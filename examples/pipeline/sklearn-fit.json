@@ -1,0 +1,46 @@
+{
+  "name": "sklearn-fit-demo",
+  "notes": "The sklearn library pack end to end (docs/25 SS2): a synthetic market feeds SklearnFit, which imports the estimator named by THIS document, fits it, persists model.joblib + a provenance sidecar under the run dir, and hands the fitted model to the toolkit's owned validate scorer through the predict(record) seam. SklearnFit fits exactly what is wired in - any split/causality cut is an upstream filter node someone can read; this demo deliberately wires the full synthetic stream and scores on the val split only. Run: python -m dskit.pipeline run examples/pipeline/sklearn-fit.json --asof 2026-01-01",
+  "pipeline": {
+    "dataset": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthEvents",
+      "params": { "n_events": 104, "n_instruments": 2, "seed": 4 },
+      "notes": "role 'data': deterministic settled events with a mid that under-reacts to the truth"
+    },
+    "labels": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthLabels",
+      "inputs": { "events": "$dataset.events" }
+    },
+    "qhat": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnFit",
+      "mode": "train",
+      "inputs": { "rows": "$dataset.events" },
+      "params": {
+        "estimator": "sklearn.linear_model.LogisticRegression",
+        "estimator_params": { "C": 1.0, "max_iter": 200 },
+        "features": ["mid"],
+        "label": "settled_yes",
+        "seed": 7,
+        "predict_method": "predict_proba"
+      },
+      "notes": "mode 'train' fits fresh and writes artifacts/qhat/model.joblib (+ .json sidecar). To pin a past fit instead: mode 'load' + artifact <path-to-model.joblib> - it restores (hash-verified, params-matched) and never refits."
+    },
+    "validate": {
+      "uses": "validate",
+      "inputs": {
+        "records": "$dataset.events",
+        "signal": "$qhat.signal",
+        "outcomes": "$labels.outcomes"
+      },
+      "params": { "split": "val", "metric": "brier", "min_events": 5 },
+      "notes": "the owned scorer consumes the signal via predict(record); no baseline wired, so metrics are absolute"
+    }
+  },
+  "splits": {
+    "kind": "random",
+    "train_frac": 0.8,
+    "val_frac": 0.2,
+    "seed": 7
+  },
+  "outputs": { "run_root": "" }
+}

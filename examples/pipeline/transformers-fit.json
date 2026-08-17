@@ -1,0 +1,31 @@
+{
+  "name": "transformers-fit",
+  "notes": "The transformers library pack (docs/25 §2 row 4) end to end: a data node feeds feature rows into a TinyTransformerFit (mode 'train' — fits fresh, save_pretrained's the checkpoint + sidecar under artifacts/qhat/checkpoint, and exposes the content digest in metrics: the artifact IS identity), while a TransformerPredict restores a PINNED checkpoint from a PRIOR run and answers from it — it always loads, never fits. Every `uses` is an import reference, so this document plans against the bare toolkit with zero registrations, on a machine with neither transformers nor torch installed. Planning never reads the pinned path; running requires it to exist (and to pass the sidecar's digest check). Nothing ever touches the HF hub: models come from a config or a local save_pretrained directory only.",
+  "pipeline": {
+    "dataset": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthEvents",
+      "params": { "n_events": 24, "n_instruments": 2, "seed": 11 },
+      "notes": "role 'data': deterministic synthetic rows; 'mid' is the feature column and 'p_true' the regression label"
+    },
+    "qhat": {
+      "uses": "dskit.pipeline.libs.transformers:TinyTransformerFit",
+      "mode": "train",
+      "inputs": { "rows": "$dataset.events" },
+      "params": {
+        "features": ["mid"],
+        "label": "p_true",
+        "seed": 7,
+        "steps": 2,
+        "lr": 0.05
+      },
+      "notes": "role 'train': 2-layer/1-head BERT-style regressor from config (hidden_size == len(features)); seed recorded in the sidecar, checkpoint digest in outputs.metrics"
+    },
+    "pinned": {
+      "uses": "dskit.pipeline.libs.transformers:TransformerPredict",
+      "mode": "load",
+      "artifact": "pipeline_runs/transformers-fit-2026-01-01-00000000/artifacts/qhat/checkpoint",
+      "notes": "role 'signal': inference-only from a prior run's checkpoint — the sidecar names the model class and the features schema; a missing, foreign, or tampered directory refuses by name at run time (the equivalent knob-level pin is params.artifact_dir)"
+    }
+  },
+  "outputs": { "run_root": "" }
+}

@@ -1,0 +1,43 @@
+{
+  "name": "nodemap-minimal",
+  "notes": "The plain-ML degeneration of the node-map grammar (docs/24): no clock -> single pass; no capital -> no stat_test requirement; random split with train+val == 1.0 -> no test split; baseline wired -> relative scoring. Every `uses` is an import reference, so this document runs against the bare toolkit with zero registrations: python -m dskit.pipeline run examples/pipeline/nodemap-minimal.json --asof 2026-01-01",
+  "pipeline": {
+    "dataset": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthEvents",
+      "params": { "n_events": 104, "n_instruments": 2, "seed": 4 },
+      "notes": "role 'data' (declared by the class): the deterministic synthetic market"
+    },
+    "labels": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthLabels",
+      "inputs": { "events": "$dataset.events" }
+    },
+    "market": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthMarketSignal",
+      "inputs": { "events": "$dataset.events" },
+      "notes": "role 'signal': the market's own price — the baseline"
+    },
+    "qhat": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthTrain",
+      "mode": "train",
+      "inputs": { "events": "$dataset.events" },
+      "params": { "min_train": 5 }
+    },
+    "validate": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthScore",
+      "inputs": {
+        "events": "$dataset.events",
+        "signal": "$qhat.signal",
+        "baseline": "$market.signal",
+        "outcomes": "$labels.outcomes"
+      },
+      "params": { "split": "val", "min_events": 5 }
+    }
+  },
+  "splits": {
+    "kind": "random",
+    "train_frac": 0.8,
+    "val_frac": 0.2,
+    "seed": 7
+  },
+  "outputs": { "run_root": "" }
+}

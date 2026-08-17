@@ -1,0 +1,596 @@
+"""The driver: the 6-step lifecycle end to end, against synthetic nodes."""
+
+import json
+import os
+
+import pytest
+
+from dskit.pipeline.base import (
+    SINK_KINDS,
+    ConfigError,
+    EnvConfig,
+    OutputsConfig,
+    SinkConfig,
+    TrackingConfig,
+    register_sink_kind,
+)
+from dskit.pipeline.document import (
+    ClockConfig,
+    NodeSpec,
+    PipelineDocument,
+    TrailingSplitSpec,
+    save_document,
+)
+from dskit.pipeline.driver import (
+    DocumentRunResult,
+    _carryable,
+    _node_metrics,
+    _summarize,
+    run_document,
+)
+from dskit.pipeline.node import Node
+from dskit.pipeline.testing import MemoryTracker
+from tests.pipeline.dochelpers import banking_document, banking_pipeline, make_registry
+
+ASOF = "2026-01-01"
+
+
+class BadContractNode(Node):
+    role = "transform"
+    outputs = ("x",)
+
+    def run(self, ctx, inputs):
+        return {"y": 1}
+
+
+@pytest.fixture
+def registry():
+    return make_registry()
+
+
+def bdoc(tmp_path, **overrides):
+    overrides.setdefault("outputs", OutputsConfig(run_root=str(tmp_path)))
+    return banking_document(**overrides)
+
+
+def read_json(run_dir, name):
+    with open(os.path.join(run_dir, name), encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+class TestCleanRun:
+    def test_end_to_end_banking_run(self, tmp_path, registry):
+        result = run_document(bdoc(tmp_path), asof=ASOF, registry=registry)
+        assert isinstance(result, DocumentRunResult)
+        assert result.state == "ran" and result.exit_code == 0
+        assert set(result.node_states.values()) == {"ok"}
+        # The planted edge deploys: both instruments survive, capital sizes.
+        assert result.outputs["edge_test"]["survivors"] == ["SYNA", "SYNB"]
+        assert result.outputs["size"]["positions"]
+        assert result.outputs["size"]["final_bankroll"] == pytest.approx(1020.0)
+
+    def test_run_dir_layout_and_naming(self, tmp_path, registry):
+        doc = bdoc(tmp_path)
+        result = run_document(doc, asof=ASOF, registry=registry)
+        base = os.path.basename(result.run_dir)
+        assert base == f"synth-banking-{ASOF}-{result.run_hash[:8]}"
+        for artifact in (
+            "config.json",
+            "plan.json",
+            "resolved.json",
+            "result.json",
+            "report.md",
+            "carry.json",
+            "run.log",
+        ):
+            assert os.path.isfile(os.path.join(result.run_dir, artifact)), artifact
+        assert os.path.isfile(
+            os.path.join(result.run_dir, "artifacts", "qhat", "model.json")
+        )
+        records = sorted(os.listdir(os.path.join(result.run_dir, "nodes")))
+        assert len(records) == len(banking_pipeline())
+        assert records[0].startswith("01-")
+
+    def test_report_leads_with_the_verdict(self, tmp_path, registry):
+        result = run_document(bdoc(tmp_path), asof=ASOF, registry=registry)
+        with open(os.path.join(result.run_dir, "report.md"), encoding="utf-8") as fh:
+            first = fh.readline().strip()
+        assert first.startswith("**RAN")
+
+    def test_result_json_mirrors_the_result(self, tmp_path, registry):
+        result = run_document(bdoc(tmp_path), asof=ASOF, registry=registry)
+        payload = read_json(result.run_dir, "result.json")
+        assert payload["state"] == "ran" and payload["exit_code"] == 0
+        assert payload["run_hash"] == result.run_hash
+        assert payload["node_states"] == result.node_states
+
+    def test_run_log_narrates_the_nodes(self, tmp_path, registry):
+        result = run_document(bdoc(tmp_path), asof=ASOF, registry=registry)
+        with open(os.path.join(result.run_dir, "run.log"), encoding="utf-8") as fh:
+            log = fh.read()
+        assert "node events: start" in log and "node size: ok" in log
+
+    def test_document_loads_from_a_path(self, tmp_path, registry):
+        doc_path = tmp_path / "doc.json"
+        save_document(bdoc(tmp_path / "runs"), doc_path)
+        result = run_document(str(doc_path), asof=ASOF, registry=registry)
+        assert result.state == "ran"
+
+
+class TestHaltSemantics:
+    def test_nogo_gate_halts_descendants_only(self, tmp_path, registry):
+        pipeline = banking_pipeline()
+        pipeline["family"] = NodeSpec(
+            uses="synth-eligibility",
+            inputs={"counts": "$bank.counts"},
+            params={"min_events": 10_000},
+        )
+        result = run_document(
+            bdoc(tmp_path, pipeline=pipeline), asof=ASOF, registry=registry
+        )
+        assert result.state == "halted" and result.exit_code == 3
+        assert result.halted_at == "family"
+        assert result.node_states["family"] == "ok"  # the gate itself ran
+        assert result.node_states["report"] == "halted"  # downstream of family
+        # Independent branches kept running — this is a DAG halt, not a break.
+        assert result.node_states["edge_test"] == "ok"
+        assert result.node_states["size"] == "ok"
+
+    def test_nogo_stat_test_halts_capital(self, tmp_path, registry):
+        pipeline = banking_pipeline()
+        pipeline["edge_test"] = NodeSpec(
+            uses="stat_test",
+            inputs={"scores": "$validate.cluster_scores"},
+            params={"alpha": 1e-9},
+        )
+        result = run_document(
+            bdoc(tmp_path, pipeline=pipeline), asof=ASOF, registry=registry
+        )
+        assert result.state == "halted" and result.halted_at == "edge_test"
+        assert result.node_states["size"] == "halted"
+        assert result.node_states["report"] == "halted"
+        with open(os.path.join(result.run_dir, "report.md"), encoding="utf-8") as fh:
+            assert fh.readline().startswith("**NO-GO — halted at `edge_test`")
+
+
+class TestErrorSemantics:
+    def test_node_exception_is_recorded_and_aborts(self, tmp_path, registry):
+        pipeline = banking_pipeline()
+        pipeline["qhat"] = NodeSpec(
+            uses="synth-train",
+            mode="train",
+            inputs={"events": "$clip.events"},
+            params={"min_train": 10_000},
+        )
+        result = run_document(
+            bdoc(tmp_path, pipeline=pipeline), asof=ASOF, registry=registry
+        )
+        assert result.state == "error" and result.exit_code == 1
+        assert result.node_states["qhat"] == "error"
+        assert result.node_states["market"] == "ok"  # ran before the failure
+        assert result.node_states["size"] == "not_run"  # aborted, not halted
+        record = read_json(result.run_dir, os.path.join("nodes", "07-qhat.json"))
+        assert record["status"] == "error" and "min_train=10000" in record["error"]
+        with open(os.path.join(result.run_dir, "report.md"), encoding="utf-8") as fh:
+            assert fh.readline().startswith("**ERROR at `qhat`")
+
+    def test_validate_inputs_problems_fail_the_node(self, tmp_path, registry):
+        pipeline = banking_pipeline()
+        pipeline["validate"] = NodeSpec(
+            uses="synth-score",
+            inputs={
+                "events": "$clip.events",
+                "signal": "$events.instruments",  # a list, not a signal dict
+                "baseline": "$market.signal",
+                "outcomes": "$labels.outcomes",
+            },
+            params={"split": "val"},
+        )
+        result = run_document(
+            bdoc(tmp_path, pipeline=pipeline), asof=ASOF, registry=registry
+        )
+        assert result.state == "error"
+        assert result.node_states["validate"] == "error"
+        assert "signal must be a dict" in result.error
+
+    def test_output_contract_violation_fails_the_node(self, tmp_path, registry):
+        pipeline = {
+            "events": NodeSpec(uses="synth-events", params={"n_events": 8}),
+            "bad": NodeSpec(
+                uses="tests.pipeline.test_driver:BadContractNode",
+                inputs={"events": "$events.events"},
+            ),
+        }
+        doc = PipelineDocument(
+            name="contract-break",
+            pipeline=pipeline,
+            outputs=OutputsConfig(run_root=str(tmp_path)),
+        )
+        result = run_document(doc, asof=ASOF, registry=registry)
+        assert result.state == "error"
+        assert "undeclared ['y']" in result.error
+
+
+class TestPrevCarry:
+    def test_bankroll_carries_run_over_run(self, tmp_path, registry):
+        first = run_document(bdoc(tmp_path), asof="2026-01-01", registry=registry)
+        assert first.outputs["size"]["final_bankroll"] == pytest.approx(1020.0)
+        assert read_json(first.run_dir, "resolved.json")["prev_bindings"] == {
+            "size.final_bankroll": "default"
+        }
+        second = run_document(bdoc(tmp_path), asof="2026-01-08", registry=registry)
+        assert second.prev_run == first.run_dir
+        assert second.outputs["size"]["final_bankroll"] == pytest.approx(1040.4)
+        resolved = read_json(second.run_dir, "resolved.json")
+        assert resolved["prev_bindings"] == {"size.final_bankroll": "prev"}
+        assert resolved["prev_run"] == first.run_dir
+
+    def test_missing_prev_output_falls_back_to_default_and_says_so(
+        self, tmp_path, registry
+    ):
+        first = run_document(bdoc(tmp_path), asof="2026-01-01", registry=registry)
+        carry = read_json(first.run_dir, "carry.json")
+        del carry["size"]
+        with open(
+            os.path.join(first.run_dir, "carry.json"), "w", encoding="utf-8"
+        ) as fh:
+            json.dump(carry, fh)
+        second = run_document(bdoc(tmp_path), asof="2026-01-08", registry=registry)
+        assert second.outputs["size"]["final_bankroll"] == pytest.approx(1020.0)
+        assert read_json(second.run_dir, "resolved.json")["prev_bindings"] == {
+            "size.final_bankroll": "default"
+        }
+
+    def test_carry_holds_state_not_datasets(self, tmp_path, registry):
+        result = run_document(bdoc(tmp_path), asof=ASOF, registry=registry)
+        carry = read_json(result.run_dir, "carry.json")
+        assert carry["size"]["final_bankroll"] == pytest.approx(1020.0)
+        assert "events" not in carry.get("events", {})  # the big list is not carried
+        assert "instruments" in carry["events"]
+
+
+class TestRefusals:
+    def test_occupied_run_dir_refused(self, tmp_path, registry):
+        run_document(bdoc(tmp_path), asof=ASOF, registry=registry)
+        with pytest.raises(ValueError, match="already exists"):
+            run_document(bdoc(tmp_path), asof=ASOF, registry=registry)
+
+    def test_clock_documents_refuse_to_run(self, tmp_path, registry):
+        doc = bdoc(tmp_path, clock=ClockConfig(increment="epoch"))
+        with pytest.raises(ConfigError, match="I-222"):
+            run_document(doc, asof=ASOF, registry=registry)
+
+    def test_trailing_splits_refuse_to_resolve(self, tmp_path, registry):
+        doc = bdoc(tmp_path, splits=TrailingSplitSpec(test_days=14, val_days=28))
+        with pytest.raises(ConfigError, match="trailing"):
+            run_document(doc, asof=ASOF, registry=registry)
+
+    def test_bad_asof_refused(self, tmp_path, registry):
+        with pytest.raises(ConfigError, match="asof"):
+            run_document(bdoc(tmp_path), asof="Jan 1", registry=registry)
+
+    def test_missing_required_env_lists_the_names(self, tmp_path, registry):
+        doc = bdoc(
+            tmp_path,
+            env=EnvConfig(
+                env_file=str(tmp_path / "none.env"), require=("PMQ_MISSING_XYZ",)
+            ),
+        )
+        with pytest.raises(ValueError, match="PMQ_MISSING_XYZ"):
+            run_document(doc, asof=ASOF, registry=registry)
+        assert not os.path.isdir(os.path.join(tmp_path, f"synth-banking-{ASOF}"))
+
+
+class TestTracking:
+    def register_memory(self):
+        if "memory" not in SINK_KINDS:
+            register_sink_kind("memory", lambda params: [], MemoryTracker)
+
+    def test_metrics_and_params_reach_the_sink_and_it_closes(self, tmp_path, registry):
+        self.register_memory()
+        doc = bdoc(
+            tmp_path,
+            tracking=TrackingConfig(sinks=(SinkConfig(kind="memory"),)),
+        )
+        result = run_document(doc, asof=ASOF, registry=registry)
+        sink = MemoryTracker.instances[-1]
+        assert sink.closed
+        assert sink.logged_params["run_hash"] == result.run_hash
+        logged = {node: m for node, m in sink.metrics}
+        assert "metrics.loss" in logged["validate"]
+        assert logged["size"]["final_bankroll"] == pytest.approx(1020.0)
+
+    def test_sink_closes_even_when_a_node_errors(self, tmp_path, registry):
+        self.register_memory()
+        pipeline = banking_pipeline()
+        pipeline["qhat"] = NodeSpec(
+            uses="synth-train",
+            mode="train",
+            inputs={"events": "$clip.events"},
+            params={"min_train": 10_000},
+        )
+        doc = bdoc(
+            tmp_path,
+            pipeline=pipeline,
+            tracking=TrackingConfig(sinks=(SinkConfig(kind="memory"),)),
+        )
+        result = run_document(doc, asof=ASOF, registry=registry)
+        assert result.state == "error"
+        assert MemoryTracker.instances[-1].closed
+
+    def test_unknown_sink_kind_refused_before_any_write(self, tmp_path, registry):
+        doc = bdoc(
+            tmp_path,
+            tracking=TrackingConfig(sinks=(SinkConfig(kind="wandb"),)),
+        )
+        with pytest.raises(ConfigError, match="not registered"):
+            run_document(doc, asof=ASOF, registry=registry)
+        assert not any(
+            entry.startswith("synth-banking-") for entry in os.listdir(tmp_path)
+        )
+
+    def test_class_ref_sink_constructs_and_receives(self, tmp_path, registry):
+        doc = bdoc(
+            tmp_path,
+            tracking=TrackingConfig(
+                sinks=(SinkConfig(kind="dskit.pipeline.testing:MemoryTracker"),)
+            ),
+        )
+        result = run_document(doc, asof=ASOF, registry=registry)
+        sink = MemoryTracker.instances[-1]
+        assert sink.logged_params["run_hash"] == result.run_hash and sink.closed
+
+    def test_class_ref_sink_missing_the_seam_refused(self, tmp_path, registry):
+        doc = bdoc(
+            tmp_path,
+            tracking=TrackingConfig(
+                sinks=(SinkConfig(kind="tests.pipeline.refhelpers:NotASink"),)
+            ),
+        )
+        with pytest.raises(ConfigError, match="Tracker seam"):
+            run_document(doc, asof=ASOF, registry=registry)
+
+
+class TestSplitsRefs:
+    def base_pipeline(self):
+        return {
+            "events": NodeSpec(uses="synth-events", params={"n_events": 8}),
+            "rep": NodeSpec(
+                uses="synth-report",
+                inputs={"n": "$events.newest_ms"},
+                params={"cut": "$splits.train_end_ms"},
+            ),
+        }
+
+    def test_splits_fields_materialize_into_params(self, tmp_path, registry):
+        doc = bdoc(tmp_path, pipeline=self.base_pipeline())
+        result = run_document(doc, asof=ASOF, registry=registry)
+        assert result.state == "ran"
+        report = read_json(
+            result.run_dir, os.path.join("artifacts", "rep", "report.json")
+        )
+        assert report["n"] > 0
+
+    def test_unknown_splits_field_fails_the_node_loudly(self, tmp_path, registry):
+        pipeline = self.base_pipeline()
+        pipeline["rep"] = NodeSpec(
+            uses="synth-report",
+            inputs={"n": "$events.newest_ms"},
+            params={"cut": "$splits.t9"},
+        )
+        result = run_document(
+            bdoc(tmp_path, pipeline=pipeline), asof=ASOF, registry=registry
+        )
+        assert result.state == "error"
+        assert "no 't9'" in result.error and "train_end_ms" in result.error
+
+
+class InfMetricsNode(Node):
+    """A score-shaped node whose loss diverges (routine for logloss)."""
+
+    role = "transform"
+
+    def run(self, ctx, inputs):
+        return {"metrics": {"loss": float("inf")}, "n": 3}
+
+
+class EchoParamsNode(Node):
+    """Returns the params it was constructed with — proves materialization."""
+
+    role = "transform"
+
+    def run(self, ctx, inputs):
+        return {"params_seen": self.params}
+
+
+class FlakySink:
+    """A sink whose logging fails mid-run — telemetry must not kill runs."""
+
+    def __init__(self, params):
+        self.closed = False
+
+    def log_params(self, mapping):
+        raise ConnectionError("mlflow is down")
+
+    def log_metrics(self, node, mapping):
+        raise ConnectionError("mlflow is down")
+
+    def close(self):
+        self.closed = True
+
+
+class CountingSink:
+    """Tracks open/close pairing across driver refusals."""
+
+    instances = []
+
+    def __init__(self, params):
+        self.closed = False
+        CountingSink.instances.append(self)
+
+    def log_params(self, mapping):
+        pass
+
+    def log_metrics(self, node, mapping):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+class TestReviewRegressions:
+    """Each test pins one finding of the 2026-08-14 skeptic review."""
+
+    def test_data_node_params_must_be_fully_literal(self, tmp_path, registry):
+        # $splits/$prev in a data node's params used to ride through as
+        # literals (the resolve-time instance was built from raw params).
+        pipeline = {
+            "events": NodeSpec(
+                uses="synth-events", params={"start_ms": "$splits.train_end_ms"}
+            )
+        }
+        with pytest.raises(ConfigError, match="fully literal"):
+            run_document(
+                bdoc(tmp_path, pipeline=pipeline), asof=ASOF, registry=registry
+            )
+        pipeline = {
+            "events": NodeSpec(
+                uses="synth-events",
+                params={"seed": {"$prev": "events.newest_ms", "default": 7}},
+            )
+        }
+        with pytest.raises(ConfigError, match="fully literal"):
+            run_document(
+                bdoc(tmp_path, pipeline=pipeline), asof=ASOF, registry=registry
+            )
+
+    def test_infinite_metrics_still_record(self, tmp_path, registry):
+        # inf/NaN in outputs used to crash step 6 RECORD and strand the dir.
+        pipeline = {
+            "events": NodeSpec(uses="synth-events", params={"n_events": 8}),
+            "diverged": NodeSpec(
+                uses="tests.pipeline.test_driver:InfMetricsNode",
+                inputs={"events": "$events.events"},
+            ),
+        }
+        result = run_document(
+            bdoc(tmp_path, pipeline=pipeline), asof=ASOF, registry=registry
+        )
+        assert result.state == "ran"
+        record = read_json(result.run_dir, os.path.join("nodes", "02-diverged.json"))
+        assert record["status"] == "ok"
+        assert read_json(result.run_dir, "result.json")["state"] == "ran"
+
+    def test_flaky_sink_cannot_kill_the_run(self, tmp_path, registry):
+        doc = bdoc(
+            tmp_path,
+            tracking=TrackingConfig(
+                sinks=(SinkConfig(kind="tests.pipeline.test_driver:FlakySink"),)
+            ),
+        )
+        result = run_document(doc, asof=ASOF, registry=registry)
+        assert result.state == "ran"
+
+    def test_sinks_close_on_resolve_time_refusal(self, tmp_path, registry):
+        # Identical document twice (tracking is hash-material, so the doc
+        # must be the SAME for the second run to hit the occupied dir).
+        doc = bdoc(
+            tmp_path,
+            tracking=TrackingConfig(
+                sinks=(SinkConfig(kind="tests.pipeline.test_driver:CountingSink"),)
+            ),
+        )
+        run_document(doc, asof=ASOF, registry=registry)
+        with pytest.raises(ValueError, match="already exists"):
+            run_document(doc, asof=ASOF, registry=registry)
+        assert len(CountingSink.instances) >= 2
+        assert all(s.closed for s in CountingSink.instances[-2:])
+
+    def test_same_asof_prev_run_picked_by_mtime_not_hash(self, tmp_path, registry):
+        # Two same-day prior runs: the newer by mtime must win, whatever
+        # the hash suffix's hex ordering says.
+        older = tmp_path / "synth-banking-2026-01-01-ffffffff"
+        newer = tmp_path / "synth-banking-2026-01-01-00000000"
+        for i, d in enumerate((older, newer)):
+            d.mkdir()
+            (d / "carry.json").write_text(
+                json.dumps({"size": {"final_bankroll": 111.0 * (i + 1)}})
+            )
+            os.utime(d, (1000 + i, 1000 + i))
+        result = run_document(bdoc(tmp_path), asof="2026-01-08", registry=registry)
+        assert result.prev_run == str(newer)
+        # bankroll 222 carried: final = 222 * 1.02
+        assert result.outputs["size"]["final_bankroll"] == pytest.approx(226.44)
+
+    def test_tuple_params_materialize(self, tmp_path, registry):
+        pipeline = {
+            "events": NodeSpec(uses="synth-events", params={"n_events": 8}),
+            "echo": NodeSpec(
+                uses="tests.pipeline.test_driver:EchoParamsNode",
+                inputs={"events": "$events.events"},
+                params={"srcs": ("$events.newest_ms",)},
+            ),
+        }
+        result = run_document(
+            bdoc(tmp_path, pipeline=pipeline), asof=ASOF, registry=registry
+        )
+        assert result.state == "ran"
+        # The ref inside the tuple resolved — no literal ride-through.
+        (value,) = result.outputs["echo"]["params_seen"]["srcs"]
+        assert value == result.outputs["events"]["newest_ms"]
+
+    def test_prev_default_must_be_literal(self):
+        with pytest.raises(ConfigError, match="default must be a literal"):
+            NodeSpec(
+                uses="k",
+                params={"w": {"$prev": "e.seen", "default": "$events.newest_ms"}},
+            )
+
+    def test_params_only_stat_test_reference_does_not_gate_capital(self, registry):
+        from dskit.pipeline.planner import plan as plan_document
+
+        pipeline = banking_pipeline()
+        pipeline["size"] = NodeSpec(
+            uses="synth-capital",
+            inputs={"signal": "$qhat.signal", "survivors": "$family.instruments"},
+            params={"bankroll": 100.0, "note": "$edge_test.pvalues"},
+        )
+        with pytest.raises(ConfigError, match="un-gated capital"):
+            plan_document(banking_document(pipeline=pipeline), registry)
+
+    def test_trailing_train_days_bound_refuses_to_materialize(self):
+        bounded = TrailingSplitSpec(test_days=14, val_days=28, train_days=30)
+        with pytest.raises(ValueError, match="I-223"):
+            bounded.materialize(100 * 24 * 60 * 60 * 1000)
+
+
+class TestHelpers:
+    def test_summarize_shapes(self):
+        assert _summarize(3.5) == 3.5 and _summarize(True) is True
+        assert _summarize(None) is None
+        truncated = _summarize("x" * 300)
+        assert truncated.endswith("…") and len(truncated) == 201
+        assert _summarize("short") == "short"
+        assert _summarize(list(range(5))) == {"type": "list", "len": 5}
+        assert _summarize({"a": 1}) == {"type": "dict", "len": 1}
+        assert _summarize(object())["type"] == "object"
+
+    def test_carryable_rules(self):
+        assert _carryable(1000.0) == (1000.0, True)
+        assert _carryable(object()) == (None, False)
+        assert _carryable("x" * 30_000) == (None, False)
+
+    def test_node_metrics_extraction(self):
+        out = _node_metrics(
+            {
+                "final_bankroll": 1020.0,
+                "ok": True,
+                "metrics": {"loss": 0.2, "n": 96, "tag": "val"},
+                "positions": {"A": 1.0},
+            }
+        )
+        assert out == {
+            "final_bankroll": 1020.0,
+            "metrics.loss": 0.2,
+            "metrics.n": 96,
+        }

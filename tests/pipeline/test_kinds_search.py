@@ -1,0 +1,1098 @@
+"""``hpo-grid`` + the driver's subgraph re-execution seam (docs/24 §8, §10.3).
+
+Three layers, mirroring the seam's contract:
+
+* unit — grid enumeration, sha256 subsampling, tie-breaking, param
+  validation, override-path application, registration;
+* planner — the winner-consistency rule (stale consumers refuse to
+  plan) and space-path validation;
+* driver — end-to-end ``run_document`` with PRIVATE registries: a
+  parabola fixture whose argmin is analytic (the winner is unambiguous
+  by construction), and the synthetic market where every search trial
+  must EQUAL a from-scratch pinned run of the same document.
+"""
+
+import json
+import os
+
+import pytest
+
+from dskit.pipeline.base import (
+    ConfigError,
+    OutputsConfig,
+    SinkConfig,
+    TimeSplitConfig,
+    TrackingConfig,
+)
+from dskit.pipeline.document import NodeSpec, PipelineDocument
+from dskit.pipeline.driver import _apply_param_override, run_document
+from dskit.pipeline.kinds_search import HpoGrid, _grid, _subsample, register
+from dskit.pipeline.node import Node, NodeContext, NodeKindRegistry
+from dskit.pipeline.planner import plan
+from dskit.pipeline.synthetic_nodes import (
+    SynthClip,
+    SynthEvents,
+    SynthLabels,
+    SynthMarketSignal,
+    SynthReport,
+    SynthScore,
+    SynthSearch,
+    SynthTrain,
+)
+from dskit.pipeline.testing import MemoryTracker
+from tests.pipeline.dochelpers import DAY
+
+ASOF = "2026-01-01"
+
+#: Trivially-valid splits for score nodes that never read ctx.splits.
+FLAT_SPLITS = TimeSplitConfig(train_end_ms=1, val_end_ms=2, test_end_ms=3)
+
+
+# ---------------------------------------------------------------------------
+# The parabola fixture — custom nodes with an ANALYTIC argmin
+# ---------------------------------------------------------------------------
+
+
+class ConstSource(Node):
+    """Literal data source (role ``data``) — the clean upstream that must
+    never be re-executed by trials."""
+
+    role = "data"
+    outputs = ("x",)
+
+    def fingerprint(self):
+        return {"kind": "const", "x": self.params.get("x", 0)}
+
+    def run(self, ctx, inputs):
+        return {"x": self.params.get("x", 0)}
+
+
+class ThetaTrain(Node):
+    """One trainable knob (role ``train``): value = theta + seed/100 +
+    opt.bias. The seed term makes the seeds ensemble observable; the
+    nested ``opt`` block exercises dotted override paths."""
+
+    role = "train"
+    outputs = ("value",)
+
+    def validate_inputs(self, inputs):
+        return ["x must not be 'poison'"] if inputs.get("x") == "poison" else []
+
+    def run(self, ctx, inputs):
+        if self.params.get("misbehave"):
+            return {"wrong": 1}
+        opt = self.params.get("opt") or {}
+        return {
+            "value": self.params["theta"]
+            + self.params.get("seed", 0) / 100
+            + opt.get("bias", 0.0)
+        }
+
+
+class PassThrough(Node):
+    """Pointwise relay (role ``transform``) — a LEGAL search-space head
+    sitting between the data node (identity, off-limits to spaces) and
+    the trainable, so trials can poison theta's upstream lawfully."""
+
+    role = "transform"
+    outputs = ("x",)
+
+    def run(self, ctx, inputs):
+        emit = self.params.get("emit")
+        return {"x": inputs["x"] if emit is None else emit}
+
+
+class ParabolaScore(Node):
+    """metrics.loss = (value - center)^2 (role ``score``): the val loss is
+    minimized at value == center — the grid winner is unambiguous."""
+
+    role = "score"
+    outputs = ("metrics",)
+
+    @classmethod
+    def validate_params(cls, params):
+        if params.get("split") not in ("train", "val", "test"):
+            return [f"split must be declared, got {params.get('split')!r}"]
+        return []
+
+    def run(self, ctx, inputs):
+        loss = (inputs["value"] - self.params.get("center", 3.0)) ** 2
+        return {"metrics": {"loss": loss, "n": 1}}
+
+
+class CountGate(Node):
+    """Verdict = GO iff value >= bar (role ``gate``) — the winner-pass
+    verdict-flip guard's test subject."""
+
+    role = "gate"
+    outputs = ("n", "verdict")
+
+    def run(self, ctx, inputs):
+        n = inputs["value"]
+        return {"n": n, "verdict": "GO" if n >= self.params.get("bar", 0) else "NO-GO"}
+
+
+class ProbeSearch(Node):
+    """A custom search kind driving the seam by hand: calls ``ctx.rerun``
+    on its ``probe`` overrides once, then returns whatever ``winner`` its
+    params pin (default: none) — the scratch-isolation and custom-winner
+    test subject."""
+
+    role = "search"
+    outputs = ("best_params", "best_score", "trials")
+
+    def run(self, ctx, inputs):
+        probe = self.params.get("probe", {"theta.theta": 0.0})
+        score = ctx.rerun(probe)  # passed through uncoerced — the seam validates
+        return {
+            "best_params": dict(self.params.get("winner", {})),
+            "best_score": score,
+            "trials": [{"overrides": probe, "score": score}],
+        }
+
+
+THETA = "tests.pipeline.test_kinds_search:ThetaTrain"
+
+
+def parabola_pipeline(theta_params=None, search_params=None, search_uses="hpo-grid"):
+    base_search = {
+        "space": {"theta.theta": [0.0, 3.0, 5.0]},
+        "objective": "$val.metrics.loss",
+        "select": "min",
+    }
+    base_search.update(search_params or {})
+    return {
+        "src": NodeSpec(
+            uses="tests.pipeline.test_kinds_search:ConstSource", params={"x": 1}
+        ),
+        "theta": NodeSpec(
+            uses=THETA,
+            inputs={"x": "$src.x"},
+            params=dict(theta_params or {"theta": 10.0}),
+        ),
+        "val": NodeSpec(
+            uses="tests.pipeline.test_kinds_search:ParabolaScore",
+            inputs={"value": "$theta.value"},
+            params={"split": "val", "center": 3.0},
+        ),
+        "search": NodeSpec(uses=search_uses, params=base_search),
+        "rep": NodeSpec(
+            uses="synth-report",
+            inputs={
+                "best_score": "$search.best_score",
+                "value": "$theta.value",
+                "loss": "$val.metrics.loss",
+            },
+        ),
+    }
+
+
+def parabola_document(tmp_path, pipeline=None, **overrides):
+    base = {
+        "name": "parabola",
+        "pipeline": pipeline or parabola_pipeline(),
+        "splits": FLAT_SPLITS,
+        "outputs": OutputsConfig(run_root=str(tmp_path)),
+    }
+    base.update(overrides)
+    return PipelineDocument(**base)
+
+
+def search_registry():
+    """The PRIVATE registry: needed synthetic kinds registered one by
+    one, plus ``hpo-grid`` via its own :func:`register`."""
+    reg = NodeKindRegistry()
+    reg.register("synth-events", SynthEvents)
+    reg.register("synth-labels", SynthLabels)
+    reg.register("synth-clip", SynthClip)
+    reg.register("synth-market", SynthMarketSignal)
+    reg.register("synth-train", SynthTrain)
+    reg.register("synth-score", SynthScore)
+    reg.register("synth-report", SynthReport)
+    register(reg)
+    return reg
+
+
+@pytest.fixture
+def registry():
+    return search_registry()
+
+
+def read_json(run_dir, *parts):
+    with open(os.path.join(run_dir, *parts), encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+class FakeRerun:
+    """A hand-rolled seam for unit tests: records call order, returns
+    ``fn(overrides)``, and exposes ``seed_targets`` like the driver's."""
+
+    def __init__(self, fn, seed_targets=()):
+        self.fn = fn
+        self.calls = []
+        self.seed_targets = tuple(seed_targets)
+
+    def __call__(self, overrides):
+        self.calls.append(dict(overrides))
+        return self.fn(overrides)
+
+
+def grid_ctx(tmp_path, rerun):
+    return NodeContext(name="t", asof=ASOF, run_dir=str(tmp_path), rerun=rerun)
+
+
+def grid_node(**params):
+    base = {"space": {"a.x": [10, 20], "b.y": [1, 2]}, "objective": 0.0}
+    base.update(params)
+    return HpoGrid("search", base)
+
+
+# ---------------------------------------------------------------------------
+# Unit: validate_params
+# ---------------------------------------------------------------------------
+
+
+class TestValidateParams:
+    def good(self, **over):
+        params = {
+            "space": {"train.lr": [1e-4, 3e-4]},
+            "objective": "$validate.metrics.loss",
+        }
+        params.update(over)
+        return params
+
+    def test_the_spec_example_shape_passes(self):
+        assert (
+            HpoGrid.validate_params(
+                self.good(select="min", n_trials=12, seeds=[0, 1], seed=3)
+            )
+            == []
+        )
+
+    def test_materialized_objective_is_tolerated_at_construction(self):
+        # The driver materializes "$validate.metrics.loss" into the base
+        # pass's float before constructing the node — construction must
+        # not refuse it.
+        assert HpoGrid.validate_params(self.good(objective=49.0)) == []
+        HpoGrid("search", self.good(objective=49.0))
+
+    @pytest.mark.parametrize("bad", [None, {}, [], "x"])
+    def test_space_must_be_a_non_empty_dict(self, bad):
+        problems = HpoGrid.validate_params(self.good(space=bad))
+        assert any("space must be a non-empty dict" in p for p in problems)
+
+    @pytest.mark.parametrize("key", ["train", "Train.lr", "9x.lr", ""])
+    def test_space_keys_must_be_node_dot_param(self, key):
+        problems = HpoGrid.validate_params(self.good(space={key: [1]}))
+        assert any("must be '<node>.<param.path>'" in p for p in problems)
+
+    @pytest.mark.parametrize("values", [[], (), 5, "abc"])
+    def test_space_values_must_be_non_empty_lists(self, values):
+        problems = HpoGrid.validate_params(self.good(space={"train.lr": values}))
+        assert any("non-empty list" in p for p in problems)
+
+    @pytest.mark.parametrize("scalar", [[{"a": 1}], [[1]], [float("inf")]])
+    def test_space_values_must_be_json_scalars(self, scalar):
+        problems = HpoGrid.validate_params(self.good(space={"train.lr": scalar}))
+        assert any("JSON scalars" in p for p in problems)
+
+    def test_objective_required_and_ref_shaped(self):
+        params = self.good()
+        del params["objective"]
+        assert any(
+            "objective is required" in p for p in HpoGrid.validate_params(params)
+        )
+        problems = HpoGrid.validate_params(self.good(objective="loss"))
+        assert any("'$node.path' reference" in p for p in problems)
+
+    def test_select_min_max_only(self):
+        assert HpoGrid.validate_params(self.good(select="best"))
+        assert HpoGrid.validate_params(self.good(select="max")) == []
+
+    @pytest.mark.parametrize("bad", [0, -1, True, 1.5])
+    def test_n_trials_must_be_a_positive_int(self, bad):
+        assert any(
+            "n_trials" in p for p in HpoGrid.validate_params(self.good(n_trials=bad))
+        )
+
+    @pytest.mark.parametrize("bad", [-1, True, "0"])
+    def test_seed_must_be_a_non_negative_int(self, bad):
+        assert any("seed" in p for p in HpoGrid.validate_params(self.good(seed=bad)))
+
+    @pytest.mark.parametrize("bad", [[], [0.5], [True], "01", [1, "2"]])
+    def test_seeds_must_be_a_non_empty_int_list(self, bad):
+        assert any("seeds" in p for p in HpoGrid.validate_params(self.good(seeds=bad)))
+
+
+# ---------------------------------------------------------------------------
+# Unit: grid mechanics
+# ---------------------------------------------------------------------------
+
+
+class TestGridMechanics:
+    def test_enumeration_sorted_keys_given_value_order(self):
+        assert _grid({"b.y": [1, 2], "a.x": [10, 20]}) == [
+            {"a.x": 10, "b.y": 1},
+            {"a.x": 10, "b.y": 2},
+            {"a.x": 20, "b.y": 1},
+            {"a.x": 20, "b.y": 2},
+        ]
+
+    def test_run_evaluates_in_enumeration_order(self, tmp_path):
+        fake = FakeRerun(lambda o: float(o["a.x"] + o["b.y"]))
+        out = grid_node().run(grid_ctx(tmp_path, fake), {})
+        assert fake.calls == _grid({"a.x": [10, 20], "b.y": [1, 2]})
+        assert [t["overrides"] for t in out["trials"]] == fake.calls
+        assert out["best_params"] == {"a.x": 10, "b.y": 1}
+        assert out["best_score"] == 11.0
+
+    def test_select_max_picks_the_other_end(self, tmp_path):
+        fake = FakeRerun(lambda o: float(o["a.x"] + o["b.y"]))
+        out = grid_node(select="max").run(grid_ctx(tmp_path, fake), {})
+        assert out["best_params"] == {"a.x": 20, "b.y": 2}
+        assert out["best_score"] == 22.0
+
+    @pytest.mark.parametrize("select", ["min", "max"])
+    def test_ties_go_to_the_first_enumerated(self, tmp_path, select):
+        out = grid_node(select=select).run(
+            grid_ctx(tmp_path, FakeRerun(lambda o: 1.0)), {}
+        )
+        assert out["best_params"] == {"a.x": 10, "b.y": 1}
+
+    def test_without_the_driver_seam_run_refuses(self, tmp_path):
+        ctx = NodeContext(name="t", asof=ASOF, run_dir=str(tmp_path))
+        with pytest.raises(RuntimeError, match="hpo-grid runs under the driver"):
+            grid_node().run(ctx, {})
+
+    def test_n_trials_at_or_above_grid_size_is_exhaustive(self, tmp_path):
+        fake = FakeRerun(lambda o: 0.0)
+        out = grid_node(n_trials=4).run(grid_ctx(tmp_path, fake), {})
+        assert len(out["trials"]) == 4
+        out = grid_node(n_trials=99).run(grid_ctx(tmp_path, fake), {})
+        assert len(out["trials"]) == 4
+
+    def test_subsample_is_deterministic_and_order_preserving(self):
+        trials = _grid({"a.x": list(range(8))})
+        picked = _subsample(trials, 3, 0)
+        assert picked == _subsample(trials, 3, 0)
+        assert len(picked) == 3
+        positions = [trials.index(t) for t in picked]
+        assert positions == sorted(positions)  # enumeration order survives
+        assert all(t in trials for t in picked)
+
+    def test_subsample_pinned_selection(self):
+        # The documented rule frozen: sha256(f"{seed}:{canonical}") ranks,
+        # smallest digests win. sha256 never changes, so neither may this.
+        trials = _grid({"a.x": list(range(8))})
+        assert _subsample(trials, 3, 0) == [{"a.x": 1}, {"a.x": 3}, {"a.x": 7}]
+        assert _subsample(trials, 3, 1) == [{"a.x": 0}, {"a.x": 2}, {"a.x": 3}]
+
+    def test_seeds_average_and_apply_only_to_seed_targets(self, tmp_path):
+        fake = FakeRerun(
+            lambda o: float(o["a.x"] + o.get("t.seed", 0)),
+            seed_targets=("t.seed",),
+        )
+        out = grid_node(space={"a.x": [10, 20]}, seeds=[0, 4]).run(
+            grid_ctx(tmp_path, fake), {}
+        )
+        # Every trial evaluated once per seed, seed override attached.
+        assert [c.get("t.seed") for c in fake.calls] == [0, 4, 0, 4]
+        assert out["trials"][0] == {
+            "overrides": {"a.x": 10},
+            "score": 12.0,
+            "seed_scores": [10.0, 14.0],
+        }
+        # best_params carries GRID overrides only — never a trial seed.
+        assert out["best_params"] == {"a.x": 10}
+        assert out["best_score"] == 12.0
+
+    def test_seeds_without_targets_still_ensemble(self, tmp_path):
+        fake = FakeRerun(lambda o: float(o["a.x"]))
+        out = grid_node(space={"a.x": [10]}, seeds=[0, 1, 2]).run(
+            grid_ctx(tmp_path, fake), {}
+        )
+        assert len(fake.calls) == 3
+        assert out["trials"][0]["seed_scores"] == [10.0, 10.0, 10.0]
+
+
+class TestNonFiniteObjective:
+    """S1 #3: a non-finite objective must be refused BY NAME when the
+    trial reports. NaN defeats every strict comparison (``x < nan`` and
+    ``x > nan`` are both False), so a FIRST-trial NaN would silently
+    stick as "best" and the driver would then apply its overrides as the
+    winner; an inf outranks every real trial the same way."""
+
+    def test_a_first_trial_nan_cannot_win(self, tmp_path):
+        # a.x=10, b.y=1 is the first enumerated trial — exactly the one
+        # whose NaN sticks under the strict-compare winner loop.
+        fake = FakeRerun(lambda o: float("nan") if o["a.x"] == 10 else 1.0)
+        with pytest.raises(ValueError) as excinfo:
+            grid_node().run(grid_ctx(tmp_path, fake), {})
+        message = str(excinfo.value)
+        assert "non-finite objective" in message
+        assert "'a.x': 10" in message  # the trial is named by its overrides
+        assert "nan" in message
+
+    def test_a_mid_run_nan_is_refused_not_ranked(self, tmp_path):
+        fake = FakeRerun(
+            lambda o: float("nan") if (o["a.x"], o["b.y"]) == (20, 1) else 1.0
+        )
+        with pytest.raises(ValueError, match="non-finite objective"):
+            grid_node().run(grid_ctx(tmp_path, fake), {})
+
+    @pytest.mark.parametrize("bad", [float("inf"), float("-inf")])
+    def test_infinities_are_refused_too(self, tmp_path, bad):
+        fake = FakeRerun(lambda o: bad if o["a.x"] == 10 else 1.0)
+        with pytest.raises(ValueError, match="non-finite objective"):
+            grid_node().run(grid_ctx(tmp_path, fake), {})
+
+    def test_a_nan_seed_score_names_the_whole_trial(self, tmp_path):
+        # the seeds ensemble reports once per seed; the refusal names the
+        # exact rerun call (grid overrides plus the seed override), not
+        # just the grid point — the seed is part of what failed.
+        fake = FakeRerun(
+            lambda o: float("nan") if o.get("t.seed") == 4 else 1.0,
+            seed_targets=("t.seed",),
+        )
+        with pytest.raises(ValueError) as excinfo:
+            grid_node(space={"a.x": [10]}, seeds=[0, 4]).run(
+                grid_ctx(tmp_path, fake), {}
+            )
+        message = str(excinfo.value)
+        assert "non-finite objective" in message
+        assert "'t.seed': 4" in message
+
+
+class TestRegister:
+    def test_registers_unowned_and_skips_if_present(self):
+        reg = NodeKindRegistry()
+        register(reg)
+        assert reg.get("hpo-grid") == (HpoGrid, False)
+        register(reg)  # idempotent — no duplicate-name raise
+        assert reg.get("hpo-grid") == (HpoGrid, False)
+
+    def test_never_shadows_an_existing_claim(self):
+        reg = NodeKindRegistry()
+        reg.register("hpo-grid", SynthSearch)
+        register(reg)
+        assert reg.get("hpo-grid") == (SynthSearch, False)
+
+
+class TestApplyOverride:
+    def test_sets_nested_existing_keys(self):
+        params = {"opt": {"lr": 0.1}, "n": 1}
+        _apply_param_override(params, "t", ("opt", "lr"), 0.9)
+        _apply_param_override(params, "t", ("n",), 2)
+        assert params == {"opt": {"lr": 0.9}, "n": 2}
+
+    def test_missing_terminal_key_is_an_error(self):
+        with pytest.raises(ValueError, match="never create them"):
+            _apply_param_override({"opt": {"lr": 0.1}}, "t", ("opt", "momentum"), 0.9)
+
+    def test_missing_intermediate_key_is_an_error(self):
+        with pytest.raises(ValueError, match="no 'ghost' to descend into"):
+            _apply_param_override({"opt": {}}, "t", ("ghost", "lr"), 0.9)
+
+    def test_non_dict_cursor_is_an_error(self):
+        with pytest.raises(ValueError, match="not an existing param"):
+            _apply_param_override({"opt": 5}, "t", ("opt", "lr"), 0.9)
+
+
+# ---------------------------------------------------------------------------
+# Planner: the winner-consistency rule + space-path validation
+# ---------------------------------------------------------------------------
+
+
+class TestPlannerRules:
+    def test_parabola_document_plans(self, tmp_path, registry):
+        plan(parabola_document(tmp_path), registry)
+
+    def test_stale_consumer_refuses_to_plan(self, tmp_path, registry):
+        # 'leech' consumes the tuned node's output but is neither
+        # re-executed with the winner nor downstream of the search — it
+        # would consume the stale pre-winner pass.
+        pipeline = parabola_pipeline()
+        pipeline["leech"] = NodeSpec(
+            uses="synth-report", inputs={"value": "$theta.value"}
+        )
+        with pytest.raises(ConfigError, match=r"\['leech'\].*stale pre-winner"):
+            plan(parabola_document(tmp_path, pipeline=pipeline), registry)
+
+    def test_wiring_the_consumer_behind_the_search_cures_it(self, tmp_path, registry):
+        pipeline = parabola_pipeline()
+        pipeline["leech"] = NodeSpec(
+            uses="synth-report",
+            inputs={"value": "$theta.value", "best": "$search.best_params"},
+        )
+        plan(parabola_document(tmp_path, pipeline=pipeline), registry)
+
+    def test_offender_list_names_all_and_only_offenders(self, tmp_path, registry):
+        pipeline = parabola_pipeline()
+        pipeline["leech_a"] = NodeSpec(
+            uses="synth-report", inputs={"value": "$theta.value"}
+        )
+        pipeline["leech_b"] = NodeSpec(
+            uses="synth-report", inputs={"loss": "$val.metrics.loss"}
+        )
+        with pytest.raises(ConfigError) as exc:
+            plan(parabola_document(tmp_path, pipeline=pipeline), registry)
+        message = str(exc.value)
+        assert "['leech_a', 'leech_b']" in message
+        assert "'rep'" not in message  # rep is downstream of the search: fine
+
+    def test_literal_objective_refused_at_plan(self, tmp_path, registry):
+        pipeline = parabola_pipeline(search_params={"objective": 5.0})
+        with pytest.raises(ConfigError, match=r"must be a \$-reference"):
+            plan(parabola_document(tmp_path, pipeline=pipeline), registry)
+
+    def test_space_head_param_must_exist(self, tmp_path, registry):
+        pipeline = parabola_pipeline(search_params={"space": {"theta.ghost": [1]}})
+        with pytest.raises(ConfigError, match="declares no param 'ghost'"):
+            plan(parabola_document(tmp_path, pipeline=pipeline), registry)
+
+    def test_space_key_needs_a_param_path(self, tmp_path, registry):
+        pipeline = parabola_pipeline(search_params={"space": {"theta": [1]}})
+        with pytest.raises(ConfigError, match="name the param to override"):
+            plan(parabola_document(tmp_path, pipeline=pipeline), registry)
+
+    def test_space_undeclared_node_still_refused(self, tmp_path, registry):
+        pipeline = parabola_pipeline(search_params={"space": {"ghost.lr": [1]}})
+        with pytest.raises(ConfigError, match="no node 'ghost'"):
+            plan(parabola_document(tmp_path, pipeline=pipeline), registry)
+
+    def test_space_values_validated(self, tmp_path, registry):
+        pipeline = parabola_pipeline(search_params={"space": {"theta.theta": []}})
+        with pytest.raises(ConfigError, match="non-empty list"):
+            plan(parabola_document(tmp_path, pipeline=pipeline), registry)
+        pipeline = parabola_pipeline(search_params={"space": {"theta.theta": [[1, 2]]}})
+        with pytest.raises(ConfigError, match="JSON scalars"):
+            plan(parabola_document(tmp_path, pipeline=pipeline), registry)
+
+    def test_missing_space_refused_at_plan(self, tmp_path, registry):
+        spec = NodeSpec(uses="hpo-grid", params={"objective": "$val.metrics.loss"})
+        pipeline = parabola_pipeline()
+        pipeline["search"] = spec
+        with pytest.raises(ConfigError, match="space must be a non-empty dict"):
+            plan(parabola_document(tmp_path, pipeline=pipeline), registry)
+
+    def test_deep_path_segments_defer_to_execute(self, tmp_path, registry):
+        # Head key 'opt' exists; 'momentum' below it is only checkable at
+        # execute (the planner sees params, not their nesting semantics).
+        pipeline = parabola_pipeline(
+            theta_params={"theta": 10.0, "opt": {"bias": 0.5}},
+            search_params={"space": {"theta.opt.momentum": [0.9]}},
+        )
+        plan(parabola_document(tmp_path, pipeline=pipeline), registry)
+
+
+# ---------------------------------------------------------------------------
+# Driver: end to end on the parabola (analytic winner)
+# ---------------------------------------------------------------------------
+
+
+class TestEndToEndParabola:
+    def test_winner_semantics_records_and_artifacts(self, tmp_path, registry):
+        result = run_document(parabola_document(tmp_path), asof=ASOF, registry=registry)
+        assert result.state == "ran"
+        # The analytic argmin of (theta - 3)^2 over {0, 3, 5} is 3.
+        search = result.outputs["search"]
+        assert search["best_params"] == {"theta.theta": 3.0}
+        assert search["best_score"] == 0.0
+        assert search["trials"] == [
+            {"overrides": {"theta.theta": 0.0}, "score": 9.0},
+            {"overrides": {"theta.theta": 3.0}, "score": 0.0},
+            {"overrides": {"theta.theta": 5.0}, "score": 4.0},
+        ]
+        # The subgraph was re-executed with the winner and REPLACED:
+        # downstream (rep) consumed the winner pass.
+        assert result.outputs["theta"]["value"] == 3.0
+        assert result.outputs["val"]["metrics"]["loss"] == 0.0
+        report = read_json(result.run_dir, "artifacts", "rep", "report.json")
+        assert report["value"] == 3.0 and report["loss"] == 0.0
+        # The search record counts the trials; re-executed node records
+        # reflect the final pass.
+        record = read_json(result.run_dir, "nodes", "04-search.json")
+        assert record["trials_executed"] == 3
+        assert record["winner_reran"] == ["theta", "val"]
+        theta_record = read_json(result.run_dir, "nodes", "02-theta.json")
+        assert theta_record["outputs"]["value"] == 3.0
+        # carry.json carries the winner pass (what $prev binds against).
+        carry = read_json(result.run_dir, "carry.json")
+        assert carry["theta"]["value"] == 3.0
+        assert carry["search"]["best_params"] == {"theta.theta": 3.0}
+
+    def test_two_identical_runs_are_identical(self, tmp_path, registry):
+        a = run_document(
+            parabola_document(tmp_path / "a"), asof=ASOF, registry=search_registry()
+        )
+        b = run_document(
+            parabola_document(tmp_path / "b"), asof=ASOF, registry=search_registry()
+        )
+        assert a.run_hash == b.run_hash
+        # Everything except rep (whose artifact PATH embeds the run root)
+        # must be byte-identical, the whole trial ledger included.
+        for key in ("src", "theta", "val", "search"):
+            assert a.outputs[key] == b.outputs[key], key
+
+    def test_dotted_paths_navigate_nested_params(self, tmp_path, registry):
+        pipeline = parabola_pipeline(
+            theta_params={"theta": 10.0, "opt": {"bias": 0.5}},
+            search_params={"space": {"theta.opt.bias": [0.0, -7.0]}},
+        )
+        result = run_document(
+            parabola_document(tmp_path, pipeline=pipeline),
+            asof=ASOF,
+            registry=registry,
+        )
+        assert result.state == "ran"
+        # (10 + 0 - 3)^2 = 49 vs (10 - 7 - 3)^2 = 0 — the nested bias wins.
+        assert result.outputs["search"]["best_params"] == {"theta.opt.bias": -7.0}
+        assert result.outputs["theta"]["value"] == 3.0
+
+    def test_override_into_missing_nested_param_fails_naming_the_trial(
+        self, tmp_path, registry
+    ):
+        pipeline = parabola_pipeline(
+            theta_params={"theta": 10.0, "opt": {"bias": 0.5}},
+            search_params={"space": {"theta.opt.momentum": [0.9]}},
+        )
+        result = run_document(
+            parabola_document(tmp_path, pipeline=pipeline),
+            asof=ASOF,
+            registry=registry,
+        )
+        assert result.state == "error"
+        assert result.node_states["search"] == "error"
+        assert "theta.opt.momentum" in result.error
+        assert "never create them" in result.error
+        assert "{'theta.opt.momentum': 0.9}" in result.error  # the trial named
+
+    def test_seeds_ensemble_averages_and_winner_uses_document_seed(
+        self, tmp_path, registry
+    ):
+        pipeline = parabola_pipeline(
+            theta_params={"theta": 10.0, "seed": 0},
+            search_params={"space": {"theta.theta": [0.0, 3.0]}, "seeds": [0, 2]},
+        )
+        result = run_document(
+            parabola_document(tmp_path, pipeline=pipeline),
+            asof=ASOF,
+            registry=registry,
+        )
+        assert result.state == "ran"
+        trials = result.outputs["search"]["trials"]
+        # theta=0: seeds 0/2 -> values 0.00/0.02 -> losses 9, (0.02-3)^2.
+        assert trials[0]["seed_scores"] == [
+            pytest.approx(9.0),
+            pytest.approx((0.02 - 3.0) ** 2),
+        ]
+        assert trials[0]["score"] == pytest.approx((9.0 + (0.02 - 3.0) ** 2) / 2)
+        # theta=3 wins on the seed-mean; the seed override moved the value.
+        assert trials[1]["seed_scores"][1] == pytest.approx((3.02 - 3.0) ** 2)
+        assert result.outputs["search"]["best_params"] == {"theta.theta": 3.0}
+        # 2 trials x 2 seeds = 4 subgraph re-executions.
+        record = read_json(result.run_dir, "nodes", "04-search.json")
+        assert record["trials_executed"] == 4
+        # The final pass ran under the DOCUMENT's seed (0), not a trial's.
+        assert result.outputs["theta"]["value"] == 3.0
+
+    def test_n_trials_subsamples_the_grid(self, tmp_path, registry):
+        pipeline = parabola_pipeline(
+            search_params={
+                "space": {"theta.theta": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]},
+                "n_trials": 3,
+            }
+        )
+        result = run_document(
+            parabola_document(tmp_path, pipeline=pipeline),
+            asof=ASOF,
+            registry=registry,
+        )
+        assert result.state == "ran"
+        trials = result.outputs["search"]["trials"]
+        assert len(trials) == 3
+        record = read_json(result.run_dir, "nodes", "04-search.json")
+        assert record["trials_executed"] == 3
+        # The winner is the best of the EVALUATED subset, and the final
+        # pass reflects it.
+        best = min(trials, key=lambda t: t["score"])
+        assert result.outputs["search"]["best_params"] == best["overrides"]
+        theta = best["overrides"]["theta.theta"]
+        assert result.outputs["theta"]["value"] == theta
+
+    def test_sinks_reflect_the_final_pass(self, tmp_path, registry):
+        doc = parabola_document(
+            tmp_path,
+            tracking=TrackingConfig(
+                sinks=(SinkConfig(kind="dskit.pipeline.testing:MemoryTracker"),)
+            ),
+        )
+        run_document(doc, asof=ASOF, registry=registry)
+        sink = MemoryTracker.instances[-1]
+        val_entries = [m for node, m in sink.metrics if node == "val"]
+        assert val_entries[0]["metrics.loss"] == 49.0  # base pass (theta=10)
+        assert val_entries[-1]["metrics.loss"] == 0.0  # winner re-log
+        theta_entries = [m for node, m in sink.metrics if node == "theta"]
+        assert theta_entries[-1]["value"] == 3.0
+
+
+# ---------------------------------------------------------------------------
+# Driver: the synthetic market — every trial equals a from-scratch run
+# ---------------------------------------------------------------------------
+
+MARKET_SPLITS = TimeSplitConfig(
+    train_end_ms=1048 * DAY, val_end_ms=1096 * DAY, test_end_ms=1097 * DAY
+)
+
+LO_GRID = [0.35, 0.44, 0.48]
+
+
+def market_pipeline(lo=0.35, with_search=False):
+    pipeline = {
+        "events": NodeSpec(
+            uses="synth-events",
+            params={"n_events": 96, "n_instruments": 1, "seed": 11},
+        ),
+        "labels": NodeSpec(uses="synth-labels", inputs={"events": "$events.events"}),
+        "clip": NodeSpec(
+            uses="synth-clip",
+            inputs={"events": "$events.events"},
+            params={"lo": lo, "hi": 0.97},
+        ),
+        "market": NodeSpec(uses="synth-market", inputs={"events": "$clip.events"}),
+        "qhat": NodeSpec(
+            uses="synth-train",
+            mode="train",
+            inputs={"events": "$clip.events"},
+            params={"min_train": 1},
+        ),
+        "validate": NodeSpec(
+            uses="synth-score",
+            inputs={
+                "events": "$clip.events",
+                "signal": "$qhat.signal",
+                "baseline": "$market.signal",
+                "outcomes": "$labels.outcomes",
+            },
+            params={"split": "val", "min_events": 1},
+        ),
+    }
+    if with_search:
+        pipeline["search"] = NodeSpec(
+            uses="hpo-grid",
+            params={
+                "space": {"clip.lo": list(LO_GRID)},
+                "objective": "$validate.metrics.loss",
+                "select": "min",
+            },
+        )
+        pipeline["report"] = NodeSpec(
+            uses="synth-report",
+            inputs={
+                "best_score": "$search.best_score",
+                "loss": "$validate.metrics.loss",
+            },
+        )
+    return pipeline
+
+
+def market_document(tmp_path, **kwargs):
+    return PipelineDocument(
+        name="mkt",
+        pipeline=market_pipeline(**kwargs),
+        splits=MARKET_SPLITS,
+        outputs=OutputsConfig(run_root=str(tmp_path)),
+    )
+
+
+class TestEndToEndMarket:
+    def test_each_trial_equals_a_from_scratch_pinned_run(self, tmp_path, registry):
+        # Ground truth: one full pinned run per grid value.
+        pinned = {}
+        for lo in LO_GRID:
+            result = run_document(
+                market_document(tmp_path / "pinned", lo=lo),
+                asof=ASOF,
+                registry=registry,
+            )
+            assert result.state == "ran"
+            pinned[lo] = result.outputs["validate"]["metrics"]["loss"]
+        assert len(set(pinned.values())) == 3  # the grid genuinely discriminates
+        best_lo = min(pinned, key=pinned.get)
+
+        result = run_document(
+            market_document(tmp_path / "searched", with_search=True),
+            asof=ASOF,
+            registry=registry,
+        )
+        assert result.state == "ran"
+        search = result.outputs["search"]
+        # Every trial's score IS the pinned run's loss — subgraph
+        # re-execution against the scratch outputs equals a full run.
+        for trial in search["trials"]:
+            lo = trial["overrides"]["clip.lo"]
+            assert trial["score"] == pytest.approx(pinned[lo])
+        assert search["best_params"] == {"clip.lo": best_lo}
+        assert search["best_score"] == pytest.approx(pinned[best_lo])
+        # Downstream consumed the winner pass.
+        assert result.outputs["validate"]["metrics"]["loss"] == pytest.approx(
+            pinned[best_lo]
+        )
+        report = read_json(result.run_dir, "artifacts", "report", "report.json")
+        assert report["loss"] == pytest.approx(pinned[best_lo])
+        record = read_json(result.run_dir, "nodes", "07-search.json")
+        assert record["trials_executed"] == 3
+        assert record["winner_reran"] == ["clip", "market", "qhat", "validate"]
+        # events/labels stayed clean — never re-executed.
+        assert "events" not in record["winner_reran"]
+
+
+# ---------------------------------------------------------------------------
+# Driver: the seam's contract, probed by custom search nodes
+# ---------------------------------------------------------------------------
+
+PROBE = "tests.pipeline.test_kinds_search:ProbeSearch"
+
+
+class TestSeamContract:
+    def probe_doc(self, tmp_path, probe_params):
+        params = {
+            "space": {"theta.theta": [0.0]},
+            "objective": "$val.metrics.loss",
+        }
+        params.update(probe_params)
+        return parabola_document(
+            tmp_path,
+            pipeline=parabola_pipeline(search_params=params, search_uses=PROBE),
+        )
+
+    def test_trials_run_on_a_scratch_copy_of_the_base_pass(self, tmp_path, registry):
+        # ProbeSearch evaluates theta=0 but selects NO winner: the base
+        # outputs must survive untouched — trials never leak.
+        result = run_document(
+            self.probe_doc(tmp_path, {}), asof=ASOF, registry=registry
+        )
+        assert result.state == "ran"
+        assert result.outputs["search"]["best_score"] == 9.0  # (0 - 3)^2, the trial
+        assert result.outputs["theta"]["value"] == 10.0  # base pass intact
+        assert result.outputs["val"]["metrics"]["loss"] == 49.0
+        record = read_json(result.run_dir, "nodes", "04-search.json")
+        assert record["trials_executed"] == 1
+        assert "winner_reran" not in record  # empty best_params: no final pass
+
+    def test_any_search_kinds_nonempty_best_params_is_applied(self, tmp_path, registry):
+        # The winner pass is DRIVER semantics, not an hpo-grid feature.
+        result = run_document(
+            self.probe_doc(tmp_path, {"winner": {"theta.theta": 5.0}}),
+            asof=ASOF,
+            registry=registry,
+        )
+        assert result.state == "ran"
+        assert result.outputs["theta"]["value"] == 5.0
+        assert result.outputs["val"]["metrics"]["loss"] == 4.0
+        record = read_json(result.run_dir, "nodes", "04-search.json")
+        assert record["winner_reran"] == ["theta", "val"]
+
+    def test_synth_search_placeholder_still_runs_as_a_no_op(self, tmp_path, registry):
+        pipeline = parabola_pipeline(
+            search_uses="dskit.pipeline.synthetic_nodes:SynthSearch"
+        )
+        result = run_document(
+            parabola_document(tmp_path, pipeline=pipeline),
+            asof=ASOF,
+            registry=registry,
+        )
+        assert result.state == "ran"
+        assert result.outputs["theta"]["value"] == 10.0  # nothing re-executed
+        record = read_json(result.run_dir, "nodes", "04-search.json")
+        assert record["trials_executed"] == 0
+
+    def test_malformed_override_target_is_a_loud_trial_error(self, tmp_path, registry):
+        result = run_document(
+            self.probe_doc(tmp_path, {"probe": {"nope": 1}}),
+            asof=ASOF,
+            registry=registry,
+        )
+        assert result.state == "error"
+        assert "'<node>.<param.path>'" in result.error
+        assert "{'nope': 1}" in result.error
+
+    def test_non_dict_overrides_are_a_loud_trial_error(self, tmp_path, registry):
+        result = run_document(
+            self.probe_doc(tmp_path, {"probe": "boom"}),
+            asof=ASOF,
+            registry=registry,
+        )
+        assert result.state == "error"
+        assert "overrides must be a dict" in result.error
+
+    def test_non_numeric_objective_value_is_a_loud_trial_error(
+        self, tmp_path, registry
+    ):
+        # "$val.metrics" digs out the whole metrics DICT — the seam must
+        # refuse it as the objective, naming the trial.
+        pipeline = parabola_pipeline(search_params={"objective": "$val.metrics"})
+        result = run_document(
+            parabola_document(tmp_path, pipeline=pipeline),
+            asof=ASOF,
+            registry=registry,
+        )
+        assert result.state == "error"
+        assert "objective must be numeric" in result.error
+
+    def test_trial_node_failure_names_the_trial(self, tmp_path, registry):
+        pipeline = parabola_pipeline(
+            search_params={"space": {"theta.theta": [0.0, "boom"]}}
+        )
+        result = run_document(
+            parabola_document(tmp_path, pipeline=pipeline),
+            asof=ASOF,
+            registry=registry,
+        )
+        assert result.state == "error"
+        assert result.node_states["search"] == "error"
+        assert "{'theta.theta': 'boom'}" in result.error
+
+    def test_trial_validate_inputs_problems_fail_the_trial(self, tmp_path, registry):
+        # Overriding a mid-graph transform re-executes it inside the
+        # trial; theta's validate_inputs then rejects the poisoned
+        # upstream value. (The data node itself is no longer a legal
+        # space head — fingerprinted identity.)
+        pipeline = parabola_pipeline(
+            search_params={"space": {"relay.emit": ["poison"]}}
+        )
+        pipeline["relay"] = NodeSpec(
+            uses="tests.pipeline.test_kinds_search:PassThrough",
+            inputs={"x": "$src.x"},
+            params={"emit": None},
+        )
+        pipeline["theta"] = NodeSpec(
+            uses=THETA, inputs={"x": "$relay.x"}, params={"theta": 10.0}
+        )
+        result = run_document(
+            parabola_document(tmp_path, pipeline=pipeline),
+            asof=ASOF,
+            registry=registry,
+        )
+        assert result.state == "error"
+        assert "x must not be 'poison'" in result.error
+        assert "{'relay.emit': 'poison'}" in result.error
+
+    def test_runtime_overrides_may_not_address_identity_roles(self, tmp_path, registry):
+        # The planner refuses unsearchable heads in the DOCUMENT's space;
+        # a custom search kind handing ctx.rerun a data-node override
+        # must hit the same wall at runtime.
+        pipeline = parabola_pipeline(
+            search_uses="tests.pipeline.test_kinds_search:ProbeSearch",
+            search_params={
+                "space": {"theta.theta": [0.0, 3.0]},
+                "probe": {"src.x": "poison"},
+            },
+        )
+        result = run_document(
+            parabola_document(tmp_path, pipeline=pipeline),
+            asof=ASOF,
+            registry=registry,
+        )
+        assert result.state == "error"
+        assert "may never re-tune" in result.error
+        assert "'src.x'" in result.error
+
+    def test_trial_output_contract_violations_fail_the_trial(self, tmp_path, registry):
+        pipeline = parabola_pipeline(
+            theta_params={"theta": 10.0, "misbehave": False},
+            search_params={"space": {"theta.misbehave": [True]}},
+        )
+        result = run_document(
+            parabola_document(tmp_path, pipeline=pipeline),
+            asof=ASOF,
+            registry=registry,
+        )
+        assert result.state == "error"
+        assert "declared contract" in result.error
+
+    def test_winner_pass_flipping_a_gate_verdict_refuses(self, tmp_path, registry):
+        # Base theta=5 keeps the gate GO; the winner (theta=1, loss 0)
+        # would flip it NO-GO AFTER halt decisions were made — refuse.
+        pipeline = {
+            "theta": NodeSpec(uses=THETA, params={"theta": 5.0}),
+            "gatekeeper": NodeSpec(
+                uses="tests.pipeline.test_kinds_search:CountGate",
+                inputs={"value": "$theta.value"},
+                params={"bar": 3.0},
+            ),
+            "val": NodeSpec(
+                uses="tests.pipeline.test_kinds_search:ParabolaScore",
+                inputs={"value": "$gatekeeper.n"},
+                params={"split": "val", "center": 1.0},
+            ),
+            "search": NodeSpec(
+                uses="hpo-grid",
+                params={
+                    "space": {"theta.theta": [5.0, 1.0]},
+                    "objective": "$val.metrics.loss",
+                },
+            ),
+        }
+        result = run_document(
+            parabola_document(tmp_path, pipeline=pipeline),
+            asof=ASOF,
+            registry=registry,
+        )
+        assert result.state == "error"
+        assert result.node_states["search"] == "error"
+        assert "flipped" in result.error and "NO-GO" in result.error
+
+
+# ---------------------------------------------------------------------------
+# The no-search path is byte-for-byte the old driver
+# ---------------------------------------------------------------------------
+
+
+class TestNoSearchUntouched:
+    def test_no_search_run_artifacts_carry_no_search_fields(self, tmp_path):
+        from tests.pipeline.dochelpers import banking_document, make_registry
+
+        doc = banking_document(outputs=OutputsConfig(run_root=str(tmp_path)))
+        result = run_document(doc, asof=ASOF, registry=make_registry())
+        assert result.state == "ran"
+        assert result.outputs["size"]["final_bankroll"] == pytest.approx(1020.0)
+        nodes_dir = os.path.join(result.run_dir, "nodes")
+        for name in sorted(os.listdir(nodes_dir)):
+            record = read_json(nodes_dir, name)
+            assert set(record) == {
+                "node",
+                "uses",
+                "role",
+                "status",
+                "seconds",
+                "outputs",
+            }, name
+
+    def test_non_search_nodes_never_see_the_seam(self, tmp_path, registry):
+        pipeline = {
+            "src": NodeSpec(
+                uses="tests.pipeline.test_kinds_search:ConstSource", params={"x": 1}
+            ),
+            "probe": NodeSpec(
+                uses="tests.pipeline.test_kinds_search:CtxProbeNode",
+                inputs={"x": "$src.x"},
+            ),
+        }
+        doc = parabola_document(tmp_path, pipeline=pipeline)
+        CtxProbeNode.seen.clear()
+        result = run_document(doc, asof=ASOF, registry=registry)
+        assert result.state == "ran"
+        assert CtxProbeNode.seen == [None]
+
+
+class CtxProbeNode(Node):
+    """Records the ctx.rerun each run sees — must be None off-search."""
+
+    role = "transform"
+    outputs = ("ok",)
+    seen = []
+
+    def run(self, ctx, inputs):
+        CtxProbeNode.seen.append(ctx.rerun)
+        return {"ok": True}

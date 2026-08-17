@@ -1,0 +1,30 @@
+{
+  "name": "torch-linear-demo",
+  "notes": "The tier-2 torch pack, end to end on the synthetic market: SynthEvents quotes a mid that under-reacts to p_true, LinearRegressor learns the correction (features/label are row keys), and LinearPredictor restores the SAME fit from the saved artifact via the artifact_path wire — no registration needed, packs are referenced by import path. The loader block is the docs/24 §3 convention, default-deny inside (I-227).",
+  "pipeline": {
+    "market": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthEvents",
+      "params": {"n_events": 48, "n_instruments": 2, "seed": 7},
+      "notes": "deterministic settled events; every row carries mid and p_true"
+    },
+    "qhat": {
+      "uses": "dskit.pipeline.libs.torch:LinearRegressor",
+      "mode": "train",
+      "inputs": {"rows": "$market.events"},
+      "params": {
+        "features": ["mid"],
+        "label": "p_true",
+        "epochs": 10,
+        "lr": 0.2,
+        "loader": {"batch_size": 16, "shuffle": true, "seed": 7}
+      },
+      "notes": "one nn.Linear over the features; the seed pins init + shuffle, so this fit is byte-reproducible and the artifact records the seed"
+    },
+    "predict": {
+      "uses": "dskit.pipeline.libs.torch:LinearPredictor",
+      "inputs": {"artifact_path": "$qhat.artifact_path"},
+      "notes": "inference-only: REALLY loads the state_dict qhat saved (sidecar-verified: content hash + module class), never refits"
+    }
+  },
+  "outputs": {"run_root": ""}
+}

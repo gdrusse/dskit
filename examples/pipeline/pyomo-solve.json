@@ -1,0 +1,35 @@
+{
+  "name": "pyomo-select-demo",
+  "notes": "The tier-2 PyomoSolve doorway behind the REAL owned stat_test — the same gate shape as a full quant loop, reduced to three nodes. A deterministic toy source emits per-instrument cluster evidence plus a candidate deck; the owned edge test decides WHICH instruments survive; BudgetedSelect (dskit/pipeline/libs/pyomo.py) then solves a 0/1 knapsack over the SURVIVING candidates only, inside a hard budget. The deck is rigged to prove both halves: NOISE carries the largest value in the deck but no edge evidence, so the gate must exclude it; among the survivors, greedy-by-value would take ALPHA (value 9) while the optimal fill is BRAVO+GAMMA (value 12), so the solver must genuinely optimize. The toy source lives in the pack's test module (tests/pipeline_libs/test_pyomo.py), so this document plans and runs from a repo checkout; swap that one node for your own data source to make it real.",
+
+  "outputs": { "run_root": "" },
+
+  "pipeline": {
+    "evidence": {
+      "uses": "tests.pipeline_libs.test_pyomo:OpportunityDeck",
+      "params": { "seed": 0 },
+      "notes": "role data. Deterministic fixture: scores = instrument -> {cluster: paired improvement} (the stat test's food — ALPHA/BRAVO/GAMMA all-positive across 8 clusters each, NOISE mean-zero), candidates = [{id, cost, value}] keyed by the same instrument ids."
+    },
+
+    "edge_test": {
+      "uses": "stat_test",
+      "inputs": { "scores": "$evidence.scores" },
+      "params": { "alpha": 0.05, "correction": "bh", "n_boot": 2000, "seed": 0 },
+      "notes": "role stat_test, toolkit-OWNED — an import path can never satisfy this role. One-sided event-clustered bootstrap PER instrument, then one BH correction across the family; never pooled."
+    },
+
+    "select": {
+      "uses": "dskit.pipeline.libs.pyomo:BudgetedSelect",
+      "inputs": {
+        "candidates": "$evidence.candidates",
+        "survivors": "$edge_test.survivors"
+      },
+      "params": {
+        "budget": 10.0,
+        "solver": "appsi_highs",
+        "solver_options": {}
+      },
+      "notes": "role capital. The survivors wire is structural: un-gated capital refuses to plan. Only surviving ids enter the model; an empty gate deploys zero WITHOUT invoking the solver; the reported outlay can never exceed budget (post-solve assertion, refused by name)."
+    }
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "name": "synthetic-demo",
+  "notes": "Runnable-anywhere example: the deterministic synthetic venue needs no data and no heavy deps. data_dir must exist (any directory works — point it at a scratch dir, or resolve from the repo root where '.' exists).",
+  "data": {
+    "venue": "synthetic",
+    "data_dir": ".",
+    "instruments": [],
+    "notes": "empty instruments = auto-discovery (SYN-A/SYN-B/SYN-C)"
+  },
+  "splits": {
+    "kind": "time",
+    "train_end_ms": 1000000,
+    "val_end_ms": 2000000,
+    "test_end_ms": 3000000,
+    "notes": "the synthetic clock's three equal windows"
+  },
+  "model": {
+    "name": "true-q",
+    "model_dir": "./pipeline_models",
+    "params": {
+      "n_events": 90
+    },
+    "seed": 0,
+    "notes": "'true-q' knows the truth (deploy path); 'market-copy' repeats the market (no-edge halt path)"
+  },
+  "validation": {
+    "baseline": "market",
+    "metric": "logloss",
+    "min_events": 20,
+    "notes": ""
+  },
+  "features": null,
+  "hpo": null,
+  "stat_test": {
+    "alpha": 0.05,
+    "correction": "bh",
+    "n_boot": 2000,
+    "seed": 0,
+    "notes": ""
+  },
+  "optimization": {
+    "kind": "equal-weight",
+    "params": {},
+    "notes": ""
+  },
+  "tracking": null,
+  "env": null,
+  "outputs": null,
+  "stages": ["train", "validate", "stat_test", "optimize", "backtest"]
+}

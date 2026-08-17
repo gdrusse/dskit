@@ -1,0 +1,23 @@
+{
+  "name": "numpy-features",
+  "notes": "The tier-2 numpy feature pack (docs/25 §2), wired the ONLY way packs are wired: by import path. Nothing registers — ArrayMap/ArrayFeatures are abstract subclass hooks (I-228, subclass-only; raw functions are never referenceable, D-145); a project subclasses, implements apply(arrays, params), and the document names the subclass. LogMid and TrailingReturns are the pack's concrete reference subclasses over the deterministic synthetic market, so this document runs against the bare toolkit with zero registrations and no data files: python -m dskit.pipeline run examples/pipeline/numpy-features.json --asof 2026-01-01",
+  "pipeline": {
+    "dataset": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthEvents",
+      "params": { "n_events": 48, "n_instruments": 2, "seed": 7 },
+      "notes": "role 'data' (declared by the class): the deterministic synthetic market"
+    },
+    "log_mid": {
+      "uses": "dskit.pipeline.libs.numpy:LogMid",
+      "inputs": { "records": "$dataset.events" },
+      "notes": "role 'transform': ArrayMap reference subclass — pointwise log1p onto mid (log1p keeps every positive price a legal envelope price). The base lifts records to per-instrument arrays, runs the prefix-consistency CAUSALITY GUARD (causality_check defaults true; turning it off is a decision the document owns), and rebuilds the stream in original order."
+    },
+    "features": {
+      "uses": "dskit.pipeline.libs.numpy:TrailingReturns",
+      "inputs": { "records": "$log_mid.records" },
+      "params": { "window": 2 },
+      "notes": "role 'tensor': ArrayFeatures reference subclass — backward-only trailing returns as one feature row per record ({instrument, contract, asof_ms, group, trailing_return}); the two warm-up entries per instrument land as null, an absent belief."
+    }
+  },
+  "outputs": { "run_root": "" }
+}

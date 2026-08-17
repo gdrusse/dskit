@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dskit"
+version = "0.0.1"
+description = "Venue-agnostic data-science pipeline toolkit — one JSON document declares a process; one command runs it."
+requires-python = ">=3.11"
+# The tier-1 core is stdlib-only BY DESIGN (enforced in tests/pipeline/test_purity.py):
+# a document must stay PLANNABLE on a machine with no heavy dependency installed,
+# because planning imports the node classes. Every heavy library is optional and
+# imported only inside a node's run(). Install the extras you actually use.
+dependencies = []
+
+[project.optional-dependencies]
+# Tier-2 library packs (dskit/pipeline/libs/*): each names its library only inside run().
+numpy = ["numpy>=1.26"]
+sklearn = ["scikit-learn>=1.3", "joblib>=1.3"]
+torch = ["torch>=2.0"]
+transformers = ["transformers>=4.30", "torch>=2.0"]
+optuna = ["optuna>=3.0"]
+pyomo = ["pyomo>=6.7", "highspy>=1.7"]
+# Everything the library packs can use, for running the full libs test suite.
+all = [
+    "numpy>=1.26",
+    "scikit-learn>=1.3",
+    "joblib>=1.3",
+    "torch>=2.0",
+    "transformers>=4.30",
+    "optuna>=3.0",
+    "pyomo>=6.7",
+    "highspy>=1.7",
+]
+dev = [
+    "pytest>=7.4",
+    "hypothesis>=6.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.1",
+]
+
+[tool.setuptools.packages.find]
+include = ["dskit*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: slow-running tests"]
+
+[tool.coverage.run]
+source = ["dskit"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "@(abc\\.)?abstractmethod",
+    "if __name__ == .__main__.:",
+    "^\\s*\\.\\.\\.$",
+]

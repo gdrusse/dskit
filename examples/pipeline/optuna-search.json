@@ -1,0 +1,68 @@
+{
+  "name": "optuna-search-demo",
+  "notes": "OptunaSearch (dskit/pipeline/libs/optuna.py, docs/25 §2 row 5) driving the docs/24 §8 search seam over the synthetic market: a seeded TPE study tunes clip.lo against the val-split score, the driver re-executes the dirty subgraph per trial via ctx.rerun, and the winner is re-applied so report consumes the tuned pass. Every `uses` is an import reference, so this document runs against the bare toolkit with zero registrations: python -m dskit.pipeline run examples/pipeline/optuna-search.json --asof 2026-01-01. The space here is the categorical (list) form; continuous {low,high} specs validate on the node but are refused by the planner's list-of-scalars space grammar until it learns the spec-dict form (see the module docstring's integration flag).",
+  "pipeline": {
+    "events": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthEvents",
+      "params": { "n_events": 96, "n_instruments": 1, "seed": 11 },
+      "notes": "role 'data': the deterministic synthetic market"
+    },
+    "labels": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthLabels",
+      "inputs": { "events": "$events.events" }
+    },
+    "clip": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthClip",
+      "inputs": { "events": "$events.events" },
+      "params": { "lo": 0.35, "hi": 0.97 },
+      "notes": "clip.lo is the knob the search tunes — overrides address EXISTING params only"
+    },
+    "market": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthMarketSignal",
+      "inputs": { "events": "$clip.events" }
+    },
+    "qhat": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthTrain",
+      "mode": "train",
+      "inputs": { "events": "$clip.events" },
+      "params": { "min_train": 5 }
+    },
+    "validate": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthScore",
+      "inputs": {
+        "events": "$clip.events",
+        "signal": "$qhat.signal",
+        "baseline": "$market.signal",
+        "outcomes": "$labels.outcomes"
+      },
+      "params": { "split": "val", "min_events": 5 },
+      "notes": "the objective's source: a score node reading 'val' — selection never sees test (spec §8)"
+    },
+    "search": {
+      "uses": "dskit.pipeline.libs.optuna:OptunaSearch",
+      "params": {
+        "space": { "clip.lo": [0.35, 0.44, 0.48] },
+        "objective": "$validate.metrics.loss",
+        "n_trials": 6,
+        "seed": 0,
+        "direction": "minimize"
+      },
+      "notes": "6 seeded TPE trials over 3 choices — revisits re-execute deterministically; same seed = same trial sequence"
+    },
+    "report": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthReport",
+      "inputs": {
+        "best_score": "$search.best_score",
+        "loss": "$validate.metrics.loss"
+      },
+      "notes": "downstream of the search: consumes the winner pass"
+    }
+  },
+  "splits": {
+    "kind": "random",
+    "train_frac": 0.8,
+    "val_frac": 0.2,
+    "seed": 7
+  },
+  "outputs": { "run_root": "" }
+}
