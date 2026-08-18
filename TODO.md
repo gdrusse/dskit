@@ -1,3 +1,3 @@
 # TODO
 
-- [ ] Create a concise `CLAUDE.md` for this project.
+- [x] Create a concise `CLAUDE.md` for this project.
