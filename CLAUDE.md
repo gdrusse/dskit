@@ -24,18 +24,31 @@ Wrap the *library*, generically — never a project's use of it.
 - **A new package requires an approved plan first.** Present the full structure —
   every file and its purpose — and get approval before creating anything. No
   package enters this repo without that.
-- **Be brief.** Answers ≤ ~300 characters.
+- **Be brief.** Answers ≤ ~300 characters. **Docs too** — every document stays
+  brief unless I ask for depth.
+- **Questions:** offer multiple-choice options, not open-ended prompts.
 - **Problems:** state the problem, state the proposed solution. Nothing else.
+
+## Session workflow
+
+- **Start:** pull from the remote first (automated by the `SessionStart` hook in
+  `.claude/settings.json`).
+- **`/wrap`:** refresh `docs/RE-ENTRY.md`, merge into `main` when the work is
+  coherent and tests pass, push. Defined in `.claude/commands/wrap.md`.
 
 ## Repository layout
 
 ```
 dskit/
 ├── CLAUDE.md                  # this file — repo-wide standards
+├── .claude/
+│   ├── settings.json          # SessionStart hook: git pull
+│   └── commands/wrap.md       # /wrap
 ├── README.md                  # what dskit is, install, the 60-second path
 ├── pyproject.toml             # core has ZERO required deps; heavy libs are extras
 ├── TODO.md
 ├── docs/
+│   ├── RE-ENTRY.md            # where we are — read first, refreshed by /wrap
 │   ├── agent-master-specifications.md   # Package 1 & 2 master specs (verbatim)
 │   └── architecture/                    # architecture-first design work
 │       ├── README.md                    # ecosystem + deliverables roadmap
