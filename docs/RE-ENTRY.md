@@ -4,14 +4,14 @@ Refreshed by `/wrap`. Where things stand — read this first.
 
 **Branch:** `docs/package-specs` · **Tests:** 860 pass, 22 skip (tier-2 libs not installed)
 
-**Landed:** repo-level `CLAUDE.md` (standards + working agreement). Architecture
-foundation in `docs/architecture/`: context/ownership map, 6 ADRs, 7 open questions.
-`dskit.pipeline` = the specs' "Analytical Execution Framework" (ADR-0001).
+**Landed:** Package 1 design approved — `dskit/assets/`, ONE config-driven
+registry engine; the spec's 13 registries ship as a built-in default model
+(ADR-0007…0010, OQ-1/3/5 closed). Standalone (stdlib + itself); `Store` is an
+ABC; observation is the file-based `ingest-run` seam.
 
-**Next:** Deliverable #1, Domain Model — recommend a shared core first
-(Source/DatasetVersion/Lineage are common to Packages 1 & 2).
+**Build mode:** one file at a time, each preceded by a 300–400 char brief
+(Purpose · What it does · Classes/functions · Where leveraged) for approval.
+Order: base → model → default_model → record → store → registry → lineage →
+ingest → __main__ → docs/tests/examples.
 
-**Blocked on you** (see `docs/architecture/open-questions.md`):
-- OQ-1 — authoritative `Source` owner: P1 catalog, P2, or synced?
-- OQ-3 — who registers a `FeatureVersion`, and when relative to a run?
-- OQ-5 — asset identity: reuse pipeline's sha256 content hash, version numbers, or both?
+**Next:** present the `dskit/assets/base.py` brief.

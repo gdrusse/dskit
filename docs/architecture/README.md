@@ -57,12 +57,11 @@ Each spec lists ten deliverables. They agree on #1–#4, then diverge:
 | Context & ownership map (deliverable #4 foundation) | ✅ drafted |
 | Decision Log | ✅ seeded (ADR-0001…0006) |
 | Open Questions Register | ✅ seeded (OQ-1…OQ-7) |
-| Per-package Domain Models (deliverable #1) | ⬜ next — direction pending |
-| Deliverables #2–#10 (both packages) | ⬜ not started |
+| Package 1 design + file-level plan | ✅ approved — build in progress (`dskit/assets/`) |
+| Package 2 deliverables | ⬜ not started |
 
-**This is the foundation only.** The next deliverable is a Domain Model — for one
-package or a shared core first. That choice, and the open questions that block it,
-are the current decision point.
+**Current work:** building `dskit/assets/` (Package 1) file by file per the
+approved plan — a config-driven registry engine (ADR-0007…0010).
 
 ## Implementation readiness checklist (from the specs)
 

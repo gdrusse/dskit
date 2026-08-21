@@ -58,19 +58,17 @@ registration — bearing on [OQ-5](open-questions.md#oq-5).
 
 ## ADR-0003 — Package 2's registration of a source is operational; Package 1 holds the authoritative catalog
 
-**Status:** open
+**Status:** accepted (2026-08-21, closes OQ-1)
 
 **Context.** Package 2 owns *"Source Registration"*; Package 1 owns a *"Source
 Registry"*. Both plausibly claim `Source`.
 
-**Decision.** *Not yet made.* Leading proposal: Package 2 performs *operational*
-source registration (credentials, connector config, acquisition scheduling
-metadata) and references a `Source` **identity owned by Package 1's catalog**;
-Package 1 is the reuse-and-lineage authority. Alternative: P1 subscribes to P2
-source-registration events and mirrors them.
+**Decision.** Package 2 performs *operational* source registration (credentials,
+connector config, scheduling metadata) and references a `Source` **identity owned
+by Package 1's catalog**; Package 1 is the reuse-and-lineage authority.
 
-**Consequences.** Blocks both domain models (the `Source` object appears in each).
-Tracked as [OQ-1](open-questions.md#oq-1); this ADR is ratified when OQ-1 closes.
+**Consequences.** Unblocks both domain models. P1's default model ships `source`
+as an authoritative kind; P2's design will reference it by name.
 
 ---
 
@@ -129,3 +127,66 @@ connectors — are optional extras imported at execution time, not at import).
 
 **Consequences.** Names appear throughout later specs, so fixing them early avoids
 churn. Purely nominal; revisit before implementation if a better name emerges.
+
+---
+
+## ADR-0007 — Package 1 is ONE config-driven registry engine, not 13 modules
+
+**Status:** accepted
+
+**Context.** The spec lists 13 registries. Hardcoding them contradicts the
+repo's mechanics-in-code/taxonomy-in-config philosophy.
+
+**Decision.** `dskit/assets` is a generic engine: a JSON *asset model* declares
+kinds (fields, refs, lifecycle). The spec's registries ship as the built-in
+default model — 12 kinds + lineage native in the engine = the 13. Engine
+validates structure only (6 JSON types); semantic checks are a declared future
+seam. Package 2's kinds later become config, not code.
+
+**Consequences.** Governance is topological (feature requires an entity ref;
+target has no feature ref; observations are record-only) and exactly as strong
+as the pinned model hash — explicit, auditable config-governance.
+
+---
+
+## ADR-0008 — Pipeline→assets observation is file-based; no imports either way
+
+**Status:** accepted (implements ADR-0005; closes OQ-3)
+
+**Context.** The pipeline's purity gate forbids it importing any dskit sibling.
+
+**Decision.** `python -m dskit.assets ingest-run <run_dir>` reads the completed
+run directory (result/resolved/nodes/artifacts) and registers RunObservation,
+Output, and Artifact assets plus lineage edges. Idempotent: payloads are pure
+functions of run-dir content, so re-ingest reuses everything.
+
+**Consequences.** "Observe execution rather than manage it" — literally. Run-dir
+format drift is caught by an end-to-end test that ingests a real run.
+
+---
+
+## ADR-0009 — Asset version identity is a content hash + human alias
+
+**Status:** accepted (closes OQ-5)
+
+**Decision.** `version_id` = sha256 over canonical JSON of
+`{kind, payload, refs}` (notes stripped) — the pipeline's exact recipe.
+Every kind must declare a required `name` field: the human alias. Same hash ⇒
+idempotent re-register = reuse before duplication. Provenance
+(`registered_at`, `origin`) sits outside the hash.
+
+---
+
+## ADR-0010 — Standalone package; JSON FileStore behind a Store ABC
+
+**Status:** accepted
+
+**Decision.** `dskit/assets` imports nothing outside stdlib + itself (its own
+purity gate mirrors the pipeline's); small mechanics are copied into
+`assets/base.py`, with a test asserting hash parity against the pipeline.
+Behavior seams are `abc.ABC` + `@abstractmethod` (`Store`); tier-1 storage is
+human-diffable JSON files (write-once, atomic, append-only events);
+sqlite/postgres/parquet arrive later as tier-2 `libs/` store packs.
+
+**Declared limits.** Single writer per store root; queries are directory scans
+(fine to ~10⁴ assets). Both are why `Store` is the seam.

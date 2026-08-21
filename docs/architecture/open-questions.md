@@ -8,11 +8,11 @@ deliverable(s) that cannot be frozen until this closes.
 
 | ID | Question | Risk | Blocks |
 |---|---|---|---|
-| [OQ-1](#oq-1) | Who is the authoritative `Source` owner — P1, P2, or both synced? | 🔴 high | Both domain models; [ADR-0003](decision-log.md#adr-0003--package-2s-registration-of-a-source-is-operational-package-1-holds-the-authoritative-catalog) |
+| ~~OQ-1~~ | **Closed** → [ADR-0003](decision-log.md#adr-0003--package-2s-registration-of-a-source-is-operational-package-1-holds-the-authoritative-catalog): P1 catalog authoritative; P2 references it | — | — |
 | [OQ-2](#oq-2) | What is the P2→P1 publication→registration mechanism? | 🔴 high | Package Interaction spec (#4) |
-| [OQ-3](#oq-3) | Where are Features/Targets computed, and who registers a `FeatureVersion`? | 🔴 high | P1 domain model; engine interaction |
+| ~~OQ-3~~ | **Closed** → [ADR-0008](decision-log.md#adr-0008--pipelineassets-observation-is-file-based-no-imports-either-way): computed by the engine; registered via the file-based `ingest-run` seam | — | — |
 | [OQ-4](#oq-4) | Shared physical storage or per-package? (PostgreSQL + Parquet) | 🟠 med | Storage & Versioning spec (#3) |
-| [OQ-5](#oq-5) | Does asset identity reuse the pipeline's canonical-hash model? | 🟠 med | Versioning; both domain models |
+| ~~OQ-5~~ | **Closed** → [ADR-0009](decision-log.md#adr-0009--asset-version-identity-is-a-content-hash--human-alias): content hash + mandatory `name` alias | — | — |
 | [OQ-6](#oq-6) | Where do forecasts live — P2 time-series or P1 Output registry? | 🟡 low | Lifecycle; storage |
 | [OQ-7](#oq-7) | How are `Entity`s defined and mapped onto onboarded datasets? | 🟠 med | P1 domain model; feature governance |
 
