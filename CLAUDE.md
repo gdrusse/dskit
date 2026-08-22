@@ -57,13 +57,17 @@ dskit/
 │       └── open-questions.md            # blocks implementation until closed
 ├── dskit/
 │   ├── __init__.py
-│   └── pipeline/              # package 1 of N — the execution engine
-│       └── libs/              # tier-2 wrappers for standard DS/ML libraries
+│   ├── pipeline/              # the execution engine
+│   │   └── libs/              # tier-2 wrappers for standard DS/ML libraries
+│   └── assets/                # the Data Asset Platform (spec Package 1):
+│                              #   config-driven registry engine; own README + CLAUDE.md
 ├── examples/
-│   └── pipeline/              # runnable configs, one per capability
+│   ├── pipeline/              # runnable configs, one per capability
+│   └── assets/                # a worked custom asset model
 └── tests/
     ├── pipeline/              # tier-1 core + purity gate
-    └── pipeline_libs/         # tier-2 library packs
+    ├── pipeline_libs/         # tier-2 library packs
+    └── assets/                # assets engine: purity, hash-parity, e2e ingest
 ```
 
 ## Every package ships its own docs

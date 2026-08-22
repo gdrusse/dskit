@@ -1,0 +1,32 @@
+{
+  "name": "experiment-tracking",
+  "notes": "A worked CUSTOM asset model: how a project declares its own kinds instead of (or beside) the built-in default. Two kinds show the whole grammar — a governed kind with a lifecycle, and a record-only kind that refs it. Create a store governed by this model and drive it with the same CLI as any other: python -m dskit.assets init --store ./exp_store --model examples/assets/custom-model.json && python -m dskit.assets register experiment --payload '{\"name\": \"lr-sweep-1\", \"hypothesis\": \"lower lr generalizes\"}' --store ./exp_store --model examples/assets/custom-model.json. Governance is exactly as strong as this file's hash: the store pins it at init, so changing what the model permits is a new, visible identity.",
+  "kinds": {
+    "experiment": {
+      "notes": "A governed kind: it has a lifecycle, so records move draft -> approved -> archived by explicit transition, and any move not listed below is refused (default-deny).",
+      "fields": {
+        "name": { "type": "string", "required": true, "notes": "The human alias every kind must declare (ADR-0009) — versions of the same experiment share it." },
+        "hypothesis": { "type": "string", "notes": "What this experiment is trying to show. Free text; the engine checks structure only." },
+        "params": { "type": "object", "notes": "The experiment's knobs. Hash-material: change a param, get a new version_id — same content, same identity." }
+      },
+      "lifecycle": {
+        "states": ["draft", "approved", "archived"],
+        "initial": "draft",
+        "transitions": {
+          "draft": ["approved"],
+          "approved": ["archived"]
+        }
+      }
+    },
+    "attachment": {
+      "notes": "A record-only kind: no lifecycle block, so records are registered once and never transitioned — right for evidence (plots, logs, snapshots) that IS what it is. The required ref means an attachment can never float free of its experiment; the referenced version_id must already be in the store, and must be an experiment.",
+      "fields": {
+        "name": { "type": "string", "required": true },
+        "digest": { "type": "string", "notes": "sha256 of the attached file's bytes — anchor identity on content, keep the path as provenance." }
+      },
+      "refs": {
+        "experiment": { "kind": "experiment", "required": true }
+      }
+    }
+  }
+}
