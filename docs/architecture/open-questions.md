@@ -9,12 +9,12 @@ deliverable(s) that cannot be frozen until this closes.
 | ID | Question | Risk | Blocks |
 |---|---|---|---|
 | ~~OQ-1~~ | **Closed** → [ADR-0003](decision-log.md#adr-0003--package-2s-registration-of-a-source-is-operational-package-1-holds-the-authoritative-catalog): P1 catalog authoritative; P2 references it | — | — |
-| ~~OQ-2~~ | **Closing** → [ADR-0012](decision-log.md#adr-0012--p2p1-handoff-is-a-pull-scan-the-published-store-is-the-outbox) (proposed): pull scan over the published root; scan = delivery + anti-entropy | — | — |
+| ~~OQ-2~~ | **Closed** → [ADR-0012](decision-log.md#adr-0012--p2p1-handoff-is-a-pull-scan-the-published-store-is-the-outbox): pull scan over the published root; scan = delivery + anti-entropy | — | — |
 | ~~OQ-3~~ | **Closed** → [ADR-0008](decision-log.md#adr-0008--pipelineassets-observation-is-file-based-no-imports-either-way): computed by the engine; registered via the file-based `ingest-run` seam | — | — |
-| ~~OQ-4~~ | **Closing** → [ADR-0013](decision-log.md#adr-0013--p2-reuses-the-assets-engine-connectors-use-the-four-verb-contract) (proposed): per-package roots at tier 1; shared DB deferred to store packs (ADR-0011) | — | — |
+| ~~OQ-4~~ | **Closed** → [ADR-0013](decision-log.md#adr-0013--p2-reuses-the-assets-engine-connectors-use-the-four-verb-contract): per-package roots at tier 1; shared DB deferred to store packs (ADR-0011) | — | — |
 | ~~OQ-5~~ | **Closed** → [ADR-0009](decision-log.md#adr-0009--asset-version-identity-is-a-content-hash--human-alias): content hash + mandatory `name` alias | — | — |
-| ~~OQ-6~~ | **Closing** → [ADR-0014](decision-log.md#adr-0014--bitemporal-storage-with-first-class-acquisition-modes) (proposed): acquired forecasts in P2's `forecasts/` root; computed forecasts stay P1 outputs | — | — |
-| [OQ-7](#oq-7) | How are `Entity`s defined and mapped onto onboarded datasets? **Leaning:** P2 stays entity-free (its spec has no entity concept); dataset_version→entity association asserted P1-side after registration | 🟠 med | Feature governance |
+| ~~OQ-6~~ | **Closed** → [ADR-0014](decision-log.md#adr-0014--bitemporal-storage-with-first-class-acquisition-modes): acquired forecasts in P2's `forecasts/` root; computed forecasts stay P1 outputs | — | — |
+| ~~OQ-7~~ | **Closed** → [ADR-0016](decision-log.md#adr-0016--p2-is-entity-free-entity-association-is-asserted-p1-side): P2 entity-free; dataset_version→entity asserted P1-side after registration | — | — |
 
 ---
 

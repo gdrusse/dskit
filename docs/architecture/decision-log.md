@@ -212,7 +212,7 @@ packs get built once, against settled requirements.
 
 ## ADR-0012 — P2→P1 handoff is a pull scan: the published store IS the outbox
 
-**Status:** proposed (2026-08-22; closes OQ-2 on ratification)
+**Status:** accepted (2026-08-22, closes OQ-2)
 
 **Context.** A publication must never be lost; certified data must always
 become registered. Research (transactional outbox, maildir, DataHub/Amundsen
@@ -234,7 +234,7 @@ immutable and independent.
 
 ## ADR-0013 — P2 reuses the assets engine; connectors use the four-verb contract
 
-**Status:** proposed (2026-08-22; settles OQ-4's tier-1 half)
+**Status:** accepted (2026-08-22, closes OQ-4 at tier 1; tier-2 topology follows ADR-0011)
 
 **Decision.** `dskit/onboarding` imports `dskit.assets` (one-way, stdlib-pure)
 and keeps its operational records in a P2-local store governed by
@@ -252,7 +252,7 @@ subprocess-ready later. The pipeline still imports neither package.
 
 ## ADR-0014 — Bitemporal storage with first-class acquisition modes
 
-**Status:** proposed (2026-08-22; closes OQ-6 on ratification)
+**Status:** accepted (2026-08-22, closes OQ-6)
 
 **Context.** Spec: effective date AND acquisition date; forecasts apart from
 observations. Project goal: clear tracking of backfill (pulling history) vs
@@ -273,7 +273,7 @@ forecast root; COMPUTED forecasts remain P1 outputs via `ingest-run`.
 
 ## ADR-0015 — Validation is declarative; certification consumes results, never data
 
-**Status:** proposed (2026-08-22)
+**Status:** accepted (2026-08-22)
 
 **Decision.** Suites are JSON: rules `{id, target, rule, kwargs, severity,
 warn_if/error_if}` with dbt-style thresholds on failing counts (warn never
@@ -282,3 +282,21 @@ blocks). Results are content-addressed artifacts
 A certification records a decision over ONE result (`certified | refused` —
 a refusal is also evidence); publication requires a certificate. A block is
 a result, not an error — the pipeline's NO-GO philosophy, applied to data.
+
+---
+
+## ADR-0016 — P2 is entity-free; entity association is asserted P1-side
+
+**Status:** accepted (2026-08-22, closes OQ-7)
+
+**Context.** P1 has an `Entity` registry and asserts *"features belong to
+entities"*; P2's spec has no entity concept — it publishes datasets.
+
+**Decision.** `dskit/onboarding` carries no entity concept. A
+`dataset_version → entity` association is asserted **in P1 after
+registration** (a ref in the catalog's model), keeping entity resolution a
+catalog concern.
+
+**Consequences.** Feature governance is enforceable entirely inside P1's
+asset model; publication manifests need no entity fields, so P2's domain
+model can freeze now.
