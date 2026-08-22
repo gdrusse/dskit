@@ -9,12 +9,12 @@ deliverable(s) that cannot be frozen until this closes.
 | ID | Question | Risk | Blocks |
 |---|---|---|---|
 | ~~OQ-1~~ | **Closed** → [ADR-0003](decision-log.md#adr-0003--package-2s-registration-of-a-source-is-operational-package-1-holds-the-authoritative-catalog): P1 catalog authoritative; P2 references it | — | — |
-| [OQ-2](#oq-2) | What is the P2→P1 publication→registration mechanism? | 🔴 high | Package Interaction spec (#4) |
+| ~~OQ-2~~ | **Closing** → [ADR-0012](decision-log.md#adr-0012--p2p1-handoff-is-a-pull-scan-the-published-store-is-the-outbox) (proposed): pull scan over the published root; scan = delivery + anti-entropy | — | — |
 | ~~OQ-3~~ | **Closed** → [ADR-0008](decision-log.md#adr-0008--pipelineassets-observation-is-file-based-no-imports-either-way): computed by the engine; registered via the file-based `ingest-run` seam | — | — |
-| [OQ-4](#oq-4) | Shared physical storage or per-package? (PostgreSQL + Parquet) | 🟠 med | Storage & Versioning spec (#3) |
+| ~~OQ-4~~ | **Closing** → [ADR-0013](decision-log.md#adr-0013--p2-reuses-the-assets-engine-connectors-use-the-four-verb-contract) (proposed): per-package roots at tier 1; shared DB deferred to store packs (ADR-0011) | — | — |
 | ~~OQ-5~~ | **Closed** → [ADR-0009](decision-log.md#adr-0009--asset-version-identity-is-a-content-hash--human-alias): content hash + mandatory `name` alias | — | — |
-| [OQ-6](#oq-6) | Where do forecasts live — P2 time-series or P1 Output registry? | 🟡 low | Lifecycle; storage |
-| [OQ-7](#oq-7) | How are `Entity`s defined and mapped onto onboarded datasets? | 🟠 med | P1 domain model; feature governance |
+| ~~OQ-6~~ | **Closing** → [ADR-0014](decision-log.md#adr-0014--bitemporal-storage-with-first-class-acquisition-modes) (proposed): acquired forecasts in P2's `forecasts/` root; computed forecasts stay P1 outputs | — | — |
+| [OQ-7](#oq-7) | How are `Entity`s defined and mapped onto onboarded datasets? **Leaning:** P2 stays entity-free (its spec has no entity concept); dataset_version→entity association asserted P1-side after registration | 🟠 med | Feature governance |
 
 ---
 

@@ -207,3 +207,78 @@ sqlite first (stdlib; template for postgres), then parquet, then postgres.
 
 **Consequences.** Tier-1 JSON FileStore is the only backend until OQ-4 closes;
 packs get built once, against settled requirements.
+
+---
+
+## ADR-0012 — P2→P1 handoff is a pull scan: the published store IS the outbox
+
+**Status:** proposed (2026-08-22; closes OQ-2 on ratification)
+
+**Context.** A publication must never be lost; certified data must always
+become registered. Research (transactional outbox, maildir, DataHub/Amundsen
+ingestion, anti-entropy): notification channels reintroduce the dual-write
+problem, and catalogs repair missed events with periodic pull runs anyway.
+
+**Decision.** P2 publishes version manifests into `published/` with maildir
+discipline (stage, fsync, atomic rename). P1's registrar **scans** that root
+and idempotently registers by content hash. The scan is BOTH delivery and
+anti-entropy — one code path. An optional future "nudge" only triggers an
+early scan; losing it costs nothing.
+
+**Consequences.** No message infrastructure at tier 1; effectively-once =
+at-least-once scan + hash-keyed upsert (ADR-0009 makes dedupe free). Matches
+the ADR-0008 file-seam precedent. Ordering is irrelevant: versions are
+immutable and independent.
+
+---
+
+## ADR-0013 — P2 reuses the assets engine; connectors use the four-verb contract
+
+**Status:** proposed (2026-08-22; settles OQ-4's tier-1 half)
+
+**Decision.** `dskit/onboarding` imports `dskit.assets` (one-way, stdlib-pure)
+and keeps its operational records in a P2-local store governed by
+`onboarding-model.json` — kinds as config (ADR-0007), reuse before
+duplication. Storage topology at tier 1: **per-package roots** on one
+filesystem (P2 owns raw/state/published; P1 owns the catalog store); shared
+DB deferred to tier-2 store packs (ADR-0011). Connectors: `Connector` ABC
+with `spec/check/discover/read` (Airbyte/Singer consensus), default-deny
+config, dict message envelope with `protocol: 1` and skippable unknown
+types, platform-persisted opaque per-stream state with checkpoint semantics
+("everything before this is durable"). In-process now; the data contract is
+subprocess-ready later. The pipeline still imports neither package.
+
+---
+
+## ADR-0014 — Bitemporal storage with first-class acquisition modes
+
+**Status:** proposed (2026-08-22; closes OQ-6 on ratification)
+
+**Context.** Spec: effective date AND acquisition date; forecasts apart from
+observations. Project goal: clear tracking of backfill (pulling history) vs
+live (pulling forward), with normalized pulls and saves.
+
+**Decision.** Every record carries `(effective_date, acquired_at)`,
+append-only — as-of-X-about-Y queries and ML point-in-time correctness by
+construction. **`mode: backfill | live` is a declared field** on every
+acquisition job, stamped into snapshot manifests and published versions —
+tracking is a query, never date arithmetic. Checkpoints keyed
+`(source, stream, mode)` so the two cursors never interfere. Snapshots are
+WORM: `raw/<source>/<acq_id>/payload/` + Merkle manifest (identity = hash of
+canonical manifest). `observations/` asserts `effective_date <= acquired_at`;
+`forecasts/` is a separate root. OQ-6: ACQUIRED forecasts live in P2's
+forecast root; COMPUTED forecasts remain P1 outputs via `ingest-run`.
+
+---
+
+## ADR-0015 — Validation is declarative; certification consumes results, never data
+
+**Status:** proposed (2026-08-22)
+
+**Decision.** Suites are JSON: rules `{id, target, rule, kwargs, severity,
+warn_if/error_if}` with dbt-style thresholds on failing counts (warn never
+blocks). Results are content-addressed artifacts
+`{suite_hash, snapshot_id, gating: pass|warn|block, statistics, results[]}`.
+A certification records a decision over ONE result (`certified | refused` —
+a refusal is also evidence); publication requires a certificate. A block is
+a result, not an error — the pipeline's NO-GO philosophy, applied to data.

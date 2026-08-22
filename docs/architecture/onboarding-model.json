@@ -1,0 +1,85 @@
+{
+  "name": "onboarding",
+  "notes": "Package 2's domain model — the spec's objects as kinds (ADR-0007: config, not code). A P2-local assets store is governed by this document. Evidence kinds (job, snapshot, validation_result, certification, published_version) are record-only: registered once, never transitioned — history is the record. Only source_config, the operational handle, has a lifecycle. The catalog-of-record Source lives in P1 (ADR-0003); source_config references it by alias. Validate + explore: python -m dskit.assets init --store /tmp/ob --model docs/architecture/onboarding-model.json",
+  "kinds": {
+    "source_config": {
+      "notes": "Operational connector config for one P1 catalog source (ADR-0003): credentials location, connector choice, stream selection. The only governed kind here — config is managed, evidence is immutable.",
+      "fields": {
+        "name": { "type": "string", "required": true },
+        "catalog_source": { "type": "string", "required": true, "notes": "The P1 Source this operates for — alias or version_id in the catalog store." },
+        "connector": { "type": "string", "required": true, "notes": "Registered connector kind or pkg.module:Class, as with pipeline nodes." },
+        "config": { "type": "object", "notes": "The connector's knobs, validated default-deny by its spec(). Secrets stay OUT — referenced via env, never hash-material." }
+      },
+      "lifecycle": {
+        "states": ["draft", "active", "retired"],
+        "initial": "draft",
+        "transitions": { "draft": ["active"], "active": ["retired"] }
+      }
+    },
+    "acquisition_job": {
+      "notes": "One invocation of a connector pull. MODE IS FIRST-CLASS: backfill (pulling history) vs live (pulling forward) is declared here, stamped downstream, and checkpointed separately per (source, stream, mode).",
+      "fields": {
+        "name": { "type": "string", "required": true },
+        "mode": { "type": "string", "required": true, "notes": "backfill | live — the project's tracking axis; a declared fact, never inferred from dates." },
+        "stream": { "type": "string", "required": true },
+        "effective_range": { "type": "object", "notes": "{start, end}: the window of world-time this pull covers. Past window = backfill; now-window = live." },
+        "status": { "type": "string", "notes": "ran | failed — evidence of what happened, not a lifecycle." }
+      },
+      "refs": {
+        "source_config": { "kind": "source_config", "required": true }
+      }
+    },
+    "snapshot": {
+      "notes": "One immutable raw acquisition (bronze). Identity anchors on the manifest's Merkle hash of payload bytes; the directory path is provenance. Bitemporal pair carried explicitly (ADR-0014).",
+      "fields": {
+        "name": { "type": "string", "required": true },
+        "manifest_hash": { "type": "string", "required": true, "notes": "sha256 of the canonical manifest.json — re-hash to verify, tamper-evident." },
+        "mode": { "type": "string", "required": true },
+        "acquired_at": { "type": "string", "required": true },
+        "effective_start": { "type": "string" },
+        "effective_end": { "type": "string" }
+      },
+      "refs": {
+        "job": { "kind": "acquisition_job", "required": true }
+      }
+    },
+    "validation_result": {
+      "notes": "The content-addressed outcome of running one suite against one snapshot (ADR-0015). Certification consumes THIS, never the data.",
+      "fields": {
+        "name": { "type": "string", "required": true },
+        "suite_hash": { "type": "string", "required": true },
+        "gating": { "type": "string", "required": true, "notes": "pass | warn | block — thresholds on failing counts; warn never blocks." },
+        "statistics": { "type": "object" }
+      },
+      "refs": {
+        "snapshot": { "kind": "snapshot", "required": true }
+      }
+    },
+    "certification": {
+      "notes": "The human/policy decision over a validation result. Publish requires one; a refusal is also a record.",
+      "fields": {
+        "name": { "type": "string", "required": true },
+        "decision": { "type": "string", "required": true, "notes": "certified | refused" },
+        "certified_by": { "type": "string" }
+      },
+      "refs": {
+        "snapshot": { "kind": "snapshot", "required": true },
+        "result": { "kind": "validation_result", "required": true }
+      }
+    },
+    "published_version": {
+      "notes": "P2's record of one published DatasetVersion: a pointer manifest (Iceberg-style, no data copies) written to the published root that P1 scans (ADR-0012). The P1 registration is the system of record; this is the publication evidence.",
+      "fields": {
+        "name": { "type": "string", "required": true },
+        "dataset": { "type": "string", "required": true, "notes": "The P1 dataset alias this version belongs to." },
+        "version_manifest_hash": { "type": "string", "required": true },
+        "mode": { "type": "string", "notes": "Dominant mode of member snapshots — keeps backfill vs live traceable through to publication." },
+        "effective_start": { "type": "string" },
+        "effective_end": { "type": "string" }
+      },
+      "refs": {
+        "certification": { "kind": "certification", "required": true }
+      }
+    }
+  }
+}

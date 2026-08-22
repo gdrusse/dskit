@@ -2,20 +2,22 @@
 
 Refreshed by `/wrap`. Where things stand — read this first.
 
-**Branch:** `feat/assets-package` (merged to `main`) · **Tests:** 1506 pass, 82 skip
+**Branch:** `docs/package2-design` (merged to `main`) · **Tests:** 1506 pass, 82 skip
 
-**Landed:** Package 1 **built** — `dskit/assets/` per ADR-0007…0010: model
-grammar + default model (hash-pinned `176ed570`), content-hash records,
-write-once `FileStore` behind the `Store` ABC, event-derived lifecycle,
-DAG lineage, file-based `ingest-run` of real pipeline runs, full CLI.
-78 new tests: purity gate, pipeline hash-parity, governance pin, e2e
-ingest. Package `README`/`CLAUDE.md`, `examples/assets/custom-model.json`,
-repo tree updated. Build loop used: brief → discuss → approve → write.
+**Landed:** Package 2 **designed** (not built). Research-grounded
+(connector contracts, outbox/maildir handoff, bitemporal/snapshot/validation
+patterns) → `docs/architecture/onboarding-design.md` + ADR-0012…0015
+(**proposed, awaiting ratification**) + `onboarding-model.json` — the P2
+domain model as config, validates against the engine (`a8775903`).
+Key rulings: pull-scan handoff (published root IS the outbox); P2 reuses
+the assets engine; **backfill vs live is a first-class declared `mode`**
+(user requirement) with per-(source, stream, mode) checkpoints and
+`(effective_date, acquired_at)` on every record. OQ-2/4/6 closing on
+those ADRs; OQ-7 open with a leaning (P2 entity-free). ADR-0011 logged
+earlier: store packs deferred pending OQ-4 (now settling).
 
-**Next:** Package 2 (Acquisition & Onboarding) design — its kinds arrive
-as a model document (config, not code, per ADR-0007). Blocking open
-questions: OQ-2 (P2→P1 handoff mechanism), OQ-4 (storage topology),
-OQ-7 (entities). OQ-6 noted in the default model (forecasts land in
-`output` until closed).
+**Next:** user ratifies/amends ADR-0012…0015 and the OQ-7 leaning → then
+build `dskit/onboarding` in the proven loop (brief → discuss → approve →
+write, one file at a time), plan-first per the working agreement.
 
-**Decisions awaiting user:** none — Package 1 scope closed this session.
+**Decisions awaiting user:** ratify ADR-0012…0015; confirm OQ-7 leaning.
