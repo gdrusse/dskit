@@ -190,3 +190,20 @@ sqlite/postgres/parquet arrive later as tier-2 `libs/` store packs.
 
 **Declared limits.** Single writer per store root; queries are directory scans
 (fine to ~10⁴ assets). Both are why `Store` is the seam.
+
+---
+
+## ADR-0011 — Tier-2 store packs are deferred until OQ-4 closes
+
+**Status:** accepted (2026-08-22)
+
+**Context.** The `Store` ABC (ADR-0010) invites sqlite/postgres/parquet packs,
+and the spec mandates PostgreSQL + Parquet layouts. But storage topology
+([OQ-4](open-questions.md#oq-4)) is open, no consumer hits the FileStore's
+declared limits, and Package 2's design will generate the real requirements.
+
+**Decision.** Build no `dskit/assets/libs/` store packs yet. When needed:
+sqlite first (stdlib; template for postgres), then parquet, then postgres.
+
+**Consequences.** Tier-1 JSON FileStore is the only backend until OQ-4 closes;
+packs get built once, against settled requirements.
