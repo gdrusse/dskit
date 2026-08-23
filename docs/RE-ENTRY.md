@@ -2,22 +2,25 @@
 
 Refreshed by `/wrap`. Where things stand — read this first.
 
-**Branch:** `docs/package2-design` (merged to `main`) · **Tests:** 1506 pass, 82 skip
+**Branch:** `main` · **Tests:** 1617 pass, 82 skip
 
-**Landed:** Package 2 **designed** (not built). Research-grounded
-(connector contracts, outbox/maildir handoff, bitemporal/snapshot/validation
-patterns) → `docs/architecture/onboarding-design.md` + ADR-0012…0015
-(**proposed, awaiting ratification**) + `onboarding-model.json` — the P2
-domain model as config, validates against the engine (`a8775903`).
-Key rulings: pull-scan handoff (published root IS the outbox); P2 reuses
-the assets engine; **backfill vs live is a first-class declared `mode`**
-(user requirement) with per-(source, stream, mode) checkpoints and
-`(effective_date, acquired_at)` on every record. OQ-2/4/6 closing on
-those ADRs; OQ-7 open with a leaning (P2 entity-free). ADR-0011 logged
-earlier: store packs deferred pending OQ-4 (now settling).
+**Landed:** Package 2 **built**. Ratified ADR-0012…0015 + new ADR-0016
+(P2 entity-free; entity association asserted P1-side) — OQ register is
+clear. Then `dskit/onboarding` per the approved plan (`64865ed`):
+Connector four-verb contract + protocol-1 envelope, WORM Merkle
+snapshots under `raw/`, mode-keyed checkpoints, bitemporal normalized
+rows (observations/forecasts split, declared not inferred), JSON
+validation suites (dbt thresholds; block exits 3), certification gate
+(block cannot certify), outbox publication keyed on the certification;
+`dskit.assets` gained `sync-published` (ADR-0012 scan). 111 new tests:
+purity gate (no `dskit.pipeline`), model pin `a8775903…` + parity with
+`docs/architecture/onboarding-model.json`, localfiles conformance, CLI
+e2e through sync. Package README/CLAUDE.md shipped; root CLAUDE.md and
+architecture README updated to "built".
 
-**Next:** user ratifies/amends ADR-0012…0015 and the OQ-7 leaning → then
-build `dskit/onboarding` in the proven loop (brief → discuss → approve →
-write, one file at a time), plan-first per the working agreement.
+**Next:** nothing blocking. Declared seams when needed: tier-2 store
+packs (ADR-0011), more connector packs in `onboarding/libs/`, semantic
+validation above the engines. `ruff` unavailable in the anaconda env —
+`pip install -e ".[dev]"` to lint.
 
-**Decisions awaiting user:** ratify ADR-0012…0015; confirm OQ-7 leaning.
+**Decisions awaiting user:** none.
