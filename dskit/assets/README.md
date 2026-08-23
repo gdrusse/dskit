@@ -56,6 +56,10 @@ model it was created with.
 - **Observation** — `ingest_run` reads a completed pipeline run
   directory; nothing imports across the pipeline boundary in either
   direction.
+- **Registration** — `sync_published` scans a published outbox root
+  (`published/<dataset>/*.json` manifests, e.g. `dskit.onboarding`'s)
+  and registers dataset versions idempotently; the scan is delivery
+  and anti-entropy in one. The dataset alias must already be cataloged.
 
 ## Contents
 
@@ -70,6 +74,7 @@ dskit/assets/
 ├── registry.py        the engine: register / get / find / list / state / transition
 ├── lineage.py         one global DAG: provenance-stamped edges + end-to-end queries
 ├── ingest.py          ingest_run: observe a completed pipeline run dir
+├── sync.py            sync_published: scan a published outbox root (ADR-0012)
 ├── __main__.py        the CLI: python -m dskit.assets
 ├── README.md          this file
 └── CLAUDE.md          agent orientation

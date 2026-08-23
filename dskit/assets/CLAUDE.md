@@ -58,6 +58,7 @@ dskit/assets/
 ├── registry.py        Registry — the only mutation path
 ├── lineage.py         Lineage — DAG edges, cycle-refusing, phase-stamped
 ├── ingest.py          ingest_run — the ADR-0008 file seam
+├── sync.py            sync_published — the ADR-0012 outbox scan
 ├── __main__.py        CLI
 ├── README.md          user-facing docs
 └── CLAUDE.md          this file

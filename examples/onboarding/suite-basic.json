@@ -1,0 +1,38 @@
+{
+  "name": "prices-basic",
+  "notes": "A worked validation suite (ADR-0015): run with `python -m dskit.onboarding validate --suite examples/onboarding/suite-basic.json --snapshot <vid>`. Each rule produces a FAILING COUNT over the target stream's normalized rows; the severity's threshold (error_if / warn_if, default '!= 0') gates on that count. Any tripped error rule -> gating 'block' (exit 3 — a result, not an error); tripped warn rules -> 'warn' (warn NEVER blocks); else 'pass'. Certification consumes the registered result, never the data.",
+  "rules": [
+    {
+      "id": "rows-arrived",
+      "target": "prices",
+      "rule": "row_count",
+      "kwargs": { "min": 1 },
+      "severity": "error",
+      "notes": "An empty stream is a broken pull, not a quiet day. Raise min to your expected floor."
+    },
+    {
+      "id": "close-present",
+      "target": "prices",
+      "rule": "not_null",
+      "kwargs": { "field": "close" },
+      "severity": "error",
+      "error_if": "> 0",
+      "notes": "Nulls in the field downstream models train on. Loosen with error_if '> 10' to tolerate a known-dirty tail."
+    },
+    {
+      "id": "dates-parse-bitemporally",
+      "target": "prices",
+      "rule": "bitemporal",
+      "severity": "error",
+      "notes": "effective_date <= acquired_at, re-asserted as recorded evidence (acquire already refuses violations at save time)."
+    },
+    {
+      "id": "sym-vocabulary",
+      "target": "prices",
+      "rule": "accepted_values",
+      "kwargs": { "field": "sym", "values": ["A", "B"] },
+      "severity": "warn",
+      "notes": "A new symbol is worth a look, not a blocked publish — warn never blocks (the dbt threshold model)."
+    }
+  ]
+}

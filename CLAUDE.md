@@ -59,15 +59,20 @@ dskit/
 │   ├── __init__.py
 │   ├── pipeline/              # the execution engine
 │   │   └── libs/              # tier-2 wrappers for standard DS/ML libraries
-│   └── assets/                # the Data Asset Platform (spec Package 1):
-│                              #   config-driven registry engine; own README + CLAUDE.md
+│   ├── assets/                # the Data Asset Platform (spec Package 1):
+│   │                          #   config-driven registry engine; own README + CLAUDE.md
+│   └── onboarding/            # Acquisition & Onboarding (spec Package 2):
+│       └── libs/              #   connectors/snapshots/validation/publication;
+│                              #   own README + CLAUDE.md; libs/ = connector packs
 ├── examples/
 │   ├── pipeline/              # runnable configs, one per capability
-│   └── assets/                # a worked custom asset model
+│   ├── assets/                # a worked custom asset model
+│   └── onboarding/            # a worked connector config + validation suite
 └── tests/
     ├── pipeline/              # tier-1 core + purity gate
     ├── pipeline_libs/         # tier-2 library packs
-    └── assets/                # assets engine: purity, hash-parity, e2e ingest
+    ├── assets/                # assets engine: purity, hash-parity, e2e ingest + sync
+    └── onboarding/            # onboarding: purity, model pin, conformance, CLI e2e
 ```
 
 ## Every package ships its own docs
@@ -143,9 +148,10 @@ python -m dskit.pipeline validate <doc.json>     # shape + identity hash
 
 Exit codes: **0** ran · **3** halted at a NO-GO gate (a halt is a result) · **1** error.
 
-## Design work in progress
+## Design work
 
-Two further packages are specified in `docs/agent-master-specifications.md` and are
-**in architecture, not implementation** — the specs require approved design before
-code. See `docs/architecture/`. Open questions marked high-risk block the
-components they touch.
+Both master-spec packages are **built**: Package 1 → `dskit/assets`
+(ADR-0007…0011), Package 2 → `dskit/onboarding` (ADR-0012…0016). The
+open-questions register is clear. New significant design decisions still
+require an ADR in `docs/architecture/decision-log.md` before code — no
+decision undocumented.

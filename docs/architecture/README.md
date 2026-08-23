@@ -19,8 +19,8 @@ engine. So `dskit` is being built as a three-package ecosystem:
 | Package | Role | Home (proposed) | Status |
 |---|---|---|---|
 | **Analytical Execution Framework** | runs a declared pipeline (data → predict → optimize → report); emits run records | `dskit/pipeline/` | ✅ built |
-| **Package 1 — Data Asset Platform** | authoritative **system of record**: registries + lineage; immutable, versioned; **observes** execution, never manages it | `dskit/assets/` | ⬜ to design |
-| **Package 2 — Data Acquisition & Onboarding** | governed **entry point**: acquire → snapshot → validate → certify → publish | `dskit/onboarding/` | ⬜ to design |
+| **Package 1 — Data Asset Platform** | authoritative **system of record**: registries + lineage; immutable, versioned; **observes** execution, never manages it | `dskit/assets/` | ✅ built |
+| **Package 2 — Data Acquisition & Onboarding** | governed **entry point**: acquire → snapshot → validate → certify → publish | `dskit/onboarding/` | ✅ built |
 
 Package homes are proposals — see [ADR-0006](decision-log.md#adr-0006--package-homes-and-names).
 The full ownership map and end-to-end data flow are in
@@ -55,13 +55,14 @@ Each spec lists ten deliverables. They agree on #1–#4, then diverge:
 | Artifact | State |
 |---|---|
 | Context & ownership map (deliverable #4 foundation) | ✅ drafted |
-| Decision Log | ✅ seeded (ADR-0001…0006) |
-| Open Questions Register | ✅ seeded (OQ-1…OQ-7) |
-| Package 1 design + file-level plan | ✅ approved — build in progress (`dskit/assets/`) |
-| Package 2 deliverables | ⬜ not started |
+| Decision Log | ✅ ADR-0001…0016 (0012…0016 ratified 2026-08-22) |
+| Open Questions Register | ✅ clear — OQ-1…OQ-7 all closed |
+| Package 1 design + build | ✅ built (`dskit/assets/`, ADR-0007…0011) |
+| Package 2 design + build | ✅ built (`dskit/onboarding/`, ADR-0012…0016; design: [onboarding-design.md](onboarding-design.md)) |
 
-**Current work:** building `dskit/assets/` (Package 1) file by file per the
-approved plan — a config-driven registry engine (ADR-0007…0010).
+**Current work:** both packages built and tested. Remaining seams are
+declared, not urgent: tier-2 store packs (ADR-0011), connector packs
+beyond `localfiles`, semantic validation above the engines.
 
 ## Implementation readiness checklist (from the specs)
 

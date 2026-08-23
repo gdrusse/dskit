@@ -43,6 +43,7 @@ from .model import (
 from .record import AssetRecord, check_payload
 from .registry import Registry
 from .store import FileStore, Store
+from .sync import sync_published
 
 __all__ = [
     "AssetError",
@@ -62,4 +63,5 @@ __all__ = [
     "ingest_run",
     "load_model",
     "model_hash",
+    "sync_published",
 ]

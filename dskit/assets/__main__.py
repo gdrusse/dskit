@@ -15,6 +15,8 @@ plus a model document IS the platform. Commands:
   — the graph around one asset.
 * ``ingest-run <run_dir>`` — ADR-0008's seam: observe a completed
   pipeline run from its directory.
+* ``sync-published <root>`` — ADR-0012's seam: scan a published outbox
+  and register every dataset version manifest found.
 
 ``--store`` names the store root (default ``./asset_store``);
 ``--model`` names a model file, absent meaning the built-in default —
@@ -36,6 +38,7 @@ from .lineage import Lineage
 from .model import load_model, model_hash
 from .registry import Registry
 from .store import FileStore
+from .sync import sync_published
 
 
 def _load_model(path):
@@ -151,6 +154,14 @@ def cmd_ingest_run(args) -> int:
     return 0
 
 
+def cmd_sync_published(args) -> int:
+    summary = sync_published(_registry(args), args.published_root, origin=args.origin)
+    print(json.dumps(summary, indent=2))
+    # A failed manifest is a repair job someone must see — non-zero so
+    # a cron'd scan surfaces it; the good manifests are registered anyway.
+    return 1 if summary["failed"] else 0
+
+
 # -- wiring ----------------------------------------------------------------
 
 
@@ -219,6 +230,13 @@ def main(argv=None) -> int:
     p.add_argument("--origin", default="ingest-run")
     _add_common(p)
     p.set_defaults(fn=cmd_ingest_run)
+
+    p = sub.add_parser("sync-published",
+                       help="scan a published outbox root (ADR-0012)")
+    p.add_argument("published_root")
+    p.add_argument("--origin", default="sync-published")
+    _add_common(p)
+    p.set_defaults(fn=cmd_sync_published)
 
     args = top.parse_args(argv)
     try:

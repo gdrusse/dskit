@@ -1,0 +1,6 @@
+{
+  "name": "vendor",
+  "notes": "A worked source_config payload for `python -m dskit.onboarding register-source vendor --config @examples/onboarding/source-localfiles.json` — actually the --config half only: this file IS the connector config object. Point `path` at any directory of *.csv / *.jsonl files; each file becomes a stream named by its stem. `effective_field` names the column carrying each row's ISO effective_date — the world-time half of the bitemporal pair (ADR-0014). Add \"forecast_streams\": [\"outlook\"] to DECLARE a stream's records as forecasts (segregated into forecasts/, never inferred from dates).",
+  "path": "./data",
+  "effective_field": "date"
+}
