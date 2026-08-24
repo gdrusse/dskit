@@ -2,25 +2,24 @@
 
 Refreshed by `/wrap`. Where things stand — read this first.
 
-**Branch:** `main` · **Tests:** 1617 pass, 82 skip
+**Branch:** `main` · **Tests:** 1640 pass, 82 skip
 
-**Landed:** Package 2 **built**. Ratified ADR-0012…0015 + new ADR-0016
-(P2 entity-free; entity association asserted P1-side) — OQ register is
-clear. Then `dskit/onboarding` per the approved plan (`64865ed`):
-Connector four-verb contract + protocol-1 envelope, WORM Merkle
-snapshots under `raw/`, mode-keyed checkpoints, bitemporal normalized
-rows (observations/forecasts split, declared not inferred), JSON
-validation suites (dbt thresholds; block exits 3), certification gate
-(block cannot certify), outbox publication keyed on the certification;
-`dskit.assets` gained `sync-published` (ADR-0012 scan). 111 new tests:
-purity gate (no `dskit.pipeline`), model pin `a8775903…` + parity with
-`docs/architecture/onboarding-model.json`, localfiles conformance, CLI
-e2e through sync. Package README/CLAUDE.md shipped; root CLAUDE.md and
-architecture README updated to "built".
+**Landed:** `restapi` connector pack (ADR-0017) —
+`dskit/onboarding/libs/restapi.py`, kind `restapi`, stdlib urllib only.
+Declarative streams (path / params / records_path), pagination closed
+vocabulary `none|cursor|page|offset`, one env-var credential
+(header/param via format template), `since_param` server-side filtering
+with the client-side cursor filter still applied, retry/backoff above a
+single scripted-in-tests `_fetch` seam, query strings stripped from
+errors. 24 new conformance tests (no network). Also fixed: shipped
+`source-localfiles.json` failed its own default-deny — `check_config`
+now exempts document-level `notes`; regression test guards both
+examples. Package README/CLAUDE.md trees updated.
 
-**Next:** nothing blocking. Declared seams when needed: tier-2 store
-packs (ADR-0011), more connector packs in `onboarding/libs/`, semantic
-validation above the engines. `ruff` unavailable in the anaconda env —
-`pip install -e ".[dev]"` to lint.
+**Next:** tier-2 store packs (ADR-0011) — start fresh session; design
+first (ADR before code). Other open seams: semantic validation above
+the engines, more connector packs. `ruff` still unavailable in the
+anaconda env — `pip install -e ".[dev]"` to lint (user hasn't approved
+the install).
 
 **Decisions awaiting user:** none.

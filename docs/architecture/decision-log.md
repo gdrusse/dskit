@@ -300,3 +300,35 @@ catalog concern.
 **Consequences.** Feature governance is enforceable entirely inside P1's
 asset model; publication manifests need no entity fields, so P2's domain
 model can freeze now.
+
+---
+
+## ADR-0017 — `restapi`: a declarative REST connector pack (tier-2, stdlib)
+
+**Status:** accepted (2026-08-24)
+
+**Context.** The four-verb contract (ADR-0013) was proven only by
+`localfiles`; a network connector is the untested seam. Generic REST
+APIs share one shape: endpoints, JSON bodies, pagination, a credential.
+
+**Decision.** `libs/restapi.py`, kind `restapi` (named to avoid stdlib
+`http` shadowing), **stdlib `urllib` only** — the pack stays
+dependency-free like the rest of tier 1/2. Streams are DECLARED in
+config (the Airbyte low-code idea shrunk to this contract): per-stream
+`path`/`params`/`records_path`; pagination a closed vocabulary
+`none | cursor | page | offset`; ONE credential — a secret knob holding
+the env-var name, injected as a declared header or query param via a
+format template; `since_param` passes the cursor server-side while the
+client-side filter still applies (an over-returning server is harmless).
+Pages buffer per stream and sort by effective date so the checkpoint
+stays honest (the localfiles ruling). All requests go through one
+`_fetch` seam — retries/backoff on 429/5xx/network sit above it; tests
+script it, no network, no mock library. Error messages strip query
+strings so a param-carried credential can never leak.
+
+**Consequences.** `check_config` now exempts a document-level `notes`
+key (the repo's comment standard) — found because the shipped
+`source-localfiles.json` example was failing its own default-deny; the
+example also drops its redundant `name` (the CLI argument carries it).
+`notes` still enters the `source_config` payload hash: source configs
+are operational records, not identity-hashed documents like suites.

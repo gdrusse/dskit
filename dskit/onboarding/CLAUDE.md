@@ -68,7 +68,9 @@ dskit/onboarding/
 ├── certify.py         certify — decisions; block-cannot-certify gate
 ├── publish.py         publish_version — outbox manifests, certification-keyed
 ├── libs/
-│   └── localfiles.py  reference connector (stdlib CSV/JSONL)
+│   ├── localfiles.py  reference connector (stdlib CSV/JSONL)
+│   └── restapi.py     declarative REST connector (stdlib urllib; scripted
+│                      `_fetch` seam — tests never touch the network)
 ├── __main__.py        CLI
 ├── README.md          user-facing docs
 └── CLAUDE.md          this file

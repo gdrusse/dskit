@@ -72,6 +72,13 @@ registration, no entry anywhere needed:
 `tests/onboarding/test_localfiles.py` drives it through the whole
 contract and is the conformance template for yours.
 
+Many APIs need no connector code at all: the `restapi` kind DECLARES a
+JSON API in config — streams as endpoint paths, a dot-path to the
+records, pagination (`none | cursor | page | offset`), one env-var
+credential, optional server-side `since` filtering. See
+[`examples/onboarding/source-restapi.json`](../../examples/onboarding/source-restapi.json)
+for a worked config and `libs/restapi.py` for the knob reference.
+
 ## The root layout
 
 ```
@@ -100,7 +107,8 @@ dskit/onboarding/
 ├── certify.py         certify: the decision over one result (block gate enforced)
 ├── publish.py         publish_version: pointer manifest into the outbox
 ├── libs/
-│   └── localfiles.py  reference connector: CSV/JSONL directories (stdlib)
+│   ├── localfiles.py  reference connector: CSV/JSONL directories (stdlib)
+│   └── restapi.py     declarative REST/JSON connector (stdlib urllib, ADR-0017)
 ├── __main__.py        the CLI: python -m dskit.onboarding
 ├── README.md          this file
 └── CLAUDE.md          agent orientation

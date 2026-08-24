@@ -1,0 +1,21 @@
+{
+  "notes": "A worked connector config for `python -m dskit.onboarding register-source webapi --connector restapi --config @examples/onboarding/source-restapi.json` (ADR-0017). The whole API shape is DECLARED here: swap base_url, the stream paths, and records_path for your API and nothing else changes. `records_path` is a dot-path to the record list inside each JSON response ({\"data\": {\"rows\": [...]}} -> \"data.rows\"); omit it when the body IS the list. Pagination is a closed vocabulary — this example chains cursor tokens found at meta.next_cursor back into the `cursor` query param; use {\"strategy\": \"none\"} for single-page endpoints, or the page/offset strategies for numbered pages. `secret` holds the NAME of the env var with the credential (export EXAMPLE_API_TOKEN=... before acquiring) — the material never enters this file, the store, or any hash; auth_format renders it into the auth_name header. `since_param` hands the stream's checkpoint cursor to the server so it can filter server-side; records are cursor-filtered client-side regardless, so an over-returning server is harmless.",
+  "base_url": "https://api.example.test/v1",
+  "streams": {
+    "prices": {
+      "path": "prices",
+      "params": {"region": "all"},
+      "records_path": "data",
+      "primary_key": ["id"],
+      "notes": "One stream per endpoint; static query params ride on every request."
+    }
+  },
+  "effective_field": "date",
+  "pagination": {"strategy": "cursor", "path": "meta.next_cursor", "param": "cursor"},
+  "secret": "EXAMPLE_API_TOKEN",
+  "auth_name": "Authorization",
+  "auth_format": "Bearer {secret}",
+  "since_param": "since",
+  "timeout": 30,
+  "max_retries": 3
+}

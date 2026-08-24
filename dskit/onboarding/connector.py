@@ -79,6 +79,7 @@ RECORD_KINDS = ("observation", "forecast")
 #: ``pkg.module:Class`` directly and register nothing.
 DEFAULT_CONNECTORS = {
     "localfiles": "dskit.onboarding.libs.localfiles:LocalFilesConnector",
+    "restapi": "dskit.onboarding.libs.restapi:RestApiConnector",
 }
 
 #: ``pkg.module:ClassName`` — the pipeline's class-reference shape.
@@ -166,7 +167,8 @@ def check_config(connector, config) -> None:
 
     Checks: the spec itself is well-shaped, config keys are declared
     knobs, required knobs are present, and secret knobs hold strings
-    (env-var NAMES — never secret material).
+    (env-var NAMES — never secret material). A document-level ``notes``
+    key is always allowed — the repo's comment standard (ADR-0017).
 
     Parameters
     ----------
@@ -199,7 +201,7 @@ def check_config(connector, config) -> None:
             _check_unknown(errors, decl, _KNOB_KEYS, f"spec().params.{knob}")
     _raise_if(errors)
 
-    _check_unknown(errors, config, params, "config")
+    _check_unknown(errors, config, tuple(params) + ("notes",), "config")
     missing = sorted(k for k, d in params.items()
                      if d.get("required", False) and k not in config)
     if missing:
