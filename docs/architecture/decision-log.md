@@ -332,3 +332,39 @@ key (the repo's comment standard) — found because the shipped
 example also drops its redundant `name` (the CLI argument carries it).
 `notes` still enters the `source_config` payload hash: source configs
 are operational records, not identity-hashed documents like suites.
+
+---
+
+## ADR-0018 — Store backend is declared in `store.json`; sqlite is the first pack
+
+**Status:** accepted (2026-08-24, executes the ADR-0011 deferral)
+
+**Context.** Package 2 settled the requirements ADR-0011 waited for.
+`FileStore` is constructed at three hardcoded sites (assets CLI,
+`OnboardingRoot`), so a pack alone would be unreachable; and postgres
+later has no filesystem layout, so detection-by-contents can't be the
+seam.
+
+**Decision.** A store root **declares its backend in `store.json`**:
+optional `"backend"` key, absent = `"file"` — every existing root is
+untouched. Core grows `open_store(root)` / `create_store(root, model,
+backend)`; vocabulary follows the connector precedent (ADR-0013):
+built-in names (`file`, `sqlite`) or `pkg.module:Class` for tier-3
+stores, unknown refused loudly. Packs import lazily inside the factory.
+`FileStore` refuses a root declaring another backend. First pack:
+`libs/sqlite.py` — `store.json` keeps the pin, `store.sqlite` holds
+`records(version_id PK, kind, body)` + kind index and
+`events(seq AUTOINCREMENT, body)`; bodies are the same canonical JSON,
+same rehash-on-read tamper check. WAL, `synchronous=FULL` (durability
+parity with the fsync discipline), busy timeout, connection per call —
+lifting BOTH declared FileStore limits (single writer, scan queries).
+`import sqlite3` stays inside methods: stdlib, but the pack is the
+template for postgres, whose driver import must be lazy. Core also
+gains `copy_store(src, dst)`: any-to-any replay, matching pins, empty
+destination.
+
+**Consequences.** The store conformance battery parametrizes over
+backends — every future pack passes the identical suite. The purity
+gate sanctions exactly `libs/` and extends its static scan to it.
+`OnboardingRoot.create` and both CLIs take a backend choice; opening
+goes through `open_store` everywhere.
