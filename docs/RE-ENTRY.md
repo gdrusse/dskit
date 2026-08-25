@@ -2,28 +2,26 @@
 
 Refreshed by `/wrap`. Where things stand — read this first.
 
-**Branch:** `main` · **Tests:** 1696 pass, 82 skip
+**Branch:** `main` · **Tests:** 1766 pass, 82 skip · **ruff:** clean (pinned)
 
-**Landed:** tier-2 store packs seam + sqlite pack (ADR-0018) —
-`open_store`/`create_store`/`copy_store` in `dskit/assets/store.py`;
-backend declared in `store.json` (absent = `file`, old roots
-untouched; built-in name or `pkg.module:Class`); `libs/sqlite.py`
-(WAL, `synchronous=FULL`, per-call connections, every failure an
-`AssetError`). Both CLIs take `init --backend`; `OnboardingRoot`
-opens through the seam. Store battery parametrized over backends;
-purity gate covers `libs/`. Hardened through six adversarial review
-rounds (skeptic loop + workflows): concurrency claims scoped to the
-store seam (ADR-0018 amendment — Registry/Lineage mutation stays
-one-writer-per-root), snapshot `iter_events` pinned, create refuses
-any store artifact leftover, isinstance backend guard, OSError/
-sqlite3 wraps, `lexists` pre-check in onboarding layout.
+**Landed this session:** parquet store pack (ADR-0019) — analytics-
+scannable one-row-per-file backend, hardened through 7 adversarial
+review rounds. Then the full TODO register closed via ADR-0020
+(integrity parity): storage-key trust on vid AND kind axes across
+file/sqlite/parquet, FileStore foreign-entry doctrine + wrapped I/O,
+`\Z` anchors (incl. onboarding twin), sqlite URI `mode=rw`, purity-gate
+level resolution + self-test, ruff baseline pinned. 3 review rounds,
+clean pass, all mutants killed.
 
-**Next:** open seams — parquet/postgres packs against the settled
-seam (sqlite is the template), semantic validation above the engines,
-more connector packs. Five deferred loud-not-silent items in
-`TODO.md` (FileStore runtime OSError parity, `\Z` regex anchors,
-purity-gate relative-import level, `_connect` stray-db, engine
-multi-writer ADR). `ruff` still unavailable in the anaconda env —
-`pip install -e ".[dev]"` to lint (install unapproved).
+**In progress (overnight, this session):** orchestrated pass — pmquant
+capability-gap investigation, docs overhaul (pipeline README, root
+README rebalance, child-module convention: `children/` incubation +
+skeleton, ADR-0021), small generic gaps if found. rl_stocks deferred
+(GitHub access next session).
 
-**Decisions awaiting user:** none.
+**Next:** review overnight commits; grant rl_stocks GitHub access and
+run its investigation; then first child module built to the new
+convention.
+
+**Decisions awaiting user:** none (overnight work lands as commits for
+morning review).
