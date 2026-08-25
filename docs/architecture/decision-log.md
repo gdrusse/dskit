@@ -471,3 +471,175 @@ stray non-record files now refuses enumeration loudly (dotfiles and
 verify-on-duplicate, and newline-identifier coverage on all three
 backends. Engine-level multi-writer coordination remains the one
 deferred TODO item — no consumer needs it (ADR-0011's discipline).
+
+---
+
+## ADR-0021 — Child projects: the `children/` incubation convention
+
+**Status:** accepted (2026-08-25)
+
+**Context.** dskit is the cornerstone of the owner's DS work: a project
+must never modify dskit — it consumes it as a thin **child** (tier-3
+wrappers + JSON configs over onboarding/assets/pipeline). A child needs
+a place to grow before it earns its own repository, and every child
+should share one canonical shape so the pattern stays teachable.
+
+**Decision.** (1) **`children/<project>/` at the repo root incubates a
+child.** It is never imported by dskit (packaging already ships only
+`dskit*`; an isolation test additionally asserts no `dskit/` module
+references `children`), never on `sys.path` for the toolkit, and not
+part of the distribution. (2) **A child is laid out exactly as its
+future standalone repo** — own `pyproject.toml` (depending on `dskit`),
+one package directory of tier-3 modules, `configs/`, `tests/` — and
+**graduates unchanged**: nothing inside may reference its incubation
+position (no `..` imports, no dskit-repo paths; the only coupling is
+`import dskit`). (3) **This repo's suite runs child tests by
+subprocess**: `tests/children/test_children.py` enumerates
+`children/*/` (skipping `_`-prefixed entries, the store's
+foreign-entry idiom) and runs each child's own pytest; a red child
+fails the dskit suite. Each child's `tests/conftest.py` bootstraps
+`sys.path` to its own root, so the same tests run before and after
+graduation without installing the child. (4) **`children/_skeleton/`
+is the pinned canonical shape** — not prose but a RUNNABLE child
+exercising all three seams (a connector, registered node kinds under
+conformance, an asset model + run configs validated by the engines).
+Its file list is pinned in `tests/children/test_skeleton.py`; changing
+the skeleton's shape means updating the pin in the same commit,
+deliberately. (5) **The guide is `children/README.md`**: copy the
+skeleton, rename, obey the rules — never edit dskit; a missing
+capability is either an ADR'd generic gap in dskit or stays in the
+child; the domain lives in configs — then graduate by the checklist.
+(6) `children/*/tests/**` joins the `tests/**` ruff per-file-ignores
+(same importorskip idiom).
+
+**Consequences.** The repo gains `children/` and `tests/children/`;
+wheels are unchanged. Capability-gap work on external projects lands
+as child sketches/incubations, never as dskit code. The skeleton is
+continuously verified against engine evolution by the suite itself.
+
+---
+
+## ADR-0022 — Flow-verb parity: port `concat` / `join` / `derive` from the parent engine
+
+**Status:** accepted (2026-08-25)
+
+**Context.** `dskit/pipeline` was extracted from the pmquant engine;
+the parent's node registry is a strict superset. Three flow verbs did
+not make the extraction: `concat` (merge record streams), `join`
+(attach keyed lookup rows to records), `derive` (compute fields per
+record). All three are tier-1 generic — the parent's own purity gate
+forbids venue names in them — and any multi-source document needs them
+(two sources → one stream is `concat`; a rate table onto records is
+`join` + `table-file`; a computed field is `derive`). Their absence is
+exactly the "missed a verb" failure the parent's registry doctrine
+warns about.
+
+**Decision.** Port the three kinds into `dskit/pipeline/kinds_flow.py`
+faithfully from the parent (rename only), register them beside the
+existing four, and port their tests + toolkit-conformance probes.
+Anything in the parent implementation that depends on seams dskit does
+not have (event-bounds / split-policy, ADR-0024's subject) is stripped
+and recorded in the port notes — never half-ported.
+
+**Consequences.** `DEFAULT_NODE_KINDS` grows 8 → 11. `kinds_flow.py`
+grows ~1,000 lines with matching test growth. Future parent↔child
+diffs shrink.
+
+---
+
+## ADR-0023 — Table kinds: port `table-file` / `table-write`
+
+**Status:** accepted (2026-08-25)
+
+**Context.** Same extraction gap as ADR-0022. The parent ships
+`kinds_table.py`: `table-file` loads a digest-verified keyed table
+from JSON (config declares path + sha256; load refuses drift) and
+`table-write` writes one atomically without clobbering — a provenance
+round-trip pair. The module's own docstring disclaims all domain
+knowledge; it is the generic answer to "my document needs a versioned
+lookup table" (fee schedules, symbol maps, thresholds) without smuggling
+data into params.
+
+**Decision.** Port `kinds_table.py` as a new tier-1 module, register
+`table-file` / `table-write` in `DEFAULT_NODE_KINDS`, port its tests
+and conformance probes. Same strip-and-record rule as ADR-0022 for any
+absent-seam references.
+
+**Consequences.** `DEFAULT_NODE_KINDS` grows 11 → 13. New module
+`dskit/pipeline/kinds_table.py` (~400 LOC) + `tests/pipeline/
+test_kinds_table.py`. Documents gain a sanctioned data-beside-config
+mechanism.
+
+---
+
+## ADR-0024 — Split-assignment policies + event bounds (PROPOSAL)
+
+**Status:** proposed (2026-08-25) — awaiting owner review
+
+**Context.** The parent engine assigns split membership through a
+declared POLICY — `record` (the record's own instant), `event-open`,
+`event-close` — so a multi-record event straddling a cut cannot leak
+across train/val. Machinery: `split_policy.py` (policy registry),
+`EventBounds` + `merge_event_bounds` in base, `Node.event_bounds()`
+(the per-event companion to the shared `data_edge()`), and a driver
+binding step that asks data nodes for bounds whenever the materialized
+split declares an event policy — refusing loudly when none supplies
+them. All of it is generic leakage-guard machinery (the motivating bug
+was domain, the mechanism is not).
+
+**Decision (proposed).** Port faithfully: `split_policy.py` as a new
+tier-1 module, the base/node/driver hooks per the parent diff (~190
+base lines, ~30 node lines, ~70 driver lines), tests included. This is
+engine-core surgery across three load-bearing files — hence a proposal,
+not an act.
+
+**Consequences.** Splits gain a `policy` knob; documents with
+multi-record events get a principled leakage guard; the parent↔child
+engine diff shrinks to prose. Unblocks migrating the parent's adapter
+onto this engine.
+
+---
+
+## ADR-0025 — Declared-model seam: config-named library classes (PROPOSAL)
+
+**Status:** proposed (2026-08-25) — awaiting owner review
+
+**Context.** The parent completes the config doctrine for deep
+learning: `base.py` gains `library_path_problems` / `import_library_class`
+(plan-time validation of a "name me a class from some library" param),
+the torch pack gains `torch-train` / `torch-predict` (`DeclaredTrain` /
+`DeclaredPredict` — the DOCUMENT names the `nn.Module`), transformers
+gains `transformers-fit`, and `trainlog.py` records per-epoch
+`TrainingCurve` + probability metrics (logloss/brier/ECE reusing the
+metrics module). Today dskit's torch/transformers packs require a
+subclass per model — code where the doctrine says config.
+
+**Decision (proposed).** Port the seam + the three kinds + `trainlog`
+faithfully (torch pack ~665 → ~1,384 lines; transformers +194;
+trainlog ~300 + tests).
+
+**Consequences.** Model swaps become config edits; sklearn (already
+declared via `estimator`) and torch reach parity. Registry grows
+13 → 16.
+
+---
+
+## ADR-0026 — Report renderer parity (PROPOSAL)
+
+**Status:** proposed (2026-08-25) — awaiting owner review
+
+**Context.** The parent's `run-report` renders what dskit's cannot:
+CSV export beside the markdown, bounded tables (`max_rows`/`skip` with
+explicit truncation notes — silent truncation reads as coverage), and
+ledger/rate table helpers (~1,090 extra lines). Most is generic
+rendering; two helpers (trade rows, per-instrument hit rate) sit at
+the trading-genre boundary.
+
+**Decision (proposed).** Port the generic renderers (CSV, bounded
+tables, truncation notes, fixed-table helpers). Boundary question for
+the owner: take the ledger/hit-rate helpers too (any position-taking
+child wants them; a non-trading project ignores them), or leave them
+child-side behind a renderer hook.
+
+**Consequences.** Evidence reports become spreadsheet-consumable and
+honestly bounded. Lowest urgency of the three proposals.

@@ -11,9 +11,8 @@ traceback.
 Execution is the single-pass DAG (spec §7: no clock = plan, run each
 node once, done). A document with a ``clock`` refuses to run — clocked
 execution is pending the I-222 A/B ruling; ``plan``/``validate`` still
-work on it. ``trailing`` splits refuse at resolve for the same reason:
-their materialization needs the data's edge, which arrives with the
-adapter kinds (I-223).
+work on it. ``trailing`` splits materialize here, from the data's edge
+(:meth:`Node.data_edge`); only ``train_days != "all-prior"`` refuses.
 
 Per node, the uniform lifecycle (D-145 ruling 4)::
 

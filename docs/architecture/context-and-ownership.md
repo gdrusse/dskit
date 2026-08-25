@@ -111,17 +111,14 @@ recorded as ADRs; unresolved ones are open questions.
 
 | Object | Package 2 view | Package 1 view | Boundary | Resolution |
 |---|---|---|---|---|
-| **Source** | "Source Registration" (operational onboarding) | "Source Registry" (authoritative catalog) | Two registries or one? | ⚠️ open — [OQ-1](open-questions.md#oq-1) |
+| **Source** | "Source Registration" (operational onboarding) | "Source Registry" (authoritative catalog) | Two registries or one? | P2's registration is operational; P1 holds the authoritative catalog — [ADR-0003](decision-log.md#adr-0003--package-2s-registration-of-a-source-is-operational-package-1-holds-the-authoritative-catalog) (closed OQ-1) |
 | **DatasetVersion** | "Dataset Version **Creation**" + PublishedDataset | "Dataset Version **Registry**" (record of truth) | Who creates vs. records? | P2 **creates & publishes**; P1 **registers**. Publication event is the handoff — [ADR-0002](decision-log.md#adr-0002--datasetversion-is-created-in-package-2-registered-in-package-1) |
 | **Lineage** | "Onboarding Lineage" (LineageRecord) | "Lineage Registry" (global LineageRelationship graph) | How do they compose? | Layered: P2 emits onboarding-phase lineage; P1 holds the global graph; pipeline emits execution lineage — [ADR-0004](decision-log.md#adr-0004--lineage-is-layered-onboarding--execution--global-graph) |
 | **RunObservation / Artifact / Output** | — | owned by P1 | How does the engine populate them? | Pipeline **pushes**; P1 observes, never manages — [ADR-0005](decision-log.md#adr-0005--package-1-observes-execution-it-never-triggers-it) |
-| **Feature / Target** | excluded ("no feature engineering") | registries owned, but "does not own feature engineering" | Who computes and registers them? | ⚠️ open — [OQ-3](open-questions.md#oq-3) |
+| **Feature / Target** | excluded ("no feature engineering") | registries owned, but "does not own feature engineering" | Who computes and registers them? | pipeline computes; P1 observes via the file seam — [ADR-0008](decision-log.md#adr-0008--pipelineassets-observation-is-file-based-no-imports-either-way) (closed OQ-3) |
 
-## 6. What this map does **not** yet settle
+## 6. Everything this map deferred is now settled
 
-Deferred to [open-questions.md](open-questions.md): the authoritative Source owner
-(OQ-1), the sync mechanism across the P2→P1 handoff (OQ-2), where features/targets
-are computed and registered (OQ-3), shared vs. per-package storage (OQ-4), whether
-`DatasetVersion`/`FeatureVersion` identity reuses the pipeline's canonical-hash
-model (OQ-5), where forecasts live (OQ-6), and how entities are defined and mapped
-onto onboarded datasets (OQ-7).
+OQ-1…OQ-7 are all closed — see [open-questions.md](open-questions.md) for
+each ruling's ADR. This map predates those closures; where a row above and
+an ADR disagree, the ADR wins.
