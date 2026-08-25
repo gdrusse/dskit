@@ -605,6 +605,21 @@ DOC_SPLIT_KINDS = {
 _DATE_OK = r"^\d{4}-\d{2}-\d{2}$"
 
 
+def _date_problem(value) -> bool:
+    """True when ``value`` is not a REAL calendar date. The regex alone
+    let a 2026-02-30 through `validate` to crash mid-plan at run (the
+    skeptic pass) — fail-loudly-at-validate is the document doctrine."""
+    if not re.match(_DATE_OK, value):
+        return True
+    from datetime import date
+
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return True
+    return False
+
+
 @dataclass(frozen=True, slots=True)
 class WalkForwardSpec:
     """Rolling-origin evaluation, declared (ADR-0027): K fold CUTOFFS
@@ -668,13 +683,13 @@ class WalkForwardSpec:
                 not isinstance(self.folds, (list, tuple))
                 or not self.folds
                 or any(
-                    not isinstance(f, str) or not re.match(_DATE_OK, f)
-                    for f in self.folds
+                    not isinstance(f, str) or _date_problem(f) for f in self.folds
                 )
             ):
                 errors.append(
-                    "walkforward.folds must be a non-empty list of "
-                    f"'YYYY-MM-DD' cutoffs, got {self.folds!r}"
+                    "walkforward.folds must be a non-empty list of REAL "
+                    f"'YYYY-MM-DD' cutoffs (a 2026-02-30 must refuse at "
+                    f"validate, never crash a fold), got {self.folds!r}"
                 )
             elif list(self.folds) != sorted(set(self.folds)):
                 errors.append(
@@ -682,11 +697,9 @@ class WalkForwardSpec:
                     f"duplicates, got {list(self.folds)!r}"
                 )
         elif generated:
-            if not isinstance(self.first, str) or not re.match(
-                _DATE_OK, self.first or ""
-            ):
+            if not isinstance(self.first, str) or _date_problem(self.first or ""):
                 errors.append(
-                    "walkforward.first must be a 'YYYY-MM-DD' cutoff, got "
+                    "walkforward.first must be a REAL 'YYYY-MM-DD' cutoff, got "
                     f"{self.first!r}"
                 )
             _check_int(errors, "walkforward.step_days", self.step_days, ge=1)
@@ -698,6 +711,11 @@ class WalkForwardSpec:
             )
         _check_str(errors, "walkforward.notes", self.notes, non_empty=False)
         _raise_if(errors)
+        if self.folds is not None:
+            # Pin the validated list as a tuple: the frozen spec must not
+            # share a mutable list with whoever built it (or with to_obj's
+            # callers) — object.__setattr__ is the frozen-dataclass door.
+            object.__setattr__(self, "folds", tuple(self.folds))
 
     def fold_cutoffs(self) -> tuple:
         """The fold cutoff dates, ascending, as ``YYYY-MM-DD`` strings."""

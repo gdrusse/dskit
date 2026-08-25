@@ -733,6 +733,9 @@ def test_val_rows_are_scored_into_the_curve_and_the_trainlog_artifact(tmp_path):
     assert out["metrics"]["n_val_rows"] == 12
     assert out["metrics"]["epochs_run"] == PARAMS["epochs"]
     assert out["metrics"]["stopped_early"] == 0
+    # best-epoch bookkeeping still reports without early stopping (the
+    # skeptic pass only removed the unused state CLONE on this path).
+    assert out["metrics"]["best_epoch"] is not None
     log_path = os.path.join(
         os.path.dirname(out["artifact_path"]), "trainlog.json"
     )
@@ -883,6 +886,23 @@ def test_sequence_is_shape_and_a_mismatched_load_refuses(tmp_path):
     other = {"group_by": "entity", "order_by": "t", "lookback": 5}
     node = SeqPredict("sig", {"sequence": other})
     refuses(node, tmp_path, "mismatch on 'sequence'", {"artifact_path": artifact})
+
+
+def test_declaring_sequence_over_a_flat_artifact_refuses_by_name(tmp_path):
+    """The skeptic finding: disagreement-by-ABSENCE. A flat-trained
+    artifact loaded under a declared sequence block used to restore
+    'cleanly' and serve the OLDEST window row's prediction — silently
+    wrong on every call. It must refuse like any other shape mismatch."""
+    artifact = train(tmp_path, params=DECLARED_PARAMS, cls=DeclaredTrain)[
+        "artifact_path"
+    ]
+    seq = {"group_by": "entity", "order_by": "t", "lookback": 3}
+    node = DeclaredPredict("sig", {"sequence": seq})
+    refuses(node, tmp_path, "trained on flat rows", {"artifact_path": artifact})
+    trainer = DeclaredTrain(
+        "qhat", {**DECLARED_PARAMS, "sequence": seq}, mode="load", artifact=artifact
+    )
+    refuses(trainer, tmp_path, "trained on flat rows")
 
 
 def test_unorderable_sequence_order_values_refuse_by_name(tmp_path):

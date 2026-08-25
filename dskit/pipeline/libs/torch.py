@@ -660,6 +660,19 @@ class _TorchModel(Node):
                         f"artifact sidecar mismatch on {name!r}: trained with "
                         f"{trained[name]!r}, this node declares {self.params[name]!r}"
                     )
+        # Disagreement-by-ABSENCE is a shape mismatch too (skeptic pass):
+        # a node declaring `sequence` over a flat-trained artifact would
+        # otherwise load "cleanly" and feed windows through a flat module —
+        # `out.reshape(-1)[0]` then serves the OLDEST window row's
+        # prediction, silently wrong on every call. (The reverse — a node
+        # declaring nothing — lawfully serves the sidecar's own values;
+        # defaulted knobs like `label` are absent from BOTH sides and never
+        # trip this.)
+        if self.params.get("sequence") is not None and "sequence" not in trained:
+            self._refuse(
+                "this node declares a sequence block but the artifact was "
+                "trained on flat rows — a flat module cannot serve windows"
+            )
         try:
             module = self.build_module(trained)
             state = torch.load(state_path, map_location="cpu", weights_only=True)
@@ -931,9 +944,14 @@ class TorchTrain(_TorchModel):
                 improved = best_val is None or val_loss < best_val - min_delta
                 if improved:
                     best_val, best_epoch, stalled = val_loss, epoch, 0
-                    best_state = {
-                        k: v.detach().clone() for k, v in module.state_dict().items()
-                    }
+                    if early:
+                        # The clone is only ever RESTORED under early
+                        # stopping — without it, cloning a large module
+                        # every improving epoch is pure wasted memory.
+                        best_state = {
+                            k: v.detach().clone()
+                            for k, v in module.state_dict().items()
+                        }
                 else:
                     stalled += 1
                 if early and stalled >= patience:

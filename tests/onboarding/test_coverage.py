@@ -80,6 +80,19 @@ def test_clear_removes_cells_and_whole_units(ledger):
     assert ledger.covered("vendor", "prices", "AAPL") == {}
 
 
+def test_mixed_type_period_sets_cross_the_seam_as_asset_error(ledger):
+    """The skeptic finding: sorting a mixed-type SET before validating
+    its elements raised a raw TypeError — the seam contract is
+    AssetError naming the offender."""
+    with pytest.raises(AssetError, match="periods"):
+        ledger.mark("vendor", "prices", "AAPL", {"2026-01-05", 5})
+
+
+def test_duplicate_periods_collapse_so_mark_counts_cells(ledger):
+    assert ledger.mark("vendor", "prices", "AAPL", [DAYS[0], DAYS[0]]) == 1
+    assert ledger.covered("vendor", "prices", "AAPL") == {DAYS[0]: "fetched"}
+
+
 # -- the pull-list and staleness queries --------------------------------------
 
 

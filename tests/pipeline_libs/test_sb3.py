@@ -287,6 +287,45 @@ def test_eval_reports_episode_metrics_from_the_sidecar_env(tmp_path):
     assert -8.0 <= metrics["mean_reward"] <= 0.0
 
 
+class ClosingEnv(TinyEnv):
+    """TinyEnv that records every close() — the leak probe."""
+
+    closes = []
+
+    def close(self):
+        type(self).closes.append(True)
+        super().close()
+
+
+def test_train_closes_the_env_even_when_construction_fails(tmp_path):
+    """The skeptic finding: a failed construction/learn must not leak the
+    child environment's resources — the env closes on every exit."""
+    ClosingEnv.closes = []
+    params = {
+        **PARAMS,
+        "env": "tests.pipeline_libs.test_sb3:ClosingEnv",
+        "algo_params": {"bogus_knob": 1},
+    }
+    with pytest.raises(ValueError, match="rejected its construction"):
+        train(tmp_path, params=params)
+    assert ClosingEnv.closes == [True]
+
+
+def test_eval_pins_algo_and_policy_against_the_sidecar(tmp_path):
+    """The skeptic finding: the eval's algo/policy pin was dead — the
+    names were absent from its allowed params, so the cross-check could
+    never fire. Declaring them now pins the model identity."""
+    artifact = train(tmp_path)["artifact_path"]
+    node = Sb3Eval("score", {"split": "val", "n_episodes": 1, "algo": "SAC"})
+    refuses(node, tmp_path, "mismatch on 'algo'", {"artifact_path": artifact})
+    ok = Sb3Eval(
+        "score",
+        {"split": "val", "n_episodes": 1, "algo": "PPO", "policy": "MlpPolicy"},
+    )
+    out = ok.run(ctx(tmp_path, "pinned-eval"), {"artifact_path": artifact})
+    assert math.isfinite(out["metrics"]["mean_reward"])
+
+
 def test_eval_can_declare_its_own_env_and_refuses_without_artifact(tmp_path):
     artifact = train(tmp_path)["artifact_path"]
     node = Sb3Eval(

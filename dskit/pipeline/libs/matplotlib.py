@@ -295,6 +295,12 @@ class DeclaredFigure(FigureNode):
         for i, mark in enumerate(marks):
             color = mark.get("color", PALETTE[i])  # fixed order, never cycled
             label = mark.get("label")
+            if label is None and len(marks) >= 2:
+                # Identity is never color-alone: with two or more marks a
+                # legend MUST have entries, so an unlabeled mark defaults
+                # to the field it draws (calling legend() with no labeled
+                # artists just warns and renders nothing — skeptic pass).
+                label = mark.get("y", mark["x"])
             labeled = labeled or label is not None
             xs, ys, skipped = self._series(mark, rows)
             totals["n_points"] += len(xs)
@@ -336,7 +342,7 @@ class DeclaredFigure(FigureNode):
             axis.set_ylabel(params["ylabel"])
         axis.grid(True, alpha=0.25, linewidth=0.5)  # recessive, behind marks
         axis.set_axisbelow(True)
-        if len(marks) >= 2 or labeled:
+        if labeled:
             axis.legend(loc="best")  # identity is never color-alone
         figure.tight_layout()
         self._metrics = totals

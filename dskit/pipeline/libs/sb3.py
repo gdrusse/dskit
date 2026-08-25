@@ -339,32 +339,36 @@ class Sb3Train(_Sb3Base):
         total = self.params["total_timesteps"]
         algo_cls = self._resolve_algo(self.key, algo_name)
         env = self._build_env(env_ref, env_params)
-        try:
-            model = algo_cls(
-                policy,
-                env,
-                seed=seed,
-                verbose=0,
-                **self.params.get("algo_params", {}),
+        try:  # the env closes on EVERY exit — a child env may hold real
+            # resources (readers, subprocess simulators), and a failed
+            # learn() in a retrying fold loop must not leak them.
+            try:
+                model = algo_cls(
+                    policy,
+                    env,
+                    seed=seed,
+                    verbose=0,
+                    **self.params.get("algo_params", {}),
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"{self.key}: {algo_name}({policy!r}, {env_ref}) rejected "
+                    f"its construction: {exc}"
+                ) from exc
+            model.learn(total_timesteps=total, progress_bar=False)
+            artifact_path = self._save_artifact(
+                ctx,
+                model,
+                {
+                    "algo": algo_name,
+                    "policy": policy,
+                    "env": env_ref,
+                    "env_params": env_params,
+                    "seed": seed,
+                },
             )
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"{self.key}: {algo_name}({policy!r}, {env_ref}) rejected its "
-                f"construction: {exc}"
-            ) from exc
-        model.learn(total_timesteps=total, progress_bar=False)
-        artifact_path = self._save_artifact(
-            ctx,
-            model,
-            {
-                "algo": algo_name,
-                "policy": policy,
-                "env": env_ref,
-                "env_params": env_params,
-                "seed": seed,
-            },
-        )
-        env.close()
+        finally:
+            env.close()
         self.log.info(
             "trained %s(%s) on %s for %d timestep(s), seed %d -> %s",
             algo_name,
@@ -462,16 +466,20 @@ class Sb3Eval(_Sb3Base):
     outputs = ("metrics",)
 
     _PARAMS = (
+        "algo",
         "artifact",
         "deterministic",
         "env",
         "env_params",
         "n_episodes",
+        "policy",
         "seed",
         "split",
     )
     #: An eval lawfully measures on an env OTHER than the training one —
-    #: only the model's identity must match the artifact.
+    #: only the model's identity must match the artifact. ``algo``/
+    #: ``policy`` are therefore declarable HERE (the pin), while ``env``/
+    #: ``env_params`` are exempt from the sidecar cross-check.
     _SIDECAR_CHECK = ("algo", "policy")
 
     @classmethod
@@ -486,6 +494,10 @@ class Sb3Eval(_Sb3Base):
                 f"split must declare which split this node reads "
                 f"('train'/'val'/'test'), got {params.get('split')!r}"
             )
+        _algo_problem(problems, params.get("algo"), required=False)
+        policy = params.get("policy")
+        if policy is not None and (not isinstance(policy, str) or not policy):
+            problems.append(f"policy must be a non-empty string, got {policy!r}")
         artifact = params.get("artifact")
         if artifact is not None and (not isinstance(artifact, str) or not artifact):
             problems.append(

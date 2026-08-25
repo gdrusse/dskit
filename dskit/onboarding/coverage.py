@@ -82,16 +82,29 @@ def _check_cell(errors, name, value):
 
 
 def _check_periods(errors, name, periods):
+    """The validated, DEDUPLICATED periods — or ``()`` with errors.
+
+    Elements are checked BEFORE any sort: sorting a mixed-type set first
+    raised a raw ``TypeError`` across the seam instead of an
+    ``AssetError`` naming the offender (skeptic pass). Duplicates
+    collapse (order-preserving) so ``mark``'s return honestly counts
+    CELLS, never repeats of one.
+    """
     if not isinstance(periods, (list, tuple, set, frozenset)) or not periods:
         errors.append(
             f"{name} must be a non-empty collection of period strings, "
             f"got {periods!r}"
         )
         return ()
-    ordered = sorted(periods) if isinstance(periods, (set, frozenset)) else periods
-    for period in ordered:
+    items = list(periods)
+    before = len(errors)
+    for period in items:
         _check_cell(errors, f"{name}[]", period)
-    return tuple(ordered)
+    if len(errors) > before:
+        return ()
+    if isinstance(periods, (set, frozenset)):
+        items = sorted(items)  # sets have no order; give them a stable one
+    return tuple(dict.fromkeys(items))
 
 
 def _chunks(values, size=_MAX_IN):
@@ -232,23 +245,32 @@ class CoverageLedger:
                 checked.extend(_check_periods(errors, "periods", periods))
 
         self._scope(source, stream, _extra)
+        import sqlite3
+
         removed = 0
-        if periods is None:
-            cur = self._execute(
-                "DELETE FROM coverage WHERE source = ? AND stream = ? AND unit = ?",
-                (source, stream, unit),
-            )
-            removed = cur.rowcount
-        else:
-            for chunk in _chunks(checked):
-                holes = ",".join("?" * len(chunk))
-                cur = self._execute(
-                    "DELETE FROM coverage WHERE source = ? AND stream = ? "
-                    f"AND unit = ? AND period IN ({holes})",
-                    (source, stream, unit, *chunk),
-                )
-                removed += cur.rowcount
-        self._connection().commit()
+        conn = self._connection()
+        try:
+            with conn:  # ONE transaction per call — an error mid-chunk must
+                # roll back, never leave half the deletes pending for the
+                # next mark()'s commit to adopt (skeptic pass).
+                if periods is None:
+                    cur = conn.execute(
+                        "DELETE FROM coverage WHERE source = ? AND stream = ? "
+                        "AND unit = ?",
+                        (source, stream, unit),
+                    )
+                    removed = cur.rowcount
+                else:
+                    for chunk in _chunks(checked):
+                        holes = ",".join("?" * len(chunk))
+                        cur = conn.execute(
+                            "DELETE FROM coverage WHERE source = ? AND "
+                            f"stream = ? AND unit = ? AND period IN ({holes})",
+                            (source, stream, unit, *chunk),
+                        )
+                        removed += cur.rowcount
+        except sqlite3.Error as exc:
+            raise AssetError([f"coverage ledger {self.path!r}: {exc}"]) from exc
         return removed
 
     # -- queries -----------------------------------------------------------

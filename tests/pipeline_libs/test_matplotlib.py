@@ -145,6 +145,39 @@ def test_filename_and_dpi_are_honored(tmp_path):
     assert os.path.basename(out["figure_path"]) == "curve.png"
 
 
+def test_unlabeled_multi_mark_figures_get_default_labels_and_a_legend():
+    """The skeptic finding: legend() over zero labeled artists warns and
+    renders nothing — with two or more marks, unlabeled marks default to
+    the field they draw, so identity is never color-alone."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    node = DeclaredFigure(
+        "fig",
+        {
+            "marks": [
+                {"kind": "line", "x": "t", "y": "a"},
+                {"kind": "line", "x": "t", "y": "b"},
+            ]
+        },
+    )
+    figure = node.build_figure({"rows": rows()}, node.params)
+    try:
+        legend = figure.axes[0].get_legend()
+        assert legend is not None
+        assert [t.get_text() for t in legend.get_texts()] == ["a", "b"]
+    finally:
+        plt.close(figure)
+    single = DeclaredFigure("fig", {"marks": [{"kind": "line", "x": "t", "y": "a"}]})
+    figure = single.build_figure({"rows": rows()}, single.params)
+    try:
+        assert figure.axes[0].get_legend() is None  # one series needs no box
+    finally:
+        plt.close(figure)
+
+
 # -- the subclass base ---------------------------------------------------------
 
 

@@ -226,10 +226,12 @@ def test_walk_forward_runs_each_fold_and_aggregates(tmp_path):
     assert result.state == "ran"
     assert result.exit_code == 0
     assert [f["cutoff"] for f in result.folds] == ["2025-01-01", "2025-02-01"]
-    # The probe's score IS each fold's train_end_ms — pinned arithmetic.
+    # The probe's score IS each fold's train_end_ms — pinned arithmetic:
+    # half-open cuts, so train ends 1ms BEFORE the cutoff instant (the
+    # cutoff day validates, never trains).
     from dskit.pipeline.driver import _cutoff_ms
 
-    expected = [float(_cutoff_ms(c)) for c in ("2025-01-01", "2025-02-01")]
+    expected = [float(_cutoff_ms(c) - 1) for c in ("2025-01-01", "2025-02-01")]
     assert [f["score"] for f in result.folds] == expected
     assert result.aggregate["n_scored"] == 2
     assert result.aggregate["best_cutoff"] == "2025-01-01"  # select=min
@@ -256,8 +258,10 @@ def test_walk_forward_generated_schedule_and_embargo_cuts(tmp_path):
     cuts = read_json(result.folds[0]["run_dir"], "resolved.json")["splits"]
     c = _cutoff_ms("2025-01-01")
     assert cuts["val_start_ms"] == c
-    assert cuts["train_end_ms"] == c - 3 * DAY
-    assert cuts["val_end_ms"] == c + 7 * DAY
+    # Half-open both ways: a 3-day embargo excludes exactly 3 midnight
+    # stamps, a 7-day val window holds exactly 7.
+    assert cuts["train_end_ms"] == c - 3 * DAY - 1
+    assert cuts["val_end_ms"] == c + 7 * DAY - 1
 
 
 def test_a_halted_fold_is_a_result_and_later_folds_still_run(tmp_path):
@@ -282,6 +286,62 @@ def test_an_unreadable_objective_is_a_fold_error_that_stops_the_plan(tmp_path):
     assert result.exit_code == 1
     assert result.folds[0]["state"] == "error"
     assert len(result.folds) == 1  # the plan stopped at the erroring fold
+
+
+def test_fold_boundary_membership_is_embargo_invariant():
+    """The skeptic finding: the record stamped AT the cutoff instant must
+    land in val with and without an embargo, and a val_days window must
+    hold exactly val_days midnight stamps either way."""
+    from dskit.pipeline.driver import _cutoff_ms, _fold_splits
+
+    c = _cutoff_ms("2025-01-01")
+    plain = _fold_splits(wf_spec(), "2025-01-01")
+    banded = _fold_splits(wf_spec(embargo_days=3), "2025-01-01")
+    for cuts in (plain, banded):
+        assert cuts.split_of(_Rec(c)) == "val"  # the cutoff day validates
+        assert cuts.split_of(_Rec(c + 7 * DAY - 1)) == "val"
+        assert cuts.split_of(_Rec(c + 7 * DAY)) != "val"  # half-open window
+    assert plain.split_of(_Rec(c - 1)) == "train"
+    # The 3-day embargo excludes exactly the 3 midnight stamps before it.
+    for d in (1, 2, 3):
+        assert banded.split_of(_Rec(c - d * DAY)) is None
+    assert banded.split_of(_Rec(c - 4 * DAY)) == "train"
+
+
+def test_impossible_calendar_dates_refuse_at_validate():
+    with pytest.raises(ConfigError, match="REAL"):
+        wf_spec(folds=["2026-01-15", "2026-02-30"])
+    with pytest.raises(ConfigError, match="REAL"):
+        wf_spec(folds=None, first="2026-02-30", step_days=7, count=2)
+
+
+def test_the_spec_never_shares_its_folds_list():
+    handed = ["2025-01-01", "2025-02-01"]
+    spec = wf_spec(folds=handed)
+    handed.append("2025-03-01")  # the builder's list is not the spec's
+    assert spec.fold_cutoffs() == ("2025-01-01", "2025-02-01")
+    obj = spec.to_obj()
+    obj["folds"].append("2025-04-01")  # nor is to_obj's
+    assert spec.fold_cutoffs() == ("2025-01-01", "2025-02-01")
+
+
+def test_a_refused_fold_is_recorded_and_the_summary_still_lands(tmp_path):
+    """The skeptic finding: run_document RAISES pre-flight refusals (an
+    occupied fold run dir); the loop must record the fold and write the
+    summary rather than discard every completed fold's score."""
+    import shutil
+
+    doc = probe_doc(tmp_path, wf_spec())
+    first = run_walk_forward(doc, asof=ASOF)
+    shutil.rmtree(first.summary_dir)  # the folds stay occupied
+    result = run_walk_forward(doc, asof=ASOF)
+    assert result.state == "error"
+    assert result.exit_code == 1
+    assert result.folds[0]["state"] == "error"
+    assert "already happened" in result.folds[0]["error"]
+    summary = read_json(result.summary_dir, "walkforward.json")
+    assert summary["state"] == "error"
+    assert os.path.isfile(os.path.join(result.summary_dir, "report.md"))
 
 
 def test_missing_section_and_occupied_summary_refuse(tmp_path):

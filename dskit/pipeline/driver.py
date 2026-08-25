@@ -1118,22 +1118,29 @@ def _cutoff_ms(cutoff) -> int:
 
 
 def _fold_splits(spec, cutoff) -> TimeSplitConfig:
-    """The pinned time cuts for one fold: train up to the cutoff (minus
-    the embargo), val = ``[cutoff, cutoff + val_days)``, and a degenerate
-    1ms test band — a walk-forward fold's evaluation window IS its val
-    split (the search doctrine's "objectives read val"), and
+    """The pinned time cuts for one fold, half-open on BOTH boundaries:
+    val is exactly ``[cutoff, cutoff + val_days)`` and train ends strictly
+    BEFORE ``cutoff - embargo_days`` — so for midnight-stamped daily
+    panels the cutoff day validates (never trains), a ``val_days`` window
+    holds exactly ``val_days`` daily stamps, and an ``embargo_days`` band
+    excludes exactly ``embargo_days`` of them, with or without an
+    embargo (the skeptic pass caught the cutoff-instant record training
+    in the no-embargo path and the windows running one stamp long). The
+    1ms test band is degenerate by design — a fold's evaluation window
+    IS its val split (the search doctrine's "objectives read val"), and
     :class:`TimeSplitConfig` requires strictly ascending cuts."""
     cut = _cutoff_ms(cutoff)
-    val_end = cut + spec.val_days * _DAY_MS
+    val_end = cut + spec.val_days * _DAY_MS - 1
+    train_end = cut - spec.embargo_days * _DAY_MS - 1
     if spec.embargo_days:
         return TimeSplitConfig(
-            train_end_ms=cut - spec.embargo_days * _DAY_MS,
+            train_end_ms=train_end,
             val_start_ms=cut,
             val_end_ms=val_end,
             test_end_ms=val_end + 1,
         )
     return TimeSplitConfig(
-        train_end_ms=cut, val_end_ms=val_end, test_end_ms=val_end + 1
+        train_end_ms=train_end, val_end_ms=val_end, test_end_ms=val_end + 1
     )
 
 
@@ -1211,12 +1218,31 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
     folds = []
     state = "ran"
     for cutoff in spec.fold_cutoffs():
-        fold_obj = copy.deepcopy(base_obj)
-        fold_obj["name"] = f"{document.name}-wf-{cutoff}"
-        fold_obj["splits"] = _fold_splits(spec, cutoff).to_obj()
-        fold_doc = PipelineDocument.from_obj(fold_obj)
-        _log.info("walkforward: fold %s -> %s", cutoff, fold_doc.name)
-        result = run_document(fold_doc, asof=asof, registry=registry)
+        try:
+            fold_obj = copy.deepcopy(base_obj)
+            fold_obj["name"] = f"{document.name}-wf-{cutoff}"
+            fold_obj["splits"] = _fold_splits(spec, cutoff).to_obj()
+            fold_doc = PipelineDocument.from_obj(fold_obj)
+            _log.info("walkforward: fold %s -> %s", cutoff, fold_doc.name)
+            result = run_document(fold_doc, asof=asof, registry=registry)
+        except Exception as exc:  # noqa: BLE001 — recorded, then stop
+            # run_document RAISES its pre-flight refusals (an occupied fold
+            # run dir, a missing env name) rather than returning an error
+            # state; letting that propagate here would discard every
+            # completed fold's score and write no summary (skeptic pass).
+            # The promise is "everything up to it is recorded" — so record.
+            folds.append(
+                {
+                    "cutoff": cutoff,
+                    "run_dir": "",
+                    "state": "error",
+                    "score": None,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            state = "error"
+            _log.error("walkforward: fold %s refused: %s", cutoff, exc)
+            break
         fold = {
             "cutoff": cutoff,
             "run_dir": result.run_dir,
@@ -1295,9 +1321,9 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
     lines += ["", "| fold cutoff | state | score | run |", "|---|---|---|---|"]
     for fold in folds:
         score = "—" if fold["score"] is None else f"{fold['score']:.6g}"
+        run_name = os.path.basename(fold["run_dir"]) or "—"
         lines.append(
-            f"| {fold['cutoff']} | {fold['state']} | {score} | "
-            f"`{os.path.basename(fold['run_dir'])}` |"
+            f"| {fold['cutoff']} | {fold['state']} | {score} | `{run_name}` |"
         )
     _atomic_write_text(os.path.join(summary_dir, "report.md"), "\n".join(lines) + "\n")
     return WalkForwardRunResult(
