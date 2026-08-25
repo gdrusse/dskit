@@ -4,7 +4,15 @@ import math
 
 import pytest
 
-from dskit.pipeline.metrics import CLIP, METRICS, brier, logloss, register_metric
+from dskit.pipeline.metrics import (
+    CLIP,
+    METRICS,
+    absolute_error,
+    brier,
+    logloss,
+    register_metric,
+    squared_error,
+)
 from dskit.pipeline.stats import (
     CORRECTIONS,
     benjamini_hochberg,
@@ -37,8 +45,27 @@ class TestMetrics:
         with pytest.raises(ValueError, match="number"):
             brier(True, 1.0)
 
+    def test_regression_rules_take_unbounded_values(self):
+        # ADR-0025: the mark-to-market pair has no [0, 1] frame.
+        assert squared_error(-2.5, 1.5) == pytest.approx(16.0)
+        assert absolute_error(-2.5, 1.5) == pytest.approx(4.0)
+        assert squared_error(3.0, 3.0) == 0.0
+
+    def test_regression_rules_still_refuse_non_finite_values(self):
+        with pytest.raises(ValueError, match="finite"):
+            squared_error(float("inf"), 1.0)
+        with pytest.raises(ValueError, match="finite"):
+            absolute_error(0.0, float("nan"))
+        with pytest.raises(ValueError, match="number"):
+            squared_error(True, 1.0)
+
     def test_registry_and_registration(self):
-        assert set(METRICS) >= {"logloss", "brier"}
+        assert set(METRICS) >= {
+            "logloss",
+            "brier",
+            "squared_error",
+            "absolute_error",
+        }
         with pytest.raises(ValueError, match="already registered"):
             register_metric("logloss", lambda q, y: 0.0)
         with pytest.raises(ValueError, match="non-empty"):

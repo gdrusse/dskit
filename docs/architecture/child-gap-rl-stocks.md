@@ -1,83 +1,81 @@
 # Capability-gap report — rl_stocks as a dskit child
 
-**Verdict: rl_stocks introduces zero new generic gaps — every generic fragment in
-it is covered by dskit (or by pmquant's already-proposed ADRs), and the rest is a
-small child.** Rebuilding it on dskit also retires most of its documented defects,
-because the buggy code paths are exactly the ones dskit replaces.
+**Verdict: five generic gaps, found and CLOSED the same session (ADR-0025
+accepted + ADR-0027…0030 implemented). Everything else is covered by an
+existing dskit mechanism or is child material — and the rebuild retires whole
+defect classes rl_stocks documents against itself.**
 
-Evidence base: full inventory 2026-08-25. rl_stocks is a 1,141-LOC phase-1 scaffold
-(single commit, **zero tests**): Yahoo/GDELT pull → DynamoDB → FinBERT/OHLCV
-preprocessing → joined `(dates, tickers, features)` tensor → S3 → torch Dataset.
-The LSTM forecaster and Gym trading env exist but are unwired; PPO/MIO are absent.
-Its own docs list eight known bugs (broken package imports, inverted trade signs,
-…), most still in the tree; this investigation adds two more — six of eight
-configs are dead (unreferenced by any code, one syntactically invalid) and
-`{}.json` is an unformatted-path artifact.
+Evidence base: full re-inventory 2026-08-25 (four subsystem surveys: data
+layer; features+alpha; RL+simulator+MIO; evaluation+operations) of
+`gdrusse/rl-stocks` — ~66k LOC across 13 subpackages: 22 data sources over a
+SQLite fetch manifest, a 107-feature PIT panel (schema 7.4), FT-Transformer/TFT
+quantile alpha engine with walk-forward validation, an SAC agent
+(stable-baselines3 + gymnasium) over a tax-aware simulator with MIO (pyomo)
+inside `step()`, an evaluation/report stack, and a weekly operations layer.
+**Supersedes** the earlier same-day report, which analyzed a stale 1,141-LOC
+single-commit snapshot.
 
-Separately: **pmquant no longer consumes rl_stocks at all** (pmquant D-147/D-148 —
-the `core/data/stores.py` seam is deleted; a hook merely guards edits). The "shared
-data layer" in pmquant's CLAUDE.md is stale. rl_stocks stands alone.
+## COVERED — the dskit mechanism exists (and retires a documented defect)
 
-## Classification by functional area
+| rl_stocks area | dskit mechanism | defect retired |
+|---|---|---|
+| `BaseDataSource` + 22 source classes; tenacity retry copy-pasted ~12×; three spellings of the pacing knob | `onboarding.Connector` four-verb + `restapi` pack (pagination, auth, retry, `since` — declared) | per-source reimplementation |
+| upsert-in-place parquet, no temp+rename, schema mismatch silently drops history (their I-054) | WORM snapshots, `durable_write_*`, bitemporal records | torn/lost writes |
+| data QA = null-count log lines | declarative validation suites → certify → publish | the QA it never had |
+| open configs: dead keys (`label_resolved_trading_days`, `min_train_years`, `horizons_to_plot`), silently-defaulting `.get()` reads | default-deny documents + params, identity hash | typo → silent default |
+| hand-written 3-stage weekly orchestrator; its config is 3 path strings | the pipeline document (DAG, run dirs, exit codes, `--asof`) | orchestration as code |
+| model factory if/elif + processor wiring hardcoded in `build_features.py` | `uses: "pkg.module:Class"` + kind registries | config never names a class |
+| PIT discipline "trust-based, not enforced" | numpy pack `ArrayMap`/`ArrayFeatures` + the mechanical causality guard | look-ahead by convention |
+| MIO: pyomo + HiGHS/GLPK/CBC cascade + greedy fallback (root docs still say "Gurobi/CPLEX" — stale) | `PyomoSolve` doorway (solver knob, options pass-through) | — |
+| Optuna TPE + SuccessiveHalving with a per-epoch pruning hook | `optuna-search` + `hpo-grid` + the `ctx.rerun` seam (continuous spaces stay planner-refused, documented — a child needing them runs optuna inside its own tier-3 search node) | two fold-declaration mechanisms |
+| two INCOMPATIBLE checkpoint schemas; loader gloms newest-by-mtime; no feature-schema fingerprint checked at load | the torch artifact protocol (sidecar + content hash + refuse-by-name) + `dskit.assets` registry/lineage | silent checkpoint drift |
+| TensorBoard + ad-hoc `summary.json` | `trainlog.json` curves + `run-report` evidence + the tracker sink seam | — |
+| `.env` loading, `setup_logging` | `env.py` + Secrets, per-run `run.log` | — |
+| schema-conformant synthetic panel generator | child code over its own schema (the toolkit's synthetic nodes cover engine demos) | — |
 
-**COVERED** — the dskit mechanism exists.
+## GAP — generic, evidenced, and closed this session
 
-| rl_stocks area | dskit mechanism |
+| the need (rl_stocks evidence) | what shipped |
 |---|---|
-| `base/base.py` `BaseDataSource` (config-validated pull ABC) | `dskit.onboarding.Connector` — the same idea with spec/check/discover/read, default-deny config, checkpoints |
-| `scripts/fetch_and_write.py` (JSON-driven pull → store, `eval`-based class lookup) | `python -m dskit.onboarding acquire` + `pkg.module:Class` connector resolution (no `eval`) |
-| `scripts/preprocess_and_write.py` (JSON-declared reflection stage runner — the repo's most dskit-shaped idea) | a pipeline **document**: same declaration, plus DAG wiring, identity hash, run dirs, default-deny params |
-| `data/database.py` hashing (`generate_article_id` sha-256 composite keys) | content-addressed identity is native: `AssetRecord.version_id`, snapshot Merkle hashes |
-| raw pull persistence + "did I already pull this" | WORM snapshots + per-(source,stream,mode) cursors + hash-keyed dedupe |
-| ad-hoc data QA (none today) | declarative validation suites (`not_null`, `in_range`, `row_count`, `bitemporal`, …) |
-| `preprocessing/joiner.py` (N `{key: {entity: value}}` streams → one dense tensor) | post-ADR-0022: `concat` + `join` over record streams; dense-tensor layout via a `tensor`-role node (`ArrayFeatures` base) |
-| `configs/*.json` as behavior (2 of 8 actually load; one is invalid JSON) | the config IS the interface everywhere, and `validate` refuses a broken one loudly |
-| effective-date vs pull-time confusion (`seendate`→`timestamp` munging) | bitemporal `(effective_date, acquired_at)` on every record, declared not inferred |
+| Declared torch training: `build_model` if/elif; AdamW; early stopping on a val metric with best-weights restore; per-epoch curves; pinball/quantile losses; grad clipping; the `mps→cuda→cpu` cascade duplicated ~10×; multi-resolution lookback windows | **ADR-0025 (accepted)**: `torch-train`/`torch-predict` — the document names the `nn.Module`; optimizer/loss (mse/mae/quantile) knobs, `val_rows` + `early_stopping`, `grad_clip`, `device: "auto"`, the `sequence` window block, `trainlog.json`; `metrics.py` gains `squared_error`/`absolute_error` |
+| Walk-forward: expanding folds from config, a ~30-trading-day structural embargo before each val window, per-fold fresh training + checkpoints, an aggregate gate | **ADR-0027**: the `walkforward` document section + CLI verb (one full run dir per fold + an aggregate summary); `val_start_ms` embargo band on time splits, `embargo_days` on trailing. The finer per-HORIZON graduated label masking stays child-side — its loss owns it |
+| RL: stable-baselines3 SAC over a gymnasium env; bare `.learn()`/`.save()`, no artifact protocol, no eval cadence | **ADR-0028**: the `sb3` pack — `sb3-train` (document names algo + policy + env class), `sb3-policy`, `sb3-eval`; hash-pinned artifacts |
+| Charts: six figures maintained TWICE (matplotlib + plotly, aligned by discipline) plus five more in the alpha engine — no chart spec anywhere | **ADR-0029**: the `matplotlib` pack — `mpl-figure` declared marks + the `FigureNode` base. HTML/plotly parity deliberately out of scope |
+| The fetch manifest: a `(source, ticker, day)` done-set with `no_data` tombstones, gap + refresh-cadence queries, reconcile-from-disk, drift audit — and a DOCUMENTED observation-range-inference blind spot | **ADR-0030**: `onboarding.CoverageLedger` — expected periods are declared by the caller, making that blind spot unrepresentable; `audit`/`reconcile` close the ledger-vs-store loop |
 
-**WRAPPER** — stocks/GDELT/Yahoo logic; belongs in the child.
+## WRAPPER — domain; lives in the child, composing the seams
 
-| rl_stocks area | child wrapper it becomes |
+| rl_stocks area | child shape |
 |---|---|
-| `data/yahoofinance_datasource.py` | `YahooConnector` (yfinance inside `read()`) |
-| `data/gdelt_datasource.py` | `GdeltConnector` (gdeltdoc inside `read()`) |
-| DynamoDB persistence | not needed locally (file/sqlite/parquet stores cover it); if AWS is wanted, a tier-3 `Store` via the `backend="pkg.module:Class"` seam |
-| `preprocessing/text_processing.py` (NER→ticker map→FinBERT) | a `transform`-role node; the ticker map is a `table-file` input, models named in params |
-| `preprocessing/numeric_processing.py` (OHLCV pivot) | a `transform` node; the hardcoded column list becomes a param |
-| `preprocessing/dataset_creation.py` (window/horizon panel dataset) | a `tensor`-role node in the child (windowing params in the document) |
-| `rl/forecasting.py` (shared-LSTM, per-entity heads) | a `TorchTrain` subclass — `build_module(params)` is exactly this seam |
-| `rl/environments.py` `TradingEnv` + future PPO/MIO | child modules behind `capital`-role nodes (`PyomoSolve` base for the MIO guardrail) |
-| `configs/stocks_mapping.json`, universe lists | child configs / `table-file` inputs |
+| Yahoo/Polygon/FRED/SEC-EDGAR/FINRA/issuer-CSV pulls | `restapi` configs where the API is plain; four-verb connector classes where it is not (FINRA client-credentials, Schwab OAuth refresh) |
+| feature/target processors' finance semantics (67→107 features, dividends, PIT shifts) | `ArrayMap`/`ArrayFeatures` subclasses + `derive`/`join`/`table-file` |
+| the six model families (TFT, FT-Transformer, GRU, TCN, …) and the multi-resolution collate | `nn.Module` classes the declared seam names; a `TorchTrain` subclass where the `sequence` block is too simple |
+| simulator: lot ledger, wash sale (IRC §1091), Almgren-Chriss, dividends, reward terms, tax engine | child engines behind `capital`/`score` nodes |
+| the gymnasium env wrapping the simulator | exactly the class `sb3-train` names |
+| defensive-loop statistics (IC/ICIR trust, Page-Hinkley, Ledoit-Wolf, robust QP) | child math (sklearn/scipy inside `run()`); the calibration/stats pack stays a below-the-line candidate (pmquant report) |
+| Schwab read-only client, `portfolio.json`, lot store, sector map, recommendation-report content | child modules; tables as `table-file` inputs; rendering via `run-report` + `mpl-figure` |
 
-**GAP** — none new. The only generic-shaped code dskit lacks an exact home for is
-the panel **windowing** utility (lookback/horizon slicing in `dataset_creation.py`)
-— subsumed by the ADR-0025 discussion (declared torch training needs a loader
-story); not worth its own ADR from this repo's evidence alone.
+## Below the line (no ADR yet — say the word)
 
-## rl_stocks as a thin child — sketch
+- **restapi OAuth2 token-endpoint strategy** — FINRA client-credentials +
+  Schwab refresh are the second and third vendor with the same shape; today
+  each is a small child connector.
+- **Grouped rank-correlation (cross-sectional IC)** as a shipped
+  metric/stat helper — structurally generic, child-computable today.
+- **ADR-0024 (event bounds) / ADR-0026 (report tables)** stay proposed:
+  rl_stocks' leakage need is covered by the embargo; its report need by
+  `run-report` + the figure pack.
 
-`children/rl_stocks/` per ADR-0021:
+## rl_stocks as a thin child — sketch (revised)
 
-```
-children/rl_stocks/
-├── pyproject.toml            # depends on dskit[torch,numpy]; yfinance/gdeltdoc/transformers free
-├── rl_stocks/
-│   ├── __init__.py           # import = registration of the node kinds below
-│   ├── connectors.py         # YahooConnector + GdeltConnector (four-verb; heavy imports in read())
-│   ├── nodes_text.py         # rl-news-score: NER → ticker map (table input) → FinBERT sentiment
-│   ├── nodes_panel.py        # rl-panel: join/pivot streams → (dates, tickers, features) tensor + windows
-│   ├── forecaster.py         # shared-LSTM per-entity-head module as a TorchTrain subclass
-│   ├── env.py                # TradingEnv (sign conventions FIXED in the rewrite)
-│   └── allocate.py           # the PPO/MIO guardrail when built, behind a capital node
-├── configs/
-│   ├── source-yahoo.json, source-gdelt.json
-│   ├── suite-prices.json     # rows arrived, close not-null, bitemporal — the QA it never had
-│   ├── asset-model.json      # dataset / model-checkpoint / allocation kinds
-│   ├── tickers.json          # the ticker↔alias map, loaded via table-file
-│   └── run-forecast.json     # pull → score → panel → train → validate document
-└── tests/                    # connector conformance + node conformance + config validation
-```
+`children/rl_stocks/` per ADR-0021: `connectors.py` (REST configs + the two
+OAuth connectors), `processors.py` (ArrayFeatures subclasses per feature
+family), `models.py` (the module zoo `torch-train` names), `env.py` (the
+gymnasium wrapper `sb3-train` names), `simulator/` + `tax/` (the domain
+engines), `nodes_capital.py` (`MIOAllocator` on `PyomoSolve`), `configs/`
+(universe/sector/fee tables as `table-file`; the alpha document WITH a
+`walkforward` section; the SAC document; suites; the asset model), `tests/`.
 
-Migration note: this is a **rebuild on the seams, not a port** — at 1,141 LOC with
-zero tests and phase-1 scope, wrapping the existing files as-is would preserve the
-broken imports and dead configs. The child above is smaller than the original and
-inherits testing, identity, provenance, and bitemporality for free.
+Migration note: still a **rebuild on the seams, not a port** — the paths dskit
+replaces are exactly the documented-buggy ones (write atomicity, checkpoint
+drift, dead config keys, the stale S3/DynamoDB inspection tooling).

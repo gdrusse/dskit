@@ -602,7 +602,9 @@ onto this engine.
 
 ## ADR-0025 — Declared-model seam: config-named library classes (PROPOSAL)
 
-**Status:** proposed (2026-08-25) — awaiting owner review
+**Status:** accepted (2026-08-25) — owner directive: ensure the generic
+bones for rl_stocks (`child-gap-rl-stocks.md`); scoped, see the
+implementation note below
 
 **Context.** The parent completes the config doctrine for deep
 learning: `base.py` gains `library_path_problems` / `import_library_class`
@@ -621,6 +623,21 @@ trainlog ~300 + tests).
 **Consequences.** Model swaps become config edits; sklearn (already
 declared via `estimator`) and torch reach parity. Registry grows
 13 → 16.
+
+**Implementation note (2026-08-25).** The parent repo is not reachable
+from this session, so the seam was implemented FRESH against this ADR's
+contract, not ported: `torch-train`/`torch-predict` (the document names
+the `nn.Module` by import path; artifact sidecar pins it), `trainlog.py`
+(per-epoch `TrainingCurve`, written as a run artifact), and the training
+loop the rl_stocks evidence demands — optimizer choice, loss choice
+(mse/mae/quantile), optional `val_rows` + early stopping with
+best-weights restore, gradient clipping, `device: "auto"`, and a
+`sequence` block (per-entity lookback windows — the loader story both
+gap reports flagged). `metrics.py` gains the generic regression rules
+`squared_error`/`absolute_error`. The `transformers-fit` half is
+DEFERRED (no consumer evidence beyond the parent; revisit when a child
+needs it). Registry stays 13 — packs register explicitly, never on
+import.
 
 ---
 
@@ -643,3 +660,129 @@ child-side behind a renderer hook.
 
 **Consequences.** Evidence reports become spreadsheet-consumable and
 honestly bounded. Lowest urgency of the three proposals.
+
+---
+
+## ADR-0027 — Walk-forward evaluation: `walkforward` section + embargoed time splits
+
+**Status:** accepted (2026-08-25) — owner directive: ensure the generic
+bones for rl_stocks (`child-gap-rl-stocks.md`)
+
+**Context.** The rl_stocks re-inventory shows its alpha engine's whole
+validation methodology is rolling-origin evaluation: K fold cutoffs, an
+expanding train window, a structural embargo (train ends a horizon
+before validation starts, so unresolved labels cannot leak), per-fold
+fresh training, and an aggregate gate over per-fold scores. dskit's
+splits are single-cut families, and the search seam overrides node
+PARAMS only — time is not reachable, so a document cannot declare this
+experiment shape. The mechanism is generic leakage-aware evaluation for
+any autocorrelated panel; only the motivating labels are domain.
+
+**Decision.** Two additive pieces. (1) `TimeSplitConfig` gains optional
+`val_start_ms`: records in `(train_end_ms, val_start_ms)` belong to NO
+split (`split_of` → `None` — the embargo band); `TrailingSplitSpec`
+gains `embargo_days`, materializing that band. Absent, semantics are
+unchanged. (2) A top-level `walkforward` document section — folds (an
+explicit cutoff list or `{first, step_days, count}`), `val_days`,
+`embargo_days`, `objective` (a `$node.path` into a score output),
+`select` — hashed as identity, plus `run_walk_forward` in the driver
+and a CLI verb: one derived document per fold (splits replaced by that
+fold's pinned cuts), each through `run_document` — a full run dir per
+fold — and an aggregate summary (per-fold scores, mean/std, states). A
+fold that halts is recorded, not fatal; a fold that errors aborts.
+
+**Consequences.** Walk-forward becomes a declared experiment, not a
+script; every fold is an ordinary reproducible run. The rerun seam is
+untouched. Train windows are expanding ("all-prior") in v1 — bounded
+train joins the I-223 restriction. ADR-0024 (event bounds) stays
+proposed: the embargo covers rl_stocks' need; the finer per-event
+policy machinery still awaits the parent port.
+
+---
+
+## ADR-0028 — `sb3`: declared RL training pack (tier 2)
+
+**Status:** accepted (2026-08-25) — owner directive, as above
+
+**Context.** rl_stocks' RL layer is stable-baselines3 + gymnasium end
+to end — `SAC("MultiInputPolicy", env).learn().save()` with a
+hand-written save path, no artifact protocol, no eval cadence; the env
+is a domain simulator behind the gymnasium API. Everything there but
+the env is generic RL plumbing any sequential-decision project
+rewrites. The torch pack already answers "the document names the
+model" for supervised learning; RL has no doorway.
+
+**Decision.** A tier-2 pack `libs/sb3.py`: `sb3-train` (role `train`)
+— the DOCUMENT names the algorithm (resolved from stable_baselines3 by
+name at run), the policy, and the ENVIRONMENT class by import path
+(`env: "pkg.module:Class"` + `env_params` handed to its constructor
+verbatim, the pyomo `solver_options` precedent), trains
+`total_timesteps` under a recorded seed, and saves SB3's model.zip
+plus a hash-pinned sidecar (the torch pack's artifact discipline).
+`sb3-policy` (role `signal`) restores a pinned artifact into an
+`act(obs)` signal, refusing mismatches by name. `sb3-eval` (role
+`score`) runs `evaluate_policy` over the declared env for n episodes.
+Heavy imports inside `run()`; nothing registers on import.
+
+**Consequences.** An RL project writes its env (domain) and a config;
+training/eval/artifact plumbing stops being child code. Determinism is
+best-effort per SB3's own guarantees — recorded, never promised.
+
+---
+
+## ADR-0029 — `matplotlib`: declared-figure report pack (tier 2)
+
+**Status:** accepted (2026-08-25) — owner directive, as above
+
+**Context.** Both children hand-roll chart rendering: rl_stocks
+maintains six evaluation figures TWICE (matplotlib for PNG, plotly for
+HTML, aligned only by discipline) plus five more in its alpha engine;
+pmquant's reports do the same dance. The pattern is always "plot named
+numeric fields of a row stream"; nothing about it is domain.
+
+**Decision.** A tier-2 pack `libs/matplotlib.py`: `mpl-figure` (role
+`report`) renders a declared list of `marks` (`line | scatter | bar |
+hist` over named fields of the `rows` input) to a PNG artifact under
+the run dir — title/axis labels/dpi as default-deny params, Agg
+backend, matplotlib imported inside `run()`. An abstract `FigureNode`
+base (hook `build_figure`) carries bespoke figures the declaration
+cannot express.
+
+**Consequences.** Standard evidence charts become config; bespoke
+charts become small subclasses instead of parallel rendering stacks.
+HTML/plotly parity is explicitly out of scope (a second pack if a
+child ever justifies it).
+
+---
+
+## ADR-0030 — Onboarding coverage ledger
+
+**Status:** accepted (2026-08-25) — owner directive, as above
+
+**Context.** Sparse backfills need a finer primitive than the
+per-(source, stream, mode) watermark cursor: rl_stocks' Layer 1 is
+built around a SQLite "fetch manifest" — a per-(source, ticker, day)
+done-set with `fetched`/`no_data` tombstones, gap queries driving what
+to pull next, cadence-based staleness for slow-moving sources,
+reconcile-from-disk, and a drift audit. pmquant's gap report flagged
+the same need below the line ("which-days-pulled fetch manifest"). Two
+children now demand it; nothing in it is domain — units and periods
+are opaque strings.
+
+**Decision.** A tier-1 module `dskit/onboarding/coverage.py`:
+`CoverageLedger`, SQLite-backed (stdlib, imported lazily — the assets
+sqlite-pack template) at a root-owned path, keyed
+`(source, stream, unit, period)` with a closed status vocabulary
+(`fetched` | `no_data`). Queries: `missing(units, periods)` — the
+caller DECLARES the expected periods, the toolkit never guesses a
+calendar; `stale_units(units, cutoff)`; `covered(unit)`. Mutations:
+`mark`, `clear`. Truth checks: `audit(observed)` — the symmetric
+ledger-vs-reality diff — and `reconcile(observed)` to adopt store
+truth. Single-writer per root (the store-seam doctrine). Acquisition
+does not consult it implicitly — the backfill loop drives it.
+
+**Consequences.** Backfill idempotency becomes a platform primitive
+with an honest blind-spot story: expected periods are declared, never
+inferred, so the rl_stocks observation-range-inference bug class is
+unrepresentable. The onboarding root grows one state file; `verify`
+ignores it (state, not evidence).

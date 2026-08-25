@@ -316,6 +316,14 @@ class TimeSplitConfig:
     refuse unsupported kinds at resolve, so the doctrine is enforced where
     the venue is known, not by narrowing the toolkit).
     Strictly ascending by construction — a leaky cut cannot exist.
+
+    ``val_start_ms`` (optional, ADR-0027) opens an EMBARGO band: records
+    in ``(train_end_ms, val_start_ms)`` belong to NO split — the guard
+    for labels that have not resolved by the cut (a record whose outcome
+    is still in flight at ``train_end`` must neither train nor validate).
+    Absent, validation starts right after ``train_end_ms`` — the
+    original semantics, byte for byte (the field is omitted from
+    ``to_obj`` when unset, so existing identities do not move).
     """
 
     train_end_ms: int
@@ -323,6 +331,7 @@ class TimeSplitConfig:
     test_end_ms: int
     kind: str = "time"
     notes: str = ""
+    val_start_ms: object = None
 
     def __post_init__(self):
         errors = []
@@ -336,15 +345,30 @@ class TimeSplitConfig:
                 f"< test_end_ms, got ({self.train_end_ms}, {self.val_end_ms}, "
                 f"{self.test_end_ms})"
             )
+        if self.val_start_ms is not None:
+            _check_int(errors, "splits.val_start_ms", self.val_start_ms, ge=1)
+            if not errors and not (
+                self.train_end_ms < self.val_start_ms <= self.val_end_ms
+            ):
+                errors.append(
+                    "splits.val_start_ms must open an embargo band inside the "
+                    "val window: train_end_ms < val_start_ms <= val_end_ms, "
+                    f"got ({self.train_end_ms}, {self.val_start_ms}, "
+                    f"{self.val_end_ms})"
+                )
         _check_str(errors, "splits.notes", self.notes, non_empty=False)
         _raise_if(errors)
 
     def split_of(self, record):
         """Assign by the record's decision instant (``record.asof_ms``):
-        ``"train"``/``"val"``/``"test"``, or ``None`` beyond the horizon."""
+        ``"train"``/``"val"``/``"test"``, ``None`` beyond the horizon —
+        or ``None`` inside the embargo band when ``val_start_ms`` is set
+        (an embargoed record belongs to NO split, ADR-0027)."""
         t = record.asof_ms
         if t <= self.train_end_ms:
             return "train"
+        if self.val_start_ms is not None and t < self.val_start_ms:
+            return None
         if t <= self.val_end_ms:
             return "val"
         if t <= self.test_end_ms:
@@ -352,13 +376,25 @@ class TimeSplitConfig:
         return None
 
     def to_obj(self) -> dict:
-        return _dataclass_to_obj(self)
+        obj = _dataclass_to_obj(self)
+        if self.val_start_ms is None:
+            # Omitted, not null: the field must not move the identity hash
+            # of every pre-ADR-0027 document.
+            del obj["val_start_ms"]
+        return obj
 
     @classmethod
     def from_obj(cls, obj) -> "TimeSplitConfig":
         _reject_unknown(
             obj,
-            ("kind", "train_end_ms", "val_end_ms", "test_end_ms", "notes"),
+            (
+                "kind",
+                "train_end_ms",
+                "val_start_ms",
+                "val_end_ms",
+                "test_end_ms",
+                "notes",
+            ),
             "splits",
         )
         return cls(
@@ -367,6 +403,7 @@ class TimeSplitConfig:
             test_end_ms=obj.get("test_end_ms", 0),
             kind=obj.get("kind", "time"),
             notes=obj.get("notes", ""),
+            val_start_ms=obj.get("val_start_ms"),
         )
 
 

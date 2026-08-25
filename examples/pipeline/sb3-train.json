@@ -1,0 +1,38 @@
+{
+  "name": "sb3-train-demo",
+  "notes": "The ADR-0028 declared RL doorway. This config VALIDATES as shipped (shape + hash) but running it needs the one thing that is rightly yours: the environment. Replace `env` with your gymnasium.Env subclass's import path (a dskit child's simulator wrapper) and `python -m dskit.pipeline run` it — the algorithm, policy and every constructor knob stay config. sb3-eval measures the pinned artifact over episodes; its `split` declares which split's environment the wired env_params build (the score-role rule search objectives are held to).",
+  "pipeline": {
+    "agent": {
+      "uses": "dskit.pipeline.libs.sb3:Sb3Train",
+      "mode": "train",
+      "params": {
+        "algo": "SAC",
+        "policy": "MlpPolicy",
+        "env": "yourproject.envs:YourTradingEnv",
+        "env_params": {"start": "2020-01-01", "end": "2023-12-31"},
+        "total_timesteps": 5000,
+        "seed": 7,
+        "algo_params": {"buffer_size": 10000, "batch_size": 256}
+      },
+      "notes": "algo_params pass to the SAC constructor verbatim (the pyomo solver_options precedent) — the library's signature is the contract"
+    },
+    "score": {
+      "uses": "dskit.pipeline.libs.sb3:Sb3Eval",
+      "inputs": {"artifact_path": "$agent.artifact_path"},
+      "params": {
+        "split": "val",
+        "env_params": {"start": "2024-01-01", "end": "2024-06-30"},
+        "n_episodes": 5
+      },
+      "notes": "same env class, the VAL period's dates — an eval lawfully measures on a different environment than training; only the model identity must match the artifact"
+    }
+  },
+  "splits": {
+    "kind": "time",
+    "train_end_ms": 1704067200000,
+    "val_end_ms": 1719792000000,
+    "test_end_ms": 1735689600000,
+    "notes": "2024-01-01 / 2024-07-01 / 2025-01-01 — the cuts DOCUMENT the periods the env_params above build; for env-based scoring the split binding is declared, not mechanical (episodes are the env's to generate)"
+  },
+  "outputs": {"run_root": ""}
+}

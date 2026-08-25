@@ -23,6 +23,8 @@ from dskit.pipeline.driver import run_document
 from dskit.pipeline.libs.torch import (
     ARTIFACT_FORMAT,
     NODE_KINDS,
+    DeclaredPredict,
+    DeclaredTrain,
     LinearPredictor,
     LinearRegressor,
     TorchPredict,
@@ -576,6 +578,345 @@ def test_predict_refuses_an_artifact_from_another_family(tmp_path):
     refuses(node, tmp_path, "build_module is not")
 
 
+# -- the declared pair (ADR-0025): the document names the module ---------------
+
+#: A declared param set over the stock ``torch.nn:Linear`` — no subclass
+#: anywhere; the module is config.
+DECLARED_PARAMS = {
+    **PARAMS,
+    "module": "torch.nn:Linear",
+    "module_params": {"in_features": 2, "out_features": 1},
+}
+
+
+def test_declared_train_and_predict_roundtrip(tmp_path):
+    out = train(tmp_path, params=DECLARED_PARAMS, cls=DeclaredTrain)
+    sidecar = json.loads(
+        pathlib.Path(sidecar_path(out["artifact_path"])).read_text(encoding="utf-8")
+    )
+    assert sidecar["module_class"].endswith(":DeclaredTrain")
+    assert sidecar["params"]["module"] == "torch.nn:Linear"
+    node = DeclaredPredict("sig", {})
+    restored = node.run(
+        ctx(tmp_path, "sig-run"), {"artifact_path": out["artifact_path"]}
+    )
+    row = {"x1": 0.3, "x2": 0.7}
+    assert restored["signal"].predict(row) == pytest.approx(
+        out["signal"].predict(row)
+    )
+
+
+@pytest.mark.parametrize(
+    ("override", "needle"),
+    [
+        ({}, "module is required"),
+        ({"module": "not a ref"}, "import path"),
+        ({"module": "torch.nn:Linear", "module_params": "wide"}, "module_params"),
+        ({"module": "torch.nn:Linear", "module_params": {1: 2}}, "module_params"),
+    ],
+)
+def test_declared_param_validation(override, needle):
+    params = {k: v for k, v in DECLARED_PARAMS.items() if k not in ("module",)}
+    params.pop("module_params", None)
+    problems = DeclaredTrain.validate_params({**params, **override})
+    assert any(needle in p for p in problems)
+
+
+def test_declared_predict_module_is_optional_but_shape_checked():
+    assert DeclaredPredict.validate_params({}) == []
+    problems = DeclaredPredict.validate_params({"module": "not a ref"})
+    assert any("import path" in p for p in problems)
+
+
+def test_declared_refuses_a_non_module_class_at_run(tmp_path):
+    params = {**DECLARED_PARAMS, "module": "dskit.pipeline.node:Node"}
+    with pytest.raises(ValueError, match="not a torch.nn.Module"):
+        train(tmp_path, params=params, cls=DeclaredTrain)
+
+
+def test_declared_refuses_ctor_kwargs_the_module_rejects(tmp_path):
+    params = {
+        **DECLARED_PARAMS,
+        "module_params": {"in_features": 2, "out_features": 1, "bogus": 3},
+    }
+    with pytest.raises(ValueError, match="rejected module_params"):
+        train(tmp_path, params=params, cls=DeclaredTrain)
+
+
+def test_declared_load_cross_checks_the_declared_module(tmp_path):
+    artifact = train(tmp_path, params=DECLARED_PARAMS, cls=DeclaredTrain)[
+        "artifact_path"
+    ]
+    node = DeclaredPredict("sig", {"module": "torch.nn:Identity"})
+    refuses(node, tmp_path, "mismatch on 'module'", {"artifact_path": artifact})
+
+
+# -- the training loop (ADR-0025): optimizer, loss, val, early stop, device ----
+
+
+def test_optimizer_choice_changes_the_fit(tmp_path):
+    sgd = train(tmp_path, sub="sgd")
+    adam = train(tmp_path, sub="adam", params={**PARAMS, "optimizer": "adam"})
+    assert not states_equal(
+        state_of(sgd["artifact_path"]), state_of(adam["artifact_path"])
+    )
+
+
+@pytest.mark.parametrize(
+    ("override", "needle"),
+    [
+        ({"optimizer": "sgdd"}, "optimizer"),
+        ({"weight_decay": -0.1}, "weight_decay"),
+        ({"grad_clip": 0}, "grad_clip"),
+        ({"device": ""}, "device"),
+        ({"loss": "huber"}, "loss"),
+        ({"loss_tau": 0.5}, "loss_tau"),  # tau without the quantile objective
+        ({"loss": "quantile", "loss_tau": 1.5}, "loss_tau"),
+        ({"early_stopping": {"patience": 2, "warmup": 1}}, "warmup"),
+        ({"early_stopping": {"min_delta": 0.1}}, "patience"),
+        ({"early_stopping": {"patience": 2, "min_delta": -1}}, "min_delta"),
+        ({"sequence": {"group_by": "g", "order_by": "t"}}, "lookback"),
+        ({"sequence": {"group_by": "g", "order_by": "t", "lookback": 1}}, "lookback"),
+        (
+            {
+                "sequence": {
+                    "group_by": "g",
+                    "order_by": "t",
+                    "lookback": 3,
+                    "stride": 2,
+                }
+            },
+            "stride",
+        ),
+    ],
+)
+def test_loop_param_validation(override, needle):
+    problems = LinearRegressor.validate_params({**PARAMS, **override})
+    assert any(needle in p for p in problems)
+
+
+def test_loss_dispatch_changes_the_fit(tmp_path):
+    mse = train(tmp_path, sub="mse")
+    mae = train(tmp_path, sub="mae", params={**PARAMS, "loss": "mae"})
+    lo = train(
+        tmp_path,
+        sub="q10",
+        params={**PARAMS, "loss": "quantile", "loss_tau": 0.1},
+    )
+    hi = train(
+        tmp_path,
+        sub="q90",
+        params={**PARAMS, "loss": "quantile", "loss_tau": 0.9},
+    )
+    assert not states_equal(
+        state_of(mse["artifact_path"]), state_of(mae["artifact_path"])
+    )
+    assert not states_equal(
+        state_of(lo["artifact_path"]), state_of(hi["artifact_path"])
+    )
+
+
+def test_grad_clip_and_auto_device_still_train_deterministically(tmp_path):
+    params = {**PARAMS, "grad_clip": 1.0, "device": "auto"}
+    first = train(tmp_path, sub="a", params=params)
+    second = train(tmp_path, sub="b", params=params)
+    assert states_equal(
+        state_of(first["artifact_path"]), state_of(second["artifact_path"])
+    )
+
+
+def test_val_rows_are_scored_into_the_curve_and_the_trainlog_artifact(tmp_path):
+    node = LinearRegressor("qhat", dict(PARAMS))
+    out = node.run(
+        ctx(tmp_path), {"rows": make_rows(), "val_rows": make_rows(12)}
+    )
+    assert out["metrics"]["n_val_rows"] == 12
+    assert out["metrics"]["epochs_run"] == PARAMS["epochs"]
+    assert out["metrics"]["stopped_early"] == 0
+    # best-epoch bookkeeping still reports without early stopping (the
+    # skeptic pass only removed the unused state CLONE on this path).
+    assert out["metrics"]["best_epoch"] is not None
+    log_path = os.path.join(
+        os.path.dirname(out["artifact_path"]), "trainlog.json"
+    )
+    curve = json.loads(pathlib.Path(log_path).read_text(encoding="utf-8"))
+    assert len(curve["epochs"]) == PARAMS["epochs"]
+    for row in curve["epochs"]:
+        assert math.isfinite(row["train_loss"])
+        assert math.isfinite(row["val_loss"])
+
+
+def test_trainlog_is_written_without_val_too(tmp_path):
+    out = train(tmp_path)
+    log_path = os.path.join(
+        os.path.dirname(out["artifact_path"]), "trainlog.json"
+    )
+    curve = json.loads(pathlib.Path(log_path).read_text(encoding="utf-8"))
+    assert [row["epoch"] for row in curve["epochs"]] == [0, 1]
+    assert all("val_loss" not in row for row in curve["epochs"])
+
+
+def test_early_stopping_stops_and_ships_the_best_epoch(tmp_path):
+    """Val rows carry the INVERTED relationship, so every real epoch of
+    progress on train makes val WORSE: best val is epoch 0, patience 1
+    stops at epoch 1, and the artifact must hold epoch 0's weights — the
+    same state a one-epoch run of the same seed produces."""
+    params = {**PARAMS, "epochs": 50, "early_stopping": {"patience": 1}}
+    node = LinearRegressor("qhat", dict(params))
+    out = node.run(
+        ctx(tmp_path, "es"),
+        {"rows": make_rows(), "val_rows": make_inverted_rows()},
+    )
+    assert out["metrics"]["best_epoch"] == 0
+    assert out["metrics"]["epochs_run"] == 2
+    assert out["metrics"]["stopped_early"] == 1
+    one_epoch = train(tmp_path, sub="one", params={**PARAMS, "epochs": 1})
+    assert states_equal(
+        state_of(out["artifact_path"]), state_of(one_epoch["artifact_path"])
+    )
+
+
+def test_early_stopping_without_val_rows_is_refused_by_name():
+    params = {**PARAMS, "early_stopping": {"patience": 2}}
+    node = LinearRegressor("qhat", dict(params))
+    problems = node.validate_inputs({"rows": make_rows()})
+    assert any("val_rows" in p for p in problems)
+
+
+def test_val_rows_wire_type_and_empty_val_refusal(tmp_path):
+    node = LinearRegressor("qhat", dict(PARAMS))
+    assert node.validate_inputs({"rows": [], "val_rows": iter(())}) != []
+    with pytest.raises(ValueError, match="no usable val_rows"):
+        node.run(
+            ctx(tmp_path), {"rows": make_rows(), "val_rows": [{"x1": 0.1}]}
+        )
+
+
+# -- sequence windows (ADR-0025): the loader story ------------------------------
+
+
+class _SeqPool:
+    """A tiny window module: mean-pool over time, then linear —
+    ``(B, T, F) -> (B,)``."""
+
+    def build_module(self, params):
+        import torch as _torch
+
+        class MeanPool(_torch.nn.Module):
+            def __init__(self, n_features):
+                super().__init__()
+                self.lin = _torch.nn.Linear(n_features, 1)
+
+            def forward(self, x):
+                return self.lin(x.mean(dim=1)).reshape(-1)
+
+        return MeanPool(len(params["features"]))
+
+
+class SeqTrain(_SeqPool, TorchTrain):
+    """Window trainer of the mean-pool family."""
+
+
+class SeqPredict(_SeqPool, TorchPredict):
+    """Its inference twin."""
+
+
+SEQ_PARAMS = {
+    **PARAMS,
+    "sequence": {"group_by": "entity", "order_by": "t", "lookback": 3},
+}
+
+
+def make_seq_rows(n=12, entities=("a", "b")):
+    rows = []
+    for entity in entities:
+        for t in range(n):
+            x1 = ((t * 3) % 7) / 7.0
+            x2 = ((t * 5 + len(entity)) % 11) / 11.0
+            rows.append(
+                {"entity": entity, "t": t, "x1": x1, "x2": x2, "y": 0.4 * x1 - 0.1 * x2}
+            )
+    return rows
+
+
+def test_sequence_training_windows_and_signal(tmp_path):
+    out = train(tmp_path, params=SEQ_PARAMS, rows=make_seq_rows(), cls=SeqTrain)
+    # 12 rows per entity, lookback 3 -> 10 windows per entity.
+    assert out["metrics"]["n_rows"] == 20
+    assert out["metrics"]["n_skipped"] == 0
+    signal = out["signal"]
+    window = [r for r in make_seq_rows() if r["entity"] == "a"][-3:]
+    p = signal.predict(window)
+    assert p is not None and math.isfinite(p)
+    # More history than lookback: the trailing window serves.
+    assert signal.predict(
+        [r for r in make_seq_rows() if r["entity"] == "a"]
+    ) == pytest.approx(p)
+    assert signal.predict(window[:2]) is None  # not enough history
+    with pytest.raises(TypeError, match="LIST"):
+        signal.predict(window[0])  # a single record is a wiring error
+
+
+def test_sequence_rows_without_place_on_a_timeline_are_counted(tmp_path):
+    rows = make_seq_rows() + [
+        {"t": 99, "x1": 0.1, "x2": 0.2, "y": 0.3},  # no entity
+        {"entity": "a", "x1": 0.1, "x2": 0.2, "y": 0.3},  # no order value
+        {"entity": "a", "t": 50, "x2": 0.2, "y": 0.3},  # gap -> window dropped
+    ]
+    out = train(tmp_path, params=SEQ_PARAMS, rows=rows, cls=SeqTrain)
+    assert out["metrics"]["n_skipped"] >= 3
+
+
+def test_sequence_roundtrips_through_the_predict_doorway(tmp_path):
+    trained = train(tmp_path, params=SEQ_PARAMS, rows=make_seq_rows(), cls=SeqTrain)
+    node = SeqPredict("sig", {})
+    restored = node.run(
+        ctx(tmp_path, "sig-run"), {"artifact_path": trained["artifact_path"]}
+    )
+    window = [r for r in make_seq_rows() if r["entity"] == "b"][-3:]
+    assert restored["signal"].predict(window) == pytest.approx(
+        trained["signal"].predict(window)
+    )
+
+
+def test_sequence_is_shape_and_a_mismatched_load_refuses(tmp_path):
+    artifact = train(
+        tmp_path, params=SEQ_PARAMS, rows=make_seq_rows(), cls=SeqTrain
+    )["artifact_path"]
+    other = {"group_by": "entity", "order_by": "t", "lookback": 5}
+    node = SeqPredict("sig", {"sequence": other})
+    refuses(node, tmp_path, "mismatch on 'sequence'", {"artifact_path": artifact})
+
+
+def test_declaring_sequence_over_a_flat_artifact_refuses_by_name(tmp_path):
+    """The skeptic finding: disagreement-by-ABSENCE. A flat-trained
+    artifact loaded under a declared sequence block used to restore
+    'cleanly' and serve the OLDEST window row's prediction — silently
+    wrong on every call. It must refuse like any other shape mismatch."""
+    artifact = train(tmp_path, params=DECLARED_PARAMS, cls=DeclaredTrain)[
+        "artifact_path"
+    ]
+    seq = {"group_by": "entity", "order_by": "t", "lookback": 3}
+    node = DeclaredPredict("sig", {"sequence": seq})
+    refuses(node, tmp_path, "trained on flat rows", {"artifact_path": artifact})
+    trainer = DeclaredTrain(
+        "qhat", {**DECLARED_PARAMS, "sequence": seq}, mode="load", artifact=artifact
+    )
+    refuses(trainer, tmp_path, "trained on flat rows")
+
+
+def test_unorderable_sequence_order_values_refuse_by_name(tmp_path):
+    rows = make_seq_rows()
+    rows[0] = {**rows[0], "t": "zero"}  # a string amid ints
+    with pytest.raises(ValueError, match="order_by"):
+        train(tmp_path, params=SEQ_PARAMS, rows=rows, cls=SeqTrain)
+
+
+def test_resolve_device_auto_lands_on_a_real_device():
+    device = TorchTrain._resolve_device("auto")
+    assert device.type in ("cpu", "cuda", "mps")
+
+
 # -- registration and the abstract bases ---------------------------------------
 
 
@@ -583,15 +924,24 @@ def test_register_is_explicit_and_idempotent():
     registry = NodeKindRegistry()
     register(registry)
     register(registry)  # idempotent: present names are skipped, never shadowed
-    assert registry.kinds() == ("torch-linear-predict", "torch-linear-train")
+    assert registry.kinds() == (
+        "torch-linear-predict",
+        "torch-linear-train",
+        "torch-predict",
+        "torch-train",
+    )
     assert registry.get("torch-linear-train") == (LinearRegressor, False)
     assert registry.get("torch-linear-predict") == (LinearPredictor, False)
+    assert registry.get("torch-train") == (DeclaredTrain, False)
+    assert registry.get("torch-predict") == (DeclaredPredict, False)
 
 
 def test_abstract_bases_stay_out_of_the_kind_table():
     assert dict(NODE_KINDS) == {
         "torch-linear-train": LinearRegressor,
         "torch-linear-predict": LinearPredictor,
+        "torch-train": DeclaredTrain,
+        "torch-predict": DeclaredPredict,
     }
     for base in (TorchTrain, TorchPredict):
         problems = node_class_errors(base, "torch pack")
@@ -637,11 +987,34 @@ def test_example_runs_end_to_end_and_the_predictor_restores_the_fit(tmp_path):
     assert p == pytest.approx(trained.predict(row))
 
 
+DECLARED_EXAMPLE = (
+    pathlib.Path(__file__).parents[2] / "examples" / "pipeline" / "torch-declared.json"
+)
+
+
+def test_declared_example_loads_hashes_and_runs(tmp_path):
+    doc = load_document(str(DECLARED_EXAMPLE))
+    assert doc.name == "torch-declared-demo"
+    assert doc.hash == load_document(str(DECLARED_EXAMPLE)).hash
+    obj = json.loads(DECLARED_EXAMPLE.read_text(encoding="utf-8"))
+    obj["outputs"]["run_root"] = str(tmp_path / "runs")
+    result = run_document(PipelineDocument.from_obj(obj), asof="2026-01-01")
+    assert result.state == "ran"
+    signal = result.outputs["predict"]["signal"]
+    assert signal.loaded is True
+    row = result.outputs["market"]["events"][0]
+    assert signal.predict(row) == pytest.approx(
+        result.outputs["qhat"]["signal"].predict(row)
+    )
+
+
 # -- the conformance suite (pipeline/CLAUDE.md step 8) ---------------------------
 
 EXPECTED_ROLES = {
     "torch-linear-train": "train",
     "torch-linear-predict": "signal",
+    "torch-train": "train",
+    "torch-predict": "signal",
 }
 
 
@@ -679,6 +1052,17 @@ def probes(tmp_path):
     artifact = fixture["artifact_path"]
     expected = fixture["signal"].predict(PROBE_ROW)
 
+    declared_fixture = DeclaredTrain("fixture_declared", dict(DECLARED_PARAMS)).run(
+        NodeContext(
+            name="fixture",
+            asof="2026-01-01",
+            run_dir=str(tmp_path / "fixture-declared-run"),
+        ),
+        {"rows": make_rows()},
+    )
+    declared_artifact = declared_fixture["artifact_path"]
+    declared_expected = declared_fixture["signal"].predict(PROBE_ROW)
+
     def restored(out):
         signal = out["signal"]
         prediction = signal.predict(PROBE_ROW)
@@ -687,6 +1071,16 @@ def probes(tmp_path):
             and signal.artifact_path == artifact
             and prediction is not None
             and abs(prediction - expected) < 1e-9
+        )
+
+    def declared_restored(out):
+        signal = out["signal"]
+        prediction = signal.predict(PROBE_ROW)
+        return (
+            bool(getattr(signal, "loaded", False))
+            and signal.artifact_path == declared_artifact
+            and prediction is not None
+            and abs(prediction - declared_expected) < 1e-9
         )
 
     return {
@@ -710,6 +1104,26 @@ def probes(tmp_path):
             runnable=True,
             load_artifact=artifact,
             verify_loaded=restored,
+        ),
+        "torch-train": NodeProbe(
+            params=dict(DECLARED_PARAMS),
+            required=("features", "module"),
+            inputs={"rows": make_inverted_rows()},
+            stream_ports=("rows",),
+            runnable=True,
+            load_artifact=declared_artifact,
+            verify_loaded=lambda out: (
+                declared_restored(out)
+                and out["artifact_path"] == declared_artifact
+            ),
+        ),
+        "torch-predict": NodeProbe(
+            params={},
+            inputs={"artifact_path": declared_artifact},
+            stream_ports=(),
+            runnable=True,
+            load_artifact=declared_artifact,
+            verify_loaded=declared_restored,
         ),
     }
 

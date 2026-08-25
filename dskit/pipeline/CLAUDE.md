@@ -53,15 +53,27 @@ on it without breaking its rulings.
 - **Owned kinds** (`validate`, `stat_test`, `run-report`): documents
   cannot substitute their class — the statistics are not config-swappable.
 - **`$prev` refs are legal inside `params` only**; any other `$`-string
-  is refused. `$splits.<field>` reads the materialized split.
+  is refused. `$splits.<field>` reads the materialized split
+  (`val_start_ms` appears there ONLY when an embargo is set).
 - **Trailing splits DO materialize** — from `Node.data_edge()`; only
   `train_days != "all-prior"` refuses. (Older docstrings claiming
   resolve-time refusal are the stale ones.)
 - **A `clock` section parses but refuses to run** — declared design.
 - **Document identity excludes `env`, `outputs`, AND `schedule`**;
-  the stage-list grammar excludes only `env`/`outputs`.
+  the stage-list grammar excludes only `env`/`outputs`. The
+  `walkforward` section IS identity and is EMITTED ONLY WHEN PRESENT —
+  same for `val_start_ms`/`embargo_days` on splits: an always-emitted
+  null/zero would move every pre-ADR-0027 document's hash. Keep that
+  omission discipline for any future optional field.
+- **Walk-forward folds are separate run series** — the driver suffixes
+  each derived document's name `-wf-<cutoff>`, so a `$prev` carry binds
+  within one fold's history, never across folds.
 - **Optuna continuous specs are planner-refused** (categorical only) —
   documented at the top of `libs/optuna.py`.
+- **A sequence-trained `TorchSignal` predicts from a WINDOW** (a list of
+  rows), never a single record — handing it one raises with the fix in
+  the message; the owned `validate` kind scores per-record and so cannot
+  consume it (score sequence models in a child node).
 - **An occupied run dir refuses** — reruns need a new asof or name.
 - The purity gate (`tests/pipeline/test_purity.py`) fails on ANY
   module-level import outside stdlib + this package — heavy imports go
@@ -75,10 +87,11 @@ on it without breaking its rulings.
 dskit/pipeline/
 ├── __init__.py        public surface; auto-registers the default kinds
 ├── __main__.py        the CLI: python -m dskit.pipeline
-├── document.py        PipelineDocument / NodeSpec / ROLES / splits / refs
+├── document.py        PipelineDocument / NodeSpec / ROLES / splits + walkforward / refs
 ├── node.py            Node ABC, NodeContext, registry, register_node_kind
 ├── planner.py         document -> Plan; role rules live here
-├── driver.py          run_document: LOAD..RECORD, run dirs, $prev carry
+├── driver.py          run_document: LOAD..RECORD, run dirs, $prev carry;
+│                      run_walk_forward (ADR-0027)
 ├── kinds_flow.py      filter, derive, concat, join, event-bank, eligibility, banking-report
 ├── kinds_table.py     table-file, table-write
 ├── kinds_stats.py     owned validate + stat_test
@@ -86,7 +99,8 @@ dskit/pipeline/
 ├── kinds_report.py    owned run-report
 ├── conformance.py     conformance_suite + NodeProbe
 ├── synthetic_nodes.py demo/test nodes, private registries only
-├── metrics.py         logloss / brier + register_metric
+├── metrics.py         logloss / brier / squared_error / absolute_error + register_metric
+├── trainlog.py        TrainingCurve (ADR-0025)
 ├── stats.py           cluster bootstrap + corrections
 ├── records.py         MarketRecord + accounting seams
 ├── protocols.py       structural Protocols
@@ -97,7 +111,8 @@ dskit/pipeline/
 ├── features.py        stage-list stream transforms
 ├── io.py, resolve.py  stage-list load/save + resolution
 ├── registry.py        venue-backend registry (no venues ship)
-├── libs/              numpy, sklearn, torch, transformers, optuna, pyomo
+├── libs/              numpy, sklearn, torch, transformers, optuna, pyomo,
+│                      sb3, matplotlib
 ├── README.md          user-facing docs
 └── CLAUDE.md          this file
 ```
