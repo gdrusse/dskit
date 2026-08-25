@@ -381,3 +381,37 @@ artifact — a crashed create, whichever backend's, is deleted and
 redone, never built over. Backend guards accept whatever class the
 declared reference resolves to, so `pkg.module:Class` refs to builtins
 round-trip; raw `sqlite3` exceptions never cross the seam.
+
+---
+
+## ADR-0019 — `parquet`: an analytics-interop store pack (per-record files)
+
+**Status:** accepted (2026-08-24)
+
+**Context.** The spec mandates a Parquet storage layout (OQ-4 closed at
+tier 1 by ADR-0013; packs by ADR-0018). Parquet files are immutable —
+no append, no locking — so this pack cannot lift concurrency; its value
+is different: the store becomes directly scannable by any parquet
+engine (duckdb, polars, spark) without going through the Python API.
+
+**Decision.** `libs/parquet.py` (`ParquetStore`, built-in name
+`parquet`, extra `pyarrow>=15`, imports inside methods). Layout:
+`store.json` keeps the pin and is written LAST (the commit point);
+`records/<kind>/<version_id>.parquet` one row per file, write-once via
+tmp + fsync + `os.replace`; `events/<seq:08d>.parquet` one row per
+event, append = max+1. Plain `<kind>/` dirs, NOT hive `kind=` names —
+`kind` is a real column in every file and hive dir names collide with
+it in duckdb; `records/*/*.parquet` glob-scans the whole dataset.
+Schema is the sqlite body idiom: `(version_id, kind, body)` /
+`(seq, body)`, body = canonical JSON string, rehash-on-read tamper
+check. `iter_events` snapshot = the sorted file list captured at call
+time. pyarrow and `OSError` failures cross the seam as `AssetError`.
+
+**Declared limits.** Single mutating writer per root (the max+1 seq is
+check-then-act, like FileStore's append); queries are directory scans.
+The pack lifts analytics interop only — concurrency stays sqlite's.
+
+**Consequences.** `_BACKENDS` gains `parquet`; `_STORE_ARTIFACTS`
+gains `events` (the directory), so create-refusal covers parquet
+leftovers. The conformance battery adds the backend behind an
+importorskip guard — the suite passes with pyarrow absent.
