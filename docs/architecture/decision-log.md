@@ -572,9 +572,9 @@ mechanism.
 
 ---
 
-## ADR-0024 — Split-assignment policies + event bounds (PROPOSAL)
+## ADR-0024 — Split-assignment policies + event bounds
 
-**Status:** proposed (2026-08-25) — awaiting owner review
+**Status:** accepted (2026-08-25 — proposed and owner-ratified same day)
 
 **Context.** The parent engine assigns split membership through a
 declared POLICY — `record` (the record's own instant), `event-open`,
@@ -587,11 +587,11 @@ split declares an event policy — refusing loudly when none supplies
 them. All of it is generic leakage-guard machinery (the motivating bug
 was domain, the mechanism is not).
 
-**Decision (proposed).** Port faithfully: `split_policy.py` as a new
-tier-1 module, the base/node/driver hooks per the parent diff (~190
-base lines, ~30 node lines, ~70 driver lines), tests included. This is
-engine-core surgery across three load-bearing files — hence a proposal,
-not an act.
+**Decision.** Port faithfully: `split_policy.py` as a new tier-1
+module, the base/node/driver hooks per the parent diff (~190 base
+lines, ~30 node lines, ~70 driver lines), tests included. Engine-core
+surgery across three load-bearing files — proposed first for exactly
+that reason; ratified by the owner.
 
 **Consequences.** Splits gain a `policy` knob; documents with
 multi-record events get a principled leakage guard; the parent↔child
@@ -600,9 +600,9 @@ onto this engine.
 
 ---
 
-## ADR-0025 — Declared-model seam: config-named library classes (PROPOSAL)
+## ADR-0025 — Declared-model seam: config-named library classes
 
-**Status:** proposed (2026-08-25) — awaiting owner review
+**Status:** accepted (2026-08-25 — proposed and owner-ratified same day)
 
 **Context.** The parent completes the config doctrine for deep
 learning: `base.py` gains `library_path_problems` / `import_library_class`
@@ -614,13 +614,16 @@ gains `transformers-fit`, and `trainlog.py` records per-epoch
 metrics module). Today dskit's torch/transformers packs require a
 subclass per model — code where the doctrine says config.
 
-**Decision (proposed).** Port the seam + the three kinds + `trainlog`
-faithfully (torch pack ~665 → ~1,384 lines; transformers +194;
-trainlog ~300 + tests).
+**Decision.** Port the seam + the three kinds + `trainlog` faithfully
+(torch pack ~665 → ~1,384 lines; transformers +194; trainlog ~300 +
+tests). Ratified by the owner.
 
 **Consequences.** Model swaps become config edits; sklearn (already
-declared via `estimator`) and torch reach parity. Registry grows
-13 → 16.
+declared via `estimator`) and torch reach parity. The torch and
+transformers packs' `NODE_KINDS` grow by three (`torch-train`,
+`torch-predict`, `transformers-fit`); `DEFAULT_NODE_KINDS` is
+unchanged — pack kinds register adapter-side or resolve by import
+path, like every libs kind.
 
 ---
 

@@ -48,7 +48,13 @@ your package first so its registered kinds resolve. Two more verbs — `demo`
 - **Splits**: `time` (explicit epoch-ms cuts), `random` (cluster-hashed;
   `train+val == 1.0` is legal — no test split), `trailing` (windows counted
   backward from the data's edge via `Node.data_edge()`; `train_days` must be
-  `"all-prior"`).
+  `"all-prior"`). Time-based splits take an optional **`policy`** —
+  `record` (default) | `event-open` | `event-close` — deciding WHICH
+  instant assigns a record to a side, so a multi-record event never
+  straddles a cut under an event policy. Event policies need a data node
+  supplying `Node.event_bounds()`; the driver refuses loudly when none
+  does. The default is hash-neutral: pre-policy documents keep their
+  identity.
 - **Identity**: sha256 over canonical JSON with every `notes` stripped and the
   top-level `env` / `outputs` / `schedule` sections excluded.
 - **Roles** are declared BY the node class, never by the config:
@@ -152,6 +158,7 @@ dskit/pipeline/
 ├── node.py            Node ABC, NodeContext, NodeKindRegistry, register_node_kind
 ├── planner.py         document -> Plan: topo order, role rules, wire checks
 ├── driver.py          LOAD -> IMPORT -> PLAN -> RESOLVE -> EXECUTE -> RECORD; run dirs
+├── split_policy.py    split-assignment policies (record / event-open / event-close) + EventBounds
 ├── kinds_flow.py      filter, derive, concat, join, event-bank, eligibility, banking-report
 ├── kinds_table.py     table-file, table-write (digest-verified keyed tables)
 ├── kinds_stats.py     owned validate + stat_test (cluster bootstrap, corrections)

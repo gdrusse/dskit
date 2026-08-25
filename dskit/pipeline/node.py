@@ -218,6 +218,30 @@ class Node(ABC):
         """
         return None
 
+    def event_bounds(self):
+        """``cluster -> EventBounds`` for this node's data, or ``None``.
+
+        The sibling of :meth:`data_edge`, asked at RESOLVE for the same
+        reason and of the same ``data``-role nodes. Where ``data_edge``
+        answers "where does your data END", this answers "where does each
+        EVENT in your data start and end" — the map a ``splits.policy`` of
+        ``event-close`` needs in order to put every record of an event in
+        ONE split instead of letting a long event straddle a cut.
+
+        Asked only when the document's policy actually needs it, so a source
+        never pays for a scan a ``record``-policy run would throw away.
+        Unlike an edge, several sources answering is NOT ambiguous — event
+        tickers are disjoint across venues, so the driver takes the union
+        (:func:`~dskit.pipeline.split_policy.merge_event_bounds`) rather
+        than refusing to choose.
+
+        The base default declines, which is why a document declaring an
+        event policy over sources that cannot answer refuses loudly rather
+        than silently reverting to per-record assignment — a silent revert
+        would be the leak, restored.
+        """
+        return None
+
     def artifact_dir(self, ctx):
         """This node's artifact directory under the run dir, created on
         first use — where trained models and report files land."""

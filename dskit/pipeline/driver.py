@@ -63,6 +63,7 @@ from dskit.pipeline.base import (
     _strip_notes,
     import_ref,
     is_class_ref,
+    merge_event_bounds,
 )
 from dskit.pipeline.document import (
     DOC_NON_IDENTITY_SECTIONS,
@@ -532,6 +533,50 @@ def _materialize_splits(splits, edges, data_nodes, declines=()):
         raise ConfigError([f"splits.kind 'trailing' (anchored on {key!r}): {exc}"])
 
 
+def _bind_event_bounds(splits, instances, roles):
+    """Bind the ``cluster -> EventBounds`` map an EVENT policy needs.
+
+    A no-op unless the materialized split declares a policy that reads
+    bounds, so a ``record``-policy run never pays for the scan. Bounds come
+    from the ``data`` nodes' :meth:`~dskit.pipeline.node.Node.event_bounds`
+    and are UNIONED — two venues describe disjoint events, so unlike a
+    trailing anchor there is nothing to refuse.
+
+    Refuses loudly when the policy needs bounds and no source supplied any.
+    Falling back to per-record assignment here would silently restore the
+    straddle the document explicitly asked to close, and the run would look
+    like it had worked.
+    """
+    if splits is None or not getattr(splits, "needs_event_bounds", False):
+        return splits
+    data_keys = sorted(k for k in instances if roles(k) == "data")
+    maps, declines = [], []
+    for key in data_keys:
+        node = instances[key]
+        if type(node).event_bounds is Node.event_bounds:
+            declines.append(key)
+            continue
+        got = node.event_bounds()
+        if got:
+            maps.append(got)
+    if not maps:
+        detail = (
+            f"{declines} do not implement event_bounds()"
+            if declines
+            else f"{data_keys} implement event_bounds() but reported none"
+        )
+        raise ConfigError(
+            [
+                f"splits.policy {splits.policy!r} assigns every record of an "
+                "event to its EVENT's split, which needs each event's observed "
+                f"extent, and no source supplied one: {detail}. Give a source an "
+                "event_bounds(), or declare splits.policy 'record' and accept "
+                "that long events straddle the cuts"
+            ]
+        )
+    return splits.with_event_bounds(merge_event_bounds(*maps))
+
+
 def _find_prev_run(run_root, name, own_dir):
     """The newest prior run dir of this series carrying a ``carry.json``
     — ordered by the asof embedded in the dir name (ISO dates sort
@@ -785,6 +830,10 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
             sorted(k for k in instances if the_plan.role_of(k) == "data"),
             declines=declines,
         )
+        # WHERE the cuts are is settled; WHICH INSTANT each record is cut on
+        # may still need the per-event extents. Bound here, after
+        # materialization, so a trailing spec's policy rides through.
+        splits = _bind_event_bounds(splits, instances, the_plan.role_of)
         splits_info = splits.to_obj() if splits is not None else {}
 
         identity = _strip_notes(document.to_obj())

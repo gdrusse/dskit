@@ -46,6 +46,8 @@ import re
 from dataclasses import dataclass, field
 
 from dskit.pipeline.base import (
+    DEFAULT_SPLIT_POLICY,
+    SPLIT_POLICIES,
     ConfigError,
     EnvConfig,
     OutputsConfig,
@@ -491,12 +493,19 @@ class TrailingSplitSpec:
     Materialization needs the data's edge (the newest settled instant),
     which only a data node knows — :meth:`materialize` is the pure cut
     arithmetic, called by the driver once that instant is in hand.
+
+    ``policy`` rides through materialization unchanged: WHERE the cuts land
+    is what rolls forward, WHICH INSTANT each record is cut on is a separate
+    declared choice (:mod:`dskit.pipeline.split_policy`) and must not
+    depend on when the run happened.
     """
 
     test_days: int
     val_days: int
     train_days: object = ALL_PRIOR
     kind: str = "trailing"
+    #: Handed verbatim to the materialized :class:`TimeSplitConfig`.
+    policy: str = DEFAULT_SPLIT_POLICY
     notes: str = ""
 
     def __post_init__(self):
@@ -505,6 +514,11 @@ class TrailingSplitSpec:
             errors.append(f"splits.kind must be 'trailing', got {self.kind!r}")
         _check_int(errors, "splits.test_days", self.test_days, ge=1)
         _check_int(errors, "splits.val_days", self.val_days, ge=1)
+        if self.policy not in SPLIT_POLICIES:
+            errors.append(
+                f"splits.policy: unknown policy {self.policy!r} — known "
+                f"policies: {sorted(SPLIT_POLICIES)}"
+            )
         if self.train_days != ALL_PRIOR:
             _check_int(errors, "splits.train_days", self.train_days, ge=1)
         _check_str(errors, "splits.notes", self.notes, non_empty=False)
@@ -551,22 +565,34 @@ class TrailingSplitSpec:
                 f"newest_ms={newest_ms} leaves train_end_ms={train_end}"
             )
         return TimeSplitConfig(
-            train_end_ms=train_end, val_end_ms=val_end, test_end_ms=test_end
+            train_end_ms=train_end,
+            val_end_ms=val_end,
+            test_end_ms=test_end,
+            policy=self.policy,
         )
 
     def to_obj(self) -> dict:
-        return _dataclass_to_obj(self)
+        """``policy`` is dropped when it is the default, for the same reason
+        :meth:`TimeSplitConfig.to_obj` drops it: a knob nobody declared must
+        not change the identity hash of runs that already happened."""
+        obj = _dataclass_to_obj(self)
+        if obj.get("policy") == DEFAULT_SPLIT_POLICY:
+            obj.pop("policy", None)
+        return obj
 
     @classmethod
     def from_obj(cls, obj) -> "TrailingSplitSpec":
         _reject_unknown(
-            obj, ("kind", "test_days", "val_days", "train_days", "notes"), "splits"
+            obj,
+            ("kind", "test_days", "val_days", "train_days", "policy", "notes"),
+            "splits",
         )
         return cls(
             test_days=obj.get("test_days", 0),
             val_days=obj.get("val_days", 0),
             train_days=obj.get("train_days", ALL_PRIOR),
             kind=obj.get("kind", "trailing"),
+            policy=obj.get("policy", DEFAULT_SPLIT_POLICY),
             notes=obj.get("notes", ""),
         )
 

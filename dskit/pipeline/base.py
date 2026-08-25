@@ -50,10 +50,29 @@ import importlib
 import json
 import os
 import re
-from dataclasses import dataclass, field, fields
+from collections.abc import Mapping
+from dataclasses import dataclass, field, fields, replace
+from types import MappingProxyType
+
+from dskit.pipeline.split_policy import (
+    DEFAULT_SPLIT_POLICY,
+    SPLIT_POLICIES,
+    EventBounds,
+    event_bounds_from_records,
+    merge_event_bounds,
+    policy_instant,
+    register_split_policy,
+)
 
 __all__ = [
+    "DEFAULT_SPLIT_POLICY",
+    "SPLIT_POLICIES",
     "ConfigError",
+    "EventBounds",
+    "event_bounds_from_records",
+    "merge_event_bounds",
+    "policy_instant",
+    "register_split_policy",
     "DataConfig",
     "EnvConfig",
     "FeatureConfig",
@@ -316,13 +335,29 @@ class TimeSplitConfig:
     refuse unsupported kinds at resolve, so the doctrine is enforced where
     the venue is known, not by narrowing the toolkit).
     Strictly ascending by construction — a leaky cut cannot exist.
+
+    WHERE the cuts are is this config; WHICH INSTANT each record is cut on
+    is the separate, declared ``policy`` (:mod:`dskit.pipeline.split_policy`).
     """
 
     train_end_ms: int
     val_end_ms: int
     test_end_ms: int
     kind: str = "time"
+    #: WHICH INSTANT the cuts are applied to. ``"record"`` (the default, and
+    #: the behaviour this class always had) cuts each record on its own
+    #: ``asof_ms``, so a long-lived event contributes records to two splits
+    #: — the event is the independence unit everywhere else in the toolkit,
+    #: so that is a leak. ``"event-close"`` cuts every record of an event on
+    #: the event's last observed instant, landing the event wholly in one
+    #: split. Hash-material WHEN DECLARED (see :meth:`to_obj`).
+    policy: str = DEFAULT_SPLIT_POLICY
     notes: str = ""
+    #: Resolved ``cluster -> EventBounds``, bound by the driver from the data
+    #: nodes' ``event_bounds()`` — DERIVED, never declared, never identity
+    #: (it is a function of data the run's fingerprint already covers).
+    #: ``None`` until bound; an event policy refuses rather than guessing.
+    event_bounds: object = None
 
     def __post_init__(self):
         errors = []
@@ -330,6 +365,16 @@ class TimeSplitConfig:
             errors.append(f"splits.kind must be 'time', got {self.kind!r}")
         for name in ("train_end_ms", "val_end_ms", "test_end_ms"):
             _check_int(errors, f"splits.{name}", getattr(self, name), ge=1)
+        if self.policy not in SPLIT_POLICIES:
+            errors.append(
+                f"splits.policy: unknown policy {self.policy!r} — known "
+                f"policies: {sorted(SPLIT_POLICIES)}"
+            )
+        if self.event_bounds is not None and not isinstance(self.event_bounds, Mapping):
+            errors.append(
+                "splits.event_bounds must be a mapping of cluster -> "
+                f"EventBounds, got {self.event_bounds!r}"
+            )
         if not errors and not (self.train_end_ms < self.val_end_ms < self.test_end_ms):
             errors.append(
                 "splits must be strictly ascending: train_end_ms < val_end_ms "
@@ -339,10 +384,30 @@ class TimeSplitConfig:
         _check_str(errors, "splits.notes", self.notes, non_empty=False)
         _raise_if(errors)
 
+    @property
+    def needs_event_bounds(self) -> bool:
+        """Whether this split's policy reads the event-bounds map — the
+        question the driver asks BEFORE paying to build one."""
+        return SPLIT_POLICIES[self.policy]["needs_bounds"]
+
+    def with_event_bounds(self, bounds) -> "TimeSplitConfig":
+        """This split with ``bounds`` bound — a NEW frozen config, never a
+        mutation, and the mapping is proxied so the caller's dict cannot
+        change an assignment after the fact."""
+        return replace(
+            self,
+            event_bounds=None if bounds is None else MappingProxyType(dict(bounds)),
+        )
+
     def split_of(self, record):
-        """Assign by the record's decision instant (``record.asof_ms``):
-        ``"train"``/``"val"``/``"test"``, or ``None`` beyond the horizon."""
-        t = record.asof_ms
+        """Assign by the instant this split's ``policy`` selects —
+        ``"train"``/``"val"``/``"test"``, or ``None`` beyond the horizon.
+
+        Under the default ``"record"`` policy that instant IS
+        ``record.asof_ms``, so behaviour is unchanged."""
+        t = policy_instant(self.policy, record, self.event_bounds)
+        if t is None:
+            return None
         if t <= self.train_end_ms:
             return "train"
         if t <= self.val_end_ms:
@@ -352,13 +417,23 @@ class TimeSplitConfig:
         return None
 
     def to_obj(self) -> dict:
-        return _dataclass_to_obj(self)
+        """Serialized form. ``event_bounds`` is dropped (derived, and far too
+        large to be config); ``policy`` is dropped WHEN IT IS THE DEFAULT, so
+        that adding this knob does not silently change the identity hash of
+        every run that ever ran. A document that DECLARES a policy carries it
+        into the hash, which is correct: assigning by event is a different
+        experiment from assigning by record."""
+        obj = _dataclass_to_obj(self)
+        obj.pop("event_bounds", None)
+        if obj.get("policy") == DEFAULT_SPLIT_POLICY:
+            obj.pop("policy", None)
+        return obj
 
     @classmethod
     def from_obj(cls, obj) -> "TimeSplitConfig":
         _reject_unknown(
             obj,
-            ("kind", "train_end_ms", "val_end_ms", "test_end_ms", "notes"),
+            ("kind", "train_end_ms", "val_end_ms", "test_end_ms", "policy", "notes"),
             "splits",
         )
         return cls(
@@ -366,6 +441,7 @@ class TimeSplitConfig:
             val_end_ms=obj.get("val_end_ms", 0),
             test_end_ms=obj.get("test_end_ms", 0),
             kind=obj.get("kind", "time"),
+            policy=obj.get("policy", DEFAULT_SPLIT_POLICY),
             notes=obj.get("notes", ""),
         )
 
@@ -383,6 +459,11 @@ class RandomSplitConfig:
     runs, no RNG state — and ``seed`` is hash-material, so re-seeding is a
     different experiment. The test fraction is the remainder
     ``1 - train_frac - val_frac`` and must be positive.
+
+    Carries no ``policy``: hashing the cluster makes this kind EVENT-ATOMIC
+    by construction, so the straddle :mod:`dskit.pipeline.split_policy`
+    exists to close cannot happen here. The policy is a TIME-family knob
+    because only a time cut can land in the middle of an event.
     """
 
     train_frac: float

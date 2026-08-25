@@ -31,6 +31,10 @@ on it without breaking its rulings.
   bases with a small hook (`build_module`, `build_model`, `apply`) so
   tier-3 code writes the domain, not the plumbing.
 - **Metrics** — `register_metric` (`metrics.py`); `logloss`/`brier` ship.
+- **Split policies** — `register_split_policy` (`split_policy.py`);
+  `record` / `event-open` / `event-close` ship. An event policy needs a
+  data node implementing `event_bounds()`, and the driver refuses when
+  none supplies it — never a silent fall-back to `record`.
 - **Stage-list seams** — `register_transform_kind`,
   `register_optimizer_kind` (empty by design), `register_sink_kind`,
   `BackendRegistry` (zero venues ship — the mechanism is the product).
@@ -79,6 +83,7 @@ dskit/pipeline/
 ├── node.py            Node ABC, NodeContext, registry, register_node_kind
 ├── planner.py         document -> Plan; role rules live here
 ├── driver.py          run_document: LOAD..RECORD, run dirs, $prev carry
+├── split_policy.py    split policies (record/event-open/event-close) + EventBounds
 ├── kinds_flow.py      filter, derive, concat, join, event-bank, eligibility, banking-report
 ├── kinds_table.py     table-file, table-write
 ├── kinds_stats.py     owned validate + stat_test
