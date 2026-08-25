@@ -91,9 +91,11 @@ the toolkit's statistics are not swappable by config.
 `libs/` packs register nothing by import; use their kinds via
 `register()`/`--adapter` or reference classes by import path:
 **sklearn** `sklearn-fit`/`sklearn-predict` (the document names the estimator);
-**torch** `torch-linear-train`/`torch-linear-predict` + `TorchTrain`/
-`TorchPredict` bases (`build_module` hook); **transformers**
-`transformers-tiny-fit`/`transformers-predict`; **optuna** `optuna-search`
+**torch** `torch-train`/`torch-predict` (DECLARED: the document names the
+`nn.Module` class — no subclass, validated at plan time) +
+`torch-linear-train`/`torch-linear-predict` + `TorchTrain`/`TorchPredict`
+bases (`build_module` hook); **transformers** `transformers-fit` (declared)
++ `transformers-tiny-fit`/`transformers-predict`; **optuna** `optuna-search`
 (categorical spaces; continuous specs are planner-refused, documented);
 **pyomo** `pyomo-budgeted-select` + `PyomoSolve` base (`build_model`/`extract`
 hooks); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures` and
@@ -167,6 +169,7 @@ dskit/pipeline/
 ├── conformance.py     conformance_suite + NodeProbe — the reusable pack bar
 ├── synthetic_nodes.py every role, deterministic, for demos/tests
 ├── metrics.py         logloss / brier + register_metric
+├── trainlog.py        per-epoch TrainingCurve + probability metrics (logloss/brier/ECE)
 ├── stats.py           cluster bootstrap p-values; bh / bonferroni / none
 ├── records.py         MarketRecord envelope + binary / mark-to-market accounting
 ├── protocols.py       structural Protocols (DataSource, Tracker, ...)

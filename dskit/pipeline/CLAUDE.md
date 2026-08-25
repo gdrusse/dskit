@@ -29,7 +29,10 @@ on it without breaking its rulings.
 - **Library packs** — `libs/<lib>.py`: name the library only inside
   `run()`; expose a `NODE_KINDS` tuple + `register()`; ship abstract
   bases with a small hook (`build_module`, `build_model`, `apply`) so
-  tier-3 code writes the domain, not the plumbing.
+  tier-3 code writes the domain, not the plumbing. The DECLARED kinds
+  (`torch-train`/`torch-predict`, `transformers-fit`) go further: the
+  document names the library class, `library_path_problems` /
+  `import_library_class` (base.py) validate it at plan time.
 - **Metrics** — `register_metric` (`metrics.py`); `logloss`/`brier` ship.
 - **Split policies** — `register_split_policy` (`split_policy.py`);
   `record` / `event-open` / `event-close` ship. An event policy needs a
@@ -92,6 +95,7 @@ dskit/pipeline/
 ├── conformance.py     conformance_suite + NodeProbe
 ├── synthetic_nodes.py demo/test nodes, private registries only
 ├── metrics.py         logloss / brier + register_metric
+├── trainlog.py        TrainingCurve + probability metrics (declared-model telemetry)
 ├── stats.py           cluster bootstrap + corrections
 ├── records.py         MarketRecord + accounting seams
 ├── protocols.py       structural Protocols

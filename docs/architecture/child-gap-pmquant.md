@@ -1,9 +1,10 @@
 # Capability-gap report — pmquant as a dskit child
 
 **Verdict: pmquant already contains dskit — its engine is the parent fork and a
-strict superset; after two ports landed this session (ADR-0022/23) the remaining
-engine gap is three proposed ADRs (0024–0026), and everything else in pmquant is
-child material.** No pmquant-specific code belongs in dskit.
+strict superset; after four ports landed this session (ADR-0022/23, then the
+owner-ratified 0024/25) the remaining engine gap is one proposed ADR (0026,
+report renderers), and everything else in pmquant is child material.** No
+pmquant-specific code belongs in dskit.
 
 Evidence base: full-tree inventory 2026-08-25 (132k LOC package / 127k LOC tests).
 pmquant has already performed the generic/domain split internally: `pmquant/pipeline`
@@ -20,13 +21,13 @@ diff, pmquant-side only:
 |---|---|
 | `concat` / `join` / `derive` flow kinds | **PORTED** this session (ADR-0022) |
 | `table-file` / `table-write` (`kinds_table.py`) | **PORTED** this session (ADR-0023) |
-| split policies + event bounds (`split_policy.py`, `Node.event_bounds`, driver binding) | **PROPOSED** — ADR-0024 |
-| declared-model seam (`import_library_class`, `torch-train`/`torch-predict`/`transformers-fit`) + `trainlog.py` | **PROPOSED** — ADR-0025 |
+| split policies + event bounds (`split_policy.py`, `Node.event_bounds`, driver binding) | **PORTED** (ADR-0024, owner-ratified) |
+| declared-model seam (`import_library_class`, `torch-train`/`torch-predict`/`transformers-fit`) + `trainlog.py` | **PORTED** (ADR-0025, owner-ratified; driver stderr curve-streaming deferred, see TODO) |
 | report renderer parity (CSV export, `max_rows`/truncation, table/ledger helpers) | **PROPOSED** — ADR-0026 |
 | mlflow tracking sink | stays adapter-side by design (`SINK_KINDS` seam is COVERED; the pack is child code) |
 
-Once 0024–0025 land, `pipeline_kalshi` runs on dskit's engine with only an import
-rename — that is the migration.
+With 0024–0025 landed, `pipeline_kalshi` can run on dskit's engine with only an
+import rename — that is the migration, now unblocked.
 
 ## Classification by functional area
 

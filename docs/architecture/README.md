@@ -55,12 +55,12 @@ Each spec lists ten deliverables. They agree on #1–#4, then diverge:
 | Artifact | State |
 |---|---|
 | Context & ownership map (deliverable #4 foundation) | ✅ drafted |
-| Decision Log | ✅ ADR-0001…0026 (0021…0023 accepted 2026-08-25; 0024…0026 **proposed**, awaiting owner) |
+| Decision Log | ✅ ADR-0001…0026 (0021…0025 accepted 2026-08-25 — 0024/0025 owner-ratified; 0026 **proposed**, awaiting owner) |
 | Open Questions Register | ✅ clear — OQ-1…OQ-7 all closed |
 | Package 1 design + build | ✅ built (`dskit/assets/`, ADR-0007…0011; store packs sqlite ADR-0018 + parquet ADR-0019; integrity parity ADR-0020) |
 | Package 2 design + build | ✅ built (`dskit/onboarding/`, ADR-0012…0016; `restapi` pack ADR-0017; design: [onboarding-design.md](onboarding-design.md)) |
 | Child convention | ✅ `children/` incubation + pinned skeleton (ADR-0021) |
-| Engine parity with the parent fork | ports accepted (ADR-0022/0023); proposals [child-gap-pmquant.md](child-gap-pmquant.md) → ADR-0024…0026 |
+| Engine parity with the parent fork | ports landed: ADR-0022/0023 (flow + table kinds), ADR-0024 (split policies + event bounds), ADR-0025 (declared-model seam + trainlog); ADR-0026 (report renderers) proposed — see [child-gap-pmquant.md](child-gap-pmquant.md) |
 
 **Current work:** all three pillars built and tested. Capability-gap
 reports for the first two child candidates:

@@ -22,3 +22,8 @@ Deferred:
       out of ADR-0020, round-3 residual, loud downstream: every
       dereference refuses; fixing needs O(n) content loads, defeating
       the sqlite index). Stays declared, not fixed.
+- [ ] Driver-side stderr streaming of TrainingCurve lines (the parent's
+      ~19-line StreamHandler hunk in driver.py) was deliberately NOT
+      ported with ADR-0025 — telemetry reaches sinks/logs regardless;
+      only the live-in-terminal operator view awaits it. Port when
+      wanted.
