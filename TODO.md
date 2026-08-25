@@ -17,3 +17,7 @@ Deferred from the ADR-0018 review rounds (pre-existing, loud-not-silent):
 - [ ] Engine-level multi-writer coordination (Registry/Lineage
       check-then-act) — needs its own ADR if ever wanted (ADR-0018
       amendment scopes concurrency to the store seam).
+- [ ] ruff is now available (0.16.4, anaconda) but its defaults flag
+      ~47 pre-existing findings tree-wide (I001/ISC004/SIM115/UP017…);
+      pin a `[tool.ruff]` baseline in pyproject.toml to codify the
+      repo's actual style, then clean deliberately.
