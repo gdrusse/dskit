@@ -1,7 +1,6 @@
 """sync.py: the outbox scan — delivery, anti-entropy, and repairs (ADR-0012)."""
 
 import json
-import os
 
 import pytest
 

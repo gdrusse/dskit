@@ -5,7 +5,7 @@ import pathlib
 
 import pytest
 
-from dskit.pipeline import ConfigError, PipelineConfig
+from dskit.pipeline import ConfigError
 from dskit.pipeline.io import load_config, save_config
 
 EXAMPLES = pathlib.Path(__file__).parents[2] / "examples" / "pipeline"

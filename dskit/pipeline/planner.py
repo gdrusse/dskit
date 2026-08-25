@@ -43,7 +43,7 @@ Import cost: stdlib only.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from dskit.pipeline.base import ConfigError
 from dskit.pipeline.document import (
