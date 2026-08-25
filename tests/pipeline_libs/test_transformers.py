@@ -32,6 +32,7 @@ from dskit.pipeline.document import load_document
 from dskit.pipeline.libs.transformers import (
     NODE_KINDS,
     SIDECAR_NAME,
+    DeclaredTransformerFit,
     TinyTransformerFit,
     TransformerFit,
     TransformerPredict,
@@ -105,8 +106,26 @@ def _rehash(checkpoint):
 
 
 EXPECTED_ROLES = {
+    "transformers-fit": "train",
     "transformers-tiny-fit": "train",
     "transformers-predict": "signal",
+}
+
+#: The DECLARED family's knobs: the same tiny BERT ``TinyTransformerFit``
+#: hardcodes, but named by CONFIG instead of by a Python subclass.
+DECLARED_FIT_PARAMS = {
+    **FIT_PARAMS,
+    "config_class": "transformers.BertConfig",
+    "model_class": "transformers.BertForSequenceClassification",
+    "config_params": {
+        "vocab_size": 8,
+        "hidden_size": 2,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 1,
+        "intermediate_size": 4,
+        "max_position_embeddings": 4,
+        "num_labels": 1,
+    },
 }
 
 
@@ -137,6 +156,7 @@ def fitted(tmp_path_factory):
 class TestRegistration:
     def test_node_kinds_carries_only_the_concrete_pair(self):
         assert dict(NODE_KINDS) == {
+            "transformers-fit": DeclaredTransformerFit,
             "transformers-tiny-fit": TinyTransformerFit,
             "transformers-predict": TransformerPredict,
         }
@@ -145,7 +165,33 @@ class TestRegistration:
         registry = NodeKindRegistry()
         register(registry)
         register(registry)  # a second call skips, never shadows
-        assert registry.kinds() == ("transformers-predict", "transformers-tiny-fit")
+        assert registry.kinds() == (
+            "transformers-fit",
+            "transformers-predict",
+            "transformers-tiny-fit",
+        )
+
+    def test_the_declared_family_validates_clean(self):
+        # Pure param validation — no library import, so this runs even where
+        # transformers is not installed.
+        assert DeclaredTransformerFit.validate_params(dict(DECLARED_FIT_PARAMS)) == []
+
+    def test_the_declared_family_requires_both_class_paths(self):
+        params = {k: v for k, v in DECLARED_FIT_PARAMS.items() if k != "model_class"}
+        problems = DeclaredTransformerFit.validate_params(params)
+        assert any("model_class is required" in p for p in problems)
+
+    def test_the_declared_family_refuses_a_malformed_class_path(self):
+        problems = DeclaredTransformerFit.validate_params(
+            {**DECLARED_FIT_PARAMS, "config_class": "nothubname"}
+        )
+        assert any("config_class must name a class" in p for p in problems)
+
+    def test_the_declared_family_refuses_non_dict_config_params(self):
+        problems = DeclaredTransformerFit.validate_params(
+            {**DECLARED_FIT_PARAMS, "config_params": ["hidden_size", 2]}
+        )
+        assert any("config_params must be a dict" in p for p in problems)
 
     def test_the_abstract_base_cannot_be_registered(self):
         registry = NodeKindRegistry()
@@ -644,7 +690,35 @@ def probes(tmp_path):
             and abs(prediction - expected) < 1e-9
         )
 
+    declared = _fit(
+        tmp_path,
+        "fixture-declared",
+        params=DECLARED_FIT_PARAMS,
+        cls=DeclaredTransformerFit,
+    )
+    declared_checkpoint = declared["artifact_path"]
+    declared_expected = declared["signal"].predict(ROWS[0])
+
+    def declared_verify_loaded(out):
+        signal = out["signal"]
+        prediction = signal.predict(ROWS[0])
+        return (
+            bool(signal.restored)
+            and signal.artifact_path == declared_checkpoint
+            and prediction is not None
+            and abs(prediction - declared_expected) < 1e-9
+        )
+
     return {
+        "transformers-fit": NodeProbe(
+            params=dict(DECLARED_FIT_PARAMS),
+            required=("features", "config_class", "model_class"),
+            inputs={"rows": [dict(row) for row in INVERTED_ROWS]},
+            stream_ports=("rows",),
+            runnable=True,
+            load_artifact=declared_checkpoint,
+            verify_loaded=declared_verify_loaded,
+        ),
         "transformers-tiny-fit": NodeProbe(
             params=dict(FIT_PARAMS),
             required=("features",),

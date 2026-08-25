@@ -23,6 +23,8 @@ from dskit.pipeline.driver import run_document
 from dskit.pipeline.libs.torch import (
     ARTIFACT_FORMAT,
     NODE_KINDS,
+    DeclaredPredict,
+    DeclaredTrain,
     LinearPredictor,
     LinearRegressor,
     TorchPredict,
@@ -583,19 +585,103 @@ def test_register_is_explicit_and_idempotent():
     registry = NodeKindRegistry()
     register(registry)
     register(registry)  # idempotent: present names are skipped, never shadowed
-    assert registry.kinds() == ("torch-linear-predict", "torch-linear-train")
+    assert registry.kinds() == (
+        "torch-linear-predict",
+        "torch-linear-train",
+        "torch-predict",
+        "torch-train",
+    )
     assert registry.get("torch-linear-train") == (LinearRegressor, False)
     assert registry.get("torch-linear-predict") == (LinearPredictor, False)
+    assert registry.get("torch-train") == (DeclaredTrain, False)
+    assert registry.get("torch-predict") == (DeclaredPredict, False)
 
 
 def test_abstract_bases_stay_out_of_the_kind_table():
     assert dict(NODE_KINDS) == {
+        "torch-train": DeclaredTrain,
+        "torch-predict": DeclaredPredict,
         "torch-linear-train": LinearRegressor,
         "torch-linear-predict": LinearPredictor,
     }
     for base in (TorchTrain, TorchPredict):
         problems = node_class_errors(base, "torch pack")
         assert any("abstract" in p for p in problems)
+
+
+# -- the DECLARED family: an architecture named by the document -----------------
+
+#: The declared counterpart of PARAMS — same fit, but the architecture is
+#: config, not a Python subclass.
+DECLARED_PARAMS = {
+    **PARAMS,
+    "module": "torch.nn.Linear",
+    "module_params": {"in_features": len(FEATURES), "out_features": 1},
+}
+
+
+def test_declared_module_fits_the_architecture_the_params_name(tmp_path):
+    out = train(tmp_path, params=DECLARED_PARAMS, cls=DeclaredTrain)
+    prediction = out["signal"].predict(PROBE_ROW)
+    assert prediction is not None and math.isfinite(prediction)
+
+
+def test_declared_module_accepts_both_path_spellings(tmp_path):
+    colon = train(
+        tmp_path,
+        sub="colon",
+        params={**DECLARED_PARAMS, "module": "torch.nn:Linear"},
+        cls=DeclaredTrain,
+    )
+    dotted = train(
+        tmp_path, sub="dotted", params=DECLARED_PARAMS, cls=DeclaredTrain
+    )
+    assert colon["signal"].predict(PROBE_ROW) == pytest.approx(
+        dotted["signal"].predict(PROBE_ROW)
+    )
+
+
+def test_a_missing_module_is_refused_at_plan():
+    problems = DeclaredTrain.validate_params(dict(PARAMS))
+    assert any("module is required" in p for p in problems)
+
+
+def test_a_malformed_module_path_is_refused_at_plan():
+    problems = DeclaredTrain.validate_params(
+        {**DECLARED_PARAMS, "module": "notapath"}
+    )
+    assert any("module must name a class" in p for p in problems)
+
+
+def test_a_non_dict_module_params_is_refused_at_plan():
+    problems = DeclaredTrain.validate_params(
+        {**DECLARED_PARAMS, "module_params": [1, 2]}
+    )
+    assert any("module_params must be a dict" in p for p in problems)
+
+
+def test_a_bad_constructor_knob_is_refused_by_the_constructor(tmp_path):
+    with pytest.raises(ValueError, match="rejected module_params"):
+        train(
+            tmp_path,
+            params={**DECLARED_PARAMS, "module_params": {"nope": 1}},
+            cls=DeclaredTrain,
+        )
+
+
+def test_a_different_declared_architecture_cannot_restore_the_artifact(tmp_path):
+    """The class-identity check cannot separate two DECLARED families (they
+    share one build_module), so ``module``/``module_params`` are the values
+    the sidecar cross-check refuses on."""
+    fitted = train(tmp_path, params=DECLARED_PARAMS, cls=DeclaredTrain)
+    other = DeclaredTrain(
+        "qhat",
+        {**DECLARED_PARAMS, "module_params": {"in_features": 2, "out_features": 2}},
+        mode="load",
+        artifact=fitted["artifact_path"],
+    )
+    with pytest.raises(ValueError, match="sidecar mismatch on 'module_params'"):
+        other.run(ctx(tmp_path, sub="reload"), {})
 
 
 # -- the shipped example: loads, hashes, plans, runs ----------------------------
@@ -640,6 +726,8 @@ def test_example_runs_end_to_end_and_the_predictor_restores_the_fit(tmp_path):
 # -- the conformance suite (pipeline/CLAUDE.md step 8) ---------------------------
 
 EXPECTED_ROLES = {
+    "torch-train": "train",
+    "torch-predict": "signal",
     "torch-linear-train": "train",
     "torch-linear-predict": "signal",
 }
@@ -679,6 +767,20 @@ def probes(tmp_path):
     artifact = fixture["artifact_path"]
     expected = fixture["signal"].predict(PROBE_ROW)
 
+    # The DECLARED family needs its own fixture: its sidecar records
+    # module/module_params, which the linear fixture's does not carry, and a
+    # load cross-checks them.
+    declared_fixture = DeclaredTrain("fixture_declared", dict(DECLARED_PARAMS)).run(
+        NodeContext(
+            name="fixture",
+            asof="2026-01-01",
+            run_dir=str(tmp_path / "fixture-declared"),
+        ),
+        {"rows": make_rows()},
+    )
+    declared_artifact = declared_fixture["artifact_path"]
+    declared_expected = declared_fixture["signal"].predict(PROBE_ROW)
+
     def restored(out):
         signal = out["signal"]
         prediction = signal.predict(PROBE_ROW)
@@ -689,7 +791,44 @@ def probes(tmp_path):
             and abs(prediction - expected) < 1e-9
         )
 
+    def declared_restored(out):
+        signal = out["signal"]
+        prediction = signal.predict(PROBE_ROW)
+        return (
+            bool(getattr(signal, "loaded", False))
+            and signal.artifact_path == declared_artifact
+            and prediction is not None
+            and abs(prediction - declared_expected) < 1e-9
+        )
+
     return {
+        "torch-train": NodeProbe(
+            params=dict(DECLARED_PARAMS),
+            required=("features", "module"),
+            inputs={"rows": make_inverted_rows()},
+            stream_ports=("rows",),
+            runnable=True,
+            load_artifact=declared_artifact,
+            verify_loaded=lambda out: (
+                declared_restored(out)
+                and out["artifact_path"] == declared_artifact
+            ),
+        ),
+        "torch-predict": NodeProbe(
+            # Inference knobs only — the predict node refuses epochs/lr/loader
+            # by name, and it must: they are history, not shape.
+            params={
+                "features": FEATURES,
+                "label": "y",
+                "module": DECLARED_PARAMS["module"],
+                "module_params": dict(DECLARED_PARAMS["module_params"]),
+            },
+            inputs={"artifact_path": declared_artifact},
+            stream_ports=(),
+            runnable=True,
+            load_artifact=declared_artifact,
+            verify_loaded=declared_restored,
+        ),
         "torch-linear-train": NodeProbe(
             params=dict(PARAMS),
             required=("features",),

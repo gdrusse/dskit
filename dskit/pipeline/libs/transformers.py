@@ -64,16 +64,27 @@ import hashlib
 import json
 import math
 import os
+import time
 from abc import abstractmethod
 from collections.abc import Mapping
 
-from dskit.pipeline.base import import_ref
-from dskit.pipeline.kinds_stats import _reject_unknown
+from dskit.pipeline.base import (
+    import_library_class,
+    import_ref,
+    library_path_problems,
+)
+from dskit.pipeline.kinds_stats import _check_int, _reject_unknown
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
+from dskit.pipeline.trainlog import (
+    DEFAULT_MAX_LINES,
+    TrainingCurve,
+    probability_metrics,
+)
 
 __all__ = [
     "NODE_KINDS",
     "SIDECAR_NAME",
+    "DeclaredTransformerFit",
     "TinyTransformerFit",
     "TransformerFit",
     "TransformerPredict",
@@ -343,7 +354,15 @@ class TransformerFit(Node):
     #: The base's knobs. Subclasses with their own extend this tuple
     #: (``_PARAMS = TransformerFit._PARAMS + ("depth",)``) — the shared
     #: validator default-denies against the SUBCLASS's tuple.
-    _PARAMS = ("features", "label", "seed", "steps", "lr")
+    _PARAMS = (
+        "features",
+        "label",
+        "log_every",
+        "lr",
+        "max_log_lines",
+        "seed",
+        "steps",
+    )
 
     # -- the subclass contract ---------------------------------------------
 
@@ -406,18 +425,32 @@ class TransformerFit(Node):
             or lr <= 0
         ):
             problems.append(f"lr must be a finite number > 0, got {lr!r}")
+        _check_int(problems, "log_every", params.get("log_every", 1), ge=1)
+        _check_int(
+            problems,
+            "max_log_lines",
+            params.get("max_log_lines", DEFAULT_MAX_LINES),
+            ge=0,
+        )
         return problems
 
     def validate_inputs(self, inputs):
+        problems = []
         rows = inputs.get("rows")
         if not isinstance(rows, list):
             # A one-shot iterable would be consumed by any walk before
             # run() saw it — refuse the shape by name, walk nothing.
-            return [
+            problems.append(
                 "rows must be a list of feature rows (a one-shot iterable "
                 f"would be consumed by validation), got {rows!r}"
-            ]
-        return []
+            )
+        val_rows = inputs.get("val_rows")
+        if val_rows is not None and not isinstance(val_rows, list):
+            problems.append(
+                "val_rows must be a list of feature rows (or be left "
+                f"unwired), got {val_rows!r}"
+            )
+        return problems
 
     # -- the run --------------------------------------------------------------
 
@@ -451,16 +484,59 @@ class TransformerFit(Node):
                 f"{self.key}: encode() declined the fit rows — every row must "
                 f"carry numeric values for features {params.get('features')!r}"
             )
-        model.train()
+        # The optional validation port: a val-split row list the DOCUMENT
+        # wires. Without it a fine-tune is a black box until it ends.
+        val_rows = inputs.get("val_rows") or []
+        val_encoded, val_labels, val_targets = None, None, []
+        if val_rows:
+            val_encoded = self.encode(val_rows, params)
+            if val_encoded is None:
+                raise ValueError(
+                    f"{self.key}: encode() declined the val_rows — every row "
+                    "must carry numeric values for features "
+                    f"{params.get('features')!r}"
+                )
+            val_labels = self._labels_of(val_rows, label)
+            val_targets = [float(v) for v in val_labels.reshape(-1).tolist()]
+
         optimizer = torch.optim.SGD(model.parameters(), lr=lr)
         final_loss = math.nan
-        for _ in range(steps):
+        curve = TrainingCurve(
+            self.key,
+            self.log,
+            total_epochs=steps,
+            objective="val_loss" if val_rows else "train_loss",
+            log_every=params.get("log_every", 1),
+            max_lines=params.get("max_log_lines", DEFAULT_MAX_LINES),
+        )
+        for step in range(1, steps + 1):
+            started = time.monotonic()
+            model.train()
             optimizer.zero_grad()
             out = model(**encoded, labels=labels)
             out.loss.backward()
             optimizer.step()
             final_loss = float(out.loss.detach())
+
+            val_loss, scored = None, {}
+            if val_encoded is not None:
+                model.eval()
+                with torch.no_grad():
+                    val_out = model(**val_encoded, labels=val_labels)
+                    val_loss = float(val_out.loss.detach())
+                    preds = val_out.logits.reshape(-1).tolist()
+                scored = probability_metrics(preds, val_targets)
+            curve.record(
+                step,
+                final_loss,
+                val_loss=val_loss,
+                metrics=scored,
+                seconds=time.monotonic() - started,
+            )
+        curve.log_final()
         model.eval()
+        # Durable, not merely streamed — the run report reads this file.
+        self.write_artifact(ctx, "training_curve.json", curve.payload())
 
         _quiet_transformers()
         checkpoint = os.path.join(self.artifact_dir(ctx), "checkpoint")
@@ -495,17 +571,21 @@ class TransformerFit(Node):
             digest=digest,
             restored=False,
         )
+        metrics = {
+            "n_rows": len(rows),
+            "steps": steps,
+            "final_loss": final_loss,
+            "seed": seed,
+            "restored": 0.0,
+            "artifact_digest": digest,
+        }
+        if val_rows:
+            metrics["n_val_rows"] = len(val_rows)
+        metrics.update(curve.summary())
         return {
             "signal": signal,
             "artifact_path": checkpoint,
-            "metrics": {
-                "n_rows": len(rows),
-                "steps": steps,
-                "final_loss": final_loss,
-                "seed": seed,
-                "restored": 0.0,
-                "artifact_digest": digest,
-            },
+            "metrics": metrics,
         }
 
     def _labels_of(self, rows, label):
@@ -689,6 +769,70 @@ class TinyTransformerFit(TransformerFit):
         return BertForSequenceClassification(config)
 
 
+class DeclaredTransformerFit(TransformerFit):
+    """Fine-tune ANY HF architecture the DOCUMENT names. Registered as
+    ``transformers-fit``.
+
+    :class:`TinyTransformerFit` hardcodes one BERT shape in Python;
+    this builds whatever ``config_class`` / ``model_class`` name, with
+    ``config_params`` as the config's kwargs — so a different
+    architecture is a config edit, matching the ``estimator`` /
+    ``module`` grammar the sklearn and torch packs use.
+
+    **Still zero hub access, structurally.** The model is constructed
+    from a CONFIG OBJECT (``model_class(config_class(**config_params))``),
+    which is the one HF path that reads no cache and opens no socket;
+    there is no ``from_pretrained``, and no place to put a hub name. The
+    pack's no-network property is therefore preserved by construction
+    rather than by convention.
+    """
+
+    _PARAMS = TransformerFit._PARAMS + (
+        "config_class",
+        "config_params",
+        "model_class",
+    )
+
+    @classmethod
+    def validate_params(cls, params):
+        problems = list(super().validate_params(params))
+        for name, example in (
+            ("config_class", "transformers.BertConfig"),
+            ("model_class", "transformers.BertForSequenceClassification"),
+        ):
+            if name not in params:
+                problems.append(
+                    f"{name} is required — the class path to build FROM CONFIG, "
+                    f"e.g. {example!r} (never a hub name; this pack never "
+                    "downloads)"
+                )
+            else:
+                problems += library_path_problems(name, params[name], example=example)
+        config_params = params.get("config_params", {})
+        if not isinstance(config_params, dict) or any(
+            not isinstance(k, str) for k in config_params
+        ):
+            problems.append(
+                f"config_params must be a dict of config kwargs, got "
+                f"{config_params!r}"
+            )
+        return problems
+
+    def build_model(self, params):
+        config_cls = import_library_class(params["config_class"], "transformer config")
+        model_cls = import_library_class(params["model_class"], "transformer model")
+        kwargs = dict(params.get("config_params") or {})
+        try:
+            config = config_cls(**kwargs)
+        except TypeError as exc:
+            raise ValueError(
+                f"{params['config_class']} rejected config_params ({exc}) — a "
+                "mis-typed config knob is caught here, by the config, not "
+                "silently ignored"
+            ) from exc
+        return model_cls(config)
+
+
 # ---------------------------------------------------------------------------
 # Registration — explicit and idempotent, never at import
 # ---------------------------------------------------------------------------
@@ -696,6 +840,7 @@ class TinyTransformerFit(TransformerFit):
 #: The pack's registrable kinds: CONCRETE classes only. ``TransformerFit``
 #: is abstract and the registry refuses abstract classes by construction.
 NODE_KINDS = (
+    ("transformers-fit", DeclaredTransformerFit),
     ("transformers-tiny-fit", TinyTransformerFit),
     ("transformers-predict", TransformerPredict),
 )

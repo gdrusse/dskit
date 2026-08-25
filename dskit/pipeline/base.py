@@ -865,6 +865,74 @@ def import_ref(ref):
         ) from None
 
 
+def library_path_problems(name, value, *, example):
+    """Problems with a DECLARED LIBRARY CLASS path — shape only, at plan.
+
+    The document-facing grammar for "name me a class from some library"
+    (an estimator, an ``nn.Module``, an HF config). Two spellings are
+    accepted so a document author never has to remember which doorway
+    wants which: the dotted ``pkg.module.ClassName``
+    :func:`import_library_class` splits on the last dot, and the colon
+    form ``pkg.module:ClassName`` that :func:`import_ref` already uses for
+    component references. Whether it IMPORTS is deliberately not checked
+    here — the library may legitimately be absent on the planning
+    machine, which is why this is shape-only and the resolution happens at
+    execute.
+    """
+    if not isinstance(value, str) or not value:
+        return [f"{name} must be a class path string like {example!r}, got {value!r}"]
+    head, sep, attr = value.rpartition(":") if ":" in value else value.rpartition(".")
+    if not sep or not attr.isidentifier():
+        return [
+            f"{name} must name a class as module.ClassName or module:ClassName "
+            f"(like {example!r}), got {value!r}"
+        ]
+    if not head or not all(p.isidentifier() for p in head.split(".")):
+        return [
+            f"{name} must name an importable module before the class "
+            f"(like {example!r}), got {value!r}"
+        ]
+    return []
+
+
+def import_library_class(path, where, *, requires=()):
+    """The class behind a declared library path, or a refusal naming it.
+
+    Accepts both spellings :func:`library_path_problems` allows. Import
+    failure is reported as the honest "library not installed, or the path
+    is a typo" answer AT EXECUTE, where the library is due — never at
+    plan, where the library may rightly be missing.
+
+    ``requires`` names methods the class must expose (``("fit",)`` for an
+    estimator); a class lacking one is refused BY NAME rather than
+    failing later inside a training loop, where the cause would be much
+    harder to read.
+    """
+    module_name, _, cls_name = (
+        path.rpartition(":") if ":" in path else path.rpartition(".")
+    )
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise ValueError(
+            f"{where}: cannot import {path!r} ({exc}) — is the library "
+            "installed on this machine, and the path spelled as "
+            "module.ClassName?"
+        ) from exc
+    cls = getattr(module, cls_name, None)
+    if cls is None:
+        raise ValueError(
+            f"{where}: module {module_name!r} has no attribute {cls_name!r} — "
+            f"{path!r} does not exist"
+        )
+    for method in requires:
+        if not callable(getattr(cls, method, None)):
+            raise ValueError(
+                f"{where}: {path!r} has no {method}() method — not usable here"
+            )
+    return cls
+
+
 def _ref_param_errors(ref, params, where):
     """Construction-time validation for a class reference: run the target's
     ``validate_params`` when it is importable here; silently defer when it

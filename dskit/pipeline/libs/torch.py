@@ -53,9 +53,22 @@ What the base owns, so no subclass re-invents it:
   ``loaded`` flag, which is what lets a probe's ``verify_loaded`` reject
   a fresh fit.
 
+* **The dataset seam** — :class:`TorchAdapter` answers "how does a row
+  become model input", and a document NAMES one (``adapter`` /
+  ``adapter_params``, the same grammar as ``module``). The default is
+  :class:`RowVectorAdapter`, bit-for-bit the flat feature-vector /
+  MSE behaviour this pack always had, which is why the seam changed
+  nothing for documents written before it. An adapter also supplies
+  constructor kwargs the DATA implies (a vocab size, a sequence length)
+  UNDER the document's own, so a declared value always wins. Without
+  this, the architecture was declarable while the DATASET was not, and
+  any model whose example is not a flat row — a sequence, a panel, a
+  ladder — could not be named in a document at all.
+
 Inputs are ROWS — a list of dicts (or attribute-bearing records), the
 FitRows/ArrayFeatures shape; feature and label keys are named by params.
-In-memory only: nothing here reads a data file.
+What an "example" IS, though, is the adapter's to decide. In-memory only:
+nothing here reads a data file.
 
 Packs never auto-register: :data:`NODE_KINDS` plus an explicit
 :func:`register` call is the deliberate path (``libs/__init__``), and the
@@ -73,19 +86,35 @@ import hashlib
 import json
 import math
 import os
+import time
 from abc import abstractmethod
 from collections.abc import Mapping
 
-from dskit.pipeline.base import import_ref, is_class_ref
+from dskit.pipeline.base import (
+    import_library_class,
+    import_ref,
+    is_class_ref,
+    library_path_problems,
+)
 from dskit.pipeline.kinds_stats import _check_int, _reject_unknown
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
+from dskit.pipeline.trainlog import (
+    DEFAULT_MAX_LINES,
+    TrainingCurve,
+    probability_metrics,
+)
 
 __all__ = [
     "ARTIFACT_FORMAT",
     "LOADER_PARAMS",
+    "DeclaredPredict",
+    "DeclaredTrain",
     "LinearPredictor",
     "LinearRegressor",
     "NODE_KINDS",
+    "RowVectorAdapter",
+    "TorchAdapter",
+    "TorchBatches",
     "TorchPredict",
     "TorchSignal",
     "TorchTrain",
@@ -105,6 +134,19 @@ LOADER_DEFAULTS = {"batch_size": 32, "shuffle": True, "seed": 0}
 DEFAULT_EPOCHS = 5
 DEFAULT_LR = 0.01
 DEFAULT_LABEL = "label"
+
+#: Base knobs that pin a trained module's SHAPE — a load whose sidecar
+#: disagrees on one of these is refused by name. MODULE-level, not merely
+#: a class attribute, for the reason ``LOADER_PARAMS`` is: ``_load_artifact``
+#: reads them by LOOPING over the table, so none of these literals appears
+#: in the class's own bytecode, and the conformance check that hunts orphan
+#: knobs (``_reachable_knob_names``) deliberately refuses to let a class's
+#: own ``_PARAMS``-style attribute vouch for its knobs — it looks for a
+#: module attribute of the name the code NAMES, hence the leading
+#: underscore matching ``self._SHAPE_PARAMS``. Declared here, ``label``
+#: stops reading as an unread knob on the predict family (it was never
+#: unread; only invisible).
+_SHAPE_PARAMS = ("features", "label")
 
 #: Keys every sidecar must carry — an artifact without them is refused.
 _SIDECAR_KEYS = ("format", "module_class", "params", "seed", "state_hash")
@@ -167,6 +209,31 @@ def _loader_problems(loader):
     return problems
 
 
+def _optimizer_problems(params):
+    """Problems with the declared ``optimizer``/``optimizer_params``.
+
+    ``lr`` is refused INSIDE the block on purpose: the node already owns
+    ``lr``, two spellings would disagree, and a search space addressing
+    ``<node>.lr`` would silently tune the loser.
+    """
+    problems = []
+    path = params.get("optimizer")
+    if path is not None:
+        problems += library_path_problems("optimizer", path, example="torch.optim.AdamW")
+    block = params.get("optimizer_params", {})
+    if not isinstance(block, dict) or any(not isinstance(k, str) for k in block):
+        problems.append(
+            f"optimizer_params must be a dict of optimizer kwargs, got {block!r}"
+        )
+    elif "lr" in block:
+        problems.append(
+            "optimizer_params must not carry 'lr' — the node's own lr knob is "
+            "the one place a learning rate is declared (two spellings would "
+            "disagree, and a search over '<node>.lr' would tune the loser)"
+        )
+    return problems
+
+
 def _feature_problems(params, *, required):
     """Problems with the ``features``/``label`` row-key params."""
     problems = []
@@ -190,6 +257,18 @@ def _feature_problems(params, *, required):
     return problems
 
 
+def _on_device(adapter, batches, index, device):
+    """One batch, on ``device`` — or exactly today's batch when ``device``
+    is ``None``.
+
+    A single funnel so the training loop never repeats the conditional, and
+    so the ``device is None`` path is provably the untouched one: it returns
+    ``adapter.select(...)`` and nothing else happens.
+    """
+    batch = adapter.select(batches, index)
+    return batch if device is None else adapter.to_device(batch, device)
+
+
 def _usable_rows(rows, features, label):
     """``(xs, ys, n_skipped)`` from the row stream — a row missing any
     feature or the label (or carrying a non-finite value) is SKIPPED and
@@ -206,6 +285,229 @@ def _usable_rows(rows, features, label):
     return xs, ys, skipped
 
 
+# ---------------------------------------------------------------------------
+# The BATCH-ADAPTER seam — how rows become model input (docs/25 §2)
+# ---------------------------------------------------------------------------
+
+
+class TorchBatches:
+    """One split, prepared: how many examples, how many were unusable, and
+    whatever opaque payload the adapter needs to cut a batch out of it.
+
+    A concrete container rather than a bare tuple because the trainer
+    reports ``n_rows``/``n_skipped`` in ``metrics`` for EVERY adapter — a
+    fit that silently dropped 90% of its rows must be visible in the run
+    report whether the rows were feature vectors or event panels.
+    """
+
+    __slots__ = ("n", "n_skipped", "payload")
+
+    def __init__(self, n, payload, *, n_skipped=0):
+        self.n = int(n)
+        self.payload = payload
+        self.n_skipped = int(n_skipped)
+
+    def __len__(self) -> int:
+        return self.n
+
+
+class TorchAdapter:
+    """HOW ROWS BECOME MODEL INPUT — the seam :class:`TorchTrain` was missing.
+
+    Before this, the trainer hardcoded one dataset shape: every row is a
+    flat vector of ``features``, the batch is ``(x[idx], y[idx])``, the
+    objective is MSE on ``module(x)``, and a prediction is that same scalar.
+    That is right for a regressor over a feature row and WRONG for every
+    model whose example is not a row — a sequence model, a panel model, a
+    graph model. Such a model could not be named in a document at all: the
+    architecture was declarable (``module``) while the DATASET was not.
+
+    An adapter owns the four things the base genuinely cannot know:
+
+    1. ``prepare`` — rows in, a :class:`TorchBatches` out. This is where a
+       row list becomes tensors, panels, or anything else; unusable rows
+       are counted here and never fabricated.
+    2. ``module_params`` — constructor kwargs the DATA implies (a vocab
+       size, a token width, a sequence length). They are merged UNDER the
+       document's own ``module_params``, so a declared value always wins
+       and nothing the data says can silently override the config.
+    3. ``loss`` / ``beliefs`` — the objective, and the calibrated
+       probabilities + matching labels that
+       :func:`~dskit.pipeline.trainlog.probability_metrics` scores per
+       epoch. One metrics helper, every adapter.
+    4. ``predict`` — one record to one belief, which is what
+       :class:`TorchSignal` serves downstream.
+
+    ``requires_features`` says whether the node's ``features`` knob is
+    meaningful for this adapter. The default row-vector adapter needs it;
+    an adapter that builds its examples some other way sets it ``False``
+    so the node stops demanding a feature list it would never read.
+
+    Adapters are DECLARED, not subclassed into the node: a document names
+    one in ``adapter`` with ``adapter_params`` as its kwargs, exactly the
+    ``module``/``module_params`` and ``estimator``/``estimator_params``
+    grammar the pack already uses. Import torch INSIDE methods, never at
+    module scope (``tests/pipeline/test_purity.py``).
+    """
+
+    #: Does the node's ``features`` list mean anything here?
+    requires_features = True
+
+    #: The adapter's OWN declarable knobs, for its ``validate_params``.
+    _PARAMS: tuple = ()
+
+    def __init__(self, params=None):
+        self.params = dict(params or {})
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``adapter_params``, checked at PLAN time by the
+        class that owns those knobs — never restated on the node."""
+        problems = []
+        _reject_unknown(problems, params, cls._PARAMS)
+        return problems
+
+    # -- the four hooks ----------------------------------------------------
+
+    def prepare(self, rows, params, *, where):
+        """``rows`` -> :class:`TorchBatches`. ``where`` names the port
+        (``"rows"``/``"val_rows"``) so a refusal says which wire is wrong."""
+        raise NotImplementedError
+
+    def module_params(self, batches, params):
+        """Constructor kwargs the DATA implies; ``{}`` when none do."""
+        return {}
+
+    def select(self, batches, index):
+        """The batch at ``index`` (a ``LongTensor`` of example positions),
+        or the WHOLE split when ``index`` is ``None``."""
+        raise NotImplementedError
+
+    def loss(self, module, batch):
+        """A scalar tensor to backpropagate."""
+        raise NotImplementedError
+
+    def beliefs(self, module, batch):
+        """``(preds, labels)`` in ``[0, 1]`` for the per-epoch probability
+        metrics, or ``(None, None)`` when this objective has none."""
+        return None, None
+
+    def to_device(self, batch, device):
+        """``batch`` moved onto ``device`` — the adapter's call, because the
+        adapter is the only thing that knows the batch's SHAPE.
+
+        The base declines (returns it unchanged), which is correct for an
+        adapter whose batch holds no tensors and loud for one that does: a
+        CPU batch meeting a module on ``cuda`` raises a device mismatch
+        immediately rather than training something wrong. Every shipped
+        adapter implements it for its own shape.
+        """
+        return batch
+
+    def fitted(self, module, train_batches, val_batches):
+        """Called ONCE when the fit closes, before the artifact is written.
+
+        The hook an adapter needs when serving requires the trained model
+        (materializing a lookup, calibrating a temperature). Default: do
+        nothing — a row-vector model answers straight from ``module``.
+        """
+        return None
+
+    # -- fitted state that is NOT in the state dict ------------------------
+
+    def save_state(self, prefix):
+        """Persist whatever :meth:`fitted` materialized, beside ``model.pt``.
+
+        Returns a JSON-small manifest ``{name: {...}}`` recorded in the
+        artifact sidecar — so whatever is written here is covered by the
+        artifact's content hash, exactly like the state file. ``{}`` (the
+        default) means this adapter carries no state beyond the weights.
+
+        This exists because ``mode="load"`` consumes NO inputs: "the
+        artifact IS the input". An adapter whose serving surface is built
+        by :meth:`fitted` from the panels it was prepared with therefore
+        has NOTHING to rebuild from at load time, and a restore that
+        silently answers ``None`` for every lookup is a run that quietly
+        did not use the model at all. ``prefix`` is the artifact path with
+        its extension stripped, so a file lands next to ``model.pt`` and
+        travels with it.
+        """
+        return {}
+
+    def load_state(self, prefix, recorded):
+        """Restore what :meth:`save_state` wrote, or RAISE.
+
+        ``recorded`` is the sidecar's manifest for this adapter. An adapter
+        that needs state and finds none must raise — the caller turns that
+        into a refusal naming the artifact. Falling back to "serve nothing"
+        is the failure this hook exists to make impossible.
+        """
+        return None
+
+    def predict(self, module, record):
+        """One record -> one float, or ``None`` for no coverage."""
+        raise NotImplementedError
+
+
+class RowVectorAdapter(TorchAdapter):
+    """The DEFAULT adapter: one flat feature vector per row, MSE objective.
+
+    Bit-for-bit the behaviour :class:`TorchTrain` had before the seam
+    existed — same ``_usable_rows`` skip-and-count, same
+    ``torch.tensor(xs)`` matrix, same ``mse_loss(module(x).reshape(-1), y)``,
+    same ``module(row)`` prediction. It is the default precisely so that
+    adding the seam changed nothing for any document already in flight.
+    """
+
+    def prepare(self, rows, params, *, where):
+        import torch
+
+        features = list(params["features"])
+        label = params.get("label", DEFAULT_LABEL)
+        xs, ys, skipped = _usable_rows(rows, features, label)
+        payload = None
+        if xs:
+            payload = (
+                torch.tensor(xs, dtype=torch.float32),
+                torch.tensor(ys, dtype=torch.float32),
+            )
+        return TorchBatches(len(xs), payload, n_skipped=skipped)
+
+    def select(self, batches, index):
+        # A 2-tuple ``(features, label)`` — the batch shape the pack's
+        # documented ``loss(self, module, batch)`` hook has always been
+        # handed, kept verbatim so every existing override still unpacks.
+        x, y = batches.payload
+        return (x, y) if index is None else (x[index], y[index])
+
+    def to_device(self, batch, device):
+        """The ``(features, label)`` pair, moved. Only this class knows the
+        batch is a 2-tuple, which is why the move lives here."""
+        x, y = batch
+        return x.to(device), y.to(device)
+
+    def loss(self, module, batch):
+        import torch
+
+        features, label = batch
+        return torch.nn.functional.mse_loss(module(features).reshape(-1), label)
+
+    def beliefs(self, module, batch):
+        features, label = batch
+        return module(features).reshape(-1).tolist(), label.tolist()
+
+    def predict(self, module, record):
+        import torch
+
+        names = self.params.get("features") or ()
+        values = [_value(record, name) for name in names]
+        if not values or any(v is None for v in values):
+            return None
+        with torch.no_grad():
+            out = module(torch.tensor([values], dtype=torch.float32))
+        return float(out.reshape(-1)[0])
+
+
 class TorchSignal:
     """What a torch node's ``signal`` output IS: predictions + provenance.
 
@@ -220,17 +522,23 @@ class TorchSignal:
     restore (F-220 #12).
     """
 
-    __slots__ = ("artifact_path", "features", "loaded", "module")
+    __slots__ = ("adapter", "artifact_path", "features", "loaded", "module")
 
-    def __init__(self, module, features, artifact_path, *, loaded):
+    def __init__(self, module, features, artifact_path, *, loaded, adapter=None):
         self.module = module
         self.features = tuple(features)
         self.artifact_path = artifact_path
         self.loaded = bool(loaded)
+        #: The :class:`TorchAdapter` that prepared this fit. It owns the
+        #: record -> belief translation, so a panel model answers through
+        #: the same ``predict`` a feature-row model does.
+        self.adapter = adapter
 
     def predict(self, record):
         """One row in, a float out — or ``None`` when any feature is
         missing or non-finite (no coverage, never a made-up number)."""
+        if self.adapter is not None:
+            return self.adapter.predict(self.module, record)
         import torch
 
         values = [_value(record, name) for name in self.features]
@@ -257,8 +565,17 @@ class _TorchModel(Node):
     _EXTRA_PARAMS = ()
     #: Base knobs that pin the trained module's SHAPE; a load where these
     #: disagree with the sidecar is refused by name (training knobs like
-    #: epochs/lr may lawfully differ — they are history, not shape).
-    _SHAPE_PARAMS = ("features", "label")
+    #: epochs/lr may lawfully differ — they are history, not shape). The
+    #: values live in the module-level ``_SHAPE_PARAMS`` table.
+    _SHAPE_PARAMS = _SHAPE_PARAMS
+    #: The adapter THIS fit is using, set at the top of ``run``. Kept as a
+    #: class-level ``None`` so a directly-called ``loss`` still works.
+    _adapter = None
+    #: Constructor kwargs the DATA implied for this fit (``module_params``
+    #: on the adapter). Recorded in the sidecar and merged back at load —
+    #: without that, a restore would rebuild the module from the document
+    #: alone and silently get a different shape than was trained.
+    _data_params: dict = {}
 
     @classmethod
     def _allowed(cls):
@@ -269,6 +586,49 @@ class _TorchModel(Node):
         """Return the ``torch.nn.Module`` these params describe. The
         subclass hook — import torch INSIDE it, never at module top."""
         raise NotImplementedError
+
+    def build_adapter(self, params):
+        """The :class:`TorchAdapter` that turns rows into batches.
+
+        Default: :class:`RowVectorAdapter`, the flat feature-vector shape
+        this pack always had. The declared family overrides this to build
+        whatever ``adapter`` names."""
+        return RowVectorAdapter(params)
+
+    def build_optimizer(self, module, params):
+        """The optimizer for this fit — ``torch.optim.SGD`` at ``lr`` unless
+        the document names another in ``optimizer``/``optimizer_params``.
+
+        Declarable because the optimizer is part of a model's DEFINITION,
+        not a detail: a family whose regularization is carried by
+        ``weight_decay`` (a bespoke family might shrink per-instrument
+        terms toward a pooled head that way) trains to a different
+        model under plain SGD, silently and with no error. ``lr`` stays the
+        node's own knob so it means one thing across every optimizer, and a
+        declared ``lr`` inside ``optimizer_params`` is refused rather than
+        quietly shadowing it.
+        """
+        import torch
+
+        path = params.get("optimizer")
+        kwargs = dict(params.get("optimizer_params") or {})
+        lr = float(params.get("lr", DEFAULT_LR))
+        if not path:
+            return torch.optim.SGD(module.parameters(), lr=lr, **kwargs)
+        cls = import_library_class(path, "torch optimizer", requires=("step",))
+        try:
+            return cls(module.parameters(), lr=lr, **kwargs)
+        except TypeError as exc:
+            raise ValueError(
+                f"{path} rejected optimizer_params ({exc}) — a mis-typed "
+                "optimizer knob is caught here, by the optimizer, not silently"
+            ) from exc
+
+    @classmethod
+    def _features_required(cls, params) -> bool:
+        """Does ``features`` have to be declared? Only the adapter knows,
+        and only the DECLARED family can have a non-default one."""
+        return True
 
     # -- the artifact protocol ---------------------------------------------
 
@@ -313,24 +673,68 @@ class _TorchModel(Node):
         )
         return digest.hexdigest()
 
-    def _save_artifact(self, ctx, module, seed):
+    @staticmethod
+    def _state_prefix(state_path):
+        """``model.pt`` -> ``model``: where an adapter's own state files go,
+        so they travel with the artifact a document pins."""
+        return os.path.splitext(state_path)[0]
+
+    def _save_artifact(self, ctx, module, seed, adapter=None):
         """Write ``model.pt`` + the ``model.json`` sidecar; returns the
-        state file's path (the artifact reference a document pins)."""
+        state file's path (the artifact reference a document pins).
+
+        An adapter carrying FITTED STATE beyond the weights (a serving
+        lookup, a calibration) writes it here through
+        :meth:`TorchAdapter.save_state`, and its manifest is recorded in the
+        sidecar — which is what puts it under the same content hash as the
+        state file. ``adapter_state`` is omitted entirely when the adapter
+        has none, so an artifact from a stateless adapter is byte-identical
+        to one written before this existed.
+        """
         import torch
 
         state_path = os.path.join(self.artifact_dir(ctx), "model.pt")
         torch.save(module.state_dict(), state_path)
+        adapter = adapter if adapter is not None else self._adapter
+        adapter_state = (
+            adapter.save_state(self._state_prefix(state_path))
+            if adapter is not None
+            else {}
+        )
         sidecar = {
+            "data_params": dict(self._data_params),
             "format": ARTIFACT_FORMAT,
             "module_class": self._class_ref(),
             "params": self.params,
             "seed": seed,
         }
+        if adapter_state:
+            sidecar["adapter_state"] = adapter_state
         # Hashed LAST, over the material above: the digest covers the state
         # bytes and every other sidecar field (S2-A).
         sidecar["state_hash"] = self._state_hash(state_path, sidecar)
         self.write_artifact(ctx, "model.json", sidecar)
         return state_path
+
+    def _restore_adapter(self, sidecar, state_path):
+        """The artifact's adapter, with its fitted state restored.
+
+        The load-path counterpart of :meth:`_save_artifact`. An adapter that
+        needs state and cannot find it RAISES here, and the refusal names
+        the artifact — never a restored model that answers ``None`` for
+        every lookup while the run exits 0.
+        """
+        adapter = self.build_adapter(sidecar["params"])
+        try:
+            adapter.load_state(
+                self._state_prefix(state_path), sidecar.get("adapter_state") or {}
+            )
+        except Exception as exc:  # noqa: BLE001 - refusal must name the artifact
+            self._refuse(
+                f"{type(adapter).__name__} could not restore the fitted state "
+                f"recorded beside {state_path!r}: {exc}"
+            )
+        return adapter
 
     def _load_artifact(self, state_path):
         """Restore ``(module, sidecar)`` from a pinned state file, or
@@ -393,6 +797,13 @@ class _TorchModel(Node):
                         f"artifact sidecar mismatch on {name!r}: trained with "
                         f"{trained[name]!r}, this node declares {self.params[name]!r}"
                     )
+        # Restore the data-implied kwargs the fit used, so ``build_module``
+        # rebuilds the SAME shape it trained — the document alone does not
+        # carry them.
+        data_params = sidecar.get("data_params") or {}
+        if not isinstance(data_params, dict):
+            self._refuse(f"artifact sidecar data_params are not a dict: {data_params!r}")
+        self._data_params = data_params
         try:
             module = self.build_module(trained)
             state = torch.load(state_path, map_location="cpu", weights_only=True)
@@ -423,17 +834,52 @@ class TorchTrain(_TorchModel):
     content hash) and ``artifact_path`` leaves through the outputs so a
     later run can pin it. ``mode="load"`` RESTORES that artifact — refuse
     by name on a missing/mismatched sidecar, never refit.
+
+    **Training telemetry.** Every epoch records its mean train loss and —
+    when the optional ``val_rows`` port is wired — the validation loss and
+    the calibrated-probability metrics (``logloss``, ``brier``, ``ece``;
+    :func:`dskit.pipeline.trainlog.probability_metrics`, binary labels
+    only). Lines STREAM through ``self.log`` as each epoch closes, so a
+    diverging fit is visible while it runs rather than after it; the
+    complete per-epoch table lands in ``training_curve.json`` under the
+    node's artifact dir, and the reduction (best epoch, final losses)
+    joins ``metrics``. ``log_every``/``max_log_lines`` bound the stream —
+    a 200-epoch fit costs ~20 lines, not 200 — while the ARTIFACT stays
+    complete regardless.
+
+    ``val_rows`` is a genuinely separate port, not a slice of ``rows``:
+    the document wires it from a val-split filter, so this node cannot
+    invent its own split and cannot see the test window at all.
     """
 
     role = "train"
     outputs = ("signal", "artifact_path", "metrics")
 
-    _BASE_PARAMS = ("epochs", "features", "label", "loader", "lr")
+    _BASE_PARAMS = (
+        "device",
+        "epochs",
+        "features",
+        "label",
+        "loader",
+        "log_every",
+        "lr",
+        "max_log_lines",
+        "optimizer",
+        "optimizer_params",
+    )
 
     @classmethod
     def validate_params(cls, params):
         problems = []
         _reject_unknown(problems, params, cls._allowed())
+        device = params.get("device")
+        if device is not None and (not isinstance(device, str) or not device):
+            problems.append(
+                f"device must be null or a torch device string, got {device!r} "
+                "(e.g. 'cuda', 'cuda:0', 'cpu'). Availability is NOT checked "
+                "here — a plan machine may rightly have no GPU; the move at "
+                "fit time is what refuses an absent device, loudly"
+            )
         _check_int(problems, "epochs", params.get("epochs", DEFAULT_EPOCHS), ge=1)
         lr = params.get("lr", DEFAULT_LR)
         if (
@@ -443,30 +889,45 @@ class TorchTrain(_TorchModel):
             or lr <= 0
         ):
             problems.append(f"lr must be a finite number > 0, got {lr!r}")
+        _check_int(problems, "log_every", params.get("log_every", 1), ge=1)
+        _check_int(
+            problems,
+            "max_log_lines",
+            params.get("max_log_lines", DEFAULT_MAX_LINES),
+            ge=0,
+        )
         problems.extend(_loader_problems(params.get("loader", {})))
-        problems.extend(_feature_problems(params, required=True))
+        problems.extend(_optimizer_problems(params))
+        problems.extend(
+            _feature_problems(params, required=cls._features_required(params))
+        )
         return problems
 
     def validate_inputs(self, inputs):
         if self.mode == "load":
             return []  # nothing is consumed — the artifact IS the input
+        problems = []
         rows = inputs.get("rows")
         if not isinstance(rows, list):
-            return [
+            problems.append(
                 "rows must be a LIST of feature/label rows — a one-shot "
                 f"iterable is refused by name, got {type(rows).__name__} "
                 "(walking it here would hand run() an exhausted stream)"
-            ]
-        return []
+            )
+        val_rows = inputs.get("val_rows")
+        if val_rows is not None and not isinstance(val_rows, list):
+            problems.append(
+                "val_rows must be a LIST of feature/label rows (or be left "
+                f"unwired), got {type(val_rows).__name__}"
+            )
+        return problems
 
     def loss(self, module, batch):
-        """The training objective for one ``(features, label)`` batch —
-        default MSE. Override for other objectives; return a scalar
-        tensor the loop can backpropagate."""
-        import torch
-
-        features, label = batch
-        return torch.nn.functional.mse_loss(module(features).reshape(-1), label)
+        """The training objective for one batch — delegated to the adapter
+        (:class:`RowVectorAdapter` = MSE over ``(features, label)``).
+        Override for another objective; return a scalar tensor the loop can
+        backpropagate."""
+        return (self._adapter or self.build_adapter(self.params)).loss(module, batch)
 
     def run(self, ctx, inputs):
         if self.mode == "load":
@@ -476,7 +937,16 @@ class TorchTrain(_TorchModel):
             )
             self.log.info("restored %s from %s", self._class_ref(), self.artifact)
             return {
-                "signal": TorchSignal(module, features, self.artifact, loaded=True),
+                "signal": TorchSignal(
+                    module,
+                    features,
+                    self.artifact,
+                    loaded=True,
+                    # The adapter's OWN fitted state comes back too. Without
+                    # this a restored panel model answers None for every
+                    # lookup and the run silently serves the market instead.
+                    adapter=self._restore_adapter(sidecar, self.artifact),
+                ),
                 "artifact_path": self.artifact,
                 "metrics": {"loaded": 1, "seed": sidecar["seed"]},
             }
@@ -487,58 +957,144 @@ class TorchTrain(_TorchModel):
         loader.update(self.params.get("loader", {}))
         seed, batch_size = loader["seed"], loader["batch_size"]
         epochs = self.params.get("epochs", DEFAULT_EPOCHS)
-        features = list(self.params["features"])
+        features = list(self.params.get("features") or ())
         label = self.params.get("label", DEFAULT_LABEL)
-        xs, ys, skipped = _usable_rows(inputs["rows"], features, label)
-        if not xs:
+
+        # THE DATASET SEAM. What an "example" is belongs to the adapter, so
+        # the loop below is the same whether the batch is a feature matrix
+        # or a ladder panel — and the default adapter makes it identical to
+        # what this node did before the seam existed.
+        adapter = self._adapter = self.build_adapter(self.params)
+        train_set = adapter.prepare(inputs["rows"], self.params, where="rows")
+        if not len(train_set):
             raise ValueError(
-                f"{self.key}: no usable rows — every row lacked a finite value "
-                f"for features {features} + label {label!r} "
-                f"({skipped} row(s) seen)"
+                f"{self.key}: no usable rows — {adapter.__class__.__name__} "
+                f"could build no example from features {features} + label "
+                f"{label!r} ({train_set.n_skipped} row(s) seen)"
             )
 
+        # The optional validation port — a val-split row list the DOCUMENT
+        # wires. Absent is fine (the curve then tracks train loss); present
+        # is what makes the fit's generalization visible per epoch.
+        val_set, val_rows = None, inputs.get("val_rows")
+        if val_rows:
+            val_set = adapter.prepare(val_rows, self.params, where="val_rows")
+            if not len(val_set):
+                raise ValueError(
+                    f"{self.key}: val_rows was wired but "
+                    f"{adapter.__class__.__name__} could build no example from "
+                    f"features {features} + label {label!r} "
+                    f"({val_set.n_skipped} row(s) seen) — fix the wiring rather "
+                    "than training blind"
+                )
+
         torch.manual_seed(seed)  # pins the init: one seed, one state dict
+        # Data-implied constructor kwargs go UNDER the document's own, so a
+        # declared value always wins and the data can never silently
+        # override the config.
+        self._data_params = adapter.module_params(train_set, self.params)
         module = self.build_module(self.params)
-        x = torch.tensor(xs, dtype=torch.float32)
-        y = torch.tensor(ys, dtype=torch.float32)
-        optimizer = torch.optim.SGD(
-            module.parameters(), lr=float(self.params.get("lr", DEFAULT_LR))
-        )
+        # WHERE the fit runs. Declared, never sniffed: the default is None,
+        # which is CPU and bit-for-bit what this loop always did. A named
+        # device moves the module here and every batch below through the
+        # adapter, because only the adapter knows the batch's shape.
+        device = self.params.get("device") or None
+        if device:
+            module.to(device)
+            self.log.info("training on device %r", device)
+        optimizer = self.build_optimizer(module, self.params)
         order_gen = torch.Generator().manual_seed(seed)  # pins the shuffle
-        module.train()
-        for _epoch in range(epochs):
+        curve = TrainingCurve(
+            self.key,
+            self.log,
+            total_epochs=epochs,
+            objective="val_loss" if val_set else "train_loss",
+            log_every=self.params.get("log_every", 1),
+            max_lines=self.params.get("max_log_lines", DEFAULT_MAX_LINES),
+        )
+        n = len(train_set)
+        for epoch in range(1, epochs + 1):
+            started = time.monotonic()
+            module.train()
             if loader["shuffle"]:
-                order = torch.randperm(len(xs), generator=order_gen)
+                order = torch.randperm(n, generator=order_gen)
             else:
-                order = torch.arange(len(xs))
-            for start in range(0, len(xs), batch_size):
+                order = torch.arange(n)
+            batch_loss_sum, n_batches = 0.0, 0
+            for start in range(0, n, batch_size):
                 idx = order[start : start + batch_size]
                 optimizer.zero_grad()
-                self.loss(module, (x[idx], y[idx])).backward()
+                batch_loss = self.loss(
+                    module, _on_device(adapter, train_set, idx, device)
+                )
+                batch_loss.backward()
                 optimizer.step()
+                batch_loss_sum += float(batch_loss.detach())
+                n_batches += 1
+            train_loss = batch_loss_sum / max(n_batches, 1)
+
+            val_loss, scored = None, {}
+            if val_set is not None:
+                module.eval()
+                with torch.no_grad():
+                    val_batch = _on_device(adapter, val_set, None, device)
+                    val_loss = float(self.loss(module, val_batch))
+                    preds, val_labels = adapter.beliefs(module, val_batch)
+                if preds is not None:
+                    scored = probability_metrics(preds, val_labels)
+            curve.record(
+                epoch,
+                train_loss,
+                val_loss=val_loss,
+                metrics=scored,
+                seconds=time.monotonic() - started,
+            )
+        curve.log_final()
+
         module.eval()
         with torch.no_grad():
-            final_loss = float(self.loss(module, (x, y)))
-        artifact_path = self._save_artifact(ctx, module, seed)
+            final_loss = float(
+                self.loss(module, _on_device(adapter, train_set, None, device))
+            )
+        # Serving may need the FITTED model (a lookup to materialize, a
+        # temperature to calibrate). Once, here, never per prediction.
+        adapter.fitted(module, train_set, val_set)
+        if device:
+            # The ARTIFACT is device-independent: a fit on cuda must restore
+            # on a CPU-only machine, and the served module answers single
+            # records where a device transfer costs more than the forward.
+            module.to("cpu")
+        # The curve is DURABLE, not just streamed: the run report reads the
+        # artifact, and a strided stream never loses an epoch here.
+        self.write_artifact(ctx, "training_curve.json", curve.payload())
+        artifact_path = self._save_artifact(ctx, module, seed, adapter=adapter)
         self.log.info(
-            "trained %s on %d row(s) (%d skipped), %d epoch(s), seed %d -> %s",
+            "trained %s on %d example(s) (%d skipped), %d epoch(s), seed %d -> %s",
             self._class_ref(),
-            len(xs),
-            skipped,
+            n,
+            train_set.n_skipped,
             epochs,
             seed,
             artifact_path,
         )
+        metrics = {
+            "n_rows": n,
+            "n_skipped": train_set.n_skipped,
+            "epochs": epochs,
+            "seed": seed,
+            "final_loss": final_loss,
+            "device": device or "cpu",
+        }
+        if val_set is not None:
+            metrics["n_val_rows"] = len(val_set)
+            metrics["n_val_skipped"] = val_set.n_skipped
+        metrics.update(curve.summary())
         return {
-            "signal": TorchSignal(module, features, artifact_path, loaded=False),
+            "signal": TorchSignal(
+                module, features, artifact_path, loaded=False, adapter=adapter
+            ),
             "artifact_path": artifact_path,
-            "metrics": {
-                "n_rows": len(xs),
-                "n_skipped": skipped,
-                "epochs": epochs,
-                "seed": seed,
-                "final_loss": final_loss,
-            },
+            "metrics": metrics,
         }
 
 
@@ -609,14 +1165,19 @@ class TorchPredict(_TorchModel):
                     "a train node"
                 )
         module, sidecar = self._load_artifact(reference)
+        adapter = self._restore_adapter(sidecar, reference)
         features = self.params.get("features") or sidecar["params"].get("features")
-        if not features:
+        if not features and adapter.requires_features:
             self._refuse(
                 "artifact sidecar records no features and this node declares "
                 "none — the signal would have no row keys to read"
             )
         self.log.info("restored %s from %s", self._class_ref(), reference)
-        return {"signal": TorchSignal(module, features, reference, loaded=True)}
+        return {
+            "signal": TorchSignal(
+                module, features or (), reference, loaded=True, adapter=adapter
+            )
+        }
 
 
 class _LinearModule:
@@ -642,9 +1203,166 @@ class LinearPredictor(_LinearModule, TorchPredict):
     artifacts. Registered as ``torch-linear-predict``."""
 
 
+# ---------------------------------------------------------------------------
+# The DECLARED family — an architecture the DOCUMENT names
+# ---------------------------------------------------------------------------
+
+
+class _DeclaredModule:
+    """``build_module`` from a class path in ``params["module"]``.
+
+    The config-declared counterpart of :class:`_LinearModule`, and the
+    reason a new architecture is a CONFIG edit rather than a new Python
+    subclass. ``module`` names any ``nn.Module`` class
+    (``"torch.nn.Linear"`` or ``"torch.nn:Linear"``) and ``module_params``
+    is its constructor kwargs, exactly as ``estimator`` /
+    ``estimator_params`` work in the sklearn pack — one grammar for "name
+    me a model", across doorways.
+
+    Shared by the train/predict pair as ONE mixin, which is what makes the
+    sidecar's ``build_module`` identity check pass across the pair. Note
+    what that check now means for this family: every declared
+    architecture shares this one ``build_module``, so the class check
+    alone can no longer tell a Linear artifact from an LSTM one. That is
+    exactly why ``module``/``module_params`` are ``_EXTRA_PARAMS`` — the
+    base cross-checks those against the sidecar at load
+    (``_load_artifact``), so a mismatched architecture is still refused BY
+    NAME, by value rather than by class.
+    """
+
+    def build_module(self, params):
+        cls = import_library_class(
+            params["module"], "torch module", requires=("forward",)
+        )
+        # Data-implied kwargs UNDER the document's own: this family is the
+        # one that owns a ``module_params`` sub-dict, so it is the one that
+        # knows where an adapter's shape kwargs belong. A declared value
+        # always wins, and the data can never silently override the config.
+        kwargs = {**self._data_params, **(params.get("module_params") or {})}
+        try:
+            return cls(**kwargs)
+        except TypeError as exc:
+            raise ValueError(
+                f"{params['module']} rejected module_params ({exc}) — a "
+                "mis-typed constructor knob is caught here, by the "
+                "constructor, not silently"
+            ) from exc
+
+
+class _DeclaredParams:
+    """The declared family's shared knobs and their plan-time checks."""
+
+    _EXTRA_PARAMS = ("adapter", "adapter_params", "module", "module_params")
+
+    @classmethod
+    def _resolve_adapter(cls, params):
+        """The declared :class:`TorchAdapter` CLASS, or ``None`` when none
+        is declared or it cannot be imported HERE (a plan machine may
+        rightly lack the library; execute settles it)."""
+        path = params.get("adapter")
+        if not path or library_path_problems("adapter", path, example="x.y:A"):
+            return None
+        try:
+            return import_library_class(path, "torch adapter", requires=("prepare",))
+        except ValueError:
+            return None
+
+    @classmethod
+    def _features_required(cls, params) -> bool:
+        adapter = cls._resolve_adapter(params)
+        # Unresolvable here = keep the base's demand. Being strict on the
+        # plan machine is the safe direction: it can only ask for a knob
+        # that a row-vector fit would genuinely need.
+        return True if adapter is None else bool(adapter.requires_features)
+
+    @classmethod
+    def validate_params(cls, params):
+        problems = list(super().validate_params(params))
+        if "module" not in params:
+            problems.append(
+                "module is required — the class path of the nn.Module to "
+                "build, e.g. 'torch.nn.Linear'"
+            )
+        else:
+            problems += library_path_problems(
+                "module", params["module"], example="torch.nn.Linear"
+            )
+        module_params = params.get("module_params", {})
+        if not isinstance(module_params, dict) or any(
+            not isinstance(k, str) for k in module_params
+        ):
+            problems.append(
+                f"module_params must be a dict of constructor kwargs, got "
+                f"{module_params!r}"
+            )
+        adapter_params = params.get("adapter_params", {})
+        if not isinstance(adapter_params, dict) or any(
+            not isinstance(k, str) for k in adapter_params
+        ):
+            problems.append(
+                f"adapter_params must be a dict of the adapter's own knobs, got "
+                f"{adapter_params!r}"
+            )
+        if "adapter" in params:
+            problems += library_path_problems(
+                "adapter",
+                params["adapter"],
+                example="dskit.pipeline.libs.torch:RowVectorAdapter",
+            )
+            # Delegate to the adapter's OWN validator when it is importable
+            # here, so its knobs are checked at plan by the class that owns
+            # them — never restated (or allowed to drift) on this node.
+            adapter = cls._resolve_adapter(params)
+            validator = getattr(adapter, "validate_params", None)
+            if validator is not None and isinstance(adapter_params, dict):
+                problems += [f"adapter_params.{p}" for p in validator(adapter_params)]
+        return problems
+
+    def build_adapter(self, params):
+        """The declared adapter, or the flat-vector default when a document
+        names none — which is why the seam changed nothing for documents
+        written before it existed."""
+        path = params.get("adapter")
+        if not path:
+            return RowVectorAdapter(params)
+        cls = import_library_class(path, "torch adapter", requires=("prepare",))
+        kwargs = dict(params.get("adapter_params") or {})
+        # The adapter sees the node's params (it needs ``features``/``label``)
+        # with its OWN declared knobs layered ON TOP, so an adapter knob is
+        # never shadowed by a same-named node knob.
+        try:
+            return cls({**params, **kwargs})
+        except TypeError as exc:
+            raise ValueError(
+                f"{path} rejected adapter_params ({exc}) — a mis-typed adapter "
+                "knob is caught here, by the adapter, not silently"
+            ) from exc
+
+
+class DeclaredTrain(_DeclaredParams, _DeclaredModule, TorchTrain):
+    """Train ANY ``nn.Module`` the document names. Registered as
+    ``torch-train``.
+
+    The generic trainer the pack was missing: everything
+    :class:`TorchTrain` owns (deterministic seeding, the batching loop,
+    per-epoch :class:`~dskit.pipeline.trainlog.TrainingCurve` telemetry,
+    the artifact + sidecar protocol) applied to an architecture chosen in
+    config. ``torch-linear-train`` remains as the worked example of the
+    subclassing route; this is the route that needs no Python at all.
+    """
+
+
+class DeclaredPredict(_DeclaredParams, _DeclaredModule, TorchPredict):
+    """Inference for :class:`DeclaredTrain` artifacts. Registered as
+    ``torch-predict``. The ``module``/``module_params`` it declares must
+    match the sidecar's — the base refuses a mismatch by name."""
+
+
 #: The pack's registerable kinds — CONCRETE classes only; the abstract
 #: bases are subclass material, not kinds.
 NODE_KINDS = (
+    ("torch-train", DeclaredTrain),
+    ("torch-predict", DeclaredPredict),
     ("torch-linear-train", LinearRegressor),
     ("torch-linear-predict", LinearPredictor),
 )
