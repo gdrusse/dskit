@@ -1186,7 +1186,7 @@ def _cutoff_ms(cutoff) -> int:
     return int(moment.timestamp() * 1000)
 
 
-def _fold_splits(spec, cutoff) -> TimeSplitConfig:
+def _fold_splits(spec, cutoff, policy=DEFAULT_SPLIT_POLICY) -> TimeSplitConfig:
     """The pinned time cuts for one fold, half-open on BOTH boundaries:
     val is exactly ``[cutoff, cutoff + val_days)`` and train ends strictly
     BEFORE ``cutoff - embargo_days`` — so for midnight-stamped daily
@@ -1197,7 +1197,13 @@ def _fold_splits(spec, cutoff) -> TimeSplitConfig:
     in the no-embargo path and the windows running one stamp long). The
     1ms test band is degenerate by design — a fold's evaluation window
     IS its val split (the search doctrine's "objectives read val"), and
-    :class:`TimeSplitConfig` requires strictly ascending cuts."""
+    :class:`TimeSplitConfig` requires strictly ascending cuts.
+
+    ``policy`` is the parent document's declared split policy, stamped
+    onto the cuts (ADR-0031): the cuts say WHERE, the policy says WHICH
+    INSTANT, and each fold's :func:`run_document` then binds event bounds
+    exactly as a standalone run would. The default is hash-neutral —
+    ``record`` is dropped from the serialized form."""
     cut = _cutoff_ms(cutoff)
     val_end = cut + spec.val_days * _DAY_MS - 1
     train_end = cut - spec.embargo_days * _DAY_MS - 1
@@ -1207,9 +1213,13 @@ def _fold_splits(spec, cutoff) -> TimeSplitConfig:
             val_start_ms=cut,
             val_end_ms=val_end,
             test_end_ms=val_end + 1,
+            policy=policy,
         )
     return TimeSplitConfig(
-        train_end_ms=train_end, val_end_ms=val_end, test_end_ms=val_end + 1
+        train_end_ms=train_end,
+        val_end_ms=val_end,
+        test_end_ms=val_end + 1,
+        policy=policy,
     )
 
 
@@ -1217,7 +1227,8 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
     """Run one document's declared ``walkforward`` section (ADR-0027).
 
     Per fold cutoff, a DERIVED document is built — the same pipeline with
-    ``splits`` replaced by that fold's pinned cuts and the name suffixed
+    ``splits`` replaced by that fold's pinned cuts carrying the document's
+    declared split ``policy`` (ADR-0031) and the name suffixed
     ``-wf-<cutoff>`` (folds are separate run series: a ``$prev`` carry
     binds within one fold's history, never across folds) — and executed
     through :func:`run_document`, so every fold owns an ordinary,
@@ -1231,7 +1242,10 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
     still run — a halt is a result. A fold that ERRORS stops the loop;
     everything up to it is recorded. An unreadable or non-numeric
     objective on a completed fold is an error — a fold that cannot
-    report cannot aggregate.
+    report cannot aggregate. A :class:`ConfigError` from a fold — e.g.
+    an event policy whose fold runs find no ``event_bounds()`` source
+    (ADR-0024) — propagates instead: the document, not the fold, is
+    refusing.
     """
     import statistics
 
@@ -1276,24 +1290,14 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
             "empty — same name+asof+identity means this exact evaluation "
             "already happened; remove it deliberately to repeat"
         )
+    declared_policy = DEFAULT_SPLIT_POLICY
     if document.splits is not None:
-        declared = getattr(document.splits, "policy", DEFAULT_SPLIT_POLICY)
-        if declared != DEFAULT_SPLIT_POLICY:
-            # Fold splits carry no split policy yet — running the declared
-            # one as 'record' would be the silent fallback this package
-            # forswears (ADR-0024 doctrine; ADR-0027 merge note).
-            raise ConfigError(
-                [
-                    "walkforward replaces the document's splits with each "
-                    "fold's pinned cuts, which carry no split policy yet — "
-                    f"running the declared policy {declared!r} as 'record' "
-                    "would be a silent fallback. Declare policy 'record' "
-                    "(or omit it), or drop the walkforward section."
-                ]
-            )
+        declared_policy = getattr(document.splits, "policy", DEFAULT_SPLIT_POLICY)
         _log.info(
             "walkforward: the document's own splits section is replaced by "
-            "each fold's pinned cuts"
+            "each fold's pinned cuts; its declared policy %r rides every "
+            "fold (ADR-0031)",
+            declared_policy,
         )
 
     base_obj = document.to_obj()
@@ -1304,10 +1308,17 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
         try:
             fold_obj = copy.deepcopy(base_obj)
             fold_obj["name"] = f"{document.name}-wf-{cutoff}"
-            fold_obj["splits"] = _fold_splits(spec, cutoff).to_obj()
+            fold_obj["splits"] = _fold_splits(spec, cutoff, declared_policy).to_obj()
             fold_doc = PipelineDocument.from_obj(fold_obj)
             _log.info("walkforward: fold %s -> %s", cutoff, fold_doc.name)
             result = run_document(fold_doc, asof=asof, registry=registry)
+        except ConfigError:
+            # A ConfigError is the DOCUMENT refusing, not one fold — the
+            # same pipeline refuses identically at every cutoff (e.g. the
+            # ADR-0024 bounds binding under a carried event policy,
+            # ADR-0031) — so it propagates exactly as `run` raises it,
+            # never buried in a summary as one fold's "result".
+            raise
         except Exception as exc:  # noqa: BLE001 — recorded, then stop
             # run_document RAISES its pre-flight refusals (an occupied fold
             # run dir, a missing env name) rather than returning an error

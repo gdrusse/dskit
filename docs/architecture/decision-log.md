@@ -697,7 +697,7 @@ landed in the same reconciliation, so the per-event policy machinery
 now ships — but fold splits still carry no policy; a declared event
 policy alongside `walkforward` refuses loudly rather than silently
 running folds under `record`. Policy pass-through into folds is
-future work.)
+future work (closed by ADR-0031).)
 
 ---
 

@@ -62,8 +62,9 @@ kinds resolve. Two more verbs — `demo`
 - **Walk-forward** (ADR-0027): an optional `walkforward` section — fold
   cutoffs (explicit list or `first`/`step_days`/`count`), `val_days`,
   `embargo_days`, an `objective` ref, `select` — and the `walkforward` verb
-  runs one derived document per fold (splits replaced by that fold's pinned
-  cuts; a full run dir each) plus an aggregate summary dir. The section IS
+  runs one derived document per fold, each with its own full run dir:
+  splits replaced by that fold's pinned cuts, the declared split `policy`
+  riding along (ADR-0031), plus an aggregate summary dir. The section IS
   identity; a fold that halts is a result, a fold that errors stops the plan.
 - **Identity**: sha256 over canonical JSON with every `notes` stripped and the
   top-level `env` / `outputs` / `schedule` sections excluded.

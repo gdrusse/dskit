@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,11 +13,13 @@ from dskit.pipeline.base import ConfigError, OutputsConfig, TimeSplitConfig
 from dskit.pipeline.document import (
     NodeSpec,
     PipelineDocument,
+    RandomSplitSpec,
     TrailingSplitSpec,
     WalkForwardSpec,
 )
 from dskit.pipeline.driver import run_walk_forward
 from dskit.pipeline.node import Node
+from dskit.pipeline.split_policy import EventBounds
 
 DAY = 24 * 60 * 60 * 1000
 ASOF = "2026-01-01"
@@ -47,6 +50,54 @@ class LateFoldGate(Node):
     def run(self, ctx, inputs):
         late = ctx.splits_info["train_end_ms"] > self.params["halt_after_ms"]
         return {"verdict": "NO-GO" if late else "GO"}
+
+
+class BoundedEvents(Node):
+    """A source that can answer the ADR-0024 question: a few records plus
+    each event's observed extent, both handed in literally
+    (``bounds`` = ``{cluster: [open_ms, close_ms]}``) so a test pins
+    extents spanning whichever fold ranges it needs."""
+
+    role = "data"
+    outputs = ("events",)
+
+    @classmethod
+    def validate_params(cls, params):
+        return [] if set(params) <= {"bounds"} else ["unknown params"]
+
+    def event_bounds(self):
+        return {
+            cluster: EventBounds(open_ms, close_ms)
+            for cluster, (open_ms, close_ms) in self.params["bounds"].items()
+        }
+
+    def run(self, ctx, inputs):
+        return {
+            "events": [
+                {"cluster": cluster, "asof_ms": open_ms}
+                for cluster, (open_ms, _close_ms) in self.params["bounds"].items()
+            ]
+        }
+
+
+class PolicyProbe(Node):
+    """SplitProbe plus the ADR-0031 evidence: the policy this fold's
+    ``splits_info`` carries, and where the fold's split object PUT a
+    straddler pinned relative to the fold's own cuts — asof one day
+    inside the embargo band, cluster named for the fold's cutoff instant.
+    Embargoed folds only (it reads ``val_start_ms``)."""
+
+    role = "transform"
+    outputs = ("score", "policy", "assigned")
+
+    def run(self, ctx, inputs):
+        cut = ctx.splits_info["val_start_ms"]
+        straddler = SimpleNamespace(asof_ms=cut - DAY, cluster=str(cut))
+        return {
+            "score": float(ctx.splits_info["train_end_ms"]),
+            "policy": ctx.splits_info.get("policy", "record"),
+            "assigned": ctx.splits.split_of(straddler),
+        }
 
 
 def probe_doc(tmp_path, wf, *, gate_after=None):
@@ -221,13 +272,87 @@ def read_json(*parts):
         return json.load(fh)
 
 
-def test_a_declared_event_policy_refuses_rather_than_running_folds_as_record(
-    tmp_path,
-):
-    """Folds carry no split policy yet: a document declaring one must
-    refuse loudly at the walkforward door — silently running every fold
-    under 'record' is the fallback this package forswears (merge review;
-    ADR-0024 x ADR-0027)."""
+def probe_outputs(run_dir):
+    """The probe node's recorded outputs (small strings/scalars survive
+    the per-node record whole)."""
+    nodes_dir = os.path.join(run_dir, "nodes")
+    (name,) = [f for f in os.listdir(nodes_dir) if f.endswith("-probe.json")]
+    return read_json(nodes_dir, name)["outputs"]
+
+
+def test_a_policyless_splits_parent_runs_folds_under_record(tmp_path):
+    """The getattr fallback, pinned (review M2): a splits family with no
+    policy field at all — random — must leave every fold on 'record':
+    no policy key in the fold's resolved splits, no bounds demand."""
+    from dataclasses import replace
+
+    doc = replace(
+        probe_doc(tmp_path, wf_spec()),
+        splits=RandomSplitSpec(train_frac=0.8, val_frac=0.2, seed=7),
+    )
+    result = run_walk_forward(doc, asof=ASOF)
+    assert result.state == "ran"
+    for fold in result.folds:
+        splits = read_json(fold["run_dir"], "resolved.json")["splits"]
+        assert "policy" not in splits
+
+
+def test_a_declared_event_policy_rides_every_fold(tmp_path):
+    """ADR-0031 (rewrites the old walkforward-door refusal): the parent
+    document's declared policy is STAMPED on every fold's pinned cuts and
+    HONORED there — each fold's run binds bounds from the fold's data
+    nodes (ADR-0024) and the embargo band applies to the policy-selected
+    instant. The straddler pins the direction test_split_policy.py pins:
+    its own asof sits INSIDE the embargo band (record policy: NO split),
+    its event closes inside val, and event-close carries the whole event
+    FORWARD into val."""
+    from dataclasses import replace
+
+    from dskit.pipeline.driver import _cutoff_ms
+
+    cutoffs = ["2025-01-01", "2025-02-01"]
+    bounds = {}
+    for cut in (_cutoff_ms(c) for c in cutoffs):
+        bounds[str(cut)] = [cut - 2 * DAY, cut + DAY]
+    doc = replace(
+        PipelineDocument(
+            name="wfpolicy",
+            pipeline={
+                "events": NodeSpec(
+                    uses="tests.pipeline.test_walkforward:BoundedEvents",
+                    params={"bounds": bounds},
+                ),
+                "probe": NodeSpec(
+                    uses="tests.pipeline.test_walkforward:PolicyProbe",
+                    inputs={"events": "$events.events"},
+                ),
+            },
+            outputs=OutputsConfig(run_root=str(tmp_path)),
+            walkforward=wf_spec(embargo_days=3),
+        ),
+        splits=TimeSplitConfig(
+            train_end_ms=1_000,
+            val_end_ms=2_000,
+            test_end_ms=3_000,
+            policy="event-close",
+        ),
+    )
+    result = run_walk_forward(doc, asof=ASOF)
+    assert result.state == "ran"
+    assert [f["cutoff"] for f in result.folds] == cutoffs
+    for fold in result.folds:
+        seen = probe_outputs(fold["run_dir"])
+        assert seen["policy"] == "event-close"  # ctx.splits_info, EVERY fold
+        assert seen["assigned"] == "val"  # honored, not merely stamped
+
+
+def test_a_fold_bounds_refusal_propagates_out_of_run_walk_forward(tmp_path):
+    """ADR-0031's other half: with the policy carried, a fold whose data
+    nodes cannot answer event_bounds() must refuse OUT of
+    run_walk_forward — the per-fold ADR-0024 ConfigError propagates,
+    never swallowed into a silent record fallback nor buried as one
+    fold's recorded "error". Nothing lands on disk: no fold run dir, no
+    summary."""
     from dataclasses import replace
 
     doc = replace(
@@ -239,8 +364,9 @@ def test_a_declared_event_policy_refuses_rather_than_running_folds_as_record(
             policy="event-close",
         ),
     )
-    with pytest.raises(ConfigError, match="carry no split policy"):
+    with pytest.raises(ConfigError, match="do not implement event_bounds"):
         run_walk_forward(doc, asof=ASOF)
+    assert not any(tmp_path.iterdir())
 
 
 def test_walk_forward_runs_each_fold_and_aggregates(tmp_path):
