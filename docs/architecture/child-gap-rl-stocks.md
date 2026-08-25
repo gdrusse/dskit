@@ -10,7 +10,9 @@ Evidence base: full inventory 2026-08-25. rl_stocks is a 1,141-LOC phase-1 scaff
 preprocessing → joined `(dates, tickers, features)` tensor → S3 → torch Dataset.
 The LSTM forecaster and Gym trading env exist but are unwired; PPO/MIO are absent.
 Its own docs list eight known bugs (broken package imports, inverted trade signs,
-dead configs, an `{}.json` path-formatting artifact); most are still in the tree.
+…), most still in the tree; this investigation adds two more — six of eight
+configs are dead (unreferenced by any code, one syntactically invalid) and
+`{}.json` is an unformatted-path artifact.
 
 Separately: **pmquant no longer consumes rl_stocks at all** (pmquant D-147/D-148 —
 the `core/data/stores.py` seam is deleted; a hook merely guards edits). The "shared

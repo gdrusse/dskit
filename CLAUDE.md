@@ -44,7 +44,7 @@ dskit/
 ├── .claude/
 │   ├── settings.json          # SessionStart hook: git pull
 │   └── commands/wrap.md       # /wrap
-├── README.md                  # what dskit is, install, the 60-second path
+├── README.md                  # the three pillars + the child pattern, 60-second paths
 ├── pyproject.toml             # core has ZERO required deps; heavy libs are extras
 ├── TODO.md
 ├── docs/
@@ -54,11 +54,15 @@ dskit/
 │       ├── README.md                    # ecosystem + deliverables roadmap
 │       ├── context-and-ownership.md     # who owns what; data flow
 │       ├── decision-log.md              # ADRs — no decision undocumented
-│       └── open-questions.md            # blocks implementation until closed
+│       ├── open-questions.md            # all closed; kept as the record
+│       ├── onboarding-design.md         # Package 2 ratified design
+│       ├── onboarding-model.json        # the ratified P2 model document
+│       ├── child-gap-pmquant.md         # capability-gap report: pmquant as a child
+│       └── child-gap-rl-stocks.md       # capability-gap report: rl_stocks as a child
 ├── dskit/
 │   ├── __init__.py
-│   ├── pipeline/              # the execution engine
-│   │   └── libs/              # tier-2 wrappers for standard DS/ML libraries
+│   ├── pipeline/              # the execution engine; own README + CLAUDE.md;
+│   │   └── libs/              #   libs/ = tier-2 DS/ML library packs
 │   ├── assets/                # the Data Asset Platform (spec Package 1):
 │   │   └── libs/              #   config-driven registry engine; own README +
 │   │                          #   CLAUDE.md; libs/ = tier-2 store packs
@@ -66,6 +70,9 @@ dskit/
 │   └── onboarding/            # Acquisition & Onboarding (spec Package 2):
 │       └── libs/              #   connectors/snapshots/validation/publication;
 │                              #   own README + CLAUDE.md; libs/ = connector packs
+├── children/                  # child projects (ADR-0021): incubated at repo root,
+│   ├── README.md              #   never imported by dskit; the guide
+│   └── _skeleton/             #   the pinned, runnable template a child copies
 ├── examples/
 │   ├── pipeline/              # runnable configs, one per capability
 │   ├── assets/                # a worked custom asset model
@@ -75,7 +82,8 @@ dskit/
     ├── pipeline_libs/         # tier-2 library packs
     ├── assets/                # assets engine: purity, hash-parity, e2e ingest + sync
     ├── assets_libs/           # tier-2 store packs (sqlite, parquet)
-    └── onboarding/            # onboarding: purity, model pin, conformance, CLI e2e
+    ├── onboarding/            # onboarding: purity, model pin, conformance, CLI e2e
+    └── children/              # skeleton pin + per-child subprocess runs
 ```
 
 ## Every package ships its own docs
@@ -95,8 +103,9 @@ Keep both trees current when files are added or removed.
 - **JSON is the interface.** A config declares the whole process; the code reads it.
 - **Comment rigorously and explanatorily.** Standard JSON has no `//` syntax and
   the loader uses `json.load`, so comments use the first-class **`notes`** field,
-  supported at document, node, and splits level and **excluded from the identity
-  hash** (so documentation never changes a config's identity).
+  supported on every config object (documents, nodes, splits, asset-model kinds,
+  suites, …) and **excluded from the identity hash** (so documentation never
+  changes a config's identity).
 - A `notes` string should say *why*, not restate the key. Explain intent,
   trade-offs, and how to change the behavior.
 - **Default-deny params.** A node lists the knobs it allows and refuses the rest,
@@ -137,24 +146,32 @@ Keep both trees current when files are added or removed.
 ## Commands
 
 ```bash
-pip install -e ".[dev]"            # core is pure stdlib; dev adds pytest/ruff
+pip install -e ".[dev]"            # core is pure stdlib; dev adds pytest/hypothesis/pytest-cov/ruff
 pip install -e ".[all]"            # every optional library the packs can use
 
-python -m pytest -q                # full suite
+python -m pytest -q                # full suite (child suites run by subprocess)
 python -m pytest tests/pipeline -q # tier-1 core + purity gate
 
 python -m dskit.pipeline nodemap                 # synthetic demo run
-python -m dskit.pipeline run  <doc.json> --asof <YYYY-MM-DD>
+python -m dskit.pipeline run  <doc.json> --asof <YYYY-MM-DD> [--adapter yourpkg]
 python -m dskit.pipeline plan <doc.json>         # resolved DAG, no execution
 python -m dskit.pipeline validate <doc.json>     # shape + identity hash
+# also: demo / synthetic (legacy stage-list grammar)
+
+python -m dskit.assets     init|validate-model|register|get|list|state|transition|lineage|ingest-run|sync-published
+python -m dskit.onboarding init|register-source|acquire|validate|certify|publish|verify
 ```
 
-Exit codes: **0** ran · **3** halted at a NO-GO gate (a halt is a result) · **1** error.
+Exit codes: **0** ran · **3** halted at a NO-GO gate / `validate` gated `block`
+(a halt is a result) · **1** error.
 
 ## Design work
 
 Both master-spec packages are **built**: Package 1 → `dskit/assets`
 (ADR-0007…0011), Package 2 → `dskit/onboarding` (ADR-0012…0016). The
-open-questions register is clear. New significant design decisions still
-require an ADR in `docs/architecture/decision-log.md` before code — no
-decision undocumented.
+open-questions register is clear. ADRs continue past the specs: packs
+(0017…0019), integrity parity (0020), the child convention (0021),
+engine-parity ports (0022/0023) and proposals awaiting the owner
+(0024…0026). New significant design decisions still require an ADR in
+`docs/architecture/decision-log.md` before code — no decision
+undocumented.
