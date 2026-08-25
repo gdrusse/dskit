@@ -3,7 +3,10 @@
 Same thesis as the pipeline CLI: one entry point, every project; a store
 plus a model document IS the platform. Commands:
 
-* ``init`` — create a store root pinned to a model (exactly once).
+* ``init`` — create a store root pinned to a model (exactly once);
+  ``--backend`` picks the storage (``file`` default, ``sqlite``, or a
+  ``pkg.module:Class`` reference — ADR-0018). Every other command opens
+  the root with whatever backend it declares.
 * ``validate-model [path]`` — shape-check a model file (or the built-in
   default) and print its governance hash.
 * ``register <kind> --payload <json|@file> [--ref name=vid ...]`` —
@@ -37,7 +40,7 @@ from .ingest import ingest_run
 from .lineage import Lineage
 from .model import load_model, model_hash
 from .registry import Registry
-from .store import FileStore
+from .store import create_store, open_store
 from .sync import sync_published
 
 
@@ -47,7 +50,7 @@ def _load_model(path):
 
 
 def _registry(args) -> Registry:
-    return Registry(FileStore(args.store), _load_model(args.model))
+    return Registry(open_store(args.store), _load_model(args.model))
 
 
 def _parse_payload(text) -> dict:
@@ -85,7 +88,7 @@ def _parse_refs(pairs) -> dict:
 
 def cmd_init(args) -> int:
     model = _load_model(args.model)
-    store = FileStore.create(args.store, model)
+    store = create_store(args.store, model, backend=args.backend)
     print(json.dumps(store.model_pin(), indent=2))
     return 0
 
@@ -178,6 +181,8 @@ def main(argv=None) -> int:
     sub = top.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("init", help="create a store root pinned to a model")
+    p.add_argument("--backend", default="file",
+                   help="store backend: file (default), sqlite, or pkg.module:Class")
     _add_common(p)
     p.set_defaults(fn=cmd_init)
 

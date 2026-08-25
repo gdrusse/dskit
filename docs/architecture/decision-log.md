@@ -368,3 +368,16 @@ backends — every future pack passes the identical suite. The purity
 gate sanctions exactly `libs/` and extends its static scan to it.
 `OnboardingRoot.create` and both CLIs take a backend choice; opening
 goes through `open_store` everywhere.
+
+*Amended after adversarial review (2026-08-24).* Three contract
+clarifications, pinned by the battery: (1) **concurrency is lifted at
+the Store seam only** — single calls are atomic/durable under
+concurrent writers, but Registry/Lineage check-then-act mutation still
+assumes one mutating writer per root (a proven lineage-cycle race
+otherwise corrupts the append-only log irreparably; engine-level
+coordination would be its own ADR). (2) `iter_events` is a **snapshot**
+on every backend. (3) `create` refuses a root holding ANY store
+artifact — a crashed create, whichever backend's, is deleted and
+redone, never built over. Backend guards accept whatever class the
+declared reference resolves to, so `pkg.module:Class` refs to builtins
+round-trip; raw `sqlite3` exceptions never cross the seam.

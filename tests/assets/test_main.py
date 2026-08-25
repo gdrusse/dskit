@@ -31,6 +31,15 @@ def test_validate_model_prints_the_pin(capsys):
     assert len(out["model_hash"]) == 64
 
 
+def test_init_backend_sqlite_round_trips(tmp_path, capsys):
+    args = ["--store", str(tmp_path / "q")]
+    assert main(["init", "--backend", "sqlite", *args]) == 0
+    capsys.readouterr()
+    vid = _register(capsys, args, "entity", {"name": "AAPL"})
+    assert main(["get", vid, *args]) == 0
+    assert json.loads(capsys.readouterr().out)["payload"]["name"] == "AAPL"
+
+
 def test_register_get_list_state_transition(capsys, store_args):
     e = _register(capsys, store_args, "entity", {"name": "AAPL"})
     f = _register(capsys, store_args, "feature", {"name": "mom"},

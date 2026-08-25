@@ -46,9 +46,18 @@ model it was created with.
 
 ## Extending
 
-- **Storage** — subclass the `Store` ABC (`store.py`). The tier-1
-  `FileStore` is single-writer, scan-query JSON (fine to ~10^4 assets);
-  sqlite/postgres/parquet belong in tier-2 `libs/` packs.
+- **Storage** — a root declares its backend in `store.json` and callers
+  open it with `open_store(root)` (ADR-0018); `create_store(root, model,
+  backend=...)` picks it once at init (`--backend` on the CLI). Tier-1
+  `FileStore` (the default) is single-writer, scan-query JSON — fine to
+  ~10^4 assets; the tier-2 `libs/sqlite.py` pack lifts both limits **at
+  the store seam**: indexed queries, and concurrent writers whose single
+  calls are atomic and durable. Engine-level mutation (`Registry`,
+  `Lineage`) is check-then-act and still assumes one mutating writer
+  per root — coordinate above the engine; concurrent readers are always
+  fine. Migrate any store to any other with `copy_store(src, dst)`.
+  Your own backend: subclass the `Store` ABC and reference it as
+  `backend="pkg.module:Class"` — no toolkit edit needed.
 - **Semantics** — the engine checks structure only (the six JSON types
   plus ref topology). Set-membership integrity, date semantics and the
   like are the declared future seam: enforce them in your own layer
@@ -70,11 +79,13 @@ dskit/assets/
 ├── model.py           the model grammar: AssetModel / KindSpec / FieldSpec / RefSpec
 ├── default_model.py   the spec's 12 kinds + lifecycle, shipped as data
 ├── record.py          AssetRecord: {kind, payload, refs} -> version_id
-├── store.py           Store ABC + JSON FileStore (write-once, append-only events)
+├── store.py           Store ABC + JSON FileStore; open_store/create_store/copy_store
 ├── registry.py        the engine: register / get / find / list / state / transition
 ├── lineage.py         one global DAG: provenance-stamped edges + end-to-end queries
 ├── ingest.py          ingest_run: observe a completed pipeline run dir
 ├── sync.py            sync_published: scan a published outbox root (ADR-0012)
+├── libs/
+│   └── sqlite.py      tier-2 store pack: store-seam concurrency, indexed queries
 ├── __main__.py        the CLI: python -m dskit.assets
 ├── README.md          this file
 └── CLAUDE.md          agent orientation

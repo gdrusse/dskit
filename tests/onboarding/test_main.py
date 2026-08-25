@@ -22,6 +22,14 @@ def run_cli(module, *argv, cwd):
     )
 
 
+def test_init_backend_sqlite(tmp_path):
+    # ADR-0018: the backend choice reaches the P2 store from the CLI.
+    proc = run_cli("dskit.onboarding", "init", "--root", "ob",
+                   "--backend", "sqlite", cwd=tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert (tmp_path / "ob" / "store" / "store.sqlite").is_file()
+
+
 @pytest.fixture(scope="module")
 def loop(tmp_path_factory):
     """init -> register-source -> acquire, shared by the checks below."""

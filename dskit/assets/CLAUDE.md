@@ -21,7 +21,13 @@ on it without breaking its rulings.
 ## Extension points
 
 - `Store` ABC (`store.py`) — the only sanctioned seam for new storage.
-  Tier-2 packs go in `libs/<name>.py`, heavy imports inside methods.
+  Tier-2 packs go in `libs/<name>.py`, backend imports inside methods
+  (even stdlib `sqlite3` — the pack is the template for lazy drivers).
+  A root declares its backend in `store.json` (ADR-0018); open with
+  `open_store`, never a concrete class. New pack: add to `_BACKENDS`
+  + write `create` so it records its backend; tier-3 stores need no
+  entry — `backend="pkg.module:Class"`. Every backend must pass the
+  parametrized battery in `tests/assets/test_store.py`.
 - The **semantic seam**: the engine checks JSON structure + ref
   topology only. Do not add domain semantics to the engine; they belong
   in models (`notes`) or layers above `Registry`.
@@ -36,8 +42,13 @@ on it without breaking its rulings.
   `tests/assets/test_default_model.py`. Editing `default_model.py`
   means updating the pin in the same commit, deliberately.
 - `FileStore` is **single-writer**; kind names must be
-  filesystem-safe (lowercase/digits/`_`/`-`). Both are declared limits,
-  not bugs to fix here — a tier-2 store is the fix.
+  filesystem-safe (lowercase/digits/`_`/`-`). Declared limits, not bugs
+  to fix here — `libs/sqlite.py` lifts them at the STORE seam only
+  (`copy_store` migrates). **Registry/Lineage mutation stays
+  one-writer-per-root on every backend**: their check-then-act
+  sequences (dedupe replay, cycle check) race under concurrent
+  writers, and an append-only log has no repair path. Never advertise
+  the sqlite pack as making the ENGINE multi-writer.
 - The purity gate (`tests/assets/test_purity.py`) fails on ANY
   module-level import outside stdlib + this package — heavy imports go
   inside functions, as in the pipeline.
@@ -54,7 +65,9 @@ dskit/assets/
 ├── model.py           AssetModel / KindSpec / FieldSpec / RefSpec, load_model, model_hash
 ├── default_model.py   the spec's 12 kinds as data; DEFAULT_LIFECYCLE
 ├── record.py          AssetRecord, check_payload
-├── store.py           Store ABC, FileStore
+├── store.py           Store ABC, FileStore, open_store/create_store/copy_store
+├── libs/
+│   └── sqlite.py      SqliteStore — tier-2 pack (ADR-0018)
 ├── registry.py        Registry — the only mutation path
 ├── lineage.py         Lineage — DAG edges, cycle-refusing, phase-stamped
 ├── ingest.py          ingest_run — the ADR-0008 file seam

@@ -16,11 +16,13 @@ Package 1 of the master specs, built on three rulings:
 
 The usual session::
 
-    from dskit.assets import FileStore, Lineage, Registry, default_model
+    from dskit.assets import Registry, create_store, default_model, open_store
 
     model = default_model()                       # or load_model(path)
-    registry = Registry(FileStore.create(root, model), model)
+    registry = Registry(create_store(root, model), model)   # backend="sqlite" for tier-2
     entity = registry.register("entity", {"name": "AAPL"})
+
+    registry = Registry(open_store(root), model)  # reopening later
 
 Or from the shell: ``python -m dskit.assets --help``.
 
@@ -42,7 +44,7 @@ from .model import (
 )
 from .record import AssetRecord, check_payload
 from .registry import Registry
-from .store import FileStore, Store
+from .store import FileStore, Store, copy_store, create_store, open_store
 from .sync import sync_published
 
 __all__ = [
@@ -59,9 +61,12 @@ __all__ = [
     "Registry",
     "Store",
     "check_payload",
+    "copy_store",
+    "create_store",
     "default_model",
     "ingest_run",
     "load_model",
     "model_hash",
+    "open_store",
     "sync_published",
 ]

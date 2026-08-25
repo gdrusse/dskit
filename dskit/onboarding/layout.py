@@ -30,7 +30,7 @@ import os
 
 from dskit.assets.model import AssetModel
 from dskit.assets.registry import Registry
-from dskit.assets.store import FileStore
+from dskit.assets.store import create_store, open_store
 
 from .base import (
     AssetError,
@@ -80,7 +80,7 @@ class OnboardingRoot:
             )
 
     @classmethod
-    def create(cls, root, model=None) -> "OnboardingRoot":
+    def create(cls, root, model=None, backend="file") -> "OnboardingRoot":
         """Initialize a new onboarding root — directories + pinned store.
 
         Parameters
@@ -91,6 +91,11 @@ class OnboardingRoot:
         model : AssetModel, optional
             The governing model; defaults to the ratified
             :func:`~dskit.onboarding.default_model.onboarding_model`.
+        backend : str, optional
+            The P2 store's backend (ADR-0018): ``"file"`` (default),
+            ``"sqlite"``, or a ``pkg.module:Class`` reference. The
+            choice is recorded in the store itself; reopening needs no
+            repeat.
 
         Returns
         -------
@@ -104,11 +109,32 @@ class OnboardingRoot:
         _raise_if(errors)
         model = onboarding_model() if model is None else model
         root = os.path.abspath(os.path.expanduser(root))
-        for sub in _SUBDIRS:
-            os.makedirs(os.path.join(root, sub), exist_ok=True)
-        # FileStore.create refuses an already-initialized store — that IS
-        # the create-exactly-once guarantee for the whole root.
-        FileStore.create(os.path.join(root, "store"), model)
+        # Refuse a doomed estate BEFORE building anything: a stray FILE
+        # where a subdirectory belongs would otherwise fail after the
+        # store exists, leaving a half-made root whose retry is refused.
+        # lexists, not exists: a DANGLING symlink must count as an
+        # obstruction too, or makedirs fails after the store is built.
+        errors = [
+            f"{os.path.join(root, sub)!r} exists and is not a directory"
+            for sub in _SUBDIRS
+            if os.path.lexists(os.path.join(root, sub))
+            and not os.path.isdir(os.path.join(root, sub))
+        ]
+        _raise_if(errors)
+        # Store first: create_store refuses an already-initialized
+        # store (the create-exactly-once guarantee for the whole root)
+        # and resolves the backend before touching disk — so a bad
+        # backend leaves no half-made estate behind.
+        create_store(os.path.join(root, "store"), model, backend=backend)
+        # Residual disk failures (permissions changing mid-flight)
+        # still cross the seam as AssetError, never a raw OSError.
+        try:
+            for sub in _SUBDIRS:
+                os.makedirs(os.path.join(root, sub), exist_ok=True)
+        except OSError as exc:
+            raise AssetError(
+                [f"cannot initialize onboarding root {root!r}: {exc}"]
+            ) from exc
         return cls(root)
 
     def registry(self, model=None) -> Registry:
@@ -122,7 +148,7 @@ class OnboardingRoot:
             opened with that same model — the pin enforces it.
         """
         model = onboarding_model() if model is None else model
-        return Registry(FileStore(os.path.join(self.root, "store")), model)
+        return Registry(open_store(os.path.join(self.root, "store")), model)
 
     # -- path helpers: every path in the estate comes from here ------------
 

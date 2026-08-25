@@ -15,6 +15,44 @@ def test_create_builds_the_whole_estate(tmp_path):
     assert ob.registry().model.name == "onboarding"
 
 
+def test_create_with_sqlite_backend(tmp_path):
+    # The backend choice flows through to the P2 store (ADR-0018).
+    ob = OnboardingRoot.create(str(tmp_path / "ob"), backend="sqlite")
+    assert os.path.isfile(os.path.join(ob.root, "store", "store.sqlite"))
+    assert ob.registry().model.name == "onboarding"
+
+
+def test_create_refused_over_stray_files_before_the_store_is_built(tmp_path):
+    # A stray FILE where a subdirectory belongs must refuse cleanly
+    # (AssetError, every problem listed) BEFORE the store exists — so
+    # cleaning up and retrying just works (round-4 review finding).
+    root = tmp_path / "ob"
+    root.mkdir()
+    (root / "raw").touch()
+    (root / "state").touch()
+    with pytest.raises(AssetError) as excinfo:
+        OnboardingRoot.create(str(root))
+    assert "raw" in str(excinfo.value) and "state" in str(excinfo.value)
+    assert not (root / "store").exists()
+    (root / "raw").unlink()
+    (root / "state").unlink()
+    assert OnboardingRoot.create(str(root)).registry().model.name == "onboarding"
+
+
+def test_create_refused_over_a_dangling_symlink(tmp_path):
+    # os.path.exists follows links and misses a dangling one — the
+    # pre-check must use lexists so the store is never built ahead of
+    # a doomed estate (round-5 review finding).
+    root = tmp_path / "ob"
+    root.mkdir()
+    (root / "raw").symlink_to(root / "nowhere")
+    with pytest.raises(AssetError, match="not a directory"):
+        OnboardingRoot.create(str(root))
+    assert not (root / "store").exists()
+    (root / "raw").unlink()
+    assert OnboardingRoot.create(str(root)).registry().model.name == "onboarding"
+
+
 def test_create_exactly_once(tmp_path):
     OnboardingRoot.create(str(tmp_path / "ob"))
     with pytest.raises(AssetError, match="exactly once"):

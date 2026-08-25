@@ -46,7 +46,13 @@ def module_level_imports(path):
 
 def test_static_every_module_is_stdlib_or_self():
     problems = []
-    for path in sorted(PACKAGE_DIR.glob("*.py")):
+    # rglob, not glob: libs/ is the sanctioned tier-2 subtree (ADR-0018)
+    # and answers to the same gate — module level is stdlib + self; a
+    # pack's backend library is imported inside methods, even a stdlib
+    # one like sqlite3 (the pack is the template for drivers that must
+    # stay lazy). Recursion means a surprise nested directory cannot
+    # smuggle an import past the scan either.
+    for path in sorted(PACKAGE_DIR.rglob("*.py")):
         for name in module_level_imports(path):
             root = name.split(".")[0]
             if name.startswith(PACKAGE) or root in sys.stdlib_module_names:
@@ -61,6 +67,10 @@ def test_no_subdirectories():
     subdirs = [p.name for p in PACKAGE_DIR.iterdir()
                if p.is_dir() and p.name != "__pycache__" and p.name != "libs"]
     assert not subdirs, subdirs
+    # And libs/ itself stays flat: one module per backend, no nesting.
+    libs_subdirs = [p.name for p in (PACKAGE_DIR / "libs").iterdir()
+                    if p.is_dir() and p.name != "__pycache__"]
+    assert not libs_subdirs, libs_subdirs
 
 
 def test_behavioural_fresh_import_is_pure():

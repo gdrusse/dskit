@@ -84,7 +84,7 @@ def _parse_config(text) -> dict:
 
 
 def cmd_init(args) -> int:
-    root = OnboardingRoot.create(args.root, _model(args))
+    root = OnboardingRoot.create(args.root, _model(args), backend=args.backend)
     print(json.dumps(root.registry(_model(args)).store.model_pin(), indent=2))
     return 0
 
@@ -185,6 +185,8 @@ def main(argv=None) -> int:
     sub = top.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("init", help="create an onboarding root (exactly once)")
+    p.add_argument("--backend", default="file",
+                   help="P2 store backend: file (default), sqlite, or pkg.module:Class")
     _add_common(p)
     p.set_defaults(fn=cmd_init)
 
