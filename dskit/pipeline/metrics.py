@@ -5,10 +5,11 @@ is checked at RESOLVE time (fail early, on the machine that runs), not at
 validate time. Each metric is a per-observation loss ``metric(q, y) ->
 float`` — LOWER is better — where ``q`` is the signal's belief and ``y``
 the realized payout per unit mapped through the venue's ``Accounting``
-seam. For binary venues ``y`` is exactly 0.0 or 1.0, which is what the two
-built-ins assume; a mark-to-market venue registers its own rule via
-:func:`register_metric` (e.g. squared return error) rather than bending a
-probability score.
+seam. For binary venues ``y`` is exactly 0.0 or 1.0, which is what
+``logloss``/``brier`` assume; mark-to-market venues score with the
+unbounded pair ``squared_error``/``absolute_error`` (ADR-0025), and
+anything beyond these four registers via :func:`register_metric` rather
+than bending a probability score.
 
 Beliefs are clipped to ``[CLIP, 1 - CLIP]`` before the log — a hard 0/1
 belief that turns out wrong is a model defect to SEE in a large-but-finite
@@ -21,7 +22,15 @@ from __future__ import annotations
 
 import math
 
-__all__ = ["CLIP", "METRICS", "brier", "logloss", "register_metric"]
+__all__ = [
+    "CLIP",
+    "METRICS",
+    "absolute_error",
+    "brier",
+    "logloss",
+    "register_metric",
+    "squared_error",
+]
 
 #: Belief clip bound for log scoring (symmetric: ``[CLIP, 1 - CLIP]``).
 CLIP = 1e-6
@@ -54,8 +63,41 @@ def brier(q, y) -> float:
     return (float(q) - float(y)) ** 2
 
 
+def _check_regression(metric, q, y):
+    """Both values finite numbers — a regression rule has no [0, 1] frame
+    and no binary payout to police, but a NaN/inf belief or outcome would
+    poison every aggregate exactly like the binary case."""
+    for name, v in (("q", q), ("y", y)):
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError(f"{metric}: {name} must be a number, got {v!r}")
+        if not math.isfinite(v):
+            raise ValueError(f"{metric}: {name} must be finite, got {v!r}")
+
+
+def squared_error(q, y) -> float:
+    """Per-observation squared error over unbounded values — the
+    mark-to-market sibling of :func:`brier` (ADR-0025): ``q`` is the
+    signal's point belief (a return, a price), ``y`` the realized value
+    through the venue's ``Accounting`` seam."""
+    _check_regression("squared_error", q, y)
+    return (float(q) - float(y)) ** 2
+
+
+def absolute_error(q, y) -> float:
+    """Per-observation absolute error over unbounded values — the robust
+    companion to :func:`squared_error` (median-flavored where that one is
+    mean-flavored)."""
+    _check_regression("absolute_error", q, y)
+    return abs(float(q) - float(y))
+
+
 #: The metric registry ``ValidationConfig.metric`` resolves against.
-METRICS = {"logloss": logloss, "brier": brier}
+METRICS = {
+    "logloss": logloss,
+    "brier": brier,
+    "squared_error": squared_error,
+    "absolute_error": absolute_error,
+}
 
 
 def register_metric(name, fn) -> None:

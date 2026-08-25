@@ -9,6 +9,7 @@ assembles a path by hand::
     ├── observations/<source>/<acq_id>/<stream>.jsonl   # normalized rows
     ├── forecasts/<source>/<acq_id>/<stream>.jsonl      # acquired forecasts, apart
     ├── state/<source>/<stream>-<mode>.json             # checkpoint cursors
+    ├── state/coverage.sqlite                           # coverage ledger (ADR-0030)
     └── published/<dataset>/NNNNNNNN-<hash8>.json       # the outbox P1 scans
 
 Rules the layout enforces:
@@ -190,6 +191,12 @@ class OnboardingRoot:
         _check_mode(errors, mode)
         _raise_if(errors)
         return os.path.join(self.root, "state", source, f"{stream}-{mode}.json")
+
+    def coverage_path(self) -> str:
+        """``state/coverage.sqlite`` — the coverage ledger's one file
+        (ADR-0030). State beside the cursors, never evidence: ``verify``
+        ignores it."""
+        return os.path.join(self.root, "state", "coverage.sqlite")
 
     def published_dir(self, dataset) -> str:
         """``published/<dataset>/`` — the outbox P1 scans (ADR-0012)."""

@@ -1,0 +1,38 @@
+{
+  "name": "torch-declared-demo",
+  "notes": "The ADR-0025 declared-model seam: the DOCUMENT names the nn.Module (torch.nn:Linear + its constructor kwargs) — swapping the model is a config edit, never a subclass. The loop knobs beyond the linear demo: adam, weight decay, gradient clipping, and the quantile (pinball) objective at tau 0.5. DeclaredPredict restores the exact fit from the sidecar-verified artifact, cross-checking the declared module.",
+  "pipeline": {
+    "market": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthEvents",
+      "params": {"n_events": 48, "n_instruments": 2, "seed": 7},
+      "notes": "the same synthetic market the torch-linear demo trains on"
+    },
+    "qhat": {
+      "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+      "mode": "train",
+      "inputs": {"rows": "$market.events"},
+      "params": {
+        "module": "torch.nn:Linear",
+        "module_params": {"in_features": 1, "out_features": 1},
+        "features": ["mid"],
+        "label": "p_true",
+        "optimizer": "adam",
+        "weight_decay": 0.0001,
+        "grad_clip": 1.0,
+        "loss": "quantile",
+        "loss_tau": 0.5,
+        "epochs": 10,
+        "lr": 0.1,
+        "loader": {"batch_size": 16, "shuffle": true, "seed": 7}
+      },
+      "notes": "tau 0.5 pinball = median regression; per-epoch losses land in trainlog.json beside the model"
+    },
+    "predict": {
+      "uses": "dskit.pipeline.libs.torch:DeclaredPredict",
+      "inputs": {"artifact_path": "$qhat.artifact_path"},
+      "params": {"module": "torch.nn:Linear"},
+      "notes": "declaring the module here is a cross-check against the sidecar — a different family refuses by name"
+    }
+  },
+  "outputs": {"run_root": ""}
+}

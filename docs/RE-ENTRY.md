@@ -2,32 +2,41 @@
 
 Refreshed by `/wrap`. Where things stand — read this first.
 
-**Branch:** `main` · **Tests:** 1715 pass, 73 skip (env without
-torch/transformers; that pack now importorskips) · **ruff:** clean
+**Branch:** `claude/rl-stocks-ds-kit-actnx7` (not merged — owner review) ·
+**Tests:** 2046 pass, 106 skip (env with torch/sb3/gymnasium/matplotlib/
+optuna/pyomo/sklearn/pyarrow installed; transformers still skips; the
+other skips are inapplicable conformance-probe slots) · **ruff:** clean
 
-**Landed this session (orchestrated pass):** (1) TODO residual closed —
-`append_event` broken-symlink guard mirrors the read side,
-mutation-verified. (2) Capability-gap reports for pmquant + rl_stocks
-(`docs/architecture/child-gap-*.md`): dskit/pipeline is a
-rename-extraction of pmquant's engine and was a strict subset;
-rl_stocks adds no new generic gaps; pmquant no longer imports rl_stocks
-(their D-147/D-148 — pmquant's CLAUDE.md is stale on this). (3)
-Engine-parity ports ADR-0022/0023: `concat`/`join`/`derive` +
-`table-file`/`table-write`, registry 8 → 13, byte-faithful, 10+ mutants
-killed, atomicity test strengthened. (4) ADR-0021 `children/`
-convention: guide + pinned RUNNABLE skeleton exercising all three
-seams, subprocess runner (timeout), isolation + pin tests, rename
-runbook proven live. (5) Docs overhaul: pipeline README+CLAUDE (were
-missing), root README rebalanced to the three pillars + child pattern,
-~200 claims fact-checked, stale architecture/docstring claims fixed.
-Three skeptic loops run; every finding fixed.
+**Landed this session (rl_stocks bones pass):** the owner directive —
+"ensure dskit has the generalizable functionality to build rl_stocks; no
+wrappers, nothing project-specific." (1) Re-inventoried the REAL
+rl-stocks (~66k LOC; the prior report had analyzed a stale 1,141-LOC
+snapshot) via four subsystem surveys; `child-gap-rl-stocks.md` rewritten
+and now supersedes it. (2) Five generic gaps found, all closed:
+**ADR-0025 accepted** (implemented fresh — the parent repo is not
+reachable from this environment): `torch-train`/`torch-predict` declared
+kinds, real loop (optimizer/loss/val + early stopping/grad-clip/device/
+`sequence` windows), `trainlog.py`, regression metrics;
+**ADR-0027** walk-forward: `walkforward` document section + CLI verb
+(one run dir per fold + aggregate summary), embargo bands
+(`val_start_ms` on time splits, `embargo_days` on trailing) — all
+identity-preserving (new fields omitted when unset);
+**ADR-0028** `libs/sb3.py` (document names the RL algo AND the
+gymnasium env class; hash-pinned artifacts);
+**ADR-0029** `libs/matplotlib.py` (`mpl-figure` declared marks +
+`FigureNode` base);
+**ADR-0030** `onboarding/coverage.py` (`CoverageLedger` — the sparse
+backfill done-set; declared expected periods, audit/reconcile).
+(3) Four new examples (walk-forward + torch-declared + mpl-figure run
+end-to-end; sb3-train validates — the env is rightly the child's), docs
+trees refreshed, ~230 new tests.
 
-**Decisions awaiting user:** ADR-0024 (split policies + event bounds),
-ADR-0025 (declared-model seam + trainlog), ADR-0026 (report renderer
-parity) — PROPOSED in the decision log. Below-the-line gap candidates
-(calibration/stats pack, scoring/distributions, backfill ergonomics,
-job orchestrator) listed in `child-gap-pmquant.md`.
+**Decisions awaiting user:** ADR-0024 (split policies + event bounds)
+and ADR-0026 (report renderer parity) stay PROPOSED — rl_stocks'
+needs are covered by the embargo + run-report. Below-the-line register:
+restapi OAuth2 token strategy, cross-sectional-IC helper, calibration/
+stats pack (see both child-gap reports).
 
-**Next session:** rule on 0024–0026 (0024+0025 together let pmquant's
-adapter run on dskit's engine with only an import rename); optionally
-incubate `children/pmquant` / `children/rl_stocks` per the sketches.
+**Next session:** owner reviews this branch (merge is /wrap's call);
+optionally rule on 0024/0026; optionally incubate `children/rl_stocks`
+per the revised sketch — the seams it needs all exist now.

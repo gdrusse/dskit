@@ -60,6 +60,7 @@ from dataclasses import dataclass, field, replace
 from dskit.pipeline.base import (
     SINK_KINDS,
     ConfigError,
+    TimeSplitConfig,
     _strip_notes,
     import_ref,
     is_class_ref,
@@ -80,7 +81,7 @@ from dskit.pipeline.node import Node, NodeContext
 from dskit.pipeline.planner import _UNSEARCHABLE_ROLES
 from dskit.pipeline.planner import plan as plan_document
 
-__all__ = ["DocumentRunResult", "run_document"]
+__all__ = ["DocumentRunResult", "WalkForwardRunResult", "run_document", "run_walk_forward"]
 
 DRIVER_VERSION = "1.0.0"
 
@@ -1076,3 +1077,233 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
         pipeline_logger.removeHandler(handler)
         handler.close()
         pipeline_logger.setLevel(prior_level)
+
+
+# ---------------------------------------------------------------------------
+# Walk-forward (ADR-0027): one derived document per fold, one summary
+# ---------------------------------------------------------------------------
+
+_DAY_MS = 24 * 60 * 60 * 1000
+
+
+@dataclass(frozen=True)
+class WalkForwardRunResult:
+    """What one walk-forward invocation produced.
+
+    ``folds`` is one dict per fold, in cutoff order:
+    ``{"cutoff", "run_dir", "state", "score"}`` (``score`` is ``None``
+    for a halted fold, and for the erroring fold). ``state``: ``"ran"``
+    — every fold completed; ``"halted"`` — at least one fold hit a NO-GO
+    (a halt is a result; later folds still ran); ``"error"`` — a fold
+    errored and the remaining folds were not attempted.
+    """
+
+    summary_dir: str
+    state: str
+    folds: tuple
+    aggregate: dict
+    document_hash: str
+
+    @property
+    def exit_code(self) -> int:
+        return {"ran": 0, "halted": 3, "error": 1}[self.state]
+
+
+def _cutoff_ms(cutoff) -> int:
+    """A ``YYYY-MM-DD`` cutoff as epoch ms at UTC midnight."""
+    from datetime import datetime, timezone
+
+    moment = datetime.strptime(cutoff, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    return int(moment.timestamp() * 1000)
+
+
+def _fold_splits(spec, cutoff) -> TimeSplitConfig:
+    """The pinned time cuts for one fold: train up to the cutoff (minus
+    the embargo), val = ``[cutoff, cutoff + val_days)``, and a degenerate
+    1ms test band — a walk-forward fold's evaluation window IS its val
+    split (the search doctrine's "objectives read val"), and
+    :class:`TimeSplitConfig` requires strictly ascending cuts."""
+    cut = _cutoff_ms(cutoff)
+    val_end = cut + spec.val_days * _DAY_MS
+    if spec.embargo_days:
+        return TimeSplitConfig(
+            train_end_ms=cut - spec.embargo_days * _DAY_MS,
+            val_start_ms=cut,
+            val_end_ms=val_end,
+            test_end_ms=val_end + 1,
+        )
+    return TimeSplitConfig(
+        train_end_ms=cut, val_end_ms=val_end, test_end_ms=val_end + 1
+    )
+
+
+def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult:
+    """Run one document's declared ``walkforward`` section (ADR-0027).
+
+    Per fold cutoff, a DERIVED document is built — the same pipeline with
+    ``splits`` replaced by that fold's pinned cuts and the name suffixed
+    ``-wf-<cutoff>`` (folds are separate run series: a ``$prev`` carry
+    binds within one fold's history, never across folds) — and executed
+    through :func:`run_document`, so every fold owns an ordinary,
+    reproducible run directory. The declared ``objective`` is collected
+    from each completed fold and aggregated (mean/std/min/max, best fold
+    by ``select``) into a summary directory
+    ``{name}-walkforward-{asof}-{hash8}`` beside the fold runs:
+    ``walkforward.json`` (the machine record) + ``report.md``.
+
+    A fold that HALTS (NO-GO) is recorded with no score and later folds
+    still run — a halt is a result. A fold that ERRORS stops the loop;
+    everything up to it is recorded. An unreadable or non-numeric
+    objective on a completed fold is an error — a fold that cannot
+    report cannot aggregate.
+    """
+    import statistics
+
+    if not isinstance(document, PipelineDocument):
+        document = load_document(document)
+    if document.walkforward is None:
+        raise ConfigError(
+            [
+                "walkforward: this document declares no walkforward section — "
+                "add one (folds/val_days/objective) or use `run`"
+            ]
+        )
+    if document.clock is not None:
+        raise ConfigError(
+            [
+                "clock present: clocked execution is pending the I-222 A/B "
+                "ruling — walkforward refuses exactly like `run`"
+            ]
+        )
+    if asof is None:
+        from datetime import datetime, timezone
+
+        asof = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if not isinstance(asof, str) or not re.match(_ASOF_OK, asof):
+        raise ConfigError([f"asof must be 'YYYY-MM-DD', got {asof!r}"])
+
+    spec = document.walkforward
+    target, obj_path = parse_node_ref(spec.objective)
+    outputs_cfg = document.outputs
+    run_root = os.path.abspath(
+        os.path.expanduser(
+            (outputs_cfg.run_root if outputs_cfg is not None else "")
+            or "./pipeline_runs"
+        )
+    )
+    summary_dir = os.path.join(
+        run_root, f"{document.name}-walkforward-{asof}-{document.hash[:8]}"
+    )
+    if os.path.isdir(summary_dir) and os.listdir(summary_dir):
+        raise ValueError(
+            f"walk-forward summary dir {summary_dir} already exists and is not "
+            "empty — same name+asof+identity means this exact evaluation "
+            "already happened; remove it deliberately to repeat"
+        )
+    if document.splits is not None:
+        _log.info(
+            "walkforward: the document's own splits section is replaced by "
+            "each fold's pinned cuts"
+        )
+
+    base_obj = document.to_obj()
+    base_obj.pop("walkforward", None)  # the fold doc IS one fold, not the plan
+    folds = []
+    state = "ran"
+    for cutoff in spec.fold_cutoffs():
+        fold_obj = copy.deepcopy(base_obj)
+        fold_obj["name"] = f"{document.name}-wf-{cutoff}"
+        fold_obj["splits"] = _fold_splits(spec, cutoff).to_obj()
+        fold_doc = PipelineDocument.from_obj(fold_obj)
+        _log.info("walkforward: fold %s -> %s", cutoff, fold_doc.name)
+        result = run_document(fold_doc, asof=asof, registry=registry)
+        fold = {
+            "cutoff": cutoff,
+            "run_dir": result.run_dir,
+            "state": result.state,
+            "score": None,
+        }
+        if result.state == "ran":
+            try:
+                value = _dig(
+                    result.outputs[target],
+                    obj_path,
+                    f"walkforward objective {spec.objective!r}",
+                )
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError(f"objective must be numeric, got {value!r}")
+                if not math.isfinite(value):
+                    raise ValueError(
+                        f"objective is non-finite ({value!r}) — NaN/inf cannot "
+                        "aggregate and must never rank folds"
+                    )
+                fold["score"] = float(value)
+            except (KeyError, ValueError) as exc:
+                fold["state"] = "error"
+                fold["error"] = str(exc)
+                folds.append(fold)
+                state = "error"
+                break
+        elif result.state == "halted":
+            state = "halted" if state != "error" else state
+        else:  # error inside the fold run — recorded there; stop the plan
+            folds.append(fold)
+            state = "error"
+            break
+        folds.append(fold)
+
+    scored = [f["score"] for f in folds if f["score"] is not None]
+    aggregate = {"n_folds": len(folds), "n_scored": len(scored)}
+    if scored:
+        aggregate["mean"] = statistics.fmean(scored)
+        aggregate["std"] = statistics.pstdev(scored) if len(scored) > 1 else 0.0
+        aggregate["min"] = min(scored)
+        aggregate["max"] = max(scored)
+        pick = min if spec.select == "min" else max
+        best = pick(
+            (f for f in folds if f["score"] is not None), key=lambda f: f["score"]
+        )
+        aggregate["best_cutoff"] = best["cutoff"]
+        aggregate["best_score"] = best["score"]
+
+    os.makedirs(summary_dir, exist_ok=True)
+    _write_json(
+        os.path.join(summary_dir, "walkforward.json"),
+        {
+            "name": document.name,
+            "asof": asof,
+            "document_hash": document.hash,
+            "objective": spec.objective,
+            "select": spec.select,
+            "state": state,
+            "folds": folds,
+            "aggregate": aggregate,
+        },
+    )
+    lines = [
+        f"**WALK-FORWARD {state.upper()}** — {aggregate['n_scored']}/"
+        f"{aggregate['n_folds']} fold(s) scored on `{spec.objective}`",
+        "",
+        f"- document hash: `{document.hash[:16]}…`",
+    ]
+    if "mean" in aggregate:
+        lines.append(
+            f"- mean {aggregate['mean']:.6g} · std {aggregate['std']:.6g} · "
+            f"best ({spec.select}) {aggregate['best_score']:.6g} at "
+            f"{aggregate['best_cutoff']}"
+        )
+    lines += ["", "| fold cutoff | state | score | run |", "|---|---|---|---|"]
+    for fold in folds:
+        score = "—" if fold["score"] is None else f"{fold['score']:.6g}"
+        lines.append(
+            f"| {fold['cutoff']} | {fold['state']} | {score} | "
+            f"`{os.path.basename(fold['run_dir'])}` |"
+        )
+    _atomic_write_text(os.path.join(summary_dir, "report.md"), "\n".join(lines) + "\n")
+    return WalkForwardRunResult(
+        summary_dir=summary_dir,
+        state=state,
+        folds=tuple(folds),
+        aggregate=aggregate,
+        document_hash=document.hash,
+    )

@@ -1,0 +1,27 @@
+{
+  "name": "mpl-figure-demo",
+  "notes": "The ADR-0029 declared figure: marks say what to draw from the row stream, and the PNG lands in the run's artifacts — what a chart shows is part of the run's hashed identity. Colors come from the pack's fixed categorical order (never cycled); a mark-level `color` would override for a project brand. Bespoke figures subclass FigureNode instead.",
+  "pipeline": {
+    "market": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthEvents",
+      "params": {"n_events": 96, "n_instruments": 1, "seed": 3},
+      "notes": "one instrument's daily quotes — mid under-reacts to p_true, which the figure makes visible"
+    },
+    "figure": {
+      "uses": "dskit.pipeline.libs.matplotlib:DeclaredFigure",
+      "inputs": {"rows": "$market.events"},
+      "params": {
+        "title": "quoted mid vs the truth",
+        "xlabel": "asof (epoch ms)",
+        "ylabel": "probability",
+        "filename": "mid-vs-truth.png",
+        "marks": [
+          {"kind": "line", "x": "asof_ms", "y": "mid", "label": "quoted mid"},
+          {"kind": "line", "x": "asof_ms", "y": "p_true", "label": "p_true"}
+        ]
+      },
+      "notes": "two lines share one y axis (there is deliberately no twin-axis knob); rows plot in stream order"
+    }
+  },
+  "outputs": {"run_root": ""}
+}

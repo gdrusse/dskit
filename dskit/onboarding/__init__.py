@@ -45,6 +45,7 @@ from .connector import (
     check_message,
     resolve_connector,
 )
+from .coverage import STATUSES, CoverageLedger
 from .default_model import onboarding_model
 from .layout import OnboardingRoot
 from .publish import publish_version
@@ -62,6 +63,7 @@ from .validate import Rule, ValidationSuite, load_suite, run_suite, suite_hash
 __all__ = [
     "AssetError",
     "Connector",
+    "CoverageLedger",
     "DECISIONS",
     "DEFAULT_CONNECTORS",
     "MESSAGE_TYPES",
@@ -70,6 +72,7 @@ __all__ = [
     "PROTOCOL",
     "RECORD_KINDS",
     "Rule",
+    "STATUSES",
     "ValidationSuite",
     "build_manifest",
     "canonical_hash",

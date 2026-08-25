@@ -75,6 +75,7 @@ __all__ = [
     "ScheduleConfig",
     "SPLITS_SOURCE",
     "TrailingSplitSpec",
+    "WalkForwardSpec",
     "doc_split_from_obj",
     "is_node_ref",
     "is_prev_ref",
@@ -498,6 +499,7 @@ class TrailingSplitSpec:
     train_days: object = ALL_PRIOR
     kind: str = "trailing"
     notes: str = ""
+    embargo_days: int = 0
 
     def __post_init__(self):
         errors = []
@@ -505,6 +507,7 @@ class TrailingSplitSpec:
             errors.append(f"splits.kind must be 'trailing', got {self.kind!r}")
         _check_int(errors, "splits.test_days", self.test_days, ge=1)
         _check_int(errors, "splits.val_days", self.val_days, ge=1)
+        _check_int(errors, "splits.embargo_days", self.embargo_days, ge=0)
         if self.train_days != ALL_PRIOR:
             _check_int(errors, "splits.train_days", self.train_days, ge=1)
         _check_str(errors, "splits.notes", self.notes, non_empty=False)
@@ -544,23 +547,37 @@ class TrailingSplitSpec:
             raise ValueError(f"newest_ms must be an int (epoch ms), got {newest_ms!r}")
         test_end = newest_ms
         val_end = test_end - self.test_days * _DAY_MS
-        train_end = val_end - self.val_days * _DAY_MS
+        val_start = val_end - self.val_days * _DAY_MS
+        # The embargo (ADR-0027) is carved out of TRAIN's tail, never out
+        # of the val window: train ends embargo_days before val starts,
+        # and the band between belongs to no split.
+        train_end = val_start - self.embargo_days * _DAY_MS
         if train_end < 1:
             raise ValueError(
                 f"trailing splits need newest_ms deep enough for the windows: "
                 f"newest_ms={newest_ms} leaves train_end_ms={train_end}"
             )
         return TimeSplitConfig(
-            train_end_ms=train_end, val_end_ms=val_end, test_end_ms=test_end
+            train_end_ms=train_end,
+            val_end_ms=val_end,
+            test_end_ms=test_end,
+            val_start_ms=val_start if self.embargo_days else None,
         )
 
     def to_obj(self) -> dict:
-        return _dataclass_to_obj(self)
+        obj = _dataclass_to_obj(self)
+        if not self.embargo_days:
+            # Omitted, not zero: the field must not move the identity hash
+            # of every pre-ADR-0027 document.
+            del obj["embargo_days"]
+        return obj
 
     @classmethod
     def from_obj(cls, obj) -> "TrailingSplitSpec":
         _reject_unknown(
-            obj, ("kind", "test_days", "val_days", "train_days", "notes"), "splits"
+            obj,
+            ("kind", "test_days", "val_days", "train_days", "embargo_days", "notes"),
+            "splits",
         )
         return cls(
             test_days=obj.get("test_days", 0),
@@ -568,6 +585,7 @@ class TrailingSplitSpec:
             train_days=obj.get("train_days", ALL_PRIOR),
             kind=obj.get("kind", "trailing"),
             notes=obj.get("notes", ""),
+            embargo_days=obj.get("embargo_days", 0),
         )
 
 
@@ -578,6 +596,160 @@ DOC_SPLIT_KINDS = {
     "random": RandomSplitSpec,
     "trailing": TrailingSplitSpec,
 }
+
+
+# ---------------------------------------------------------------------------
+# Walk-forward (ADR-0027) — the rolling-origin evaluation a document declares
+# ---------------------------------------------------------------------------
+
+_DATE_OK = r"^\d{4}-\d{2}-\d{2}$"
+
+
+@dataclass(frozen=True, slots=True)
+class WalkForwardSpec:
+    """Rolling-origin evaluation, declared (ADR-0027): K fold CUTOFFS
+    (each a validation-start date), a val window, an optional embargo
+    carved out of train's tail, and the objective to collect per fold.
+
+    Folds come ONE of two ways — an explicit ``folds`` list of
+    ``YYYY-MM-DD`` cutoffs (strictly ascending), or a generated schedule
+    ``first`` + ``step_days`` + ``count``. Declaring both (or neither) is
+    refused: two sources of the same truth is how they drift.
+
+    ``objective`` is a ``$node.path`` reference into a score node's
+    outputs — what each fold reports upward. Train windows are expanding
+    ("all-prior") in v1; a bounded train window joins the existing I-223
+    restriction when the cut grammar can express it.
+
+    This section IS identity (unlike ``schedule``): the fold plan defines
+    the experiment.
+    """
+
+    objective: str
+    val_days: int
+    folds: object = None
+    first: str = ""
+    step_days: int = 0
+    count: int = 0
+    embargo_days: int = 0
+    select: str = "min"
+    notes: str = ""
+
+    def __post_init__(self):
+        errors = []
+        if not isinstance(self.objective, str) or not self.objective:
+            errors.append(
+                "walkforward.objective is required — a '$node.path' reference "
+                "to the score output each fold reports"
+            )
+        else:
+            try:
+                parse_node_ref(self.objective)
+            except ConfigError:
+                errors.append(
+                    "walkforward.objective must be a '$node.path' reference "
+                    f"(e.g. '$validate.metrics.loss'), got {self.objective!r}"
+                )
+        _check_int(errors, "walkforward.val_days", self.val_days, ge=1)
+        _check_int(errors, "walkforward.embargo_days", self.embargo_days, ge=0)
+        if self.select not in ("min", "max"):
+            errors.append(
+                f"walkforward.select must be 'min' or 'max', got {self.select!r}"
+            )
+        explicit = self.folds is not None
+        generated = bool(self.first) or self.step_days or self.count
+        if explicit and generated:
+            errors.append(
+                "walkforward: declare folds EITHER as an explicit list OR as "
+                "first/step_days/count — both is two sources of one truth"
+            )
+        elif explicit:
+            if (
+                not isinstance(self.folds, (list, tuple))
+                or not self.folds
+                or any(
+                    not isinstance(f, str) or not re.match(_DATE_OK, f)
+                    for f in self.folds
+                )
+            ):
+                errors.append(
+                    "walkforward.folds must be a non-empty list of "
+                    f"'YYYY-MM-DD' cutoffs, got {self.folds!r}"
+                )
+            elif list(self.folds) != sorted(set(self.folds)):
+                errors.append(
+                    "walkforward.folds must be strictly ascending with no "
+                    f"duplicates, got {list(self.folds)!r}"
+                )
+        elif generated:
+            if not isinstance(self.first, str) or not re.match(
+                _DATE_OK, self.first or ""
+            ):
+                errors.append(
+                    "walkforward.first must be a 'YYYY-MM-DD' cutoff, got "
+                    f"{self.first!r}"
+                )
+            _check_int(errors, "walkforward.step_days", self.step_days, ge=1)
+            _check_int(errors, "walkforward.count", self.count, ge=1)
+        else:
+            errors.append(
+                "walkforward: no folds declared — give an explicit folds list "
+                "or a first/step_days/count schedule"
+            )
+        _check_str(errors, "walkforward.notes", self.notes, non_empty=False)
+        _raise_if(errors)
+
+    def fold_cutoffs(self) -> tuple:
+        """The fold cutoff dates, ascending, as ``YYYY-MM-DD`` strings."""
+        if self.folds is not None:
+            return tuple(self.folds)
+        from datetime import date, timedelta
+
+        first = date.fromisoformat(self.first)
+        return tuple(
+            (first + timedelta(days=i * self.step_days)).isoformat()
+            for i in range(self.count)
+        )
+
+    def to_obj(self) -> dict:
+        obj = _dataclass_to_obj(self)
+        # Only the ACTIVE fold declaration is emitted — the unset half's
+        # defaults are absence, not data (and never hash material).
+        if self.folds is not None:
+            for name in ("first", "step_days", "count"):
+                del obj[name]
+        else:
+            del obj["folds"]
+        return obj
+
+    @classmethod
+    def from_obj(cls, obj) -> "WalkForwardSpec":
+        _reject_unknown(
+            obj,
+            (
+                "objective",
+                "val_days",
+                "folds",
+                "first",
+                "step_days",
+                "count",
+                "embargo_days",
+                "select",
+                "notes",
+            ),
+            "walkforward",
+        )
+        return cls(
+            objective=obj.get("objective", ""),
+            val_days=obj.get("val_days", 0),
+            folds=obj.get("folds"),
+            first=obj.get("first", ""),
+            step_days=obj.get("step_days", 0),
+            count=obj.get("count", 0),
+            embargo_days=obj.get("embargo_days", 0),
+            select=obj.get("select", "min"),
+            notes=obj.get("notes", ""),
+        )
 
 
 def doc_split_from_obj(obj):
@@ -717,6 +889,7 @@ class PipelineDocument:
     outputs: object = None
     tracking: object = None
     notes: str = ""
+    walkforward: object = None
 
     def __post_init__(self):
         errors = []
@@ -755,6 +928,7 @@ class PipelineDocument:
         _check_child(errors, "env", self.env, EnvConfig)
         _check_child(errors, "outputs", self.outputs, OutputsConfig)
         _check_child(errors, "tracking", self.tracking, TrackingConfig)
+        _check_child(errors, "walkforward", self.walkforward, WalkForwardSpec)
         _check_str(errors, "notes", self.notes, non_empty=False)
         if not errors:
             errors.extend(self._cross_field_errors())
@@ -768,10 +942,11 @@ class PipelineDocument:
             node_refs, prev_refs = spec.refs()
             for source, _path in node_refs:
                 if source == SPLITS_SOURCE:
-                    if self.splits is None:
+                    if self.splits is None and self.walkforward is None:
                         errors.append(
                             f"pipeline.{key}: references '$splits...' but the "
-                            "document has no splits section"
+                            "document has no splits section (a walkforward "
+                            "section would materialize one per fold)"
                         )
                 elif source not in keys:
                     errors.append(
@@ -798,11 +973,20 @@ class PipelineDocument:
                     f"pipeline.{key}: every={spec.every!r} is only meaningful "
                     "under a clock — add the clock section or drop 'every'"
                 )
-        if wants_split and self.splits is None:
+        if wants_split and self.splits is None and self.walkforward is None:
             errors.append(
                 f"splits section required: node(s) {sorted(wants_split)} "
-                "declare a 'split' param"
+                "declare a 'split' param (a walkforward section counts — it "
+                "materializes the splits per fold)"
             )
+        if self.walkforward is not None:
+            source, _path = parse_node_ref(self.walkforward.objective)
+            if source == SPLITS_SOURCE or source not in keys:
+                errors.append(
+                    "walkforward.objective must reference a DECLARED node's "
+                    f"output, got {self.walkforward.objective!r} "
+                    f"(declared: {sorted(keys)})"
+                )
         return errors
 
     @property
@@ -819,6 +1003,12 @@ class PipelineDocument:
         for section in ("splits", "clock", "schedule", "env", "outputs", "tracking"):
             v = getattr(self, section)
             obj[section] = v.to_obj() if v is not None else None
+        if self.walkforward is not None:
+            # Emitted only when present (unlike the always-emitted nulls
+            # above): the section postdates the hash recipe, and an
+            # always-present null would move every existing document's
+            # identity (ADR-0027).
+            obj["walkforward"] = self.walkforward.to_obj()
         obj["notes"] = self.notes
         return obj
 
@@ -835,6 +1025,7 @@ class PipelineDocument:
                 "env",
                 "outputs",
                 "tracking",
+                "walkforward",
                 "notes",
             ),
             "document",
@@ -872,6 +1063,7 @@ class PipelineDocument:
         env = _section("env", EnvConfig.from_obj)
         outputs = _section("outputs", OutputsConfig.from_obj)
         tracking = _section("tracking", TrackingConfig.from_obj)
+        walkforward = _section("walkforward", WalkForwardSpec.from_obj)
         _raise_if(errors)
         return cls(
             name=obj.get("name", ""),
@@ -883,6 +1075,7 @@ class PipelineDocument:
             outputs=outputs,
             tracking=tracking,
             notes=obj.get("notes", ""),
+            walkforward=walkforward,
         )
 
 
