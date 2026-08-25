@@ -425,3 +425,49 @@ The pack lifts analytics interop only — concurrency stays sqlite's.
 gains `events` (the directory), so create-refusal covers parquet
 leftovers. The conformance battery adds the backend behind an
 importorskip guard — the suite passes with pyarrow absent.
+
+---
+
+## ADR-0020 — Store integrity parity: key trust, loud foreign entries, wrapped I/O
+
+**Status:** accepted (2026-08-24)
+
+**Context.** The ADR-0019 review rounds surfaced integrity gaps the
+parquet pack fixed for itself but that are contract-level, and the
+TODO register held four deferred loud-not-silent items. Closing them
+together keeps the three backends at ONE standard.
+
+**Decision.** (1) **Storage-key trust, both axes:** every content
+read that answers for a key — `get_record`, and `put_record`'s
+verify-on-duplicate — checks `loaded.version_id() == key` AND that
+the record's declared kind matches its storage location (directory or
+kind column) on every backend; a valid foreign record planted under
+another key OR another kind is refused, never returned. A vid listed
+under two kinds proves a plant (the kind is inside the hash) and
+enumeration refuses it. Point lookups (`_find`) refuse a
+key-conforming path that is not a regular file, and skip the same
+`.`/`_` prefixed kind entries enumeration skips (the symmetric half
+of the doctrine; a non-key-conforming foreign FILE still surfaces
+only through enumeration — point lookups probe exact keys). A
+directory squatting `events.jsonl` is refused on read, never
+mistaken for an empty history. (2) **FileStore adopts the foreign-entry
+doctrine** (ADR-0019): `.`/`_`-prefixed names ignored, anything else
+unaccountable in `records/` refused loudly — never a garbage stem
+that detonates downstream — and ALL its runtime I/O failures cross
+the seam as `AssetError` (the packs' standard). (3) **Identifier
+regexes are `\Z`-anchored** (`_SEGMENT`, `_VERSION_ID`, and
+onboarding's twin `_SEGMENT`, whose comment binds it to the assets
+rule; the pipeline's `_SEGMENT_OK` is out of scope — separate
+package, no shared-rule claim): `$` forgives a trailing newline.
+(4) **Sqlite runtime connects use URI
+`mode=rw`**, so a call against a damaged root fails loudly instead of
+recreating a stray empty database. (5) The assets purity gate
+resolves relative-import LEVELS (a `from ...pipeline` escape was
+mapped to the package itself); the pipeline gate already did.
+
+**Consequences.** Tier-1 behavior change: a FileStore root holding
+stray non-record files now refuses enumeration loudly (dotfiles and
+`_`-prefixed names stay invisible). Battery grows key-trust,
+verify-on-duplicate, and newline-identifier coverage on all three
+backends. Engine-level multi-writer coordination remains the one
+deferred TODO item — no consumer needs it (ADR-0011's discipline).
