@@ -61,7 +61,8 @@ __all__ = ["FileStore", "Store", "copy_store", "create_store", "open_store"]
 #: Kind names become directory names, so they must be filesystem-safe:
 #: lowercase, digits, ``_``/``-``, no separators — refused loudly otherwise.
 #: Every backend enforces the same rule, so a store copies anywhere.
-_SEGMENT = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+#: \Z, not $ — $ forgives a trailing newline (ADR-0020).
+_SEGMENT = re.compile(r"^[a-z0-9][a-z0-9_-]*\Z")
 
 #: A ``pkg.module:ClassName`` backend reference — the connector idiom.
 _CLASS_REF = re.compile(r"^[A-Za-z_][\w.]*:[A-Za-z_]\w*$")
@@ -369,7 +370,9 @@ class Store(abc.ABC):
 
     @abc.abstractmethod
     def has_record(self, version_id) -> bool:
-        """Whether a version_id is present (no exception control flow)."""
+        """Whether a version_id is present. Absence is a bool, never an
+        exception; store DAMAGE (a squatted key, an unreadable root)
+        raises AssetError like every other call (ADR-0020)."""
 
     @abc.abstractmethod
     def list_records(self, kind=None) -> list:
@@ -476,23 +479,61 @@ class FileStore(Store):
         _check_version_id(version_id)
         return os.path.join(self._root, "records", kind, f"{version_id}.json")
 
-    def _load(self, path) -> AssetRecord:
+    def _load(self, path, expected_vid) -> AssetRecord:
+        # open() inside the wrap: a damaged/read-only root crosses the
+        # seam as AssetError, the packs' standard (ADR-0020).
         try:
             with open(path, encoding="utf-8") as fh:
                 obj = json.load(fh)
+        except OSError as exc:
+            raise AssetError([f"cannot read record file {path!r}: {exc}"]) from exc
         except ValueError as exc:
             raise AssetError([f"record file {path!r} is not valid JSON: {exc}"]) from exc
         # from_obj recomputes the hash — a corrupted/edited file is refused.
-        return AssetRecord.from_obj(obj)
+        record = AssetRecord.from_obj(obj)
+        # Storage-key trust (ADR-0020): a VALID record planted under
+        # another key must be refused, not returned as the wrong asset.
+        if record.version_id() != expected_vid:
+            raise AssetError(
+                [f"record at storage key {expected_vid!r} holds different "
+                 "content — the store was mutated out of band"]
+            )
+        # And the KIND axis of the same trust: a valid record planted
+        # under its own vid but the wrong kind directory would answer
+        # kind-scoped queries wrongly (round-2 review finding).
+        stored_kind = os.path.basename(os.path.dirname(path))
+        if record.kind != stored_kind:
+            raise AssetError(
+                [f"record at storage key {expected_vid!r} is stored under "
+                 f"kind {stored_kind!r} but declares {record.kind!r} — the "
+                 "store was mutated out of band"]
+            )
+        return record
 
     def _find(self, version_id):
         """The path holding version_id, or None — kind dirs are scanned
         because a caller with only an id does not know the kind."""
         records = os.path.join(self._root, "records")
-        for kind in sorted(os.listdir(records)):
+        try:
+            kinds = sorted(os.listdir(records))
+        except OSError as exc:
+            raise AssetError([f"cannot scan store root {self._root!r}: {exc}"]) from exc
+        # Same '.'/'_' skip as list_records: an entry enumeration
+        # cannot see must be equally invisible to a point lookup, or
+        # list and has/get disagree about the same root (ADR-0020).
+        kinds = [k for k in kinds if not k.startswith((".", "_"))]
+        for kind in kinds:
             path = os.path.join(records, kind, f"{version_id}.json")
             if os.path.isfile(path):
                 return path
+            if os.path.lexists(path):
+                # Key-conforming name that is not a regular file: a
+                # point lookup must refuse it as loudly as an
+                # enumeration would (ADR-0020).
+                raise AssetError(
+                    [f"records/{kind} holds foreign entry "
+                     f"{version_id + '.json'!r} — not a record file"]
+                )
         return None
 
     def put_record(self, record) -> str:
@@ -503,10 +544,13 @@ class FileStore(Store):
         vid = record.version_id()
         path = self._record_path(record.kind, vid)
         if os.path.isfile(path):
-            self._load(path)  # verify, keep original provenance, write nothing
+            self._load(path, vid)  # verify, keep original provenance, write nothing
             return vid
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        atomic_write_json(path, record.to_obj())
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            atomic_write_json(path, record.to_obj())
+        except OSError as exc:
+            raise AssetError([f"cannot write to store root {self._root!r}: {exc}"]) from exc
         return vid
 
     def get_record(self, version_id) -> AssetRecord:
@@ -514,7 +558,7 @@ class FileStore(Store):
         path = self._find(version_id)
         if path is None:
             raise AssetError([f"no record with version_id {version_id!r}"])
-        return self._load(path)
+        return self._load(path, version_id)
 
     def has_record(self, version_id) -> bool:
         return isinstance(version_id, str) and bool(_VERSION_ID.match(version_id)) and (
@@ -524,19 +568,65 @@ class FileStore(Store):
     def list_records(self, kind=None) -> list:
         records = os.path.join(self._root, "records")
         if kind is None:
-            kinds = sorted(os.listdir(records))
+            try:
+                entries = sorted(os.listdir(records))
+            except OSError as exc:
+                raise AssetError(
+                    [f"cannot scan store root {self._root!r}: {exc}"]
+                ) from exc
+            # The foreign-entry doctrine (ADR-0019/0020): '.'/'_'
+            # prefixed names invisible (Finder/Spark droppings),
+            # anything else that is not a kind directory refused
+            # loudly — never a garbage result that detonates later.
+            kinds = []
+            for k in entries:
+                if k.startswith((".", "_")):
+                    continue
+                if not os.path.isdir(os.path.join(records, k)):
+                    raise AssetError(
+                        [f"records/ holds foreign entry {k!r} — "
+                         "a store root holds only kind directories"]
+                    )
+                kinds.append(k)
         else:
             if not isinstance(kind, str) or not _SEGMENT.match(kind):
                 raise AssetError([f"kind must be a filesystem-safe string, got {kind!r}"])
-            kinds = [kind] if os.path.isdir(os.path.join(records, kind)) else []
+            kdir = os.path.join(records, kind)
+            if os.path.isdir(kdir):
+                kinds = [kind]
+            elif os.path.lexists(kdir):
+                raise AssetError(
+                    [f"records/ holds foreign entry {kind!r} — "
+                     "a store root holds only kind directories"]
+                )
+            else:
+                kinds = []
         out = []
-        for k in kinds:
-            out.extend(
-                f[: -len(".json")]
-                for f in os.listdir(os.path.join(records, k))
-                if f.endswith(".json")
-            )
-        return sorted(out)
+        try:
+            for k in kinds:
+                for f in os.listdir(os.path.join(records, k)):
+                    if f.startswith((".", "_")):
+                        continue
+                    stem = f[: -len(".json")] if f.endswith(".json") else None
+                    if (stem is None or not _VERSION_ID.match(stem)
+                            or not os.path.isfile(os.path.join(records, k, f))):
+                        raise AssetError(
+                            [f"records/{k} holds foreign entry {f!r} — "
+                             "a kind directory holds only record files"]
+                        )
+                    out.append(stem)
+        except OSError as exc:
+            raise AssetError([f"cannot scan store root {self._root!r}: {exc}"]) from exc
+        out.sort()
+        # A version_id under two kinds is impossible legitimately (the
+        # kind is inside the hash), so a duplicate proves a plant.
+        for a, b in zip(out, out[1:]):
+            if a == b:
+                raise AssetError(
+                    [f"version_id {a!r} appears under more than one kind — "
+                     "the store was mutated out of band"]
+                )
+        return out
 
     # -- events -----------------------------------------------------------
 
@@ -553,18 +643,37 @@ class FileStore(Store):
             raise AssetError([f"event is not JSON-serializable: {exc}"]) from exc
         # Plain append: atomic enough under the declared single-writer
         # limit, and the reason multi-writer needs a tier-2 store.
-        with open(os.path.join(self._root, "events.jsonl"), "a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+        try:
+            with open(os.path.join(self._root, "events.jsonl"), "a",
+                      encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except OSError as exc:
+            raise AssetError(
+                [f"cannot append to event log in {self._root!r}: {exc}"]
+            ) from exc
 
     def iter_events(self):
         path = os.path.join(self._root, "events.jsonl")
-        if not os.path.isfile(path):
+        if not os.path.lexists(path):
             return
+        if not os.path.isfile(path):
+            # Present but not a regular file: reading it as "no events
+            # yet" would silently reset replay-derived state while
+            # append fails loudly on the same root (round-2 finding).
+            raise AssetError(
+                [f"events.jsonl in {self._root!r} is not a regular file — "
+                 "the store was mutated out of band"]
+            )
         # Snapshot before yielding (the pinned cross-backend contract):
         # appends made after iteration begins are never seen, so every
         # backend replays identically.
-        with open(path, encoding="utf-8") as fh:
-            lines = fh.readlines()
+        try:
+            with open(path, encoding="utf-8") as fh:
+                lines = fh.readlines()
+        except OSError as exc:
+            raise AssetError(
+                [f"cannot read event log in {self._root!r}: {exc}"]
+            ) from exc
         for lineno, line in enumerate(lines, start=1):
             if not line.strip():
                 continue

@@ -271,7 +271,7 @@ class ParquetStore(Store):
             raise AssetError([f"parquet file {path!r} body is not a string"])
         return body
 
-    def _load(self, path) -> AssetRecord:
+    def _load(self, path, expected_vid) -> AssetRecord:
         # _read_body stays OUTSIDE the try: AssetError subclasses
         # ValueError, so wrapping it here would relabel every corrupt-
         # parquet failure as a JSON one (round-1 review finding).
@@ -283,7 +283,24 @@ class ParquetStore(Store):
                 [f"record file {path!r} body is not valid JSON: {exc}"]
             ) from exc
         # from_obj recomputes the hash — a tampered file is refused.
-        return AssetRecord.from_obj(obj)
+        record = AssetRecord.from_obj(obj)
+        # Storage-key trust (ADR-0020): a VALID record planted under
+        # another key must be refused, not returned as the wrong asset.
+        if record.version_id() != expected_vid:
+            raise AssetError(
+                [f"record at storage key {expected_vid!r} holds different "
+                 "content — the store was mutated out of band"]
+            )
+        # And the KIND axis: the directory answers kind-scoped queries
+        # and engine scans, so it must agree with the body (round-2).
+        stored_kind = os.path.basename(os.path.dirname(path))
+        if record.kind != stored_kind:
+            raise AssetError(
+                [f"record at storage key {expected_vid!r} is stored under "
+                 f"kind {stored_kind!r} but declares {record.kind!r} — the "
+                 "store was mutated out of band"]
+            )
+        return record
 
     def _find(self, version_id):
         """The path holding version_id, or None — kind dirs are scanned
@@ -294,10 +311,22 @@ class ParquetStore(Store):
             raise AssetError(
                 [f"parquet store {self._root!r}: {exc}"]
             ) from exc
+        # Same '.'/'_' skip as list_records: an entry enumeration
+        # cannot see must be equally invisible to a point lookup, or
+        # list and has/get disagree about the same root (ADR-0020).
+        kinds = [k for k in kinds if not k.startswith((".", "_"))]
         for kind in kinds:
             path = os.path.join(self._records, kind, f"{version_id}.parquet")
             if os.path.isfile(path):
                 return path
+            if os.path.lexists(path):
+                # Key-conforming name that is not a regular file: a
+                # point lookup refuses it as loudly as an enumeration
+                # would (ADR-0020).
+                raise AssetError(
+                    [f"records/{kind} holds foreign entry "
+                     f"{version_id + '.parquet'!r} — not a record file"]
+                )
         return None
 
     # -- records ----------------------------------------------------------
@@ -315,7 +344,7 @@ class ParquetStore(Store):
         if os.path.isfile(path):
             # Already present: verify it, keep the FIRST registration's
             # provenance, write nothing.
-            self._load(path)
+            self._load(path, vid)
             return vid
         try:
             body = json.dumps(record.to_obj(), sort_keys=True, allow_nan=False)
@@ -335,7 +364,7 @@ class ParquetStore(Store):
         path = self._find(version_id)
         if path is None:
             raise AssetError([f"no record with version_id {version_id!r}"])
-        return self._load(path)
+        return self._load(path, version_id)
 
     def has_record(self, version_id) -> bool:
         return isinstance(version_id, str) and bool(_VERSION_ID.match(version_id)) and (
@@ -392,12 +421,11 @@ class ParquetStore(Store):
                     # the API cannot account for is one an engine scan
                     # WOULD read — refuse loudly, never return a
                     # garbage stem that detonates later in get_record
-                    # (round-2/4 findings). fullmatch, not match:
-                    # _VERSION_ID is $-anchored and $ forgives a
-                    # trailing newline (round-3). And it must be a
-                    # regular FILE — a directory named like a record
-                    # passes every name check but get_record denies it
-                    # (round-6 finding).
+                    # (round-2/4 findings). fullmatch: belt-and-braces
+                    # with the pattern's own \Z anchor (ADR-0020). And
+                    # it must be a regular FILE — a directory named
+                    # like a record passes every name check but
+                    # get_record denies it (round-6 finding).
                     stem = f[: -len(".parquet")] if f.endswith(".parquet") else None
                     if (stem is None or not _VERSION_ID.fullmatch(stem)
                             or not os.path.isfile(
@@ -410,7 +438,16 @@ class ParquetStore(Store):
                     out.append(stem)
         except OSError as exc:
             raise AssetError([f"parquet store {self._root!r}: {exc}"]) from exc
-        return sorted(out)
+        out.sort()
+        # A version_id under two kinds is impossible legitimately (the
+        # kind is inside the hash), so a duplicate proves a plant.
+        for a, b in zip(out, out[1:]):
+            if a == b:
+                raise AssetError(
+                    [f"version_id {a!r} appears under more than one kind — "
+                     "the store was mutated out of band"]
+                )
+        return out
 
     # -- events -----------------------------------------------------------
 

@@ -8,6 +8,7 @@ mechanics (file tampering, concurrency) live next to each pack.
 import dataclasses
 import json
 import os
+import shutil
 
 import pytest
 
@@ -139,6 +140,20 @@ def test_create_refused_over_any_store_artifact(tmp_path, backend, leftover):
 def test_path_unsafe_kind_refused(store):
     with pytest.raises(AssetError, match="filesystem-safe"):
         store.put_record(AssetRecord(kind="../evil", payload={"name": "x"}, refs={}))
+
+
+def test_newline_suffixed_identifiers_refused(store):
+    # \Z anchors (ADR-0020): $ forgives one trailing newline, so a
+    # malformed key or kind could slip the boundary on every backend.
+    evil_vid = "f" * 64 + "\n"
+    assert not store.has_record(evil_vid)
+    with pytest.raises(AssetError, match="64-char"):
+        store.get_record(evil_vid)
+    with pytest.raises(AssetError, match="filesystem-safe"):
+        store.put_record(
+            AssetRecord(kind="entity\n", payload={"name": "x"}, refs={}))
+    with pytest.raises(AssetError, match="filesystem-safe"):
+        store.list_records("entity\n")
 
 
 def test_unserializable_event_refused(store):
@@ -327,3 +342,111 @@ def test_corrupted_record_refused_on_read(tmp_path):
     json.dump(obj, open(path, "w"))
     with pytest.raises(AssetError, match="does not match"):
         store.get_record(vid)
+    # Verify-on-duplicate (ADR-0020 battery gap): a re-put of the same
+    # record is the tamper check the ABC pins, not a silent no-op.
+    with pytest.raises(AssetError, match="does not match"):
+        store.put_record(_entity())
+
+
+def test_foreign_record_under_wrong_key_refused(tmp_path):
+    # Storage-key trust (ADR-0020): a VALID record copied under another
+    # record's filename is refused on read AND on re-put — the rehash
+    # alone cannot catch it, the planted body is self-consistent.
+    store = create_store(str(tmp_path / "s"), default_model())
+    vid_a = store.put_record(_entity())
+    vid_b = store.put_record(
+        AssetRecord(kind="entity", payload={"name": "MSFT"}, refs={}))
+    records = os.path.join(str(tmp_path / "s"), "records", "entity")
+    shutil.copyfile(os.path.join(records, vid_b + ".json"),
+                    os.path.join(records, vid_a + ".json"))
+    with pytest.raises(AssetError, match="storage key"):
+        store.get_record(vid_a)
+    with pytest.raises(AssetError, match="storage key"):
+        store.put_record(_entity())
+
+
+def test_record_planted_under_wrong_kind_refused(tmp_path):
+    # The KIND axis of storage-key trust (ADR-0020): a valid record
+    # copied under its own vid but another kind directory must not
+    # answer kind-scoped queries — a vid under two kinds proves a
+    # plant, since the kind lives inside the hash.
+    store = create_store(str(tmp_path / "s"), default_model())
+    vid = store.put_record(_entity())
+    records = os.path.join(str(tmp_path / "s"), "records")
+    os.makedirs(os.path.join(records, "dataset"))
+    shutil.copyfile(os.path.join(records, "entity", vid + ".json"),
+                    os.path.join(records, "dataset", vid + ".json"))
+    with pytest.raises(AssetError, match="more than one kind"):
+        store.list_records()
+    # _find hits the earlier-sorting plant first — refused loudly.
+    with pytest.raises(AssetError, match="stored under kind"):
+        store.get_record(vid)
+
+
+def test_events_log_dir_squat_refused(tmp_path):
+    # A directory squatting events.jsonl must not read as an empty
+    # history while appends fail loudly on the same root (ADR-0020).
+    store = create_store(str(tmp_path / "s"), default_model())
+    os.mkdir(os.path.join(str(tmp_path / "s"), "events.jsonl"))
+    with pytest.raises(AssetError, match="not a regular file"):
+        list(store.iter_events())
+    with pytest.raises(AssetError, match="cannot append"):
+        store.append_event({"n": 1})
+
+
+def test_filestore_sidecars_ignored_and_foreign_entries_refused(tmp_path):
+    # ADR-0020: FileStore adopts the foreign-entry doctrine — '.'/'_'
+    # prefixed names invisible, anything else unaccountable refused.
+    store = create_store(str(tmp_path / "s"), default_model())
+    vid = store.put_record(_entity())
+    records = os.path.join(str(tmp_path / "s"), "records")
+    open(os.path.join(records, ".DS_Store"), "w").close()
+    open(os.path.join(records, "_SUCCESS"), "w").close()
+    open(os.path.join(records, "entity", ".hidden.json"), "w").close()
+    assert store.list_records() == [vid]
+    open(os.path.join(records, "entity", "notes.json"), "w").close()
+    with pytest.raises(AssetError, match="foreign"):
+        store.list_records()
+
+
+def test_filestore_kind_path_as_file_refused(tmp_path):
+    store = create_store(str(tmp_path / "s"), default_model())
+    open(os.path.join(str(tmp_path / "s"), "records", "entity"), "w").close()
+    with pytest.raises(AssetError, match="foreign"):
+        store.list_records("entity")
+    with pytest.raises(AssetError, match="foreign"):
+        store.list_records()
+
+
+def test_filestore_dir_squat_refused_on_point_lookup(tmp_path):
+    # A directory squatting a record filename splits list (loud) from
+    # get/has (silent miss) unless the point lookup refuses too.
+    store = create_store(str(tmp_path / "s"), default_model())
+    fake = "e" * 64
+    os.makedirs(os.path.join(str(tmp_path / "s"), "records", "entity",
+                             fake + ".json"))
+    with pytest.raises(AssetError, match="foreign"):
+        store.get_record(fake)
+    with pytest.raises(AssetError, match="foreign"):
+        store.has_record(fake)
+
+
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0,
+                    reason="chmod-based denial is inert for root")
+def test_filestore_runtime_io_failures_are_asset_errors(tmp_path):
+    # ADR-0020: runtime disk failures cross the seam wrapped, matching
+    # the packs — no raw OSError from a put or append on a bad root.
+    store = create_store(str(tmp_path / "s"), default_model())
+    store.put_record(_entity())
+    root = tmp_path / "s"
+    (root / "records" / "entity").chmod(0o500)
+    root.chmod(0o500)
+    try:
+        with pytest.raises(AssetError, match="cannot write"):
+            store.put_record(
+                AssetRecord(kind="entity", payload={"name": "MSFT"}, refs={}))
+        with pytest.raises(AssetError, match="cannot append"):
+            store.append_event({"n": 1})
+    finally:
+        root.chmod(0o755)
+        (root / "records" / "entity").chmod(0o755)

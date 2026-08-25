@@ -45,7 +45,12 @@ on it without breaking its rulings.
   filesystem-safe (lowercase/digits/`_`/`-`). Declared limits, not bugs
   to fix here — `libs/sqlite.py` lifts them at the STORE seam only
   (`copy_store` migrates). `libs/parquet.py` lifts NEITHER — it keeps
-  the tier-1 limits and exists for analytics scanning (ADR-0019). **Registry/Lineage mutation stays
+  the tier-1 limits and exists for analytics scanning (ADR-0019).
+- **Integrity parity (ADR-0020).** Every backend checks the storage
+  key on reads (a valid record planted under another key is refused);
+  `records/` refuses foreign entries loudly (`.`/`_` prefixed names
+  are invisible); all runtime I/O failures cross the seam as
+  `AssetError`. Don't drop non-record files into a store root. **Registry/Lineage mutation stays
   one-writer-per-root on every backend**: their check-then-act
   sequences (dedupe replay, cycle check) race under concurrent
   writers, and an append-only log has no repair path. Never advertise

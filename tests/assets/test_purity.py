@@ -18,12 +18,24 @@ PACKAGE_DIR = pathlib.Path(dskit.assets.__file__).parent
 PACKAGE = "dskit.assets"
 
 
-def module_level_imports(path):
+def module_level_imports(path, package=None):
     """Absolute names of every module-level import in a file — including
     ones nested in try/if/with or class bodies, exactly like the
-    pipeline's gate (a hole there was a hole here)."""
+    pipeline's gate (a hole there was a hole here). ``package`` is the
+    dotted package holding the module — derived from the file's
+    location when omitted; the scanner's own self-test feeds synthetic
+    files with it explicit."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found = []
+    # The package of the module holding the import: relative levels
+    # resolve against it, mirroring Python's own rules — level=1 is the
+    # containing package, each extra level strips one component. Naming
+    # every relative import PACKAGE regardless of level let a
+    # `from ...pipeline import x` in libs/ slip the scan (ADR-0020).
+    if package is None:
+        package_parts = list(path.relative_to(PACKAGE_DIR.parents[1]).parts[:-1])
+    else:
+        package_parts = package.split(".")
 
     class Visitor(ast.NodeVisitor):
         # Function bodies are the sanctioned heavy-import location — do
@@ -38,7 +50,12 @@ def module_level_imports(path):
             found.extend(alias.name for alias in node.names)
 
         def visit_ImportFrom(self, node):
-            found.append(PACKAGE if node.level else (node.module or ""))
+            if node.level:
+                keep = max(0, len(package_parts) - (node.level - 1))
+                base = package_parts[:keep]
+                found.append(".".join(base + ([node.module] if node.module else [])))
+            else:
+                found.append(node.module or "")
 
     Visitor().visit(tree)
     return found
@@ -55,10 +72,30 @@ def test_static_every_module_is_stdlib_or_self():
     for path in sorted(PACKAGE_DIR.rglob("*.py")):
         for name in module_level_imports(path):
             root = name.split(".")[0]
-            if name.startswith(PACKAGE) or root in sys.stdlib_module_names:
+            # Prefix check with the dot: "dskit.assets_evil" must not
+            # ride on startswith("dskit.assets").
+            if (name == PACKAGE or name.startswith(PACKAGE + ".")
+                    or root in sys.stdlib_module_names):
                 continue
             problems.append(f"{path.name}: {name}")
     assert not problems, f"non-stdlib module-level imports: {problems}"
+
+
+def test_relative_import_levels_resolve_absolutely(tmp_path):
+    # The scanner's own self-test (mirrors the pipeline gate's): each
+    # relative level strips one component, so a deep escape like
+    # `from ...pipeline import x` in libs/ resolves to dskit.pipeline
+    # and gets flagged — not silently mapped to the package itself.
+    f = tmp_path / "mod.py"
+    f.write_text(
+        "from ..base import x\n"
+        "from ...pipeline import y\n"
+        "from . import z\n"
+    )
+    names = module_level_imports(f, package="dskit.assets.libs")
+    assert "dskit.assets.base" in names
+    assert "dskit.pipeline" in names
+    assert "dskit.assets.libs" in names
 
 
 def test_no_subdirectories():

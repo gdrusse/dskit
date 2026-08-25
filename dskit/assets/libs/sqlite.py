@@ -198,11 +198,21 @@ class SqliteStore(Store):
 
     def _connect(self):
         """One connection per call: nothing held open, so any number of
-        threads/processes can hold their own — the point of the pack."""
+        threads/processes can hold their own — the point of the pack.
+
+        URI ``mode=rw`` (ADR-0020): a plain connect CREATES a missing
+        database, so a call against a damaged root would leave a stray
+        empty ``store.sqlite`` behind its own failure. ``mode=rw``
+        opens what exists or fails loudly, touching nothing.
+        """
         import sqlite3
+        from urllib.parse import quote
 
         try:
-            conn = sqlite3.connect(self._db, timeout=_BUSY_TIMEOUT)
+            conn = sqlite3.connect(
+                f"file:{quote(self._db)}?mode=rw",
+                timeout=_BUSY_TIMEOUT, uri=True,
+            )
         except sqlite3.Error as exc:
             raise AssetError([f"sqlite store {self._db!r}: {exc}"]) from exc
         try:
@@ -212,13 +222,29 @@ class SqliteStore(Store):
             raise AssetError([f"sqlite store {self._db!r}: {exc}"]) from exc
         return conn
 
-    def _load_body(self, body) -> AssetRecord:
+    def _load_body(self, body, expected_vid, stored_kind) -> AssetRecord:
         try:
             obj = json.loads(body)
         except ValueError as exc:
             raise AssetError([f"record row is not valid JSON: {exc}"]) from exc
         # from_obj recomputes the hash — a tampered row is refused.
-        return AssetRecord.from_obj(obj)
+        record = AssetRecord.from_obj(obj)
+        # Storage-key trust (ADR-0020): a VALID record planted under
+        # another key must be refused, not returned as the wrong asset.
+        if record.version_id() != expected_vid:
+            raise AssetError(
+                [f"record at storage key {expected_vid!r} holds different "
+                 "content — the store was mutated out of band"]
+            )
+        # And the KIND axis: the indexed kind column answers kind-scoped
+        # queries, so it must agree with the body (round-2 finding).
+        if record.kind != stored_kind:
+            raise AssetError(
+                [f"record at storage key {expected_vid!r} is stored under "
+                 f"kind {stored_kind!r} but declares {record.kind!r} — the "
+                 "store was mutated out of band"]
+            )
+        return record
 
     # -- records ----------------------------------------------------------
 
@@ -246,14 +272,14 @@ class SqliteStore(Store):
                 # Already present (possibly a concurrent writer's row):
                 # verify it, keep the FIRST registration's provenance.
                 row = conn.execute(
-                    "SELECT body FROM records WHERE version_id = ?", (vid,)
+                    "SELECT kind, body FROM records WHERE version_id = ?", (vid,)
                 ).fetchone()
                 if row is None:
                     raise AssetError(
                         [f"record {vid!r} vanished during verify — the "
                          "store was mutated out of band"]
                     )
-                self._load_body(row[0])
+                self._load_body(row[1], vid, row[0])
         except sqlite3.Error as exc:
             raise AssetError([f"sqlite store {self._db!r}: {exc}"]) from exc
         finally:
@@ -267,7 +293,7 @@ class SqliteStore(Store):
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT body FROM records WHERE version_id = ?", (version_id,)
+                "SELECT kind, body FROM records WHERE version_id = ?", (version_id,)
             ).fetchone()
         except sqlite3.Error as exc:
             raise AssetError([f"sqlite store {self._db!r}: {exc}"]) from exc
@@ -275,7 +301,7 @@ class SqliteStore(Store):
             conn.close()
         if row is None:
             raise AssetError([f"no record with version_id {version_id!r}"])
-        return self._load_body(row[0])
+        return self._load_body(row[1], version_id, row[0])
 
     def has_record(self, version_id) -> bool:
         if not isinstance(version_id, str) or not _VERSION_ID.match(version_id):

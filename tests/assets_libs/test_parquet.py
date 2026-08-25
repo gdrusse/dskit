@@ -8,6 +8,7 @@ for, file tampering, half-created roots, and crashed-append leftovers.
 
 import json
 import os
+import shutil
 
 import pytest
 
@@ -164,6 +165,38 @@ def test_non_string_body_refused(tmp_path, store):
     assert "not valid JSON" not in str(exc.value)
 
 
+def test_foreign_body_under_wrong_key_refused(tmp_path, store):
+    # Storage-key trust (ADR-0020): a VALID record body planted at
+    # another version_id's path is refused on read and re-put — the
+    # rehash alone cannot catch it, the planted body is self-consistent.
+    vid = store.put_record(_entity())
+    other = AssetRecord(kind="entity", payload={"name": "MSFT"}, refs={})
+    pq.write_table(
+        pa.table({"version_id": [vid], "kind": ["entity"],
+                  "body": [json.dumps(other.to_obj(), sort_keys=True)]}),
+        _record_path(tmp_path, vid),
+    )
+    with pytest.raises(AssetError, match="storage key"):
+        store.get_record(vid)
+    with pytest.raises(AssetError, match="storage key"):
+        store.put_record(_entity())
+
+
+def test_record_planted_under_wrong_kind_refused(tmp_path, store):
+    # The KIND axis of storage-key trust (ADR-0020): the directory
+    # answers kind-scoped queries and engine scans, so it must agree
+    # with the record body; a vid under two kinds proves a plant.
+    vid = store.put_record(_entity())
+    records = os.path.join(str(tmp_path / "s"), "records")
+    os.makedirs(os.path.join(records, "dataset"))
+    shutil.copyfile(os.path.join(records, "entity", vid + ".parquet"),
+                    os.path.join(records, "dataset", vid + ".parquet"))
+    with pytest.raises(AssetError, match="more than one kind"):
+        store.list_records()
+    with pytest.raises(AssetError, match="stored under kind"):
+        store.get_record(vid)
+
+
 def test_reput_of_tampered_record_refused(tmp_path, store):
     # The ABC pins verify-on-duplicate: a re-put of an already-present
     # version_id is a tamper check, not a no-op (round-1 review
@@ -257,7 +290,7 @@ def test_newline_suffixed_stem_refused(tmp_path, store):
     # $ forgives a trailing newline, so the foreign-stem guard must
     # use fullmatch — a '<64hex>\n.parquet' file would otherwise sail
     # through and detonate later in get_record (round-3 finding).
-    vid = store.put_record(_entity())
+    store.put_record(_entity())
     evil = os.path.join(str(tmp_path / "s"), "records", "entity",
                         "f" * 64 + "\n.parquet")
     pq.write_table(pa.table({"body": ["{}"]}), evil)
@@ -336,10 +369,16 @@ def test_directory_with_conforming_name_refused(tmp_path, store):
     # name that is not a regular file is foreign (round-6 finding).
     root = str(tmp_path / "s")
     store.put_record(_entity())
-    os.makedirs(os.path.join(root, "records", "entity",
-                             "e" * 64 + ".parquet"))
+    fake = "e" * 64
+    os.makedirs(os.path.join(root, "records", "entity", fake + ".parquet"))
     with pytest.raises(AssetError, match="foreign"):
         store.list_records()
+    # Point lookups refuse the squat as loudly as enumeration does —
+    # never a silent miss that splits list from has/get (ADR-0020).
+    with pytest.raises(AssetError, match="foreign"):
+        store.get_record(fake)
+    with pytest.raises(AssetError, match="foreign"):
+        store.has_record(fake)
     os.makedirs(os.path.join(root, "events", "00000001.parquet"))
     with pytest.raises(AssetError, match="foreign"):
         list(store.iter_events())

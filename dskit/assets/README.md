@@ -58,7 +58,10 @@ model it was created with.
   fine. The `libs/parquet.py` pack (extra: `pip install dskit[parquet]`)
   keeps the tier-1 limits but makes the whole store directly scannable
   by any parquet engine — `read_parquet('root/records/*/*.parquet')`
-  (ADR-0019). Migrate any store to any other with `copy_store(src, dst)`.
+  (ADR-0019). Every backend verifies the storage key on reads and
+  refuses foreign entries in `records/` loudly (`.`/`_` prefixed
+  names are ignored) — a store root holds only store files
+  (ADR-0020). Migrate any store to any other with `copy_store(src, dst)`.
   Your own backend: subclass the `Store` ABC and reference it as
   `backend="pkg.module:Class"` — no toolkit edit needed.
 - **Semantics** — the engine checks structure only (the six JSON types

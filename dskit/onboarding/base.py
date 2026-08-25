@@ -67,7 +67,8 @@ MODES = ("backfill", "live")
 
 #: Sources, streams, datasets, and modes become directory names — the
 #: same filesystem-safe rule the assets store applies to kinds.
-_SEGMENT = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+#: \Z, not $ — $ forgives a trailing newline (ADR-0020).
+_SEGMENT = re.compile(r"^[a-z0-9][a-z0-9_-]*\Z")
 
 
 def _check_segment(errors, name, value):

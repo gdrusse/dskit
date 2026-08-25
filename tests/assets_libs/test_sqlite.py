@@ -147,6 +147,54 @@ def test_tampered_row_refused_on_read(tmp_path, store):
     conn.close()
     with pytest.raises(AssetError, match="does not match"):
         store.get_record(vid)
+    # Verify-on-duplicate (ADR-0020 battery gap): the re-put IS the
+    # tamper check the ABC pins.
+    with pytest.raises(AssetError, match="does not match"):
+        store.put_record(_entity())
+
+
+def test_foreign_row_under_wrong_key_refused(tmp_path, store):
+    # Storage-key trust (ADR-0020): a VALID record body planted under
+    # another version_id's row is refused on read and re-put — the
+    # rehash alone cannot catch it, the planted body is self-consistent.
+    vid = store.put_record(_entity())
+    other = AssetRecord(kind="entity", payload={"name": "MSFT"}, refs={})
+    conn = sqlite3.connect(os.path.join(str(tmp_path / "s"), "store.sqlite"))
+    conn.execute("UPDATE records SET body = ? WHERE version_id = ?",
+                 (json.dumps(other.to_obj(), sort_keys=True), vid))
+    conn.commit()
+    conn.close()
+    with pytest.raises(AssetError, match="storage key"):
+        store.get_record(vid)
+    with pytest.raises(AssetError, match="storage key"):
+        store.put_record(_entity())
+
+
+def test_kind_column_divergence_refused(tmp_path, store):
+    # The KIND axis of storage-key trust (ADR-0020): the indexed kind
+    # column answers kind-scoped queries, so it must agree with the
+    # record body — on read and on the verify-on-duplicate path.
+    vid = store.put_record(_entity())
+    conn = sqlite3.connect(os.path.join(str(tmp_path / "s"), "store.sqlite"))
+    conn.execute("UPDATE records SET kind = 'feature' WHERE version_id = ?",
+                 (vid,))
+    conn.commit()
+    conn.close()
+    with pytest.raises(AssetError, match="stored under kind"):
+        store.get_record(vid)
+    with pytest.raises(AssetError, match="stored under kind"):
+        store.put_record(_entity())
+
+
+def test_damaged_root_never_grows_a_stray_db(tmp_path, store):
+    # URI mode=rw (ADR-0020): a runtime call against a root whose
+    # database vanished fails loudly and leaves NO stray empty
+    # store.sqlite behind its own failure.
+    db = os.path.join(str(tmp_path / "s"), "store.sqlite")
+    os.remove(db)
+    with pytest.raises(AssetError, match="sqlite"):
+        store.append_event({"n": 1})
+    assert not os.path.exists(db)
 
 
 @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0,

@@ -86,7 +86,7 @@ def test_modes_vocabulary_closed():
 
 
 def test_segment_checker_refuses_separators_and_case():
-    for bad in ("Bad", "a/b", "", "a b", ".hidden"):
+    for bad in ("Bad", "a/b", "", "a b", ".hidden", "prices\n"):
         errors = []
         _check_segment(errors, "x", bad)
         assert errors, bad

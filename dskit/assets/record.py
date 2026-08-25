@@ -42,7 +42,8 @@ __all__ = ["AssetRecord", "check_payload"]
 
 #: A version_id is a sha256 hex digest — nothing else. Refusing anything
 #: shorter catches "I passed the human alias" bugs at the boundary.
-_VERSION_ID = re.compile(r"^[0-9a-f]{64}$")
+#: \Z, not $ — $ forgives a trailing newline (ADR-0020).
+_VERSION_ID = re.compile(r"^[0-9a-f]{64}\Z")
 
 # The six JSON types as Python predicates. bool is checked FIRST because
 # bool subclasses int — a JSON boolean must never pass as a number.
