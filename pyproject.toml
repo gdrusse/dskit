@@ -21,6 +21,8 @@ torch = ["torch>=2.0"]
 transformers = ["transformers>=4.30", "torch>=2.0"]
 optuna = ["optuna>=3.0"]
 pyomo = ["pyomo>=6.7", "highspy>=1.7"]
+# Tier-2 store packs (dskit/assets/libs/*): same lazy-import rule.
+parquet = ["pyarrow>=15"]
 # Everything the library packs can use, for running the full libs test suite.
 all = [
     "numpy>=1.26",
@@ -31,6 +33,7 @@ all = [
     "optuna>=3.0",
     "pyomo>=6.7",
     "highspy>=1.7",
+    "pyarrow>=15",
 ]
 dev = [
     "pytest>=7.4",

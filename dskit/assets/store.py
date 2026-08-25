@@ -2,8 +2,8 @@
 
 :class:`Store` is the ABC every backend implements; :class:`FileStore` is
 the tier-1 implementation: human-diffable JSON files, no dependencies.
-Tier-2 packs live in ``libs/`` (sqlite today; postgres/parquet when
-needed) — the ABC exists precisely because the tier-1 limits are real
+Tier-2 packs live in ``libs/`` (sqlite, parquet; postgres when needed)
+— the ABC exists precisely because the tier-1 limits are real
 and declared:
 
 - **Single writer per store root.** Nothing here locks; concurrent
@@ -71,6 +71,7 @@ _CLASS_REF = re.compile(r"^[A-Za-z_][\w.]*:[A-Za-z_]\w*$")
 _BACKENDS = {
     "file": "dskit.assets.store:FileStore",
     "sqlite": "dskit.assets.libs.sqlite:SqliteStore",
+    "parquet": "dskit.assets.libs.parquet:ParquetStore",
 }
 
 
@@ -121,7 +122,7 @@ def _read_meta(root):
 #: store silently re-pinned over a stray database would be worse than
 #: the crash).
 _STORE_ARTIFACTS = ("store.json", "store.sqlite", "store.sqlite-wal",
-                    "store.sqlite-shm", "records", "events.jsonl")
+                    "store.sqlite-shm", "records", "events.jsonl", "events")
 
 
 def _refuse_existing_store(root):

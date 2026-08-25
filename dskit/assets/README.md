@@ -55,7 +55,10 @@ model it was created with.
   calls are atomic and durable. Engine-level mutation (`Registry`,
   `Lineage`) is check-then-act and still assumes one mutating writer
   per root — coordinate above the engine; concurrent readers are always
-  fine. Migrate any store to any other with `copy_store(src, dst)`.
+  fine. The `libs/parquet.py` pack (extra: `pip install dskit[parquet]`)
+  keeps the tier-1 limits but makes the whole store directly scannable
+  by any parquet engine — `read_parquet('root/records/*/*.parquet')`
+  (ADR-0019). Migrate any store to any other with `copy_store(src, dst)`.
   Your own backend: subclass the `Store` ABC and reference it as
   `backend="pkg.module:Class"` — no toolkit edit needed.
 - **Semantics** — the engine checks structure only (the six JSON types
@@ -85,7 +88,8 @@ dskit/assets/
 ├── ingest.py          ingest_run: observe a completed pipeline run dir
 ├── sync.py            sync_published: scan a published outbox root (ADR-0012)
 ├── libs/
-│   └── sqlite.py      tier-2 store pack: store-seam concurrency, indexed queries
+│   ├── sqlite.py      tier-2 store pack: store-seam concurrency, indexed queries
+│   └── parquet.py     tier-2 store pack: analytics-scannable one-row-per-file layout
 ├── __main__.py        the CLI: python -m dskit.assets
 ├── README.md          this file
 └── CLAUDE.md          agent orientation

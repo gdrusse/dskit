@@ -1,6 +1,6 @@
 """Tier-2 store packs — alternative backends behind the Store ABC (ADR-0018).
 
-One module per backend (``sqlite.py`` today; postgres/parquet when
+One module per backend (``sqlite.py``, ``parquet.py``; postgres when
 requirements arrive, per ADR-0011's sequencing). Each pack answers to
 the same purity gate as the core (module level = stdlib + this
 package) and imports its backend library only inside methods — even

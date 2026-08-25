@@ -23,11 +23,19 @@ from dskit.assets import (
 )
 
 #: Every built-in backend passes the identical battery below.
-BACKENDS = ("file", "sqlite")
+BACKENDS = ("file", "sqlite", "parquet")
+
+
+def _require_backend(backend):
+    """Skip when a backend's library is absent — the suite must pass
+    with no optional dependency installed."""
+    if backend == "parquet":
+        pytest.importorskip("pyarrow")
 
 
 @pytest.fixture(params=BACKENDS)
 def store(tmp_path, request):
+    _require_backend(request.param)
     return create_store(str(tmp_path / "s"), default_model(),
                         backend=request.param)
 
@@ -73,6 +81,7 @@ def test_iter_events_is_a_snapshot(store):
 
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_model_pin_declares_its_backend(tmp_path, backend):
+    _require_backend(backend)
     store = create_store(str(tmp_path / "s"), default_model(), backend=backend)
     assert store.model_pin()["backend"] == backend
 
@@ -100,14 +109,15 @@ def test_recreate_refused(tmp_path, store):
 
 @pytest.mark.parametrize("leftover",
                          ["records", "events.jsonl", "store.sqlite",
-                          "store.sqlite-wal"])
+                          "store.sqlite-wal", "events"])
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_create_refused_over_any_store_artifact(tmp_path, backend, leftover):
     # A crashed create (ANY backend's) is never silently built over —
     # the symmetric half of "a root is initialized exactly once".
+    _require_backend(backend)
     root = tmp_path / "s"
     root.mkdir()
-    if leftover == "records":
+    if leftover in ("records", "events"):
         (root / leftover).mkdir()
     else:
         (root / leftover).touch()
@@ -162,6 +172,7 @@ def test_open_store_unknown_backend_refused(tmp_path):
 def test_create_into_unwritable_parent_is_an_asset_error(tmp_path, backend):
     # Disk failures during create cross the seam wrapped, on every
     # backend — no raw OSError tracebacks (round-3 review finding).
+    _require_backend(backend)
     parent = tmp_path / "p"
     parent.mkdir()
     parent.chmod(0o500)
@@ -174,6 +185,7 @@ def test_create_into_unwritable_parent_is_an_asset_error(tmp_path, backend):
 
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_create_over_a_file_path_is_an_asset_error(tmp_path, backend):
+    _require_backend(backend)
     stray = tmp_path / "s"
     stray.touch()
     with pytest.raises(AssetError, match="cannot initialize"):
@@ -250,8 +262,11 @@ def test_filestore_refuses_a_foreign_backend_root(tmp_path):
 
 
 @pytest.mark.parametrize("src_backend,dst_backend",
-                         [("file", "sqlite"), ("sqlite", "file")])
+                         [("file", "sqlite"), ("sqlite", "file"),
+                          ("file", "parquet"), ("parquet", "sqlite")])
 def test_copy_store_replays_records_and_events(tmp_path, src_backend, dst_backend):
+    _require_backend(src_backend)
+    _require_backend(dst_backend)
     src = create_store(str(tmp_path / "src"), default_model(),
                        backend=src_backend)
     vid = src.put_record(_entity(origin="first"))

@@ -44,7 +44,8 @@ on it without breaking its rulings.
 - `FileStore` is **single-writer**; kind names must be
   filesystem-safe (lowercase/digits/`_`/`-`). Declared limits, not bugs
   to fix here — `libs/sqlite.py` lifts them at the STORE seam only
-  (`copy_store` migrates). **Registry/Lineage mutation stays
+  (`copy_store` migrates). `libs/parquet.py` lifts NEITHER — it keeps
+  the tier-1 limits and exists for analytics scanning (ADR-0019). **Registry/Lineage mutation stays
   one-writer-per-root on every backend**: their check-then-act
   sequences (dedupe replay, cycle check) race under concurrent
   writers, and an append-only log has no repair path. Never advertise
@@ -67,7 +68,8 @@ dskit/assets/
 ├── record.py          AssetRecord, check_payload
 ├── store.py           Store ABC, FileStore, open_store/create_store/copy_store
 ├── libs/
-│   └── sqlite.py      SqliteStore — tier-2 pack (ADR-0018)
+│   ├── sqlite.py      SqliteStore — tier-2 pack (ADR-0018)
+│   └── parquet.py     ParquetStore — tier-2 pack (ADR-0019)
 ├── registry.py        Registry — the only mutation path
 ├── lineage.py         Lineage — DAG edges, cycle-refusing, phase-stamped
 ├── ingest.py          ingest_run — the ADR-0008 file seam
