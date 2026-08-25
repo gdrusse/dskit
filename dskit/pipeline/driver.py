@@ -52,6 +52,7 @@ import logging
 import math
 import os
 import re
+import sys
 import tempfile
 import time
 import traceback
@@ -893,6 +894,21 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
     )
     prior_level = pipeline_logger.level
     pipeline_logger.addHandler(handler)
+    # The file alone is not enough: a long run (a training node's epochs, a
+    # search node's trials) showed the operator NOTHING until the summary
+    # table printed at the end, because run.log was the only sink. A model
+    # that diverges at epoch 2 has to be visible at epoch 2. Stream to
+    # stderr — stdout carries the run's REPORT, which is piped and parsed —
+    # and only when the caller has not already installed their own handler,
+    # so an embedding application's logging setup is never doubled.
+    stream_handler = None
+    if not any(
+        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+        for h in (*pipeline_logger.handlers, *logging.getLogger().handlers)
+    ):
+        stream_handler = logging.StreamHandler(sys.stderr)
+        stream_handler.setFormatter(logging.Formatter("%(message)s"))
+        pipeline_logger.addHandler(stream_handler)
     pipeline_logger.setLevel(logging.INFO)
 
     ctx = NodeContext(
@@ -1126,6 +1142,9 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
         trackers.close()
         pipeline_logger.removeHandler(handler)
         handler.close()
+        if stream_handler is not None:
+            pipeline_logger.removeHandler(stream_handler)
+            stream_handler.close()
         pipeline_logger.setLevel(prior_level)
 
 

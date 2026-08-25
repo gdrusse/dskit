@@ -159,9 +159,8 @@ class TrainingCurve:
         The node key, so a multi-node run's lines are attributable.
     log : logging.Logger
         The node's logger (``self.log``). Lines go through logging, not
-        ``print``, so they land in the run's ``run.log`` — and on the
-        terminal wherever a stream handler is attached (the driver's
-        live-stderr streaming is a deferred port; see TODO.md).
+        ``print``, so they land in the run's ``run.log`` as well as the
+        operator's terminal.
     total_epochs : int
         Planned epochs — used to render ``epoch 3/20`` and to decide the
         stride.

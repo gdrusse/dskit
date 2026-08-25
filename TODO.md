@@ -12,6 +12,12 @@
       mirrors the iter_events squat guard, so a dangling events.jsonl
       symlink refuses loudly instead of creating the target.
 
+- [x] Driver-side stderr streaming of TrainingCurve lines (2026-08-25):
+      the parent's StreamHandler hunk is ported — during a run, INFO
+      lines stream bare to stderr unless the caller already has a live
+      stream handler, and the handler is removed on every exit path.
+      Closes the ADR-0025 residual.
+
 Deferred:
 
 - [ ] Engine-level multi-writer coordination (Registry/Lineage
@@ -22,8 +28,3 @@ Deferred:
       out of ADR-0020, round-3 residual, loud downstream: every
       dereference refuses; fixing needs O(n) content loads, defeating
       the sqlite index). Stays declared, not fixed.
-- [ ] Driver-side stderr streaming of TrainingCurve lines (the parent's
-      ~19-line StreamHandler hunk in driver.py) was deliberately NOT
-      ported with ADR-0025 — telemetry reaches sinks/logs regardless;
-      only the live-in-terminal operator view awaits it. Port when
-      wanted.

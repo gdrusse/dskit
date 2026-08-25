@@ -1,6 +1,8 @@
 """The driver: the 6-step lifecycle end to end, against synthetic nodes."""
 
+import io
 import json
+import logging
 import os
 
 import pytest
@@ -562,6 +564,133 @@ class TestReviewRegressions:
         bounded = TrailingSplitSpec(test_days=14, val_days=28, train_days=30)
         with pytest.raises(ValueError, match="I-223"):
             bounded.materialize(100 * 24 * 60 * 60 * 1000)
+
+
+def _live_streams(logger):
+    """The driver's live-stderr kind: StreamHandlers that are not files."""
+    return sum(
+        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+        for h in logger.handlers
+    )
+
+
+class LoggerProbeNode(Node):
+    """Logs one INFO line and reports the live handlers it saw mid-run."""
+
+    role = "transform"
+    outputs = ("probe",)
+
+    def run(self, ctx, inputs):
+        self.log.info("probe-sentinel-line")
+        return {
+            "probe": {
+                "pipeline_live": _live_streams(logging.getLogger("dskit.pipeline")),
+                "root_live": _live_streams(logging.getLogger()),
+            }
+        }
+
+
+class RaisingProbeNode(Node):
+    """Raises, carrying the mid-run live-handler count in the message."""
+
+    role = "transform"
+
+    def run(self, ctx, inputs):
+        n = _live_streams(logging.getLogger("dskit.pipeline"))
+        raise RuntimeError(f"boom live-streams-mid-error={n}")
+
+
+def probe_doc(tmp_path, node="LoggerProbeNode"):
+    pipeline = {
+        "events": NodeSpec(uses="synth-events", params={"n_events": 8}),
+        "probe": NodeSpec(
+            uses=f"tests.pipeline.test_driver:{node}",
+            inputs={"events": "$events.events"},
+        ),
+    }
+    return PipelineDocument(
+        name="stream-probe",
+        pipeline=pipeline,
+        outputs=OutputsConfig(run_root=str(tmp_path)),
+    )
+
+
+def operator_terminal():
+    """Strip pytest's own live StreamHandlers from the root logger.
+
+    The driver streams only when the caller has no live (non-file)
+    StreamHandler anywhere — and pytest's log-capture handlers are
+    exactly that, so under test the guard sees an embedding application
+    and rightly declines. Stripping them simulates the bare operator
+    terminal the feature exists for. Called from the test BODY, not a
+    fixture: fixtures run in the setup phase and pytest re-attaches its
+    capture handlers when the call phase opens. No restore: pytest's own
+    end-of-phase removal is membership-checked (a no-op here) and it
+    re-attaches the same reused handlers at the next phase boundary.
+    The pipeline logger is swept too, so a leaked handler (the exact
+    defect the teardown tests exist to catch) cannot ride into the next
+    test's ``before`` snapshot and mask its assertions.
+    """
+    for logger in (logging.getLogger(), logging.getLogger("dskit.pipeline")):
+        for handler in list(logger.handlers):
+            if isinstance(handler, logging.StreamHandler) and not isinstance(
+                handler, logging.FileHandler
+            ):
+                logger.removeHandler(handler)
+
+
+class TestLiveStderrStreaming:
+    """ADR-0025 residual: INFO lines stream live to stderr during a run."""
+
+    def test_node_info_lines_stream_bare_to_stderr(self, tmp_path, registry, capsys):
+        operator_terminal()
+        result = run_document(probe_doc(tmp_path), asof=ASOF, registry=registry)
+        assert result.state == "ran"
+        err = capsys.readouterr().err
+        # Bare %(message)s lines — no asctime/name/level prefix — and the
+        # driver's own narration streams alongside the node's records.
+        assert "probe-sentinel-line" in err.splitlines()
+        assert "node probe: start" in err
+        # Streamed, not doubled: run.log still carries each line once.
+        with open(os.path.join(result.run_dir, "run.log"), encoding="utf-8") as fh:
+            assert fh.read().count("probe-sentinel-line") == 1
+
+    def test_handler_on_pipeline_logger_only_during_the_run(self, tmp_path, registry):
+        operator_terminal()
+        pipeline_logger = logging.getLogger("dskit.pipeline")
+        before = list(pipeline_logger.handlers)
+        result = run_document(probe_doc(tmp_path), asof=ASOF, registry=registry)
+        probe = result.outputs["probe"]["probe"]
+        assert probe["pipeline_live"] == 1  # installed on dskit.pipeline…
+        assert probe["root_live"] == 0  # …never on the root logger
+        assert pipeline_logger.handlers == before  # and removed at the end
+
+    def test_handler_removed_when_a_node_raises(self, tmp_path, registry):
+        operator_terminal()
+        pipeline_logger = logging.getLogger("dskit.pipeline")
+        before = list(pipeline_logger.handlers)
+        result = run_document(
+            probe_doc(tmp_path, node="RaisingProbeNode"), asof=ASOF, registry=registry
+        )
+        assert result.state == "error"
+        # Streaming was live when the node blew up…
+        assert "live-streams-mid-error=1" in result.error
+        # …and the failure path still tears it down: nothing leaks.
+        assert pipeline_logger.handlers == before
+
+    def test_a_callers_own_stream_handler_is_never_doubled(self, tmp_path, registry):
+        operator_terminal()
+        own = logging.StreamHandler(io.StringIO())
+        root = logging.getLogger()
+        root.addHandler(own)
+        try:
+            result = run_document(probe_doc(tmp_path), asof=ASOF, registry=registry)
+        finally:
+            root.removeHandler(own)
+        probe = result.outputs["probe"]["probe"]
+        assert probe["pipeline_live"] == 0  # driver declined — caller streams
+        # The caller's handler still gets the lines, via propagation.
+        assert "probe-sentinel-line" in own.stream.getvalue()
 
 
 class TestHelpers:
