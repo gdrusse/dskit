@@ -1,0 +1,20 @@
+{
+  "name": "yourproject-sample-run",
+  "notes": "The child's pipeline document: the smallest real DAG over its own registered kinds (data -> transform), template for every run the child declares. Once the child is installed (pip install -e . from the child root) it runs through the ONE universal command line: python -m dskit.pipeline run configs/run-sample.json --asof 2026-01-01 --adapter yourproject — the --adapter flag imports the package, and import = registration, which is what makes the 'yourproject-*' kind names below resolve. tests/test_nodes.py runs this same document in-process through the same entry the CLI uses.",
+  "pipeline": {
+    "sample": {
+      "uses": "yourproject-sample",
+      "notes": "Role 'data' (declared by the class, never by config): the child's source. No 'limit' set = the whole table; a real child's source node points at its store here."
+    },
+    "enrich": {
+      "uses": "yourproject-enrich",
+      "inputs": { "records": "$sample.records" },
+      "params": { "factor": 2.0 },
+      "notes": "Role 'transform': every record gains derived = value * factor. 'factor' is required on purpose — the derivation is stated in the document, never defaulted in code."
+    }
+  },
+  "outputs": {
+    "run_root": "",
+    "notes": "Empty = ./pipeline_runs under the invoking cwd. Placement is not identity (hash-excluded); the child's e2e test overrides it with a tmp dir."
+  }
+}

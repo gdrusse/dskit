@@ -52,6 +52,8 @@ select = ["E4", "E7", "E9", "F"]
 # Tests import after pytest.importorskip by design (E402) and bind
 # small lambdas where a def would add noise (E731).
 "tests/**" = ["E402", "E731"]
+# Child tests share the tests/** idiom (ADR-0021).
+"children/*/tests/**" = ["E402", "E731"]
 
 [tool.setuptools.packages.find]
 include = ["dskit*"]

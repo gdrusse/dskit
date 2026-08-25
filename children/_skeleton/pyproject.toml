@@ -1,0 +1,25 @@
+# A child project's OWN packaging — the child is installable on its own,
+# in-repo and after graduation, and dskit is its only coupling.
+#
+# Copying the skeleton? The rename is a GLOBAL replace, not a file list —
+# it must also hit the tests' imports, the kind prefixes, and the configs:
+#   cp -r children/_skeleton children/<name> && cd children/<name>
+#   grep -rl yourproject . | xargs sed -i 's/yourproject/<name>/g'
+#   mv yourproject <name>
+# That covers this file's `name` + `include` glob and everything else.
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yourproject"                # <- 1. your project's distribution name
+version = "0.0.1"
+description = "A dskit child: tier-3 wrappers + JSON configs over the toolkit."
+requires-python = ">=3.11"
+# `dskit` is the ONLY dependency and the only coupling (ADR-0021) — never a
+# path into the dskit repo. Your own heavy libraries (vendor SDKs, torch, …)
+# are added here too, but stay imported only inside run()/read().
+dependencies = ["dskit"]
+
+[tool.setuptools.packages.find]
+include = ["yourproject*"]          # <- 3. matches the renamed package dir

@@ -1,0 +1,5 @@
+{
+  "notes": "The connector CONFIG OBJECT for yourproject.connectors:SampleConnector, validated default-deny against its spec() (a document-level `notes` like this one is always allowed). This object is what a source_config's `config` field carries — register it once, transition draft -> active, and every acquisition pulls with it: the file is the single source of truth the tests drive the real acquire path with. `rows` sizes one full pull; `start_date` anchors the stream (one day per row) and must stay in the past — records are observations, and acquisition refuses an observation dated after acquired_at. A real child's config carries its vendor knobs here (secrets as env-var NAMES, never values).",
+  "rows": 3,
+  "start_date": "2026-01-01"
+}
