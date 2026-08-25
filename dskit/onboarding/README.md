@@ -13,6 +13,15 @@ time the data *describes* vs when you *got* it — and **mode**
 (`backfill` | `live`), a declared field with per-(source, stream, mode)
 checkpoint cursors, never an inference from dates.
 
+For sparse backfills over units × periods (tickers × days, stations ×
+months) the **coverage ledger** (ADR-0030) is the finer primitive: a
+SQLite done-set keyed `(source, stream, unit, period)` with
+`fetched`/`no_data` statuses. `CoverageLedger.from_root(root)` opens it
+at `state/coverage.sqlite`; `mark`/`missing`/`stale_units` drive the
+backfill loop (expected periods are DECLARED by the caller — the ledger
+never guesses a calendar), `audit`/`reconcile` keep it honest against
+the store. Library-first: acquisition never consults it implicitly.
+
 ## The 60-second path
 
 ```bash
@@ -88,6 +97,7 @@ onboarding_root/
 ├── observations/<source>/<acq_id>/<stream>.jsonl   # normalized bitemporal rows
 ├── forecasts/<source>/<acq_id>/<stream>.jsonl      # declared forecasts, apart
 ├── state/<source>/<stream>-<mode>.json       # one cursor per mode
+├── state/coverage.sqlite                     # coverage ledger (ADR-0030)
 └── published/<dataset>/NNNNNNNN-<hash8>.json # the outbox dskit.assets scans
 ```
 
@@ -101,6 +111,7 @@ dskit/onboarding/
 ├── layout.py          OnboardingRoot: every path in the estate
 ├── connector.py       Connector ABC, message envelope, check_config, resolve_connector
 ├── state.py           checkpoint cursors keyed (source, stream, mode)
+├── coverage.py        CoverageLedger: the (source, stream, unit, period) done-set
 ├── snapshot.py        Merkle manifests, WORM commits, verify, find-by-hash
 ├── acquire.py         run_acquisition: pull -> snapshot -> evidence -> checkpoint
 ├── validate.py        ValidationSuite / Rule, the rule engine, run_suite

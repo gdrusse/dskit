@@ -312,6 +312,26 @@ def test_driver_ignores_non_data_nodes():
         )
 
 
+def test_the_embargo_band_applies_to_the_policy_instant():
+    """ADR-0024 x ADR-0027 composition, as base.py promises: under an
+    event policy the ``val_start_ms`` embargo drops records by their
+    EVENT's instant, never their own. X's record sits inside the band by
+    asof but its event closes past val_start -> val; Y's record sits
+    past the band by asof but its event closes inside -> dropped
+    (merge-review gap: this pairing had zero coverage)."""
+    split = TimeSplitConfig(
+        train_end_ms=1_000,
+        val_start_ms=1_500,
+        val_end_ms=2_000,
+        test_end_ms=3_000,
+        policy="event-close",
+    ).with_event_bounds(
+        {"X": EventBounds(900, 1_600), "Y": EventBounds(400, 1_200)}
+    )
+    assert split.split_of(rec(1_200, "X")) == "val"
+    assert split.split_of(rec(1_600, "Y")) is None
+
+
 def test_policy_instant_refuses_an_unknown_name_directly():
     # The REGISTRY's own refusal (review F2): the config layer's
     # membership check shadows this lookup on the normal route, so a

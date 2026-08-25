@@ -1,0 +1,61 @@
+{
+  "name": "walk-forward-demo",
+  "notes": "Rolling-origin evaluation, declared (ADR-0027): `python -m dskit.pipeline walkforward examples/pipeline/walk-forward.json --asof 1973-08-01`. Three fold cutoffs are generated (first/step_days/count); per fold the driver derives pinned time cuts (train up to cutoff MINUS the 5-day embargo, val = the 21 days from the cutoff) and runs this whole pipeline once — a full run dir per fold — then aggregates the objective. The two filter nodes read the fold's cuts through $splits refs, so 'train rows' and 'val rows' move with every fold; the trainer's best_val_loss (its val-curve minimum) is what each fold reports.",
+  "pipeline": {
+    "market": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthEvents",
+      "params": {"n_events": 300, "n_instruments": 2, "seed": 11},
+      "notes": "deterministic daily events from day 1000 (1972-09-27) onward — the fold cutoffs below land inside this span"
+    },
+    "train_rows": {
+      "uses": "filter",
+      "inputs": {"records": "$market.events"},
+      "params": {
+        "require_usable": false,
+        "where": [
+          {"field": "asof_ms", "op": "<=", "value": "$splits.train_end_ms"}
+        ]
+      },
+      "notes": "everything up to the fold's train cut; the 5-day embargo band after it belongs to NO split"
+    },
+    "val_rows": {
+      "uses": "filter",
+      "inputs": {"records": "$market.events"},
+      "params": {
+        "require_usable": false,
+        "where": [
+          {"field": "asof_ms", "op": ">=", "value": "$splits.val_start_ms"},
+          {"field": "asof_ms", "op": "<=", "value": "$splits.val_end_ms"}
+        ]
+      },
+      "notes": "the fold's val window, starting AFTER the embargo (val_start_ms exists because walkforward.embargo_days > 0)"
+    },
+    "qhat": {
+      "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+      "mode": "train",
+      "inputs": {"rows": "$train_rows.records", "val_rows": "$val_rows.records"},
+      "params": {
+        "module": "torch.nn:Linear",
+        "module_params": {"in_features": 1, "out_features": 1},
+        "features": ["mid"],
+        "label": "p_true",
+        "optimizer": "torch.optim:Adam",
+        "epochs": 8,
+        "lr": 0.05,
+        "loader": {"batch_size": 32, "shuffle": true, "seed": 7}
+      },
+      "notes": "the document names the module AND the optimizer by import path (ADR-0025); every epoch's train/val loss lands in training_curve.json and metrics carries best_val_loss — the objective below"
+    }
+  },
+  "walkforward": {
+    "objective": "$qhat.metrics.best_val_loss",
+    "select": "min",
+    "first": "1973-03-01",
+    "step_days": 30,
+    "count": 3,
+    "val_days": 21,
+    "embargo_days": 5,
+    "notes": "expanding train windows; the embargo keeps rows whose outcomes are still resolving at the cutoff out of BOTH sides"
+  },
+  "outputs": {"run_root": ""}
+}

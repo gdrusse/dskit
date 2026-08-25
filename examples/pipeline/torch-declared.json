@@ -1,0 +1,35 @@
+{
+  "name": "torch-declared-demo",
+  "notes": "The ADR-0025 declared-model seam: the DOCUMENT names the nn.Module (torch.nn:Linear + its constructor kwargs) AND the optimizer (torch.optim:Adam + its own knobs) — swapping either is a config edit, never a subclass. Per-epoch telemetry streams through the node's log while it runs and lands complete in training_curve.json beside the model. DeclaredPredict restores the exact fit from the sidecar-verified artifact, cross-checking the declared module by value.",
+  "pipeline": {
+    "market": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthEvents",
+      "params": {"n_events": 48, "n_instruments": 2, "seed": 7},
+      "notes": "the same synthetic market the torch-linear demo trains on"
+    },
+    "qhat": {
+      "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+      "mode": "train",
+      "inputs": {"rows": "$market.events"},
+      "params": {
+        "module": "torch.nn:Linear",
+        "module_params": {"in_features": 1, "out_features": 1},
+        "features": ["mid"],
+        "label": "p_true",
+        "optimizer": "torch.optim:Adam",
+        "optimizer_params": {"weight_decay": 0.0001},
+        "epochs": 10,
+        "lr": 0.1,
+        "loader": {"batch_size": 16, "shuffle": true, "seed": 7}
+      },
+      "notes": "optimizer is an import path with optimizer_params as its kwargs; lr stays the node's own knob (declaring it inside optimizer_params refuses). The per-epoch curve is written to artifacts/qhat/training_curve.json."
+    },
+    "predict": {
+      "uses": "dskit.pipeline.libs.torch:DeclaredPredict",
+      "inputs": {"artifact_path": "$qhat.artifact_path"},
+      "params": {"module": "torch.nn:Linear"},
+      "notes": "declaring the module here is a cross-check against the sidecar — a different family refuses by name (spell it exactly as the trainer did; the check is by value)"
+    }
+  },
+  "outputs": {"run_root": ""}
+}

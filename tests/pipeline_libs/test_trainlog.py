@@ -115,6 +115,19 @@ class TestTrainingCurve:
         assert curve.best_epoch == 2
         assert curve.summary()["best_val_loss"] == pytest.approx(0.4)
 
+    def test_a_tied_objective_keeps_the_earliest_best_epoch(self):
+        # Salvaged (2026-08-25 merge) from the superseded parallel suite:
+        # best is a STRICT improvement, so a tie never moves the epoch.
+        rec = _Recorder()
+        curve = TrainingCurve(
+            "qhat", _logger_with(rec, "test.curve.tie"), total_epochs=3
+        )
+        curve.record(1, 0.9, val_loss=0.5)
+        curve.record(2, 0.5, val_loss=0.3)
+        row = curve.record(3, 0.4, val_loss=0.3)  # tie -> earliest wins
+        assert curve.best_epoch == 2
+        assert row["best"] is False
+
     def test_the_stream_is_bounded_for_a_long_fit(self):
         rec = _Recorder()
         curve = TrainingCurve(

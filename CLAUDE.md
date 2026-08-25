@@ -15,7 +15,8 @@ time. Once code is set, using it on a new project means writing a new config —
 never editing the package.
 
 Wrapping a standard DS/ML library is encouraged when it earns its place
-(see `dskit/pipeline/libs/`: numpy, sklearn, torch, transformers, optuna, pyomo).
+(see `dskit/pipeline/libs/`: numpy, sklearn, torch, transformers, optuna, pyomo,
+sb3, matplotlib).
 Wrap the *library*, generically — never a project's use of it.
 
 ## Working agreement
@@ -154,6 +155,7 @@ python -m pytest tests/pipeline -q # tier-1 core + purity gate
 
 python -m dskit.pipeline nodemap                 # synthetic demo run
 python -m dskit.pipeline run  <doc.json> --asof <YYYY-MM-DD> [--adapter yourpkg]
+python -m dskit.pipeline walkforward <doc.json> --asof <YYYY-MM-DD>  # one run per fold + summary
 python -m dskit.pipeline plan <doc.json>         # resolved DAG, no execution
 python -m dskit.pipeline validate <doc.json>     # shape + identity hash
 # also: demo / synthetic (legacy stage-list grammar)
@@ -171,7 +173,11 @@ Both master-spec packages are **built**: Package 1 → `dskit/assets`
 (ADR-0007…0011), Package 2 → `dskit/onboarding` (ADR-0012…0016). The
 open-questions register is clear. ADRs continue past the specs: packs
 (0017…0019), integrity parity (0020), the child convention (0021),
-engine-parity ports (0022/0023) and proposals awaiting the owner
-(0024…0026). New significant design decisions still require an ADR in
+engine-parity ports (0022/0023), split policies + event bounds (0024),
+the rl_stocks-driven capability set (0025 + 0027…0030: the
+declared-model seam + trainlog, walk-forward + embargoed splits, the
+sb3 and matplotlib packs, the onboarding coverage ledger) and the
+proposal still awaiting the owner (0026). New
+significant design decisions still require an ADR in
 `docs/architecture/decision-log.md` before code — no decision
 undocumented.

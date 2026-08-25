@@ -269,6 +269,15 @@ def test_predict_input_wire_checks():
     assert node.validate_inputs({}) == []
 
 
+def test_a_non_list_val_rows_wire_is_refused_by_name():
+    # Salvaged (2026-08-25 merge) from the superseded parallel suite: the
+    # ported loop has the same wire rule and no test pinned it.
+    node = LinearRegressor("qhat", dict(PARAMS))
+    problems = node.validate_inputs({"rows": [], "val_rows": iter([])})
+    assert any("val_rows must be a LIST" in p for p in problems)
+    assert node.validate_inputs({"rows": [], "val_rows": []}) == []
+
+
 # -- training: contract, artifact, signal -------------------------------------
 
 
@@ -660,6 +669,15 @@ def test_a_non_dict_module_params_is_refused_at_plan():
     assert any("module_params must be a dict" in p for p in problems)
 
 
+def test_non_string_module_params_keys_are_refused_at_plan():
+    # Salvaged (2026-08-25 merge) from the superseded parallel suite: a
+    # dict with a non-string key is not constructor kwargs either.
+    problems = DeclaredTrain.validate_params(
+        {**DECLARED_PARAMS, "module_params": {1: 2}}
+    )
+    assert any("module_params must be a dict" in p for p in problems)
+
+
 def test_a_bad_constructor_knob_is_refused_by_the_constructor(tmp_path):
     with pytest.raises(ValueError, match="rejected module_params"):
         train(
@@ -721,6 +739,31 @@ def test_example_runs_end_to_end_and_the_predictor_restores_the_fit(tmp_path):
     assert p is not None and math.isfinite(p)
     trained = result.outputs["qhat"]["signal"]
     assert p == pytest.approx(trained.predict(row))
+
+
+DECLARED_EXAMPLE = (
+    pathlib.Path(__file__).parents[2] / "examples" / "pipeline" / "torch-declared.json"
+)
+
+
+def test_declared_example_loads_hashes_and_runs(tmp_path):
+    # Salvaged (2026-08-25 merge) from the superseded parallel suite and
+    # adapted to the ported grammar: the shipped DECLARED example must stay
+    # loadable, hash-stable, and runnable end-to-end.
+    doc = load_document(str(DECLARED_EXAMPLE))
+    assert doc.name == "torch-declared-demo"
+    assert doc.hash == load_document(str(DECLARED_EXAMPLE)).hash
+    obj = json.loads(DECLARED_EXAMPLE.read_text(encoding="utf-8"))
+    obj["outputs"]["run_root"] = str(tmp_path / "runs")
+    result = run_document(PipelineDocument.from_obj(obj), asof="2026-01-01")
+    assert result.error == ""
+    assert result.state == "ran"
+    signal = result.outputs["predict"]["signal"]
+    assert signal.loaded is True
+    row = result.outputs["market"]["events"][0]
+    assert signal.predict(row) == pytest.approx(
+        result.outputs["qhat"]["signal"].predict(row)
+    )
 
 
 # -- the conformance suite (pipeline/CLAUDE.md step 8) ---------------------------

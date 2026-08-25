@@ -51,6 +51,11 @@ on it without breaking its rulings (ADR-0012…0016).
   not "fix" duplicate snapshots by moving the checkpoint earlier.
 - **`FakeConnector` scripts are class attributes** (the acquire path
   instantiates the class); the `fake_source` fixture resets them.
+- **The coverage ledger never guesses a calendar** (ADR-0030): `missing`
+  takes the caller's DECLARED period list; do not "improve" it with
+  range inference — that blind spot is the bug class it exists to
+  prevent. One writer per ledger file; `reconcile` adopts store truth
+  but never clears a `fetched` claim (that is the operator's `clear`).
 
 ## Contents
 
@@ -62,6 +67,7 @@ dskit/onboarding/
 ├── layout.py          OnboardingRoot — every path; create-exactly-once
 ├── connector.py       Connector ABC, envelope checks, config default-deny, resolve
 ├── state.py           load_state / save_state — (source, stream, mode) cursors
+├── coverage.py        CoverageLedger — sparse-backfill done-set (ADR-0030)
 ├── snapshot.py        build_manifest / write_snapshot / verify / find_snapshot_dir
 ├── acquire.py         run_acquisition — the orchestrated pull + durability order
 ├── validate.py        Rule / ValidationSuite / _RULES / run_suite

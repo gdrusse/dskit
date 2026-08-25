@@ -6,6 +6,10 @@ One command line for every project and venue (docs/24 §9, D-145 ruling
 * ``run <config.json> [--asof YYYY-MM-DD]`` — the 6-step lifecycle
   (LOAD → IMPORT → PLAN → RESOLVE → EXECUTE → RECORD). Exit code
   reflects the outcome: 0 ran, 3 halted at a NO-GO gate, 1 error.
+* ``walkforward <config.json> [--asof YYYY-MM-DD]`` — run the document's
+  declared ``walkforward`` section (ADR-0027): one full run per fold
+  cutoff plus an aggregate summary dir. Exit 0 all folds ran, 3 a fold
+  halted, 1 a fold errored.
 * ``plan <config.json>`` — print the resolved DAG (plan.json), no
   execution.
 * ``validate <config.json>`` — shape + hash only. Dispatches on the
@@ -167,7 +171,15 @@ def _doc_validate(path) -> int:
         return 1
     sections = [
         s
-        for s in ("splits", "clock", "schedule", "env", "outputs", "tracking")
+        for s in (
+            "splits",
+            "clock",
+            "schedule",
+            "env",
+            "outputs",
+            "tracking",
+            "walkforward",
+        )
         if getattr(doc, s) is not None
     ]
     print(f"OK — {path}")
@@ -245,6 +257,21 @@ def cmd_run(path, asof, adapters=()) -> int:
     return result.exit_code
 
 
+def cmd_walkforward(path, asof, adapters=()) -> int:
+    from dskit.pipeline.driver import run_walk_forward
+
+    try:
+        _import_adapters(adapters)
+        result = run_walk_forward(path, asof=asof)
+    except (ImportError, ValueError, OSError) as exc:
+        print(exc)
+        return 1
+    with open(os.path.join(result.summary_dir, "report.md"), encoding="utf-8") as fh:
+        print(fh.read())
+    print(f"(summary dir: {result.summary_dir})")
+    return result.exit_code
+
+
 def cmd_nodemap() -> int:
     from dskit.pipeline.base import OutputsConfig
     from dskit.pipeline.driver import run_document
@@ -284,6 +311,19 @@ def main(argv=None) -> int:
         help="the run's asof (defaults to today, UTC)",
     )
     _add_adapter_flag(run_p)
+    wf_p = sub.add_parser(
+        "walkforward",
+        help="run the document's declared walkforward section: one run per "
+        "fold + an aggregate summary (ADR-0027)",
+    )
+    wf_p.add_argument("path", help="path to the document JSON")
+    wf_p.add_argument(
+        "--asof",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="the evaluation's asof (defaults to today, UTC)",
+    )
+    _add_adapter_flag(wf_p)
     plan_p = sub.add_parser("plan", help="print the resolved DAG, no execution")
     plan_p.add_argument("path", help="path to the document JSON")
     _add_adapter_flag(plan_p)
@@ -299,6 +339,8 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if args.command == "run":
         return cmd_run(args.path, args.asof, args.adapter)
+    if args.command == "walkforward":
+        return cmd_walkforward(args.path, args.asof, args.adapter)
     if args.command == "plan":
         return cmd_plan(args.path, args.adapter)
     if args.command == "nodemap":

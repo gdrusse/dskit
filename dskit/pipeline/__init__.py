@@ -52,9 +52,10 @@ migrating to, built spec-first against a synthetic Node set (D-145):
   role; the set the runner is proven against.
 
 Runnable commands (``python -m dskit.pipeline ...``): ``run <doc>
-[--asof]`` / ``plan <doc>`` / ``validate <config>`` (dispatches on the
-document's shape) / ``nodemap`` (the banking demo on synthetic nodes);
-stage-list: ``demo`` (default) and ``synthetic``.
+[--asof]`` / ``walkforward <doc>`` / ``plan <doc>`` / ``validate
+<config>`` (dispatches on the document's shape) / ``nodemap`` (the
+banking demo on synthetic nodes); stage-list: ``demo`` (default) and
+``synthetic``.
 """
 
 from dskit.pipeline.base import (
@@ -107,10 +108,16 @@ from dskit.pipeline.document import (
     RandomSplitSpec,
     ScheduleConfig,
     TrailingSplitSpec,
+    WalkForwardSpec,
     load_document,
     save_document,
 )
-from dskit.pipeline.driver import DocumentRunResult, run_document
+from dskit.pipeline.driver import (
+    DocumentRunResult,
+    WalkForwardRunResult,
+    run_document,
+    run_walk_forward,
+)
 from dskit.pipeline.env import Secrets, load_env
 from dskit.pipeline.features import apply_stream_steps
 from dskit.pipeline.io import load_config, save_config
@@ -202,11 +209,14 @@ __all__ = [
     "TableFile",
     "TrailingSplitSpec",
     "Validate",
+    "WalkForwardRunResult",
+    "WalkForwardSpec",
     "load_document",
     "plan",
     "register_node_kind",
     "resolve_uses",
     "run_document",
+    "run_walk_forward",
     "save_document",
     "parse_stage_entry",
     "is_class_ref",
