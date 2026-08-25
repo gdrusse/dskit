@@ -390,8 +390,36 @@ def test_events_log_dir_squat_refused(tmp_path):
     os.mkdir(os.path.join(str(tmp_path / "s"), "events.jsonl"))
     with pytest.raises(AssetError, match="not a regular file"):
         list(store.iter_events())
-    with pytest.raises(AssetError, match="cannot append"):
+    with pytest.raises(AssetError, match="not a regular file"):
         store.append_event({"n": 1})
+
+
+def test_events_log_broken_symlink_append_refused(tmp_path):
+    # "a" through a dangling symlink lands the write wherever the
+    # out-of-band link points and silently HEALS the refusal reads
+    # gave the same root — so append mirrors the iter_events squat
+    # guard and leaves the target uncreated (ADR-0020 round-3 residual).
+    root = tmp_path / "s"
+    store = create_store(str(root), default_model())
+    os.symlink(str(root / "nowhere"), str(root / "events.jsonl"))
+    with pytest.raises(AssetError, match="not a regular file"):
+        store.append_event({"n": 1})
+    assert not (root / "nowhere").exists()
+    with pytest.raises(AssetError, match="not a regular file"):
+        list(store.iter_events())
+
+
+def test_events_log_valid_symlink_allowed(tmp_path):
+    # The ALLOWED half of the parity: a symlink RESOLVING to a regular
+    # file passes lexists+isfile on both append and read — an
+    # over-broad islink refusal would break it.
+    root = tmp_path / "s"
+    store = create_store(str(root), default_model())
+    target = tmp_path / "elsewhere.jsonl"
+    target.write_text("", encoding="utf-8")
+    os.symlink(str(target), str(root / "events.jsonl"))
+    store.append_event({"n": 1})
+    assert [e["n"] for e in store.iter_events()] == [1]
 
 
 def test_filestore_sidecars_ignored_and_foreign_entries_refused(tmp_path):

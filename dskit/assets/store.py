@@ -641,11 +641,20 @@ class FileStore(Store):
             line = json.dumps(event, sort_keys=True, allow_nan=False)
         except (TypeError, ValueError) as exc:
             raise AssetError([f"event is not JSON-serializable: {exc}"]) from exc
+        path = os.path.join(self._root, "events.jsonl")
+        if os.path.lexists(path) and not os.path.isfile(path):
+            # Mirror of the iter_events squat guard: "a" through a
+            # dangling symlink would land the write wherever the
+            # out-of-band link points and silently HEAL the refusal
+            # reads gave the same root (ADR-0020 round-3 residual).
+            raise AssetError(
+                [f"events.jsonl in {self._root!r} is not a regular file — "
+                 "the store was mutated out of band"]
+            )
         # Plain append: atomic enough under the declared single-writer
         # limit, and the reason multi-writer needs a tier-2 store.
         try:
-            with open(os.path.join(self._root, "events.jsonl"), "a",
-                      encoding="utf-8") as fh:
+            with open(path, "a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
         except OSError as exc:
             raise AssetError(
