@@ -179,7 +179,8 @@ def _resolve_backend(ref):
     Parameters
     ----------
     ref : str
-        A built-in backend name (``"file"``, ``"sqlite"``) or an import
+        A built-in backend name (``"file"``, ``"sqlite"``, ``"parquet"``)
+        or an import
         reference (``"my_pkg.stores:PostgresStore"``).
 
     Returns
@@ -254,7 +255,8 @@ def create_store(root, model, backend="file"):
     model : AssetModel
         The governing model; its hash is pinned in ``store.json``.
     backend : str, optional
-        Built-in name (``"file"``, ``"sqlite"``) or ``pkg.module:Class``.
+        Built-in name (``"file"``, ``"sqlite"``, ``"parquet"``) or
+        ``pkg.module:Class``.
 
     Returns
     -------

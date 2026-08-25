@@ -61,7 +61,8 @@ dskit/
 │   │   └── libs/              # tier-2 wrappers for standard DS/ML libraries
 │   ├── assets/                # the Data Asset Platform (spec Package 1):
 │   │   └── libs/              #   config-driven registry engine; own README +
-│   │                          #   CLAUDE.md; libs/ = tier-2 store packs (sqlite)
+│   │                          #   CLAUDE.md; libs/ = tier-2 store packs
+│   │                          #   (sqlite, parquet)
 │   └── onboarding/            # Acquisition & Onboarding (spec Package 2):
 │       └── libs/              #   connectors/snapshots/validation/publication;
 │                              #   own README + CLAUDE.md; libs/ = connector packs
@@ -73,7 +74,7 @@ dskit/
     ├── pipeline/              # tier-1 core + purity gate
     ├── pipeline_libs/         # tier-2 library packs
     ├── assets/                # assets engine: purity, hash-parity, e2e ingest + sync
-    ├── assets_libs/           # tier-2 store packs (sqlite: concurrency, tampering)
+    ├── assets_libs/           # tier-2 store packs (sqlite, parquet)
     └── onboarding/            # onboarding: purity, model pin, conformance, CLI e2e
 ```
 

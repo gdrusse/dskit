@@ -4,7 +4,8 @@ Same thesis as the pipeline CLI: one entry point, every project; a store
 plus a model document IS the platform. Commands:
 
 * ``init`` — create a store root pinned to a model (exactly once);
-  ``--backend`` picks the storage (``file`` default, ``sqlite``, or a
+  ``--backend`` picks the storage (``file`` default, ``sqlite``,
+  ``parquet``, or a
   ``pkg.module:Class`` reference — ADR-0018). Every other command opens
   the root with whatever backend it declares.
 * ``validate-model [path]`` — shape-check a model file (or the built-in
@@ -182,7 +183,7 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("init", help="create a store root pinned to a model")
     p.add_argument("--backend", default="file",
-                   help="store backend: file (default), sqlite, or pkg.module:Class")
+                   help="store backend: file (default), sqlite, parquet, or pkg.module:Class")
     _add_common(p)
     p.set_defaults(fn=cmd_init)
 

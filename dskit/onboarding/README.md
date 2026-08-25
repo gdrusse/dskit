@@ -16,7 +16,7 @@ checkpoint cursors, never an inference from dates.
 ## The 60-second path
 
 ```bash
-python -m dskit.onboarding init --root ./onboarding_root   # --backend sqlite for the tier-2 store
+python -m dskit.onboarding init --root ./onboarding_root   # --backend sqlite/parquet for a tier-2 store
 python -m dskit.onboarding register-source vendor --root ./onboarding_root \
     --catalog-source vendor-src --connector localfiles \
     --config '{"path": "./data", "effective_field": "date"}' --activate

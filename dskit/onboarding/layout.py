@@ -93,7 +93,8 @@ class OnboardingRoot:
             :func:`~dskit.onboarding.default_model.onboarding_model`.
         backend : str, optional
             The P2 store's backend (ADR-0018): ``"file"`` (default),
-            ``"sqlite"``, or a ``pkg.module:Class`` reference. The
+            ``"sqlite"``, ``"parquet"``, or a ``pkg.module:Class``
+            reference. The
             choice is recorded in the store itself; reopening needs no
             repeat.
 

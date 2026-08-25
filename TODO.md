@@ -17,6 +17,17 @@ Deferred from the ADR-0018 review rounds (pre-existing, loud-not-silent):
 - [ ] Engine-level multi-writer coordination (Registry/Lineage
       check-then-act) — needs its own ADR if ever wanted (ADR-0018
       amendment scopes concurrency to the store seam).
+- [ ] Every backend's `get_record(X)` trusts the storage key: a valid
+      foreign record placed under X's filename/row returns a record
+      whose `version_id() != X` (rehash checks content-vs-stored-hash,
+      not content-vs-requested-key). Shared identically by file/sqlite/
+      parquet — add the key check across all three at once. Adjacent:
+      parquet point lookups (has/get) silently miss a directory
+      squatting `<vid>.parquet` that list/iter refuse loudly.
+- [ ] Battery-wide gaps found in the ADR-0019 review: verify-on-
+      duplicate-put is untested on file/sqlite (parquet covers its
+      own), and FileStore `list_records` returns foreign `*.json`
+      stems where parquet now refuses loudly — align or declare.
 - [ ] ruff is now available (0.16.4, anaconda) but its defaults flag
       ~47 pre-existing findings tree-wide (I001/ISC004/SIM115/UP017…);
       pin a `[tool.ruff]` baseline in pyproject.toml to codify the

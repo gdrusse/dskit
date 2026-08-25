@@ -61,6 +61,17 @@ def test_put_get_list_has(store):
     assert store.list_records("feature") == []
 
 
+def test_list_records_is_sorted(store):
+    # The ABC pins "sorted version_ids" — with 3+ records, insertion
+    # order and hash order diverge, so an unsorted backend fails here
+    # (round-1 review finding: this had zero coverage on any backend).
+    vids = [store.put_record(
+        AssetRecord(kind="entity", payload={"name": n}, refs={}))
+        for n in ("AAPL", "MSFT", "NVDA")]
+    assert store.list_records() == sorted(vids)
+    assert store.list_records("entity") == sorted(vids)
+
+
 def test_events_append_and_replay_in_order(store):
     store.append_event({"event": "register", "n": 1})
     store.append_event({"event": "transition", "n": 2})

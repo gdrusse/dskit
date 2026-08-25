@@ -404,8 +404,18 @@ event, append = max+1. Plain `<kind>/` dirs, NOT hive `kind=` names —
 it in duckdb; `records/*/*.parquet` glob-scans the whole dataset.
 Schema is the sqlite body idiom: `(version_id, kind, body)` /
 `(seq, body)`, body = canonical JSON string, rehash-on-read tamper
-check. `iter_events` snapshot = the sorted file list captured at call
-time. pyarrow and `OSError` failures cross the seam as `AssetError`.
+check. `iter_events` snapshot = the sorted file list captured when
+iteration begins (the ABC's wording; parity with both siblings).
+pyarrow and `OSError` failures cross the seam as `AssetError` — the
+driver is probed at open AND create, so a root never yields an
+instance whose data calls would leak ImportError. Foreign entries are
+refused loudly, extension-blind: anything in `events/` or
+`records/`(`<kind>/`) the API cannot account for — wrong name, wrong
+suffix, or a directory where a record/event file belongs — is one an
+engine scan would treat differently, and the two read paths must
+never silently disagree. Names with the engine-ignored `.`/`_`
+prefixes (AppleDouble sidecars, crashed temps) are invisible to both
+paths and exempt.
 
 **Declared limits.** Single mutating writer per root (the max+1 seq is
 check-then-act, like FileStore's append); queries are directory scans.

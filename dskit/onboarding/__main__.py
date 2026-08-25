@@ -186,7 +186,7 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("init", help="create an onboarding root (exactly once)")
     p.add_argument("--backend", default="file",
-                   help="P2 store backend: file (default), sqlite, or pkg.module:Class")
+                   help="P2 store backend: file (default), sqlite, parquet, or pkg.module:Class")
     _add_common(p)
     p.set_defaults(fn=cmd_init)
 

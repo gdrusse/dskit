@@ -70,16 +70,35 @@ __all__ = ["ParquetStore"]
 #: Event filenames are the zero-padded sequence number, so a lexical
 #: sort IS append order. Eight digits caps the log at 10^8 - 1 events —
 #: refused loudly if ever reached, unreachable at the declared ~10^4.
-_EVENT_FILE = re.compile(r"^\d{8}\.parquet$")
+#: ASCII digits only (``\d`` would admit Unicode digits) and ``\Z``,
+#: not ``$`` (which forgives a trailing newline).
+_EVENT_FILE = re.compile(r"^[0-9]{8}\.parquet\Z")
 _MAX_SEQ = 10**8 - 1
+
+
+def _require_pyarrow():
+    """Refuse loudly when the driver is absent.
+
+    Called at BOTH create and open, so an instance whose every data
+    call would fail can never exist — the missing driver surfaces as
+    one clear ``AssetError`` at the seam, never a raw ImportError from
+    the middle of a put (round-1 review finding).
+    """
+    try:
+        import pyarrow  # noqa: F401 — availability check only
+    except Exception as exc:
+        raise AssetError(
+            [f"parquet store needs pyarrow (pip install dskit[parquet]): {exc}"]
+        ) from exc
 
 
 def _atomic_write_bytes(path, data):
     """Write ``data`` via a same-directory temp + fsync + ``os.replace``.
 
     The byte-level twin of :func:`~dskit.assets.base.atomic_write_json`:
-    a reader can only ever see a complete file, and a returned write has
-    reached disk.
+    a reader can only ever see a complete file. The file's DATA is
+    fsynced before the rename; the rename's directory entry is synced
+    best-effort afterwards (the onboarding maildir discipline).
 
     Parameters
     ----------
@@ -100,6 +119,20 @@ def _atomic_write_bytes(path, data):
         if os.path.exists(tmp):
             os.unlink(tmp)
         raise
+    # After the replace the write is VISIBLE and must be reported as
+    # success — a raise here would tell the caller an append failed
+    # when it landed, inviting a duplicate on retry (round-2 review
+    # finding). So the directory-entry sync is best-effort, exactly
+    # like onboarding's _fsync_dir: platforms whose filesystems refuse
+    # directory fds lose nothing but rename durability on power loss.
+    try:
+        dfd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except OSError:
+        pass
 
 
 class ParquetStore(Store):
@@ -129,6 +162,7 @@ class ParquetStore(Store):
     def __init__(self, root):
         self._root, self._meta = _read_meta(root)
         _check_declared_backend(self, self._meta, self._root)
+        _require_pyarrow()
         self._records = os.path.join(self._root, "records")
         self._events = os.path.join(self._root, "events")
         missing = [d for d in ("records", "events")
@@ -168,12 +202,7 @@ class ParquetStore(Store):
         if not isinstance(model, AssetModel):
             errors.append(f"model must be an AssetModel, got {type(model).__name__}")
         _raise_if(errors)
-        try:
-            import pyarrow  # noqa: F401 — availability check only
-        except Exception as exc:
-            raise AssetError(
-                [f"parquet store needs pyarrow (pip install dskit[parquet]): {exc}"]
-            ) from exc
+        _require_pyarrow()
         root = os.path.abspath(os.path.expanduser(root))
         # Any artifact present means SOME create ran here before — even
         # a crashed one, even another backend's. Refuse; a root is
@@ -243,8 +272,12 @@ class ParquetStore(Store):
         return body
 
     def _load(self, path) -> AssetRecord:
+        # _read_body stays OUTSIDE the try: AssetError subclasses
+        # ValueError, so wrapping it here would relabel every corrupt-
+        # parquet failure as a JSON one (round-1 review finding).
+        body = self._read_body(path)
         try:
-            obj = json.loads(self._read_body(path))
+            obj = json.loads(body)
         except ValueError as exc:
             raise AssetError(
                 [f"record file {path!r} body is not valid JSON: {exc}"]
@@ -312,21 +345,69 @@ class ParquetStore(Store):
     def list_records(self, kind=None) -> list:
         if kind is None:
             try:
-                kinds = sorted(os.listdir(self._records))
+                entries = sorted(os.listdir(self._records))
             except OSError as exc:
                 raise AssetError([f"parquet store {self._root!r}: {exc}"]) from exc
+            # The kind LEVEL gets the same engine-discovery rules as
+            # the files below it: '.'/'_' names skipped (Finder's
+            # .DS_Store, Spark's _SUCCESS land here too — round-4
+            # review finding), anything else that is not a kind
+            # directory refused loudly.
+            kinds = []
+            for k in entries:
+                if k.startswith((".", "_")):
+                    continue
+                if not os.path.isdir(os.path.join(self._records, k)):
+                    raise AssetError(
+                        [f"records/ holds foreign entry {k!r} — an engine "
+                         "scan would not agree with the API about the store"]
+                    )
+                kinds.append(k)
         else:
             if not isinstance(kind, str) or not _SEGMENT.match(kind):
                 raise AssetError([f"kind must be a filesystem-safe string, got {kind!r}"])
-            kinds = [kind] if os.path.isdir(os.path.join(self._records, kind)) else []
+            kdir = os.path.join(self._records, kind)
+            if os.path.isdir(kdir):
+                kinds = [kind]
+            elif os.path.lexists(kdir):
+                # Present but not a directory: the same foreign-entry
+                # refusal as the kind=None branch — a silent [] here
+                # would disagree with that branch AND with an engine
+                # scan of the same root (round-5 review finding).
+                raise AssetError(
+                    [f"records/ holds foreign entry {kind!r} — an engine "
+                     "scan would not agree with the API about the store"]
+                )
+            else:
+                kinds = []
         out = []
         try:
             for k in kinds:
-                out.extend(
-                    f[: -len(".parquet")]
-                    for f in os.listdir(os.path.join(self._records, k))
-                    if f.endswith(".parquet")
-                )
+                for f in os.listdir(os.path.join(self._records, k)):
+                    # '.'/'_' prefixes mirror engine discovery, exactly
+                    # as in _event_files.
+                    if f.startswith((".", "_")):
+                        continue
+                    # Same rule as events/, extension-blind: any name
+                    # the API cannot account for is one an engine scan
+                    # WOULD read — refuse loudly, never return a
+                    # garbage stem that detonates later in get_record
+                    # (round-2/4 findings). fullmatch, not match:
+                    # _VERSION_ID is $-anchored and $ forgives a
+                    # trailing newline (round-3). And it must be a
+                    # regular FILE — a directory named like a record
+                    # passes every name check but get_record denies it
+                    # (round-6 finding).
+                    stem = f[: -len(".parquet")] if f.endswith(".parquet") else None
+                    if (stem is None or not _VERSION_ID.fullmatch(stem)
+                            or not os.path.isfile(
+                                os.path.join(self._records, k, f))):
+                        raise AssetError(
+                            [f"records/{k} holds foreign entry {f!r} — an "
+                             "engine scan would not agree with the API "
+                             "about the store"]
+                        )
+                    out.append(stem)
         except OSError as exc:
             raise AssetError([f"parquet store {self._root!r}: {exc}"]) from exc
         return sorted(out)
@@ -337,12 +418,40 @@ class ParquetStore(Store):
         return dict(self._meta)
 
     def _event_files(self):
-        """Sorted event filenames — lexical order IS append order."""
+        """Sorted event filenames — lexical order IS append order.
+
+        A ``*.parquet`` file that does NOT match the event pattern is
+        refused loudly: an engine scan of ``events/`` would see it, so
+        silently skipping it here would let the two sanctioned read
+        paths disagree (round-1 review finding). Names with a ``.`` or
+        ``_`` prefix are exempt — engine discovery ignores those
+        prefixes (pyarrow/Spark/dask), so AppleDouble sidecars and
+        crashed-write temps are invisible to BOTH paths and must not
+        brick the store (round-3 review finding).
+        """
         try:
             names = os.listdir(self._events)
         except OSError as exc:
             raise AssetError([f"parquet store {self._root!r}: {exc}"]) from exc
-        return sorted(n for n in names if _EVENT_FILE.match(n))
+        names = [n for n in names if not n.startswith((".", "_"))]
+        # Extension-blind on purpose: engine discovery reads EVERY
+        # non-prefixed name (a .PARQUET or extensionless file too), so
+        # suffix-scoping the check would leave silent divergence
+        # (round-4 review finding). And a conforming NAME is not
+        # enough — a directory named like an event (engines write
+        # datasets as directories) would be silently replayed as one
+        # (round-6 finding). Anything unaccountable is foreign.
+        foreign = sorted(
+            n for n in names
+            if not _EVENT_FILE.match(n)
+            or not os.path.isfile(os.path.join(self._events, n))
+        )
+        if foreign:
+            raise AssetError(
+                [f"events/ holds foreign entries {foreign} — an engine "
+                 "scan would not agree with the API about the log"]
+            )
+        return sorted(names)
 
     def append_event(self, event) -> None:
         errors = []
@@ -373,9 +482,13 @@ class ParquetStore(Store):
         # sequence names and are never in this list.
         for name in self._event_files():
             path = os.path.join(self._events, name)
+            # As in _load: _read_body outside the try, or its own
+            # AssetErrors would be relabeled as JSON failures.
+            body = self._read_body(path)
             try:
-                yield json.loads(self._read_body(path))
+                obj = json.loads(body)
             except ValueError as exc:
                 raise AssetError(
                     [f"event file {path!r} body is not valid JSON: {exc}"]
                 ) from exc
+            yield obj
