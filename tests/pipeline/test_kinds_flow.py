@@ -1,10 +1,20 @@
-"""The flow kinds: filter / event-bank / eligibility / banking-report.
+"""The flow kinds: filter / event-bank / eligibility / banking-report,
+and the relational three: concat / join / derive.
 
 Unit tests construct nodes directly (dict records AND MarketRecord
 objects — the one accessor must serve both); the integration run proves
 the ★BANKING spine (events -> event-bank -> eligibility ->
 banking-report) wires end to end under the driver, and that a too-high
 bar halts the report as the gate's descendant.
+
+The relational three are tested mostly through what they REFUSE. Their
+value is entirely in the refusals — an untagged union, an overlapping
+namespace, an unmatched row, a defaulted branch — and a refusal that
+quietly stopped firing looks exactly like a healthy run, which is the
+failure mode a joint two-venue document exists inside of. So
+every negative case below asserts a raise, and the second integration
+run proves the raise reaches the DRIVER rather than dying in a unit
+test.
 """
 
 import json
@@ -17,9 +27,12 @@ from dskit.pipeline.document import NodeSpec, PipelineDocument
 from dskit.pipeline.driver import run_document
 from dskit.pipeline.kinds_flow import (
     BankingReport,
+    Concat,
+    Derive,
     Eligibility,
     EventBank,
     Filter,
+    Join,
     register,
 )
 from dskit.pipeline.node import NodeContext, NodeKindRegistry
@@ -40,10 +53,14 @@ def drec(instrument, contract, asof_ms, **extra):
     return {"instrument": instrument, "contract": contract, "asof_ms": asof_ms, **extra}
 
 
-def mrec(instrument, contract, asof_ms, *, usable=True, mid=None, group=None):
-    """A MarketRecord — the attribute-access case."""
+def mrec(
+    instrument, contract, asof_ms, *, usable=True, mid=None, group=None, venue="synth"
+):
+    """A MarketRecord — the attribute-access case. ``venue`` is a knob
+    because it is the field ``concat`` reads as provenance on an object it
+    cannot stamp."""
     return MarketRecord(
-        venue="synth",
+        venue=venue,
         instrument=instrument,
         contract=contract,
         asof_ms=asof_ms,
@@ -464,16 +481,442 @@ class TestBankingReport:
         assert len(problems) == 3
 
 
-class TestRegister:
-    def test_registers_all_four_unowned(self):
-        reg = register(NodeKindRegistry())
-        assert {"filter", "event-bank", "eligibility", "banking-report"} <= set(
-            reg.kinds()
+# ---------------------------------------------------------------------------
+# concat — the union
+# ---------------------------------------------------------------------------
+
+
+def alphaish(contract, asof_ms):
+    return mrec("ALP", contract, asof_ms, venue="alpha", group="ALP-EV")
+
+
+def betaish(contract, asof_ms):
+    return mrec("BET", contract, asof_ms, venue="beta", group="BET-EV")
+
+
+def concat_node(**params):
+    base = {"shape": "records", "provenance": "venue"}
+    return Concat("merge", {**base, **params})
+
+
+class TestConcat:
+    def test_unions_n_ports_in_sorted_port_order(self, ctx):
+        node = concat_node(provenance="source")
+        out = node.run(
+            ctx,
+            {
+                "beta": [drec("B", "B-1", 2)],
+                "alpha": [drec("A", "A-1", 1)],
+                "gamma": [drec("C", "C-1", 3)],
+            },
         )
+        # sorted by PORT NAME, never by the order JSON happened to carry
+        assert [r["contract"] for r in out["merged"]] == ["A-1", "B-1", "C-1"]
+        assert [r["source"] for r in out["merged"]] == ["alpha", "beta", "gamma"]
+
+    def test_mapping_rows_are_stamped_and_never_mutated(self, ctx):
+        row = drec("A", "A-1", 1)
+        out = concat_node(provenance="source").run(ctx, {"alpha": [row]})
+        assert out["merged"][0]["source"] == "alpha"
+        assert "source" not in row  # the caller's row is untouched
+
+    def test_object_rows_prove_their_own_provenance(self, ctx):
+        out = concat_node(key="contract").run(
+            ctx,
+            {
+                "alpha": [alphaish("ALP-1", 1), alphaish("ALP-2", 2)],
+                "beta": [betaish("BET-1", 3)],
+            },
+        )
+        assert len(out["merged"]) == 3
+        # the envelopes ride through UNCOPIED — the native record every
+        # venue stage reads must survive the union
+        assert all(isinstance(r, MarketRecord) for r in out["merged"])
+        assert out["sources"]["alpha"]["rows"] == 2
+
+    def test_a_stream_wired_into_the_wrong_port_is_refused(self, ctx):
+        """The conflation no downstream number would ever reveal."""
+        with pytest.raises(ValueError, match="name the port after the source"):
+            concat_node().run(ctx, {"alpha": [betaish("BET-1", 1)]})
+
+    def test_an_untaggable_row_with_no_tag_of_its_own_is_refused(self, ctx):
+        with pytest.raises(ValueError, match="cannot say where it came from"):
+            concat_node().run(ctx, {"alpha": ["a-bare-ticker"]})
+
+    def test_a_row_claiming_another_source_is_never_overwritten(self, ctx):
+        with pytest.raises(ValueError, match="already claims"):
+            concat_node(provenance="source").run(
+                ctx, {"alpha": [drec("A", "A-1", 1, source="beta")]}
+            )
+
+    def test_an_untagged_union_refuses_at_plan_time(self):
+        problems = Concat.validate_params({"shape": "records"})
+        assert any("provenance" in p for p in problems)
+
+    def test_declining_the_tag_takes_a_written_reason(self):
+        assert (
+            Concat.validate_params(
+                {
+                    "shape": "records",
+                    "provenance_waiver": "bare tickers carry no source",
+                }
+            )
+            == []
+        )
+        assert any(
+            "WRITTEN" in p
+            for p in Concat.validate_params(
+                {"shape": "records", "provenance_waiver": "  "}
+            )
+        )
+
+    def test_declaring_both_a_tag_and_a_waiver_is_refused(self):
+        problems = Concat.validate_params(
+            {"shape": "records", "provenance": "venue", "provenance_waiver": "why"}
+        )
+        assert any("exactly one" in p for p in problems)
+
+    def test_schema_mismatch_refuses_rather_than_filling(self, ctx):
+        with pytest.raises(ValueError, match="REFUSES a schema mismatch"):
+            concat_node(provenance="source").run(
+                ctx,
+                {
+                    "alpha": [drec("A", "A-1", 1, mid=0.5)],
+                    "beta": [drec("B", "B-1", 2)],  # no mid — a fill would hide it
+                },
+            )
+
+    def test_a_declared_schema_is_the_reference(self, ctx):
+        params = {"shape": "records", "provenance": "source"}
+        rows = {"alpha": [drec("A", "A-1", 1)]}
+        assert Concat(
+            "merge", {**params, "schema": ["instrument", "contract", "asof_ms"]}
+        ).run(ctx, rows)["merged"]
+        with pytest.raises(ValueError, match="REFUSES a schema mismatch"):
+            Concat("merge", {**params, "schema": ["instrument", "contract"]}).run(
+                ctx, rows
+            )
+
+    def test_overlapping_namespaces_refuse_unless_declared(self, ctx):
+        streams = {
+            "alpha": [mrec("SHARED", "A-1", 1, venue="alpha")],
+            "beta": [mrec("SHARED", "B-1", 2, venue="beta")],
+        }
+        with pytest.raises(ValueError, match="overlapping key"):
+            concat_node(key=["instrument", "contract"]).run(ctx, streams)
+        allowed = concat_node(key="instrument", allow_overlap=True).run(ctx, streams)
+        assert len(allowed["merged"]) == 2
+
+    def test_repeats_inside_one_port_are_not_an_overlap(self, ctx):
+        """A ladder carries one contract at every lead — only a value
+        claimed by TWO ports breaks the independence unit."""
+        out = concat_node(key="instrument").run(
+            ctx, {"alpha": [alphaish("ALP-1", 1), alphaish("ALP-1", 2)]}
+        )
+        assert len(out["merged"]) == 2
+
+    def test_a_row_missing_a_declared_key_is_refused(self, ctx):
+        with pytest.raises(ValueError, match="cannot prove it is disjoint"):
+            concat_node(provenance="source", key="venue_id").run(
+                ctx, {"alpha": [drec("A", "A-1", 1)]}
+            )
+
+    def test_an_empty_port_refuses_unless_declared(self, ctx):
+        streams = {"alpha": [alphaish("ALP-1", 1)], "beta": []}
+        with pytest.raises(ValueError, match="contributed NOTHING"):
+            concat_node().run(ctx, streams)
+        assert len(concat_node(allow_empty=True).run(ctx, streams)["merged"]) == 1
+
+    def test_table_shape_unions_lookup_tables(self, ctx):
+        node = Concat("fee_book", {"shape": "table"})
+        out = node.run(ctx, {"alpha": {"ALP": 0.07}, "beta": {"BET": 0.07}})
+        assert out["merged"] == {"ALP": 0.07, "BET": 0.07}
+        assert out["sources"]["alpha"] == {"rows": 1, "distinct": {"key": 1}}
+
+    def test_table_shape_refuses_a_key_two_ports_claim(self, ctx):
+        """The disjointness assertion a joint fee book leans on."""
+        with pytest.raises(ValueError, match="overlapping key"):
+            Concat("fee_book", {"shape": "table"}).run(
+                ctx, {"alpha": {"SAME": 0.07}, "beta": {"SAME": 0.07}}
+            )
+
+    def test_table_values_are_compared_to_each_other(self, ctx):
+        """0.07 and "0.07" is the transcription mistake that happens; 0 and
+        0.0 is not a mistake at all."""
+        node = Concat("fee_book", {"shape": "table"})
+        assert node.run(ctx, {"a": {"X": 0}, "b": {"Y": 0.07}})["merged"] == {
+            "X": 0,
+            "Y": 0.07,
+        }
+        with pytest.raises(ValueError, match="REFUSES a schema mismatch"):
+            node.run(ctx, {"a": {"X": 0.07}, "b": {"Y": "0.07"}})
+
+    def test_declared_tables_need_no_wire(self, ctx):
+        node = Concat(
+            "fee_book",
+            {
+                "shape": "table",
+                "tables": {"alpha": {"ALP": 0.07}, "beta": {"B": 0.02}},
+            },
+        )
+        assert node.run(ctx, {})["merged"] == {"ALP": 0.07, "B": 0.02}
+
+    def test_a_port_supplied_twice_is_refused(self):
+        node = Concat("fee_book", {"shape": "table", "tables": {"alpha": {"A": 0.07}}})
+        assert any(
+            "BOTH by wire" in p for p in node.validate_inputs({"alpha": {"A": 0.07}})
+        )
+
+    def test_shape_is_required_and_the_knobs_do_not_cross(self):
+        assert any("shape is required" in p for p in Concat.validate_params({}))
+        table_only = Concat.validate_params(
+            {"shape": "records", "tables": {"a": {}}, "provenance": "venue"}
+        )
+        assert any("table" in p and "tables" in p for p in table_only)
+        record_only = Concat.validate_params(
+            {"shape": "table", "provenance": "venue", "key": "contract"}
+        )
+        assert len(record_only) == 2
+
+    def test_unknown_knobs_are_refused_by_name(self):
+        problems = Concat.validate_params({"shape": "records", "how": "outer"})
+        assert any("how" in p for p in problems)
+
+    def test_validation_refuses_a_one_shot_stream_by_name(self):
+        node = concat_node()
+        problems = node.validate_inputs({"alpha": (r for r in ())})
+        assert any("one-shot" in p for p in problems)
+
+
+# ---------------------------------------------------------------------------
+# join — the lookup
+# ---------------------------------------------------------------------------
+
+
+def join_node(**params):
+    base = {"key": "contract", "how": "strict"}
+    return Join("lookup", {**base, **params})
+
+
+class TestJoin:
+    def test_a_scalar_table_contributes_the_port_name_as_a_field(self, ctx):
+        node = join_node(tables={"settled_yes": {"A-1": True}})
+        out = node.run(ctx, {"records": [drec("A", "A-1", 1)]})
+        assert out["records"] == [
+            {"instrument": "A", "contract": "A-1", "asof_ms": 1, "settled_yes": True}
+        ]
+        assert out["matched"]["ports"]["settled_yes"] == {"matched": 1, "unmatched": 0}
+
+    def test_a_mapping_table_contributes_its_own_fields(self, ctx):
+        node = join_node(
+            tables={"fees": {"A-1": {"fee_rate": 0.07, "schedule": "alpha-2026"}}}
+        )
+        joined = node.run(ctx, {"records": [drec("A", "A-1", 1)]})["records"][0]
+        assert joined["fee_rate"] == 0.07 and joined["schedule"] == "alpha-2026"
+
+    def test_n_side_tables_align_at_once(self, ctx):
+        node = join_node(
+            tables={"settled_yes": {"A-1": True}, "fee_rate": {"A-1": 0.07}}
+        )
+        out = node.run(ctx, {"records": [drec("A", "A-1", 1)]})
+        assert out["records"][0]["settled_yes"] is True
+        assert out["records"][0]["fee_rate"] == 0.07
+
+    def test_strict_raises_on_an_unmatched_row(self, ctx):
+        with pytest.raises(ValueError, match="how='strict'"):
+            join_node(tables={"fee_rate": {"A-1": 0.07}}).run(
+                ctx, {"records": [drec("B", "B-9", 1)]}
+            )
+
+    def test_inner_drops_and_counts(self, ctx):
+        node = join_node(how="inner", tables={"fee_rate": {"A-1": 0.07}})
+        out = node.run(ctx, {"records": [drec("A", "A-1", 1), drec("B", "B-9", 2)]})
+        assert len(out["records"]) == 1
+        assert out["matched"]["dropped"] == 1
+        assert out["matched"]["ports"]["fee_rate"]["unmatched"] == 1
+
+    def test_left_takes_a_written_fill_and_applies_it(self, ctx):
+        assert any(
+            "unmatched_fill is required" in p
+            for p in Join.validate_params({"key": "contract", "how": "left"})
+        )
+        node = join_node(
+            how="left",
+            unmatched_fill={"fee_rate": None, "why": "no schedule for this series"},
+            tables={"fee_rate": {"A-1": 0.07}},
+        )
+        out = node.run(ctx, {"records": [drec("B", "B-9", 1)]})
+        assert out["records"][0]["why"] == "no schedule for this series"
+
+    def test_a_fill_under_strict_or_inner_is_refused(self):
+        problems = Join.validate_params(
+            {"key": "contract", "how": "strict", "unmatched_fill": {}}
+        )
+        assert any("meaningless" in p for p in problems)
+
+    def test_fanout_is_refused_unless_declared(self, ctx):
+        rows = {"records": [drec("A", "A-1", 1)]}
+        table = {"legs": {"A-1": [{"leg": 1}, {"leg": 2}]}}
+        with pytest.raises(ValueError, match="must be DECLARED with allow_fanout"):
+            join_node(tables=table).run(ctx, rows)
+        out = join_node(tables=table, allow_fanout=True).run(ctx, rows)
+        assert [r["leg"] for r in out["records"]] == [1, 2]
+
+    def test_two_tables_fanning_at_once_is_never_authorised(self, ctx):
+        node = join_node(
+            allow_fanout=True,
+            tables={
+                "left": {"A-1": [{"x": 1}, {"x": 2}]},
+                "right": {"A-1": [{"y": 1}, {"y": 2}]},
+            },
+        )
+        with pytest.raises(ValueError, match="cartesian product"):
+            node.run(ctx, {"records": [drec("A", "A-1", 1)]})
+
+    def test_two_tables_claiming_one_field_are_refused(self, ctx):
+        node = join_node(tables={"a": {"A-1": {"rate": 1}}, "b": {"A-1": {"rate": 2}}})
+        with pytest.raises(ValueError, match="refusing to pick one"):
+            node.run(ctx, {"records": [drec("A", "A-1", 1)]})
+
+    def test_a_table_never_overwrites_the_row_own_field(self, ctx):
+        node = join_node(tables={"instrument": {"A-1": "SOMETHING-ELSE"}})
+        with pytest.raises(ValueError, match="would overwrite"):
+            node.run(ctx, {"records": [drec("A", "A-1", 1)]})
+
+    def test_a_row_with_no_key_is_refused(self, ctx):
+        node = join_node(key="venue", tables={"fee_rate": {"alpha": 0.07}})
+        with pytest.raises(ValueError, match="carries no 'venue'"):
+            node.run(ctx, {"records": [drec("A", "A-1", 1)]})
+
+    def test_frozen_envelopes_are_refused_by_name(self, ctx):
+        node = join_node(tables={"fee_rate": {"A-1": 0.07}})
+        with pytest.raises(ValueError, match="drop the native record"):
+            node.run(ctx, {"records": [mrec("A", "A-1", 1)]})
+
+    def test_key_and_how_are_required(self):
+        problems = Join.validate_params({})
+        assert any("key is required" in p for p in problems)
+        assert any("how is required" in p for p in problems)
+
+    def test_the_stream_port_is_reserved(self):
+        problems = Join.validate_params(
+            {"key": "c", "how": "strict", "tables": {"records": {}}}
+        )
+        assert any("reserved stream port" in p for p in problems)
+
+
+# ---------------------------------------------------------------------------
+# derive — the fail-closed projection
+# ---------------------------------------------------------------------------
+
+#: Two venues, two schedules that carry the SAME number for different
+#: reasons — the case a default silently gets wrong.
+FEE_CASES = [
+    {
+        "when": [{"field": "venue", "op": "==", "value": "alpha"}],
+        "value": {"rate": 0.07, "schedule": "alpha-quadratic"},
+    },
+    {
+        "when": [{"field": "venue", "op": "==", "value": "beta"}],
+        "value": {"rate": 0.07, "schedule": "beta-crypto"},
+    },
+]
+
+
+class TestDerive:
+    def test_first_matching_case_wins_and_branches_are_counted(self, ctx):
+        node = Derive("fees", {"field": "fee", "cases": FEE_CASES})
+        out = node.run(
+            ctx,
+            {
+                "records": [
+                    {"venue": "alpha"},
+                    {"venue": "beta"},
+                    {"venue": "alpha"},
+                ]
+            },
+        )
+        assert [r["fee"]["schedule"] for r in out["records"]] == [
+            "alpha-quadratic",
+            "beta-crypto",
+            "alpha-quadratic",
+        ]
+        assert out["branches"] == [2, 1]
+
+    def test_each_row_gets_its_own_copy_of_a_container_value(self, ctx):
+        node = Derive("fees", {"field": "fee", "cases": FEE_CASES})
+        out = node.run(ctx, {"records": [{"venue": "alpha"}, {"venue": "alpha"}]})
+        assert out["records"][0]["fee"] is not out["records"][1]["fee"]
+
+    def test_an_unmatched_row_raises_with_no_default(self, ctx):
+        node = Derive("fees", {"field": "fee", "cases": FEE_CASES})
+        with pytest.raises(ValueError, match="FAIL-CLOSED"):
+            node.run(ctx, {"records": [{"venue": "someothervenue"}]})
+
+    def test_a_missing_field_never_falls_through_to_a_branch(self, ctx):
+        node = Derive("fees", {"field": "fee", "cases": FEE_CASES})
+        with pytest.raises(ValueError, match="<missing>"):
+            node.run(ctx, {"records": [{"instrument": "A"}]})
+
+    def test_an_explicit_catch_all_is_the_only_default(self, ctx):
+        node = Derive(
+            "fees",
+            {"field": "fee", "cases": [*FEE_CASES, {"when": [], "value": "unpriced"}]},
+        )
+        out = node.run(ctx, {"records": [{"venue": "someothervenue"}]})
+        assert out["records"][0]["fee"] == "unpriced"
+
+    def test_a_catch_all_that_is_not_last_refuses_to_validate(self):
+        problems = Derive.validate_params(
+            {"field": "fee", "cases": [{"when": [], "value": 1}, *FEE_CASES]}
+        )
+        assert any("default in disguise" in p for p in problems)
+
+    def test_an_existing_field_is_never_overwritten_silently(self, ctx):
+        rows = {"records": [{"venue": "alpha", "fee": "already here"}]}
+        with pytest.raises(ValueError, match="never overwrites"):
+            Derive("fees", {"field": "fee", "cases": FEE_CASES}).run(ctx, rows)
+        node = Derive("fees", {"field": "fee", "cases": FEE_CASES, "overwrite": True})
+        assert (
+            node.run(ctx, rows)["records"][0]["fee"]["schedule"] == "alpha-quadratic"
+        )
+
+    def test_frozen_envelopes_are_refused_by_name(self, ctx):
+        node = Derive("fees", {"field": "fee", "cases": [{"when": [], "value": 1}]})
+        with pytest.raises(ValueError, match="drop the native record"):
+            node.run(ctx, {"records": [mrec("A", "A-1", 1)]})
+
+    def test_field_and_cases_are_required(self):
+        problems = Derive.validate_params({})
+        assert any("field is required" in p for p in problems)
+        assert any("cases is required" in p for p in problems)
+
+    def test_a_malformed_case_is_named(self):
+        problems = Derive.validate_params(
+            {"field": "fee", "cases": [{"when": [], "value": 1, "otherwise": 2}]}
+        )
+        assert any("cases[0]" in p for p in problems)
+
+
+class TestRegister:
+    def test_registers_all_seven_unowned(self):
+        reg = register(NodeKindRegistry())
+        assert {
+            "filter",
+            "event-bank",
+            "eligibility",
+            "banking-report",
+            "concat",
+            "join",
+            "derive",
+        } <= set(reg.kinds())
         assert reg.get("filter") == (Filter, False)
         assert reg.get("event-bank") == (EventBank, False)
         assert reg.get("eligibility") == (Eligibility, False)
         assert reg.get("banking-report") == (BankingReport, False)
+        assert reg.get("concat") == (Concat, False)
+        assert reg.get("join") == (Join, False)
+        assert reg.get("derive") == (Derive, False)
 
     def test_idempotent_and_never_shadows(self):
         reg = NodeKindRegistry()
@@ -597,3 +1040,114 @@ class TestFlowIntegration:
         assert not os.path.exists(
             os.path.join(result.run_dir, "artifacts", "report", "banking.json")
         )
+
+
+# ---------------------------------------------------------------------------
+# integration: two sources, ONE union, under the driver
+# ---------------------------------------------------------------------------
+
+
+def union_document(tmp_path, *, collide=False):
+    """The joint-document shape in miniature: one synthetic generator
+    split into two DISJOINT streams that stand in for two venues, unioned
+    by ``concat``, priced per source by ``derive``, and banked ONCE.
+
+    ``collide=True`` points both slices at the same instrument, which is
+    the namespace collision a joint document must never be able to make
+    quietly — the union refuses and the DRIVER reports the error.
+    """
+    left = "SYNA"
+    right = left if collide else "SYNB"
+    pipeline = {
+        "events": NodeSpec(
+            uses="synth-events", params={"n_events": 24, "n_instruments": 2, "seed": 7}
+        ),
+        "labels": NodeSpec(uses="synth-labels", inputs={"events": "$events.events"}),
+        "venue_a": NodeSpec(
+            uses="filter",
+            inputs={"records": "$events.events"},
+            params={"where": [{"field": "instrument", "op": "==", "value": left}]},
+        ),
+        "venue_b": NodeSpec(
+            uses="filter",
+            inputs={"records": "$events.events"},
+            params={"where": [{"field": "instrument", "op": "==", "value": right}]},
+        ),
+        "both": NodeSpec(
+            uses="concat",
+            inputs={"venue_a": "$venue_a.records", "venue_b": "$venue_b.records"},
+            params={
+                "shape": "records",
+                "provenance": "source",
+                "key": ["instrument", "contract"],
+                "allow_overlap": False,
+                "allow_empty": False,
+            },
+        ),
+        "priced": NodeSpec(
+            uses="derive",
+            inputs={"records": "$both.merged"},
+            params={
+                "field": "fee_schedule",
+                "cases": [
+                    {
+                        "when": [{"field": "source", "op": "==", "value": "venue_a"}],
+                        "value": "schedule-a",
+                    },
+                    {
+                        "when": [{"field": "source", "op": "==", "value": "venue_b"}],
+                        "value": "schedule-b",
+                    },
+                ],
+            },
+        ),
+        "bank": NodeSpec(
+            uses="event-bank",
+            inputs={"events": "$priced.records", "outcomes": "$labels.outcomes"},
+            params={"count": "settled", "distinct_by": "contract"},
+        ),
+        "family": NodeSpec(
+            uses="eligibility",
+            inputs={"banked": "$bank.counts"},
+            params={"min_events": 10},
+        ),
+    }
+    return PipelineDocument(
+        name="kinds-union",
+        pipeline=pipeline,
+        splits=TimeSplitConfig(
+            train_end_ms=1012 * DAY, val_end_ms=1018 * DAY, test_end_ms=1024 * DAY
+        ),
+        outputs=OutputsConfig(run_root=str(tmp_path)),
+    )
+
+
+class TestUnionIntegration:
+    def test_two_sources_bank_once_against_one_family(self, tmp_path):
+        result = run_document(
+            union_document(tmp_path), asof=ASOF, registry=flow_registry()
+        )
+        assert result.state == "ran" and result.exit_code == 0
+        # ONE bank over the union, not two banks summed after the fact
+        assert result.outputs["bank"]["counts"] == {"SYNA": 24, "SYNB": 24}
+        assert result.outputs["family"]["instruments"] == ["SYNA", "SYNB"]
+        sources = result.outputs["both"]["sources"]
+        assert sources["venue_a"]["rows"] == sources["venue_b"]["rows"] == 24
+        assert sources["venue_a"]["distinct"] == {"instrument": 1, "contract": 24}
+        # every row carries which source it came from, and the per-source
+        # schedule that followed from it — nothing was defaulted
+        assert result.outputs["priced"]["branches"] == [24, 24]
+        pairs = {
+            (r["source"], r["fee_schedule"])
+            for r in result.outputs["priced"]["records"]
+        }
+        assert pairs == {("venue_a", "schedule-a"), ("venue_b", "schedule-b")}
+
+    def test_a_namespace_collision_stops_the_run(self, tmp_path):
+        result = run_document(
+            union_document(tmp_path, collide=True), asof=ASOF, registry=flow_registry()
+        )
+        assert result.state != "ran"
+        assert result.exit_code == 1
+        assert result.node_states["both"] == "error"
+        assert "overlapping key" in (result.error or "")

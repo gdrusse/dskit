@@ -106,7 +106,15 @@ from dskit.pipeline.driver import DocumentRunResult, run_document
 from dskit.pipeline.env import Secrets, load_env
 from dskit.pipeline.features import apply_stream_steps
 from dskit.pipeline.io import load_config, save_config
-from dskit.pipeline.kinds_flow import BankingReport, Eligibility, EventBank, Filter
+from dskit.pipeline.kinds_flow import (
+    BankingReport,
+    Concat,
+    Derive,
+    Eligibility,
+    EventBank,
+    Filter,
+    Join,
+)
 from dskit.pipeline.kinds_flow import register as _register_flow_kinds
 from dskit.pipeline.kinds_report import RunReport
 from dskit.pipeline.kinds_report import register as _register_report_kinds
@@ -114,6 +122,8 @@ from dskit.pipeline.kinds_search import HpoGrid
 from dskit.pipeline.kinds_search import register as _register_search_kinds
 from dskit.pipeline.kinds_stats import StatTest, Validate
 from dskit.pipeline.kinds_stats import register as _register_stats_kinds
+from dskit.pipeline.kinds_table import TableFile
+from dskit.pipeline.kinds_table import register as _register_table_kinds
 from dskit.pipeline.node import (
     DEFAULT_NODE_KINDS,
     Node,
@@ -149,23 +159,28 @@ from dskit.pipeline.resolve import (
 from dskit.pipeline.runner import RunContext, Runner, RunResult, StageResult
 
 #: The toolkit-owned kinds claim their names the moment the package
-#: imports (idempotent — a re-import never re-registers): stat_test and
-#: validate as OWNED doctrine kinds, plus filter / event-bank /
-#: eligibility / banking-report / hpo-grid / run-report.
+#: imports (idempotent — a re-import never re-registers): stat_test,
+#: validate and run-report as OWNED doctrine kinds, plus filter /
+#: derive / concat / join / event-bank / eligibility / banking-report /
+#: hpo-grid / table-file / table-write.
 _register_stats_kinds()
 _register_flow_kinds()
 _register_search_kinds()
 _register_report_kinds()
+_register_table_kinds()
 
 __all__ = [
     "BankingReport",
     "ClockConfig",
+    "Concat",
     "DEFAULT_NODE_KINDS",
     "DocumentRunResult",
+    "Derive",
     "Eligibility",
     "EventBank",
     "Filter",
     "HpoGrid",
+    "Join",
     "Node",
     "NodeContext",
     "NodeKindRegistry",
@@ -176,6 +191,7 @@ __all__ = [
     "RunReport",
     "ScheduleConfig",
     "StatTest",
+    "TableFile",
     "TrailingSplitSpec",
     "Validate",
     "load_document",
