@@ -41,6 +41,9 @@ from dskit.pipeline.libs.transformers import (
 from dskit.pipeline.node import NodeContext, NodeKindRegistry
 from dskit.pipeline.planner import plan
 
+pytest.importorskip("torch")
+pytest.importorskip("transformers")
+
 EXAMPLE = (
     pathlib.Path(__file__).parents[2]
     / "examples"
