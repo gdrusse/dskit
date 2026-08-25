@@ -151,8 +151,9 @@ TestConformance = conformance_suite(
 
 (`tests/pipeline/test_toolkit_conformance.py` is the worked example. Passing
 `require_probes=False` runs structural checks only — a decision, write it down.)
-Project-specific nodes belong in YOUR package (a dskit *child* — see
-`children/README.md`), never here.
+Project-specific nodes belong in YOUR package — a dskit **child**, which is
+the whole adapter unit (ADR-0032: never a `pipeline_<venue>` sibling, in
+dskit or beside it; see `children/README.md`) — never here.
 
 ## The legacy stage-list grammar
 

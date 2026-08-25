@@ -50,6 +50,11 @@ _skeleton/
 - **Never edit dskit.** A capability the toolkit lacks is either a genuinely
   generic gap — propose an ADR in `docs/architecture/decision-log.md` — or it
   is domain logic and stays here. There is no third option.
+- **The child IS the adapter unit (ADR-0032).** There is no
+  `pipeline_<venue>` package — not in dskit, not beside it. Nodes,
+  connectors, backend tags, tracking sinks, and asset models for a project
+  all live in that project's one child package; a real venue split is a
+  MODULE inside it (`nodes_<venue>.py`), never a package taxonomy.
 - **The domain lives in configs.** Node params, source knobs, suites, the asset
   model: JSON with `notes`, default-deny everywhere. Code holds mechanisms.
 - **Position-independent.** Nothing inside a child may reference its incubation

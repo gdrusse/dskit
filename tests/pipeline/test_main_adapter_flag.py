@@ -186,9 +186,9 @@ class TestValidateUnchanged:
         assert main(["validate", LEGACY]) == 0
         out = capsys.readouterr().out
         assert "(shape-only*)" in out
-        # The hint names the SHAPE of an adapter module, not one venue's:
-        # tier-1 code is venue-neutral (tests/pipeline/test_purity.py).
-        assert "--adapter dskit.pipeline_<venue>" in out
+        # The hint names a CHILD package, never a venue or a dskit
+        # subpackage (ADR-0032; tier-1 stays venue-neutral, test_purity).
+        assert "--adapter yourproject, your child package" in out
 
     def test_with_the_flag_validation_is_strict(self, capsys):
         assert main(["validate", LEGACY, "--adapter", ADAPTER]) == 0
@@ -227,5 +227,6 @@ class TestHelp:
         assert "--adapter MODULE" in out
         assert (
             "adapter module(s) to import first (import = registration), "
-            "e.g. dskit.pipeline_<venue>" in out
+            "e.g. yourproject — a child package, never a dskit subpackage"
+            in out
         )

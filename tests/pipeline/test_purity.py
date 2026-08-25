@@ -315,7 +315,8 @@ def test_only_the_sanctioned_subdirectory_exists():
     }
     assert subdirs <= ALLOWED_SUBDIRS, (
         f"unsanctioned subdirectory under the toolkit: {sorted(subdirs - ALLOWED_SUBDIRS)} "
-        f"(D-146 allows only {sorted(ALLOWED_SUBDIRS)}; adapters are SIBLING packages)"
+        f"(D-146 allows only {sorted(ALLOWED_SUBDIRS)}; adapters are CHILD "
+        "packages outside dskit, ADR-0032)"
     )
 
 
@@ -397,8 +398,8 @@ def test_no_venue_names_in_toolkit_executable_code():
         offenders.extend(_venue_hits(path))
     assert not offenders, (
         f"venue names in tier-1/2 executable code: {offenders}. Adapters are "
-        "SIBLING packages (dskit/pipeline_<venue>/); the toolkit never "
-        "names one outside explanatory prose."
+        "CHILD packages outside dskit (ADR-0032, children/README.md); the "
+        "toolkit never names one outside explanatory prose."
     )
 
 

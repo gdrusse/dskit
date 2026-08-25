@@ -21,8 +21,9 @@ One command line for every project and venue (docs/24 §9, D-145 ruling
 named module BEFORE the document is read, which is how a document that
 names registered adapter kinds (``<venue>-kelly-mio``) resolves them.
 Documents referencing components by class path
-(``dskit.pipeline_<venue>.nodes:KellyMIOSize``) import themselves and
-need no flag — adapters ship components, never CLIs (D-145 ruling 3).
+(``yourproject.nodes:KellyMIOSize`` — a CHILD package, ADR-0032) import
+themselves and need no flag — adapters ship components, never CLIs
+(D-145 ruling 3).
 * ``nodemap`` — the full banking document (data → … → stat_test →
   capital → report) against the synthetic Node set, in a temporary
   directory; prints the verdict-first report.
@@ -156,7 +157,7 @@ def _legacy_validate(path, adapters) -> int:
         print(
             "  * optimizer params validate strictly only with the kind's "
             "adapter imported — pass --adapter <module> "
-            "(e.g. --adapter dskit.pipeline_<venue>)"
+            "(e.g. --adapter yourproject, your child package)"
         )
     return 0
 
@@ -293,7 +294,7 @@ def _add_adapter_flag(parser) -> None:
         default=[],
         metavar="MODULE",
         help="adapter module(s) to import first (import = registration), "
-        "e.g. dskit.pipeline_<venue>",
+        "e.g. yourproject — a child package, never a dskit subpackage",
     )
 
 

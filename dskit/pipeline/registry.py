@@ -2,10 +2,11 @@
 
 Design ruling (2026-08-13 design session, question 2, revised for the
 toolkit/adapter split): the toolkit ships the registry MECHANISM and ZERO
-venues. An adapter package (e.g. ``dskit.pipeline_<venue>``) registers
-its venue tags into :data:`DEFAULT_REGISTRY` at import time — so
-"registration" is exactly "import your adapter", and the toolkit never
-imports venue code in any direction.
+venues. An adapter package — a CHILD outside dskit, never a
+``pipeline_<venue>`` sibling (ADR-0032; e.g. ``yourproject``) —
+registers its venue tags into :data:`DEFAULT_REGISTRY` at import time —
+so "registration" is exactly "import your adapter", and the toolkit
+never imports venue code in any direction.
 
 Binding is two-phase, because resolution itself needs venue knowledge:
 
@@ -159,8 +160,8 @@ class BackendRegistry:
             raise ValueError(
                 f"no backend registered for venue {venue!r} — registered: "
                 f"{sorted(self._factories)}. Registration happens when an "
-                "adapter package is imported (`import dskit.pipeline_<venue>` "
-                "registers the tags it serves)."
+                "adapter package is imported (`import yourproject` — your "
+                "child package — registers the tags it serves)."
             )
         return factory(config)
 

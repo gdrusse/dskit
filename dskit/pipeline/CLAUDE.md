@@ -25,7 +25,9 @@ on it without breaking its rulings.
 - **Node kinds** — subclass `Node`, then `register_node_kind(name, cls)`
   at import, or reference `pkg.module:Class` directly (no registration;
   an import path can never be `owned`). Project-specific kinds belong in
-  a child package (`children/README.md`), NEVER here.
+  a child package (`children/README.md`), NEVER here — and the child is
+  the WHOLE adapter unit (ADR-0032): `pipeline_<venue>` sibling packages
+  are retired; do not reintroduce the pattern in code or prose.
 - **Library packs** — `libs/<lib>.py`: name the library only inside
   `run()`; expose a `NODE_KINDS` tuple + `register()`; ship abstract
   bases with a small hook (`build_module`, `build_model`, `apply`) so

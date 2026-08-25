@@ -10,10 +10,11 @@ is re-raised with the PATH prefixed, so a broken file names itself
 
 Adapters and strictness: optimizer-kind params are validated strictly
 only when the kind's owner is imported (its validator registers then).
-``load_config(..., adapters=("dskit.pipeline_<venue>",))`` imports the
-named adapter modules FIRST — a venue-neutral mechanism (the toolkit
-never names a venue; the caller or CLI flag does), so a config file can
-be checked with full strictness anywhere its adapter is installed.
+``load_config(..., adapters=("yourproject",))`` imports the named
+adapter modules FIRST — a venue-neutral mechanism (the toolkit never
+names a venue; the caller or CLI flag does; adapters are CHILD
+packages, ADR-0032), so a config file can be checked with full
+strictness anywhere its adapter is installed.
 
 Import cost: stdlib only.
 """

@@ -8,7 +8,8 @@ child material.** No pmquant-specific code belongs in dskit.
 Evidence base: full-tree inventory 2026-08-25 (132k LOC package / 127k LOC tests).
 pmquant has already performed the generic/domain split internally: `pmquant/pipeline`
 is venue-purity-tested generic; `pipeline_kalshi` + `pipeline_schwab` are adapters —
-the child pattern, proven at scale.
+the generic/domain split proven at scale (their sibling-package NAMING predates
+ADR-0032 and does not survive migration).
 
 ## The engine relationship
 
@@ -25,8 +26,10 @@ diff, pmquant-side only:
 | report renderer parity (CSV export, `max_rows`/truncation, table/ledger helpers) | **PORTED** (ADR-0026, owner-ratified — full module, boundary resolved via records.py) |
 | mlflow tracking sink | stays adapter-side by design (`SINK_KINDS` seam is COVERED; the pack is child code) |
 
-With 0024–0025 landed, `pipeline_kalshi` can run on dskit's engine with only an
-import rename — that is the migration, now unblocked.
+With the parity ports landed, `pipeline_kalshi`'s content can run on dskit's
+engine with only an import rename — and per ADR-0032 it lands as modules of
+`children/pmquant` (`nodes_*.py`, `backend.py`, …), never as a
+`pipeline_<venue>` package: the package name does not survive migration.
 
 ## Classification by functional area
 
@@ -50,7 +53,7 @@ import rename — that is the migration, now unblocked.
 | pmquant area | child wrapper it becomes |
 |---|---|
 | `pipeline_kalshi/` (10 `kalshi-*` kinds, backend tags, `fractional-kelly-mio`, mlflow sink) | already IS the child — nodes/backend/tracking modules |
-| `pipeline_schwab/` | second child (or second package in one child) |
+| `pipeline_schwab/` | modules of the same child (`nodes_schwab.py`, …) — a venue split is a module, not a package (ADR-0032); a second child only if the projects genuinely separate |
 | `core/markets`, `core/fees`, `core/venues`, `core/book/features`, `core/pathdyn`, `core/models`, screening domain parts | child domain modules the nodes wrap |
 | `data/sources/*`, recorders, `snapshot_store`, `poly_ladder`, `predexon_*` | onboarding **Connector packs** in the child (REST/WSS pulls → WORM snapshots → suites replace the bespoke validate/report scripts) |
 | `simulator/`, `portfolio/` (MIO), `arb/`, `ladder/` (transformer), `jobless/`, `music/`, `tsa/`, `scout/`, `lab/` domain layers | child engines behind `capital`/`train`/`signal` nodes (`PyomoSolve`, `TorchTrain` bases) |

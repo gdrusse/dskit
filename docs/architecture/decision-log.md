@@ -816,3 +816,39 @@ behaves exactly as before — hash-neutral, behavior-neutral.
 **Consequences.** `run_walk_forward` loses the guard, `_fold_splits`
 gains one stamped field; the ADR-0027 merge note's "future work" is
 closed. Fold-level event policies are now first-class.
+
+---
+
+## ADR-0032 — The child is the adapter unit; `pipeline_<venue>` is retired
+
+**Status:** accepted (2026-08-25 — owner-ratified)
+
+**Context.** The extraction inherited the parent's adapter naming:
+prose, CLI help, and error messages across the pipeline package pointed
+at `dskit.pipeline_<venue>` sibling packages. That prefix was a
+monorepo artifact — inside the parent it distinguished the adapter from
+its sibling engine within one distribution. Post-ADR-0021 it misleads
+twice over: it suggests creating a venue package INSIDE dskit
+(violating the toolkit's first law), and it brands one seam when a real
+project adapts all three pillars (nodes + connectors + asset model),
+not "the pipeline".
+
+**Decision.** The CHILD is the adapter unit. All project/venue
+adaptation — node kinds, connectors, store backends, backend tags,
+tracking sinks, asset models — lives in that project's ONE child
+package (`children/<project>/` while incubating, its own repo after;
+ADR-0021). There is no `pipeline_<venue>` package, in dskit or beside
+it. A genuine venue split inside a project (e.g. per-venue accounting)
+is a MODULE of the child (`nodes_<venue>.py`), never a package
+taxonomy. Every `dskit.pipeline_<venue>` exemplar in docstrings, CLI
+help, and error messages is replaced with the child form
+(`--adapter yourproject`; `yourproject.nodes:Class`); migration
+guidance for the parent's `pipeline_kalshi`/`pipeline_schwab` lands
+their content as child modules — the package names do not survive.
+
+**Consequences.** Eleven in-code references swept (help strings,
+runtime errors, docstrings, both purity-gate messages, two help-pinning
+tests); `children/README.md`, both READMEs, the pipeline CLAUDE.md, the
+pmquant gap report, and RE-ENTRY state the ruling. Nothing behavioral
+changes — `--adapter` and class-path resolution were always
+name-agnostic.

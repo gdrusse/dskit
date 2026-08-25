@@ -5,9 +5,11 @@ abstraction layer other trading projects build on — and it contains ZERO
 venue code. The purity rule is hard and test-enforced
 (``tests/pipeline/test_purity.py``): no module here imports anything from
 the owning distribution outside this package, and nothing heavy
-(numpy/pandas/torch). Venue adapters are SIBLING packages that import the
-toolkit and register themselves (e.g. ``dskit.pipeline_<venue>``);
-extracting this toolkit to its own repo someday is a file move.
+(numpy/pandas/torch). Venue adapters are CHILD packages outside dskit
+that import the toolkit and register themselves (ADR-0021/0032,
+``children/README.md``) — the retired ``pipeline_<venue>`` sibling
+form must NOT come back, in dskit or beside it; extracting this
+toolkit to its own repo someday is a file move.
 
 It uses frozen-dataclass config patterns on purpose (frozen
 dataclasses, ``__post_init__`` shape validation, unknown-key rejection,

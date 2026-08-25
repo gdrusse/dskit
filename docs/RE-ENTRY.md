@@ -20,10 +20,12 @@ per-fold ADR-0024 bounds binding, loud propagation, policy-less
 parents proven hash-neutral.
 
 **Engine parity with the parent fork: COMPLETE** (ADR-0022…0026 all
-ported, 0031 extends beyond it). pmquant's `pipeline_kalshi` can run
-on this engine with an import rename — that migration, and incubating
-`children/pmquant` / `children/rl_stocks` per the gap-report sketches,
-are the natural next builds.
+ported, 0031 extends beyond it). **ADR-0032 (owner-ratified): the
+child is the adapter unit** — `pipeline_<venue>` sibling packages are
+retired everywhere (ten in-code exemplars swept; docs state the ban).
+pmquant's adapter content can run on this engine with an import rename
+— per 0032 it migrates INTO `children/pmquant` as modules; the
+`pipeline_kalshi` name does not survive.
 
 **Decisions awaiting user: none.** Deferred by standing rulings only:
 engine multi-writer coordination (needs a consumer + its own ADR) and
@@ -33,5 +35,6 @@ completed folds discards the summary (docstring carve-out);
 TrailingSplitSpec-parent policy pass-through is runtime-verified but
 untested; sb3/matplotlib packs' tests skip here (libs absent).
 
-**Next session:** incubate a child (pmquant or rl_stocks), or the
-`pipeline_kalshi`-on-dskit migration proof.
+**Next session:** incubate a child (pmquant or rl_stocks) per the
+sketches — the pmquant one now doubles as the adapter-migration proof
+(its old `pipeline_kalshi` content, as child modules, ADR-0032).

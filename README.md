@@ -91,7 +91,9 @@ problem domain use it?*
 
 A child is thin: tier-3 wrappers (pipeline nodes, connectors, store backends)
 in a few clear files, plus the JSON configs that carry the domain — sources,
-suites, an asset model, run documents. The toolkit never imports a child;
+suites, an asset model, run documents. **The child is the whole adapter**
+(ADR-0032): there is no `pipeline_<venue>` package, in dskit or beside it —
+a venue split is a module inside the child. The toolkit never imports a child;
 `children/README.md` is the guide, `children/_skeleton/` the runnable template,
 and `children/<project>/` the incubator until a child graduates to its own repo.
 
