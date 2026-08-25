@@ -632,9 +632,10 @@ ADR-0027..0030 — are kept in full.)
 
 ---
 
-## ADR-0026 — Report renderer parity (PROPOSAL)
+## ADR-0026 — Report renderer parity
 
-**Status:** proposed (2026-08-25) — awaiting owner review
+**Status:** accepted (2026-08-25 — proposed, then owner-ratified with
+the rest of the parity ports)
 
 **Context.** The parent's `run-report` renders what dskit's cannot:
 CSV export beside the markdown, bounded tables (`max_rows`/`skip` with
@@ -643,14 +644,20 @@ ledger/rate table helpers (~1,090 extra lines). Most is generic
 rendering; two helpers (trade rows, per-instrument hit rate) sit at
 the trading-genre boundary.
 
-**Decision (proposed).** Port the generic renderers (CSV, bounded
-tables, truncation notes, fixed-table helpers). Boundary question for
-the owner: take the ledger/hit-rate helpers too (any position-taking
-child wants them; a non-trading project ignores them), or leave them
-child-side behind a renderer hook.
+**Decision.** Port the whole module faithfully — the boundary
+question resolves to "take the ledger/hit-rate helpers too": this
+toolkit already ships position-taking primitives at tier 1
+(`records.py`: MarketRecord, binary/mark-to-market accounting,
+`settle_position`), so rendering the ledgers those primitives produce
+is in-genre, and the parent's purity gate holds the helpers
+venue-free. A non-trading project simply never feeds them. Faithful
+whole-module ports have also proven safer than surgical partial ones
+four times running (ADR-0022…0025).
 
 **Consequences.** Evidence reports become spreadsheet-consumable and
-honestly bounded. Lowest urgency of the three proposals.
+honestly bounded; `kinds_report.py` grows ~409 → ~1,500 lines with
+matching test growth; `run-report` stays owned and its param surface
+grows (bounded-table knobs).
 
 ---
 
@@ -780,3 +787,32 @@ with an honest blind-spot story: expected periods are declared, never
 inferred, so the rl_stocks observation-range-inference bug class is
 unrepresentable. The onboarding root grows one state file; `verify`
 ignores it (state, not evidence).
+
+---
+
+## ADR-0031 — Walk-forward folds carry the document's split policy
+
+**Status:** accepted (2026-08-25 — owner directive to close the
+deferred residuals)
+
+**Context.** The ADR-0027 merge note left a seam closed but blunt: a
+document declaring a split `policy` alongside `walkforward` refuses
+loudly, because `_fold_splits` builds each fold's `TimeSplitConfig`
+without a policy and silently running folds under `record` was the
+fallback ADR-0024 forswears. Refusal beats leakage, but the combination
+is exactly what an event-shaped walk-forward wants: fold cuts AND
+event-atomic assignment.
+
+**Decision.** Pass the declared policy through: `_fold_splits` stamps
+the parent document's `splits.policy` onto every fold's
+`TimeSplitConfig`. Each fold already routes through `run_document`, so
+event policies get the ADR-0024 binding — bounds from the fold's data
+nodes, loud refusal when none supplies them — and the `val_start_ms`
+embargo band keeps applying to the policy-selected instant. The
+walkforward-door refusal guard is removed; its test becomes the
+pass-through test. A document with no `splits` section (or `record`)
+behaves exactly as before — hash-neutral, behavior-neutral.
+
+**Consequences.** `run_walk_forward` loses the guard, `_fold_splits`
+gains one stamped field; the ADR-0027 merge note's "future work" is
+closed. Fold-level event policies are now first-class.
