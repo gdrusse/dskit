@@ -55,6 +55,7 @@ from dskit.pipeline.document import (
     parse_prev_ref,
 )
 from dskit.pipeline.node import resolve_uses
+from dskit.pipeline.stats import CORRECTIONS
 
 __all__ = ["Plan", "plan"]
 
@@ -381,6 +382,25 @@ def plan(document, registry=None) -> Plan:
                         f"pipeline.{key}: a score node may read 'test' only as "
                         f"the terminal evaluation — {non_report} consume its "
                         "outputs (only report nodes may)"
+                    )
+        if role == "stat_test":
+            # The plan-time mirror of the weights-port rules. The
+            # enforcing gate is validate_inputs (it sees the wired
+            # values), but a weighted correction with no weights wire —
+            # or the converse — is knowable from the spec alone, so it
+            # refuses here, before anything runs.
+            corr = spec.params.get("correction", "bh")
+            entry = CORRECTIONS.get(corr) if isinstance(corr, str) else None
+            if entry is not None:
+                if entry["needs_weights"] and "weights" not in spec.inputs:
+                    errors.append(
+                        f"pipeline.{key}: correction {corr!r} needs "
+                        "per-instrument weights — wire a weights input"
+                    )
+                if not entry["needs_weights"] and "weights" in spec.inputs:
+                    errors.append(
+                        f"pipeline.{key}: a weights input is wired but "
+                        f"correction {corr!r} does not use weights"
                     )
         if role == "search":
             errors.extend(_search_errors(key, spec, specs, roles, edges))

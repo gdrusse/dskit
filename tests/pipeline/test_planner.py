@@ -338,6 +338,40 @@ class TestCapitalNeedsSplits:
         assert plan(doc_of(pipeline), registry).order
 
 
+class TestStatTestWeightsRule:
+    """The plan-time mirror of the weights-port rules (ADR-0033): a
+    weighted correction with no weights wire — or the converse — is
+    knowable from the spec alone, so it refuses before anything runs."""
+
+    def _pipeline(self, gate):
+        return {"events": NodeSpec(uses="synth-events"), "gate": gate}
+
+    def test_weighted_correction_without_a_weights_wire_refuses(self, registry):
+        gate = NodeSpec(
+            uses="stat_test",
+            inputs={"scores": "$events.events"},
+            params={"correction": "weighted-bh"},
+        )
+        with pytest.raises(ConfigError, match="wire a weights input"):
+            plan(doc_of(self._pipeline(gate)), registry)
+
+    def test_weighted_correction_with_the_wire_plans(self, registry):
+        gate = NodeSpec(
+            uses="stat_test",
+            inputs={"scores": "$events.events", "weights": "$events.events"},
+            params={"correction": "weighted-bh"},
+        )
+        assert plan(doc_of(self._pipeline(gate)), registry).order
+
+    def test_a_weights_wire_with_an_unweighted_correction_refuses(self, registry):
+        gate = NodeSpec(
+            uses="stat_test",
+            inputs={"scores": "$events.events", "weights": "$events.events"},
+        )
+        with pytest.raises(ConfigError, match="does not use weights"):
+            plan(doc_of(self._pipeline(gate)), registry)
+
+
 class TestSearchRules:
     def base(self):
         splits = TimeSplitConfig(**BANKING_SPLITS)

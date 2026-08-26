@@ -36,7 +36,12 @@ from types import SimpleNamespace
 
 from dskit.pipeline.metrics import METRICS
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
-from dskit.pipeline.stats import CORRECTIONS, cluster_bootstrap_pvalue
+from dskit.pipeline.stats import (
+    CORRECTIONS,
+    METHODS,
+    cluster_bootstrap_pvalue,
+    cluster_bootstrap_t,
+)
 
 __all__ = ["MIN_CLUSTERS", "StatTest", "Validate", "register"]
 
@@ -144,13 +149,23 @@ class StatTest(Node):
     ``evidence`` is the run report's per-instrument row: each p-value,
     its cluster count, whether it survived, and what the family
     correction cost it (I-232).
+
+    Two statistics, selected by ``method`` (`stats.METHODS` — a closed
+    tuple, not a registry): ``"plain"`` (the default; byte-stable with
+    every pre-``method`` run) and ``"studentized"`` (the recentered
+    cluster bootstrap-t, which also emits per-instrument ``se``/``t``
+    and descriptive ``ci_low``/``ci_high`` bounds). A correction whose
+    registry entry declares ``needs_weights`` (e.g. ``"weighted-bh"``)
+    requires a wired ``weights`` input — per-instrument weights are
+    data, not config — and a ``weights`` wire with a non-weighted
+    correction is refused.
     """
 
     role = "stat_test"
     outputs = ("survivors", "pvalues", "verdict", "evidence")
 
     #: The class's own knobs — anything else is refused by name.
-    _PARAMS = ("alpha", "correction", "n_boot", "seed")
+    _PARAMS = ("alpha", "correction", "method", "n_boot", "seed")
 
     @classmethod
     def validate_params(cls, params):
@@ -172,6 +187,12 @@ class StatTest(Node):
             problems.append(
                 f"correction must be one of {sorted(CORRECTIONS)}, got {correction!r}"
             )
+        method = params.get("method", "plain")
+        # Same isinstance-first shape as the correction check above.
+        if not isinstance(method, str) or method not in METHODS:
+            problems.append(
+                f"method must be one of {sorted(METHODS)}, got {method!r}"
+            )
         return problems
 
     def validate_inputs(self, inputs):
@@ -184,6 +205,7 @@ class StatTest(Node):
                 )
             ]
         problems = []
+        self._check_weights(problems, inputs, scores)
         for inst, clusters in scores.items():
             if not isinstance(inst, str):
                 problems.append(f"instrument keys must be strings, got {inst!r}")
@@ -214,12 +236,61 @@ class StatTest(Node):
                     )
         return problems
 
+    def _check_weights(self, problems, inputs, scores):
+        """The weights-port rules: demanded by a ``needs_weights``
+        correction, refused otherwise, and shaped when present.
+
+        Degraded instruments (below :data:`MIN_CLUSTERS`) still enter the
+        correction family at ``p = 1.0``, so EVERY instrument in
+        ``scores`` needs a weight — not just the testable ones.
+        """
+        correction = self.params.get("correction", "bh")
+        entry = CORRECTIONS.get(correction) if isinstance(correction, str) else None
+        needs = bool(entry and entry["needs_weights"])
+        weights = inputs.get("weights")
+        if needs and weights is None:
+            problems.append(
+                f"correction {correction!r} needs per-instrument weights — "
+                "wire a weights input"
+            )
+            return
+        if not needs and weights is not None:
+            problems.append(
+                f"a weights input is wired but correction {correction!r} does "
+                "not use weights — a knob silently ignored is a config lie"
+            )
+            return
+        if weights is None:
+            return
+        if not isinstance(weights, dict):
+            problems.append(
+                f"weights must be a dict of instrument -> weight, got {weights!r}"
+            )
+            return
+        for name, w in weights.items():
+            if not isinstance(name, str):
+                problems.append(f"weights: instrument keys must be strings, got {name!r}")
+            if (
+                isinstance(w, bool)
+                or not isinstance(w, (int, float))
+                or not math.isfinite(w)
+                or w <= 0
+            ):
+                problems.append(
+                    f"weights[{name!r}] must be a finite number > 0, got {w!r}"
+                )
+        for inst in scores:
+            if isinstance(inst, str) and inst not in weights:
+                problems.append(f"no weight for instrument {inst!r}")
+
     def run(self, ctx, inputs):
         alpha = self.params.get("alpha", 0.05)
         n_boot = self.params.get("n_boot", 10_000)
         seed = self.params.get("seed", 0)
         correction = self.params.get("correction", "bh")
+        method = self.params.get("method", "plain")
         pvalues = {}
+        tstats = {}
         for inst in sorted(inputs["scores"]):
             clusters = inputs["scores"][inst]
             if len(clusters) < MIN_CLUSTERS:
@@ -231,23 +302,33 @@ class StatTest(Node):
                     MIN_CLUSTERS,
                 )
                 continue
-            pvalues[inst] = cluster_bootstrap_pvalue(
-                {cluster: [float(value)] for cluster, value in clusters.items()},
-                n_boot,
-                seed,
-                label=inst,
-            )
+            wrapped = {cluster: [float(value)] for cluster, value in clusters.items()}
+            if method == "studentized":
+                res = cluster_bootstrap_t(
+                    wrapped, n_boot, seed, label=inst, alpha=alpha
+                )
+                pvalues[inst] = res["p_value"]
+                tstats[inst] = res
+            else:
+                pvalues[inst] = cluster_bootstrap_pvalue(
+                    wrapped, n_boot, seed, label=inst
+                )
         if pvalues:
-            rejected = CORRECTIONS[correction](pvalues, alpha)
+            entry = CORRECTIONS[correction]
+            if entry["needs_weights"]:
+                rejected = entry["fn"](pvalues, alpha, inputs["weights"])
+            else:
+                rejected = entry["fn"](pvalues, alpha)
             survivors = sorted(inst for inst, hit in rejected.items() if hit)
         else:
             survivors = []
         verdict = "GO" if survivors else "NO-GO"
         self.log.info(
-            "stat test: %d/%d instrument(s) survive at alpha=%s (%s) — %s",
+            "stat test: %d/%d instrument(s) survive at alpha=%s (%s, %s) — %s",
             len(survivors),
             len(pvalues),
             alpha,
+            method,
             correction,
             verdict,
         )
@@ -256,12 +337,42 @@ class StatTest(Node):
             "pvalues": pvalues,
             "verdict": verdict,
             "evidence": self._evidence(
-                inputs["scores"], pvalues, survivors, alpha, correction
+                inputs["scores"],
+                pvalues,
+                survivors,
+                alpha,
+                correction,
+                method,
+                n_boot,
+                seed,
+                tstats,
             ),
         }
 
+    #: What each method IS, in the report's own words. The plain strings
+    #: match the report renderer's historical fallbacks exactly, so the
+    #: rendered sentence for existing documents does not change — the
+    #: stage now says what the renderer used to assume (TODO-1).
+    _TEST_DESCRIPTIONS = {
+        "plain": (
+            "one-sided cluster bootstrap on the paired improvement "
+            "(H0: mean improvement <= 0)"
+        ),
+        "studentized": (
+            "one-sided studentized recentered cluster bootstrap-t on the "
+            "paired improvement (H0: mean improvement <= 0)"
+        ),
+    }
+    _STATISTIC_DESCRIPTIONS = {
+        "plain": "size-weighted mean improvement over clusters",
+        "studentized": (
+            "studentized recentered mean improvement "
+            "(t = mean / cluster-robust SE)"
+        ),
+    }
+
     @staticmethod
-    def _evidence(scores, pvalues, survivors, alpha, correction):
+    def _evidence(scores, pvalues, survivors, alpha, correction, method, n_boot, seed, tstats):
         """Per-instrument p-values and what the family correction did.
 
         The correction's EFFECT is the point: an instrument at p = 0.03
@@ -271,6 +382,12 @@ class StatTest(Node):
         different family sizes. ``survives_uncorrected`` is the raw
         ``p < alpha`` comparison — the counterfactual, never a second
         verdict.
+
+        ``totals`` self-describes the test (name, statistic, independence
+        unit, replicates, seed, method) so the report renders what
+        actually ran, never a fallback description. Studentized rows add
+        ``se`` and — when the sample supports them — ``t``/``ci_low``/
+        ``ci_high``; a degenerate bound is OMITTED, never null or NaN.
         """
         survivor_set = set(survivors)
         instruments = {}
@@ -294,13 +411,39 @@ class StatTest(Node):
                     )
                 ),
             }
+            res = tstats.get(name)
+            if res is not None:
+                instruments[name]["se"] = res["se"]
+                for key in ("t", "ci_low", "ci_high"):
+                    if res[key] is not None:
+                        instruments[name][key] = res[key]
         raw = sum(1 for row in instruments.values() if row["survives_uncorrected"])
+        notes = (
+            [
+                f"the {correction!r} family correction removed {raw - len(survivors)} "
+                f"instrument(s) that cleared alpha={alpha} on their own p-value"
+            ]
+            if raw != len(survivors)
+            else []
+        )
+        if method == "studentized":
+            notes.append(
+                f"per-instrument intervals are two-sided {1 - alpha:g} "
+                "bootstrap-t bounds — descriptive evidence, uncorrected for "
+                "the family, never a second verdict"
+            )
         return {
             "stage": "edge test",
             "totals": {
                 "family_size": len(pvalues),
                 "alpha": alpha,
                 "correction": correction,
+                "method": method,
+                "test": StatTest._TEST_DESCRIPTIONS[method],
+                "statistic": StatTest._STATISTIC_DESCRIPTIONS[method],
+                "independence_unit": "cluster (the record's dependence group)",
+                "n_boot": n_boot,
+                "seed": seed,
                 "n_survivors": len(survivors),
                 "n_survivors_uncorrected": raw,
                 "correction_cost": raw - len(survivors),
@@ -310,12 +453,7 @@ class StatTest(Node):
                 "verdict": "GO" if survivors else "NO-GO",
             },
             "instruments": instruments,
-            "notes": [
-                f"the {correction!r} family correction removed {raw - len(survivors)} "
-                f"instrument(s) that cleared alpha={alpha} on their own p-value"
-            ]
-            if raw != len(survivors)
-            else [],
+            "notes": notes,
         }
 
 

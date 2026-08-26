@@ -407,7 +407,7 @@ class Runner:
             i: cluster_bootstrap_pvalue(scores[i], st.n_boot, st.seed, label=i)
             for i in testable
         }
-        rejected = CORRECTIONS[st.correction](pvalues, st.alpha)
+        rejected = CORRECTIONS[st.correction]["fn"](pvalues, st.alpha)
         payload = {
             "instruments": {
                 i: {"p_value": pvalues[i], "rejected": rejected[i]} for i in testable

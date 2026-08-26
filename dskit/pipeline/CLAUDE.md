@@ -36,6 +36,12 @@ on it without breaking its rulings.
   document names the library class, `library_path_problems` /
   `import_library_class` (base.py) validate it at plan time.
 - **Metrics** — `register_metric` (`metrics.py`); `logloss`/`brier` ship.
+- **Corrections** — `register_correction` (`stats.py`);
+  `bh`/`bonferroni`/`none`/`weighted-bh` ship. `needs_weights` metadata
+  gates the stat_test `weights` input port (plan-time mirror in
+  `planner.py`; the stage-list grammar refuses weighted corrections).
+  The STATISTIC itself (`METHODS`: plain | studentized) is a closed
+  tuple by owned-kind doctrine — never registrable.
 - **Split policies** — `register_split_policy` (`split_policy.py`);
   `record` / `event-open` / `event-close` ship. An event policy needs a
   data node implementing `event_bounds()`, and the driver refuses when
@@ -107,7 +113,7 @@ dskit/pipeline/
 ├── synthetic_nodes.py demo/test nodes, private registries only
 ├── metrics.py         logloss / brier / squared_error / absolute_error + register_metric
 ├── trainlog.py        TrainingCurve + probability metrics (declared-model telemetry)
-├── stats.py           cluster bootstrap + corrections
+├── stats.py           cluster bootstraps (plain, studentized-t) + correction registry
 ├── records.py         MarketRecord + accounting seams
 ├── protocols.py       structural Protocols
 ├── env.py             env + redacting Secrets

@@ -229,6 +229,12 @@ def resolve(config, asof=None, backend=None, registry=DEFAULT_REGISTRY):
             f"stat_test.correction {config.stat_test.correction!r} is not "
             f"registered — known corrections: {sorted(CORRECTIONS)}"
         )
+    if CORRECTIONS[config.stat_test.correction]["needs_weights"]:
+        raise ValueError(
+            f"correction {config.stat_test.correction!r} needs per-instrument "
+            "weights, which the stage-list grammar cannot wire — use the "
+            "node-map stat_test with a weights input"
+        )
 
     backend = backend if backend is not None else registry.create(config)
 

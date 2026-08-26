@@ -23,13 +23,13 @@ each with a named dskit home and interim child-side handling. The full
 statements are §13 of `docs/children_design_proposals/pmquant.md`; none is an
 ADR yet, and none blocks the child from starting:
 
-- [ ] 1. `stat_test` evidence self-description (`kinds_stats.py`) — the one
-      unported pmquant→dskit engine capability. **Graduated → ADR-0033 (2026-08-26).**
-- [ ] 2. Studentized recentered cluster bootstrap-t as a `stat_test` method
-      (`stats.py`) — **blocks a single-document deploy→size path**.
-      **Graduated → ADR-0033 (2026-08-26).**
-- [ ] 3. Registrable family corrections / weighted BH (`stats.py`).
-      **Graduated → ADR-0033 (2026-08-26).**
+- [x] 1. `stat_test` evidence self-description (`kinds_stats.py`) — the one
+      unported pmquant→dskit engine capability. **Landed via ADR-0033 (2026-08-26).**
+- [x] 2. Studentized recentered cluster bootstrap-t as a `stat_test` method
+      (`stats.py`) — **unblocked the single-document deploy→size path**.
+      **Landed via ADR-0033 (2026-08-26).**
+- [x] 3. Registrable family corrections / weighted BH (`stats.py`).
+      **Landed via ADR-0033 (2026-08-26).**
 - [ ] 4. A calibration split block (`cal_start_ms` in `base.TimeSplitConfig`).
       **Graduated → ADR-0034 (2026-08-26).**
 - [ ] 5. Calibration/scoring `libs/` packs (beta, CORP isotonic, cross-fit,
