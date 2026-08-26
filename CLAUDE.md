@@ -51,6 +51,8 @@ dskit/
 ├── docs/
 │   ├── RE-ENTRY.md            # where we are — read first, refreshed by /wrap
 │   ├── agent-master-specifications.md   # Package 1 & 2 master specs (verbatim)
+│   ├── children_design_proposals/       # per-child build proposals (owner-ratified
+│   │   └── pmquant.md                   #   before code); pmquant = the ladder-market child
 │   └── architecture/                    # architecture-first design work
 │       ├── README.md                    # ecosystem + deliverables roadmap
 │       ├── context-and-ownership.md     # who owns what; data flow

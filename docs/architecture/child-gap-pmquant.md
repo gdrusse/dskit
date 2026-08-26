@@ -1,5 +1,12 @@
 # Capability-gap report — pmquant as a dskit child
 
+> **Superseded in part (2026-08-26).** The "pmquant as a thin child" sketch below is
+> superseded by `docs/children_design_proposals/pmquant.md`, whose provenance block
+> lists the eight points it changes (kind naming, backend tags, dependencies, the
+> schwab split, Tier-B capture, the cross-feed validators, one engine-parity residual,
+> and two COVERED rows revisited as TODOs). The COVERED table and the classification
+> method below stand.
+
 **Verdict: pmquant already contains dskit — its engine is the parent fork and
 was a strict superset; after the owner-ratified parity ports (ADR-0022…0026,
 2026-08-25) the generic engine gap is CLOSED, and everything else in pmquant is
