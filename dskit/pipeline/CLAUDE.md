@@ -69,7 +69,8 @@ on it without breaking its rulings.
   cannot substitute their class — the statistics are not config-swappable.
 - **`$prev` refs are legal inside `params` only**; any other `$`-string
   is refused. `$splits.<field>` reads the materialized split
-  (`val_start_ms` appears there ONLY when an embargo is set).
+  (`val_start_ms` appears there ONLY when an embargo is set, and
+  `cal_start_ms` only when a cal band is declared — ADR-0034).
 - **Trailing splits DO materialize** — from `Node.data_edge()`; only
   `train_days != "all-prior"` refuses. (Older docstrings claiming
   resolve-time refusal are the stale ones.)
@@ -77,9 +78,10 @@ on it without breaking its rulings.
 - **Document identity excludes `env`, `outputs`, AND `schedule`**;
   the stage-list grammar excludes only `env`/`outputs`. The
   `walkforward` section IS identity and is EMITTED ONLY WHEN PRESENT —
-  same for `val_start_ms`/`embargo_days` on splits: an always-emitted
-  null/zero would move every pre-ADR-0027 document's hash. Keep that
-  omission discipline for any future optional field.
+  same for `val_start_ms`/`embargo_days`/`cal_start_ms`/`cal_days` on
+  splits: an always-emitted null/zero would move every pre-ADR-0027
+  document's hash. Keep that omission discipline for any future
+  optional field.
 - **Walk-forward folds are separate run series** — the driver suffixes
   each derived document's name `-wf-<cutoff>`, so a `$prev` carry binds
   within one fold's history, never across folds.

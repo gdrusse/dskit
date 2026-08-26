@@ -850,6 +850,19 @@ class TorchTrain(_TorchModel):
     ``val_rows`` is a genuinely separate port, not a slice of ``rows``:
     the document wires it from a val-split filter, so this node cannot
     invent its own split and cannot see the test window at all.
+
+    **Checkpoint selection (ADR-0035).** ``monitor`` names the recorded
+    loss the fit is selected on (:attr:`_MONITORS` — each a loss, lower
+    is better; a maximize-metric cannot be named). When declared, the
+    curve tracks it, the best epoch's weights are snapshotted (detached,
+    on CPU) and RESTORED after the loop — before ``final_loss`` and
+    ``adapter.fitted``, so the persisted artifact, the serving state, and
+    the final metrics all describe the selected weights — and ``metrics``
+    stamps ``monitor``/``selected_epoch``/``monitor_value``. Undeclared,
+    the final epoch's weights persist, bit-for-bit the old behavior. A
+    val-derived monitor with no ``val_rows`` wired refuses before epoch
+    1; a monitor that never records a finite value refuses after the
+    loop.
     """
 
     role = "train"
@@ -864,9 +877,15 @@ class TorchTrain(_TorchModel):
         "log_every",
         "lr",
         "max_log_lines",
+        "monitor",
         "optimizer",
         "optimizer_params",
     )
+
+    #: The monitorable row keys — every one a LOSS the curve records.
+    #: Class-level so a child pack widens it by declaration; validation is
+    #: a pure string check, importable with no torch installed.
+    _MONITORS = ("train_loss", "val_loss", "logloss", "brier", "ece")
 
     @classmethod
     def validate_params(cls, params):
@@ -896,6 +915,14 @@ class TorchTrain(_TorchModel):
             params.get("max_log_lines", DEFAULT_MAX_LINES),
             ge=0,
         )
+        monitor = params.get("monitor")
+        if monitor is not None and (
+            not isinstance(monitor, str) or monitor not in cls._MONITORS
+        ):
+            problems.append(
+                f"monitor must be one of {sorted(cls._MONITORS)} (each a "
+                f"loss — lower is better), got {monitor!r}"
+            )
         problems.extend(_loader_problems(params.get("loader", {})))
         problems.extend(_optimizer_problems(params))
         problems.extend(
@@ -988,6 +1015,18 @@ class TorchTrain(_TorchModel):
                     "than training blind"
                 )
 
+        # ADR-0035: every monitor except train_loss is validation
+        # telemetry — its row key only exists when val_rows are wired. A
+        # declared selection rule that silently degraded to train-loss
+        # selection is exactly the trap the seam exists to close.
+        monitor = self.params.get("monitor")
+        if monitor and monitor != "train_loss" and val_set is None:
+            raise ValueError(
+                f"{self.key}: monitor {monitor!r} selects on validation "
+                "telemetry but no val_rows are wired — wire val_rows or "
+                "drop monitor"
+            )
+
         torch.manual_seed(seed)  # pins the init: one seed, one state dict
         # Data-implied constructor kwargs go UNDER the document's own, so a
         # declared value always wins and the data can never silently
@@ -1008,10 +1047,11 @@ class TorchTrain(_TorchModel):
             self.key,
             self.log,
             total_epochs=epochs,
-            objective="val_loss" if val_set else "train_loss",
+            objective=monitor or ("val_loss" if val_set else "train_loss"),
             log_every=self.params.get("log_every", 1),
             max_lines=self.params.get("max_log_lines", DEFAULT_MAX_LINES),
         )
+        best_state = None  # the monitor's snapshot; None until a best epoch
         n = len(train_set)
         for epoch in range(1, epochs + 1):
             started = time.monotonic()
@@ -1042,14 +1082,42 @@ class TorchTrain(_TorchModel):
                     preds, val_labels = adapter.beliefs(module, val_batch)
                 if preds is not None:
                     scored = probability_metrics(preds, val_labels)
-            curve.record(
+            row = curve.record(
                 epoch,
                 train_loss,
                 val_loss=val_loss,
                 metrics=scored,
                 seconds=time.monotonic() - started,
             )
+            if monitor and row["best"]:
+                # Snapshot NOW: the state_dict's tensors alias the live
+                # training weights, so the copy is mandatory, and to-CPU
+                # means a cuda fit holds one extra host copy, never 2x
+                # device memory. One snapshot lives at a time.
+                best_state = {
+                    k: v.detach().to("cpu", copy=True)
+                    for k, v in module.state_dict().items()
+                }
         curve.log_final()
+
+        if monitor:
+            if best_state is None:
+                raise ValueError(
+                    f"{self.key}: monitor {monitor!r} never recorded a "
+                    "finite value — every epoch's tracked objective was "
+                    "NaN/inf; there is nothing to select"
+                )
+            # Restore BEFORE final_loss and adapter.fitted: the persisted
+            # artifact, the serving state, and the final metrics must all
+            # describe the SELECTED weights, not the last epoch's.
+            module.load_state_dict(best_state)
+            self.log.info(
+                "%s: restored epoch %d weights (best %s %.6g)",
+                self.key,
+                curve.best_epoch,
+                monitor,
+                curve.best_value,
+            )
 
         module.eval()
         with torch.no_grad():
@@ -1089,6 +1157,13 @@ class TorchTrain(_TorchModel):
             metrics["n_val_rows"] = len(val_set)
             metrics["n_val_skipped"] = val_set.n_skipped
         metrics.update(curve.summary())
+        if monitor:
+            # selected_epoch is THE contract key: which epoch's weights
+            # were persisted. best_epoch (from the summary) agrees here by
+            # construction, but a consumer must not have to know that.
+            metrics["monitor"] = monitor
+            metrics["selected_epoch"] = curve.best_epoch
+            metrics["monitor_value"] = curve.best_value
         return {
             "signal": TorchSignal(
                 module, features, artifact_path, loaded=False, adapter=adapter

@@ -150,6 +150,7 @@ class TestTrainingCurve:
             "qhat",
             _logger_with(rec, "test.curve.ends"),
             total_epochs=50,
+            objective="train_loss",  # train-only rows (ADR-0035 strictness)
             max_lines=3,
         )
         for epoch in range(1, 51):
@@ -165,6 +166,20 @@ class TestTrainingCurve:
         curve.record(1, float("nan"), val_loss=float("inf"))
         # write_artifact refuses NaN — the payload must already be clean.
         json.dumps(curve.payload(), allow_nan=False)
+
+    def test_an_absent_objective_key_refuses_loudly(self):
+        # ADR-0035: a curve that silently tracked something else would let
+        # a typo'd monitor select on the wrong signal. A PRESENT key with
+        # a non-finite (None) value records fine — covered above.
+        rec = _Recorder()
+        curve = TrainingCurve(
+            "qhat",
+            _logger_with(rec, "test.curve.strict"),
+            total_epochs=2,
+            objective="brier",
+        )
+        with pytest.raises(ValueError, match="'brier' is absent"):
+            curve.record(1, 0.5)  # train-only row: no brier anywhere
 
 
 # ---------------------------------------------------------------------------

@@ -165,9 +165,12 @@ class TrainingCurve:
         Planned epochs — used to render ``epoch 3/20`` and to decide the
         stride.
     objective : str, optional
-        Which recorded field names the BEST epoch (default ``val_loss``,
-        falling back to ``train_loss`` when no validation is wired). Lower
-        is better — every metric this module records is a loss.
+        Which recorded field names the BEST epoch (default ``val_loss``).
+        Lower is better — every metric this module records is a loss. An
+        objective absent from a recorded row REFUSES loudly (ADR-0035): a
+        curve that silently tracked something else would let a typo'd
+        monitor select on the wrong signal — callers with train-only rows
+        must say ``objective="train_loss"``.
     log_every : int, optional
         Stream at most one line per this many epochs (default 1). The
         stride from ``max_lines`` is applied on top, whichever is coarser.
@@ -220,9 +223,18 @@ class TrainingCurve:
         if seconds is not None:
             row["seconds"] = round(float(seconds), 3)
 
-        tracked = row.get(self.objective)
-        if tracked is None:
-            tracked = row.get("train_loss")
+        if self.objective not in row:
+            # A key that never materialized is a wrong SELECTION RULE (a
+            # typo'd monitor, an adapter that emits no beliefs) — refusing
+            # beats silently selecting on something else (ADR-0035). A
+            # PRESENT key whose value went non-finite (a diverged epoch,
+            # already None via _num) records normally and is simply never
+            # the best.
+            raise ValueError(
+                f"{self.key}: objective {self.objective!r} is absent from "
+                f"epoch {row['epoch']}'s row — recorded keys: {sorted(row)}"
+            )
+        tracked = row[self.objective]
         improved = (
             isinstance(tracked, (int, float))
             and math.isfinite(tracked)

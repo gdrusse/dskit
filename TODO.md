@@ -30,8 +30,8 @@ ADR yet, and none blocks the child from starting:
       **Landed via ADR-0033 (2026-08-26).**
 - [x] 3. Registrable family corrections / weighted BH (`stats.py`).
       **Landed via ADR-0033 (2026-08-26).**
-- [ ] 4. A calibration split block (`cal_start_ms` in `base.TimeSplitConfig`).
-      **Graduated → ADR-0034 (2026-08-26).**
+- [x] 4. A calibration split block (`cal_start_ms` in `base.TimeSplitConfig`).
+      **Landed via ADR-0034 (2026-08-26).**
 - [ ] 5. Calibration/scoring `libs/` packs (beta, CORP isotonic, cross-fit,
       Efron lfdr, Venn–Abers, proper scoring rules).
 - [ ] 6. Acquire-side coverage hook + guarded parallel acquisition
@@ -47,9 +47,9 @@ ADR yet, and none blocks the child from starting:
 - [ ] 11. A records → keyed-table verb (`groupby`/`pivot`, `kinds_flow.py`).
 - [ ] 12. Search-seam expressiveness for seed-ensemble studies + per-fold
       node-param binding (`kinds_search.py`, `document.py`/`driver.py`).
-- [ ] 13. Val-metric checkpoint selection in the torch pack (a `monitor` +
+- [x] 13. Val-metric checkpoint selection in the torch pack (a `monitor` +
       best-state-restore seam; the curve already computes the row).
-      **Graduated → ADR-0035 (2026-08-26).**
+      **Landed via ADR-0035 (2026-08-26).**
 
 Deferred:
 

@@ -402,6 +402,93 @@ def test_different_seeds_differ(tmp_path):
     )
 
 
+# -- checkpoint selection: monitor + best-state restore (ADR-0035) ------------
+
+
+def test_monitor_restores_the_selected_epochs_weights(tmp_path):
+    # Val rows carry the OPPOSITE relationship, so fitting the train rows
+    # eventually worsens val loss — some early epoch is best. The contract
+    # under test: the persisted weights ARE that epoch's weights, proven
+    # by re-fitting with epochs=selected_epoch (same seed, same shuffle
+    # stream => identical state, deterministically).
+    epochs = 10
+    params = {**PARAMS, "epochs": epochs, "monitor": "val_loss"}
+    out = LinearRegressor("qhat", params).run(
+        ctx(tmp_path, "mon"),
+        {"rows": make_rows(), "val_rows": make_inverted_rows()},
+    )
+    k = out["metrics"]["selected_epoch"]
+    assert 1 <= k <= epochs
+    assert out["metrics"]["monitor"] == "val_loss"
+    assert out["metrics"]["monitor_value"] == out["metrics"]["best_val_loss"]
+    replay = LinearRegressor("qhat", {**PARAMS, "epochs": k}).run(
+        ctx(tmp_path, "replay"), {"rows": make_rows()}
+    )
+    assert states_equal(
+        state_of(out["artifact_path"]), state_of(replay["artifact_path"])
+    )
+    if k < epochs:  # the restore actually changed what was persisted
+        final = LinearRegressor("qhat", {**PARAMS, "epochs": epochs}).run(
+            ctx(tmp_path, "final"),
+            {"rows": make_rows(), "val_rows": make_inverted_rows()},
+        )
+        assert not states_equal(
+            state_of(out["artifact_path"]), state_of(final["artifact_path"])
+        )
+
+
+def test_monitor_unset_leaves_metrics_and_selection_alone(tmp_path):
+    out = train(tmp_path)
+    for key in ("monitor", "selected_epoch", "monitor_value"):
+        assert key not in out["metrics"]
+    data = json.loads(pathlib.Path(sidecar_path(out["artifact_path"])).read_text())
+    assert "monitor" not in data["params"]  # hash-material only when declared
+
+
+def test_monitor_is_recorded_in_the_sidecar_when_declared(tmp_path):
+    params = {**PARAMS, "monitor": "train_loss"}
+    out = train(tmp_path, params=params)
+    data = json.loads(pathlib.Path(sidecar_path(out["artifact_path"])).read_text())
+    assert data["params"]["monitor"] == "train_loss"
+    assert out["metrics"]["selected_epoch"] == out["metrics"]["best_epoch"]
+
+
+def test_monitor_without_val_rows_refuses_before_training(tmp_path):
+    params = {**PARAMS, "monitor": "val_loss"}
+    with pytest.raises(ValueError, match="val_rows"):
+        LinearRegressor("qhat", params).run(
+            ctx(tmp_path), {"rows": make_rows()}
+        )
+
+
+def test_monitor_train_loss_needs_no_val(tmp_path):
+    out = train(tmp_path, params={**PARAMS, "monitor": "train_loss"})
+    assert out["metrics"]["monitor"] == "train_loss"
+    assert 1 <= out["metrics"]["selected_epoch"] <= PARAMS["epochs"]
+
+
+def test_a_typoed_monitor_is_refused_at_plan():
+    (problem,) = TorchTrain.validate_params(
+        {"features": FEATURES, "monitor": "val_accuracy"}
+    )
+    assert "monitor" in problem and "val_accuracy" in problem
+    for known in ("val_loss", "brier"):
+        assert known in problem
+    # loss-only doctrine: the closed list IS the direction knob
+    assert TorchTrain.validate_params({"features": FEATURES, "monitor": "ece"}) == []
+
+
+def test_monitor_that_never_records_a_finite_value_refuses(tmp_path):
+    # lr large enough to blow the weights to inf on the first step: every
+    # epoch's val_loss is non-finite, so nothing was ever selectable.
+    params = {**PARAMS, "epochs": 3, "lr": 1e30, "monitor": "val_loss"}
+    with pytest.raises(ValueError, match="never recorded a finite value"):
+        LinearRegressor("qhat", params).run(
+            ctx(tmp_path),
+            {"rows": make_rows(), "val_rows": make_rows()},
+        )
+
+
 # -- mode="load" on the trainer: really loads, refuses by name ----------------
 
 
