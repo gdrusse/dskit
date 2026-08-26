@@ -1,0 +1,25 @@
+# A child project's OWN packaging — the child is installable on its own,
+# in-repo and after graduation, and dskit is its only coupling (ADR-0021).
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "intraday_poc"
+version = "0.0.1"
+description = "dskit child: two-stock intraday PoC — Alpaca bars, per-symbol LSTM, pick-one selector."
+requires-python = ">=3.11"
+# `dskit` is the structural coupling (ADR-0021) — never a path into the dskit
+# repo. The heavy libraries are the child's own run-path deps, imported only
+# inside run()/read()/live.py so documents still plan without them; the tests
+# importorskip them so the suite passes on a bare install too.
+dependencies = [
+    "dskit",
+    "alpaca-py>=0.44",
+    "torch",
+    "pyomo",
+    "highspy",
+]
+
+[tool.setuptools.packages.find]
+include = ["intraday_poc*"]

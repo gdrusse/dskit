@@ -26,3 +26,11 @@ pipeline_runs/
 .DS_Store
 .idea/
 .vscode/
+
+# Secrets — the material never enters the repo
+.env
+
+# Onboarding roots / asset stores created by child runs
+children/*/ob/
+children/*/asset_store/
+children/*/decisions.jsonl

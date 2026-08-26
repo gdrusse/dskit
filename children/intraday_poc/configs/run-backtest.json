@@ -1,0 +1,310 @@
+{
+  "name": "intraday_poc-backtest",
+  "notes": "The intraday BACKTEST as a walk-forward document (ADR-0027): python -m dskit.pipeline walkforward configs/run-backtest.json --asof 2026-08-25 --adapter intraday_poc. Per fold: train each symbol's LSTM on everything up to the cutoff (minus the embargo), forecast the fold's validation window, and let the select-one program pick exactly one symbol per minute — the aggregate objective is the summed realized next-bar log return of those picks. Same nodes, same configs as the production fit; only the split filters and the walkforward section differ.",
+  "pipeline": {
+    "bars": {
+      "uses": "intraday_poc-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca"
+      },
+      "notes": "Same store as run-train.json — one source of truth for both documents."
+    },
+    "window": {
+      "uses": "intraday_poc-window",
+      "inputs": {
+        "records": "$bars.records"
+      },
+      "params": {
+        "lookback": 30,
+        "max_gap_minutes": 5
+      },
+      "notes": "Identical windowing to the production fit — backtest and live must consume the same features or the backtest proves nothing."
+    },
+    "aapl_train": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$window.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "==",
+            "value": "AAPL"
+          },
+          {
+            "field": "asof_ms",
+            "op": "<=",
+            "value": "$splits.train_end_ms"
+          }
+        ]
+      },
+      "notes": "AAPL rows up to the fold's train cut; the embargo band after it belongs to NO split."
+    },
+    "aapl_val": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$window.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "==",
+            "value": "AAPL"
+          },
+          {
+            "field": "asof_ms",
+            "op": ">=",
+            "value": "$splits.val_start_ms"
+          },
+          {
+            "field": "asof_ms",
+            "op": "<=",
+            "value": "$splits.val_end_ms"
+          }
+        ]
+      },
+      "notes": "The fold's AAPL validation window, starting AFTER the embargo."
+    },
+    "msft_train": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$window.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "==",
+            "value": "MSFT"
+          },
+          {
+            "field": "asof_ms",
+            "op": "<=",
+            "value": "$splits.train_end_ms"
+          }
+        ]
+      },
+      "notes": "The MSFT twin of aapl_train."
+    },
+    "msft_val": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$window.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "==",
+            "value": "MSFT"
+          },
+          {
+            "field": "asof_ms",
+            "op": ">=",
+            "value": "$splits.val_start_ms"
+          },
+          {
+            "field": "asof_ms",
+            "op": "<=",
+            "value": "$splits.val_end_ms"
+          }
+        ]
+      },
+      "notes": "The MSFT twin of aapl_val."
+    },
+    "qhat_aapl": {
+      "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+      "mode": "train",
+      "inputs": {
+        "rows": "$aapl_train.records",
+        "val_rows": "$aapl_val.records"
+      },
+      "params": {
+        "module": "intraday_poc.models:NextBarLSTM",
+        "module_params": {
+          "lookback": 30,
+          "hidden_size": 32,
+          "num_layers": 1
+        },
+        "features": [
+          "ret_lag_0",
+          "ret_lag_1",
+          "ret_lag_2",
+          "ret_lag_3",
+          "ret_lag_4",
+          "ret_lag_5",
+          "ret_lag_6",
+          "ret_lag_7",
+          "ret_lag_8",
+          "ret_lag_9",
+          "ret_lag_10",
+          "ret_lag_11",
+          "ret_lag_12",
+          "ret_lag_13",
+          "ret_lag_14",
+          "ret_lag_15",
+          "ret_lag_16",
+          "ret_lag_17",
+          "ret_lag_18",
+          "ret_lag_19",
+          "ret_lag_20",
+          "ret_lag_21",
+          "ret_lag_22",
+          "ret_lag_23",
+          "ret_lag_24",
+          "ret_lag_25",
+          "ret_lag_26",
+          "ret_lag_27",
+          "ret_lag_28",
+          "ret_lag_29"
+        ],
+        "label": "y_next",
+        "optimizer": "torch.optim:Adam",
+        "epochs": 5,
+        "lr": 0.001,
+        "loader": {
+          "batch_size": 512,
+          "shuffle": true,
+          "seed": 7
+        }
+      },
+      "notes": "Fresh weights every fold (expanding train window); per-epoch train/val loss lands in training_curve.json beside the fold's artifact."
+    },
+    "qhat_msft": {
+      "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+      "mode": "train",
+      "inputs": {
+        "rows": "$msft_train.records",
+        "val_rows": "$msft_val.records"
+      },
+      "params": {
+        "module": "intraday_poc.models:NextBarLSTM",
+        "module_params": {
+          "lookback": 30,
+          "hidden_size": 32,
+          "num_layers": 1
+        },
+        "features": [
+          "ret_lag_0",
+          "ret_lag_1",
+          "ret_lag_2",
+          "ret_lag_3",
+          "ret_lag_4",
+          "ret_lag_5",
+          "ret_lag_6",
+          "ret_lag_7",
+          "ret_lag_8",
+          "ret_lag_9",
+          "ret_lag_10",
+          "ret_lag_11",
+          "ret_lag_12",
+          "ret_lag_13",
+          "ret_lag_14",
+          "ret_lag_15",
+          "ret_lag_16",
+          "ret_lag_17",
+          "ret_lag_18",
+          "ret_lag_19",
+          "ret_lag_20",
+          "ret_lag_21",
+          "ret_lag_22",
+          "ret_lag_23",
+          "ret_lag_24",
+          "ret_lag_25",
+          "ret_lag_26",
+          "ret_lag_27",
+          "ret_lag_28",
+          "ret_lag_29"
+        ],
+        "label": "y_next",
+        "optimizer": "torch.optim:Adam",
+        "epochs": 5,
+        "lr": 0.001,
+        "loader": {
+          "batch_size": 512,
+          "shuffle": true,
+          "seed": 7
+        }
+      },
+      "notes": "The MSFT twin of qhat_aapl."
+    },
+    "fc_aapl": {
+      "uses": "intraday_poc-forecast",
+      "inputs": {
+        "signal": "$qhat_aapl.signal",
+        "records": "$aapl_val.records"
+      },
+      "notes": "One belief per AAPL validation minute — the trainer's signal predicts straight off the fitted module; a row without full feature coverage is skipped, never fabricated.",
+      "params": {
+        "split": "val"
+      }
+    },
+    "fc_msft": {
+      "uses": "intraday_poc-forecast",
+      "inputs": {
+        "signal": "$qhat_msft.signal",
+        "records": "$msft_val.records"
+      },
+      "notes": "The MSFT twin of fc_aapl.",
+      "params": {
+        "split": "val"
+      }
+    },
+    "forecasts": {
+      "uses": "concat",
+      "inputs": {
+        "aapl": "$fc_aapl.forecasts",
+        "msft": "$fc_msft.forecasts"
+      },
+      "params": {
+        "shape": "records",
+        "key": "symbol",
+        "provenance_waiver": "rows already carry their symbol; the ports are split by symbol upstream, so a port tag would duplicate the field"
+      },
+      "notes": "Both symbols' beliefs in one stream for the selector; key=symbol proves the ports stayed disjoint."
+    },
+    "labeled": {
+      "uses": "concat",
+      "inputs": {
+        "aapl": "$aapl_val.records",
+        "msft": "$msft_val.records"
+      },
+      "params": {
+        "shape": "records",
+        "key": "symbol",
+        "provenance_waiver": "rows already carry their symbol; the ports are split by symbol upstream, so a port tag would duplicate the field"
+      },
+      "notes": "The validation rows with their y_next labels — what realizes each pick after the fact."
+    },
+    "select": {
+      "uses": "intraday_poc-select-one",
+      "inputs": {
+        "forecasts": "$forecasts.merged",
+        "labeled": "$labeled.merged"
+      },
+      "params": {
+        "solver": "appsi_highs",
+        "solver_options": {},
+        "split": "val"
+      },
+      "notes": "The PoC's one constraint on the PyomoSolve doorway: exactly one symbol per minute, maximize predicted next-bar return. metrics.total_realized — the summed realized log return of the picks — is the walk-forward objective."
+    }
+  },
+  "walkforward": {
+    "objective": "$select.metrics.total_realized",
+    "select": "max",
+    "first": "2026-05-01",
+    "step_days": 30,
+    "count": 3,
+    "val_days": 21,
+    "embargo_days": 1,
+    "notes": "Three expanding folds over the backfill's tail. Next-bar labels resolve in one minute, so a 1-day embargo is already generous — it exists to keep the discipline visible, not because the label needs it."
+  },
+  "outputs": {
+    "run_root": "",
+    "notes": "Empty = ./pipeline_runs under the invoking cwd; walkforward writes one full run dir per fold plus the aggregate summary."
+  }
+}

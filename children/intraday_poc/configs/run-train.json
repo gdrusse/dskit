@@ -1,0 +1,65 @@
+{
+  "name": "intraday_poc-train",
+  "notes": "The PRODUCTION fit: one LSTM per symbol over every published bar, artifacts the live loop restores. Run from the child root after the backfill is published: python -m dskit.pipeline run configs/run-train.json --asof 2026-08-25 --adapter intraday_poc. Then point the forward loop at the run dir: python -m intraday_poc.live --run-dir <run dir>. The node keys qhat_aapl / qhat_msft are a CONTRACT with live.py's DEFAULT_ARTIFACTS table — rename both sides together or pass --artifact overrides.",
+  "pipeline": {
+    "bars": {
+      "uses": "intraday_poc-bars",
+      "params": { "root": "./ob", "source": "alpaca" },
+      "notes": "Role data: the onboarding store's deduplicated bar records, bitemporally resolved (latest acquired_at wins per (symbol, ts)). root is relative to the invoking cwd — run from the child root."
+    },
+    "window": {
+      "uses": "intraday_poc-window",
+      "inputs": { "records": "$bars.records" },
+      "params": { "lookback": 30, "max_gap_minutes": 5 },
+      "notes": "30 one-minute log returns per row, next-bar return as label. max_gap_minutes 5 tolerates thin IEX minutes without ever bridging a session boundary; windows crossing a larger gap are dropped, not interpolated."
+    },
+    "aapl_rows": {
+      "uses": "filter",
+      "inputs": { "records": "$window.records" },
+      "params": { "where": [ { "field": "symbol", "op": "==", "value": "AAPL" } ] },
+      "notes": "One model per symbol — the PoC's design, so each series is fit on its own dynamics."
+    },
+    "msft_rows": {
+      "uses": "filter",
+      "inputs": { "records": "$window.records" },
+      "params": { "where": [ { "field": "symbol", "op": "==", "value": "MSFT" } ] },
+      "notes": "The MSFT twin of aapl_rows."
+    },
+    "qhat_aapl": {
+      "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+      "mode": "train",
+      "inputs": { "rows": "$aapl_rows.records" },
+      "params": {
+        "module": "intraday_poc.models:NextBarLSTM",
+        "module_params": { "lookback": 30, "hidden_size": 32, "num_layers": 1 },
+        "features": ["ret_lag_0", "ret_lag_1", "ret_lag_2", "ret_lag_3", "ret_lag_4", "ret_lag_5", "ret_lag_6", "ret_lag_7", "ret_lag_8", "ret_lag_9", "ret_lag_10", "ret_lag_11", "ret_lag_12", "ret_lag_13", "ret_lag_14", "ret_lag_15", "ret_lag_16", "ret_lag_17", "ret_lag_18", "ret_lag_19", "ret_lag_20", "ret_lag_21", "ret_lag_22", "ret_lag_23", "ret_lag_24", "ret_lag_25", "ret_lag_26", "ret_lag_27", "ret_lag_28", "ret_lag_29"],
+        "label": "y_next",
+        "optimizer": "torch.optim:Adam",
+        "epochs": 5,
+        "lr": 0.001,
+        "loader": { "batch_size": 512, "shuffle": true, "seed": 7 }
+      },
+      "notes": "ADR-0025 declared seam: the document names the child's nn.Module and the optimizer; the module owns the flat-lag-vector -> LSTM-sequence resequencing, so the pack's default RowVectorAdapter carries it. features MUST stay ret_lag_0..ret_lag_{lookback-1} in order and module_params.lookback must equal the window node's lookback — the module refuses a width mismatch at run."
+    },
+    "qhat_msft": {
+      "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+      "mode": "train",
+      "inputs": { "rows": "$msft_rows.records" },
+      "params": {
+        "module": "intraday_poc.models:NextBarLSTM",
+        "module_params": { "lookback": 30, "hidden_size": 32, "num_layers": 1 },
+        "features": ["ret_lag_0", "ret_lag_1", "ret_lag_2", "ret_lag_3", "ret_lag_4", "ret_lag_5", "ret_lag_6", "ret_lag_7", "ret_lag_8", "ret_lag_9", "ret_lag_10", "ret_lag_11", "ret_lag_12", "ret_lag_13", "ret_lag_14", "ret_lag_15", "ret_lag_16", "ret_lag_17", "ret_lag_18", "ret_lag_19", "ret_lag_20", "ret_lag_21", "ret_lag_22", "ret_lag_23", "ret_lag_24", "ret_lag_25", "ret_lag_26", "ret_lag_27", "ret_lag_28", "ret_lag_29"],
+        "label": "y_next",
+        "optimizer": "torch.optim:Adam",
+        "epochs": 5,
+        "lr": 0.001,
+        "loader": { "batch_size": 512, "shuffle": true, "seed": 7 }
+      },
+      "notes": "The MSFT twin of qhat_aapl — same architecture, its own weights."
+    }
+  },
+  "outputs": {
+    "run_root": "",
+    "notes": "Empty = ./pipeline_runs under the invoking cwd."
+  }
+}

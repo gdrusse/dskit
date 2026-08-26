@@ -1,0 +1,7 @@
+{
+  "notes": "The BACKHISTORY pull: connector config for intraday_poc.connectors:AlpacaBarsConnector, validated default-deny against its spec(). Register once, then acquire with --mode backfill: python -m dskit.onboarding register-source alpaca --catalog-source alpaca-src --connector intraday_poc.connectors:AlpacaBarsConnector --config @configs/source-backfill.json --activate. feed=sip because the free tier serves FULL consolidated-tape history (back to 2016) — the IEX-only restriction is a real-time restriction, not a historical one; the connector clamps the fetch window 16 minutes into the past to clear the free tier's SIP gate. adjustment=all (splits + dividends) keeps the return series stationary for the LSTM; store a second source with adjustment=raw if as-traded fills ever matter. Secrets are env-var NAMES (key_env/secret_env defaults apply) — the material never enters this file, a snapshot, or any hash.",
+  "symbols": ["AAPL", "MSFT"],
+  "start": "2021-01-01",
+  "feed": "sip",
+  "adjustment": "all"
+}

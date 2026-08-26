@@ -1,0 +1,45 @@
+{
+  "name": "bars-basic",
+  "notes": "The child's validation suite over the `bars` stream (ADR-0015): structure-level rules producing failing COUNTS; error rules can block a publish, warn NEVER blocks. Runs against any acquired snapshot: python -m dskit.onboarding validate --root ./ob --suite configs/suite-bars.json --snapshot <vid>.",
+  "rules": [
+    {
+      "id": "bars-arrived",
+      "target": "bars",
+      "rule": "row_count",
+      "kwargs": { "min": 1 },
+      "severity": "error",
+      "notes": "An empty pull is a broken connector or dead keys, not a quiet day. For a full backfill raise min toward the expected bar count (~98k bars per symbol-year at 1-minute RTH)."
+    },
+    {
+      "id": "close-present",
+      "target": "bars",
+      "rule": "not_null",
+      "kwargs": { "field": "close" },
+      "severity": "error",
+      "notes": "Nulls in the field the LSTM trains on block the publish outright."
+    },
+    {
+      "id": "close-positive",
+      "target": "bars",
+      "rule": "in_range",
+      "kwargs": { "field": "close", "min": 0.01, "max": 100000 },
+      "severity": "error",
+      "notes": "A non-positive close would blow up the log-return transform; the wide max only exists so the rule reads as a sanity band, not a forecast."
+    },
+    {
+      "id": "symbol-vocabulary",
+      "target": "bars",
+      "rule": "accepted_values",
+      "kwargs": { "field": "symbol", "values": ["AAPL", "MSFT"] },
+      "severity": "warn",
+      "notes": "An unexpected symbol is worth a look, not a blocked publish — warn never blocks. Tightening to error is one word if the universe is contractual."
+    },
+    {
+      "id": "dates-parse-bitemporally",
+      "target": "bars",
+      "rule": "bitemporal",
+      "severity": "error",
+      "notes": "effective_date <= acquired_at, re-asserted as recorded evidence (acquire already refuses violations at save time)."
+    }
+  ]
+}

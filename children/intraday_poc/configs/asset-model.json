@@ -1,0 +1,32 @@
+{
+  "name": "intraday_poc-model",
+  "notes": "The child's OWN asset model — its catalog kinds as config, never code (ADR-0007). Two kinds show the whole grammar: a governed kind with a lifecycle and a record-only kind that refs it. Create a store governed by this model and drive it with the same CLI as any other: python -m dskit.assets init --store ./intraday_poc_store --model configs/asset-model.json. Governance is exactly as strong as this file's hash — the store pins it at init, so changing what the model permits is a new, visible identity. Rename the kinds to YOUR domain's nouns; the engine checks structure and ref topology only, so meaning lives in these notes.",
+  "kinds": {
+    "dataset": {
+      "notes": "The governed kind: a lifecycle means records move draft -> published -> retired by explicit transition, and any move not listed below is refused (default-deny). Right for the things the child MANAGES — config is governed, evidence is immutable.",
+      "fields": {
+        "name": { "type": "string", "required": true, "notes": "The human alias every kind must declare (ADR-0009) — versions of the same dataset share it." },
+        "description": { "type": "string", "notes": "What this dataset is for. Free text; the engine checks structure only." },
+        "settings": { "type": "object", "notes": "The dataset's knobs. Hash-material: change a setting, get a new version_id — same content, same identity." }
+      },
+      "lifecycle": {
+        "states": ["draft", "published", "retired"],
+        "initial": "draft",
+        "transitions": {
+          "draft": ["published"],
+          "published": ["retired"]
+        }
+      }
+    },
+    "artifact": {
+      "notes": "The record-only kind: no lifecycle block, so records are registered once and never transitioned — right for EVIDENCE (outputs, plots, snapshots) that is what it is. The required ref means an artifact can never float free: the referenced version_id must already be in the store, and must be a dataset.",
+      "fields": {
+        "name": { "type": "string", "required": true },
+        "digest": { "type": "string", "notes": "sha256 of the artifact's bytes — anchor identity on content, keep the path as provenance." }
+      },
+      "refs": {
+        "dataset": { "kind": "dataset", "required": true }
+      }
+    }
+  }
+}
