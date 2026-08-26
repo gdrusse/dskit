@@ -2,44 +2,43 @@
 
 Refreshed by `/wrap`. Where things stand — read this first.
 
-**Branch:** `docs/pmquant-child-proposal` (merged to `main`) · **Tests:**
-children + purity gates green (20 passed); docs-only change, so the full
-suite was not re-run · **ruff:** untouched (no code).
+**Branch:** `chore/gitignore-env-glob` (merged to `main`) · **Tests:**
+children gates 5 passed, `intraday_poc` 69 passed / 8 skipped; the full
+suite was not re-run (no `dskit/` code changed) · **ruff:** untouched.
 
-**Landed this round: the pmquant child design proposal** —
-`docs/children_design_proposals/pmquant.md` (~1,270 lines), the plan of
-record for building `children/pmquant/`. No code was written; nothing in
-`dskit/` changed.
+**Landed this round: `intraday_poc` ran against real data for the first
+time** — and it exposed a scaling defect the stub tests cannot see.
 
-- **What it is.** pmquant — the Kalshi/Polymarket ladder-mispricing
-  program — re-expressed *entirely* in dskit's three seams: 6 connectors,
-  **38 node kinds** in four modules, an asset model, and ~20 JSON
-  documents. Nothing is a port: every capability is a connector, a kind,
-  an asset-model kind, or a config. Zero dskit edits are needed to start.
-- **The doctrine survives translation.** §9 maps every load-bearing
-  invariant to the mechanism that enforces it — event-clustered testing,
-  never-pool, all-21-leads, N0-only, ≥50-or-no-test, write-once banking
-  with monotone look records, frozen-ϖ, exact venue-dispatched fees,
-  strict-PIT replay.
-- **Thirteen generic gaps** are flagged as TODOs (now in `TODO.md`, full
-  statements in §13), each with a named dskit home and interim child-side
-  handling. **TODO-2** (studentized cluster bootstrap-t on the owned
-  `stat_test`) is the one that structurally matters: until it lands, the
-  D-138 deploy verdict cannot authorize sizing inside one document, so
-  deployment stays operator-mediated.
-- **Eight owner questions** are open in §14 — docs/22 registration, `q_hold`,
-  cross-venue dedup, the child coverage bar, MIO tuning, the recorder host,
-  CI-robust entry activation, and **Tier-B ratification** (bulk book
-  streams bypass onboarding's WORM chain on a stated size argument:
-  ~96× on the gz archives).
-- `docs/architecture/child-gap-pmquant.md` now carries a supersession note
-  pointing at the proposal; `CLAUDE.md`'s layout tree gains the directory.
+- **The onboarding seam is proven.** 2,013,682 Alpaca SIP 1-minute bars
+  (AAPL+MSFT, 2021→now) acquired with 0 skipped, validated 5/5 rules with
+  0 tripped, certified, published, and `onboarding verify` returned
+  `problems: []`. The WORM chain holds end to end on real vendor data.
+- **The production fit is proven.** `run-train.json` ran 6/6 nodes green;
+  both LSTMs fit (891k / 745k examples) and the artifacts land as
+  `qhat_aapl` / `qhat_msft` — the `live.py:DEFAULT_ARTIFACTS` contract,
+  satisfied for real.
+- **The walk-forward backtest is BLOCKED**, and this is the finding that
+  matters. `IntradayBars._scan()` holds the whole stream about four times
+  over — a 2M-entry `best` dict, a second 2M-dict `records` list cached
+  permanently as `_snap`, and a third full copy in `run()` via
+  `[dict(row) for row in self._scan()]` — while `fingerprint()`
+  `json.dumps`es all 2M records into one string just to hash them.
+  Measured peak is **14.3 GB for a single run** against an 18 GB WSL cap;
+  three folds OOM (observed kill at 17.4 GB anon-rss). One fold did
+  complete before the kill: picked 13,518 minutes, predicted 0.164506,
+  realized 0.107305.
+- **Config cannot fix it** — the `bars` node takes only
+  `root`/`source`/`stream`, so there is no history knob. The fix is code:
+  drop the redundant copies and hash incrementally.
+- `.gitignore` now ignores `.env*` with `!.env.example` negated. The old
+  `.env` rule let a Notepad-saved `.env.txt` carrying a live key pair sit
+  untracked in the repo; the first attempt at the fix silently swallowed
+  `.env.example` for every future child, which is why the negation is
+  there. Both directions are verified.
 
-**How it was validated: eleven adversarial review rounds**, five lenses
-each (framework-fit, completeness, doctrine, purity, precision), every
-finding verified against both repos. ~150 defects found and fixed; round
-11 returned **CLEAR on all five lenses**.
-
-**Next session:** the proposal is PROPOSED, not ratified. It needs the
-owner's read and the §14 answers before P0 (scaffold from `_skeleton`)
-starts. Nothing is blocked in dskit itself.
+**Next session:** fix the `bars` node's memory behavior (with a test that
+pins it), then re-run `walkforward run-backtest.json` — everything
+upstream of it is already proven. The live loop is untouched and needs
+only a market-hours session. The defect generalizes: pmquant's ladder
+data is far larger than 2M rows, so the same shape would bite harder
+there.
