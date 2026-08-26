@@ -489,10 +489,10 @@ class Sb3Eval(_Sb3Base):
         # The planner enforces this for every score node in a document;
         # repeated here so a directly-constructed node refuses too (the
         # kinds_stats wording).
-        if params.get("split") not in ("train", "val", "test"):
+        if params.get("split") not in ("train", "val", "cal", "test"):
             problems.append(
                 f"split must declare which split this node reads "
-                f"('train'/'val'/'test'), got {params.get('split')!r}"
+                f"('train'/'val'/'cal'/'test'), got {params.get('split')!r}"
             )
         _algo_problem(problems, params.get("algo"), required=False)
         policy = params.get("policy")

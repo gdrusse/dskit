@@ -1265,6 +1265,21 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
                 "ruling — walkforward refuses exactly like `run`"
             ]
         )
+    # ADR-0034 v1: folds replace the splits section with a degenerate
+    # 1 ms test band, which leaves no room for a cal band — a parent
+    # document declaring one would silently lose it, so it refuses.
+    if bool(
+        getattr(document.splits, "cal_start_ms", None)
+        or getattr(document.splits, "cal_days", 0)
+    ):
+        raise ConfigError(
+            [
+                "walkforward folds replace the splits section and cannot "
+                "carry a cal band (ADR-0034 v1) — remove "
+                "splits.cal_start_ms / splits.cal_days or the walkforward "
+                "section"
+            ]
+        )
     if asof is None:
         from datetime import datetime, timezone
 

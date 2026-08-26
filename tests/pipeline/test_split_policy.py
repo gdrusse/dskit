@@ -207,6 +207,25 @@ def test_straddle_report_shows_where_the_rows_went():
     assert after == {"train": 2, "test": 3}  # the straddler's val row moved to test
 
 
+def test_straddle_report_sees_the_cal_band():
+    """ADR-0034: a straddler across the cal boundaries is named like any
+    other — the leakage ledger cannot be blind to the fourth split."""
+    cuts = TimeSplitConfig(**CUTS, cal_start_ms=1_950)
+    r = straddle_report(cuts, RECORDS)
+    # STRADDLER's rows land at 1900 (val) and 2100 (test): with the cal
+    # band [1950, 2000] between them the boundary key spans it.
+    assert r["rows_by_split"] == {"train": 2, "val": 1, "test": 2}
+    with_cal_row = RECORDS + [rec(1_975, "STRADDLER")]
+    r2 = straddle_report(cuts, with_cal_row)
+    assert r2["rows_by_split"] == {"train": 2, "val": 1, "cal": 1, "test": 2}
+    assert r2["boundaries"] == {"val|cal": 1, "cal|test": 1}
+    # A no-cal config over the same records reports byte-identically to
+    # the pre-ADR-0034 shape.
+    assert straddle_report(TimeSplitConfig(**CUTS), RECORDS)["boundaries"] == {
+        "val|test": 1
+    }
+
+
 # --- extension: a third policy is a registration ---------------------------
 
 

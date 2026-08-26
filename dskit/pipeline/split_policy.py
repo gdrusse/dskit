@@ -354,7 +354,7 @@ def straddle_report(splits, records, *, bounds=None) -> dict:
         if len(splits_seen) < 2:
             continue
         straddlers.append(cluster)
-        ordered = [s for s in ("train", "val", "test") if s in splits_seen]
+        ordered = [s for s in ("train", "val", "cal", "test") if s in splits_seen]
         for a, b in zip(ordered, ordered[1:]):
             key = f"{a}|{b}"
             boundaries[key] = boundaries.get(key, 0) + 1

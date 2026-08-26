@@ -496,10 +496,10 @@ class Validate(Node):
         problems = []
         _reject_unknown(problems, params, cls._PARAMS)
         split = params.get("split")
-        if split not in ("train", "val", "test"):
+        if split not in ("train", "val", "cal", "test"):
             problems.append(
                 f"split must declare which split this node reads "
-                f"('train'/'val'/'test'), got {split!r}"
+                f"('train'/'val'/'cal'/'test'), got {split!r}"
             )
         metric = params.get("metric", "logloss")
         # isinstance first: METRICS is a dict, and membership against it

@@ -513,7 +513,7 @@ class TestValidateParams:
         (problem,) = Validate.validate_params({})
         assert "split" in problem
         assert Validate.validate_params({"split": "holdout"}) != []
-        for split in ("train", "val", "test"):
+        for split in ("train", "val", "cal", "test"):
             assert Validate.validate_params({"split": split}) == []
 
     def test_unknown_metric_names_the_known_ones(self):
@@ -636,6 +636,37 @@ class TestValidateRun:
             split_ctx, {"records": records, "signal": signal, "outcomes": outcomes}
         )
         assert out["metrics"]["n"] == 1
+
+    def test_a_cal_reader_scores_only_the_cal_band(self, tmp_path):
+        # ADR-0034: the run path buckets by the fourth name like any other.
+        splits = TimeSplitConfig(
+            train_end_ms=10 * DAY,
+            cal_start_ms=17 * DAY,
+            val_end_ms=20 * DAY,
+            test_end_ms=30 * DAY,
+        )
+        cal_ctx = NodeContext(
+            name="kinds",
+            asof=ASOF,
+            run_dir=str(tmp_path),
+            splits=splits,
+            splits_info=splits.to_obj(),
+        )
+        outcomes = {"AAA-1": True, "AAA-2": True, "AAA-3": True}
+        signal = {"AAA-1": 0.9, "AAA-2": 0.9, "AAA-3": 0.9}
+        records = [
+            drec("AAA-1", 15 * DAY, cluster="AAA:c0"),  # val
+            drec("AAA-2", 18 * DAY, cluster="AAA:c1"),  # cal
+            drec("AAA-3", 25 * DAY, cluster="AAA:c2"),  # test
+        ]
+        cal = Validate("val", {"split": "cal", "metric": "brier"}).run(
+            cal_ctx, {"records": records, "signal": signal, "outcomes": outcomes}
+        )
+        val = Validate("val", {"split": "val", "metric": "brier"}).run(
+            cal_ctx, {"records": records, "signal": signal, "outcomes": outcomes}
+        )
+        assert cal["metrics"]["n"] == 1
+        assert val["metrics"]["n"] == 1  # the cal band came OUT of val
 
     def test_no_splits_section_means_everything_in_sample(self, ctx):
         records, outcomes, signal, _ = scoring_case()

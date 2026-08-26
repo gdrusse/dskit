@@ -264,6 +264,94 @@ def test_trailing_embargo_materializes_the_band():
     assert no_embargo.val_start_ms is None
 
 
+# -- the calibration band (ADR-0034) -------------------------------------------
+
+
+def test_cal_start_opens_a_cal_band():
+    cuts = TimeSplitConfig(
+        train_end_ms=10 * DAY,
+        val_start_ms=12 * DAY,
+        cal_start_ms=16 * DAY,
+        val_end_ms=20 * DAY,
+        test_end_ms=25 * DAY,
+    )
+    assert cuts.split_of(_Rec(10 * DAY)) == "train"
+    assert cuts.split_of(_Rec(11 * DAY)) is None  # embargoed: NO split
+    assert cuts.split_of(_Rec(12 * DAY)) == "val"
+    assert cuts.split_of(_Rec(15 * DAY)) == "val"
+    assert cuts.split_of(_Rec(16 * DAY)) == "cal"  # inclusive start
+    assert cuts.split_of(_Rec(20 * DAY)) == "cal"  # inclusive end (= val_end)
+    assert cuts.split_of(_Rec(21 * DAY)) == "test"
+    assert cuts.split_of(_Rec(26 * DAY)) is None
+    # Without an embargo, the band floor is train_end.
+    plain = TimeSplitConfig(
+        train_end_ms=10 * DAY,
+        cal_start_ms=16 * DAY,
+        val_end_ms=20 * DAY,
+        test_end_ms=25 * DAY,
+    )
+    assert plain.split_of(_Rec(11 * DAY)) == "val"
+    assert plain.split_of(_Rec(16 * DAY)) == "cal"
+
+
+def test_cal_start_invariants_and_identity_omission():
+    # cal must sit strictly after the val floor and inside the val window
+    with pytest.raises(ConfigError, match="cal_start_ms"):
+        TimeSplitConfig(
+            train_end_ms=10, cal_start_ms=10, val_end_ms=20, test_end_ms=30
+        )
+    with pytest.raises(ConfigError, match="cal_start_ms"):
+        TimeSplitConfig(
+            train_end_ms=10, cal_start_ms=25, val_end_ms=20, test_end_ms=30
+        )
+    with pytest.raises(ConfigError, match="cal_start_ms"):
+        TimeSplitConfig(
+            train_end_ms=10,
+            val_start_ms=15,
+            cal_start_ms=15,  # == val_start: val would be empty
+            val_end_ms=20,
+            test_end_ms=30,
+        )
+    plain = TimeSplitConfig(train_end_ms=10, val_end_ms=20, test_end_ms=30)
+    assert "cal_start_ms" not in plain.to_obj()  # existing identities must not move
+    banded = TimeSplitConfig(
+        train_end_ms=10, cal_start_ms=17, val_end_ms=20, test_end_ms=30
+    )
+    assert TimeSplitConfig.from_obj(banded.to_obj()) == banded
+
+
+def test_trailing_cal_materializes_the_band():
+    spec = TrailingSplitSpec(test_days=5, val_days=10, cal_days=3, embargo_days=2)
+    cuts = spec.materialize(100 * DAY)
+    assert cuts.test_end_ms == 100 * DAY
+    assert cuts.val_end_ms == 95 * DAY
+    assert cuts.cal_start_ms == 92 * DAY  # cal = the val window's newest 3 days
+    assert cuts.val_start_ms == 82 * DAY  # val counts back from the cal band
+    assert cuts.train_end_ms == 80 * DAY
+    assert "cal_days" not in TrailingSplitSpec(test_days=5, val_days=10).to_obj()
+    assert TrailingSplitSpec.from_obj(spec.to_obj()) == spec
+    no_cal = TrailingSplitSpec(test_days=5, val_days=10).materialize(100 * DAY)
+    assert no_cal.cal_start_ms is None
+
+
+def test_walkforward_refuses_a_parent_cal_band(tmp_path):
+    doc = probe_doc(tmp_path, wf_spec())
+    with_cal = PipelineDocument(
+        name="cal-wf",
+        pipeline=dict(doc.pipeline),
+        outputs=doc.outputs,
+        walkforward=doc.walkforward,
+        splits=TimeSplitConfig(
+            train_end_ms=10 * DAY,
+            cal_start_ms=16 * DAY,
+            val_end_ms=20 * DAY,
+            test_end_ms=25 * DAY,
+        ),
+    )
+    with pytest.raises(ConfigError, match="cannot carry a cal band"):
+        run_walk_forward(with_cal, asof="2026-01-01")
+
+
 # -- the driver: one run per fold + a summary ----------------------------------
 
 

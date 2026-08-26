@@ -368,11 +368,25 @@ def plan(document, registry=None) -> Plan:
                 )
         if role == "score":
             split = spec.params.get("split")
-            if split not in ("train", "val", "test"):
+            if split not in ("train", "val", "cal", "test"):
                 errors.append(
                     f"pipeline.{key}: role 'score' must declare which split "
-                    f"it reads (params.split in train/val/test), got {split!r}"
+                    f"it reads (params.split in train/val/cal/test), got {split!r}"
                 )
+            elif split == "cal":
+                # ADR-0034: the 'cal' name only exists when the declared
+                # splits carve a band — a reader of a band that cannot
+                # exist would run on zero rows and exit 0. Refuse at plan.
+                has_band = bool(
+                    getattr(document.splits, "cal_start_ms", None)
+                    or getattr(document.splits, "cal_days", 0)
+                )
+                if not has_band:
+                    errors.append(
+                        f"pipeline.{key}: a 'cal' reader needs a declared "
+                        "cal band — set splits.cal_start_ms (time) or "
+                        "splits.cal_days (trailing)"
+                    )
             elif split == "test":
                 non_report = sorted(
                     d for d in _descendants_of(key, edges) if roles.get(d) != "report"

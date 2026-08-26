@@ -338,6 +338,40 @@ class TestCapitalNeedsSplits:
         assert plan(doc_of(pipeline), registry).order
 
 
+class TestCalBandRule:
+    """ADR-0034: a `split: "cal"` reader refuses unless the declared
+    splits can actually yield a cal band — a reader of a band that cannot
+    exist would score zero rows and exit 0."""
+
+    def _doc(self, splits):
+        pipeline = banking_pipeline()
+        spec = pipeline["validate"]
+        pipeline["validate"] = NodeSpec(
+            uses=spec.uses,
+            inputs=dict(spec.inputs),
+            params={**spec.params, "split": "cal"},
+        )
+        return doc_of(pipeline, splits=splits)
+
+    def test_cal_reader_plans_over_a_declared_time_band(self, registry):
+        splits = TimeSplitConfig(
+            train_end_ms=BANKING_SPLITS["train_end_ms"],
+            cal_start_ms=BANKING_SPLITS["val_end_ms"] - 1,
+            val_end_ms=BANKING_SPLITS["val_end_ms"],
+            test_end_ms=BANKING_SPLITS["test_end_ms"],
+        )
+        assert plan(self._doc(splits), registry).order
+
+    def test_cal_reader_refuses_when_time_declares_no_band(self, registry):
+        with pytest.raises(ConfigError, match="declared cal band"):
+            plan(self._doc(TimeSplitConfig(**BANKING_SPLITS)), registry)
+
+    def test_cal_reader_refuses_under_a_random_split(self, registry):
+        splits = RandomSplitSpec(train_frac=0.6, val_frac=0.2, seed=1)
+        with pytest.raises(ConfigError, match="declared cal band"):
+            plan(self._doc(splits), registry)
+
+
 class TestStatTestWeightsRule:
     """The plan-time mirror of the weights-port rules (ADR-0033): a
     weighted correction with no weights wire — or the converse — is

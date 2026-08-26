@@ -290,10 +290,10 @@ class SynthScore(Node):
     def validate_params(cls, params):
         problems = []
         split = params.get("split")
-        if split not in ("train", "val", "test"):
+        if split not in ("train", "val", "cal", "test"):
             problems.append(
                 f"split must declare which split this node reads "
-                f"('train'/'val'/'test'), got {split!r}"
+                f"('train'/'val'/'cal'/'test'), got {split!r}"
             )
         _check_int(problems, "min_events", params.get("min_events", 1), ge=1)
         return problems
