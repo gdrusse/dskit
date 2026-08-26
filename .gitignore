@@ -28,7 +28,8 @@ pipeline_runs/
 .vscode/
 
 # Secrets — the material never enters the repo
-.env
+.env*
+!.env.example
 
 # Onboarding roots / asset stores created by child runs
 children/*/ob/
