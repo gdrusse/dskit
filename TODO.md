@@ -37,9 +37,10 @@ ADR yet, and none blocks the child from starting:
 - [ ] 6. Acquire-side coverage hook + guarded parallel acquisition
       (`onboarding/acquire.py`).
 - [ ] 7. A grouped/cardinality suite rule (`onboarding/validate.py` `_RULES`).
-- [ ] 8. Compressed snapshot payloads in onboarding (~96× on gz-class
-      archives, ~10× on parquet-class). **Graduated → ADR-0036 (2026-08-26;
-      the ratified Tier-B sunset path).**
+- [x] 8. Compressed snapshot payloads in onboarding (~96× on gz-class
+      archives, ~10× on parquet-class). **Landed via ADR-0036 (2026-08-26;
+      the ratified Tier-B sunset path — pmquant's Tier-B bypass retires
+      onto it when the child builds).**
 - [ ] 9. A generic `records-write` kind beside `table-write`
       (`kinds_table.py`).
 - [ ] 10. A generic onboarding-observations reader kind — the second child

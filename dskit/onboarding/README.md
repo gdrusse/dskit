@@ -94,12 +94,34 @@ for a worked config and `libs/restapi.py` for the knob reference.
 onboarding_root/
 ├── store/                                    # P2 evidence store (onboarding model)
 ├── raw/<source>/<acq_id>/                    # WORM: payload/ + manifest.json
-├── observations/<source>/<acq_id>/<stream>.jsonl   # normalized bitemporal rows
-├── forecasts/<source>/<acq_id>/<stream>.jsonl      # declared forecasts, apart
+├── observations/<source>/<acq_id>/<stream>.jsonl[.gz]  # normalized bitemporal rows
+├── forecasts/<source>/<acq_id>/<stream>.jsonl[.gz]     # declared forecasts, apart
 ├── state/<source>/<stream>-<mode>.json       # one cursor per mode
 ├── state/coverage.sqlite                     # coverage ledger (ADR-0030)
 └── published/<dataset>/NNNNNNNN-<hash8>.json # the outbox dskit.assets scans
 ```
+
+## Compressed storage (ADR-0036)
+
+A source opts into gzip storage through a reserved `storage` block inside
+its config object — the connector never sees it:
+
+```jsonc
+"config": {
+  "storage": {"payload_codec": "gzip", "observations_codec": "gzip"},
+  ...connector knobs...
+}
+```
+
+Both codecs default `"none"`; the codec is declared by the file
+EXTENSION (`.jsonl` vs `.jsonl.gz`), never a manifest field, so
+manifests, `acq_id`s, and `verify` are untouched (digests cover the
+stored bytes). gzip members are written deterministically (`mtime=0`,
+no filename, pinned level). Flip `payload_codec` freely — nothing
+external reads bronze bytes. Flipping `observations_codec` is a
+CONSUMER-VISIBLE change: anything reading `observations/` by literal
+path must sniff both spellings first
+(`dskit.onboarding.codec.resolve_stream_file` / `iter_text_lines`).
 
 ## Contents
 
@@ -112,6 +134,7 @@ dskit/onboarding/
 ├── connector.py       Connector ABC, message envelope, check_config, resolve_connector
 ├── state.py           checkpoint cursors keyed (source, stream, mode)
 ├── coverage.py        CoverageLedger: the (source, stream, unit, period) done-set
+├── codec.py           extension-declared codecs: deterministic gzip, loud decode (ADR-0036)
 ├── snapshot.py        Merkle manifests, WORM commits, verify, find-by-hash
 ├── acquire.py         run_acquisition: pull -> snapshot -> evidence -> checkpoint
 ├── validate.py        ValidationSuite / Rule, the rule engine, run_suite

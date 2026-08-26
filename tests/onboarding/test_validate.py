@@ -1,5 +1,7 @@
 """validate.py: suites, the rule engine, thresholds, and gating."""
 
+import os
+
 import pytest
 
 from dskit.assets.base import AssetError
@@ -140,3 +142,44 @@ def test_wrong_kind_refused(root, registry, snapshot, fake_source):
         run_suite(root, registry,
                   _suite(Rule(id="r", target="t", rule="bitemporal")),
                   fake_source)
+
+
+# -- compressed observations (ADR-0036) ---------------------------------------
+
+
+@pytest.fixture
+def gz_snapshot(root, registry, gz_source):
+    """One acquired snapshot whose normalized rows landed gzipped."""
+    FakeConnector.script = [
+        record("prices", "2026-01-02", {"close": 10.5, "sym": "A"}),
+        record("prices", "2026-01-04", {"close": 11.0, "sym": "B"}),
+    ]
+    return run_acquisition(root, registry, "gz", "prices", "live")["snapshot"]
+
+
+def test_suite_runs_over_gz_observations(root, registry, gz_snapshot):
+    out = run_suite(root, registry, _suite(
+        Rule(id="nn", target="prices", rule="not_null",
+             kwargs={"field": "close"}),
+        Rule(id="rc", target="prices", rule="row_count",
+             kwargs={"min": 2, "max": 2})),
+        gz_snapshot)
+    assert out["gating"] == "pass"
+    assert out["statistics"]["rows"] == {"prices": 2}
+
+
+def test_corrupt_gz_observations_refuse_as_asset_error(
+    root, registry, gz_snapshot
+):
+    # Find the committed gz observations file and truncate it: the suite
+    # must refuse with a typed error, never a raw zlib/OSError.
+    obs_root = os.path.join(root.root, "observations", "gz")
+    (acq_id,) = os.listdir(obs_root)
+    path = os.path.join(obs_root, acq_id, "prices.jsonl.gz")
+    blob = open(path, "rb").read()
+    open(path, "wb").write(blob[: len(blob) - 6])  # chop the trailer
+    with pytest.raises(AssetError, match="corrupt or unreadable"):
+        run_suite(root, registry, _suite(
+            Rule(id="rc", target="prices", rule="row_count",
+                 kwargs={"min": 1})),
+            gz_snapshot)

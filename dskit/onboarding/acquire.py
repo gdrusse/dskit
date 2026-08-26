@@ -7,12 +7,15 @@ The flow, with its durability ordering (the whole point):
 2. Load the checkpoint for (source, stream, MODE) — each mode has its
    own cursor (ADR-0014).
 3. Stream messages from ``read()`` into a STAGED directory: data-bearing
-   messages (RECORD/SCHEMA) to ``payload/<stream>.jsonl`` exactly as
-   received (bronze); each RECORD also normalized to a bitemporal row
+   messages (RECORD/SCHEMA) to ``payload/<stream>.jsonl[.gz]`` exactly
+   as received (bronze; the codec is the source config's declared
+   ``storage`` block, ADR-0036, default uncompressed); each RECORD also
+   normalized to a bitemporal row
    ``{stream, mode, kind, effective_date, acquired_at, data}`` —
    observations asserted ``effective_date <= acquired_at``, declared
    forecasts segregated into their own root (ADR-0014/OQ-6). STATE is
    remembered, LOG collected, ERROR aborts, unknown types skipped.
+   Compressed staged members are fully re-decoded before commit.
 4. Build the Merkle manifest; rename the snapshot into ``raw/`` (the
    commit point); move normalized rows into ``observations/`` /
    ``forecasts/``.
@@ -30,6 +33,7 @@ Import cost: stdlib + this package.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -44,6 +48,7 @@ from .base import (
     parse_utc,
     utc_now,
 )
+from .codec import check_storage, open_text_writer, stream_filename, verify_member
 from .connector import check_config, check_message, resolve_connector
 from .layout import OnboardingRoot
 from .snapshot import build_manifest, snapshot_hash, write_snapshot
@@ -120,6 +125,11 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
     connector = resolve_connector(cfg["connector"])()
     config = cfg.get("config", {})
     check_config(connector, config)
+    # The reserved storage block is PLATFORM config (ADR-0036): it is
+    # read here and stripped, so a connector can never grow a covert
+    # dependency on how the platform stores its output.
+    storage = check_storage(config.get("storage", {}))
+    config = {k: v for k, v in config.items() if k != "storage"}
     connector.check(config)
 
     # -- 2. the mode-keyed cursor ------------------------------------------
@@ -140,8 +150,21 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
         os.makedirs(payload_dir)
         os.makedirs(os.path.join(norm_staged, "observations"))
         os.makedirs(os.path.join(norm_staged, "forecasts"))
-        raw_path = os.path.join(payload_dir, f"{stream}.jsonl")
-        with open(raw_path, "w", encoding="utf-8") as raw_fh:
+        raw_path = os.path.join(
+            payload_dir, stream_filename(stream, storage["payload_codec"])
+        )
+        payload_lines = 0
+        # ONE kept-open writer per file, all on one stack: gzip members
+        # cannot be re-opened per row, and even for "none" the per-row
+        # open/close this replaces was O(rows) for no reason. The stack
+        # MUST close before build_manifest below — a buffered member
+        # digested without its trailer would verify forever over
+        # undecodable bytes (the corrupt-at-birth trap).
+        with contextlib.ExitStack() as stack:
+            raw_fh = stack.enter_context(
+                open_text_writer(raw_path, storage["payload_codec"])
+            )
+            norm_fhs = {}
             for i, msg in enumerate(connector.read(config, [stream], state, mode)):
                 try:
                     mtype = check_message(msg)
@@ -166,6 +189,7 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
 
                 # RECORD and SCHEMA are the payload — bronze, as received.
                 raw_fh.write(json.dumps(msg, sort_keys=True) + "\n")
+                payload_lines += 1
                 if mtype != "RECORD":
                     continue
                 eff = msg["effective_date"]
@@ -185,9 +209,21 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
                     "data": msg["data"],
                 }
                 top = "forecasts" if kind == "forecast" else "observations"
-                with open(os.path.join(norm_staged, top, f"{stream}.jsonl"),
-                          "a", encoding="utf-8") as fh:
-                    fh.write(json.dumps(row, sort_keys=True) + "\n")
+                fh = norm_fhs.get(top)
+                if fh is None:
+                    fh = norm_fhs[top] = stack.enter_context(
+                        open_text_writer(
+                            os.path.join(
+                                norm_staged,
+                                top,
+                                stream_filename(
+                                    stream, storage["observations_codec"]
+                                ),
+                            ),
+                            storage["observations_codec"],
+                        )
+                    )
+                fh.write(json.dumps(row, sort_keys=True) + "\n")
                 if kind == "forecast":
                     forecasts += 1
                 else:
@@ -207,6 +243,35 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
             return {"job": None, "snapshot": None, "acq_id": None,
                     "records": 0, "forecasts": 0, "skipped": skipped,
                     "logs": logs, "state_saved": state_saved}
+
+        # -- pre-commit member check (compressed files only): every staged
+        # member must decode back to the line count that was written,
+        # BEFORE any digest is taken over it. One hot-cache decode pass —
+        # cheap against acquisition I/O, and the difference between a
+        # loud abort here and a corrupt-at-birth snapshot with valid
+        # evidence.
+        if storage["payload_codec"] != "none":
+            decoded = verify_member(raw_path)
+            if decoded != payload_lines:
+                raise AssetError(
+                    [f"staged payload {raw_path} decoded to {decoded} line(s) "
+                     f"but {payload_lines} were written — refusing to commit"]
+                )
+        if storage["observations_codec"] != "none":
+            for top, expected in (("observations", records),
+                                  ("forecasts", forecasts)):
+                path = os.path.join(
+                    norm_staged, top,
+                    stream_filename(stream, storage["observations_codec"]),
+                )
+                if os.path.exists(path):
+                    decoded = verify_member(path)
+                    if decoded != expected:
+                        raise AssetError(
+                            [f"staged {top} {path} decoded to {decoded} "
+                             f"row(s) but {expected} were written — "
+                             "refusing to commit"]
+                        )
 
         # -- 4. commit: manifest -> rename into raw/, then normalized rows -
         manifest = build_manifest(

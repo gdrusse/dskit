@@ -143,3 +143,92 @@ def test_errors_exit_1_listing_problems(tmp_path):
                    cwd=tmp_path)
     assert proc.returncode == 1
     assert "not an initialized onboarding root" in proc.stderr
+
+
+# -- the full loop again, compressed (ADR-0036) --------------------------------
+
+
+@pytest.fixture(scope="module")
+def gz_loop(tmp_path_factory):
+    """init -> register-source (storage: gzip) -> acquire."""
+    cwd = tmp_path_factory.mktemp("cli-gz")
+    data = cwd / "data"
+    data.mkdir()
+    (data / "prices.csv").write_text(
+        "date,close\n2026-01-02,10.5\n2026-01-05,11.0\n")
+    (cwd / "suite.json").write_text(json.dumps({
+        "name": "basic",
+        "rules": [{"id": "rows", "target": "prices",
+                   "rule": "row_count", "kwargs": {"min": 1}}],
+    }))
+    proc = run_cli("dskit.onboarding", "init", "--root", "ob", cwd=cwd)
+    assert proc.returncode == 0, proc.stderr
+    proc = run_cli(
+        "dskit.onboarding", "register-source", "vendor", "--root", "ob",
+        "--catalog-source", "vendor-src", "--connector", "localfiles",
+        "--config", json.dumps({
+            "path": str(data), "effective_field": "date",
+            "storage": {"payload_codec": "gzip",
+                        "observations_codec": "gzip"},
+        }),
+        "--activate", cwd=cwd)
+    assert proc.returncode == 0, proc.stderr
+    proc = run_cli("dskit.onboarding", "acquire", "--root", "ob",
+                   "--source", "vendor", "--stream", "prices",
+                   "--mode", "backfill", cwd=cwd)
+    assert proc.returncode == 0, proc.stderr
+    summary = json.loads(proc.stdout)
+    assert summary["records"] == 2
+    return cwd, summary
+
+
+def test_gz_loop_lands_compressed_and_flows_to_publish(gz_loop):
+    cwd, summary = gz_loop
+    raw = cwd / "ob" / "raw" / "vendor"
+    payload_dir = next(raw.iterdir()) / "payload"
+    assert (payload_dir / "prices.jsonl.gz").is_file()
+    assert not (payload_dir / "prices.jsonl").exists()
+
+    # validate -> certify -> publish are payload-blind: the whole chain
+    # runs over the compressed snapshot unchanged.
+    proc = run_cli("dskit.onboarding", "validate", "--root", "ob",
+                   "--suite", "suite.json", "--snapshot", summary["snapshot"],
+                   cwd=cwd)
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout)["result"]
+    proc = run_cli("dskit.onboarding", "certify", "--root", "ob",
+                   "--result", result, "--decision", "certified",
+                   "--by", "gibson", cwd=cwd)
+    assert proc.returncode == 0, proc.stderr
+    proc = run_cli("dskit.onboarding", "publish", "--root", "ob",
+                   "--dataset", "vendor-prices",
+                   "--certification", proc.stdout.strip(), cwd=cwd)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_gz_verify_clean_then_tampered_both_ways(gz_loop):
+    cwd, _summary = gz_loop
+    proc = run_cli("dskit.onboarding", "verify", "--root", "ob", cwd=cwd)
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["problems"] == []
+
+    raw = cwd / "ob" / "raw" / "vendor"
+    payload = next(raw.iterdir()) / "payload" / "prices.jsonl.gz"
+    original = payload.read_bytes()
+
+    # Twin (a): decompress, edit, recompress in place — content drift.
+    import gzip as _gzip
+
+    text = _gzip.decompress(original).decode("utf-8").replace("10.5", "99.9")
+    payload.write_bytes(_gzip.compress(text.encode("utf-8")))
+    proc = run_cli("dskit.onboarding", "verify", "--root", "ob", cwd=cwd)
+    assert proc.returncode == 1
+    assert any("drift" in p for p in json.loads(proc.stdout)["problems"])
+
+    # Twin (b): a blind byte flip — same emergency, no decode needed.
+    blob = bytearray(original)
+    blob[len(blob) // 2] ^= 0xFF
+    payload.write_bytes(bytes(blob))
+    proc = run_cli("dskit.onboarding", "verify", "--root", "ob", cwd=cwd)
+    assert proc.returncode == 1
+    assert any("drift" in p for p in json.loads(proc.stdout)["problems"])

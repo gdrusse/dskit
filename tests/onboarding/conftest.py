@@ -8,6 +8,7 @@ import os
 import pytest
 
 from dskit.onboarding import OnboardingRoot
+from dskit.onboarding.codec import iter_text_lines, resolve_stream_file
 
 from .fake_connector import FakeConnector
 
@@ -59,14 +60,44 @@ def fake_source(registry):
     FakeConnector.script, FakeConnector.calls = [], []
 
 
+@pytest.fixture
+def gz_source(registry):
+    """An ACTIVE source_config named 'gz' — the FakeConnector with BOTH
+    codecs declared gzip (ADR-0036). Same reset discipline as
+    ``fake_source``."""
+    vid = registry.register("source_config", {
+        "name": "gz",
+        "catalog_source": "gz-src",
+        "connector": "tests.onboarding.fake_connector:FakeConnector",
+        "config": {
+            "storage": {"payload_codec": "gzip", "observations_codec": "gzip"},
+        },
+    }, origin="conftest")
+    registry.transition(vid, "active", origin="conftest")
+    FakeConnector.script, FakeConnector.calls = [], []
+    yield vid
+    FakeConnector.script, FakeConnector.calls = [], []
+
+
 def read_jsonl(path):
-    """Rows of a JSONL file — the normalized-record read used everywhere."""
-    with open(path, encoding="utf-8") as fh:
-        return [json.loads(line) for line in fh if line.strip()]
+    """Rows of a JSONL file (codec sniffed by extension) — the
+    normalized-record read used everywhere."""
+    return [json.loads(line) for line in iter_text_lines(path) if line.strip()]
 
 
 def norm_path(root, source, acq_id, stream, forecasts=False):
-    """Path to one acquisition's normalized rows for a stream."""
+    """Path to one acquisition's normalized rows for a stream —
+    UNCOMPRESSED spelling only, deliberately: the tests that pin the
+    pre-codec layout keep pinning it byte for byte."""
     return os.path.join(
         root.records_dir(source, acq_id, forecasts=forecasts), f"{stream}.jsonl"
     )
+
+
+def norm_read(root, source, acq_id, stream, forecasts=False):
+    """Rows of one acquisition's normalized stream, whichever codec it
+    landed under."""
+    path = resolve_stream_file(
+        root.records_dir(source, acq_id, forecasts=forecasts), stream
+    )
+    return [] if path is None else read_jsonl(path)

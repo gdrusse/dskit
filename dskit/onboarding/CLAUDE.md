@@ -51,6 +51,17 @@ on it without breaking its rulings (ADR-0012…0016).
   not "fix" duplicate snapshots by moving the checkpoint earlier.
 - **`FakeConnector` scripts are class attributes** (the acquire path
   instantiates the class); the `fake_source` fixture resets them.
+- **The acquire writer stack closes BEFORE `build_manifest`** — with a
+  gzip codec this ordering is load-bearing, not style: a member digested
+  without its trailer would verify forever over undecodable bytes. The
+  pre-commit `verify_member` pass is the guard; do not remove either.
+- **Never extend `_MANIFEST_KEYS` for codecs** (ADR-0036): the codec is
+  the file EXTENSION, already inside `relpath`/the Merkle hash. A
+  manifest field would break every older reader by default-deny and add
+  a second declaration that can disagree with the filename.
+- **`storage` and `notes` are reserved config keys** — `check_config`
+  refuses a connector spec that declares either; acquire strips
+  `storage` before the connector sees config.
 - **The coverage ledger never guesses a calendar** (ADR-0030): `missing`
   takes the caller's DECLARED period list; do not "improve" it with
   range inference — that blind spot is the bug class it exists to
@@ -68,6 +79,7 @@ dskit/onboarding/
 ├── connector.py       Connector ABC, envelope checks, config default-deny, resolve
 ├── state.py           load_state / save_state — (source, stream, mode) cursors
 ├── coverage.py        CoverageLedger — sparse-backfill done-set (ADR-0030)
+├── codec.py           extension-declared codecs — deterministic gzip (ADR-0036)
 ├── snapshot.py        build_manifest / write_snapshot / verify / find_snapshot_dir
 ├── acquire.py         run_acquisition — the orchestrated pull + durability order
 ├── validate.py        Rule / ValidationSuite / _RULES / run_suite

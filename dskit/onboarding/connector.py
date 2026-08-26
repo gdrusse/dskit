@@ -50,6 +50,7 @@ from .base import (
     _check_unknown,
     _raise_if,
 )
+from .codec import storage_problems
 
 __all__ = [
     "Connector",
@@ -167,8 +168,11 @@ def check_config(connector, config) -> None:
 
     Checks: the spec itself is well-shaped, config keys are declared
     knobs, required knobs are present, and secret knobs hold strings
-    (env-var NAMES — never secret material). A document-level ``notes``
-    key is always allowed — the repo's comment standard (ADR-0017).
+    (env-var NAMES — never secret material). Two keys are PLATFORM
+    RESERVED and always allowed in config — ``notes`` (the repo's
+    comment standard, ADR-0017) and ``storage`` (the codec block,
+    ADR-0036; shape-checked here, stripped before the connector ever
+    sees config) — and a spec may declare neither as a knob.
 
     Parameters
     ----------
@@ -196,12 +200,19 @@ def check_config(connector, config) -> None:
     _check_dict(errors, "spec().params", params)
     _raise_if(errors)
     for knob, decl in sorted(params.items()):
+        if knob in ("notes", "storage"):
+            errors.append(
+                f"spec().params.{knob}: reserved platform key (ADR-0017/0036) "
+                "— a connector may not declare it as a knob"
+            )
         _check_dict(errors, f"spec().params.{knob}", decl)
         if isinstance(decl, dict):
             _check_unknown(errors, decl, _KNOB_KEYS, f"spec().params.{knob}")
     _raise_if(errors)
 
-    _check_unknown(errors, config, tuple(params) + ("notes",), "config")
+    _check_unknown(errors, config, tuple(params) + ("notes", "storage"), "config")
+    if "storage" in config:
+        errors.extend(storage_problems(config["storage"]))
     missing = sorted(k for k, d in params.items()
                      if d.get("required", False) and k not in config)
     if missing:

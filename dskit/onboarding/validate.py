@@ -64,6 +64,7 @@ from .base import (
     canonical_hash,
     parse_utc,
 )
+from .codec import iter_text_lines, resolve_stream_file
 from .layout import OnboardingRoot
 from .snapshot import find_snapshot_dir
 
@@ -342,23 +343,24 @@ def suite_hash(suite) -> str:
 
 def _snapshot_rows(root, source, acq_id, target) -> list:
     """Every normalized row of one stream in one acquisition —
-    observations and forecasts both (rules see the whole pull)."""
+    observations and forecasts both (rules see the whole pull). The
+    stream file's codec is sniffed from its extension (ADR-0036)."""
     rows = []
     for forecasts in (False, True):
-        path = os.path.join(root.records_dir(source, acq_id, forecasts=forecasts),
-                            f"{target}.jsonl")
-        if not os.path.isfile(path):
+        path = resolve_stream_file(
+            root.records_dir(source, acq_id, forecasts=forecasts), target
+        )
+        if path is None:
             continue
-        with open(path, encoding="utf-8") as fh:
-            for lineno, line in enumerate(fh, start=1):
-                if not line.strip():
-                    continue
-                try:
-                    rows.append(json.loads(line))
-                except ValueError as exc:
-                    raise AssetError(
-                        [f"{path}:{lineno} is not valid JSON: {exc}"]
-                    ) from exc
+        for lineno, line in enumerate(iter_text_lines(path), start=1):
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except ValueError as exc:
+                raise AssetError(
+                    [f"{path}:{lineno} is not valid JSON: {exc}"]
+                ) from exc
     return rows
 
 
