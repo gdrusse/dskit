@@ -1257,3 +1257,17 @@ symlink squatting the stream spelling is silently skipped — a
 pre-existing ADR-0036 `resolve_stream_file` behavior on `main`
 (`os.path.exists` is false for it), unchanged by this branch and
 declared here rather than fixed.
+
+*Seventh-round correction (2026-08-26; the `_epoch_ms` code itself
+took a clean PASS — a 1.2M-sample exactness proof against a Fraction
+oracle, bit-identical freeze through the whole seam, 1.10× drain
+cost):* the sixth round's era claim was itself underdescribed. The
+retired `int(timestamp() * 1000)` recipe was one ms wrong for
+~1-2.5% of MILLISECOND-precision stamps in affected decades WITHIN
+1970..2037 as well (first counterexamples already in 1970) — only
+exact-SECOND stamps, the writer's `utc_now` envelope, were
+era-independently exact, so "none in-repo" stands and digests still
+move only for stores that actually hit the defect. Also from this
+round: the two-key tie-accumulation test's assertion was
+half-tautological (`"1" in text` matched any path:line material) and
+now matches the key spellings and counts the problems.

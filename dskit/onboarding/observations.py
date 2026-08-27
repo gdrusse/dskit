@@ -56,10 +56,13 @@ def _epoch_ms(dt) -> int:
     """Exact integer epoch milliseconds for an aware datetime.
 
     Never ``int(dt.timestamp() * 1000)``: that compounds two float
-    roundings, landing exact-ms stamps one ms off from ~2038 on (and
-    pre-1970) and collapsing acquired_at stamps a FULL millisecond
-    apart into one instant. Integer timedelta arithmetic is exact for
-    every representable datetime; a sub-ms remainder FLOORS.
+    roundings, landing ~1-2.5% of millisecond-precision stamps one ms
+    off in affected decades — counterexamples exist from 1970 on, not
+    only pre-1970/post-2038 — and collapsing acquired_at stamps a FULL
+    millisecond apart into one instant. Only exact-SECOND stamps (the
+    writer's ``utc_now`` envelope) were era-independently exact under
+    the old recipe. Integer timedelta arithmetic is exact for every
+    representable datetime; a sub-ms remainder FLOORS.
     """
     d = dt - _EPOCH
     return (d.days * 86400 + d.seconds) * 1000 + d.microseconds // 1000
@@ -403,8 +406,8 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
             )
         else:
             records.sort(
-            key=lambda r: tuple(_key_part(r[f]) for f in key_fields)
-        )
+                key=lambda r: tuple(_key_part(r[f]) for f in key_fields)
+            )
     except TypeError as exc:
         raise AssetError(
             [f"records are not totally orderable by "

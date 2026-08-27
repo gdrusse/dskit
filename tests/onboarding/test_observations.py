@@ -211,8 +211,11 @@ class TestScan:
                    [_row(symbol, ts, 100.5, acquired=t1)])
         with pytest.raises(AssetError) as err:
             _scan(root)
+        # Both keys named, both problems accumulated — "1" alone would
+        # be satisfied by any path:line material (round-7 hygiene fix).
         text = str(err.value)
-        assert "1" in text and "'a'" in text
+        assert "[1," in text and "['a'," in text
+        assert text.count("share the winning") == 2
 
     def test_acquired_at_adjudicates_chronologically(self, tmp_path):
         # "2026-01-06T23:00:00-05:00" is a LATER instant than
@@ -428,10 +431,11 @@ class TestScan:
             _scan(root)
 
     def test_epoch_ms_is_exact_integer_arithmetic(self, tmp_path):
-        # int(timestamp() * 1000) compounds two float roundings: exact-
-        # millisecond stamps went wrong by 1 ms from 2038 on and
-        # pre-1970 (round-6 finding). The expected stamps are built via
-        # exact timedelta arithmetic, independent of the implementation.
+        # int(timestamp() * 1000) compounds two float roundings: ~1-2.5%
+        # of millisecond-precision stamps landed one ms off in affected
+        # decades, with counterexamples from 1970 on (rounds 6-7). The
+        # expected stamps are built via exact timedelta arithmetic,
+        # independent of the implementation.
         for true_ms in (2163892205864, -2177167649680):
             stamp = (datetime(1970, 1, 1, tzinfo=timezone.utc)
                      + timedelta(milliseconds=true_ms)).isoformat()
