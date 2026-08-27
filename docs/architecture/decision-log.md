@@ -1112,3 +1112,33 @@ peak-pinning test stands at BOTH layers (the generic scan and the
 child wrapper). pmquant's reader lands on the same seam with a
 different `key_fields`. One behavior tightens: a wrong root that
 silently produced zero records now refuses by name.
+
+*Review amendments (same day, two-skeptic adversarial pass, all
+fixed):* (a) the identity freeze is an ENVELOPE, not absolute: order
+is now fully key-determined, so a store holding two distinct `ts`
+SPELLINGS of the same instant for one key (naive vs tz-aware, sub-ms
+variants) sorts by the `ts` string where the retired code kept
+scan-order ties — same content, possibly a different digest; real
+acquire-minted stores with one spelling per instant are byte-frozen,
+and the key-determined order is the deliberate keep. (b) an
+`acquired_at` tie dedups quietly only when the data is IDENTICAL (the
+at-least-once re-pull); differing data refuses — there is no
+bitemporal winner, and this makes dedup content scan-order-independent
+(the retired sorted-glob order could flip winners across
+prefix-related dir names). (c) enumeration is `os.listdir`, never a
+glob — glob metacharacters in a caller's `root`/`source` silently
+scanned a full store as empty; a stream file sitting directly under
+`observations/<source>/` (outside any acquisition dir) refuses as
+tamper-shaped. (d) `RecursionError` joins the loud family around both
+`json.loads` and `json.dumps` — a pathological nested line crossed
+the seam raw. (e) a 0-byte `.gz` member refuses in
+`codec.iter_text_lines` (corrupt-shaped — a valid empty member always
+carries header + trailer; `gzip.open` hands back silent EOF), while a
+valid empty member still reads as zero lines. (f) two more
+tightenings join the wrong-root refusal: a record already carrying
+`ts_out` refuses (the retired code silently overwrote it in its
+copy), and `.jsonl.gz` members are now READ (the retired glob
+silently scanned a gz-only store as empty). (g) both peak pins
+tightened (peak < 800, resident < 700 B/row) so a whole-dump digest
+regression alone (~930 B/row measured) fails them, not just the full
+defect (~1550).

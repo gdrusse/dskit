@@ -63,7 +63,8 @@ reclassified generic by the owner (generic-first: children are wrappers):
       the scan graduated into `dskit.onboarding.observations.scan_stream`
       / `stream_digest` — single-copy dedup, canonical-string sharing,
       incremental digest with byte-parity to the frozen dump recipe
-      (zero identity movement) — and `BarsFromStore` shrank to a
+      (identity frozen for one-spelling-per-instant stores; see the
+      ADR-0037 review amendments) — and `BarsFromStore` shrank to a
       wrapper. Measured 650 B/row peak vs 1547 B/row for the defect
       (~2.4×); peak-pinning tracemalloc tests stand at BOTH layers. The
       same session widened the child's score-split tuples to accept

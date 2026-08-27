@@ -39,7 +39,6 @@ future pack, never here.
 
 from __future__ import annotations
 
-import glob
 import hashlib
 import json
 import os
@@ -105,7 +104,10 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
     key_fields : sequence of str
         The ``data`` fields forming the dedup key. For one key, the row
         with the LATEST ``acquired_at`` wins (a missing ``acquired_at``
-        reads as ``""`` and loses every tie).
+        reads as ``""``). An ``acquired_at`` TIE dedups quietly when the
+        data is identical (an at-least-once re-pull) and refuses when it
+        differs — there is no bitemporal winner, and scan order must
+        never pick one silently.
     ts_field : str, optional
         A ``data`` field holding an ISO date/datetime (naive values are
         UTC — the ``parse_utc`` convention). When declared, each record
@@ -144,10 +146,26 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
              "wrong root, or a source never acquired"]
         )
 
+    try:
+        entries = sorted(os.listdir(base))
+    except OSError as exc:
+        raise AssetError([f"cannot list {base}: {exc}"]) from exc
+
     best = {}  # key tuple -> (acquired_at, data)
     shared = {}  # one canonical copy per repeated string
     _share = shared.setdefault
-    for directory in sorted(glob.glob(os.path.join(base, "*"))):
+    for name in entries:
+        directory = os.path.join(base, name)
+        if not os.path.isdir(directory):
+            # The writer only ever puts a stream INSIDE an acquisition
+            # dir — a misplaced spelling is tamper-shaped and refuses;
+            # any other stray file (editor droppings) is not ours.
+            if name in (f"{stream}.jsonl", f"{stream}.jsonl.gz"):
+                raise AssetError(
+                    [f"{directory}: stream file outside an acquisition "
+                     "dir — tamper-shaped; refusing"]
+                )
+            continue
         path = resolve_stream_file(directory, stream)
         if path is None:
             continue
@@ -159,7 +177,7 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                 continue
             try:
                 row = json.loads(line)
-            except ValueError as exc:
+            except (ValueError, RecursionError) as exc:
                 raise AssetError(
                     [f"invalid JSON at {path}:{n}: {exc}"]
                 ) from exc
@@ -199,6 +217,17 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                 ) from exc
             if held is None or acquired > held[0]:
                 best[key] = (acquired, data)
+            elif acquired == held[0] and data != held[1]:
+                # An acquired_at tie with IDENTICAL data is an
+                # at-least-once re-pull — a duplicate, kept quiet. A tie
+                # with DIFFERENT data has no bitemporal winner; refusing
+                # keeps the dedup scan-order-independent (no directory
+                # ordering may pick silently).
+                raise AssetError(
+                    [f"{path}:{n}: two rows for key {list(key)!r} share "
+                     f"acquired_at {acquired!r} with differing data — "
+                     "no bitemporal winner; refusing"]
+                )
 
     # Drain best rather than copying it: each winning data dict BECOMES
     # its record — the stream is held once.
@@ -267,7 +296,7 @@ def stream_digest(records) -> str:
             hasher.update(b", ")
         try:
             hasher.update(json.dumps(record, sort_keys=True).encode("utf-8"))
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, RecursionError) as exc:
             raise AssetError(
                 [f"record {i} is not JSON-serializable: {exc}"]
             ) from exc

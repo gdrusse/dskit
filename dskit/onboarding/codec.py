@@ -188,9 +188,21 @@ def iter_text_lines(path):
     """
     try:
         if path.endswith(".gz"):
+            # A written member always carries its header and trailer
+            # (~20 bytes even empty), and gzip.open would hand back a
+            # silent EOF: 0 bytes is corrupt-shaped (a partial copy),
+            # not an empty stream.
+            if os.path.getsize(path) == 0:
+                raise AssetError(
+                    [f"{path}: 0-byte gzip member — corrupt-shaped "
+                     "(a valid member always carries its header and "
+                     "trailer); refusing"]
+                )
             fh = gzip.open(path, "rt", encoding="utf-8")
         else:
             fh = open(path, encoding="utf-8")
+    except AssetError:
+        raise
     except _DECODE_ERRORS as exc:
         raise AssetError([f"cannot open {path}: {exc}"]) from exc
     with fh:

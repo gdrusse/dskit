@@ -275,7 +275,8 @@ def test_bars_scan_holds_one_copy_of_the_stream(tmp_path):
     must hold ONE copy of the snapshot — no second records list, no
     run()-time dict-per-row copy, no whole-snapshot JSON string. The
     budgets sit between the single-copy cost and the measured multi-copy
-    defect (~1550 B/row peak, ~1265 B/row resident)."""
+    defect (~1550 B/row peak, ~1265 B/row resident) — and tight enough
+    to catch a whole-dump digest regression alone (~930 B/row)."""
     root = str(tmp_path / "ob")
     n_minutes = 5000
     _write_store(root, n_minutes=n_minutes)  # 2 symbols -> 10_000 rows
@@ -291,8 +292,8 @@ def test_bars_scan_holds_one_copy_of_the_stream(tmp_path):
         tracemalloc.stop()
 
     assert len(out["records"]) == n_rows
-    assert peak / n_rows < 1100, f"peak {peak / n_rows:.0f} B/row"
-    assert current / n_rows < 900, f"resident {current / n_rows:.0f} B/row"
+    assert peak / n_rows < 800, f"peak {peak / n_rows:.0f} B/row"
+    assert current / n_rows < 700, f"resident {current / n_rows:.0f} B/row"
 
 
 def test_score_kinds_accept_the_cal_split():

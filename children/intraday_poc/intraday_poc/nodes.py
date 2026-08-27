@@ -122,7 +122,9 @@ class BarsFromStore(Node):
         """Content-derived: moves whenever any bar a run would consume
         changes — count-only fingerprints are content-blind.
         ``stream_digest`` is byte-parity with the frozen whole-dump
-        recipe, so no existing run's identity moves."""
+        recipe; identity holds for any store with one ``ts`` spelling
+        per instant (ADR-0037 review amendments — same-instant spelling
+        duplicates now order by the ``ts`` string, not scan order)."""
         records = self._scan()
         return {"kind": "intraday_poc-bars", "rows": len(records),
                 "sha256": stream_digest(records)}
