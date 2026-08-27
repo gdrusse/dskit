@@ -1211,3 +1211,25 @@ documented: `acquired_at` adjudication is millisecond-resolution
 (sub-ms-apart stamps collapse to one level, loud direction only) and
 refusal message WORDING may vary with directory arrangement while
 outcomes never do.
+
+*Fifth-round amendments (2026-08-26, continue-until-clean; the
+round-4 identity fix held a 4,225-pair canonicity fuzz and a 300-store
+sort fuzz):* (i) float keys SORT NUMERICALLY — the round-4 tag put
+repr first, freezing repr-lexicographic order (`[-1.0, -2.0, 10.0,
+2.5]`) into the digest-to-be; the tag is now `(value, repr)` so order
+is numeric with the repr as the `-0.0`/`0.0` tiebreak (NaN never
+reaches the sort — intake-refused), and the round-4 claim "homogeneous
+keys order as before" is corrected: it held for str/int, not float.
+Caught before any consumer froze on the wrong order. (ii) `source`
+and `stream` must be SEGMENT-SAFE (`_check_segment`, the writer's own
+rule): the reader accepted any string, so `"../../../secrets"` read a
+file OUTSIDE the store, `"alpaca/../polygon"` read a sibling source
+under the wrong name, and writer-impossible typos (`"Bars "`) scanned
+silently empty. The seam refuses them at parameter check (the child
+wrapper inherits the refusal at resolve). (iii) a 0-byte stream
+member of EITHER spelling refuses at the seam — the committed writer
+lazy-opens on the first record, so a committed member always holds a
+line; the codec-level refusal stays gz-only (other `iter_text_lines`
+callers may read legitimately empty text). (iv) tie-refusal messages
+show the raw key values (a float key `1.0` no longer prints
+indistinguishably from a string key `'1.0'`).

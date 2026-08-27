@@ -426,6 +426,63 @@ class TestScan:
         with pytest.raises(AssetError, match="asof_ms"):
             _scan(root)
 
+    def test_float_keys_order_numerically(self, tmp_path):
+        # Round-5 finding: the ("f", repr) tag sorted float keys as
+        # repr STRINGS ([-1.0, -2.0, 10.0, 2.5]) — the order freezes at
+        # merge, so it must be numeric (repr as the -0.0/0.0 tiebreak).
+        ts = "2026-01-05T14:30:00+00:00"
+        root = str(tmp_path)
+        rows = []
+        for level in (2.5, 10.0, -1.0, -2.0):
+            row = _row("AAPL", ts, 100.0)
+            row["data"]["level"] = level
+            rows.append(row)
+        _write(root, "acq-0001", rows)
+        records = _scan(root, key_fields=("level", "ts"))
+        assert [r["level"] for r in records] == [-2.0, -1.0, 2.5, 10.0]
+
+    def test_float_key_refusal_shows_the_float(self, tmp_path):
+        # The tie message must show the float 1.0, not the string '1.0'
+        # — the type distinction is the point of canonical identity.
+        ts = "2026-01-05T14:30:00+00:00"
+        root = str(tmp_path)
+        for acq, close in (("acq-0001", 100.0), ("acq-0002", 555.0)):
+            row = _row("AAPL", ts, close)
+            row["data"]["level"] = 1.0
+            _write(root, acq, [row])
+        with pytest.raises(AssetError, match=r"\[1\.0,"):
+            _scan(root, key_fields=("level", "ts"))
+
+    def test_unsafe_source_and_stream_spellings_refuse(self, tmp_path):
+        # Round-5 finding: the writer only mints segment-safe names, but
+        # the reader accepted any string — path traversal read files
+        # OUTSIDE the store, "alpaca/../other" read the wrong source,
+        # and writer-impossible typos ("Bars ") scanned silently empty.
+        root = str(tmp_path)
+        _write(root, "acq-0001",
+               [_row("AAPL", "2026-01-05T14:30:00+00:00", 100.0)])
+        for source, stream in (
+            ("alpaca", "../../../secrets"),
+            ("alpaca/../polygon", "bars"),
+            ("alpaca", "Bars "),
+            ("Alpaca", "bars"),
+        ):
+            with pytest.raises(AssetError, match="filesystem-safe"):
+                _scan(root, source=source, stream=stream)
+
+    def test_zero_byte_plain_member_refuses(self, tmp_path):
+        # The committed writer lazy-opens on the first record, so a
+        # committed member always has >= 1 line — 0 bytes is a partial
+        # copy, corrupt-shaped for the plain spelling exactly as for gz.
+        root = str(tmp_path)
+        _write(root, "acq-0001",
+               [_row("AAPL", "2026-01-05T14:30:00+00:00", 100.0)])
+        directory = os.path.join(root, "observations", "alpaca", "acq-0002")
+        os.makedirs(directory)
+        open(os.path.join(directory, "bars.jsonl"), "w").close()
+        with pytest.raises(AssetError, match="0-byte"):
+            _scan(root)
+
     def test_param_problems_accumulate(self, tmp_path):
         with pytest.raises(AssetError) as err:
             scan_stream("", "", "", key_fields=())

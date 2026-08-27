@@ -43,7 +43,7 @@ import hashlib
 import json
 import os
 
-from .base import AssetError, _raise_if, parse_utc
+from .base import AssetError, _check_segment, _raise_if, parse_utc
 from .codec import iter_text_lines, resolve_stream_file
 
 __all__ = ["scan_stream", "stream_digest"]
@@ -57,17 +57,20 @@ def _key_part(value):
 
     Strings — the overwhelmingly common key type — pass through
     untouched (zero allocation, so the memory contract is unchanged).
-    The bool/int/float family is type-tagged; floats tag their repr so
-    ``-0.0`` and ``0.0`` stay distinct, matching their serializations.
-    Anything else passes through raw: an unhashable value still hits
-    the existing loud refusal.
+    The bool/int/float family is type-tagged. Floats carry the VALUE
+    first (numeric sort order — repr-lexicographic order would freeze
+    ``[-1.0, -2.0, 10.0, 2.5]`` into the digest) with the repr as the
+    tiebreak, so ``-0.0`` and ``0.0`` stay distinct and deterministic
+    (NaN never reaches here — refused at intake). Anything else passes
+    through raw: an unhashable value still hits the existing loud
+    refusal.
     """
     if isinstance(value, str):
         return value
     if isinstance(value, bool):
         return ("b", value)
     if isinstance(value, float):
-        return ("f", repr(value))
+        return ("f", value, repr(value))
     if isinstance(value, int):
         return ("i", value)
     return value
@@ -75,7 +78,7 @@ def _key_part(value):
 
 def _key_display(key) -> list:
     """The raw values behind a key's tagged parts, for messages."""
-    return [part[1] if isinstance(part, tuple) and len(part) == 2
+    return [part[1] if isinstance(part, tuple) and len(part) in (2, 3)
             and part[0] in ("b", "f", "i") else part
             for part in key]
 
@@ -84,12 +87,14 @@ def _scan_problems(root, source, stream, key_fields, ts_field, ts_out,
                    shared_fields) -> list:
     """Every problem with a scan request, accumulated (never raises)."""
     problems = []
-    for name, value in (("root", root), ("source", source),
-                        ("stream", stream)):
-        if not isinstance(value, str) or not value:
-            problems.append(
-                f"{name} must be a non-empty string, got {value!r}"
-            )
+    if not isinstance(root, str) or not root:
+        problems.append(f"root must be a non-empty string, got {root!r}")
+    # The writer only ever mints segment-safe source/stream names
+    # (acquire's _check_segment rule) — a reader accepting more reads
+    # files the store never wrote: path traversal, a sibling source,
+    # or a silent empty on a writer-impossible typo.
+    _check_segment(problems, "source", source)
+    _check_segment(problems, "stream", stream)
     for name, fields in (("key_fields", key_fields),
                          ("shared_fields", shared_fields)):
         if not isinstance(fields, (tuple, list)) or not all(
@@ -219,6 +224,22 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
         path = resolve_stream_file(directory, stream)
         if path is None:
             continue
+        # The committed writer lazy-opens on the first record, so a
+        # committed member of EITHER spelling always holds >= 1 line:
+        # 0 bytes is a partial copy, corrupt-shaped — and observations/
+        # has no manifest, so this seam is its only detector. (codec.py
+        # refuses the gz spelling for every caller; the plain spelling
+        # is this seam's own invariant.)
+        try:
+            empty = os.path.getsize(path) == 0
+        except OSError as exc:
+            raise AssetError([f"cannot stat {path}: {exc}"]) from exc
+        if empty:
+            raise AssetError(
+                [f"{path}: 0-byte stream member — corrupt-shaped (a "
+                 "committed member always holds at least one line); "
+                 "refusing"]
+            )
         n = 0
         for line in iter_text_lines(path):
             n += 1
