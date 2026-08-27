@@ -72,6 +72,14 @@ def test_parse_utc_normalizes_offsets():
     assert parse_utc("2026-01-02T01:00:00+01:00") == parse_utc("2026-01-02T00:00:00")
 
 
+def test_parse_utc_refuses_out_of_range_conversions():
+    # Valid ISO whose UTC conversion leaves datetime's year range must
+    # refuse typed, never raise a raw OverflowError (round-4 finding).
+    for bad in ("9999-12-31T23:00:00-05:00", "0001-01-01T00:00:00+05:45"):
+        with pytest.raises(AssetError):
+            parse_utc(bad)
+
+
 def test_parse_utc_refuses_garbage():
     for bad in ("not-a-date", "", None, 20260102):
         with pytest.raises(AssetError):

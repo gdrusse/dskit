@@ -57,6 +57,18 @@ class TestRoundTrip:
         with gzip.open(path, "rt", encoding="utf-8") as fh:
             assert fh.read() == "".join(LINES)
 
+    def test_zero_byte_gz_refuses(self, tmp_path):
+        # gzip.open would hand back a silent EOF; 0 bytes is a partial
+        # copy, not an empty member (a valid empty member is ~20 bytes).
+        path = tmp_path / "s.jsonl.gz"
+        path.write_bytes(b"")
+        with pytest.raises(AssetError, match="0-byte"):
+            list(iter_text_lines(str(path)))
+
+    def test_valid_empty_gzip_member_reads_as_zero_lines(self, tmp_path):
+        path = _write(tmp_path / "s.jsonl.gz", "gzip", lines=[])
+        assert list(iter_text_lines(str(path))) == []
+
 
 class TestCorruptMembers:
     def test_truncated_member_refuses_as_asset_error(self, tmp_path):

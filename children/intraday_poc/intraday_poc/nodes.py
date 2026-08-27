@@ -2,11 +2,15 @@
 
 Four kinds carry the whole PoC:
 
-- ``intraday_poc-bars`` (role ``data``) — fronts the onboarding store's
-  normalized bar rows (``<root>/observations/<source>/*/<stream>.jsonl``),
-  deduplicated bitemporally: for one ``(symbol, ts)`` the row with the
-  LATEST ``acquired_at`` wins. Content-derived fingerprint, one scan
-  memoized per instance (the resolve/execute straddle rule).
+- ``intraday_poc-bars`` (role ``data``) — a thin wrapper over the
+  toolkit's observations read seam (``dskit.onboarding.observations``,
+  ADR-0037), which owns the codec resolution, the bitemporal dedup
+  (latest ``acquired_at`` wins per ``(symbol, ts)``), and the
+  single-copy memory discipline (the 14.3 GB lesson of the first
+  2M-bar run). The wrapper only declares the domain: the key fields,
+  the repeated ``symbol``, and the bar stamp flattening to ``asof_ms``.
+  Content-derived fingerprint, one scan memoized per instance (the
+  resolve/execute straddle rule).
 - ``intraday_poc-window`` (role ``transform``) — per-symbol sliding
   windows of one-bar log returns: ``ret_lag_0`` (most recent) …
   ``ret_lag_{L-1}``, labelled with the NEXT bar's return ``y_next``.
@@ -33,13 +37,9 @@ methods, so documents naming these kinds plan on machines without them.
 
 from __future__ import annotations
 
-import glob
-import hashlib
-import json
 import math
-import os
-from datetime import datetime, timezone
 
+from dskit.onboarding.observations import scan_stream, stream_digest
 from dskit.pipeline.libs.pyomo import PyomoSolve
 from dskit.pipeline.node import Node, register_node_kind
 
@@ -63,15 +63,6 @@ def _reject_unknown(problems, params, allowed) -> None:
         )
 
 
-def _epoch_ms(stamp: str) -> int:
-    """An ISO date/datetime string as UTC epoch milliseconds (naive
-    values are treated as UTC — the onboarding ``parse_utc`` convention)."""
-    dt = datetime.fromisoformat(stamp)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp() * 1000)
-
-
 class BarsFromStore(Node):
     """Emit the store's deduplicated bar records (role ``data``) — the
     ``intraday_poc-bars`` kind.
@@ -82,7 +73,9 @@ class BarsFromStore(Node):
 
     Records are the normalized rows' ``data`` payloads flattened, plus
     ``asof_ms`` (the bar timestamp as epoch ms — what split filters cut
-    on). Ordered by ``(asof_ms, symbol)``.
+    on). Ordered by ``(asof_ms, symbol, ts)`` — the seam's
+    key-determined order (identical to ``(asof_ms, symbol)`` except
+    for same-instant duplicate ``ts`` spellings, per ADR-0037).
     """
 
     role = "data"
@@ -114,44 +107,36 @@ class BarsFromStore(Node):
     def _scan(self):
         if self._snap is not None:
             return self._snap
-        stream = self.params.get("stream", "bars")
-        pattern = os.path.join(
-            self.params["root"], "observations", self.params["source"],
-            "*", f"{stream}.jsonl",
+        # The generic seam (ADR-0037) owns the codec resolution, the
+        # bitemporal dedup, and the single-copy memory discipline; this
+        # wrapper only declares the domain shape.
+        self._snap = scan_stream(
+            self.params["root"],
+            self.params["source"],
+            self.params.get("stream", "bars"),
+            key_fields=("symbol", "ts"),
+            ts_field="ts",
+            shared_fields=("symbol",),
         )
-        best = {}  # (symbol, ts) -> (acquired_at, data)
-        for path in sorted(glob.glob(pattern)):
-            with open(path, encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    row = json.loads(line)
-                    data = row["data"]
-                    key = (data["symbol"], data["ts"])
-                    acquired = row.get("acquired_at", "")
-                    held = best.get(key)
-                    if held is None or acquired > held[0]:
-                        best[key] = (acquired, data)
-        records = []
-        for (_symbol, ts), (_acq, data) in best.items():
-            records.append({**data, "asof_ms": _epoch_ms(ts)})
-        records.sort(key=lambda r: (r["asof_ms"], r["symbol"]))
-        self._snap = records
         return self._snap
 
     def fingerprint(self):
         """Content-derived: moves whenever any bar a run would consume
-        changes — count-only fingerprints are content-blind."""
+        changes — count-only fingerprints are content-blind.
+        ``stream_digest`` is byte-parity with the frozen whole-dump
+        recipe; identity holds for any store with one ``ts`` spelling
+        per instant (ADR-0037 review amendments — same-instant spelling
+        duplicates now order by the ``ts`` string, not scan order)."""
         records = self._scan()
-        digest = hashlib.sha256(
-            json.dumps(records, sort_keys=True).encode("utf-8")
-        ).hexdigest()
         return {"kind": "intraday_poc-bars", "rows": len(records),
-                "sha256": digest}
+                "sha256": stream_digest(records)}
 
     def run(self, ctx, inputs):
-        records = [dict(row) for row in self._scan()]
+        # The snapshot itself is emitted — no dict-per-row copy. Safe:
+        # the driver runs the pinned instance ONCE per run (fingerprint
+        # at resolve, run at execute, never again), and record streams
+        # are read-only downstream by the single-pass doctrine.
+        records = self._scan()
         self.log.info("emitting %d bar record(s)", len(records))
         return {"records": records}
 
@@ -272,9 +257,10 @@ class ForecastRows(Node):
     Output ``forecasts``: ``[{symbol, asof_ms, pred}]``; rows the signal
     declines (``None`` — no coverage) are skipped and counted.
 
-    Params: ``split`` (REQUIRED, one of train/val/test) — the planner's
-    score-role rule: which split the wired rows come from must be
-    READABLE from the document, and must agree with the upstream filter.
+    Params: ``split`` (REQUIRED, one of train/val/cal/test) — the
+    planner's score-role rule: which split the wired rows come from must
+    be READABLE from the document, and must agree with the upstream
+    filter.
     """
 
     role = "score"
@@ -286,10 +272,10 @@ class ForecastRows(Node):
     def validate_params(cls, params):
         problems = []
         _reject_unknown(problems, params, cls._PARAMS)
-        if params.get("split") not in ("train", "val", "test"):
+        if params.get("split") not in ("train", "val", "cal", "test"):
             problems.append(
                 f"split must declare which split this node reads "
-                f"(train/val/test), got {params.get('split')!r}"
+                f"(train/val/cal/test), got {params.get('split')!r}"
             )
         return problems
 
@@ -356,8 +342,8 @@ class SelectOne(PyomoSolve):
     ``concat`` of per-symbol forecast nodes); ``labeled`` — the window
     rows carrying ``y_next``, joined by ``(symbol, asof_ms)`` to realize
     each pick after the fact. Params: the doorway's own ``solver`` /
-    ``solver_options``, plus ``split`` (REQUIRED, train/val/test) — the
-    planner's score-role declaration, matching the upstream filters.
+    ``solver_options``, plus ``split`` (REQUIRED, train/val/cal/test) —
+    the planner's score-role declaration, matching the upstream filters.
 
     Outputs: ``picks`` — ``[{asof_ms, symbol, pred, realized}]``
     (``realized`` is ``None`` when no label row matches); ``metrics`` —
@@ -377,10 +363,10 @@ class SelectOne(PyomoSolve):
     @classmethod
     def validate_params(cls, params):
         problems = super().validate_params(params)
-        if params.get("split") not in ("train", "val", "test"):
+        if params.get("split") not in ("train", "val", "cal", "test"):
             problems.append(
                 f"split must declare which split this node reads "
-                f"(train/val/test), got {params.get('split')!r}"
+                f"(train/val/cal/test), got {params.get('split')!r}"
             )
         return problems
 

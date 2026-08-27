@@ -7,15 +7,19 @@ suite passes on a bare install of dskit alone; the full chain only
 proves itself where the child's real deps are installed.
 """
 
+import hashlib
 import importlib.util
 import json
 import math
 import os
+import tracemalloc
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from dskit.onboarding.base import AssetError
+from dskit.onboarding.codec import open_text_writer
 from dskit.pipeline import OutputsConfig, run_document
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.document import load_document
@@ -24,6 +28,8 @@ from dskit.pipeline.node import NodeContext
 from intraday_poc.nodes import (
     NODE_KINDS,
     BarsFromStore,
+    ForecastRows,
+    SelectOne,
     WindowRows,
 )
 
@@ -206,6 +212,97 @@ def test_bars_store_dedupes_bitemporally(tmp_path):
     assert [r["close"] for r in records if r["asof_ms"] == _ms(2)] == [555.0]
     assert [r["asof_ms"] for r in records] == sorted(r["asof_ms"]
                                                      for r in records)
+
+
+def test_bars_fingerprint_digest_is_the_whole_snapshot_dump(tmp_path):
+    """The digest recipe is FROZEN: sha256 of json.dumps(records,
+    sort_keys=True) over the emitted snapshot. However the hash is
+    computed internally, it must reproduce that byte for byte — identity
+    movement would orphan every existing run's artifacts."""
+    root = str(tmp_path / "ob")
+    _write_store(root, n_minutes=4)
+    node = BarsFromStore("bars", {"root": root, "source": "alpaca"})
+    fp = node.fingerprint()
+    records = node.run(None, {})["records"]
+    expected = hashlib.sha256(
+        json.dumps(records, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    assert fp["sha256"] == expected
+    assert fp["rows"] == len(records)
+
+
+def test_bars_reads_gzip_observations(tmp_path):
+    """A source that opts into observations_codec "gzip" (ADR-0036)
+    stores <stream>.jsonl.gz — the reader must see those rows, not
+    silently return an empty store."""
+    plain_root = str(tmp_path / "plain")
+    _write_store(plain_root, n_minutes=5, symbols=("AAPL",))
+    expected = BarsFromStore(
+        "bars", {"root": plain_root, "source": "alpaca"}
+    ).run(None, {})["records"]
+
+    gz_root = str(tmp_path / "gz")
+    directory = os.path.join(gz_root, "observations", "alpaca", "acq-0001")
+    os.makedirs(directory)
+    with open_text_writer(os.path.join(directory, "bars.jsonl.gz"),
+                          "gzip") as fh:
+        for i in range(5):
+            fh.write(json.dumps(_bar("AAPL", i, _close("AAPL", i)),
+                                sort_keys=True) + "\n")
+
+    node = BarsFromStore("bars", {"root": gz_root, "source": "alpaca"})
+    assert node.run(None, {})["records"] == expected
+
+
+def test_bars_refuses_ambiguous_stream_spellings(tmp_path):
+    """bars.jsonl AND bars.jsonl.gz in one acquisition dir is
+    tamper-shaped (the observations tree has no manifest) — refuse
+    loudly, never silently pick one."""
+    root = str(tmp_path / "ob")
+    _write_store(root, n_minutes=3, symbols=("AAPL",))
+    directory = os.path.join(root, "observations", "alpaca", "acq-0001")
+    with open_text_writer(os.path.join(directory, "bars.jsonl.gz"),
+                          "gzip") as fh:
+        fh.write(json.dumps(_bar("AAPL", 0, 111.0), sort_keys=True) + "\n")
+
+    node = BarsFromStore("bars", {"root": root, "source": "alpaca"})
+    with pytest.raises(AssetError):
+        node.run(None, {})
+
+
+def test_bars_scan_holds_one_copy_of_the_stream(tmp_path):
+    """The OOM regression pin (14.3 GB on 2M bars): fingerprint + run
+    must hold ONE copy of the snapshot — no second records list, no
+    run()-time dict-per-row copy, no whole-snapshot JSON string. The
+    budgets sit between the single-copy cost and the measured multi-copy
+    defect (~1550 B/row peak, ~1265 B/row resident) — and tight enough
+    to catch a whole-dump digest regression alone (~930 B/row)."""
+    root = str(tmp_path / "ob")
+    n_minutes = 5000
+    _write_store(root, n_minutes=n_minutes)  # 2 symbols -> 10_000 rows
+    n_rows = n_minutes * 2
+
+    node = BarsFromStore("bars", {"root": root, "source": "alpaca"})
+    tracemalloc.start()
+    try:
+        node.fingerprint()
+        out = node.run(None, {})
+        current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert len(out["records"]) == n_rows
+    assert peak / n_rows < 800, f"peak {peak / n_rows:.0f} B/row"
+    assert current / n_rows < 700, f"resident {current / n_rows:.0f} B/row"
+
+
+def test_score_kinds_accept_the_cal_split():
+    """dskit grew a fourth split name (ADR-0034: the cal band); both
+    score kinds must accept it — and still refuse junk by name."""
+    assert ForecastRows.validate_params({"split": "cal"}) == []
+    assert SelectOne.validate_params({"split": "cal"}) == []
+    assert ForecastRows.validate_params({"split": "holdout"})
+    assert SelectOne.validate_params({"split": "holdout"})
 
 
 def test_window_rows_lags_labels_and_gap_discipline():

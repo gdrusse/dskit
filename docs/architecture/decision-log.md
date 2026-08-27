@@ -1056,3 +1056,271 @@ codec asymmetry: gzip text pins `newline="\n"` while `"none"` keeps the
 platform default (byte parity with the pre-codec tree wins there).
 (c) `resolve_stream_file` resolves regular FILES only and refuses a
 squatting non-file by name.
+
+## ADR-0037 — The observations read seam: `scan_stream` / `stream_digest`
+
+**Status:** accepted (2026-08-26 — owner ruling: generic dskit
+capability first, children are wrappers only). The function-seam half
+of §13 item 10; the generic reader *kind* stays open until a second
+child needs it.
+
+**Context.** The first real-data run of `children/intraday_poc` OOM'd
+reading BACK the observations tree: the child's scan held 2,013,682
+bars about four times over (a dedup dict, a second records list, a
+third full copy at emit) and `json.dumps`'d the whole snapshot into
+one string to fingerprint it — 14.3 GB peak on a single run, a
+17.4 GB kill across three walk-forward folds. The same child's reader
+also globbed the literal `.jsonl` spelling, silently blind to
+ADR-0036's `.jsonl.gz`. Both defects are generic: every child that
+reads observations re-derives the same scan, and pmquant's ladder
+streams are far larger than 2M rows.
+
+**Decision.** A tier-1 onboarding module `observations.py` owns
+reading back what acquire wrote — stdlib + this package only, no
+pipeline import (the sibling firewall stands).
+
+- `scan_stream(root, source, stream, key_fields, ts_field=None,
+  ts_out="asof_ms", shared_fields=())` — one deduplicated snapshot of
+  `observations/<source>/*/<stream>.jsonl[.gz]`: per declared
+  `key_fields` tuple the row with the LATEST `acquired_at` wins
+  (bitemporal supersede, ADR-0014's comparison convention via
+  `parse_utc` when `ts_field` is declared). Codec-resolved per
+  acquisition dir through `resolve_stream_file`/`iter_text_lines`
+  (ADR-0036: loud on ambiguity, squats, and mid-stream corruption).
+  **Memory discipline is the contract:** the returned records ARE the
+  winning `data` dicts (the dedup dict is drained, never copied; the
+  declared epoch-ms field is added in place), and repeated strings —
+  JSON object keys, `acquired_at`, and any caller-declared
+  `shared_fields` values (fields that repeat heavily, e.g. a symbol) —
+  collapse to one canonical copy. Deterministic order: sorted by
+  `(ts_out, *key_fields)` when `ts_field` is declared, else by
+  `key_fields`. A missing `observations/<source>` directory refuses
+  (default-deny: a typo'd root must not read as an empty store); an
+  existing source with no stream files is truthfully empty. A row
+  missing a key field, a non-dict `data`, or an unparseable
+  `ts_field` refuses loudly as `AssetError` (parameter problems and
+  winning-level tie conflicts accumulate; store-side row refusals
+  raise at the offending row).
+- `stream_digest(records)` — the content fingerprint, hashed record
+  by record yet **byte-identical** to
+  `sha256(json.dumps(records, sort_keys=True))` (`json.dumps` joins
+  list items with `", "`): the whole-snapshot string never exists,
+  and any caller whose digest was frozen on the canonical dump keeps
+  its identity unmoved.
+
+**Consequences.** `intraday_poc`'s `BarsFromStore` shrinks to a
+wrapper (kind name, field names, fingerprint shape); its digest does
+not move, its blocked walk-forward backtest fits in memory, and a
+peak-pinning test stands at BOTH layers (the generic scan and the
+child wrapper). pmquant's reader lands on the same seam with a
+different `key_fields`. One behavior tightens: a wrong root that
+silently produced zero records now refuses by name.
+
+*Review amendments (same day, two-skeptic adversarial pass, all
+fixed):* (a) the identity freeze is an ENVELOPE, not absolute: order
+is now fully key-determined, so a store holding two distinct `ts`
+SPELLINGS of the same instant for one key (naive vs tz-aware, sub-ms
+variants) sorts by the `ts` string where the retired code kept
+scan-order ties — same content, possibly a different digest; real
+acquire-minted stores with one spelling per instant are byte-frozen,
+and the key-determined order is the deliberate keep. (b) an
+`acquired_at` tie is adjudicated against the FINAL winner only, after
+the scan: a tie AT the winning `acquired_at` dedups quietly when the
+data serializes identically (the at-least-once re-pull) and refuses
+when it differs — no bitemporal winner exists — while a tie a later
+acquisition supersedes is history, never a refusal. This makes both
+the dedup content and the accept/refuse outcome scan-order-independent
+(the retired sorted-glob order could flip winners across
+prefix-related dir names). (c) enumeration is `os.listdir`, never a
+glob — glob metacharacters in a caller's `root`/`source` silently
+scanned a full store as empty; a stream file sitting directly under
+`observations/<source>/` (outside any acquisition dir) refuses as
+tamper-shaped. (d) `RecursionError` joins the loud family around both
+`json.loads` and `json.dumps` — a pathological nested line crossed
+the seam raw. (e) a 0-byte `.gz` member refuses in
+`codec.iter_text_lines` (corrupt-shaped — a valid empty member always
+carries header + trailer; `gzip.open` hands back silent EOF), while a
+valid empty member still reads as zero lines. (f) two more
+tightenings join the wrong-root refusal: a record already carrying
+`ts_out` refuses (the retired code silently overwrote it in its
+copy), and `.jsonl.gz` members are now READ (the retired glob
+silently scanned a gz-only store as empty). (g) both peak pins
+tightened (peak < 800, resident < 700 B/row) so a whole-dump digest
+regression alone (~930 B/row measured) fails them, not just the full
+defect (~1550).
+
+*Second-round amendments (same day — fresh skeptics re-reviewed the
+first round's fixes and both independently broke its tie rule; fixed
+red-first):* (i) the first-round refusal fired against the RUNNING
+maximum, so a same-second conflict that a later acquisition had
+already superseded refused anyway — permanently, since observations/
+is append-only and every corrective pull sorts after the tie — and the
+outcome flipped with directory arrangement. Ties are now recorded
+during the scan and judged only against the final winner (the rule as
+stated in (b) above). (ii) tie identity was Python `==`, which coerces
+`100 == 100.0 == True` — a type-respelled same-second re-pull dedup'd
+quietly with a hash8-order-picked winner, moving the emitted value's
+TYPE and the digest; identity is now the canonical
+`json.dumps(sort_keys=True)` serialization. (iii) documented, not
+changed: `int()` sub-millisecond truncation in the epoch-ms flatten is
+one ms off true floor for pre-1970 and ~2112+ sub-ms stamps —
+inherited from the retired code, digest-frozen, called out in the
+docstring.
+
+*Third-round amendments (same day — the loop's escalation trigger
+fired: three consecutive fresh-skeptic rounds each surfaced
+correctness defects, so the loop stops here and the merge decision
+goes to the owner; all round-3 findings are fixed red-first):* (i) a
+NaN key value refuses at intake — NaN neither equals nor orders
+against anything WITHOUT raising, so the sort's `TypeError` guard
+never fired and record order (and digest) went silently
+scan-order-dependent. (ii) tie adjudication filters to the winning
+level BEFORE sorting and sorts the problem STRINGS — the second-round
+code sorted raw key tuples first, so type-heterogeneous keys crashed
+raw `TypeError` even on a store whose winners were unambiguous.
+(iii) `acquired_at` adjudicates on the parsed INSTANT (`parse_utc`,
+one parse per distinct spelling), never the string: lexicographic
+comparison ranked a later `-05:00` stamp below an earlier UTC one and
+let two spellings of one instant dodge the tie rule; an unparseable
+stamp refuses, a missing one reads as the earliest possible instant.
+Acquire-minted stores (fixed-width single-spelling `utc_now`) are
+unaffected — the freeze envelope holds. (iv) the drain-time
+`ts_field` refusal names the key. (v) the README now routes
+observation readers through the seam (it still pointed consumers at
+hand-rolled `resolve_stream_file` sniffing) and documents how to
+leverage it.
+
+*Fourth-round amendments (2026-08-26, the owner's continue-until-clean
+ruling; two fresh skeptics per round; the round-3 adjudication itself
+held under 600×6 permutation fuzzing and a 200-store freeze check):*
+(i) dedup-KEY identity is canonical, never coercing Python `==` —
+dict hashing let `1`/`1.0`/`true` share one slot, so a later
+acquisition silently superseded records it never keyed; key values
+are now type-tagged for keying AND sorting (strings pass through
+untouched — zero allocation, the memory contract is unchanged;
+floats tag their repr so `-0.0`/`0.0` stay distinct), closing the
+same coercion family the second round closed for data identity.
+In-envelope digest freeze unaffected (homogeneous keys order as
+before). (ii) `parse_utc` catches `OverflowError` — a boundary-year
+offset stamp (`9999-12-31T23:00:00-05:00`) parses as ISO and then
+leaves the year range in `astimezone`, which escaped raw through
+both stamp paths; every caller inherits the typed refusal. (iii) a
+DIRECTORY squatting the stream spelling at source level refuses like
+the file spelling (it scanned as an empty acquisition dir). (iv)
+documented: `acquired_at` adjudication is millisecond-resolution
+(sub-ms-apart stamps collapse to one level, loud direction only) and
+refusal message WORDING may vary with directory arrangement while
+outcomes never do.
+
+*Fifth-round amendments (2026-08-26, continue-until-clean; the
+round-4 identity fix held a 4,225-pair canonicity fuzz and a 300-store
+sort fuzz):* (i) float keys SORT NUMERICALLY — the round-4 tag put
+repr first, freezing repr-lexicographic order (`[-1.0, -2.0, 10.0,
+2.5]`) into the digest-to-be; the tag is now `(value, repr)` so order
+is numeric with the repr as the `-0.0`/`0.0` tiebreak (NaN never
+reaches the sort — intake-refused), and the round-4 claim "homogeneous
+keys order as before" is corrected: it held for str/int, not float.
+Caught before any consumer froze on the wrong order. (ii) `source`
+and `stream` must be SEGMENT-SAFE (`_check_segment`, the writer's own
+rule): the reader accepted any string, so `"../../../secrets"` read a
+file OUTSIDE the store, `"alpaca/../polygon"` read a sibling source
+under the wrong name, and writer-impossible typos (`"Bars "`) scanned
+silently empty. The seam refuses them at parameter check (the child
+wrapper inherits the refusal at resolve). (iii) a 0-byte stream
+member of EITHER spelling refuses at the seam — the committed writer
+lazy-opens on the first record, so a committed member always holds a
+line; the codec-level refusal stays gz-only (other `iter_text_lines`
+callers may read legitimately empty text). (iv) tie-refusal messages
+show the raw key values (a float key `1.0` no longer prints
+indistinguishably from a string key `'1.0'`).
+
+*Sixth-round amendments (2026-08-26, continue-until-clean; the
+round-5 fixes took a clean PASS from their dedicated lens — 1,891-pair
+identity fuzz, 3,050-candidate reader/writer acceptance equivalence
+with zero mismatches, the traversal family dead, a 60-store freeze
+check clean):* (i) epoch milliseconds are computed in exact INTEGER
+arithmetic — `int(timestamp() * 1000)` compounded two float roundings,
+landing exact-ms stamps one ms wrong from ~2038 on (and pre-1970) and
+collapsing `acquired_at` stamps a FULL millisecond apart into one
+instant, which could spuriously and permanently refuse a valid
+supersede. This corrects the round-2 (iii) and round-4 (iv)
+statements: the "inherited edge" was underdescribed. Sub-ms
+remainders now FLOOR in every era; digests move only for stores that
+actually hit the defect (none in-repo — second-precision writer
+stamps and 2026 minute bars are float-exact). (ii) documented, not
+changed: cross-family key order is tag-lexicographic (`bool < float <
+int`), deterministic and digest-stable; decodable-but-empty members
+(a valid empty gz member, a whitespace-only plain member) read as
+zero rows — writer-impossible shapes that cannot hold lost data,
+while the 0-byte refusal targets partial copies; and a DANGLING
+symlink squatting the stream spelling is silently skipped — a
+pre-existing ADR-0036 `resolve_stream_file` behavior on `main`
+(`os.path.exists` is false for it), unchanged by this branch and
+declared here rather than fixed.
+
+*Seventh-round correction (2026-08-26; the `_epoch_ms` code itself
+took a clean PASS — a 1.2M-sample exactness proof against a Fraction
+oracle, bit-identical freeze through the whole seam, 1.10× drain
+cost):* the sixth round's era claim was itself underdescribed. The
+retired `int(timestamp() * 1000)` recipe was one ms wrong for
+~1-2.5% of MILLISECOND-precision stamps in affected decades WITHIN
+1970..2037 as well (first counterexamples already in 1970) — only
+exact-SECOND stamps, the writer's `utc_now` envelope, were
+era-independently exact, so "none in-repo" stands and digests still
+move only for stores that actually hit the defect. Also from this
+round: the two-key tie-accumulation test's assertion was
+half-tautological (`"1" in text` matched any path:line material) and
+now matches the key spellings and counts the problems.
+
+*Eighth-round amendments (2026-08-26; the free-sweep lens returned a
+full PASS — a 600-store differential fuzz against an ADR-derived
+reference with zero mismatches, the verbatim backtest config executed
+end to end over a gzip superseding acquisition, packaging/import/
+hash-seed all clean — and the seventh round's era corrections were
+confirmed by measurement):* (i) a present-but-EMPTY `acquired_at`
+string refuses like every other unparseable spelling; only true
+ABSENCE of the field reads as the earliest possible instant. The
+empty string was silently conflated with absence — writer-impossible,
+corrupt-shaped, bounded (it could never flip a winner or move a
+well-formed store's digest), but the wrong direction. (ii) declared,
+not changed: duplicate names in `key_fields` are accepted harmlessly,
+and `ts_field == ts_out` refuses via the record-already-carries
+message rather than a parameter-check message — both loud-or-harmless
+directions.
+
+*Ninth-round amendments (2026-08-26; the free-sweep lens returned a
+full PASS — the first cal-band document ran end to end with a gzip
+supersede composing ADR-0034/0036/0037 in one run, 500k-row scaling
+measured linear, a 600-store differential fuzz clean):* (i)
+permission denial refuses instead of reading as absence — the boolean
+stat probes (`os.path.isdir` in the scan gate, `os.path.isfile`/
+`exists` in `resolve_stream_file`) returned False on EACCES, so a
+mode-000 acquisition dir silently vanished from the bitemporal dedup
+(a SUPERSEDED row served as winner, digest moved without a word) and
+an untraversable source dir scanned a correct root as empty. Both
+sites now `os.stat` and refuse on any `OSError` except
+ENOENT/ENOTDIR, matching the assets engine's chmod-denial pins; the
+declared dangling-symlink skip is unchanged (`FileNotFoundError` maps
+to absence). `validate`'s snapshot reader inherits the loud refusal
+through `resolve_stream_file`. (ii) `stream_digest`'s refusal message
+says "cannot be canonically serialized" — the old "not
+JSON-serializable" misdescribed the unorderable-mixed-key-types
+`TypeError` from `sort_keys`.
+
+*Tenth round — the clean pass (2026-08-26).* Both fresh lenses
+returned zero blocker/major/correctness findings: the verification
+lens (1,200-store three-way differential fuzz — branch vs pre-round-9
+seam vs a clean-room reference — zero mismatches; ELOOP/FIFO/socket
+squats typed; the validate CLI inherits the denial refusals; 120/120
+freeze stores byte-identical; both memory pins green) and the free
+sweep (mutation-testing the suite, 400-store fuzz, 300k-datetime
+`Fraction` oracle, public-surface kwarg misuse, wrong-root
+interactions — production code unbroken). Post-pass, with NO
+production change: two mutation-proven test gaps were closed as green
+pins (the sub-ms FLOOR and `-0.0`/`0.0` key distinctness — both
+documented, digest-relevant invariants the suite did not yet pin),
+and one nit is declared-deferred: `os.path.isdir(base)` on a
+permission-denied `observations/` PARENT refuses via the wrong-root
+message rather than a denial diagnosis — every path through that
+branch refuses, so denial can never read as an empty store; only the
+wording misattributes.

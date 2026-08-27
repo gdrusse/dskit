@@ -33,6 +33,7 @@ from __future__ import annotations
 import gzip
 import io
 import os
+import stat
 import zlib
 
 from .base import AssetError, _raise_if
@@ -188,9 +189,21 @@ def iter_text_lines(path):
     """
     try:
         if path.endswith(".gz"):
+            # A written member always carries its header and trailer
+            # (~20 bytes even empty), and gzip.open would hand back a
+            # silent EOF: 0 bytes is corrupt-shaped (a partial copy),
+            # not an empty stream.
+            if os.path.getsize(path) == 0:
+                raise AssetError(
+                    [f"{path}: 0-byte gzip member — corrupt-shaped "
+                     "(a valid member always carries its header and "
+                     "trailer); refusing"]
+                )
             fh = gzip.open(path, "rt", encoding="utf-8")
         else:
             fh = open(path, encoding="utf-8")
+    except AssetError:
+        raise
     except _DECODE_ERRORS as exc:
         raise AssetError([f"cannot open {path}: {exc}"]) from exc
     with fh:
@@ -218,13 +231,27 @@ def resolve_stream_file(dirpath, stream):
     """
     plain = os.path.join(dirpath, f"{stream}.jsonl")
     gz = plain + ".gz"
-    for path in (plain, gz):
-        if os.path.exists(path) and not os.path.isfile(path):
+
+    def _probe(path):
+        # Boolean probes (os.path.isfile/exists) return False on EACCES,
+        # silently reading permission denial as absence — an unreadable
+        # acquisition would vanish from a scan's bitemporal dedup
+        # (ADR-0037, round 9). Denial refuses; only absence is None.
+        try:
+            return os.stat(path)
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        except OSError as exc:
+            raise AssetError([f"cannot stat {path}: {exc}"]) from exc
+
+    st_plain, st_gz = _probe(plain), _probe(gz)
+    for path, st in ((plain, st_plain), (gz, st_gz)):
+        if st is not None and not stat.S_ISREG(st.st_mode):
             raise AssetError(
                 [f"{path} exists but is not a regular file — the stream "
                  "location is squatted; refusing"]
             )
-    has_plain, has_gz = os.path.isfile(plain), os.path.isfile(gz)
+    has_plain, has_gz = st_plain is not None, st_gz is not None
     if has_plain and has_gz:
         raise AssetError(
             [f"both {plain} and {gz} exist — ambiguous stream storage; "
