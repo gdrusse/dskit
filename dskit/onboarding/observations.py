@@ -104,14 +104,20 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
     key_fields : sequence of str
         The ``data`` fields forming the dedup key. For one key, the row
         with the LATEST ``acquired_at`` wins (a missing ``acquired_at``
-        reads as ``""``). An ``acquired_at`` TIE dedups quietly when the
-        data is identical (an at-least-once re-pull) and refuses when it
-        differs — there is no bitemporal winner, and scan order must
-        never pick one silently.
+        reads as ``""``). A tie AT THE WINNING ``acquired_at`` dedups
+        quietly when the data serializes identically (an at-least-once
+        re-pull; equality is the canonical dump, never coercing Python
+        ``==``) and refuses when it differs — no bitemporal winner
+        exists and scan order must never pick one. A tie a LATER
+        acquisition supersedes is history, never a refusal.
     ts_field : str, optional
         A ``data`` field holding an ISO date/datetime (naive values are
         UTC — the ``parse_utc`` convention). When declared, each record
         gains ``ts_out`` = its epoch milliseconds, added IN PLACE.
+        Sub-millisecond stamps truncate via ``int()`` (toward zero) —
+        exact-ms stamps are exact everywhere; pre-1970 or far-future
+        (~2112+) sub-ms stamps can land one ms off true floor. An
+        inherited, digest-frozen edge.
     ts_out : str
         Name of the derived epoch-ms field (default ``"asof_ms"`` —
         what split filters cut on). Refuses to overwrite: a record
@@ -152,6 +158,7 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
         raise AssetError([f"cannot list {base}: {exc}"]) from exc
 
     best = {}  # key tuple -> (acquired_at, data)
+    conflicts = {}  # key tuple -> (acquired_at, "path:line") of a seen tie
     shared = {}  # one canonical copy per repeated string
     _share = shared.setdefault
     for name in entries:
@@ -217,17 +224,43 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                 ) from exc
             if held is None or acquired > held[0]:
                 best[key] = (acquired, data)
-            elif acquired == held[0] and data != held[1]:
+            elif acquired == held[0]:
                 # An acquired_at tie with IDENTICAL data is an
-                # at-least-once re-pull — a duplicate, kept quiet. A tie
-                # with DIFFERENT data has no bitemporal winner; refusing
-                # keeps the dedup scan-order-independent (no directory
-                # ordering may pick silently).
-                raise AssetError(
-                    [f"{path}:{n}: two rows for key {list(key)!r} share "
-                     f"acquired_at {acquired!r} with differing data — "
-                     "no bitemporal winner; refusing"]
-                )
+                # at-least-once re-pull — a duplicate, kept quiet.
+                # Identity is judged on the canonical SERIALIZATION,
+                # never Python == (which coerces 100 == 100.0 == True
+                # and would let a type-respelled tie dedup quietly with
+                # a scan-order-picked winner). A differing tie is only
+                # RECORDED here: whether it is ambiguity or history is
+                # decided against the final winner after the scan — a
+                # tie a later acquisition supersedes must never refuse,
+                # or one same-second conflict bricks the stream forever
+                # (observations/ is append-only).
+                try:
+                    same = (json.dumps(data, sort_keys=True)
+                            == json.dumps(held[1], sort_keys=True))
+                except (TypeError, ValueError, RecursionError) as exc:
+                    raise AssetError(
+                        [f"{path}:{n}: tie comparison failed — data is "
+                         f"not JSON-serializable: {exc}"]
+                    ) from exc
+                if not same:
+                    prev = conflicts.get(key)
+                    if prev is None or acquired > prev[0]:
+                        conflicts[key] = (acquired, f"{path}:{n}")
+
+    # Adjudicate recorded ties against the FINAL winner only, all
+    # problems accumulated: a conflict at a superseded acquired_at is
+    # history; one AT the winning acquired_at has no bitemporal winner.
+    tie_problems = [
+        f"{where}: two rows for key {list(key)!r} share the winning "
+        f"acquired_at {acq_c!r} with differing data — no bitemporal "
+        "winner; refusing"
+        for key, (acq_c, where) in sorted(conflicts.items())
+        if acq_c == best[key][0]
+    ]
+    if tie_problems:
+        raise AssetError(tie_problems)
 
     # Drain best rather than copying it: each winning data dict BECOMES
     # its record — the stream is held once.

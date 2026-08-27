@@ -121,15 +121,64 @@ class TestScan:
         assert len(_scan(root)) == 1
 
     def test_equal_acquired_at_differing_data_refuses(self, tmp_path):
-        # A genuine tie with DIFFERENT content is ambiguous — refusing
-        # makes the winner scan-order-independent (the prefix-dir-name
-        # ordering flip can no longer pick silently).
+        # A tie with DIFFERENT content AT THE WINNING acquired_at is
+        # ambiguous — refusing makes the winner scan-order-independent
+        # (no directory ordering may pick silently).
         root = str(tmp_path)
         _write(root, "acq-0001",
                [_row("AAPL", "2026-01-05T14:30:00+00:00", 100.0)])
         _write(root, "acq-0002",
                [_row("AAPL", "2026-01-05T14:30:00+00:00", 555.0)])
         with pytest.raises(AssetError, match="acquired_at"):
+            _scan(root)
+
+    def test_superseded_tie_does_not_refuse(self, tmp_path):
+        # A conflict at an OLDER acquired_at is history, not ambiguity:
+        # a later corrective acquisition decides the key, in EVERY
+        # directory arrangement — the round-2 adversarial finding was
+        # that the tie fired against the running max, bricking a stream
+        # no future acquisition could ever repair.
+        t1, t2 = "2026-01-06T00:00:00+00:00", "2026-01-07T00:00:00+00:00"
+        ts = "2026-01-05T14:30:00+00:00"
+        for i, arrangement in enumerate((
+            # tie pair scans BEFORE the winner
+            (("acq-0001", 100.0, t1), ("acq-0002", 100.5, t1),
+             ("acq-0003", 101.0, t2)),
+            # winner scans FIRST
+            (("acq-0001", 101.0, t2), ("acq-0002", 100.0, t1),
+             ("acq-0003", 100.5, t1)),
+        )):
+            root = str(tmp_path / f"case-{i}")
+            for acq, close, acquired in arrangement:
+                _write(root, acq, [_row("AAPL", ts, close,
+                                        acquired=acquired)])
+            records = _scan(root)
+            assert [r["close"] for r in records] == [101.0]
+
+    def test_type_respelled_tie_refuses(self, tmp_path):
+        # Python == coerces 100 == 100.0 == True; such a tie must refuse
+        # (they serialize differently, so a quiet dedup would emit a
+        # scan-order-picked value and digest).
+        ts = "2026-01-05T14:30:00+00:00"
+        for a, b in ((100, 100.0), (1, True)):
+            root = str(tmp_path / f"case-{a!r}-{b!r}")
+            row_a = _row("AAPL", ts, a)
+            row_b = _row("AAPL", ts, b)
+            _write(root, "acq-0001", [row_a])
+            _write(root, "acq-0002", [row_b])
+            with pytest.raises(AssetError, match="acquired_at"):
+                _scan(root)
+
+    def test_misplaced_gz_stream_spelling_refuses(self, tmp_path):
+        # The tamper-shaped refusal covers BOTH spellings.
+        root = str(tmp_path)
+        directory = os.path.join(root, "observations", "alpaca")
+        os.makedirs(directory)
+        with open_text_writer(os.path.join(directory, "bars.jsonl.gz"),
+                              "gzip") as fh:
+            fh.write(json.dumps(
+                _row("AAPL", "2026-01-05T14:30:00+00:00", 100.0)) + "\n")
+        with pytest.raises(AssetError, match="acquisition"):
             _scan(root)
 
     def test_same_instant_spellings_order_key_determined(self, tmp_path):

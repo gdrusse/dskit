@@ -1080,7 +1080,7 @@ reading back what acquire wrote — stdlib + this package only, no
 pipeline import (the sibling firewall stands).
 
 - `scan_stream(root, source, stream, key_fields, ts_field=None,
-  ts_out="asof_ms")` — one deduplicated snapshot of
+  ts_out="asof_ms", shared_fields=())` — one deduplicated snapshot of
   `observations/<source>/*/<stream>.jsonl[.gz]`: per declared
   `key_fields` tuple the row with the LATEST `acquired_at` wins
   (bitemporal supersede, ADR-0014's comparison convention via
@@ -1089,9 +1089,10 @@ pipeline import (the sibling firewall stands).
   (ADR-0036: loud on ambiguity, squats, and mid-stream corruption).
   **Memory discipline is the contract:** the returned records ARE the
   winning `data` dicts (the dedup dict is drained, never copied; the
-  declared epoch-ms field is added in place) and every repeated
-  string — JSON keys, key-field values, `acquired_at` — is collapsed
-  to one canonical copy. Deterministic order: sorted by
+  declared epoch-ms field is added in place), and repeated strings —
+  JSON object keys, `acquired_at`, and any caller-declared
+  `shared_fields` values (fields that repeat heavily, e.g. a symbol) —
+  collapse to one canonical copy. Deterministic order: sorted by
   `(ts_out, *key_fields)` when `ts_field` is declared, else by
   `key_fields`. A missing `observations/<source>` directory refuses
   (default-deny: a typo'd root must not read as an empty store); an
@@ -1121,9 +1122,12 @@ variants) sorts by the `ts` string where the retired code kept
 scan-order ties — same content, possibly a different digest; real
 acquire-minted stores with one spelling per instant are byte-frozen,
 and the key-determined order is the deliberate keep. (b) an
-`acquired_at` tie dedups quietly only when the data is IDENTICAL (the
-at-least-once re-pull); differing data refuses — there is no
-bitemporal winner, and this makes dedup content scan-order-independent
+`acquired_at` tie is adjudicated against the FINAL winner only, after
+the scan: a tie AT the winning `acquired_at` dedups quietly when the
+data serializes identically (the at-least-once re-pull) and refuses
+when it differs — no bitemporal winner exists — while a tie a later
+acquisition supersedes is history, never a refusal. This makes both
+the dedup content and the accept/refuse outcome scan-order-independent
 (the retired sorted-glob order could flip winners across
 prefix-related dir names). (c) enumeration is `os.listdir`, never a
 glob — glob metacharacters in a caller's `root`/`source` silently
@@ -1142,3 +1146,21 @@ silently scanned a gz-only store as empty). (g) both peak pins
 tightened (peak < 800, resident < 700 B/row) so a whole-dump digest
 regression alone (~930 B/row measured) fails them, not just the full
 defect (~1550).
+
+*Second-round amendments (same day — fresh skeptics re-reviewed the
+first round's fixes and both independently broke its tie rule; fixed
+red-first):* (i) the first-round refusal fired against the RUNNING
+maximum, so a same-second conflict that a later acquisition had
+already superseded refused anyway — permanently, since observations/
+is append-only and every corrective pull sorts after the tie — and the
+outcome flipped with directory arrangement. Ties are now recorded
+during the scan and judged only against the final winner (the rule as
+stated in (b) above). (ii) tie identity was Python `==`, which coerces
+`100 == 100.0 == True` — a type-respelled same-second re-pull dedup'd
+quietly with a hash8-order-picked winner, moving the emitted value's
+TYPE and the digest; identity is now the canonical
+`json.dumps(sort_keys=True)` serialization. (iii) documented, not
+changed: `int()` sub-millisecond truncation in the epoch-ms flatten is
+one ms off true floor for pre-1970 and ~2112+ sub-ms stamps —
+inherited from the retired code, digest-frozen, called out in the
+docstring.
