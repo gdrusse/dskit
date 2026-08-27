@@ -135,6 +135,7 @@ dskit/onboarding/
 ├── state.py           checkpoint cursors keyed (source, stream, mode)
 ├── coverage.py        CoverageLedger: the (source, stream, unit, period) done-set
 ├── codec.py           extension-declared codecs: deterministic gzip, loud decode (ADR-0036)
+├── observations.py    the read seam: deduplicated snapshots + content digest (ADR-0037)
 ├── snapshot.py        Merkle manifests, WORM commits, verify, find-by-hash
 ├── acquire.py         run_acquisition: pull -> snapshot -> evidence -> checkpoint
 ├── validate.py        ValidationSuite / Rule, the rule engine, run_suite

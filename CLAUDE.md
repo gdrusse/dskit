@@ -179,7 +179,8 @@ engine-parity ports (0022/0023), split policies + event bounds (0024),
 the rl_stocks-driven capability set (0025 + 0027…0030: the
 declared-model seam + trainlog, walk-forward + embargoed splits, the
 sb3 and matplotlib packs, the onboarding coverage ledger) and the
-proposal still awaiting the owner (0026). New
+proposal still awaiting the owner (0026), the §14/§13 graduation round
+(0033…0036), and the observations read seam (0037). New
 significant design decisions still require an ADR in
 `docs/architecture/decision-log.md` before code — no decision
 undocumented.

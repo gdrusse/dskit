@@ -1056,3 +1056,59 @@ codec asymmetry: gzip text pins `newline="\n"` while `"none"` keeps the
 platform default (byte parity with the pre-codec tree wins there).
 (c) `resolve_stream_file` resolves regular FILES only and refuses a
 squatting non-file by name.
+
+## ADR-0037 — The observations read seam: `scan_stream` / `stream_digest`
+
+**Status:** accepted (2026-08-26 — owner ruling: generic dskit
+capability first, children are wrappers only). The function-seam half
+of §13 item 10; the generic reader *kind* stays open until a second
+child needs it.
+
+**Context.** The first real-data run of `children/intraday_poc` OOM'd
+reading BACK the observations tree: the child's scan held 2,013,682
+bars about four times over (a dedup dict, a second records list, a
+third full copy at emit) and `json.dumps`'d the whole snapshot into
+one string to fingerprint it — 14.3 GB peak on a single run, a
+17.4 GB kill across three walk-forward folds. The same child's reader
+also globbed the literal `.jsonl` spelling, silently blind to
+ADR-0036's `.jsonl.gz`. Both defects are generic: every child that
+reads observations re-derives the same scan, and pmquant's ladder
+streams are far larger than 2M rows.
+
+**Decision.** A tier-1 onboarding module `observations.py` owns
+reading back what acquire wrote — stdlib + this package only, no
+pipeline import (the sibling firewall stands).
+
+- `scan_stream(root, source, stream, key_fields, ts_field=None,
+  ts_out="asof_ms")` — one deduplicated snapshot of
+  `observations/<source>/*/<stream>.jsonl[.gz]`: per declared
+  `key_fields` tuple the row with the LATEST `acquired_at` wins
+  (bitemporal supersede, ADR-0014's comparison convention via
+  `parse_utc` when `ts_field` is declared). Codec-resolved per
+  acquisition dir through `resolve_stream_file`/`iter_text_lines`
+  (ADR-0036: loud on ambiguity, squats, and mid-stream corruption).
+  **Memory discipline is the contract:** the returned records ARE the
+  winning `data` dicts (the dedup dict is drained, never copied; the
+  declared epoch-ms field is added in place) and every repeated
+  string — JSON keys, key-field values, `acquired_at` — is collapsed
+  to one canonical copy. Deterministic order: sorted by
+  `(ts_out, *key_fields)` when `ts_field` is declared, else by
+  `key_fields`. A missing `observations/<source>` directory refuses
+  (default-deny: a typo'd root must not read as an empty store); an
+  existing source with no stream files is truthfully empty. A row
+  missing a key field, a non-dict `data`, or an unparseable
+  `ts_field` refuses loudly, accumulated as `AssetError`.
+- `stream_digest(records)` — the content fingerprint, hashed record
+  by record yet **byte-identical** to
+  `sha256(json.dumps(records, sort_keys=True))` (`json.dumps` joins
+  list items with `", "`): the whole-snapshot string never exists,
+  and any caller whose digest was frozen on the canonical dump keeps
+  its identity unmoved.
+
+**Consequences.** `intraday_poc`'s `BarsFromStore` shrinks to a
+wrapper (kind name, field names, fingerprint shape); its digest does
+not move, its blocked walk-forward backtest fits in memory, and a
+peak-pinning test stands at BOTH layers (the generic scan and the
+child wrapper). pmquant's reader lands on the same seam with a
+different `key_fields`. One behavior tightens: a wrong root that
+silently produced zero records now refuses by name.

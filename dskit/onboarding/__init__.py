@@ -48,6 +48,7 @@ from .connector import (
 from .coverage import STATUSES, CoverageLedger
 from .default_model import onboarding_model
 from .layout import OnboardingRoot
+from .observations import scan_stream, stream_digest
 from .publish import publish_version
 from .snapshot import (
     build_manifest,
@@ -92,7 +93,9 @@ __all__ = [
     "run_acquisition",
     "run_suite",
     "save_state",
+    "scan_stream",
     "snapshot_hash",
+    "stream_digest",
     "suite_hash",
     "verify_snapshot",
     "write_snapshot",

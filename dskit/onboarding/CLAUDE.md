@@ -25,6 +25,10 @@ on it without breaking its rulings (ADR-0012…0016).
   (import = registration) or add a tier-2 pack in `libs/` +
   `DEFAULT_CONNECTORS`. Conformance template:
   `tests/onboarding/test_localfiles.py`.
+- **Reading observations back** — consumers (children, packs) go
+  through `observations.scan_stream` / `stream_digest` (ADR-0037),
+  never a hand-rolled glob: the seam owns codec resolution, bitemporal
+  dedup, and the single-copy memory contract.
 - **Validation rules** — add to `_RULES` in `validate.py`:
   `(allowed_kwargs, required_kwargs, evaluator)`; the evaluator returns
   a failing COUNT, nothing else. Structure-level only — semantics stay
@@ -80,6 +84,7 @@ dskit/onboarding/
 ├── state.py           load_state / save_state — (source, stream, mode) cursors
 ├── coverage.py        CoverageLedger — sparse-backfill done-set (ADR-0030)
 ├── codec.py           extension-declared codecs — deterministic gzip (ADR-0036)
+├── observations.py    the read seam: scan_stream dedup + stream_digest (ADR-0037)
 ├── snapshot.py        build_manifest / write_snapshot / verify / find_snapshot_dir
 ├── acquire.py         run_acquisition — the orchestrated pull + durability order
 ├── validate.py        Rule / ValidationSuite / _RULES / run_suite

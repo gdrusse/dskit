@@ -44,7 +44,9 @@ ADR yet, and none blocks the child from starting:
 - [ ] 9. A generic `records-write` kind beside `table-write`
       (`kinds_table.py`).
 - [ ] 10. A generic onboarding-observations reader kind — the second child
-      to need it.
+      to need it. **Half landed via ADR-0037 (2026-08-26): the function
+      seam (`observations.scan_stream`/`stream_digest`) exists; the
+      pipeline-facing KIND stays open until a second child needs it.**
 - [ ] 11. A records → keyed-table verb (`groupby`/`pivot`, `kinds_flow.py`).
 - [ ] 12. Search-seam expressiveness for seed-ensemble studies + per-fold
       node-param binding (`kinds_search.py`, `document.py`/`driver.py`).
@@ -53,21 +55,21 @@ ADR yet, and none blocks the child from starting:
       **Landed via ADR-0035 (2026-08-26).**
 
 Found by the first real-data run of `children/intraday_poc` (2026-08-26) —
-a child-side defect, not a dskit gap:
+reclassified generic by the owner (generic-first: children are wrappers):
 
-- [ ] `intraday_poc` bars-node memory. `IntradayBars._scan()` holds the
-      stream about four times over — a 2M-entry `best` dict, a second
-      2M-dict `records` list cached permanently as `_snap`, and a third
-      full copy in `run()` via `[dict(row) for row in self._scan()]` —
-      while `fingerprint()` `json.dumps`es every record into one string
-      just to hash it. Measured **14.3 GB peak for a single run** on
-      2,013,682 bars against an 18 GB cap; three walk-forward folds OOM
-      (observed kill at 17.4 GB). Blocks `run-backtest.json`; the
-      onboarding chain and `run-train.json` are green. Config cannot
-      reach it — the node takes only `root`/`source`/`stream`. Fix: drop
-      the redundant copies and hash incrementally, with a test pinning
-      peak. Generalizes — pmquant's ladder data is far larger than 2M
-      rows.
+- [x] `intraday_poc` bars-node memory (14.3 GB peak on 2,013,682 bars;
+      three walk-forward folds killed at 17.4 GB against an 18 GB cap;
+      blocked `run-backtest.json`). **Fixed via ADR-0037 (2026-08-26):**
+      the scan graduated into `dskit.onboarding.observations.scan_stream`
+      / `stream_digest` — single-copy dedup, canonical-string sharing,
+      incremental digest with byte-parity to the frozen dump recipe
+      (zero identity movement) — and `BarsFromStore` shrank to a
+      wrapper. Measured 650 B/row peak vs 1547 B/row for the defect
+      (~2.4×); peak-pinning tracemalloc tests stand at BOTH layers. The
+      same session widened the child's score-split tuples to accept
+      `"cal"` (ADR-0034) and made its reader codec-aware (ADR-0036) —
+      both RE-ENTRY action items. The backtest re-run still needs the
+      store re-acquired (the `ob/` root is not on this machine).
 
 Deferred:
 
