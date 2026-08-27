@@ -3,7 +3,13 @@
 import pytest
 
 from dskit.pipeline.base import ConfigError, TimeSplitConfig
-from dskit.pipeline.document import NodeSpec, PipelineDocument, RandomSplitSpec
+from dskit.pipeline.document import (
+    NodeSpec,
+    PipelineDocument,
+    RandomSplitSpec,
+    TrailingSplitSpec,
+    WalkForwardSpec,
+)
 from dskit.pipeline.node import Node
 from dskit.pipeline.planner import plan
 from tests.pipeline.dochelpers import (
@@ -336,6 +342,98 @@ class TestCapitalNeedsSplits:
             ),
         }
         assert plan(doc_of(pipeline), registry).order
+
+
+class TestCalBandRule:
+    """ADR-0034: a `split: "cal"` reader refuses unless the declared
+    splits can actually yield a cal band — a reader of a band that cannot
+    exist would score zero rows and exit 0."""
+
+    def _doc(self, splits):
+        pipeline = banking_pipeline()
+        spec = pipeline["validate"]
+        pipeline["validate"] = NodeSpec(
+            uses=spec.uses,
+            inputs=dict(spec.inputs),
+            params={**spec.params, "split": "cal"},
+        )
+        return doc_of(pipeline, splits=splits)
+
+    def test_cal_reader_plans_over_a_declared_time_band(self, registry):
+        splits = TimeSplitConfig(
+            train_end_ms=BANKING_SPLITS["train_end_ms"],
+            cal_start_ms=BANKING_SPLITS["val_end_ms"] - 1,
+            val_end_ms=BANKING_SPLITS["val_end_ms"],
+            test_end_ms=BANKING_SPLITS["test_end_ms"],
+        )
+        assert plan(self._doc(splits), registry).order
+
+    def test_cal_reader_refuses_when_time_declares_no_band(self, registry):
+        with pytest.raises(ConfigError, match="declared cal band"):
+            plan(self._doc(TimeSplitConfig(**BANKING_SPLITS)), registry)
+
+    def test_cal_reader_refuses_under_a_random_split(self, registry):
+        splits = RandomSplitSpec(train_frac=0.6, val_frac=0.2, seed=1)
+        with pytest.raises(ConfigError, match="declared cal band"):
+            plan(self._doc(splits), registry)
+
+    def test_cal_reader_plans_over_a_trailing_band_and_refuses_without(
+        self, registry
+    ):
+        with_band = TrailingSplitSpec(test_days=5, val_days=10, cal_days=3)
+        assert plan(self._doc(with_band), registry).order
+        without = TrailingSplitSpec(test_days=5, val_days=10)
+        with pytest.raises(ConfigError, match="declared cal band"):
+            plan(self._doc(without), registry)
+
+    def test_walkforward_with_a_cal_band_refuses_at_plan(self, registry):
+        # ADR-0034 v1: the driver refuses this at run; the planner must
+        # not bless a document whose only possible run is that refusal.
+        doc = doc_of(
+            banking_pipeline(),
+            splits=TrailingSplitSpec(test_days=5, val_days=10, cal_days=3),
+            walkforward=WalkForwardSpec(
+                objective="$edge_test.verdict",
+                val_days=7,
+                folds=["2025-01-01"],
+            ),
+        )
+        with pytest.raises(ConfigError, match="cannot carry a cal band"):
+            plan(doc, registry)
+
+
+class TestStatTestWeightsRule:
+    """The plan-time mirror of the weights-port rules (ADR-0033): a
+    weighted correction with no weights wire — or the converse — is
+    knowable from the spec alone, so it refuses before anything runs."""
+
+    def _pipeline(self, gate):
+        return {"events": NodeSpec(uses="synth-events"), "gate": gate}
+
+    def test_weighted_correction_without_a_weights_wire_refuses(self, registry):
+        gate = NodeSpec(
+            uses="stat_test",
+            inputs={"scores": "$events.events"},
+            params={"correction": "weighted-bh"},
+        )
+        with pytest.raises(ConfigError, match="wire a weights input"):
+            plan(doc_of(self._pipeline(gate)), registry)
+
+    def test_weighted_correction_with_the_wire_plans(self, registry):
+        gate = NodeSpec(
+            uses="stat_test",
+            inputs={"scores": "$events.events", "weights": "$events.events"},
+            params={"correction": "weighted-bh"},
+        )
+        assert plan(doc_of(self._pipeline(gate)), registry).order
+
+    def test_a_weights_wire_with_an_unweighted_correction_refuses(self, registry):
+        gate = NodeSpec(
+            uses="stat_test",
+            inputs={"scores": "$events.events", "weights": "$events.events"},
+        )
+        with pytest.raises(ConfigError, match="does not use weights"):
+            plan(doc_of(self._pipeline(gate)), registry)
 
 
 class TestSearchRules:

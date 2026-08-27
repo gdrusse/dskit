@@ -110,6 +110,30 @@ class TestSplitFamily:
         assert s.split_of(_Rec(asof_ms=30)) == "test"
         assert s.split_of(_Rec(asof_ms=31)) is None
 
+    def test_time_split_cal_band_assignment(self):
+        # ADR-0034: the fourth name exists only when the band is declared.
+        s = TimeSplitConfig(
+            train_end_ms=10, cal_start_ms=17, val_end_ms=20, test_end_ms=30
+        )
+        assert s.split_of(_Rec(asof_ms=11)) == "val"
+        assert s.split_of(_Rec(asof_ms=16)) == "val"
+        assert s.split_of(_Rec(asof_ms=17)) == "cal"
+        assert s.split_of(_Rec(asof_ms=20)) == "cal"
+        assert s.split_of(_Rec(asof_ms=21)) == "test"
+
+    def test_time_split_from_obj_still_default_denies(self):
+        # the allowlist widened for cal_start_ms; unknown keys still refuse
+        with pytest.raises(ConfigError, match="cal_end_ms"):
+            TimeSplitConfig.from_obj(
+                {
+                    "kind": "time",
+                    "train_end_ms": 1,
+                    "val_end_ms": 2,
+                    "test_end_ms": 3,
+                    "cal_end_ms": 2,
+                }
+            )
+
     def test_random_split_needs_test_remainder(self):
         with pytest.raises(ConfigError, match="positive test remainder"):
             RandomSplitConfig(train_frac=0.7, val_frac=0.3)

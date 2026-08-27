@@ -124,6 +124,11 @@ def test_reference_params_validate_clean():
         Sb3Eval.validate_params({"split": "val", "env": ENV_REF, "n_episodes": 2})
         == []
     )
+    # ADR-0034: the fourth split name is lawful for an eval reader too.
+    assert (
+        Sb3Eval.validate_params({"split": "cal", "env": ENV_REF, "n_episodes": 2})
+        == []
+    )
 
 
 @pytest.mark.parametrize(

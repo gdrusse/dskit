@@ -7,7 +7,7 @@ import pytest
 from dskit.assets.base import AssetError
 from dskit.onboarding import find_active_source, load_state, run_acquisition
 
-from .conftest import norm_path, read_jsonl
+from .conftest import norm_path, norm_read, read_jsonl
 from .fake_connector import FakeConnector, record, state
 
 
@@ -122,3 +122,78 @@ def test_malformed_message_names_connector_and_index(root, registry, fake_source
     FakeConnector.script = [{"protocol": 1, "type": "RECORD"}]
     with pytest.raises(AssetError, match="message 0"):
         run_acquisition(root, registry, "fake", "prices", "live")
+
+
+# -- compressed payloads (ADR-0036) -------------------------------------------
+
+
+def test_gz_source_lands_compressed_and_verifiable(root, registry, gz_source):
+    from dskit.onboarding import verify_snapshot
+
+    FakeConnector.script = [
+        record("prices", "2026-01-02", {"close": 10.5}),
+        record("prices", "2026-01-05", {"close": 11.0}),
+        state({"cursor": "2026-01-05"}),
+    ]
+    s = run_acquisition(root, registry, "gz", "prices", "live")
+    assert s["records"] == 2 and s["state_saved"]
+    # Bronze landed under the gz spelling, decodes to the two messages,
+    # and the manifest's relpath carries the codec (identity material).
+    snap_dir = root.snapshot_dir("gz", s["acq_id"])
+    raw = os.path.join(snap_dir, "payload", "prices.jsonl.gz")
+    assert os.path.isfile(raw)
+    assert not os.path.exists(os.path.join(snap_dir, "payload", "prices.jsonl"))
+    assert len(read_jsonl(raw)) == 2
+    # verify is codec-agnostic: digests are the stored bytes.
+    assert verify_snapshot(snap_dir) == []
+    # Normalized rows landed compressed too, readable via norm_read.
+    assert len(norm_read(root, "gz", s["acq_id"], "prices")) == 2
+    assert load_state(root, "gz", "prices", "live") == {"cursor": "2026-01-05"}
+
+
+def test_gz_determinism_dedupes_via_worm(root, registry, gz_source, monkeypatch):
+    # Same records + same stamp => same compressed bytes => same acq_id:
+    # the re-pull hits the WORM refusal, which IS the at-least-once
+    # dedupe story surviving compression.
+    import dskit.onboarding.acquire as acquire_mod
+
+    monkeypatch.setattr(
+        acquire_mod, "utc_now", lambda: "2026-08-26T12:00:00+00:00"
+    )
+    script = [record("prices", "2026-01-02", {"close": 10.5})]
+    FakeConnector.script = list(script)
+    first = run_acquisition(root, registry, "gz", "prices", "live")
+    FakeConnector.script = list(script)
+    with pytest.raises(AssetError, match="WORM") as exc:
+        run_acquisition(root, registry, "gz", "prices", "live")
+    assert first["acq_id"] in str(exc.value)
+
+
+def test_connector_never_sees_the_storage_block(root, registry, gz_source):
+    FakeConnector.script = [record("prices", "2026-01-02")]
+    run_acquisition(root, registry, "gz", "prices", "live")
+    checks = [c for c in FakeConnector.calls if c[0] == "check"]
+    assert checks and all("storage" not in cfg for _, cfg in checks)
+
+
+def test_gz_error_mid_stream_leaves_no_debris(root, registry, gz_source):
+    FakeConnector.script = [
+        record("prices", "2026-01-02"),
+        {"protocol": 1, "type": "ERROR", "message": "auth expired"},
+    ]
+    with pytest.raises(AssetError, match="auth expired"):
+        run_acquisition(root, registry, "gz", "prices", "live")
+    assert os.listdir(root.raw_dir("gz")) == []
+    assert not os.path.isdir(os.path.join(root.root, "observations", "gz"))
+
+
+def test_gz_forecasts_segregate_compressed(root, registry, gz_source):
+    FakeConnector.script = [
+        record("outlook", "2026-01-01", {"v": 1}),
+        record("outlook", "2027-01-01", {"v": 2}, kind="forecast"),
+    ]
+    s = run_acquisition(root, registry, "gz", "outlook", "live")
+    assert s["records"] == 1 and s["forecasts"] == 1
+    assert len(norm_read(root, "gz", s["acq_id"], "outlook")) == 1
+    fc = norm_read(root, "gz", s["acq_id"], "outlook", forecasts=True)
+    assert len(fc) == 1 and fc[0]["kind"] == "forecast"

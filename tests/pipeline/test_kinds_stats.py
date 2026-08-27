@@ -140,13 +140,30 @@ class TestStatTestParams:
 
     def test_problems_accumulate_never_raise(self):
         problems = StatTest.validate_params(
-            {"alpha": 2.0, "n_boot": 1, "seed": -1, "correction": "holm"}
+            {
+                "alpha": 2.0,
+                "n_boot": 1,
+                "seed": -1,
+                "correction": "holm",
+                "method": "percentile",
+            }
         )
-        assert len(problems) == 4
+        assert len(problems) == 5
 
     def test_construction_refuses_bad_params(self):
         with pytest.raises(ConfigError, match="n_boot"):
             StatTest("edge", {"n_boot": 10})
+
+    @pytest.mark.parametrize("method", ["plain", "studentized"])
+    def test_good_methods(self, method):
+        assert StatTest.validate_params({"method": method}) == []
+
+    @pytest.mark.parametrize("method", ["percentile", True, None, "", 3])
+    def test_bad_method_names_the_known_ones(self, method):
+        (problem,) = StatTest.validate_params({"method": method})
+        assert "method" in problem
+        for known in ("plain", "studentized"):
+            assert known in problem
 
 
 class TestStatTestInputs:
@@ -189,6 +206,62 @@ class TestStatTestInputs:
             {"scores": {"AAA": [0.1], "BBB": {"c0": float("nan")}}}
         )
         assert len(problems) == 2
+
+
+class TestStatTestWeightsInput:
+    """The weights-port rules: demanded by a needs_weights correction,
+    refused otherwise, shaped when present, and covering EVERY instrument
+    (degraded ones enter the family at p = 1.0, so they weigh too)."""
+
+    SCORES = {"AAA": {"c0": 0.1, "c1": -0.2}, "BBB": {"c0": 0.3}}
+
+    def node(self, **params):
+        return StatTest("t", {"correction": "weighted-bh", **params})
+
+    def test_weighted_correction_without_weights_refuses(self):
+        problems = self.node().validate_inputs({"scores": dict(self.SCORES)})
+        assert any("wire a weights input" in p for p in problems)
+
+    def test_unweighted_correction_with_weights_refuses(self):
+        problems = StatTest("t").validate_inputs(
+            {"scores": dict(self.SCORES), "weights": {"AAA": 1.0, "BBB": 1.0}}
+        )
+        assert any("does not use weights" in p for p in problems)
+
+    def test_good_weights_pass(self):
+        problems = self.node().validate_inputs(
+            {"scores": dict(self.SCORES), "weights": {"AAA": 2.0, "BBB": 0.5}}
+        )
+        assert problems == []
+
+    @pytest.mark.parametrize("w", [0.0, -1.0, True, float("nan"), "2", None])
+    def test_bad_weight_values_refuse(self, w):
+        problems = self.node().validate_inputs(
+            {"scores": dict(self.SCORES), "weights": {"AAA": w, "BBB": 1.0}}
+        )
+        assert any("finite number > 0" in p for p in problems)
+
+    def test_weights_must_be_a_dict(self):
+        problems = self.node().validate_inputs(
+            {"scores": dict(self.SCORES), "weights": [1.0, 2.0]}
+        )
+        assert any("weights must be a dict" in p for p in problems)
+
+    def test_every_instrument_needs_a_weight_including_degraded(self):
+        scores = {"AAA": {"c0": 0.1, "c1": 0.2}, "TINY": {"c0": 0.5}}
+        problems = self.node().validate_inputs(
+            {"scores": scores, "weights": {"AAA": 1.0}}
+        )
+        assert any("no weight for instrument 'TINY'" in p for p in problems)
+
+    def test_extra_weight_keys_are_fine(self):
+        problems = self.node().validate_inputs(
+            {
+                "scores": dict(self.SCORES),
+                "weights": {"AAA": 1.0, "BBB": 1.0, "unrelated": 3.0},
+            }
+        )
+        assert problems == []
 
 
 class TestStatTestRun:
@@ -289,6 +362,132 @@ class TestStatTestRun:
         out = node.run(ctx, {"scores": {"AAA": {"c0": 1.0, "c1": 1.0}}})
         assert node.validate_outputs(out) == []
 
+    def test_method_plain_is_default_and_identical(self, ctx):
+        # Full-output equality, evidence included: an undeclared method IS
+        # the plain method, byte-for-byte.
+        scores = {
+            "EDGE": {f"c{i}": 1.0 + 0.1 * i for i in range(8)},
+            "MIXED": {"c0": 1.0, "c1": -1.0, "c2": 0.4},
+        }
+        base = StatTest("t", {"n_boot": 1000}).run(ctx, {"scores": scores})
+        explicit = StatTest("t", {"n_boot": 1000, "method": "plain"}).run(
+            ctx, {"scores": scores}
+        )
+        assert base == explicit
+
+    def test_studentized_oracle_and_degradation(self, ctx):
+        # Identical positives are the signed-degenerate case: exact add-one
+        # floor. Identical zeros: exact 1.0. Below MIN_CLUSTERS degrades
+        # exactly as the plain method does.
+        scores = {
+            "EDGE": {f"c{i}": 1.0 for i in range(8)},
+            "NULL": {f"c{i}": 0.0 for i in range(8)},
+            "TINY": {"c0": 5.0},
+        }
+        out = StatTest("t", {"n_boot": 1000, "method": "studentized"}).run(
+            ctx, {"scores": scores}
+        )
+        assert out["pvalues"]["EDGE"] == 1 / 1001
+        assert out["pvalues"]["NULL"] == 1.0
+        assert out["pvalues"]["TINY"] == 1.0
+        assert out["survivors"] == ["EDGE"] and out["verdict"] == "GO"
+        row = out["evidence"]["instruments"]["TINY"]
+        assert row["tested"] is False and "MIN_CLUSTERS" in row["reason"]
+
+    @pytest.mark.parametrize("method", ["plain", "studentized"])
+    def test_evidence_self_describes_the_test(self, ctx, method):
+        # TODO-1 / ADR-0033: the stage says what ran; the report renders
+        # these instead of a fallback description.
+        out = StatTest("t", {"n_boot": 1000, "method": method, "seed": 3}).run(
+            ctx, {"scores": {"AAA": {f"c{i}": 0.5 + 0.1 * i for i in range(6)}}}
+        )
+        totals = out["evidence"]["totals"]
+        assert totals["method"] == method
+        assert totals["n_boot"] == 1000
+        assert totals["seed"] == 3
+        assert totals["independence_unit"] == "cluster (the record's dependence group)"
+        if method == "plain":
+            assert totals["test"] == (
+                "one-sided cluster bootstrap on the paired improvement "
+                "(H0: mean improvement <= 0)"
+            )
+        else:
+            assert "studentized recentered cluster bootstrap-t" in totals["test"]
+        assert "statistic" in totals
+
+    def test_studentized_rows_carry_se_and_ci(self, ctx):
+        out = StatTest("t", {"n_boot": 1000, "method": "studentized"}).run(
+            ctx,
+            {
+                "scores": {
+                    "AAA": {f"c{i}": 0.5 + 0.05 * (i % 7) for i in range(40)},
+                    "FLAT": {f"c{i}": 0.5 for i in range(6)},
+                }
+            },
+        )
+        row = out["evidence"]["instruments"]["AAA"]
+        assert row["ci_low"] <= row["mean_improvement"] <= row["ci_high"]
+        assert row["se"] > 0 and row["t"] > 0
+        # Degenerate bounds are OMITTED, never null (allow_nan JSON safety
+        # + the report's disclaimer probe keys off presence).
+        flat = out["evidence"]["instruments"]["FLAT"]
+        assert flat["se"] == 0.0
+        assert "ci_low" not in flat and "ci_high" not in flat and "t" not in flat
+        # Plain rows carry none of the studentized columns.
+        plain = StatTest("t", {"n_boot": 1000}).run(
+            ctx, {"scores": {"AAA": {"c0": 1.0, "c1": 1.0}}}
+        )
+        assert "se" not in plain["evidence"]["instruments"]["AAA"]
+
+    def test_weighted_bh_cannot_promote_an_untested_instrument(self, ctx):
+        # The sentinel p=1.0 of a below-MIN_CLUSTERS instrument is
+        # rejectable under weighted-bh (q = 1/w) — but an untested
+        # instrument can never be a survivor: GO on zero evidence is
+        # exactly what the gate exists to prevent.
+        out = StatTest("t", {"n_boot": 1000, "correction": "weighted-bh"}).run(
+            ctx,
+            {"scores": {"TINY": {"c0": 0.5}}, "weights": {"TINY": 50.0}},
+        )
+        assert out["survivors"] == [] and out["verdict"] == "NO-GO"
+        row = out["evidence"]["instruments"]["TINY"]
+        assert row["tested"] is False and row["survived"] is False
+
+    def test_weighted_bh_admission_is_said_not_mislabeled(self, ctx):
+        # A big weight can admit a TESTED instrument whose own p-value
+        # missed alpha. The note must say "admitted", never "removed -1".
+        scores = {"EDGE": {f"c{i}": 1.0 for i in range(8)}}
+        node = StatTest(
+            "t",
+            {"n_boot": 1000, "alpha": 0.0005, "correction": "weighted-bh"},
+        )
+        out = node.run(ctx, {"scores": scores, "weights": {"EDGE": 10.0}})
+        # p = 1/1001 ~ 0.000999 >= alpha, but q = p/10 clears the bar.
+        assert out["survivors"] == ["EDGE"]
+        assert out["evidence"]["instruments"]["EDGE"]["survives_uncorrected"] is False
+        assert out["evidence"]["totals"]["correction_cost"] == -1
+        (note,) = out["evidence"]["notes"]
+        assert "admitted 1" in note and "-1" not in note
+
+    def test_weighted_bh_end_to_end_flip(self, ctx):
+        # Exact p-values: EDGE = 1/1001, NULL = 1.0. With a tiny weight on
+        # EDGE, its q = p/w blows past the BH threshold; with unit weights
+        # it survives — the weights change the family decision, nothing
+        # else.
+        scores = {
+            "EDGE": {f"c{i}": 1.0 for i in range(8)},
+            "NULL": {f"c{i}": 0.0 for i in range(8)},
+        }
+        node = StatTest("t", {"n_boot": 1000, "correction": "weighted-bh"})
+        up = node.run(
+            ctx, {"scores": scores, "weights": {"EDGE": 1.0, "NULL": 1.0}}
+        )
+        down = node.run(
+            ctx, {"scores": scores, "weights": {"EDGE": 0.01, "NULL": 1.0}}
+        )
+        assert up["survivors"] == ["EDGE"] and up["verdict"] == "GO"
+        assert down["survivors"] == [] and down["verdict"] == "NO-GO"
+        assert up["pvalues"] == down["pvalues"] == {"EDGE": 1 / 1001, "NULL": 1.0}
+
 
 class TestStatTestProperties:
     SHAPES = {
@@ -300,23 +499,37 @@ class TestStatTestProperties:
         "empty": {},
     }
 
+    @pytest.mark.parametrize("method", ["plain", "studentized"])
     @pytest.mark.parametrize("correction", ["bh", "bonferroni", "none"])
     @pytest.mark.parametrize("seed", [0, 1])
     def test_invariants_hold_across_shapes_seeds_corrections(
-        self, ctx, correction, seed
+        self, ctx, correction, seed, method
     ):
-        params = {"n_boot": 1000, "seed": seed, "correction": correction}
+        params = {
+            "n_boot": 1000,
+            "seed": seed,
+            "correction": correction,
+            "method": method,
+        }
         out = StatTest("t", params).run(ctx, {"scores": dict(self.SHAPES)})
         assert set(out["pvalues"]) == set(self.SHAPES)
         assert all(0 < p <= 1 for p in out["pvalues"].values())
         assert out["survivors"] == sorted(out["survivors"])
         assert set(out["survivors"]) <= set(self.SHAPES)
         assert (out["verdict"] == "GO") == bool(out["survivors"])
-        # Degenerate instruments degrade honestly; extremes are exact.
+        # Degenerate instruments degrade honestly; extremes are exact
+        # where the method makes them exact.
         assert out["pvalues"]["single"] == 1.0
         assert out["pvalues"]["empty"] == 1.0
-        assert out["pvalues"]["all_negative"] == 1.0
-        assert out["pvalues"]["all_positive"] == 1 / 1001
+        assert out["pvalues"]["all_zero"] == 1.0
+        if method == "plain":
+            # every resample mean is <= 0 / > 0 respectively — exact
+            assert out["pvalues"]["all_negative"] == 1.0
+            assert out["pvalues"]["all_positive"] == 1 / 1001
+        else:
+            # varied values: the studentized pivot resamples for real
+            assert out["pvalues"]["all_negative"] >= 0.5
+            assert out["pvalues"]["all_positive"] <= 0.05
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +542,7 @@ class TestValidateParams:
         (problem,) = Validate.validate_params({})
         assert "split" in problem
         assert Validate.validate_params({"split": "holdout"}) != []
-        for split in ("train", "val", "test"):
+        for split in ("train", "val", "cal", "test"):
             assert Validate.validate_params({"split": split}) == []
 
     def test_unknown_metric_names_the_known_ones(self):
@@ -452,6 +665,37 @@ class TestValidateRun:
             split_ctx, {"records": records, "signal": signal, "outcomes": outcomes}
         )
         assert out["metrics"]["n"] == 1
+
+    def test_a_cal_reader_scores_only_the_cal_band(self, tmp_path):
+        # ADR-0034: the run path buckets by the fourth name like any other.
+        splits = TimeSplitConfig(
+            train_end_ms=10 * DAY,
+            cal_start_ms=17 * DAY,
+            val_end_ms=20 * DAY,
+            test_end_ms=30 * DAY,
+        )
+        cal_ctx = NodeContext(
+            name="kinds",
+            asof=ASOF,
+            run_dir=str(tmp_path),
+            splits=splits,
+            splits_info=splits.to_obj(),
+        )
+        outcomes = {"AAA-1": True, "AAA-2": True, "AAA-3": True}
+        signal = {"AAA-1": 0.9, "AAA-2": 0.9, "AAA-3": 0.9}
+        records = [
+            drec("AAA-1", 15 * DAY, cluster="AAA:c0"),  # val
+            drec("AAA-2", 18 * DAY, cluster="AAA:c1"),  # cal
+            drec("AAA-3", 25 * DAY, cluster="AAA:c2"),  # test
+        ]
+        cal = Validate("val", {"split": "cal", "metric": "brier"}).run(
+            cal_ctx, {"records": records, "signal": signal, "outcomes": outcomes}
+        )
+        val = Validate("val", {"split": "val", "metric": "brier"}).run(
+            cal_ctx, {"records": records, "signal": signal, "outcomes": outcomes}
+        )
+        assert cal["metrics"]["n"] == 1
+        assert val["metrics"]["n"] == 1  # the cal band came OUT of val
 
     def test_no_splits_section_means_everything_in_sample(self, ctx):
         records, outcomes, signal, _ = scoring_case()

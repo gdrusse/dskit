@@ -80,6 +80,12 @@ Writers stage + fsync + `os.replace` (maildir discipline); nothing under
 `raw/` or `published/` is ever modified; a `verify` command re-hashes
 against manifests (tamper evidence, DVC-style).
 
+ADR-0036 amendment: payload and observation stream files may be stored
+gzipped — `<stream>.jsonl.gz`, opted into per source via the reserved
+`storage` config block. The codec is declared by the extension, never a
+manifest field; digests cover the stored bytes, so the manifest shape,
+`acq_id` recipe, and `verify` are unchanged.
+
 ## Validation & certification (ADR-0015)
 
 Suites are JSON documents; rules are

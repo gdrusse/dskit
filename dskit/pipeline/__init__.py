@@ -103,6 +103,7 @@ from dskit.pipeline.base import (
     split_from_obj,
 )
 from dskit.pipeline.split_policy import straddle_report
+from dskit.pipeline.stats import register_correction
 from dskit.pipeline.document import (
     ClockConfig,
     NodeSpec,
@@ -271,6 +272,7 @@ __all__ = [
     "event_bounds_from_records",
     "merge_event_bounds",
     "policy_instant",
+    "register_correction",
     "register_split_policy",
     "straddle_report",
     "SettlementSource",

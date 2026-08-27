@@ -55,4 +55,6 @@ def test_source_sample_validates_against_the_connectors_spec():
         config = json.load(fh)
     connector = SampleConnector()
     check_config(connector, config)  # default-deny against spec()
-    connector.check(config)  # and the connector itself accepts the knobs
+    # The reserved "storage" block (ADR-0036) is platform config —
+    # acquire strips it before the connector sees config; mirror that.
+    connector.check({k: v for k, v in config.items() if k != "storage"})

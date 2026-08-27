@@ -23,19 +23,24 @@ each with a named dskit home and interim child-side handling. The full
 statements are §13 of `docs/children_design_proposals/pmquant.md`; none is an
 ADR yet, and none blocks the child from starting:
 
-- [ ] 1. `stat_test` evidence self-description (`kinds_stats.py`) — the one
-      unported pmquant→dskit engine capability.
-- [ ] 2. Studentized recentered cluster bootstrap-t as a `stat_test` method
-      (`stats.py`) — **blocks a single-document deploy→size path**.
-- [ ] 3. Registrable family corrections / weighted BH (`stats.py`).
-- [ ] 4. A calibration split block (`cal_start_ms` in `base.TimeSplitConfig`).
+- [x] 1. `stat_test` evidence self-description (`kinds_stats.py`) — the one
+      unported pmquant→dskit engine capability. **Landed via ADR-0033 (2026-08-26).**
+- [x] 2. Studentized recentered cluster bootstrap-t as a `stat_test` method
+      (`stats.py`) — **unblocked the single-document deploy→size path**.
+      **Landed via ADR-0033 (2026-08-26).**
+- [x] 3. Registrable family corrections / weighted BH (`stats.py`).
+      **Landed via ADR-0033 (2026-08-26).**
+- [x] 4. A calibration split block (`cal_start_ms` in `base.TimeSplitConfig`).
+      **Landed via ADR-0034 (2026-08-26).**
 - [ ] 5. Calibration/scoring `libs/` packs (beta, CORP isotonic, cross-fit,
       Efron lfdr, Venn–Abers, proper scoring rules).
 - [ ] 6. Acquire-side coverage hook + guarded parallel acquisition
       (`onboarding/acquire.py`).
 - [ ] 7. A grouped/cardinality suite rule (`onboarding/validate.py` `_RULES`).
-- [ ] 8. Compressed snapshot payloads in onboarding (~96× on gz-class
-      archives, ~10× on parquet-class).
+- [x] 8. Compressed snapshot payloads in onboarding (~96× on gz-class
+      archives, ~10× on parquet-class). **Landed via ADR-0036 (2026-08-26;
+      the ratified Tier-B sunset path — pmquant's Tier-B bypass retires
+      onto it when the child builds).**
 - [ ] 9. A generic `records-write` kind beside `table-write`
       (`kinds_table.py`).
 - [ ] 10. A generic onboarding-observations reader kind — the second child
@@ -43,8 +48,9 @@ ADR yet, and none blocks the child from starting:
 - [ ] 11. A records → keyed-table verb (`groupby`/`pivot`, `kinds_flow.py`).
 - [ ] 12. Search-seam expressiveness for seed-ensemble studies + per-fold
       node-param binding (`kinds_search.py`, `document.py`/`driver.py`).
-- [ ] 13. Val-metric checkpoint selection in the torch pack (a `monitor` +
+- [x] 13. Val-metric checkpoint selection in the torch pack (a `monitor` +
       best-state-restore seam; the curve already computes the row).
+      **Landed via ADR-0035 (2026-08-26).**
 
 Found by the first real-data run of `children/intraday_poc` (2026-08-26) —
 a child-side defect, not a dskit gap:

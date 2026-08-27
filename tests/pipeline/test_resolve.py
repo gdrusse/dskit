@@ -105,6 +105,16 @@ class TestCapabilityChecks:
         with pytest.raises(ValueError, match="correction.*tukey"):
             resolve(cfg, asof="2026-01-01", registry=registry)
 
+    def test_weighted_correction_refuses_in_the_stage_list_grammar(
+        self, registry, synthetic_config
+    ):
+        # ADR-0033: the stage-list grammar has no way to wire per-instrument
+        # weights, so a needs_weights correction refuses here, naming the
+        # node-map door — never a TypeError inside the runner.
+        cfg = synthetic_config(stat_test=StatTestConfig(correction="weighted-bh"))
+        with pytest.raises(ValueError, match="node-map stat_test"):
+            resolve(cfg, asof="2026-01-01", registry=registry)
+
     def test_backend_refuses_unsupported_split_kind(self, registry, synthetic_config):
         class TimeOnly:
             venue = "synthetic"

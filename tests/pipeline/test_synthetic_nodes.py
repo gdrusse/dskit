@@ -143,6 +143,8 @@ class TestSignalsAndScoring:
 
     def test_score_validators(self, ctx):
         assert SynthScore.validate_params({"split": "holdout"})
+        for split in ("train", "val", "cal", "test"):  # ADR-0034
+            assert SynthScore.validate_params({"split": split}) == []
         problems = SynthScore("s", {"split": "val"}).validate_inputs(
             {"signal": [], "outcomes": {}, "events": {}}
         )

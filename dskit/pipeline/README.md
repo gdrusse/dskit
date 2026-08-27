@@ -49,23 +49,29 @@ kinds resolve. Two more verbs — `demo`
   carries a value from the previous run of the same series.
 - **Splits**: `time` (explicit epoch-ms cuts; optional `val_start_ms` opens
   an EMBARGO band — records between `train_end_ms` and it belong to NO
-  split, ADR-0027), `random` (cluster-hashed; `train+val == 1.0` is legal —
-  no test split), `trailing` (windows counted backward from the data's edge
+  split, ADR-0027; optional `cal_start_ms` carves a CALIBRATION band out
+  of the val window's tail — `split_of` returns a fourth name, `"cal"`,
+  for `[cal_start_ms, val_end_ms]`, ADR-0034), `random` (cluster-hashed;
+  `train+val == 1.0` is legal — no test split; never yields `"cal"`),
+  `trailing` (windows counted backward from the data's edge
   via `Node.data_edge()`; `train_days` must be `"all-prior"`; optional
-  `embargo_days` carves the band out of train's tail). Time-based splits
+  `embargo_days` carves the band out of train's tail; optional `cal_days`
+  carves the cal band between test and val). Time-based splits
   take an optional **`policy`** — `record` (default) | `event-open` |
   `event-close` — deciding WHICH instant assigns a record to a side, so a
   multi-record event never straddles a cut under an event policy. Event
   policies need a data node supplying `Node.event_bounds()`; the driver
   refuses loudly when none does. The defaults are hash-neutral: pre-policy,
-  pre-embargo documents keep their identity.
+  pre-embargo, pre-cal documents keep their identity.
 - **Walk-forward** (ADR-0027): an optional `walkforward` section — fold
   cutoffs (explicit list or `first`/`step_days`/`count`), `val_days`,
   `embargo_days`, an `objective` ref, `select` — and the `walkforward` verb
   runs one derived document per fold, each with its own full run dir:
   splits replaced by that fold's pinned cuts, the declared split `policy`
   riding along (ADR-0031), plus an aggregate summary dir. The section IS
-  identity; a fold that halts is a result, a fold that errors stops the plan.
+  identity; a fold that halts is a result, a fold that errors stops the
+  plan. Folds carry no cal band (ADR-0034 v1) — a parent document
+  declaring one refuses pre-flight.
 - **Identity**: sha256 over canonical JSON with every `notes` stripped and the
   top-level `env` / `outputs` / `schedule` sections excluded.
 - **Roles** are declared BY the node class, never by the config:
@@ -93,7 +99,7 @@ Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 | `banking-report` | report | the banked/in-family/gap ledger |
 | `hpo-grid` | search | grid search over `"node.param.path"` via the rerun seam |
 | `validate` † | score | model-vs-baseline per-record loss on a declared split |
-| `stat_test` † | stat_test | per-instrument cluster bootstrap + family correction |
+| `stat_test` † | stat_test | per-instrument cluster bootstrap (`method`: plain \| studentized bootstrap-t) + family correction; weighted corrections take a `weights` input |
 | `run-report` † | report | renders stage evidence to `evidence.json`/`.md` |
 
 † **owned**: documents may not substitute these kinds with their own class —
@@ -105,7 +111,8 @@ the toolkit's statistics are not swappable by config.
 **torch** `torch-train`/`torch-predict` (DECLARED, ADR-0025: the document
 names the `nn.Module` class — no subclass, validated at plan time) +
 `torch-linear-train`/`torch-linear-predict` + `TorchTrain`/`TorchPredict`
-bases (`build_module` hook); **sb3** `sb3-train`/`sb3-policy`/`sb3-eval`
+bases (`build_module` hook; optional `monitor` selects the checkpoint —
+the best epoch's weights restore before persist/serve, ADR-0035); **sb3** `sb3-train`/`sb3-policy`/`sb3-eval`
 (ADR-0028: the document names the RL algorithm AND the gymnasium env class;
 artifacts are hash-pinned); **matplotlib** `mpl-figure` + `FigureNode` base
 (ADR-0029: declared line/scatter/bar/hist marks over a row stream → a PNG
@@ -180,14 +187,16 @@ dskit/pipeline/
 ├── split_policy.py    split-assignment policies (record / event-open / event-close) + EventBounds
 ├── kinds_flow.py      filter, derive, concat, join, event-bank, eligibility, banking-report
 ├── kinds_table.py     table-file, table-write (digest-verified keyed tables)
-├── kinds_stats.py     owned validate + stat_test (cluster bootstrap, corrections)
+├── kinds_stats.py     owned validate + stat_test (plain + studentized bootstrap-t, corrections)
 ├── kinds_search.py    hpo-grid (the ctx.rerun seam)
 ├── kinds_report.py    owned run-report (evidence.json / evidence.md)
 ├── conformance.py     conformance_suite + NodeProbe — the reusable pack bar
 ├── synthetic_nodes.py every role, deterministic, for demos/tests
 ├── metrics.py         logloss / brier / squared_error / absolute_error + register_metric
 ├── trainlog.py        per-epoch TrainingCurve + probability metrics (logloss/brier/ECE)
-├── stats.py           cluster bootstrap p-values; bh / bonferroni / none
+├── stats.py           cluster bootstraps (plain, studentized-t); correction
+│                      registry (bh / bonferroni / none / weighted-bh) +
+│                      register_correction
 ├── records.py         MarketRecord envelope + binary / mark-to-market accounting
 ├── protocols.py       structural Protocols (DataSource, Tracker, ...)
 ├── env.py             env file + redacting Secrets façade

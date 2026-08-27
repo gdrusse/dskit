@@ -93,6 +93,33 @@ def test_malformed_spec_is_the_connectors_fault_but_loud():
         check_config(Sloppy(), {})
 
 
+def test_storage_block_is_platform_reserved():
+    # ADR-0036: allowed without a spec declaration, shape-checked here.
+    conn = FakeConnector()
+    check_config(conn, {"storage": {"payload_codec": "gzip"}})  # ok
+    check_config(conn, {"storage": {}})  # empty block is fine
+    with pytest.raises(AssetError, match="storage.payload_codec"):
+        check_config(conn, {"storage": {"payload_codec": "zstd"}})
+    with pytest.raises(AssetError, match="unknown key"):
+        check_config(conn, {"storage": {"codec": "gzip"}})
+
+
+def test_a_spec_may_not_declare_the_reserved_keys():
+    class Squatter(FakeConnector):
+        def spec(self):
+            return {"params": {"storage": {"notes": "mine now"}}}
+
+    with pytest.raises(AssetError, match="reserved platform key"):
+        check_config(Squatter(), {})
+
+    class NoteSquatter(FakeConnector):
+        def spec(self):
+            return {"params": {"notes": {}}}
+
+    with pytest.raises(AssetError, match="reserved platform key"):
+        check_config(NoteSquatter(), {})
+
+
 # -- resolve_connector ------------------------------------------------------
 
 

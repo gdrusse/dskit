@@ -852,3 +852,207 @@ tests); `children/README.md`, both READMEs, the pipeline CLAUDE.md, the
 pmquant gap report, and RE-ENTRY state the ruling. Nothing behavioral
 changes — `--adapter` and class-path resolution were always
 name-agnostic.
+
+---
+
+## ADR-0033 — stat_test self-description, a studentized method, a correction registry
+
+**Status:** accepted (2026-08-26 — owner graduated pmquant §13 items 1–3)
+
+**Context.** Three generic gaps in the stats seam. The report renderer
+already reads `totals["test"]/["independence_unit"]/["n_boot"]/["seed"]`
+and probes per-instrument `ci_low`/`ci_high`, but `StatTest` never emits
+them — the rendered edge section describes the cluster bootstrap by
+fallback string regardless of what ran. The plain bootstrap is not
+gate-grade for a deploy verdict that authorizes sizing inside one
+document (pmquant TODO-2, the structural blocker). Corrections are a
+closed dict `{bh, bonferroni, none}`; weighted BH is unregistrable.
+
+**Decision.** (1) *Self-description*: `evidence.totals` gains `test`,
+`statistic`, `independence_unit`, `n_boot`, `seed`, `method` for both
+methods; studentized rows carry `se` always and `t`/`ci_low`/`ci_high`
+only when finite — omitted, never null/NaN. The plain method's `test`
+string equals the renderer's existing fallback, so old runs render
+unchanged. (2) *A `method` param* on the `stat_test` kind —
+`METHODS = ("plain", "studentized")`, a **closed tuple**, not a
+registry: the statistic is the ruler and stays owned (and the role stays
+unsearchable, so `method` is not HPO-addressable). `"studentized"` is a
+one-sided studentized recentered cluster bootstrap-t: size-weighted
+pooled mean, cluster-robust linearized SE (`s/√n` in the single-record
+degenerate), recentered pivot with signed conventions for degenerate
+replicates, add-one p, two-sided bootstrap-t CI — descriptive,
+uncorrected for the family. The default `"plain"` is byte-stable (same
+seed stream, same p-values). (3) *A correction registry*: `CORRECTIONS`
+reshaped to the split-policy metadata pattern
+(`name -> {fn, needs_weights, doc}`) with `register_correction`
+(duplicates raise) and a loud lookup; `weighted-bh` ships
+(Genovese–Roeder `p/w` with raw weights, `needs_weights=True`). Weights
+reach the node as an **input port** — family membership and weights are
+data, not config. The stage-list grammar refuses `needs_weights`
+corrections (it cannot wire weights); `StatTestConfig` gains **no**
+field — one would move every stage-list config hash.
+
+**Consequences.** Zero identity movement: no dataclass field, node
+params serialized as written, default-path p-values byte-identical.
+Rendered evidence for existing node-map runs now shows real
+`n_boot`/`seed` where "—" printed, and the independence-unit line states
+the generic truth ("cluster …") instead of the renderer's venue-flavored
+fallback. The `test_registry` tripwire is updated deliberately. The
+single-document deploy→size path unblocks.
+
+*Review amendments (same day, adversarial pass):* (a) an UNTESTED
+instrument (below MIN_CLUSTERS, sentinel p=1.0) can never be a survivor —
+a weighted correction could otherwise reject `q = 1/w` and declare GO on
+zero evidence; the sentinel stays in the family (it spends budget) but
+cannot win. (b) The studentized signed-degenerate p is floored at half
+the all-one-cluster replicate mass, `n^(1-n)/2` — the method's own
+resampling floor — so an exact tie at small n can never claim more
+significance than an epsilon-perturbed sample could (at n=2 the floor is
+0.25; by n≈8 the add-one floor rules). (c) Degeneracy is detected
+structurally (equal cluster means), not by exact `se == 0.0`, so ULP
+dust cannot render a t of ~1e16 with a zero-width interval. (d) The
+correction note names ADMISSIONS (a weighted correction rejecting an
+instrument whose own p missed alpha) instead of reporting a negative
+removal. (e) Both bootstrap functions refuse `n_boot < 1`.
+
+---
+
+## ADR-0034 — A declared calibration band inside the val window
+
+**Status:** accepted (2026-08-26 — owner graduated pmquant §13 item 4)
+
+**Context.** Calibrator fitting needs rows strictly after train (never
+training data), disjoint from val (val selects models and checkpoints;
+fitting the calibrator on the selection set fits it to the selection),
+and strictly before everything it is applied to. Children carve this
+with child-side `cuts_ms` + `block` params; `TimeSplitConfig` knows
+three names plus the embargo band.
+
+**Decision.** `cal_start_ms` (optional, appended last, omitted from
+`to_obj` when `None` — the `val_start_ms` omission discipline) declares
+cal as the **tail of the val window**: `val = [val_start_ms,
+cal_start_ms)`, `cal = [cal_start_ms, val_end_ms]`, with
+`(val_start_ms or train_end_ms) < cal_start_ms <= val_end_ms`.
+`split_of` returns a fourth name `"cal"`, computed on the
+policy-selected instant (ADR-0024 untouched), giving
+`train < embargo < val < cal < test` by construction.
+`TrailingSplitSpec` gains `cal_days` (counted back between test and
+val; omitted when 0). The five three-name sites learn the fourth name;
+`straddle_report` gains the cal boundaries; the planner refuses a
+`split:"cal"` reader whose declared splits cannot yield a band.
+Walk-forward v1: folds carry **no** cal band — a parent document
+declaring one refuses pre-flight (future work). Random splits never
+produce `"cal"`.
+
+**Consequences.** Hash-frozen for every existing document (omission
+discipline; assignment unchanged when unset). `$splits.cal_start_ms`
+appears exactly when declared. pmquant's `block`-param workaround
+retires.
+
+*Review amendments (same day, adversarial pass):* (a) the trailing
+materializer stamps `cal_start = val_end − cal_days·DAY + 1` — the cal
+band is inclusive-left, so without the +1 the boundary midnight stamp
+moved from val into cal (cal_days+1 daily stamps in cal, one stolen from
+val); with it, cal holds exactly `cal_days` daily stamps and val never
+shrinks. (b) The walkforward-vs-cal refusal also runs at PLAN time, so
+`plan`/`validate` cannot bless a document whose only possible run is the
+driver's refusal.
+
+---
+
+## ADR-0035 — Val-metric checkpoint selection in the torch pack
+
+**Status:** accepted (2026-08-26 — owner graduated pmquant §13 item 13)
+
+**Context.** `TorchTrain` runs a fixed epoch count and persists the
+FINAL epoch's weights; `TrainingCurve` already computes
+`best_epoch`/`best_value` but the tracked objective is hard-coded and
+the best epoch's weights are discarded. A child wanting "keep the epoch
+that minimized this metric" must own an entire train kind. Worse,
+`TrainingCurve.record` silently falls back to `train_loss` when the
+objective key is absent — a typo selects on the wrong signal quietly.
+
+**Decision.** A `monitor` param on `TorchTrain._BASE_PARAMS` (covers
+`DeclaredTrain` and `LinearRegressor`; excluded from the predict-side
+sidecar cross-check by construction), validated at plan time against
+`_MONITORS = ("train_loss", "val_loss", "logloss", "brier", "ece")` —
+loss-only in v1, no direction knob; a maximize metric is refused by the
+closed list, which a child may widen by declaration. At run: a
+val-derived monitor with no `val_rows` refuses before epoch 1; the
+curve tracks the monitor; the best epoch's `state_dict` is snapshotted
+(detached, copied to CPU) and restored after the loop **before** the
+final-loss recompute and `adapter.fitted`, so the persisted artifact,
+the serving state, and `final_loss` all describe the selected weights;
+metrics stamp `monitor`/`selected_epoch`/`monitor_value`; a monitor
+that never records a finite value refuses. `TrainingCurve.record`
+loses the silent fallback: an absent objective key raises naming the
+objective, the epoch, and the row's keys — a tier-1 behavior change,
+accepted for loudness.
+
+**Consequences.** `state_hash` moves only for runs declaring `monitor`;
+undeclared runs are bit-for-bit unchanged. The child's reason to own a
+train kind shrinks to its domain residue.
+
+*Review amendments (same day, adversarial pass):* (a) a DIVERGED epoch
+under a probability-metric monitor (non-finite predictions drop the
+metrics dict) records the monitored key as a present None — never the
+best, never a crash — so a transient divergence restores the
+pre-divergence best instead of aborting the fit; a monitor that never
+sees a finite value still refuses after the loop. (b) The best-state
+snapshot deep-copies non-tensor `state_dict` entries (a module's
+`get_extra_state()`), which have no `.detach()`.
+
+---
+
+## ADR-0036 — Compressed snapshot payloads: extension-declared codecs
+
+**Status:** accepted (2026-08-26 — owner graduated pmquant §13 item 8;
+the ratified Tier-B sunset path). Amends ADR-0014's layout naming.
+
+**Context.** Onboarding stores each acquired record twice as
+uncompressed JSON (bronze `payload/` + normalized `observations/`).
+Routed as-is, gz-class book archives grow ~96×, parquet-class ~10× —
+the size math behind pmquant's Tier-B bypass, which the owner ratified
+**with sunset at this ADR**. A model-level knob is ruled out: any new
+model field moves the model hash and locks every initialized root out
+at the registry pin.
+
+**Decision.** The codec is declared by **file extension** —
+`<stream>.jsonl` or `<stream>.jsonl.gz` — never a manifest field:
+`relpath` is already identity material, digests stay post-compression,
+`verify` stays codec-agnostic and unchanged, `_MANIFEST_KEYS` is
+untouched, so manifests, `acq_id`, the model pin, and mixed-version
+estates all stand. Opt-in per source via a reserved `"storage"`
+namespace inside the source config's `config` object
+(`{"storage": {"payload_codec", "observations_codec"}}`), closed
+vocabulary `("none", "gzip")`, both defaulting `"none"`, stripped
+before the connector sees config; a connector spec may not declare
+`storage`/`notes` knobs. gzip is written deterministically
+(`GzipFile(filename="", mtime=0, compresslevel=9)`); determinism is
+per-zlib-build — asserted as write-twice equality, never pinned
+digests. A new tier-1 module `codec.py` owns the mechanics. The
+acquire writer closes before `build_manifest` — **load-bearing**: a
+buffered writer digested unclosed would mint corrupt-at-birth
+snapshots with valid evidence; a pre-commit member decode with
+line-count cross-check guards it, and corrupt members surface as
+`AssetError` at every seam (ADR-0020 parity). The per-row
+observations append becomes kept-open writers (mandatory for gzip,
+byte-parity for `"none"`). The payload codec is free to flip (nothing
+external reads bronze bytes); the observations codec is a
+published-contract change — flip per source only after its consumers
+sniff extensions.
+
+**Consequences.** Existing sources produce byte-identical trees
+(default `"none"`); `test_snapshot.py` and `test_default_model.py`
+passing unmodified is the acceptance gate. Tier-B book streams gain an
+onboarding route at ~parent size, making the bypass's retirement
+schedulable. Cursor/state/publication paths untouched.
+
+*Review amendments (same day, adversarial pass):* (a) the determinism
+envelope is per (CPython io/gzip layer, zlib build) — CPython's flush
+behavior contributes sync-flush framing beyond the zlib bytes; tests
+assert write-twice equality, never pinned digests. (b) One deliberate
+codec asymmetry: gzip text pins `newline="\n"` while `"none"` keeps the
+platform default (byte parity with the pre-codec tree wins there).
+(c) `resolve_stream_file` resolves regular FILES only and refuses a
+squatting non-file by name.

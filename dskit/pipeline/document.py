@@ -509,6 +509,11 @@ class TrailingSplitSpec:
     policy: str = DEFAULT_SPLIT_POLICY
     notes: str = ""
     embargo_days: int = 0
+    #: ADR-0034: a trailing calibration band, carved out BETWEEN test and
+    #: val — cal = the ``cal_days`` newest days of the val window, val
+    #: counts backward from the cal band's start. Zero (the default)
+    #: materializes no band, byte for byte.
+    cal_days: int = 0
 
     def __post_init__(self):
         errors = []
@@ -522,6 +527,7 @@ class TrailingSplitSpec:
                 f"policies: {sorted(SPLIT_POLICIES)}"
             )
         _check_int(errors, "splits.embargo_days", self.embargo_days, ge=0)
+        _check_int(errors, "splits.cal_days", self.cal_days, ge=0)
         if self.train_days != ALL_PRIOR:
             _check_int(errors, "splits.train_days", self.train_days, ge=1)
         _check_str(errors, "splits.notes", self.notes, non_empty=False)
@@ -561,7 +567,16 @@ class TrailingSplitSpec:
             raise ValueError(f"newest_ms must be an int (epoch ms), got {newest_ms!r}")
         test_end = newest_ms
         val_end = test_end - self.test_days * _DAY_MS
-        val_start = val_end - self.val_days * _DAY_MS
+        # The cal band (ADR-0034) is the tail of the val window: cal =
+        # [cal_start, val_end], and val counts backward from the band's
+        # start — declaring cal_days never shrinks val, it pushes the
+        # earlier cuts deeper into history. The +1 mirrors _fold_splits'
+        # boundary discipline: the cal band is INCLUSIVE-left, so without
+        # it the midnight stamp exactly cal_days before val_end would move
+        # from val into cal — cal_days+1 daily stamps in cal, one stolen
+        # from val. With it, cal holds exactly cal_days daily stamps.
+        cal_start = val_end - self.cal_days * _DAY_MS + 1
+        val_start = (cal_start if self.cal_days else val_end) - self.val_days * _DAY_MS
         # The embargo (ADR-0027) is carved out of TRAIN's tail, never out
         # of the val window: train ends embargo_days before val starts,
         # and the band between belongs to no split.
@@ -577,18 +592,21 @@ class TrailingSplitSpec:
             test_end_ms=test_end,
             policy=self.policy,
             val_start_ms=val_start if self.embargo_days else None,
+            cal_start_ms=cal_start if self.cal_days else None,
         )
 
     def to_obj(self) -> dict:
         """``policy`` is dropped when it is the default, and ``embargo_days``
-        when zero, for the same reason :meth:`TimeSplitConfig.to_obj` drops
-        them: a knob nobody declared must not change the identity hash of
-        runs that already happened."""
+        / ``cal_days`` when zero, for the same reason
+        :meth:`TimeSplitConfig.to_obj` drops them: a knob nobody declared
+        must not change the identity hash of runs that already happened."""
         obj = _dataclass_to_obj(self)
         if obj.get("policy") == DEFAULT_SPLIT_POLICY:
             obj.pop("policy", None)
         if not self.embargo_days:
             del obj["embargo_days"]
+        if not self.cal_days:
+            del obj["cal_days"]
         return obj
 
     @classmethod
@@ -602,6 +620,7 @@ class TrailingSplitSpec:
                 "train_days",
                 "policy",
                 "embargo_days",
+                "cal_days",
                 "notes",
             ),
             "splits",
@@ -614,6 +633,7 @@ class TrailingSplitSpec:
             policy=obj.get("policy", DEFAULT_SPLIT_POLICY),
             notes=obj.get("notes", ""),
             embargo_days=obj.get("embargo_days", 0),
+            cal_days=obj.get("cal_days", 0),
         )
 
 

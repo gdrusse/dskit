@@ -1266,3 +1266,21 @@ to an ADR only on the owner's word.
 8. **Tier B ratification** — the bulk book streams bypass P2's immutable-snapshot
    rule (§3.1, compensating controls named and implemented). Ratify, or block
    Tier-B capture on TODO-8.
+
+### Owner rulings (2026-08-26)
+
+All eight answered conceptually. The proposal itself stays **PROPOSED** (Q1).
+
+| Q | Ruling |
+|---|---|
+| 1 | **Hold at PROPOSED.** No forward verdict runs; docs/22 registration waits until one is imminent. |
+| 2 | **`q_hold` stays unset** (documented no-op) until forward trading is real. |
+| 3 | **Dedup across venues, high-precision keying** — merge only certain matches; ambiguous pairs stay distinct. Never discard legitimately distinct events. Lands as config (`pmquant-varpi.dedup` + the eligibility `key`). |
+| 4 | **Coverage bar at graduation** — the ≥90% commit gate applies when the child leaves the incubator, not during incubation. |
+| 5 | **No MIO HPO; knobs fixed by policy.** `kelly_fraction` is a risk constant — direct optimization degenerates toward full Kelly. Uncertainty-scaled Kelly noted as a possible future ruling, not commissioned. |
+| 6 | **Recorder lives on a dedicated server/VPS** — host named when capture is scheduled; source configs stay host-agnostic templates until then. |
+| 7 | **E6a stays OFF** (`ci_robust_gate:false`) — parity with the validated parent behavior; the knob remains available, not policy. |
+| 8 | **Tier B ratified, sunset at TODO-8** — the bypass stands with its compensating controls; book streams re-route through onboarding when TODO-8 (ADR-0036) lands. |
+
+Rulings 1–3, 5–7 are child-config decisions and bind the build when P0 starts.
+TODOs 1–4, 8, 13 of §13 were graduated the same day to dskit ADRs 0033–0036.

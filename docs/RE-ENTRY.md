@@ -2,43 +2,52 @@
 
 Refreshed by `/wrap`. Where things stand — read this first.
 
-**Branch:** `chore/gitignore-env-glob` (merged to `main`) · **Tests:**
-children gates 5 passed, `intraday_poc` 69 passed / 8 skipped; the full
-suite was not re-run (no `dskit/` code changed) · **ruff:** untouched.
+**Two rounds landed on main this day (2026-08-26), from two sessions.**
 
-**Landed this round: `intraday_poc` ran against real data for the first
-time** — and it exposed a scaling defect the stub tests cannot see.
+## Round A — §14 rulings + four graduated TODO clusters (ADR-0033…0036)
 
-- **The onboarding seam is proven.** 2,013,682 Alpaca SIP 1-minute bars
-  (AAPL+MSFT, 2021→now) acquired with 0 skipped, validated 5/5 rules with
-  0 tripped, certified, published, and `onboarding verify` returned
-  `problems: []`. The WORM chain holds end to end on real vendor data.
-- **The production fit is proven.** `run-train.json` ran 6/6 nodes green;
-  both LSTMs fit (891k / 745k examples) and the artifacts land as
-  `qhat_aapl` / `qhat_msft` — the `live.py:DEFAULT_ARTIFACTS` contract,
-  satisfied for real.
-- **The walk-forward backtest is BLOCKED**, and this is the finding that
-  matters. `IntradayBars._scan()` holds the whole stream about four times
-  over — a 2M-entry `best` dict, a second 2M-dict `records` list cached
-  permanently as `_snap`, and a third full copy in `run()` via
-  `[dict(row) for row in self._scan()]` — while `fingerprint()`
-  `json.dumps`es all 2M records into one string just to hash them.
-  Measured peak is **14.3 GB for a single run** against an 18 GB WSL cap;
-  three folds OOM (observed kill at 17.4 GB anon-rss). One fold did
-  complete before the kill: picked 13,518 minutes, predicted 0.164506,
-  realized 0.107305.
-- **Config cannot fix it** — the `bars` node takes only
-  `root`/`source`/`stream`, so there is no history knob. The fix is code:
-  drop the redundant copies and hash incrementally.
-- `.gitignore` now ignores `.env*` with `!.env.example` negated. The old
-  `.env` rule let a Notepad-saved `.env.txt` carrying a live key pair sit
-  untracked in the repo; the first attempt at the fix silently swallowed
-  `.env.example` for every future child, which is why the negation is
-  there. Both directions are verified.
+**Branch:** `feat/todo-graduation-adr-0033-0036` (merged to `main`) ·
+**Tests:** full suite green (2389 passed, 108 optional-lib skips) ·
+**ruff:** clean.
 
-**Next session:** fix the `bars` node's memory behavior (with a test that
-pins it), then re-run `walkforward run-backtest.json` — everything
-upstream of it is already proven. The live loop is untouched and needs
-only a market-hours session. The defect generalizes: pmquant's ladder
-data is far larger than 2M rows, so the same shape would bite harder
-there.
+- **§14 answered.** All eight owner questions ruled conceptually and
+  recorded in the proposal (`docs/children_design_proposals/pmquant.md`
+  §14): hold-at-PROPOSED, `q_hold` unset, high-precision cross-venue
+  dedup, coverage bar at graduation, no MIO HPO, recorder on a VPS
+  (host TBD), E6a OFF, **Tier B ratified with sunset at TODO-8**. The
+  proposal stays PROPOSED; P0 still needs the owner's go.
+- **ADR-0033** — stats seam: `stat_test` evidence self-description, the
+  studentized recentered cluster bootstrap-t as a `method` (closed
+  tuple), `register_correction` + `weighted-bh` with a `weights` input
+  port. **TODO-2, the deploy→size blocker, is closed.**
+- **ADR-0034** — the `cal` split band: fourth split name in the val
+  window's tail, trailing `cal_days` (+1 boundary discipline),
+  straddle-ledger + planner + walkforward guards.
+- **ADR-0035** — torch `monitor` + best-state restore; trainlog's
+  silent fallback removed; divergence-safe metric monitors.
+- **ADR-0036** — onboarding codec: extension-declared gzip, reserved
+  `storage` config block, deterministic members, pre-commit decode
+  guard. The ratified Tier-B sunset path exists.
+- **Validated:** a 26-agent adversarial review (5 lenses,
+  refute-by-default verification); 16 confirmed findings fixed same-day,
+  with review-amendment records inside each ADR. The identity/hash
+  freeze held — zero movement for existing artifacts.
+- Two review findings live in `children/intraday_poc/` (hands-off, other
+  session): its score kinds refuse `"cal"`, and its replay reads
+  `observations/*.jsonl` by literal glob so it would miss `.jsonl.gz`.
+  Neither bites until a config opts in; the child owner adopts.
+
+## Round B — intraday_poc's first real-data run (other session)
+
+- The onboarding seam and the production fit are **proven on real
+  data** (2M Alpaca SIP bars acquired/validated/certified/published,
+  `verify` clean; both LSTMs fit and land their artifacts).
+- The **walk-forward backtest is BLOCKED** by an `IntradayBars._scan()`
+  memory defect (~4x stream copies; 14.3 GB peak, folds OOM) — logged in
+  `TODO.md`; the fix is child-side code plus a peak-pinning test.
+- `.gitignore` now ignores `.env*` with `!.env.example` negated.
+
+**Next session:** Round-A thread — pmquant ratification/P0 on the
+owner's word (rulings 1–3, 5–7 bind the build); §13 gaps
+5/6/7/9/10/11/12 remain in `TODO.md`, ADR-less until graduated.
+Round-B thread — fix the `bars` node memory, re-run the backtest.

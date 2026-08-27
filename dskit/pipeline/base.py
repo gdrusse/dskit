@@ -348,6 +348,16 @@ class TimeSplitConfig:
     ``to_obj`` when unset, so existing identities do not move). The band
     is applied to the instant the ``policy`` selects, so an event-cut
     record is embargoed on its event's instant, not its own.
+
+    ``cal_start_ms`` (optional, ADR-0034) declares a CALIBRATION band as
+    the tail of the val window: ``split_of`` returns a fourth name,
+    ``"cal"``, for ``[cal_start_ms, val_end_ms]``, and val shrinks to
+    ``[val_start_ms, cal_start_ms)``. The ordering is leakage-correct by
+    construction — ``train < embargo < val < cal < test`` — so a
+    calibrator fits strictly after training data, on rows disjoint from
+    the selection (val) set, and strictly before everything it is
+    applied to. Same omission discipline as ``val_start_ms``, same
+    policy interaction (the band cuts the policy-selected instant).
     """
 
     train_end_ms: int
@@ -369,6 +379,7 @@ class TimeSplitConfig:
     #: ``None`` until bound; an event policy refuses rather than guessing.
     event_bounds: object = None
     val_start_ms: object = None
+    cal_start_ms: object = None
 
     def __post_init__(self):
         errors = []
@@ -403,6 +414,26 @@ class TimeSplitConfig:
                     f"got ({self.train_end_ms}, {self.val_start_ms}, "
                     f"{self.val_end_ms})"
                 )
+        if self.cal_start_ms is not None:
+            _check_int(errors, "splits.cal_start_ms", self.cal_start_ms, ge=1)
+            if not errors:
+                # Strict on the left: an empty val band would mean models
+                # are selected on nothing — a cal-but-no-val design is a
+                # different experiment and refuses rather than passing
+                # silently.
+                floor = (
+                    self.val_start_ms
+                    if self.val_start_ms is not None
+                    else self.train_end_ms
+                )
+                if not floor < self.cal_start_ms <= self.val_end_ms:
+                    errors.append(
+                        "splits.cal_start_ms must carve the cal band out of "
+                        "the tail of the val window: "
+                        "(val_start_ms or train_end_ms) < cal_start_ms <= "
+                        f"val_end_ms, got ({floor}, {self.cal_start_ms}, "
+                        f"{self.val_end_ms})"
+                    )
         _check_str(errors, "splits.notes", self.notes, non_empty=False)
         _raise_if(errors)
 
@@ -423,9 +454,11 @@ class TimeSplitConfig:
 
     def split_of(self, record):
         """Assign by the instant this split's ``policy`` selects —
-        ``"train"``/``"val"``/``"test"``, or ``None`` beyond the horizon,
-        or ``None`` inside the embargo band when ``val_start_ms`` is set
-        (an embargoed record belongs to NO split, ADR-0027).
+        ``"train"``/``"val"``/``"cal"``/``"test"``, or ``None`` beyond the
+        horizon, or ``None`` inside the embargo band when ``val_start_ms``
+        is set (an embargoed record belongs to NO split, ADR-0027). The
+        ``"cal"`` name only exists when ``cal_start_ms`` is declared
+        (ADR-0034).
 
         Under the default ``"record"`` policy that instant IS
         ``record.asof_ms``, so behaviour is unchanged."""
@@ -437,6 +470,8 @@ class TimeSplitConfig:
         if self.val_start_ms is not None and t < self.val_start_ms:
             return None
         if t <= self.val_end_ms:
+            if self.cal_start_ms is not None and t >= self.cal_start_ms:
+                return "cal"
             return "val"
         if t <= self.test_end_ms:
             return "test"
@@ -445,17 +480,19 @@ class TimeSplitConfig:
     def to_obj(self) -> dict:
         """Serialized form. ``event_bounds`` is dropped (derived, and far too
         large to be config); ``policy`` is dropped WHEN IT IS THE DEFAULT, and
-        ``val_start_ms`` is dropped WHEN UNSET, so that adding these knobs
-        does not silently change the identity hash of every run that ever
-        ran. A document that DECLARES a policy or an embargo carries it into
-        the hash, which is correct: assigning by event, or embargoing a band,
-        is a different experiment from assigning by record."""
+        ``val_start_ms``/``cal_start_ms`` are dropped WHEN UNSET, so that
+        adding these knobs does not silently change the identity hash of
+        every run that ever ran. A document that DECLARES a policy, an
+        embargo, or a cal band carries it into the hash, which is correct:
+        each is a different experiment from the plain three-way cut."""
         obj = _dataclass_to_obj(self)
         obj.pop("event_bounds", None)
         if obj.get("policy") == DEFAULT_SPLIT_POLICY:
             obj.pop("policy", None)
         if self.val_start_ms is None:
             del obj["val_start_ms"]
+        if self.cal_start_ms is None:
+            del obj["cal_start_ms"]
         return obj
 
     @classmethod
@@ -466,6 +503,7 @@ class TimeSplitConfig:
                 "kind",
                 "train_end_ms",
                 "val_start_ms",
+                "cal_start_ms",
                 "val_end_ms",
                 "test_end_ms",
                 "policy",
@@ -481,6 +519,7 @@ class TimeSplitConfig:
             policy=obj.get("policy", DEFAULT_SPLIT_POLICY),
             notes=obj.get("notes", ""),
             val_start_ms=obj.get("val_start_ms"),
+            cal_start_ms=obj.get("cal_start_ms"),
         )
 
 

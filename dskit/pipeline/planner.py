@@ -55,6 +55,7 @@ from dskit.pipeline.document import (
     parse_prev_ref,
 )
 from dskit.pipeline.node import resolve_uses
+from dskit.pipeline.stats import CORRECTIONS
 
 __all__ = ["Plan", "plan"]
 
@@ -314,6 +315,20 @@ def plan(document, registry=None) -> Plan:
                 "state the split on the node"
             )
 
+    # ADR-0034 v1: walkforward folds replace the splits section with a
+    # degenerate 1 ms test band — no room for a cal band. The driver
+    # refuses at run; refusing HERE means `plan`/`validate` cannot bless
+    # a document whose only possible run is that refusal.
+    if document.walkforward is not None and bool(
+        getattr(document.splits, "cal_start_ms", None)
+        or getattr(document.splits, "cal_days", 0)
+    ):
+        errors.append(
+            "walkforward folds replace the splits section and cannot carry "
+            "a cal band (ADR-0034 v1) — remove splits.cal_start_ms / "
+            "splits.cal_days or the walkforward section"
+        )
+
     declared_kind = getattr(document.splits, "kind", None)
     if declared_kind is not None:
         for key in specs:
@@ -367,11 +382,25 @@ def plan(document, registry=None) -> Plan:
                 )
         if role == "score":
             split = spec.params.get("split")
-            if split not in ("train", "val", "test"):
+            if split not in ("train", "val", "cal", "test"):
                 errors.append(
                     f"pipeline.{key}: role 'score' must declare which split "
-                    f"it reads (params.split in train/val/test), got {split!r}"
+                    f"it reads (params.split in train/val/cal/test), got {split!r}"
                 )
+            elif split == "cal":
+                # ADR-0034: the 'cal' name only exists when the declared
+                # splits carve a band — a reader of a band that cannot
+                # exist would run on zero rows and exit 0. Refuse at plan.
+                has_band = bool(
+                    getattr(document.splits, "cal_start_ms", None)
+                    or getattr(document.splits, "cal_days", 0)
+                )
+                if not has_band:
+                    errors.append(
+                        f"pipeline.{key}: a 'cal' reader needs a declared "
+                        "cal band — set splits.cal_start_ms (time) or "
+                        "splits.cal_days (trailing)"
+                    )
             elif split == "test":
                 non_report = sorted(
                     d for d in _descendants_of(key, edges) if roles.get(d) != "report"
@@ -381,6 +410,25 @@ def plan(document, registry=None) -> Plan:
                         f"pipeline.{key}: a score node may read 'test' only as "
                         f"the terminal evaluation — {non_report} consume its "
                         "outputs (only report nodes may)"
+                    )
+        if role == "stat_test":
+            # The plan-time mirror of the weights-port rules. The
+            # enforcing gate is validate_inputs (it sees the wired
+            # values), but a weighted correction with no weights wire —
+            # or the converse — is knowable from the spec alone, so it
+            # refuses here, before anything runs.
+            corr = spec.params.get("correction", "bh")
+            entry = CORRECTIONS.get(corr) if isinstance(corr, str) else None
+            if entry is not None:
+                if entry["needs_weights"] and "weights" not in spec.inputs:
+                    errors.append(
+                        f"pipeline.{key}: correction {corr!r} needs "
+                        "per-instrument weights — wire a weights input"
+                    )
+                if not entry["needs_weights"] and "weights" in spec.inputs:
+                    errors.append(
+                        f"pipeline.{key}: a weights input is wired but "
+                        f"correction {corr!r} does not use weights"
                     )
         if role == "search":
             errors.extend(_search_errors(key, spec, specs, roles, edges))
