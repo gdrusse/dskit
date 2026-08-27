@@ -46,6 +46,23 @@ ADR yet, and none blocks the child from starting:
 - [ ] 13. Val-metric checkpoint selection in the torch pack (a `monitor` +
       best-state-restore seam; the curve already computes the row).
 
+Found by the first real-data run of `children/intraday_poc` (2026-08-26) —
+a child-side defect, not a dskit gap:
+
+- [ ] `intraday_poc` bars-node memory. `IntradayBars._scan()` holds the
+      stream about four times over — a 2M-entry `best` dict, a second
+      2M-dict `records` list cached permanently as `_snap`, and a third
+      full copy in `run()` via `[dict(row) for row in self._scan()]` —
+      while `fingerprint()` `json.dumps`es every record into one string
+      just to hash it. Measured **14.3 GB peak for a single run** on
+      2,013,682 bars against an 18 GB cap; three walk-forward folds OOM
+      (observed kill at 17.4 GB). Blocks `run-backtest.json`; the
+      onboarding chain and `run-train.json` are green. Config cannot
+      reach it — the node takes only `root`/`source`/`stream`. Fix: drop
+      the redundant copies and hash incrementally, with a test pinning
+      peak. Generalizes — pmquant's ladder data is far larger than 2M
+      rows.
+
 Deferred:
 
 - [ ] Engine-level multi-writer coordination (Registry/Lineage
