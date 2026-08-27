@@ -31,11 +31,9 @@ Refreshed by `/wrap`. Where things stand — read this first.
 - **Validated:** a 26-agent adversarial review (5 lenses,
   refute-by-default verification); 16 confirmed findings fixed same-day,
   with review-amendment records inside each ADR. The identity/hash
-  freeze held — zero movement for existing artifacts.
-- Two review findings live in `children/intraday_poc/` (hands-off, other
-  session): its score kinds refuse `"cal"`, and its replay reads
-  `observations/*.jsonl` by literal glob so it would miss `.jsonl.gz`.
-  Neither bites until a config opts in; the child owner adopts.
+  freeze held — zero movement for existing artifacts. Two confirmed
+  findings live in `children/intraday_poc/` (hands-off from this
+  session) — see the action items under Round B.
 
 ## Round B — intraday_poc's first real-data run (other session)
 
@@ -46,6 +44,25 @@ Refreshed by `/wrap`. Where things stand — read this first.
   memory defect (~4x stream copies; 14.3 GB peak, folds OOM) — logged in
   `TODO.md`; the fix is child-side code plus a peak-pinning test.
 - `.gitignore` now ignores `.env*` with `!.env.example` negated.
+
+**Action items FOR the POC session** — two Round-A review findings,
+confirmed by execution, that live in `children/intraday_poc/` (Round A
+was hands-off there; neither bites until a config opts in):
+
+1. **Score kinds refuse the new `"cal"` split.**
+   `intraday_poc/nodes.py:289` (`ForecastRows`) and `:380` (`SelectOne`)
+   validate `params.split in ("train", "val", "test")`; dskit now has a
+   fourth name (ADR-0034) and the planner accepts `"cal"` for score
+   roles. Widen both tuples (and their messages) to
+   `("train", "val", "cal", "test")` when the child wants calibration
+   blocks — or leave as-is deliberately if it never will.
+2. **The replay reader would miss gzipped observations.**
+   `intraday_poc/nodes.py:118-121` globs
+   `observations/<source>/*/<stream>.jsonl` by literal extension. If any
+   source it consumes ever sets `storage.observations_codec: "gzip"`
+   (ADR-0036), those rows silently vanish. Adopt
+   `dskit.onboarding.codec.resolve_stream_file` / `iter_text_lines`
+   (extension-sniffing, loud on corruption) before flipping any codec.
 
 **Next session:** Round-A thread — pmquant ratification/P0 on the
 owner's word (rulings 1–3, 5–7 bind the build); §13 gaps
