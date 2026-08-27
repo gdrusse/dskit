@@ -161,8 +161,9 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
         with the LATEST ``acquired_at`` INSTANT wins — stamps are
         parsed (``parse_utc``), never string-compared, so an offset
         spelling ranks by chronology and two spellings of one instant
-        are one level; an unparseable stamp refuses, and a missing one
-        reads as the earliest possible instant. A tie AT THE WINNING
+        are one level; an unparseable stamp — the empty string
+        included — refuses, and a truly ABSENT one reads as the
+        earliest possible instant. A tie AT THE WINNING
         instant dedups quietly when the data serializes identically (an
         at-least-once re-pull; equality is the canonical dump, never
         coercing Python ``==``) and refuses when it differs — no
@@ -299,31 +300,35 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                 value = data.get(field)
                 if isinstance(value, str):
                     data[field] = _share(value, value)
-            acquired = row.get("acquired_at", "")
-            if not isinstance(acquired, str):
-                raise AssetError(
-                    [f"{path}:{n}: acquired_at must be a string, "
-                     f"got {acquired!r}"]
-                )
-            # Adjudicate on the INSTANT, never the spelling: string
-            # comparison ranks "…T23:00:00-05:00" below an earlier
-            # "…T00:00:00+00:00", and lets two spellings of one instant
-            # dodge the tie rule. One parse per DISTINCT spelling — an
-            # acquisition mints one stamp, so the memo stays tiny.
-            when = instants.get(acquired)
-            if when is None:
-                if acquired == "":
-                    # Absent acquired_at is the earliest possible
-                    # instant: it loses to any stamped row.
-                    when = float("-inf")
-                else:
+            if "acquired_at" in row:
+                acquired = row["acquired_at"]
+                if not isinstance(acquired, str):
+                    raise AssetError(
+                        [f"{path}:{n}: acquired_at must be a string, "
+                         f"got {acquired!r}"]
+                    )
+                # Adjudicate on the INSTANT, never the spelling: string
+                # comparison ranks "…T23:00:00-05:00" below an earlier
+                # "…T00:00:00+00:00", and lets two spellings of one
+                # instant dodge the tie rule. One parse per DISTINCT
+                # spelling — an acquisition mints one stamp, so the
+                # memo stays tiny. A present-but-EMPTY stamp is
+                # unparseable and refuses here like any other bad
+                # spelling (it is writer-impossible, corrupt-shaped).
+                when = instants.get(acquired)
+                if when is None:
                     try:
                         when = _epoch_ms(parse_utc(acquired))
                     except AssetError as exc:
                         raise AssetError(
                             [f"{path}:{n}: invalid acquired_at: {exc}"]
                         ) from exc
-                instants[acquired] = when
+                    instants[acquired] = when
+            else:
+                # True ABSENCE of acquired_at is the earliest possible
+                # instant: it loses to any stamped row.
+                acquired = ""
+                when = float("-inf")
             key = tuple(_key_part(data[f]) for f in key_fields)
             try:
                 held = best.get(key)

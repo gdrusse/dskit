@@ -303,6 +303,17 @@ class TestScan:
         with pytest.raises(AssetError, match="bars.jsonl"):
             _scan(root)
 
+    def test_empty_string_acquired_at_refuses(self, tmp_path):
+        # A present-but-EMPTY stamp is writer-impossible and
+        # unparseable — it must refuse like every other bad spelling;
+        # only true ABSENCE reads as the earliest instant (round-8).
+        root = str(tmp_path)
+        _write(root, "acq-0001",
+               [_row("AAPL", "2026-01-05T14:30:00+00:00", 100.0,
+                     acquired="")])
+        with pytest.raises(AssetError, match="acquired_at"):
+            _scan(root)
+
     def test_missing_acquired_at_loses_to_any_stamp(self, tmp_path):
         # An absent acquired_at reads as the earliest possible instant.
         ts = "2026-01-05T14:30:00+00:00"

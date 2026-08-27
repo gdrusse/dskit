@@ -1271,3 +1271,19 @@ move only for stores that actually hit the defect. Also from this
 round: the two-key tie-accumulation test's assertion was
 half-tautological (`"1" in text` matched any path:line material) and
 now matches the key spellings and counts the problems.
+
+*Eighth-round amendments (2026-08-26; the free-sweep lens returned a
+full PASS — a 600-store differential fuzz against an ADR-derived
+reference with zero mismatches, the verbatim backtest config executed
+end to end over a gzip superseding acquisition, packaging/import/
+hash-seed all clean — and the seventh round's era corrections were
+confirmed by measurement):* (i) a present-but-EMPTY `acquired_at`
+string refuses like every other unparseable spelling; only true
+ABSENCE of the field reads as the earliest possible instant. The
+empty string was silently conflated with absence — writer-impossible,
+corrupt-shaped, bounded (it could never flip a winner or move a
+well-formed store's digest), but the wrong direction. (ii) declared,
+not changed: duplicate names in `key_fields` are accepted harmlessly,
+and `ts_field == ts_out` refuses via the record-already-carries
+message rather than a parameter-check message — both loud-or-harmless
+directions.
