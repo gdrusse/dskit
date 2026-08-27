@@ -4,40 +4,34 @@ Refreshed by `/wrap`. Where things stand — read this first.
 
 ## This session (2026-08-26): ADR-0037 — the observations read seam
 
-**Branch:** `feat/obs-read-seam-adr-0037` (**NOT merged** — see below) ·
-**Tests:** 2425 passed, 108 optional-lib skips · **ruff:** clean.
+**Branch:** `feat/obs-read-seam-adr-0037`, **merged to `main`** after a
+clean adversarial pass · **Tests:** 2440 passed, 108 optional-lib
+skips · **ruff:** clean.
 
-- **Owner ruling applied:** generic dskit first, children are wrappers.
-  The intraday_poc bars-node OOM (14.3 GB on 2M bars) graduated into
+- **Generic-first (owner ruling):** the intraday_poc bars-node OOM
+  (14.3 GB on 2M bars) graduated into
   `dskit/onboarding/observations.py`: `scan_stream` (codec-aware,
-  bitemporally deduplicating, single-copy memory discipline — 650 vs
-  1547 B/row measured) + `stream_digest` (incremental, byte-parity
-  with the frozen dump recipe). `BarsFromStore` is now a thin wrapper.
-- Both RE-ENTRY action items closed: score kinds accept `"cal"`
-  (ADR-0034); the reader is codec-aware (ADR-0036).
-- The blocked walk-forward backtest runs end to end on synthetic
-  stores (3 folds, plain and gzip byte-parity, 2.6 GB RSS). The
-  REAL-data re-run still needs the 2M-bar `ob/` store re-acquired —
-  it is not on this machine.
+  bitemporal instant-adjudicated dedup, canonical key identity,
+  segment-safe params, single-copy memory — 650 vs 1547 B/row) +
+  `stream_digest` (incremental, byte-parity with the frozen dump
+  recipe). `BarsFromStore` is a thin wrapper; score kinds accept
+  `"cal"`; both prior RE-ENTRY action items closed.
+- **The skeptic loop ran to a clean pass:** ten rounds, two fresh
+  adversarial reviewers per round (20 reviews). Rounds 1–9 surfaced
+  ~18 real defects — every one fixed red-first with the skeptics'
+  reproductions pinned as tests, every round recorded as an amendment
+  block inside ADR-0037. Round 10: both lenses zero
+  blocker/major/correctness. Deferred nits are declared in the ADR
+  (tenth block).
+- The walk-forward backtest runs end to end on synthetic stores
+  (3/3 folds, plain and gzip byte-parity; the first cal-band document
+  also ran, composing ADR-0034/0036/0037).
 
-## Why the branch is NOT merged — owner decision needed
+## Open
 
-A skeptic-review loop ran (2 fresh adversarial reviewers per round,
-distinct lenses). **Three consecutive rounds each found real
-correctness defects** — round 1 in the original code, rounds 2 and 3
-in the previous round's fixes (tie adjudication: running-max vs final
-winner; coercing `==` identity; NaN key ordering; heterogeneous-key
-crash; lexicographic vs instant `acquired_at`). All are fixed
-red-first with the skeptics' own reproductions as tests, and each
-round's findings are recorded as amendment blocks inside ADR-0037.
-Per the loop's escalation rule the grind stopped there instead of
-self-declaring a marginal pass.
-
-**Decision for the owner:** run one more fresh two-skeptic round on
-`6889c82` and merge on a clean pass (recommended), or merge as-is.
-The four commits: `3e40b10` (seam), `b330e1a` (round-1 fixes),
-`1578c56` (round-2 fixes), `6889c82` (round-3 fixes).
-
-**Next after that:** re-acquire the Alpaca store and re-run
-`run-backtest.json` on real data; pmquant P0 remains on the owner's
-word; §13 gaps 5/6/7/9/11/12 in `TODO.md` (10 is half-landed).
+- **Real-data backtest re-run:** the 2M-bar Alpaca `ob/` store is not
+  on this machine — re-acquire (needs the child's `.env` keys) or run
+  where it lives, then `walkforward run-backtest.json`.
+- pmquant ratification/P0 stays on the owner's word; §13 gaps
+  5/6/7/9/11/12 in `TODO.md` (10 is half-landed: the function seam
+  exists, the reader KIND awaits a second child).

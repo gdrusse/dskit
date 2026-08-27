@@ -1306,3 +1306,21 @@ through `resolve_stream_file`. (ii) `stream_digest`'s refusal message
 says "cannot be canonically serialized" — the old "not
 JSON-serializable" misdescribed the unorderable-mixed-key-types
 `TypeError` from `sort_keys`.
+
+*Tenth round — the clean pass (2026-08-26).* Both fresh lenses
+returned zero blocker/major/correctness findings: the verification
+lens (1,200-store three-way differential fuzz — branch vs pre-round-9
+seam vs a clean-room reference — zero mismatches; ELOOP/FIFO/socket
+squats typed; the validate CLI inherits the denial refusals; 120/120
+freeze stores byte-identical; both memory pins green) and the free
+sweep (mutation-testing the suite, 400-store fuzz, 300k-datetime
+`Fraction` oracle, public-surface kwarg misuse, wrong-root
+interactions — production code unbroken). Post-pass, with NO
+production change: two mutation-proven test gaps were closed as green
+pins (the sub-ms FLOOR and `-0.0`/`0.0` key distinctness — both
+documented, digest-relevant invariants the suite did not yet pin),
+and one nit is declared-deferred: `os.path.isdir(base)` on a
+permission-denied `observations/` PARENT refuses via the wrong-root
+message rather than a denial diagnosis — every path through that
+branch refuses, so denial can never read as an empty store; only the
+wording misattributes.

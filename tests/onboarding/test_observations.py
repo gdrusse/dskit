@@ -510,6 +510,40 @@ class TestScan:
         records = _scan(root)
         assert [r["close"] for r in records] == [200.0]
 
+    def test_sub_ms_remainders_floor_in_every_era(self, tmp_path):
+        # Round-10 mutation evidence: floor->round survived the whole
+        # suite. Pin the documented FLOOR: +0.5 ms floors down, and a
+        # pre-1970 -0.5 ms floors to -1 (true floor, never
+        # trunc-toward-zero).
+        exact = datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc) \
+            - datetime(1970, 1, 1, tzinfo=timezone.utc)
+        exact_ms = (exact.days * 86400 + exact.seconds) * 1000
+        for stamp, expected in (
+            ("2026-01-05T14:30:00.000500+00:00", exact_ms),
+            ("1969-12-31T23:59:59.999500+00:00", -1),
+        ):
+            root = str(tmp_path / stamp.replace(":", "-"))
+            _write(root, "acq-0001", [_row("AAPL", stamp, 100.0)])
+            records = _scan(root)
+            assert records[0]["asof_ms"] == expected
+
+    def test_negative_zero_key_stays_distinct(self, tmp_path):
+        # Round-10 mutation evidence: dropping the repr tiebreak let a
+        # later 0.0 acquisition silently supersede a -0.0-keyed record.
+        # Pin: they are two keys, both emitted.
+        ts = "2026-01-05T14:30:00+00:00"
+        root = str(tmp_path)
+        for acq, level, close, acquired in (
+            ("acq-0001", -0.0, 100.0, "2026-01-06T00:00:00+00:00"),
+            ("acq-0002", 0.0, 200.0, "2026-01-07T00:00:00+00:00"),
+        ):
+            row = _row("AAPL", ts, close, acquired=acquired)
+            row["data"]["level"] = level
+            _write(root, acq, [row])
+        records = _scan(root, key_fields=("level", "ts"))
+        assert sorted(r["close"] for r in records) == [100.0, 200.0]
+        assert sorted(repr(r["level"]) for r in records) == ["-0.0", "0.0"]
+
     def test_float_keys_order_numerically(self, tmp_path):
         # Round-5 finding: the ("f", repr) tag sorted float keys as
         # repr STRINGS ([-1.0, -2.0, 10.0, 2.5]) — the order freezes at
