@@ -1287,3 +1287,22 @@ not changed: duplicate names in `key_fields` are accepted harmlessly,
 and `ts_field == ts_out` refuses via the record-already-carries
 message rather than a parameter-check message — both loud-or-harmless
 directions.
+
+*Ninth-round amendments (2026-08-26; the free-sweep lens returned a
+full PASS — the first cal-band document ran end to end with a gzip
+supersede composing ADR-0034/0036/0037 in one run, 500k-row scaling
+measured linear, a 600-store differential fuzz clean):* (i)
+permission denial refuses instead of reading as absence — the boolean
+stat probes (`os.path.isdir` in the scan gate, `os.path.isfile`/
+`exists` in `resolve_stream_file`) returned False on EACCES, so a
+mode-000 acquisition dir silently vanished from the bitemporal dedup
+(a SUPERSEDED row served as winner, digest moved without a word) and
+an untraversable source dir scanned a correct root as empty. Both
+sites now `os.stat` and refuse on any `OSError` except
+ENOENT/ENOTDIR, matching the assets engine's chmod-denial pins; the
+declared dangling-symlink skip is unchanged (`FileNotFoundError` maps
+to absence). `validate`'s snapshot reader inherits the loud refusal
+through `resolve_stream_file`. (ii) `stream_digest`'s refusal message
+says "cannot be canonically serialized" — the old "not
+JSON-serializable" misdescribed the unorderable-mixed-key-types
+`TypeError` from `sort_keys`.

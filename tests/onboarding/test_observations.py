@@ -303,6 +303,45 @@ class TestScan:
         with pytest.raises(AssetError, match="bars.jsonl"):
             _scan(root)
 
+    @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0,
+                        reason="chmod-based denial is inert for root")
+    def test_unreadable_acquisition_dir_refuses(self, tmp_path):
+        # os.path.isdir/isfile swallow EACCES: a mode-000 acquisition
+        # dir silently vanished from the dedup, serving the SUPERSEDED
+        # row as winner (round-9 finding). Denial must refuse loudly.
+        ts = "2026-01-05T14:30:00+00:00"
+        root = str(tmp_path)
+        _write(root, "acq-0001",
+               [_row("AAPL", ts, 100.0,
+                     acquired="2026-01-06T00:00:00+00:00")])
+        _write(root, "acq-0002",
+               [_row("AAPL", ts, 555.0,
+                     acquired="2026-01-07T00:00:00+00:00")])
+        blocked = os.path.join(root, "observations", "alpaca", "acq-0002")
+        os.chmod(blocked, 0)
+        try:
+            with pytest.raises(AssetError, match="acq-0002"):
+                _scan(root)
+        finally:
+            os.chmod(blocked, 0o755)
+
+    @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0,
+                        reason="chmod-based denial is inert for root")
+    def test_untraversable_source_dir_refuses(self, tmp_path):
+        # A readable-but-untraversable source dir (mode r--) listed
+        # fine but every per-entry stat failed silently — a CORRECT
+        # root scanned as an empty store.
+        root = str(tmp_path)
+        _write(root, "acq-0001",
+               [_row("AAPL", "2026-01-05T14:30:00+00:00", 100.0)])
+        source_dir = os.path.join(root, "observations", "alpaca")
+        os.chmod(source_dir, 0o400)
+        try:
+            with pytest.raises(AssetError, match="cannot stat"):
+                _scan(root)
+        finally:
+            os.chmod(source_dir, 0o755)
+
     def test_empty_string_acquired_at_refuses(self, tmp_path):
         # A present-but-EMPTY stamp is writer-impossible and
         # unparseable — it must refuse like every other bad spelling;

@@ -42,6 +42,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 from datetime import datetime, timezone
 
 from .base import AssetError, _check_segment, _raise_if, parse_utc
@@ -238,7 +239,16 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                 [f"{directory}: stream spelling outside an acquisition "
                  "dir — tamper-shaped; refusing"]
             )
-        if not os.path.isdir(directory):
+        # A boolean isdir would swallow EACCES as "not a dir", silently
+        # dropping an unreadable acquisition from the dedup (a stale
+        # winner served) — denial refuses; only true absence skips.
+        try:
+            entry_stat = os.stat(directory)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError as exc:
+            raise AssetError([f"cannot stat {directory}: {exc}"]) from exc
+        if not stat.S_ISDIR(entry_stat.st_mode):
             continue
         path = resolve_stream_file(directory, stream)
         if path is None:
@@ -457,7 +467,7 @@ def stream_digest(records) -> str:
             hasher.update(json.dumps(record, sort_keys=True).encode("utf-8"))
         except (TypeError, ValueError, RecursionError) as exc:
             raise AssetError(
-                [f"record {i} is not JSON-serializable: {exc}"]
+                [f"record {i} cannot be canonically serialized: {exc}"]
             ) from exc
     hasher.update(b"]")
     return hasher.hexdigest()
