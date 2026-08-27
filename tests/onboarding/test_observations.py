@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import tracemalloc
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -425,6 +426,35 @@ class TestScan:
         _write(root, "acq-0001", [row])
         with pytest.raises(AssetError, match="asof_ms"):
             _scan(root)
+
+    def test_epoch_ms_is_exact_integer_arithmetic(self, tmp_path):
+        # int(timestamp() * 1000) compounds two float roundings: exact-
+        # millisecond stamps went wrong by 1 ms from 2038 on and
+        # pre-1970 (round-6 finding). The expected stamps are built via
+        # exact timedelta arithmetic, independent of the implementation.
+        for true_ms in (2163892205864, -2177167649680):
+            stamp = (datetime(1970, 1, 1, tzinfo=timezone.utc)
+                     + timedelta(milliseconds=true_ms)).isoformat()
+            root = str(tmp_path / f"case{abs(true_ms)}")
+            _write(root, "acq-0001", [_row("AAPL", stamp, 100.0)])
+            records = _scan(root)
+            assert records[0]["asof_ms"] == true_ms
+
+    def test_one_ms_apart_stamps_supersede(self, tmp_path):
+        # The same float defect collapsed acquired_at stamps a FULL
+        # millisecond apart into one instant, spuriously refusing a
+        # valid supersede — permanently, since observations/ is
+        # append-only.
+        ts = "2026-01-05T14:30:00+00:00"
+        root = str(tmp_path)
+        _write(root, "acq-0001",
+               [_row("AAPL", ts, 100.0,
+                     acquired="2038-10-20T17:12:31.817000+00:00")])
+        _write(root, "acq-0002",
+               [_row("AAPL", ts, 200.0,
+                     acquired="2038-10-20T17:12:31.818000+00:00")])
+        records = _scan(root)
+        assert [r["close"] for r in records] == [200.0]
 
     def test_float_keys_order_numerically(self, tmp_path):
         # Round-5 finding: the ("f", repr) tag sorted float keys as

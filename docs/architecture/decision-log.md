@@ -1233,3 +1233,27 @@ line; the codec-level refusal stays gz-only (other `iter_text_lines`
 callers may read legitimately empty text). (iv) tie-refusal messages
 show the raw key values (a float key `1.0` no longer prints
 indistinguishably from a string key `'1.0'`).
+
+*Sixth-round amendments (2026-08-26, continue-until-clean; the
+round-5 fixes took a clean PASS from their dedicated lens — 1,891-pair
+identity fuzz, 3,050-candidate reader/writer acceptance equivalence
+with zero mismatches, the traversal family dead, a 60-store freeze
+check clean):* (i) epoch milliseconds are computed in exact INTEGER
+arithmetic — `int(timestamp() * 1000)` compounded two float roundings,
+landing exact-ms stamps one ms wrong from ~2038 on (and pre-1970) and
+collapsing `acquired_at` stamps a FULL millisecond apart into one
+instant, which could spuriously and permanently refuse a valid
+supersede. This corrects the round-2 (iii) and round-4 (iv)
+statements: the "inherited edge" was underdescribed. Sub-ms
+remainders now FLOOR in every era; digests move only for stores that
+actually hit the defect (none in-repo — second-precision writer
+stamps and 2026 minute bars are float-exact). (ii) documented, not
+changed: cross-family key order is tag-lexicographic (`bool < float <
+int`), deterministic and digest-stable; decodable-but-empty members
+(a valid empty gz member, a whitespace-only plain member) read as
+zero rows — writer-impossible shapes that cannot hold lost data,
+while the 0-byte refusal targets partial copies; and a DANGLING
+symlink squatting the stream spelling is silently skipped — a
+pre-existing ADR-0036 `resolve_stream_file` behavior on `main`
+(`os.path.exists` is false for it), unchanged by this branch and
+declared here rather than fixed.

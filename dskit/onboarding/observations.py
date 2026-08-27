@@ -42,11 +42,27 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import datetime, timezone
 
 from .base import AssetError, _check_segment, _raise_if, parse_utc
 from .codec import iter_text_lines, resolve_stream_file
 
 __all__ = ["scan_stream", "stream_digest"]
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _epoch_ms(dt) -> int:
+    """Exact integer epoch milliseconds for an aware datetime.
+
+    Never ``int(dt.timestamp() * 1000)``: that compounds two float
+    roundings, landing exact-ms stamps one ms off from ~2038 on (and
+    pre-1970) and collapsing acquired_at stamps a FULL millisecond
+    apart into one instant. Integer timedelta arithmetic is exact for
+    every representable datetime; a sub-ms remainder FLOORS.
+    """
+    d = dt - _EPOCH
+    return (d.days * 86400 + d.seconds) * 1000 + d.microseconds // 1000
 
 
 def _key_part(value):
@@ -159,11 +175,10 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
     ts_field : str, optional
         A ``data`` field holding an ISO date/datetime (naive values are
         UTC — the ``parse_utc`` convention). When declared, each record
-        gains ``ts_out`` = its epoch milliseconds, added IN PLACE.
-        Sub-millisecond stamps truncate via ``int()`` (toward zero) —
-        exact-ms stamps are exact everywhere; pre-1970 or far-future
-        (~2112+) sub-ms stamps can land one ms off true floor. An
-        inherited, digest-frozen edge.
+        gains ``ts_out`` = its epoch milliseconds, added IN PLACE —
+        computed in exact integer arithmetic (never the float
+        ``timestamp()`` round-trip), so exact-ms stamps are exact in
+        every era and a sub-millisecond remainder floors.
     ts_out : str
         Name of the derived epoch-ms field (default ``"asof_ms"`` —
         what split filters cut on). Refuses to overwrite: a record
@@ -300,7 +315,7 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                     when = float("-inf")
                 else:
                     try:
-                        when = int(parse_utc(acquired).timestamp() * 1000)
+                        when = _epoch_ms(parse_utc(acquired))
                     except AssetError as exc:
                         raise AssetError(
                             [f"{path}:{n}: invalid acquired_at: {exc}"]
@@ -374,9 +389,7 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                      f"overwrite it (key {_key_display(_key)!r})"]
                 )
             try:
-                data[ts_out] = int(
-                    parse_utc(data[ts_field]).timestamp() * 1000
-                )
+                data[ts_out] = _epoch_ms(parse_utc(data[ts_field]))
             except AssetError as exc:
                 raise AssetError(
                     [f"key {_key_display(_key)!r}: invalid {ts_field}: {exc}"]
