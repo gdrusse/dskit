@@ -68,6 +68,13 @@ def _check_cluster_scores(cluster_scores):
     return clusters
 
 
+def _check_n_boot(n_boot):
+    """``n_boot`` must be an int >= 1 — a zero-replicate bootstrap would
+    return a silent 1.0 (plain) or index an empty list (studentized)."""
+    if isinstance(n_boot, bool) or not isinstance(n_boot, int) or n_boot < 1:
+        raise ValueError(f"n_boot must be an int >= 1, got {n_boot!r}")
+
+
 def _bootstrap_rng(seed, label):
     """The pinned RNG recipe: sha256 of ``seed:label``, first 8 bytes."""
     digest = hashlib.sha256(f"{seed}:{label}".encode()).digest()
@@ -104,6 +111,7 @@ def cluster_bootstrap_pvalue(cluster_scores, n_boot, seed, label="") -> float:
         scores is an upstream bug, not a resampling detail to paper over).
     """
     clusters = _check_cluster_scores(cluster_scores)
+    _check_n_boot(n_boot)
     rng = _bootstrap_rng(seed, label)
     n = len(clusters)
     at_or_below = 0
@@ -186,6 +194,7 @@ def cluster_bootstrap_t(cluster_scores, n_boot, seed, label="", alpha=0.05) -> d
         clusters, or an alpha outside (0, 1).
     """
     clusters = _check_cluster_scores(cluster_scores)
+    _check_n_boot(n_boot)
     n = len(clusters)
     if n < 2:
         raise ValueError(
@@ -198,13 +207,24 @@ def cluster_bootstrap_t(cluster_scores, n_boot, seed, label="", alpha=0.05) -> d
     sizes = [len(cluster_scores[c]) for c in clusters]
     theta_hat, se_hat = _pooled_mean_and_se(totals, sizes)
 
-    # Signed-degenerate observed sample: every cluster agrees exactly with
-    # the pooled mean, so no variance exists to studentize. No resampling
-    # happens; the SIGN decides — unbounded evidence never reaches p=0
-    # (the add-one floor), and a non-positive mean is simply not an edge.
-    # No interval is claimed from a zero-variance sample.
-    if se_hat == 0.0:
-        p = (1 / (n_boot + 1)) if theta_hat > 0 else 1.0
+    # Signed-degenerate observed sample: every cluster's mean agrees with
+    # every other's, so no variance exists to studentize. Detected
+    # STRUCTURALLY (equal cluster means), not by ``se_hat == 0.0`` alone:
+    # the pooled mean can round a hair away from the common value, and an
+    # exact-zero test would then let ULP dust masquerade as a t of ~1e16
+    # with a zero-width interval. No resampling happens; the SIGN
+    # decides. A positive mean's p is floored at HALF THE ALL-ONE-CLUSTER
+    # REPLICATE MASS, n^(1-n)/2 — the method's own resampling floor — so
+    # an exact tie can never claim more significance than an
+    # epsilon-perturbed sample could (at n=2 that floor is 0.25; by n~8
+    # it is far below the add-one floor and the add-one floor rules). A
+    # non-positive mean is simply not an edge. No interval is claimed
+    # from a zero-variance sample.
+    if se_hat == 0.0 or len({t / m for t, m in zip(totals, sizes)}) == 1:
+        if theta_hat > 0:
+            p = max(1 / (n_boot + 1), n ** (1 - n) / 2)
+        else:
+            p = 1.0
         return {
             "p_value": p,
             "mean": theta_hat,

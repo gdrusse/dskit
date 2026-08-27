@@ -895,8 +895,25 @@ field — one would move every stage-list config hash.
 **Consequences.** Zero identity movement: no dataclass field, node
 params serialized as written, default-path p-values byte-identical.
 Rendered evidence for existing node-map runs now shows real
-`n_boot`/`seed` where "—" printed. The `test_registry` tripwire is
-updated deliberately. The single-document deploy→size path unblocks.
+`n_boot`/`seed` where "—" printed, and the independence-unit line states
+the generic truth ("cluster …") instead of the renderer's venue-flavored
+fallback. The `test_registry` tripwire is updated deliberately. The
+single-document deploy→size path unblocks.
+
+*Review amendments (same day, adversarial pass):* (a) an UNTESTED
+instrument (below MIN_CLUSTERS, sentinel p=1.0) can never be a survivor —
+a weighted correction could otherwise reject `q = 1/w` and declare GO on
+zero evidence; the sentinel stays in the family (it spends budget) but
+cannot win. (b) The studentized signed-degenerate p is floored at half
+the all-one-cluster replicate mass, `n^(1-n)/2` — the method's own
+resampling floor — so an exact tie at small n can never claim more
+significance than an epsilon-perturbed sample could (at n=2 the floor is
+0.25; by n≈8 the add-one floor rules). (c) Degeneracy is detected
+structurally (equal cluster means), not by exact `se == 0.0`, so ULP
+dust cannot render a t of ~1e16 with a zero-width interval. (d) The
+correction note names ADMISSIONS (a weighted correction rejecting an
+instrument whose own p missed alpha) instead of reporting a negative
+removal. (e) Both bootstrap functions refuse `n_boot < 1`.
 
 ---
 
@@ -932,6 +949,15 @@ discipline; assignment unchanged when unset). `$splits.cal_start_ms`
 appears exactly when declared. pmquant's `block`-param workaround
 retires.
 
+*Review amendments (same day, adversarial pass):* (a) the trailing
+materializer stamps `cal_start = val_end − cal_days·DAY + 1` — the cal
+band is inclusive-left, so without the +1 the boundary midnight stamp
+moved from val into cal (cal_days+1 daily stamps in cal, one stolen from
+val); with it, cal holds exactly `cal_days` daily stamps and val never
+shrinks. (b) The walkforward-vs-cal refusal also runs at PLAN time, so
+`plan`/`validate` cannot bless a document whose only possible run is the
+driver's refusal.
+
 ---
 
 ## ADR-0035 — Val-metric checkpoint selection in the torch pack
@@ -966,6 +992,15 @@ accepted for loudness.
 **Consequences.** `state_hash` moves only for runs declaring `monitor`;
 undeclared runs are bit-for-bit unchanged. The child's reason to own a
 train kind shrinks to its domain residue.
+
+*Review amendments (same day, adversarial pass):* (a) a DIVERGED epoch
+under a probability-metric monitor (non-finite predictions drop the
+metrics dict) records the monitored key as a present None — never the
+best, never a crash — so a transient divergence restores the
+pre-divergence best instead of aborting the fit; a monitor that never
+sees a finite value still refuses after the loop. (b) The best-state
+snapshot deep-copies non-tensor `state_dict` entries (a module's
+`get_extra_state()`), which have no `.detach()`.
 
 ---
 
@@ -1012,3 +1047,12 @@ sniff extensions.
 passing unmodified is the acceptance gate. Tier-B book streams gain an
 onboarding route at ~parent size, making the bypass's retirement
 schedulable. Cursor/state/publication paths untouched.
+
+*Review amendments (same day, adversarial pass):* (a) the determinism
+envelope is per (CPython io/gzip layer, zlib build) — CPython's flush
+behavior contributes sync-flush framing beyond the zlib bytes; tests
+assert write-twice equality, never pinned digests. (b) One deliberate
+codec asymmetry: gzip text pins `newline="\n"` while `"none"` keeps the
+platform default (byte parity with the pre-codec tree wins there).
+(c) `resolve_stream_file` resolves regular FILES only and refuses a
+squatting non-file by name.

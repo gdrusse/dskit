@@ -3,7 +3,13 @@
 import pytest
 
 from dskit.pipeline.base import ConfigError, TimeSplitConfig
-from dskit.pipeline.document import NodeSpec, PipelineDocument, RandomSplitSpec
+from dskit.pipeline.document import (
+    NodeSpec,
+    PipelineDocument,
+    RandomSplitSpec,
+    TrailingSplitSpec,
+    WalkForwardSpec,
+)
 from dskit.pipeline.node import Node
 from dskit.pipeline.planner import plan
 from tests.pipeline.dochelpers import (
@@ -370,6 +376,30 @@ class TestCalBandRule:
         splits = RandomSplitSpec(train_frac=0.6, val_frac=0.2, seed=1)
         with pytest.raises(ConfigError, match="declared cal band"):
             plan(self._doc(splits), registry)
+
+    def test_cal_reader_plans_over_a_trailing_band_and_refuses_without(
+        self, registry
+    ):
+        with_band = TrailingSplitSpec(test_days=5, val_days=10, cal_days=3)
+        assert plan(self._doc(with_band), registry).order
+        without = TrailingSplitSpec(test_days=5, val_days=10)
+        with pytest.raises(ConfigError, match="declared cal band"):
+            plan(self._doc(without), registry)
+
+    def test_walkforward_with_a_cal_band_refuses_at_plan(self, registry):
+        # ADR-0034 v1: the driver refuses this at run; the planner must
+        # not bless a document whose only possible run is that refusal.
+        doc = doc_of(
+            banking_pipeline(),
+            splits=TrailingSplitSpec(test_days=5, val_days=10, cal_days=3),
+            walkforward=WalkForwardSpec(
+                objective="$edge_test.verdict",
+                val_days=7,
+                folds=["2025-01-01"],
+            ),
+        )
+        with pytest.raises(ConfigError, match="cannot carry a cal band"):
+            plan(doc, registry)
 
 
 class TestStatTestWeightsRule:

@@ -118,6 +118,13 @@ class TestResolveStreamFile:
         with pytest.raises(AssetError, match="ambiguous"):
             resolve_stream_file(str(tmp_path), "s")
 
+    def test_a_squatting_directory_refuses_by_name(self, tmp_path):
+        # A directory where the stream file should be is squat-shaped —
+        # loud refusal, never a silent skip or an open() crash.
+        (tmp_path / "s.jsonl").mkdir()
+        with pytest.raises(AssetError, match="squatted"):
+            resolve_stream_file(str(tmp_path), "s")
+
 
 def test_stream_filename_mapping():
     assert stream_filename("prices", "none") == "prices.jsonl"

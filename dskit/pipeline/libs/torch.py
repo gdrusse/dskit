@@ -82,6 +82,7 @@ enforces this twice).
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -1082,6 +1083,15 @@ class TorchTrain(_TorchModel):
                     preds, val_labels = adapter.beliefs(module, val_batch)
                 if preds is not None:
                     scored = probability_metrics(preds, val_labels)
+                if monitor and monitor not in ("train_loss", "val_loss") and monitor not in scored:
+                    # A diverged epoch (non-finite predictions) drops the
+                    # probability metrics entirely; the monitored key must
+                    # still be PRESENT — as a None the curve records but
+                    # never selects — or the strict curve would abort the
+                    # whole fit instead of restoring the pre-divergence
+                    # best (ADR-0035).
+                    scored = dict(scored)
+                    scored[monitor] = None
             row = curve.record(
                 epoch,
                 train_loss,
@@ -1093,9 +1103,15 @@ class TorchTrain(_TorchModel):
                 # Snapshot NOW: the state_dict's tensors alias the live
                 # training weights, so the copy is mandatory, and to-CPU
                 # means a cuda fit holds one extra host copy, never 2x
-                # device memory. One snapshot lives at a time.
+                # device memory. One snapshot lives at a time. Non-tensor
+                # entries (a module's get_extra_state()) are deep-copied —
+                # they have no .detach().
                 best_state = {
-                    k: v.detach().to("cpu", copy=True)
+                    k: (
+                        v.detach().to("cpu", copy=True)
+                        if hasattr(v, "detach")
+                        else copy.deepcopy(v)
+                    )
                     for k, v in module.state_dict().items()
                 }
         curve.log_final()
@@ -1105,7 +1121,7 @@ class TorchTrain(_TorchModel):
                 raise ValueError(
                     f"{self.key}: monitor {monitor!r} never recorded a "
                     "finite value — every epoch's tracked objective was "
-                    "NaN/inf; there is nothing to select"
+                    "missing or non-finite; there is nothing to select"
                 )
             # Restore BEFORE final_loss and adapter.fitted: the persisted
             # artifact, the serving state, and the final metrics must all

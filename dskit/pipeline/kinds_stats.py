@@ -319,7 +319,18 @@ class StatTest(Node):
                 rejected = entry["fn"](pvalues, alpha, inputs["weights"])
             else:
                 rejected = entry["fn"](pvalues, alpha)
-            survivors = sorted(inst for inst, hit in rejected.items() if hit)
+            # An UNTESTED instrument (below MIN_CLUSTERS, sentinel p=1.0)
+            # can never be a survivor. The plain corrections make this
+            # unreachable arithmetically (no threshold reaches 1.0), but a
+            # weighted correction ranks q = p/w, and a legal weight can
+            # push q = 1/w under the bar — a GO on zero statistical
+            # evidence. The sentinel stays IN the family (it spends
+            # budget, honestly); it just cannot win.
+            survivors = sorted(
+                inst
+                for inst, hit in rejected.items()
+                if hit and len(inputs["scores"][inst]) >= MIN_CLUSTERS
+            )
         else:
             survivors = []
         verdict = "GO" if survivors else "NO-GO"
@@ -349,10 +360,13 @@ class StatTest(Node):
             ),
         }
 
-    #: What each method IS, in the report's own words. The plain strings
-    #: match the report renderer's historical fallbacks exactly, so the
-    #: rendered sentence for existing documents does not change — the
-    #: stage now says what the renderer used to assume (TODO-1).
+    #: What each method IS, in the report's own words. The plain TEST
+    #: string matches the report renderer's historical fallback exactly,
+    #: so that rendered sentence is unchanged for existing documents; the
+    #: independence-unit line deliberately is NOT — the stage states the
+    #: generic truth ("cluster ...") where the renderer's fallback said
+    #: "event (the statistical cluster)". Run output only, never identity
+    #: (ADR-0033).
     _TEST_DESCRIPTIONS = {
         "plain": (
             "one-sided cluster bootstrap on the paired improvement "
@@ -418,14 +432,23 @@ class StatTest(Node):
                     if res[key] is not None:
                         instruments[name][key] = res[key]
         raw = sum(1 for row in instruments.values() if row["survives_uncorrected"])
-        notes = (
-            [
-                f"the {correction!r} family correction removed {raw - len(survivors)} "
+        delta = raw - len(survivors)
+        notes = []
+        if delta > 0:
+            notes.append(
+                f"the {correction!r} family correction removed {delta} "
                 f"instrument(s) that cleared alpha={alpha} on their own p-value"
-            ]
-            if raw != len(survivors)
-            else []
-        )
+            )
+        elif delta < 0:
+            # Only a weighted correction can ADMIT: q = p/w with a large
+            # weight rejects an instrument whose own p-value did not
+            # clear alpha. Say so — "removed -1" would be a lie.
+            notes.append(
+                f"the {correction!r} family correction admitted {-delta} "
+                f"instrument(s) whose own p-value did not clear "
+                f"alpha={alpha} (their weights spent the family's budget "
+                "toward them)"
+            )
         if method == "studentized":
             notes.append(
                 f"per-instrument intervals are two-sided {1 - alpha:g} "

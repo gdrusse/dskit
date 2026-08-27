@@ -9,9 +9,13 @@ whole integrity chain is codec-agnostic without changing shape.
 Determinism: the gzip member is written with ``filename=""`` (no FNAME
 field), ``mtime=0``, and a pinned ``compresslevel``, so the same records
 produce the same bytes — and therefore the same acq_id — on a fixed
-zlib build. Cross-build byte equality is NOT promised (zlib-ng may emit
-different valid bytes); tests assert write-twice equality, never pinned
-compressed digests.
+build. The envelope is per (CPython io/gzip layer, zlib build): zlib-ng
+may emit different valid bytes, and CPython's TextIOWrapper/GzipFile
+flush behavior contributes sync-flush framing of its own. Tests assert
+write-twice equality, never pinned compressed digests. One deliberate
+codec asymmetry: gzip text pins ``newline="\\n"`` (bytes must not vary
+by platform) while ``"none"`` keeps the platform-default translation —
+exact byte parity with the pre-codec tree wins there.
 
 Sources opt in through a reserved ``"storage"`` namespace inside the
 source config's ``config`` object (see :func:`check_storage`); both
@@ -205,14 +209,22 @@ def iter_text_lines(path):
 
 
 def resolve_stream_file(dirpath, stream):
-    """The one file holding ``stream``'s rows in ``dirpath``, or ``None``.
+    """The one FILE holding ``stream``'s rows in ``dirpath``, or ``None``.
 
     Both spellings present at once is tamper-shaped — ``observations/``
     has no manifest, so this refusal is its only both-exist detector.
+    A path that exists but is not a regular file (a squatting directory)
+    refuses by name rather than being opened or silently skipped.
     """
     plain = os.path.join(dirpath, f"{stream}.jsonl")
     gz = plain + ".gz"
-    has_plain, has_gz = os.path.exists(plain), os.path.exists(gz)
+    for path in (plain, gz):
+        if os.path.exists(path) and not os.path.isfile(path):
+            raise AssetError(
+                [f"{path} exists but is not a regular file — the stream "
+                 "location is squatted; refusing"]
+            )
+    has_plain, has_gz = os.path.isfile(plain), os.path.isfile(gz)
     if has_plain and has_gz:
         raise AssetError(
             [f"both {plain} and {gz} exist — ambiguous stream storage; "

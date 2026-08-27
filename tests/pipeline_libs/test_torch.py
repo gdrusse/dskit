@@ -489,6 +489,37 @@ def test_monitor_that_never_records_a_finite_value_refuses(tmp_path):
         )
 
 
+def make_binary_rows(n=24):
+    """make_rows with a 0/1 label — the shape probability metrics need."""
+    return [{**row, "y": 1.0 if row["x1"] > 0.5 else 0.0} for row in make_rows(n)]
+
+
+def test_divergence_under_a_metric_monitor_restores_not_crashes(tmp_path):
+    # A transiently diverging fit drops the probability metrics for the
+    # diverged epochs (non-finite predictions -> empty scored dict). The
+    # monitored key must record as a present None — never the best, never
+    # an abort — so the pre-divergence best is what persists (ADR-0035).
+    params = {**PARAMS, "epochs": 6, "lr": 100.0, "monitor": "logloss"}
+    out = LinearRegressor("qhat", params).run(
+        ctx(tmp_path),
+        {"rows": make_binary_rows(), "val_rows": make_binary_rows()},
+    )
+    assert out["metrics"]["monitor"] == "logloss"
+    assert 1 <= out["metrics"]["selected_epoch"] <= 6
+    assert math.isfinite(out["metrics"]["monitor_value"])
+
+
+def test_fully_divergent_metric_monitor_still_refuses(tmp_path):
+    # When NO epoch ever produced a finite monitored value, the post-loop
+    # refusal fires (not an epoch-1 crash inside the curve).
+    params = {**PARAMS, "epochs": 3, "lr": 1e30, "monitor": "logloss"}
+    with pytest.raises(ValueError, match="never recorded a finite value"):
+        LinearRegressor("qhat", params).run(
+            ctx(tmp_path),
+            {"rows": make_binary_rows(), "val_rows": make_binary_rows()},
+        )
+
+
 # -- mode="load" on the trainer: really loads, refuses by name ----------------
 
 

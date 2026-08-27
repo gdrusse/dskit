@@ -570,8 +570,12 @@ class TrailingSplitSpec:
         # The cal band (ADR-0034) is the tail of the val window: cal =
         # [cal_start, val_end], and val counts backward from the band's
         # start — declaring cal_days never shrinks val, it pushes the
-        # earlier cuts deeper into history.
-        cal_start = val_end - self.cal_days * _DAY_MS
+        # earlier cuts deeper into history. The +1 mirrors _fold_splits'
+        # boundary discipline: the cal band is INCLUSIVE-left, so without
+        # it the midnight stamp exactly cal_days before val_end would move
+        # from val into cal — cal_days+1 daily stamps in cal, one stolen
+        # from val. With it, cal holds exactly cal_days daily stamps.
+        cal_start = val_end - self.cal_days * _DAY_MS + 1
         val_start = (cal_start if self.cal_days else val_end) - self.val_days * _DAY_MS
         # The embargo (ADR-0027) is carved out of TRAIN's tail, never out
         # of the val window: train ends embargo_days before val starts,

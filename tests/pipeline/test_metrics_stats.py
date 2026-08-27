@@ -223,6 +223,43 @@ class TestClusterBootstrapT:
         assert 0.0 < res["p_value"] < 1.0
         assert res["ci_low"] is None and res["ci_high"] is None
 
+    def test_exact_tie_is_floored_at_the_methods_own_resampling_floor(self):
+        # An exact two-cluster tie must not leap past what the method's
+        # own resampling could ever report (~0.25 at n=2): the degenerate
+        # p is floored at half the all-one-cluster replicate mass,
+        # n^(1-n)/2. A strictly less informative sample can never claim
+        # more significance than an epsilon-perturbed one.
+        tie = cluster_bootstrap_t({"a": [0.5], "b": [0.5]}, 10_000, 0)
+        assert tie["p_value"] == 0.25  # max(1/10001, 2**-1 / 2)
+        near = cluster_bootstrap_t(
+            {"a": [0.5], "b": [math.nextafter(0.5, 1.0)]}, 10_000, 0
+        )
+        assert tie["p_value"] <= near["p_value"] * 1.5  # no cliff between them
+        # n=3: floor 3^-2/2 = 1/18; by n=10 the add-one floor rules.
+        three = cluster_bootstrap_t({f"e{i}": [0.7] for i in range(3)}, 1000, 0)
+        assert three["p_value"] == pytest.approx(1 / 18)
+        ten = cluster_bootstrap_t({f"e{i}": [0.7] for i in range(10)}, 1000, 0)
+        assert ten["p_value"] == 1 / 1001
+
+    def test_float_dust_still_hits_the_degenerate_path(self):
+        # sum([0.1]*3)/3 rounds a hair away from 0.1: an exact se==0.0
+        # gate would let ULP dust masquerade as t ~ 1e16 with a
+        # zero-width interval. Degeneracy is structural (equal cluster
+        # means), so the dust case reports exactly like the exact case.
+        res = cluster_bootstrap_t({f"e{i}": [0.1] for i in range(3)}, 1000, 0)
+        assert res["se"] == 0.0
+        assert res["t"] is None
+        assert res["ci_low"] is None and res["ci_high"] is None
+        assert res["p_value"] == pytest.approx(1 / 18)
+
+    def test_n_boot_guards(self):
+        scores = {"a": [0.1], "b": [0.2]}
+        for bad in (0, -1, 2.5, True):
+            with pytest.raises(ValueError, match="n_boot"):
+                cluster_bootstrap_pvalue(scores, bad, 0)
+            with pytest.raises(ValueError, match="n_boot"):
+                cluster_bootstrap_t(scores, bad, 0)
+
     def test_pivot_is_scale_invariant(self):
         scores = {f"ev{i}": [0.1 * ((-1) ** i) + 0.03 * i] for i in range(15)}
         scaled = {k: [v * 7.3 for v in vals] for k, vals in scores.items()}

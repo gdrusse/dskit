@@ -325,9 +325,20 @@ def test_trailing_cal_materializes_the_band():
     cuts = spec.materialize(100 * DAY)
     assert cuts.test_end_ms == 100 * DAY
     assert cuts.val_end_ms == 95 * DAY
-    assert cuts.cal_start_ms == 92 * DAY  # cal = the val window's newest 3 days
-    assert cuts.val_start_ms == 82 * DAY  # val counts back from the cal band
-    assert cuts.train_end_ms == 80 * DAY
+    # +1: the cal band is inclusive-left, so the shifted cut keeps the
+    # midnight stamp at 92D in VAL — cal = stamps {93D, 94D, 95D},
+    # exactly cal_days of daily stamps, none stolen from val.
+    assert cuts.cal_start_ms == 92 * DAY + 1
+    assert cuts.val_start_ms == 82 * DAY + 1  # val counts back from the band
+    assert cuts.train_end_ms == 80 * DAY + 1
+    # Boundary-by-boundary on daily midnight stamps:
+    assert cuts.split_of(_Rec(92 * DAY)) == "val"
+    assert cuts.split_of(_Rec(93 * DAY)) == "cal"
+    assert cuts.split_of(_Rec(95 * DAY)) == "cal"
+    assert cuts.split_of(_Rec(96 * DAY)) == "test"
+    # Ten daily stamps in val, as declared:
+    val_stamps = [d for d in range(80, 101) if cuts.split_of(_Rec(d * DAY)) == "val"]
+    assert len(val_stamps) == 10
     assert "cal_days" not in TrailingSplitSpec(test_days=5, val_days=10).to_obj()
     assert TrailingSplitSpec.from_obj(spec.to_obj()) == spec
     no_cal = TrailingSplitSpec(test_days=5, val_days=10).materialize(100 * DAY)

@@ -439,6 +439,35 @@ class TestStatTestRun:
         )
         assert "se" not in plain["evidence"]["instruments"]["AAA"]
 
+    def test_weighted_bh_cannot_promote_an_untested_instrument(self, ctx):
+        # The sentinel p=1.0 of a below-MIN_CLUSTERS instrument is
+        # rejectable under weighted-bh (q = 1/w) — but an untested
+        # instrument can never be a survivor: GO on zero evidence is
+        # exactly what the gate exists to prevent.
+        out = StatTest("t", {"n_boot": 1000, "correction": "weighted-bh"}).run(
+            ctx,
+            {"scores": {"TINY": {"c0": 0.5}}, "weights": {"TINY": 50.0}},
+        )
+        assert out["survivors"] == [] and out["verdict"] == "NO-GO"
+        row = out["evidence"]["instruments"]["TINY"]
+        assert row["tested"] is False and row["survived"] is False
+
+    def test_weighted_bh_admission_is_said_not_mislabeled(self, ctx):
+        # A big weight can admit a TESTED instrument whose own p-value
+        # missed alpha. The note must say "admitted", never "removed -1".
+        scores = {"EDGE": {f"c{i}": 1.0 for i in range(8)}}
+        node = StatTest(
+            "t",
+            {"n_boot": 1000, "alpha": 0.0005, "correction": "weighted-bh"},
+        )
+        out = node.run(ctx, {"scores": scores, "weights": {"EDGE": 10.0}})
+        # p = 1/1001 ~ 0.000999 >= alpha, but q = p/10 clears the bar.
+        assert out["survivors"] == ["EDGE"]
+        assert out["evidence"]["instruments"]["EDGE"]["survives_uncorrected"] is False
+        assert out["evidence"]["totals"]["correction_cost"] == -1
+        (note,) = out["evidence"]["notes"]
+        assert "admitted 1" in note and "-1" not in note
+
     def test_weighted_bh_end_to_end_flip(self, ctx):
         # Exact p-values: EDGE = 1/1001, NULL = 1.0. With a tiny weight on
         # EDGE, its q = p/w blows past the BH threshold; with unit weights

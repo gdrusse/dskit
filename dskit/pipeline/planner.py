@@ -315,6 +315,20 @@ def plan(document, registry=None) -> Plan:
                 "state the split on the node"
             )
 
+    # ADR-0034 v1: walkforward folds replace the splits section with a
+    # degenerate 1 ms test band — no room for a cal band. The driver
+    # refuses at run; refusing HERE means `plan`/`validate` cannot bless
+    # a document whose only possible run is that refusal.
+    if document.walkforward is not None and bool(
+        getattr(document.splits, "cal_start_ms", None)
+        or getattr(document.splits, "cal_days", 0)
+    ):
+        errors.append(
+            "walkforward folds replace the splits section and cannot carry "
+            "a cal band (ADR-0034 v1) — remove splits.cal_start_ms / "
+            "splits.cal_days or the walkforward section"
+        )
+
     declared_kind = getattr(document.splits, "kind", None)
     if declared_kind is not None:
         for key in specs:
