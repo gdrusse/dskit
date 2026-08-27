@@ -26,6 +26,51 @@ python -m dskit.assets lineage <vid> --show ancestors --store ./asset_store
 
 Exit codes: **0** ok · **1** error (every problem listed, one per line).
 
+## The shape
+
+```
+model JSON --load_model--> AssetModel --model_hash--> pin in store.json
+(or default_model())       kinds: fields/refs/lifecycle       |
+                                        |                     |
+                                        | governs             | must match
+                                        v                     v
+register(kind, payload, refs) --->+-------------------------------+
+transition(version_id, to) ------>|           Registry            |
+ingest_run(registry, run_dir) --->|    the only mutation path     |
+sync_published(registry,          | check_payload -> refs resolve |
+               published_root) -->| lifecycle move: default-deny  |
+                                  +----+--------------------+-----+
+                                       |                    |
+                                       |                    | <- Lineage.add
+                                  put_record          append_event
+                                       v                    v
+                          records: write-once     event log: append-only
+                          vid = sha256 over       register / transition /
+                          {kind, payload, refs}   lineage
+                             |            |                 |
+                            get      find, list        iter_events
+                             v            v                 v
+                        AssetRecord  version_ids   state(vid) by replay;
+                                                   Lineage parents/ancestors
+```
+
+- **Model in, pin out** — `create_store` writes the model hash *and* the
+  backend into `store.json`; `Registry.__init__` re-checks the hash,
+  `open_store` resolves the backend, and every backend refuses a root
+  declaring another class.
+- **One mutation path — and two writers beside it** — `Lineage.add`
+  appends its edges to the log directly, and `copy_store` fills a fresh
+  empty root the same way; neither goes through `register`/`transition`.
+  Engine-level mutation is one writer per root on every backend.
+- **Two sinks, three layouts** — `put_record`/`append_event` are the whole
+  write seam; what lands under them is the backend's. `FileStore` writes
+  `records/<kind>/<vid>.json` atomically and appends plainly to
+  `events.jsonl`; `SqliteStore` keeps both tables in `store.sqlite`;
+  `ParquetStore` writes one parquet file per record and per event.
+- **The feeders** — `ingest_run` and `sync_published` are handed a
+  `Registry` and never open a store of their own. Every left-hand entry
+  arrow is a `__main__.py` subcommand; the store-level arrows are not.
+
 ## Writing your own model
 
 A model is a JSON file — see

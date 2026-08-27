@@ -45,6 +45,54 @@ python -m dskit.onboarding verify --root ./onboarding_root   # tamper check
 Exit codes: **0** ok · **3** `validate` gated `block` (a block is a
 result) · **1** error (every problem listed, one per line).
 
+## The flow, end to end
+
+```
+  register-source ---> source_config (ACTIVE)   the evidence store:
+         |             read as a ref, never     every record REFS the
+         v             rewritten by a pull      one before it
+  +-------------+  stage -> Merkle manifest -> rename into raw/
+  |   acquire   |  = THE COMMIT POINT   ---> acquisition_job, snapshot
+  +-------------+  the cursor is saved LAST, after that evidence
+         |
+         |  empty pull: no snapshot, nothing registered — a STATE
+         |  message still checkpoints, and is then the ONLY write
+         v
+  +-------------+  suite JSON -> failing counts -> thresholds
+  |   validate  |  ---> validation_result   (ref: snapshot)
+  +-------------+
+         v
+  +-------------+  reads the result's refs, carries the snapshot on
+  |   certify   |  ---> certification   (refs: snapshot, result)
+  +-------------+
+         v
+  +-------------+  pointer manifest: snapshot hashes, never data;
+  |   publish   |  idempotent on the CERTIFICATION, not the hash
+  +-------------+  ---> published_version   (ref: certification)
+         v
+  dskit.assets sync-published      files on disk are the only seam
+
+  and the way OUT, for consumers of the rows themselves:
+  observations/<source>/<acq_id>/<stream>.jsonl[.gz]
+         `--> scan_stream(root, source, stream, key_fields=...)
+              dedups bitemporally, holds the stream ONCE
+```
+
+- **the ACTIVE rule** — `find_active_source` (`acquire.py`) demands exactly
+  one `active` config per alias; zero and two are both errors, never a
+  guess. `register-source` is the only verb that writes one.
+- **the commit point** — the rename inside `write_snapshot` (`snapshot.py`)
+  makes a whole snapshot exist at once; a crash before it leaves no debris
+  and re-pulls from the old cursor — at-least-once plus hash dedupe.
+- **the read seam** — `scan_stream` / `stream_digest` (`observations.py`,
+  re-exported from `dskit.onboarding`) is how consumers read rows back:
+  bitemporal dedup, the stream held once, and a digest computed without
+  ever building the whole-snapshot string. A hand-rolled glob over
+  `observations/` is exactly what it replaces (ADR-0037).
+- **the pin** — `OnboardingRoot.create` pins the store to `onboarding_model`
+  (`default_model.py`) at init; `registry()` only reopens it, and its model
+  must hash to that pin — the pin governs, not the accessor.
+
 ## Writing a validation suite
 
 A suite is JSON — see

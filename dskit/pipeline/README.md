@@ -25,6 +25,52 @@ Exit codes: **0** ran · **3** halted at a NO-GO gate (a halt is a result) ·
 kinds resolve. Two more verbs — `demo`
 (the default) and `synthetic` — drive the legacy stage-list grammar (below).
 
+## The shape of a run
+
+```
+  doc.json { name, pipeline{ key: uses|inputs|params }, splits, walkforward }
+      |  python -m dskit.pipeline  run | walkforward | plan | validate | ...
+      v                            [--adapter pkg -- import IS registration]
+ +--------------------------------------------------------------------------+
+ | 1 LOAD    2 IMPORT    3 PLAN      4 RESOLVE      5 EXECUTE      6 RECORD |
+ | json ->   uses ->     topo order  fingerprints,  plan order,    every    |
+ | document  Node class  role rules  splits, hash   search re-runs outcome  |
+ +--------------------------------------------------------------------------+
+   `--- a refusal in 1-4 writes nothing ----' `-- run dir opens at 4's end:
+      |                                       halts and errors land there --'
+      v   the planned DAG -- every $node ref (inputs AND params) is an edge:
+   [data]->[gate]->[train]->[score]->[search]->[stat_test]->[capital]->[report]
+             |                     ^ the objective param ref --
+             |                       params make edges too
+             +-> a NO-GO verdict from ANY gate- or stat_test-role
+                 node halts every DESCENDANT
+      |  every node, on a NodeContext: validate_params ->
+      v  validate_inputs -> run -> validate_outputs -> nodes/NN-key.json
+   {name}-{asof}-{hash8}/ -- its carry.json feeds the next run's "$prev"
+```
+
+- **Document + `$`-refs** — `PipelineDocument`, `NodeSpec`, `ROLES`,
+  `parse_node_ref`, `parse_prev_ref`, `load_document` (`document.py`).
+- **The verbs** — `main` dispatching `cmd_run` / `cmd_walkforward` /
+  `cmd_plan` / `cmd_validate` / `cmd_nodemap` / `cmd_synthetic`, falling
+  through to `cmd_demo`; `--adapter` is `_import_adapters` (`__main__.py`).
+- **IMPORT + PLAN** — `resolve_uses` against `NodeKindRegistry` /
+  `DEFAULT_NODE_KINDS`, guarded by `node_class_errors` (`node.py`); each
+  `kinds_*.py` `register` claims its names at package import, `libs/` packs
+  only via `register()`/`--adapter`. `plan` → `Plan` (`order`, `edges`,
+  `role_of`, `ancestors`, `descendants`) and the role rules: `planner.py`.
+- **RESOLVE → RECORD** — `run_document` → `DocumentRunResult`
+  (`driver.py`; `exit_code` derives from `state`); trailing cuts materialize
+  in `_materialize_splits` off `Node.data_edge`, event policies bind in
+  `_bind_event_bounds` (both `driver.py`) over `merge_event_bounds`
+  (`split_policy.py`).
+- **The search seam** — `ctx.rerun` is `_SearchSeam` (`driver.py`, driven by
+  `HpoGrid`, `kinds_search.py`), for `search` roles only and never an edge:
+  each trial re-executes the dirty part of the objective's ancestry, then
+  `apply_winner` runs it once more and that pass replaces those outputs.
+- **Series and folds** — `_find_prev_run` + `_materialize` bind `$prev`;
+  `run_walk_forward` + `_fold_splits` → `WalkForwardRunResult` (`driver.py`).
+
 ## The document
 
 ```jsonc
