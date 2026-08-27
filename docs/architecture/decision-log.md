@@ -1098,7 +1098,9 @@ pipeline import (the sibling firewall stands).
   (default-deny: a typo'd root must not read as an empty store); an
   existing source with no stream files is truthfully empty. A row
   missing a key field, a non-dict `data`, or an unparseable
-  `ts_field` refuses loudly, accumulated as `AssetError`.
+  `ts_field` refuses loudly as `AssetError` (parameter problems and
+  winning-level tie conflicts accumulate; store-side row refusals
+  raise at the offending row).
 - `stream_digest(records)` — the content fingerprint, hashed record
   by record yet **byte-identical** to
   `sha256(json.dumps(records, sort_keys=True))` (`json.dumps` joins
@@ -1187,3 +1189,25 @@ unaffected — the freeze envelope holds. (iv) the drain-time
 observation readers through the seam (it still pointed consumers at
 hand-rolled `resolve_stream_file` sniffing) and documents how to
 leverage it.
+
+*Fourth-round amendments (2026-08-26, the owner's continue-until-clean
+ruling; two fresh skeptics per round; the round-3 adjudication itself
+held under 600×6 permutation fuzzing and a 200-store freeze check):*
+(i) dedup-KEY identity is canonical, never coercing Python `==` —
+dict hashing let `1`/`1.0`/`true` share one slot, so a later
+acquisition silently superseded records it never keyed; key values
+are now type-tagged for keying AND sorting (strings pass through
+untouched — zero allocation, the memory contract is unchanged;
+floats tag their repr so `-0.0`/`0.0` stay distinct), closing the
+same coercion family the second round closed for data identity.
+In-envelope digest freeze unaffected (homogeneous keys order as
+before). (ii) `parse_utc` catches `OverflowError` — a boundary-year
+offset stamp (`9999-12-31T23:00:00-05:00`) parses as ISO and then
+leaves the year range in `astimezone`, which escaped raw through
+both stamp paths; every caller inherits the typed refusal. (iii) a
+DIRECTORY squatting the stream spelling at source level refuses like
+the file spelling (it scanned as an empty acquisition dir). (iv)
+documented: `acquired_at` adjudication is millisecond-resolution
+(sub-ms-apart stamps collapse to one level, loud direction only) and
+refusal message WORDING may vary with directory arrangement while
+outcomes never do.

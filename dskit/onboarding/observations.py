@@ -49,6 +49,37 @@ from .codec import iter_text_lines, resolve_stream_file
 __all__ = ["scan_stream", "stream_digest"]
 
 
+def _key_part(value):
+    """A key-field value under CANONICAL identity — never coercing
+    Python ``==``, where ``1 == 1.0 == True`` would let one dict slot
+    silently merge three canonically distinct keys (and the same
+    coercion would let sort comparisons equate distinct records).
+
+    Strings — the overwhelmingly common key type — pass through
+    untouched (zero allocation, so the memory contract is unchanged).
+    The bool/int/float family is type-tagged; floats tag their repr so
+    ``-0.0`` and ``0.0`` stay distinct, matching their serializations.
+    Anything else passes through raw: an unhashable value still hits
+    the existing loud refusal.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return ("b", value)
+    if isinstance(value, float):
+        return ("f", repr(value))
+    if isinstance(value, int):
+        return ("i", value)
+    return value
+
+
+def _key_display(key) -> list:
+    """The raw values behind a key's tagged parts, for messages."""
+    return [part[1] if isinstance(part, tuple) and len(part) == 2
+            and part[0] in ("b", "f", "i") else part
+            for part in key]
+
+
 def _scan_problems(root, source, stream, key_fields, ts_field, ts_out,
                    shared_fields) -> list:
     """Every problem with a scan request, accumulated (never raises)."""
@@ -114,7 +145,12 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
         bitemporal winner exists and scan order must never pick one. A
         tie a LATER acquisition supersedes is history, never a refusal.
         A NaN key value refuses at intake (it breaks total order
-        without raising).
+        without raising). Key identity is CANONICAL, never coercing
+        Python ``==``: ``1``, ``1.0``, and ``true`` are three distinct
+        keys. Adjudication compares instants at millisecond
+        resolution — sub-ms-apart stamps collapse to one level (loud
+        direction only: identical data dedups, differing data
+        refuses; the second-precision writer can never mint them).
     ts_field : str, optional
         A ``data`` field holding an ISO date/datetime (naive values are
         UTC — the ``parse_utc`` convention). When declared, each record
@@ -169,15 +205,16 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
     _share = shared.setdefault
     for name in entries:
         directory = os.path.join(base, name)
+        # The writer only ever puts a stream INSIDE an acquisition dir —
+        # a misplaced spelling is tamper-shaped and refuses, whether it
+        # squats as a file OR a directory; any other stray non-dir
+        # entry (editor droppings) is not ours.
+        if name in (f"{stream}.jsonl", f"{stream}.jsonl.gz"):
+            raise AssetError(
+                [f"{directory}: stream spelling outside an acquisition "
+                 "dir — tamper-shaped; refusing"]
+            )
         if not os.path.isdir(directory):
-            # The writer only ever puts a stream INSIDE an acquisition
-            # dir — a misplaced spelling is tamper-shaped and refuses;
-            # any other stray file (editor droppings) is not ours.
-            if name in (f"{stream}.jsonl", f"{stream}.jsonl.gz"):
-                raise AssetError(
-                    [f"{directory}: stream file outside an acquisition "
-                     "dir — tamper-shaped; refusing"]
-                )
             continue
         path = resolve_stream_file(directory, stream)
         if path is None:
@@ -248,7 +285,7 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                             [f"{path}:{n}: invalid acquired_at: {exc}"]
                         ) from exc
                 instants[acquired] = when
-            key = tuple(data[f] for f in key_fields)
+            key = tuple(_key_part(data[f]) for f in key_fields)
             try:
                 held = best.get(key)
             except TypeError as exc:
@@ -290,7 +327,7 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
     # tuples of mixed types are not orderable and must never crash a
     # store whose winners are unambiguous.
     tie_problems = sorted(
-        f"{where}: two rows for key {list(key)!r} share the winning "
+        f"{where}: two rows for key {_key_display(key)!r} share the winning "
         f"acquired_at instant ({spelling!r}) with differing data — no "
         "bitemporal winner; refusing"
         for key, (when_c, where, spelling) in conflicts.items()
@@ -308,12 +345,12 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
             if ts_field not in data:
                 raise AssetError(
                     [f"a record is missing ts_field {ts_field!r} — "
-                     f"key {list(_key)!r}"]
+                     f"key {_key_display(_key)!r}"]
                 )
             if ts_out in data:
                 raise AssetError(
                     [f"a record already carries {ts_out!r} — refusing to "
-                     f"overwrite it (key {list(_key)!r})"]
+                     f"overwrite it (key {_key_display(_key)!r})"]
                 )
             try:
                 data[ts_out] = int(
@@ -321,16 +358,19 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                 )
             except AssetError as exc:
                 raise AssetError(
-                    [f"key {list(_key)!r}: invalid {ts_field}: {exc}"]
+                    [f"key {_key_display(_key)!r}: invalid {ts_field}: {exc}"]
                 ) from exc
         records.append(data)
     try:
         if ts_field is not None:
             records.sort(
-                key=lambda r: (r[ts_out],) + tuple(r[f] for f in key_fields)
+                key=lambda r: (r[ts_out],)
+                + tuple(_key_part(r[f]) for f in key_fields)
             )
         else:
-            records.sort(key=lambda r: tuple(r[f] for f in key_fields))
+            records.sort(
+            key=lambda r: tuple(_key_part(r[f]) for f in key_fields)
+        )
     except TypeError as exc:
         raise AssetError(
             [f"records are not totally orderable by "

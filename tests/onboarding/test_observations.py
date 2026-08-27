@@ -251,6 +251,54 @@ class TestScan:
         with pytest.raises(AssetError, match="not-a-stamp"):
             _scan(root)
 
+    def test_boundary_year_offset_stamps_refuse_typed(self, tmp_path):
+        # "9999-12-31T23:00:00-05:00" parses as ISO but its UTC
+        # conversion leaves datetime's range — the seam must refuse
+        # typed on BOTH stamp paths, never leak a raw OverflowError.
+        ts = "2026-01-05T14:30:00+00:00"
+        root_a = str(tmp_path / "a")
+        _write(root_a, "acq-0001",
+               [_row("AAPL", ts, 100.0,
+                     acquired="9999-12-31T23:00:00-05:00")])
+        with pytest.raises(AssetError, match="9999"):
+            _scan(root_a)
+        root_b = str(tmp_path / "b")
+        _write(root_b, "acq-0001",
+               [_row("AAPL", "0001-01-01T00:00:00+05:45", 100.0)])
+        with pytest.raises(AssetError, match="0001"):
+            _scan(root_b)
+
+    def test_respelled_keys_are_distinct_across_instants(self, tmp_path):
+        # Key identity is CANONICAL, not coercing ==: 1, 1.0, and true
+        # are three keys — a later acquisition must never silently
+        # supersede records it never keyed (round-4 finding).
+        t1, t2, t3 = ("2026-01-06T00:00:00+00:00",
+                      "2026-01-07T00:00:00+00:00",
+                      "2026-01-08T00:00:00+00:00")
+        ts = "2026-01-05T14:30:00+00:00"
+        root = str(tmp_path)
+        for acq, ident, close, acquired in (
+            ("acq-0001", 1, 100.0, t1),
+            ("acq-0002", 1.0, 200.0, t2),
+            ("acq-0003", True, 300.0, t3),
+        ):
+            row = _row("AAPL", ts, close, acquired=acquired)
+            row["data"]["ident"] = ident
+            _write(root, acq, [row])
+        records = _scan(root, key_fields=("ident", "ts"))
+        assert sorted(r["close"] for r in records) == [100.0, 200.0, 300.0]
+
+    def test_stream_named_directory_squat_refuses(self, tmp_path):
+        # A DIRECTORY squatting the stream spelling at source level must
+        # refuse like the file spelling — never scan as an empty acq dir.
+        root = str(tmp_path)
+        _write(root, "acq-0001",
+               [_row("AAPL", "2026-01-05T14:30:00+00:00", 100.0)])
+        os.makedirs(os.path.join(root, "observations", "alpaca",
+                                 "bars.jsonl"))
+        with pytest.raises(AssetError, match="bars.jsonl"):
+            _scan(root)
+
     def test_missing_acquired_at_loses_to_any_stamp(self, tmp_path):
         # An absent acquired_at reads as the earliest possible instant.
         ts = "2026-01-05T14:30:00+00:00"

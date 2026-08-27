@@ -123,11 +123,14 @@ def parse_utc(value):
         raise AssetError([f"expected an ISO date/datetime string, got {value!r}"])
     try:
         dt = datetime.fromisoformat(value)
-    except ValueError as exc:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        # astimezone stays INSIDE the try: a boundary-year offset stamp
+        # ("9999-12-31T23:00:00-05:00") parses fine and then leaves the
+        # year range here as OverflowError, not ValueError.
+        return dt.astimezone(timezone.utc)
+    except (ValueError, OverflowError) as exc:
         raise AssetError([f"{value!r} is not an ISO date/datetime: {exc}"]) from exc
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
 
 
 # ---------------------------------------------------------------------------

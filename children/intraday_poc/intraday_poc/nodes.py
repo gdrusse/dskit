@@ -73,7 +73,9 @@ class BarsFromStore(Node):
 
     Records are the normalized rows' ``data`` payloads flattened, plus
     ``asof_ms`` (the bar timestamp as epoch ms — what split filters cut
-    on). Ordered by ``(asof_ms, symbol)``.
+    on). Ordered by ``(asof_ms, symbol, ts)`` — the seam's
+    key-determined order (identical to ``(asof_ms, symbol)`` except
+    for same-instant duplicate ``ts`` spellings, per ADR-0037).
     """
 
     role = "data"
