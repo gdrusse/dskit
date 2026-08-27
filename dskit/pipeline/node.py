@@ -48,13 +48,109 @@ __all__ = [
     "NodeContext",
     "NodeKindRegistry",
     "ResolvedUse",
+    "check_int_param",
     "node_class_errors",
     "register_node_kind",
+    "reject_unknown_params",
     "resolve_uses",
 ]
 
 _NODE_KEY_OK = r"^[a-z_][a-z0-9_]*$"
 _KIND_OK = r"^[a-z][a-z0-9_-]*$"
+
+
+# ---------------------------------------------------------------------------
+# The validate_params helper family — PUBLIC, and public on purpose.
+#
+# These serve one protocol: `Node.validate_params`, which ACCUMULATES into
+# a problems list and returns it (never raises). `base.py` has same-named
+# private helpers serving the opposite protocol — raise-immediately, for
+# dataclass `from_obj` parsing — which is why these cannot live there and
+# why the names differ.
+#
+# They are exported rather than underscore-private so a tier-3 child
+# IMPORTS them instead of copying them. Two children copied the old
+# private version verbatim; that is the duplication class CLAUDE.md's
+# "Duplication that diverges" section exists to stop.
+# ---------------------------------------------------------------------------
+
+
+def reject_unknown_params(problems, params, allowed) -> None:
+    """Append a problem for any param name outside the allowed set.
+
+    The default-deny half of a node's ``validate_params``. The base
+    ``Node.validate_params`` accepts anything, so each kind closes the
+    hole for itself — a typo'd knob that is silently ignored is a config
+    lie.
+
+    Keys only. A VALUE that is a ``$``-reference string is legal wiring
+    (``hpo-grid``'s ``objective`` is one by design) and is never
+    inspected here.
+
+    Parameters
+    ----------
+    problems : list of str
+        The accumulator. Appended to in place; never raised from.
+    params : dict
+        The node's declared params, straight from the document.
+    allowed : iterable of str
+        This kind's own knob names — conventionally its ``_PARAMS``.
+
+    Returns
+    -------
+    None
+        Problems are appended to ``problems``.
+
+    Examples
+    --------
+    The default-deny opening of a node's validator::
+
+        @classmethod
+        def validate_params(cls, params):
+            problems = []
+            reject_unknown_params(problems, params, cls._PARAMS)
+            check_int_param(problems, "lookback", params.get("lookback"), ge=2)
+            return problems
+    """
+    unknown = sorted(set(params) - set(allowed))
+    if unknown:
+        problems.append(f"unknown param(s) {unknown} — allowed: {sorted(allowed)}")
+
+
+def check_int_param(problems, name, value, *, ge) -> None:
+    """Append a problem unless ``value`` is an int at or above ``ge``.
+
+    ``bool`` is refused explicitly: it is an ``int`` in Python, so
+    without the check ``True`` would pass as 1.
+
+    Parameters
+    ----------
+    problems : list of str
+        The accumulator. Appended to in place.
+    name : str
+        The knob's name, used in the message.
+    value : object
+        The declared value; anything non-int accumulates a problem.
+    ge : int
+        Inclusive lower bound. Required — a bound the caller did not
+        state is a bound nobody can review.
+
+    Returns
+    -------
+    None
+        Problems are appended to ``problems``.
+
+    Examples
+    --------
+    Refuse a width nobody stated, and one below the floor::
+
+        problems = []
+        check_int_param(problems, "lookback", None, ge=2)
+        check_int_param(problems, "lookback", 1, ge=2)
+        len(problems)   # 2
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value < ge:
+        problems.append(f"{name} must be an int >= {ge}, got {value!r}")
 
 
 @dataclass(frozen=True)

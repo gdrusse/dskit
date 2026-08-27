@@ -26,7 +26,11 @@ import hashlib
 import json
 import math
 
-from dskit.pipeline.node import Node, register_node_kind
+from dskit.pipeline.node import (
+    Node,
+    register_node_kind,
+    reject_unknown_params,
+)
 
 __all__ = ["EnrichRecords", "NODE_KINDS", "SAMPLE_ROWS", "SampleRecords"]
 
@@ -40,15 +44,10 @@ SAMPLE_ROWS = [
 ]
 
 
-def _reject_unknown(problems, params, allowed) -> None:
-    """Default-deny on this class's own knobs — the child keeps its own
-    copy of the toolkit idiom (the toolkit is never imported the other
-    way around, and its helper is private)."""
-    unknown = sorted(set(params) - set(allowed))
-    if unknown:
-        problems.append(
-            f"unknown param(s) {unknown} — this kind allows {sorted(allowed)}"
-        )
+#: Default-deny on this class's own knobs. IMPORTED, never copied: the
+#: toolkit exports this helper precisely so a child does not carry its own
+#: drifting duplicate. Same for ``check_int_param`` when you need it.
+_reject_unknown = reject_unknown_params
 
 
 class SampleRecords(Node):

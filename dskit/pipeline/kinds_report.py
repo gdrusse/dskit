@@ -113,7 +113,11 @@ import csv
 import io
 from datetime import datetime, timezone
 
-from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
+from dskit.pipeline.node import (
+    DEFAULT_NODE_KINDS,
+    Node,
+    reject_unknown_params,
+)
 
 __all__ = [
     "DECISION_COLUMNS",
@@ -136,13 +140,10 @@ EVIDENCE_PORTS = ("training", "validation", "edge", "sizing", "replay")
 SECTIONS = ("summary", "trades", "edge_test", "family", "decisions", "stages")
 
 
-def _reject_unknown(problems, params, allowed):
-    """Default-deny on this class's own knobs (the sibling kind modules
-    carry the same helper; a typo'd knob silently ignored is a config
-    lie)."""
-    unknown = sorted(set(params) - set(allowed))
-    if unknown:
-        problems.append(f"unknown param(s) {unknown} — allowed: {sorted(allowed)}")
+#: Default-deny on this class's own knobs. One definition, in ``node.py``
+#: beside the ``validate_params`` protocol it serves; this alias keeps
+#: the module-local spelling every kind in this file already uses.
+_reject_unknown = reject_unknown_params
 
 
 def _fmt(value):

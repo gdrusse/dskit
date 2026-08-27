@@ -32,7 +32,7 @@ import json
 import math
 from types import SimpleNamespace
 
-from dskit.pipeline.node import Node
+from dskit.pipeline.node import Node, check_int_param
 
 __all__ = [
     "DEMO_SPLITS",
@@ -74,9 +74,9 @@ def _u(seed, *tags) -> float:
     return int.from_bytes(digest[:8], "big") / 2**64
 
 
-def _check_int(problems, name, value, *, ge):
-    if isinstance(value, bool) or not isinstance(value, int) or value < ge:
-        problems.append(f"{name} must be an int >= {ge}, got {value!r}")
+#: One definition, in ``node.py`` beside the ``validate_params``
+#: protocol it serves.
+_check_int = check_int_param
 
 
 def _split_of(splits, event):

@@ -46,14 +46,110 @@ dev = [
 # House baseline: the classic pycodestyle/pyflakes defaults, pinned so
 # a ruff upgrade cannot silently widen the rule set. Broader families
 # (I, SIM, UP, ...) are deliberate future opt-ins, not defaults.
-select = ["E4", "E7", "E9", "F"]
+# D = the docstring standard (CLAUDE.md "Docstrings").
+#
+# The ANN family is deliberately ABSENT — no parameter annotations AND no
+# return annotations. The owner's standing preference is that type hints
+# clutter data-science code, and the docstring standard already requires a
+# typed `Returns` section, so an enforced `-> dict` would be the SAME type
+# stated twice with nothing pinning the two together — the exact defect
+# class CLAUDE.md's "Duplication that diverges" exists to stop. Existing
+# return annotations are fine; they are simply not required.
+select = ["E4", "E7", "E9", "F", "D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
 
 [tool.ruff.lint.per-file-ignores]
 # Tests import after pytest.importorskip by design (E402) and bind
 # small lambdas where a def would add noise (E731).
-"tests/**" = ["E402", "E731"]
+"tests/**" = ["E402", "E731", "D"]
 # Child tests share the tests/** idiom (ADR-0021).
-"children/*/tests/**" = ["E402", "E731"]
+"children/*/tests/**" = ["E402", "E731", "D"]
+
+# ---------------------------------------------------------------------
+# PRE-STANDARD MODULES — the remaining work, in config form.
+#
+# The docstring standard applies to new code and to any function you
+# meaningfully edit; it is NOT a retrofit sweep. Every module written
+# before the standard is listed here. **Delete a module's entry when you
+# convert it** — that is what makes the list shrink to nothing.
+#
+# Ignores are file-granular, so clearing a large module (driver.py,
+# torch.py) means converting the whole file; do that as its own commit.
+# ---------------------------------------------------------------------
+"children/_skeleton/yourproject/connectors.py" = ["D"]
+"children/_skeleton/yourproject/nodes.py" = ["D"]
+"children/intraday_poc/intraday_poc/__init__.py" = ["D"]
+"children/intraday_poc/intraday_poc/connectors.py" = ["D"]
+"children/intraday_poc/intraday_poc/live.py" = ["D"]
+"children/intraday_poc/intraday_poc/models.py" = ["D"]
+"children/intraday_poc/intraday_poc/nodes.py" = ["D"]
+"children/intraday_poc/intraday_poc/testing.py" = ["D"]
+"dskit/__init__.py" = ["D"]
+"dskit/assets/__main__.py" = ["D"]
+"dskit/assets/base.py" = ["D"]
+"dskit/assets/default_model.py" = ["D"]
+"dskit/assets/ingest.py" = ["D"]
+"dskit/assets/libs/parquet.py" = ["D"]
+"dskit/assets/libs/sqlite.py" = ["D"]
+"dskit/assets/lineage.py" = ["D"]
+"dskit/assets/model.py" = ["D"]
+"dskit/assets/record.py" = ["D"]
+"dskit/assets/registry.py" = ["D"]
+"dskit/assets/store.py" = ["D"]
+"dskit/assets/sync.py" = ["D"]
+"dskit/onboarding/__init__.py" = ["D"]
+"dskit/onboarding/__main__.py" = ["D"]
+"dskit/onboarding/acquire.py" = ["D"]
+"dskit/onboarding/base.py" = ["D"]
+"dskit/onboarding/certify.py" = ["D"]
+"dskit/onboarding/codec.py" = ["D"]
+"dskit/onboarding/connector.py" = ["D"]
+"dskit/onboarding/coverage.py" = ["D"]
+"dskit/onboarding/default_model.py" = ["D"]
+"dskit/onboarding/layout.py" = ["D"]
+"dskit/onboarding/libs/localfiles.py" = ["D"]
+"dskit/onboarding/libs/restapi.py" = ["D"]
+"dskit/onboarding/observations.py" = ["D"]
+"dskit/onboarding/publish.py" = ["D"]
+"dskit/onboarding/snapshot.py" = ["D"]
+"dskit/onboarding/state.py" = ["D"]
+"dskit/onboarding/validate.py" = ["D"]
+"dskit/pipeline/__main__.py" = ["D"]
+"dskit/pipeline/base.py" = ["D"]
+"dskit/pipeline/conformance.py" = ["D"]
+"dskit/pipeline/document.py" = ["D"]
+"dskit/pipeline/driver.py" = ["D"]
+"dskit/pipeline/env.py" = ["D"]
+"dskit/pipeline/features.py" = ["D"]
+"dskit/pipeline/io.py" = ["D"]
+"dskit/pipeline/kinds_flow.py" = ["D"]
+"dskit/pipeline/kinds_report.py" = ["D"]
+"dskit/pipeline/kinds_search.py" = ["D"]
+"dskit/pipeline/kinds_stats.py" = ["D"]
+"dskit/pipeline/kinds_table.py" = ["D"]
+"dskit/pipeline/libs/matplotlib.py" = ["D"]
+"dskit/pipeline/libs/numpy.py" = ["D"]
+"dskit/pipeline/libs/optuna.py" = ["D"]
+"dskit/pipeline/libs/pyomo.py" = ["D"]
+"dskit/pipeline/libs/sb3.py" = ["D"]
+"dskit/pipeline/libs/sklearn.py" = ["D"]
+"dskit/pipeline/libs/torch.py" = ["D"]
+"dskit/pipeline/libs/transformers.py" = ["D"]
+"dskit/pipeline/metrics.py" = ["D"]
+"dskit/pipeline/node.py" = ["D"]
+"dskit/pipeline/planner.py" = ["D"]
+"dskit/pipeline/protocols.py" = ["D"]
+"dskit/pipeline/records.py" = ["D"]
+"dskit/pipeline/registry.py" = ["D"]
+"dskit/pipeline/resolve.py" = ["D"]
+"dskit/pipeline/runner.py" = ["D"]
+"dskit/pipeline/split_policy.py" = ["D"]
+"dskit/pipeline/stats.py" = ["D"]
+"dskit/pipeline/synthetic_nodes.py" = ["D"]
+"dskit/pipeline/testing.py" = ["D"]
+"dskit/pipeline/trainlog.py" = ["D"]
 
 [tool.setuptools.packages.find]
 include = ["dskit*"]

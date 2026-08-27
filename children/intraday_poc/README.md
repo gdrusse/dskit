@@ -66,6 +66,46 @@ The forward pull is the SAME connector class under a second source
 per (source, stream, mode), so backfill and live never fight. Re-run the
 live acquire on any cadence; each pull takes only what is new.
 
+## How the pulled data reaches the model
+
+The two halves never import each other — they meet at a **directory
+path**. `register-source` only files a record saying which class to
+import; `acquire` writes rows to `observations/<source>/`; the pipeline
+reads that same folder back. The only thing binding them is the pair of
+strings `root` + `source` in the run document.
+
+```
+  register-source ──►  registry record: source_config          __main__.py:92
+                       {name, connector, config}, draft→active
+                       "pkg.module:Class" imported on demand   connector.py:291
+                                  │
+  acquire ─────────►  run_acquisition                          acquire.py:86
+                       ├─ raw/<source>/<acq>/          WORM evidence
+                       ├─ observations/<source>/<acq>/bars.jsonl
+                       └─ state/<source>/bars-<mode>.json   cursor, written LAST
+                                  │
+              ┌───────────────────┴───────────────────┐
+              │ MODELLING                             │ GOVERNANCE
+              ▼                                       ▼
+   scan_stream(root, source, …)          validate → certify → publish
+     observations.py:214                   published/<dataset>/*.json
+     os.path.join(root,"observations",source)          │      publish.py:51
+              ▼                                        ▼
+   BarsFromStore          nodes.py:107        sync_published  assets/sync.py
+              ▼                                   (the catalog)
+   window → DeclaredTrain → select-one
+     run-train.json / run-backtest.json
+```
+
+**Certify and publish are NOT on the modelling path.** Nothing under
+`dskit/pipeline` reads `published/` — that branch feeds the asset
+catalog. The pipeline reads acquired observations directly, certified or
+not. Publish for governance, not to unblock a run.
+
+**`"alpaca"` is an unpinned string.** It is chosen at `register-source`,
+becomes the folder name, and must then be retyped in every run
+document's `bars` node. A typo yields an empty scan, not an error.
+
 ## Backtest, fit, go forward
 
 ```bash

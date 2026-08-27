@@ -83,7 +83,11 @@ import os
 import sys
 from collections.abc import Mapping
 
-from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
+from dskit.pipeline.node import (
+    DEFAULT_NODE_KINDS,
+    Node,
+    reject_unknown_params,
+)
 
 __all__ = [
     "NODE_KINDS",
@@ -127,12 +131,9 @@ _UNHASHED_SIDECAR_FIELDS = ("sha256", "library_version")
 # ---------------------------------------------------------------------------
 
 
-def _reject_unknown(problems, params, allowed):
-    """Default-deny on this class's own knobs — a typo'd knob that is
-    silently ignored is a config lie, refused by name."""
-    unknown = sorted(set(params) - set(allowed))
-    if unknown:
-        problems.append(f"unknown param(s) {unknown} — allowed: {sorted(allowed)}")
+#: Default-deny on this class's own knobs. One definition, in ``node.py``
+#: beside the ``validate_params`` protocol it serves.
+_reject_unknown = reject_unknown_params
 
 
 def _import_path_problems(name, value, *, example):

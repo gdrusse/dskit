@@ -35,7 +35,12 @@ from collections.abc import Mapping
 from types import SimpleNamespace
 
 from dskit.pipeline.metrics import METRICS
-from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
+from dskit.pipeline.node import (
+    DEFAULT_NODE_KINDS,
+    Node,
+    check_int_param,
+    reject_unknown_params,
+)
 from dskit.pipeline.stats import (
     CORRECTIONS,
     METHODS,
@@ -53,28 +58,18 @@ __all__ = ["MIN_CLUSTERS", "StatTest", "Validate", "register"]
 MIN_CLUSTERS = 2
 
 
-def _reject_unknown(problems, params, allowed):
-    """Default-deny on this class's own knobs.
-
-    The BASE ``validate_params`` accepts anything (a strict default is
-    parked in I-222), but each toolkit kind knows its own knob names
-    exactly — and a typo'd knob that is silently ignored is a config lie,
-    so every kind closes the hole for itself. Shared by the sibling kind
-    modules (``kinds_flow``, ``kinds_search``); the adapter keeps its own
-    copy because the toolkit is never imported the other way around.
-
-    Keys only: a VALUE that is a ``$``-reference string is legal wiring
-    (``hpo-grid``'s ``objective`` is one by design) and is never touched
-    here.
-    """
-    unknown = sorted(set(params) - set(allowed))
-    if unknown:
-        problems.append(f"unknown param(s) {unknown} — allowed: {sorted(allowed)}")
-
-
-def _check_int(problems, name, value, *, ge):
-    if isinstance(value, bool) or not isinstance(value, int) or value < ge:
-        problems.append(f"{name} must be an int >= {ge}, got {value!r}")
+#: The ``validate_params`` helper family now has ONE definition, in
+#: ``node.py`` beside the protocol it serves — and it is PUBLIC there so
+#: a tier-3 child imports it instead of copying it.
+#:
+#: These aliases stay because nine sibling modules import the private
+#: spellings from THIS module, which was never their right home (a
+#: statistics module hosting a generic validator). Import
+#: ``reject_unknown_params`` / ``check_int_param`` from
+#: ``dskit.pipeline.node`` in new code; these are the compatibility
+#: shims and can go once the importers move.
+_reject_unknown = reject_unknown_params
+_check_int = check_int_param
 
 
 def _field(record, name):

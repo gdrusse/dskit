@@ -21,6 +21,51 @@ Wrap the *library*, generically — never a project's use of it.
 
 ## Working agreement
 
+- **Inventory before you build.** "dskit has no X" needs a search behind
+  it: read the package README's "What ships" and open any `dskit/*/libs/`
+  pack whose subject matches. **The node registry is not an inventory** —
+  packs wired by import path register nothing (`libs/numpy.py` sets
+  `NODE_KINDS = ()`), so an empty `registry.kinds()` result proves nothing.
+- **To find what is configurable, read the class's params tuple, never the
+  config file.** Usually `_PARAMS`; the torch/model families split it into
+  `_BASE_PARAMS` + `_EXTRA_PARAMS`, so check both and walk the base classes.
+  The document shows what someone USED; the tuple is what is AVAILABLE, and
+  default-deny makes it exhaustive. Diffing the two is the highest-yield
+  review move here.
+- **Missing capability graduates INTO dskit. Always.** Build it generic in
+  `dskit/` and let the child call it; never solve it child-side and move
+  on. **Children are wrappers** — thin tier-3 code plus JSON configs, never
+  a home for capability. The bar is "*might* a second project want this",
+  not "will it". ADR before code for significant designs.
+- **Same for `libs/`.** Library plumbing graduates to the tier-2 pack, not
+  into the child. Pick the tier by what the code IS: domain-neutral stdlib
+  → core; generic wrapping of a library → pack; the project's own domain →
+  the child. Inside a child: **mechanism belongs to the pack, the domain
+  constraint belongs to the child** (`SelectOne` subclasses the
+  `PyomoSolve` doorway and supplies only its own program).
+- **"ADR before code" means WRITE IT AND WAIT.** Add the entry to
+  `docs/architecture/decision-log.md`, get it approved, then implement — a
+  proposal is not an approval. (A whole new *package* additionally needs its
+  full file-by-file structure approved first.)
+- **Design with the pillars — encapsulation, inheritance, polymorphism,
+  abstraction — to keep code decoupled and modular.** This repo already
+  runs on them (`Node`, `Connector`, `Store`, `PyomoSolve`, `TorchAdapter`),
+  so extend a seam rather than inventing plumbing beside it. In practice:
+  - **Subclass a hook, don't branch.** A new `if kind ==` / `if mode ==`
+    chain in a `run()` is the smell — that behavior is a subclass, or a
+    registry entry, or a strategy object passed in.
+  - **Abstract means abstract.** A hook that only raises
+    `NotImplementedError` lets an incomplete subclass construct fine and
+    fail later; use `@abstractmethod` so it refuses at construction.
+  - **Encapsulate at the boundary.** `__all__` plus the `_` prefix IS the
+    public API contract here — 62 of 69 modules declare it and no
+    underscore name leaks into one. Keep that true.
+  - **One job per method.** If you need comment headers to mark sections
+    inside a body, those sections are the methods.
+- **Never hardcode what could change.** A literal is only acceptable when
+  the value is certain never to vary. If a value must appear twice, PIN the
+  agreement with a test (`test_lookback_agrees_everywhere`) or a runtime
+  refusal — the failure to design against is one copy changing silently.
 - **Ask before writing new files.** Always. No unrequested files.
 - **A new package requires an approved plan first.** Present the full structure —
   every file and its purpose — and get approval before creating anything. No
@@ -104,6 +149,14 @@ Keep both trees current when files are added or removed.
 ## Configuration standards
 
 - **JSON is the interface.** A config declares the whole process; the code reads it.
+- **The identity hash is what a config IS.** sha256 over the config's canonical
+  JSON with `notes` stripped and `env`/`outputs`/`schedule` excluded — so
+  documentation and placement never change identity, but any change to what the
+  run COMPUTES does. It names the run directory, keys the `$prev` run series,
+  and is what a store pins at init. **Moving a hash orphans every prior run and
+  every stored artifact keyed to it**, which is why adding or removing a graded
+  field is a breaking change even when no behavior changed. Optional fields are
+  emitted ONLY WHEN PRESENT for exactly this reason.
 - **Comment rigorously and explanatorily.** Standard JSON has no `//` syntax and
   the loader uses `json.load`, so comments use the first-class **`notes`** field,
   supported on every config object (documents, nodes, splits, asset-model kinds,
@@ -132,7 +185,51 @@ Keep both trees current when files are added or removed.
 ## Code standards
 
 - **PEP 8.** `ruff` is the dev dependency; keep the tree clean.
-- Match the surrounding code's naming, docstring, and comment density.
+- Match the surrounding code's naming and comment density. **Docstrings follow
+  the standard below, not the surrounding file** — "match the neighbours" is
+  what let `assets` reach ~50% NumPy-sectioned while `pipeline/libs` sat at
+  ~0.5%.
+
+### Docstrings
+
+New code, and any function you meaningfully edit. No retrofit sweep.
+
+- **Modules: prose** — they carry the *why*, which sections would fragment.
+- **Classes: NumPy sections + an `Examples` block that INSTANTIATES the class**,
+  so a reader can copy it and have a working object.
+- **Functions: `Parameters` / `Returns` / `Raises`,** with types in the
+  docstring TEXT. **No type hints in signatures** — not on parameters, not on
+  returns. The `Returns` section already states the type; an annotation would
+  be the same fact in two places with nothing pinning them. Existing
+  annotations stay; they are simply never required.
+- **Private `_`-helpers: one line.** `D103` exempts non-public names.
+
+```python
+class WindowRows(Node):
+    """Per-symbol lagged-return windows with a next-bar label.
+
+    Parameters
+    ----------
+    params : dict
+        ``lookback`` (int >= 2, required), ``price_field`` (str, default
+        ``"close"``), ``max_gap_minutes`` (float, default 5).
+
+    Examples
+    --------
+    Build 30-bar windows that never bridge a session gap::
+
+        node = WindowRows("window", {"lookback": 30, "max_gap_minutes": 5})
+        out = node.run(ctx, {"records": bars})
+    """
+```
+
+**Examples are illustrative and must NEVER use `>>>`** — use an indented `::`
+block. `>>>` promises a suite verified it, and nothing here collects doctests.
+(81 such lines already exist in `assets`/`onboarding`; convert on touch.)
+
+**Enforced** by ruff `D` (numpy), with a `per-file-ignores` entry per
+unconverted module. **Delete the entry when you convert the module** — that
+list is the remaining work.
 - **Tiering** — one test decides where code goes: *could a project that has never
   heard of your problem domain use it?*
 
@@ -145,6 +242,30 @@ Keep both trees current when files are added or removed.
 - **The core stays importable with nothing installed.** Heavy imports go *inside*
   `run()`, never at module top. Enforced by `tests/pipeline/test_purity.py`.
 - The toolkit never imports an adapter; adapters import the toolkit.
+
+### Duplication that diverges
+
+Every hardcoding defect in the 2026-08-27 audit was one shape: **a value in
+two places with nothing pinning them.** Instances live in `TODO.md`; the
+rules:
+
+- **A default belongs to ONE name.** `params.get(k, <literal>)` in both
+  `validate_params` and `run` is the commonest defect here — validation then
+  approves a value the run never uses. Name it once (`DEFAULT_EPOCHS`).
+- **If a value MUST appear twice, pin the agreement** with a test or a
+  runtime refusal. Unpinned duplication is a scheduled bug.
+- **A pinning test that omits a knob is worse than none** — it claims
+  coverage it lacks. Add the knob to the tuple when you add the knob.
+- **A tier-2 pack never restates tier-1 truth.** Import the rule; a pack that
+  re-derives a core validator drifts the moment core loosens a bound.
+- **A serving path never restates a training knob** — read it from the run
+  dir or source config. A parity test over the *mechanism* will not catch a
+  differing FIELD.
+- **Never document an escape hatch you did not build.**
+
+The exception: **deliberate independent restatement is correct.** A
+validation suite must NOT read its expected vocabulary from the thing it
+validates — an assertion sourced from its subject asserts nothing.
 
 ## Commands
 
