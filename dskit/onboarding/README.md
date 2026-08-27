@@ -119,9 +119,30 @@ manifests, `acq_id`s, and `verify` are untouched (digests cover the
 stored bytes). gzip members are written deterministically (`mtime=0`,
 no filename, pinned level). Flip `payload_codec` freely — nothing
 external reads bronze bytes. Flipping `observations_codec` is a
-CONSUMER-VISIBLE change: anything reading `observations/` by literal
-path must sniff both spellings first
-(`dskit.onboarding.codec.resolve_stream_file` / `iter_text_lines`).
+CONSUMER-VISIBLE change — but consumers that read through the seam
+below are codec-blind already.
+
+## Reading observations back (ADR-0037)
+
+Consumers never hand-roll a glob over `observations/`. The read seam:
+
+```python
+from dskit.onboarding import scan_stream, stream_digest
+
+records = scan_stream(root, "mysource", "bars",
+                      key_fields=("symbol", "ts"),  # the dedup key
+                      ts_field="ts",                # -> asof_ms, in place
+                      shared_fields=("symbol",))    # heavy-repeat values
+digest = stream_digest(records)                     # frozen dump recipe
+```
+
+`scan_stream` resolves either codec spelling per acquisition dir,
+dedups bitemporally (latest `acquired_at` instant wins; a differing
+tie at the winning instant refuses), holds the stream ONCE (the
+records are the winning `data` dicts), and is loud on every corrupt or
+tamper-shaped store. `stream_digest` fingerprints without ever
+building the whole-snapshot string, byte-identical to
+`sha256(json.dumps(records, sort_keys=True))`.
 
 ## Contents
 

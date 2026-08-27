@@ -1164,3 +1164,26 @@ changed: `int()` sub-millisecond truncation in the epoch-ms flatten is
 one ms off true floor for pre-1970 and ~2112+ sub-ms stamps —
 inherited from the retired code, digest-frozen, called out in the
 docstring.
+
+*Third-round amendments (same day — the loop's escalation trigger
+fired: three consecutive fresh-skeptic rounds each surfaced
+correctness defects, so the loop stops here and the merge decision
+goes to the owner; all round-3 findings are fixed red-first):* (i) a
+NaN key value refuses at intake — NaN neither equals nor orders
+against anything WITHOUT raising, so the sort's `TypeError` guard
+never fired and record order (and digest) went silently
+scan-order-dependent. (ii) tie adjudication filters to the winning
+level BEFORE sorting and sorts the problem STRINGS — the second-round
+code sorted raw key tuples first, so type-heterogeneous keys crashed
+raw `TypeError` even on a store whose winners were unambiguous.
+(iii) `acquired_at` adjudicates on the parsed INSTANT (`parse_utc`,
+one parse per distinct spelling), never the string: lexicographic
+comparison ranked a later `-05:00` stamp below an earlier UTC one and
+let two spellings of one instant dodge the tie rule; an unparseable
+stamp refuses, a missing one reads as the earliest possible instant.
+Acquire-minted stores (fixed-width single-spelling `utc_now`) are
+unaffected — the freeze envelope holds. (iv) the drain-time
+`ts_field` refusal names the key. (v) the README now routes
+observation readers through the seam (it still pointed consumers at
+hand-rolled `resolve_stream_file` sniffing) and documents how to
+leverage it.

@@ -169,6 +169,101 @@ class TestScan:
             with pytest.raises(AssetError, match="acquired_at"):
                 _scan(root)
 
+    def test_nan_key_field_refuses(self, tmp_path):
+        # NaN breaks total order WITHOUT raising — Timsort silently
+        # falls back to scan order, making record order and digest
+        # arrangement-dependent. Refuse at intake, by path and line.
+        root = str(tmp_path)
+        row = _row("AAPL", "2026-01-05T14:30:00+00:00", 100.0)
+        row["data"]["symbol"] = float("nan")
+        _write(root, "acq-0001", [row])
+        with pytest.raises(AssetError, match="NaN"):
+            _scan(root)
+
+    def test_superseded_ties_on_mixed_type_keys_scan_clean(self, tmp_path):
+        # Round-3 finding: the conflicts adjudication sorted RAW key
+        # tuples before the winning-level filter, so heterogeneous key
+        # types crashed a store whose winners are unambiguous.
+        t1, t2 = "2026-01-06T00:00:00+00:00", "2026-01-07T00:00:00+00:00"
+        root = str(tmp_path)
+        for i, symbol in enumerate((1, "a")):
+            ts = f"2026-01-05T14:3{i}:00+00:00"
+            _write(root, f"acq-000{3 * i + 1}",
+                   [_row(symbol, ts, 100.0, acquired=t1)])
+            _write(root, f"acq-000{3 * i + 2}",
+                   [_row(symbol, ts, 100.5, acquired=t1)])
+            _write(root, f"acq-000{3 * i + 3}",
+                   [_row(symbol, ts, 101.0, acquired=t2)])
+        records = _scan(root)
+        assert [r["close"] for r in records] == [101.0, 101.0]
+
+    def test_winning_ties_on_mixed_type_keys_accumulate(self, tmp_path):
+        # Winning-level conflicts on heterogeneous keys must refuse as
+        # ONE AssetError naming every key — never a raw TypeError.
+        t1 = "2026-01-06T00:00:00+00:00"
+        root = str(tmp_path)
+        for i, symbol in enumerate((1, "a")):
+            ts = f"2026-01-05T14:3{i}:00+00:00"
+            _write(root, f"acq-000{2 * i + 1}",
+                   [_row(symbol, ts, 100.0, acquired=t1)])
+            _write(root, f"acq-000{2 * i + 2}",
+                   [_row(symbol, ts, 100.5, acquired=t1)])
+        with pytest.raises(AssetError) as err:
+            _scan(root)
+        text = str(err.value)
+        assert "1" in text and "'a'" in text
+
+    def test_acquired_at_adjudicates_chronologically(self, tmp_path):
+        # "2026-01-06T23:00:00-05:00" is a LATER instant than
+        # "2026-01-07T00:00:00+00:00" but string-sorts below it — the
+        # winner is the instant, never the spelling.
+        ts = "2026-01-05T14:30:00+00:00"
+        root = str(tmp_path)
+        _write(root, "acq-0001",
+               [_row("AAPL", ts, 999.0,
+                     acquired="2026-01-06T23:00:00-05:00")])
+        _write(root, "acq-0002",
+               [_row("AAPL", ts, 100.0,
+                     acquired="2026-01-07T00:00:00+00:00")])
+        records = _scan(root)
+        assert [r["close"] for r in records] == [999.0]
+
+    def test_same_instant_acquired_spellings_tie(self, tmp_path):
+        # "Z" and "+00:00" are one instant: differing data at that
+        # instant has no bitemporal winner — spelling must not dodge
+        # the tie refusal.
+        ts = "2026-01-05T14:30:00+00:00"
+        root = str(tmp_path)
+        _write(root, "acq-0001",
+               [_row("AAPL", ts, 100.0,
+                     acquired="2026-01-06T00:00:00Z")])
+        _write(root, "acq-0002",
+               [_row("AAPL", ts, 555.0,
+                     acquired="2026-01-06T00:00:00+00:00")])
+        with pytest.raises(AssetError, match="acquired_at"):
+            _scan(root)
+
+    def test_unparseable_acquired_at_refuses(self, tmp_path):
+        root = str(tmp_path)
+        _write(root, "acq-0001",
+               [_row("AAPL", "2026-01-05T14:30:00+00:00", 100.0,
+                     acquired="not-a-stamp")])
+        with pytest.raises(AssetError, match="not-a-stamp"):
+            _scan(root)
+
+    def test_missing_acquired_at_loses_to_any_stamp(self, tmp_path):
+        # An absent acquired_at reads as the earliest possible instant.
+        ts = "2026-01-05T14:30:00+00:00"
+        root = str(tmp_path)
+        bare = _row("AAPL", ts, 100.0)
+        del bare["acquired_at"]
+        _write(root, "acq-0001", [bare])
+        _write(root, "acq-0002",
+               [_row("AAPL", ts, 999.0,
+                     acquired="1971-01-01T00:00:00+00:00")])
+        records = _scan(root)
+        assert [r["close"] for r in records] == [999.0]
+
     def test_misplaced_gz_stream_spelling_refuses(self, tmp_path):
         # The tamper-shaped refusal covers BOTH spellings.
         root = str(tmp_path)
@@ -267,10 +362,12 @@ class TestScan:
         with pytest.raises(AssetError, match=r":2"):
             _scan(root)
 
-    def test_unparseable_ts_refuses(self, tmp_path):
+    def test_unparseable_ts_refuses_naming_the_key(self, tmp_path):
         root = str(tmp_path)
         _write(root, "acq-0001", [_row("AAPL", "not-a-stamp", 100.0)])
         with pytest.raises(AssetError, match="not-a-stamp"):
+            _scan(root)
+        with pytest.raises(AssetError, match="AAPL"):
             _scan(root)
 
     def test_ts_out_collision_refuses(self, tmp_path):

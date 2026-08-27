@@ -103,13 +103,18 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
         ambiguity, squats, and mid-stream corruption).
     key_fields : sequence of str
         The ``data`` fields forming the dedup key. For one key, the row
-        with the LATEST ``acquired_at`` wins (a missing ``acquired_at``
-        reads as ``""``). A tie AT THE WINNING ``acquired_at`` dedups
-        quietly when the data serializes identically (an at-least-once
-        re-pull; equality is the canonical dump, never coercing Python
-        ``==``) and refuses when it differs — no bitemporal winner
-        exists and scan order must never pick one. A tie a LATER
-        acquisition supersedes is history, never a refusal.
+        with the LATEST ``acquired_at`` INSTANT wins — stamps are
+        parsed (``parse_utc``), never string-compared, so an offset
+        spelling ranks by chronology and two spellings of one instant
+        are one level; an unparseable stamp refuses, and a missing one
+        reads as the earliest possible instant. A tie AT THE WINNING
+        instant dedups quietly when the data serializes identically (an
+        at-least-once re-pull; equality is the canonical dump, never
+        coercing Python ``==``) and refuses when it differs — no
+        bitemporal winner exists and scan order must never pick one. A
+        tie a LATER acquisition supersedes is history, never a refusal.
+        A NaN key value refuses at intake (it breaks total order
+        without raising).
     ts_field : str, optional
         A ``data`` field holding an ISO date/datetime (naive values are
         UTC — the ``parse_utc`` convention). When declared, each record
@@ -157,8 +162,9 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
     except OSError as exc:
         raise AssetError([f"cannot list {base}: {exc}"]) from exc
 
-    best = {}  # key tuple -> (acquired_at, data)
-    conflicts = {}  # key tuple -> (acquired_at, "path:line") of a seen tie
+    best = {}  # key tuple -> (acquired_ms, data)
+    conflicts = {}  # key tuple -> (acquired_ms, "path:line", spelling)
+    instants = {}  # acquired_at spelling -> epoch ms (one per acquisition)
     shared = {}  # one canonical copy per repeated string
     _share = shared.setdefault
     for name in entries:
@@ -203,6 +209,16 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                 raise AssetError(
                     [f"{path}:{n}: data is missing key field(s) {missing}"]
                 )
+            # NaN never equals or orders against anything WITHOUT
+            # raising, so it would silently make record order — and the
+            # digest — scan-order-dependent. Refuse it at intake.
+            nans = [f for f in key_fields
+                    if isinstance(data[f], float) and data[f] != data[f]]
+            if nans:
+                raise AssetError(
+                    [f"{path}:{n}: NaN in key field(s) {nans} — NaN "
+                     "breaks total order silently; refusing"]
+                )
             for field in shared_fields:
                 value = data.get(field)
                 if isinstance(value, str):
@@ -213,7 +229,25 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                     [f"{path}:{n}: acquired_at must be a string, "
                      f"got {acquired!r}"]
                 )
-            acquired = _share(acquired, acquired)
+            # Adjudicate on the INSTANT, never the spelling: string
+            # comparison ranks "…T23:00:00-05:00" below an earlier
+            # "…T00:00:00+00:00", and lets two spellings of one instant
+            # dodge the tie rule. One parse per DISTINCT spelling — an
+            # acquisition mints one stamp, so the memo stays tiny.
+            when = instants.get(acquired)
+            if when is None:
+                if acquired == "":
+                    # Absent acquired_at is the earliest possible
+                    # instant: it loses to any stamped row.
+                    when = float("-inf")
+                else:
+                    try:
+                        when = int(parse_utc(acquired).timestamp() * 1000)
+                    except AssetError as exc:
+                        raise AssetError(
+                            [f"{path}:{n}: invalid acquired_at: {exc}"]
+                        ) from exc
+                instants[acquired] = when
             key = tuple(data[f] for f in key_fields)
             try:
                 held = best.get(key)
@@ -222,9 +256,9 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                     [f"{path}:{n}: key fields {list(key_fields)} are not "
                      f"hashable here: {exc}"]
                 ) from exc
-            if held is None or acquired > held[0]:
-                best[key] = (acquired, data)
-            elif acquired == held[0]:
+            if held is None or when > held[0]:
+                best[key] = (when, data)
+            elif when == held[0]:
                 # An acquired_at tie with IDENTICAL data is an
                 # at-least-once re-pull — a duplicate, kept quiet.
                 # Identity is judged on the canonical SERIALIZATION,
@@ -246,19 +280,22 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                     ) from exc
                 if not same:
                     prev = conflicts.get(key)
-                    if prev is None or acquired > prev[0]:
-                        conflicts[key] = (acquired, f"{path}:{n}")
+                    if prev is None or when > prev[0]:
+                        conflicts[key] = (when, f"{path}:{n}", acquired)
 
     # Adjudicate recorded ties against the FINAL winner only, all
-    # problems accumulated: a conflict at a superseded acquired_at is
-    # history; one AT the winning acquired_at has no bitemporal winner.
-    tie_problems = [
+    # problems accumulated: a conflict at a superseded instant is
+    # history; one AT the winning instant has no bitemporal winner.
+    # Filter BEFORE sorting, and sort the problem STRINGS — raw key
+    # tuples of mixed types are not orderable and must never crash a
+    # store whose winners are unambiguous.
+    tie_problems = sorted(
         f"{where}: two rows for key {list(key)!r} share the winning "
-        f"acquired_at {acq_c!r} with differing data — no bitemporal "
-        "winner; refusing"
-        for key, (acq_c, where) in sorted(conflicts.items())
-        if acq_c == best[key][0]
-    ]
+        f"acquired_at instant ({spelling!r}) with differing data — no "
+        "bitemporal winner; refusing"
+        for key, (when_c, where, spelling) in conflicts.items()
+        if when_c == best[key][0]
+    )
     if tie_problems:
         raise AssetError(tie_problems)
 
@@ -278,7 +315,14 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                     [f"a record already carries {ts_out!r} — refusing to "
                      f"overwrite it (key {list(_key)!r})"]
                 )
-            data[ts_out] = int(parse_utc(data[ts_field]).timestamp() * 1000)
+            try:
+                data[ts_out] = int(
+                    parse_utc(data[ts_field]).timestamp() * 1000
+                )
+            except AssetError as exc:
+                raise AssetError(
+                    [f"key {list(_key)!r}: invalid {ts_field}: {exc}"]
+                ) from exc
         records.append(data)
     try:
         if ts_field is not None:
