@@ -16,9 +16,14 @@ from dskit.pipeline import driver as driver_mod
 from dskit.pipeline.base import OutputsConfig
 from dskit.pipeline.document import NodeSpec
 from dskit.pipeline.driver import run_document
-from dskit.pipeline.markdown import pipe_table, render_cell
+from dskit.pipeline.markdown import MISSING, pipe_table, render_cell
+from dskit.pipeline.node import Node
 from dskit.pipeline.runs import (
+    CARRY_FILE,
+    CONFIG_FILE,
     DEFAULT_RUN_ROOT,
+    NODES_DIR,
+    RESULT_FILE,
     RunProblem,
     RunSummary,
     format_runs,
@@ -33,6 +38,21 @@ from tests.pipeline.dochelpers import banking_document, make_registry
 FIRST = "2026-01-01"
 SECOND = "2026-02-01"
 REPO = pathlib.Path(__file__).parents[2]
+
+
+class DivergedScalarNode(Node):
+    """A node whose TOP-LEVEL score diverges (routine for a logloss).
+
+    ``inf`` is not JSON, so the record keeps only the text ``"inf"`` and
+    ``carry.json`` keeps nothing — the reader must say so rather than
+    render the same blank a node that measured nothing renders.
+    """
+
+    role = "transform"
+
+    def run(self, ctx, inputs):
+        """Return a diverged top-level loss beside a real count."""
+        return {"loss": float("inf"), "n": 3}
 
 
 @pytest.fixture
@@ -223,10 +243,15 @@ class TestSummarizedMetrics:
         assert any("diverged" in note and "metrics" in note for note in run.notes)
 
     def test_the_verb_prints_the_note(self, diverged_root, capsys):
+        """The note exists to be READ: a mechanism the only user-facing
+        surface never prints is the silent truncation it was written to
+        prevent."""
         assert main(["runs", "--root", diverged_root]) == 0
         out = capsys.readouterr().out
         assert "metrics.len" not in out
-        assert "diverged" in out.split("note")[-1]
+        _table, marker, printed = out.partition("notes")
+        assert marker, f"the verb printed no notes section:\n{out}"
+        assert "diverged" in printed and "metrics" in printed
 
     def test_a_real_metrics_dict_is_not_mistaken_for_the_marker(self):
         assert node_metrics({"metrics": {"type": 2, "len": 3}}) == {
@@ -235,16 +260,191 @@ class TestSummarizedMetrics:
         }
 
 
+class TestLostMeasurements:
+    """Everything the records hold but the reader cannot turn into a
+    number is NAMED. A blank cell that means "diverged", one that means
+    "the record was truncated" and one that means "never measured" are
+    three different facts, and only the last is routine."""
+
+    @pytest.fixture
+    def diverged_scalar_root(self, tmp_path):
+        """A run whose scored node diverges in a TOP-LEVEL output."""
+        root = str(tmp_path / "pipeline_runs")
+        pipeline = {
+            "events": NodeSpec(uses="synth-events", params={"n_events": 8}),
+            "diverged": NodeSpec(
+                uses="tests.pipeline.test_runs:DivergedScalarNode",
+                inputs={"events": "$events.events"},
+            ),
+        }
+        run_document(
+            banking_document(
+                pipeline=pipeline, outputs=OutputsConfig(run_root=root)
+            ),
+            asof=FIRST,
+            registry=make_registry(),
+        )
+        return root
+
+    def test_a_diverged_top_level_number_is_said_out_loud(
+        self, diverged_scalar_root
+    ):
+        (run,), problems = scan_runs(diverged_scalar_root)
+        assert problems == ()
+        assert "diverged.loss" not in run.metrics  # "inf" is text, not a number
+        assert run.metrics["diverged.n"] == 3
+        assert any("diverged.loss" in note and "inf" in note for note in run.notes)
+
+    def test_the_verb_prints_the_diverged_scalar_note(
+        self, diverged_scalar_root, capsys
+    ):
+        assert main(["runs", "--root", diverged_scalar_root]) == 0
+        _table, marker, printed = capsys.readouterr().out.partition("notes")
+        assert marker
+        assert "diverged.loss" in printed
+
+    def test_an_unreadable_node_record_is_named_and_recovered(self, two_runs):
+        """A truncated record must not take the node's carried numbers
+        with it, and must not pass for a node that measured nothing."""
+        root, results = two_runs
+        record = os.path.join(results[1].run_dir, NODES_DIR, "10-size.json")
+        assert os.path.isfile(record)
+        with open(record, "w", encoding="utf-8") as fh:
+            fh.write("{trunc")
+        newest = scan_runs(root)[0][0]
+        assert newest.run_dir == results[1].run_dir
+        assert newest.metrics["size.final_bankroll"] == pytest.approx(1040.4)
+        assert any("10-size.json" in note for note in newest.notes)
+
+    def test_a_missing_nodes_dir_is_named(self, two_runs):
+        root, results = two_runs
+        victim = results[1].run_dir
+        for entry in os.listdir(os.path.join(victim, NODES_DIR)):
+            os.remove(os.path.join(victim, NODES_DIR, entry))
+        os.rmdir(os.path.join(victim, NODES_DIR))
+        newest = scan_runs(root)[0][0]
+        assert any(NODES_DIR in note for note in newest.notes)
+
+    def test_an_unreadable_config_is_named_not_read_as_an_absent_knob(
+        self, two_runs
+    ):
+        """`param_at` reports None for a knob a document never declared —
+        a legitimate answer. An unreadable config.json is not that."""
+        root, results = two_runs
+        with open(
+            os.path.join(results[1].run_dir, CONFIG_FILE), "w", encoding="utf-8"
+        ) as fh:
+            fh.write("{trunc")
+        newest = scan_runs(root)[0][0]
+        assert any(CONFIG_FILE in note for note in newest.notes)
+
+    def test_an_unreadable_carry_is_named(self, two_runs):
+        root, results = two_runs
+        with open(
+            os.path.join(results[1].run_dir, CARRY_FILE), "w", encoding="utf-8"
+        ) as fh:
+            fh.write("{trunc")
+        newest = scan_runs(root)[0][0]
+        assert any(CARRY_FILE in note for note in newest.notes)
+
+
+class TestRunDirLayout:
+    """The reader's names for the run-dir layout and the writer's are one
+    agreement. Rename `nodes/` writer-side with nothing pinning it and
+    every run tabulates blank, with no problem and no note."""
+
+    def test_the_writer_writes_the_names_the_reader_reads(self, two_runs):
+        _root, results = two_runs
+        run_dir = results[0].run_dir
+        for name in (RESULT_FILE, CONFIG_FILE, CARRY_FILE):
+            assert os.path.isfile(os.path.join(run_dir, name)), name
+        assert os.path.isdir(os.path.join(run_dir, NODES_DIR))
+
+    def test_the_pipeline_writers_do_not_restate_the_layout(self):
+        """driver.py and resolve.py write THROUGH the reader's names."""
+        for module in ("driver.py", "resolve.py"):
+            source = (REPO / "dskit/pipeline" / module).read_text(encoding="utf-8")
+            for name in (RESULT_FILE, CONFIG_FILE, CARRY_FILE):
+                assert f'"{name}"' not in source, f"{module} restates {name}"
+
+    def test_the_other_run_dir_reader_reads_the_same_names(self):
+        """dskit/assets/ingest.py reads run dirs too and cannot import
+        the pipeline package (the tiers are independent), so the
+        agreement is pinned instead: move a name and this goes red."""
+        source = (REPO / "dskit/assets/ingest.py").read_text(encoding="utf-8")
+        assert f'"{RESULT_FILE}"' in source
+        assert f'"{NODES_DIR}"' in source
+
+    def test_a_result_without_a_document_hash_is_not_a_run(self, two_runs):
+        """A blank identity cell would read as a rendering failure; the
+        other run-dir reader requires the field, and so does this one."""
+        root, results = two_runs
+        path = os.path.join(results[0].run_dir, RESULT_FILE)
+        with open(path, encoding="utf-8") as fh:
+            payload = json.load(fh)
+        del payload["document_hash"]
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        runs, problems = scan_runs(root)
+        assert len(runs) == 1
+        assert "document_hash" in problems[0].reason
+
+
 class TestSharedRenderer:
     """Every markdown table this package emits is built by ONE renderer."""
 
     def test_only_one_module_builds_a_markdown_table(self):
+        """The pattern is the SEPARATOR ITSELF, not a quoted copy of it:
+        a hand-built `|---|---|---|` is exactly what must be caught."""
         hits = sorted(
             path.name
             for path in (REPO / "dskit").rglob("*.py")
-            if '"---|"' in path.read_text(encoding="utf-8")
+            if "---|" in path.read_text(encoding="utf-8")
         )
         assert hits == ["markdown.py"]
+
+    def test_the_run_report_node_table_goes_through_the_renderer(self):
+        """A hand-built table restates the renderer's decisions and
+        drifts: `str(0.000123456789)` where render_cell gives 6 s.f., and
+        no escaping where the renderer escapes."""
+        lines = driver_mod._node_table(
+            ("a|b", "plain"),
+            lambda key: "transform",
+            {"a|b": "ok", "plain": "not_run"},
+            {"a|b": 0.000123456789},
+        )
+        assert lines[0] == "| node | role | status | seconds |"
+        assert r"a\|b" in lines[2]
+        assert "0.000123457" in lines[2]
+        assert lines[3].endswith(f"| {MISSING} |")  # never ran, never timed
+
+    def test_the_walk_forward_table_goes_through_the_renderer(self):
+        lines = driver_mod._fold_table(
+            [
+                {
+                    "cutoff": "2026-01-01",
+                    "state": "ran|x",
+                    "score": 0.000123456789,
+                    "run_dir": "/r/demo-2026-01-01-0badc0de",
+                },
+                {
+                    "cutoff": "2026-02-01",
+                    "state": "error",
+                    "score": None,
+                    "run_dir": "",
+                },
+            ]
+        )
+        assert lines[0] == "| fold cutoff | state | score | run |"
+        assert r"ran\|x" in lines[2]
+        assert "0.000123457" in lines[2]
+        assert "`demo-2026-01-01-0badc0de`" in lines[2]
+        assert lines[3].count(MISSING) == 2  # no score, no run dir
+
+    def test_the_empty_string_is_not_a_blank_cell(self):
+        """markdown.py's own rule: a blank cell is indistinguishable from
+        a rendering bug, so nothing may render as one."""
+        assert render_cell("") == MISSING
 
     def test_a_boolean_reads_the_same_everywhere(self):
         run = RunSummary(

@@ -26,6 +26,14 @@ measurement, not a measurement: mining its ``len`` would report a dict's
 key count as a number someone could plot. The reader drops it and says so
 (:attr:`RunSummary.notes`).
 
+Saying so is the module's whole discipline, and it holds for every way a
+number can fail to arrive: a non-finite scalar that survives only as the
+text ``"inf"``, a truncated node record, an unreadable ``carry.json`` or
+``config.json``, a missing ``nodes/``. Each renders the same empty cell
+as a node that measured nothing, and only the last of those is routine —
+so the reader never leaves the cell to speak for itself. The verb prints
+every note; a note nobody sees is the silent truncation it replaced.
+
 Tier 1: stdlib only, no knowledge of any domain.
 """
 
@@ -38,7 +46,11 @@ from dataclasses import dataclass, field
 from dskit.pipeline.markdown import pipe_table
 
 __all__ = [
+    "CARRY_FILE",
+    "CONFIG_FILE",
     "DEFAULT_RUN_ROOT",
+    "NODES_DIR",
+    "RESULT_FILE",
     "RunProblem",
     "RunSummary",
     "format_runs",
@@ -53,15 +65,25 @@ __all__ = [
 #: through :func:`resolve_run_root` rather than restating the literal.
 DEFAULT_RUN_ROOT = "./pipeline_runs"
 
-#: The files a run directory is read through. `report.md` is absent on
-#: purpose — prose is never a data source.
+#: The run-dir layout, as ONE set of names: the driver writes through
+#: these and every reader reads through them, so a rename cannot land on
+#: one side only. `report.md` is absent on purpose — prose is never a
+#: data source.
 RESULT_FILE = "result.json"
 CONFIG_FILE = "config.json"
 CARRY_FILE = "carry.json"
 NODES_DIR = "nodes"
 
-#: Keys `result.json` must carry for a directory to count as a run.
-_REQUIRED = ("name", "asof", "run_hash", "state")
+#: Keys `result.json` must carry for a directory to count as a run. The
+#: identity fields are all required: a run whose document_hash is absent
+#: would render a BLANK identity cell, which reads as a rendering bug
+#: rather than as the unreadable directory it is (the other run-dir
+#: reader, `dskit.assets.ingest`, requires the same four).
+_REQUIRED = ("name", "asof", "run_hash", "state", "document_hash")
+
+#: What `driver._summarize` leaves behind for a non-finite float: `inf`
+#: is not JSON, so the record keeps `repr(value)` — text, not a number.
+_NON_FINITE = ("inf", "-inf", "nan")
 
 #: The fixed left-hand columns of the table, before params and metrics.
 _FIXED_COLUMNS = ("name", "asof", "state", "run", "doc")
@@ -199,9 +221,10 @@ class RunSummary:
         Directory mtime — the recency tiebreak between same-asof reruns.
     notes : tuple of str, optional
         What the run measured but this reader could not recover — a
-        metrics dict the writer summarized and could not carry. A blank
-        column and a missing measurement look identical, so the
-        difference is stated.
+        metrics dict the writer summarized and could not carry, a
+        non-finite scalar recorded as text, a node record or a
+        ``config.json`` that would not parse. A blank column and a
+        missing measurement look identical, so the difference is stated.
 
     Examples
     --------
@@ -282,8 +305,11 @@ def _read_run(run_dir):
     absent = [key for key in _REQUIRED if key not in result]
     if absent:
         return None, f"{RESULT_FILE} is missing {', '.join(absent)}"
-    config, _ = _load_json(os.path.join(run_dir, CONFIG_FILE))
+    config, config_reason = _load_json(os.path.join(run_dir, CONFIG_FILE))
     metrics, notes = _run_metrics(run_dir)
+    if not isinstance(config, dict):
+        reason = config_reason or f"{CONFIG_FILE} is not an object"
+        notes = (f"{reason} — no declared param is shown for this run", *notes)
     return (
         RunSummary(
             run_dir=run_dir,
@@ -291,7 +317,7 @@ def _read_run(run_dir):
             asof=str(result["asof"]),
             state=str(result["state"]),
             run_hash=str(result["run_hash"]),
-            document_hash=str(result.get("document_hash", "")),
+            document_hash=str(result["document_hash"]),
             metrics=metrics,
             config=config if isinstance(config, dict) else {},
             mtime=os.path.getmtime(run_dir),
@@ -327,42 +353,88 @@ def _run_metrics(run_dir):
     """Collect ``(metrics, notes)`` for one run directory.
 
     Every node's numeric outputs, keyed ``<node>.<metric>``, plus a note
-    per measurement the records could not give back.
+    per measurement the records could not give back. The two records are
+    read INDEPENDENTLY and unioned: a node whose record is truncated
+    still contributes whatever ``carry.json`` holds for it, because a
+    number that survived on disk must not be lost to a broken file
+    beside it.
     """
-    carry, _ = _load_json(os.path.join(run_dir, CARRY_FILE))
+    carry, carry_reason = _load_json(os.path.join(run_dir, CARRY_FILE))
     carried = carry if isinstance(carry, dict) else {}
-    metrics, notes = {}, []
-    for key, outputs in _node_outputs(run_dir).items():
+    notes = []
+    if not isinstance(carry, dict):
+        reason = carry_reason or f"{CARRY_FILE} is not an object"
+        notes.append(f"{reason} — carried metrics are not tabulated")
+    recorded, record_notes = _node_outputs(run_dir)
+    notes.extend(record_notes)
+    metrics = {}
+    for key in sorted(set(recorded) | set(carried)):
+        outputs = recorded.get(key, {})
         merged = {k: v for k, v in outputs.items() if not _is_summary_marker(v)}
         node_carry = carried.get(key)
         if isinstance(node_carry, dict):
             merged.update(node_carry)
-        recorded = outputs.get("metrics")
-        if _is_summary_marker(recorded) and recorded["type"] == "dict":
-            if "metrics" not in merged:
-                notes.append(
-                    f"{key}: its metrics dict was summarized in the record "
-                    "and too large or non-finite to carry — not tabulated"
-                )
+        notes.extend(_unrecovered(key, outputs, merged))
         for metric, value in node_metrics(merged).items():
             metrics[f"{key}.{metric}"] = value
     return metrics, tuple(notes)
 
 
+def _unrecovered(key, outputs, merged):
+    """Name one node's measurements that survived as text, not as data.
+
+    Two shapes exist, both from ``driver._summarize``: a `metrics` DICT
+    reduced to the container marker, and a non-finite float reduced to
+    its ``repr``. Either renders the same blank cell as a node that
+    measured nothing, and only the latter is routine.
+    """
+    notes = []
+    marker = outputs.get("metrics")
+    if (
+        _is_summary_marker(marker)
+        and marker["type"] == "dict"
+        and "metrics" not in merged
+    ):
+        notes.append(
+            f"{key}: its metrics dict was summarized in the record "
+            "and too large or non-finite to carry — not tabulated"
+        )
+    for name, value in outputs.items():
+        recovered = merged.get(name)
+        if value in _NON_FINITE and not isinstance(recovered, (int, float)):
+            notes.append(
+                f"{key}.{name}: measured {value} — non-finite, recorded as "
+                "text and not tabulated as a number"
+            )
+    return notes
+
+
 def _node_outputs(run_dir):
-    """``{node key: recorded outputs}`` from ``nodes/NN-<key>.json``."""
+    """``({node key: recorded outputs}, notes)`` from ``nodes/NN-*.json``.
+
+    Every record that cannot be read is NAMED: a node dropped in silence
+    is a column that quietly goes blank.
+    """
     nodes_dir = os.path.join(run_dir, NODES_DIR)
     if not os.path.isdir(nodes_dir):
-        return {}
-    out = {}
+        return {}, [f"no {NODES_DIR}/ — per-node records are not tabulated"]
+    out, notes = {}, []
     for entry in sorted(os.listdir(nodes_dir)):
-        record, _ = _load_json(os.path.join(nodes_dir, entry))
+        record, reason = _load_json(os.path.join(nodes_dir, entry))
         if not isinstance(record, dict):
+            notes.append(
+                f"{NODES_DIR}/{entry}: "
+                f"{reason or 'is not an object'} — not tabulated"
+            )
             continue
         key, outputs = record.get("node"), record.get("outputs")
         if isinstance(key, str) and isinstance(outputs, dict):
             out[key] = outputs
-    return out
+        else:
+            notes.append(
+                f"{NODES_DIR}/{entry}: no node/outputs pair — not tabulated"
+            )
+    return out, notes
 
 
 def format_runs(runs, metrics=(), params=()):

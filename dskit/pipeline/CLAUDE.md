@@ -99,6 +99,18 @@ on it without breaking its rulings.
   carry survives only as the `{"type": ..., "len": n}` summary marker:
   the reader DROPS it and says so in `RunSummary.notes` — mining its
   `len` would publish a key count as a measurement.
+- **Every note is PRINTED by the verb.** A dropped metrics dict, a
+  non-finite scalar recorded as the text `"inf"`, a truncated
+  `nodes/NN-*.json`, an unreadable `carry.json`/`config.json` — each
+  would otherwise render the same blank cell as a node that measured
+  nothing. `cmd_runs` prints the table, the `--limit` count, the `notes`
+  list and the `skipped` list; a loud-not-silent mechanism the only
+  user-facing surface never prints IS the silent truncation it replaced.
+- **The run-dir layout has one home** — `runs.RESULT_FILE` /
+  `CONFIG_FILE` / `CARRY_FILE` / `NODES_DIR`. `driver.py` and
+  `resolve.py` write through those names; `dskit/assets/ingest.py`
+  cannot import the pipeline package (the tiers are independent), so its
+  copy is PINNED in `tests/pipeline/test_runs.py::TestRunDirLayout`.
 - The purity gate (`tests/pipeline/test_purity.py`) fails on ANY
   module-level import outside stdlib + this package — heavy imports go
   inside `run()`.

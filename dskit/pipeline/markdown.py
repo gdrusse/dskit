@@ -38,10 +38,12 @@ def render_cell(value):
     Parameters
     ----------
     value : object
-        Any scalar or container. Booleans read as ``yes``/``no`` (a
-        verdict, not a number), floats to 6 significant figures, and
-        containers as their size — a table row is not a place to dump a
-        payload.
+        Any scalar or container. None and the empty string read as
+        :data:`MISSING` — a cell with nothing in it is indistinguishable
+        from a rendering bug, so nothing renders as one. Booleans read as
+        ``yes``/``no`` (a verdict, not a number), floats to 6 significant
+        figures, and containers as their size — a table row is not a
+        place to dump a payload.
 
     Returns
     -------
@@ -49,7 +51,7 @@ def render_cell(value):
         The cell, truncated at :data:`MAX_CELL` characters and with every
         ``|`` escaped so it cannot be read as a column boundary.
     """
-    if value is None:
+    if value is None or (isinstance(value, str) and not value):
         return MISSING
     if isinstance(value, bool):
         return "yes" if value else "no"

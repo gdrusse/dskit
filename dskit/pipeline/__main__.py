@@ -391,6 +391,16 @@ def cmd_runs(root=None, metrics=(), params=(), limit=None):
     -------
     int
         0 — the scan is a read; 1 when the run root does not exist.
+
+    Notes
+    -----
+    Three things are printed BESIDE the table, and all three are the same
+    rule: what the table cannot show, it names. The ``--limit`` tail
+    counts the runs held back, the ``skipped`` list names every directory
+    that was not a run, and the ``notes`` list names every measurement
+    that reached disk as text rather than as a number
+    (:attr:`~dskit.pipeline.runs.RunSummary.notes`) — a blank cell would
+    otherwise read as "this run never measured it".
     """
     from dskit.pipeline.runs import format_runs, scan_runs
 
@@ -403,6 +413,12 @@ def cmd_runs(root=None, metrics=(), params=(), limit=None):
     print(format_runs(shown, metrics=metrics, params=params))
     if len(shown) < len(runs):
         print(f"\n({len(runs) - len(shown)} older run(s) not shown — --limit)")
+    noted = [run for run in shown if run.notes]
+    if noted:
+        print("\nnotes (measured, but not recoverable as a number):")
+        for run in noted:
+            for note in run.notes:
+                print(f"- {run.name} {run.asof} {run.run_hash[:8]}: {note}")
     if problems:
         print(f"\nskipped (not runs): {len(problems)}")
         for problem in problems:

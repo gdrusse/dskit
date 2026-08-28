@@ -148,6 +148,12 @@ data source. Foreign or partial directories (a walk-forward summary dir, a
 half-written run) are listed as skipped with a reason rather than dropped, and
 `--limit` counts what it did not show.
 
+Anything the table cannot show, it **names** in a `notes` block under the
+table: a metric that reached disk as text rather than as a number (a diverged
+`inf`, a `metrics` dict too big to carry), a node record that would not parse,
+a missing `nodes/`, an unreadable `config.json`. An empty cell therefore means
+one thing only — that run did not measure it.
+
 Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 
 | Kind | Role | Does |

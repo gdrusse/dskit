@@ -59,6 +59,7 @@ from dskit.pipeline.base import (
 from dskit.pipeline.env import load_env
 from dskit.pipeline.metrics import METRICS
 from dskit.pipeline.registry import DEFAULT_REGISTRY
+from dskit.pipeline.runs import CONFIG_FILE
 from dskit.pipeline.stats import CORRECTIONS
 
 __all__ = [
@@ -393,7 +394,7 @@ def write_run_dir(resolved) -> str:
     rd["pipeline_hash"] = new_hash
     resolved_text = json.dumps(rd, indent=2, sort_keys=True, allow_nan=False)
     os.makedirs(run_dir, exist_ok=True)
-    with open(os.path.join(run_dir, "config.json"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(run_dir, CONFIG_FILE), "w", encoding="utf-8") as fh:
         fh.write(config_text + "\n")
     with open(os.path.join(run_dir, "resolved.json"), "w", encoding="utf-8") as fh:
         fh.write(resolved_text + "\n")
