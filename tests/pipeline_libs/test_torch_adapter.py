@@ -574,6 +574,82 @@ def test_a_declared_optimizer_actually_changes_the_fit(tmp_path):
     assert not all(torch.equal(a[k], b[k]) for k in a)
 
 
+#: Every call the declared-loss sentinel saw, so a test can prove the
+#: SELECTED objective is what the training step actually applied — not
+#: merely what validation accepted.
+LOSS_CALLS = []
+
+
+def recording_huber(prediction, target):
+    """A Huber objective that records every call — the sentinel a document
+    can NAME, so 'the selection reached the training step' is an assertion
+    about the loop, not about the params dict."""
+    LOSS_CALLS.append(tuple(prediction.reshape(-1).shape))
+    return torch.nn.functional.smooth_l1_loss(prediction, target)
+
+
+def test_the_default_objective_is_still_mse():
+    """The default is the SAME callable the adapter hardcoded — resolved
+    through the knob's own doorway, so there is one loss path, not two."""
+    assert RowVectorAdapter(FLAT_PARAMS).build_loss() is torch.nn.functional.mse_loss
+
+
+def test_a_declared_loss_resolves_to_the_named_callable():
+    adapter = RowVectorAdapter(
+        {**FLAT_PARAMS, "loss": "torch.nn.functional:smooth_l1_loss"}
+    )
+    assert adapter.build_loss() is torch.nn.functional.smooth_l1_loss
+
+
+@pytest.mark.parametrize(
+    "params,needle",
+    [
+        ({"loss": 3}, "loss must be a class path"),
+        ({"loss": "mse_loss"}, "must name a class as module.ClassName"),
+        ({"loss": ""}, "loss must be a class path"),
+    ],
+)
+def test_loss_knobs_are_refused_by_name_at_plan(params, needle):
+    problems = LinearRegressor.validate_params({**FLAT_PARAMS, **params})
+    assert any(needle in p for p in problems), problems
+
+
+def test_a_declared_loss_reaches_the_training_step(tmp_path):
+    """The knob is not paperwork: the named callable is what every batch's
+    backward pass was taken on."""
+    LOSS_CALLS.clear()
+    DeclaredTrain(
+        "huber",
+        {**DECLARED_FLAT, "loss": f"{__name__}:recording_huber"},
+        mode="train",
+    ).run(ctx(tmp_path), {"rows": flat_rows()})
+    assert LOSS_CALLS, "the declared loss was never called by the fit"
+
+
+def test_a_declared_loss_actually_changes_the_fit(tmp_path):
+    """Huber is the point of the knob on fat-tailed targets — it must train
+    a DIFFERENT model than MSE, or the selection changed nothing."""
+    mse = DeclaredTrain("a", DECLARED_FLAT, mode="train").run(
+        ctx(tmp_path, "a"), {"rows": flat_rows()}
+    )
+    huber = DeclaredTrain(
+        "b",
+        {**DECLARED_FLAT, "loss": "torch.nn.functional:smooth_l1_loss"},
+        mode="train",
+    ).run(ctx(tmp_path, "b"), {"rows": flat_rows()})
+    a = torch.load(mse["artifact_path"], map_location="cpu", weights_only=True)
+    b = torch.load(huber["artifact_path"], map_location="cpu", weights_only=True)
+    assert not all(torch.equal(a[k], b[k]) for k in a)
+
+
+def test_a_loss_that_cannot_be_imported_is_refused_at_run(tmp_path):
+    node = DeclaredTrain(
+        "k", {**DECLARED_FLAT, "loss": "torch.nn.functional:no_such_loss"}, mode="train"
+    )
+    with pytest.raises(ValueError, match="no_such_loss"):
+        node.run(ctx(tmp_path), {"rows": flat_rows()})
+
+
 def test_import_library_class_requires_the_named_methods():
     """``requires`` refuses a resolvable path whose class lacks the method
     BY NAME — the plan-time honesty the declared grammar rests on."""
