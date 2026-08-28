@@ -573,13 +573,32 @@ across runs is what is missing**, plus the wiring below.
       problem: two trainers (`qhat_aapl`, `qhat_msft`) means every tuned
       knob needs duplicate space keys that nothing pins together — the
       `foreach` gap again, surfacing in the search space this time.
-- [ ] **HPO inside walk-forward is mechanically supported but UNTESTED and
+- [x] **HPO inside walk-forward is mechanically supported but UNTESTED and
       semantically undecided.** `run_walk_forward` puts every fold through
       `run_document`, so each fold builds its own `_SearchSeam` and re-tunes
       independently. `tests/pipeline/test_walkforward.py` contains no HPO.
       That is defensible nested CV, but it costs folds x trials runs and
       yields a DIFFERENT winner per fold, so there is no single best config
       to ship. Decide the semantics, then test it.
+      **Landed this run (2026-08-28, C7) via ADR-0043 — and the "nested CV"
+      label above is WRONG, which the ADR corrects:** a fold's evaluation
+      window IS its val split, the planner forces every search objective
+      onto a val score node, and folds refuse a cal band, so no outer band
+      de-biases the fold's score. Per-fold re-tune therefore STANDS as
+      MEASUREMENT of the tuning procedure — valid for comparing procedures
+      under one fold plan, never a deployment estimate. Shipping is the
+      plain `run`; freezing a winner means EDITING the document, which moves
+      its hash by design (no `freeze` knob, no `search_mode`). A run now
+      SURFACES its search, node-keyed so K>1 search nodes stay distinct:
+      trials executed, and the winner and score when the kind produced them
+      — presence, not value, separates "no winner" from "a winner of None",
+      and a winner JSON cannot hold is recorded as DROPPED, never coerced.
+      The summary carries it per fold and in aggregate, so **per-fold winner
+      instability is now a printed diagnostic instead of folklore**. Eight
+      HPO tests where there were none; the HPO-free summary is proven
+      byte-identical (mutation-proven twice). `driver.py` converted and its
+      ignore entry DRAINED. Deferred by the ADR: a fold-internal outer band,
+      the only route to an unbiased tuned-pipeline estimate.
 - [x] **The intraday store is not on this machine** — `./ob` must be
       re-acquired before any of this runs. Blocker zero for an actual
       experiment.
