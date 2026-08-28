@@ -959,6 +959,99 @@ def test_model_sweep_survives_the_dataset_swap_its_notes_invite(tmp_path):
     assert "brier" in shipped["pipeline"]["validate"]["notes"]
 
 
+def test_dataset_swap_recipe_says_the_split_cuts_move_with_the_data(tmp_path):
+    # The other half of the swap invitation. The three `splits` cuts are
+    # ABSOLUTE epoch-ms instants placed inside SynthEvents' default span
+    # (start day 1000, i.e. 1972-73); a real data source starts elsewhere,
+    # and cuts the data never straddles leave `train_rows` empty — the
+    # first fit then dies on zero rows (measured below). So the notes must
+    # state the coupling (an invitation whose one required edit is
+    # unstated is an escape hatch nobody built), and the stated recipe —
+    # move the three cuts with the data — must actually run.
+    pytest.importorskip("sklearn")
+    obj = json.loads(SWEEP_EXAMPLE.read_text())
+    day_ms = 86_400_000
+    new_start = 1_700_000_000_000  # any modern real-world stream
+
+    stale = json.loads(json.dumps(obj))
+    stale["pipeline"]["dataset"]["params"]["start_ms"] = new_start
+    result = run_sweep_example(tmp_path / "stale", stale)
+    assert result.state == "error" and result.exit_code != 0
+    assert "cannot fit on zero rows" in result.error
+
+    moved = json.loads(json.dumps(obj))
+    moved["pipeline"]["dataset"]["params"]["start_ms"] = new_start
+    delta = new_start - 1_000 * day_ms  # shipped cuts sit in the default span
+    for cut in ("train_end_ms", "val_end_ms", "test_end_ms"):
+        moved["splits"][cut] = obj["splits"][cut] + delta
+    result = run_sweep_example(tmp_path / "moved", moved)
+    assert result.state == "ran" and result.exit_code == 0
+    assert result.outputs["sweep"]["best_params"]["model.estimator"] in SWEPT_ESTIMATORS
+
+    # The notes must carry the recipe: the dataset note points at the
+    # cuts, and the splits note names the failure a stale cut earns.
+    assert "`splits` cuts" in obj["pipeline"]["dataset"]["notes"]
+    assert "cannot fit on zero rows" in obj["splits"]["notes"]
+
+
+def test_train_rows_usability_gate_is_absent_on_purpose_and_says_so(tmp_path):
+    # These events carry no `usable` field (pinned below), so the filter's
+    # usability gate has nothing to test: `require_usable: false` would be
+    # an inert restatement of the default, and flipping it on engages the
+    # sparse semantics (no field = cannot claim usability = dropped) —
+    # every record dropped, run dead at the first fit (measured below).
+    # The shipped document therefore does NOT declare the knob, and the
+    # node's note must explain the absence, because this cookbook explains
+    # every knob it does declare.
+    pytest.importorskip("sklearn")
+    obj = json.loads(SWEEP_EXAMPLE.read_text())
+    train_rows = obj["pipeline"]["train_rows"]
+    assert "require_usable" not in train_rows["params"]
+    assert "require_usable" in train_rows["notes"]
+    assert "cannot fit on zero rows" in train_rows["notes"]
+
+    result = run_sweep_example(tmp_path / "shipped", json.loads(json.dumps(obj)))
+    record = result.outputs["dataset"]["events"][0]
+    fields = vars(record) if hasattr(record, "__dict__") else record
+    assert "usable" not in fields  # the gate would test a field that isn't there
+
+    flipped = json.loads(json.dumps(obj))
+    flipped["pipeline"]["train_rows"]["params"]["require_usable"] = True
+    result = run_sweep_example(tmp_path / "flipped", flipped)
+    assert result.state == "error" and result.exit_code != 0
+    assert "cannot fit on zero rows" in result.error
+
+
+#: n -> English word/ordinal, restated independently of the prose the
+#: counts test checks (an expectation sourced from its subject would
+#: assert nothing). A count drifting off this range fails loudly.
+_COUNT_WORDS = {5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine"}
+_ORDINAL_WORDS = {6: "sixth", 7: "seventh", 8: "eighth", 9: "ninth", 10: "tenth"}
+
+
+def test_restated_counts_agree_with_the_document_everywhere():
+    # The cookbook's pitch is "adding a candidate is one more string in
+    # the list" — so every prose copy of the candidate COUNT (and of the
+    # dataset arithmetic) is pinned to the document values it restates.
+    # Without this, a seventh sklearn row updates the space, the table and
+    # SWEPT_ESTIMATORS (all pinned) while "the six"/"6 candidates" stay
+    # silently wrong with the suite green.
+    obj = json.loads(SWEEP_EXAMPLE.read_text())
+    n = len(sweep_space())
+    word, next_ordinal = _COUNT_WORDS[n], _ORDINAL_WORDS[n + 1]
+    flat = " ".join(pack_docstring().split())  # the docstring hard-wraps
+    assert f"sweeps the {word} ``sklearn.`` rows" in flat
+    assert f"the {next_ordinal} needs an extra" in flat
+    assert f"{n} candidates, {n} trials" in obj["pipeline"]["sweep"]["notes"]
+    assert f"last of the {word}" in obj["pipeline"]["train_rows"]["notes"]
+    params = obj["pipeline"]["dataset"]["params"]
+    events = params["n_events"] * params["n_instruments"]
+    assert (
+        f"{params['n_events']} days x {params['n_instruments']} instruments "
+        f"= {events} events" in obj["pipeline"]["dataset"]["notes"]
+    )
+
+
 def test_model_sweep_fits_on_the_train_split_only(tmp_path):
     # THE leakage pin. A "compare many models" cookbook that fits on the
     # rows it selects on crowns whichever candidate memorises hardest —

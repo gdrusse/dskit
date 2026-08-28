@@ -5,7 +5,7 @@
     "dataset": {
       "uses": "dskit.pipeline.synthetic_nodes:SynthEvents",
       "params": { "n_events": 104, "n_instruments": 2, "seed": 4 },
-      "notes": "role 'data': deterministic settled events with a mid that under-reacts to the truth, one per day per instrument from day 1000 (1972-09-27) — 104 days x 2 instruments = 208 events. Swap this node for your own data source and the sweep below is unchanged — the candidates never mention the domain."
+      "notes": "role 'data': deterministic settled events with a mid that under-reacts to the truth, one per day per instrument from day 1000 (1972-09-27) — 104 days x 2 instruments = 208 events. Swap this node for your own data source and the sweep below is unchanged — the candidates never mention the domain; the ONE edit that must come with the swap is the three `splits` cuts at the bottom, which are absolute instants placed inside THIS dataset's span (the splits note has the failure a stale cut earns)."
     },
     "labels": {
       "uses": "dskit.pipeline.synthetic_nodes:SynthLabels",
@@ -15,12 +15,11 @@
       "uses": "filter",
       "inputs": { "records": "$dataset.events" },
       "params": {
-        "require_usable": false,
         "where": [
           { "field": "asof_ms", "op": "<=", "value": "$splits.train_end_ms" }
         ]
       },
-      "notes": "THE node that makes the comparison mean something. SklearnFit fits exactly what is wired into it and applies no split cut of its own (that is the pack's contract, deliberately: the cut must be a node someone can read). Without this filter every candidate would be fitted on the same val rows it is then scored on, and the sweep would crown whichever model memorises hardest rather than whichever generalises — measured on this document, rewiring `rows` to `$dataset.events` made RandomForest the 'winner' at ~0.03 on rows it had just been fitted on, while its honest score here is ~0.22-0.25 — usually last of the six (unseeded, so the odd run edges past the boosted trees), behind the plain linear baseline it appeared to beat. The `$splits.train_end_ms` reference is the walk-forward idiom, so this node moves with the cut instead of restating it."
+      "notes": "THE node that makes the comparison mean something. SklearnFit fits exactly what is wired into it and applies no split cut of its own (that is the pack's contract, deliberately: the cut must be a node someone can read). Without this filter every candidate would be fitted on the same val rows it is then scored on, and the sweep would crown whichever model memorises hardest rather than whichever generalises — measured on this document, rewiring `rows` to `$dataset.events` made RandomForest the 'winner' at ~0.03 on rows it had just been fitted on, while its honest score here is ~0.22-0.25 — usually last of the six (unseeded, so the odd run edges past the boosted trees), behind the plain linear baseline it appeared to beat. The `$splits.train_end_ms` reference is the walk-forward idiom, so this node moves with the cut instead of restating it. Filter's other knob, `require_usable`, is deliberately NOT declared: these events carry no `usable` field, false is already the default (declaring it would be an inert restatement), and flipping it on engages the filter's sparse semantics — no field means no record can claim usability, so ALL rows are dropped and the run dies at `model` with 'cannot fit on zero rows'. Declare it only over records that actually carry `usable`."
     },
     "model": {
       "uses": "dskit.pipeline.libs.sklearn:SklearnFit",
@@ -76,7 +75,7 @@
     "train_end_ms": 92620800000,
     "val_end_ms": 93916800000,
     "test_end_ms": 95299200000,
-    "notes": "TIME cuts, not `kind: random`, because `train_rows` above has to be able to NAME the train boundary — a random assignment hashes the event's cluster and exposes no instant a filter could reference. The three values are days 1072 / 1087 / 1103 in epoch-ms, splitting the dataset's 104-day span 73 / 15 / 16 (146 train rows, 30 val, 32 test). Test is reserved and never read here: selection is a val-split job."
+    "notes": "TIME cuts, not `kind: random`, because `train_rows` above has to be able to NAME the train boundary — a random assignment hashes the event's cluster and exposes no instant a filter could reference. The three values are days 1072 / 1087 / 1103 in epoch-ms, splitting the dataset's 104-day span 73 / 15 / 16 (146 train rows, 30 val, 32 test). Test is reserved and never read here: selection is a val-split job. Because the cuts are absolute instants, they are the one thing a dataset swap MUST move: shift all three to bracket your own rows' asof_ms (measured: a modern start_ms with these 1972 cuts left standing keeps 0/208 records in `train_rows`, and the first fit dies with 'cannot fit on zero rows')."
   },
   "outputs": { "run_root": "" }
 }
