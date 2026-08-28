@@ -47,11 +47,16 @@ REMAINING, in the plan's risk order:
       `children/_skeleton/yourproject/nodes.py:43`. The helper is public now,
       so they should `from dskit.pipeline.node import reject_unknown_params`.
       Fix the skeleton first — its copy propagates to every future child.
-- [ ] **3b — `TorchAdapter` becomes a real ABC.** `libs/torch.py:315`: four
+- [x] **3b — `TorchAdapter` becomes a real ABC.** `libs/torch.py:315`: four
       hooks raise `NotImplementedError` WITHOUT `@abstractmethod`, so an
       incomplete adapter constructs fine and fails later at call time. Two
       subclasses exist; low blast radius. Adapters named by import path are
       checked structurally and unaffected.
+      **Landed this run (2026-08-27, B1):** ABC on exactly the four hooks;
+      the structural-resolution claim verified against `base.py` AND
+      pinned; the abstract refusal is core's one sentence
+      (`abstract_class_problem`), asked by the node registry and the
+      adapter doorway at plan and run, plan/run wording pinned equal.
 - [ ] **3c — `TrainableNode` base so nodes stop branching on `mode`. ADR FIRST.**
       Deletes nine `if mode ==` sites across torch/sb3/transformers/sklearn/
       synthetic. **Do NOT split each trainable into train and load classes** —

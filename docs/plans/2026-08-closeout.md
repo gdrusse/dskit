@@ -800,7 +800,7 @@ Intentional-move log (append `document → old-prefix → new-prefix → card`):
 | E3 | pending | | after E1 |
 | E4 | pending | | |
 | E5 | pending | | |
-| B1 | pending | | torch #1 |
+| B1 | MERGED | b3237a7 | torch #1 · 5-round loop + orchestrator round-5 rulings (plan-time guard kept; sentence-equality pin + _ADAPTER_SUBJECT; docstrings to standard); new core helper abstract_class_problem; suite 2456/108, hash gate empty |
 | B2 | pending | | torch #2 |
 | B3 | pending | | |
 | ADR-A…F | pending | | drafts ∥ W1 |
