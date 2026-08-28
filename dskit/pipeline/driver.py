@@ -197,102 +197,42 @@ def _open_sinks(tracking):
     return _Trackers(sinks)
 
 
-def _tracked_identity(document, asof, run_hash, order):
-    """What this run IS — logged at run start, so a crash still lands it."""
-    return {
-        "name": document.name,
-        "asof": asof,
-        "document_hash": document.hash,
-        "run_hash": run_hash,
-        "nodes": ",".join(order),
-    }
-
-
-def _tracked_value(declared, resolved):
-    """One param as a sink should see it: the value, except for wiring.
-
-    Materialization is what makes a logged param TRUE — a ``$prev`` carry
-    and a ``$splits`` boundary resolve to the number the node sized or cut
-    on, and logging the spec instead would file a value the run never had.
-    A ``$<node>.<port>`` reference is the exception, because it is not a
-    knob at all but an EDGE: it resolves to another node's output, which
-    is already recorded as that node's output, may be a whole dataset
-    (pushed into every sink), and can be a metric no pass selected on — a
-    search node's ``objective`` resolves to the base pass's score, a
-    number the seam never reads and nothing ever chose. For those the
-    declaration is both the honest answer and a bounded one, so it is
-    logged as written.
-
-    Parameters
-    ----------
-    declared : any
-        The param subtree as the document spells it (with any search
-        overrides already applied), so references are still visible.
-    resolved : any
-        The same subtree after :func:`_materialize`.
-
-    Returns
-    -------
-    any
-        ``resolved``, with every node-reference subtree replaced by the
-        reference string that produced it.
-    """
-    if is_node_ref(declared):
-        return resolved if parse_node_ref(declared)[0] == SPLITS_SOURCE else declared
-    if is_prev_ref(declared):
-        # A carry SPEC is itself a dict, so it must resolve WHOLE before
-        # the dict branch below can walk it spec-against-value — a carry
-        # whose value is a dict would otherwise log a husk of Nones
-        # under the spec's own keys.
-        return resolved
-    if isinstance(declared, dict) and isinstance(resolved, dict):
-        return {k: _tracked_value(v, resolved.get(k)) for k, v in declared.items()}
-    if isinstance(declared, list) and isinstance(resolved, list):
-        if len(declared) == len(resolved):
-            return [_tracked_value(d, r) for d, r in zip(declared, resolved)]
-    return resolved
-
-
-def _tracked_params(effective, order):
-    """The hyperparameters the run RAN with, flattened for the sinks.
+def _tracked_params(pipeline, order):
+    """The document's declared hyperparameters, flattened for the sinks.
 
     Identity alone left runs unfilterable — you could not ask a sink for
-    "the runs at hidden_size=64". What makes that answer TRUE is logging
-    the effective params, never the document's text: a ``$prev`` carry is
-    a reference, not a value, and a search node's winner overrides what
-    the document declared. Logging the declaration would file the
-    winner's score under a config no pass ever executed — worse than
-    logging nothing, which is why this payload is sent after the nodes
-    have run rather than beside the identity fields. The one thing kept
-    as written is an edge into another node's outputs
-    (:func:`_tracked_value`).
+    "the runs at hidden_size=64". The payload is the DECLARED
+    (post-override) document: every node's params as this execution's
+    document spells them — a search winner promoted by rerunning it as
+    its own document carries the override in that document's text —
+    flattened to the ``"<node>.<param.path>"`` spelling ``hpo-grid``
+    space keys use, with every reference logged as a reference
+    (:func:`~dskit.pipeline.document.flatten_param_paths`). Declared is
+    what keeps the payload honest AND stable: it is known before any
+    node runs (so one call at run start carries it and a crash cannot
+    lose it), its key set never drifts across a run series the way a
+    resolved carry's shape can, and every key is an address the
+    override/space grammar can spell. What a run RESOLVED lives in the
+    run dir (``resolved.json``, ``carry.json``, the node records); what
+    a search CHOSE lives in the search node's outputs.
 
     Parameters
     ----------
-    effective : dict
-        ``node key -> the params that node ran with`` (the winner pass's,
-        where a search re-executed it), materialized and passed through
-        :func:`_tracked_value`. A node with no params-in-effect is absent
-        — one the run never REACHED (halted, or after an abort), and one
-        whose FAILURE was the params materialization itself: substituting
-        the declaration would file references as values, the same lie in
-        miniature. A node that failed at or after construction is
-        present, since it was built and entered with those params, and
-        that config is what the failure is about.
+    pipeline : dict
+        The document's node map (``key`` -> ``NodeSpec``).
     order : tuple of str
         Plan order, so the payload is built deterministically.
 
     Returns
     -------
     dict
-        ``"<node>.<param.path>"`` -> value, the spelling ``hpo-grid``
-        space keys use. Every key carries a dot, so none can shadow the
-        undotted identity fields logged beside them.
+        ``"<node>.<param.path>"`` -> declared value. Every key carries a
+        dot, so none can shadow the undotted identity fields logged
+        beside them.
     """
     payload = {}
     for key in order:
-        if key in effective:
-            payload.update(flatten_param_paths(key, effective[key]))
+        payload.update(flatten_param_paths(key, pipeline[key].params))
     return payload
 
 
@@ -432,12 +372,6 @@ class _SearchSeam:
 
     ``calls`` counts every ``rerun`` invocation — surfaced as
     ``trials_executed`` in the search node's record.
-
-    ``params_used`` holds the params of the most recent pass, keyed by
-    node — materialized, then passed through :func:`_tracked_value`. The
-    driver reads it after :meth:`apply_winner` so the sinks log the params
-    the winner actually ran with, not the ones the document declared and
-    the search then overrode.
     """
 
     def __init__(self, key, the_plan, node_outputs, splits_info, prev, trial_ctx):
@@ -449,7 +383,6 @@ class _SearchSeam:
         self._prev = prev
         self._trial_ctx = trial_ctx
         self.calls = 0
-        self.params_used = {}
         # The planner guaranteed the objective is a $-ref into a declared
         # val-split score node before anything could execute.
         target, path = parse_node_ref(self._specs[key].params["objective"])
@@ -537,7 +470,6 @@ class _SearchSeam:
             dirty |= self._plan.descendants(head)
         subgraph = tuple(k for k in self._plan.order if k in self.needed and k in dirty)
         seconds = {}
-        self.params_used = {}
         for k in subgraph:
             spec = self._specs[k]
             t0 = time.perf_counter()
@@ -552,7 +484,6 @@ class _SearchSeam:
                 self._prev,
                 bindings,
             )
-            self.params_used[k] = _tracked_value(raw, params)
             inputs = {
                 port: _materialize(
                     ref,
@@ -1034,16 +965,27 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
     node_outputs = {}
     seconds = {}
     search_meta = {}
-    effective_params = {}  # what each node RAN with — the tracked payload
     halted = set()
     halted_at = ""
     error_text = ""
     state = "ran"
 
-    identity = _tracked_identity(document, asof, run_hash, the_plan.order)
-
     try:
-        trackers.log_params(identity)
+        # ONE log_params per run, at run start (the Tracker contract): the
+        # five identity fields plus every node's declared params, flattened
+        # to the override spelling — dotted, so no knob can shadow an
+        # identity field. Sent before any node runs, so however far the
+        # run gets, its full config is findable in every sink.
+        trackers.log_params(
+            {
+                "name": document.name,
+                "asof": asof,
+                "document_hash": document.hash,
+                "run_hash": run_hash,
+                "nodes": ",".join(the_plan.order),
+                **_tracked_params(document.pipeline, the_plan.order),
+            }
+        )
         for key in the_plan.order:
             spec = document.pipeline[key]
             if key in halted:
@@ -1062,7 +1004,6 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
                     prev,
                     prev_bindings,
                 )
-                effective_params[key] = _tracked_value(spec.params, params)
                 inputs = {
                     port: _materialize(
                         ref,
@@ -1106,9 +1047,6 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
                             winner, ctx, prev_bindings
                         )
                         search_meta[key]["winner_reran"] = list(winner_reran)
-                        # The winner pass is the pass that stands, so its
-                        # params are the ones the run ran with.
-                        effective_params.update(seam.params_used)
             except Exception:  # noqa: BLE001 — recorded, then abort
                 if seam is not None:
                     search_meta[key] = {"trials_executed": seam.calls}
@@ -1151,14 +1089,6 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
                 )
         for key in the_plan.order:
             node_states.setdefault(key, "not_run")
-        # The hyperparameters go out only now: a search node's winner is
-        # not known until it has run, and a reference is only a value once
-        # materialized. The identity rides along again — unchanged, so a
-        # sink that MERGES and one that REPLACES both end up holding the
-        # whole picture, and the seam needs no promise about which it is.
-        trackers.log_params(
-            {**identity, **_tracked_params(effective_params, the_plan.order)}
-        )
 
         # -- 6 RECORD ---------------------------------------------------
         nodes_dir = os.path.join(run_dir, "nodes")

@@ -39,9 +39,9 @@ ASOF = "2026-01-01"
 
 class ReplacingTracker:
     """A Tracker seam implemented the blunt way — each ``log_params`` call
-    REPLACES what the sink holds. Nothing in the seam forbids that, so the
-    driver's payloads must survive it; ``payloads`` keeps every call so a
-    test can also read what was sent, in order."""
+    REPLACES what the sink holds. Legal, because the seam's contract is ONE
+    call per run; ``payloads`` keeps every call so a test can count them
+    and read what was sent."""
 
     instances = []
 
@@ -349,14 +349,18 @@ class TestTracking:
         assert logged["run_hash"] == result.run_hash
         assert logged["nodes"].startswith("events,")
 
-    def test_logged_params_are_the_values_the_run_actually_used(
+    def test_a_prev_carry_logs_as_the_reference_it_was_declared_as(
         self, tmp_path, registry
     ):
-        # A reference is not a value: logging the carry SPEC would give
-        # every run in a series an identical 'size.bankroll', none of which
-        # the run after the first ever sized against — a sink filter would
-        # read a number the run never had. The MATERIALIZED value is logged.
+        # Round-4 ruling (findings 1+2+3): keys and values follow the
+        # DECLARED document, and a reference logs as a reference. Logging
+        # the carry RESOLVED would make 'size.bankroll' a different value
+        # every run of the series; the declared spec is stable, bounded,
+        # and IS the config — what the carry bound to lives in
+        # resolved.json and the prior run's outputs, where it happened.
         self.register_memory()
+        declared = banking_pipeline()["size"].params["bankroll"]
+        assert "$prev" in declared  # the fixture still carries; else vacuous
 
         def run(asof):
             doc = bdoc(
@@ -365,33 +369,35 @@ class TestTracking:
             return run_document(doc, asof=asof, registry=registry)
 
         first = run("2026-01-01")
-        assert MemoryTracker.instances[-1].logged_params[
-            "size.bankroll"
-        ] == pytest.approx(1000.0)  # the carry's default: no prior run
+        first_logged = dict(MemoryTracker.instances[-1].logged_params)
         second = run("2026-01-08")
-        assert MemoryTracker.instances[-1].logged_params[
-            "size.bankroll"
-        ] == pytest.approx(first.outputs["size"]["final_bankroll"])
-        assert second.prev_run == first.run_dir
+        second_logged = dict(MemoryTracker.instances[-1].logged_params)
+        assert second.prev_run == first.run_dir  # a real series, not two firsts
+        assert first_logged["size.bankroll"] == declared
+        assert second_logged["size.bankroll"] == declared
+        # Descent never enters a reference: the carry contributes no
+        # subtree keys, and the payload's KEY SET holds across the series.
+        assert "size.bankroll.default" not in first_logged
+        assert set(first_logged) == set(second_logged)
 
-    def test_a_dict_valued_carry_logs_the_dict_the_run_used(
+    def test_a_dict_valued_carry_also_logs_as_its_declared_reference(
         self, tmp_path, registry
     ):
-        # A carry SPEC is a dict, so a carry whose VALUE is also a dict
-        # must not be walked spec-against-value — that files neither the
-        # spec nor the value but a husk of Nones under the spec's keys.
-        # The carry resolves whole, whatever shape it resolves to.
+        # Round-4 ruling (findings 1+2+3): the dict-valued carry was the
+        # unstable case — resolving it whole gave run 1 keys from the
+        # literal default and run 2 whatever keys the prior run's output
+        # happened to hold, so the payload's key set drifted across the
+        # series and spelled targets no override or space key can address.
+        # The declared reference is ONE stable leaf, both runs alike.
         self.register_memory()
+        spec = {"$prev": "size.positions", "default": {"lr": 0.1}}
 
         def run(asof):
             pipeline = banking_pipeline()
             pipeline["size"] = NodeSpec(
                 uses="synth-capital",
                 inputs=dict(pipeline["size"].inputs),
-                params={
-                    **pipeline["size"].params,
-                    "cfg": {"$prev": "size.positions", "default": {"lr": 0.1}},
-                },
+                params={**pipeline["size"].params, "cfg": dict(spec)},
             )
             doc = bdoc(
                 tmp_path,
@@ -401,15 +407,15 @@ class TestTracking:
             return run_document(doc, asof=asof, registry=registry)
 
         first = run("2026-01-01")
-        logged = MemoryTracker.instances[-1].logged_params
+        first_logged = dict(MemoryTracker.instances[-1].logged_params)
         assert first.state == "ran"
-        assert logged["size.cfg.lr"] == 0.1  # the dict default, first run
         second = run("2026-01-08")
-        logged = MemoryTracker.instances[-1].logged_params
+        second_logged = dict(MemoryTracker.instances[-1].logged_params)
         assert second.prev_run == first.run_dir
-        # Contract keys ('SYNA-0000') are unspellable, so the carried
-        # dict lands whole under the param's own path.
-        assert logged["size.cfg"] == first.outputs["size"]["positions"]
+        assert first_logged["size.cfg"] == spec
+        assert second_logged["size.cfg"] == spec
+        assert "size.cfg.lr" not in first_logged  # descent never enters a ref
+        assert set(first_logged) == set(second_logged)
 
     def test_a_param_wired_to_a_node_output_logs_the_REFERENCE(
         self, tmp_path, registry
@@ -437,15 +443,15 @@ class TestTracking:
         assert logged["clip.note"] == "$events.instruments"
         assert logged["clip.lo"] == 0.02  # ordinary knobs still log their value
 
-    def test_the_second_payload_repeats_identity_so_a_sink_may_replace(
+    def test_log_params_is_called_once_with_identity_and_hyperparameters(
         self, tmp_path, registry
     ):
-        # The driver logs params twice (identity at run start, so a crash
-        # still lands something; hyperparameters after the nodes, because a
-        # search winner is not known before). A sink that REPLACES on each
-        # call — the obvious reading of a 'log the params' seam, and what a
-        # tier-3 sink may already do — must not thereby lose the identity,
-        # so the second payload carries it again, unchanged.
+        # Round-4 ruling (finding 5): the Tracker contract is ONE
+        # log_params per run, at run start — the five identity fields and
+        # the flattened declared params in a single payload. A sink that
+        # REPLACES on each call (the blunt reading of the seam) therefore
+        # cannot lose a field, and an mlflow-style sink that refuses to
+        # restate a param is never asked to.
         doc = bdoc(
             tmp_path,
             tracking=TrackingConfig(
@@ -454,26 +460,23 @@ class TestTracking:
         )
         result = run_document(doc, asof=ASOF, registry=registry)
         sink = ReplacingTracker.instances[-1]
-        assert set(sink.payloads[0]) == {
-            "name",
-            "asof",
-            "document_hash",
-            "run_hash",
-            "nodes",
-        }
-        last = sink.params  # what a replacing sink is left holding
-        assert last["run_hash"] == result.run_hash and last["name"] == doc.name
-        assert last["events.n_events"] == 432
-        # No key is ever re-sent with a DIFFERENT value (mlflow refuses that).
-        assert all(last[k] == v for k, v in sink.payloads[0].items())
+        assert len(sink.payloads) == 1
+        payload = sink.payloads[0]
+        assert payload["name"] == doc.name
+        assert payload["asof"] == ASOF
+        assert payload["document_hash"] == doc.hash
+        assert payload["run_hash"] == result.run_hash
+        assert payload["nodes"].startswith("events,")
+        assert payload["events.n_events"] == 432  # knobs ride the same call
 
-    def test_a_node_whose_params_never_materialized_logs_none_of_them(
+    def test_a_node_that_later_fails_still_logged_its_declared_params(
         self, tmp_path, registry
     ):
-        # 'Params in effect' means params that took effect. A node whose
-        # FAILURE is the params materialization never had any — logging its
-        # declaration would file references as values — so it contributes
-        # nothing, even though its state is 'error', not 'not_run'.
+        # Round-4 ruling (findings 1+2+3 and 5): the payload goes out at
+        # run start and follows the DECLARED document, so what a node's
+        # materialization later does cannot take its params back — a
+        # crashed run is exactly the one you want to find in a sink by its
+        # config. The reference that fails to resolve logs as written.
         self.register_memory()
         pipeline = banking_pipeline()
         pipeline["clip"] = NodeSpec(
@@ -488,15 +491,17 @@ class TestTracking:
         )
         result = run_document(doc, asof=ASOF, registry=registry)
         logged = MemoryTracker.instances[-1].logged_params
-        assert result.node_states["clip"] == "error"
-        assert not [k for k in logged if k.startswith("clip.")]
-        assert logged["events.n_events"] == 432  # upstream still lands
+        assert result.node_states["clip"] == "error"  # materialization failed…
+        assert logged["clip.bad"] == "$splits.no_such_key"  # …the config landed
+        assert logged["clip.lo"] == 0.02
 
-    def test_a_node_that_never_ran_logs_no_params(self, tmp_path, registry):
-        # 'Params in effect' means params that took effect: a node the run
-        # never reached has none. A node that failed INSIDE ITS RUN does —
-        # it was built and entered with them, and that config is the point
-        # of the payload.
+    def test_a_node_the_run_never_reached_still_logged_its_declared_params(
+        self, tmp_path, registry
+    ):
+        # Round-4 ruling (finding 5): 'once, at run start' means the
+        # payload cannot depend on how far the run got — an aborted run
+        # lands the same declared config a completed one does, which is
+        # what lets a sink answer "which configs crash".
         self.register_memory()
         pipeline = banking_pipeline()
         pipeline["qhat"] = NodeSpec(
@@ -515,7 +520,7 @@ class TestTracking:
         assert result.node_states["qhat"] == "error"
         assert logged["qhat.min_train"] == 10_000
         assert result.node_states["size"] == "not_run"
-        assert not [k for k in logged if k.startswith("size.")]
+        assert logged["size.stake_frac"] == 0.1  # declared, so still logged
 
     def test_sink_closes_even_when_a_node_errors(self, tmp_path, registry):
         self.register_memory()

@@ -227,9 +227,15 @@ def parse_prev_ref(value):
 def _flatten_into(out, prefix, value):
     """Emit ``prefix`` -> leaf for one params subtree, key by key.
 
-    A block that holds a key no path segment can name is emitted WHOLE as
-    well as descended, so the walk never drops a value.
+    A reference is one leaf, as declared — descent never enters it (the
+    ``$prev`` carry is the only dict-shaped reference; ``$``-strings are
+    leaves by shape). A block that holds a key no path segment can name
+    is emitted WHOLE as well as descended, so the walk never drops a
+    value.
     """
+    if is_prev_ref(value):
+        out[prefix] = value
+        return
     inside = _spellable_keys(value)
     if not inside or len(inside) < len(value):
         out[prefix] = value
@@ -252,10 +258,10 @@ def flatten_param_paths(node_key, params):
     path, ``hpo-grid`` tunes one, and the driver logs one per knob to the
     tracking sinks. The walk descends a dict exactly where an override
     could descend, KEY BY KEY: a key that is no legal path segment
-    (``$prev``, ``1d``, a dotted space target) is skipped, since nothing
-    could ever spell it, while its siblings ride along — dropping a whole
-    dict for one unspellable key would hide knobs that ARE tunable
-    (``n.opt.lr`` beside ``n.opt.1st_moment``).
+    (``1d``, a dotted space target) is skipped, since nothing could ever
+    spell it, while its siblings ride along — dropping a whole dict for
+    one unspellable key would hide knobs that ARE tunable (``n.opt.lr``
+    beside ``n.opt.1st_moment``).
 
     Descent never LOSES a value, though: a block holding an unspellable
     key is ALSO emitted whole under its own path, so two runs differing
@@ -271,28 +277,36 @@ def flatten_param_paths(node_key, params):
     addressable as ``search.space``, and dropping it would hide the
     searched grid from every sink.
 
-    Values pass through unchanged — rendering belongs to the sink, so a
-    numeric knob stays comparable as a number.
+    A REFERENCE is wiring, not a dict of knobs, and is one leaf logged
+    exactly as declared: a ``$node.port``/``$splits...`` string rides
+    through as written, and a ``$prev`` carry is emitted whole with
+    descent never entering it (its ``default`` is reference plumbing, so
+    it gets no key of its own). That keeps the emitted key set equal to
+    the declared tree — stable across a run series, where a carry's
+    RESOLUTION changes shape run over run — and keeps every key an
+    address the override/space grammar can spell. What a reference bound
+    to lives where it happened: outputs, ``carry.json``,
+    ``resolved.json``.
+
+    Values otherwise pass through unchanged — rendering belongs to the
+    sink, so a numeric knob stays comparable as a number.
 
     Parameters
     ----------
     node_key : str
         The node's key in the document's ``pipeline`` map.
     params : dict
-        That node's params. The driver passes the MATERIALIZED params
-        filtered through its wiring rule
-        (:func:`dskit.pipeline.driver._tracked_value`), so most values
-        are the ones the node ran with but a param wired to another
-        node's output arrives as the ``$node.port`` string as written; a
-        caller that passes the document's text gets every reference
-        spelled as written.
+        That node's params AS DECLARED (post-override) in the document —
+        the driver passes the document's own text at run start, never a
+        materialized copy, so every reference is still spelled as
+        written.
 
     Returns
     -------
     dict
-        ``"<node_key>.<param.path>"`` -> the value at that path (a leaf,
-        or a block that also holds something unspellable); empty when the
-        node declares no addressable params. Every key
+        ``"<node_key>.<param.path>"`` -> the declared value at that path
+        (a leaf, or a block that also holds something unspellable);
+        empty when the node declares no addressable params. Every key
         contains at least one dot, so these never collide with the
         undotted run-identity fields a tracker logs beside them.
     """

@@ -15,6 +15,7 @@ Three layers, mirroring the seam's contract:
 import copy
 import json
 import os
+import re
 
 import pytest
 
@@ -25,7 +26,12 @@ from dskit.pipeline.base import (
     TimeSplitConfig,
     TrackingConfig,
 )
-from dskit.pipeline.document import NodeSpec, PipelineDocument, flatten_param_paths
+from dskit.pipeline.document import (
+    _NODE_KEY_OK,
+    NodeSpec,
+    PipelineDocument,
+    flatten_param_paths,
+)
 from dskit.pipeline.driver import _apply_param_override, run_document
 from dskit.pipeline.kinds_search import HpoGrid, _grid, _subsample, register
 from dskit.pipeline.node import Node, NodeContext, NodeKindRegistry
@@ -538,13 +544,15 @@ class TestSpaceKeyGrammarParity:
 
     @staticmethod
     def _leaf_paths(value, prefix=()):
-        """Every path to a leaf, walked NAIVELY — no grammar applied.
+        """Every path to a KNOB leaf, walked NAIVELY — no grammar applied.
 
         Deliberate independent restatement: an assertion sourced from the
         flattener would assert nothing, so this walk descends every
-        non-empty dict and lets the grammar (not the walk) do the
-        filtering."""
-        if isinstance(value, dict) and value:
+        non-empty dict itself and lets the grammar (not the walk) do the
+        filtering — stopping only at a carry (a dict holding a ``$prev``
+        key), which the round-4 ruling makes wiring: one leaf, never a
+        subtree of knobs."""
+        if isinstance(value, dict) and value and "$prev" not in value:
             for name, inner in value.items():
                 yield from TestSpaceKeyGrammarParity._leaf_paths(inner, (*prefix, name))
         else:
@@ -595,6 +603,30 @@ class TestSpaceKeyGrammarParity:
             and not k.startswith(f"{key}.")
             and not key.startswith(f"{k}.")
         }
+
+    def test_node_keys_across_their_whole_alphabet_head_legal_space_keys(self):
+        # Round-4 ruling (finding 6): PARAMS pins the SEGMENT half of the
+        # grammar; the NODE-KEY half rested on an unpinned subset relation
+        # between document._NODE_KEY_OK and _SPACE_KEY_OK's head. Walk the
+        # node-name alphabet's edges — single letter, underscore head,
+        # digit+underscore tail — through BOTH authorities, so either
+        # regex narrowing fails here.
+        for name in ("a", "_x", "z9_"):
+            assert re.match(_NODE_KEY_OK, name), name  # a legal node key…
+            flat = flatten_param_paths(name, {"lr": 0.001, "opt": {"beta": 0.9}})
+            assert len(flat) == 2  # …flattens (a vacuous space proves nothing)…
+            HpoGrid(  # …to keys hpo-grid's own space validation accepts
+                "search",
+                {
+                    "space": {key: [1, 2] for key in flat},
+                    "objective": "$validate.metrics.loss",
+                },
+            )
+        # And a head the document refuses can never head a space key either.
+        assert not re.match(_NODE_KEY_OK, "Q")
+        assert HpoGrid.validate_params(
+            {"space": {"Q.lr": [1]}, "objective": "$validate.metrics.loss"}
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -834,13 +866,15 @@ class TestEndToEndParabola:
         theta_entries = [m for node, m in sink.metrics if node == "theta"]
         assert theta_entries[-1]["value"] == 3.0
 
-    def test_logged_params_are_the_winner_s_not_the_declared_ones(
+    def test_logged_params_are_this_document_s_declared_ones_not_the_winner_s(
         self, tmp_path, registry
     ):
-        # The whole point of logging params: ask a sink for "the runs at
-        # theta=3.0" and get this one. Logging the DECLARED theta would
-        # file the winner's score under a config no pass ever executed —
-        # worse than logging nothing, and the reason this item blocks HPO.
+        # Round-4 ruling (findings 1+2+3 and 5): ONE payload, at run
+        # start, keys AND values following THIS execution's declared
+        # document — every run of one document logs one config, and a
+        # winner promoted by rerunning it as its own document carries the
+        # override in THAT run's payload. The winner found here lives
+        # where it happened: in the search node's outputs and record.
         doc = parabola_document(
             tmp_path,
             tracking=TrackingConfig(
@@ -849,9 +883,10 @@ class TestEndToEndParabola:
         )
         result = run_document(doc, asof=ASOF, registry=registry)
         logged = MemoryTracker.instances[-1].logged_params
+        declared = doc.pipeline["theta"].params["theta"]
         winner = result.outputs["search"]["best_params"]["theta.theta"]
-        assert winner != doc.pipeline["theta"].params["theta"]  # else vacuous
-        assert logged["theta.theta"] == winner
+        assert winner != declared  # else vacuous
+        assert logged["theta.theta"] == declared
         assert logged["src.x"] == doc.pipeline["src"].params["x"]  # untouched node
 
     def test_a_search_node_logs_its_own_declaration_not_a_resolved_score(

@@ -146,15 +146,18 @@ class TestFlattenParamPaths:
             "n.by_day.total": 4,
         }
 
-    def test_a_carry_spec_yields_its_addressable_default(self):
-        # A raw $prev carry only reaches the flattener outside the driver
-        # (which flattens MATERIALIZED params); '$prev' is no segment, and
-        # 'default' is an existing param an override may set — and the
-        # carry rides along whole, so the target it reads is not lost.
+    def test_a_reference_is_a_leaf_logged_as_declared(self):
+        # Round-4 ruling (findings 1+2+3): a reference is wiring, not a
+        # dict of knobs, and logs as its DECLARED form — descent never
+        # enters it. A $prev carry is therefore ONE leaf (its 'default'
+        # gets no key of its own), and a $-ref string rides through as
+        # written; either way the emitted key set is the declared tree.
         carry = {"$prev": "size.final_bankroll", "default": 1000.0}
         assert flatten_param_paths("size", {"bankroll": carry}) == {
-            "size.bankroll": carry,
-            "size.bankroll.default": 1000.0,
+            "size.bankroll": carry
+        }
+        assert flatten_param_paths("clip", {"note": "$events.instruments"}) == {
+            "clip.note": "$events.instruments"
         }
 
     def test_no_params_flatten_to_nothing(self):
