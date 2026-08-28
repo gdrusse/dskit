@@ -143,8 +143,21 @@ DEFAULT_LOSS = "torch.nn.functional:mse_loss"
 #: The objective's declared knob pair — named ONCE so the plan-time gate,
 #: the ignored-objective check, and the fit's doorway all interrogate the
 #: same two spellings, and a third spelling cannot appear in one of them
-#: silently.
+#: silently. They are the NODE's knobs: read from ``self.params`` at the
+#: fit and THREADED into the adapter as arguments, never re-read from the
+#: adapter's own merged params (see ``build_loss``).
 _LOSS_KNOBS = ("loss", "loss_params")
+#: The hook an ADAPTER applies the node's declared objective THROUGH. The
+#: promise ``applies_loss`` is a claim about this hook, so both the reset
+#: in :class:`_LossPromise` and the refusal in ``_loss_ignored_problem``
+#: name it from here — the adapter doorway is STRUCTURAL, and an adapter
+#: carrying no ``build_loss`` at all is a shape this pack must still fit.
+_LOSS_DOORWAY = "build_loss"
+#: Every implementation the declared objective flows through: the
+#: ``loss()`` a batch enters, and the doorway that resolves the callable it
+#: applies. The promise is keyed on the PAIR because replacing EITHER ends
+#: the flow the promise describes.
+_LOSS_FLOW = ("loss", _LOSS_DOORWAY)
 DEFAULT_EPOCHS = 5
 DEFAULT_LR = 0.01
 DEFAULT_LABEL = "label"
@@ -286,7 +299,7 @@ def _loss_problems(params):
     return problems
 
 
-def _loss_ignored_problem(subject, params):
+def _loss_ignored_problem(subject, params, doorway=None):
     """Why a declared ``loss``/``loss_params`` would never be applied by
     ``subject``, or None.
 
@@ -295,16 +308,43 @@ def _loss_ignored_problem(subject, params):
     way :func:`~dskit.pipeline.base.abstract_class_problem` is: the node
     ACCEPTS the knob, a ``loss()`` APPLIES it, and one that computes its
     own objective would silently train a different model than the document
-    declares. ``subject`` is whoever answers ``loss()`` — the adapter, or
-    the node itself when a family overrode ``loss`` — as a class (plan) or
-    an instance (run); ``None`` means this machine cannot tell (the
-    library may rightly be absent, and run settles it).
+    declares.
+
+    Parameters
+    ----------
+    subject : type or object or None
+        Whoever answers ``loss()`` — the adapter, or the node itself when a
+        family overrode ``loss`` — as a class (plan) or an instance (run).
+        ``None`` means this machine cannot tell (the library may rightly be
+        absent, and run settles it).
+    params : dict
+        The node's params, read for the declared knobs.
+    doorway : str or None
+        The hook this subject's promise RESTS on, or ``None`` when it rests
+        on nothing further. An adapter applies the knob through
+        :data:`_LOSS_DOORWAY`, so one promising ``applies_loss`` without
+        that hook has promised a path it does not have and is denied — the
+        adapter doorway is STRUCTURAL (``requires=("prepare",)``), so a
+        duck-typed adapter written before the knob existed reaches here
+        carrying neither name and must be answered, not crashed into. A
+        node passes ``None``: its promise is to DELEGATE, and the adapter
+        it delegates to is asked in its own right.
+
+    Returns
+    -------
+    str or None
+        The one refusal sentence, or ``None`` when the knob is undeclared
+        or the subject genuinely applies it.
     """
     declared = [f"{k} {params[k]!r}" for k in _LOSS_KNOBS if params.get(k)]
-    # ``getattr`` because the adapter doorway is STRUCTURAL (it requires
-    # ``prepare``, not a base class): a class that never heard of the flag
-    # has not promised anything, which is the deny side of default-deny.
-    if not declared or subject is None or getattr(subject, "applies_loss", False):
+    # ``getattr`` twice, because both names are STRUCTURAL here: a class
+    # that never heard of the flag — or that claims it without the doorway
+    # that would honour it — has promised nothing this machine can hold it
+    # to, which is the deny side of default-deny.
+    applies = getattr(subject, "applies_loss", False) and (
+        doorway is None or hasattr(subject, doorway)
+    )
+    if not declared or subject is None or applies:
         return None
     name = subject.__name__ if isinstance(subject, type) else type(subject).__name__
     return (
@@ -315,47 +355,56 @@ def _loss_ignored_problem(subject, params):
     )
 
 
+def _loss_chain(cls):
+    """The implementations ``cls`` resolves for the whole objective flow."""
+    return tuple(getattr(cls, hook, None) for hook in _LOSS_FLOW)
+
+
 class _LossPromise:
-    """Declares whether this class's ``loss()`` applies the node's ``loss``.
+    """Declares whether this class APPLIES the node's declared ``loss``.
 
     Mixed into both sides of the objective — the adapter that implements
     ``loss()`` and the node that may override it — because the promise is
     a property of that IMPLEMENTATION, not of a class name: a subclass
     replacing ``loss()`` inherits an ``applies_loss`` it never earned, and
     the seam would then approve an objective nothing applies. So a class
-    body that declares ``applies_loss`` BINDS the promise to the ``loss``
-    implementation visible there, and any subclass whose RESOLVED ``loss``
-    is a different function — its own body or a co-base mixin, "one mixin
-    for the pair" being this pack's own documented shape — loses the
-    promise unless it declares again. Default-deny applied to inheritance,
-    keyed to what the MRO will actually run, never to ``cls.__dict__``.
-    Overriding neither inherits a promise still kept by the inherited
-    implementation.
+    body that declares ``applies_loss`` BINDS the promise to the
+    implementations visible there, and any subclass whose RESOLVED ones
+    differ — its own body or a co-base mixin, "one mixin for the pair"
+    being this pack's own documented shape — loses the promise unless it
+    declares again. Default-deny applied to inheritance, keyed to what the
+    MRO will actually run, never to ``cls.__dict__``. Overriding neither
+    inherits a promise still kept by the inherited implementation.
+
+    The witness is :data:`_LOSS_FLOW` — BOTH hooks, because the objective
+    reaches a batch through both and a promise about one of them is only
+    half a promise. ``loss()`` is where a batch enters; ``build_loss`` is
+    where the declared callable is resolved, and a class that replaces the
+    DOORWAY changes which objective is applied just as surely as one that
+    replaces ``loss()``. Keying on ``loss`` alone let exactly that subclass
+    keep an unearned promise, and plan then certified an objective the fit
+    never applied.
 
     Attributes
     ----------
     applies_loss : bool
         Class-level, default ``False``. See :class:`TorchAdapter`.
-    _loss_promised_for : callable or None
-        Class-level. The ``loss`` implementation the standing promise was
-        declared FOR — the witness the reset compares against.
+    _loss_promised_for : tuple
+        Class-level. The :data:`_LOSS_FLOW` implementations the standing
+        promise was declared FOR — the witness the reset compares against.
     """
 
     applies_loss = False
-    _loss_promised_for = None
+    _loss_promised_for = ()
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         if "applies_loss" in cls.__dict__:
-            # A fresh declaration: bind it to the implementation this
-            # class resolves NOW (``getattr`` — a promise with no loss()
+            # A fresh declaration: bind it to the implementations this
+            # class resolves NOW (``getattr`` — a promise with no hook
             # anywhere binds to nothing and denies every real one).
-            cls._loss_promised_for = (
-                getattr(cls, "loss", None) if cls.applies_loss else None
-            )
-        elif cls.applies_loss and getattr(cls, "loss", None) is not (
-            cls._loss_promised_for
-        ):
+            cls._loss_promised_for = _loss_chain(cls) if cls.applies_loss else ()
+        elif cls.applies_loss and _loss_chain(cls) != cls._loss_promised_for:
             cls.applies_loss = False
 
 
@@ -513,9 +562,12 @@ class TorchAdapter(_LossPromise, ABC):
         ``features`` has its flag: a document that declares ``loss`` for an
         adapter which never made that promise is REFUSED by name — at plan
         and again at the fit — because an ignored objective trains a
-        different model in silence. The promise describes THIS class's
-        :meth:`loss`, so a subclass that overrides ``loss`` must repeat the
-        declaration to keep it.
+        different model in silence. The promise describes the FLOW, so a
+        subclass that overrides :meth:`loss` OR :meth:`build_loss` must
+        repeat the declaration to keep it, and an adapter carrying no
+        :meth:`build_loss` at all (the doorway is structural — a
+        duck-typed adapter never subclassed this ABC) is answered as
+        ``False`` rather than believed.
     _PARAMS : tuple of str
         Class-level, default ``()``. The adapter's OWN declarable knobs,
         which :meth:`validate_params` enforces default-deny at plan time
@@ -607,7 +659,7 @@ class TorchAdapter(_LossPromise, ABC):
         """A scalar tensor to backpropagate."""
         raise NotImplementedError
 
-    def build_loss(self, device=None):
+    def build_loss(self, device=None, loss=None, loss_params=None):
         """The objective callable this adapter's :meth:`loss` applies.
 
         The ``loss`` knob's resolution doorway, and the reason the knob can
@@ -633,15 +685,29 @@ class TorchAdapter(_LossPromise, ABC):
         Resolution is memoized on the instance, so the training loop pays
         the import lookup once per fit rather than once per batch.
 
+        Every knob here is THREADED IN, and none is read from
+        ``self.params``. That dict is the node's params with the document's
+        ``adapter_params`` layered ON TOP, so an adapter whose own
+        ``_PARAMS`` includes ``loss`` would SHADOW the node's declared,
+        plan-validated objective: plan certifies one callable and the fit
+        applies another, silently, which is the whole defect this knob
+        exists to prevent. The node's params are the one read
+        (:meth:`TorchTrain.run`), exactly as they are for ``device``.
+
         Parameters
         ----------
         device : str or None
-            Where the fit runs — THREADED from the node's single ``device``
-            read (:meth:`TorchTrain.run`), exactly as every batch's move
-            is, and never re-read from this adapter's own params, where a
-            same-named adapter knob could point somewhere the batches never
-            go. ``None`` (the default, and every direct call outside a
-            fit) moves nothing.
+            Where the fit runs — from the node's single ``device`` read
+            (:meth:`TorchTrain.run`), exactly as every batch's move is.
+            ``None`` (the default, and every direct call outside a fit)
+            moves nothing.
+        loss : str or None
+            The declared objective's ``pkg.module:Callable`` import path,
+            from the node's ``loss`` knob. ``None`` (the default) resolves
+            :data:`DEFAULT_LOSS`.
+        loss_params : dict or None
+            The objective's own kwargs, from the node's ``loss_params``
+            knob. ``None`` or ``{}`` binds nothing.
 
         Returns
         -------
@@ -667,11 +733,9 @@ class TorchAdapter(_LossPromise, ABC):
             refused by name here rather than as an obscure error mid-fit.
         """
         if self._loss_fn is None:
-            path = self.params.get("loss") or DEFAULT_LOSS
+            path = loss or DEFAULT_LOSS
             resolved = import_library_class(path, _LOSS_SUBJECT)
-            built = self._construct_loss(
-                resolved, path, dict(self.params.get("loss_params") or {})
-            )
+            built = self._construct_loss(resolved, path, dict(loss_params or {}))
             if device:
                 import torch
 
@@ -1053,11 +1117,50 @@ class _TorchModel(_LossPromise, Node):
                 "build_adapter have drifted — override them together, or state "
                 "the identity once in _ADAPTER"
             )
-        for subject in (self, adapter):
-            problem = _loss_ignored_problem(subject, params)
+        # The node's promise is to DELEGATE, the adapter's is to apply the
+        # knob through its doorway — so only the adapter is held to having
+        # one. Same pair, same order, as ``TorchTrain.validate_params``.
+        for problem in (
+            _loss_ignored_problem(self, params),
+            _loss_ignored_problem(adapter, params, doorway=_LOSS_DOORWAY),
+        ):
             if problem:
                 raise ValueError(problem)
         return adapter
+
+    def _thread_loss(self, adapter, device=None):
+        """Resolve ``adapter``'s objective against THIS node's params read.
+
+        The one place the ``loss``/``loss_params`` knobs are read for a
+        fit, threaded in as arguments so the adapter never re-reads them
+        from its own merged params — where ``adapter_params`` could shadow
+        the plan-validated objective. Called before the first batch, so a
+        bad path is refused by name up front and every later ``loss()``
+        gets the memoized callable.
+
+        Parameters
+        ----------
+        adapter : object
+            Whatever :meth:`_adapter_for_fit` returned.
+        device : str or None
+            The node's single device read, passed straight through.
+
+        Returns
+        -------
+        callable or None
+            The resolved objective, or ``None`` for an adapter with no
+            :data:`_LOSS_DOORWAY` — a duck-typed adapter predating the
+            knob, whose own ``loss()`` applies and whose fit is therefore
+            byte-identical to what it always was. Reaching here with a
+            DECLARED objective is impossible: :meth:`_adapter_for_fit`
+            refuses that adapter by name first.
+        """
+        doorway = getattr(adapter, _LOSS_DOORWAY, None)
+        if doorway is None:
+            return None
+        return doorway(
+            device, self.params.get("loss"), self.params.get("loss_params")
+        )
 
     def build_optimizer(self, module, params):
         """The optimizer for this fit — ``torch.optim.SGD`` at ``lr`` unless
@@ -1419,10 +1522,16 @@ class TorchTrain(_TorchModel):
         # (it may have overridden ``loss``) and the adapter it will build.
         # Only worth interrogating when an objective knob is declared.
         if any(params.get(k) for k in _LOSS_KNOBS):
-            for subject in (cls, cls._loss_adapter(params)):
-                ignored = _loss_ignored_problem(subject, params)
-                if ignored:
-                    problems.append(ignored)
+            problems.extend(
+                p
+                for p in (
+                    _loss_ignored_problem(cls, params),
+                    _loss_ignored_problem(
+                        cls._loss_adapter(params), params, doorway=_LOSS_DOORWAY
+                    ),
+                )
+                if p
+            )
         problems.extend(
             _feature_problems(params, required=cls._features_required(params))
         )
@@ -1479,7 +1588,13 @@ class TorchTrain(_TorchModel):
             adapter-identity drift; the adapter's own ``loss`` then refuses
             an unusable declared ``loss`` path by name (``build_loss``).
         """
-        adapter = self._adapter or self._adapter_for_fit(self.params)
+        adapter = self._adapter
+        if adapter is None:
+            # A direct call, outside a fit: build the adapter this node
+            # would fit with and thread the SAME params read ``run`` does,
+            # so a declared objective means the same thing either way.
+            adapter = self._adapter_for_fit(self.params)
+            self._thread_loss(adapter)
         return adapter.loss(module, batch)
 
     def run(self, ctx, inputs):
@@ -1567,12 +1682,13 @@ class TorchTrain(_TorchModel):
         if device:
             module.to(device)
             self.log.info("training on device %r", device)
-        # The objective resolves HERE, against the fit's ONE device read —
-        # the same read that just moved the module and moves every batch
-        # below — never against the adapter's own params, where a
-        # same-named adapter knob could point somewhere the batches never
-        # go. Memoized: every later loss() call gets this object.
-        adapter.build_loss(device)
+        # The objective resolves HERE, against this node's OWN reads — the
+        # declared loss knobs and the same device read that just moved the
+        # module and moves every batch below — never against the adapter's
+        # params, where a same-named adapter knob could name another
+        # objective or a device the batches never reach. Memoized: every
+        # later loss() call gets this object.
+        self._thread_loss(adapter, device)
         optimizer = self.build_optimizer(module, self.params)
         order_gen = torch.Generator().manual_seed(seed)  # pins the shuffle
         curve = TrainingCurve(

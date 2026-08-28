@@ -607,10 +607,13 @@ def test_the_default_objective_is_still_mse():
 
 
 def test_a_declared_loss_resolves_to_the_named_callable():
-    adapter = RowVectorAdapter(
-        {**FLAT_PARAMS, "loss": "torch.nn.functional:smooth_l1_loss"}
+    """The declared path arrives as the ARGUMENT the node threads from its
+    own params read (ruling 1) — never out of the adapter's params dict."""
+    adapter = RowVectorAdapter(FLAT_PARAMS)
+    assert (
+        adapter.build_loss(loss="torch.nn.functional:smooth_l1_loss")
+        is torch.nn.functional.smooth_l1_loss
     )
-    assert adapter.build_loss() is torch.nn.functional.smooth_l1_loss
 
 
 @pytest.mark.parametrize(
@@ -742,8 +745,8 @@ def test_a_module_loss_class_is_instantiated_like_an_optimizer(tmp_path):
     """``torch.nn:HuberLoss`` is the spelling a torch user reaches for, and
     the grammar says "name me a CLASS" — so a resolved class is CONSTRUCTED
     here exactly as ``optimizer`` is, never called with the batch as its
-    constructor kwargs."""
-    fn = RowVectorAdapter({**FLAT_PARAMS, "loss": "torch.nn:HuberLoss"}).build_loss()
+    constructor kwargs. The path is the threaded argument (ruling 1)."""
+    fn = RowVectorAdapter(FLAT_PARAMS).build_loss(loss="torch.nn:HuberLoss")
     assert isinstance(fn, torch.nn.HuberLoss)
     value = fn(torch.tensor([1.0, 2.0]), torch.tensor([1.0, 3.0]))
     assert value.ndim == 0
@@ -765,9 +768,10 @@ class NeedsAnArgumentLoss:
 
 
 def test_a_loss_class_that_cannot_be_constructed_is_refused_by_name():
-    adapter = RowVectorAdapter({**FLAT_PARAMS, "loss": f"{__name__}:NeedsAnArgumentLoss"})
     with pytest.raises(ValueError, match="NeedsAnArgumentLoss"):
-        adapter.build_loss()
+        RowVectorAdapter(FLAT_PARAMS).build_loss(
+            loss=f"{__name__}:NeedsAnArgumentLoss"
+        )
 
 
 class NotCallableWhenBuilt:
@@ -780,11 +784,10 @@ def test_a_loss_whose_instances_are_not_callable_is_refused_by_name():
     """The doorway promises a callable; a class that constructs into a
     non-callable must be refused HERE, by name, not as a ``TypeError``
     inside the batch loop."""
-    adapter = RowVectorAdapter(
-        {**FLAT_PARAMS, "loss": f"{__name__}:NotCallableWhenBuilt"}
-    )
     with pytest.raises(ValueError, match="NotCallableWhenBuilt"):
-        adapter.build_loss()
+        RowVectorAdapter(FLAT_PARAMS).build_loss(
+            loss=f"{__name__}:NotCallableWhenBuilt"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -799,10 +802,11 @@ def test_a_loss_whose_instances_are_not_callable_is_refused_by_name():
 
 def test_a_loss_class_carries_its_declared_params():
     """A resolved CLASS is constructed with ``loss_params`` as kwargs —
-    the same resolution ``optimizer``/``optimizer_params`` already has."""
-    fn = RowVectorAdapter(
-        {**FLAT_PARAMS, "loss": "torch.nn:HuberLoss", "loss_params": {"delta": 0.05}}
-    ).build_loss()
+    the same resolution ``optimizer``/``optimizer_params`` already has;
+    both knobs arrive as the node-threaded arguments (ruling 1)."""
+    fn = RowVectorAdapter(FLAT_PARAMS).build_loss(
+        loss="torch.nn:HuberLoss", loss_params={"delta": 0.05}
+    )
     assert isinstance(fn, torch.nn.HuberLoss)
     assert fn.delta == 0.05
 
@@ -810,13 +814,9 @@ def test_a_loss_class_carries_its_declared_params():
 def test_a_functional_loss_carries_its_declared_params():
     """A resolved FUNCTION carries ``loss_params`` as call-time kwargs, so
     ``torch.nn.functional:huber_loss`` can declare its ``delta`` too."""
-    fn = RowVectorAdapter(
-        {
-            **FLAT_PARAMS,
-            "loss": "torch.nn.functional:huber_loss",
-            "loss_params": {"delta": 0.05},
-        }
-    ).build_loss()
+    fn = RowVectorAdapter(FLAT_PARAMS).build_loss(
+        loss="torch.nn.functional:huber_loss", loss_params={"delta": 0.05}
+    )
     # Residuals BETWEEN the two deltas (0.05 < |r| < 1.0): linear under the
     # declared knob, quadratic under the library default — the regime where
     # an unreachable ``delta`` silently trains the MSE model.
@@ -828,9 +828,10 @@ def test_a_functional_loss_carries_its_declared_params():
 
 def test_an_empty_loss_params_leaves_the_default_untouched():
     """No kwargs means the very same callable — the default path stays
-    byte-identical whether ``loss_params`` is absent or ``{}``."""
-    adapter = RowVectorAdapter({**FLAT_PARAMS, "loss_params": {}})
-    assert adapter.build_loss() is torch.nn.functional.mse_loss
+    byte-identical whether ``loss_params`` is absent or ``{}`` (threaded as
+    the node's argument, ruling 1)."""
+    adapter = RowVectorAdapter(FLAT_PARAMS)
+    assert adapter.build_loss(loss_params={}) is torch.nn.functional.mse_loss
 
 
 def test_loss_params_are_accepted_beside_loss_at_plan():
@@ -856,24 +857,20 @@ def test_loss_params_are_refused_by_name_at_plan(params, needle):
 
 def test_a_loss_class_that_rejects_its_params_is_refused_by_name():
     """A mis-typed loss knob is caught by the loss, named as the knob the
-    author must edit — ``optimizer_params``'s own refusal, mirrored."""
-    adapter = RowVectorAdapter(
-        {**FLAT_PARAMS, "loss": "torch.nn:HuberLoss", "loss_params": {"nope": 1}}
-    )
+    author must edit — ``optimizer_params``'s own refusal, mirrored. Both
+    knobs arrive as the node-threaded arguments (ruling 1)."""
     with pytest.raises(ValueError, match="loss_params"):
-        adapter.build_loss()
+        RowVectorAdapter(FLAT_PARAMS).build_loss(
+            loss="torch.nn:HuberLoss", loss_params={"nope": 1}
+        )
 
 
 def test_a_loss_class_needing_arguments_takes_them_from_loss_params():
     """The constructor-argument refusal now has a config-only exit: declare
     the arguments in ``loss_params`` instead of writing Python."""
-    fn = RowVectorAdapter(
-        {
-            **FLAT_PARAMS,
-            "loss": f"{__name__}:NeedsAnArgumentLoss",
-            "loss_params": {"weight": 2.0},
-        }
-    ).build_loss()
+    fn = RowVectorAdapter(FLAT_PARAMS).build_loss(
+        loss=f"{__name__}:NeedsAnArgumentLoss", loss_params={"weight": 2.0}
+    )
     assert fn.weight == 2.0
 
 
@@ -1046,9 +1043,10 @@ def test_a_stateful_loss_class_is_moved_to_the_fits_device():
     module's own state must ride along, or a stateful loss dies mid-fit
     with a raw cross-device error — the obscure failure ``build_loss``
     exists to prevent. The device arrives as an ARGUMENT, threaded from
-    the node's one device read exactly as every batch's move is."""
-    adapter = RowVectorAdapter({**FLAT_PARAMS, "loss": ref_to(BufferedLoss)})
-    assert adapter.build_loss("meta").w.device.type == "meta"
+    the node's one device read exactly as every batch's move is — and so
+    does the objective itself (ruling 1)."""
+    adapter = RowVectorAdapter(FLAT_PARAMS)
+    assert adapter.build_loss("meta", loss=ref_to(BufferedLoss)).w.device.type == "meta"
 
 
 def test_the_loss_device_is_the_nodes_read_not_the_adapters_params():
@@ -1056,10 +1054,8 @@ def test_the_loss_device_is_the_nodes_read_not_the_adapters_params():
     knob passed through, or an adapter's OWN ``_PARAMS`` knob layered on
     top) — ``build_loss`` must never read it, or the loss lands somewhere
     the batches never go."""
-    adapter = RowVectorAdapter(
-        {**FLAT_PARAMS, "device": "meta", "loss": ref_to(BufferedLoss)}
-    )
-    assert adapter.build_loss().w.device.type == "cpu"
+    adapter = RowVectorAdapter({**FLAT_PARAMS, "device": "meta"})
+    assert adapter.build_loss(loss=ref_to(BufferedLoss)).w.device.type == "cpu"
 
 
 def test_a_functional_loss_ignores_the_device_knob():
@@ -1080,13 +1076,19 @@ class DeviceKnobAdapter(RowVectorAdapter):
 
 class DeviceRecordingAdapter(RowVectorAdapter):
     """Records every ``device`` its ``build_loss`` receives — the witness
-    that the fit THREADS its one device read, before the first batch."""
+    that the fit THREADS its one device read, before the first batch.
 
+    It replaces the doorway, so the inherited promise ends there (ruling
+    2); the declaration is repeated because this override genuinely
+    forwards to the implementation that applies the knob.
+    """
+
+    applies_loss = True
     seen = []
 
-    def build_loss(self, device=None):
+    def build_loss(self, device=None, loss=None, loss_params=None):
         type(self).seen.append(device)
-        return super().build_loss(device)
+        return super().build_loss(device, loss, loss_params)
 
 
 def test_the_fit_threads_its_device_read_into_the_loss(tmp_path):
@@ -1219,3 +1221,301 @@ def test_import_library_class_requires_the_named_methods():
         import_library_class(
             "collections.OrderedDict", "torch module", requires=("forward",)
         )
+
+
+# ---------------------------------------------------------------------------
+# RULING 1 — the objective is the NODE's read, never the adapter's params.
+# ``build_adapter`` layers ``adapter_params`` ON TOP of the node's params,
+# so an adapter whose own ``_PARAMS`` carries ``loss`` would SHADOW the
+# declared, plan-validated objective: plan certifies one callable and the
+# fit applies another, silently. The knobs are threaded in as ARGUMENTS,
+# exactly the way ``device`` already is.
+# ---------------------------------------------------------------------------
+
+
+#: Every call the ADAPTER-side sentinel saw. It must stay EMPTY: an
+#: objective sitting in ``adapter_params`` is not the node's declared one,
+#: and nothing may reach a backward pass through it.
+SHADOWED_LOSS_CALLS = []
+
+
+def shadowing_mse(prediction, target):
+    """The objective an adapter's OWN ``loss`` knob would name — recorded,
+    so "the adapter's params were never read" is an assertion about the
+    training step rather than about a dict."""
+    SHADOWED_LOSS_CALLS.append(tuple(prediction.reshape(-1).shape))
+    return torch.nn.functional.mse_loss(prediction, target)
+
+
+class ShadowAdapter(RowVectorAdapter):
+    """An adapter with its OWN ``loss`` knob — legitimate (``_PARAMS`` is
+    the adapter's own declarable surface) and layered OVER the node's
+    params by the declared doorway, so an objective read from the ADAPTER's
+    params would be this knob's and never the document's."""
+
+    _PARAMS = ("loss", "loss_params")
+
+
+class LossRecordingAdapter(RowVectorAdapter):
+    """Records every ``(loss, loss_params)`` its ``build_loss`` receives —
+    the witness that the fit THREADS the node's own read, before the first
+    batch. Re-declares the promise beside the doorway it overrides
+    (ruling 2), which it genuinely forwards."""
+
+    applies_loss = True
+    seen = []
+
+    def build_loss(self, device=None, loss=None, loss_params=None):
+        type(self).seen.append((loss, loss_params))
+        return super().build_loss(device, loss, loss_params)
+
+
+def test_the_objective_is_never_read_from_the_adapters_params():
+    """``build_loss`` must not reach into ``self.params`` for either knob:
+    the adapter's dict is the node's params with ``adapter_params`` layered
+    on top, which is precisely where a shadowing value lands."""
+    shadowed = RowVectorAdapter(
+        {**FLAT_PARAMS, "loss": "torch.nn:HuberLoss", "loss_params": {"delta": 0.05}}
+    )
+    assert shadowed.build_loss() is torch.nn.functional.mse_loss
+    # And the second knob alone: the node's argument decides delta, so the
+    # adapter's own block cannot reach a constructed objective either.
+    blocked = RowVectorAdapter({**FLAT_PARAMS, "loss_params": {"delta": 0.05}})
+    assert blocked.build_loss(loss="torch.nn:HuberLoss").delta == 1.0
+
+
+def test_the_fit_threads_its_own_loss_read_into_the_doorway(tmp_path):
+    """The node's ONE read of ``loss``/``loss_params`` is what resolves the
+    objective — passed as arguments before the first batch, so there is no
+    second read to drift."""
+    LossRecordingAdapter.seen.clear()
+    DeclaredTrain(
+        "k",
+        {
+            **DECLARED_FLAT,
+            "adapter": ref_to(LossRecordingAdapter),
+            "loss": "torch.nn.functional:huber_loss",
+            "loss_params": {"delta": 0.05},
+        },
+        mode="train",
+    ).run(ctx(tmp_path), {"rows": flat_rows()})
+    assert LossRecordingAdapter.seen
+    assert LossRecordingAdapter.seen[0] == (
+        "torch.nn.functional:huber_loss",
+        {"delta": 0.05},
+    )
+
+
+def test_an_adapters_own_loss_knob_cannot_shadow_the_declared_objective(tmp_path):
+    """The repro, end to end: the node declares one objective, the adapter's
+    ``adapter_params`` declares another, and PLAN certifies the node's. The
+    fit must take every backward pass on the certified one — an adapter
+    knob that quietly wins is a run training a model the document never
+    declared."""
+    LOSS_CALLS.clear()
+    SHADOWED_LOSS_CALLS.clear()
+    params = {
+        **DECLARED_FLAT,
+        "adapter": ref_to(ShadowAdapter),
+        "adapter_params": {"loss": f"{__name__}:shadowing_mse"},
+        "loss": f"{__name__}:recording_huber",
+    }
+    assert DeclaredTrain.validate_params(params) == []
+    DeclaredTrain("k", params, mode="train").run(ctx(tmp_path), {"rows": flat_rows()})
+    assert LOSS_CALLS, "the NODE's declared objective never reached the fit"
+    assert SHADOWED_LOSS_CALLS == [], "the adapter's own knob shadowed the document"
+
+
+def test_an_adapters_own_loss_params_cannot_shadow_the_declared_block(tmp_path):
+    """Same shadow, second knob: ``loss_params`` in ``adapter_params`` must
+    not reach the objective either, or Huber's tail cutoff is decided by
+    the adapter rather than the plan-validated document."""
+    PARAM_LOSS_CALLS.clear()
+    DeclaredTrain(
+        "k",
+        {
+            **DECLARED_FLAT,
+            "adapter": ref_to(ShadowAdapter),
+            "adapter_params": {"loss_params": {"delta": 9.0}},
+            "loss": f"{__name__}:recording_param_huber",
+            "loss_params": {"delta": 0.05},
+        },
+        mode="train",
+    ).run(ctx(tmp_path), {"rows": flat_rows()})
+    assert PARAM_LOSS_CALLS, "the declared loss was never called by the fit"
+    assert all(delta == 0.05 for delta in PARAM_LOSS_CALLS)
+
+
+# ---------------------------------------------------------------------------
+# RULING 2 — the promise keys on the hook the objective actually FLOWS
+# THROUGH. ``loss()`` is where a batch enters; ``build_loss`` is where the
+# declared callable is resolved. A subclass replacing EITHER without
+# repeating the declaration keeps an ``applies_loss`` it never earned, and
+# plan then certifies an objective the fit never applies.
+# ---------------------------------------------------------------------------
+
+
+class HardcodedBuildLossAdapter(RowVectorAdapter):
+    """Replaces the DOORWAY rather than ``loss()``. Its ``loss()`` is the
+    inherited one — it still calls ``build_loss`` — and this ``build_loss``
+    answers with a hardcoded objective, so the document's declared callable
+    never reaches a batch while ``applies_loss`` says it does."""
+
+    def build_loss(self, device=None, loss=None, loss_params=None):
+        return torch.nn.functional.mse_loss
+
+
+def test_an_adapter_overriding_the_doorway_loses_the_inherited_promise():
+    """``applies_loss`` describes the whole flow, so it cannot be inherited
+    past a replaced ``build_loss`` any more than past a replaced ``loss``
+    (ruling 2)."""
+    assert HardcodedBuildLossAdapter.applies_loss is False
+    # The other side: an override that FORWARDS may re-declare and keep it.
+    assert LossRecordingAdapter.applies_loss is True
+    # And a subclass that touched neither hook keeps what it inherited.
+    assert WidthAdapter.applies_loss is True
+
+
+def test_an_adapter_that_hardcodes_the_doorway_refuses_the_knob(tmp_path):
+    """Refused at plan and again at the fit, in the pack's one sentence —
+    and the declared sentinel never runs. Without the re-key, plan returns
+    NO problems for exactly this class and the fit trains under MSE."""
+    params = {
+        **DECLARED_FLAT,
+        "adapter": ref_to(HardcodedBuildLossAdapter),
+        "loss": f"{__name__}:recording_huber",
+    }
+    problems = DeclaredTrain.validate_params(params)
+    assert any(
+        "applies_loss" in p and "HardcodedBuildLossAdapter" in p for p in problems
+    ), problems
+    LOSS_CALLS.clear()
+    with pytest.raises(ValueError, match="applies_loss"):
+        DeclaredTrain("k", params, mode="train").run(
+            ctx(tmp_path), {"rows": flat_rows()}
+        )
+    assert LOSS_CALLS == []
+
+
+# ---------------------------------------------------------------------------
+# RULING 3 — the declared-adapter doorway is STRUCTURAL
+# (``requires=("prepare",)``), so an adapter written before the knob
+# existed carries no ``build_loss`` at all. It must keep fitting exactly as
+# it did, and a declared objective it cannot apply must be refused BY NAME
+# rather than crashing with a bare AttributeError.
+# ---------------------------------------------------------------------------
+
+
+#: Every call the duck-typed adapter's OWN objective saw.
+DUCK_LOSS_CALLS = []
+
+
+class DuckAdapter:
+    """A pre-B2 adapter: it satisfies the STRUCTURAL doorway and nothing
+    else — no :class:`TorchAdapter` base, no ``applies_loss``, no
+    ``build_loss``. The shape a project could legitimately have written
+    before the ``loss`` knob existed."""
+
+    requires_features = True
+
+    def __init__(self, params=None):
+        self.params = dict(params or {})
+
+    def prepare(self, rows, params, *, where):
+        xs = [[float(r["x1"]), float(r["x2"])] for r in rows]
+        ys = [float(r["y"]) for r in rows]
+        return TorchBatches(
+            len(xs),
+            (
+                torch.tensor(xs, dtype=torch.float32),
+                torch.tensor(ys, dtype=torch.float32),
+            ),
+        )
+
+    def module_params(self, batches, params):
+        return {}
+
+    def select(self, batches, index):
+        x, y = batches.payload
+        return (x, y) if index is None else (x[index], y[index])
+
+    def to_device(self, batch, device):
+        return batch
+
+    def loss(self, module, batch):
+        x, y = batch
+        DUCK_LOSS_CALLS.append(tuple(x.shape))
+        return torch.nn.functional.mse_loss(module(x).reshape(-1), y)
+
+    def beliefs(self, module, batch):
+        return None, None
+
+    def fitted(self, module, train_batches, val_batches):
+        return None
+
+    def save_state(self, prefix):
+        return {}
+
+    def load_state(self, prefix, recorded):
+        return None
+
+    def predict(self, module, record):
+        with torch.no_grad():
+            x = torch.tensor([[float(record["x1"]), float(record["x2"])]])
+            return float(module(x).reshape(-1)[0])
+
+
+class LyingDuckAdapter(DuckAdapter):
+    """A duck that PROMISES the knob it has no doorway to apply. The
+    promise names ``build_loss``; with no such hook there is no application
+    path, so the flag is denied rather than believed (ruling 3)."""
+
+    applies_loss = True
+
+
+def test_a_duck_typed_adapter_with_no_declared_loss_still_fits(tmp_path):
+    """No ``build_loss`` and no declared objective: the adapter's own
+    ``loss()`` applies and the fit is what it was before the knob existed.
+    Before ruling 3 this died on a bare ``AttributeError``."""
+    DUCK_LOSS_CALLS.clear()
+    out = DeclaredTrain(
+        "k", {**DECLARED_FLAT, "adapter": ref_to(DuckAdapter)}, mode="train"
+    ).run(ctx(tmp_path), {"rows": flat_rows()})
+    assert DUCK_LOSS_CALLS, "the adapter's own objective never ran"
+    assert out["metrics"]["final_loss"] >= 0.0
+
+
+def test_a_duck_typed_adapter_refuses_a_declared_loss_by_name(tmp_path):
+    """The other way: no doorway means no way to apply a declared
+    objective, so the knob is refused BY NAME — at plan and at the fit —
+    and neither objective is ever called."""
+    params = {
+        **DECLARED_FLAT,
+        "adapter": ref_to(DuckAdapter),
+        "loss": f"{__name__}:recording_huber",
+    }
+    problems = DeclaredTrain.validate_params(params)
+    assert any("applies_loss" in p and "DuckAdapter" in p for p in problems), problems
+    LOSS_CALLS.clear()
+    DUCK_LOSS_CALLS.clear()
+    with pytest.raises(ValueError, match="applies_loss"):
+        DeclaredTrain("k", params, mode="train").run(
+            ctx(tmp_path), {"rows": flat_rows()}
+        )
+    assert LOSS_CALLS == [] and DUCK_LOSS_CALLS == []
+
+
+def test_a_promise_without_the_doorway_is_denied():
+    """``applies_loss`` is a promise ABOUT ``build_loss``; a class carrying
+    the flag without the hook has promised a path it does not have, and
+    default-deny answers it the same way as no flag at all."""
+    problems = DeclaredTrain.validate_params(
+        {
+            **DECLARED_FLAT,
+            "adapter": ref_to(LyingDuckAdapter),
+            "loss": f"{__name__}:recording_huber",
+        }
+    )
+    assert any(
+        "applies_loss" in p and "LyingDuckAdapter" in p for p in problems
+    ), problems
