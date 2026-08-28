@@ -691,6 +691,38 @@ def test_predict_refuses_mode_train_and_missing_references(tmp_path):
     refuses(empty, tmp_path, "empty artifact reference")
 
 
+def test_the_recorded_class_refs_and_build_fns_are_unmoved():
+    """The sidecar records ``_class_ref()`` and matches ``build_module`` BY
+    IDENTITY through the MRO, so a rename or a relocated mixin method
+    orphans every existing ``.pt``. Re-parenting onto TrainableNode
+    (ADR-0038) must move neither — and only a load of an artifact written
+    before the change would notice, which no test performs."""
+    assert LinearRegressor._class_ref() == "dskit.pipeline.libs.torch:LinearRegressor"
+    assert LinearPredictor._class_ref() == "dskit.pipeline.libs.torch:LinearPredictor"
+    assert DeclaredTrain._class_ref() == "dskit.pipeline.libs.torch:DeclaredTrain"
+    assert DeclaredPredict._class_ref() == "dskit.pipeline.libs.torch:DeclaredPredict"
+    # One mixin for the pair IS what makes a cross-pair load pass, and a
+    # different family must still be refused.
+    assert LinearRegressor._build_fn() is LinearPredictor._build_fn()
+    assert DeclaredTrain._build_fn() is DeclaredPredict._build_fn()
+    assert LinearRegressor._build_fn() is not DeclaredTrain._build_fn()
+
+
+def test_predict_refuses_a_node_level_pin_that_contradicts_the_param(tmp_path):
+    """ADR-0038's declared delta: under mode='load' a contradicting
+    params.artifact is now REFUSED rather than silently preferring the
+    node-level pin — one pin, not two."""
+    artifact = train(tmp_path)["artifact_path"]
+    node = LinearPredictor(
+        "sig", {"artifact": str(tmp_path / "other.pt")}, mode="load", artifact=artifact
+    )
+    refuses(node, tmp_path, "disagree")
+    agreeing = LinearPredictor(
+        "sig", {"artifact": artifact}, mode="load", artifact=artifact
+    )
+    assert agreeing.run(ctx(tmp_path, "agree"), {})["signal"].loaded is True
+
+
 def test_predict_refuses_a_sidecar_with_no_features_for_the_signal(tmp_path):
     trained = train(tmp_path, cls=FixedWidthTrain)
     artifact = trained["artifact_path"]

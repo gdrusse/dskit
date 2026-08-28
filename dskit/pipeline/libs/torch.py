@@ -100,7 +100,7 @@ from dskit.pipeline.base import (
     library_path_problems,
 )
 from dskit.pipeline.kinds_stats import _check_int, _reject_unknown
-from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
+from dskit.pipeline.node import DEFAULT_NODE_KINDS, TrainableNode
 from dskit.pipeline.trainlog import (
     DEFAULT_MAX_LINES,
     TrainingCurve,
@@ -986,9 +986,15 @@ def _adapter_unknown_at_plan(cls, params):
     return None
 
 
-class _TorchModel(_LossPromise, Node):
+class _TorchModel(_LossPromise, TrainableNode):
     """The grammar the train and predict doorways share: the
     ``build_module`` hook and the artifact save/load protocol.
+
+    Re-parented ONCE here (ADR-0038), which covers both doorways and every
+    declared subclass. ``_LossPromise`` may precede :class:`TrainableNode`
+    because it defines neither template method — the base-order rule is
+    that ``run`` and ``validate_inputs`` must both still resolve to
+    :class:`TrainableNode`.
 
     Abstract by construction (``build_module`` is the subclass's
     identity), so neither base can enter a registry —
@@ -1537,9 +1543,9 @@ class TorchTrain(_TorchModel):
         )
         return problems
 
-    def validate_inputs(self, inputs):
-        if self.mode == "load":
-            return []  # nothing is consumed — the artifact IS the input
+    def validate_train_inputs(self, inputs):
+        # Nothing is consumed under load — the artifact IS the input — so
+        # the load hook stays the base's empty default.
         problems = []
         rows = inputs.get("rows")
         if not isinstance(rows, list):
@@ -1597,28 +1603,26 @@ class TorchTrain(_TorchModel):
             self._thread_loss(adapter)
         return adapter.loss(module, batch)
 
-    def run(self, ctx, inputs):
-        if self.mode == "load":
-            module, sidecar = self._load_artifact(self.artifact)
-            features = self.params.get("features") or sidecar["params"].get(
-                "features", ()
-            )
-            self.log.info("restored %s from %s", self._class_ref(), self.artifact)
-            return {
-                "signal": TorchSignal(
-                    module,
-                    features,
-                    self.artifact,
-                    loaded=True,
-                    # The adapter's OWN fitted state comes back too. Without
-                    # this a restored panel model answers None for every
-                    # lookup and the run silently serves the market instead.
-                    adapter=self._restore_adapter(sidecar, self.artifact),
-                ),
-                "artifact_path": self.artifact,
-                "metrics": {"loaded": 1, "seed": sidecar["seed"]},
-            }
+    def run_load(self, ctx, inputs):
+        module, sidecar = self._load_artifact(self.artifact)
+        features = self.params.get("features") or sidecar["params"].get("features", ())
+        self.log.info("restored %s from %s", self._class_ref(), self.artifact)
+        return {
+            "signal": TorchSignal(
+                module,
+                features,
+                self.artifact,
+                loaded=True,
+                # The adapter's OWN fitted state comes back too. Without
+                # this a restored panel model answers None for every
+                # lookup and the run silently serves the market instead.
+                adapter=self._restore_adapter(sidecar, self.artifact),
+            ),
+            "artifact_path": self.artifact,
+            "metrics": {"loaded": 1, "seed": sidecar["seed"]},
+        }
 
+    def run_train(self, ctx, inputs):
         import torch
 
         loader = dict(LOADER_DEFAULTS)
@@ -1857,6 +1861,7 @@ class TorchPredict(_TorchModel):
 
     role = "signal"
     outputs = ("signal",)
+    default_mode = "load"
 
     _BASE_PARAMS = ("artifact", "features", "label")
 
@@ -1872,36 +1877,32 @@ class TorchPredict(_TorchModel):
         problems.extend(_feature_problems(params, required=False))
         return problems
 
-    def validate_inputs(self, inputs):
-        path = inputs.get("artifact_path")
-        if path is not None and (not isinstance(path, str) or not path):
-            return [
-                "artifact_path must be a non-empty string (wire it from a "
-                f"train node's artifact_path output), got {path!r}"
-            ]
-        return []
+    def validate_common_inputs(self, inputs):
+        # The port is checked in EITHER mode: a document that wires it
+        # wired it wrong regardless of which mode it also declared.
+        return self.pin_port_problems(
+            inputs,
+            "artifact_path",
+            hint="wire it from a train node's artifact_path output",
+        )
 
-    def run(self, ctx, inputs):
-        if self.mode == "train":
-            raise NotImplementedError(
-                f"{self.key}: torch-predict is inference-only — mode='train' "
-                "fits nothing here; train with the TorchTrain family and pin "
-                "its artifact"
-            )
-        if self.mode == "load":
-            reference = self.artifact
-            if not reference:
-                self._refuse("mode='load' was given an empty artifact reference")
-        else:
-            reference = self.params.get("artifact") or (inputs or {}).get(
-                "artifact_path"
-            )
-            if not reference:
-                self._refuse(
-                    "no artifact reference — set mode='load' + artifact, "
-                    "params['artifact'], or wire inputs['artifact_path'] from "
-                    "a train node"
-                )
+    def run_train(self, ctx, inputs):
+        raise NotImplementedError(
+            f"{self.key}: torch-predict is inference-only — mode='train' "
+            "fits nothing here; train with the TorchTrain family and pin "
+            "its artifact"
+        )
+
+    def run_load(self, ctx, inputs):
+        reference = self.pinned_artifact(
+            self.params.get("artifact"),
+            (inputs or {}).get("artifact_path"),
+            missing=(
+                "no artifact reference — set mode='load' + artifact, "
+                "params['artifact'], or wire inputs['artifact_path'] from "
+                "a train node"
+            ),
+        )
         module, sidecar = self._load_artifact(reference)
         adapter = self._restore_adapter(sidecar, reference)
         features = self.params.get("features") or sidecar["params"].get("features")
