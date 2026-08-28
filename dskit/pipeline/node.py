@@ -53,6 +53,7 @@ __all__ = [
     "NodeContext",
     "NodeKindRegistry",
     "ResolvedUse",
+    "TrainableNode",
     "check_int_param",
     "node_class_errors",
     "register_node_kind",
@@ -372,6 +373,246 @@ class Node(ABC):
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text)
         return path
+
+    # -- the pinned-artifact services (ADR-0038) ---------------------------
+    #
+    # They live HERE, not on TrainableNode, because a non-trainable caller
+    # needs them: ``sb3-eval`` has role ``score`` — it may carry no
+    # ``mode``/``artifact`` at all — yet it resolves the same artifact
+    # reference from the same two places and wrote its own copies of both
+    # checks. A service only trainables could reach would have left those
+    # copies in place, which is the duplication this seam exists to end.
+
+    def node_level_pin(self):
+        """The artifact the DOCUMENT pinned on this node, or ``None``.
+
+        The hook that keeps :meth:`pinned_artifact` free of a type test:
+        the base answers "no node-level pin exists here", and
+        :class:`TrainableNode` — the only place the field is meaningful —
+        answers from ``mode``/``artifact``. An ``isinstance`` check inside
+        :meth:`pinned_artifact` would be exactly the branch ADR-0038
+        deletes, moved one class up.
+
+        Returns
+        -------
+        str or None
+            ``None`` when the document declared no node-level pin (always,
+            for a plain Node). A subclass returns the declared pin, which
+            may be the EMPTY string — "declared, but naming nothing" is a
+            refusal, not an absence, and only a three-state answer can say
+            so.
+        """
+        return None
+
+    def pin_port_problems(self, inputs, port, *, hint):
+        """Problems with a wired artifact-reference port, empty when none.
+
+        An UNWIRED port is lawful — the reference may come from the
+        document instead — so only a wired value is checked, and it must be
+        a non-empty string. Written three times before ADR-0038 (two
+        predict kinds and an eval), which is why it is a service rather
+        than a snippet.
+
+        Parameters
+        ----------
+        inputs : dict or None
+            The materialized inputs handed to ``validate_inputs``.
+        port : str
+            The port name carrying the reference (``"artifact_path"``).
+        hint : str
+            Where a document should wire it from, quoted into the message.
+            Required — a refusal that does not say what to do instead is
+            half a refusal.
+
+        Returns
+        -------
+        list of str
+            One problem when the port is wired to something unusable;
+            empty otherwise.
+        """
+        value = (inputs or {}).get(port)
+        if value is not None and (not isinstance(value, str) or not value):
+            return [f"{port} must be a non-empty string ({hint}), got {value!r}"]
+        return []
+
+    def pinned_artifact(self, declared=None, wired=None, *, missing):
+        """The one artifact reference this node serves, or a refusal.
+
+        The resolution order, stated once for every kind that loads a
+        pinned artifact: the node-level pin (:meth:`node_level_pin`), then
+        the declared param, then the wired port. A node-level pin that
+        CONTRADICTS the declared param refuses — one pin, not two — while a
+        restatement of the same path is lawful. A falsy ``declared`` or
+        ``wired`` counts as absent, matching the ``x or y`` chains this
+        replaces, so ``params: {"artifact": null}`` refuses by name instead
+        of crashing downstream. A node-level pin that was DECLARED but
+        empty refuses on the spot: that is the torch/sb3 rule, kept as the
+        single one, and it is document-unreachable (the document already
+        refuses ``mode="load"`` without an artifact).
+
+        Parameters
+        ----------
+        declared : str or None
+            The reference this node's own params declare, if any.
+        wired : str or None
+            The reference an input port supplied, if any.
+        missing : str
+            The refusal to raise when nothing pins an artifact — pack-local
+            wording, because only the pack knows which param and which port
+            a document should have used. Required.
+
+        Returns
+        -------
+        str
+            The resolved, non-empty artifact reference.
+
+        Raises
+        ------
+        ValueError
+            When the node-level pin is declared-but-empty, when it
+            contradicts ``declared``, or when no source supplies one.
+        """
+        pin = self.node_level_pin()
+        if pin is not None:
+            if not pin:
+                raise ValueError(
+                    f"{self.key}: mode='load' was given an empty artifact "
+                    "reference — a pin must name what it restores"
+                )
+            if declared and pin != declared:
+                raise ValueError(
+                    f"{self.key}: the node-level artifact {pin!r} and the "
+                    f"declared pin {declared!r} disagree — one pin, not two: "
+                    "one pinned artifact, one source of truth (mode='load' "
+                    "may restate it, never replace it)"
+                )
+            return pin
+        for candidate in (declared, wired):
+            if candidate:
+                return candidate
+        raise ValueError(f"{self.key}: {missing}")
+
+
+class TrainableNode(Node):
+    """A node whose ``mode`` decides whether it FITS or RESTORES.
+
+    The trainable roles (``train``/``signal``) are the only ones a document
+    may give ``mode``/``artifact``, and every one of them used to hand-roll
+    the same dispatch inside ``run``. Here it is a template method: ``run``
+    and ``validate_inputs`` are the base's, and a subclass supplies the
+    per-mode hooks instead of branching (ADR-0038). Abstract by
+    construction — both run hooks are ``@abstractmethod``, so an
+    incomplete trainable refuses to CONSTRUCT rather than failing halfway
+    through a fit — and never registered as a kind.
+
+    A pinned-inference kind (one that always loads) sets
+    ``default_mode = "load"`` and implements :meth:`run_train` as its
+    refusal; a fit kind leaves the default and implements both.
+
+    Attributes
+    ----------
+    default_mode : str
+        Class-level, ``"train"`` by default. What an UNSET document
+        ``mode`` means for this class.
+
+    Examples
+    --------
+    A fit kind and the pinned-inference kind that serves its artifact::
+
+        class Fit(TrainableNode):
+            role = "train"
+
+            def run_train(self, ctx, inputs):
+                return {"signal": fit(inputs["rows"])}
+
+            def run_load(self, ctx, inputs):
+                return {"signal": restore(self.artifact)}
+
+        class Serve(Fit):
+            role = "signal"
+            default_mode = "load"
+
+            def run_train(self, ctx, inputs):
+                raise ValueError(f"{self.key}: this node never fits")
+
+        node = Serve("serve", {}, mode="load", artifact="runs/x/model.pt")
+        node.effective_mode   # 'load'
+    """
+
+    #: What an UNSET ``mode`` means for this class — ``"train"`` for a fit
+    #: kind, ``"load"`` for a kind that only ever restores.
+    default_mode = "train"
+
+    @property
+    def effective_mode(self):
+        """The mode this node actually runs under: the document's ``mode``
+        when it declared one, else :attr:`default_mode`. Read-only — the
+        document decides, never the node."""
+        return self.mode or type(self).default_mode
+
+    # -- the template methods (do not override; override the hooks) --------
+
+    def run(self, ctx, inputs):
+        """Dispatch to :meth:`run_load` or :meth:`run_train` by
+        :attr:`effective_mode`. See :meth:`Node.run` for the contract both
+        hooks answer."""
+        if self.effective_mode == "load":
+            return self.run_load(ctx, inputs)
+        return self.run_train(ctx, inputs)
+
+    def validate_inputs(self, inputs):
+        """Problems with ``inputs``: the common checks, then the ones for
+        :attr:`effective_mode`. Additive — a mode's hook ADDS to the common
+        list, so a check that holds either way is written once."""
+        problems = list(self.validate_common_inputs(inputs))
+        if self.effective_mode == "load":
+            problems.extend(self.validate_load_inputs(inputs))
+        else:
+            problems.extend(self.validate_train_inputs(inputs))
+        return problems
+
+    # -- the hooks ---------------------------------------------------------
+
+    @abstractmethod
+    def run_train(self, ctx, inputs):
+        """Fit, and return this node's named outputs. A kind that cannot
+        fit implements this as its refusal, by name."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def run_load(self, ctx, inputs):
+        """Restore the pinned artifact and return this node's named
+        outputs. It must NEVER fit — that is the whole point of the pin."""
+        raise NotImplementedError
+
+    def validate_common_inputs(self, inputs):
+        """Problems that hold in EITHER mode, empty when none. The base
+        default accepts anything, like :meth:`Node.validate_inputs`."""
+        return []
+
+    def validate_train_inputs(self, inputs):
+        """Problems with the inputs a FIT reads, empty when none."""
+        return []
+
+    def validate_load_inputs(self, inputs):
+        """Problems with the inputs a RESTORE reads, empty when none —
+        usually nothing: the artifact is the input."""
+        return []
+
+    def node_level_pin(self):
+        """The node-level ``artifact``, or ``None`` when the document
+        pinned none. The design's only raw ``mode`` read, and it is exact:
+        the document refuses ``artifact`` without ``mode="load"`` and
+        ``mode="load"`` without an ``artifact``, so a node-level pin exists
+        IFF the document wrote ``mode="load"``.
+
+        Returns
+        -------
+        str or None
+            The declared pin under ``mode="load"`` (possibly empty, which
+            :meth:`Node.pinned_artifact` refuses); ``None`` otherwise.
+        """
+        return self.artifact if self.mode == "load" else None
 
 
 def node_class_errors(cls, where):

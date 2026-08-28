@@ -7,6 +7,7 @@ from dskit.pipeline.node import (
     Node,
     NodeContext,
     NodeKindRegistry,
+    TrainableNode,
     node_class_errors,
     resolve_uses,
 )
@@ -92,6 +93,155 @@ class TestNodeABC:
 
     def test_default_fingerprint_is_none(self):
         assert MinimalNode("a").fingerprint() is None
+
+
+class Trainable(TrainableNode):
+    """The shape ADR-0038 ports every fit kind to: two hooks, no branch."""
+
+    role = "train"
+
+    def run_train(self, ctx, inputs):
+        return {"out": "trained"}
+
+    def run_load(self, ctx, inputs):
+        return {"out": f"loaded:{self.artifact}"}
+
+
+class PinnedInference(Trainable):
+    """A pinned-inference kind: an UNSET mode means load, and train is the
+    refusal."""
+
+    role = "signal"
+    default_mode = "load"
+
+    def run_train(self, ctx, inputs):
+        raise ValueError(f"{self.key}: mode='train' — this node never fits")
+
+
+class HalfTrainable(TrainableNode):
+    """Only one hook — abstract, so it must refuse at CONSTRUCTION."""
+
+    role = "train"
+
+    def run_train(self, ctx, inputs):
+        return {}
+
+
+class ValidatingTrainable(Trainable):
+    """Every validation hook answers, so the additive order is visible."""
+
+    def validate_common_inputs(self, inputs):
+        return ["common"]
+
+    def validate_train_inputs(self, inputs):
+        return ["train"]
+
+    def validate_load_inputs(self, inputs):
+        return ["load"]
+
+
+MISSING = "no artifact reference — pin one"
+
+
+class TestTrainableNode:
+    def test_run_is_the_template_method_dispatching_on_effective_mode(self, tmp_path):
+        frame = ctx(tmp_path)
+        assert Trainable("t").run(frame, {}) == {"out": "trained"}
+        assert Trainable("t", mode="train").run(frame, {}) == {"out": "trained"}
+        loader = Trainable("t", mode="load", artifact="a/model.pt")
+        assert loader.run(frame, {}) == {"out": "loaded:a/model.pt"}
+
+    def test_default_mode_decides_what_an_unset_mode_means(self, tmp_path):
+        assert Trainable("t").effective_mode == "train"
+        assert Trainable("t", mode="load", artifact="a").effective_mode == "load"
+        assert PinnedInference("p").effective_mode == "load"
+        assert PinnedInference("p", mode="train").effective_mode == "train"
+        assert PinnedInference("p").run(ctx(tmp_path), {}) == {"out": "loaded:"}
+        with pytest.raises(ValueError, match="never fits"):
+            PinnedInference("p", mode="train").run(ctx(tmp_path), {})
+
+    def test_both_hooks_are_abstract_so_a_half_class_cannot_construct(self):
+        with pytest.raises(TypeError):
+            HalfTrainable("h")
+        assert "abstract" in "; ".join(node_class_errors(TrainableNode, "base"))
+
+    def test_both_template_methods_resolve_to_the_base(self):
+        for cls in (Trainable, PinnedInference, ValidatingTrainable):
+            assert cls.run is TrainableNode.run
+            assert cls.validate_inputs is TrainableNode.validate_inputs
+
+    def test_validate_inputs_dispatches_additively_by_effective_mode(self):
+        assert Trainable("t").validate_inputs({}) == []
+        assert ValidatingTrainable("v").validate_inputs({}) == ["common", "train"]
+        loader = ValidatingTrainable("v", mode="load", artifact="a")
+        assert loader.validate_inputs({}) == ["common", "load"]
+
+
+class TestNodeArtifactServices:
+    def test_a_plain_node_declares_no_node_level_pin(self):
+        assert MinimalNode("m").node_level_pin() is None
+        # Even directly constructed with one: the hook, not a type test,
+        # is what makes a pin visible (ADR-0038).
+        assert MinimalNode("m", mode="load", artifact="a").node_level_pin() is None
+
+    def test_a_trainable_pin_exists_exactly_when_the_document_wrote_load(self):
+        assert Trainable("t").node_level_pin() is None
+        assert Trainable("t", mode="train").node_level_pin() is None
+        assert Trainable("t", mode="load", artifact="a").node_level_pin() == "a"
+        assert Trainable("t", mode="load", artifact="").node_level_pin() == ""
+
+    def test_the_node_level_pin_wins_and_a_restatement_is_allowed(self):
+        node = Trainable("t", mode="load", artifact="a")
+        assert node.pinned_artifact(missing=MISSING) == "a"
+        assert node.pinned_artifact("a", missing=MISSING) == "a"
+        assert node.pinned_artifact(None, "wired", missing=MISSING) == "a"
+
+    def test_a_contradicting_declared_param_refuses(self):
+        node = Trainable("t", mode="load", artifact="a")
+        with pytest.raises(ValueError, match="disagree"):
+            node.pinned_artifact("b", missing=MISSING)
+        with pytest.raises(ValueError, match="one source of truth"):
+            node.pinned_artifact("b", missing=MISSING)
+
+    def test_an_empty_node_level_pin_refuses_by_name(self):
+        node = Trainable("t", mode="load", artifact="")
+        with pytest.raises(ValueError, match="empty artifact reference"):
+            node.pinned_artifact("b", "w", missing=MISSING)
+
+    def test_a_falsy_declared_or_wired_value_counts_as_absent(self):
+        node = Trainable("t")
+        assert node.pinned_artifact("d", "w", missing=MISSING) == "d"
+        assert node.pinned_artifact(None, "w", missing=MISSING) == "w"
+        assert node.pinned_artifact("", "w", missing=MISSING) == "w"
+        with pytest.raises(ValueError, match="no artifact reference"):
+            node.pinned_artifact(None, None, missing=MISSING)
+        with pytest.raises(ValueError, match="no artifact reference"):
+            node.pinned_artifact("", "", missing=MISSING)
+
+    def test_the_missing_refusal_names_the_node(self):
+        with pytest.raises(ValueError, match=r"^t: no artifact reference"):
+            Trainable("t").pinned_artifact(missing=MISSING)
+
+    def test_pin_port_problems_accepts_absent_and_refuses_an_empty_wire(self):
+        node = MinimalNode("m")
+        hint = "wire it from a train node"
+        assert node.pin_port_problems({}, "artifact_path", hint=hint) == []
+        assert node.pin_port_problems(None, "artifact_path", hint=hint) == []
+        assert (
+            node.pin_port_problems({"artifact_path": None}, "artifact_path", hint=hint)
+            == []
+        )
+        assert (
+            node.pin_port_problems({"artifact_path": "p"}, "artifact_path", hint=hint)
+            == []
+        )
+        assert node.pin_port_problems(
+            {"artifact_path": ""}, "artifact_path", hint=hint
+        ) == [
+            "artifact_path must be a non-empty string (wire it from a train "
+            "node), got ''"
+        ]
+        assert node.pin_port_problems({"artifact_path": 7}, "artifact_path", hint=hint)
 
 
 class TestValidateOutputs:
