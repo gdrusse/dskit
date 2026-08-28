@@ -32,7 +32,7 @@ import json
 import math
 from types import SimpleNamespace
 
-from dskit.pipeline.node import Node, check_int_param
+from dskit.pipeline.node import Node, TrainableNode, check_int_param
 
 __all__ = [
     "DEMO_SPLITS",
@@ -239,7 +239,7 @@ class SynthMarketSignal(Node):
         return {"signal": {e["contract"]: e["mid"] for e in inputs["events"]}}
 
 
-class SynthTrain(Node):
+class SynthTrain(TrainableNode):
     """A trainable signal: recovers ``LEARN`` of the market's under-
     reaction, fit on the train split only (role ``train``). Honors
     ``mode``: ``train`` fits and writes the artifact; ``load`` reads a
@@ -254,22 +254,27 @@ class SynthTrain(Node):
         _check_int(problems, "min_train", params.get("min_train", 1), ge=1)
         return problems
 
-    def run(self, ctx, inputs):
-        if self.mode == "load":
-            with open(self.artifact, encoding="utf-8") as fh:
-                model = json.load(fh)
-            self.log.info("loaded pinned artifact %s", self.artifact)
-        else:
-            train_events = [
-                e for e in inputs["events"] if _in_split(ctx.splits, e, "train")
-            ]
-            floor = self.params.get("min_train", 1)
-            if len(train_events) < floor:
-                raise ValueError(
-                    f"min_train={floor} but only {len(train_events)} training "
-                    "event(s) in the train split"
-                )
-            model = {"learn": LEARN, "n_train": len(train_events)}
+    def run_train(self, ctx, inputs):
+        train_events = [
+            e for e in inputs["events"] if _in_split(ctx.splits, e, "train")
+        ]
+        floor = self.params.get("min_train", 1)
+        if len(train_events) < floor:
+            raise ValueError(
+                f"min_train={floor} but only {len(train_events)} training "
+                "event(s) in the train split"
+            )
+        return self._served(ctx, inputs, {"learn": LEARN, "n_train": len(train_events)})
+
+    def run_load(self, ctx, inputs):
+        with open(self.artifact, encoding="utf-8") as fh:
+            model = json.load(fh)
+        self.log.info("loaded pinned artifact %s", self.artifact)
+        return self._served(ctx, inputs, model)
+
+    def _served(self, ctx, inputs, model):
+        """The tail both modes share: persist the model, then price every
+        event with it. Fitted or restored, a run answers the same way."""
         path = self.write_artifact(ctx, "model.json", model)
         signal = {
             e["contract"]: e["mid"] + model["learn"] * (e["p_true"] - e["mid"])
