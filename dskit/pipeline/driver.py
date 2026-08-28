@@ -378,7 +378,7 @@ class _SearchSeam:
     def __init__(self, key, the_plan, node_outputs, splits_info, prev, trial_ctx):
         self._key = key
         self._plan = the_plan
-        self._specs = the_plan.document.pipeline
+        self._specs = the_plan.document.expanded
         self._outputs = node_outputs  # the LIVE dict; trials copy, winner writes
         self._splits_info = splits_info
         self._prev = prev
@@ -889,7 +889,7 @@ def _source_instances(document, the_plan):
         role = the_plan.role_of(key)
         if role not in ("data", "labels") or key in the_plan.deferred_params:
             continue
-        spec = document.pipeline[key]
+        spec = document.expanded[key]
         node = the_plan.resolved[key].cls(
             key, spec.params, mode=spec.mode, artifact=spec.artifact
         )
@@ -1222,11 +1222,11 @@ def _execute_plan(document, the_plan, ctx, resolved, trackers):
             "document_hash": document.hash,
             "run_hash": resolved.run_hash,
             "nodes": ",".join(the_plan.order),
-            **_tracked_params(document.pipeline, the_plan.order),
+            **_tracked_params(document.expanded, the_plan.order),
         }
     )
     for key in the_plan.order:
-        spec = document.pipeline[key]
+        spec = document.expanded[key]
         if key in run.halted:
             run.node_states[key] = "halted"
             continue

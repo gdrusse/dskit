@@ -121,6 +121,19 @@ kinds resolve. Two more verbs — `demo`
   identity; a fold that halts is a result, a fold that errors stops the
   plan. Folds carry no cal band (ADR-0034 v1) — a parent document
   declaring one refuses pre-flight.
+- **Fan-out** (ADR-0039): an optional `foreach` section — `keys` (a declared
+  list, sorted at construction) plus a `pipeline` of TEMPLATE nodes — expanded
+  at document construction, so "one model per symbol" stops being N
+  hand-copied nodes. A template `t` becomes `t__<slug>` per key; a reference
+  naming a template key rewrites to that key's instance; a `params` value that
+  is EXACTLY `"$each"` becomes the key string (whole values only — never
+  substring interpolation, and never a params KEY); and a SHARED node fans a
+  port out only when it opts in by writing it `<base>__each`. `pipeline` may
+  be empty when a `foreach` is declared. No expressions, no conditionals, no
+  nesting — this is fan-out, not templating. The section IS identity (adding a
+  key is a different computation) while the expansion is DERIVED
+  (`document.expanded`, never emitted, never hashed), which is why every
+  pre-ADR-0039 hash is unmoved. See `examples/pipeline/foreach-fanout.json`.
 - **Identity**: sha256 over canonical JSON with every `notes` stripped and the
   top-level `env` / `outputs` / `schedule` sections excluded.
 - **Roles** are declared BY the node class, never by the config:
@@ -321,7 +334,8 @@ application-side.
 dskit/pipeline/
 ├── __init__.py        public surface; auto-registers the default kinds
 ├── __main__.py        the CLI: python -m dskit.pipeline
-├── document.py        PipelineDocument / NodeSpec / ROLES + MODES / splits + walkforward specs / refs
+├── document.py        PipelineDocument / NodeSpec / ROLES + MODES / splits + walkforward
+│                      + foreach specs / refs / the foreach expansion
 ├── node.py            Node + TrainableNode ABCs, NodeContext, NodeKindRegistry, register_node_kind
 ├── planner.py         document -> Plan: topo order, role rules, wire checks
 ├── driver.py          LOAD -> IMPORT -> PLAN -> RESOLVE -> EXECUTE -> RECORD; run dirs;

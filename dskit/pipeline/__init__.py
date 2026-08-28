@@ -110,6 +110,7 @@ from dskit.pipeline.split_policy import straddle_report
 from dskit.pipeline.stats import register_correction
 from dskit.pipeline.document import (
     ClockConfig,
+    ForeachSpec,
     NodeSpec,
     PipelineDocument,
     RandomSplitSpec,
@@ -208,6 +209,7 @@ __all__ = [
     "Eligibility",
     "EventBank",
     "Filter",
+    "ForeachSpec",
     "HpoGrid",
     "Join",
     "Node",

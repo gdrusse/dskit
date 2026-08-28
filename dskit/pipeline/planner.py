@@ -170,8 +170,8 @@ class Plan:
                     f"{self.resolved[key].cls.__name__}",
                     "role": self.role_of(key),
                     "owned": self.resolved[key].owned,
-                    "every": self.document.pipeline[key].every,
-                    "inputs": dict(self.document.pipeline[key].inputs),
+                    "every": self.document.expanded[key].every,
+                    "inputs": dict(self.document.expanded[key].inputs),
                     "params_validation": "deferred"
                     if key in self.deferred_params
                     else "checked",
@@ -232,7 +232,10 @@ def plan(document, registry=None) -> Plan:
     """
     errors = []
     warnings = []
-    specs = document.pipeline
+    # What RUNS, not what was written: with no `foreach` section this IS
+    # the declared map (the same object, ADR-0039), and with one it is
+    # the shared nodes plus every fanned-out instance.
+    specs = document.expanded
 
     # -- IMPORT: every uses -> a Node subclass; role cross-check ----------
     resolved = {}

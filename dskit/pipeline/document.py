@@ -33,6 +33,9 @@ Reference grammar (spec §4):
   run in this series. ``default`` is REQUIRED (it defines the first
   run) and must be JSON-legal. Legal inside ``params`` only: ``inputs``
   wire THIS run's DAG.
+* ``"$each"`` — the ``foreach`` fan-out token (ADR-0039), reserved and
+  NOT a reference: inside a template's ``params`` a value that is exactly
+  this string becomes the key; anywhere else it is the literal string.
 * Any other string beginning with ``$`` is refused loudly — a mistyped
   wire must never ride through as a literal.
 
@@ -43,7 +46,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from dskit.pipeline.base import (
     DEFAULT_SPLIT_POLICY,
@@ -70,6 +73,9 @@ __all__ = [
     "ClockConfig",
     "DOC_NON_IDENTITY_SECTIONS",
     "DOC_SPLIT_KINDS",
+    "EACH_TOKEN",
+    "FOREACH_SEP",
+    "ForeachSpec",
     "MODES",
     "NodeSpec",
     "PipelineDocument",
@@ -81,6 +87,7 @@ __all__ = [
     "WalkForwardSpec",
     "doc_split_from_obj",
     "flatten_param_paths",
+    "foreach_slug",
     "is_node_ref",
     "is_prev_ref",
     "load_document",
@@ -142,6 +149,30 @@ _SEGMENT_OK = r"^[A-Za-z_][A-Za-z0-9_]*$"
 
 PREV_KEY = "$prev"
 
+#: The ``foreach`` fan-out token (ADR-0039 rule 3). A template ``params``
+#: value that is EXACTLY this string becomes the key string; substring
+#: interpolation is never performed, which is the line between fan-out
+#: and templating. It is deliberately NOT a reference — :func:`is_node_ref`
+#: excludes it — so outside a template it rides through as the literal it
+#: is instead of being refused as a mistyped wire.
+EACH_TOKEN = "$each"
+
+#: How a fanned-out name is spelled: a template key plus one key's slug
+#: (``qhat`` + ``aapl`` -> ``qhat__aapl``), and a shared node's opt-in
+#: port plus that same slug (``records__each`` -> ``records__aapl``). ONE
+#: separator, so the node-key spelling and the port spelling can never
+#: drift apart.
+FOREACH_SEP = "__"
+
+#: The input-port suffix that OPTS IN to port fan-out (ADR-0039 rule 4),
+#: derived from the separator and the token so the two spellings agree by
+#: construction rather than by two authors remembering the same string.
+_EACH_PORT = FOREACH_SEP + EACH_TOKEN[1:]
+
+#: Every character a node key may not hold — replaced by ``_`` when a
+#: foreach key is slugged into one.
+_SLUG_BAD = r"[^a-z0-9_]"
+
 
 # ---------------------------------------------------------------------------
 # Reference grammar
@@ -154,8 +185,11 @@ def is_node_ref(value) -> bool:
     Grammar validity is :func:`parse_node_ref`'s business — this only
     detects the FORM, so a malformed ``$`` string is still routed into
     the parser and refused there, never passed through as a literal.
+    The one exception is :data:`EACH_TOKEN`: it is a reserved fan-out
+    placeholder, not a wire, so it is not a reference and every walker
+    composed of this predicate steps over it.
     """
-    return isinstance(value, str) and value.startswith("$")
+    return isinstance(value, str) and value.startswith("$") and value != EACH_TOKEN
 
 
 def parse_node_ref(value):
@@ -933,6 +967,401 @@ class WalkForwardSpec:
         )
 
 
+# ---------------------------------------------------------------------------
+# Foreach (ADR-0039) — declared fan-out over a key list. The document
+# STORES what was written (this section, which is identity) and DERIVES
+# what runs (``PipelineDocument.expanded``, which is not).
+# ---------------------------------------------------------------------------
+
+
+def foreach_slug(key):
+    """The node-key-safe slug of one ``foreach`` key.
+
+    Parameters
+    ----------
+    key : str
+        A ``foreach.keys`` entry, exactly as the document wrote it.
+
+    Returns
+    -------
+    str
+        The key lowercased, with every character no node key may hold
+        replaced by ``_`` (``"BTC-USD"`` -> ``"btc_usd"``). The RAW key
+        is what :data:`EACH_TOKEN` substitutes into params; the slug is
+        only ever a NAME. Two keys may slug alike — the expansion
+        refuses that collision by name rather than merging them.
+    """
+    return re.sub(_SLUG_BAD, "_", key.lower())
+
+
+def _instance_key(name, slug):
+    """One template key (or port base) plus one key's slug."""
+    return f"{name}{FOREACH_SEP}{slug}"
+
+
+def _each_key_errors(where, obj):
+    """Every place :data:`EACH_TOKEN` is used as a dict KEY inside ``obj``."""
+    errors = []
+    if isinstance(obj, dict):
+        for name, value in obj.items():
+            if name == EACH_TOKEN:
+                errors.append(
+                    f"{where}: {EACH_TOKEN!r} is not legal as a params KEY — "
+                    "key substitution is not built, and letting the token ride "
+                    "unchanged onto every instance is exactly the ride-through "
+                    "this grammar exists to refuse"
+                )
+            errors.extend(_each_key_errors(f"{where}.{name}", value))
+    elif isinstance(obj, (list, tuple)):
+        for i, value in enumerate(obj):
+            errors.extend(_each_key_errors(f"{where}[{i}]", value))
+    return errors
+
+
+def _template_node_errors(where, spec):
+    """The refusals a template node earns before any key is applied."""
+    errors = []
+    for port in spec.inputs:
+        if port.endswith(_EACH_PORT):
+            errors.append(
+                f"{where}: input port {port!r} asks for foreach port fan-out, "
+                "which is a SHARED node's opt-in — inside a template every "
+                "reference to a template key already rewrites to this "
+                "instance"
+            )
+    errors.extend(_each_key_errors(f"{where}.params", spec.params))
+    return errors
+
+
+@dataclass(frozen=True, slots=True)
+class ForeachSpec:
+    """Declared fan-out over a key list (ADR-0039): ONE template subgraph,
+    instantiated once per key at document construction.
+
+    "One model per symbol" written longhand is N byte-identical node pairs
+    whose only difference is a name and one param — and N unpinned copies
+    of every search-space key. This section collapses that to one
+    declaration. It is deliberately NOT a template language: no
+    expressions, no conditionals, no nesting. The whole vocabulary is the
+    key list, the suffixing rule, reference rewrite inside the template,
+    the :data:`EACH_TOKEN` whole-value substitution, and a shared node's
+    opt-in ``<base>__each`` port.
+
+    ``keys`` is SORTED and pinned as a tuple: keys are a set, so sorting
+    beats refusing-unless-sorted. A key beginning ``$`` refuses, because
+    the RAW key is substituted as a params value and ``"$window.records"``
+    would expand into a live reference.
+
+    Parameters
+    ----------
+    keys : list of str
+        The fan-out keys: non-empty, unique, non-empty strings, none
+        starting ``$``. Sorted at construction.
+    pipeline : dict
+        The template subgraph — ``template key`` -> :class:`NodeSpec`,
+        non-empty, normalized exactly as a node is (so ``{"uses": "x"}``
+        and its fully-spelled twin hash identically).
+    notes : str, optional
+        Why this fan-out exists; never hash material.
+
+    Raises
+    ------
+    ConfigError
+        Listing every shape problem at once — an empty or duplicated key
+        list, a ``$``-prefixed key, an empty template map, a template
+        using :data:`EACH_TOKEN` as a params key, or a template declaring
+        a ``<base>__each`` port.
+
+    Examples
+    --------
+    One filter per symbol, keyed by the symbol itself::
+
+        spec = ForeachSpec(
+            keys=["AAPL", "MSFT"],
+            pipeline={
+                "rows": NodeSpec(
+                    uses="filter",
+                    inputs={"records": "$bars.records"},
+                    params={
+                        "where": [
+                            {"field": "symbol", "op": "==", "value": "$each"}
+                        ]
+                    },
+                )
+            },
+        )
+        spec.keys  # ('AAPL', 'MSFT')
+    """
+
+    keys: tuple
+    pipeline: dict
+    notes: str = ""
+
+    def __post_init__(self):
+        errors = []
+        self._check_keys(errors)
+        self._check_templates(errors)
+        _check_str(errors, "foreach.notes", self.notes, non_empty=False)
+        _raise_if(errors)
+        # Pin the validated key list as a SORTED tuple: the frozen spec
+        # must not share a mutable list with whoever built it, and a
+        # canonical order makes emission order a property of the grammar
+        # rather than of JSON key order.
+        object.__setattr__(self, "keys", tuple(sorted(self.keys)))
+
+    def _check_keys(self, errors):
+        """Accumulate the key-list problems."""
+        if not isinstance(self.keys, (list, tuple)) or not self.keys:
+            errors.append(
+                "foreach.keys must be a non-empty list of unique, non-empty "
+                f"strings — a fan-out with no keys fans over nothing, got "
+                f"{self.keys!r}"
+            )
+            return
+        seen = set()
+        for key in self.keys:
+            if not isinstance(key, str) or not key:
+                errors.append(
+                    f"foreach.keys: every key must be a non-empty string, "
+                    f"got {key!r}"
+                )
+                continue
+            if key.startswith("$"):
+                errors.append(
+                    f"foreach.keys: key {key!r} may not begin with '$' — the "
+                    f"RAW key is substituted for {EACH_TOKEN!r} in a template's "
+                    "params, and a $-key would expand into a live reference"
+                )
+            if key in seen:
+                errors.append(
+                    f"foreach.keys: key {key!r} is declared twice — keys are a "
+                    "set, and a repeat would build the same instance twice"
+                )
+            seen.add(key)
+
+    def _check_templates(self, errors):
+        """Accumulate the template-subgraph problems."""
+        if not isinstance(self.pipeline, dict) or not self.pipeline:
+            errors.append(
+                "foreach.pipeline must be a non-empty map of template key -> "
+                "node object — a foreach declaring no template fans out "
+                f"nothing, got {self.pipeline!r}"
+            )
+            return
+        for key, spec in self.pipeline.items():
+            if not isinstance(key, str) or not re.match(_NODE_KEY_OK, key):
+                errors.append(
+                    f"foreach.pipeline: template keys must match "
+                    f"{_NODE_KEY_OK}, got {key!r}"
+                )
+            elif key == SPLITS_SOURCE:
+                errors.append(
+                    "foreach.pipeline: 'splits' is a reserved reference source "
+                    "and cannot be a template key"
+                )
+            _check_child(errors, f"foreach.pipeline.{key}", spec, NodeSpec)
+            if isinstance(spec, NodeSpec):
+                errors.extend(
+                    _template_node_errors(f"foreach.pipeline.{key}", spec)
+                )
+
+    def to_obj(self) -> dict:
+        """This section as plain JSON-able data — the identity payload."""
+        return {
+            "keys": list(self.keys),
+            "pipeline": {k: v.to_obj() for k, v in self.pipeline.items()},
+            "notes": self.notes,
+        }
+
+    @classmethod
+    def from_obj(cls, obj) -> "ForeachSpec":
+        """Rebuild one ``foreach`` section from its serialized form.
+
+        Parameters
+        ----------
+        obj : dict
+            The section's ``keys`` / ``pipeline`` / ``notes``; any other
+            key is refused by name.
+
+        Returns
+        -------
+        ForeachSpec
+            The validated section.
+
+        Raises
+        ------
+        ConfigError
+            On an unknown key, a template that is not an object, or any
+            shape problem the constructor accumulates.
+        """
+        _reject_unknown(obj, ("keys", "pipeline", "notes"), "foreach")
+        errors = []
+        templates = {}
+        raw = obj.get("pipeline", {})
+        if isinstance(raw, dict):
+            for key, node_obj in raw.items():
+                if not isinstance(node_obj, dict):
+                    errors.append(
+                        f"foreach.pipeline.{key}: a node must be an object, "
+                        f"got {node_obj!r}"
+                    )
+                    continue
+                try:
+                    templates[key] = NodeSpec.from_obj(node_obj)
+                except ConfigError as exc:
+                    errors.extend(
+                        f"foreach.pipeline.{key}: {e}" for e in exc.errors
+                    )
+        else:
+            templates = raw
+        _raise_if(errors)
+        return cls(
+            keys=obj.get("keys", ()),
+            pipeline=templates,
+            notes=obj.get("notes", ""),
+        )
+
+
+def _rewrite_refs(obj, template_keys, slug):
+    """``obj`` with every reference naming a template key aimed at that
+    template's instance for one key (ADR-0039 rule 2). Shared-node and
+    ``$splits`` references pass untouched."""
+    if is_prev_ref(obj):
+        node, path, default = parse_prev_ref(obj)
+        head = _instance_key(node, slug) if node in template_keys else node
+        return {PREV_KEY: ".".join((head, *path)), "default": default}
+    if is_node_ref(obj):
+        source, path = parse_node_ref(obj)
+        if source not in template_keys:
+            return obj
+        return "$" + ".".join((_instance_key(source, slug), *path))
+    if isinstance(obj, dict):
+        return {k: _rewrite_refs(v, template_keys, slug) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_rewrite_refs(v, template_keys, slug) for v in obj)
+    return obj
+
+
+def _substitute_each(obj, key):
+    """``obj`` with every value that is EXACTLY :data:`EACH_TOKEN` replaced
+    by ``key``, at any depth (ADR-0039 rule 3). Whole values only — a
+    string that merely CONTAINS the token is left alone."""
+    if isinstance(obj, str):
+        return key if obj == EACH_TOKEN else obj
+    if isinstance(obj, dict):
+        return {k: _substitute_each(v, key) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_substitute_each(v, key) for v in obj)
+    return obj
+
+
+def _instantiate(template, template_keys, key, slug):
+    """One template node as its instance for one foreach key (rules 2–3)."""
+    rewritten = _rewrite_refs(template.params, template_keys, slug)
+    return replace(
+        template,
+        inputs=_rewrite_refs(template.inputs, template_keys, slug),
+        params=_substitute_each(rewritten, key),
+    )
+
+
+def _collision_errors(shared, groups):
+    """Refuse every name two provenances could both claim (rule 1)."""
+    errors = []
+    owners = {key: "a declared node" for key in shared}
+    for tkey in groups:
+        if tkey in owners:
+            errors.append(
+                f"foreach.pipeline.{tkey}: template key {tkey!r} is also "
+                f"{owners[tkey]} — shared, template and instance names must be "
+                "pairwise distinct so every name has ONE provenance"
+            )
+        else:
+            owners[tkey] = f"the template {tkey!r}"
+    for tkey, instances in groups.items():
+        for name in instances:
+            if name in owners:
+                errors.append(
+                    f"foreach: instance key {name!r} (template {tkey!r}) "
+                    f"collides with {owners[name]} — shared, template and "
+                    "instance names must be pairwise distinct"
+                )
+            else:
+                owners[name] = f"an instance of the template {tkey!r}"
+    return errors
+
+
+def _reach_message(key, where, source, groups):
+    """The one refusal text for a shared node naming a template key."""
+    return (
+        f"pipeline.{key}: {where} references the foreach template {source!r}, "
+        f"which is not a node — the template exists once per key "
+        f"({list(groups[source])}). Fan a port out with '<port>{_EACH_PORT}', "
+        "or name one instance"
+    )
+
+
+def _reach_errors(key, spec, groups):
+    """Refuse a shared node reaching into a template other than by fan-out."""
+    errors = []
+    for port, ref in spec.inputs.items():
+        if port.endswith(_EACH_PORT):
+            continue  # rule 4's opt-in — checked where it fans out
+        source, _path = parse_node_ref(ref)
+        if source in groups:
+            errors.append(_reach_message(key, f"inputs.{port}", source, groups))
+    node_refs, prev_refs = [], []
+    _collect_refs(spec.params, node_refs, prev_refs)
+    sources = [s for s, _p in node_refs] + [n for n, _p, _d in prev_refs]
+    for source in sources:
+        if source in groups:
+            errors.append(_reach_message(key, "params", source, groups))
+    return errors
+
+
+def _fanned_inputs(key, spec, groups, keys, slugs):
+    """A shared node's inputs after opt-in port fan-out (rule 4).
+
+    Returns ``(inputs, errors)``. ``inputs`` is None when the node
+    declares no ``<base>__each`` port (the caller then reuses the node
+    object unchanged) or when the fan-out itself refused.
+    """
+    if not any(port.endswith(_EACH_PORT) for port in spec.inputs):
+        return None, []
+    errors = []
+    out = {}
+    for port, ref in spec.inputs.items():
+        if not port.endswith(_EACH_PORT):
+            out[port] = ref
+            continue
+        base = port[: -len(_EACH_PORT)]
+        source, path = parse_node_ref(ref)
+        if not base:
+            errors.append(
+                f"pipeline.{key}: input port {port!r} needs a base name before "
+                f"{_EACH_PORT!r} — the fanned-out ports are named "
+                f"'<base>{FOREACH_SEP}<key>'"
+            )
+        elif source not in groups:
+            errors.append(
+                f"pipeline.{key}: input port {port!r} asks for foreach fan-out "
+                f"but {ref!r} names {source!r}, which is not a foreach template "
+                f"(templates: {sorted(groups)})"
+            )
+        else:
+            for name in keys:
+                fanned = _instance_key(base, slugs[name])
+                if fanned in out or fanned in spec.inputs:
+                    errors.append(
+                        f"pipeline.{key}: fanned-out port {fanned!r} collides "
+                        f"with a port the node already declares"
+                    )
+                out[fanned] = "$" + ".".join(
+                    (_instance_key(source, slugs[name]), *path)
+                )
+    return (None if errors else out), errors
+
+
 def doc_split_from_obj(obj):
     """Reconstruct a split variant, dispatching on the ``kind`` tag."""
     if not isinstance(obj, dict) or "kind" not in obj:
@@ -1059,6 +1488,14 @@ class PipelineDocument:
 
     Everything needing imports (role cross-check, output contracts, DAG
     order, capital⇐stat_test) is the planner's business.
+
+    A ``foreach`` section (ADR-0039) is expanded HERE, at construction:
+    the document stores what was WRITTEN (``pipeline`` + ``foreach``,
+    both identity) and derives what RUNS (``expanded`` and
+    ``foreach_groups``, neither ever emitted by :meth:`to_obj`, which is
+    what makes them provably not hash material). With no ``foreach``,
+    ``expanded`` IS ``pipeline`` — the same object — so every engine site
+    that reads it is byte-identical to reading the declared map.
     """
 
     name: str
@@ -1071,6 +1508,15 @@ class PipelineDocument:
     tracking: object = None
     notes: str = ""
     walkforward: object = None
+    foreach: object = None
+    #: DERIVED, never declared and never emitted: the node map that
+    #: actually runs, and ``template key -> instance keys``. ``init=False``
+    #: so no caller can inject one, ``compare=False`` because they are a
+    #: pure function of the fields that ARE compared.
+    expanded: dict = field(default=None, init=False, compare=False, repr=False)
+    foreach_groups: dict = field(
+        default=None, init=False, compare=False, repr=False
+    )
 
     def __post_init__(self):
         errors = []
@@ -1084,8 +1530,14 @@ class PipelineDocument:
                 f"name must be a run-dir-safe series name matching {_NAME_OK}, "
                 f"got {self.name!r}"
             )
-        if not isinstance(self.pipeline, dict) or not self.pipeline:
-            errors.append("pipeline must be a non-empty map of node key -> node object")
+        if not isinstance(self.pipeline, dict) or (
+            not self.pipeline and self.foreach is None
+        ):
+            errors.append(
+                "pipeline must be a non-empty map of node key -> node object "
+                "(it may be empty ONLY when a foreach section declares the "
+                "templates that fan out)"
+            )
         else:
             for key, spec in self.pipeline.items():
                 if not isinstance(key, str) or not re.match(_NODE_KEY_OK, key):
@@ -1110,16 +1562,52 @@ class PipelineDocument:
         _check_child(errors, "outputs", self.outputs, OutputsConfig)
         _check_child(errors, "tracking", self.tracking, TrackingConfig)
         _check_child(errors, "walkforward", self.walkforward, WalkForwardSpec)
+        _check_child(errors, "foreach", self.foreach, ForeachSpec)
         _check_str(errors, "notes", self.notes, non_empty=False)
+        # The derived pair defaults to the declared map — with no foreach
+        # that IS the answer, and the expansion overwrites it otherwise.
+        object.__setattr__(self, "expanded", self.pipeline)
+        object.__setattr__(self, "foreach_groups", {})
+        if not errors:
+            errors.extend(self._expand())
         if not errors:
             errors.extend(self._cross_field_errors())
         _raise_if(errors)
 
+    def _expand(self):
+        """Install the derived map; return the expansion's refusals."""
+        if self.foreach is None:
+            return []
+        keys = self.foreach.keys
+        slugs = {k: foreach_slug(k) for k in keys}
+        groups = {
+            t: tuple(_instance_key(t, slugs[k]) for k in keys)
+            for t in self.foreach.pipeline
+        }
+        errors = _collision_errors(self.pipeline, groups)
+        if errors:
+            return errors
+        expanded = {}
+        for key, spec in self.pipeline.items():
+            inputs, problems = _fanned_inputs(key, spec, groups, keys, slugs)
+            errors.extend(problems)
+            errors.extend(_reach_errors(key, spec, groups))
+            expanded[key] = spec if inputs is None else replace(spec, inputs=inputs)
+        templates = set(self.foreach.pipeline)
+        for tkey, template in self.foreach.pipeline.items():
+            for name, key in zip(groups[tkey], keys):
+                expanded[name] = _instantiate(template, templates, key, slugs[key])
+        if errors:
+            return errors
+        object.__setattr__(self, "expanded", expanded)
+        object.__setattr__(self, "foreach_groups", groups)
+        return []
+
     def _cross_field_errors(self):
         errors = []
-        keys = set(self.pipeline)
+        keys = set(self.expanded)
         wants_split = []
-        for key, spec in self.pipeline.items():
+        for key, spec in self.expanded.items():
             node_refs, prev_refs = spec.refs()
             for source, _path in node_refs:
                 if source == SPLITS_SOURCE:
@@ -1190,6 +1678,13 @@ class PipelineDocument:
             # always-present null would move every existing document's
             # identity (ADR-0027).
             obj["walkforward"] = self.walkforward.to_obj()
+        if self.foreach is not None:
+            # Emitted only when present, for the reason ``walkforward``
+            # is: an always-present null would move every existing
+            # document's identity. The DERIVED pair (``expanded``,
+            # ``foreach_groups``) is emitted NEVER — the hash reads
+            # to_obj alone, so what to_obj cannot say cannot be identity.
+            obj["foreach"] = self.foreach.to_obj()
         obj["notes"] = self.notes
         return obj
 
@@ -1207,6 +1702,7 @@ class PipelineDocument:
                 "outputs",
                 "tracking",
                 "walkforward",
+                "foreach",
                 "notes",
             ),
             "document",
@@ -1245,6 +1741,7 @@ class PipelineDocument:
         outputs = _section("outputs", OutputsConfig.from_obj)
         tracking = _section("tracking", TrackingConfig.from_obj)
         walkforward = _section("walkforward", WalkForwardSpec.from_obj)
+        foreach = _section("foreach", ForeachSpec.from_obj)
         _raise_if(errors)
         return cls(
             name=obj.get("name", ""),
@@ -1257,6 +1754,7 @@ class PipelineDocument:
             tracking=tracking,
             notes=obj.get("notes", ""),
             walkforward=walkforward,
+            foreach=foreach,
         )
 
 

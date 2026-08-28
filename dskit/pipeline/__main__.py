@@ -213,12 +213,16 @@ def _doc_validate(path) -> int:
             "outputs",
             "tracking",
             "walkforward",
+            "foreach",
         )
         if getattr(doc, s) is not None
     ]
     print(f"OK — {path}")
     print(f"  name:  {doc.name}")
-    print(f"  nodes: {len(doc.pipeline)}  sections: {', '.join(sections) or '—'}")
+    # The count reports what RUNS: with a `foreach` section that is the
+    # shared nodes plus every fanned-out instance (ADR-0039); with none
+    # it is the declared map itself, the same object.
+    print(f"  nodes: {len(doc.expanded)}  sections: {', '.join(sections) or '—'}")
     print(f"  hash:  {doc.hash}")
     return 0
 
@@ -226,8 +230,11 @@ def _doc_validate(path) -> int:
 def cmd_validate(path, adapters) -> int:
     """Validate a config file, whichever grammar it is written in.
 
-    Dispatches on the document's own shape: a ``pipeline`` node map is
-    the docs/24 grammar; everything else is the stage list.
+    Dispatches on the document's own shape: a ``pipeline`` node map — or
+    a ``foreach`` section, since ``pipeline`` may be empty when one is
+    declared (ADR-0039) — is the docs/24 grammar; everything else is the
+    stage list. A ``foreach``-only file that missed this sentinel would
+    fall through to the legacy loader and print the wrong error.
 
     Parameters
     ----------
@@ -246,7 +253,7 @@ def cmd_validate(path, adapters) -> int:
             doc = json.load(fh)
     except (OSError, json.JSONDecodeError):
         doc = None  # the legacy loader produces the path-naming error
-    if isinstance(doc, dict) and "pipeline" in doc:
+    if isinstance(doc, dict) and ("pipeline" in doc or "foreach" in doc):
         try:
             # Node-map validation is shape + hash and resolves no `uses`, so
             # the import changes no outcome — but a flag that silently does

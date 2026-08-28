@@ -1,0 +1,36 @@
+{
+  "name": "foreach-fanout",
+  "notes": "The `foreach` grammar (ADR-0039): one template subgraph, instantiated once per declared key, so 'one node per symbol' stops being N hand-copied nodes. The document STORES this section (it is identity — adding a key is a different computation) and DERIVES what runs; nothing here is a template language, only fan-out over a key list. Run it: python -m dskit.pipeline run examples/pipeline/foreach-fanout.json --asof 2026-01-01",
+  "foreach": {
+    "keys": ["SYNA", "SYNB"],
+    "notes": "The two synthetic instruments. Keys are a SET — declared in any order, sorted at construction — and each one names the instances it builds: template `rows` becomes rows__syna and rows__synb (node keys take the key's slug; `$each` substitutes the RAW key). Add a third instrument by adding a key here, and nothing else.",
+    "pipeline": {
+      "rows": {
+        "uses": "filter",
+        "inputs": { "records": "$dataset.events" },
+        "params": {
+          "where": [{ "field": "instrument", "op": "==", "value": "$each" }]
+        },
+        "notes": "`$each` is substituted as a WHOLE value only — never interpolated into a longer string, which is the line between fan-out and templating. The `$dataset.events` wire names a SHARED node, so it rides through unrewritten; a reference to another TEMPLATE key would be re-aimed at that template's instance for this key."
+      }
+    }
+  },
+  "pipeline": {
+    "dataset": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthEvents",
+      "params": { "n_events": 6, "n_instruments": 2, "seed": 3 },
+      "notes": "role 'data': the shared deterministic source every instance filters. Shared nodes are declared here, once."
+    },
+    "both": {
+      "uses": "concat",
+      "inputs": { "records__each": "$rows.records" },
+      "params": {
+        "shape": "records",
+        "provenance_waiver": "one synthetic source, fanned out per instrument — the ports are the instruments, not two venues",
+        "key": "contract"
+      },
+      "notes": "Port fan-out is OPT-IN: a port written '<base>__each' whose reference names a template key becomes one port per key (records__syna, records__synb). Nothing is fanned out automatically — a Node declares no port set, so the engine cannot know which ports are fannable."
+    }
+  },
+  "outputs": { "run_root": "" }
+}

@@ -161,6 +161,18 @@ on it without breaking its rulings.
 - **Walk-forward folds are separate run series** — the driver suffixes
   each derived document's name `-wf-<cutoff>`, so a `$prev` carry binds
   within one fold's history, never across folds.
+- **Read `document.expanded`, never `document.pipeline`, in the engine**
+  (ADR-0039). `pipeline` is what was WRITTEN; `expanded` is what RUNS —
+  and with no `foreach` section it IS `pipeline`, the same object, so the
+  switch is byte-identical today. `expanded` and `foreach_groups` are
+  `init=False` derived fields that `to_obj` NEVER emits, which is what
+  makes them provably not hash material (the hash reads `to_obj` alone).
+  A new engine site reading `pipeline` would silently skip every
+  fanned-out instance.
+- **`"$each"` is a reserved token, not a reference** — `is_node_ref`
+  excludes it, so every walker composed of that predicate steps over it
+  and outside a template it rides through as a literal. Substituted as a
+  WHOLE value only; as a params dict KEY it refuses.
 - **A search `space` value's grammar is SPLIT, not the kind's alone** —
   the planner owns the structural rules (key shape, declared params,
   ancestors of the objective, winner-consistency) AND the one shape
@@ -206,7 +218,8 @@ on it without breaking its rulings.
 dskit/pipeline/
 ├── __init__.py        public surface; auto-registers the default kinds
 ├── __main__.py        the CLI: python -m dskit.pipeline
-├── document.py        PipelineDocument / NodeSpec / ROLES + MODES / splits + walkforward / refs
+├── document.py        PipelineDocument / NodeSpec / ROLES + MODES / splits + walkforward
+│                      + foreach (ADR-0039: stores what was written, derives what runs) / refs
 ├── node.py            Node + TrainableNode ABCs, NodeContext, registry, register_node_kind
 ├── planner.py         document -> Plan; role rules live here
 ├── driver.py          run_document: LOAD..RECORD, run dirs, $prev carry;
