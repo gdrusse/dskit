@@ -651,3 +651,325 @@ def test_cli_verb_prints_the_summary_and_reports_exit(tmp_path, capsys):
     assert code == 0
     assert "WALK-FORWARD RAN" in out
     assert "summary dir:" in out
+
+
+# -- HPO inside walk-forward (ADR-0043) ----------------------------------------
+
+
+class ThetaKnob(Node):
+    """One tunable knob (role ``train``): the value IS ``theta``, so a
+    search over it moves the objective by exactly the declared amount."""
+
+    role = "train"
+    outputs = ("value",)
+
+    @classmethod
+    def validate_params(cls, params):
+        return [] if set(params) <= {"theta"} else ["unknown params"]
+
+    def run(self, ctx, inputs):
+        return {"value": float(self.params["theta"])}
+
+
+class MovingTargetScore(Node):
+    """A val-split score whose optimum MOVES with the fold: the loss is
+    ``(value - late)^2`` once the fold's train cut passes ``switch_ms``
+    and ``(value - early)^2`` before it — so the folds genuinely
+    disagree about which theta wins, which is the whole diagnostic."""
+
+    role = "score"
+    outputs = ("metrics",)
+
+    @classmethod
+    def validate_params(cls, params):
+        known = {"split", "switch_ms", "early", "late"}
+        return [] if set(params) <= known else ["unknown params"]
+
+    def run(self, ctx, inputs):
+        late = ctx.splits_info["train_end_ms"] > self.params["switch_ms"]
+        target = self.params["late" if late else "early"]
+        return {"metrics": {"loss": (inputs["value"] - target) ** 2}}
+
+
+class ThetaGate(Node):
+    """GO iff ``value <= bar`` (role ``gate``), sitting between the knob
+    and the score — the winner-pass verdict-flip refusal's subject."""
+
+    role = "gate"
+    outputs = ("value", "verdict")
+
+    @classmethod
+    def validate_params(cls, params):
+        return [] if set(params) <= {"bar"} else ["unknown params"]
+
+    def run(self, ctx, inputs):
+        value = inputs["value"]
+        return {
+            "value": value,
+            "verdict": "GO" if value <= self.params["bar"] else "NO-GO",
+        }
+
+
+class PinnedSearch(Node):
+    """A search kind whose winner STATE is declared, not discovered
+    (role ``search``).
+
+    It drives the seam once, then emits exactly the winner its params
+    pin: a JSON value (``winner``), no ``best_params`` key at all
+    (``emit_winner: false``), or a value JSON cannot hold
+    (``infinite_winner: true``) — the three states ADR-0043 asks the run
+    result to tell apart.
+    """
+
+    role = "search"
+
+    @classmethod
+    def validate_params(cls, params):
+        known = {"emit_winner", "infinite_winner", "objective", "space", "winner"}
+        return [] if set(params) <= known else ["unknown params"]
+
+    def run(self, ctx, inputs):
+        probe = {"theta.theta": 3.0}
+        score = ctx.rerun(dict(probe))
+        out = {"best_score": score, "trials": [{"overrides": probe, "score": score}]}
+        if self.params.get("infinite_winner"):
+            out["best_params"] = {"theta.theta": float("inf")}
+        elif self.params.get("emit_winner", True):
+            out["best_params"] = self.params.get("winner")
+        return out
+
+
+def hpo_pipeline(switch_ms, *, uses="hpo-grid", search_params=None, suffix="", theta=9.0):
+    """One search chain — knob, fold-dependent val score, search node."""
+    params = {
+        "space": {f"theta{suffix}.theta": [1.0, 2.0]},
+        "objective": f"$val{suffix}.metrics.loss",
+    }
+    params.update(search_params or {})
+    return {
+        f"theta{suffix}": NodeSpec(
+            uses="tests.pipeline.test_walkforward:ThetaKnob", params={"theta": theta}
+        ),
+        f"val{suffix}": NodeSpec(
+            uses="tests.pipeline.test_walkforward:MovingTargetScore",
+            inputs={"value": f"$theta{suffix}.value"},
+            params={"split": "val", "switch_ms": switch_ms, "early": 1.0, "late": 2.0},
+        ),
+        f"tune{suffix}": NodeSpec(uses=uses, params=params),
+    }
+
+
+def hpo_doc(tmp_path, pipeline, *, objective="$val.metrics.loss", folds=None):
+    return PipelineDocument(
+        name="wfhpo",
+        pipeline=pipeline,
+        outputs=OutputsConfig(run_root=str(tmp_path)),
+        walkforward=wf_spec(
+            objective=objective,
+            folds=list(folds or ["2025-01-01", "2025-02-01", "2025-03-01"]),
+        ),
+    )
+
+
+def switch_between_folds():
+    """A ``switch_ms`` that lands after fold 1's train cut and before the
+    rest — folds 2 and 3 then share a winner fold 1 does not."""
+    from dskit.pipeline.driver import _cutoff_ms
+
+    return _cutoff_ms("2025-01-15")
+
+
+def test_per_fold_winners_that_disagree_are_counted_and_printed(tmp_path):
+    """The point of ADR-0043: three folds, two winners, and a reader of
+    the summary can SEE the folds disagreed."""
+    doc = hpo_doc(tmp_path, hpo_pipeline(switch_between_folds()))
+    result = run_walk_forward(doc, asof=ASOF)
+    assert result.state == "ran"
+    assert [f["search"]["tune"]["winner"] for f in result.folds] == [
+        {"theta.theta": 1.0},
+        {"theta.theta": 2.0},
+        {"theta.theta": 2.0},
+    ]
+    assert [f["search"]["tune"]["trials_executed"] for f in result.folds] == [2, 2, 2]
+    assert [f["search"]["tune"]["winner_score"] for f in result.folds] == [0.0] * 3
+    assert result.aggregate["search"] == {
+        "tune": {"n_folds_with_winner": 3, "n_distinct_winners": 2}
+    }
+    summary = read_json(result.summary_dir, "walkforward.json")
+    assert summary["aggregate"]["search"]["tune"]["n_distinct_winners"] == 2
+    assert summary["folds"][0]["search"]["tune"]["winner_reran"] == ["theta", "val"]
+    with open(os.path.join(result.summary_dir, "report.md"), encoding="utf-8") as fh:
+        report = fh.read()
+    assert "| tune | 3 | 2 |" in report  # the aggregate row
+    assert '| 2025-01-01 | tune | 2 | `{"theta.theta": 1.0}` |' in report
+    assert '| 2025-02-01 | tune | 2 | `{"theta.theta": 2.0}` |' in report
+    assert "6 trial(s) executed" in report  # counted, never predicted
+
+
+def test_two_search_nodes_stay_distinguishable(tmp_path):
+    """Node-keyed, so K>1 searches never collapse into one tally: the
+    second chain's score never switches, so its folds all agree."""
+    switch = switch_between_folds()
+    pipeline = hpo_pipeline(switch)
+    pipeline.update(hpo_pipeline(switch * 10, suffix="_b"))
+    result = run_walk_forward(hpo_doc(tmp_path, pipeline), asof=ASOF)
+    assert result.state == "ran"
+    assert result.aggregate["search"] == {
+        "tune": {"n_folds_with_winner": 3, "n_distinct_winners": 2},
+        "tune_b": {"n_folds_with_winner": 3, "n_distinct_winners": 1},
+    }
+    assert result.folds[2]["search"]["tune_b"]["winner"] == {"theta_b.theta": 1.0}
+
+
+def test_a_search_that_produces_no_winner_reports_none(tmp_path):
+    """Presence, not value: a kind that emits no ``best_params`` at all
+    records no winner, and the section still says the search RAN."""
+    pipeline = hpo_pipeline(
+        switch_between_folds(),
+        uses="tests.pipeline.test_walkforward:PinnedSearch",
+        search_params={"emit_winner": False},
+    )
+    result = run_walk_forward(
+        hpo_doc(tmp_path, pipeline, objective="$tune.best_score", folds=["2025-01-01"]),
+        asof=ASOF,
+    )
+    assert result.state == "ran"
+    meta = result.folds[0]["search"]["tune"]
+    assert meta["trials_executed"] == 1
+    assert "winner" not in meta
+    assert "winner_dropped" not in meta
+    assert meta["winner_score"] == 4.0  # (3 - 1)^2 on the probe trial
+    assert result.aggregate["search"] == {
+        "tune": {"n_folds_with_winner": 0, "n_distinct_winners": 0}
+    }
+    with open(os.path.join(result.summary_dir, "report.md"), encoding="utf-8") as fh:
+        assert "| 2025-01-01 | tune | 1 | — |" in fh.read()
+
+
+def test_a_winner_of_none_is_not_a_missing_winner(tmp_path):
+    """The other side of the presence rule: a kind CAN choose ``None``,
+    and that is a winner the summary counts."""
+    pipeline = hpo_pipeline(
+        switch_between_folds(),
+        uses="tests.pipeline.test_walkforward:PinnedSearch",
+        search_params={"emit_winner": True},
+    )
+    result = run_walk_forward(
+        hpo_doc(tmp_path, pipeline, objective="$tune.best_score", folds=["2025-01-01"]),
+        asof=ASOF,
+    )
+    meta = result.folds[0]["search"]["tune"]
+    assert "winner" in meta and meta["winner"] is None
+    assert "winner_reran" not in meta  # a falsy winner is never applied
+    assert result.aggregate["search"] == {
+        "tune": {"n_folds_with_winner": 1, "n_distinct_winners": 1}
+    }
+
+
+def test_a_winner_json_cannot_hold_is_dropped_never_coerced(tmp_path):
+    """An infinite override is applied to the run but NOT invented into
+    the record: the fold reports a winner it cannot print."""
+    pipeline = hpo_pipeline(
+        switch_between_folds(),
+        uses="tests.pipeline.test_walkforward:PinnedSearch",
+        search_params={"infinite_winner": True},
+    )
+    result = run_walk_forward(
+        hpo_doc(tmp_path, pipeline, objective="$tune.best_score", folds=["2025-01-01"]),
+        asof=ASOF,
+    )
+    assert result.state == "ran"
+    meta = result.folds[0]["search"]["tune"]
+    assert "winner" not in meta
+    assert meta["winner_dropped"] == ["best_params"]
+    assert meta["winner_reran"] == ["theta", "val"]  # applied all the same
+    assert result.aggregate["search"] == {
+        "tune": {
+            "n_folds_with_winner": 1,
+            "n_distinct_winners": 0,
+            "n_folds_dropped": 1,
+        }
+    }
+    read_json(result.summary_dir, "walkforward.json")  # the record stayed writable
+    with open(os.path.join(result.summary_dir, "report.md"), encoding="utf-8") as fh:
+        assert "dropped (not JSON-legal)" in fh.read()
+
+
+def test_the_winner_that_caused_a_flip_refusal_is_still_reported(tmp_path):
+    """Population happens BEFORE the winner is applied, so the fold that
+    refused to ride a stale GO still names the winner that caused it."""
+    from dataclasses import replace
+
+    pipeline = hpo_pipeline(
+        switch_between_folds(), search_params={"select": "max"}, theta=1.0
+    )
+    pipeline["gate"] = NodeSpec(
+        uses="tests.pipeline.test_walkforward:ThetaGate",
+        inputs={"value": "$theta.value"},
+        params={"bar": 1.5},
+    )
+    pipeline["val"] = replace(pipeline["val"], inputs={"value": "$gate.value"})
+    result = run_walk_forward(
+        hpo_doc(tmp_path, pipeline, folds=["2025-01-01"]), asof=ASOF
+    )
+    assert result.state == "error"
+    meta = result.folds[0]["search"]["tune"]
+    assert meta["winner"] == {"theta.theta": 2.0}  # the winner that flipped the gate
+    assert "winner_reran" not in meta  # the apply never completed
+
+
+def test_an_hpo_free_summary_is_byte_identical(tmp_path):
+    """The hard invariant: a walk-forward document with no search node
+    must produce exactly the summary it produced before ADR-0043 — no
+    empty ``search`` key on a fold row, none in the aggregate, and no
+    section in the report. Spelled out here independently of the
+    formatter, so an unconditional emission cannot pass."""
+    import statistics
+
+    from dskit.pipeline.driver import _cutoff_ms
+
+    doc = probe_doc(tmp_path, wf_spec())
+    result = run_walk_forward(doc, asof=ASOF)
+    summary = read_json(result.summary_dir, "walkforward.json")
+    assert set(summary) == {
+        "name",
+        "asof",
+        "document_hash",
+        "objective",
+        "select",
+        "state",
+        "folds",
+        "aggregate",
+    }
+    assert [sorted(f) for f in summary["folds"]] == [
+        ["cutoff", "run_dir", "score", "state"]
+    ] * 2
+    assert sorted(summary["aggregate"]) == [
+        "best_cutoff",
+        "best_score",
+        "max",
+        "mean",
+        "min",
+        "n_folds",
+        "n_scored",
+        "std",
+    ]
+    cutoffs = ["2025-01-01", "2025-02-01"]
+    scores = [float(_cutoff_ms(c) - 1) for c in cutoffs]
+    expected = [
+        "**WALK-FORWARD RAN** — 2/2 fold(s) scored on `$probe.score`",
+        "",
+        f"- document hash: `{doc.hash[:16]}…`",
+        f"- mean {statistics.fmean(scores):.6g} · "
+        f"std {statistics.pstdev(scores):.6g} · "
+        f"best (min) {min(scores):.6g} at {cutoffs[0]}",
+        "",
+        "| fold cutoff | state | score | run |",
+        "|---|---|---|---|",
+    ] + [
+        f"| {fold['cutoff']} | ran | {fold['score']:.6g} | "
+        f"`{os.path.basename(fold['run_dir'])}` |"
+        for fold in summary["folds"]
+    ]
+    with open(os.path.join(result.summary_dir, "report.md"), encoding="utf-8") as fh:
+        assert fh.read() == "\n".join(expected) + "\n"

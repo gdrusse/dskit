@@ -34,6 +34,14 @@ and sink metrics — everything downstream of the search consumes the
 winner pass, and the search node's record carries ``trials_executed``
 plus the ``winner_reran`` node list.
 
+A run SURFACES its search (ADR-0043): the same per-node record — the
+trials, the ``winner`` and its score when the kind produced them —
+rides out on :attr:`DocumentRunResult.search`, node-keyed, populated
+BEFORE the winner is applied so a winner-flip refusal still names the
+winner that caused it. Walk-forward then tallies those winners per
+fold, because per-fold re-tuning MEASURES the tuning procedure and its
+per-fold disagreement must be printed rather than assumed away.
+
 Run-over-run state (``$prev``): each run writes ``carry.json`` — every
 JSON-small node output — and the next run in the series binds its
 ``$prev`` references against the newest prior run dir, falling back to
@@ -665,14 +673,25 @@ def _summarize(value):
     return {"type": type(value).__name__}
 
 
+def _json_text(value):
+    """The value's canonical JSON, or None when JSON cannot hold it.
+
+    The one legality rule the driver's records share: ``carry.json``
+    decides what a run may hand the next one by it, and a search node's
+    recorded winner by it too. Two copies of this ``try`` would be one
+    ``allow_nan`` apart from silently carrying a value the other dropped.
+    """
+    try:
+        return json.dumps(value, sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError):
+        return None
+
+
 def _carryable(value):
     """The value if it is JSON-legal and small enough to carry, else None
     (with a flag) — carry.json is state, not storage."""
-    try:
-        text = json.dumps(value, sort_keys=True, allow_nan=False)
-    except (TypeError, ValueError):
-        return None, False
-    if len(text) > _CARRY_LIMIT:
+    text = _json_text(value)
+    if text is None or len(text) > _CARRY_LIMIT:
         return None, False
     return value, True
 
@@ -700,6 +719,53 @@ def _collect_flags(order, node_outputs):
                 level, row = "note", (key, "flag", str(flag))
             (loud if level.upper() == "LOUD" else notes).append(row)
     return loud, notes
+
+
+#: What a search node PRODUCES, and the name the run RECORDS it under
+#: (ADR-0043). Two names, because the outputs are the kind's vocabulary
+#: (``best_params`` is what a search kind returns) and the record is the
+#: run's (``winner`` is what a reader of a summary asks about).
+_SEARCH_WINNER_FIELDS = (("best_params", "winner"), ("best_score", "winner_score"))
+
+
+def _search_record(seam, outputs):
+    """One search node's metadata: its trials, and the winner it chose.
+
+    PRESENCE, not value, is the signal (ADR-0043): a kind that emitted
+    ``best_params`` at all reported a winner — even a winner of ``None``
+    — and a kind that emitted none reports nothing, because no search
+    kind is obliged to choose. A produced value JSON cannot hold is
+    named in ``winner_dropped`` rather than coerced: a record that
+    invented a printable stand-in would be reporting a winner the search
+    never picked.
+
+    Parameters
+    ----------
+    seam : _SearchSeam
+        The node's re-execution seam, whose ``calls`` counts its trials.
+    outputs : dict
+        What the search node's ``run`` returned — empty when it raised
+        before returning anything.
+
+    Returns
+    -------
+    dict
+        ``trials_executed`` always; ``winner`` / ``winner_score`` for
+        each field the kind produced JSON-legally; ``winner_dropped``,
+        the produced names JSON could not hold, only when non-empty.
+    """
+    record = {"trials_executed": seam.calls}
+    dropped = []
+    for produced, recorded in _SEARCH_WINNER_FIELDS:
+        if produced not in outputs:
+            continue
+        if _json_text(outputs[produced]) is None:
+            dropped.append(produced)
+        else:
+            record[recorded] = outputs[produced]
+    if dropped:
+        record["winner_dropped"] = dropped
+    return record
 
 
 def _node_metrics(outputs) -> dict:
@@ -733,6 +799,12 @@ class DocumentRunResult:
     ``"halted"`` (exit 3) — a gate said NO-GO and its descendants were
     skipped, which is a RESULT; ``"error"`` (exit 1) — a node failed and
     the remaining order was aborted.
+
+    ``search`` is what the run's search nodes did (ADR-0043), keyed by
+    node key so K>1 searches stay distinguishable: ``trials_executed``,
+    the ``winner`` and ``winner_score`` the kind produced, the nodes the
+    winner re-ran. Empty — and absent from every artifact — for a
+    document that declares no search node.
     """
 
     run_dir: str
@@ -745,6 +817,7 @@ class DocumentRunResult:
     prev_run: str = ""
     warnings: tuple = ()
     seconds: dict = field(default_factory=dict)
+    search: dict = field(default_factory=dict)
 
     @property
     def exit_code(self) -> int:
@@ -1123,7 +1196,9 @@ def _run_one_node(attempt, key, spec, the_plan, ctx, run, instances):
     attempt.outputs = out
     if attempt.seam is None:
         return
-    run.search_meta[key] = {"trials_executed": attempt.seam.calls}
+    # Recorded BEFORE the winner is applied (ADR-0043): a winner-flip
+    # refusal must still report the winner that caused it.
+    run.search_meta[key] = _search_record(attempt.seam, out)
     winner = out.get("best_params")
     if winner:
         attempt.winner_reran, attempt.winner_seconds = attempt.seam.apply_winner(
@@ -1238,7 +1313,9 @@ def _execute_plan(document, the_plan, ctx, resolved, trackers):
             _run_one_node(attempt, key, spec, the_plan, ctx, run, resolved.instances)
         except Exception:  # noqa: BLE001 — recorded, then abort
             if attempt.seam is not None:
-                run.search_meta[key] = {"trials_executed": attempt.seam.calls}
+                run.search_meta[key] = _search_record(
+                    attempt.seam, attempt.outputs or {}
+                )
             _record_error(run, key, t0)
             break
         _record_success(run, key, attempt, trackers, t0)
@@ -1349,6 +1426,7 @@ def _record_run(document, asof, the_plan, resolved, run):
         prev_run=resolved.prev_dir,
         warnings=the_plan.warnings,
         seconds=run.seconds,
+        search=run.search_meta,
     )
     _write_json(
         os.path.join(resolved.run_dir, "result.json"),
@@ -1463,10 +1541,17 @@ class WalkForwardRunResult:
 
     ``folds`` is one dict per fold, in cutoff order:
     ``{"cutoff", "run_dir", "state", "score"}`` (``score`` is ``None``
-    for a halted fold, and for the erroring fold). ``state``: ``"ran"``
-    — every fold completed; ``"halted"`` — at least one fold hit a NO-GO
-    (a halt is a result; later folds still ran); ``"error"`` — a fold
-    errored and the remaining folds were not attempted.
+    for a halted fold, and for the erroring fold), plus ``"search"`` —
+    that fold's per-node search record — ONLY when the fold ran one.
+    ``state``: ``"ran"`` — every fold completed; ``"halted"`` — at least
+    one fold hit a NO-GO (a halt is a result; later folds still ran);
+    ``"error"`` — a fold errored and the remaining folds were not
+    attempted.
+
+    ``aggregate`` likewise carries ``"search"`` only when some fold
+    searched: per node, how many folds reported a winner and how many
+    DISTINCT winners they were (ADR-0043). An HPO-free evaluation's
+    summary is byte-identical to the pre-ADR-0043 one.
     """
 
     summary_dir: str
@@ -1670,6 +1755,10 @@ def _run_folds(document, spec, asof, registry, policy):
             "state": result.state,
             "score": None,
         }
+        if result.search:
+            # Only when the fold HAD a search node: an always-emitted key
+            # would move every HPO-free summary's bytes (ADR-0043).
+            fold["search"] = result.search
         if result.state == "ran":
             try:
                 fold["score"] = _fold_score(result, target, obj_path, spec.objective)
@@ -1689,12 +1778,87 @@ def _run_folds(document, spec, asof, registry, policy):
     return folds, state
 
 
+def _winner_identity(meta):
+    """How one fold's search record counts, as ``(reported, identity)``.
+
+    Parameters
+    ----------
+    meta : dict
+        One search node's record on one fold, as :func:`_search_record`
+        wrote it.
+
+    Returns
+    -------
+    tuple
+        ``(reported, identity)`` — whether the kind reported a winner at
+        all (bool), and that winner's canonical JSON as the string that
+        identifies it, or None when it was dropped and so cannot be
+        compared with any other fold's.
+    """
+    if "winner" in meta:
+        return True, _json_text(meta["winner"])
+    if "best_params" in meta.get("winner_dropped", ()):
+        return True, None
+    return False, None
+
+
+def _aggregate_search(folds):
+    """Per search node, whether the folds AGREED about the winner.
+
+    The ADR-0043 diagnostic: per-fold re-tuning measures the tuning
+    procedure, so winners MAY differ fold to fold — and a distinct-winner
+    count above one is exactly the instability a reader must not have to
+    take on folklore. Dropped winners count as reported (the search did
+    choose) but never as distinct (nothing can compare them), so the two
+    numbers are reconciled by ``n_folds_dropped``, emitted only when some
+    fold dropped one.
+
+    Parameters
+    ----------
+    folds : list of dict
+        The fold rows, each carrying a ``search`` map when its fold ran
+        one.
+
+    Returns
+    -------
+    dict
+        ``node key -> {"n_folds_with_winner", "n_distinct_winners"[,
+        "n_folds_dropped"]}``. EMPTY when no fold declared a search node,
+        which is what keeps an HPO-free summary byte-identical.
+    """
+    tally = {}
+    for fold in folds:
+        for key, meta in fold.get("search", {}).items():
+            reported, identity = _winner_identity(meta)
+            seen = tally.setdefault(key, {"reported": 0, "dropped": 0, "distinct": set()})
+            if not reported:
+                continue
+            seen["reported"] += 1
+            if identity is None:
+                seen["dropped"] += 1
+            else:
+                seen["distinct"].add(identity)
+    out = {}
+    for key, seen in tally.items():
+        row = {
+            "n_folds_with_winner": seen["reported"],
+            "n_distinct_winners": len(seen["distinct"]),
+        }
+        if seen["dropped"]:
+            row["n_folds_dropped"] = seen["dropped"]
+        out[key] = row
+    return out
+
+
 def _aggregate_folds(folds, select):
     """Aggregate the scored folds, and name the best one by ``select``."""
     import statistics
 
     scored = [f["score"] for f in folds if f["score"] is not None]
     aggregate = {"n_folds": len(folds), "n_scored": len(scored)}
+    search = _aggregate_search(folds)
+    if search:
+        aggregate["search"] = search
     if not scored:
         return aggregate
     aggregate["mean"] = statistics.fmean(scored)
@@ -1706,6 +1870,76 @@ def _aggregate_folds(folds, select):
     aggregate["best_cutoff"] = best["cutoff"]
     aggregate["best_score"] = best["score"]
     return aggregate
+
+
+def _winner_cell(meta):
+    """One fold's winner as the report prints it: its canonical JSON, a
+    named drop when JSON could not hold it, or a dash for no winner."""
+    if "winner" in meta:
+        return f"`{_json_text(meta['winner'])}`"
+    if "best_params" in meta.get("winner_dropped", ()):
+        return "dropped (not JSON-legal)"
+    return "—"
+
+
+def _walkforward_search_lines(folds, aggregate):
+    """The report's Search section — nothing at all when no fold searched.
+
+    An HPO-free evaluation must read exactly as it did before ADR-0043,
+    so this returns an EMPTY list rather than an empty section. When
+    folds did search, it prints what the ADR exists for: per node, how
+    many folds chose a winner and how many DIFFERENT winners they chose,
+    then the per-fold winners themselves — and the run's cost COUNTED
+    (folds x one base pass + the trials each executed + one winner
+    pass), never predicted.
+
+    Parameters
+    ----------
+    folds : list of dict
+        The fold rows, in cutoff order.
+    aggregate : dict
+        The aggregate, read for its ``search`` tally.
+
+    Returns
+    -------
+    list of str
+        Markdown lines to append, or ``[]``.
+    """
+    search = aggregate.get("search")
+    if not search:
+        return []
+    trials = sum(
+        meta.get("trials_executed", 0)
+        for fold in folds
+        for meta in fold.get("search", {}).values()
+    )
+    lines = [
+        "",
+        "## Search — per-fold re-tune",
+        "",
+        "Every fold re-tuned independently, which MEASURES the tuning "
+        "procedure (ADR-0043): a winner below is that fold's, never a "
+        f"shipped configuration. Cost: {aggregate['n_folds']} fold(s) x "
+        f"(one base pass + its trials + one winner pass), {trials} "
+        "trial(s) executed.",
+        "",
+        "| search node | folds with a winner | distinct winners |",
+        "|---|---|---|",
+    ]
+    lines += [
+        f"| {key} | {search[key]['n_folds_with_winner']} | "
+        f"{search[key]['n_distinct_winners']} |"
+        for key in sorted(search)
+    ]
+    lines += ["", "| fold cutoff | search node | trials | winner |", "|---|---|---|---|"]
+    lines += [
+        f"| {fold['cutoff']} | {key} | "
+        f"{fold['search'][key].get('trials_executed', '—')} | "
+        f"{_winner_cell(fold['search'][key])} |"
+        for fold in folds
+        for key in sorted(fold.get("search", {}))
+    ]
+    return lines
 
 
 def _walkforward_report_lines(document, spec, state, folds, aggregate):
@@ -1729,7 +1963,7 @@ def _walkforward_report_lines(document, spec, state, folds, aggregate):
         lines.append(
             f"| {fold['cutoff']} | {fold['state']} | {score} | `{run_name}` |"
         )
-    return lines
+    return lines + _walkforward_search_lines(folds, aggregate)
 
 
 def _write_walkforward_summary(
@@ -1768,6 +2002,15 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
     by ``select``) into a summary directory
     ``{name}-walkforward-{asof}-{hash8}`` beside the fold runs:
     ``walkforward.json`` (the machine record) + ``report.md``.
+
+    A fold carrying a search node RE-TUNES independently (ADR-0043) —
+    which is a MEASUREMENT of the tuning procedure, not an unbiased
+    estimate of a tuned model, and costs folds x (one base pass + the
+    trials it executed + one winner pass). The summary reports each
+    fold's winner and, per search node, how many folds reported one and
+    how many DISTINCT ones there were. What SHIPS is the plain ``run``:
+    freezing a winner means editing the document (pin the values, drop
+    the search node), which moves its hash by design.
 
     A fold that HALTS (NO-GO) is recorded with no score and later folds
     still run — a halt is a result. A fold that ERRORS stops the loop;

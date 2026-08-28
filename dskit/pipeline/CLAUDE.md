@@ -161,6 +161,34 @@ on it without breaking its rulings.
 - **Walk-forward folds are separate run series** — the driver suffixes
   each derived document's name `-wf-<cutoff>`, so a `$prev` carry binds
   within one fold's history, never across folds.
+- **HPO inside walk-forward MEASURES the tuning procedure (ADR-0043)** —
+  it is NOT nested CV, and no docstring here may imply it is: a fold's
+  evaluation window IS its val split, the planner forces every search
+  objective onto a `val` score node, and folds refuse a cal band, so
+  nothing de-biases a fold's own score. Cost is folds x (one base pass +
+  that fold's executed trials + one winner pass), COUNTED in the summary
+  and never predicted. Shipping is the plain `run`; freezing a winner is
+  an EDIT of the document (pin the values, drop the search node) and
+  moves its hash by design — there is deliberately no `freeze` knob and
+  no `search_mode`, and adding one would be a second way to say it. The
+  fold-internal outer band that WOULD de-bias the estimate is deferred,
+  not forgotten.
+- **The search diagnostic is emitted only when non-empty** — a fold row
+  and the aggregate grow a `search` key only when a fold ran a search
+  node, and `_walkforward_search_lines` returns `[]` rather than an
+  empty section, so an HPO-free summary stays byte-identical
+  (`test_walkforward.py::test_an_hpo_free_summary_is_byte_identical`
+  restates the whole report independently and pins it). Same omission
+  discipline as the optional document fields — for the same reason.
+- **A search winner is recorded by PRESENCE, never coerced** —
+  `_search_record` copies `best_params`/`best_score` under the run's own
+  names (`winner`/`winner_score`) only when the kind emitted the key, so
+  "no winner produced" and "a winner of `None`" stay distinguishable; a
+  value JSON cannot hold is NAMED in `winner_dropped`, never summarized
+  into a printable stand-in the search never chose. It is populated
+  BEFORE `apply_winner`, so a winner-flip refusal still reports the
+  winner that caused it. `_json_text` is the single JSON-legality rule
+  the record and `carry.json` share.
 - **Read `document.expanded`, never `document.pipeline`, in the engine**
   (ADR-0039). `pipeline` is what was WRITTEN; `expanded` is what RUNS —
   and with no `foreach` section it IS `pipeline`, the same object, so the

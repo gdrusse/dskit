@@ -69,6 +69,8 @@ kinds resolve. Two more verbs — `demo`
   `HpoGrid`, `kinds_search.py`), for `search` roles only and never an edge:
   each trial re-executes the dirty part of the objective's ancestry, then
   `apply_winner` runs it once more and that pass replaces those outputs.
+  What it chose rides out on `DocumentRunResult.search`, node-keyed
+  (ADR-0043).
 - **Series and folds** — `_find_prev_run` + `_materialize` bind `$prev`;
   `run_walk_forward` + `_fold_splits` → `WalkForwardRunResult` (`driver.py`).
 - **Reading runs back** — `scan_runs` → `RunSummary` / `RunProblem`,
@@ -121,6 +123,20 @@ kinds resolve. Two more verbs — `demo`
   identity; a fold that halts is a result, a fold that errors stops the
   plan. Folds carry no cal band (ADR-0034 v1) — a parent document
   declaring one refuses pre-flight.
+- **Walk-forward + a search node** (ADR-0043): every fold re-tunes on its
+  own, so this MEASURES the tuning procedure — rolling-origin performance
+  of "search, then fit" — and is never an unbiased estimate of a tuned
+  model (nothing de-biases a fold's score: a fold's evaluation window IS
+  its val split, which is what the search optimized). **It costs
+  folds x (one base pass + the trials that fold executed + one winner
+  pass)**, counted in the summary, never predicted. The summary prints
+  each fold's winner plus, per search node, how many folds chose one and
+  how many DISTINCT ones they chose — folds may legitimately disagree,
+  and that is a number to read, not folklore. **What ships is the plain
+  `run`**: freezing a winner means EDITING the document — pin the values,
+  drop the search node — which moves its hash by design, because a
+  different computation is a different identity. A summary whose folds
+  declared no search node is byte-identical to a pre-ADR-0043 one.
 - **Fan-out** (ADR-0039): an optional `foreach` section — `keys` (a declared
   list, sorted at construction) plus a `pipeline` of TEMPLATE nodes — expanded
   at document construction, so "one model per symbol" stops being N
