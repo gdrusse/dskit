@@ -39,7 +39,12 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
-from dskit.pipeline.base import ConfigError, import_ref, is_class_ref
+from dskit.pipeline.base import (
+    ConfigError,
+    abstract_class_problem,
+    import_ref,
+    is_class_ref,
+)
 from dskit.pipeline.document import ROLES
 
 __all__ = [
@@ -385,11 +390,11 @@ def node_class_errors(cls, where):
             "machinery inside one, never reference a raw function"
         ]
     problems = []
-    if getattr(cls, "__abstractmethods__", None):
-        problems.append(
-            f"{where}: {cls.__name__} is abstract "
-            f"(missing {sorted(cls.__abstractmethods__)})"
-        )
+    # Asked of core, not restated: the import doorway refuses the same
+    # defect in the same words (``base.abstract_class_problem``).
+    abstract = abstract_class_problem(cls, where)
+    if abstract:
+        problems.append(abstract)
     if cls.role not in ROLES:
         problems.append(
             f"{where}: {cls.__name__} must declare a class-level role from "

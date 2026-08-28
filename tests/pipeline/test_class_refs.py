@@ -3,6 +3,8 @@ plus named custom stages: the customization layer over the seams."""
 
 import pytest
 
+from abc import ABC, abstractmethod
+
 from dskit.pipeline.base import (
     ConfigError,
     FeatureConfig,
@@ -11,15 +13,42 @@ from dskit.pipeline.base import (
     OptimizationConfig,
     SinkConfig,
     TrackingConfig,
+    import_library_class,
     import_ref,
     is_class_ref,
     parse_stage_entry,
 )
 from dskit.pipeline.features import apply_stream_steps
+from dskit.pipeline.node import Node, node_class_errors
 from dskit.pipeline.resolve import resolve
 from dskit.pipeline.runner import Runner
 
 HELPERS = "tests.pipeline.refhelpers"
+
+
+class HalfWrittenNode(Node):
+    """A Node subclass that declares a hook and never implements it — the
+    shape both doorways must refuse, and the ONE class through which their
+    wording is compared."""
+
+    role = "transform"
+
+    @abstractmethod
+    def step(self):
+        """The hook this class deliberately leaves abstract."""
+
+    def run(self, ctx, inputs):
+        return {}
+
+
+class HalfWrittenPlain(ABC):
+    """The same defect on a class that is NOT a Node — what a declared
+    library class (a torch adapter, an nn.Module) actually looks like, and
+    therefore what the import doorway alone can refuse."""
+
+    @abstractmethod
+    def step(self):
+        """The hook this class deliberately leaves abstract."""
 
 
 class TestReferenceGrammar:
@@ -247,3 +276,44 @@ class TestOptimizerAndCustomStages:
         result = Runner(cfg, asof="2026-01-01", registry=registry).run()
         opt = next(s for s in result.stages if s.stage == "optimize")
         assert opt.payload["cap"] == len(result.survivors)  # wired from report
+
+
+#: The one sentence core says about an unimplemented hook. Both doorways
+#: below must END with it, which is what makes "the pack imports the rule"
+#: checkable: a second, differently-worded copy anywhere fails this.
+ABSTRACT_TAIL = "is abstract (missing ['step'])"
+
+THIS = "tests.pipeline.test_class_refs"
+
+
+class TestLibraryClassDoorway:
+    """``import_library_class`` — the shared door EVERY declared library
+    class enters through (torch module, torch optimizer, torch adapter,
+    transformer config/model)."""
+
+    def test_a_class_with_unimplemented_hooks_is_refused_by_the_doorway(self):
+        """Not usable here for the same reason ``requires=`` exists: refused
+        BY NAME at the door rather than as a raw ``ABCMeta`` TypeError deep
+        inside a training loop."""
+        with pytest.raises(ValueError) as caught:
+            import_library_class(f"{THIS}:HalfWrittenPlain", "torch adapter")
+        message = str(caught.value)
+        assert f"{THIS}:HalfWrittenPlain" in message
+        assert message.endswith(ABSTRACT_TAIL)
+
+    def test_a_complete_class_still_passes(self):
+        cls = import_library_class("dskit.pipeline.synthetic_nodes:SynthClip", "x")
+        assert cls.__name__ == "SynthClip"
+
+    def test_both_core_doorways_word_abstractness_identically(self):
+        """The pin behind "a tier-2 pack never restates tier-1 truth": the
+        registration door (``node_class_errors``) and the import door say
+        the same sentence about the same defect, because they ask the same
+        core helper. Two copies drift; one cannot."""
+        registration = [
+            p for p in node_class_errors(HalfWrittenNode, "here") if "abstract" in p
+        ]
+        with pytest.raises(ValueError) as caught:
+            import_library_class(f"{THIS}:HalfWrittenNode", "here")
+        assert registration and registration[0].endswith(ABSTRACT_TAIL)
+        assert str(caught.value).endswith(ABSTRACT_TAIL)

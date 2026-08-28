@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 
 import pytest
 
@@ -146,6 +147,20 @@ def test_the_adapter_seam_declares_exactly_its_four_abstract_hooks():
     assert set(TorchAdapter.__abstractmethods__) == ABSTRACT_HOOKS
 
 
+def test_the_seams_docstring_enumerates_exactly_the_abstract_hooks():
+    """The required set is stated twice — once by the decorators, once by
+    the class docstring an adapter author reads BEFORE writing a line. The
+    docstring is the copy that cannot fail loudly, so it is pinned here: a
+    hook made abstract without being enumerated (or enumerated as required
+    while it keeps a working default) sends the author to write the wrong
+    four and meet a construction refusal naming a hook nobody told them
+    about.
+    """
+    enumerated = re.findall(r"^\s*\d+\. ``(\w+)``", TorchAdapter.__doc__, re.M)
+    assert len(enumerated) == len(ABSTRACT_HOOKS)  # numbered once each
+    assert set(enumerated) == ABSTRACT_HOOKS
+
+
 def test_an_incomplete_adapter_refuses_at_construction():
     """Abstract means abstract: the missing hooks are named by TypeError at
     construction, not by NotImplementedError deep in a training loop."""
@@ -165,23 +180,35 @@ def test_the_optional_hooks_stay_optional():
         assert isinstance(cls({}), TorchAdapter)
 
 
-def test_a_declared_adapter_is_still_RESOLVED_structurally():
-    """RESOLUTION is the half the ABC left alone: the import-path grammar
-    asks for a callable ``prepare`` and nothing more, so an incomplete class
-    still resolves. It is CONSTRUCTION that now refuses — pinned below, and
-    this test deliberately claims nothing about it."""
+def test_a_complete_declared_adapter_resolves():
+    """The structural half of the declared path: a complete adapter passes
+    the import-path grammar's ``requires`` check, as it always did."""
     assert import_library_class(ref_to(DoubleAdapter), "a", requires=("prepare",))
-    assert import_library_class(ref_to(IncompleteAdapter), "a", requires=("prepare",))
+
+
+def test_an_incomplete_declared_adapter_is_refused_by_CORE_at_the_doorway():
+    """The pack does not own this refusal, and must not restate it.
+
+    ``import_library_class`` is core's shared door for every declared
+    library class, and core refuses an unimplemented hook there in ONE
+    wording (pinned against ``node_class_errors`` in
+    ``tests/pipeline/test_class_refs.py``). This test only proves the torch
+    adapter path goes through that door — a half-written adapter, having
+    written ``prepare`` first, passes ``requires`` and is caught anyway.
+    """
+    with pytest.raises(ValueError, match="is abstract"):
+        import_library_class(ref_to(IncompleteAdapter), "a", requires=("prepare",))
 
 
 def test_a_declared_incomplete_adapter_is_refused_by_its_missing_hooks():
-    """The other half of the declared path, and the half the ABC changed.
+    """The declared path end to end, and the half the ABC changed.
 
-    ``build_adapter`` resolves then CONSTRUCTS, and construction of an
-    incomplete class now raises. The refusal must name the hooks that were
-    never implemented — not ``adapter_params``, which here is empty and
-    entirely correct, and which would send the author to inspect JSON knobs
-    instead of writing the three missing methods.
+    ``build_adapter`` resolves then CONSTRUCTS. Resolution now refuses, so
+    the ABC's raw ``TypeError`` never reaches the ``adapter_params`` branch
+    below — the refusal must name the hooks that were never implemented,
+    not ``adapter_params``, which here is empty and entirely correct and
+    would send the author to inspect JSON knobs instead of writing the
+    three missing methods.
     """
     node = DeclaredTrain("k", {**FLAT_PARAMS, "module": MODULE_REF})
     with pytest.raises(ValueError) as caught:

@@ -94,6 +94,7 @@ __all__ = [
     "TRANSFORM_KINDS",
     "TrackingConfig",
     "ValidationConfig",
+    "abstract_class_problem",
     "config_hash",
     "import_ref",
     "is_class_ref",
@@ -972,6 +973,41 @@ def library_path_problems(name, value, *, example):
     return []
 
 
+def abstract_class_problem(cls, where, subject=None):
+    """Why ``cls`` cannot be constructed, when hooks are still abstract.
+
+    The ONE place this repo words that defect. A class reaches the engine
+    through two doors — kind registration (:func:`node_class_errors`) and
+    a declared import path (:func:`import_library_class`) — and both ask
+    here, so the sentence cannot drift between them and a pack never has
+    a reason to re-derive it.
+
+    Parameters
+    ----------
+    cls : type
+        The class to check. Anything without ``__abstractmethods__`` (a
+        non-ABC, a plain object) is fine by definition.
+    where : str
+        The site being reported, prefixed to the message so a refusal
+        says which door it came from.
+    subject : str or None
+        How to NAME the class in the message; defaults to ``cls.__name__``.
+        The import doors pass ``repr(path)`` instead, because the path is
+        what the document actually wrote.
+
+    Returns
+    -------
+    str or None
+        The problem, naming every unimplemented hook in sorted order, or
+        ``None`` when the class is complete.
+    """
+    missing = getattr(cls, "__abstractmethods__", None)
+    if not missing:
+        return None
+    name = subject if subject is not None else getattr(cls, "__name__", cls)
+    return f"{where}: {name} is abstract (missing {sorted(missing)})"
+
+
 def import_library_class(path, where, *, requires=()):
     """The class behind a declared library path, or a refusal naming it.
 
@@ -983,7 +1019,11 @@ def import_library_class(path, where, *, requires=()):
     ``requires`` names methods the class must expose (``("fit",)`` for an
     estimator); a class lacking one is refused BY NAME rather than
     failing later inside a training loop, where the cause would be much
-    harder to read.
+    harder to read. For the same reason, a class that INHERITS a hook it
+    never implemented is refused here too
+    (:func:`abstract_class_problem`) — ``requires`` sees the abstract
+    method and is satisfied, while constructing it would raise a bare
+    ``ABCMeta`` TypeError wherever the caller happens to build it.
     """
     module_name, _, cls_name = (
         path.rpartition(":") if ":" in path else path.rpartition(".")
@@ -1007,6 +1047,9 @@ def import_library_class(path, where, *, requires=()):
             raise ValueError(
                 f"{where}: {path!r} has no {method}() method — not usable here"
             )
+    problem = abstract_class_problem(cls, where, repr(path))
+    if problem:
+        raise ValueError(problem)
     return cls
 
 

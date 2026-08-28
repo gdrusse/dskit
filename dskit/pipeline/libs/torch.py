@@ -323,21 +323,29 @@ class TorchAdapter(ABC):
     graph model. Such a model could not be named in a document at all: the
     architecture was declarable (``module``) while the DATASET was not.
 
-    An adapter owns the four things the base genuinely cannot know:
+    An adapter owns the four things the base genuinely cannot know, and
+    the class is ABSTRACT in exactly these four — an adapter missing one
+    is refused at construction, never deep inside a training loop:
 
     1. ``prepare`` — rows in, a :class:`TorchBatches` out. This is where a
        row list becomes tensors, panels, or anything else; unusable rows
        are counted here and never fabricated.
-    2. ``module_params`` — constructor kwargs the DATA implies (a vocab
-       size, a token width, a sequence length). They are merged UNDER the
-       document's own ``module_params``, so a declared value always wins
-       and nothing the data says can silently override the config.
-    3. ``loss`` / ``beliefs`` — the objective, and the calibrated
-       probabilities + matching labels that
-       :func:`~dskit.pipeline.trainlog.probability_metrics` scores per
-       epoch. One metrics helper, every adapter.
+    2. ``select`` — the examples at an index (a ``LongTensor`` of
+       positions), or the WHOLE split. Only the adapter knows how to slice
+       a batch whose shape it invented.
+    3. ``loss`` — the objective: the scalar that is backpropagated.
     4. ``predict`` — one record to one belief, which is what
        :class:`TorchSignal` serves downstream.
+
+    Everything else has a WORKING default and stays optional, so an
+    adapter implements it only when its shape demands it: ``module_params``
+    (constructor kwargs the DATA implies — a vocab size, a token width —
+    merged UNDER the document's own, so a declared value always wins and
+    nothing the data says can silently override the config), ``beliefs``
+    (the calibrated probabilities + matching labels that
+    :func:`~dskit.pipeline.trainlog.probability_metrics` scores per epoch;
+    one metrics helper, every adapter), ``to_device``, ``fitted``, and the
+    ``save_state``/``load_state`` pair.
 
     ``requires_features`` says whether the node's ``features`` knob is
     meaningful for this adapter. The default row-vector adapter needs it;
@@ -1421,24 +1429,20 @@ class _DeclaredParams:
 
         Two DIFFERENT failures are told apart here. A class that never
         implemented some of :class:`TorchAdapter`'s abstract hooks is
-        refused by those hook NAMES — the fix is code, and the document may
-        be perfect. Only a class that is complete and still rejects its
-        kwargs is reported against ``adapter_params``.
+        refused BY CORE, at the doorway, naming those hooks — the fix is
+        code, and the document may be perfect. Only a class that is
+        complete and still rejects its kwargs reaches the
+        ``adapter_params`` diagnosis below.
         """
         path = params.get("adapter")
         if not path:
             return RowVectorAdapter(params)
+        # The doorway asks both structural questions: ``requires`` proves the
+        # class LOOKS like an adapter (which a half-written one, having
+        # written ``prepare`` first, does) and core refuses the hooks it left
+        # abstract — so the ABC's TypeError never reaches the kwargs branch
+        # below to be misread as a knob problem.
         cls = import_library_class(path, "torch adapter", requires=("prepare",))
-        # Asked BEFORE construction, so the ABC's TypeError never reaches the
-        # kwargs branch below and gets read as a knob problem. ``requires``
-        # above only proves the class LOOKS like an adapter — which a
-        # half-written one, having written ``prepare`` first, does.
-        missing = sorted(getattr(cls, "__abstractmethods__", ()) or ())
-        if missing:
-            raise ValueError(
-                f"{path} is an incomplete adapter: it never implements "
-                f"{', '.join(missing)} — implement the hook(s) on the class"
-            )
         kwargs = dict(params.get("adapter_params") or {})
         # The adapter sees the node's params (it needs ``features``/``label``)
         # with its OWN declared knobs layered ON TOP, so an adapter knob is
