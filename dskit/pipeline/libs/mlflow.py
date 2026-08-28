@@ -39,14 +39,25 @@ checked where the swallow cannot reach:
   server must accept a TCP connection within ``connect_timeout``. An
   unreachable URI fails the plan, not the run.
 * **At construction** — the constructor re-runs the same validator and
-  opens the mlflow run immediately, before any node executes
-  (``_open_sinks`` runs ahead of the driver's node loop). A missing
-  mlflow install, an unwritable store, a broken experiment: all raise
-  here, where they are visible.
+  then opens the mlflow CLIENT and EXPERIMENT immediately, before any
+  node executes (``_open_sinks`` runs ahead of the driver's node loop).
+  A missing mlflow install, an unwritable store, a broken experiment:
+  all raise here, where they are visible.
 
 Only the three seam calls afterwards (``log_params``/``log_metrics``/
 ``close``) sit inside the swallow — by then the configuration has been
 proven, which is the point.
+
+**Why the RUN is not opened there too.** The driver builds sinks before
+resolve finishes and closes them on every pre-execution refusal (an
+occupied run dir is the documented normal case: reruns need a new asof
+or name). A run created in ``__init__`` therefore landed in the store
+for refusals that never executed a node — empty and ``FINISHED``, which
+browses exactly like a successful run and corrupts the cross-run
+comparison this pack exists to provide. So the mlflow run is created
+lazily, on the first ``log_params``/``log_metrics``; ``run_id`` is
+``""`` until then. Construction stays loud — it just proves the store
+instead of writing to it.
 
 **What lands.** ``log_params`` receives the driver's one-per-run payload:
 the five identity fields plus every node's declared params flattened to
@@ -289,6 +300,26 @@ def _chunks(items, size):
         yield items[start : start + size]
 
 
+def _open_experiment(client, name):
+    """Experiment id for ``name``, creating it once — race-tolerantly."""
+    experiment = client.get_experiment_by_name(name)
+    if experiment is not None:
+        return experiment.experiment_id
+    try:
+        return client.create_experiment(name)
+    except Exception:  # noqa: BLE001 — re-raised below unless it was the race
+        # Look-then-create is not atomic: a concurrent run_document
+        # against the same store can create the experiment between the
+        # two calls, and the loser's create fails on a UNIQUE
+        # constraint. Losing that race is not a misconfiguration, and
+        # this runs inside __init__ — raising would let TRACKING kill a
+        # correctly configured run, the one thing this seam forbids.
+        experiment = client.get_experiment_by_name(name)
+        if experiment is None:
+            raise
+        return experiment.experiment_id
+
+
 class MlflowTracker:
     """The mlflow tracking sink (kind ``"mlflow"``).
 
@@ -300,14 +331,21 @@ class MlflowTracker:
     Parameters
     ----------
     params : dict
-        ``tracking_uri`` (str, default ``"./mlruns"`` — a local file
-        store; schemes ``""``/``file``/``http``/``https``),
-        ``experiment`` (str, default ``"dskit-pipeline"``, created on
-        first use), ``run_name`` (str, optional — mlflow names the run
-        itself when omitted), ``tags`` (dict of str -> str, optional),
+        ``tracking_uri`` (str, default ``"sqlite:///mlruns.db"`` — a
+        LOCAL, serverless sqlite store; schemes ``""``, ``file``,
+        ``http``, ``https``, ``sqlite``, and note that the two directory
+        spellings — a bare path and ``file:`` — reach a store current
+        mlflow refuses, see the module docstring), ``experiment`` (str,
+        default ``"dskit-pipeline"``, created on first use),
+        ``run_name`` (str, optional — mlflow names the run itself when
+        omitted), ``tags`` (dict of str -> str, optional),
         ``connect_timeout`` (number of seconds > 0, default 5.0 —
         the server reachability probe's budget), ``notes`` (str, the
-        config standard's documentation field).
+        config standard's documentation field). The defaults live in
+        :data:`DEFAULT_TRACKING_URI`/:data:`DEFAULT_EXPERIMENT`/
+        :data:`DEFAULT_CONNECT_TIMEOUT` and the scheme list in
+        :data:`TRACKING_URI_SCHEMES`; the copies above are pinned to them
+        by ``test_the_class_docstring_states_the_default_and_the_vocabulary``.
 
     Raises
     ------
@@ -318,9 +356,9 @@ class MlflowTracker:
 
     Examples
     --------
-    Track into a local file store, no server anywhere::
+    Track into the default local sqlite store, no server anywhere::
 
-        sink = MlflowTracker({"tracking_uri": "/tmp/mlruns"})
+        sink = MlflowTracker({"tracking_uri": "sqlite:///mlruns.db"})
         sink.log_params({"name": "demo", "train.lr": 0.001})
         sink.log_metrics("validate", {"metrics.loss": 0.31})
         sink.close()
@@ -342,6 +380,7 @@ class MlflowTracker:
             raise ConfigError([f"tracking.{SINK_KIND}: {m}" for m in problems])
         self.params = dict(params)
         self._client = None
+        self._experiment = ""
         self._run_id = ""
         self._open()
 
@@ -421,11 +460,11 @@ class MlflowTracker:
 
     @property
     def run_id(self):
-        """The mlflow run this sink writes to (str)."""
+        """The mlflow run this sink writes to (str, ``""`` until first log)."""
         return self._run_id
 
     def _open(self):
-        """Create the local store if needed, then start the mlflow run."""
+        """Prove the store usable now: open its client and experiment."""
         try:
             from mlflow.tracking import MlflowClient
         except ImportError as exc:
@@ -442,17 +481,7 @@ class MlflowTracker:
         name = settings["experiment"]
         try:
             client = MlflowClient(tracking_uri=uri)
-            experiment = client.get_experiment_by_name(name)
-            experiment_id = (
-                experiment.experiment_id
-                if experiment is not None
-                else client.create_experiment(name)
-            )
-            run = client.create_run(
-                experiment_id,
-                tags=dict(self.params.get("tags", {})),
-                run_name=self.params.get("run_name"),
-            )
+            experiment = _open_experiment(client, name)
         except Exception as exc:  # noqa: BLE001 — surfaced, never swallowed
             raise ConfigError(
                 [
@@ -461,7 +490,18 @@ class MlflowTracker:
                 ]
             ) from exc
         self._client = client
-        self._run_id = run.info.run_id
+        self._experiment = experiment
+
+    def _ensure_run(self):
+        """Return the run id, creating it on FIRST log, never at construction."""
+        if not self._run_id:
+            run = self._client.create_run(
+                self._experiment,
+                tags=dict(self.params.get("tags", {})),
+                run_name=self.params.get("run_name"),
+            )
+            self._run_id = run.info.run_id
+        return self._run_id
 
     def log_params(self, mapping):
         """Record the run's identity and hyperparameters, once at run start.
@@ -480,9 +520,10 @@ class MlflowTracker:
         """
         from mlflow.entities import Param
 
+        run_id = self._ensure_run()
         entries = [Param(str(k), _param_value(v)) for k, v in mapping.items()]
         for chunk in _chunks(entries, PARAM_BATCH):
-            self._client.log_batch(self._run_id, params=chunk)
+            self._client.log_batch(run_id, params=chunk)
 
     def log_metrics(self, stage, mapping):
         """Record one stage's numeric metrics, namespaced by that stage.
@@ -502,25 +543,34 @@ class MlflowTracker:
         """
         from mlflow.entities import Metric
 
+        run_id = self._ensure_run()
         now = int(time.time() * 1000)
         entries = [
             Metric(f"{stage}.{k}", float(v), now, 0) for k, v in mapping.items()
         ]
         for chunk in _chunks(entries, METRIC_BATCH):
-            self._client.log_batch(self._run_id, metrics=chunk)
+            self._client.log_batch(run_id, metrics=chunk)
 
     def close(self):
-        """End the mlflow run. Idempotent — the driver always calls it.
+        """End the mlflow run, if one was ever started. Idempotent.
+
+        A sink that logged NOTHING never created a run, so nothing is
+        terminated — see :meth:`_ensure_run`. A run that did start is
+        marked ``FINISHED`` whatever happened, because the ``Tracker``
+        seam carries no status and the driver's ``close()`` is the same
+        call on the success and the crash path; distinguishing them
+        needs a status on the protocol, which is core's to add.
 
         Returns
         -------
         None
-            The run is marked ``FINISHED`` in the tracking store.
+            Any started run is marked ``FINISHED`` in the tracking store.
         """
         if self._client is None:
             return
         client, self._client = self._client, None
-        client.set_terminated(self._run_id, "FINISHED")
+        if self._run_id:
+            client.set_terminated(self._run_id, "FINISHED")
 
 
 def register():

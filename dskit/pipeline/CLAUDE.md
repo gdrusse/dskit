@@ -72,13 +72,28 @@ on it without breaking its rulings.
   plan) and the constructor (`_open_sinks` runs before the node loop).
   `libs/mlflow.py` is the worked example — default-deny knobs plus a
   stdlib reachability probe of the tracking URI, both at plan time.
+- **`Tracker.close()` carries no status** and the driver calls it from a
+  `finally` on every path, so a sink cannot tell a crashed run from a
+  clean one — an mlflow run reads `FINISHED` either way. Giving it one
+  is core's change (`protocols.py` + both call sites + the `memory`
+  sink), i.e. an ADR; a pack must not guess from `sys.exc_info()`. What
+  a pack CAN do, and `libs/mlflow.py` does, is create its remote run
+  lazily on the first log, so a run refused before execution leaves no
+  empty `FINISHED` run behind at all.
 - **Tracking config is NOT hash-excluded.**
   `DOC_NON_IDENTITY_SECTIONS` is `("env", "outputs", "schedule")` only,
   so the `tracking` section IS graded: changing a sink's URI renames the
-  run. Arguably wrong (it reads like `outputs`), but moving it orphans
-  every run dir of every document that declares a sink — so it is pinned
-  in `tests/pipeline_libs/test_mlflow.py::TestHashPlacement` and any
-  move must trip that test first.
+  run. Arguably wrong (it reads like `outputs`) — but do NOT read "no
+  shipped example declares a sink" as "the move is nearly free". It is
+  not: `PipelineDocument.to_obj` emits `"tracking": null` ALWAYS, and
+  `config_hash` POPS each excluded key before hashing, so adding
+  `tracking` to the list moves **every document's hash**, sink or no
+  sink (measured: `examples/pipeline/mpl-figure.json`, which declares no
+  tracking at all, goes `e9d5f60c…` -> `314cea4d…`). That orphans every
+  run dir and every stored artifact in the repo, so the move needs an
+  ADR plus a hash-baseline re-cut. It is pinned in
+  `tests/pipeline_libs/test_mlflow.py::TestHashPlacement` and any move
+  must trip that test first.
 - **The numpy pack registers no kinds** — `ArrayMap`/`ArrayFeatures`
   subclasses wired by import path only.
 - **Base `Node.validate_params` accepts anything.** The deny lives in

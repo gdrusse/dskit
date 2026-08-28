@@ -208,6 +208,13 @@ the TRACKING-sink registry instead. Call `dskit.pipeline.libs.mlflow.register()`
 
 Knobs: `tracking_uri` (default `sqlite:///mlruns.db`; schemes `""`/`file`/
 `http`/`https`/`sqlite`), `experiment`, `run_name`, `tags`, `connect_timeout`.
+The default is sqlite and not the older `./mlruns` DIRECTORY for a reason: the
+two directory spellings — a bare path and `file:` — reach a store that mlflow
+3.x put into maintenance mode and **refuses** unless `MLFLOW_ALLOW_FILE_STORE`
+is set in your environment, and this pack sets no environment variable on your
+behalf. They stay in the vocabulary for mlflow 2.x and for anyone who has opted
+in; on a modern mlflow they plan clean and then raise at sink construction,
+carrying mlflow's own message. Prefer `sqlite:` unless you know otherwise.
 Skipping `register()` is fine — spell the class instead:
 `"kind": "dskit.pipeline.libs.mlflow:MlflowTracker"`, validated by the same
 rules. **The sink is loud on purpose**: unknown knobs and an unreachable
