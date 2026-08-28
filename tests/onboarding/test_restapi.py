@@ -111,12 +111,10 @@ def test_timeout_and_retries_defaults_are_named_constants(conn, config, monkeypa
     assert restapi._DEFAULT_TIMEOUT == 30
     assert restapi._DEFAULT_MAX_RETRIES == 3
 
-    # spec() notes are BUILT from the constants (f-strings), so they can
-    # never independently drift — no separate pin is meaningful there.
-    # The module docstring is static prose, so it's the one text that can
-    # go stale. Anchor each assertion on the OWNING bullet's own words: a
-    # bare "(default N)." needle would still match with the two values
-    # swapped between bullets, which is a real way for the prose to lie.
+    # The module docstring is static prose, so it can go stale on its own.
+    # Anchor each assertion on the OWNING bullet's own words: a bare
+    # "(default N)." needle would still match with the two values swapped
+    # between bullets, which is a real way for the prose to lie.
     assert (
         f"``timeout`` — request timeout in seconds "
         f"(default {restapi._DEFAULT_TIMEOUT})."
@@ -133,6 +131,14 @@ def test_timeout_and_retries_defaults_are_named_constants(conn, config, monkeypa
     cfg = conn._conf(config)
     assert cfg["timeout"] == 99
     assert cfg["max_retries"] == 7
+
+    # spec() is the machine-readable knob catalogue config authors read, so
+    # its notes must be BUILT from the constants, not restate them. Under
+    # the same rebinding the advertised defaults must move too: notes that
+    # went back to literal "30"/"3" would still advertise the old value.
+    params = conn.spec()["params"]
+    assert "default 99." in params["timeout"]["notes"]
+    assert "default 7." in params["max_retries"]["notes"]
 
 
 # -- check ------------------------------------------------------------------
