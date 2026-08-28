@@ -4,6 +4,7 @@ import pytest
 
 from dskit.assets.base import AssetError
 from dskit.onboarding import check_config, check_message
+from dskit.onboarding.libs import localfiles
 from dskit.onboarding.libs.localfiles import LocalFilesConnector
 
 
@@ -40,6 +41,25 @@ def test_check_fails_fast_on_bad_or_empty_paths(conn, tmp_path, config):
     empty.mkdir()
     with pytest.raises(AssetError, match="no \\*\\.csv"):
         conn.check({"path": str(empty), "effective_field": "date"})
+
+
+def test_default_encoding_is_one_named_constant(conn, config, monkeypatch):
+    # discover() and read() must both fall back to the SAME module constant
+    # rather than each hardcoding their own "utf-8" literal.
+    assert localfiles._DEFAULT_ENCODING == "utf-8"
+
+    seen = []
+    real_rows = LocalFilesConnector._rows
+
+    def _spy(self, path, encoding):
+        seen.append(encoding)
+        return real_rows(self, path, encoding)
+
+    monkeypatch.setattr(LocalFilesConnector, "_rows", _spy)
+    conn.discover(config)
+    list(conn.read(config, ["prices"], {}, "live"))
+    assert seen
+    assert all(enc == localfiles._DEFAULT_ENCODING for enc in seen)
 
 
 def test_discover_one_stream_per_file(conn, config):

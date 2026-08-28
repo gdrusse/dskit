@@ -37,9 +37,9 @@ Config knobs (default-deny, per ``spec()``):
 - ``since_param`` — query param that receives the stream's cursor so a
   server that can filter does; the client-side cursor filter still
   applies regardless, so an over-returning server stays harmless.
-- ``timeout`` — request timeout in seconds (default 30).
+- ``timeout`` — request timeout in seconds (default {_DEFAULT_TIMEOUT}).
 - ``max_retries`` — extra attempts on 429/5xx/network errors with
-  exponential backoff (default 3).
+  exponential backoff (default {_DEFAULT_MAX_RETRIES}).
 
 Cursor semantics are localfiles' exactly: state maps stream ->
 ``{"cursor": <max effective_date emitted>}`` and the logic is identical
@@ -74,6 +74,16 @@ _RETRY_STATUSES = (429, 500, 502, 503, 504)
 #: Backoff base in seconds, doubled per attempt. Module-level so the test
 #: suite can zero it out instead of sleeping through retry scenarios.
 _BACKOFF = 0.5
+
+#: Default ``config.timeout`` (seconds) and ``config.max_retries`` — named
+#: once so the module docstring and spec() notes can reference them and
+#: never drift from what ``_conf`` actually applies.
+_DEFAULT_TIMEOUT = 30
+_DEFAULT_MAX_RETRIES = 3
+
+__doc__ = __doc__.replace(
+    "{_DEFAULT_TIMEOUT}", str(_DEFAULT_TIMEOUT)
+).replace("{_DEFAULT_MAX_RETRIES}", str(_DEFAULT_MAX_RETRIES))
 
 # Default-deny key sets for the nested declarations.
 _STREAM_KEYS = ("path", "params", "records_path", "schema", "primary_key", "notes")
@@ -152,11 +162,12 @@ class RestApiConnector(Connector):
                              "filter still applies.",
                 },
                 "timeout": {
-                    "notes": "Request timeout in seconds; default 30.",
+                    "notes": f"Request timeout in seconds; default "
+                             f"{_DEFAULT_TIMEOUT}.",
                 },
                 "max_retries": {
                     "notes": "Extra attempts on 429/5xx/network errors, "
-                             "exponential backoff; default 3.",
+                             f"exponential backoff; default {_DEFAULT_MAX_RETRIES}.",
                 },
             },
         }
@@ -272,10 +283,10 @@ class RestApiConnector(Connector):
         if "since_param" in config:
             _check_str(errors, "config.since_param", config["since_param"])
 
-        timeout = config.get("timeout", 30)
+        timeout = config.get("timeout", _DEFAULT_TIMEOUT)
         if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
             errors.append(f"config.timeout must be a positive number, got {timeout!r}")
-        max_retries = config.get("max_retries", 3)
+        max_retries = config.get("max_retries", _DEFAULT_MAX_RETRIES)
         if not isinstance(max_retries, int) or isinstance(max_retries, bool) or max_retries < 0:
             errors.append(
                 f"config.max_retries must be an int >= 0, got {max_retries!r}"

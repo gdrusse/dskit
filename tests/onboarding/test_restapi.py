@@ -104,6 +104,24 @@ def test_bad_shapes_refused(conn, config):
         conn.check({**config, "auth_name": "Authorization"})
 
 
+def test_timeout_and_retries_defaults_are_named_constants(conn, config):
+    # The module docstring and spec() notes state these defaults in prose;
+    # a single constant per default is the only way that prose can't drift
+    # from the code that actually applies it.
+    assert restapi._DEFAULT_TIMEOUT == 30
+    assert restapi._DEFAULT_MAX_RETRIES == 3
+
+    cfg = conn._conf(config)
+    assert cfg["timeout"] == restapi._DEFAULT_TIMEOUT
+    assert cfg["max_retries"] == restapi._DEFAULT_MAX_RETRIES
+
+    notes = conn.spec()["params"]
+    assert str(restapi._DEFAULT_TIMEOUT) in notes["timeout"]["notes"]
+    assert str(restapi._DEFAULT_MAX_RETRIES) in notes["max_retries"]["notes"]
+    assert str(restapi._DEFAULT_TIMEOUT) in restapi.__doc__
+    assert str(restapi._DEFAULT_MAX_RETRIES) in restapi.__doc__
+
+
 # -- check ------------------------------------------------------------------
 
 

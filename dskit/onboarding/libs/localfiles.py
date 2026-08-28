@@ -43,11 +43,16 @@ __all__ = ["LocalFilesConnector"]
 
 _EXTENSIONS = (".csv", ".jsonl")
 
+#: Default ``config.encoding`` — shared by discover() and read() so the
+#: fallback can only ever drift once, not twice.
+_DEFAULT_ENCODING = "utf-8"
+
 
 class LocalFilesConnector(Connector):
     """Files in a local directory, one stream per file. See module docs."""
 
     def spec(self) -> dict:
+        """Declare this connector's config knobs. See module docs."""
         return {
             "params": {
                 "path": {
@@ -77,7 +82,7 @@ class LocalFilesConnector(Connector):
         return os.path.abspath(os.path.expanduser(path))
 
     def _files(self, config) -> dict:
-        """stream name -> file path, for every recognized data file."""
+        """Stream name -> file path, for every recognized data file."""
         directory = self._dir(config)
         if not os.path.isdir(directory):
             raise AssetError([f"config.path is not a directory: {directory!r}"])
@@ -115,7 +120,7 @@ class LocalFilesConnector(Connector):
     # -- the four verbs ----------------------------------------------------
 
     def check(self, config) -> None:
-        """The directory exists, is readable, and holds at least one file."""
+        """Check the directory exists, is readable, and holds a file."""
         if not self._files(config):
             raise AssetError(
                 [f"no *.csv / *.jsonl files under {self._dir(config)!r}"]
@@ -123,7 +128,7 @@ class LocalFilesConnector(Connector):
 
     def discover(self, config) -> list:
         """One stream per file; schema = the first row's keys."""
-        encoding = config.get("encoding", "utf-8")
+        encoding = config.get("encoding", _DEFAULT_ENCODING)
         out = []
         for stream, path in sorted(self._files(config).items()):
             fields = []
@@ -150,7 +155,7 @@ class LocalFilesConnector(Connector):
             errors.append(f"streams must be a non-empty list, got {streams!r}")
         _raise_if(errors)
         files = self._files(config)
-        encoding = config.get("encoding", "utf-8")
+        encoding = config.get("encoding", _DEFAULT_ENCODING)
         eff_field = config.get("effective_field")
         forecast_streams = config.get("forecast_streams", [])
         new_state = {k: dict(v) for k, v in state.items()}
