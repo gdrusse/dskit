@@ -354,6 +354,16 @@ class TestFitLoad:
         )
         assert "final_loss" not in out["metrics"]  # no training happened
 
+    def test_load_stops_demanding_a_rows_wire_it_never_reads(self, tmp_path):
+        """ADR-0038's declared delta: validate_inputs dispatches BY mode
+        now, so a load — which consumes neither port — stops demanding the
+        wire a fit needs."""
+        loader = TinyTransformerFit(
+            "fit", dict(FIT_PARAMS), mode="load", artifact="ck"
+        )
+        assert loader.validate_inputs({}) == []
+        assert TinyTransformerFit("fit", dict(FIT_PARAMS)).validate_inputs({})
+
     def test_an_empty_artifact_refuses(self, tmp_path):
         with pytest.raises(ValueError, match="mode='load'.*artifact"):
             _load_fit(tmp_path, "")
@@ -457,6 +467,18 @@ class TestPredictNode:
     def test_no_pin_refuses_by_name(self, tmp_path):
         with pytest.raises(ValueError, match="no artifact pinned"):
             TransformerPredict("sig", {}).run(_ctx(tmp_path), {})
+
+    def test_an_empty_node_level_pin_refuses_rather_than_falling_through(
+        self, fitted, tmp_path
+    ):
+        """ADR-0038's declared delta: an empty node-level pin refuses
+        instead of falling through to artifact_dir — torch's and sb3's
+        stricter rule, kept as the single one. Document-unreachable."""
+        node = TransformerPredict(
+            "sig", {"artifact_dir": fitted["artifact_path"]}, mode="load"
+        )
+        with pytest.raises(ValueError, match="empty artifact reference"):
+            node.run(_ctx(tmp_path), {})
 
     def test_mode_train_refuses_by_name(self, tmp_path):
         with pytest.raises(ValueError, match="mode='train'"):

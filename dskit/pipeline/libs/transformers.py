@@ -74,7 +74,7 @@ from dskit.pipeline.base import (
     library_path_problems,
 )
 from dskit.pipeline.kinds_stats import _check_int, _reject_unknown
-from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
+from dskit.pipeline.node import DEFAULT_NODE_KINDS, TrainableNode
 from dskit.pipeline.trainlog import (
     DEFAULT_MAX_LINES,
     TrainingCurve,
@@ -323,7 +323,7 @@ class TransformerSignal:
 # ---------------------------------------------------------------------------
 
 
-class TransformerFit(Node):
+class TransformerFit(TrainableNode):
     """Fine-tune an HF model over feature rows; the checkpoint is the artifact.
 
     ABSTRACT — subclasses implement :meth:`build_model` (and this class
@@ -434,7 +434,10 @@ class TransformerFit(Node):
         )
         return problems
 
-    def validate_inputs(self, inputs):
+    def validate_train_inputs(self, inputs):
+        # A load consumes NEITHER port — the checkpoint is the input — so
+        # the load hook stays the base's empty default rather than
+        # demanding a rows wire it never reads.
         problems = []
         rows = inputs.get("rows")
         if not isinstance(rows, list):
@@ -454,9 +457,7 @@ class TransformerFit(Node):
 
     # -- the run --------------------------------------------------------------
 
-    def run(self, ctx, inputs):
-        if self.mode == "load":
-            return self._load(ctx)
+    def run_train(self, ctx, inputs):
         import torch
 
         rows = inputs["rows"]
@@ -605,7 +606,7 @@ class TransformerFit(Node):
 
         return torch.tensor(values, dtype=torch.float32)
 
-    def _load(self, ctx):
+    def run_load(self, ctx, inputs):
         """The ``mode="load"`` path: verify, restore, NEVER refit."""
         where = f"{self.key} (mode='load')"
         sidecar, digest = _read_sidecar(where, self.artifact)
@@ -658,15 +659,16 @@ class TransformerFit(Node):
 # ---------------------------------------------------------------------------
 
 
-class TransformerPredict(Node):
+class TransformerPredict(TrainableNode):
     """A signal restored from a pinned local checkpoint. It ALWAYS loads.
 
     The pin arrives either as the node-level ``artifact`` (with
     ``mode="load"``) or as the ``artifact_dir`` param — both are
     hash-material, and giving both DIFFERENT values refuses. No pin, no
     signal: there is nothing this node could honestly answer from, so it
-    refuses by name rather than inventing a model. ``mode="train"``
-    refuses too — training is :class:`TransformerFit`'s job.
+    refuses by name rather than inventing a model. ``default_mode`` is
+    ``"load"``, so an unset ``mode`` loads; ``mode="train"`` refuses —
+    training is :class:`TransformerFit`'s job.
 
     Concrete as shipped: the sidecar records the model class to restore
     and the ``features`` the checkpoint was fitted with, so the default
@@ -676,6 +678,7 @@ class TransformerPredict(Node):
 
     role = "signal"
     outputs = ("signal", "metrics")
+    default_mode = "load"
 
     _PARAMS = ("artifact_dir",)
 
@@ -696,26 +699,22 @@ class TransformerPredict(Node):
             )
         return problems
 
-    def run(self, ctx, inputs):
+    def run_train(self, ctx, inputs):
+        raise ValueError(
+            f"{self.key} (transformers predict): inference-only — mode='train' "
+            "has nothing to fit here; fine-tune with a TransformerFit "
+            "subclass and pin its artifact"
+        )
+
+    def run_load(self, ctx, inputs):
         where = f"{self.key} (transformers predict)"
-        if self.mode == "train":
-            raise ValueError(
-                f"{where}: inference-only — mode='train' has nothing to fit "
-                "here; fine-tune with a TransformerFit subclass and pin its "
-                "artifact"
-            )
-        declared = self.params.get("artifact_dir", "")
-        if self.artifact and declared and self.artifact != declared:
-            raise ValueError(
-                f"{where}: the node-level artifact {self.artifact!r} and the "
-                f"artifact_dir param {declared!r} disagree — one pin, not two"
-            )
-        pinned = self.artifact or declared
-        if not pinned:
-            raise ValueError(
-                f"{where}: no artifact pinned — this node always loads; give "
+        pinned = self.pinned_artifact(
+            self.params.get("artifact_dir"),
+            missing=(
+                "no artifact pinned — this node always loads; give "
                 "mode='load' with an artifact, or the artifact_dir param"
-            )
+            ),
+        )
         sidecar, digest = _read_sidecar(where, pinned)
         model = _restore_model(where, pinned, sidecar)
         fitted_params = sidecar.get("params", {})
