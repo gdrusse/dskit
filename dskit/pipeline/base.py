@@ -80,6 +80,7 @@ __all__ = [
     "HPOConfig",
     "ModelConfig",
     "NON_IDENTITY_SECTIONS",
+    "NULLED_IDENTITY_SECTIONS",
     "OPTIMIZER_KINDS",
     "OutputsConfig",
     "OptimizationConfig",
@@ -202,10 +203,39 @@ def _raise_if(errors):
 
 
 #: Top-level config sections excluded from the identity hash (with every
-#: ``notes`` key): ``env`` (where credentials live) and ``outputs`` (where
-#: artifacts land) say nothing about WHAT the experiment computes — the
-#: the ``run_dir`` precedent, generalized.
-NON_IDENTITY_SECTIONS = ("env", "outputs")
+#: ``notes`` key): ``env`` (where credentials live), ``outputs`` (where
+#: artifacts land) and ``tracking`` (where METRICS land) say nothing
+#: about WHAT the experiment computes — the ``run_dir`` precedent,
+#: generalized. A tracking sink is placement exactly as ``outputs`` is:
+#: the identity hash grades what the run COMPUTES, and repointing
+#: telemetry at another store changes none of it.
+NON_IDENTITY_SECTIONS = ("env", "outputs", "tracking")
+
+#: The excluded sections whose KEY stays in the hash material, as
+#: ``null``, instead of being removed with the section. ``tracking``
+#: joined the exclusion above LATE — every ``to_obj`` has always emitted
+#: a ``"tracking"`` key, so every hash ever written counted one, and
+#: REMOVING it would move them all (orphaning every run directory and
+#: stored artifact keyed to one). Rendering the section as UNDECLARED
+#: excludes it just as completely — present/absent and one store versus
+#: another all hash alike — and leaves the canonical JSON byte-identical.
+#: Same reasoning as ``walkforward``, which is emitted only when present.
+NULLED_IDENTITY_SECTIONS = ("tracking",)
+
+
+def _strip_non_identity(
+    obj, exclude=NON_IDENTITY_SECTIONS, nulled=NULLED_IDENTITY_SECTIONS
+):
+    """Drop the non-identity top-level sections from a config mapping."""
+    if not isinstance(obj, dict):
+        return obj
+    for section in exclude:
+        if section in nulled:
+            if section in obj:
+                obj[section] = None
+        else:
+            obj.pop(section, None)
+    return obj
 
 
 def config_hash(cfg, exclude=NON_IDENTITY_SECTIONS) -> str:
@@ -216,14 +246,13 @@ def config_hash(cfg, exclude=NON_IDENTITY_SECTIONS) -> str:
     and others cannot is not an identity). ``notes`` keys are stripped at
     every nesting level before hashing — documentation must never change
     what an experiment IS — and the top-level ``exclude`` sections
-    (default :data:`NON_IDENTITY_SECTIONS`) are stripped with them. The
-    node-map document grammar passes its own exclusion list (env/outputs
-    plus the provenance-only ``schedule``).
+    (default :data:`NON_IDENTITY_SECTIONS`) are stripped with them,
+    except those :data:`NULLED_IDENTITY_SECTIONS` renders as undeclared
+    instead of removing. The node-map document grammar passes its own
+    exclusion list (env/outputs/tracking plus the provenance-only
+    ``schedule``).
     """
-    obj = _strip_notes(cfg.to_obj())
-    if isinstance(obj, dict):
-        for section in exclude:
-            obj.pop(section, None)
+    obj = _strip_non_identity(_strip_notes(cfg.to_obj()), exclude)
     try:
         canon = json.dumps(
             obj,

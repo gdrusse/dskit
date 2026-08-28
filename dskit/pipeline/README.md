@@ -191,9 +191,9 @@ artifact); **transformers** `transformers-fit` (declared)
 hooks); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures` and
 wire by import path. Heavy imports live inside `run()` — the tier rule.
 
-**mlflow** is the odd pack out (ADR-0038): it ships no node kind at all, because
-it fills the TRACKING-sink registry instead. Call
-`dskit.pipeline.libs.mlflow.register()`
+**mlflow** is the odd pack out (see its module docstring for the whole
+rationale): it ships no node kind at all, because it fills the TRACKING-sink
+registry instead. Call `dskit.pipeline.libs.mlflow.register()`
 (idempotent — the seam `testing.register_synthetic()` uses for the test
 `memory` sink) and a document may then declare where its metrics land:
 
@@ -208,7 +208,12 @@ it fills the TRACKING-sink registry instead. Call
 ```
 
 Knobs: `tracking_uri` (default `sqlite:///mlruns.db`; schemes `""`/`file`/
-`http`/`https`/`sqlite`), `experiment`, `run_name`, `tags`, `connect_timeout`.
+`http`/`https`/`sqlite`), `experiment`, `run_name`, `tags`, `connect_timeout` —
+and documentation goes in the sink's own `notes` field, beside `params`, never
+inside them. That list, the default and the scheme vocabulary are the THIRD copy
+of values the pack owns, so they are pinned to the constants by
+`test_the_readme_states_the_knobs_the_default_and_the_vocabulary`: change
+`_PARAMS`, `DEFAULT_TRACKING_URI` or `_DESTINATIONS` and change this paragraph.
 The default is sqlite and not the older `./mlruns` DIRECTORY for a reason: the
 two directory spellings — a bare path and `file:` — reach a store that mlflow
 3.x put into maintenance mode and **refuses** unless `MLFLOW_ALLOW_FILE_STORE`
@@ -216,18 +221,24 @@ is set in your environment, and this pack never opts you in. They stay in the
 vocabulary for mlflow 2.x and for anyone who has opted in; on a modern mlflow
 they plan clean and then raise at sink construction, carrying mlflow's own
 message and leaving nothing on disk. Prefer `sqlite:` unless you know otherwise.
-Skipping `register()` is fine — spell the class instead:
-`"kind": "dskit.pipeline.libs.mlflow:MlflowTracker"`, validated by the same
-rules. **The sink is loud on purpose**: unknown knobs, an unreachable
-destination (a missing store directory, a server that refuses a TCP connection)
-and a DELETED experiment all fail before the run, because the driver
+Another store family (postgres, say) arrives by subclassing `MlflowTracker` and
+laying your scheme over `_DESTINATIONS`, which carries both the probe that
+proves it reachable and whether it is a server. Skipping `register()` is fine —
+spell the class instead: `"kind": "dskit.pipeline.libs.mlflow:MlflowTracker"`,
+validated by the same rules. **The sink is loud on purpose**: unknown knobs, an
+unreachable destination (a missing store directory, a server that refuses a TCP
+connection) and a DELETED experiment all fail before the run, because the driver
 deliberately SWALLOWS sink exceptions at run time so telemetry can never kill a
-run — an unchecked misconfiguration would log nothing and say nothing. The one
-case that is loud but **not** fatal is a server that accepted the plan-time
-connection and is now failing: that is the store's condition, not your
-document's, so the sink disables itself with a logged warning and your run
-proceeds. `connect_timeout` is the budget for both the probe and the sink's own
-mlflow calls, so a degraded server cannot stall the run either. Install it with
+run — an unchecked misconfiguration would log nothing and say nothing. What is
+loud but **not** fatal is a destination having a bad day: a server that accepted
+the plan-time connection and is now failing, or a local store another process
+holds the write lock on. That is the store's condition, not your document's, so
+the sink disables itself with a logged warning and your run proceeds.
+`connect_timeout` is the budget for both the probe and the sink's own mlflow
+calls, so a degraded server cannot stall the run either. Nothing about tracking
+touches a document's identity hash — `tracking` is excluded by name, like
+`env`/`outputs`/`schedule` — so repointing a study at another store keeps its
+run directory and its `$prev` series. Install it with
 `pip install "dskit[mlflow]"`.
 
 Synthetic nodes (`synthetic_nodes.py`) mirror every role for demos and tests;

@@ -150,9 +150,9 @@ Keep both trees current when files are added or removed.
 
 - **JSON is the interface.** A config declares the whole process; the code reads it.
 - **The identity hash is what a config IS.** sha256 over the config's canonical
-  JSON with `notes` stripped and `env`/`outputs`/`schedule` excluded — so
-  documentation and placement never change identity, but any change to what the
-  run COMPUTES does. It names the run directory, keys the `$prev` run series,
+  JSON with `notes` stripped and `env`/`outputs`/`schedule`/`tracking` excluded
+  — so documentation and placement never change identity, but any change to what
+  the run COMPUTES does. It names the run directory, keys the `$prev` run series,
   and is what a store pins at init. **Moving a hash orphans every prior run and
   every stored artifact keyed to it**, which is why adding or removing a graded
   field is a breaking change even when no behavior changed. Optional fields are
@@ -306,8 +306,7 @@ the rl_stocks-driven capability set (0025 + 0027…0030: the
 declared-model seam + trainlog, walk-forward + embargoed splits, the
 sb3 and matplotlib packs, the onboarding coverage ledger) and the
 proposal still awaiting the owner (0026), the §14/§13 graduation round
-(0033…0036), the observations read seam (0037), and the mlflow
-tracking-sink pack (0038). New
+(0033…0036), and the observations read seam (0037). New
 significant design decisions still require an ADR in
 `docs/architecture/decision-log.md` before code — no decision
 undocumented.

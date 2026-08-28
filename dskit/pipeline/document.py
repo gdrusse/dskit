@@ -111,11 +111,17 @@ ROLES = (
 #: other than ``once`` is only meaningful when the document has a clock.
 CADENCES = ("once", "epoch", "day", "week")
 
-#: Top-level document sections excluded from the identity hash: env and
-#: outputs (the stage-list precedent) plus ``schedule`` — the run-series
-#: cadence is provenance, documentation of when the same command is
-#: re-invoked, never part of what one run computes (spec §2, I-222 lean).
-DOC_NON_IDENTITY_SECTIONS = ("env", "outputs", "schedule")
+#: Top-level document sections excluded from the identity hash: env,
+#: outputs and tracking (the stage-list precedent,
+#: :data:`~dskit.pipeline.base.NON_IDENTITY_SECTIONS`) plus ``schedule``
+#: — the run-series cadence is provenance, documentation of when the same
+#: command is re-invoked, never part of what one run computes (spec §2,
+#: I-222 lean). ``tracking`` is here for the reason ``outputs`` is: WHERE
+#: a run's metrics are logged is placement, and the identity hash grades
+#: what the run COMPUTES. Excluding it moved no hash — ``to_obj`` emits
+#: a ``"tracking"`` key for every document, so the section is rendered
+#: UNDECLARED rather than removed (base's ``NULLED_IDENTITY_SECTIONS``).
+DOC_NON_IDENTITY_SECTIONS = ("env", "outputs", "schedule", "tracking")
 
 #: The reserved reference source naming the materialized splits section
 #: (``"$splits.t1"``). A node may not take this name.
@@ -1158,7 +1164,7 @@ class PipelineDocument:
     @property
     def hash(self) -> str:
         """The experiment's identity (spec §2): canonical-JSON sha256 with
-        notes stripped and env/outputs/schedule excluded."""
+        notes stripped and env/outputs/schedule/tracking excluded."""
         return config_hash(self, exclude=DOC_NON_IDENTITY_SECTIONS)
 
     def to_obj(self) -> dict:

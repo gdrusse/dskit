@@ -15,14 +15,19 @@ loudness is exactly what must not silently regress.
 import http.server
 import pathlib
 import socket
+import subprocess
+import sys
 import threading
 import time
 import tomllib
+import urllib.parse
 
 import pytest
 
 import dskit
 from dskit.pipeline.base import (
+    NON_IDENTITY_SECTIONS,
+    NULLED_IDENTITY_SECTIONS,
     SINK_KINDS,
     ConfigError,
     OutputsConfig,
@@ -94,6 +99,38 @@ def degraded_server():
         server.server_close()
 
 
+#: A process that takes sqlite's write lock on argv[1] and keeps it.
+LOCK_HOLDER = """
+import sqlite3, sys, time
+con = sqlite3.connect(sys.argv[1], isolation_level=None)
+con.execute("BEGIN EXCLUSIVE")
+con.execute("CREATE TABLE IF NOT EXISTS held (x int)")
+print("LOCKED", flush=True)
+time.sleep(300)
+"""
+
+
+@pytest.fixture
+def locked_store(tmp_path):
+    """A local sqlite store ANOTHER PROCESS holds the write lock on.
+
+    The local twin of ``degraded_server``: a destination the plan-time
+    probe rightly accepts (the file is there and writable) which is
+    momentarily unusable through no fault of the document.
+    """
+    path = tmp_path / "locked.db"
+    holder = subprocess.Popen(
+        [sys.executable, "-c", LOCK_HOLDER, str(path)], stdout=subprocess.PIPE
+    )
+    try:
+        assert holder.stdout.readline().strip() == b"LOCKED"
+        yield f"sqlite:///{path}"
+    finally:
+        holder.kill()
+        holder.wait()
+        holder.stdout.close()
+
+
 def sink_config(**params):
     """Build the SinkConfig a document would carry (runs the validator)."""
     return SinkConfig(kind=SINK_KIND, params=params)
@@ -134,8 +171,9 @@ class TestRegistration:
         assert SINK_KIND in SINK_KINDS
 
     def test_the_pack_registers_no_node_kind(self):
-        # A tracking destination is not a node: it may never be spelled
-        # inside `pipeline`, the section identity is computed over.
+        # A tracking destination is not a node, so a store URI is never
+        # spellable as a node param. (What keeps the tracking SECTION
+        # out of identity is the exclusion list — TestHashPlacement.)
         assert NODE_KINDS == ()
 
 
@@ -170,7 +208,6 @@ class TestParamValidation:
         assert MlflowTracker._PARAMS == (
             "connect_timeout",
             "experiment",
-            "notes",
             "run_name",
             "tags",
             "tracking_uri",
@@ -181,8 +218,24 @@ class TestParamValidation:
             sink_config(tracking_uri=str(tmp_path), trackingURI="typo")
         assert "trackingURI" in str(exc.value)
 
-    def test_notes_is_allowed_inside_params(self, tmp_path):
-        sink_config(tracking_uri=str(tmp_path), notes="why this store")
+    def test_notes_belongs_to_the_sink_object_not_to_its_params(self, tmp_path):
+        """One documentation field per object, and it is core's (Ruling 6).
+
+        ``SinkConfig`` already carries a first-class ``notes``, which
+        core validates allowing empty. The pack used to add a SECOND
+        ``notes`` inside ``params`` and validate it NON-empty, so one
+        object carried two documentation fields under one name with
+        contradicting bounds — a tier-2 pack restating tier-1 truth,
+        differently. The pack's copy is gone; the core field is the one.
+        """
+        SinkConfig(
+            kind=SINK_KIND,
+            params={"tracking_uri": str(tmp_path)},
+            notes="why this store",
+        )
+        with pytest.raises(ConfigError) as exc:
+            sink_config(tracking_uri=str(tmp_path), notes="why this store")
+        assert "notes" in str(exc.value)
 
     def test_defaults_are_accepted_with_no_params_at_all(self, tmp_path, monkeypatch):
         # A document that says only {"kind": "mlflow"} plans, with no
@@ -239,6 +292,31 @@ class TestParamValidation:
         # block this asserts is EXECUTED, verbatim, by
         # test_the_default_store_is_resolved_in_one_place.
         assert f'MlflowTracker({{"tracking_uri": "{DEFAULT_TRACKING_URI}"}})' in doc
+
+    def test_the_readme_states_the_knobs_the_default_and_the_vocabulary(self):
+        """The pack's THIRD copy of its own values, pinned (Ruling 7).
+
+        `CLAUDE.md` routes a reader to the params tuple and the class
+        docstring is pinned to the constants — but the package README
+        restates the same default, the same scheme vocabulary and the
+        same knob list as prose, pinned by nothing, and it had already
+        drifted. Pin it the way the class docstring is pinned: change a
+        constant, change the README.
+        """
+        readme = pathlib.Path(dskit.pipeline.__file__).parent / "README.md"
+        prose = readme.read_text(encoding="utf-8")
+        section = prose.split("**mlflow** is the odd pack out")[1].split("\n## ")[0]
+        assert f"`{DEFAULT_TRACKING_URI}`" in section
+        for knob in MlflowTracker._PARAMS:
+            assert f"`{knob}`" in section, f"knob {knob!r} missing from the README"
+        for scheme in TRACKING_URI_SCHEMES:
+            token = '`""`' if scheme == "" else f"`{scheme}`"
+            assert token in section, f"scheme {scheme!r} missing from the README"
+        # ...and no knob the pack does NOT allow, which is how the old
+        # copy drifted: it listed the pack's own `notes` (Ruling 6). The
+        # clause is the text between "Knobs:" and the em-dash that ends
+        # the list — `notes` is named just after it, as the SINK's field.
+        assert "`notes`" not in section.split("Knobs:")[1].split("—")[0]
 
     def test_the_default_store_is_local_and_serverless(self, tmp_path, monkeypatch):
         # mlflow put the ./mlruns DIRECTORY store into maintenance mode and
@@ -336,6 +414,163 @@ class TestDirectoryStore:
             assert pathlib.Path(uri).is_dir()
 
 
+class TestBusyLocalStore:
+    """A LOCAL store having a bad day is weather too (Ruling 5).
+
+    The pack used to raise ``ConfigError`` for every non-server failure
+    at construction, on the reasoning that the plan-time probe already
+    proved a local store writable, "so a failure now is not the
+    weather". Lock contention is exactly that weather: a second
+    ``run_document`` against the same sqlite file — or any process
+    holding the write lock — makes a correctly configured store refuse
+    for a moment, and ``_open_sinks`` runs OUTSIDE ``run_document``'s
+    try, so raising there kills a good run. It degrades instead, like a
+    degraded server. What must NOT degrade with it is genuine
+    MISconfiguration, which is why the second half of this class re-pins
+    that every named misconfiguration still fails at PLAN — and why
+    ``TestDirectoryStore``/``TestExperimentState`` still expect a
+    ``ConfigError`` from an open that failed for a reason a document
+    can fix.
+    """
+
+    def test_a_locked_store_still_plans_clean(self, locked_store):
+        # Reachability is all the stdlib probe can prove, and it holds:
+        # the file exists and is writable. Whether another process holds
+        # the write lock right now is not a property of the document.
+        assert MlflowTracker.validate_params({"tracking_uri": locked_store}) == []
+
+    def test_lock_contention_disables_the_sink_instead_of_raising(
+        self, locked_store, caplog
+    ):
+        pytest.importorskip("mlflow")
+        sink = MlflowTracker({"tracking_uri": locked_store, "experiment": "busy"})
+        sink.log_params({"name": "busy"})
+        sink.log_metrics("train", {"metrics.loss": 1.0})
+        sink.close()
+        assert sink.run_id == ""
+        assert any("locked" in rec.getMessage() for rec in caplog.records)
+
+    def test_lock_contention_does_not_abort_the_run(self, tmp_path, locked_store):
+        pytest.importorskip("mlflow")
+        result = run_document(
+            tracked_document(tmp_path, locked_store),
+            asof=ASOF,
+            registry=make_registry(),
+        )
+        assert result.state == "ran"
+
+    @pytest.mark.parametrize("scheme", ["postgresql", "wasbs"])
+    def test_an_unknown_scheme_still_fails_the_plan(self, scheme):
+        with pytest.raises(ConfigError) as exc:
+            sink_config(tracking_uri=f"{scheme}://host/store")
+        assert scheme in str(exc.value)
+
+    def test_a_missing_parent_still_fails_the_plan(self, tmp_path):
+        with pytest.raises(ConfigError) as exc:
+            sink_config(tracking_uri=f"sqlite:///{tmp_path}/gone/m.db")
+        assert "unreachable" in str(exc.value)
+
+    def test_an_unwritable_parent_still_fails_the_plan(self, tmp_path):
+        sealed = tmp_path / "sealed"
+        sealed.mkdir(mode=0o500)
+        try:
+            with pytest.raises(ConfigError) as exc:
+                sink_config(tracking_uri=f"sqlite:///{sealed}/m.db")
+            assert "not writable" in str(exc.value)
+        finally:
+            sealed.chmod(0o700)
+
+
+# ---------------------------------------------------------------------------
+# The seam another store family arrives through
+# ---------------------------------------------------------------------------
+
+#: A store family this pack does not ship — mlflow speaks it, the probe
+#: table does not. Port 1 and a bare user keep it unreachable if anything
+#: ever does try to dial it; psycopg2 is not installed, so it never does.
+PG_URI = "postgresql://user@127.0.0.1:1/mlflow"
+
+
+class RemotePostgres(MlflowTracker):
+    """A subclass declaring ``postgresql`` a SERVER family."""
+
+    _DESTINATIONS = {
+        **MlflowTracker._DESTINATIONS,
+        "postgresql": (lambda uri, timeout: [], True),
+    }
+
+
+class LocalPostgres(MlflowTracker):
+    """The same family, declared LOCAL — the opposite semantics."""
+
+    _DESTINATIONS = {
+        **MlflowTracker._DESTINATIONS,
+        "postgresql": (lambda uri, timeout: [], False),
+    }
+
+
+class ProbeOnlyPostgres(MlflowTracker):
+    """A subclass that overrides ONLY the advertised hook (the repro)."""
+
+    @classmethod
+    def probe_destination(cls, uri, timeout):
+        if urllib.parse.urlparse(uri).scheme == "postgresql":
+            return []
+        return super().probe_destination(uri, timeout)
+
+
+class TestStoreFamilySeam:
+    """A family arrives through ONE seam, its failure semantics included.
+
+    Ruling 4. ``probe_destination`` is advertised as THE hook for a store
+    family this pack does not know — but reachability is only half of
+    what a family decides. The other half is what a failure at
+    construction MEANS (degrade, or refuse the run) and whether mlflow's
+    own HTTP calls need bounding, and that half used to be read off a
+    module-level table keyed on the private probe identity, which no
+    subclass could reach: an overriding subclass inherited semantics it
+    never chose. Both halves now come from the declaring class.
+    """
+
+    def test_a_subclass_may_add_a_family_the_base_class_refuses(self):
+        assert MlflowTracker.validate_params({"tracking_uri": PG_URI})
+        assert RemotePostgres.validate_params({"tracking_uri": PG_URI}) == []
+        assert ProbeOnlyPostgres.validate_params({"tracking_uri": PG_URI}) == []
+
+    @pytest.mark.parametrize(
+        "tracker,remote",
+        [(RemotePostgres, True), (LocalPostgres, False), (ProbeOnlyPostgres, True)],
+    )
+    def test_the_declaring_class_decides_the_family(self, tracker, remote):
+        # A subclass that declares nothing about its new family gets the
+        # SAFE reading — the pack proved nothing local about a scheme it
+        # does not ship, so a failure there cannot be blamed on the
+        # document, and tracking must never fail a run.
+        assert tracker.destination_is_remote(PG_URI) is remote
+        assert MlflowTracker.destination_is_remote("sqlite:///m.db") is False
+        assert MlflowTracker.destination_is_remote("https://tracker") is True
+
+    @pytest.mark.parametrize(
+        "tracker,remote",
+        [(RemotePostgres, True), (LocalPostgres, False), (ProbeOnlyPostgres, True)],
+    )
+    def test_the_declared_family_decides_the_failure_semantics(
+        self, tracker, remote, caplog
+    ):
+        # psycopg2 is not installed, so opening a postgres store always
+        # fails — the same failure, routed two ways by the declaration.
+        pytest.importorskip("mlflow")
+        params = {"tracking_uri": PG_URI, "experiment": "family"}
+        if remote:
+            sink = tracker(params)
+            assert sink.run_id == "" and sink.log_params({"name": "x"}) is None
+            assert any(PG_URI in rec.getMessage() for rec in caplog.records)
+        else:
+            with pytest.raises(ConfigError) as exc:
+                tracker(params)
+            assert PG_URI in str(exc.value)
+
+
 # ---------------------------------------------------------------------------
 # Where tracking config belongs, relative to the identity hash
 # ---------------------------------------------------------------------------
@@ -354,26 +589,20 @@ class TestHashPlacement:
         assert SINK_KIND in SINK_KINDS
         assert SINK_KIND not in DEFAULT_NODE_KINDS
 
-    def test_identity_recipe_is_pinned_so_moving_tracking_trips_here(
-        self, tmp_path
-    ):
-        """The exclusion list, pinned — a move in EITHER direction fails.
+    def test_tracking_never_moves_a_documents_identity(self, tmp_path):
+        """Placement is not computation — the INVERSE of the pin it replaces.
 
-        `tracking` is NOT in `DOC_NON_IDENTITY_SECTIONS`, so the section
-        IS hash-graded: two runs differing only in WHERE their metrics
-        land carry different identities. Whether that is right is a
-        design question (it reads like `outputs`, which IS excluded) —
-        what is settled is that moving it is not this pack's to make.
-        `PipelineDocument.to_obj` emits `"tracking": null` ALWAYS
-        (`document.py`), and `config_hash` pops excluded top-level keys
-        before hashing, so excluding `tracking` moves EVERY document's
-        hash — not only those declaring a sink. Measured:
-        `examples/pipeline/mpl-figure.json`, which declares no tracking
-        at all, goes e9d5f60c… -> 314cea4d… . That orphans every run dir
-        and every stored artifact in the repo, so it needs an ADR and a
-        baseline re-cut, and it must trip a test first — this one.
+        Ruling 1. The card's central Do-NOT is that tracking config never
+        enters the identity hash, and the branch pinned the defect
+        instead: it asserted that two documents differing only in their
+        tracking section carry DIFFERENT identities. They must carry the
+        SAME one. WHERE metrics are logged is placement, exactly like
+        `outputs`, which has always been excluded; the identity hash
+        grades what the run COMPUTES. Present-vs-absent and one store
+        URI vs another are all one identity, and the list membership is
+        asserted too so REMOVING `tracking` from it trips here.
         """
-        assert DOC_NON_IDENTITY_SECTIONS == ("env", "outputs", "schedule")
+        assert "tracking" in DOC_NON_IDENTITY_SECTIONS
         untracked = banking_document(
             outputs=OutputsConfig(run_root=str(tmp_path / "runs"))
         )
@@ -381,8 +610,41 @@ class TestHashPlacement:
         tracked_elsewhere = tracked_document(
             tmp_path, store_uri(tmp_path, "elsewhere.db")
         )
-        assert untracked.hash != tracked.hash
-        assert tracked.hash != tracked_elsewhere.hash
+        assert untracked.hash == tracked.hash == tracked_elsewhere.hash
+
+    def test_both_identity_recipes_agree_about_tracking(self):
+        """The exclusion list exists TWICE; pin the two to agree (Ruling 1).
+
+        base's `NON_IDENTITY_SECTIONS` grades the stage-list config and
+        `resolve.pipeline_hash`; the document's copy adds the
+        provenance-only `schedule`. Two lists, one doctrine — what one
+        calls placement the other must not grade — and a NULLED section
+        must be an EXCLUDED one, or it would be rendered null while
+        still counting toward identity.
+        """
+        assert set(NON_IDENTITY_SECTIONS) <= set(DOC_NON_IDENTITY_SECTIONS)
+        assert set(NULLED_IDENTITY_SECTIONS) <= set(NON_IDENTITY_SECTIONS)
+        assert "tracking" in NULLED_IDENTITY_SECTIONS
+
+    def test_excluding_tracking_moved_no_existing_hash(self, tmp_path):
+        """...and it moved NO ledger hash, which is Ruling 1's proof.
+
+        `PipelineDocument.to_obj` emits `"tracking": null` for EVERY
+        document, and the exclusion recipe REMOVES an excluded key — so
+        excluding `tracking` the obvious way would have moved every hash
+        in the repo, sink or no sink, orphaning every run directory and
+        stored artifact. The recipe therefore renders an excluded
+        `tracking` section as UNDECLARED instead of removing its key
+        (`base.NULLED_IDENTITY_SECTIONS`), which excludes it just as
+        completely and leaves the canonical JSON byte-identical. The
+        literal below was measured BEFORE the exclusion landed; a change
+        that goes back to removing the key moves it.
+        """
+        doc = banking_document(outputs=OutputsConfig(run_root=str(tmp_path / "runs")))
+        assert (
+            doc.hash
+            == "8dcdc84e69d758df674928e3a314c8656e8fa08c10d203a2ae108ea89d39d325"
+        )
 
 
 # ---------------------------------------------------------------------------

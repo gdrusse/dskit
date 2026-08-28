@@ -750,9 +750,31 @@ class TestReviewRegressions:
         result = run_document(doc, asof=ASOF, registry=registry)
         assert result.state == "ran"
 
+    def test_the_run_hash_ignores_the_tracking_section(self, tmp_path, registry):
+        """The driver's own copy of the exclusion list, pinned (Ruling 1).
+
+        ``run_hash`` is computed from the document minus
+        ``DOC_NON_IDENTITY_SECTIONS``, in the driver rather than through
+        ``PipelineDocument.hash`` — a second copy of the recipe, so a
+        second place ``tracking`` could stay graded. Two documents
+        differing ONLY in whether they declare a sink therefore have to
+        name the same run directory, which the occupied-dir refusal
+        reports for us.
+        """
+        run_document(bdoc(tmp_path), asof=ASOF, registry=registry)
+        with pytest.raises(ValueError, match="already exists"):
+            run_document(
+                bdoc(
+                    tmp_path,
+                    tracking=TrackingConfig(sinks=(SinkConfig(kind="memory"),)),
+                ),
+                asof=ASOF,
+                registry=registry,
+            )
+
     def test_sinks_close_on_resolve_time_refusal(self, tmp_path, registry):
-        # Identical document twice (tracking is hash-material, so the doc
-        # must be the SAME for the second run to hit the occupied dir).
+        # Identical document twice: the second run hits the occupied run
+        # dir, which is what makes it a resolve-time refusal.
         doc = bdoc(
             tmp_path,
             tracking=TrackingConfig(

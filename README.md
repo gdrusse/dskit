@@ -44,7 +44,8 @@ python -m dskit.pipeline plan <doc.json>                          # resolved DAG
 
 Exit codes: **0** ran · **3** halted at a NO-GO gate (a halt is a result) ·
 **1** error. Identity = sha256 of the canonical JSON (`notes` stripped
-everywhere; `env`/`outputs`/`schedule` excluded). Same hash, same experiment.
+everywhere; `env`/`outputs`/`schedule`/`tracking` excluded — documentation and
+placement, never computation). Same hash, same experiment.
 
 **Store** — a catalog governed by a model you declare:
 

@@ -63,6 +63,7 @@ from dskit.pipeline.base import (
     SINK_KINDS,
     ConfigError,
     TimeSplitConfig,
+    _strip_non_identity,
     _strip_notes,
     import_ref,
     is_class_ref,
@@ -879,9 +880,9 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
         splits = _bind_event_bounds(splits, instances, the_plan.role_of)
         splits_info = splits.to_obj() if splits is not None else {}
 
-        identity = _strip_notes(document.to_obj())
-        for section in DOC_NON_IDENTITY_SECTIONS:
-            identity.pop(section, None)
+        identity = _strip_non_identity(
+            _strip_notes(document.to_obj()), DOC_NON_IDENTITY_SECTIONS
+        )
         run_hash = _canonical_hash(
             {"document": identity, "data_fingerprint": fingerprints}
         )

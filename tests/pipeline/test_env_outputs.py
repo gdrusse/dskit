@@ -7,10 +7,14 @@ import os
 import pytest
 
 from dskit.pipeline.base import (
+    NON_IDENTITY_SECTIONS,
     ConfigError,
     EnvConfig,
     ModelConfig,
     OutputsConfig,
+    SinkConfig,
+    TrackingConfig,
+    _strip_non_identity,
 )
 from dskit.pipeline.env import Secrets, load_env
 from dskit.pipeline.resolve import pipeline_hash, resolve
@@ -100,6 +104,30 @@ class TestNonIdentitySections:
         r1, _ = resolve(base, asof="2026-01-01", registry=registry)
         r2, _ = resolve(with_out, asof="2026-01-01", registry=registry)
         assert pipeline_hash(r1) == pipeline_hash(r2)  # placement != identity
+
+    def test_tracking_never_moves_the_hash_either(self, registry, synthetic_config):
+        """WHERE metrics land is placement too (Ruling 1).
+
+        ``tracking`` names the sink a run's telemetry goes to — the same
+        kind of fact as ``outputs``, and none of what the run COMPUTES.
+        It joined the exclusion list LATE, though, so it is excluded by
+        being rendered UNDECLARED rather than by having its key removed
+        (``NULLED_IDENTITY_SECTIONS``): every hash ever written already
+        counted a ``"tracking": null``, and dropping the key would have
+        moved all of them.
+        """
+        base = synthetic_config()
+        tracked = synthetic_config(
+            tracking=TrackingConfig(sinks=(SinkConfig(kind="memory"),))
+        )
+        assert "tracking" in NON_IDENTITY_SECTIONS
+        assert base.hash == tracked.hash
+        # ...and the KEY survived, as null — the byte-for-byte reason no
+        # existing hash moved when the section became non-identity.
+        assert _strip_non_identity(tracked.to_obj())["tracking"] is None
+        r1, _ = resolve(base, asof="2026-01-01", registry=registry)
+        r2, _ = resolve(tracked, asof="2026-01-01", registry=registry)
+        assert pipeline_hash(r1) == pipeline_hash(r2)
 
     def test_run_root_redirects_artifacts(self, registry, synthetic_config, tmp_path):
         cfg = synthetic_config(

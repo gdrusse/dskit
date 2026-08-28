@@ -46,11 +46,11 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
 from dskit.pipeline.base import (
-    NON_IDENTITY_SECTIONS,
     OPTIMIZER_KINDS,
     SINK_KINDS,
     TRANSFORM_KINDS,
     PipelineConfig,
+    _strip_non_identity,
     _strip_notes,
     import_ref,
     is_class_ref,
@@ -163,9 +163,8 @@ def pipeline_hash(resolved) -> str:
     d = resolved.to_dict() if hasattr(resolved, "to_dict") else dict(resolved)
     d = _strip_notes({k: v for k, v in d.items() if k not in _PROVENANCE_KEYS})
     d.pop("run_dir", None)
-    if isinstance(d.get("config"), dict):
-        for section in NON_IDENTITY_SECTIONS:  # env + outputs: not identity
-            d["config"].pop(section, None)
+    # env + outputs + tracking: placement, not identity
+    _strip_non_identity(d.get("config"))
     try:
         canon = json.dumps(
             d, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False

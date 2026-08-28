@@ -71,21 +71,33 @@ on it without breaking its rulings.
   reach: `validate_params` (runs in `SinkConfig.__post_init__`, i.e. at
   plan) and the constructor (`_open_sinks` runs before the node loop).
   `libs/mlflow.py` is the worked example — default-deny knobs plus a
-  stdlib reachability probe of the tracking URI, both at plan time
-  (ADR-0038).
+  stdlib reachability probe of the tracking URI, both at plan time; its
+  module docstring carries the whole rationale.
 - **…but a sink that RAISES at construction kills the run.**
   `_open_sinks` is called at `driver.py:823`, one line ABOVE the `try`
   that `run_document`'s body lives in, so a `ConfigError` from a sink
   factory aborts the run before a single node executes. That is right
   for a MISconfiguration and wrong for a destination having a bad day,
   and the two look identical from inside the `except`. `libs/mlflow.py`
-  splits them by origin: mlflow missing, a non-active experiment, or any
-  failure of a LOCAL store (already proved writable at plan time) raise;
-  an `http`/`https` store that passed the TCP probe and then fails
-  disables the sink and logs a warning. A new sink pack must make the
-  same split, and must bound its own remote calls — a telemetry
-  destination that HANGS stalls the run just as fatally as one that
-  raises, and no swallow catches a hang.
+  splits them by whose fault they are: mlflow missing, a non-active
+  experiment or a store family the installed mlflow refuses raise —
+  each names something a human can change; a degraded `http`/`https`
+  server that passed the TCP probe, and a LOCAL store that is merely
+  BUSY (sqlite lock contention, read off the DBAPI's error classes),
+  disable the sink and log a warning. "The probe already proved it
+  writable" does NOT make a later local failure the document's fault —
+  contention is the ordinary cost of a shared store, and treating it as
+  misconfiguration kills correctly configured runs. A new sink pack
+  must make the same split, and must bound its own remote calls — a
+  telemetry destination that HANGS stalls the run just as fatally as
+  one that raises, and no swallow catches a hang.
+- **A store family owns BOTH its probe and its failure semantics.**
+  `libs/mlflow.py` keeps them in one class-level table
+  (`MlflowTracker._DESTINATIONS`: scheme -> `(probe, remote)`) read by
+  `probe_destination` and `destination_is_remote`. The version that
+  advertised only the probe hook, and decided remote-ness from a private
+  module table, handed every subclass failure semantics it never chose.
+  If you extend a seam, extend all of what the extension decides.
 - **`Tracker.close()` carries no status** and the driver calls it from a
   `finally` on every path, so a sink cannot tell a crashed run from a
   clean one — an mlflow run reads `FINISHED` either way. Giving it one
@@ -94,20 +106,23 @@ on it without breaking its rulings.
   a pack CAN do, and `libs/mlflow.py` does, is create its remote run
   lazily on the first log, so a run refused before execution leaves no
   empty `FINISHED` run behind at all.
-- **Tracking config is NOT hash-excluded.**
-  `DOC_NON_IDENTITY_SECTIONS` is `("env", "outputs", "schedule")` only,
-  so the `tracking` section IS graded: changing a sink's URI renames the
-  run. Arguably wrong (it reads like `outputs`) — but do NOT read "no
-  shipped example declares a sink" as "the move is nearly free". It is
-  not: `PipelineDocument.to_obj` emits `"tracking": null` ALWAYS, and
-  `config_hash` POPS each excluded key before hashing, so adding
-  `tracking` to the list moves **every document's hash**, sink or no
-  sink (measured: `examples/pipeline/mpl-figure.json`, which declares no
-  tracking at all, goes `e9d5f60c…` -> `314cea4d…`). That orphans every
-  run dir and every stored artifact in the repo, so the move needs an
-  ADR plus a hash-baseline re-cut. It is pinned in
-  `tests/pipeline_libs/test_mlflow.py::TestHashPlacement` and any move
-  must trip that test first.
+- **Tracking config is hash-EXCLUDED, and excluded a second way.**
+  `tracking` is in `DOC_NON_IDENTITY_SECTIONS` (and in base's
+  `NON_IDENTITY_SECTIONS`) beside `env`/`outputs`/`schedule`: WHERE
+  metrics land is placement, and identity grades what a run COMPUTES.
+  But `to_obj` emits a `"tracking"` key for EVERY document, and the
+  recipe REMOVES an excluded key — so removing it would have moved
+  every hash in the repo, sink or no sink, orphaning every run dir and
+  stored artifact. Excluded sections named in `NULLED_IDENTITY_SECTIONS`
+  are therefore rendered UNDECLARED (`null`) instead of removed, which
+  excludes them just as completely and leaves the canonical JSON
+  byte-identical — the same reasoning as `walkforward`'s emit-only-when-
+  present. Adding a section to an exclusion list AFTER documents exist
+  always needs that treatment. Pinned in
+  `tests/pipeline_libs/test_mlflow.py::TestHashPlacement` (identity and
+  a golden hash), `test_env_outputs.py` and
+  `test_driver.py::test_the_run_hash_ignores_the_tracking_section` —
+  the driver keeps its own copy of the recipe.
 - **The numpy pack registers no kinds** — `ArrayMap`/`ArrayFeatures`
   subclasses wired by import path only.
 - **Base `Node.validate_params` accepts anything.** The deny lives in

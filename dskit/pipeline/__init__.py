@@ -66,6 +66,7 @@ stage-list: ``demo`` (default) and ``synthetic``.
 from dskit.pipeline.base import (
     DEFAULT_SPLIT_POLICY,
     NON_IDENTITY_SECTIONS,
+    NULLED_IDENTITY_SECTIONS,
     OPTIMIZER_KINDS,
     SINK_KINDS,
     SPLIT_KINDS,
@@ -241,6 +242,7 @@ __all__ = [
     "Secrets",
     "OutputsConfig",
     "NON_IDENTITY_SECTIONS",
+    "NULLED_IDENTITY_SECTIONS",
     "EnvConfig",
     "FeatureConfig",
     "FeatureStepConfig",

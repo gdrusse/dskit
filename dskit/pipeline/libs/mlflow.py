@@ -41,9 +41,10 @@ checked where the swallow cannot reach:
 * **At construction** — the constructor re-runs the same validator and
   then opens the mlflow CLIENT and EXPERIMENT immediately, before any
   node executes (``_open_sinks`` runs ahead of the driver's node loop).
-  A missing mlflow install, an unwritable store, an experiment that
-  exists but was DELETED (mlflow keeps returning it, and every write to
-  it raises): all raise here, where they are visible.
+  What only the installed mlflow can decide is decided here: a missing
+  mlflow install, a store family it refuses, an experiment that exists
+  but was DELETED (mlflow keeps returning it, and every write to it
+  raises). Those raise, where they are visible.
 
 Only the three seam calls afterwards (``log_params``/``log_metrics``/
 ``close``) sit inside the swallow — by then the configuration has been
@@ -53,18 +54,22 @@ proven, which is the point.
 ``_open_sinks`` runs OUTSIDE ``run_document``'s ``try``, so a sink that
 raises at construction aborts the run before a single node executes —
 which is precisely what the swallow exists to prevent. So the two
-failures are separated by ORIGIN, not by symptom:
+failures are separated by whose FAULT they are, not by symptom:
 
 * a **misconfiguration** raises ``ConfigError`` — mlflow not installed,
-  a non-active experiment, or any failure of a LOCAL store, whose
-  writability the plan-time probe already proved (so a failure now is
-  about the store family or the installed mlflow, not the weather);
-* a **degraded SERVER** does not. An ``http``/``https`` destination was
-  proved to accept a TCP connection at plan time; that it is now 5xx-ing
-  or resetting is the server's condition, which no document can fix and
-  no document should die of. The sink DISABLES itself, logs a warning
-  naming the URI and the experiment, and every later seam call is a
-  no-op — degraded, never fatal, never silent.
+  a non-active experiment, a store family the installed mlflow refuses.
+  Each names something a human can go and change;
+* **the weather** does not. A degraded SERVER (an ``http``/``https``
+  destination proved to accept a TCP connection at plan time, now
+  5xx-ing or resetting) and a BUSY local store (another process holding
+  the sqlite write lock — contention is the ordinary cost of a shared
+  local store, and :func:`_is_transient` reads it off the DBAPI's own
+  error classes rather than a message match) are both conditions of the
+  destination, which no document can fix and no run should die of. The
+  sink DISABLES itself, logs a warning naming the URI and the
+  experiment, and every later seam call is a no-op — degraded, never
+  fatal, never silent. The cost, recorded rather than fixed: a disabled
+  sink is a line in the log, not a run-visible result.
 
 For the same reason ``connect_timeout`` bounds more than the stdlib
 probe: it is also pushed into mlflow's own HTTP knobs
@@ -73,6 +78,20 @@ operator has not set them) for the duration of this sink's calls.
 Without that, construction against a reachable-but-degraded server runs
 under mlflow's default retry/backoff policy and stalls ``run_document``
 for minutes, before any node, with no output at all.
+
+**Which stores, and how another one arrives.** The scheme vocabulary is
+CLOSED — ``""``, ``file``, ``http``, ``https``, ``sqlite``. mlflow also
+speaks postgres and mysql; this pack refuses what it cannot PROVE
+reachable, because an unprovable destination is one whose
+misconfiguration would be silent, the failure mode the pack exists to
+remove. Another family arrives by subclassing: lay your scheme over
+:data:`MlflowTracker._DESTINATIONS`, which carries BOTH facts a family
+decides — the probe that proves it reachable
+(:meth:`MlflowTracker.probe_destination`) and whether it is a SERVER
+(:meth:`MlflowTracker.destination_is_remote`, which settles the
+degrade-or-refuse split above and whether the HTTP budget applies).
+They travel together on purpose: a seam that handed out only the probe
+left a subclass running on failure semantics it never chose.
 
 **Why the RUN is not opened there too.** The driver builds sinks before
 resolve finishes and closes them on every pre-execution refusal (an
@@ -106,10 +125,18 @@ being what a node logging a per-epoch series through
 ``ctx.tracker.log_metrics`` does.
 
 **What this pack is not.** No node kind (``NODE_KINDS`` is empty): a
-tracking destination is not a step of the pipeline, and keeping it out of
-``pipeline`` keeps it out of everything an identity hash is computed
-over. No server, no UI, no model registry — the default is a LOCAL store
-so tests and laptops need nothing running.
+tracking destination is not a step of the pipeline. That alone would not
+keep it out of the identity hash, though — the hash covers the WHOLE
+document minus a named exclusion list, so a ``tracking`` section left
+off that list is graded as surely as ``pipeline`` is. What keeps it out
+is the name: ``tracking`` sits in
+:data:`~dskit.pipeline.document.DOC_NON_IDENTITY_SECTIONS` beside
+``env``/``outputs``/``schedule``, because WHERE a run's metrics are
+logged is placement and the identity hash grades what the run COMPUTES.
+So a document repointed at another store keeps its identity, its run
+directory and its ``$prev`` series. No server, no UI, no model registry
+— the default is a LOCAL store so tests and laptops need nothing
+running.
 
 **Which local store.** The default is ``sqlite:///mlruns.db``, not the
 older ``./mlruns`` directory: mlflow put the plain-directory file store
@@ -130,11 +157,14 @@ Import cost: stdlib + ``dskit.pipeline`` only.
 
 from __future__ import annotations
 
+import collections
 import contextlib
+import errno
 import hashlib
 import logging
 import os
 import socket
+import sqlite3
 import time
 import urllib.parse
 import urllib.request
@@ -205,8 +235,9 @@ METRIC_BATCH = 1000
 
 #: Deliberately EMPTY — a tracking destination is not a pipeline step.
 #: The pack registers into ``SINK_KINDS`` (see :func:`register`), never
-#: into the node registry, which is what keeps mlflow config out of the
-#: hash-graded ``pipeline`` section.
+#: into the node registry, so a store URI is never spellable as a node
+#: param. What keeps the ``tracking`` SECTION out of identity is the
+#: exclusion list, not this table (see the module docstring).
 NODE_KINDS = ()
 
 #: Every knob that HAS a default. Resolved in ONE place (:func:`_settings`)
@@ -304,22 +335,11 @@ def _probe_host(uri, timeout):
         return [_unreachable(uri, f"{host}:{port} refused the connection ({exc})")]
 
 
-#: URI scheme -> the probe that PROVES that family reachable. A closed
-#: vocabulary on purpose: a scheme this pack cannot prove reachable is a
-#: scheme whose misconfiguration would be silent, which is the one
-#: failure mode the pack exists to remove. Other stores are reached by
-#: subclassing :class:`MlflowTracker` and overriding ``probe_destination``.
-_URI_PROBES = {
-    "": _probe_local,
-    "file": _probe_local,
-    "http": _probe_host,
-    "https": _probe_host,
-    "sqlite": _probe_sqlite,
-}
-
-#: The scheme vocabulary, derived from the probe table so the two can
-#: never disagree.
-TRACKING_URI_SCHEMES = tuple(sorted(_URI_PROBES))
+#: One destination FAMILY: the probe that proves that scheme reachable,
+#: and whether the scheme names a SERVER. Both facts belong to the
+#: family, so both travel together — a subclass that adds a store cannot
+#: declare one and silently inherit the other.
+_Family = collections.namedtuple("_Family", "probe remote")
 
 
 def _check_str(problems, name, value):
@@ -375,15 +395,10 @@ def _chunks(items, size):
         yield items[start : start + size]
 
 
-def _is_remote(uri):
-    """Say whether ``uri`` names a tracking SERVER, not a local store."""
-    return _URI_PROBES.get(urllib.parse.urlparse(uri).scheme) is _probe_host
-
-
 @contextlib.contextmanager
-def _request_budget(uri, timeout):
-    """Bound mlflow's own HTTP calls to ``timeout``, for a server URI only."""
-    if not _is_remote(uri):
+def _request_budget(remote, timeout):
+    """Bound mlflow's own HTTP calls to ``timeout``, for a server only."""
+    if not remote:
         yield
         return
     ours = {_HTTP_TIMEOUT_ENV: str(max(1, int(timeout))), _HTTP_RETRIES_ENV: "1"}
@@ -397,6 +412,41 @@ def _request_budget(uri, timeout):
     finally:
         for name in set_here:
             os.environ.pop(name, None)
+
+
+#: ``OSError`` numbers that mean BUSY or momentarily out of resources —
+#: the store is fine, this instant is not. Anything else (a permission,
+#: a missing path) is a config problem the plan-time probe already had
+#: its chance to catch, so it stays fatal.
+_TRANSIENT_ERRNOS = frozenset(
+    {
+        errno.EAGAIN,
+        errno.EBUSY,
+        errno.EINTR,
+        errno.EMFILE,
+        errno.ENFILE,
+        errno.ENOLCK,
+        errno.ETIMEDOUT,
+    }
+)
+
+
+def _is_transient(exc):
+    """Say whether a failed open is the WEATHER rather than the config."""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        # sqlite reports lock contention and momentary I/O trouble as
+        # OperationalError ("database is locked"), and a store that is
+        # genuinely wrong as some other DatabaseError ("file is not a
+        # database") — so the split is the DBAPI's own, not a message
+        # match. The driver wraps it, so walk the whole chain.
+        if isinstance(exc, sqlite3.OperationalError):
+            return True
+        if isinstance(exc, OSError) and exc.errno in _TRANSIENT_ERRNOS:
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
 
 
 class _StoreRefused(Exception):
@@ -463,8 +513,9 @@ class MlflowTracker:
         omitted), ``tags`` (dict of str -> str, optional),
         ``connect_timeout`` (number of seconds > 0, default 5.0 — the
         budget for BOTH the plan-time server probe and the sink's own
-        mlflow HTTP calls), ``notes`` (str, the config standard's
-        documentation field). The defaults live in
+        mlflow HTTP calls). Documentation goes in the sink's OWN
+        ``notes`` field beside ``params``, never inside them. The
+        defaults live in
         :data:`DEFAULT_TRACKING_URI`/:data:`DEFAULT_EXPERIMENT`/
         :data:`DEFAULT_CONNECT_TIMEOUT` and the scheme list in
         :data:`TRACKING_URI_SCHEMES`; the copies above are pinned to them
@@ -476,10 +527,12 @@ class MlflowTracker:
         When ``params`` is invalid, the destination is unreachable,
         mlflow is not installed, or the declared experiment exists but
         is not active. Raised at construction, which the driver performs
-        before any node runs. A reachable SERVER that then fails is not
-        a misconfiguration and does NOT raise: the sink disables itself
-        and warns, because construction runs outside the driver's try
-        and raising there would abort a correctly configured run.
+        before any node runs. A destination merely having a BAD DAY is
+        not a misconfiguration and does NOT raise — a reachable server
+        that then fails, or a local store another process holds the
+        write lock on: the sink disables itself and warns, because
+        construction runs outside the driver's try and raising there
+        would abort a correctly configured run.
 
     Examples
     --------
@@ -491,11 +544,29 @@ class MlflowTracker:
         sink.close()
     """
 
+    #: URI scheme -> :data:`_Family`. THE extension point for a store
+    #: family this pack does not ship: a subclass lays its scheme over
+    #: this table and gets the probe AND the failure semantics in one
+    #: declaration. A closed vocabulary on purpose — a scheme the sink
+    #: cannot prove reachable is a scheme whose misconfiguration would be
+    #: silent, the one failure mode this pack exists to remove. Read by
+    #: unpacking, so a subclass may spell an entry as a plain
+    #: ``(probe, remote)`` pair.
+    _DESTINATIONS = {
+        "": _Family(_probe_local, False),
+        "file": _Family(_probe_local, False),
+        "http": _Family(_probe_host, True),
+        "https": _Family(_probe_host, True),
+        "sqlite": _Family(_probe_sqlite, False),
+    }
+
     #: Default-deny: every knob this sink allows, and nothing else.
+    #: (No ``notes``: ``SinkConfig`` carries the config standard's
+    #: documentation field itself, and a tier-2 pack never restates
+    #: tier-1 truth — two ``notes`` on one object would be two bounds.)
     _PARAMS = (
         "connect_timeout",
         "experiment",
-        "notes",
         "run_name",
         "tags",
         "tracking_uri",
@@ -542,8 +613,6 @@ class MlflowTracker:
         _check_str(problems, "experiment", settings["experiment"])
         if "run_name" in params:
             _check_str(problems, "run_name", params["run_name"])
-        if "notes" in params:
-            _check_str(problems, "notes", params["notes"])
         if "tags" in params:
             _check_tags(problems, params["tags"])
         _check_timeout(problems, settings["connect_timeout"])
@@ -557,9 +626,10 @@ class MlflowTracker:
     def probe_destination(cls, uri, timeout):
         """Problems proving ``uri`` reachable, without importing mlflow.
 
-        The subclass hook for a store family this pack does not know:
-        override, handle your scheme, and delegate the rest to
-        ``super()``.
+        Half of the store-family hook: add your scheme to
+        :data:`_DESTINATIONS` (which carries the other half,
+        :meth:`destination_is_remote`), or override this and delegate the
+        rest to ``super()``.
 
         Parameters
         ----------
@@ -574,15 +644,46 @@ class MlflowTracker:
             Empty when the destination is reachable.
         """
         scheme = urllib.parse.urlparse(uri).scheme
-        probe = _URI_PROBES.get(scheme)
-        if probe is None:
+        family = cls._DESTINATIONS.get(scheme)
+        if family is None:
             return [
                 f"tracking_uri {uri!r} uses scheme {scheme!r}, which this sink "
-                f"cannot prove reachable — allowed: {list(TRACKING_URI_SCHEMES)} "
-                "(subclass MlflowTracker and override probe_destination for "
-                "another store)"
+                f"cannot prove reachable — allowed: {sorted(cls._DESTINATIONS)} "
+                "(subclass MlflowTracker and declare another store family in "
+                "_DESTINATIONS)"
             ]
+        probe, _remote = family
         return probe(uri, timeout)
+
+    @classmethod
+    def destination_is_remote(cls, uri):
+        """Whether ``uri`` names a tracking SERVER rather than a local store.
+
+        The other half of the store-family hook, and the reason the two
+        travel together: this one answer decides whether a failure at
+        construction DEGRADES or refuses the run, and whether mlflow's
+        own HTTP calls are bounded. A subclass that adds a family to
+        :data:`_DESTINATIONS` declares both at once; one that only
+        widens :meth:`probe_destination` gets the safe reading, because
+        an undeclared scheme is one this class proved nothing LOCAL
+        about — so a failure there is never the document's fault.
+
+        Parameters
+        ----------
+        uri : str
+            The declared tracking URI.
+
+        Returns
+        -------
+        bool
+            True for a server family, and for any scheme this class does
+            not declare.
+        """
+        family = cls._DESTINATIONS.get(urllib.parse.urlparse(uri).scheme)
+        if family is None:
+            return True
+        _probe, remote = family
+        return remote
 
     # -- the run ------------------------------------------------------------
 
@@ -594,7 +695,10 @@ class MlflowTracker:
     def _budget(self):
         """Bound this sink's own mlflow calls to the declared timeout."""
         settings = _settings(self.params)
-        return _request_budget(settings["tracking_uri"], settings["connect_timeout"])
+        return _request_budget(
+            self.destination_is_remote(settings["tracking_uri"]),
+            settings["connect_timeout"],
+        )
 
     def _open(self):
         """Prove the store usable now — open its client and experiment, write nothing."""
@@ -616,19 +720,25 @@ class MlflowTracker:
         except _StoreRefused as exc:
             raise ConfigError([self._open_failed(name, uri, exc)]) from exc
         except Exception as exc:  # noqa: BLE001 — routed, never swallowed
-            if _is_remote(uri):
-                # A SERVER was proved to accept a TCP connection at plan
-                # time; that it is now failing is the server's condition,
-                # not the document's. `_open_sinks` runs OUTSIDE
-                # `run_document`'s try, so raising here would let a
-                # telemetry destination abort a correctly configured run
-                # before a single node ran — the one thing this seam
-                # forbids. Degrade to a disabled sink, loudly.
+            if self.destination_is_remote(uri) or _is_transient(exc):
+                # Neither failure is the DOCUMENT's. A SERVER was proved
+                # to accept a TCP connection at plan time and is now
+                # having a bad day; a local store was proved writable and
+                # is BUSY this instant (another run_document holds the
+                # sqlite write lock — contention is the normal cost of a
+                # shared local store, not a misconfiguration). Either
+                # way `_open_sinks` runs OUTSIDE `run_document`'s try, so
+                # raising here would let a telemetry destination abort a
+                # correctly configured run before a single node ran — the
+                # one thing this seam forbids. Degrade, loudly.
                 _log.warning(
                     "%s — tracking disabled for this run",
                     self._open_failed(name, uri, exc),
                 )
                 return
+            # Everything left is a reason a human can act on: mlflow
+            # missing, a store family this mlflow refuses, a permission.
+            # Those stay fatal, which is the whole point of the pack.
             raise ConfigError([self._open_failed(name, uri, exc)]) from exc
         self._client = client
         self._experiment = experiment
@@ -744,6 +854,11 @@ class MlflowTracker:
         if self._run_id:
             with self._budget():
                 client.set_terminated(self._run_id, "FINISHED")
+
+
+#: The scheme vocabulary this pack ships, derived from the family table
+#: so the two can never disagree. A subclass widens the table, not this.
+TRACKING_URI_SCHEMES = tuple(sorted(MlflowTracker._DESTINATIONS))
 
 
 def register():
