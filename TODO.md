@@ -59,7 +59,7 @@ REMAINING, in the plan's risk order:
       pinned; the abstract refusal is core's one sentence
       (`abstract_class_problem`), asked by the node registry and the
       adapter doorway at plan and run, plan/run wording pinned equal.
-- [ ] **3c — `TrainableNode` base so nodes stop branching on `mode`. ADR FIRST.**
+- [x] **3c — `TrainableNode` base so nodes stop branching on `mode`. ADR FIRST.**
       Deletes nine `if mode ==` sites across torch/sb3/transformers/sklearn/
       synthetic. **Do NOT split each trainable into train and load classes** —
       that was the first proposal and it is wrong: `mode` is inside the
@@ -71,6 +71,18 @@ REMAINING, in the plan's risk order:
       sb3. The ADR covers the seam and the conformance-bar change, since
       `conformance.py:1214`'s bytecode sniff for `mode` must become a
       structural check and child packs subclass against it.
+      **Landed this run (2026-08-28, C1) via ADR-0038.** All nine sites
+      died — the ONE surviving raw-`mode` read is `node_level_pin`, which
+      the ADR sanctions as the design's single one. Every hash unmoved on
+      an engine change across five packs. The bar is now structural
+      (subclass + both template methods still the base's), proven
+      red-first against a plain-`Node` trainable. Two services moved to
+      `Node`, not the new base, because the non-trainable `Sb3Eval` needs
+      them. `_evidence_bases` keeps the new base out of the conformance
+      MRO walks — proven red-first too: without it the base vouches for a
+      child's declared-but-unread `artifact` knob. A new pin freezes the
+      four recorded class refs and both `build_module` identities, the
+      invariant only loading a pre-change `.pt` would otherwise catch.
 - [ ] **3d — decompose the long methods** (after 3b/3c, so the seams are
       stable): `driver.py:730` `run_document` (399 lines; its six phase
       comments ARE the boundaries), `kinds_report.py:1227` `RunReport.run`
