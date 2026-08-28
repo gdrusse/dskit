@@ -34,8 +34,11 @@ on it without breaking its rulings.
   implement `run_train`/`run_load` (both abstract) and the
   `validate_common_inputs`/`validate_train_inputs`/`validate_load_inputs`
   hooks; set `default_mode = "load"` for a kind that only ever loads and
-  make `run_train` its refusal. Never override either template method —
-  the conformance bar checks both still resolve to the base. Resolving a
+  make `run_train` its refusal. `default_mode` is graded against
+  `document.MODES` by `node_class_errors`, beside the `role` check — the
+  grammar and the dispatch read ONE vocabulary. Never override either
+  template method — the conformance bar checks both still resolve to the
+  base. Resolving a
   pin is `Node.pinned_artifact` (node-level pin → declared param → wired
   port) plus `Node.pin_port_problems`; they sit on `Node`, not the
   trainable base, because `sb3-eval` (role `score`) needs them too.
@@ -203,7 +206,7 @@ on it without breaking its rulings.
 dskit/pipeline/
 ├── __init__.py        public surface; auto-registers the default kinds
 ├── __main__.py        the CLI: python -m dskit.pipeline
-├── document.py        PipelineDocument / NodeSpec / ROLES / splits + walkforward / refs
+├── document.py        PipelineDocument / NodeSpec / ROLES + MODES / splits + walkforward / refs
 ├── node.py            Node + TrainableNode ABCs, NodeContext, registry, register_node_kind
 ├── planner.py         document -> Plan; role rules live here
 ├── driver.py          run_document: LOAD..RECORD, run dirs, $prev carry;

@@ -727,6 +727,25 @@ def test_predict_node_refuses_an_empty_node_level_pin(tmp_path):
         node.run(_ctx(tmp_path, "serverun"), {})
 
 
+def test_a_node_level_artifact_without_mode_load_is_not_a_pin(tmp_path):
+    """ADR-0038's IFF rule, and the consequence it carries: a node-level
+    ``artifact`` exists ONLY under ``mode='load'``, so without the mode
+    there is nothing to contradict and ``params.artifact`` is served.
+
+    The document cannot produce this state — it refuses ``artifact``
+    without ``mode='load'`` (``document.py``: "'artifact' without mode
+    'load' has no meaning") — so it takes direct construction, and this
+    pins that the base treats the stray field as ABSENT rather than as a
+    silent second pin."""
+    pinned = _fit(tmp_path)["artifact_path"]
+    node = SklearnPredict(
+        "serve", {"artifact": pinned}, artifact=str(tmp_path / "other.joblib")
+    )
+    assert node.node_level_pin() is None
+    out = node.run(_ctx(tmp_path, "serverun"), {})
+    assert out["signal"].artifact_path == pinned
+
+
 def test_predict_node_refuses_a_missing_artifact_by_name(tmp_path):
     node = SklearnPredict("serve", {"artifact": str(tmp_path / "gone.joblib")})
     with pytest.raises(ValueError, match="does not exist"):

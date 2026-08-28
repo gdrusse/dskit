@@ -321,7 +321,7 @@ application-side.
 dskit/pipeline/
 ├── __init__.py        public surface; auto-registers the default kinds
 ├── __main__.py        the CLI: python -m dskit.pipeline
-├── document.py        PipelineDocument / NodeSpec / ROLES / splits + walkforward specs / refs
+├── document.py        PipelineDocument / NodeSpec / ROLES + MODES / splits + walkforward specs / refs
 ├── node.py            Node + TrainableNode ABCs, NodeContext, NodeKindRegistry, register_node_kind
 ├── planner.py         document -> Plan: topo order, role rules, wire checks
 ├── driver.py          LOAD -> IMPORT -> PLAN -> RESOLVE -> EXECUTE -> RECORD; run dirs;

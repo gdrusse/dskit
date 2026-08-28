@@ -70,6 +70,7 @@ __all__ = [
     "ClockConfig",
     "DOC_NON_IDENTITY_SECTIONS",
     "DOC_SPLIT_KINDS",
+    "MODES",
     "NodeSpec",
     "PipelineDocument",
     "RandomSplitSpec",
@@ -110,6 +111,13 @@ ROLES = (
 #: Node cadences under a clock (spec §3/§7). Omitted = ``once``; anything
 #: other than ``once`` is only meaningful when the document has a clock.
 CADENCES = ("once", "epoch", "day", "week")
+
+#: What a node's ``mode`` may say (spec §3): FIT, or RESTORE a pinned
+#: artifact. Omitted is legal and means the class's ``default_mode``
+#: (:class:`~dskit.pipeline.node.TrainableNode`), which is checked
+#: against this same tuple — the grammar and the dispatch read ONE
+#: vocabulary, never two copies of it.
+MODES = ("train", "load")
 
 #: Top-level document sections excluded from the identity hash: env,
 #: outputs and tracking (the stage-list precedent,
@@ -449,7 +457,7 @@ class NodeSpec:
             _check_ref_tree(errors, "params", self.params, allow_prev=True)
         if self.every not in CADENCES:
             errors.append(f"every must be one of {list(CADENCES)}, got {self.every!r}")
-        if self.mode not in (None, "train", "load"):
+        if self.mode is not None and self.mode not in MODES:
             errors.append(
                 f"mode must be 'train' or 'load' (or absent), got {self.mode!r}"
             )

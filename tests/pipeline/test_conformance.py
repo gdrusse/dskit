@@ -369,6 +369,15 @@ class RealLoader(HonoursLoadMode):
         return {"signal": f"restored:{self.artifact}"}
 
 
+class RefitsUnderLoad(HonoursLoadMode):
+    """Passes the structural floor — it IS a ``TrainableNode`` and both
+    template methods are still the base's — and refits inside the load
+    hook anyway. The shape is right; the behaviour is the silent refit."""
+
+    def run_load(self, ctx, inputs):
+        return {"signal": "fresh"}
+
+
 class WrapsRun(RealLoader):
     """Wraps the ``run`` template method — refused: a wrapper is where the
     dispatch quietly grows a second opinion."""
@@ -729,7 +738,8 @@ def test_a_declared_knob_nothing_reads_is_refused():
 
 def test_naming_a_knob_in_the_DOCSTRING_does_not_make_it_read():
     """The mention loophole, closed from the other side: prose is not a
-    reader, exactly as `_referenced_names` already holds for `self.mode`."""
+    reader. `_referenced_names` reads compiled code, so a knob named only
+    in a docstring or a comment leaves no trace to find."""
     suite = _suite(DocstringOnlyKnob)
     with pytest.raises(AssertionError, match="leftover"):
         suite.test_every_declared_knob_is_reachable_from_the_class("toy")
@@ -1196,11 +1206,31 @@ def _trainable_probe(**kw):
 
 
 def test_the_silent_refit_is_caught_behaviourally(tmp_path):
-    """F-222 FN-2: the structural floor can be met by ANY read of mode;
-    the behavioural check demands the run REFUSE or PROVE the restore.
-    IgnoresLoadMode returns happily under mode='load' with no proof."""
+    """F-222 FN-2: the structural floor is about SHAPE — it can say the
+    dispatch was INHERITED, never that ``run_load`` restores anything —
+    so the behavioural check demands the run REFUSE or PROVE the restore.
+    IgnoresLoadMode returns happily under mode='load' with no proof. The
+    two bars are independent in both directions: this class also fails
+    the floor (it is a plain ``Node``), and
+    ``test_a_class_that_passes_the_floor_can_still_refit`` is the same
+    behavioural catch on a class the floor accepts."""
     suite = _suite(IgnoresLoadMode, probes=_trainable_probe())
     with pytest.raises(AssertionError, match="supplies no verify_loaded"):
+        suite.test_load_mode_loads_or_refuses("toy", tmp_path)
+
+
+def test_a_class_that_passes_the_floor_can_still_refit(tmp_path):
+    """The two bars are independent, from the other side: RefitsUnderLoad
+    inherits the dispatch whole — the structural floor is green on it —
+    and its load hook refits. Only the behavioural bar sees that, which
+    is why the port did not make it redundant."""
+    _suite(RefitsUnderLoad).test_trainable_kinds_dispatch_through_the_base("toy")
+    probes = _trainable_probe(
+        load_artifact="model-v7",
+        verify_loaded=lambda out: out["signal"] == "restored:model-v7",
+    )
+    suite = _suite(RefitsUnderLoad, probes=probes)
+    with pytest.raises(AssertionError, match="refitted instead of restoring"):
         suite.test_load_mode_loads_or_refuses("toy", tmp_path)
 
 

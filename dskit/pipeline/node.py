@@ -45,7 +45,7 @@ from dskit.pipeline.base import (
     import_ref,
     is_class_ref,
 )
-from dskit.pipeline.document import ROLES
+from dskit.pipeline.document import MODES, ROLES
 
 __all__ = [
     "DEFAULT_NODE_KINDS",
@@ -513,7 +513,11 @@ class TrainableNode(Node):
     ----------
     default_mode : str
         Class-level, ``"train"`` by default. What an UNSET document
-        ``mode`` means for this class.
+        ``mode`` means for this class. One of
+        :data:`~dskit.pipeline.document.MODES` — the document grammar's
+        vocabulary, not a second one — and :func:`node_class_errors`
+        refuses a class declaring anything else, beside the same refusal
+        for ``role``.
 
     Examples
     --------
@@ -555,7 +559,13 @@ class TrainableNode(Node):
     def run(self, ctx, inputs):
         """Dispatch to :meth:`run_load` or :meth:`run_train` by
         :attr:`effective_mode`. See :meth:`Node.run` for the contract both
-        hooks answer."""
+        hooks answer.
+
+        The two branches ARE :data:`~dskit.pipeline.document.MODES`; a
+        member this does not name would fall through to a refit, so the
+        agreement is pinned by test
+        (``test_every_mode_the_grammar_allows_reaches_its_OWN_hook``)
+        rather than left to be noticed."""
         if self.effective_mode == "load":
             return self.run_load(ctx, inputs)
         return self.run_train(ctx, inputs)
@@ -621,6 +631,29 @@ def node_class_errors(cls, where):
     Checked at kind registration and at import-path resolution, so a
     broken class is refused at the boundary it enters through, with the
     same words either way.
+
+    The class-declared contract, in one place: it is a class, it is a
+    Node, it is concrete, its ``role`` is in
+    :data:`~dskit.pipeline.document.ROLES`, its ``default_mode`` (when it
+    is a :class:`TrainableNode`) is in
+    :data:`~dskit.pipeline.document.MODES`, and its ``outputs`` is a
+    non-empty tuple of names or ``None``. None of the three is a param,
+    so ``validate_params`` never sees them — this is their only doorway.
+
+    Parameters
+    ----------
+    cls : object
+        The candidate class. Not required to be a class at all — "not a
+        class" is the first problem this reports.
+    where : str
+        What is being resolved (``"kind 'sklearn-fit'"``), prefixed onto
+        every problem so a refusal names the reference that caused it.
+
+    Returns
+    -------
+    list of str
+        One problem per broken clause, in declaration order; empty when
+        ``cls`` is usable.
     """
     if not isinstance(cls, type):
         return [f"{where}: must be a class, got {cls!r}"]
@@ -641,6 +674,13 @@ def node_class_errors(cls, where):
             f"{where}: {cls.__name__} must declare a class-level role from "
             f"{list(ROLES)}, got {cls.role!r} — the role is the class's to "
             "declare, never the config's"
+        )
+    if issubclass(cls, TrainableNode) and cls.default_mode not in MODES:
+        problems.append(
+            f"{where}: {cls.__name__}.default_mode must be one of "
+            f"{list(MODES)}, got {cls.default_mode!r} — it decides the run "
+            "for every document that omits 'mode', and an unrecognized "
+            "value would silently take the train path"
         )
     declared = cls.outputs
     if declared is not None and (

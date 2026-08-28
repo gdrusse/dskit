@@ -3,6 +3,7 @@
 import pytest
 
 from dskit.pipeline.base import ConfigError
+from dskit.pipeline.document import MODES
 from dskit.pipeline.node import (
     Node,
     NodeContext,
@@ -175,6 +176,53 @@ class TestTrainableNode:
         assert ValidatingTrainable("v").validate_inputs({}) == ["common", "train"]
         loader = ValidatingTrainable("v", mode="load", artifact="a")
         assert loader.validate_inputs({}) == ["common", "load"]
+
+    def test_every_mode_the_grammar_allows_reaches_its_OWN_hook(self, tmp_path):
+        """The dispatch and the document's mode vocabulary are one
+        agreement, pinned here because the dispatch names only ``load``:
+        a member :data:`MODES` grows and ``run`` does not name falls
+        through to ``run_train`` — a silent REFIT where a restore was
+        asked for (F-220 #12), and ``validate_inputs`` would demand the
+        fit's wires alongside it."""
+        ran, validated = {}, {}
+        for mode in MODES:
+            node = ValidatingTrainable("v", mode=mode, artifact="a")
+            ran[mode] = node.run(ctx(tmp_path), {})["out"]
+            validated[mode] = tuple(node.validate_inputs({}))
+        assert len(set(ran.values())) == len(MODES), (
+            f"two of {list(MODES)} reached the same run hook: {ran}"
+        )
+        assert len(set(validated.values())) == len(MODES), (
+            f"two of {list(MODES)} reached the same validation hook: {validated}"
+        )
+
+    def test_a_default_mode_outside_the_grammar_is_refused_at_the_doorway(self):
+        """``default_mode`` decides dispatch for every document that omits
+        ``mode``, and a typo in it is invisible: the class still subclasses
+        :class:`TrainableNode`, both template methods still resolve to the
+        base, and it is not a param, so no validator sees it. Refused where
+        ``role`` is refused — at registration and at import-path
+        resolution."""
+
+        class TypoedMode(Trainable):
+            default_mode = "Load"
+
+        problems = "; ".join(node_class_errors(TypoedMode, "kind 'typoed'"))
+        assert "default_mode" in problems and "'Load'" in problems
+        assert str(list(MODES)) in problems
+        assert node_class_errors(Trainable, "kind 'ok'") == []
+        assert node_class_errors(PinnedInference, "kind 'ok'") == []
+        assert node_class_errors(MinimalNode, "kind 'plain'") == []
+
+
+def test_the_trainable_base_is_on_the_package_surface():
+    """ADR-0038 makes :class:`TrainableNode` a published extension point,
+    and every pack and child is told to subclass it — so it belongs beside
+    :class:`Node` on the package surface, not only on the module path."""
+    import dskit.pipeline as pkg
+
+    for name in ("Node", "TrainableNode"):
+        assert name in pkg.__all__ and hasattr(pkg, name)
 
 
 class TestNodeArtifactServices:

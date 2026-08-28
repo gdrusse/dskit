@@ -480,6 +480,22 @@ class TestPredictNode:
         with pytest.raises(ValueError, match="empty artifact reference"):
             node.run(_ctx(tmp_path), {})
 
+    def test_a_node_level_artifact_without_mode_load_is_not_a_pin(
+        self, fitted, tmp_path
+    ):
+        """ADR-0038's IFF rule, and the consequence it carries: a
+        node-level ``artifact`` exists ONLY under ``mode='load'``, so
+        without the mode this node has NO pin and refuses by name instead
+        of loading the stray field.
+
+        The document cannot produce this state — it refuses ``artifact``
+        without ``mode='load'`` (``document.py``: "'artifact' without mode
+        'load' has no meaning") — so it takes direct construction."""
+        node = TransformerPredict("sig", {}, artifact=fitted["artifact_path"])
+        assert node.node_level_pin() is None
+        with pytest.raises(ValueError, match="no artifact pinned"):
+            node.run(_ctx(tmp_path), {})
+
     def test_mode_train_refuses_by_name(self, tmp_path):
         with pytest.raises(ValueError, match="mode='train'"):
             TransformerPredict("sig", {}, mode="train").run(_ctx(tmp_path), {})

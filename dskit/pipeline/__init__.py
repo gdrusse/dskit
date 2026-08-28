@@ -145,6 +145,7 @@ from dskit.pipeline.node import (
     Node,
     NodeContext,
     NodeKindRegistry,
+    TrainableNode,
     register_node_kind,
     resolve_uses,
 )
@@ -221,6 +222,7 @@ __all__ = [
     "StatTest",
     "TableFile",
     "TrailingSplitSpec",
+    "TrainableNode",
     "Validate",
     "WalkForwardRunResult",
     "WalkForwardSpec",

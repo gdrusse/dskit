@@ -699,15 +699,21 @@ class TransformerPredict(TrainableNode):
             )
         return problems
 
+    @property
+    def _where(self):
+        """This node's self-description, quoted into every refusal it
+        raises in EITHER mode — one wording, one place."""
+        return f"{self.key} (transformers predict)"
+
     def run_train(self, ctx, inputs):
         raise ValueError(
-            f"{self.key} (transformers predict): inference-only — mode='train' "
+            f"{self._where}: inference-only — mode='train' "
             "has nothing to fit here; fine-tune with a TransformerFit "
             "subclass and pin its artifact"
         )
 
     def run_load(self, ctx, inputs):
-        where = f"{self.key} (transformers predict)"
+        where = self._where
         pinned = self.pinned_artifact(
             self.params.get("artifact_dir"),
             missing=(
