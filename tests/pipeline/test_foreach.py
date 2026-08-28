@@ -579,6 +579,61 @@ class TestEngineReadsExpanded:
         assert set(the_plan.order) == {"dataset", "rows__syna", "rows__synb", "both"}
         assert the_plan.order.index("both") > the_plan.order.index("rows__syna")
 
+    def test_a_space_key_naming_a_template_says_so(self):
+        # ADR-0039 leaves override-path rewriting out of the grammar: a
+        # `space` key is a plain string, and only $-references rewrite.
+        # The refusal must therefore POINT — "no node 'qhat'" alone would
+        # bewilder an author who wrote `qhat` two lines above.
+        doc = PipelineDocument(
+            name="tune-per-key",
+            pipeline={
+                "dataset": dataset_node(),
+                "labels": NodeSpec(
+                    uses="dskit.pipeline.synthetic_nodes:SynthLabels",
+                    inputs={"events": "$dataset.events"},
+                ),
+                "market": NodeSpec(
+                    uses="dskit.pipeline.synthetic_nodes:SynthMarketSignal",
+                    inputs={"events": "$dataset.events"},
+                ),
+            },
+            splits=RandomSplitSpec(train_frac=0.8, val_frac=0.2),
+            foreach=ForeachSpec(
+                keys=["a"],
+                pipeline={
+                    "qhat": NodeSpec(
+                        uses="dskit.pipeline.synthetic_nodes:SynthTrain",
+                        mode="train",
+                        inputs={"events": "$dataset.events"},
+                        params={"min_train": 5},
+                    ),
+                    "val": NodeSpec(
+                        uses="dskit.pipeline.synthetic_nodes:SynthScore",
+                        inputs={
+                            "events": "$dataset.events",
+                            "signal": "$qhat.signal",
+                            "baseline": "$market.signal",
+                            "outcomes": "$labels.outcomes",
+                        },
+                        params={"split": "val", "min_events": 5},
+                    ),
+                    "tune": NodeSpec(
+                        uses="hpo-grid",
+                        params={
+                            "objective": "$val.metrics.loss",
+                            "space": {"qhat.min_train": [3, 5]},
+                        },
+                    ),
+                },
+            ),
+        )
+        # Rule 2 DID rewrite every reference, including the objective.
+        assert doc.expanded["tune__a"].params["objective"] == "$val__a.metrics.loss"
+        with pytest.raises(ConfigError) as exc:
+            plan(doc)
+        assert "qhat__a" in message(exc)
+        assert "foreach TEMPLATE" in message(exc)
+
     def test_the_example_validates_and_reports_what_runs(self, capsys):
         assert main(["validate", FOREACH_EXAMPLE]) == 0
         out = capsys.readouterr().out

@@ -516,7 +516,11 @@ def plan(document, registry=None) -> Plan:
                         f"correction {corr!r} does not use weights"
                     )
         if role == "search":
-            errors.extend(_search_errors(key, spec, specs, roles, edges))
+            errors.extend(
+                _search_errors(
+                    key, spec, specs, roles, edges, document.foreach_groups
+                )
+            )
         if spec.mode is not None and role not in _TRAINABLE_ROLES:
             errors.append(
                 f"pipeline.{key}: mode/artifact apply to trainable roles "
@@ -589,7 +593,20 @@ def _is_json_scalar(value) -> bool:
     return isinstance(value, (int, float)) and math.isfinite(value)
 
 
-def _search_errors(key, spec, specs, roles, edges):
+def _template_head_hint(head, groups):
+    """Name the instances when an unknown space head is a foreach template."""
+    instances = groups.get(head)
+    if not instances:
+        return ""
+    return (
+        f" — {head!r} is a foreach TEMPLATE, which exists once per key "
+        f"({list(instances)}). A space key is an override PATH, not a "
+        "$-reference, so it is never rewritten per instance (ADR-0039); "
+        "address an instance by name"
+    )
+
+
+def _search_errors(key, spec, specs, roles, edges, groups=None):
     """Collect the search node's wiring-rule violations (spec §8) as plan errors.
 
     Beyond the objective checks: ``space`` keys must be
@@ -655,6 +672,7 @@ def _search_errors(key, spec, specs, roles, edges):
                 problems.append(
                     f"pipeline.{key}: search.space addresses {target!r} but no "
                     f"node {head!r} is declared"
+                    + _template_head_hint(head, groups or {})
                 )
             elif len(parts) < 2:
                 problems.append(
