@@ -42,11 +42,13 @@ identity hashes byte-identical to baseline):
 
 REMAINING, in the plan's risk order:
 
-- [ ] **Children still COPY `_reject_unknown`** —
+- [x] **Children still COPY `_reject_unknown`** —
       `children/intraday_poc/intraday_poc/nodes.py:56` and
       `children/_skeleton/yourproject/nodes.py:43`. The helper is public now,
       so they should `from dskit.pipeline.node import reject_unknown_params`.
       Fix the skeleton first — its copy propagates to every future child.
+      **Landed this run (2026-08-28, A2):** child and skeleton both import
+      `reject_unknown_params` from `dskit.pipeline.node`; no copy remains.
 - [x] **3b — `TorchAdapter` becomes a real ABC.** `libs/torch.py:315`: four
       hooks raise `NotImplementedError` WITHOUT `@abstractmethod`, so an
       incomplete adapter constructs fine and fails later at call time. Two
@@ -232,28 +234,38 @@ silent. "Pinned?" is the column that matters; `lookback` is the benchmark
 
 HIGH — silent wrong behavior:
 
-- [ ] **`WindowRows`/`BarsFromStore` write every default TWICE** — once in
+- [x] **`WindowRows`/`BarsFromStore` write every default TWICE** — once in
       `validate_params`, once in `run`/`_scan`: `"bars"`
       (`nodes.py:102`/`:119`), `"close"` (`:177`/`:198`), `5`
       (`:182`/`:199`). Validation then approves a value the run never uses.
       Nothing catches it. Fix: name each default once as a module constant,
       the `libs/torch.py:135-136` idiom (`DEFAULT_EPOCHS`, `LOADER_DEFAULTS`).
+      **Landed this run (2026-08-28, A2):** each default named ONCE as a
+      module constant read by both `validate_params` and the run; pinned by
+      rebinding the constant and watching both follow.
 - [ ] **The numpy pack re-implements `MarketRecord`'s rules** —
       `libs/numpy.py:113-120` (`_price_ok`, `_lead_ok`) and `:106`/`:110`
       restate `records.py:69-76`/`:150-155`/`:122-132`. Tier-2 duplicating
       tier-1 truth, failing SILENTLY: a value failing `_WRITEBACK` leaves the
       field unchanged, counted and logged, never raised. Loosen a bound in
       `records.py` and `ArrayMap` quietly drops legitimate writebacks.
-- [ ] **The bar primary key is stated twice** — `connectors.py:219`
+- [x] **The bar primary key is stated twice** — `connectors.py:219`
       (`primary_key`) and `nodes.py:117-118` (`key_fields` to `scan_stream`).
       The bitemporal dedup keys off the NODE's copy; diverge and the store
       dedupes on the wrong tuple. `tests/test_connectors.py:93` freezes only
       the connector side.
-- [ ] **`price_field` is a knob in training, hardcoded in live** —
+      **Landed this run (2026-08-28, A2):** one `BAR_KEY_FIELDS` constant in
+      `connectors.py`, imported by `nodes.py` (identity-pinned, plus a
+      rebinding pin proving the scan reads it).
+- [x] **`price_field` is a knob in training, hardcoded in live** —
       `nodes.py:198` vs `live.py:186` (`float(b.close)`). Set
       `"price_field": "vwap"` and the backtest trains on VWAP while live
       feeds close returns into the same weights. Pure train/serve skew.
       `test_live_window_parity` uses `close` on both sides, so it is blind.
+      **Landed this run (2026-08-28, A2):** `live.py` READS `price_field` from
+      the run dir's document; `test_live_window_parity` is parameterized over
+      `close` AND `vwap` on deliberately different series, so the blindness
+      the audit named now fails loudly.
 - [x] **`epochs: 5` is the one knob the pinning test omits** —
       `run-train.json:38`/`:54`, `run-backtest.json:166`/`:224`.
       `tests/test_configs.py:64-65` pins seven knobs between the documents;
@@ -264,55 +276,79 @@ HIGH — silent wrong behavior:
       one declared divergence, its values pinned too), plus presence,
       symbol-twin, and monitor/val_rows-coupling pins; each proven able
       to fail.
-- [ ] **`adjustment` disagrees three ways** — `all`
+- [x] **`adjustment` disagrees three ways** — `all`
       (`source-backfill.json:6`), `raw` (`source-live.json:6`), and the
       vendor default (`live.py:178-183` passes none). Training is
       corporate-action-adjusted; the forward loop is not, though
       `source-backfill.json:2` argues `all` is required to keep the return
       series stationary.
+      **Landed this run (2026-08-28, A2):** the live fetch takes `adjustment`
+      from the SOURCE config through the connector's own knob gate — the loop
+      restates neither the value nor the default.
 
 MEDIUM:
 
-- [ ] **`--artifact SYMBOL=PATH` does not exist.** `live.py:48` and
+- [x] **`--artifact SYMBOL=PATH` does not exist.** `live.py:48` and
       `run-train.json:3` both document it as the override that makes
       `DEFAULT_ARTIFACTS` "never an edit here" — `main()` has no such
       argparse argument (`live.py:227-240`). Either add the flag or stop
       promising it. The `live.py:258` fallback already reproduces both
       table entries, so `DEFAULT_ARTIFACTS` is pure redundancy.
-- [ ] **The model class path is a literal in the live loop** —
+      **Landed this run (2026-08-28, A2):** the `--artifact SYMBOL=PATH` flag is
+      implemented (relative and absolute paths pinned) and `DEFAULT_ARTIFACTS`
+      is deleted — the convention fallback already reproduced it.
+- [x] **The model class path is a literal in the live loop** —
       `live.py:101` refuses anything but `intraday_poc.models:NextBarLSTM`,
       while the documents declare it (`run-train.json:33`/`:49`,
       `run-backtest.json:126`/`:184`). Swapping the declared module — the
       whole point of the ADR-0025 seam — breaks serving. Loud, but it undoes
       the seam.
+      **Landed this run (2026-08-28, A2):** the live loop resolves the class the
+      run DECLARED, by path, through `import_library_class` — the ADR-0025
+      seam restored; a foreign or unloadable ref is refused by name.
 - [x] **`utf-8` written twice in the localfiles pack** —
       `libs/localfiles.py:126` (`discover`) and `:153` (`read`). Diverge and
       the schema is inferred under one encoding while rows decode under
       another: mojibake, no exception. **Landed this run (2026-08-28, A4):**
       one `_DEFAULT_ENCODING`, both call sites, prose pinned to the
       constant with a terminated needle.
-- [ ] **`source-live.json` is disconnected.** It registers as `alpaca-live`;
+- [x] **`source-live.json` is disconnected.** It registers as `alpaca-live`;
       both run documents read `"source": "alpaca"`. Live-acquired bars never
       reach the modelling path — no error, just an unused store.
-- [ ] **`APCA_API_BASE_URL` is inert.** `.env.example:7` advertises the paper
+      **Landed this run (2026-08-28, A2):** resolved by DELETING the second
+      config: one source name (`alpaca`) carries both pulls, separated by
+      `--mode backfill|live` on the cursor the onboarding seam already keys
+      per (source, stream, mode). README, configs and code tell one story,
+      pinned by `test_one_source_name_carries_both_pulls`.
+- [x] **`APCA_API_BASE_URL` is inert.** `.env.example:7` advertises the paper
       endpoint; `live.py:251-252` hardcodes `paper=True` and never reads it.
       Safe direction today, but the file advertises a control that is not
       wired.
-- [ ] **`README.md:105-107` states the opposite of the code.** It claims a
+      **Landed this run (2026-08-28, A2):** deleted from `.env.example`;
+      `paper=True` stays hardcoded (refusal-by-default).
+- [x] **`README.md:105-107` states the opposite of the code.** It claims a
       bad `source` "yields an empty scan, not an error";
       `observations.py:214-218` raises `AssetError`. Correct the doc.
+      **Landed this run (2026-08-28, A2):** the README states what
+      `observations.py` actually does — a mistyped source raises `AssetError`,
+      pinned by `test_a_mistyped_source_refuses_loudly`.
 
 LOW:
 
-- [ ] `live.py:51` `_SIP_FIELDS` is dead — no reader anywhere in `children/`.
-- [ ] Defaults restated in prose AND code: `libs/restapi.py:40`/`:155`/`:275`
+- [x] `live.py:51` `_SIP_FIELDS` is dead — no reader anywhere in `children/`.
+      **Landed this run (2026-08-28, A2):** deleted.
+- [x] Defaults restated in prose AND code: `libs/restapi.py:40`/`:155`/`:275`
       (`30`) and `:42`/`:159`/`:278` (`3`); `_skeleton/yourproject/
       connectors.py:42` `_DEFAULT_START` vs its `spec()` note at `:57` —
       doc-drift only, but the skeleton's copy propagates to every child.
       **restapi half landed this run (2026-08-28, A4):** `_DEFAULT_TIMEOUT`
       / `_DEFAULT_MAX_RETRIES` (+ `_DEFAULT_PAGE_START`, same defect class),
       spec() notes read the constants, module prose pinned by test.
-      Skeleton half rides with the child card (A2).
+      **Skeleton half landed this run (2026-08-28, A2):** the `spec()` note
+      is built from `_DEFAULT_START`, pinned by rebinding the constant and
+      watching all three consumers follow. The same treatment went to the
+      child connector's own five spec defaults (feed / adjustment /
+      key_env / secret_env / lookback).
 
 Confirmed CORRECT — do not "fix": `suite-bars.json:33` restating the symbol
 vocabulary (an assertion reading its expectation from the thing it validates
@@ -336,6 +372,17 @@ child hardcodes what should be config, and the pipeline cannot express
       reads `<run-dir>/config.json` for the modelling knobs and the
       source config for the vendor knobs. Child-only, no ADR. A THIRD
       config file is the wrong answer — it would duplicate both.
+      **HALF LANDED (2026-08-28, A2) — the serving half is DONE, the knob
+      is not.** `live.py` now reads the modelling knobs (`price_field`,
+      `max_gap_minutes`, `lookback`, the declared module class) from the
+      run dir's document through the engine's own `load_document`, and the
+      vendor knobs from the source config through the connector's knob
+      gate; `DEFAULT_ARTIFACTS` is gone and credentials are ONE shared
+      rule (`connectors.resolve_credentials`). STILL OPEN: `timeframe` is
+      not yet a `spec()` knob — the two hardcoded `TimeFrame(1, Minute)`
+      sites were consolidated into one `connectors.bar_timeframe()`, so
+      the agreement is single-sourced and the remaining work is to promote
+      it to config.
 - [ ] **A `foreach` section in the document grammar — needs an ADR.**
       "One model per symbol" is written longhand: adding a third symbol
       means four new nodes in `run-train.json` and six in
