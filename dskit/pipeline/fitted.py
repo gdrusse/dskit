@@ -655,6 +655,15 @@ class FittedTransform(TrainableNode):
         ``asof_ms`` regardless would put every such row in NO split and
         then blame the split bounds.
 
+        The instant is held to :func:`_numeric` on the way in, for the
+        same reason ``_ordered`` tolerates one that is not: this module
+        must have ONE answer about what the declared order field may
+        carry. A string timestamp — the ordinary shape of a CSV- or
+        table-sourced foreign stream — handed straight to a time cut
+        died as a bare ``TypeError`` naming neither the node nor the
+        field; unreadable becomes ``None`` here and
+        :meth:`_refuse_unassignable` names it.
+
         The identity is :func:`~dskit.pipeline.records.cluster_of` — the
         envelope's own rule, IMPORTED rather than restated. It matters
         which: an envelope publishes the derived ``cluster`` as a
@@ -673,9 +682,14 @@ class FittedTransform(TrainableNode):
         Returns
         -------
         dskit.pipeline.split_policy.SplitFrame
-            The frame handed to ``split_of``.
+            The frame handed to ``split_of``; its instant is the row's
+            own value when that value is a real finite number, and
+            ``None`` when the field carries something no cut can read.
         """
-        return SplitFrame(_field(row, self.order_field()), cluster_of(row))
+        instant = _field(row, self.order_field())
+        return SplitFrame(
+            instant if _numeric(instant) is not None else None, cluster_of(row)
+        )
 
     def _fit_rows(self, ctx, rows):
         """Select the declared split's rows, ordered — or refuse by name."""
@@ -695,7 +709,7 @@ class FittedTransform(TrainableNode):
                 "refuse"
             )
         frames = [self.frame_of(row) for row in rows]
-        self._refuse_unassignable(splits, frames)
+        self._refuse_unassignable(splits, rows, frames)
         keep = [row for row, frame in zip(rows, frames)
                 if splits.split_of(frame) == split]
         if not keep:
@@ -710,8 +724,11 @@ class FittedTransform(TrainableNode):
             )
         return self._ordered(keep)
 
-    def _refuse_unassignable(self, splits, frames):
+    def _refuse_unassignable(self, splits, rows, frames):
         """Refuse a row the run's splits cannot honestly place.
+
+        Whichever half of the frame this run's cut READS must be
+        readable, and the two halves fail differently.
 
         Under a CLUSTER-KEYED cut every row without a USABLE identity
         hashes the same string, so they all land in ONE bucket — and
@@ -724,21 +741,39 @@ class FittedTransform(TrainableNode):
         way a missing value does, so :func:`~dskit.pipeline.records.
         cluster_of` has already dropped them and the check reads its
         answer rather than testing the raw field.
+
+        Under a TIME cut the instant is what is read, and a value the
+        bounds cannot compare used to reach ``split_of`` and die there
+        as a bare ``TypeError`` — naming neither this node, nor the
+        port, nor the declared field it came from.
         """
-        if not _assigns_by_cluster(splits):
+        if _assigns_by_cluster(splits):
+            for i, frame in enumerate(frames):
+                if frame.cluster is not None:
+                    continue
+                raise ValueError(
+                    f"{self.key}: row {i} carries no usable split identity "
+                    f"(none of 'cluster', {CLUSTER_FIELD!r}, "
+                    f"{CONTRACT_FIELD!r} holds a non-empty string) and this "
+                    "run cuts BY CLUSTER — every such row is assigned by "
+                    "hashing the same unusable value, so they all land in "
+                    "ONE split and a fit_split that catches them fits on the "
+                    "WHOLE stream, val and test included. Carry the identity "
+                    "onto the rows, or cut this run on time"
+                )
             return
+        field = self.order_field()
         for i, frame in enumerate(frames):
-            if frame.cluster is not None:
+            if frame.asof_ms is not None:
                 continue
             raise ValueError(
-                f"{self.key}: row {i} carries no usable split identity "
-                f"(none of 'cluster', {CLUSTER_FIELD!r}, {CONTRACT_FIELD!r} "
-                "holds a non-empty string) and this run cuts BY CLUSTER — "
-                "every such row is assigned by hashing the same unusable "
-                "value, so they all land in ONE split and a fit_split that "
-                "catches them fits on the WHOLE stream, val and test "
-                "included. Carry the identity onto the rows, or cut this "
-                "run on time"
+                f"{self.key}: row {i} carries no readable instant under its "
+                f"declared order_field {field!r} (got "
+                f"{_field(rows[i], field)!r}) and this run cuts ON TIME — a "
+                "value the cuts cannot compare places the row in NO split, "
+                "so the fit would quietly proceed on whatever was left. "
+                "Declare the field these rows carry their instant under, or "
+                "convert it to epoch milliseconds upstream"
             )
 
     def _ordered(self, rows):
@@ -956,7 +991,19 @@ class Standardize(FittedTransform):
         -------
         list of str
             The base's problems, plus one when ``features`` is missing or
-            is not a non-empty list of field names.
+            is not a non-empty list of DISTINCT field names.
+
+        Notes
+        -----
+        The distinctness half is not a tidiness rule. ``fit`` learns one
+        entry per NAME, so a repeated name is silently collapsed — and
+        :meth:`state_problems` then compares the declared LIST against
+        the state's covered keys, so the very document that fitted and
+        wrote the sidecar refuses its own artifact on the load-mode
+        rerun, blaming the state for a typo in the plan. The sibling
+        pack refuses the identical shape one tier over
+        (``_ArrayApply._fields_problems``); a document is read here, so
+        this is where it is answered.
         """
         problems = super().validate_params(params)
         features = params.get("features")
@@ -971,10 +1018,29 @@ class Standardize(FittedTransform):
                 "features is required and must be a non-empty list of row "
                 f"field names — there is no default, got {features!r}"
             )
+            return problems
+        dupes = sorted({f for f in features if list(features).count(f) > 1})
+        if dupes:
+            problems.append(f"features repeats {dupes} — declare each field once")
         return problems
 
     def row_problems(self, rows):
-        """Refuse a row this scaler cannot rebuild: one that is not a mapping.
+        """Refuse a stream this scaler cannot honestly project.
+
+        Two ways, and the second is the one that matters. A row that is
+        not a mapping cannot be rebuilt. And a declared feature that NOT
+        ONE row of a non-empty stream carries has no honest reading: the
+        fit doorway already refuses it (``fit``, "nothing to learn from
+        is indistinguishable from a misspelt one") and the load doorway
+        refuses it (:meth:`state_problems`), while the apply doorway
+        projected the stream untouched and said nothing — so the model
+        downstream is fed a raw column forever, which is exactly the
+        train/serve skew this hook exists to close on BOTH doorways.
+
+        Per-row absence stays the documented policy: a row missing the
+        feature keeps its absence. An EMPTY stream is not a missing
+        feature either — nothing to look in is not looking and not
+        finding.
 
         Parameters
         ----------
@@ -984,7 +1050,9 @@ class Standardize(FittedTransform):
         Returns
         -------
         list of str
-            One problem naming the first non-mapping row, or none.
+            One problem naming the first non-mapping row, or one naming
+            the declared features the whole stream lacks; none when the
+            scaler can project the stream.
         """
         for i, row in enumerate(rows):
             if isinstance(row, dict):
@@ -993,6 +1061,20 @@ class Standardize(FittedTransform):
                 f"rows[{i}] is a {type(row).__name__} — "
                 f"{type(self).__name__} rebuilds each row as a mapping, so "
                 "every row must be one"
+            ]
+        if not rows:
+            return []
+        absent = [
+            name for name in self.features()
+            if all(_numeric(_field(row, name)) is None for row in rows)
+        ]
+        if absent:
+            return [
+                f"not one of the {len(rows)} row(s) carries a usable number "
+                f"for {absent} — a declared feature the whole stream lacks "
+                "would ride through unscaled while every document said it "
+                "was scaled. Check the spelling against the rows upstream "
+                "emits, or drop the feature"
             ]
         return []
 

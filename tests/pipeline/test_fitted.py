@@ -287,6 +287,48 @@ class TestLeakageIsRefused:
         assert out["metrics"]["n_fit_rows"] == 4
         assert out["transform"].state["mean"]["x"] == pytest.approx(2.5)
 
+    def test_an_order_value_no_TIME_cut_can_read_refuses_by_name(
+        self, split_ctx
+    ):
+        """The other half of the declared-order story, and the same rule.
+
+        A string timestamp is the ordinary shape of a CSV- or
+        table-sourced foreign stream — exactly the stream the declared
+        order field exists to admit — and a time cut cannot compare one
+        to its bounds. Handed straight to ``split_of`` it died as a bare
+        ``TypeError: '<=' not supported between instances of 'str' and
+        'int'``: no node key, no port, no mention of ``order_field``,
+        which is the wrong-cause refusal the sibling test above was
+        written to prevent. The module already tolerates a non-numeric
+        order value when it ORDERS the fit rows, so it must have one
+        answer about what that field may carry, not two.
+        """
+        rows = [{"contract": f"C-{i}", "asof_ms": f"2026-01-0{i + 1}",
+                 "x": float(i)} for i in range(4)]
+        node = Standardize("scaler", {"fit_split": "train", "features": ["x"]})
+        with pytest.raises(ValueError) as caught:
+            node.run(split_ctx, {"rows": rows})
+        message = str(caught.value)
+        assert "scaler" in message and "asof_ms" in message, message
+        assert "2026-01-01" in message, message
+
+    def test_a_cluster_keyed_cut_never_reads_the_instant_and_never_refuses(
+        self, tmp_path
+    ):
+        """The complement: a random cut assigns by hashing the cluster
+        and reads no instant at all, so a stream whose order field is
+        unreadable is none of its business."""
+        rows = [{"cluster": f"day-{i}", "asof_ms": f"d{i}", "x": float(i)}
+                for i in range(100)]
+        ctx = NodeContext(
+            name="f", asof=ASOF, run_dir=str(tmp_path),
+            splits=RandomSplitConfig(train_frac=0.6, val_frac=0.2, seed=1),
+        )
+        out = Standardize("s", {"fit_split": "train", "features": ["x"]}).run(
+            ctx, {"rows": rows}
+        )
+        assert 0 < out["metrics"]["n_fit_rows"] < len(rows)
+
     def test_a_carried_cluster_satisfies_a_random_cut(self, tmp_path):
         """And the same rows WITH an identity assign per cluster, which
         is what a random cut promised in the first place."""
@@ -692,6 +734,66 @@ class TestTheScalerItself:
             split_ctx, {"rows": mixed}
         )
         assert out["transform"].state["mean"]["x"] == pytest.approx(2.5)
+
+    def test_a_feature_declared_twice_refuses_at_PLAN(self):
+        """A document typo is the document's to answer for.
+
+        ``["x", "x"]`` used to validate clean, fit clean and write a
+        sidecar — and then the load-mode rerun of that SAME document
+        refused its own artifact ("features ['x', 'x'] but the restored
+        state covers ['x']"), blaming the state for a typo in the plan.
+        The sibling pack already refuses the shape one tier over
+        (``_ArrayApply._fields_problems``: "fields repeats [...]"), so
+        the rule existed and was simply not carried across.
+        """
+        problems = Standardize.validate_params(
+            {"fit_split": "train", "features": ["x", "y", "x"]}
+        )
+        assert any("repeats" in p and "'x'" in p for p in problems), problems
+        assert Standardize.validate_params(
+            {"fit_split": "train", "features": ["x", "y"]}
+        ) == []
+
+    def test_a_feature_NO_row_of_the_second_stream_carries_refuses(
+        self, split_ctx
+    ):
+        """The apply doorway's twin of the fit-time refusal.
+
+        ``fit`` refuses a declared feature no fit row carries, and
+        ``state_problems`` refuses the same shape on the load doorway —
+        but an ``apply-transform`` wired to a stream where NOT ONE row
+        carries the feature projected it untouched and said nothing, so
+        the model downstream is fed a raw column forever. That is the
+        train/serve skew ``row_problems`` was introduced to make
+        impossible on BOTH doorways. Per-row absence stays the
+        documented policy; a whole-stream absence has no honest reading.
+        """
+        carrier = Standardize(
+            "scaler", {"fit_split": "train", "features": ["x"]}
+        ).run(split_ctx, {"rows": TRAIN_ROWS})["transform"]
+        strangers = [{"contract": "S", "asof_ms": DAY, "X": 9.0}]
+        problems = ApplyTransform("apply", {}).validate_inputs(
+            {"transform": carrier, "rows": strangers}
+        )
+        assert any("'x'" in p for p in problems), problems
+        # The fitting node's own doorway answers the same way...
+        assert any("'x'" in p for p in Standardize(
+            "scaler", {"fit_split": "train", "features": ["x"]}
+        ).validate_common_inputs({"rows": strangers}))
+        # ...and a stream where SOME row carries it is untouched.
+        assert ApplyTransform("apply", {}).validate_inputs(
+            {"transform": carrier, "rows": strangers + VAL_ROWS}
+        ) == []
+
+    def test_an_EMPTY_stream_is_not_a_missing_feature(self, split_ctx):
+        """Nothing to look in is not the same as looking and not finding
+        — an empty stream keeps whatever answer it had."""
+        carrier = Standardize(
+            "scaler", {"fit_split": "train", "features": ["x"]}
+        ).run(split_ctx, {"rows": TRAIN_ROWS})["transform"]
+        assert ApplyTransform("apply", {}).validate_inputs(
+            {"transform": carrier, "rows": []}
+        ) == []
 
     def test_the_state_is_json_able_by_construction(self, split_ctx):
         out = Standardize("s", {"fit_split": "train", "features": ["x"]}).run(

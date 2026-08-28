@@ -227,11 +227,20 @@ carry a USABLE identity — `records.cluster_of` reads `cluster`, then `group`,
 then `contract`, the same rule and the same vocabulary the feature rows are
 built with — or the fit is refused: an absent or unusable id (`""`, an int)
 hashes like every other, so those rows land in one bucket, which is the whole
-stream. A member's
+stream. Under a TIME cut the frame's OTHER half is what is read, so a row whose
+declared `order_field` carries something the cuts cannot compare (a string
+timestamp) is refused by name rather than dying inside the assignment. A search
+`space` may not address the role at all: every knob the base declares re-aims
+what the state learned from, and a trial's override is never plan-checked — so
+`{"scaler.fit_split": ["train","val","test"]}` would fit a trial on the very
+split its objective scores. A member's
 own row rule (`row_problems`) is asked on BOTH doorways — its own stream and
 the second stream an `apply-transform` wires its carrier to — and `standardize`
-refuses a declared feature that no fit row carries, because a typo is an error,
-not an identity transform. Write a member by implementing two methods:
+refuses a declared feature that NO row of either stream carries, because a typo
+is an error, not an identity transform. It refuses one declared TWICE at plan
+for the same reason: the state would cover it once, and the load-mode rerun of
+that same document would then blame the artifact for a typo in the document.
+Write a member by implementing two methods:
 
 ```jsonc
 "scaler": {

@@ -81,9 +81,15 @@ on it without breaking its rulings.
   `row_problems(rows)` for the member's own INPUT shape: it is asked on
   both doorways — this node's stream and the second stream an
   `apply-transform` wires its carrier to — so the sibling half cannot
-  validate clean and die inside `apply_state`. The screen's comparison
-  is nan-equal (`_same`), so a member may mark an absence the way the
-  rest of the repo does.
+  validate clean and die inside `apply_state`. A knob `validate_params`
+  can judge belongs THERE and not in `state_problems`: the scaler's
+  duplicate `features` used to fit and write a sidecar, then have the
+  same document refuse its own artifact on the load-mode rerun. The
+  screen's comparison is nan-equal (`_same`), so a member may mark an
+  absence the way the rest of the repo does. The role is UNSEARCHABLE
+  (`planner._UNSEARCHABLE_ROLES`): a trial override is never
+  plan-checked, so a space addressing `fit_split` would fit on the split
+  its objective scores.
 - **One name per shared vocabulary.** `node.class_ref(cls)` is the
   `module:QualName` an artifact sidecar RECORDS and load mode compares —
   three modules used to write that f-string out, and a divergence there

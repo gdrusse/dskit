@@ -12,6 +12,7 @@ from dskit.pipeline.document import (
 )
 from dskit.pipeline.node import Node
 from dskit.pipeline.planner import plan
+from dskit.pipeline.split_policy import SPLIT_NAMES
 from tests.pipeline.dochelpers import (
     BANKING_SPLITS,
     banking_document,
@@ -167,8 +168,14 @@ class TestRoleRules:
                 },
             ),
         }
-        with pytest.raises(ConfigError, match="must declare which split"):
+        with pytest.raises(ConfigError, match="must declare which split") as caught:
             plan(doc_of(pipeline), registry)
+        # The vocabulary is named ONCE (split_policy.SPLIT_NAMES) and this
+        # message must READ it, not restate it: 'cal' was added to the
+        # engine once already and every literal copy went stale in
+        # silence. The sibling refusal for 'fitted_transform' builds the
+        # same list from the same tuple.
+        assert "/".join(SPLIT_NAMES) in str(caught.value), str(caught.value)
 
     def test_test_split_score_must_be_terminal(self, registry):
         splits = TimeSplitConfig(**BANKING_SPLITS)
@@ -539,6 +546,44 @@ class TestSearchRules:
         pipeline["search"] = self.search_spec(space={"events.n_events": [16, 32]})
         with pytest.raises(ConfigError, match="may not address 'events.n_events'"):
             plan(doc_of(pipeline, splits=splits), registry)
+
+    def test_space_may_not_re_aim_what_a_fitted_transform_LEARNED_FROM(
+        self, registry
+    ):
+        """The score node's exploit, one seam over and worse.
+
+        ADR-0040 refuses leakage "at plan where the document can be
+        read" — and a search space IS the document. But trial overrides
+        are never plan-checked, so a space addressing ``fit_split``
+        planned clean and RAN: the driver fitted on 'train', then on
+        'val', then on 'test', each trial scored by an objective reading
+        the val split, and the search picked whichever leaked best. The
+        family's every base knob re-aims what the state learned from —
+        ``fit_split`` directly, ``purity_check`` by switching the screen
+        off, ``order_field`` by re-cutting which rows fall where — so
+        the role is unsearchable whole, exactly as 'score' is.
+        """
+        for knob, values in (("fit_split", ["train", "val", "test"]),
+                             ("purity_check", [True, False]),
+                             ("order_field", ["asof_ms", "t"])):
+            pipeline, splits = self.base()
+            pipeline["scaler"] = NodeSpec(
+                uses="dskit.pipeline.fitted:Standardize",
+                inputs={"rows": "$events.events"},
+                params={"fit_split": "train", "features": ["mid"]},
+            )
+            pipeline["qhat"] = NodeSpec(
+                uses="synth-train",
+                inputs={"events": "$scaler.rows"},
+                params={"min_train": 5},
+            )
+            pipeline["search"] = self.search_spec(
+                space={f"scaler.{knob}": values}
+            )
+            with pytest.raises(
+                ConfigError, match=f"may not address 'scaler.{knob}'"
+            ):
+                plan(doc_of(pipeline, splits=splits), registry)
 
     def test_space_head_must_be_an_ancestor_of_the_objective(self, registry):
         # A head outside ancestors(objective) is a knob the search cannot

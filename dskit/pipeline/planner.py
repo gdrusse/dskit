@@ -70,13 +70,17 @@ __all__ = ["Plan", "plan"]
 #: trainable family would silently be refused its ``mode``.
 _TRAINABLE_ROLES = TRAINABLE_ROLES
 
-#: Roles a search space may NEVER address, and why. Two families: the
+#: Roles a search space may NEVER address, and why. Three families: the
 #: measurement instruments (score/stat_test/gate — a space that can
 #: re-aim the ruler is how ``{"val.split": ["test"]}`` plans clean and
-#: selection consults the split it must never see), and fingerprinted
+#: selection consults the split it must never see), fingerprinted
 #: identity (data/labels — trials rebuild addressed nodes with overridden
 #: params, so the run would consume a source or outcomes its identity
-#: never hashed, bypassing the resolve-time pinning).
+#: never hashed, bypassing the resolve-time pinning), and what a fitted
+#: transform LEARNED FROM (fitted_transform — the ruler exploit one seam
+#: over: :func:`_fitted_errors` only ever sees the BASE pass's params, so
+#: a space addressing ``fit_split`` planned clean and then fitted one
+#: trial on the very split the objective scores).
 _UNSEARCHABLE_ROLES = {
     "score": (
         "the measurement instrument — an override could re-aim what the "
@@ -98,6 +102,13 @@ _UNSEARCHABLE_ROLES = {
     "labels": (
         "fingerprinted identity — a trial would re-label outcomes the "
         "run's identity never hashed"
+    ),
+    "fitted_transform": (
+        "what the state was LEARNED FROM — every knob this family's base "
+        "declares re-aims it (fit_split directly, purity_check by "
+        "switching the screen off, order_field by re-cutting which rows "
+        "fall where), and a trial's override is never plan-checked, so a "
+        "search could fit on the split its own objective scores"
     ),
 }
 
@@ -546,7 +557,8 @@ def plan(document, registry=None) -> Plan:
             if split not in SPLIT_NAMES:
                 errors.append(
                     f"pipeline.{key}: role 'score' must declare which split "
-                    f"it reads (params.split in train/val/cal/test), got {split!r}"
+                    f"it reads (params.split in {'/'.join(SPLIT_NAMES)}), got "
+                    f"{split!r}"
                 )
             elif split == "cal":
                 # ADR-0034: the 'cal' name only exists when the declared
