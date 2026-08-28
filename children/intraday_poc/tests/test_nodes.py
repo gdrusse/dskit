@@ -593,6 +593,54 @@ def test_window_rows_pins_todays_gap_and_sparse_semantics():
     assert msft["ret_lag_0"] == pytest.approx(math.log(203.0 / 201.0))
 
 
+def test_window_rows_narrowed_every_accessor_it_answers():
+    """The pack's rule, held here (ADR-0040).
+
+    This node answers eleven of the pack's accessors from its own
+    vocabulary, and every one of them must be gone from ``_PARAMS`` — or
+    default-deny would approve a document knob the run discards. The
+    pack REFUSES such a class at construction, so this is belt and
+    braces; it is here because the failure it prevents is silent for the
+    document's author, not for the class's.
+    """
+    from dskit.pipeline.libs.numpy import (
+        ACCESSOR_KNOBS,
+        accessor_narrowing_problems,
+    )
+
+    assert accessor_narrowing_problems(WindowRows) == []
+    overridden = [knob for knob, owner in ACCESSOR_KNOBS.items()
+                  if getattr(WindowRows, knob) is not getattr(owner, knob)]
+    assert set(overridden) & set(WindowRows._PARAMS) == set()
+    # And the knobs that DID survive are the ones the documents write.
+    assert set(WindowRows._PARAMS) == {"causality_check", "cuts", "lookback",
+                                       "max_gap_minutes", "price_field"}
+
+
+def test_window_rows_inherits_the_causality_screen():
+    """The screen this node never had, now on by default.
+
+    A subclass that reached forward in a LAG column is refused; the
+    label is not, because it declares its horizon. Both halves matter:
+    a screen that waved the whole class through would be theatre.
+    """
+    from dskit.pipeline.libs.numpy import lead
+
+    rows = [{"symbol": "AAPL", "asof_ms": _ms(i), "close": 100.0 + i}
+            for i in range(8)]
+    assert WindowRows("w", {"lookback": 2}).run(
+        None, {"records": rows})["records"], "the declared label passes"
+
+    class _Leaky(WindowRows):
+        def apply(self, arrays, params):
+            columns = super().apply(arrays, params)
+            columns["ret_lag_0"] = lead(columns["ret_lag_0"], 1)
+            return columns
+
+    with pytest.raises(ValueError, match="not causal"):
+        _Leaky("w", {"lookback": 2}).run(None, {"records": rows})
+
+
 def test_window_rows_lags_labels_and_gap_discipline():
     """ret_lag_0 is the return ENDING at asof_ms, y_next the one after;
     a gap over max_gap_minutes breaks the chain — no row bridges it."""

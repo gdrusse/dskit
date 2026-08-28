@@ -875,7 +875,9 @@ def main(argv=None) -> int:
     # the credential env-var NAMES among them.
     document = load_run_document(args.run_dir)
     window = window_node(document)
-    price_field, max_gap_minutes = window.price_field(), window.max_gap_minutes()
+    # The two knobs the FETCH needs, read the one way anything reads
+    # them — off the node, through its accessors, never a copy here.
+    price_field, max_gap_minutes = window_knobs(document)
     module_ref = declared_module(document)
     knobs = source_knobs(args.source_config)
     symbols, adjustment = knobs["symbols"], knobs["adjustment"]
