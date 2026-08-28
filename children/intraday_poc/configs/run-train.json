@@ -35,11 +35,13 @@
         "features": ["ret_lag_0", "ret_lag_1", "ret_lag_2", "ret_lag_3", "ret_lag_4", "ret_lag_5", "ret_lag_6", "ret_lag_7", "ret_lag_8", "ret_lag_9", "ret_lag_10", "ret_lag_11", "ret_lag_12", "ret_lag_13", "ret_lag_14", "ret_lag_15", "ret_lag_16", "ret_lag_17", "ret_lag_18", "ret_lag_19", "ret_lag_20", "ret_lag_21", "ret_lag_22", "ret_lag_23", "ret_lag_24", "ret_lag_25", "ret_lag_26", "ret_lag_27", "ret_lag_28", "ret_lag_29"],
         "label": "y_next",
         "optimizer": "torch.optim:Adam",
+        "optimizer_params": { "weight_decay": 0.0 },
         "epochs": 5,
         "lr": 0.001,
-        "loader": { "batch_size": 512, "shuffle": true, "seed": 7 }
+        "loader": { "batch_size": 512, "shuffle": true, "seed": 7 },
+        "device": "cpu"
       },
-      "notes": "ADR-0025 declared seam: the document names the child's nn.Module and the optimizer; the module owns the flat-lag-vector -> LSTM-sequence resequencing, so the pack's default RowVectorAdapter carries it. features MUST stay ret_lag_0..ret_lag_{lookback-1} in order and module_params.lookback must equal the window node's lookback — the module refuses a width mismatch at run."
+      "notes": "ADR-0025 declared seam: the document names the child's nn.Module and the optimizer; the module owns the flat-lag-vector -> LSTM-sequence resequencing, so the pack's default RowVectorAdapter carries it. features MUST stay ret_lag_0..ret_lag_{lookback-1} in order and module_params.lookback must equal the window node's lookback — the module refuses a width mismatch at run. device is declared explicitly (not left to sniff whatever the box has) so a GPU box's run stays reproducible on CPU until a GPU device string is deliberately swapped in. optimizer_params names Adam's other knobs (weight_decay etc.) explicitly at their library defaults, so the knob is visible and adjustable rather than a silent zero. No monitor is set here: this document wires no val_rows (it trains on every published bar), and ADR-0035's monitor selects on validation telemetry — the run refuses a monitor with no val_rows wired, so declaring one would only break the production fit."
     },
     "qhat_msft": {
       "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
@@ -51,11 +53,13 @@
         "features": ["ret_lag_0", "ret_lag_1", "ret_lag_2", "ret_lag_3", "ret_lag_4", "ret_lag_5", "ret_lag_6", "ret_lag_7", "ret_lag_8", "ret_lag_9", "ret_lag_10", "ret_lag_11", "ret_lag_12", "ret_lag_13", "ret_lag_14", "ret_lag_15", "ret_lag_16", "ret_lag_17", "ret_lag_18", "ret_lag_19", "ret_lag_20", "ret_lag_21", "ret_lag_22", "ret_lag_23", "ret_lag_24", "ret_lag_25", "ret_lag_26", "ret_lag_27", "ret_lag_28", "ret_lag_29"],
         "label": "y_next",
         "optimizer": "torch.optim:Adam",
+        "optimizer_params": { "weight_decay": 0.0 },
         "epochs": 5,
         "lr": 0.001,
-        "loader": { "batch_size": 512, "shuffle": true, "seed": 7 }
+        "loader": { "batch_size": 512, "shuffle": true, "seed": 7 },
+        "device": "cpu"
       },
-      "notes": "The MSFT twin of qhat_aapl — same architecture, its own weights."
+      "notes": "The MSFT twin of qhat_aapl — same architecture, its own weights. device/optimizer_params mirror qhat_aapl's rationale: an explicit CPU knob for this GPU box and Adam's other kwargs named at their library defaults. No monitor here either, for the same reason: no val_rows wired on this document."
     }
   },
   "outputs": {
