@@ -884,6 +884,127 @@ def test_a_family_that_hardcodes_its_objective_refuses_the_knob(tmp_path):
     assert LOSS_CALLS == []
 
 
+class BufferedLoss(torch.nn.Module):
+    """A loss with REGISTERED state. Every shipped ``nn`` loss constructs
+    with zero buffers, so only a stateful one can prove the constructed
+    objective is moved where the module and the batches already go."""
+
+    def __init__(self):
+        super().__init__()
+        self.register_buffer("w", torch.ones(1))
+
+    def forward(self, prediction, target):
+        return ((prediction - target) ** 2 * self.w).mean()
+
+
+def test_a_stateful_loss_class_is_moved_to_the_declared_device():
+    """``device`` moves the module and every batch; a constructed loss
+    module's own state must ride along, or a stateful loss dies mid-fit
+    with a raw cross-device error — the obscure failure ``build_loss``
+    exists to prevent."""
+    adapter = RowVectorAdapter(
+        {**FLAT_PARAMS, "device": "meta", "loss": ref_to(BufferedLoss)}
+    )
+    assert adapter.build_loss().w.device.type == "meta"
+
+
+def test_a_functional_loss_ignores_the_device_knob():
+    """A functional objective carries no state, so ``device`` must leave it
+    the very same object — the default path stays byte-identical."""
+    adapter = RowVectorAdapter({**FLAT_PARAMS, "device": "meta"})
+    assert adapter.build_loss() is torch.nn.functional.mse_loss
+
+
+class HardcodedLossMixin:
+    """A co-base supplying ``loss()`` — "one mixin for the pair is the
+    shape" is the pack's own documented pattern, so the promise reset must
+    key on the RESOLVED implementation, not on the class's own body."""
+
+    def loss(self, module, batch):
+        features, label = batch
+        return torch.nn.functional.mse_loss(module(features).reshape(-1), label)
+
+
+class MixinLossFamily(HardcodedLossMixin, LinearRegressor):
+    """A family whose ``loss()`` arrives from a mixin, promising nothing."""
+
+
+class MixinLossAdapter(HardcodedLossMixin, RowVectorAdapter):
+    """Same replacement, adapter side."""
+
+
+class DoorwayLossMixin:
+    """A mixin ``loss()`` that DOES go through the doorway, so a class may
+    honestly re-declare the promise beside it."""
+
+    def loss(self, module, batch):
+        features, label = batch
+        return self.build_loss()(module(features).reshape(-1), label)
+
+
+class ReclaimedMixinAdapter(DoorwayLossMixin, RowVectorAdapter):
+    """Declares ``applies_loss`` in its own body FOR the mixin's ``loss``."""
+
+    applies_loss = True
+
+
+def test_a_mixin_supplied_loss_loses_the_inherited_promise():
+    """``applies_loss`` follows the implementation that will actually run:
+    a ``loss()`` resolved from a co-base earned nothing, while a fresh
+    declaration binds to whatever implementation is visible beside it."""
+    assert MixinLossFamily.applies_loss is False
+    assert MixinLossAdapter.applies_loss is False
+    assert ReclaimedMixinAdapter.applies_loss is True
+
+
+def test_a_family_with_a_mixin_loss_refuses_the_knob(tmp_path):
+    """End-to-end for the mixin hole: refused at plan and at the fit, and
+    the declared sentinel is never silently dropped."""
+    params = {**FLAT_PARAMS, "loss": f"{__name__}:recording_huber"}
+    problems = MixinLossFamily.validate_params(params)
+    assert any(
+        "applies_loss" in p and "MixinLossFamily" in p for p in problems
+    ), problems
+    LOSS_CALLS.clear()
+    with pytest.raises(ValueError, match="applies_loss"):
+        MixinLossFamily("k", params, mode="train").run(
+            ctx(tmp_path), {"rows": flat_rows()}
+        )
+    assert LOSS_CALLS == []
+
+
+def test_a_family_swapping_build_adapter_alone_is_unknown_at_plan():
+    """Plan must never name an adapter the fit does not build: a family
+    overriding ``build_adapter`` without ``_loss_adapter`` beside it
+    answers ``None`` at plan — cannot-tell, settled by the fit's own
+    doorway — rather than restating an identity the override changed."""
+    assert SwappedAdapterFamily._loss_adapter(FLAT_PARAMS) is None
+    # And the pack's own pairs still answer: they define the two together.
+    assert LinearRegressor._loss_adapter(FLAT_PARAMS) is RowVectorAdapter
+
+
+class LyingPlanFamily(LinearRegressor):
+    """Overrides the pair TOGETHER but in disagreement — the residual
+    duplication the run-side pin exists to catch loudly."""
+
+    def build_adapter(self, params):
+        return HardcodedRowAdapter(params)
+
+    @classmethod
+    def _loss_adapter(cls, params):
+        return RowVectorAdapter
+
+
+def test_plan_and_run_adapter_identity_is_pinned_at_the_fit():
+    """When plan NAMES a class, the fit must build exactly that class —
+    the runtime pin on the one duplication ``_ADAPTER`` cannot collapse."""
+    node = LyingPlanFamily("k", FLAT_PARAMS, mode="train")
+    with pytest.raises(ValueError, match="drifted") as caught:
+        node._adapter_for_fit(FLAT_PARAMS)
+    message = str(caught.value)
+    assert "RowVectorAdapter" in message and "HardcodedRowAdapter" in message
+
+
 def test_import_library_class_requires_the_named_methods():
     """``requires`` refuses a resolvable path whose class lacks the method
     BY NAME — the plan-time honesty the declared grammar rests on."""

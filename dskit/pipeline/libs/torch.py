@@ -168,6 +168,12 @@ _SIDECAR_KEYS = ("format", "module_class", "params", "seed", "state_hash")
 #: is exactly the unpinned duplication where one changes silently.
 _ADAPTER_SUBJECT = "torch adapter"
 
+#: Same rule for the ``loss`` doorway: resolution (``build_loss``) and both
+#: of ``_construct_loss``'s refusals report under one name, so the knob
+#: never refuses under two different subjects — named ONCE for exactly the
+#: reason ``_ADAPTER_SUBJECT`` is.
+_LOSS_SUBJECT = "torch loss"
+
 
 def _value(record, name):
     """Key-or-attr numeric lookup on one row: a finite float, or ``None``
@@ -303,24 +309,40 @@ class _LossPromise:
     ``loss()`` and the node that may override it — because the promise is
     a property of that IMPLEMENTATION, not of a class name: a subclass
     replacing ``loss()`` inherits an ``applies_loss`` it never earned, and
-    the seam would then approve an objective nothing applies. So the
-    promise is RESET for any subclass that overrides ``loss`` without
-    repeating the declaration, which is default-deny applied to
-    inheritance. Overriding both (``applies_loss = True`` beside the new
-    ``loss``) keeps the knob real, and overriding neither inherits a
-    promise still kept by the inherited implementation.
+    the seam would then approve an objective nothing applies. So a class
+    body that declares ``applies_loss`` BINDS the promise to the ``loss``
+    implementation visible there, and any subclass whose RESOLVED ``loss``
+    is a different function — its own body or a co-base mixin, "one mixin
+    for the pair" being this pack's own documented shape — loses the
+    promise unless it declares again. Default-deny applied to inheritance,
+    keyed to what the MRO will actually run, never to ``cls.__dict__``.
+    Overriding neither inherits a promise still kept by the inherited
+    implementation.
 
     Attributes
     ----------
     applies_loss : bool
         Class-level, default ``False``. See :class:`TorchAdapter`.
+    _loss_promised_for : callable or None
+        Class-level. The ``loss`` implementation the standing promise was
+        declared FOR — the witness the reset compares against.
     """
 
     applies_loss = False
+    _loss_promised_for = None
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        if "loss" in cls.__dict__ and "applies_loss" not in cls.__dict__:
+        if "applies_loss" in cls.__dict__:
+            # A fresh declaration: bind it to the implementation this
+            # class resolves NOW (``getattr`` — a promise with no loss()
+            # anywhere binds to nothing and denies every real one).
+            cls._loss_promised_for = (
+                getattr(cls, "loss", None) if cls.applies_loss else None
+            )
+        elif cls.applies_loss and getattr(cls, "loss", None) is not (
+            cls._loss_promised_for
+        ):
             cls.applies_loss = False
 
 
@@ -601,7 +623,12 @@ class TorchAdapter(_LossPromise, ABC):
             of the resolved class — or the callable behind
             :data:`DEFAULT_LOSS` (``torch.nn.functional.mse_loss``) when the
             document named none, which is the same object this pack always
-            applied.
+            applied. A constructed ``nn.Module`` objective is moved to the
+            node's ``device`` first, exactly as the fit moves the module
+            and every batch — a stateful loss (registered buffers) must
+            live where the tensors it meets do, or it dies mid-fit with a
+            raw cross-device error. A functional objective is returned as
+            the very same object, ``device`` or not.
 
         Raises
         ------
@@ -614,8 +641,20 @@ class TorchAdapter(_LossPromise, ABC):
         """
         if self._loss_fn is None:
             path = self.params.get("loss") or DEFAULT_LOSS
-            resolved = import_library_class(path, "torch loss")
-            self._loss_fn = self._construct_loss(resolved, path)
+            resolved = import_library_class(path, _LOSS_SUBJECT)
+            built = self._construct_loss(resolved, path)
+            device = self.params.get("device")
+            if device:
+                import torch
+
+                # A constructed loss MODULE carries state (buffers, e.g. a
+                # class-weight vector) that must live where ``TorchTrain``
+                # already moved the module and moves every batch. Only an
+                # ``nn.Module`` promises ``.to``; a bare callable carries
+                # no tensors for this machine to move.
+                if isinstance(built, torch.nn.Module):
+                    built = built.to(device)
+            self._loss_fn = built
         return self._loss_fn
 
     @staticmethod
@@ -636,14 +675,16 @@ class TorchAdapter(_LossPromise, ABC):
                 built = resolved()
             except TypeError as exc:
                 raise ValueError(
-                    f"torch loss: {path!r} names a class that needs constructor "
-                    f"arguments ({exc}) — an import path carries none, so name a "
-                    "module-level callable that already has them instead"
+                    f"{_LOSS_SUBJECT}: {path!r} names a class that needs "
+                    f"constructor arguments ({exc}) — an import path carries "
+                    "none, so name a module-level callable that already has "
+                    "them instead"
                 ) from exc
         if not callable(built):
             raise ValueError(
-                f"torch loss: {path!r} yields {built!r}, which is not callable "
-                "— name a loss function, or a loss class whose instances are"
+                f"{_LOSS_SUBJECT}: {path!r} yields {built!r}, which is not "
+                "callable — name a loss function, or a loss class whose "
+                "instances are"
             )
         return built
 
@@ -757,8 +798,29 @@ class RowVectorAdapter(TorchAdapter):
         return x.to(device), y.to(device)
 
     def loss(self, module, batch):
-        """The objective over one ``(features, label)`` batch: whatever the
-        document's ``loss`` names, MSE when it names nothing (:meth:`build_loss`)."""
+        """The objective over one ``(features, label)`` batch.
+
+        Parameters
+        ----------
+        module : torch.nn.Module
+            The module being fitted; called on the batch's feature matrix.
+        batch : tuple
+            The ``(features, label)`` tensor pair :meth:`select` produced.
+
+        Returns
+        -------
+        torch.Tensor
+            A scalar — whatever callable the document's ``loss`` names
+            applied to ``(module(features).reshape(-1), label)``, MSE when
+            it names nothing (:meth:`build_loss`).
+
+        Raises
+        ------
+        ValueError
+            When the declared ``loss`` path cannot be resolved to a usable
+            callable — :meth:`build_loss` refuses it by name on the first
+            batch rather than dying mid-fit.
+        """
         features, label = batch
         return self.build_loss()(module(features).reshape(-1), label)
 
@@ -819,6 +881,15 @@ class TorchSignal:
         return float(out.reshape(-1)[0])
 
 
+def _adapter_unknown_at_plan(cls, params):
+    """Plan cannot name this family's adapter — ``build_adapter`` was
+    overridden without ``_loss_adapter`` beside it, so answering would
+    restate an identity the override may have changed. ``None`` leaves the
+    ``loss`` interrogation to the fit's own doorway (``_adapter_for_fit``),
+    which asks the adapter actually built."""
+    return None
+
+
 class _TorchModel(_LossPromise, Node):
     """The grammar the train and predict doorways share: the
     ``build_module`` hook and the artifact save/load protocol.
@@ -826,6 +897,17 @@ class _TorchModel(_LossPromise, Node):
     Abstract by construction (``build_module`` is the subclass's
     identity), so neither base can enter a registry —
     ``node_class_errors`` refuses abstract classes.
+
+    The adapter identity is stated ONCE per family: ``build_adapter``
+    constructs it at run and ``_loss_adapter`` names it at plan, both
+    reading :attr:`_ADAPTER` here. A subclass whose resolved
+    ``build_adapter`` sits SHALLOWER in the MRO than its resolved
+    ``_loss_adapter`` has changed the run side alone, so
+    ``__init_subclass__`` replaces its plan answer with cannot-tell
+    (``None``) rather than let plan certify an adapter the fit does not
+    build; overriding the pair together — one class or one mixin defining
+    both — is trusted, and their residual agreement is pinned by a runtime
+    refusal in :meth:`_adapter_for_fit`.
     """
 
     #: The adapter class this family fits with — stated ONCE, read by
@@ -851,6 +933,16 @@ class _TorchModel(_LossPromise, Node):
     #: alone and silently get a different shape than was trained.
     _data_params: dict = {}
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        mro = cls.__mro__
+        built = next(i for i, base in enumerate(mro) if "build_adapter" in vars(base))
+        planned = next(
+            i for i, base in enumerate(mro) if "_loss_adapter" in vars(base)
+        )
+        if planned > built:
+            cls._loss_adapter = classmethod(_adapter_unknown_at_plan)
+
     @classmethod
     def _allowed(cls):
         return tuple(cls._BASE_PARAMS) + tuple(cls._EXTRA_PARAMS)
@@ -867,9 +959,25 @@ class _TorchModel(_LossPromise, Node):
         Default: :attr:`_ADAPTER` (:class:`RowVectorAdapter`, the flat
         feature-vector shape this pack always had). A family fitting a
         different shape names it in :attr:`_ADAPTER`, so plan and run read
-        ONE statement of that identity; the declared family, whose adapter
-        is a document value rather than a class attribute, overrides this
-        and :meth:`_loss_adapter` together."""
+        ONE statement of that identity; a family that must CONSTRUCT its
+        adapter differently overrides this and :meth:`_loss_adapter`
+        together — overriding this alone demotes the family's plan answer
+        to cannot-tell (see the class docstring), and a pair that
+        disagrees is refused at the fit (:meth:`_adapter_for_fit`). The
+        declared family, whose adapter is a document value rather than a
+        class attribute, overrides the pair.
+
+        Parameters
+        ----------
+        params : dict
+            The node's params — handed to the adapter's constructor, which
+            reads its own knobs (``features``/``label``/…) from them.
+
+        Returns
+        -------
+        TorchAdapter
+            A fresh :attr:`_ADAPTER` instance over ``params``.
+        """
         return self._ADAPTER(params)
 
     def _adapter_for_fit(self, params):
@@ -895,12 +1003,24 @@ class _TorchModel(_LossPromise, Node):
         Raises
         ------
         ValueError
-            When the document declares a ``loss`` that neither this node
-            nor its adapter applies (``applies_loss`` is ``False``), in the
-            same sentence plan says — a fit never proceeds under an
-            objective nothing will use.
+            When the class :meth:`_loss_adapter` promised at plan is not
+            the class this fit built — the runtime pin on the plan/run
+            identity pair, so one side changing silently is a refusal, not
+            a certificate for the wrong adapter. Or when the document
+            declares a ``loss`` that neither this node nor its adapter
+            applies (``applies_loss`` is ``False``), in the same sentence
+            plan says — a fit never proceeds under an objective nothing
+            will use.
         """
         adapter = self.build_adapter(params)
+        promised = self._loss_adapter(params)
+        if promised is not None and type(adapter) is not promised:
+            raise ValueError(
+                f"{type(self).__name__} plans with {promised.__name__} but the "
+                f"fit built {type(adapter).__name__}: _loss_adapter and "
+                "build_adapter have drifted — override them together, or state "
+                "the identity once in _ADAPTER"
+            )
         for subject in (self, adapter):
             problem = _loss_ignored_problem(subject, params)
             if problem:
@@ -946,7 +1066,11 @@ class _TorchModel(_LossPromise, Node):
     def _loss_adapter(cls, params):
         """The adapter class whose ``applies_loss`` plan interrogates —
         :attr:`_ADAPTER`, the same value :meth:`build_adapter` constructs,
-        so the question asked at plan is about the class the fit builds."""
+        so the question asked at plan is about the class the fit builds.
+        Valid only beside that ``build_adapter``: a subclass replacing the
+        run side alone gets this answer swapped for cannot-tell
+        (``__init_subclass__``), and :meth:`_adapter_for_fit` pins the
+        pair's agreement at the fit."""
         return cls._ADAPTER
 
     # -- the artifact protocol ---------------------------------------------
@@ -1288,13 +1412,37 @@ class TorchTrain(_TorchModel):
         return problems
 
     def loss(self, module, batch):
-        """The training objective for one batch — delegated to the adapter
-        (:class:`RowVectorAdapter` = the declared ``loss``, MSE by default,
-        over ``(features, label)``). Declare ``loss`` to swap the objective;
-        override this only for one no import path can express (and then say
-        ``applies_loss = False`` beside it, so a document declaring ``loss``
-        is refused rather than ignored). Returns a scalar tensor the loop
-        can backpropagate."""
+        """The training objective for one batch — delegated to the adapter.
+
+        The default chain: :class:`RowVectorAdapter` applies the declared
+        ``loss`` (MSE when none is declared) over ``(features, label)``.
+        Declare ``loss`` to swap the objective; override this only for one
+        no import path can express (and then say ``applies_loss = False``
+        beside it, so a document declaring ``loss`` is refused rather than
+        ignored).
+
+        Parameters
+        ----------
+        module : torch.nn.Module
+            The module being fitted.
+        batch : object
+            Whatever the adapter's ``select`` produced — only the adapter
+            knows its shape.
+
+        Returns
+        -------
+        torch.Tensor
+            A scalar tensor the loop can backpropagate.
+
+        Raises
+        ------
+        ValueError
+            On a direct call before ``run`` set the fit's adapter, this
+            builds one through :meth:`~_TorchModel._adapter_for_fit`, which
+            refuses a declared ``loss`` nothing applies and a plan/run
+            adapter-identity drift; the adapter's own ``loss`` then refuses
+            an unusable declared ``loss`` path by name (``build_loss``).
+        """
         adapter = self._adapter or self._adapter_for_fit(self.params)
         return adapter.loss(module, batch)
 
