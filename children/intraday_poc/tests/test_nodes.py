@@ -509,6 +509,87 @@ def test_score_kinds_accept_the_cal_split():
     assert SelectOne.validate_params({"split": "holdout"})
 
 
+#: The pin stream's AAPL closes: a contiguous session, then a 34-minute
+#: hole, then a second session. Deliberately irregular so a lag written
+#: backwards, an off-by-one label, or a bridged gap all move a value.
+_PIN_AAPL = {0: 100.0, 1: 101.0, 2: 100.5, 3: 102.0, 4: 101.0, 5: 101.5,
+             40: 99.0, 41: 99.5, 42: 99.25, 43: 99.75}
+#: MSFT's minute 2 carries NO close and minute 5 a non-positive one: both
+#: are dropped, and the SURVIVORS chain across the hole they leave (2
+#: minutes apart, inside the bound). That bridging is the semantic a
+#: naive port loses — it is pinned here on purpose.
+_PIN_MSFT = {0: 200.0, 1: 201.0, 2: None, 3: 203.0, 4: 204.0, 5: 0.0}
+
+
+def _pin_records():
+    """The pin stream, in an order that is NOT time order — the node must
+    order its own bars, never inherit the stream's accident."""
+    rows = [{"symbol": "AAPL", "asof_ms": _ms(i), "close": close}
+            for i, close in _PIN_AAPL.items()]
+    rows += [{"symbol": "MSFT", "asof_ms": _ms(i), "close": close}
+             for i, close in _PIN_MSFT.items()]
+    return rows[::-1]
+
+
+def _pin_expected():
+    """What today's WindowRows computes, restated INDEPENDENTLY.
+
+    Nothing here calls the node or reads its source: the chain rule is
+    written out again from the docstring's promise (drop a bar with no
+    usable price, chain the survivors while consecutive bars sit inside
+    the bound, ``ret_lag_0`` ends at ``asof_ms``, ``y_next`` is the next
+    return). An expectation sourced from its subject asserts nothing.
+    """
+    expected = []
+    for symbol, closes in (("AAPL", _PIN_AAPL), ("MSFT", _PIN_MSFT)):
+        usable = [(i, c) for i, c in sorted(closes.items())
+                  if isinstance(c, float) and c > 0]
+        chains, chain = [], []
+        for (prev_i, prev_c), (i, c) in zip(usable, usable[1:]):
+            if i - prev_i > 5:
+                chains.append(chain)
+                chain = []
+                continue
+            chain.append((_ms(i), math.log(c / prev_c)))
+        chains.append(chain)
+        for chain in chains:
+            for i in range(1, len(chain) - 1):
+                expected.append({
+                    "symbol": symbol, "asof_ms": chain[i][0],
+                    "y_next": chain[i + 1][1],
+                    "ret_lag_0": chain[i][1], "ret_lag_1": chain[i - 1][1],
+                })
+    expected.sort(key=lambda r: (r["asof_ms"], r["symbol"]))
+    return expected
+
+
+def test_window_rows_pins_todays_gap_and_sparse_semantics():
+    """THE port pin: every window this node emits today, value for value.
+
+    Gap discipline and sparse-bar handling are the two things the child
+    got right and a rewrite loses silently — a bridged session boundary
+    or a hole that stops bridging changes what every model downstream
+    trains on, and no other test in this file would notice. So the whole
+    output is pinned against an independent restatement of the rule
+    BEFORE the node is rewritten over the toolkit's window ops.
+    """
+    out = WindowRows("window", {"lookback": 2}).run(
+        None, {"records": _pin_records()})["records"]
+    expected = _pin_expected()
+
+    assert [(r["asof_ms"], r["symbol"]) for r in out] == \
+        [(r["asof_ms"], r["symbol"]) for r in expected]
+    assert [sorted(r) for r in out] == [sorted(r) for r in expected]
+    for got, want in zip(out, expected):
+        for name in sorted(want):
+            assert got[name] == pytest.approx(want[name]), (name, got, want)
+    # The bridge itself, spelled out: MSFT's one row reads THROUGH the
+    # minute that carried no price.
+    (msft,) = [r for r in out if r["symbol"] == "MSFT"]
+    assert msft["asof_ms"] == _ms(3)
+    assert msft["ret_lag_0"] == pytest.approx(math.log(203.0 / 201.0))
+
+
 def test_window_rows_lags_labels_and_gap_discipline():
     """ret_lag_0 is the return ENDING at asof_ms, y_next the one after;
     a gap over max_gap_minutes breaks the chain — no row bridges it."""
