@@ -24,8 +24,10 @@ pyomo = ["pyomo>=6.7", "highspy>=1.7"]
 # No pack of its own: LightGBM ships an sklearn-compatible estimator API, so
 # "lightgbm.LGBMRegressor" resolves straight through the SklearnFit doorway.
 # A wrapper class here would add nothing but a place to drift. xgboost and
-# catboost would enter exactly this way.
-lightgbm = ["lightgbm>=4.0"]
+# catboost would enter exactly this way. Self-sufficient like transformers
+# above (which carries torch): the path runs THROUGH SklearnFit, so the
+# extra carries that doorway's scikit-learn/joblib runtime too.
+lightgbm = ["lightgbm>=4.0", "scikit-learn>=1.3", "joblib>=1.3"]
 # Tier-2 store packs (dskit/assets/libs/*): same lazy-import rule.
 parquet = ["pyarrow>=15"]
 # Everything the library packs can use, for running the full libs test suite.

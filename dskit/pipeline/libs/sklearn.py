@@ -116,17 +116,23 @@ was wired in, a document that wires the FULL stream into the candidates
 and scores them on its own val rows selects in-sample, and the ranking it
 reports is a memorisation ranking — on the cookbook's synthetic market
 that inverts the result outright (measured and pinned: the forest "wins"
-at ~0.03 leaky and trails at 0.22-0.25 honest — a band, not a point,
-because that candidate is unseeded, and usually last: the odd run edges
-it past the boosted trees — while the plain linear baseline it beat
-becomes the winner). Put the train cut upstream, in a node.
+at ~0.03 leaky and trails at 0.22-0.26 honest — the envelope measured
+over 65 runs, quoted to two decimals, not a point, because that
+candidate is unseeded, and usually last: the odd run edges it past the
+boosted trees — while the plain linear baseline it beat becomes the
+winner). Put the train cut upstream, in a node.
 
-Match the metric to the belief's RANGE, not to the outcome's: unbounded
-``predict`` beliefs score with ``squared_error``/``absolute_error``,
-never ``brier``/``logloss`` — those two enforce a [0, 1] belief, and a
-linear or kernel extrapolation on a nearby dataset crosses it and kills
-the run mid-sweep (measured; the cookbook's validate note carries the
-numbers). The probability pair belongs with ``predict_proba``.
+The metric rule is tier-1's, not this pack's: binary venues score
+``logloss``/``brier``, mark-to-market venues the unbounded pair
+(``dskit/pipeline/metrics.py``, ADR-0025). The cookbook is the
+DOCUMENTED EXCEPTION to that rule, and here is its mechanism: raw
+regressor ``predict`` beliefs are unclipped, and ``brier``'s domain
+guard refuses any belief outside [0, 1] — on nearby data SVR emits
+~1.025 (measured), so one such trial kills the whole sweep mid-run.
+Until a calibration/clipping step exists between fit and validate, an
+uncalibrated-regressor sweep on a binary venue scores ``squared_error``;
+a ``predict_proba`` document keeps the venue rule as written, as
+``examples/pipeline/sklearn-fit.json`` does with ``brier``.
 
 Import cost: stdlib + ``dskit.pipeline`` only. sklearn and joblib are
 imported inside the run path exclusively (``tests/pipeline/test_purity.py``

@@ -926,7 +926,7 @@ def test_model_sweep_example_runs_end_to_end_and_picks_a_winner(tmp_path):
     # The sweep SELECTS, it does not merely run — and on an HONEST
     # train-only fit the plain linear baseline wins this synthetic market
     # (its mid is a shrunken affine function of the truth, so there is no
-    # interaction for a tree to find and the forest trails at ~0.22-0.25).
+    # interaction for a tree to find and the forest trails at 0.22-0.26).
     # Every rival here is deterministic; the winner's margin over the
     # runner-up (kNN, 0.176) sits far outside the unseeded forest's
     # spread.
@@ -943,11 +943,12 @@ def test_model_sweep_survives_the_dataset_swap_its_notes_invite(tmp_path):
     # UNBOUNDED `predict`, and on this exact nearby dataset (measured)
     # SVR extrapolates a belief of ~1.025: `brier` guards a [0, 1] belief
     # contract and would kill the whole sweep mid-run on it. The document
-    # therefore scores with `squared_error` — the same mean-squared loss
-    # without the belief bound (ADR-0025's mark-to-market sibling) — and
-    # its validate note must say why, because the brier pairing looks
-    # equally plausible on the page (examples/pipeline/sklearn-fit.json
-    # pairs brier CORRECTLY: bounded predict_proba beliefs).
+    # therefore scores with `squared_error` — the documented EXCEPTION to
+    # tier-1's venue rule (dskit/pipeline/metrics.py, ADR-0025: binary
+    # venues score logloss/brier), which its validate note must cite and
+    # defer to rather than restate as a rule of its own
+    # (examples/pipeline/sklearn-fit.json keeps the venue rule as
+    # written: bounded predict_proba beliefs, brier).
     pytest.importorskip("sklearn")
     obj = json.loads(SWEEP_EXAMPLE.read_text())
     obj["pipeline"]["dataset"]["params"].update({"seed": 22, "n_instruments": 1})
@@ -957,6 +958,15 @@ def test_model_sweep_survives_the_dataset_swap_its_notes_invite(tmp_path):
     shipped = json.loads(SWEEP_EXAMPLE.read_text())
     assert shipped["pipeline"]["validate"]["params"]["metric"] == "squared_error"
     assert "brier" in shipped["pipeline"]["validate"]["notes"]
+    assert "dskit/pipeline/metrics.py" in shipped["pipeline"]["validate"]["notes"]
+    # The fact those notes cite, pinned rather than quoted: flip ONLY the
+    # metric to brier over the same swapped data and the run dies on
+    # brier's own domain guard — the out-of-[0, 1] belief refused by name.
+    flipped = json.loads(json.dumps(obj))
+    flipped["pipeline"]["validate"]["params"]["metric"] = "brier"
+    result = run_sweep_example(tmp_path / "brier", flipped)
+    assert result.state == "error" and result.exit_code != 0
+    assert "brier: q must lie in [0, 1]" in result.error
 
 
 def test_dataset_swap_recipe_says_the_split_cuts_move_with_the_data(tmp_path):
@@ -1056,7 +1066,7 @@ def test_model_sweep_fits_on_the_train_split_only(tmp_path):
     # THE leakage pin. A "compare many models" cookbook that fits on the
     # rows it selects on crowns whichever candidate memorises hardest —
     # verified: wired to the full stream the forest "won" at ~0.03 while
-    # scoring ~0.22-0.25 honestly. The `train_rows` filter upstream of `model`
+    # scoring 0.22-0.26 honestly. The `train_rows` filter upstream of `model`
     # is what makes the comparison mean anything, so the row COUNTS are
     # pinned: rewiring `model` back to `$dataset.events` moves n_rows to
     # the full population and fails here.
@@ -1166,16 +1176,27 @@ def test_lightgbm_resolves_through_the_doorway_with_no_wrapper(tmp_path):
 
 
 def test_lightgbm_extra_is_declared_and_covered_by_all():
-    # The requirement string necessarily appears twice — its own extra and
+    # The requirement strings necessarily appear twice — the extra and
     # the `all` bundle the libs suite installs from — so the agreement is
-    # pinned. An `all` that misses it would leave CI green while the
-    # cookbook's documented candidate is unimportable.
+    # pinned. An `all` that missed one would leave CI green while the
+    # cookbook's documented candidate is unimportable. The extra is
+    # SELF-SUFFICIENT, on the repo's transformers precedent
+    # (`transformers = ["transformers>=4.30", "torch>=2.0"]` carries the
+    # runtime its pack needs): the LGBM path runs THROUGH SklearnFit,
+    # whose run() imports joblib and whose LGBMRegressor is the sklearn
+    # estimator API — so the documented `pip install 'dskit[lightgbm]'`
+    # must pull all three, or the sweep note's own command installs a
+    # candidate that cannot fit.
     import tomllib
 
     root = pathlib.Path(__file__).parents[2]
     with open(root / "pyproject.toml", "rb") as fh:
         extras = tomllib.load(fh)["project"]["optional-dependencies"]
-    assert extras["lightgbm"] == ["lightgbm>=4.0"]
+    assert extras["lightgbm"] == [
+        "lightgbm>=4.0",
+        "scikit-learn>=1.3",
+        "joblib>=1.3",
+    ]
     assert set(extras["lightgbm"]) <= set(extras["all"])
     # And it is an EXTRA, never a pack: no lightgbm module under libs/.
     assert not list((root / "dskit" / "pipeline" / "libs").glob("*lightgbm*"))
@@ -1251,6 +1272,19 @@ def test_unseeded_forest_moves_between_runs_of_one_identity(tmp_path):
     assert "same identity" in json.loads(SWEEP_EXAMPLE.read_text())["notes"]
 
 
+#: The unseeded forest's honest-score envelope actually MEASURED — 65
+#: e2e runs, min 0.219 / max 0.257 (a later 60-run remeasure landed
+#: inside it at 0.2224-0.2564). Restated independently of the prose band
+#: the docstring quotes, so the containment pin below can fail (an
+#: expectation sourced from its subject would assert nothing).
+_FOREST_HONEST_ENVELOPE = (0.219, 0.257)
+
+#: The prose quotes the band to TWO DECIMALS, so half that last digit is
+#: the only slack any band check gets — the old ±0.02 slack is exactly
+#: what let the prose understate the band's top edge.
+_HALF_QUOTED_DIGIT = 0.005
+
+
 def quoted_forest_figures():
     """The honest band and leaky point the cookbook quotes about the
     unseeded forest — parsed OUT OF the pack docstring, with the two
@@ -1268,17 +1302,29 @@ def quoted_forest_figures():
     return float(band.group(1)), float(band.group(2)), float(approx.group(1))
 
 
+def test_documented_forest_band_contains_the_measured_envelope():
+    # The deterministic half of the honest-band pin: the prose calls its
+    # "0.22-0.26 honest" figure a measured envelope, so the quote must
+    # CONTAIN the envelope actually recorded. Narrowing the prose back to
+    # the old understated "0.22-0.25" fails HERE with no rerun lottery —
+    # a single e2e run lands inside a narrowed band most of the time
+    # (the top edge bit at ~2.5% per run) and would let it ride.
+    lo, hi, _ = quoted_forest_figures()
+    assert lo - _HALF_QUOTED_DIGIT <= _FOREST_HONEST_ENVELOPE[0]
+    assert _FOREST_HONEST_ENVELOPE[1] <= hi + _HALF_QUOTED_DIGIT
+
+
 def test_cookbook_figures_are_the_ones_the_engine_produces(tmp_path):
     # Every measured number the prose quotes, pinned to a real run — the
     # notes and the pack docstring both quote them, and the fields they
     # derive from (dataset params, split boundaries) are exactly what the
     # cookbook invites a reader to change. The forest's figures are
     # parsed from the prose rather than restated here, so a drifted copy
-    # fails; the tolerances around the quoted values are what their "~"
-    # promises, sized so an unseeded candidate cannot flake the pin
-    # (measured envelopes over 65 honest / 25 leaky runs: 0.219-0.257
-    # honest and 0.027-0.044 leaky — the old hand-picked `0.22 <` floor
-    # and the last-of-six claim both broke at ~2.5% per run).
+    # fails. The honest figure is the measured ENVELOPE itself
+    # (_FOREST_HONEST_ENVELOPE, quoted to two decimals), so this run
+    # must land INSIDE the quoted band with only the half-digit quantum
+    # for slack. The leaky point keeps its "~" tolerance (envelope
+    # 0.027-0.044 over 25 leaky runs).
     pytest.importorskip("sklearn")
     forest = "sklearn.ensemble.RandomForestRegressor"
     obj = json.loads(SWEEP_EXAMPLE.read_text())
@@ -1300,9 +1346,11 @@ def test_cookbook_figures_are_the_ones_the_engine_produces(tmp_path):
         for trial in honest.outputs["sweep"]["trials"]
     }
     lo, hi, leaky_point = quoted_forest_figures()
-    # HONEST: the forest lands inside the quoted band, far behind the
-    # deterministic winner (min observed gap 0.058 — outside any spread).
-    assert lo - 0.02 <= scores[forest] <= hi + 0.02
+    # HONEST: the forest lands inside the quoted band — no slack beyond
+    # the two-decimal quote's own half digit (a measured 0.219 sits
+    # under the quoted 0.22) — far behind the deterministic winner (min
+    # observed gap 0.058, outside any spread).
+    assert lo - _HALF_QUOTED_DIGIT <= scores[forest] <= hi + _HALF_QUOTED_DIGIT
     assert scores[forest] > honest.outputs["sweep"]["best_score"]
 
     leaky = json.loads(json.dumps(obj))
