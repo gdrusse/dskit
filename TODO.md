@@ -397,13 +397,18 @@ per-model artifacts with a `state_hash` sidecar — one full dir per fold under
 walk-forward. Reproducibility is strong and content-addressed. **Comparison
 across runs is what is missing**, plus the wiring below.
 
-- [ ] **`log_params` carries no hyperparameters.** `driver.py:934` sends
+- [x] **`log_params` carries no hyperparameters.** `driver.py:934` sends
       exactly five fields — `name`, `asof`, `document_hash`, `run_hash`,
       `nodes`. Not node params, not the architecture. So even with a sink
       attached you could not filter runs by `hidden_size` or `lr`. Widen it
       to flatten each node's params (`<node>.<path>` keys, the space-key
       grammar `hpo-grid` already uses). **This blocks every other item
       here** — do it first.
+      **Landed this run (2026-08-28, E1):** ONE core flattener
+      (`document.flatten_param_paths`); one `log_params` per run at run
+      start, five fields kept; keys follow the declared post-override
+      tree, references log as declared (never resolved); grammar parity
+      with space keys pinned BOTH halves, mutation-proven.
 - [ ] **No tracking sink ships.** The seam is complete and deliberate —
       `Tracker` protocol (`protocols.py:86`), `SINK_KINDS` +
       `register_sink_kind` (`base.py:1232`), a `tracking.sinks` config

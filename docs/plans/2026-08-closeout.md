@@ -795,7 +795,7 @@ Intentional-move log (append `document → old-prefix → new-prefix → card`):
 | A2 | pending | | |
 | A4 | pending | | |
 | A5 | pending | | |
-| E1 | pending | | |
+| E1 | MERGED | 2e6fda9 | 4 loop rounds + limit-killed round, orchestrator arbitration (declared-tree keys / run values / references-as-declared; single log_params call) + 1 confirming round (4 findings) + directed fixes; suite 2479/108, hash gate empty. E3 UNBLOCKED |
 | E2 | pending | | |
 | E3 | pending | | after E1 |
 | E4 | pending | | |
