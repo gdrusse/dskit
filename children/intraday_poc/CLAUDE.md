@@ -61,7 +61,11 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
   `_PARAMS` (`narrow_params`), and the pack REFUSES the class if you
   forget. The serving path calls `latest_rows` on the SAME node, so
   there is no second implementation to drift — `latest_feature_row` is
-  gone. `keep_mask` cuts both ways: a priceless minute BEHIND the newest
+  gone — and it restates none of the node's spellings either:
+  `window_records` takes the NODE and reads `group_field()`,
+  `order_field()` and `price_field()` off it, so a retuned field name
+  cannot leave the loop emitting records the node will not lift.
+  `keep_mask` cuts both ways: a priceless minute BEHIND the newest
   bar is read through (the survivors chain), while a priceless NEWEST
   minute makes the symbol absent from `latest_rows` rather than serving
   a one-minute-stale vector as current.

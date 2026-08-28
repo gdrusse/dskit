@@ -200,8 +200,10 @@ duplicate both.
 - Windows never bridge gaps (`max_gap_minutes`); rows the model cannot
   cover are skipped, never imputed. Training and serving build them with
   the SAME node — the loop calls `latest_rows` on the window node it
-  rebuilds from the run's own document (ADR-0040), so a retuned
-  `price_field` cannot leave the loop pricing on the old series.
+  rebuilds from the run's own document (ADR-0040), and builds the records
+  it hands over from that node's own `group_field()` / `order_field()` /
+  `price_field()`, so no retuned field name can leave the loop pricing on
+  the old series or keying on a name the node no longer reads.
 
 ## Tests
 

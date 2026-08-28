@@ -593,32 +593,41 @@ def _restore_signals(run_dir, symbols, overrides, module_ref):
     return signals, lookback
 
 
-def window_records(symbol, series, price_field):
+def window_records(node, symbol, series):
     """Turn one symbol's fetched series into records the window node reads.
 
     The whole adapter between the vendor fetch and the training node:
     the node consumes the same record shape the store emits, so the
     serving path hands it that shape and nothing else. It restates no
     chain arithmetic — there is only one implementation of that now, and
-    it is the node's (ADR-0040).
+    it is the node's (ADR-0040) — and no FIELD NAME either. All three
+    spellings come off the node's own accessors, which are the only
+    things that know them: a literal ``"asof_ms"`` here survives a
+    retuned ``order_field()``, and then every record is unlifted and the
+    loop dies inside the pack, naming the fetch instead of the copy.
 
     Parameters
     ----------
+    node : intraday_poc.nodes.WindowRows
+        The RUN's own window node, built from its document. Its
+        ``group_field()``, ``order_field()`` and ``price_field()`` name
+        the three keys each record carries.
     symbol : str
-        The symbol these bars belong to.
+        The symbol these bars belong to — the GROUP value, which is also
+        the key ``latest_rows`` answers under.
     series : list of tuple
         ``(asof_ms, price)`` ascending, as :func:`bar_series` returns it.
-    price_field : str
-        The field the RUN trained on, read off its window node — the key
-        the record carries the price under, so the node finds it where
-        the document says it is.
 
     Returns
     -------
     list of dict
-        ``[{"symbol": ..., "asof_ms": ..., <price_field>: ...}]``.
+        One record per bar, carrying the node's three declared fields
+        and nothing else.
     """
-    return [{"symbol": symbol, "asof_ms": asof_ms, price_field: price}
+    group, order, price_field = (
+        node.group_field(), node.order_field(), node.price_field()
+    )
+    return [{group: symbol, order: asof_ms, price_field: price}
             for asof_ms, price in series]
 
 
@@ -919,7 +928,7 @@ def main(argv=None) -> int:
             # rows and the training rows come out of the same code.
             rows = window.latest_rows([
                 record for symbol, series in sorted(bars.items())
-                for record in window_records(symbol, series, price_field)
+                for record in window_records(window, symbol, series)
             ])
             preds = {}
             for symbol, (module, features) in signals.items():

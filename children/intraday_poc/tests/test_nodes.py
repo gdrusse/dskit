@@ -787,8 +787,8 @@ def test_live_serves_the_training_row_for_the_same_key(price_field):
     # The vendor's bars, through the loop's own extraction, minus the
     # newest one — so the serving row lands on a bar that HAS a label
     # row to be compared against.
-    series = window_records("AAPL", bar_series(_vendor_bars(), price_field),
-                            price_field)
+    series = window_records(node, "AAPL",
+                            bar_series(_vendor_bars(), price_field))
     served = node.latest_rows(series[:-1])["AAPL"]
 
     training = trained[served["asof_ms"]]
@@ -799,14 +799,48 @@ def test_live_serves_the_training_row_for_the_same_key(price_field):
         assert served[f"ret_lag_{lag}"] == pytest.approx(expect)
 
 
+def test_the_serving_records_speak_the_NODE_s_vocabulary_not_a_copy():
+    """The loop restates NO key field — it asks the node for all of them.
+
+    ``window_records`` wrote ``{"symbol": ..., "asof_ms": ...}`` as
+    literals while reading only the price field off the node, but
+    ``WindowRows.group_field()`` and ``order_field()`` are the accessors
+    that OWN those two spellings. Retune ``order_field()`` to ``ts_ms``
+    alongside the store and training is unaffected, the loop goes on
+    emitting ``asof_ms``, every record is unlifted, and the first fetch
+    dies inside the pack's "every one of the N input record(s) was
+    unlifted" refusal — pointing at the fetch rather than at the copy.
+    Same shape as ``DEFAULT_PRICE_FIELD``, same answer: a serving path
+    never restates a training knob.
+    """
+    from intraday_poc.live import window_records
+
+    class _Retuned(WindowRows):
+        def group_field(self):
+            return "ticker"
+
+        def order_field(self):
+            return "ts_ms"
+
+    node = _Retuned("window", {"lookback": 3, "max_gap_minutes": 5,
+                               "price_field": "vwap"})
+    series = [(_ms(i), price) for i, price in enumerate(_VWAPS)]
+    records = window_records(node, "AAPL", series)
+
+    assert set(records[0]) == {"ticker", "ts_ms", "vwap"}
+    served = node.latest_rows(records)["AAPL"]
+    assert served["ticker"] == "AAPL"
+    assert served["ts_ms"] == _ms(len(_VWAPS) - 1)
+
+
 def test_the_serving_row_never_carries_a_label(price_field="close"):
     """``y_next`` does not exist yet at the newest bar — and a serving
     row that carried one would be reading the future."""
     from intraday_poc.live import bar_series, window_records
 
     node = WindowRows("window", {"lookback": 3, "max_gap_minutes": 5})
-    series = window_records("AAPL", bar_series(_vendor_bars(), price_field),
-                            price_field)
+    series = window_records(node, "AAPL",
+                            bar_series(_vendor_bars(), price_field))
     served = node.latest_rows(series)["AAPL"]
     assert "y_next" not in served
     assert served["asof_ms"] == _ms(len(_CLOSES) - 1)
