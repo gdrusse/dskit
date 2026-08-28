@@ -96,6 +96,7 @@ __all__ = [
     "ValidationConfig",
     "abstract_class_problem",
     "config_hash",
+    "import_library_class",
     "import_ref",
     "is_class_ref",
     "is_ref",

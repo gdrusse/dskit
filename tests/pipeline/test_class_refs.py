@@ -63,6 +63,21 @@ class TestReferenceGrammar:
         assert parse_stage_entry("report=pkg.mod:Cls") == ("report", "pkg.mod:Cls")
         assert parse_stage_entry("train") == ("train", None)
 
+    def test_the_declared_class_resolver_is_public(self):
+        """``import_library_class`` belongs to base's declared surface.
+
+        ``__all__`` plus the ``_`` prefix is this repo's public API
+        contract, and this resolver has a consumer OUTSIDE dskit: a
+        tier-3 child restoring a trained artifact refuses a declared
+        class by the same rule the torch pack builds with
+        (``children/intraday_poc``'s serving loop). A name a child
+        depends on that the list does not declare is a contract nobody
+        can see — base would be free to rename it with no signal.
+        """
+        from dskit.pipeline import base
+
+        assert "import_library_class" in base.__all__
+
     def test_import_ref_failures_name_the_ref(self):
         with pytest.raises(ValueError, match="cannot import"):
             import_ref("no.such.module:X")
