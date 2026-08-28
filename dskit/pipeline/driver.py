@@ -1,5 +1,6 @@
-"""The universal execution file's engine (docs/24 §9): LOAD → IMPORT →
-PLAN → RESOLVE → EXECUTE → RECORD.
+"""The universal execution file's engine (docs/24 §9).
+
+LOAD → IMPORT → PLAN → RESOLVE → EXECUTE → RECORD.
 
 One entry point, :func:`run_document`, drives any node-map document —
 there is deliberately nowhere else for per-project execution logic to
@@ -115,9 +116,12 @@ _log = logging.getLogger("dskit.pipeline.driver")
 
 
 def _atomic_write_text(path, text) -> None:
-    """Write via a same-directory temp file + ``os.replace`` — a reader
-    never sees a half-written artifact. (Inline by necessity: the purity
-    rule bars importing the application's own atomic-write helper here.)"""
+    """Write ``text`` to ``path`` atomically, never half-visible.
+
+    Via a same-directory temp file + ``os.replace``, so a reader never
+    sees a half-written artifact. (Inline by necessity: the purity rule
+    bars importing the application's own atomic-write helper here.)
+    """
     directory = os.path.dirname(path) or "."
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=".tmp-")
     try:
@@ -173,8 +177,11 @@ class _Trackers:
 
 
 def _open_sinks(tracking):
-    """Construct every configured sink; contract-check class refs the way
-    the stage-list resolve did (log_params/log_metrics/close)."""
+    """Construct every configured sink, refusing one that cannot track.
+
+    Class refs are contract-checked the way the stage-list resolve did
+    (``log_params``/``log_metrics``/``close``).
+    """
     if tracking is None:
         return _Trackers(())
     sinks = []
@@ -327,7 +334,8 @@ def _apply_param_override(params, node_key, path, value) -> None:
     Overrides may only address EXISTING params: every segment must
     navigate an existing dict key, and the terminal key must already be
     there — creating a missing key is an error, never a feature (a typo
-    must not become a silent new knob)."""
+    must not become a silent new knob).
+    """
     where = f"override '{node_key}.{'.'.join(path)}'"
     cursor = params
     for seg in path[:-1]:
@@ -437,9 +445,35 @@ class _SearchSeam:
             ) from exc
 
     def apply_winner(self, overrides, ctx, bindings):
-        """Re-execute ``needed ∩ dirty(overrides)`` ONE final time with the
-        winning overrides, replacing those nodes' outputs in the live
-        ``node_outputs``. Returns ``(reran_keys, seconds_by_key)``."""
+        """Re-execute the winner's subgraph ONE final time, for real.
+
+        ``needed ∩ dirty(overrides)`` runs again under the winning
+        overrides, replacing those nodes' outputs in the live
+        ``node_outputs``.
+
+        Parameters
+        ----------
+        overrides : dict
+            The winning ``"node.param.path" -> value`` map.
+        ctx : NodeContext
+            The run frame — the LIVE one, so the winner pass reaches the
+            tracking sinks that the trials were silenced against.
+        bindings : dict
+            Where this pass's ``$prev`` bindings are recorded.
+
+        Returns
+        -------
+        tuple
+            ``(reran_keys, seconds_by_key)`` — the subgraph in plan
+            order, and each node's wall time.
+
+        Raises
+        ------
+        RuntimeError
+            Any failure of the pass, named by the winning overrides —
+            including a ``gate``/``stat_test`` node whose verdict flips
+            to NO-GO under the winner.
+        """
         try:
             return self._execute(
                 overrides, self._outputs, ctx, bindings, guard_verdicts=True
@@ -537,7 +571,7 @@ class _SearchSeam:
 
 
 def _materialize_splits(splits, edges, data_nodes, declines=()):
-    """The document's splits as the object nodes will use.
+    """Return the document's splits as the object nodes will use.
 
     Every kind but ``trailing`` IS its own runtime object and passes
     through. A trailing spec is materialized against the data's edge —
@@ -631,11 +665,13 @@ def _bind_event_bounds(splits, instances, roles):
 
 
 def _find_prev_run(run_root, name, own_dir):
-    """The newest prior run dir of this series carrying a ``carry.json``
-    — ordered by the asof embedded in the dir name (ISO dates sort
-    lexicographically), then by mtime for same-asof reruns (the hash
-    suffix is identity, not recency, and must not decide). ``None`` on a
-    first run."""
+    """Find the newest prior run of this series carrying a ``carry.json``.
+
+    Ordered by the asof embedded in the dir name (ISO dates sort
+    lexicographically), then by mtime for same-asof reruns — the hash
+    suffix is identity, not recency, and must not decide. ``None`` on a
+    first run.
+    """
     if not os.path.isdir(run_root):
         return None
     pattern = re.compile(
@@ -674,7 +710,7 @@ def _summarize(value):
 
 
 def _json_text(value):
-    """The value's canonical JSON, or None when JSON cannot hold it.
+    """Render the value as canonical JSON, or None when JSON cannot hold it.
 
     The one legality rule the driver's records share: ``carry.json``
     decides what a run may hand the next one by it, and a search node's
@@ -688,8 +724,11 @@ def _json_text(value):
 
 
 def _carryable(value):
-    """The value if it is JSON-legal and small enough to carry, else None
-    (with a flag) — carry.json is state, not storage."""
+    """Judge one output for ``carry.json``, which is state, not storage.
+
+    Returns the value with a True flag when it is JSON-legal and small
+    enough to carry, and ``(None, False)`` when it is not.
+    """
     text = _json_text(value)
     if text is None or len(text) > _CARRY_LIMIT:
         return None, False
@@ -697,7 +736,7 @@ def _carryable(value):
 
 
 def _collect_flags(order, node_outputs):
-    """Findings any node raised, split ``(loud, notes)``.
+    """Collect the findings any node raised, split ``(loud, notes)``.
 
     The channel is an output literally named ``flags``: a list of
     ``{"level", "code", "message"}`` (the shape
@@ -769,9 +808,11 @@ def _search_record(seam, outputs):
 
 
 def _node_metrics(outputs) -> dict:
-    """What a node's outputs contribute to the sinks: top-level numeric
-    scalars, plus every numeric leaf of an output literally named
-    ``metrics`` — never bulk payloads."""
+    """Extract what a node's outputs contribute to the sinks.
+
+    Top-level numeric scalars, plus every numeric leaf of an output
+    literally named ``metrics`` — never bulk payloads.
+    """
     out = {}
     for key, value in outputs.items():
         if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -791,20 +832,61 @@ def _node_metrics(outputs) -> dict:
 @dataclass(frozen=True)
 class DocumentRunResult:
     """What one invocation of the universal execution file produced.
-    (Named to coexist with the stage-list runner's ``RunResult`` while
+
+    Named to coexist with the stage-list runner's ``RunResult`` while
     the migration completes — one package must not export two different
-    result types under one name.)
+    result types under one name.
 
-    ``state``: ``"ran"`` (exit 0) — every non-halted node completed;
-    ``"halted"`` (exit 3) — a gate said NO-GO and its descendants were
-    skipped, which is a RESULT; ``"error"`` (exit 1) — a node failed and
-    the remaining order was aborted.
+    Parameters
+    ----------
+    run_dir : str
+        Absolute path to this run's directory; every artifact below is
+        also on disk there.
+    state : str
+        ``"ran"`` (exit 0) — every non-halted node completed;
+        ``"halted"`` (exit 3) — a gate said NO-GO and its descendants
+        were skipped, which is a RESULT; ``"error"`` (exit 1) — a node
+        failed and the remaining order was aborted.
+    node_states : dict
+        ``node key -> "ok" | "halted" | "error" | "not_run"``.
+    outputs : dict
+        Each node's outputs, in full — the winner pass's, where a search
+        replaced them.
+    run_hash : str
+        Identity of what was computed: the document's identity plus the
+        sources' fingerprints. Its first 8 characters name ``run_dir``.
+    halted_at : str, optional
+        The node that halted or errored; ``""`` for a clean run.
+    error : str, optional
+        The failing node's traceback; ``""`` when none failed.
+    prev_run : str, optional
+        The run dir ``$prev`` bound against; ``""`` on a first run.
+    warnings : tuple of str, optional
+        What the planner warned about.
+    seconds : dict, optional
+        Wall time per node, restated from the winner pass for any node a
+        search re-executed.
+    search : dict, optional
+        What the run's search nodes did (ADR-0043), keyed by node key so
+        K>1 searches stay distinguishable: ``trials_executed``, the
+        ``winner`` and ``winner_score`` the kind produced, the nodes the
+        winner re-ran. Empty — and absent from every artifact — for a
+        document that declares no search node.
 
-    ``search`` is what the run's search nodes did (ADR-0043), keyed by
-    node key so K>1 searches stay distinguishable: ``trials_executed``,
-    the ``winner`` and ``winner_score`` the kind produced, the nodes the
-    winner re-ran. Empty — and absent from every artifact — for a
-    document that declares no search node.
+    Examples
+    --------
+    Results come from :func:`run_document`, but the class is a plain
+    record and builds directly::
+
+        result = DocumentRunResult(
+            run_dir="/tmp/pipeline_runs/demo-2026-01-01-0badc0de",
+            state="ran",
+            node_states={"events": "ok"},
+            outputs={"events": {"events": []}},
+            run_hash="0badc0de" * 8,
+        )
+        result.exit_code
+        # -> 0
     """
 
     run_dir: str
@@ -821,10 +903,12 @@ class DocumentRunResult:
 
     @property
     def exit_code(self) -> int:
+        """The process exit code this state means: 0 ran, 3 NO-GO, 1 error."""
         return {"ran": 0, "halted": 3, "error": 1}[self.state]
 
     @property
     def verdict(self) -> str:
+        """One line naming the outcome — the report's headline."""
         if self.state == "error":
             first = self.error.strip().splitlines()
             return f"ERROR at `{self.halted_at}` — {first[-1] if first else 'failed'}"
@@ -1539,19 +1623,46 @@ _DAY_MS = 24 * 60 * 60 * 1000
 class WalkForwardRunResult:
     """What one walk-forward invocation produced.
 
-    ``folds`` is one dict per fold, in cutoff order:
-    ``{"cutoff", "run_dir", "state", "score"}`` (``score`` is ``None``
-    for a halted fold, and for the erroring fold), plus ``"search"`` —
-    that fold's per-node search record — ONLY when the fold ran one.
-    ``state``: ``"ran"`` — every fold completed; ``"halted"`` — at least
-    one fold hit a NO-GO (a halt is a result; later folds still ran);
-    ``"error"`` — a fold errored and the remaining folds were not
-    attempted.
+    Parameters
+    ----------
+    summary_dir : str
+        Where ``walkforward.json`` and ``report.md`` landed, beside the
+        fold runs.
+    state : str
+        ``"ran"`` — every fold completed; ``"halted"`` — at least one
+        fold hit a NO-GO (a halt is a result; later folds still ran);
+        ``"error"`` — a fold errored and the remaining folds were not
+        attempted.
+    folds : tuple of dict
+        One dict per fold, in cutoff order:
+        ``{"cutoff", "run_dir", "state", "score"}`` (``score`` is
+        ``None`` for a halted fold, and for the erroring fold), plus
+        ``"search"`` — that fold's per-node search record — ONLY when
+        the fold ran one.
+    aggregate : dict
+        ``n_folds``/``n_scored`` always, mean/std/min/max and the best
+        fold once anything scored, and ``"search"`` only when some fold
+        searched: per node, how many folds reported a winner and how
+        many DISTINCT winners there were (ADR-0043). An HPO-free
+        evaluation's summary is byte-identical to the pre-ADR-0043 one.
+    document_hash : str
+        Identity of the parent document — the fold plan is part of it.
 
-    ``aggregate`` likewise carries ``"search"`` only when some fold
-    searched: per node, how many folds reported a winner and how many
-    DISTINCT winners they were (ADR-0043). An HPO-free evaluation's
-    summary is byte-identical to the pre-ADR-0043 one.
+    Examples
+    --------
+    Results come from :func:`run_walk_forward`, but the class is a plain
+    record and builds directly::
+
+        result = WalkForwardRunResult(
+            summary_dir="/tmp/pipeline_runs/demo-walkforward-2026-01-01-0badc0de",
+            state="ran",
+            folds=({"cutoff": "2025-01-01", "run_dir": "", "state": "ran",
+                    "score": 1.5},),
+            aggregate={"n_folds": 1, "n_scored": 1},
+            document_hash="0badc0de" * 8,
+        )
+        result.exit_code
+        # -> 0
     """
 
     summary_dir: str
@@ -1562,11 +1673,12 @@ class WalkForwardRunResult:
 
     @property
     def exit_code(self) -> int:
+        """The process exit code this state means: 0 ran, 3 NO-GO, 1 error."""
         return {"ran": 0, "halted": 3, "error": 1}[self.state]
 
 
 def _cutoff_ms(cutoff) -> int:
-    """A ``YYYY-MM-DD`` cutoff as epoch ms at UTC midnight."""
+    """Read a ``YYYY-MM-DD`` cutoff as epoch ms at UTC midnight."""
     from datetime import datetime, timezone
 
     moment = datetime.strptime(cutoff, "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -1574,8 +1686,9 @@ def _cutoff_ms(cutoff) -> int:
 
 
 def _fold_splits(spec, cutoff, policy=DEFAULT_SPLIT_POLICY) -> TimeSplitConfig:
-    """The pinned time cuts for one fold, half-open on BOTH boundaries:
-    val is exactly ``[cutoff, cutoff + val_days)`` and train ends strictly
+    """Pin one fold's time cuts, half-open on BOTH boundaries.
+
+    Val is exactly ``[cutoff, cutoff + val_days)`` and train ends strictly
     BEFORE ``cutoff - embargo_days`` — so for midnight-stamped daily
     panels the cutoff day validates (never trains), a ``val_days`` window
     holds exactly ``val_days`` daily stamps, and an ``embargo_days`` band
@@ -1590,7 +1703,8 @@ def _fold_splits(spec, cutoff, policy=DEFAULT_SPLIT_POLICY) -> TimeSplitConfig:
     onto the cuts (ADR-0031): the cuts say WHERE, the policy says WHICH
     INSTANT, and each fold's :func:`run_document` then binds event bounds
     exactly as a standalone run would. The default is hash-neutral —
-    ``record`` is dropped from the serialized form."""
+    ``record`` is dropped from the serialized form.
+    """
     cut = _cutoff_ms(cutoff)
     val_end = cut + spec.val_days * _DAY_MS - 1
     train_end = cut - spec.embargo_days * _DAY_MS - 1
@@ -1663,7 +1777,7 @@ def _walkforward_summary_dir(document, asof):
 
 
 def _declared_policy(document):
-    """The split policy every fold's pinned cuts carry (ADR-0031).
+    """Read the split policy every fold's pinned cuts carry (ADR-0031).
 
     The document's own splits section is replaced fold by fold, but its
     declared POLICY rides through: the cuts say WHERE, the policy says
@@ -1683,7 +1797,7 @@ def _declared_policy(document):
 
 
 def _fold_score(result, target, obj_path, objective):
-    """The declared objective read off one completed fold, as a finite float.
+    """Read the declared objective off one completed fold, as a finite float.
 
     An unreadable or non-numeric objective is an error, not a blank: a
     fold that cannot report cannot aggregate, and a NaN must never rank
@@ -1873,8 +1987,11 @@ def _aggregate_folds(folds, select):
 
 
 def _winner_cell(meta):
-    """One fold's winner as the report prints it: its canonical JSON, a
-    named drop when JSON could not hold it, or a dash for no winner."""
+    """Render one fold's winner for the report.
+
+    Its canonical JSON, a named drop when JSON could not hold it, or a
+    dash for no winner at all.
+    """
     if "winner" in meta:
         return f"`{_json_text(meta['winner'])}`"
     if "best_params" in meta.get("winner_dropped", ()):
@@ -1883,7 +2000,7 @@ def _winner_cell(meta):
 
 
 def _walkforward_search_lines(folds, aggregate):
-    """The report's Search section — nothing at all when no fold searched.
+    """Build the report's Search section — nothing when no fold searched.
 
     An HPO-free evaluation must read exactly as it did before ADR-0043,
     so this returns an EMPTY list rather than an empty section. When

@@ -88,8 +88,9 @@ convention = "numpy"
 # before the standard is listed here. **Delete a module's entry when you
 # convert it** — that is what makes the list shrink to nothing.
 #
-# Ignores are file-granular, so clearing a large module (driver.py,
+# Ignores are file-granular, so clearing a large module (document.py,
 # torch.py) means converting the whole file; do that as its own commit.
+# driver.py was drained that way — the pattern to copy.
 # ---------------------------------------------------------------------
 "children/_skeleton/yourproject/connectors.py" = ["D"]
 "children/_skeleton/yourproject/nodes.py" = ["D"]
@@ -129,7 +130,6 @@ convention = "numpy"
 "dskit/pipeline/base.py" = ["D"]
 "dskit/pipeline/conformance.py" = ["D"]
 "dskit/pipeline/document.py" = ["D"]
-"dskit/pipeline/driver.py" = ["D"]
 "dskit/pipeline/env.py" = ["D"]
 "dskit/pipeline/features.py" = ["D"]
 "dskit/pipeline/io.py" = ["D"]
