@@ -122,7 +122,7 @@ def _require_str(name, value):
 
 
 def _require_price(name, value):
-    """A price field: None, or a finite positive number (bool excluded)."""
+    """Refuse a price field that is neither None nor a positive number."""
     if value is None:
         return
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -188,6 +188,7 @@ class MarketRecord:
     native: object = None
 
     def __post_init__(self):
+        """Refuse the first shape problem, loudly (see ``Raises``)."""
         _require_str("venue", self.venue)
         _require_str("instrument", self.instrument)
         _require_str("contract", self.contract)
@@ -211,15 +212,20 @@ class MarketRecord:
 
     @property
     def cluster(self) -> str:
-        """The dependence cluster this record belongs to (``group`` or, when
-        no grouping exists, the contract itself). Randomized splits and
-        cluster bootstraps key off this."""
+        """Name the dependence cluster this record belongs to.
+
+        ``group`` when it has one, else the contract itself. Randomized
+        splits and cluster bootstraps key off this.
+        """
         return self.group if self.group is not None else self.contract
 
     @property
     def crossed(self) -> bool:
-        """True when both quotes exist and bid exceeds ask (a state worth
-        observing, which is exactly why construction did not refuse it)."""
+        """Say whether the book is crossed: both quotes present, bid > ask.
+
+        A state worth observing, which is exactly why construction did
+        not refuse it.
+        """
         return self.bid is not None and self.ask is not None and self.bid > self.ask
 
 
@@ -238,6 +244,24 @@ class BinaryAccounting:
     """
 
     def payout_per_unit(self, outcome) -> float:
+        """Turn a settled-YES bool into currency per unit.
+
+        Parameters
+        ----------
+        outcome : bool
+            Whether the contract settled YES.
+
+        Returns
+        -------
+        float
+            ``1.0`` for YES, ``0.0`` for NO.
+
+        Raises
+        ------
+        ValueError
+            When ``outcome`` is not a bool — a mark price arriving here
+            means a mark-to-market venue was wired to binary accounting.
+        """
         if not isinstance(outcome, bool):
             raise ValueError(
                 f"BinaryAccounting expects a bool outcome (settled YES?), got "
@@ -256,6 +280,26 @@ class MarkToMarketAccounting:
     """
 
     def payout_per_unit(self, outcome) -> float:
+        """Turn a closing mark into currency per unit — it IS the mark.
+
+        Parameters
+        ----------
+        outcome : int or float
+            The closing mark, finite and ``>= 0`` (0 is a real mark:
+            bankruptcy).
+
+        Returns
+        -------
+        float
+            The mark itself.
+
+        Raises
+        ------
+        ValueError
+            When ``outcome`` is a bool or is not a finite number ``>= 0``
+            — a bool here means a binary venue was wired to
+            mark-to-market accounting.
+        """
         if isinstance(outcome, bool) or not isinstance(outcome, (int, float)):
             raise ValueError(
                 f"MarkToMarketAccounting expects a numeric mark, got {outcome!r} "
@@ -306,6 +350,7 @@ class PositionOutcome:
     pnl: float
 
     def __post_init__(self):
+        """Refuse the first shape problem, loudly (see ``Raises``)."""
         _require_str("contract", self.contract)
         for name in ("qty", "cost", "fee", "payout_per_unit", "proceeds", "pnl"):
             v = getattr(self, name)
@@ -335,7 +380,7 @@ class PositionOutcome:
 
 
 def settle_position(contract, qty, cost, fee, payout_per_unit) -> PositionOutcome:
-    """The shared settlement arithmetic — identical for every venue.
+    """Settle one position with the arithmetic every venue shares.
 
     The venue-specific step happened BEFORE this call: the backend's
     ``Accounting.payout_per_unit(outcome)`` turned the venue outcome (a

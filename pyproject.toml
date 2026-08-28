@@ -144,7 +144,6 @@ convention = "numpy"
 "dskit/pipeline/metrics.py" = ["D"]
 "dskit/pipeline/node.py" = ["D"]
 "dskit/pipeline/protocols.py" = ["D"]
-"dskit/pipeline/records.py" = ["D"]
 "dskit/pipeline/registry.py" = ["D"]
 "dskit/pipeline/resolve.py" = ["D"]
 "dskit/pipeline/runner.py" = ["D"]
