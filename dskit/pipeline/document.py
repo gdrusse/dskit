@@ -1358,15 +1358,15 @@ def _fanned_inputs(key, spec, groups, keys, slugs):
                 f"(templates: {sorted(groups)})"
             )
         else:
-            for name in keys:
-                fanned = _instance_key(base, slugs[name])
+            for each_key in keys:
+                fanned = _instance_key(base, slugs[each_key])
                 if fanned in out or fanned in spec.inputs:
                     errors.append(
                         f"pipeline.{key}: fanned-out port {fanned!r} collides "
                         f"with a port the node already declares"
                     )
                 out[fanned] = "$" + ".".join(
-                    (_instance_key(source, slugs[name]), *path)
+                    (_instance_key(source, slugs[each_key]), *path)
                 )
     return (None if errors else out), errors
 
@@ -1584,7 +1584,13 @@ class PipelineDocument:
         _raise_if(errors)
 
     def _expand(self):
-        """Install the derived map; return the expansion's refusals."""
+        """Install the derived map; return the expansion's refusals.
+
+        Emission order is FIXED because the toposort breaks ties on it:
+        shared nodes in declaration order, then template-major and
+        key-minor. With no ``foreach`` nothing is installed and the
+        derived map stays the declared one — the same object.
+        """
         if self.foreach is None:
             return []
         keys = self.foreach.keys
@@ -1604,6 +1610,9 @@ class PipelineDocument:
             expanded[key] = spec if inputs is None else replace(spec, inputs=inputs)
         templates = set(self.foreach.pipeline)
         for tkey, template in self.foreach.pipeline.items():
+            # `groups[tkey]` was built from `keys` in that order two
+            # statements above, so the zip pairs each instance NAME with
+            # the key it was named for — one source, never two lists.
             for name, key in zip(groups[tkey], keys):
                 expanded[name] = _instantiate(template, templates, key, slugs[key])
         if errors:

@@ -16,6 +16,7 @@ path, not a second one.
 import json
 import os
 import pathlib
+from dataclasses import replace
 
 import pytest
 
@@ -521,6 +522,17 @@ class TestIdentity:
         # what a document says. Adding a key must be a new identity.
         assert foreach_document().expanded == longhand_document().pipeline
         assert foreach_document().hash != longhand_document().hash
+
+    def test_dataclasses_replace_re_derives_the_expansion(self):
+        # Children call `replace(document, outputs=...)` to redirect a run
+        # dir. The derived fields are init=False, so `replace` skips them
+        # and __post_init__ rebuilds them — a pin, because a derived field
+        # that `replace` carried STALE would run yesterday's graph.
+        moved = replace(
+            foreach_document(), outputs=OutputsConfig(run_root="/tmp/elsewhere")
+        )
+        assert moved.expanded == foreach_document().expanded
+        assert moved.hash == foreach_document().hash  # placement is not identity
 
     def test_a_foreach_document_round_trips_through_json(self, tmp_path):
         path = tmp_path / "doc.json"
