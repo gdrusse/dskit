@@ -160,10 +160,18 @@ document, which the driver writes; the adjustment, the symbol
 **universe** and the credential env-var **names**
 (`key_env`/`secret_env`) come from the source config the puller
 registered (`--source-config`), so adding a ticker there and retraining
-is all it takes — and the loop always authenticates as the puller did.
-The values behind those names are loaded by dskit's own `env.py` (`.env`
-beside the CWD, process environment winning, `export ` and quotes per
-its documented format); the loop parses no dotenv of its own. Only
+is all it takes.
+
+Credentials: both sides read the same env-var **names** from that config
+and share ONE rule for what counts as a credential
+(`connectors.resolve_credentials` — a var set to `""` is refused by
+name, never authenticated), but they do **not** read from the same
+place. The puller reads the **process environment only**. The loop also
+reads `.env` beside the CWD, through dskit's own `env.py` (process
+environment winning, `export ` and quotes per its documented format);
+it parses no dotenv of its own. So a key pair that lives only in `.env`
+serves the forward loop while `acquire` refuses it by name — **export
+the pair** (`set -a; . ./.env; set +a`) and both are served. Only
 operational flags live on the CLI: `--qty`, `--log-dir`, `--once`,
 `--dry-run`, `--history-minutes`, and `--artifact SYMBOL=PATH` when a
 document names its trainer nodes something other than `qhat_<symbol>`

@@ -6,6 +6,8 @@ envelope under test are the REAL code. The shipped configs drive the
 spec-gate tests; no test touches the network.
 """
 
+import ast
+import inspect
 import json
 import os
 
@@ -218,13 +220,32 @@ def test_a_first_live_pull_does_not_re_fetch_the_backfill(conn):
     assert len(backfill) == 180
 
 
-def test_the_live_lookback_default_is_named_once(conn):
-    """One name for the default: the knob gate and the ``spec()`` note a
-    config author reads must both come from the constant."""
-    default = connectors.DEFAULT_LIVE_LOOKBACK_MINUTES
-    assert conn.resolve_knobs(STUB_CONFIG)["live_lookback_minutes"] == default
-    notes = conn.spec()["params"]["live_lookback_minutes"]["notes"]
-    assert f"Default {default}." in notes, notes
+@pytest.mark.parametrize("knob,constant,rebound", [
+    ("feed", "DEFAULT_FEED", "iex"),
+    ("adjustment", "DEFAULT_ADJUSTMENT", "split"),
+    ("live_lookback_minutes", "DEFAULT_LIVE_LOOKBACK_MINUTES", 77),
+    ("key_env", "DEFAULT_KEY_ENV", "SOME_OTHER_KEY_ID"),
+    ("secret_env", "DEFAULT_SECRET_ENV", "SOME_OTHER_SECRET_KEY"),
+])
+def test_every_spec_default_is_named_once(conn, monkeypatch, knob, constant,
+                                          rebound):
+    """One name per default: the gate AND the note both read it.
+
+    ``spec()``'s notes are what a config author reads to decide whether
+    to declare a knob at all, so a note restating the default as a
+    LITERAL advertises a value the pull may no longer use — the repo's
+    commonest defect, in prose. Rebinding each constant must therefore
+    move both consumers; a literal in either survives the rebinding and
+    fails here. This replaces the lookback-only version, which read the
+    constant but never rebound it and covered one knob of five.
+    (Ruling 4.)
+    """
+    bare = {"symbols": ["AAPL"], "start": STUB_CONFIG["start"]}
+    assert conn.resolve_knobs(bare)[knob] == getattr(connectors, constant)
+
+    monkeypatch.setattr(connectors, constant, rebound)
+    notes = conn.spec()["params"][knob]["notes"]
+    assert f"Default {rebound}." in notes, notes
 
 
 def test_a_live_lookback_the_sip_clamp_swallows_is_refused(conn):
@@ -255,12 +276,57 @@ def test_a_live_lookback_the_sip_clamp_swallows_is_refused(conn):
     )["live_lookback_minutes"] == clamp
 
 
+def _unpacked_from(module, names):
+    """The module-level name ``names`` is tuple-unpacked from, or None."""
+    tree = ast.parse(inspect.getsource(module))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if (isinstance(target, ast.Tuple)
+                and all(isinstance(e, ast.Name) for e in target.elts)
+                and tuple(e.id for e in target.elts) == tuple(names)):
+            return node.value.id if isinstance(node.value, ast.Name) else None
+    return None
+
+
+def _imports_from(module, name):
+    """The dotted module ``name`` is imported from, or None."""
+    tree = ast.parse(inspect.getsource(module))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and any(
+                alias.name == name for alias in node.names):
+            return "." * node.level + (node.module or "")
+    return None
+
+
 def test_the_mode_vocabulary_comes_from_the_platform():
-    """The forward mode's NAME is unpacked from ``MODES`` (ADR-0014), so
-    a platform that grows a third mode breaks this connector at import —
-    loudly — instead of silently treating the newcomer as a backfill."""
+    """The forward mode's NAME is UNPACKED from the platform's ``MODES``.
+
+    ADR-0014 declares two acquisition modes, and this connector's whole
+    live/backfill split is keyed on their names. A platform that grows a
+    THIRD mode must break this module at import — loudly — instead of
+    letting the newcomer fall through ``_window``'s ``elif`` and be
+    windowed as a backfill.
+
+    A value comparison alone cannot show that: ``BACKFILL_MODE =
+    "backfill"`` / ``LIVE_MODE = "live"`` written as two literals
+    satisfies it exactly as well, and then a third platform mode lands
+    silently. So the BINDING is what is read — the trick ``test_nodes``
+    uses for the constants a reader must not restate — and both halves
+    matter: unpacked from a name, and that name imported from the
+    platform rather than rebuilt here. (Ruling 5.)
+    """
     from dskit.onboarding import MODES
 
+    assert _unpacked_from(connectors, ("BACKFILL_MODE", "LIVE_MODE")) == \
+        "MODES", (
+        "connectors.py must UNPACK the platform's MODES tuple — two "
+        "literals cannot break when the platform grows a mode"
+    )
+    assert _imports_from(connectors, "MODES") == "dskit.onboarding", (
+        "MODES must come from the platform, not a tuple rebuilt here"
+    )
     assert (connectors.BACKFILL_MODE, connectors.LIVE_MODE) == MODES
 
 

@@ -73,19 +73,31 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
   (`live.py:LIVE_FEED`), because real-time SIP is not on the free tier —
   sparse minutes possible, gap discipline handles it, never bridge.
 - **`live.py` restates nothing**: price field, gap bound and module class
-  come from `<run-dir>/config.json`; vendor knobs AND the symbol universe
-  from the source config (`--source-config`), resolved through the
-  connector's public `resolve_knobs` — the credential env-var NAMES
-  (`key_env`/`secret_env`) among them, so the loop authenticates as the
-  puller does, with the values loaded by dskit's `env.py` rather than a
-  dotenv parser of the child's own. The bar interval is one constant
+  come from `<run-dir>/config.json`, read through the ENGINE's own
+  `load_document` (typed `NodeSpec`s — never a parse of the child's, which
+  would accept runs the engine refuses); vendor knobs AND the symbol
+  universe from the source config (`--source-config`), resolved through
+  the connector's public `resolve_knobs` — the credential env-var NAMES
+  (`key_env`/`secret_env`) among them. The bar interval is one constant
   (`connectors.BAR_INTERVAL`) both fetch paths build from.
   Node keys `qhat_aapl`/`qhat_msft` are the default
   artifact convention (`artifacts/qhat_<symbol>`); a document that names
   them differently is served with `--artifact SYMBOL=PATH`, never an
   edit to the loop — and an override for a symbol the config does not
   declare is refused, not dropped.
+- **Credentials: one rule, two sources.** Both sides take the env-var
+  NAMES from the source config and both refuse a var that is missing OR
+  empty, by name, through the ONE shared
+  `connectors.resolve_credentials` — presence is not authentication, and
+  `.env.example` ships both keys empty. They differ in WHERE they read:
+  the puller's connector reads `os.environ` only; `live.py` reads `.env`
+  beside the CWD merged under the process environment, via dskit's
+  `env.py`. Do not write "the loop authenticates as the puller does" —
+  it did not, and does not; exporting the pair is what serves both.
 - `live.py` only ever constructs `TradingClient(..., paper=True)`.
   Keep it that way.
+- **`__all__` is the contract in this package too.** `live.py` declares
+  one and `test_the_serving_loop_declares_its_public_surface` pins it:
+  a new helper is underscored, or added to `__all__` on purpose.
 
 Keep this tree and README.md's current when files change.

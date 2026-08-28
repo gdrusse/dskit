@@ -21,11 +21,16 @@ Run-path only (torch, pyomo, alpaca-py) — never imported by
 **This loop re-declares nothing the run already declared.** The
 modelling knobs — the price field, the gap discipline, the module class
 — are READ from ``<run-dir>/config.json``, the whole training document
-the driver writes; the vendor knobs AND the symbol universe come from
-the acquisition source config the puller registered
-(``--source-config``). Only operational flags (quantity, dry-run, log
-dir, artifact overrides, history window) live on the CLI, and there is
-deliberately no third config file: it would duplicate both of those.
+the driver writes, through the ENGINE's own
+:func:`~dskit.pipeline.document.load_document` rather than a parse of
+this loop's: the grammar is tier-1 truth, and re-deriving it here would
+accept runs the engine refuses and then blame the document for it. The
+vendor knobs AND the symbol universe come from the acquisition source
+config the puller registered (``--source-config``), resolved through the
+connector's own knob gate for the same reason. Only operational flags
+(quantity, dry-run, log dir, artifact overrides, history window) live on
+the CLI, and there is deliberately no third config file: it would
+duplicate both of those.
 
 Two vendor knobs come from neither file, for different reasons:
 
@@ -51,11 +56,17 @@ Usage::
         --qty 1 [--once] [--dry-run] \
         [--artifact AAPL=artifacts/qhat_aapl]
 
-Credentials are read the same way: the source config NAMES the two env
-vars (``key_env``/``secret_env``), and the toolkit's own ``env.py``
-loader materializes them — ``.env`` beside the CWD, process environment
-winning. The loop authenticates as the puller does, and no dotenv rule
-is re-derived here.
+Credentials are half read, half shared. The source config NAMES the two
+env vars (``key_env``/``secret_env``), and what COUNTS as a credential
+is the connector's own
+:func:`~intraday_poc.connectors.resolve_credentials` — one rule for the
+whole child, so a var that is missing or set to ``""`` is refused by
+name on either side rather than authenticated blank. Where the VALUES
+come from is the one thing the two paths do not share: the puller reads
+the process environment only, while this loop materializes ``.env``
+beside the CWD under it through the toolkit's ``env.py`` (process
+environment winning) and re-derives no dotenv rule of its own.
+Exporting the pair serves both.
 """
 
 from __future__ import annotations
@@ -69,15 +80,21 @@ import os
 import sys
 import time
 
+from dskit.onboarding import AssetError
 from dskit.pipeline.base import (
     EnvConfig,
     import_library_class,
     import_ref,
     is_class_ref,
 )
+from dskit.pipeline.document import load_document
 from dskit.pipeline.env import load_env
 
-from .connectors import AlpacaBarsConnector, bar_timeframe
+from .connectors import (
+    AlpacaBarsConnector,
+    bar_timeframe,
+    resolve_credentials,
+)
 from .nodes import (
     DEFAULT_MAX_GAP_MINUTES,
     DEFAULT_PRICE_FIELD,
@@ -85,6 +102,24 @@ from .nodes import (
     WindowRows,
     build_select_model,
 )
+
+__all__ = [
+    "LIVE_FEED",
+    "artifact_dirs",
+    "bar_series",
+    "credentials",
+    "declared_module",
+    "fetch_bars",
+    "latest_feature_row",
+    "load_run_document",
+    "main",
+    "parse_artifact_overrides",
+    "predict",
+    "restore_model",
+    "solve_pick",
+    "source_knobs",
+    "window_knobs",
+]
 
 #: The forward fetch's feed. Deliberately NOT read from the source
 #: config: that config's ``feed`` is ``sip`` (free-tier history), and
@@ -102,13 +137,19 @@ _WINDOW_KIND = next(name for name, cls in NODE_KINDS.items()
 def credentials(knobs):
     """Materialize the key pair the source config's knobs NAME.
 
-    Both halves are read, never restated: the NAMES are the connector's
-    ``key_env``/``secret_env`` knobs, so the loop authenticates as the
-    puller does, and the VALUES come from dskit's own ``env.py`` loader
-    — ``.env`` beside the CWD, process environment winning, ``export ``
-    prefixes and matched quotes handled the one way the toolkit
-    documents. A second dotenv parser here would drift from that rule
-    the moment either side changed.
+    Nothing here is restated. The NAMES are the connector's
+    ``key_env``/``secret_env`` knobs. The VALUES come from dskit's own
+    ``env.py`` loader — ``.env`` beside the CWD merged under the process
+    environment, ``export `` prefixes and matched quotes handled the one
+    way the toolkit documents. And what COUNTS as a credential is the
+    connector's :func:`~intraday_poc.connectors.resolve_credentials`,
+    called with those values: an env var set to ``""`` passes every
+    presence check ``env.py`` makes, so without the shared rule the loop
+    would authenticate blank while the puller refused the same pair.
+
+    The one thing the two paths do not share is WHERE they look: the
+    puller reads the process environment only, this loop reads ``.env``
+    as well. Exporting the pair serves both.
 
     Parameters
     ----------
@@ -124,15 +165,19 @@ def credentials(knobs):
     ------
     SystemExit
         When a NAMED variable is missing from both the process
-        environment and ``.env``, or the config names something that is
-        not a valid environment variable name.
+        environment and ``.env``, when either resolves EMPTY (the
+        connector's refusal, verbatim), or when the config names
+        something that is not a valid environment variable name.
     """
     names = (knobs["key_env"], knobs["secret_env"])
     try:
         secrets = load_env(EnvConfig(require=names))
     except ValueError as exc:
         raise SystemExit(f"{exc} — fill in .env (see .env.example)") from exc
-    return secrets[names[0]], secrets[names[1]]
+    try:
+        return resolve_credentials(knobs, secrets.get)
+    except AssetError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def load_run_document(run_dir):
@@ -141,7 +186,12 @@ def load_run_document(run_dir):
     The driver writes the document VERBATIM to ``<run-dir>/config.json``
     (lookback, gap discipline, the declared module class, every node's
     params), which is why this loop reads it instead of restating any of
-    it.
+    it — and reads it through the ENGINE's own loader, which already
+    refuses non-JSON, refuses a document that is not an object, and
+    validates the whole node-map grammar into typed
+    :class:`~dskit.pipeline.document.NodeSpec`s. A parse of the child's
+    own would accept runs the engine never planned and then blame the
+    document for what it could not read.
 
     Parameters
     ----------
@@ -150,34 +200,26 @@ def load_run_document(run_dir):
 
     Returns
     -------
-    dict
-        The document as declared.
+    dskit.pipeline.document.PipelineDocument
+        The document as declared, typed and validated.
 
     Raises
     ------
     SystemExit
-        When the file is missing, unreadable, not JSON, or carries no
-        ``pipeline`` section — a serving loop with no document to read
-        must stop, never assume.
+        When the file is missing or unreadable, or when the engine
+        refuses it — the engine's message verbatim, since the grammar is
+        its truth, not this loop's.
     """
     path = os.path.join(run_dir, "config.json")
     try:
-        with open(path, encoding="utf-8") as fh:
-            document = json.load(fh)
+        return load_document(path)
     except OSError as exc:
         raise SystemExit(
             f"cannot read {path}: {exc} — --run-dir must name a run "
             "directory the pipeline wrote"
         ) from exc
-    except ValueError as exc:
-        raise SystemExit(f"{path} is not valid JSON: {exc}") from exc
-    if not isinstance(document, dict) or \
-            not isinstance(document.get("pipeline"), dict):
-        raise SystemExit(
-            f"{path} carries no pipeline section — this is not a run "
-            "document"
-        )
-    return document
+    except ValueError as exc:  # ConfigError is one; both name the path
+        raise SystemExit(str(exc)) from exc
 
 
 def _is_window(uses):
@@ -194,8 +236,8 @@ def _is_window(uses):
 
 def _window_nodes(document):
     """Return the document's window nodes, by node key."""
-    return {key: node for key, node in document["pipeline"].items()
-            if isinstance(node, dict) and _is_window(node.get("uses"))}
+    return {key: spec for key, spec in document.pipeline.items()
+            if _is_window(spec.uses)}
 
 
 def window_knobs(document):
@@ -210,7 +252,7 @@ def window_knobs(document):
 
     Parameters
     ----------
-    document : dict
+    document : dskit.pipeline.document.PipelineDocument
         A training document, as :func:`load_run_document` returns it.
 
     Returns
@@ -233,11 +275,10 @@ def window_knobs(document):
             "were built"
         )
     resolved = set()
-    for node in windows.values():
-        params = node.get("params") or {}
+    for spec in windows.values():
         resolved.add((
-            params.get("price_field", DEFAULT_PRICE_FIELD),
-            float(params.get("max_gap_minutes", DEFAULT_MAX_GAP_MINUTES)),
+            spec.params.get("price_field", DEFAULT_PRICE_FIELD),
+            float(spec.params.get("max_gap_minutes", DEFAULT_MAX_GAP_MINUTES)),
         ))
     if len(resolved) > 1:
         raise SystemExit(
@@ -257,7 +298,7 @@ def declared_module(document):
 
     Parameters
     ----------
-    document : dict
+    document : dskit.pipeline.document.PipelineDocument
         A training document, as :func:`load_run_document` returns it.
 
     Returns
@@ -270,11 +311,9 @@ def declared_module(document):
     SystemExit
         When no node declares ``module``, or the trainers disagree.
     """
-    declared = {node["params"]["module"]
-                for node in document["pipeline"].values()
-                if isinstance(node, dict)
-                and isinstance(node.get("params"), dict)
-                and "module" in node["params"]}
+    declared = {spec.params["module"]
+                for spec in document.pipeline.values()
+                if "module" in spec.params}
     if not declared:
         raise SystemExit(
             "the run declares no module class — --run-dir must name the "
@@ -486,7 +525,7 @@ def restore_model(artifact_dir, module_ref):
     return module, features
 
 
-def restore_signals(run_dir, symbols, overrides, module_ref):
+def _restore_signals(run_dir, symbols, overrides, module_ref):
     """Restore every symbol's module, and the lookback they all share.
 
     Parameters
@@ -705,7 +744,7 @@ def fetch_bars(symbols, minutes, price_field, adjustment, key, secret):
             for symbol, series in bars.data.items()}
 
 
-def current_position(trading, symbol: str) -> float:
+def _current_position(trading, symbol):
     """How many shares of ``symbol`` the paper account holds (0 if none)."""
     from alpaca.common.exceptions import APIError
 
@@ -715,7 +754,7 @@ def current_position(trading, symbol: str) -> float:
         return 0.0
 
 
-def flip_to(trading, winner: str, losers, qty: float, dry_run: bool) -> list:
+def _flip_to(trading, winner, losers, qty, dry_run):
     """Hold ``qty`` of the winner and nothing else.
 
     Parameters
@@ -741,12 +780,12 @@ def flip_to(trading, winner: str, losers, qty: float, dry_run: bool) -> list:
 
     actions = []
     for symbol in losers:
-        held = current_position(trading, symbol)
+        held = _current_position(trading, symbol)
         if held > 0:
             actions.append(f"close {symbol} ({held:g})")
             if not dry_run:
                 trading.close_position(symbol)
-    if current_position(trading, winner) <= 0:
+    if _current_position(trading, winner) <= 0:
         actions.append(f"buy {qty:g} {winner}")
         if not dry_run:
             trading.submit_order(order_data=MarketOrderRequest(
@@ -824,7 +863,7 @@ def main(argv=None) -> int:
 
     trading = TradingClient(key, secret, paper=True)
 
-    signals, lookback = restore_signals(
+    signals, lookback = _restore_signals(
         args.run_dir, symbols,
         parse_artifact_overrides(args.artifact), module_ref)
     print(f"models restored for {list(signals)} ({module_ref}, lookback "
@@ -857,8 +896,8 @@ def main(argv=None) -> int:
             else:
                 winner = solve_pick(preds)
                 losers = [s for s in symbols if s != winner]
-                actions = flip_to(trading, winner, losers, args.qty,
-                                  args.dry_run)
+                actions = _flip_to(trading, winner, losers, args.qty,
+                                   args.dry_run)
                 record["pick"] = winner
                 record["action"] = "; ".join(actions) or f"already in {winner}"
                 if args.dry_run:

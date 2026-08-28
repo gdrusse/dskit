@@ -42,11 +42,13 @@ Config knobs (default-deny, per ``spec()``):
 
 - ``symbols`` (required) — list of ticker strings, e.g. ["AAPL", "MSFT"].
 - ``start`` (required) — ISO date/datetime; the earliest bar wanted.
-- ``feed`` — ``"sip"`` (default; full consolidated tape, historical only
-  on the free tier) or ``"iex"`` (real-time-eligible, ~2.5% of volume).
-- ``adjustment`` — ``"raw"`` | ``"split"`` | ``"dividend"`` | ``"all"``
-  (default ``"all"``: the LSTM wants price series stationary across
-  corporate actions).
+- ``feed`` — which tape to pull, one of :data:`_FEEDS`; default
+  :data:`DEFAULT_FEED`. SIP is the full consolidated tape, historical
+  only on the free tier; IEX is real-time-eligible (~2.5% of volume).
+- ``adjustment`` — corporate-action adjustment, one of
+  :data:`_ADJUSTMENTS`; default :data:`DEFAULT_ADJUSTMENT` (splits +
+  dividends: the LSTM wants price series stationary across corporate
+  actions).
 - ``live_lookback_minutes`` — how far back a live pull with no cursor
   reaches (default :data:`DEFAULT_LIVE_LOOKBACK_MINUTES`). Widen it if
   the backfill's tail is further behind than that; the bars between the
@@ -55,9 +57,17 @@ Config knobs (default-deny, per ``spec()``):
   before it starts emits nothing and checkpoints nothing, so the gate
   refuses that combination rather than shipping a silent no-op.
 - ``key_env`` / ``secret_env`` — NAMES of the env vars holding the
-  Alpaca key pair (defaults ``APCA_API_KEY_ID`` / ``APCA_API_SECRET_KEY``).
-  The material itself never enters a config, a snapshot, or any hash —
-  the restapi pack's ``secret`` doctrine.
+  Alpaca key pair (defaults :data:`DEFAULT_KEY_ENV` /
+  :data:`DEFAULT_SECRET_ENV`). The material itself never enters a
+  config, a snapshot, or any hash — the restapi pack's ``secret``
+  doctrine. What COUNTS as a credential is one rule,
+  :func:`resolve_credentials`: the puller reads it out of the process
+  environment, the forward loop out of ``.env`` merged under the
+  process environment, and BOTH refuse an empty value by name.
+
+Every default above has exactly ONE name — the constants below — and
+``spec()`` builds the note a config author reads from it, so prose here
+states which constant applies rather than a second copy of its value.
 
 The BAR INTERVAL is deliberately not a knob yet (:data:`BAR_INTERVAL`):
 one constant, imported by the forward loop, because the loop's own
@@ -83,10 +93,15 @@ __all__ = [
     "BAR_INTERVAL",
     "BAR_KEY_FIELDS",
     "BAR_STREAM",
+    "DEFAULT_ADJUSTMENT",
+    "DEFAULT_FEED",
+    "DEFAULT_KEY_ENV",
     "DEFAULT_LIVE_LOOKBACK_MINUTES",
+    "DEFAULT_SECRET_ENV",
     "LIVE_MODE",
     "AlpacaBarsConnector",
     "bar_timeframe",
+    "resolve_credentials",
 ]
 
 #: The platform's acquisition modes, unpacked rather than restated: a
@@ -121,6 +136,21 @@ _FIELDS = ["symbol", "ts", "open", "high", "low", "close", "volume",
 _FEEDS = ("sip", "iex")
 _ADJUSTMENTS = ("raw", "split", "dividend", "all")
 
+#: The two feeds, unpacked from the vocabulary rather than restated: the
+#: clamp below applies to ONE of them and ``check``'s free latest-bar
+#: round-trip to the OTHER, and neither may drift from what the gate
+#: accepts.
+_SIP_FEED, _IEX_FEED = _FEEDS
+
+#: Every remaining knob default, each named ONCE. The knob gate reads
+#: them and ``spec()`` BUILDS its notes from them (as the lookback note
+#: already did), so a config author can never be told a default the pull
+#: does not use. Pinned by ``test_every_spec_default_is_named_once``.
+DEFAULT_FEED = _SIP_FEED
+DEFAULT_ADJUSTMENT = "all"
+DEFAULT_KEY_ENV = "APCA_API_KEY_ID"
+DEFAULT_SECRET_ENV = "APCA_API_SECRET_KEY"
+
 #: The free tier refuses SIP queries whose ``end`` is inside the last 15
 #: minutes; clamp with a minute of slack rather than erroring mid-pull.
 #: The knob gate reads the same clamp (in minutes) to refuse a live
@@ -149,6 +179,52 @@ def bar_timeframe():
 
     amount, unit = BAR_INTERVAL
     return TimeFrame(amount, TimeFrameUnit[unit])
+
+
+def resolve_credentials(knobs, lookup=os.environ.get):
+    """Resolve the NAMED key pair — the child's ONE credential rule.
+
+    Public, and shared: the puller reaches it through the connector's
+    ``_credentials`` (reading the process environment) and the forward
+    loop calls it with ``.env``-merged values, so the two sides of the
+    child cannot disagree about what counts as a credential. PRESENT is
+    not AUTHENTICATED — an env var set to ``""`` satisfies every
+    presence check there is and then buys nothing but a 401, so it is
+    refused here, by name, before any client is built.
+
+    Parameters
+    ----------
+    knobs : dict
+        Resolved knobs carrying ``key_env`` and ``secret_env`` — the
+        env-var NAMES, as :meth:`AlpacaBarsConnector.resolve_knobs`
+        returns them.
+    lookup : callable
+        ``lookup(name, default)`` returning one value; defaults to the
+        process environment. The forward loop passes ``.get`` of the
+        toolkit's ``Secrets`` façade instead, which is the only
+        difference between the two paths.
+
+    Returns
+    -------
+    tuple of (str, str)
+        The Alpaca key id and secret, in that order.
+
+    Raises
+    ------
+    AssetError
+        Naming EVERY var that is missing or empty — never echoing the
+        material itself.
+    """
+    pairs = ((knobs["key_env"], lookup(knobs["key_env"], "")),
+             (knobs["secret_env"], lookup(knobs["secret_env"], "")))
+    missing = [name for name, value in pairs if not value]
+    if missing:
+        raise AssetError(
+            [f"env var(s) {missing} are empty — export the Alpaca key pair, "
+             "or put it in the .env the forward loop reads (see "
+             ".env.example)"]
+        )
+    return pairs[0][1], pairs[1][1]
 
 
 class AlpacaBarsConnector(Connector):
@@ -190,30 +266,35 @@ class AlpacaBarsConnector(Connector):
                     "required": True,
                     "notes": "ISO date/datetime of the earliest bar wanted.",
                 },
+                # Every note below is BUILT from the knob's constant,
+                # never restated: a note advertising a stale default is
+                # a config lie.
                 "feed": {
-                    "notes": "sip (default; historical-only on free tier) "
-                             "or iex (real-time-eligible).",
+                    "notes": f"Which tape to pull: {_SIP_FEED} is the full "
+                             f"consolidated tape (historical-only on the "
+                             f"free tier), {_IEX_FEED} is real-time-"
+                             f"eligible. Default {DEFAULT_FEED}.",
                 },
                 "adjustment": {
-                    "notes": "raw|split|dividend|all; default all.",
+                    "notes": "Corporate-action adjustment: "
+                             f"{'|'.join(_ADJUSTMENTS)}. "
+                             f"Default {DEFAULT_ADJUSTMENT}.",
                 },
                 "live_lookback_minutes": {
-                    # BUILT from the constant, never restated: a note
-                    # advertising a stale default is a config lie.
                     "notes": "How far back a live-mode pull with no "
                              "cursor reaches; the history is backfill's "
                              f"job. Default {DEFAULT_LIVE_LOOKBACK_MINUTES}. "
-                             f"On feed sip it must exceed the "
+                             f"On feed {_SIP_FEED} it must exceed the "
                              f"{_SIP_LAG_MINUTES:g}-minute clamp a live "
                              "pull ends at, or the window is empty.",
                 },
                 "key_env": {
-                    "notes": "Env var NAME holding the Alpaca key id; "
-                             "default APCA_API_KEY_ID.",
+                    "notes": "Env var NAME holding the Alpaca key id. "
+                             f"Default {DEFAULT_KEY_ENV}.",
                 },
                 "secret_env": {
-                    "notes": "Env var NAME holding the Alpaca secret; "
-                             "default APCA_API_SECRET_KEY.",
+                    "notes": "Env var NAME holding the Alpaca secret. "
+                             f"Default {DEFAULT_SECRET_ENV}.",
                 },
             },
         }
@@ -261,10 +342,10 @@ class AlpacaBarsConnector(Connector):
         start = config.get("start")
         if not isinstance(start, str) or not start:
             problems.append(f"config.start must be an ISO string, got {start!r}")
-        feed = config.get("feed", "sip")
+        feed = config.get("feed", DEFAULT_FEED)
         if feed not in _FEEDS:
             problems.append(f"config.feed must be one of {_FEEDS}, got {feed!r}")
-        adjustment = config.get("adjustment", "all")
+        adjustment = config.get("adjustment", DEFAULT_ADJUSTMENT)
         if adjustment not in _ADJUSTMENTS:
             problems.append(
                 f"config.adjustment must be one of {_ADJUSTMENTS}, "
@@ -278,15 +359,16 @@ class AlpacaBarsConnector(Connector):
                 f"config.live_lookback_minutes must be a positive number, "
                 f"got {lookback!r}"
             )
-        elif feed == "sip" and lookback <= _SIP_LAG_MINUTES:
+        elif feed == _SIP_FEED and lookback <= _SIP_LAG_MINUTES:
             # A window from now-lookback to now-clamp is EMPTY, so the
             # pull would emit nothing, checkpoint nothing and repeat
             # forever — silently. Refuse the combination by name.
             problems.append(
                 f"config.live_lookback_minutes must exceed the "
                 f"{_SIP_LAG_MINUTES:g}-minute free-tier SIP clamp on "
-                f"feed 'sip' (a live pull ends there), got {lookback!r} — "
-                f"widen it, or declare feed 'iex', which is not clamped"
+                f"feed {_SIP_FEED!r} (a live pull ends there), got "
+                f"{lookback!r} — widen it, or declare feed {_IEX_FEED!r}, "
+                f"which is not clamped"
             )
         if problems:
             raise AssetError(problems)
@@ -297,24 +379,15 @@ class AlpacaBarsConnector(Connector):
             "feed": feed,
             "adjustment": adjustment,
             "live_lookback_minutes": lookback,
-            "key_env": config.get("key_env", "APCA_API_KEY_ID"),
-            "secret_env": config.get("secret_env", "APCA_API_SECRET_KEY"),
+            "key_env": config.get("key_env", DEFAULT_KEY_ENV),
+            "secret_env": config.get("secret_env", DEFAULT_SECRET_ENV),
         }
 
     # -- internals ---------------------------------------------------------
 
-    def _credentials(self, knobs) -> tuple:
-        key = os.environ.get(knobs["key_env"], "")
-        secret = os.environ.get(knobs["secret_env"], "")
-        missing = [name for name, value in
-                   ((knobs["key_env"], key), (knobs["secret_env"], secret))
-                   if not value]
-        if missing:
-            raise AssetError(
-                [f"env var(s) {missing} are empty — put the Alpaca key pair "
-                 "in .env (see .env.example) or export them"]
-            )
-        return key, secret
+    def _credentials(self, knobs):
+        """Read the named pair from the process environment (shared rule)."""
+        return resolve_credentials(knobs)
 
     def _window(self, knobs, cursor, mode) -> tuple:
         """Compute the fetch window, ``(start, end)`` or ``(None, None)``.
@@ -334,7 +407,7 @@ class AlpacaBarsConnector(Connector):
             if floor > start_dt:
                 start_dt = floor
         end_dt = datetime.now(timezone.utc)
-        if knobs["feed"] == "sip":
+        if knobs["feed"] == _SIP_FEED:
             end_dt = end_dt - _SIP_LAG
         if end_dt <= start_dt:
             return None, None  # nothing new can exist yet
@@ -411,7 +484,7 @@ class AlpacaBarsConnector(Connector):
         try:
             client.get_stock_latest_bar(StockLatestBarRequest(
                 symbol_or_symbols=knobs["symbols"][:1],
-                feed=DataFeed("iex"),  # latest-bar is free only on iex
+                feed=DataFeed(_IEX_FEED),  # latest-bar is free only on iex
             ))
         except Exception as exc:  # vendor errors are not AssetErrors yet
             raise AssetError(

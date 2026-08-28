@@ -14,6 +14,7 @@ import inspect
 import json
 import math
 import os
+import shutil
 import tracemalloc
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -25,7 +26,7 @@ from dskit.onboarding.base import AssetError
 from dskit.onboarding.codec import open_text_writer
 from dskit.pipeline import OutputsConfig, run_document
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
-from dskit.pipeline.document import load_document
+from dskit.pipeline.document import PipelineDocument, load_document
 from dskit.pipeline.node import NodeContext
 
 from intraday_poc import connectors, nodes
@@ -296,6 +297,38 @@ def test_the_serving_loop_imports_the_window_defaults(name):
         "it from .nodes, or the serving loop windows on a default the "
         "training node abandoned"
     )
+
+
+def test_the_serving_loop_declares_its_public_surface():
+    """``__all__`` plus the ``_`` prefix IS the API contract here.
+
+    ``live.py`` grew from a handful of names to the loop's whole seam
+    list, and was the only module in either child package declaring no
+    ``__all__`` — so every helper it happened to define read as public,
+    and nothing said which names a caller may pin to. This asserts both
+    halves: every exported name exists, and every public name the module
+    DEFINES is exported, so a new helper is either underscored or
+    deliberately added to the contract. (Ruling 2.)
+    """
+    from intraday_poc import live
+
+    tree = ast.parse(inspect.getsource(live))
+    defined = {node.name for node in tree.body
+               if isinstance(node, ast.FunctionDef)}
+    defined |= {target.id for node in tree.body
+                if isinstance(node, ast.Assign)
+                for target in node.targets if isinstance(target, ast.Name)}
+    public = {name for name in defined if not name.startswith("_")}
+
+    assert public == set(live.__all__), (
+        "live.py defines public names it does not export "
+        f"({sorted(public - set(live.__all__))}) or exports names it does "
+        f"not define ({sorted(set(live.__all__) - public)}) — underscore "
+        "the internals, or put them in the contract on purpose"
+    )
+    assert live.__all__ == sorted(live.__all__), live.__all__
+    for name in live.__all__:
+        assert hasattr(live, name), name
 
 
 def test_the_bars_stream_default_is_named_once(tmp_path, monkeypatch):
@@ -637,6 +670,12 @@ def _run_dir(tmp_path, window_params, uses="intraday_poc-window"):
     return result.run_dir
 
 
+def _document(pipeline):
+    """A typed document from a bare node map — what the loop reads once
+    it loads its run through the engine's own loader (Ruling 3)."""
+    return PipelineDocument.from_obj({"name": "serving", "pipeline": pipeline})
+
+
 def test_live_reads_the_window_knobs_the_run_declared(tmp_path):
     """price_field and max_gap_minutes come from the run dir, never from
     a second copy in the loop: a serving path that restates a training
@@ -673,23 +712,73 @@ def test_live_falls_back_to_the_window_nodes_own_defaults(tmp_path,
 def test_live_refuses_a_run_dir_it_cannot_read(tmp_path):
     """Loud, always: a missing document, a document with no window node,
     and two window nodes that disagree are each a refusal — never a
-    quietly assumed default."""
+    quietly assumed default.
+
+    The three cases are now expressed as DOCUMENTS rather than raw
+    dicts, because the loop reads its run through the engine's loader
+    (Ruling 3) — the empty-pipeline case, which the grammar itself
+    refuses, is therefore a document that simply declares no window
+    node.
+    """
     from intraday_poc.live import load_run_document, window_knobs
 
     with pytest.raises(SystemExit, match="config.json"):
         load_run_document(str(tmp_path))
 
     with pytest.raises(SystemExit, match="intraday_poc-window"):
-        window_knobs({"pipeline": {}})
+        window_knobs(_document({"bars": {"uses": "intraday_poc-bars",
+                                         "params": {"root": ".",
+                                                    "source": "alpaca"}}}))
 
-    two = {"pipeline": {
+    two = _document({
         "a": {"uses": "intraday_poc-window",
               "params": {"lookback": 3, "price_field": "close"}},
         "b": {"uses": "intraday_poc-window",
               "params": {"lookback": 3, "price_field": "vwap"}},
-    }}
+    })
     with pytest.raises(SystemExit, match="disagree"):
         window_knobs(two)
+
+
+def test_live_reads_the_run_document_through_the_engines_own_loader(tmp_path):
+    """The run document is TIER-1 truth — read it, never re-derive it.
+
+    A hand-rolled ``json.load`` plus an "is ``pipeline`` a dict" check
+    ACCEPTS documents the engine refuses: a dangling ``$`` wire, a node
+    that is not an object, a missing series ``name``. The loop then
+    resolves knobs off a node the engine would never plan, or blames the
+    DOCUMENT for the reader's own gap ("the run declares no ... node").
+    ``dskit.pipeline.document.load_document`` already reads the file,
+    refuses non-JSON, refuses a non-object document, validates the whole
+    node-map grammar and returns typed ``NodeSpec``s — so it is what
+    runs, and ITS message is what the operator sees. (Ruling 3.)
+    """
+    from intraday_poc.live import load_run_document, window_knobs
+
+    run_dir = tmp_path / "badrun"
+    run_dir.mkdir()
+    (run_dir / "config.json").write_text(json.dumps({
+        "name": "knobs",
+        "pipeline": {"window": {"uses": "intraday_poc-window",
+                                "inputs": {"records": "$nope.records"},
+                                "params": {"lookback": 3,
+                                           "price_field": "vwap"}}},
+    }), encoding="utf-8")
+
+    with pytest.raises(ValueError) as engine:
+        load_document(str(run_dir / "config.json"))
+    with pytest.raises(SystemExit) as refusal:
+        load_run_document(str(run_dir))
+    assert str(refusal.value) == str(engine.value)
+    assert "$nope" in str(refusal.value), refusal.value
+
+    # A well-formed run dir still reads back — as the TYPED document,
+    # which is what lets the child drop the guards NodeSpec already
+    # makes.
+    document = load_run_document(_run_dir(tmp_path, {"lookback": 3,
+                                                     "price_field": "vwap"}))
+    assert document.pipeline["window"].params["price_field"] == "vwap"
+    assert window_knobs(document)[0] == "vwap"
 
 
 def test_live_serves_a_document_that_names_the_class_directly(tmp_path):
@@ -711,35 +800,42 @@ def test_live_serves_a_document_that_names_the_class_directly(tmp_path):
     # A reference to some OTHER class is not a window node, and a
     # reference that cannot be imported is not one either — neither may
     # be mistaken for one, and neither may raise anything but the
-    # loop's own refusal.
+    # loop's own refusal. (Documents, not raw dicts, per Ruling 3.)
     for other in ("intraday_poc.nodes:ForecastRows", "no.such:Module"):
         with pytest.raises(SystemExit, match="intraday_poc-window"):
-            window_knobs({"pipeline": {"w": {"uses": other,
-                                             "params": {"lookback": 3}}}})
+            window_knobs(_document({"w": {"uses": other,
+                                          "params": {"lookback": 3}}}))
 
 
 def test_live_reads_the_declared_module_from_the_run_document():
     """ADR-0025's seam: the document names the module class, so the
     serving loop must too. A literal in the loop makes swapping the
     declared class break serving — which is the whole point of the
-    seam."""
+    seam.
+
+    Built as a typed document, per Ruling 3: the "no module declared"
+    case is now a node with a legal ``uses`` and no ``module`` param,
+    since the grammar refuses a node with no ``uses`` at all — that
+    refusal is the ENGINE's, and pinning it here would only restate it.
+    """
     from intraday_poc.live import declared_module
 
-    doc = {"pipeline": {
+    nodemap = {
         "window": {"uses": "intraday_poc-window", "params": {"lookback": 3}},
         "qhat_aapl": {"uses": "dskit.pipeline.libs.torch:DeclaredTrain",
                       "params": {"module": "somepkg.models:OtherNet"}},
         "qhat_msft": {"uses": "dskit.pipeline.libs.torch:DeclaredTrain",
                       "params": {"module": "somepkg.models:OtherNet"}},
-    }}
-    assert declared_module(doc) == "somepkg.models:OtherNet"
+    }
+    assert declared_module(_document(nodemap)) == "somepkg.models:OtherNet"
 
     with pytest.raises(SystemExit, match="declares no"):
-        declared_module({"pipeline": {"window": {"params": {}}}})
+        declared_module(_document({"window": {"uses": "intraday_poc-window",
+                                              "params": {}}}))
 
-    doc["pipeline"]["qhat_msft"]["params"]["module"] = "somepkg.models:Net2"
+    nodemap["qhat_msft"]["params"]["module"] = "somepkg.models:Net2"
     with pytest.raises(SystemExit, match="several module classes"):
-        declared_module(doc)
+        declared_module(_document(nodemap))
 
 
 def test_artifact_paths_default_by_convention_and_bend_by_flag(tmp_path):
@@ -799,12 +895,15 @@ def test_live_takes_the_credential_env_names_from_the_source_config(
     monkeypatch.chdir(tmp_path)
     run_dir = tmp_path / "run"
     (run_dir / "artifacts").mkdir(parents=True)
-    (run_dir / "config.json").write_text(json.dumps({"pipeline": {
-        "window": {"uses": "intraday_poc-window",
-                   "params": {"lookback": 3}},
-        "qhat_aapl": {"uses": "dskit.pipeline.libs.torch:DeclaredTrain",
-                      "params": {"module": "intraday_poc.models:NextBarLSTM"}},
-    }}), encoding="utf-8")
+    (run_dir / "config.json").write_text(json.dumps({
+        "name": "serving",  # a run document, per the engine's grammar
+        "pipeline": {
+            "window": {"uses": "intraday_poc-window",
+                       "params": {"lookback": 3}},
+            "qhat_aapl": {
+                "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+                "params": {"module": "intraday_poc.models:NextBarLSTM"}},
+        }}), encoding="utf-8")
     source = tmp_path / "source.json"
     source.write_text(json.dumps({"symbols": ["AAPL"], "start": "2026-01-01",
                                   "key_env": "ALPACA_KEY_A",
@@ -868,6 +967,41 @@ def test_live_reads_dotenv_through_the_toolkits_own_parser(tmp_path,
         live.credentials(missing)
 
 
+def test_live_refuses_empty_credentials_by_name(tmp_path, monkeypatch):
+    """PRESENT is not AUTHENTICATED — and empty is the shipped case.
+
+    ``.env.example`` ships both keys with no value, so copying it
+    verbatim (what its own header tells an operator to do) yields a
+    ``.env`` in which every required NAME exists holding ``""``.
+    ``load_env`` checks presence, so the loop resolved ``('', '')`` and
+    went on to open a broker client and place orders against a vendor
+    that can only answer 401 — while the PULLER's gate refuses that
+    exact pair by name. The child owns ONE credential rule, so the loop
+    runs the connector's own instead of a second copy that can drift
+    from it. (Ruling 1.)
+    """
+    from intraday_poc import live
+
+    monkeypatch.chdir(tmp_path)
+    shutil.copyfile(os.path.join(CHILD_ROOT, ".env.example"),
+                    str(tmp_path / ".env"))
+    knobs = AlpacaBarsConnector().resolve_knobs({"symbols": ["AAPL"],
+                                                 "start": "2026-01-01"})
+    for name in (knobs["key_env"], knobs["secret_env"]):
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(SystemExit) as refusal:
+        live.credentials(knobs)
+    assert knobs["key_env"] in str(refusal.value), refusal.value
+    assert knobs["secret_env"] in str(refusal.value), refusal.value
+
+    # ...and it IS the connector's refusal, not a restatement of it: one
+    # rule, one message, whichever side of the child hits it.
+    with pytest.raises(AssetError) as puller:
+        AlpacaBarsConnector()._credentials(knobs)
+    assert str(refusal.value) == str(puller.value)
+
+
 def test_live_vendor_knobs_come_from_the_source_config(tmp_path):
     """The vendor half of the same rule: the live fetch takes its
     adjustment from the config the PULLER uses, through the connector's
@@ -929,12 +1063,15 @@ def test_live_serves_the_universe_the_source_config_declares(tmp_path,
 
     run_dir = tmp_path / "run"
     (run_dir / "artifacts").mkdir(parents=True)
-    (run_dir / "config.json").write_text(json.dumps({"pipeline": {
-        "window": {"uses": "intraday_poc-window",
-                   "params": {"lookback": 3}},
-        "qhat_aapl": {"uses": "dskit.pipeline.libs.torch:DeclaredTrain",
-                      "params": {"module": "intraday_poc.models:NextBarLSTM"}},
-    }}), encoding="utf-8")
+    (run_dir / "config.json").write_text(json.dumps({
+        "name": "serving",  # a run document, per the engine's grammar
+        "pipeline": {
+            "window": {"uses": "intraday_poc-window",
+                       "params": {"lookback": 3}},
+            "qhat_aapl": {
+                "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+                "params": {"module": "intraday_poc.models:NextBarLSTM"}},
+        }}), encoding="utf-8")
     source = tmp_path / "source.json"
     source.write_text(json.dumps({"symbols": ["AAPL", "MSFT", "GOOG"],
                                   "start": "2026-01-01"}), encoding="utf-8")
@@ -972,12 +1109,15 @@ def test_live_main_fetches_with_the_knobs_it_read(tmp_path, monkeypatch):
 
     run_dir = tmp_path / "run"
     (run_dir / "artifacts").mkdir(parents=True)
-    (run_dir / "config.json").write_text(json.dumps({"pipeline": {
-        "window": {"uses": "intraday_poc-window",
-                   "params": {"lookback": 3, "price_field": "vwap"}},
-        "qhat_aapl": {"uses": "dskit.pipeline.libs.torch:DeclaredTrain",
-                      "params": {"module": "intraday_poc.models:NextBarLSTM"}},
-    }}), encoding="utf-8")
+    (run_dir / "config.json").write_text(json.dumps({
+        "name": "serving",  # a run document, per the engine's grammar
+        "pipeline": {
+            "window": {"uses": "intraday_poc-window",
+                       "params": {"lookback": 3, "price_field": "vwap"}},
+            "qhat_aapl": {
+                "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+                "params": {"module": "intraday_poc.models:NextBarLSTM"}},
+        }}), encoding="utf-8")
 
     seen = {}
 
