@@ -430,13 +430,17 @@ across runs is what is missing**, plus the wiring below.
       Gotcha to design around: `_Trackers` SWALLOWS per-sink exceptions
       (`driver.py:139-153`) so tracking can never fail a run — meaning a
       misconfigured sink logs nothing and says nothing.
-- [ ] **No cross-run comparison exists at all.** The CLI has
+- [x] **No cross-run comparison exists at all.** The CLI has
       `run`/`walkforward`/`plan`/`validate`/`nodemap` and nothing that
       lists runs with their metrics. Today you read `report.md` files by
       hand. Even without MLflow, a `dskit.pipeline runs` verb that scans
       `pipeline_runs/` and tabulates (hash, asof, key metrics) would cover
       most of the need with zero dependencies — arguably do this BEFORE
-      the sink.
+      the sink. **Landed this run (2026-08-28, E2):** tier-1
+      `pipeline/runs.py` + the `runs` verb — structured records only
+      (never report.md prose), metrics overlay record+carry, foreign and
+      broken entries named loudly-but-nonfatally, restatements pinned
+      (metric rule vs driver, run root, layout names), 64 new tests.
 - [ ] **Neither intraday document declares a search node.** Adding
       `hpo-grid`/`optuna-search` is config-only, but note the shape
       problem: two trainers (`qhat_aapl`, `qhat_msft`) means every tuned
