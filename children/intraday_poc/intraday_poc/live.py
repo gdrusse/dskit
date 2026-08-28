@@ -10,13 +10,28 @@ Run-path only (torch, pyomo, alpaca-py) — never imported by
    ~2–3 s after the minute closes, and a minute in which a symbol did
    not print on IEX simply has no bar — the window helper refuses,
    never bridges);
-3. restore each symbol's LSTM from the run's artifact — sidecar
-   verified (state_hash, S2-A) and the module class refused by name on
-   mismatch, the pack's own load discipline;
+3. restore each symbol's model from the run's artifact — sidecar
+   verified (state_hash, S2-A) and the module class refused by name
+   against the one the RUN declared, the pack's own load discipline;
 4. decide with the SAME pyomo program the backtest scores
    (:func:`intraday_poc.nodes.build_select_model`, one timestamp);
 5. flip the paper position when the pick changes: flatten the loser,
    market-buy the winner (TIF ``day``), through the paper endpoint.
+
+**This loop re-declares nothing the run already declared.** The
+modelling knobs — the price field, the gap discipline, the module class
+— are READ from ``<run-dir>/config.json``, the whole training document
+the driver writes; the vendor knobs come from the acquisition source
+config the puller registered (``--source-config``). Only operational
+flags (symbols, quantity, dry-run, log dir, artifact overrides) live on
+the CLI, and there is deliberately no third config file: it would
+duplicate both of those.
+
+The one vendor knob neither file can supply is the FEED. The store is
+built from SIP history and real-time SIP is not sold on the free tier,
+so the forward fetch must ask for IEX (:data:`LIVE_FEED`) — the child's
+single declared train/serve vendor difference, carried in README's
+"What to know before trusting the numbers".
 
 Every iteration appends one JSON line to ``decisions.jsonl`` in
 ``--log-dir`` — predictions, pick, action taken — so the forward run
@@ -25,7 +40,9 @@ leaves evidence the way a pipeline run does.
 Usage::
 
     python -m intraday_poc.live --run-dir <run dir of run-train.json> \
-        --symbols AAPL MSFT --qty 1 [--once] [--dry-run]
+        --source-config configs/source-backfill.json \
+        --symbols AAPL MSFT --qty 1 [--once] [--dry-run] \
+        [--artifact AAPL=artifacts/qhat_aapl]
 
 Credentials come from the environment (``.env`` beside the CWD is read
 first, process env winning — the toolkit's ``env.py`` precedence).
@@ -37,23 +54,49 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import sys
 import time
 
-from .nodes import build_select_model
+from dskit.pipeline.base import import_library_class
 
-#: The trainer artifact directory names inside a run dir, per symbol —
-#: run-train.json's node keys. A different document layout is a CLI flag
-#: away (``--artifact SYMBOL=PATH``), never an edit here.
-DEFAULT_ARTIFACTS = {"AAPL": "artifacts/qhat_aapl", "MSFT": "artifacts/qhat_msft"}
+from .connectors import AlpacaBarsConnector
+from .nodes import (
+    DEFAULT_MAX_GAP_MINUTES,
+    DEFAULT_PRICE_FIELD,
+    NODE_KINDS,
+    WindowRows,
+    build_select_model,
+)
 
-_SIP_FIELDS = ("open", "high", "low", "close", "volume")
+#: The forward fetch's feed. Deliberately NOT read from the source
+#: config: that config's ``feed`` is ``sip`` (free-tier history), and
+#: real-time SIP is not sold on the free tier, so the serving fetch
+#: cannot use the store's feed. This is the child's one declared
+#: train/serve vendor difference — see the module docstring.
+LIVE_FEED = "iex"
+
+#: The kind name the training document uses for its window node, taken
+#: from the registry the child registers rather than restated here.
+_WINDOW_KIND = next(name for name, cls in NODE_KINDS.items()
+                    if cls is WindowRows)
 
 
 def load_dotenv(path: str = ".env") -> None:
-    """KEY=VALUE lines into ``os.environ`` — process env wins (the
-    dotenv convention dskit's ``env.py`` follows)."""
+    """Load ``KEY=VALUE`` lines into ``os.environ``; process env wins.
+
+    Parameters
+    ----------
+    path : str
+        The dotenv file to read; a missing file is not an error.
+
+    Returns
+    -------
+    None
+        ``os.environ`` is updated in place, never overwritten (the
+        dotenv convention dskit's ``env.py`` follows).
+    """
     if not os.path.isfile(path):
         return
     with open(path, encoding="utf-8") as fh:
@@ -65,17 +108,279 @@ def load_dotenv(path: str = ".env") -> None:
             os.environ.setdefault(key.strip(), value.strip())
 
 
-def restore_model(artifact_dir: str):
-    """``model.pt`` + verified ``model.json`` -> (module, features).
+def load_run_document(run_dir):
+    """Read the training document the driver wrote into a run directory.
+
+    The driver writes the document VERBATIM to ``<run-dir>/config.json``
+    (lookback, gap discipline, the declared module class, every node's
+    params), which is why this loop reads it instead of restating any of
+    it.
+
+    Parameters
+    ----------
+    run_dir : str
+        A run directory produced by ``python -m dskit.pipeline run``.
+
+    Returns
+    -------
+    dict
+        The document as declared.
+
+    Raises
+    ------
+    SystemExit
+        When the file is missing, unreadable, not JSON, or carries no
+        ``pipeline`` section — a serving loop with no document to read
+        must stop, never assume.
+    """
+    path = os.path.join(run_dir, "config.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            document = json.load(fh)
+    except OSError as exc:
+        raise SystemExit(
+            f"cannot read {path}: {exc} — --run-dir must name a run "
+            "directory the pipeline wrote"
+        ) from exc
+    except ValueError as exc:
+        raise SystemExit(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(document, dict) or \
+            not isinstance(document.get("pipeline"), dict):
+        raise SystemExit(
+            f"{path} carries no pipeline section — this is not a run "
+            "document"
+        )
+    return document
+
+
+def _nodes_using(document, kind):
+    """Return the nodes declaring ``kind``, by node key."""
+    return {key: node for key, node in document["pipeline"].items()
+            if isinstance(node, dict) and node.get("uses") == kind}
+
+
+def window_knobs(document):
+    """How the run windowed its bars: the price field and the gap bound.
+
+    Both are the WindowRows knobs, resolved exactly as that node
+    resolves them — an undeclared knob falls back to the node's own
+    module constant, never to a second copy of the value.
+
+    Parameters
+    ----------
+    document : dict
+        A training document, as :func:`load_run_document` returns it.
+
+    Returns
+    -------
+    tuple of (str, float)
+        The price field the run trained on, and its gap bound in
+        minutes.
+
+    Raises
+    ------
+    SystemExit
+        When the document declares no window node, or declares several
+        that disagree — one forward loop cannot serve two windowings.
+    """
+    windows = _nodes_using(document, _WINDOW_KIND)
+    if not windows:
+        raise SystemExit(
+            f"the run declares no {_WINDOW_KIND} node — this loop cannot "
+            "tell how its features were built"
+        )
+    resolved = set()
+    for node in windows.values():
+        params = node.get("params") or {}
+        resolved.add((
+            params.get("price_field", DEFAULT_PRICE_FIELD),
+            float(params.get("max_gap_minutes", DEFAULT_MAX_GAP_MINUTES)),
+        ))
+    if len(resolved) > 1:
+        raise SystemExit(
+            f"the run's {_WINDOW_KIND} nodes disagree on how bars are "
+            f"windowed ({sorted(resolved)}) — one loop cannot serve both"
+        )
+    return resolved.pop()
+
+
+def declared_module(document):
+    """Read the module class path the run declared (ADR-0025's seam).
+
+    The document names the class its trainers built, so the loop that
+    restores those artifacts reads the name from there. A literal here
+    would break serving the moment the declared class changed — which
+    is the whole point of the seam.
+
+    Parameters
+    ----------
+    document : dict
+        A training document, as :func:`load_run_document` returns it.
+
+    Returns
+    -------
+    str
+        The declared class path, e.g. ``"pkg.models:Net"``.
+
+    Raises
+    ------
+    SystemExit
+        When no node declares ``module``, or the trainers disagree.
+    """
+    declared = {node["params"]["module"]
+                for node in document["pipeline"].values()
+                if isinstance(node, dict)
+                and isinstance(node.get("params"), dict)
+                and "module" in node["params"]}
+    if not declared:
+        raise SystemExit(
+            "the run declares no module class — --run-dir must name the "
+            "run of a document that trained models"
+        )
+    if len(declared) > 1:
+        raise SystemExit(
+            f"the run declares several module classes ({sorted(declared)}) "
+            "— this loop restores one class per run"
+        )
+    return declared.pop()
+
+
+def source_knobs(path):
+    """Resolve the acquisition source config's vendor knobs.
+
+    Read through the CONNECTOR's own knob gate, so an undeclared knob
+    lands on the connector's default rather than a copy of it living
+    here, and a config this loop accepts is one the puller accepts too.
+
+    Parameters
+    ----------
+    path : str
+        The connector config the source was registered with.
+
+    Returns
+    -------
+    dict
+        The resolved knobs (``symbols``, ``start``, ``feed``,
+        ``adjustment``, the credential env-var names).
+
+    Raises
+    ------
+    SystemExit
+        When the file is missing, unreadable, or not JSON.
+    AssetError
+        When the knobs themselves are invalid — the connector's own
+        refusal, unchanged.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            config = json.load(fh)
+    except OSError as exc:
+        raise SystemExit(
+            f"cannot read the source config {path}: {exc} — "
+            "--source-config names the config the source was registered "
+            "with"
+        ) from exc
+    except ValueError as exc:
+        raise SystemExit(
+            f"the source config {path} is not valid JSON: {exc}"
+        ) from exc
+    # The connector's gate, not a copy of it: same vocabulary, same
+    # defaults, same refusals (its own module, same package).
+    return AlpacaBarsConnector()._knobs(config)
+
+
+def parse_artifact_overrides(values):
+    """Turn ``SYMBOL=PATH`` CLI values into a mapping.
+
+    Parameters
+    ----------
+    values : list of str
+        Raw ``--artifact`` values, in order.
+
+    Returns
+    -------
+    dict
+        Symbol -> artifact directory (relative to the run dir, or
+        absolute); a later value for one symbol wins.
+
+    Raises
+    ------
+    SystemExit
+        On a value that is not ``SYMBOL=PATH``.
+    """
+    overrides = {}
+    for value in values:
+        symbol, sep, path = value.partition("=")
+        if not sep or not symbol or not path:
+            raise SystemExit(
+                f"--artifact wants SYMBOL=PATH, got {value!r}"
+            )
+        overrides[symbol] = path
+    return overrides
+
+
+def artifact_dirs(run_dir, symbols, overrides):
+    """Where each symbol's trained artifact lives.
+
+    The run's own layout is the default — ``artifacts/<node key>``, and
+    the documents key their trainers by lowercased symbol — so no table
+    of symbols is written here; ``--artifact`` bends any single symbol
+    to a document that names its nodes differently.
+
+    Parameters
+    ----------
+    run_dir : str
+        The run directory holding the artifacts.
+    symbols : sequence of str
+        The symbols to serve.
+    overrides : dict
+        Symbol -> path, from :func:`parse_artifact_overrides`.
+
+    Returns
+    -------
+    dict
+        Symbol -> artifact directory.
+    """
+    return {
+        symbol: os.path.join(
+            run_dir,
+            overrides.get(symbol,
+                          os.path.join("artifacts", f"qhat_{symbol.lower()}")),
+        )
+        for symbol in symbols
+    }
+
+
+def restore_model(artifact_dir, module_ref):
+    """Restore one trained module from its verified artifact.
 
     The pack's load discipline, applied outside a pipeline run: the
     sidecar's ``state_hash`` (sha256 over the state bytes, a NUL, then
     the canonical JSON of every other sidecar field) must match, and the
-    module class must be this child's LSTM — refused by name otherwise.
+    sidecar's declared class must be the one the RUN declared — which
+    the caller read from the run dir, so the declared-model seam still
+    swings.
+
+    Parameters
+    ----------
+    artifact_dir : str
+        Directory holding ``model.pt`` and ``model.json``.
+    module_ref : str
+        The class path the run declared, e.g. ``"pkg.models:Net"``.
+
+    Returns
+    -------
+    tuple of (object, list of str)
+        The restored module in eval mode, and its feature list.
+
+    Raises
+    ------
+    SystemExit
+        On a missing file, a state_hash mismatch, a sidecar declaring a
+        different class, a class path that cannot be resolved to a
+        module with ``forward``, or a sidecar with no feature list.
     """
     import torch
-
-    from .models import NextBarLSTM
 
     state_path = os.path.join(artifact_dir, "model.pt")
     sidecar_path = os.path.join(artifact_dir, "model.json")
@@ -98,12 +403,20 @@ def restore_model(artifact_dir: str):
         )
     params = sidecar.get("params", {})
     declared = params.get("module", "")
-    if declared != "intraday_poc.models:NextBarLSTM":
+    if declared != module_ref:
         raise SystemExit(
             f"artifact {artifact_dir}: declares module {declared!r}, not "
-            "intraday_poc.models:NextBarLSTM — wrong artifact for this loop"
+            f"the run's {module_ref!r} — wrong artifact for this run"
         )
-    module = NextBarLSTM(**params.get("module_params", {}))
+    # The same resolver the torch pack builds with, so a declared class
+    # that is not a module is refused by NAME, here, not by a failure
+    # inside load_state_dict.
+    try:
+        cls = import_library_class(module_ref, f"artifact {artifact_dir}",
+                                   requires=("forward",))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    module = cls(**params.get("module_params", {}))
     module.load_state_dict(torch.load(state_path, weights_only=True))
     module.eval()
     features = list(params.get("features", []))
@@ -113,14 +426,67 @@ def restore_model(artifact_dir: str):
     return module, features
 
 
-def latest_feature_row(bars, lookback: int, max_gap_minutes: float = 5.0):
-    """``[(asof_ms, close)]`` ascending, one symbol -> the newest
-    ``ret_lag_*`` vector (``ret_lag_0`` most recent), or ``None`` when
-    coverage or gap discipline refuses — the same chain semantics as
-    ``WindowRows`` (a gap over ``max_gap_minutes`` breaks the chain;
-    nothing is bridged)."""
-    import math
+def restore_signals(run_dir, symbols, overrides, module_ref):
+    """Restore every symbol's module, and the lookback they all share.
 
+    Parameters
+    ----------
+    run_dir : str
+        The run directory holding the artifacts.
+    symbols : sequence of str
+        The symbols to serve.
+    overrides : dict
+        Symbol -> artifact directory, from the ``--artifact`` flag.
+    module_ref : str
+        The class path the run declared.
+
+    Returns
+    -------
+    tuple of (dict, int)
+        Symbol -> ``(module, features)``, and the common lookback.
+
+    Raises
+    ------
+    SystemExit
+        When two artifacts disagree on lookback — they were trained
+        against different windowings and cannot be compared.
+    """
+    dirs = artifact_dirs(run_dir, symbols, overrides)
+    signals = {}
+    lookback = None
+    for symbol in symbols:
+        module, features = restore_model(dirs[symbol], module_ref)
+        signals[symbol] = (module, features)
+        if lookback is None:
+            lookback = module.lookback
+        elif lookback != module.lookback:
+            raise SystemExit("artifacts disagree on lookback — retrain")
+    return signals, lookback
+
+
+def latest_feature_row(bars, lookback, max_gap_minutes):
+    """Build the newest ``ret_lag_*`` vector these bars can support.
+
+    The same chain semantics as ``WindowRows``: a gap wider than
+    ``max_gap_minutes`` breaks the chain and nothing is bridged, so the
+    caller passes the bound the RUN declared rather than a default of
+    its own.
+
+    Parameters
+    ----------
+    bars : list of tuple
+        ``(asof_ms, price)`` ascending, one symbol.
+    lookback : int
+        How many one-bar log returns the row carries.
+    max_gap_minutes : float
+        Bars further apart than this never chain.
+
+    Returns
+    -------
+    dict or None
+        ``{"ret_lag_0": ..., ...}`` with ``ret_lag_0`` the most recent
+        return, or ``None`` when coverage or gap discipline refuses.
+    """
     if len(bars) < lookback + 1:
         return None
     gap_ms = max_gap_minutes * 60_000
@@ -137,8 +503,23 @@ def latest_feature_row(bars, lookback: int, max_gap_minutes: float = 5.0):
 
 
 def predict(module, features, row) -> float | None:
-    """One row in, a float out — ``None`` on missing coverage, the
-    TorchSignal contract."""
+    """Score one feature row, the TorchSignal contract.
+
+    Parameters
+    ----------
+    module : object
+        A restored torch module in eval mode.
+    features : list of str
+        The feature names, in the order the module was trained on.
+    row : dict
+        One feature row.
+
+    Returns
+    -------
+    float or None
+        The prediction, or ``None`` when the row misses coverage — a
+        belief is never fabricated.
+    """
     import torch
 
     values = [row.get(name) for name in features]
@@ -150,8 +531,24 @@ def predict(module, features, row) -> float | None:
 
 
 def solve_pick(preds: dict) -> str:
-    """``{symbol: pred}`` -> the chosen symbol, via the SAME pyomo
-    program the backtest's select-one node solves."""
+    """Pick one symbol with the program the backtest solves.
+
+    Parameters
+    ----------
+    preds : dict
+        Symbol -> predicted next-bar return; must be non-empty.
+
+    Returns
+    -------
+    str
+        The chosen symbol.
+
+    Raises
+    ------
+    RuntimeError
+        If the solver selects nothing, which a one-per-timestamp
+        equality constraint makes impossible.
+    """
     import pyomo.environ as pyo
 
     model = build_select_model({0: preds})
@@ -164,10 +561,65 @@ def solve_pick(preds: dict) -> str:
                        "with a non-empty prediction set")
 
 
-def fetch_bars(symbols, minutes: int):
-    """The last ``minutes`` of 1-minute IEX bars per symbol ->
-    ``{symbol: [(asof_ms, close)]}`` ascending."""
-    from alpaca.data.enums import DataFeed
+def bar_series(bars, price_field):
+    """Vendor bars -> ``(asof_ms, price)`` pairs on the declared field.
+
+    Parameters
+    ----------
+    bars : iterable
+        Vendor bar objects for one symbol.
+    price_field : str
+        The field the RUN trained on — read from its document, never
+        assumed here.
+
+    Returns
+    -------
+    list of tuple
+        ``(asof_ms, price)`` ascending; a minute the vendor published
+        no value for is absent, and the gap discipline sees that.
+
+    Raises
+    ------
+    SystemExit
+        When the vendor's bars carry no such field — pricing on nothing
+        would masquerade as "no coverage".
+    """
+    series = []
+    for bar in bars:
+        if not hasattr(bar, price_field):
+            raise SystemExit(
+                f"price_field {price_field!r} is not a field of an Alpaca "
+                "bar — the run trained on a price this vendor does not "
+                "publish"
+            )
+        value = getattr(bar, price_field)
+        if value is None:
+            continue
+        series.append((int(bar.timestamp.timestamp() * 1000), float(value)))
+    return sorted(series)
+
+
+def fetch_bars(symbols, minutes, price_field, adjustment):
+    """Fetch the last ``minutes`` of 1-minute bars per symbol.
+
+    Parameters
+    ----------
+    symbols : sequence of str
+        Symbols to fetch.
+    minutes : int
+        How far back to ask.
+    price_field : str
+        The price the run trained on (see :func:`bar_series`).
+    adjustment : str
+        The corporate-action adjustment the SOURCE config declares, so
+        the served series is adjusted the way the trained one was.
+
+    Returns
+    -------
+    dict
+        Symbol -> ``[(asof_ms, price)]`` ascending.
+    """
+    from alpaca.data.enums import Adjustment, DataFeed
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
@@ -179,17 +631,15 @@ def fetch_bars(symbols, minutes: int):
         symbol_or_symbols=list(symbols),
         timeframe=TimeFrame(1, TimeFrameUnit.Minute),
         start=start,
-        feed=DataFeed.IEX,
+        feed=DataFeed(LIVE_FEED),
+        adjustment=Adjustment(adjustment),
     ))
-    out = {}
-    for symbol, series in bars.data.items():
-        rows = [(int(b.timestamp.timestamp() * 1000), float(b.close))
-                for b in series]
-        out[symbol] = sorted(rows)
-    return out
+    return {symbol: bar_series(series, price_field)
+            for symbol, series in bars.data.items()}
 
 
 def current_position(trading, symbol: str) -> float:
+    """How many shares of ``symbol`` the paper account holds (0 if none)."""
     from alpaca.common.exceptions import APIError
 
     try:
@@ -199,8 +649,26 @@ def current_position(trading, symbol: str) -> float:
 
 
 def flip_to(trading, winner: str, losers, qty: float, dry_run: bool) -> list:
-    """Flatten every non-winner we hold, then hold ``qty`` of the winner.
-    Returns the action strings taken (paper endpoint only)."""
+    """Hold ``qty`` of the winner and nothing else.
+
+    Parameters
+    ----------
+    trading : object
+        The paper trading client.
+    winner : str
+        The picked symbol.
+    losers : sequence of str
+        Symbols to flatten.
+    qty : float
+        Shares to hold in the winner.
+    dry_run : bool
+        Decide and report, place no orders.
+
+    Returns
+    -------
+    list of str
+        The actions taken (or that would be taken under ``dry_run``).
+    """
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import MarketOrderRequest
 
@@ -221,13 +689,23 @@ def flip_to(trading, winner: str, losers, qty: float, dry_run: bool) -> list:
     return actions
 
 
-def main(argv=None) -> int:
+def _parser():
+    """Build the CLI — operational flags only, by design."""
     parser = argparse.ArgumentParser(
         prog="python -m intraday_poc.live", description=__doc__)
     parser.add_argument("--run-dir", required=True,
                         help="run dir of run-train.json (holds the "
-                             "per-symbol artifacts)")
+                             "per-symbol artifacts and the document)")
+    parser.add_argument("--source-config", required=True,
+                        help="the connector config the source was "
+                             "registered with — the live fetch takes its "
+                             "vendor knobs from it")
     parser.add_argument("--symbols", nargs="+", default=["AAPL", "MSFT"])
+    parser.add_argument("--artifact", action="append", default=[],
+                        metavar="SYMBOL=PATH",
+                        help="artifact dir for one symbol, relative to "
+                             "--run-dir or absolute; repeatable. Default: "
+                             "artifacts/qhat_<symbol>")
     parser.add_argument("--qty", type=float, default=1.0,
                         help="shares to hold in the picked symbol")
     parser.add_argument("--log-dir", default=".",
@@ -238,7 +716,30 @@ def main(argv=None) -> int:
                         help="decide and log, place no orders")
     parser.add_argument("--history-minutes", type=int, default=240,
                         help="bar window fetched per iteration")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv=None) -> int:
+    """Run the forward loop.
+
+    Parameters
+    ----------
+    argv : list of str or None
+        Command-line arguments; ``None`` reads ``sys.argv``.
+
+    Returns
+    -------
+    int
+        Process exit code; ``0`` when ``--once`` completed one
+        iteration.
+
+    Raises
+    ------
+    SystemExit
+        On missing credentials, or any refusal from the run dir,
+        source config, or artifacts.
+    """
+    args = _parser().parse_args(argv)
 
     load_dotenv()
     for name in ("APCA_API_KEY_ID", "APCA_API_SECRET_KEY"):
@@ -246,23 +747,23 @@ def main(argv=None) -> int:
             raise SystemExit(f"{name} is not set — fill in .env "
                              "(see .env.example)")
 
+    # Everything the run and the pull already declared, read back.
+    document = load_run_document(args.run_dir)
+    price_field, max_gap_minutes = window_knobs(document)
+    module_ref = declared_module(document)
+    adjustment = source_knobs(args.source_config)["adjustment"]
+
     from alpaca.trading.client import TradingClient
 
     trading = TradingClient(os.environ["APCA_API_KEY_ID"],
                             os.environ["APCA_API_SECRET_KEY"], paper=True)
 
-    signals = {}
-    lookback = None
-    for symbol in args.symbols:
-        rel = DEFAULT_ARTIFACTS.get(
-            symbol, f"artifacts/qhat_{symbol.lower()}")
-        module, features = restore_model(os.path.join(args.run_dir, rel))
-        signals[symbol] = (module, features)
-        if lookback is None:
-            lookback = module.lookback
-        elif lookback != module.lookback:
-            raise SystemExit("artifacts disagree on lookback — retrain")
-    print(f"models restored for {list(signals)} (lookback {lookback})")
+    signals, lookback = restore_signals(
+        args.run_dir, args.symbols,
+        parse_artifact_overrides(args.artifact), module_ref)
+    print(f"models restored for {list(signals)} ({module_ref}, lookback "
+          f"{lookback}, {price_field} bars, adjustment {adjustment}, feed "
+          f"{LIVE_FEED})")
 
     log_path = os.path.join(args.log_dir, "decisions.jsonl")
     while True:
@@ -273,10 +774,12 @@ def main(argv=None) -> int:
             record["action"] = "market closed — no decision"
             print(record["action"], f"(next open {clock.next_open})")
         else:
-            bars = fetch_bars(args.symbols, args.history_minutes)
+            bars = fetch_bars(args.symbols, args.history_minutes,
+                              price_field, adjustment)
             preds = {}
             for symbol, (module, features) in signals.items():
-                row = latest_feature_row(bars.get(symbol, []), lookback)
+                row = latest_feature_row(bars.get(symbol, []), lookback,
+                                         max_gap_minutes)
                 if row is None:
                     continue  # coverage refused — no fabricated belief
                 pred = predict(module, features, row)

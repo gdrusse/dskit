@@ -15,6 +15,7 @@ import os
 import tracemalloc
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,6 +27,7 @@ from dskit.pipeline.document import load_document
 from dskit.pipeline.node import NodeContext
 
 from intraday_poc import connectors, nodes
+from intraday_poc.connectors import AlpacaBarsConnector
 from intraday_poc.nodes import (
     NODE_KINDS,
     BarsFromStore,
@@ -427,40 +429,75 @@ def test_window_rows_lags_labels_and_gap_discipline():
     assert row["y_next"] == pytest.approx(math.log(closes[3] / closes[2]))
 
 
-def test_live_window_parity():
-    """live.latest_feature_row and WindowRows agree bit-for-bit on the
-    lag construction — the train/serve-skew guard."""
-    from intraday_poc.live import latest_feature_row
+_CLOSES = [100.0, 100.7, 100.2, 101.1, 100.9, 101.4]
+#: A deliberately DIFFERENT series in the same bars — every parity
+#: assertion below would pass on either field if the two agreed.
+_VWAPS = [round(c + 0.35, 6) for c in _CLOSES]
 
-    closes = [100.0, 100.7, 100.2, 101.1, 100.9, 101.4]
-    rows = [{"symbol": "AAPL", "asof_ms": _ms(i), "close": c}
-            for i, c in enumerate(closes)]
-    node = WindowRows("window", {"lookback": 3, "max_gap_minutes": 5})
+
+def _vendor_bars():
+    """Alpaca-shaped minute bars (only the attributes this loop reads),
+    so the serving side is exercised through the same extraction the
+    REST fetch uses — no vendor SDK required."""
+    return [SimpleNamespace(timestamp=_BASE + timedelta(minutes=i),
+                            close=close, vwap=vwap)
+            for i, (close, vwap) in enumerate(zip(_CLOSES, _VWAPS))]
+
+
+@pytest.mark.parametrize("price_field", ["close", "vwap"])
+def test_live_window_parity(price_field):
+    """live and WindowRows agree bit-for-bit on the lag construction AND
+    on WHICH FIELD they price — the train/serve-skew guard.
+
+    The close-only version of this test was blind to the skew that
+    matters: set ``price_field`` to anything else and the backtest
+    trained on that series while the loop fed close returns into the
+    same weights. The vwap case fails against a loop that prices on
+    close, however right its arithmetic.
+    """
+    from intraday_poc.live import bar_series, latest_feature_row
+
+    prices = _CLOSES if price_field == "close" else _VWAPS
+    rows = [{"symbol": "AAPL", "asof_ms": _ms(i), "close": close,
+             "vwap": vwap}
+            for i, (close, vwap) in enumerate(zip(_CLOSES, _VWAPS))]
+    node = WindowRows("window", {"lookback": 3, "price_field": price_field,
+                                 "max_gap_minutes": 5})
     out = node.run(None, {"records": rows})["records"]
 
     # The live row ends at the newest bar (t5, no label needed forward).
-    live_row = latest_feature_row([(r["asof_ms"], r["close"]) for r in rows],
-                                  lookback=3)
+    live_row = latest_feature_row(bar_series(_vendor_bars(), price_field),
+                                  lookback=3, max_gap_minutes=5)
     assert live_row is not None
     for lag in range(3):
-        expect = math.log(closes[5 - lag] / closes[4 - lag])
+        expect = math.log(prices[5 - lag] / prices[4 - lag])
         assert live_row[f"ret_lag_{lag}"] == pytest.approx(expect)
     # The node's newest LABELLED row is the same construction one bar
     # back — same lag orientation, same values.
     newest = out[-1]
     assert newest["asof_ms"] == _ms(4)
     for lag in range(3):
-        expect = math.log(closes[4 - lag] / closes[3 - lag])
+        expect = math.log(prices[4 - lag] / prices[3 - lag])
         assert newest[f"ret_lag_{lag}"] == pytest.approx(expect)
+
+
+def test_bar_series_refuses_a_field_the_vendor_does_not_carry():
+    """A document naming a price field Alpaca does not publish must be
+    loud: silently pricing on nothing would hand the model an empty
+    series and call it "no coverage"."""
+    from intraday_poc.live import bar_series
+
+    with pytest.raises(SystemExit, match="price_field"):
+        bar_series(_vendor_bars(), "mid")
 
 
 def test_live_window_refuses_gaps_and_short_history():
     from intraday_poc.live import latest_feature_row
 
     bars = [(_ms(i), 100.0 + i) for i in range(4)]
-    assert latest_feature_row(bars, lookback=5) is None  # too short
+    assert latest_feature_row(bars, lookback=5, max_gap_minutes=5) is None
     gapped = bars[:2] + [(_ms(30), 105.0), (_ms(31), 106.0)]
-    assert latest_feature_row(gapped, lookback=3) is None  # gap refused
+    assert latest_feature_row(gapped, lookback=3, max_gap_minutes=5) is None
 
 
 @pytest.mark.skipif(not HAVE_SOLVER, reason="pyomo/highspy not installed")
@@ -499,6 +536,201 @@ def test_select_one_empty_forecasts_skip_the_solver():
         "total_realized": 0.0}}
 
 
+# -- the serving loop READS what the run already declared -------------------
+
+
+def _run_dir(tmp_path, window_params):
+    """A REAL run dir for a bars -> window document.
+
+    The driver writes the whole document to ``<run-dir>/config.json``,
+    which is exactly what the live loop reads — so these tests read the
+    driver's own output rather than a hand-made dict that could agree
+    with the reader and disagree with production.
+    """
+    root = str(tmp_path / "ob")
+    _write_store(root, n_minutes=20, symbols=("AAPL",))
+    doc = {
+        "name": "knobs",
+        "pipeline": {
+            "bars": {"uses": "intraday_poc-bars",
+                     "params": {"root": root, "source": "alpaca"}},
+            "window": {"uses": "intraday_poc-window",
+                       "inputs": {"records": "$bars.records"},
+                       "params": dict(window_params)},
+        },
+    }
+    path = tmp_path / "knobs.json"
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    document = replace(load_document(str(path)),
+                       outputs=OutputsConfig(run_root=str(tmp_path / "runs")))
+    result = run_document(document, asof="2026-01-06")
+    assert result.state == "ran", (result.state, result.error)
+    return result.run_dir
+
+
+def test_live_reads_the_window_knobs_the_run_declared(tmp_path):
+    """price_field and max_gap_minutes come from the run dir, never from
+    a second copy in the loop: a serving path that restates a training
+    knob drifts the day someone tunes the document."""
+    from intraday_poc.live import load_run_document, window_knobs
+
+    run_dir = _run_dir(tmp_path, {"lookback": 3, "price_field": "vwap",
+                                  "max_gap_minutes": 7})
+    assert window_knobs(load_run_document(run_dir)) == ("vwap", 7.0)
+
+
+def test_live_falls_back_to_the_window_nodes_own_defaults(tmp_path,
+                                                          monkeypatch):
+    """An undeclared knob resolves to the NODE's constant — the same
+    object, not a copy of its value."""
+    from intraday_poc import live
+
+    assert live.DEFAULT_PRICE_FIELD is nodes.DEFAULT_PRICE_FIELD
+    assert live.DEFAULT_MAX_GAP_MINUTES is nodes.DEFAULT_MAX_GAP_MINUTES
+    run_dir = _run_dir(tmp_path, {"lookback": 3})
+    document = live.load_run_document(run_dir)
+    assert live.window_knobs(document) == (nodes.DEFAULT_PRICE_FIELD,
+                                           float(nodes.DEFAULT_MAX_GAP_MINUTES))
+    monkeypatch.setattr(live, "DEFAULT_PRICE_FIELD", "vwap")
+    monkeypatch.setattr(live, "DEFAULT_MAX_GAP_MINUTES", 9)
+    assert live.window_knobs(document) == ("vwap", 9.0)
+
+
+def test_live_refuses_a_run_dir_it_cannot_read(tmp_path):
+    """Loud, always: a missing document, a document with no window node,
+    and two window nodes that disagree are each a refusal — never a
+    quietly assumed default."""
+    from intraday_poc.live import load_run_document, window_knobs
+
+    with pytest.raises(SystemExit, match="config.json"):
+        load_run_document(str(tmp_path))
+
+    with pytest.raises(SystemExit, match="intraday_poc-window"):
+        window_knobs({"pipeline": {}})
+
+    two = {"pipeline": {
+        "a": {"uses": "intraday_poc-window",
+              "params": {"lookback": 3, "price_field": "close"}},
+        "b": {"uses": "intraday_poc-window",
+              "params": {"lookback": 3, "price_field": "vwap"}},
+    }}
+    with pytest.raises(SystemExit, match="disagree"):
+        window_knobs(two)
+
+
+def test_live_reads_the_declared_module_from_the_run_document():
+    """ADR-0025's seam: the document names the module class, so the
+    serving loop must too. A literal in the loop makes swapping the
+    declared class break serving — which is the whole point of the
+    seam."""
+    from intraday_poc.live import declared_module
+
+    doc = {"pipeline": {
+        "window": {"uses": "intraday_poc-window", "params": {"lookback": 3}},
+        "qhat_aapl": {"uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+                      "params": {"module": "somepkg.models:OtherNet"}},
+        "qhat_msft": {"uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+                      "params": {"module": "somepkg.models:OtherNet"}},
+    }}
+    assert declared_module(doc) == "somepkg.models:OtherNet"
+
+    with pytest.raises(SystemExit, match="declares no"):
+        declared_module({"pipeline": {"window": {"params": {}}}})
+
+    doc["pipeline"]["qhat_msft"]["params"]["module"] = "somepkg.models:Net2"
+    with pytest.raises(SystemExit, match="several module classes"):
+        declared_module(doc)
+
+
+def test_artifact_paths_default_by_convention_and_bend_by_flag(tmp_path):
+    """``--artifact SYMBOL=PATH`` is the documented override; the
+    convention below it is the fallback, so no table of symbols lives in
+    the code."""
+    from intraday_poc.live import artifact_dirs, parse_artifact_overrides
+
+    assert parse_artifact_overrides(["AAPL=artifacts/other"]) == \
+        {"AAPL": "artifacts/other"}
+    with pytest.raises(SystemExit, match="SYMBOL=PATH"):
+        parse_artifact_overrides(["AAPL"])
+
+    dirs = artifact_dirs("/runs/r1", ["AAPL", "MSFT"],
+                         {"MSFT": "artifacts/other"})
+    assert dirs["AAPL"] == os.path.join("/runs/r1", "artifacts", "qhat_aapl")
+    assert dirs["MSFT"] == os.path.join("/runs/r1", "artifacts", "other")
+    absolute = artifact_dirs("/runs/r1", ["AAPL"],
+                             {"AAPL": str(tmp_path / "elsewhere")})
+    assert absolute["AAPL"] == str(tmp_path / "elsewhere")
+
+
+def test_live_vendor_knobs_come_from_the_source_config(tmp_path):
+    """The vendor half of the same rule: the live fetch takes its
+    adjustment from the config the PULLER uses, through the connector's
+    own knob gate — so the loop cannot fetch a differently-adjusted
+    price series than the store was built from, and cannot restate the
+    connector's default either."""
+    from intraday_poc.live import source_knobs
+
+    shipped = source_knobs(os.path.join(CONFIGS, "source-backfill.json"))
+    assert shipped["adjustment"] == "all"
+
+    bare = tmp_path / "source-bare.json"
+    bare.write_text(json.dumps({"symbols": ["AAPL"], "start": "2026-01-01"}),
+                    encoding="utf-8")
+    assert source_knobs(str(bare))["adjustment"] == \
+        AlpacaBarsConnector()._knobs({"symbols": ["AAPL"],
+                                      "start": "2026-01-01"})["adjustment"]
+
+    with pytest.raises(SystemExit, match="source config"):
+        source_knobs(str(tmp_path / "nope.json"))
+
+
+def test_live_main_fetches_with_the_knobs_it_read(tmp_path, monkeypatch):
+    """The wiring itself: main() must hand fetch_bars the document's
+    price field and the source config's adjustment. Everything the loop
+    cannot reach in a test — the broker client, the artifacts, the
+    vendor — is doubled; the knob resolution under test is real."""
+    pytest.importorskip("alpaca.trading.client")
+    import alpaca.trading.client as trading_client
+
+    from intraday_poc import live
+
+    run_dir = tmp_path / "run"
+    (run_dir / "artifacts").mkdir(parents=True)
+    (run_dir / "config.json").write_text(json.dumps({"pipeline": {
+        "window": {"uses": "intraday_poc-window",
+                   "params": {"lookback": 3, "price_field": "vwap"}},
+        "qhat_aapl": {"uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+                      "params": {"module": "intraday_poc.models:NextBarLSTM"}},
+    }}), encoding="utf-8")
+
+    seen = {}
+
+    def fake_fetch(symbols, minutes, price_field, adjustment):
+        seen.update(symbols=list(symbols), minutes=minutes,
+                    price_field=price_field, adjustment=adjustment)
+        return {}  # no coverage: the iteration decides nothing, loudly
+
+    monkeypatch.setattr(live, "fetch_bars", fake_fetch)
+    monkeypatch.setattr(live, "restore_model",
+                        lambda directory, ref: (SimpleNamespace(lookback=3),
+                                                ["ret_lag_0"]))
+    monkeypatch.setattr(trading_client, "TradingClient",
+                        lambda *a, **kw: SimpleNamespace(
+                            get_clock=lambda: SimpleNamespace(
+                                is_open=True, next_open="")))
+    monkeypatch.setenv("APCA_API_KEY_ID", "stub-key")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "stub-secret")
+
+    rc = live.main(["--run-dir", str(run_dir),
+                    "--source-config", os.path.join(CONFIGS,
+                                                    "source-backfill.json"),
+                    "--symbols", "AAPL", "--once", "--dry-run",
+                    "--log-dir", str(tmp_path)])
+    assert rc == 0
+    assert seen["price_field"] == "vwap", seen
+    assert seen["adjustment"] == "all", seen
+
+
 # -- end-to-end: store -> train -> artifact -> live restore/select ---------
 
 
@@ -510,7 +742,9 @@ def test_train_document_to_live_chain_end_to_end(tmp_path):
     live loop then restores the artifacts through its own sidecar
     verification, predicts, and the pyomo program picks a symbol."""
     from intraday_poc.live import (
+        declared_module,
         latest_feature_row,
+        load_run_document,
         predict,
         restore_model,
         solve_pick,
@@ -537,13 +771,22 @@ def test_train_document_to_live_chain_end_to_end(tmp_path):
     bars = {symbol: [(_ms(i), _close(symbol, i)) for i in range(120)]
             for symbol in ("AAPL", "MSFT")}
 
+    # The loop reads the class the DOCUMENT declared off the run dir the
+    # driver just wrote — the ADR-0025 seam, end to end.
+    written = load_run_document(result.run_dir)
+    module_ref = declared_module(written)
+    assert module_ref == doc["pipeline"]["qhat_aapl"]["params"]["module"]
+
     preds = {}
     for symbol, node_key in (("AAPL", "qhat_aapl"), ("MSFT", "qhat_msft")):
         artifact_dir = os.path.join(result.run_dir, "artifacts", node_key)
-        module, features = restore_model(artifact_dir)
+        with pytest.raises(SystemExit, match="wrong artifact"):
+            restore_model(artifact_dir, "somepkg.models:OtherNet")
+        module, features = restore_model(artifact_dir, module_ref)
         assert module.lookback == 30
         assert features[0] == "ret_lag_0" and len(features) == 30
-        row = latest_feature_row(bars[symbol], lookback=30)
+        row = latest_feature_row(bars[symbol], lookback=30,
+                                 max_gap_minutes=5)
         assert row is not None
         pred = predict(module, features, row)
         assert pred is not None and math.isfinite(pred)
@@ -551,6 +794,35 @@ def test_train_document_to_live_chain_end_to_end(tmp_path):
 
     winner = solve_pick(preds)
     assert winner == max(preds, key=preds.get)
+
+
+@pytest.mark.skipif(not HAVE_TORCH, reason="torch not installed")
+def test_restore_model_resolves_the_class_the_run_declared(tmp_path):
+    """The declared path is RESOLVED, not string-compared to a literal.
+
+    A run whose declared class is not a torch module refuses BY THAT
+    PATH, through the same resolver the torch pack builds with — a loop
+    that constructed NextBarLSTM regardless would sail past this and
+    fail much later, on weights that do not fit.
+    """
+    from intraday_poc.live import restore_model
+
+    artifact = tmp_path / "artifacts" / "qhat_aapl"
+    artifact.mkdir(parents=True)
+    state = artifact / "model.pt"
+    state.write_bytes(b"never loaded: the resolver refuses first")
+    sidecar = {"params": {"module": "intraday_poc.nodes:WindowRows",
+                          "module_params": {}, "features": ["ret_lag_0"]}}
+    digest = hashlib.sha256(state.read_bytes())
+    digest.update(b"\x00")
+    digest.update(json.dumps(sidecar, sort_keys=True,
+                             separators=(",", ":")).encode("utf-8"))
+    sidecar["state_hash"] = digest.hexdigest()
+    (artifact / "model.json").write_text(json.dumps(sidecar),
+                                         encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="forward"):
+        restore_model(str(artifact), "intraday_poc.nodes:WindowRows")
 
 
 @pytest.mark.skipif(not HAVE_TORCH, reason="torch not installed")
@@ -583,4 +855,5 @@ def test_restore_model_refuses_a_tampered_artifact(tmp_path):
         fh.seek(-1, os.SEEK_END)
         fh.write(bytes([last[0] ^ 0xFF]))
     with pytest.raises(SystemExit, match="state_hash"):
-        restore_model(artifact_dir)
+        restore_model(artifact_dir,
+                      doc["pipeline"]["qhat_aapl"]["params"]["module"])
