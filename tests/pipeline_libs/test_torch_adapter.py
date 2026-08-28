@@ -691,17 +691,17 @@ def test_an_adapter_that_ignores_the_objective_refuses_the_knob_at_plan():
 
 
 def test_an_adapter_that_ignores_the_objective_refuses_the_knob_at_run():
-    """The SAME sentence at ``build_adapter``, for the machine whose plan
-    could not import the adapter and so could not tell — a fit never
-    proceeds under an objective nobody applies. Pinned by equality against
-    the plan-side wording, as the abstract-hook refusal already is: two
-    doorways, one sentence, and no room to drift."""
+    """The SAME sentence at the fit's own adapter doorway, for the machine
+    whose plan could not import the adapter and so could not tell — a fit
+    never proceeds under an objective nobody applies. Pinned by equality
+    against the plan-side wording, as the abstract-hook refusal already
+    is: two doorways, one sentence, and no room to drift."""
     declared = declared_loss_params(
         DoubleAdapter, loss="torch.nn.functional:smooth_l1_loss"
     )
     node = DeclaredTrain("k", declared_loss_params(ObjectiveAdapter), mode="train")
     with pytest.raises(ValueError) as caught:
-        node.build_adapter(declared)
+        node._adapter_for_fit(declared)
     assert str(caught.value) == "\n".join(
         p for p in DeclaredTrain.validate_params(declared) if "applies_loss" in p
     )
@@ -756,6 +756,132 @@ def test_a_loss_class_that_cannot_be_constructed_is_refused_by_name():
     adapter = RowVectorAdapter({**FLAT_PARAMS, "loss": f"{__name__}:NeedsAnArgumentLoss"})
     with pytest.raises(ValueError, match="NeedsAnArgumentLoss"):
         adapter.build_loss()
+
+
+class NotCallableWhenBuilt:
+    """A CLASS whose instances are not callable. ``getattr(cls, "__call__")``
+    finds ``type.__call__`` and is always callable, so only the CONSTRUCTED
+    object can answer whether this is a loss."""
+
+
+def test_a_loss_whose_instances_are_not_callable_is_refused_by_name():
+    """The doorway promises a callable; a class that constructs into a
+    non-callable must be refused HERE, by name, not as a ``TypeError``
+    inside the batch loop."""
+    adapter = RowVectorAdapter(
+        {**FLAT_PARAMS, "loss": f"{__name__}:NotCallableWhenBuilt"}
+    )
+    with pytest.raises(ValueError, match="NotCallableWhenBuilt"):
+        adapter.build_loss()
+
+
+# ---------------------------------------------------------------------------
+# The promise belongs to the ``loss()`` IMPLEMENTATION, not to the class —
+# so every documented way to write one's own objective (an adapter
+# subclass, a family that swaps the adapter, a family that answers loss()
+# itself) is held to the same declaration.
+# ---------------------------------------------------------------------------
+
+
+class HardcodedRowAdapter(RowVectorAdapter):
+    """A row-vector adapter that computes its OWN objective. It inherits an
+    ``applies_loss = True`` it never earned, so the promise must be reset
+    for any subclass overriding ``loss`` without repeating it."""
+
+    def loss(self, module, batch):
+        features, label = batch
+        return torch.nn.functional.mse_loss(module(features).reshape(-1), label)
+
+
+class ReclaimedRowAdapter(RowVectorAdapter):
+    """The other side: overrides ``loss`` AND repeats the declaration, so
+    the knob stays real."""
+
+    applies_loss = True
+
+    def loss(self, module, batch):
+        features, label = batch
+        return self.build_loss()(module(features).reshape(-1), label)
+
+
+class SwappedAdapterFamily(LinearRegressor):
+    """A family that swaps the adapter through ``build_adapter`` — the
+    pack's documented extension hook, and the tier-3 child pattern."""
+
+    def build_adapter(self, params):
+        return HardcodedRowAdapter(params)
+
+
+class HardcodedLossFamily(LinearRegressor):
+    """A family that answers ``loss()`` itself rather than delegating to
+    the adapter — what ``TorchTrain.loss``'s docstring invites."""
+
+    def loss(self, module, batch):
+        features, label = batch
+        return torch.nn.functional.mse_loss(module(features).reshape(-1), label)
+
+
+def test_an_adapter_subclass_overriding_loss_loses_the_inherited_promise():
+    """``applies_loss`` describes a ``loss()`` implementation, so it cannot
+    be inherited past one that was replaced."""
+    assert HardcodedRowAdapter.applies_loss is False
+    assert ReclaimedRowAdapter.applies_loss is True
+    # A subclass that did NOT touch loss() keeps the promise it inherited.
+    assert WidthAdapter.applies_loss is True
+
+
+def test_an_adapter_subclass_that_hardcodes_its_objective_refuses_the_knob():
+    problems = DeclaredTrain.validate_params(
+        declared_loss_params(
+            HardcodedRowAdapter,
+            loss="torch.nn.functional:smooth_l1_loss",
+            features=["x1", "x2"],
+            label="y",
+        )
+    )
+    assert any(
+        "applies_loss" in p and "HardcodedRowAdapter" in p for p in problems
+    ), problems
+
+
+def test_the_plan_asks_the_adapter_the_fit_will_actually_build():
+    """One statement of the adapter identity: what ``validate_params``
+    interrogates about the objective is the class ``build_adapter``
+    constructs, for the default family and the declared one alike."""
+    node = LinearRegressor("k", FLAT_PARAMS, mode="train")
+    assert type(node.build_adapter(FLAT_PARAMS)) is node._loss_adapter(FLAT_PARAMS)
+    declared = declared_loss_params(ObjectiveAdapter)
+    node = DeclaredTrain("k", declared, mode="train")
+    assert type(node.build_adapter(declared)) is node._loss_adapter(declared)
+
+
+def test_a_family_that_swaps_the_adapter_cannot_ignore_the_objective(tmp_path):
+    """The refusal lives where EVERY family's adapter is built, so
+    overriding ``build_adapter`` cannot walk past it: the fit refuses
+    rather than training under an objective the document did not get."""
+    LOSS_CALLS.clear()
+    node = SwappedAdapterFamily(
+        "k", {**FLAT_PARAMS, "loss": f"{__name__}:recording_huber"}, mode="train"
+    )
+    with pytest.raises(ValueError, match="applies_loss"):
+        node.run(ctx(tmp_path), {"rows": flat_rows()})
+    assert LOSS_CALLS == []
+
+
+def test_a_family_that_hardcodes_its_objective_refuses_the_knob(tmp_path):
+    """A node that answers ``loss()`` itself has made no promise about the
+    knob either — refused at plan, and again at the fit."""
+    params = {**FLAT_PARAMS, "loss": f"{__name__}:recording_huber"}
+    problems = HardcodedLossFamily.validate_params(params)
+    assert any(
+        "applies_loss" in p and "HardcodedLossFamily" in p for p in problems
+    ), problems
+    LOSS_CALLS.clear()
+    with pytest.raises(ValueError, match="applies_loss"):
+        HardcodedLossFamily("k", params, mode="train").run(
+            ctx(tmp_path), {"rows": flat_rows()}
+        )
+    assert LOSS_CALLS == []
 
 
 def test_import_library_class_requires_the_named_methods():

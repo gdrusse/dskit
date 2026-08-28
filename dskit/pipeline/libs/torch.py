@@ -268,30 +268,60 @@ def _loss_problems(params):
     )
 
 
-def _loss_ignored_problem(adapter, params):
-    """Why a declared ``loss`` would never be applied by ``adapter``, or None.
+def _loss_ignored_problem(subject, params):
+    """Why a declared ``loss`` would never be applied by ``subject``, or None.
 
-    ONE sentence said at both doorways (plan and ``build_adapter``), the
+    ONE sentence said wherever a ``loss()`` implementation is chosen —
+    plan (``validate_params``) and the fit (``_adapter_for_fit``) — the
     way :func:`~dskit.pipeline.base.abstract_class_problem` is: the node
-    ACCEPTS the knob, the adapter APPLIES it, and an adapter that computes
-    its own objective would silently train a different model than the
-    document declares. ``adapter`` may be a class (plan) or an instance
-    (run), and ``None`` means this machine cannot tell — the library may
-    rightly be absent, and run settles it.
+    ACCEPTS the knob, a ``loss()`` APPLIES it, and one that computes its
+    own objective would silently train a different model than the document
+    declares. ``subject`` is whoever answers ``loss()`` — the adapter, or
+    the node itself when a family overrode ``loss`` — as a class (plan) or
+    an instance (run); ``None`` means this machine cannot tell (the
+    library may rightly be absent, and run settles it).
     """
     path = params.get("loss")
     # ``getattr`` because the adapter doorway is STRUCTURAL (it requires
     # ``prepare``, not a base class): a class that never heard of the flag
     # has not promised anything, which is the deny side of default-deny.
-    if not path or adapter is None or getattr(adapter, "applies_loss", False):
+    if not path or subject is None or getattr(subject, "applies_loss", False):
         return None
-    name = adapter.__name__ if isinstance(adapter, type) else type(adapter).__name__
+    name = subject.__name__ if isinstance(subject, type) else type(subject).__name__
     return (
         f"loss {path!r} would be IGNORED: {name} computes its own objective "
-        "(applies_loss is False) — apply the node's objective by returning "
-        "self.build_loss()(...) from loss() and setting applies_loss = True, "
-        "or drop the loss param"
+        "(applies_loss is False) — have loss() apply the declared objective "
+        "(self.build_loss()(...) in an adapter, super().loss(...) in a node) "
+        "and set applies_loss = True, or drop the loss param"
     )
+
+
+class _LossPromise:
+    """Declares whether this class's ``loss()`` applies the node's ``loss``.
+
+    Mixed into both sides of the objective — the adapter that implements
+    ``loss()`` and the node that may override it — because the promise is
+    a property of that IMPLEMENTATION, not of a class name: a subclass
+    replacing ``loss()`` inherits an ``applies_loss`` it never earned, and
+    the seam would then approve an objective nothing applies. So the
+    promise is RESET for any subclass that overrides ``loss`` without
+    repeating the declaration, which is default-deny applied to
+    inheritance. Overriding both (``applies_loss = True`` beside the new
+    ``loss``) keeps the knob real, and overriding neither inherits a
+    promise still kept by the inherited implementation.
+
+    Attributes
+    ----------
+    applies_loss : bool
+        Class-level, default ``False``. See :class:`TorchAdapter`.
+    """
+
+    applies_loss = False
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if "loss" in cls.__dict__ and "applies_loss" not in cls.__dict__:
+            cls.applies_loss = False
 
 
 def _feature_problems(params, *, required):
@@ -371,7 +401,7 @@ class TorchBatches:
         return self.n
 
 
-class TorchAdapter(ABC):
+class TorchAdapter(_LossPromise, ABC):
     """HOW ROWS BECOME MODEL INPUT — the seam :class:`TorchTrain` was missing.
 
     Before this, the trainer hardcoded one dataset shape: every row is a
@@ -442,12 +472,15 @@ class TorchAdapter(ABC):
         way sets it ``False`` so the node stops demanding a feature list
         it would never read.
     applies_loss : bool
-        Class-level, default ``False``. Whether :meth:`loss` applies the
-        node's ``loss`` knob through :meth:`build_loss`. Default-deny, and
-        for the same reason ``features`` has its flag: a document that
-        declares ``loss`` for an adapter which never made that promise is
-        REFUSED by name — at plan and again at construction — because an
-        ignored objective trains a different model in silence.
+        Class-level, default ``False`` (:class:`_LossPromise`). Whether
+        :meth:`loss` applies the node's ``loss`` knob through
+        :meth:`build_loss`. Default-deny, and for the same reason
+        ``features`` has its flag: a document that declares ``loss`` for an
+        adapter which never made that promise is REFUSED by name — at plan
+        and again at the fit — because an ignored objective trains a
+        different model in silence. The promise describes THIS class's
+        :meth:`loss`, so a subclass that overrides ``loss`` must repeat the
+        declaration to keep it.
     _PARAMS : tuple of str
         Class-level, default ``()``. The adapter's OWN declarable knobs,
         which :meth:`validate_params` enforces default-deny at plan time
@@ -497,11 +530,6 @@ class TorchAdapter(ABC):
 
     #: Does the node's ``features`` list mean anything here?
     requires_features = True
-
-    #: Does :meth:`loss` apply the node's ``loss`` knob (via
-    #: :meth:`build_loss`)? Default-deny: an adapter promises this, and a
-    #: document declaring ``loss`` for one that has not is refused by name.
-    applies_loss = False
 
     #: The adapter's OWN declarable knobs, for its ``validate_params``.
     _PARAMS: tuple = ()
@@ -578,32 +606,46 @@ class TorchAdapter(ABC):
         Raises
         ------
         ValueError
-            When the declared path names no importable module/attribute or
-            resolves to something not callable
-            (:func:`~dskit.pipeline.base.import_library_class`), or when a
-            resolved CLASS rejects a no-argument construction — refused by
-            name here rather than as an obscure error mid-fit.
+            When the declared path names no importable module or attribute
+            (:func:`~dskit.pipeline.base.import_library_class`); when a
+            resolved CLASS rejects a no-argument construction; or when what
+            the path finally yields is not callable — each refused by name
+            here rather than as an obscure error mid-fit.
         """
         if self._loss_fn is None:
             path = self.params.get("loss") or DEFAULT_LOSS
-            resolved = import_library_class(path, "torch loss", requires=("__call__",))
+            resolved = import_library_class(path, "torch loss")
             self._loss_fn = self._construct_loss(resolved, path)
         return self._loss_fn
 
     @staticmethod
     def _construct_loss(resolved, path):
-        """A resolved loss CLASS constructed (``nn`` loss modules take no
-        required arguments); anything else callable used as it stands."""
-        if not isinstance(resolved, type):
-            return resolved
-        try:
-            return resolved()
-        except TypeError as exc:
+        """The callable a resolved loss path yields, or a refusal naming it.
+
+        A resolved CLASS is constructed (``nn`` loss modules take no
+        required arguments); anything else is used as it stands. Then the
+        RESULT is asked whether it is callable, because that is the only
+        thing that can answer: ``import_library_class(..., requires=)``
+        interrogates the class, and every class carries ``type.__call__``,
+        so a class whose INSTANCES are not callable would sail past a
+        structural check and die inside the batch loop.
+        """
+        built = resolved
+        if isinstance(resolved, type):
+            try:
+                built = resolved()
+            except TypeError as exc:
+                raise ValueError(
+                    f"torch loss: {path!r} names a class that needs constructor "
+                    f"arguments ({exc}) — an import path carries none, so name a "
+                    "module-level callable that already has them instead"
+                ) from exc
+        if not callable(built):
             raise ValueError(
-                f"torch loss: {path!r} names a class that needs constructor "
-                f"arguments ({exc}) — an import path carries none, so name a "
-                "module-level callable that already has them instead"
-            ) from exc
+                f"torch loss: {path!r} yields {built!r}, which is not callable "
+                "— name a loss function, or a loss class whose instances are"
+            )
+        return built
 
     def beliefs(self, module, batch):
         """``(preds, labels)`` in ``[0, 1]`` for the per-epoch probability
@@ -777,7 +819,7 @@ class TorchSignal:
         return float(out.reshape(-1)[0])
 
 
-class _TorchModel(Node):
+class _TorchModel(_LossPromise, Node):
     """The grammar the train and predict doorways share: the
     ``build_module`` hook and the artifact save/load protocol.
 
@@ -786,6 +828,10 @@ class _TorchModel(Node):
     ``node_class_errors`` refuses abstract classes.
     """
 
+    #: The adapter class this family fits with — stated ONCE, read by
+    #: ``build_adapter`` at run and ``_loss_adapter`` at plan, so the two
+    #: cannot drift into disagreeing about what a fit will use.
+    _ADAPTER = RowVectorAdapter
     #: Role-specific knobs, set by :class:`TorchTrain`/:class:`TorchPredict`.
     _BASE_PARAMS = ()
     #: A concrete family's OWN model knobs — appended to the allowed list
@@ -818,10 +864,48 @@ class _TorchModel(Node):
     def build_adapter(self, params):
         """The :class:`TorchAdapter` that turns rows into batches.
 
-        Default: :class:`RowVectorAdapter`, the flat feature-vector shape
-        this pack always had. The declared family overrides this to build
-        whatever ``adapter`` names."""
-        return RowVectorAdapter(params)
+        Default: :attr:`_ADAPTER` (:class:`RowVectorAdapter`, the flat
+        feature-vector shape this pack always had). A family fitting a
+        different shape names it in :attr:`_ADAPTER`, so plan and run read
+        ONE statement of that identity; the declared family, whose adapter
+        is a document value rather than a class attribute, overrides this
+        and :meth:`_loss_adapter` together."""
+        return self._ADAPTER(params)
+
+    def _adapter_for_fit(self, params):
+        """The adapter this fit will use, held to the ``loss`` promise.
+
+        The ONE doorway every family's adapter passes on its way into a
+        training loop — :meth:`build_adapter` is the extension hook, so a
+        refusal bolted onto one family's override is a refusal the next
+        family walks past. Both implementations that could answer
+        ``loss()`` are asked here: the node (a family may override
+        :meth:`~TorchTrain.loss`) and the adapter it built.
+
+        Parameters
+        ----------
+        params : dict
+            The node's params, read for the declared ``loss`` path.
+
+        Returns
+        -------
+        TorchAdapter
+            Whatever :meth:`build_adapter` returned.
+
+        Raises
+        ------
+        ValueError
+            When the document declares a ``loss`` that neither this node
+            nor its adapter applies (``applies_loss`` is ``False``), in the
+            same sentence plan says — a fit never proceeds under an
+            objective nothing will use.
+        """
+        adapter = self.build_adapter(params)
+        for subject in (self, adapter):
+            problem = _loss_ignored_problem(subject, params)
+            if problem:
+                raise ValueError(problem)
+        return adapter
 
     def build_optimizer(self, module, params):
         """The optimizer for this fit — ``torch.optim.SGD`` at ``lr`` unless
@@ -860,9 +944,10 @@ class _TorchModel(Node):
 
     @classmethod
     def _loss_adapter(cls, params):
-        """The adapter class whose ``applies_loss`` answers for this fit —
-        this family always builds the default one."""
-        return RowVectorAdapter
+        """The adapter class whose ``applies_loss`` plan interrogates —
+        :attr:`_ADAPTER`, the same value :meth:`build_adapter` constructs,
+        so the question asked at plan is about the class the fit builds."""
+        return cls._ADAPTER
 
     # -- the artifact protocol ---------------------------------------------
 
@@ -1107,6 +1192,12 @@ class TorchTrain(_TorchModel):
     role = "train"
     outputs = ("signal", "artifact_path", "metrics")
 
+    #: This node's ``loss`` DELEGATES to the adapter, which is how the
+    #: declared objective reaches a batch — so the node keeps the promise
+    #: and the adapter's own flag decides. A family that overrides ``loss``
+    #: to compute its own objective loses it again (:class:`_LossPromise`).
+    applies_loss = True
+
     _BASE_PARAMS = (
         "device",
         "epochs",
@@ -1166,9 +1257,12 @@ class TorchTrain(_TorchModel):
         problems.extend(_loader_problems(params.get("loader", {})))
         problems.extend(_optimizer_problems(params))
         problems.extend(_loss_problems(params))
-        ignored = _loss_ignored_problem(cls._loss_adapter(params), params)
-        if ignored:
-            problems.append(ignored)
+        # Both implementations that could answer ``loss()`` — this family
+        # (it may have overridden ``loss``) and the adapter it will build.
+        for subject in (cls, cls._loss_adapter(params)):
+            ignored = _loss_ignored_problem(subject, params)
+            if ignored:
+                problems.append(ignored)
         problems.extend(
             _feature_problems(params, required=cls._features_required(params))
         )
@@ -1197,9 +1291,12 @@ class TorchTrain(_TorchModel):
         """The training objective for one batch — delegated to the adapter
         (:class:`RowVectorAdapter` = the declared ``loss``, MSE by default,
         over ``(features, label)``). Declare ``loss`` to swap the objective;
-        override this only for one no import path can express. Returns a
-        scalar tensor the loop can backpropagate."""
-        return (self._adapter or self.build_adapter(self.params)).loss(module, batch)
+        override this only for one no import path can express (and then say
+        ``applies_loss = False`` beside it, so a document declaring ``loss``
+        is refused rather than ignored). Returns a scalar tensor the loop
+        can backpropagate."""
+        adapter = self._adapter or self._adapter_for_fit(self.params)
+        return adapter.loss(module, batch)
 
     def run(self, ctx, inputs):
         if self.mode == "load":
@@ -1236,7 +1333,7 @@ class TorchTrain(_TorchModel):
         # the loop below is the same whether the batch is a feature matrix
         # or a ladder panel — and the default adapter makes it identical to
         # what this node did before the seam existed.
-        adapter = self._adapter = self.build_adapter(self.params)
+        adapter = self._adapter = self._adapter_for_fit(self.params)
         train_set = adapter.prepare(inputs["rows"], self.params, where="rows")
         if not len(train_set):
             raise ValueError(
@@ -1615,10 +1712,11 @@ class _DeclaredParams:
     @classmethod
     def _loss_adapter(cls, params):
         """The DECLARED adapter, which is the one whose ``applies_loss``
-        answers here; ``None`` when it cannot be imported on this machine,
-        which leaves the refusal to ``build_adapter`` at run."""
+        answers here — the same ``_resolve_adapter`` ``build_adapter``
+        builds from. ``None`` when it cannot be imported on this machine,
+        which leaves the refusal to the fit."""
         if not params.get("adapter"):
-            return RowVectorAdapter
+            return super()._loss_adapter(params)
         return cls._resolve_adapter(params)
 
     @classmethod
@@ -1712,14 +1810,16 @@ class _DeclaredParams:
             resolved class is still ABSTRACT, in a sentence naming every
             unimplemented hook; when a complete adapter's own constructor
             rejects its ``adapter_params``, naming that knob dict so the
-            author reads JSON rather than code; or when the document
-            declares a ``loss`` this adapter never applies
-            (``applies_loss`` is ``False``), in the same sentence plan
-            says.
+            author reads JSON rather than code.
+
+            A declared ``loss`` this adapter would never apply is refused
+            too — not here, but at
+            :meth:`~_TorchModel._adapter_for_fit`, the one doorway every
+            family's adapter passes on its way into the loop.
         """
         path = params.get("adapter")
         if not path:
-            return RowVectorAdapter(params)
+            return self._ADAPTER(params)
         cls = import_library_class(path, _ADAPTER_SUBJECT, requires=("prepare",))
         # Asked HERE and at plan (``validate_params``) — never at resolution:
         # plan-time callers rightly treat a resolution failure as "library
@@ -1733,20 +1833,12 @@ class _DeclaredParams:
         # with its OWN declared knobs layered ON TOP, so an adapter knob is
         # never shadowed by a same-named node knob.
         try:
-            adapter = cls({**params, **kwargs})
+            return cls({**params, **kwargs})
         except TypeError as exc:
             raise ValueError(
                 f"{path} rejected adapter_params ({exc}) — a mis-typed adapter "
                 "knob is caught here, by the adapter, not silently"
             ) from exc
-        # The last doorway a declared ``loss`` passes: on a machine whose
-        # plan could not import the adapter, THIS is where "the objective
-        # nobody applies" is refused — never a fit that runs to completion
-        # under an objective the document did not declare.
-        ignored = _loss_ignored_problem(adapter, params)
-        if ignored:
-            raise ValueError(ignored)
-        return adapter
 
 
 class DeclaredTrain(_DeclaredParams, _DeclaredModule, TorchTrain):
