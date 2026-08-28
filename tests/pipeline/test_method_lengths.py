@@ -99,6 +99,14 @@ def _functions(path):
     Both pins walk the same tree, so they share one walker: a body the
     length pin cannot see is a body the annotation pin cannot see either,
     and one walker keeps that true by construction.
+
+    "Every" is literal, and that is why the third branch is here. A
+    ``def`` is a statement, so it can sit in ANY statement's body — a
+    version guard, an import ``try``, a ``with`` — and descending only
+    through ``class`` and ``def`` would step over every one of them.
+    Only ``class`` and ``def`` qualify a name, so the other statements
+    are descended through without touching the prefix: a method guarded
+    by an ``if`` is still reported as ``Class.method``.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found = []
@@ -110,6 +118,8 @@ def _functions(path):
             elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 found.append((f"{prefix}{child.name}", child))
                 walk(child, f"{prefix}{child.name}.")
+            else:
+                walk(child, prefix)
 
     walk(tree, "")
     return found
@@ -191,6 +201,58 @@ def test_the_measure_sees_methods_and_nested_helpers(tmp_path):
         "outer": 8,
         "outer.inner": 2,
     }
+
+
+def test_the_measure_sees_a_def_in_any_statement_body(tmp_path):
+    """A ``def`` under ``if``/``try``/``with`` is a body someone still scrolls.
+
+    Descending only through ``class`` and ``def`` is not the same as
+    seeing every function: a helper inside a version guard, an import
+    fallback, or a ``with`` block sits in a statement body, and a walker
+    that steps over those statements never reaches it. Both pins read
+    this one walker, so a body it misses is a body NEITHER pin covers —
+    the length pin would pass a body twice the ceiling (``guarded``
+    below) and the annotation pin would pass four annotated signatures,
+    while both still claimed the module. *"A pinning test that omits a
+    knob is worse than none — it claims coverage it lacks."*
+
+    Nothing qualifies a name here but ``class`` and ``def``, so the
+    statements the walker descends through leave the reported names
+    alone: the method guarded by an ``if`` is still ``C.maybe_method``.
+    """
+    long_body = "        x = 1\n" * (MAX_FUNCTION_LINES + 1)
+    module = tmp_path / "sample.py"
+    module.write_text(
+        "import typing\n"
+        "if typing.TYPE_CHECKING:\n"
+        "    def guarded(a: int):\n" + long_body + "try:\n"
+        "    def preferred() -> int:\n"
+        "        return 1\n"
+        "except ImportError:\n"
+        "    def fallback():\n"
+        "        pass\n"
+        'with open("x") as fh:\n'
+        "    def in_with(b: str):\n"
+        "        pass\n"
+        "class C:\n"
+        "    if typing.TYPE_CHECKING:\n"
+        "        def maybe_method(self) -> None:\n"
+        "            pass\n",
+        encoding="utf-8",
+    )
+    assert {name: length for name, _, length in _function_lengths(module)} == {
+        "guarded": MAX_FUNCTION_LINES + 2,
+        "preferred": 2,
+        "fallback": 2,
+        "in_with": 2,
+        "C.maybe_method": 2,
+    }
+    assert [name for name, _ in _annotated_functions(module)] == [
+        "guarded",
+        "preferred",
+        "in_with",
+        "C.maybe_method",
+    ]
 
 
 def test_no_new_signature_annotation_in_a_decomposed_module():
