@@ -41,12 +41,38 @@ checked where the swallow cannot reach:
 * **At construction** — the constructor re-runs the same validator and
   then opens the mlflow CLIENT and EXPERIMENT immediately, before any
   node executes (``_open_sinks`` runs ahead of the driver's node loop).
-  A missing mlflow install, an unwritable store, a broken experiment:
-  all raise here, where they are visible.
+  A missing mlflow install, an unwritable store, an experiment that
+  exists but was DELETED (mlflow keeps returning it, and every write to
+  it raises): all raise here, where they are visible.
 
 Only the three seam calls afterwards (``log_params``/``log_metrics``/
 ``close``) sit inside the swallow — by then the configuration has been
 proven, which is the point.
+
+**The one thing loudness must not do is kill the run.**
+``_open_sinks`` runs OUTSIDE ``run_document``'s ``try``, so a sink that
+raises at construction aborts the run before a single node executes —
+which is precisely what the swallow exists to prevent. So the two
+failures are separated by ORIGIN, not by symptom:
+
+* a **misconfiguration** raises ``ConfigError`` — mlflow not installed,
+  a non-active experiment, or any failure of a LOCAL store, whose
+  writability the plan-time probe already proved (so a failure now is
+  about the store family or the installed mlflow, not the weather);
+* a **degraded SERVER** does not. An ``http``/``https`` destination was
+  proved to accept a TCP connection at plan time; that it is now 5xx-ing
+  or resetting is the server's condition, which no document can fix and
+  no document should die of. The sink DISABLES itself, logs a warning
+  naming the URI and the experiment, and every later seam call is a
+  no-op — degraded, never fatal, never silent.
+
+For the same reason ``connect_timeout`` bounds more than the stdlib
+probe: it is also pushed into mlflow's own HTTP knobs
+(:data:`_HTTP_TIMEOUT_ENV`/:data:`_HTTP_RETRIES_ENV`, and only when the
+operator has not set them) for the duration of this sink's calls.
+Without that, construction against a reachable-but-degraded server runs
+under mlflow's default retry/backoff policy and stalls ``run_document``
+for minutes, before any node, with no output at all.
 
 **Why the RUN is not opened there too.** The driver builds sinks before
 resolve finishes and closes them on every pre-execution refusal (an
@@ -62,11 +88,22 @@ instead of writing to it.
 **What lands.** ``log_params`` receives the driver's one-per-run payload:
 the five identity fields plus every node's declared params flattened to
 ``"<node>.<param.path>"`` keys, so runs are filterable by hyperparameter.
-Values are stringified and truncated to
-:data:`MAX_PARAM_VALUE_CHARS` (the store's own limit would otherwise
-raise INTO the swallow). ``log_metrics`` namespaces each stage's metrics
-as ``"<stage>.<name>"``, so two nodes both reporting ``metrics.loss``
-never overwrite each other.
+Values are stringified and truncated to :data:`MAX_PARAM_VALUE_CHARS`,
+and NAMES — param and metric alike — to :data:`MAX_ENTITY_KEY_CHARS`,
+because the store caps both and ``log_batch`` is all-or-nothing: one
+over-long flattened path would otherwise cost the whole call, identity
+fields included, and raise INTO the swallow. A capped name keeps its
+head (the ``"<node>."`` prefix runs are filtered by) and carries the
+full name's digest, so two deep paths sharing a prefix stay two params.
+``log_metrics`` namespaces each stage's metrics as ``"<stage>.<name>"``,
+so two nodes both reporting ``metrics.loss`` never overwrite each other,
+and gives each key its own increasing STEP: mlflow breaks a latest-value
+tie by max(step), then max(timestamp), then max(VALUE), so restatement
+at a fixed step reports the larger value rather than the last one — and
+restatement is a shipped path (the driver re-logs a re-executed node's
+metrics so records and sinks reflect the final pass, spec §8), besides
+being what a node logging a per-epoch series through
+``ctx.tracker.log_metrics`` does.
 
 **What this pack is not.** No node kind (``NODE_KINDS`` is empty): a
 tracking destination is not a step of the pipeline, and keeping it out of
@@ -79,18 +116,23 @@ older ``./mlruns`` directory: mlflow put the plain-directory file store
 into maintenance mode and now REFUSES it unless ``MLFLOW_ALLOW_FILE_STORE``
 is set in the environment. Directory URIs (bare paths and ``file:``) stay
 in the vocabulary — they are correct on mlflow 2.x and for anyone who has
-opted out — but this pack sets no environment variable on your behalf, so
-on a modern mlflow a directory URI raises at CONSTRUCTION, carrying
-mlflow's own message. Loud and before the run, like every other refusal
-here; just not a refusal the plan-time probe can make, because whether
-the store is allowed is the installed mlflow's business, not the
-document's.
+opted out — but this pack never opts you in, so on a modern mlflow a
+directory URI raises at CONSTRUCTION, carrying mlflow's own message and
+leaving nothing behind on disk. Loud and before the run, like every
+other refusal here; just not a refusal the plan-time probe can make,
+because whether the store is allowed is the installed mlflow's business,
+not the document's. (The only environment this pack ever writes is the
+HTTP budget above — scoped to its own calls, and never over a value you
+set yourself.)
 
 Import cost: stdlib + ``dskit.pipeline`` only.
 """
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import logging
 import os
 import socket
 import time
@@ -100,10 +142,13 @@ import urllib.request
 from dskit.pipeline.base import SINK_KINDS, ConfigError, register_sink_kind
 from dskit.pipeline.node import reject_unknown_params
 
+_log = logging.getLogger(__name__)
+
 __all__ = [
     "DEFAULT_CONNECT_TIMEOUT",
     "DEFAULT_EXPERIMENT",
     "DEFAULT_TRACKING_URI",
+    "MAX_ENTITY_KEY_CHARS",
     "MAX_PARAM_VALUE_CHARS",
     "METRIC_BATCH",
     "MlflowTracker",
@@ -135,6 +180,24 @@ DEFAULT_CONNECT_TIMEOUT = 5.0
 #: between releases (500, then 6000); the smallest is the safe one, and a
 #: value this long is an artifact, not a hyperparameter.
 MAX_PARAM_VALUE_CHARS = 500
+
+#: Longest param or metric KEY the sink sends. The store enforces the
+#: same limit on names as on values, and ``log_batch`` is all-or-nothing:
+#: one over-long key would cost the whole call, inside the swallow.
+MAX_ENTITY_KEY_CHARS = 250
+
+#: Hex digits of the full key's digest that a capped key carries, so two
+#: long keys sharing a prefix stay two keys.
+_KEY_DIGEST_CHARS = 12
+
+#: mlflow's own HTTP budget knobs, read from the environment per request.
+#: ``connect_timeout`` bounds the stdlib TCP probe directly; these are the
+#: only way to bound the calls mlflow itself makes, which otherwise run
+#: under its default retry/backoff policy (minutes against a degraded
+#: server, ahead of every node). The pack sets them only when the operator
+#: has not, and only for the duration of its own calls.
+_HTTP_TIMEOUT_ENV = "MLFLOW_HTTP_REQUEST_TIMEOUT"
+_HTTP_RETRIES_ENV = "MLFLOW_HTTP_REQUEST_MAX_RETRIES"
 
 #: Batch sizes the tracking store accepts in one ``log_batch`` call.
 PARAM_BATCH = 100
@@ -180,6 +243,16 @@ def _unreachable(uri, why):
     )
 
 
+def _parent_problems(uri, path):
+    """Problems creating ``path``: its parent must exist and be writable."""
+    parent = os.path.dirname(path) or "."
+    if not os.path.isdir(parent):
+        return [_unreachable(uri, f"its parent directory {parent!r} does not exist")]
+    if not os.access(parent, os.W_OK):
+        return [_unreachable(uri, f"its parent directory {parent!r} is not writable")]
+    return []
+
+
 def _probe_local(uri, timeout):
     """Problems with a local file store: parent must exist and be writable."""
     del timeout  # a directory is reached without waiting
@@ -192,12 +265,7 @@ def _probe_local(uri, timeout):
         if not os.access(path, os.W_OK):
             return [_unreachable(uri, f"{path!r} is not writable")]
         return []
-    parent = os.path.dirname(path) or "."
-    if not os.path.isdir(parent):
-        return [_unreachable(uri, f"its parent directory {parent!r} does not exist")]
-    if not os.access(parent, os.W_OK):
-        return [_unreachable(uri, f"its parent directory {parent!r} is not writable")]
-    return []
+    return _parent_problems(uri, path)
 
 
 def _sqlite_path(uri):
@@ -219,12 +287,7 @@ def _probe_sqlite(uri, timeout):
         if not os.access(path, os.W_OK):
             return [_unreachable(uri, f"{path!r} is not writable")]
         return []
-    parent = os.path.dirname(path) or "."
-    if not os.path.isdir(parent):
-        return [_unreachable(uri, f"its parent directory {parent!r} does not exist")]
-    if not os.access(parent, os.W_OK):
-        return [_unreachable(uri, f"its parent directory {parent!r} is not writable")]
-    return []
+    return _parent_problems(uri, path)
 
 
 def _probe_host(uri, timeout):
@@ -294,17 +357,76 @@ def _param_value(value):
     return text[: MAX_PARAM_VALUE_CHARS - 3] + "..."
 
 
+def _entity_key(name):
+    """One param/metric name as the store holds it: capped, still unique."""
+    if len(name) <= MAX_ENTITY_KEY_CHARS:
+        return name
+    # Keep the HEAD — the '<node>.' prefix runs are filtered by — and
+    # carry the whole name's digest so two paths sharing a long prefix
+    # cannot collapse into one param, which the store would refuse.
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:_KEY_DIGEST_CHARS]
+    kept = MAX_ENTITY_KEY_CHARS - _KEY_DIGEST_CHARS - 1
+    return f"{name[:kept]}.{digest}"
+
+
 def _chunks(items, size):
     """Yield ``items`` in lists of at most ``size``."""
     for start in range(0, len(items), size):
         yield items[start : start + size]
 
 
+def _is_remote(uri):
+    """Say whether ``uri`` names a tracking SERVER, not a local store."""
+    return _URI_PROBES.get(urllib.parse.urlparse(uri).scheme) is _probe_host
+
+
+@contextlib.contextmanager
+def _request_budget(uri, timeout):
+    """Bound mlflow's own HTTP calls to ``timeout``, for a server URI only."""
+    if not _is_remote(uri):
+        yield
+        return
+    ours = {_HTTP_TIMEOUT_ENV: str(max(1, int(timeout))), _HTTP_RETRIES_ENV: "1"}
+    # Never override a budget the operator declared — only supply one
+    # where mlflow would otherwise use its own generous default.
+    set_here = [name for name in ours if name not in os.environ]
+    for name in set_here:
+        os.environ[name] = ours[name]
+    try:
+        yield
+    finally:
+        for name in set_here:
+            os.environ.pop(name, None)
+
+
+class _StoreRefused(Exception):
+    """The store answered and said no — a config problem, not a blip."""
+
+
+def _usable_experiment(client, name):
+    """Id of an EXISTING, writable experiment; None when there is none."""
+    experiment = client.get_experiment_by_name(name)
+    if experiment is None:
+        return None
+    stage = getattr(experiment, "lifecycle_stage", "active")
+    if stage != "active":
+        # A non-None answer proves the NAME is taken, not that it is
+        # usable: mlflow keeps returning a DELETED experiment, and every
+        # write to it raises — inside the swallow, where the run would
+        # report success having tracked nothing. Deleting an experiment
+        # in the UI is a normal operation, so say so out here instead.
+        raise _StoreRefused(
+            f"experiment {name!r} exists but its lifecycle_stage is {stage!r}, "
+            "not 'active' — restore it in mlflow or declare another experiment"
+        )
+    return experiment.experiment_id
+
+
 def _open_experiment(client, name):
     """Experiment id for ``name``, creating it once — race-tolerantly."""
-    experiment = client.get_experiment_by_name(name)
-    if experiment is not None:
-        return experiment.experiment_id
+    existing = _usable_experiment(client, name)
+    if existing is not None:
+        return existing
     try:
         return client.create_experiment(name)
     except Exception:  # noqa: BLE001 — re-raised below unless it was the race
@@ -314,10 +436,10 @@ def _open_experiment(client, name):
         # constraint. Losing that race is not a misconfiguration, and
         # this runs inside __init__ — raising would let TRACKING kill a
         # correctly configured run, the one thing this seam forbids.
-        experiment = client.get_experiment_by_name(name)
-        if experiment is None:
+        existing = _usable_experiment(client, name)
+        if existing is None:
             raise
-        return experiment.experiment_id
+        return existing
 
 
 class MlflowTracker:
@@ -339,9 +461,10 @@ class MlflowTracker:
         default ``"dskit-pipeline"``, created on first use),
         ``run_name`` (str, optional — mlflow names the run itself when
         omitted), ``tags`` (dict of str -> str, optional),
-        ``connect_timeout`` (number of seconds > 0, default 5.0 —
-        the server reachability probe's budget), ``notes`` (str, the
-        config standard's documentation field). The defaults live in
+        ``connect_timeout`` (number of seconds > 0, default 5.0 — the
+        budget for BOTH the plan-time server probe and the sink's own
+        mlflow HTTP calls), ``notes`` (str, the config standard's
+        documentation field). The defaults live in
         :data:`DEFAULT_TRACKING_URI`/:data:`DEFAULT_EXPERIMENT`/
         :data:`DEFAULT_CONNECT_TIMEOUT` and the scheme list in
         :data:`TRACKING_URI_SCHEMES`; the copies above are pinned to them
@@ -350,9 +473,13 @@ class MlflowTracker:
     Raises
     ------
     ConfigError
-        When ``params`` is invalid, the destination is unreachable, or
-        mlflow is not installed. Raised at construction, which the
-        driver performs before any node runs.
+        When ``params`` is invalid, the destination is unreachable,
+        mlflow is not installed, or the declared experiment exists but
+        is not active. Raised at construction, which the driver performs
+        before any node runs. A reachable SERVER that then fails is not
+        a misconfiguration and does NOT raise: the sink disables itself
+        and warns, because construction runs outside the driver's try
+        and raising there would abort a correctly configured run.
 
     Examples
     --------
@@ -382,6 +509,7 @@ class MlflowTracker:
         self._client = None
         self._experiment = ""
         self._run_id = ""
+        self._steps = {}
         self._open()
 
     # -- configuration ------------------------------------------------------
@@ -463,8 +591,13 @@ class MlflowTracker:
         """The mlflow run this sink writes to (str, ``""`` until first log)."""
         return self._run_id
 
+    def _budget(self):
+        """Bound this sink's own mlflow calls to the declared timeout."""
+        settings = _settings(self.params)
+        return _request_budget(settings["tracking_uri"], settings["connect_timeout"])
+
     def _open(self):
-        """Prove the store usable now: open its client and experiment."""
+        """Prove the store usable now — open its client and experiment, write nothing."""
         try:
             from mlflow.tracking import MlflowClient
         except ImportError as exc:
@@ -475,22 +608,38 @@ class MlflowTracker:
                 ]
             ) from exc
         settings = _settings(self.params)
-        uri = settings["tracking_uri"]
-        if _URI_PROBES.get(urllib.parse.urlparse(uri).scheme) is _probe_local:
-            os.makedirs(_local_path(uri), exist_ok=True)
-        name = settings["experiment"]
+        uri, name = settings["tracking_uri"], settings["experiment"]
         try:
-            client = MlflowClient(tracking_uri=uri)
-            experiment = _open_experiment(client, name)
-        except Exception as exc:  # noqa: BLE001 — surfaced, never swallowed
-            raise ConfigError(
-                [
-                    f"tracking sink {SINK_KIND!r} could not open experiment "
-                    f"{name!r} at {uri!r}: {type(exc).__name__}: {exc}"
-                ]
-            ) from exc
+            with self._budget():
+                client = MlflowClient(tracking_uri=uri)
+                experiment = _open_experiment(client, name)
+        except _StoreRefused as exc:
+            raise ConfigError([self._open_failed(name, uri, exc)]) from exc
+        except Exception as exc:  # noqa: BLE001 — routed, never swallowed
+            if _is_remote(uri):
+                # A SERVER was proved to accept a TCP connection at plan
+                # time; that it is now failing is the server's condition,
+                # not the document's. `_open_sinks` runs OUTSIDE
+                # `run_document`'s try, so raising here would let a
+                # telemetry destination abort a correctly configured run
+                # before a single node ran — the one thing this seam
+                # forbids. Degrade to a disabled sink, loudly.
+                _log.warning(
+                    "%s — tracking disabled for this run",
+                    self._open_failed(name, uri, exc),
+                )
+                return
+            raise ConfigError([self._open_failed(name, uri, exc)]) from exc
         self._client = client
         self._experiment = experiment
+
+    @staticmethod
+    def _open_failed(name, uri, exc):
+        """Word a store that would not open, the one way every path words it."""
+        return (
+            f"tracking sink {SINK_KIND!r} could not open experiment {name!r} "
+            f"at {uri!r}: {type(exc).__name__}: {exc}"
+        )
 
     def _ensure_run(self):
         """Return the run id, creating it on FIRST log, never at construction."""
@@ -503,6 +652,12 @@ class MlflowTracker:
             self._run_id = run.info.run_id
         return self._run_id
 
+    def _next_step(self, key):
+        """Count this key's own writes, so the LAST one wins in the store."""
+        step = self._steps.get(key, -1) + 1
+        self._steps[key] = step
+        return step
+
     def log_params(self, mapping):
         """Record the run's identity and hyperparameters, once at run start.
 
@@ -511,19 +666,27 @@ class MlflowTracker:
         mapping : dict
             ``name`` -> value. The driver sends the five identity fields
             plus every node's declared params under ``"<node>.<path>"``
-            keys; values are stringified and length-capped.
+            keys; names and values are both length-capped, values
+            stringified.
 
         Returns
         -------
         None
-            The payload is written to the tracking store.
+            The payload is written to the tracking store, or dropped
+            when the sink disabled itself at construction.
         """
+        if self._client is None:
+            return
         from mlflow.entities import Param
 
-        run_id = self._ensure_run()
-        entries = [Param(str(k), _param_value(v)) for k, v in mapping.items()]
-        for chunk in _chunks(entries, PARAM_BATCH):
-            self._client.log_batch(run_id, params=chunk)
+        with self._budget():
+            run_id = self._ensure_run()
+            entries = [
+                Param(_entity_key(str(k)), _param_value(v))
+                for k, v in mapping.items()
+            ]
+            for chunk in _chunks(entries, PARAM_BATCH):
+                self._client.log_batch(run_id, params=chunk)
 
     def log_metrics(self, stage, mapping):
         """Record one stage's numeric metrics, namespaced by that stage.
@@ -534,22 +697,31 @@ class MlflowTracker:
             The node key that produced the metrics.
         mapping : dict
             ``name`` -> number. Keys land as ``"<stage>.<name>"``, so two
-            nodes reporting the same metric never overwrite each other.
+            nodes reporting the same metric never overwrite each other,
+            each at its own next STEP so a restated or per-epoch value
+            is ordered by write rather than by size.
 
         Returns
         -------
         None
-            The metrics are written to the tracking store.
+            The metrics are written to the tracking store, or dropped
+            when the sink disabled itself at construction.
         """
+        if self._client is None:
+            return
         from mlflow.entities import Metric
 
-        run_id = self._ensure_run()
-        now = int(time.time() * 1000)
-        entries = [
-            Metric(f"{stage}.{k}", float(v), now, 0) for k, v in mapping.items()
-        ]
-        for chunk in _chunks(entries, METRIC_BATCH):
-            self._client.log_batch(run_id, metrics=chunk)
+        with self._budget():
+            run_id = self._ensure_run()
+            now = int(time.time() * 1000)
+            entries = []
+            for name, value in mapping.items():
+                key = _entity_key(f"{stage}.{name}")
+                entries.append(
+                    Metric(key, float(value), now, self._next_step(key))
+                )
+            for chunk in _chunks(entries, METRIC_BATCH):
+                self._client.log_batch(run_id, metrics=chunk)
 
     def close(self):
         """End the mlflow run, if one was ever started. Idempotent.
@@ -570,7 +742,8 @@ class MlflowTracker:
             return
         client, self._client = self._client, None
         if self._run_id:
-            client.set_terminated(self._run_id, "FINISHED")
+            with self._budget():
+                client.set_terminated(self._run_id, "FINISHED")
 
 
 def register():
