@@ -1839,7 +1839,7 @@ class TorchTrain(_TorchModel):
             for k, v in module.state_dict().items()
         }
 
-    def _train_epochs(self, fit) -> None:
+    def _train_epochs(self, fit):
         """Run every epoch, recording the curve and the monitor's best."""
         for epoch in range(1, fit.epochs + 1):
             started = time.monotonic()
@@ -1856,7 +1856,7 @@ class TorchTrain(_TorchModel):
                 fit.best_state = self._snapshot(fit.module)
         fit.curve.log_final()
 
-    def _restore_best(self, fit) -> None:
+    def _restore_best(self, fit):
         """Put the monitor's selected weights back, before anything reads them.
 
         Restore BEFORE final_loss and ``adapter.fitted``: the persisted

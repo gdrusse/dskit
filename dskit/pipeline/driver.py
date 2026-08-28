@@ -828,7 +828,7 @@ class _NodeAttempt:
     winner_seconds: dict = field(default_factory=dict)
 
 
-def _run_root(document) -> str:
+def _run_root(document):
     """Where this document's run directories live, absolute and expanded."""
     outputs_cfg = document.outputs
     return os.path.abspath(
@@ -839,7 +839,7 @@ def _run_root(document) -> str:
     )
 
 
-def _validated_asof(asof) -> str:
+def _validated_asof(asof):
     """Today (UTC) when none was given, and always a ``YYYY-MM-DD`` string."""
     if asof is None:
         from datetime import datetime, timezone
@@ -950,7 +950,7 @@ def _open_run_dir(document, asof, run_hash):
     return run_dir, prev_dir, prev
 
 
-def _resolve_run(document, the_plan, asof) -> _ResolvedRun:
+def _resolve_run(document, the_plan, asof):
     """Run step 4 RESOLVE: fingerprint, cut, hash, and claim the run dir.
 
     Parameters
@@ -1033,7 +1033,7 @@ def _open_run_log(run_dir):
     return pipeline_logger, handler, stream_handler, prior_level
 
 
-def _close_run_log(pipeline_logger, handler, stream_handler, prior_level) -> None:
+def _close_run_log(pipeline_logger, handler, stream_handler, prior_level):
     """Detach what :func:`_open_run_log` attached and restore the level."""
     pipeline_logger.removeHandler(handler)
     handler.close()
@@ -1043,11 +1043,16 @@ def _close_run_log(pipeline_logger, handler, stream_handler, prior_level) -> Non
     pipeline_logger.setLevel(prior_level)
 
 
-def _run_one_node(attempt, key, spec, the_plan, ctx, run, instances) -> None:
+def _run_one_node(attempt, key, spec, the_plan, ctx, run, instances):
     """Materialize, build, validate and run ONE node, onto ``attempt``.
 
-    The uniform per-node lifecycle (D-145 ruling 4):
-    ``validate_params -> validate_inputs -> run -> validate_outputs``.
+    What this body performs is the execute-time tail of the D-145
+    lifecycle: ``validate_inputs -> run -> validate_outputs``. There is
+    deliberately no ``validate_params`` call to find here — that half ran
+    at plan time in the planner, and runs again inside ``Node.__init__``
+    for whatever is constructed below, so a node reaching this point has
+    been through it whether it was pinned at RESOLVE or built now.
+
     A ``search``-role node — and only a search node — is handed the
     subgraph re-execution seam (docs/24 §8); every other node's context is
     untouched and ``ctx.rerun`` stays None.
@@ -1126,7 +1131,7 @@ def _run_one_node(attempt, key, spec, the_plan, ctx, run, instances) -> None:
         run.search_meta[key]["winner_reran"] = list(attempt.winner_reran)
 
 
-def _record_error(run, key, t0) -> None:
+def _record_error(run, key, t0):
     """Record the node that failed and stop the pass at it."""
     run.seconds[key] = round(time.perf_counter() - t0, 6)
     run.node_states[key] = "error"
@@ -1135,7 +1140,7 @@ def _record_error(run, key, t0) -> None:
     _log.error("node %s: FAILED\n%s", key, run.error_text)
 
 
-def _record_success(run, key, attempt, trackers, t0) -> None:
+def _record_success(run, key, attempt, trackers, t0):
     """Record a completed node, plus any nodes a search winner re-ran.
 
     Records and sinks must reflect the FINAL pass (spec §8): the winner
@@ -1158,7 +1163,7 @@ def _record_success(run, key, attempt, trackers, t0) -> None:
         )
 
 
-def _apply_verdict(run, key, the_plan, outputs) -> None:
+def _apply_verdict(run, key, the_plan, outputs):
     """Halt every DAG descendant of a gate that said NO-GO.
 
     Not a linear break — independent branches keep running, and a halt is
@@ -1181,7 +1186,7 @@ def _apply_verdict(run, key, the_plan, outputs) -> None:
     )
 
 
-def _execute_plan(document, the_plan, ctx, resolved, trackers) -> _Execution:
+def _execute_plan(document, the_plan, ctx, resolved, trackers):
     """Run step 5 EXECUTE: every node in plan order, recording each outcome.
 
     ONE ``log_params`` per run goes first (the Tracker contract): the five
@@ -1242,7 +1247,7 @@ def _execute_plan(document, the_plan, ctx, resolved, trackers) -> _Execution:
     return run
 
 
-def _write_node_records(run_dir, the_plan, run) -> None:
+def _write_node_records(run_dir, the_plan, run):
     """Write one JSON record per node, in execution order."""
     nodes_dir = os.path.join(run_dir, "nodes")
     os.makedirs(nodes_dir, exist_ok=True)
@@ -1264,7 +1269,7 @@ def _write_node_records(run_dir, the_plan, run) -> None:
         _write_json(os.path.join(nodes_dir, f"{i:02d}-{key}.json"), record)
 
 
-def _write_carry(run_dir, node_outputs) -> None:
+def _write_carry(run_dir, node_outputs):
     """Write ``carry.json`` — every JSON-small output the next run may bind."""
     carry = {}
     for key, outs in node_outputs.items():
@@ -1320,7 +1325,7 @@ def _report_lines(document, asof, the_plan, resolved, run, result):
     return lines
 
 
-def _record_run(document, asof, the_plan, resolved, run) -> DocumentRunResult:
+def _record_run(document, asof, the_plan, resolved, run):
     """Run step 6 RECORD: write everything down and return the result.
 
     Reached however the pass ended — clean run, NO-GO halt or node error —
@@ -1519,7 +1524,7 @@ def _fold_splits(spec, cutoff, policy=DEFAULT_SPLIT_POLICY) -> TimeSplitConfig:
     )
 
 
-def _walkforward_refusals(document) -> None:
+def _walkforward_refusals(document):
     """Refuse a document walk-forward cannot honour, before any fold runs.
 
     Three refusals: no ``walkforward`` section (use ``run``), a ``clock``
@@ -1556,7 +1561,7 @@ def _walkforward_refusals(document) -> None:
         )
 
 
-def _walkforward_summary_dir(document, asof) -> str:
+def _walkforward_summary_dir(document, asof):
     """Claim the summary directory that sits beside this evaluation's folds."""
     summary_dir = os.path.join(
         _run_root(document),
@@ -1571,7 +1576,7 @@ def _walkforward_summary_dir(document, asof) -> str:
     return summary_dir
 
 
-def _declared_policy(document) -> str:
+def _declared_policy(document):
     """The split policy every fold's pinned cuts carry (ADR-0031).
 
     The document's own splits section is replaced fold by fold, but its
@@ -1591,7 +1596,7 @@ def _declared_policy(document) -> str:
     return policy
 
 
-def _fold_score(result, target, obj_path, objective) -> float:
+def _fold_score(result, target, obj_path, objective):
     """The declared objective read off one completed fold, as a finite float.
 
     An unreadable or non-numeric objective is an error, not a blank: a
@@ -1683,7 +1688,7 @@ def _run_folds(document, spec, asof, registry, policy):
     return folds, state
 
 
-def _aggregate_folds(folds, select) -> dict:
+def _aggregate_folds(folds, select):
     """Aggregate the scored folds, and name the best one by ``select``."""
     import statistics
 
@@ -1728,7 +1733,7 @@ def _walkforward_report_lines(document, spec, state, folds, aggregate):
 
 def _write_walkforward_summary(
     summary_dir, document, asof, spec, state, folds, aggregate
-) -> None:
+):
     """Write the machine record and the human read of one evaluation."""
     os.makedirs(summary_dir, exist_ok=True)
     _write_json(
