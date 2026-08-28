@@ -61,7 +61,7 @@ from dataclasses import dataclass, field
 
 from dskit.pipeline.base import ConfigError
 from dskit.pipeline.document import PipelineDocument
-from dskit.pipeline.node import Node, NodeContext, NodeKindRegistry
+from dskit.pipeline.node import Node, NodeContext, NodeKindRegistry, TrainableNode
 from dskit.pipeline.planner import plan
 
 __all__ = [
@@ -342,21 +342,47 @@ def _normalize(registry):
     return out
 
 
+def _evidence_bases(cls):
+    """The bases whose code is EVIDENCE about ``cls`` — its own, never the
+    toolkit's.
+
+    One seam for the three MRO walks below, because the rule they share is
+    not "walk the MRO" but "walk the child's OWN classes": the toolkit's
+    bases are read by every kind, so anything they touch would vouch for
+    every kind. That was free while :class:`Node` was the only toolkit
+    ancestor — the walks simply stopped there — and stopped being free the
+    moment :class:`TrainableNode` was inserted between a pack's class and
+    ``Node`` (ADR-0038): its ``node_level_pin`` reads ``self.artifact``,
+    which is a DECLARED knob of three pinned-inference kinds, so an
+    unfiltered walk would certify a knob nobody read.
+
+    Yields
+    ------
+    type
+        Each base from ``cls.__mro__`` up to (excluding) :class:`Node`,
+        skipping :class:`TrainableNode`.
+    """
+    for base in cls.__mro__:
+        if base is Node or base is object:
+            return
+        if base is TrainableNode:
+            continue
+        yield base
+
+
 def _referenced_names(cls):
-    """Names ``cls``'s OWN code touches — MRO up to (excluding) :class:`Node`.
+    """Names ``cls``'s OWN code touches — its :func:`_evidence_bases`.
 
     Read from the compiled code objects, not the source text, for two
     reasons. It works wherever the class does (a notebook cell has no
     source file, and ``inspect.getsource`` raises there — a check that
-    silently skips is a hole). And it cannot be satisfied by a MENTION:
-    ``self.mode`` in a comment or a docstring is invisible to bytecode,
-    while a real attribute access lands in ``co_names``.
+    silently skips is a hole). And it cannot be satisfied by a MENTION: a
+    knob named in a comment or a docstring is invisible to bytecode, while
+    a real attribute access lands in ``co_names``.
     """
     names = set()
     stack = []
-    for base in cls.__mro__:
-        if base is Node or base is object:
-            break
+    for base in _evidence_bases(cls):
         for value in vars(base).values():
             fn = getattr(value, "__func__", value)  # unwrap class/staticmethod
             code = getattr(fn, "__code__", None)
@@ -424,9 +450,7 @@ def _reachable_knob_names(cls):
     names = _referenced_names(cls)
     reachable = set(names)
     stack, modules = [], []
-    for base in cls.__mro__:
-        if base is Node or base is object:
-            break
+    for base in _evidence_bases(cls):
         modules.append(sys.modules.get(base.__module__))
         for value in vars(base).values():
             fn = getattr(value, "__func__", value)
@@ -459,9 +483,7 @@ def _reachable_knob_names(cls):
     # READ merely by being DECLARED, or every knob would vouch for itself
     # (the reason the module-level pass already skips a class's own attrs).
     _DECLARATION_TABLES = {"_PARAMS", "_BASE_PARAMS", "_EXTRA_PARAMS"}
-    for base in cls.__mro__:
-        if base is Node or base is object:
-            break
+    for base in _evidence_bases(cls):
         members = vars(base)
         for name in names:
             if name in _DECLARATION_TABLES or name not in members:
@@ -1217,19 +1239,41 @@ def conformance_suite(
         # -- roles: trainable ------------------------------------------------
 
         @pytest.mark.parametrize("kind", _of_role(*TRAINABLE_ROLES))
-        def test_trainable_kinds_read_mode(self, kind):
-            """The structural floor: a trainable class whose compiled code
-            never touches ``mode`` cannot possibly be honouring it —
-            ``mode="load"`` would be accepted, hashed, and silently
-            ignored (F-220 #12). Bytecode, not source text: a docstring
-            mentioning ``self.mode`` buys nothing."""
+        def test_trainable_kinds_dispatch_through_the_base(self, kind):
+            """The structural floor (ADR-0038): a trainable kind honours
+            ``mode`` by INHERITING the dispatch, not by writing one.
+
+            A class that carries no dispatch at all accepts ``mode="load"``,
+            hashes it, and silently ignores it (F-220 #12). The bar used to
+            sniff the compiled code for the name ``mode``, which only ever
+            proved the class MENTIONED the field; now the type answers, and
+            it answers about the two template methods as well — a kind that
+            wraps either one has taken the dispatch back, and a wrapper is
+            where a second opinion about ``mode`` quietly regrows.
+            """
             if kind is None:
                 pytest.skip(f"registry declares no {list(TRAINABLE_ROLES)} kinds")
             cls = kinds[kind][0]
-            assert "mode" in _referenced_names(cls), (
-                f"{kind} ({cls.__name__}) has trainable role {cls.role!r} and "
-                "never reads self.mode — mode='load' would be accepted, hashed, "
-                "and silently ignored. Load the artifact or REFUSE by name."
+            assert issubclass(cls, TrainableNode), (
+                f"{kind} ({cls.__name__}) has trainable role {cls.role!r} but "
+                "does not subclass TrainableNode — mode='load' would be "
+                "accepted, hashed, and silently ignored. Subclass "
+                "dskit.pipeline.node.TrainableNode and implement run_train / "
+                "run_load."
+            )
+            assert cls.run is TrainableNode.run, (
+                f"{kind} ({cls.__name__}) overrides run() — TrainableNode.run "
+                "IS the mode dispatch, and a class that replaces it can drop "
+                "or invert it unseen. Put the behaviour in run_train / "
+                "run_load instead."
+            )
+            assert cls.validate_inputs is TrainableNode.validate_inputs, (
+                f"{kind} ({cls.__name__}) overrides validate_inputs() — "
+                "TrainableNode.validate_inputs dispatches BY mode, so an "
+                "override re-imposes one set of demands on both modes (the "
+                "load path then demands a wire it never reads). Override "
+                "validate_common_inputs / validate_train_inputs / "
+                "validate_load_inputs instead."
             )
 
         @pytest.mark.parametrize("kind", _of_role(*TRAINABLE_ROLES))

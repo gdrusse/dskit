@@ -26,7 +26,7 @@ from dskit.pipeline.conformance import (
     conformance_suite,
     import_with_blocked,
 )
-from dskit.pipeline.node import Node, NodeKindRegistry
+from dskit.pipeline.node import Node, NodeKindRegistry, TrainableNode
 
 Skipped = pytest.skip.Exception
 
@@ -340,28 +340,65 @@ class IgnoresLoadMode(Clean):
         return {"signal": "refit"}  # mode never consulted — the silent refit
 
 
-class HonoursLoadMode(IgnoresLoadMode):
-    def run(self, ctx, inputs):
-        if self.mode == "load":
-            raise NotImplementedError("nothing to load — this family persists nothing")
+class HonoursLoadMode(TrainableNode):
+    """The shape ADR-0038's structural bar accepts, REPARENTED from the
+    ``if self.mode ==`` body it used to carry: two hooks, no branch, and
+    both template methods still the base's. It persists nothing, so a
+    load is an honest refusal."""
+
+    role = "train"
+    outputs = ("signal",)
+
+    def run_train(self, ctx, inputs):
         return {"signal": "fresh"}
 
+    def run_load(self, ctx, inputs):
+        raise NotImplementedError("nothing to load — this family persists nothing")
 
-class CrashingLoader(IgnoresLoadMode):
-    """Reads mode, then dies with a message naming nothing — a crash is
-    not a refusal."""
+
+class CrashingLoader(HonoursLoadMode):
+    """Dispatches to the load hook, then dies with a message naming
+    nothing — a crash is not a refusal."""
+
+    def run_load(self, ctx, inputs):
+        raise KeyError("weights_v2")
+
+
+class RealLoader(HonoursLoadMode):
+    def run_load(self, ctx, inputs):
+        return {"signal": f"restored:{self.artifact}"}
+
+
+class WrapsRun(RealLoader):
+    """Wraps the ``run`` template method — refused: a wrapper is where the
+    dispatch quietly grows a second opinion."""
 
     def run(self, ctx, inputs):
-        if self.mode == "load":
-            raise KeyError("weights_v2")
-        return {"signal": "fresh"}
+        return super().run(ctx, inputs)
 
 
-class RealLoader(IgnoresLoadMode):
-    def run(self, ctx, inputs):
-        if self.mode == "load":
-            return {"signal": f"restored:{self.artifact}"}
-        return {"signal": "fresh"}
+class WrapsValidateInputs(RealLoader):
+    """Overrides the ``validate_inputs`` template method — the likelier
+    breach, so the refusal names the hook to override instead."""
+
+    def validate_inputs(self, inputs):
+        return []
+
+
+class UnreadArtifactKnob(TrainableNode):
+    """Declares ``artifact`` as a knob and never reads it.
+    :class:`TrainableNode` DOES read ``self.artifact``, and toolkit code is
+    never evidence about a child — so the leftover must still be caught."""
+
+    role = "train"
+    outputs = ("signal",)
+    _PARAMS = ("scale", "artifact")
+
+    def run_train(self, ctx, inputs):
+        return {"signal": self.params.get("scale", 1)}
+
+    def run_load(self, ctx, inputs):
+        raise NotImplementedError("nothing to load")
 
 
 class ConsumingValidator(Clean):
@@ -1079,7 +1116,7 @@ def test_role_checks_skip_when_the_registry_has_no_such_role(tmp_path):
     with pytest.raises(Skipped, match="no data kinds"):
         suite.test_run_consumes_exactly_what_was_fingerprinted(None, tmp_path)
     with pytest.raises(Skipped, match="no .* kinds"):
-        suite.test_trainable_kinds_read_mode(None)
+        suite.test_trainable_kinds_dispatch_through_the_base(None)
     with pytest.raises(Skipped, match="no .* kinds"):
         suite.test_load_mode_loads_or_refuses(None, tmp_path)
     with pytest.raises(Skipped, match="no capital kinds"):
@@ -1095,45 +1132,59 @@ def test_role_checks_skip_when_the_registry_has_no_such_role(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_a_trainable_node_that_never_reads_mode_is_refused():
-    """F-220 #12, structural floor."""
-    with pytest.raises(AssertionError, match="never reads self.mode"):
-        _suite(IgnoresLoadMode).test_trainable_kinds_read_mode("toy")
+def test_a_trainable_node_that_is_not_a_TrainableNode_is_refused():
+    """ADR-0038's structural floor. A plain ``Node`` in a trainable role
+    carries no dispatch at all — ``mode='load'`` would be accepted,
+    hashed and silently ignored (F-220 #12), and after the port a child's
+    own code never names ``mode``, so only the TYPE can answer."""
+    with pytest.raises(AssertionError, match="does not subclass TrainableNode"):
+        _suite(IgnoresLoadMode).test_trainable_kinds_dispatch_through_the_base("toy")
 
 
-def test_a_trainable_node_that_reads_mode_passes_the_floor():
-    _suite(HonoursLoadMode).test_trainable_kinds_read_mode("toy")
+def test_a_ported_trainable_passes_the_structural_floor():
+    _suite(HonoursLoadMode).test_trainable_kinds_dispatch_through_the_base("toy")
 
 
-def test_merely_MENTIONING_self_mode_does_not_satisfy_the_floor():
-    """Bytecode, not source text: a docstring saying ``self.mode`` is
-    invisible, so a node cannot buy its way past by talking about the
-    field it never reads."""
-
-    class TalksAboutMode(IgnoresLoadMode):
-        def run(self, ctx, inputs):
-            """Honours self.mode faithfully."""  # self.mode, honest
-            return {"signal": "refit"}
-
-    with pytest.raises(AssertionError, match="never reads self.mode"):
-        _suite(TalksAboutMode).test_trainable_kinds_read_mode("toy")
+def test_wrapping_the_run_template_method_is_refused():
+    with pytest.raises(AssertionError, match="run_train.*run_load"):
+        _suite(WrapsRun).test_trainable_kinds_dispatch_through_the_base("toy")
 
 
-def test_the_mode_floor_works_where_there_is_no_source_file():
+def test_overriding_validate_inputs_is_refused_and_names_the_hook():
+    """The validation half is the likelier breach — a pack reaches for
+    ``validate_inputs`` by habit — so the refusal names the hooks."""
+    with pytest.raises(AssertionError, match="validate_common_inputs"):
+        _suite(WrapsValidateInputs).test_trainable_kinds_dispatch_through_the_base(
+            "toy"
+        )
+
+
+def test_the_base_never_vouches_for_a_childs_declared_artifact_knob():
+    """The ``_evidence_bases`` seam: ``TrainableNode.node_level_pin`` reads
+    ``self.artifact``, a DECLARED knob of three pinned-inference kinds.
+    Toolkit code is never evidence about a child, so the walk skips the
+    base and the unread knob is still caught."""
+    suite = _suite(UnreadArtifactKnob)
+    with pytest.raises(AssertionError, match=r"\['artifact'\]"):
+        suite.test_every_declared_knob_is_reachable_from_the_class("toy")
+
+
+def test_knob_discovery_works_where_there_is_no_source_file():
     """Classes defined by exec() have no retrievable source — a source-
     text check would silently SKIP, which is a hole. Bytecode answers."""
-    namespace = {"IgnoresLoadMode": IgnoresLoadMode}
+    namespace = {"Clean": Clean}
     exec(  # noqa: S102 - the point of the test is a sourceless class
-        "class Sourceless(IgnoresLoadMode):\n"
+        "class Sourceless(Clean):\n"
+        "    _PARAMS = ('scale', 'leftover')\n"
         "    def run(self, ctx, inputs):\n"
-        "        if self.mode == 'load':\n"
-        "            raise NotImplementedError('nothing to load')\n"
-        "        return {'signal': 'fresh'}\n",
+        "        return {'records': [self.params.get('scale', 1)]}\n",
         namespace,
     )
     with pytest.raises((OSError, TypeError)):  # the source really is gone
         __import__("inspect").getsource(namespace["Sourceless"])
-    _suite(namespace["Sourceless"]).test_trainable_kinds_read_mode("toy")
+    suite = _suite(namespace["Sourceless"])
+    with pytest.raises(AssertionError, match="leftover"):
+        suite.test_every_declared_knob_is_reachable_from_the_class("toy")
 
 
 def _trainable_probe(**kw):
@@ -1193,9 +1244,7 @@ def test_a_loader_whose_train_mode_cannot_run_still_passes(tmp_path):
     itself refuses, that is loud and the restore proof stands alone."""
 
     class LoadOnly(RealLoader):
-        def run(self, ctx, inputs):
-            if self.mode == "load":
-                return {"signal": f"restored:{self.artifact}"}
+        def run_train(self, ctx, inputs):
             raise RuntimeError("this family is inference-only; train elsewhere")
 
     probes = _trainable_probe(
