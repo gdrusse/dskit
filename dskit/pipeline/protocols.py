@@ -89,15 +89,17 @@ class Tracker(Protocol):
     built by their registered factories (``register_sink_kind``)."""
 
     def log_params(self, mapping):
-        """Record run identity/parameters — MERGE, never replace.
+        """Record run identity/parameters — merging or replacing, either.
 
-        The document driver calls this twice with DISJOINT keys: the run's
-        identity at run start (undotted ``name``/``asof``/hashes/
-        ``nodes``, so an aborted run still lands something), then the
-        hyperparameters the run actually ran with once the nodes are done
+        The document driver calls this twice: the run's identity at run
+        start (undotted ``name``/``asof``/hashes/``nodes``, so an aborted
+        run still lands something), then that identity AGAIN beside the
+        hyperparameters the run actually ran with, once the nodes are done
         (dotted ``"<node>.<param.path>"`` — a search node's winner is not
-        known until it has run). No key is ever sent twice, so a sink that
-        refuses to restate a param is safe."""
+        known until it has run). The second payload is a superset of the
+        first with identical values for the shared keys, so a sink that
+        replaces loses no field, and a sink that refuses to restate a
+        param under a DIFFERENT value (mlflow) is never asked to."""
         ...
 
     def log_metrics(self, stage, mapping):

@@ -574,9 +574,23 @@ class TestSpaceKeyGrammarParity:
             _apply_param_override(target, node, path.split("."), "SENTINEL")
             after = flatten_param_paths(node, target)
             assert after[key] == "SENTINEL"
-            assert {k: v for k, v in after.items() if k != key} == {
-                k: v for k, v in flat.items() if k != key
-            }
+            assert self._unrelated(after, key) == self._unrelated(flat, key)
+
+    @staticmethod
+    def _unrelated(mapping, key):
+        """``mapping`` minus everything on ``key``'s own branch.
+
+        An override touches its target, whatever was BELOW it (replaced),
+        and the blocks ABOVE it that are logged whole — every one of those
+        moves is the override doing its job. Nothing off that branch may
+        move, which is the pin."""
+        return {
+            k: v
+            for k, v in mapping.items()
+            if k != key
+            and not k.startswith(f"{key}.")
+            and not key.startswith(f"{k}.")
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -835,6 +849,31 @@ class TestEndToEndParabola:
         assert winner != doc.pipeline["theta"].params["theta"]  # else vacuous
         assert logged["theta.theta"] == winner
         assert logged["src.x"] == doc.pipeline["src"].params["x"]  # untouched node
+
+    def test_a_search_node_logs_its_own_declaration_not_a_resolved_score(
+        self, tmp_path, registry
+    ):
+        # 'objective' is a $-ref the SEAM reads raw. Materializing it yields
+        # the BASE pass's loss — an intermediate no pass ever selected on,
+        # which would contradict, in one payload, both the val metrics
+        # logged beside it and the theta it says the run used.
+        doc = parabola_document(
+            tmp_path,
+            tracking=TrackingConfig(
+                sinks=(SinkConfig(kind="dskit.pipeline.testing:MemoryTracker"),)
+            ),
+        )
+        result = run_document(doc, asof=ASOF, registry=registry)
+        sink = MemoryTracker.instances[-1]
+        logged = sink.logged_params
+        declared = doc.pipeline["search"].params
+        assert logged["search.objective"] == declared["objective"]
+        assert logged["search.space"] == declared["space"]
+        assert logged["search.select"] == declared["select"]
+        # The scores live in the metrics stream, where they mean something.
+        losses = [m["metrics.loss"] for node, m in sink.metrics if node == "val"]
+        assert losses[0] == 49.0  # the value that used to be logged as a param
+        assert result.outputs["search"]["best_score"] == pytest.approx(min(losses))
 
 
 # ---------------------------------------------------------------------------

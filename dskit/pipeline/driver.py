@@ -208,25 +208,69 @@ def _tracked_identity(document, asof, run_hash, order):
     }
 
 
+def _tracked_value(declared, resolved):
+    """One param as a sink should see it: the value, except for wiring.
+
+    Materialization is what makes a logged param TRUE — a ``$prev`` carry
+    and a ``$splits`` boundary resolve to the number the node sized or cut
+    on, and logging the spec instead would file a value the run never had.
+    A ``$<node>.<port>`` reference is the exception, because it is not a
+    knob at all but an EDGE: it resolves to another node's output, which
+    is already recorded as that node's output, may be a whole dataset
+    (pushed into every sink), and can be a metric no pass selected on — a
+    search node's ``objective`` resolves to the base pass's score, a
+    number the seam never reads and nothing ever chose. For those the
+    declaration is both the honest answer and a bounded one, so it is
+    logged as written.
+
+    Parameters
+    ----------
+    declared : any
+        The param subtree as the document spells it (with any search
+        overrides already applied), so references are still visible.
+    resolved : any
+        The same subtree after :func:`_materialize`.
+
+    Returns
+    -------
+    any
+        ``resolved``, with every node-reference subtree replaced by the
+        reference string that produced it.
+    """
+    if is_node_ref(declared):
+        return resolved if parse_node_ref(declared)[0] == SPLITS_SOURCE else declared
+    if isinstance(declared, dict) and isinstance(resolved, dict):
+        return {k: _tracked_value(v, resolved.get(k)) for k, v in declared.items()}
+    if isinstance(declared, list) and isinstance(resolved, list):
+        if len(declared) == len(resolved):
+            return [_tracked_value(d, r) for d, r in zip(declared, resolved)]
+    return resolved
+
+
 def _tracked_params(effective, order):
     """The hyperparameters the run RAN with, flattened for the sinks.
 
     Identity alone left runs unfilterable — you could not ask a sink for
     "the runs at hidden_size=64". What makes that answer TRUE is logging
-    the effective params, never the document's text: a ``$prev`` carry or
-    a ``$node`` reference is a reference, not a value, and a search node's
-    winner overrides what the document declared. Logging the declaration
-    would file the winner's score under a config no pass ever executed —
-    worse than logging nothing, which is why this payload is sent after
-    the nodes have run rather than beside the identity fields.
+    the effective params, never the document's text: a ``$prev`` carry is
+    a reference, not a value, and a search node's winner overrides what
+    the document declared. Logging the declaration would file the
+    winner's score under a config no pass ever executed — worse than
+    logging nothing, which is why this payload is sent after the nodes
+    have run rather than beside the identity fields. The one thing kept
+    as written is an edge into another node's outputs
+    (:func:`_tracked_value`).
 
     Parameters
     ----------
     effective : dict
-        ``node key -> the materialized params that node ran with`` (the
-        winner pass's, where a search re-executed it). A node that never
-        reached execution is absent: it has no params-in-effect, and
+        ``node key -> the params that node ran with`` (the winner pass's,
+        where a search re-executed it), materialized and passed through
+        :func:`_tracked_value`. A node the run never REACHED — halted, or
+        after an abort — is absent: it has no params-in-effect, and
         substituting its declaration would be the same lie in miniature.
+        A node that failed is present, since it was built and entered
+        with those params, and that config is what the failure is about.
     order : tuple of str
         Plan order, so the payload is built deterministically.
 
@@ -381,10 +425,11 @@ class _SearchSeam:
     ``calls`` counts every ``rerun`` invocation — surfaced as
     ``trials_executed`` in the search node's record.
 
-    ``params_used`` holds the MATERIALIZED params of the most recent pass,
-    keyed by node — the driver reads it after :meth:`apply_winner` so the
-    sinks log the params the winner actually ran with, not the ones the
-    document declared and the search then overrode.
+    ``params_used`` holds the params of the most recent pass, keyed by
+    node — materialized, then passed through :func:`_tracked_value`. The
+    driver reads it after :meth:`apply_winner` so the sinks log the params
+    the winner actually ran with, not the ones the document declared and
+    the search then overrode.
     """
 
     def __init__(self, key, the_plan, node_outputs, splits_info, prev, trial_ctx):
@@ -499,7 +544,7 @@ class _SearchSeam:
                 self._prev,
                 bindings,
             )
-            self.params_used[k] = params
+            self.params_used[k] = _tracked_value(raw, params)
             inputs = {
                 port: _materialize(
                     ref,
@@ -987,10 +1032,10 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
     error_text = ""
     state = "ran"
 
+    identity = _tracked_identity(document, asof, run_hash, the_plan.order)
+
     try:
-        trackers.log_params(
-            _tracked_identity(document, asof, run_hash, the_plan.order)
-        )
+        trackers.log_params(identity)
         for key in the_plan.order:
             spec = document.pipeline[key]
             if key in halted:
@@ -1009,7 +1054,7 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
                     prev,
                     prev_bindings,
                 )
-                effective_params[key] = params
+                effective_params[key] = _tracked_value(spec.params, params)
                 inputs = {
                     port: _materialize(
                         ref,
@@ -1100,9 +1145,12 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
             node_states.setdefault(key, "not_run")
         # The hyperparameters go out only now: a search node's winner is
         # not known until it has run, and a reference is only a value once
-        # materialized. Disjoint keys from the identity payload (dotted vs
-        # undotted), so no sink is ever asked to restate a param.
-        trackers.log_params(_tracked_params(effective_params, the_plan.order))
+        # materialized. The identity rides along again — unchanged, so a
+        # sink that MERGES and one that REPLACES both end up holding the
+        # whole picture, and the seam needs no promise about which it is.
+        trackers.log_params(
+            {**identity, **_tracked_params(effective_params, the_plan.order)}
+        )
 
         # -- 6 RECORD ---------------------------------------------------
         nodes_dir = os.path.join(run_dir, "nodes")

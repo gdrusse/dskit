@@ -225,13 +225,16 @@ def parse_prev_ref(value):
 
 
 def _flatten_into(out, prefix, value):
-    """Emit ``prefix`` -> leaf for one params subtree, key by key."""
+    """Emit ``prefix`` -> leaf for one params subtree, key by key.
+
+    A block that holds a key no path segment can name is emitted WHOLE as
+    well as descended, so the walk never drops a value.
+    """
     inside = _spellable_keys(value)
-    if inside:
-        for name in inside:
-            _flatten_into(out, f"{prefix}.{name}", value[name])
-    else:
+    if not inside or len(inside) < len(value):
         out[prefix] = value
+    for name in inside:
+        _flatten_into(out, f"{prefix}.{name}", value[name])
 
 
 def _spellable_keys(value):
@@ -253,6 +256,14 @@ def flatten_param_paths(node_key, params):
     could ever spell it, while its siblings ride along — dropping a whole
     dict for one unspellable key would hide knobs that ARE tunable
     (``n.opt.lr`` beside ``n.opt.1st_moment``).
+
+    Descent never LOSES a value, though: a block holding an unspellable
+    key is ALSO emitted whole under its own path, so two runs differing
+    only in ``opt.1st_moment`` still log differently. Emission therefore
+    never depends on whether a value happens to have a spellable sibling
+    — the one asymmetry left is the node's own params dict, which has no
+    path of its own (``"size"`` is no override target), so an unspellable
+    TOP-level param name is unrecoverable.
 
     A value with no spellable key below it is the LEAF and is emitted
     whole: a scalar, a list, an empty dict, and a block like ``hpo-grid``'s
@@ -276,8 +287,9 @@ def flatten_param_paths(node_key, params):
     Returns
     -------
     dict
-        ``"<node_key>.<param.path>"`` -> the leaf value at that path;
-        empty when the node declares no addressable params. Every key
+        ``"<node_key>.<param.path>"`` -> the value at that path (a leaf,
+        or a block that also holds something unspellable); empty when the
+        node declares no addressable params. Every key
         contains at least one dot, so these never collide with the
         undotted run-identity fields a tracker logs beside them.
     """

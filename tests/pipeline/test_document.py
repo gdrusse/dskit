@@ -115,8 +115,10 @@ class TestFlattenParamPaths:
         # dropped — but it must not take its addressable SIBLINGS with it
         # (an override addresses 'n.opt.lr' happily beside '1st_moment').
         assert flatten_param_paths("size", {"1d": 3, "ok": 1}) == {"size.ok": 1}
-        assert flatten_param_paths("n", {"opt": {"lr": 0.001, "1st_moment": 0.9}}) == {
-            "n.opt.lr": 0.001
+        opt = {"lr": 0.001, "1st_moment": 0.9}
+        assert flatten_param_paths("n", {"opt": opt}) == {
+            "n.opt": opt,  # whole, so the unspellable knob is not lost
+            "n.opt.lr": 0.001,  # and the tunable one is filterable alone
         }
 
     def test_a_dict_with_nothing_spellable_inside_is_itself_the_leaf(self):
@@ -132,13 +134,27 @@ class TestFlattenParamPaths:
             "n.by_day": {"1d": 3}
         }
 
+    def test_a_block_holding_an_unspellable_key_is_also_emitted_whole(self):
+        # Descent must never LOSE a value. '1d' cannot be a path segment,
+        # so it gets no key of its own — but two runs differing only in
+        # 'by_day.1d' must not log identically, so the block that holds it
+        # rides along whole beside the keys that ARE addressable. Without
+        # this, whether a value survives would depend on whether it happens
+        # to have a spellable sibling.
+        assert flatten_param_paths("n", {"by_day": {"1d": 3, "total": 4}}) == {
+            "n.by_day": {"1d": 3, "total": 4},
+            "n.by_day.total": 4,
+        }
+
     def test_a_carry_spec_yields_its_addressable_default(self):
         # A raw $prev carry only reaches the flattener outside the driver
         # (which flattens MATERIALIZED params); '$prev' is no segment, and
-        # 'default' is an existing param an override may set.
+        # 'default' is an existing param an override may set — and the
+        # carry rides along whole, so the target it reads is not lost.
         carry = {"$prev": "size.final_bankroll", "default": 1000.0}
         assert flatten_param_paths("size", {"bankroll": carry}) == {
-            "size.bankroll.default": 1000.0
+            "size.bankroll": carry,
+            "size.bankroll.default": 1000.0,
         }
 
     def test_no_params_flatten_to_nothing(self):

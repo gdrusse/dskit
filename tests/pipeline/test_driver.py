@@ -37,6 +37,30 @@ from tests.pipeline.dochelpers import banking_document, banking_pipeline, make_r
 ASOF = "2026-01-01"
 
 
+class ReplacingTracker:
+    """A Tracker seam implemented the blunt way — each ``log_params`` call
+    REPLACES what the sink holds. Nothing in the seam forbids that, so the
+    driver's payloads must survive it; ``payloads`` keeps every call so a
+    test can also read what was sent, in order."""
+
+    instances = []
+
+    def __init__(self, params):
+        self.params = {}
+        self.payloads = []
+        ReplacingTracker.instances.append(self)
+
+    def log_params(self, mapping):
+        self.payloads.append(dict(mapping))
+        self.params = dict(mapping)
+
+    def log_metrics(self, stage, mapping):
+        pass
+
+    def close(self):
+        pass
+
+
 class BadContractNode(Node):
     role = "transform"
     outputs = ("x",)
@@ -349,6 +373,86 @@ class TestTracking:
             "size.bankroll"
         ] == pytest.approx(first.outputs["size"]["final_bankroll"])
         assert second.prev_run == first.run_dir
+
+    def test_a_param_wired_to_a_node_output_logs_the_REFERENCE(
+        self, tmp_path, registry
+    ):
+        # A param declared as '$node.port' is WIRING, not a hyperparameter:
+        # its resolved value is another node's output — already recorded as
+        # that node's output, possibly a whole dataset, and meaningless as a
+        # sink filter. The declaration is what identifies the config, and it
+        # is bounded, so it is what gets logged.
+        self.register_memory()
+        pipeline = banking_pipeline()
+        pipeline["clip"] = NodeSpec(
+            uses="synth-clip",
+            inputs={"events": "$events.events"},
+            params={"lo": 0.02, "hi": 0.98, "note": "$events.instruments"},
+        )
+        doc = bdoc(
+            tmp_path,
+            pipeline=pipeline,
+            tracking=TrackingConfig(sinks=(SinkConfig(kind="memory"),)),
+        )
+        result = run_document(doc, asof=ASOF, registry=registry)
+        logged = MemoryTracker.instances[-1].logged_params
+        assert result.state == "ran"
+        assert logged["clip.note"] == "$events.instruments"
+        assert logged["clip.lo"] == 0.02  # ordinary knobs still log their value
+
+    def test_the_second_payload_repeats_identity_so_a_sink_may_replace(
+        self, tmp_path, registry
+    ):
+        # The driver logs params twice (identity at run start, so a crash
+        # still lands something; hyperparameters after the nodes, because a
+        # search winner is not known before). A sink that REPLACES on each
+        # call — the obvious reading of a 'log the params' seam, and what a
+        # tier-3 sink may already do — must not thereby lose the identity,
+        # so the second payload carries it again, unchanged.
+        doc = bdoc(
+            tmp_path,
+            tracking=TrackingConfig(
+                sinks=(SinkConfig(kind="tests.pipeline.test_driver:ReplacingTracker"),)
+            ),
+        )
+        result = run_document(doc, asof=ASOF, registry=registry)
+        sink = ReplacingTracker.instances[-1]
+        assert set(sink.payloads[0]) == {
+            "name",
+            "asof",
+            "document_hash",
+            "run_hash",
+            "nodes",
+        }
+        last = sink.params  # what a replacing sink is left holding
+        assert last["run_hash"] == result.run_hash and last["name"] == doc.name
+        assert last["events.n_events"] == 432
+        # No key is ever re-sent with a DIFFERENT value (mlflow refuses that).
+        assert all(last[k] == v for k, v in sink.payloads[0].items())
+
+    def test_a_node_that_never_ran_logs_no_params(self, tmp_path, registry):
+        # 'Params in effect' means params that took effect: a node the run
+        # never reached has none. A node that FAILED does — it was built and
+        # entered with them, and that config is the point of the payload.
+        self.register_memory()
+        pipeline = banking_pipeline()
+        pipeline["qhat"] = NodeSpec(
+            uses="synth-train",
+            mode="train",
+            inputs={"events": "$clip.events"},
+            params={"min_train": 10_000},
+        )
+        doc = bdoc(
+            tmp_path,
+            pipeline=pipeline,
+            tracking=TrackingConfig(sinks=(SinkConfig(kind="memory"),)),
+        )
+        result = run_document(doc, asof=ASOF, registry=registry)
+        logged = MemoryTracker.instances[-1].logged_params
+        assert result.node_states["qhat"] == "error"
+        assert logged["qhat.min_train"] == 10_000
+        assert result.node_states["size"] == "not_run"
+        assert not [k for k in logged if k.startswith("size.")]
 
     def test_sink_closes_even_when_a_node_errors(self, tmp_path, registry):
         self.register_memory()
