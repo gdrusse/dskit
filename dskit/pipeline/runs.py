@@ -32,6 +32,7 @@ __all__ = [
     "RESULT_FILE",
     "RunProblem",
     "RunSummary",
+    "WALKFORWARD_FILE",
     "format_runs",
     "node_metrics",
     "param_at",
@@ -54,6 +55,12 @@ RESULT_FILE = "result.json"
 CONFIG_FILE = "config.json"
 CARRY_FILE = "carry.json"
 NODES_DIR = "nodes"
+
+#: The machine record `driver.run_walk_forward` writes into its summary
+#: dir (beside `report.md`; deliberately no `result.json`). The scan
+#: uses it to name the driver's own summary dirs for what they are in
+#: the skipped list, instead of listing them as foreign strays.
+WALKFORWARD_FILE = "walkforward.json"
 
 #: Keys `result.json` must carry AS NON-EMPTY STRINGS for a directory to
 #: count as a run. Presence alone is not enough: an empty run_hash would
@@ -299,6 +306,11 @@ def _read_run(run_dir):
         return None, "not a directory"
     result, reason = _load_json(os.path.join(run_dir, RESULT_FILE))
     if not isinstance(result, dict):
+        if os.path.isfile(os.path.join(run_dir, WALKFORWARD_FILE)):
+            # The driver's own walk-forward summary layout — its record
+            # beside report.md, deliberately no result.json. Not foreign:
+            # named for what it is, so it cannot drown the real strays.
+            return None, "walk-forward summary (not a run)"
         # A file holding `null` parses to None with no reason of its own,
         # and a skip with a blank reason is a silent skip.
         return None, reason or f"{RESULT_FILE} is not an object"
@@ -364,9 +376,10 @@ def _run_metrics(run_dir):
     beside it.
     """
     carry, carry_reason = _load_json(os.path.join(run_dir, CARRY_FILE))
-    carried = carry if isinstance(carry, dict) else {}
+    carry_ok = isinstance(carry, dict)
+    carried = carry if carry_ok else {}
     notes = []
-    if not isinstance(carry, dict):
+    if not carry_ok:
         reason = carry_reason or f"{CARRY_FILE} is not an object"
         notes.append(f"{reason} — carried metrics are not tabulated")
     recorded, record_notes = _node_outputs(run_dir)
@@ -376,36 +389,42 @@ def _run_metrics(run_dir):
         outputs = recorded.get(key, {})
         merged = {k: v for k, v in outputs.items() if not _is_summary_marker(v)}
         node_carry = carried.get(key)
-        if isinstance(node_carry, dict):
-            merged.update(node_carry)
-        notes.extend(_unrecovered(key, outputs, merged))
+        node_carry = node_carry if isinstance(node_carry, dict) else {}
+        merged.update(node_carry)
+        if carry_ok:
+            # Both diagnoses read the node's CARRY as evidence; with
+            # carry.json unreadable, its own note is the whole story —
+            # a per-node verdict beside it would contradict it.
+            notes.extend(_unrecovered(key, outputs, node_carry))
         for metric, value in node_metrics(merged).items():
             metrics[f"{key}.{metric}"] = value
     return metrics, tuple(notes)
 
 
-def _unrecovered(key, outputs, merged):
+def _unrecovered(key, outputs, carried):
     """Name one node's measurements that survived as text, not as data.
 
-    Two shapes exist, both from ``driver._summarize``: a `metrics` DICT
-    reduced to the container marker, and a non-finite float reduced to
-    its ``repr``. Either renders the same blank cell as a node that
-    measured nothing, and only the latter is routine.
+    Both diagnoses are judged against the node's CARRY (the caller skips
+    this entirely when ``carry.json`` was unreadable). ``_carryable``
+    refuses non-finite floats, so a `metrics` dict absent from carry was
+    too large or non-finite to keep, and a top-level ``"inf"``/``"nan"``
+    absent from carry is a diverged float's ``repr`` — while the same
+    text PRESENT in carry is provably a genuine string, and no note
+    fires: a string simply isn't a numeric metric.
     """
     notes = []
     marker = outputs.get("metrics")
     if (
         _is_summary_marker(marker)
         and marker["type"] == "dict"
-        and "metrics" not in merged
+        and "metrics" not in carried
     ):
         notes.append(
             f"{key}: its metrics dict was summarized in the record "
             "and too large or non-finite to carry — not tabulated"
         )
     for name, value in outputs.items():
-        recovered = merged.get(name)
-        if value in _NON_FINITE and not isinstance(recovered, (int, float)):
+        if value in _NON_FINITE and name not in carried:
             notes.append(
                 f"{key}.{name}: measured {value} — non-finite, recorded as "
                 "text and not tabulated as a number"

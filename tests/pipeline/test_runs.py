@@ -15,8 +15,8 @@ import pytest
 from dskit.pipeline import driver as driver_mod
 from dskit.pipeline import runs as runs_mod
 from dskit.pipeline.base import OutputsConfig
-from dskit.pipeline.document import NodeSpec
-from dskit.pipeline.driver import run_document
+from dskit.pipeline.document import NodeSpec, PipelineDocument, WalkForwardSpec
+from dskit.pipeline.driver import run_document, run_walk_forward
 from dskit.pipeline.node import Node
 from dskit.pipeline.runs import (
     CARRY_FILE,
@@ -26,6 +26,7 @@ from dskit.pipeline.runs import (
     RESULT_FILE,
     RunProblem,
     RunSummary,
+    WALKFORWARD_FILE,
     format_runs,
     node_metrics,
     param_at,
@@ -64,6 +65,21 @@ class DivergedScalarNode(Node):
     def run(self, ctx, inputs):
         """Return a diverged top-level loss beside a real count."""
         return {"loss": float("inf"), "n": 3}
+
+
+class StringNanNode(Node):
+    """A node whose ``"nan"`` is a GENUINE string, not a diverged float.
+
+    Strings are carryable, so this one reaches ``carry.json`` — which a
+    non-finite float never can (`driver._carryable` refuses it). Its
+    presence in carry is therefore proof it was born a string.
+    """
+
+    role = "transform"
+
+    def run(self, ctx, inputs):
+        """Return a real string that merely spells a non-finite name."""
+        return {"status": "nan", "n": 2}
 
 
 @pytest.fixture
@@ -139,6 +155,39 @@ class TestScan:
         with pytest.raises(OSError, match="no run root"):
             scan_runs(str(tmp_path / "nope"))
 
+    def test_a_walk_forward_summary_dir_is_named_for_what_it_is(self, tmp_path):
+        """Every walkforward invocation leaves its summary dir in the run
+        root; listing it forever as "no result.json" would drown the
+        genuinely foreign strays. The scan recognizes the driver's own
+        layout by its `walkforward.json` record — still listed, but
+        accurately named."""
+        root = str(tmp_path / "pipeline_runs")
+        doc = PipelineDocument(
+            name="wfdemo",
+            pipeline={
+                "events": NodeSpec(
+                    uses="dskit.pipeline.synthetic_nodes:SynthEvents",
+                    params={"n_events": 4},
+                ),
+                "probe": NodeSpec(
+                    uses="tests.pipeline.test_walkforward:SplitProbe",
+                    inputs={"events": "$events.events"},
+                ),
+            },
+            outputs=OutputsConfig(run_root=root),
+            walkforward=WalkForwardSpec(
+                objective="$probe.score", val_days=7, folds=["2025-01-01"]
+            ),
+        )
+        result = run_walk_forward(doc, asof=FIRST)
+        # The writer's real layout: the record, beside report.md.
+        assert os.path.isfile(os.path.join(result.summary_dir, WALKFORWARD_FILE))
+        runs, problems = scan_runs(root)
+        assert [r.name for r in runs] == ["wfdemo-wf-2025-01-01"]  # the fold ran
+        (problem,) = problems
+        assert problem.entry == os.path.basename(result.summary_dir)
+        assert problem.reason == "walk-forward summary (not a run)"
+
     def test_a_binary_result_json_is_a_skip_not_a_crash(self, two_runs, capsys):
         """UnicodeDecodeError is a ValueError, not a JSONDecodeError: a
         foreign directory holding binary bytes named result.json must
@@ -184,25 +233,24 @@ class TestScan:
         runs, _ = scan_runs(DEFAULT_RUN_ROOT)
         assert [r.run_dir for r in runs] == [result.run_dir]
 
-    def test_the_default_run_root_is_spelled_only_where_pinned(self):
-        """Where ``pipeline_runs`` may be spelled in dskit — matched in
-        ANY quoting, single or double, with or without the ``./`` prefix,
-        because a quote-anchored grep is exactly the pin a respelled copy
-        slips past. The three permitted homes: runs.py owns
-        `DEFAULT_RUN_ROOT`; driver.py restates it and the agreement is
-        behavioural (test_default_run_root_agrees_with_the_driver);
-        resolve.py's legacy ``{data_root}/pipeline_runs`` is a DIFFERENT
-        knob for a different layout (see TestRunDirLayout). Anywhere else
-        is a new restatement nothing pins — `__main__.py`'s ``--help``
-        derives from the constant instead
+    def test_the_default_run_root_token_is_confined_to_its_owners(self):
+        """The BARE token, matched as a substring — no quoting, prefix or
+        EMBEDDING hides it: a quoted-form pin missed
+        ``help="... (default ./pipeline_runs)"``. Its owners: runs.py
+        defines `DEFAULT_RUN_ROOT`; driver.py's restatement is
+        agreement-pinned (test_default_run_root_agrees_with_the_driver);
+        resolve.py owns the legacy ``{data_root}/pipeline_runs`` — a
+        DIFFERENT knob (TestRunDirLayout) — and base.py documents that
+        legacy placement in its grammar prose. Anyone else must import
+        `DEFAULT_RUN_ROOT` — their source then contains only the name,
+        which is how `__main__.py`'s ``--help`` states the default
         (TestVerb::test_the_help_states_the_default_from_the_constant)."""
-        spelled = re.compile(r"['\"](?:\./)?pipeline_runs['\"]")
         hits = sorted(
             path.name
-            for path in (REPO / "dskit").rglob("*.py")
-            if spelled.search(path.read_text(encoding="utf-8"))
+            for path in (REPO / "dskit/pipeline").rglob("*.py")
+            if "pipeline_runs" in path.read_text(encoding="utf-8")
         )
-        assert hits == ["driver.py", "resolve.py", "runs.py"]
+        assert hits == ["base.py", "driver.py", "resolve.py", "runs.py"]
 
     def test_resolve_run_root_is_what_the_declaration_means(self, tmp_path):
         assert resolve_run_root("") == os.path.abspath(DEFAULT_RUN_ROOT)
@@ -441,6 +489,31 @@ class TestLostMeasurements:
         assert marker
         assert "diverged.loss" in printed
 
+    def test_a_genuine_string_nan_is_not_reported_as_non_finite(self, tmp_path):
+        """A ``"nan"`` PRESENT in carry is provably a real string — carry
+        refuses non-finite floats, so only a genuine string can arrive
+        there. A string simply isn't a numeric metric: no note."""
+        root = str(tmp_path / "pipeline_runs")
+        pipeline = {
+            "events": NodeSpec(uses="synth-events", params={"n_events": 8}),
+            "tagged": NodeSpec(
+                uses="tests.pipeline.test_runs:StringNanNode",
+                inputs={"events": "$events.events"},
+            ),
+        }
+        run_document(
+            banking_document(
+                pipeline=pipeline, outputs=OutputsConfig(run_root=root)
+            ),
+            asof=FIRST,
+            registry=make_registry(),
+        )
+        (run,), problems = scan_runs(root)
+        assert problems == ()
+        assert run.metrics["tagged.n"] == 2  # the real number tabulates
+        assert "tagged.status" not in run.metrics  # a string is no metric
+        assert run.notes == ()  # and no false non-finite diagnosis
+
     def test_an_unreadable_node_record_is_named_and_recovered(self, two_runs):
         """A truncated record must not take the node's carried numbers
         with it, and must not pass for a node that measured nothing."""
@@ -506,6 +579,20 @@ class TestLostMeasurements:
             fh.write("{trunc")
         newest = scan_runs(root)[0][0]
         assert any(CARRY_FILE in note for note in newest.notes)
+
+    def test_an_unreadable_carry_is_the_whole_story(self, two_runs):
+        """With carry.json unreadable the reader cannot tell a carried
+        metrics dict from an uncarried one, so a per-node "too large or
+        non-finite to carry" diagnosis beside the unreadable-carry note
+        would contradict it. One cause, one note."""
+        root, results = two_runs
+        with open(
+            os.path.join(results[1].run_dir, CARRY_FILE), "w", encoding="utf-8"
+        ) as fh:
+            fh.write("{trunc")
+        newest = scan_runs(root)[0][0]
+        (note,) = newest.notes
+        assert CARRY_FILE in note
 
 
 class TestRunDirLayout:
