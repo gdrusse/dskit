@@ -77,7 +77,13 @@ on it without breaking its rulings.
   when a knob DESCRIBES the state rather than sitting beside it (the
   scaler's `features` does): under `mode="load"` a document may restate
   what a state is and never misdescribe it, and a knob `apply_state`
-  never reads is where train/serve skew hides.
+  never reads is where train/serve skew hides. Override
+  `row_problems(rows)` for the member's own INPUT shape: it is asked on
+  both doorways — this node's stream and the second stream an
+  `apply-transform` wires its carrier to — so the sibling half cannot
+  validate clean and die inside `apply_state`. The screen's comparison
+  is nan-equal (`_same`), so a member may mark an absence the way the
+  rest of the repo does.
 - **Conformance** — point `conformance_suite(registry=, probes=,
   expected_roles=)` at any pack; probes are behavioural, not optional
   (`require_probes=False` is a written-down decision).
@@ -164,7 +170,16 @@ on it without breaking its rulings.
   Dropping a position makes the survivors adjacent, which is what
   TRAINING wants and what SERVING must not have: a group whose newest
   position was masked out is ABSENT from `latest_rows`, never served the
-  newest survivor wearing a one-bar-old stamp.
+  newest survivor wearing a one-bar-old stamp. The other half is
+  unconditional too: an INCOMPLETE newest row is absent whatever
+  `drop_incomplete` says — that knob governs what `run` EMITS, and a
+  serving vector half full of warm-up NaNs is not the truth about now.
+- **A carried `group` is normalized by the ENVELOPE's rule**
+  (`records.cluster_ok`, imported — the `price_ok` precedent). A dict
+  record is interchangeable with a `MarketRecord` throughout that pack,
+  so a `group` the envelope would refuse rides as absent: a random split
+  hashes `"{seed}:{cluster}"`, and passing `5` through would bucket the
+  row differently from the envelope's own answer.
 - **Base `Node.validate_params` accepts anything.** The deny lives in
   each class (`_PARAMS` + `_reject_unknown`); forget it and typos pass.
 - **Owned kinds** (`validate`, `stat_test`, `run-report`): documents

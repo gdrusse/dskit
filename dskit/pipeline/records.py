@@ -53,14 +53,30 @@ import math
 from dataclasses import dataclass
 
 __all__ = [
+    "ASOF_FIELD",
+    "CLUSTER_FIELD",
     "BinaryAccounting",
     "MarkToMarketAccounting",
     "MarketRecord",
     "PositionOutcome",
+    "cluster_ok",
     "lead_frac_ok",
     "price_ok",
     "settle_position",
 ]
+
+#: The envelope field naming an observation's DECISION INSTANT — the
+#: causality anchor every downstream stage keys on. Named HERE because
+#: more than one pack defaults to it (what a stream is ordered by, what
+#: a fitted transform's split cuts on) and those are the same fact about
+#: the same rows: two literals would be a scheduled bug the day one is
+#: retuned.
+ASOF_FIELD = "asof_ms"
+
+#: The envelope field naming an observation's statistical-dependence
+#: CLUSTER. Same reason: a row's cluster is what randomized splits and
+#: cluster bootstraps key off, so its spelling belongs to one name.
+CLUSTER_FIELD = "group"
 
 
 def price_ok(value):
@@ -114,6 +130,31 @@ def lead_frac_ok(value):
         and math.isfinite(value)
         and 0.0 < float(value) < 1.0
     )
+
+
+def cluster_ok(value):
+    """Say whether ``value`` is a cluster id this envelope can hold.
+
+    The third of the public envelope predicates, for the same reason as
+    :func:`price_ok`: a pack that copies a record's ``group`` onto a row
+    must normalize it by the ENVELOPE's rule, not by a restatement of
+    it. :class:`MarketRecord` refuses anything else at construction, so
+    a dict record carrying a non-string cluster must land the way the
+    envelope would have had it — absent.
+
+    Parameters
+    ----------
+    value : object
+        The candidate. Anything at all; a non-string is simply not a
+        cluster id, so this answers ``False`` rather than raising.
+
+    Returns
+    -------
+    bool
+        True for a non-empty ``str``. ``None`` (each contract its own
+        cluster) is not a cluster ID and answers ``False``.
+    """
+    return isinstance(value, str) and bool(value)
 
 
 def _require_str(name, value):
@@ -199,8 +240,8 @@ class MarketRecord:
         if not isinstance(self.usable, bool):
             raise ValueError(f"usable must be a bool, got {self.usable!r}")
         _require_str("reason", self.reason)
-        if self.group is not None:
-            _require_str("group", self.group)
+        if self.group is not None and not cluster_ok(self.group):
+            raise ValueError(f"group must be a non-empty string, got {self.group!r}")
         for name in ("bid", "ask", "mid"):
             _require_price(name, getattr(self, name))
         if self.lead_frac is not None:

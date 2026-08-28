@@ -31,10 +31,12 @@ subclasses documents, examples and tests point at.
 (ADR-0040). ``group_field``, ``order_field``, ``fields`` and ``max_gap``
 say what the stream is keyed on, ordered by, lifted from, and framed
 with; :class:`ArrayFeatures` adds ``carry_fields``, ``require_fields``
-and ``drop_incomplete`` for the row it emits. Each is read through a
+and ``drop_incomplete`` for the row it emits, and the guard's own
+``causality_check``/``cuts`` read the same way. Each is read through a
 one-line public accessor, so a project whose documents speak different
 SPELLINGS overrides the accessor instead of bending its vocabulary to
-this pack's. Every default is a module constant named ONCE and
+this pack's. Every default is a module constant named ONCE — read by the
+knob gate AND by the run path, never a literal in either — and
 reproduces the pre-ADR-0040 behaviour exactly.
 
 **An accessor override NARROWS ``_PARAMS``, and hardcoding IS an
@@ -105,7 +107,11 @@ whose records were ALL unlifted: a declared field matching nothing would
 emit zero rows and exit 0, so that refuses by name. A row missing a
 ``require_fields`` id is skipped (a feature row with no identity is
 unusable downstream) — the record still participates in the arrays, so
-later trailing windows see it. Which positions participate at all is the
+later trailing windows see it. A carried CLUSTER the envelope could not
+hold rides as absent, by the envelope's own imported rule
+(:func:`~dskit.pipeline.records.cluster_ok`), because a dict record and
+an envelope are interchangeable here and a random split buckets on that
+value. Which positions participate at all is the
 ``keep_mask`` hook: the base keeps every lifted record, and a subclass
 whose domain says otherwise ("a bar with no usable price is not a bar")
 answers with a vectorized mask and the base compacts around it.
@@ -130,13 +136,21 @@ from dataclasses import is_dataclass, replace
 
 from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.node import Node, reject_unknown_params
-from dskit.pipeline.records import lead_frac_ok, price_ok
+from dskit.pipeline.records import (
+    ASOF_FIELD,
+    CLUSTER_FIELD,
+    cluster_ok,
+    lead_frac_ok,
+    price_ok,
+)
 
 __all__ = [
     "ACCESSOR_KNOBS",
     "ArrayFeatures",
     "ArrayMap",
     "DEFAULT_CARRY_FIELDS",
+    "DEFAULT_CAUSALITY_CHECK",
+    "DEFAULT_CUTS",
     "DEFAULT_DROP_INCOMPLETE",
     "DEFAULT_FIELDS",
     "DEFAULT_GROUP_FIELD",
@@ -169,8 +183,10 @@ _MISSING = object()
 DEFAULT_GROUP_FIELD = "instrument"
 
 #: What a stream is ordered by when the document does not say: the
-#: envelope's decision instant.
-DEFAULT_ORDER_FIELD = "asof_ms"
+#: envelope's decision instant, read from the envelope's own name
+#: (:data:`~dskit.pipeline.records.ASOF_FIELD`) rather than retyped —
+#: ``fitted.py`` defaults to the same field for the same rows.
+DEFAULT_ORDER_FIELD = ASOF_FIELD
 
 #: Numeric fields lifted into every per-group array set alongside the
 #: order array. Missing/non-numeric values lift as NaN so the arrays stay
@@ -184,7 +200,9 @@ DEFAULT_MAX_GAP = None
 #: Record fields :class:`ArrayFeatures` copies onto every row. A feature
 #: column may not take one of these names (it would silently clobber the
 #: row's identity).
-DEFAULT_CARRY_FIELDS = (DEFAULT_GROUP_FIELD, "contract", DEFAULT_ORDER_FIELD, "group")
+DEFAULT_CARRY_FIELDS = (
+    DEFAULT_GROUP_FIELD, "contract", DEFAULT_ORDER_FIELD, CLUSTER_FIELD,
+)
 
 #: Identity fields a row must carry to be emitted at all — a row with no
 #: identity is unusable downstream.
@@ -192,7 +210,16 @@ DEFAULT_REQUIRE_FIELDS = ("contract",)
 
 #: Keep every row, warm-up NaNs included; a supervised windowing document
 #: turns this on to drop the rows whose window or label is incomplete.
+#: A TRAINING emission knob only — :meth:`ArrayFeatures.latest_rows`
+#: requires completeness unconditionally, because a serving vector that
+#: is half warm-up is not the truth about now.
 DEFAULT_DROP_INCOMPLETE = False
+
+#: The causality guard runs unless the document turns it off, and the
+#: default grid decides its own cut points. Both are named ONCE: the
+#: knob gate and the run path read these, never a bare literal.
+DEFAULT_CAUSALITY_CHECK = True
+DEFAULT_CUTS = None
 
 #: :class:`ReturnWindows` defaults: one-step LOG returns, a one-step
 #: forward label, and neutral column spellings a domain subclass renames.
@@ -472,6 +499,21 @@ def _order_value(value):
 def _identity_ok(value) -> bool:
     """Say whether a required identity field is present and non-empty."""
     return isinstance(value, str) and bool(value)
+
+
+def _carried_value(name, value):
+    """One carried field's row value, the envelope's rule applied.
+
+    The CLUSTER field is normalized by :func:`cluster_ok` — imported,
+    never restated: a dict record is interchangeable with an envelope
+    everywhere else here, so a ``group`` the envelope would refuse must
+    land the way the envelope would have had it (absent), not ride into
+    a random split as a bucket of its own. Every other field rides as
+    it is, with an absent one as ``None``.
+    """
+    if name == CLUSTER_FIELD:
+        return value if cluster_ok(value) else None
+    return None if value is _MISSING else value
 
 
 def _lift(records, group_field, order_field, fields):
@@ -763,6 +805,14 @@ class _ArrayApply(Node):
         """
         return self.params.get("max_gap", DEFAULT_MAX_GAP)
 
+    def causality_check(self):
+        """Say whether the causality guard runs (bool)."""
+        return bool(self.params.get("causality_check", DEFAULT_CAUSALITY_CHECK))
+
+    def cuts(self):
+        """Give the guard's declared cut points, or ``None`` for the grid."""
+        return self.params.get("cuts", DEFAULT_CUTS)
+
     @classmethod
     def validate_params(cls, params):
         """Problems with ``params``, empty when none.
@@ -786,9 +836,10 @@ class _ArrayApply(Node):
         """
         problems = accessor_narrowing_problems(cls)
         reject_unknown_params(problems, params, cls._PARAMS)
-        flag = params.get("causality_check", True)
-        if not is_node_ref(flag) and not isinstance(flag, bool):
-            problems.append(f"causality_check must be a bool, got {flag!r}")
+        if "causality_check" in cls._PARAMS:
+            flag = params.get("causality_check", DEFAULT_CAUSALITY_CHECK)
+            if not is_node_ref(flag) and not isinstance(flag, bool):
+                problems.append(f"causality_check must be a bool, got {flag!r}")
         cls._cut_problems(problems, params)
         for knob in ("group_field", "order_field"):
             if knob not in cls._PARAMS or knob not in params:
@@ -833,7 +884,9 @@ class _ArrayApply(Node):
     @classmethod
     def _cut_problems(cls, problems, params):
         """Check ``cuts``: distinct ints >= 1, or absent."""
-        cuts = params.get("cuts")
+        if "cuts" not in cls._PARAMS:
+            return
+        cuts = params.get("cuts", DEFAULT_CUTS)
         if cuts is None or is_node_ref(cuts):
             return
         # ints and >= 1 are checkable at PLAN; the upper bound is each
@@ -1005,7 +1058,7 @@ class _ArrayApply(Node):
             self.key, group, self.apply(_copies(arrays), self.params), n
         )
         self._refuse_columns(sorted(full))
-        if self.params.get("causality_check", True):
+        if self.causality_check():
             self._assert_causal(group, arrays, full, n)
         return full
 
@@ -1020,7 +1073,7 @@ class _ArrayApply(Node):
         "not caught here", never "proven causal".
         """
         ahead = self.lookahead_columns()
-        for cut in _cut_points(n, self.params.get("cuts")):
+        for cut in _cut_points(n, self.cuts()):
             try:
                 trial = self.apply({k: v[:cut].copy() for k, v in arrays.items()},
                                    self.params)
@@ -1340,23 +1393,24 @@ class ArrayFeatures(_ArrayApply):
             )
 
     def _carried(self, record):
-        """Copy the declared identity fields, an absent one as ``None``."""
-        row = {}
-        for name in self.carry_fields():
-            value = _field(record, name)
-            row[name] = None if value is _MISSING else value
-        return row
+        """Copy the declared identity fields, each by the envelope's rule."""
+        return {
+            name: _carried_value(name, _field(record, name))
+            for name in self.carry_fields()
+        }
 
-    def _feature_rows(self, records, drop=()):
+    def _feature_rows(self, records, drop=(), complete_only=False):
         """Build every emittable row, keyed by its input index.
 
         Answers ``(grouped, rows_by_index, unlifted, schema, no_row)``
         and is shared by :meth:`run` and :meth:`latest_rows`; ``drop``
-        names columns to leave OUT of the emitted rows.
+        names columns to leave OUT of the emitted rows, and
+        ``complete_only`` requires completeness whatever the knob says —
+        the serving caller's unconditional rule.
         """
         grouped, unlifted, schema = self._grouped_columns(records)
         required = self.require_fields()
-        incomplete_is_no_row = self.drop_incomplete()
+        incomplete_is_no_row = complete_only or self.drop_incomplete()
         rows_by_index = {}
         no_row = 0
         for built in grouped.values():
@@ -1431,6 +1485,13 @@ class ArrayFeatures(_ArrayApply):
         wants the truth about now. (A record that could not be lifted at
         all belongs to no group, so it cannot make one stale.)
 
+        **Both halves of that rule are UNCONDITIONAL.**
+        ``drop_incomplete`` is a TRAINING emission knob — it decides
+        whether :meth:`run` keeps warm-up rows — and a serving call that
+        read it would publish a half-warm feature vector to any document
+        that left the knob at its default. So completeness is required
+        here whatever the knob says.
+
         Parameters
         ----------
         records : list
@@ -1444,7 +1505,7 @@ class ArrayFeatures(_ArrayApply):
             whose newest position is dropped or incomplete is ABSENT.
         """
         grouped, rows_by_index, _unlifted, _schema, _no_row = self._feature_rows(
-            records, drop=tuple(self.lookahead_columns())
+            records, drop=tuple(self.lookahead_columns()), complete_only=True
         )
         latest = {}
         for group, built in grouped.items():
@@ -1772,6 +1833,8 @@ ACCESSOR_KNOBS = {
     "order_field": _ArrayApply,
     "fields": _ArrayApply,
     "max_gap": _ArrayApply,
+    "causality_check": _ArrayApply,
+    "cuts": _ArrayApply,
     "carry_fields": ArrayFeatures,
     "require_fields": ArrayFeatures,
     "drop_incomplete": ArrayFeatures,

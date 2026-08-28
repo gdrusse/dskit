@@ -359,6 +359,53 @@ class TestThePurityScreen:
                                 "purity_check": False})
         assert len(node.run(split_ctx, {"rows": TRAIN_ROWS})["rows"]) == 4
 
+    def test_a_member_emitting_nan_is_not_mistaken_for_row_dependence(
+        self, split_ctx
+    ):
+        """NaN-as-absent is this repo's own convention, and the screen
+        must not read it as drift.
+
+        ``float('nan') != float('nan')``, so a plain ``==`` over the
+        transformed rows refuses a member that marks an unusable value
+        the way ``libs/numpy.py`` marks a warm-up one — pure and
+        row-independent by construction, refused anyway, with a message
+        naming the wrong cause and no escape but turning the family's one
+        mechanical check off.
+        """
+
+        class _Nanner(FittedTransform):
+            def fit(self, rows, params):
+                return {"k": 1.0}
+
+            def apply_state(self, state, rows, params):
+                return [{**row, "y": float("nan")} for row in rows]
+
+        out = _Nanner("nan", {"fit_split": "train"}).run(
+            split_ctx, {"rows": TRAIN_ROWS}
+        )
+        assert len(out["rows"]) == len(TRAIN_ROWS)
+        assert all(row["y"] != row["y"] for row in out["rows"])
+
+    def test_row_dependence_is_still_caught_through_a_nan_column(
+        self, split_ctx
+    ):
+        """The nan-equal path widens what compares equal, never what
+        passes: a member that reads the rows it was handed is refused
+        even while it also emits a NaN."""
+
+        class _NanPeeker(FittedTransform):
+            def fit(self, rows, params):
+                return {"k": 1.0}
+
+            def apply_state(self, state, rows, params):
+                shift = sum(row["x"] for row in rows) / max(len(rows), 1)
+                return [{**row, "x": row["x"] - shift, "y": float("nan")}
+                        for row in rows]
+
+        node = _NanPeeker("peek", {"fit_split": "train"})
+        with pytest.raises(ValueError, match="row-independent"):
+            node.run(split_ctx, {"rows": TRAIN_ROWS})
+
     def test_a_row_count_that_moves_is_refused_even_unscreened(self, split_ctx):
         class _Dropper(Standardize):
             def apply_state(self, state, rows, params):
@@ -485,6 +532,36 @@ class TestApplyTransform:
         )
         assert any("transform" in p for p in problems), problems
 
+    def test_the_members_own_row_rule_reaches_the_SECOND_stream(
+        self, split_ctx
+    ):
+        """The kind exists to project a second stream, so the member's
+        own input rule must hold on it.
+
+        ``Standardize`` refuses a non-mapping row by index when it runs
+        itself; through this kind the same stream used to validate clean
+        and die at execute with a bare ``TypeError`` out of ``dict(row)``
+        — the validate-clean-die-at-execute shape ADR-0040 names.
+        """
+        fitted = Standardize("scaler", {"fit_split": "train", "features": ["x"]})
+        carrier = fitted.run(split_ctx, {"rows": TRAIN_ROWS})["transform"]
+        strangers = [SimpleNamespace(contract="D-0", asof_ms=DAY, x=1.0)]
+
+        problems = ApplyTransform("apply", {}).validate_inputs(
+            {"transform": carrier, "rows": strangers}
+        )
+        assert any("rows[0]" in p and "Standardize" in p for p in problems), \
+            problems
+
+    def test_a_second_stream_the_member_accepts_still_validates_clean(
+        self, split_ctx
+    ):
+        fitted = Standardize("scaler", {"fit_split": "train", "features": ["x"]})
+        carrier = fitted.run(split_ctx, {"rows": TRAIN_ROWS})["transform"]
+        assert ApplyTransform("apply", {}).validate_inputs(
+            {"transform": carrier, "rows": VAL_ROWS}
+        ) == []
+
 
 class TestTheScalerItself:
     def test_a_zero_variance_column_does_not_divide_by_zero(self, split_ctx):
@@ -504,6 +581,35 @@ class TestTheScalerItself:
         assert out["rows"][-1]["x"] is None
         # It was IN the fit split — it just carried nothing to learn from.
         assert out["metrics"]["n_fit_rows"] == len(TRAIN_ROWS) + 1
+        assert out["transform"].state["mean"]["x"] == pytest.approx(2.5)
+
+    def test_a_feature_no_fit_row_carries_refuses_by_name(self, split_ctx):
+        """A typo is an error, not a silent identity transform.
+
+        Learning mean 0 / std 1 for a name nothing carries makes a
+        typo'd feature a clean, successful, WRONG run: the real column
+        rides through unscaled, ``n_features`` counts the phantom, and
+        the load-mode cross-check agrees with itself because declared
+        and covered are the same wrong name. This is the fit-time twin
+        of the numpy half's all-unlifted refusal.
+        """
+        rows = [{"contract": f"C-{i}", "asof_ms": DAY + i, "ret_lag_0": float(i)}
+                for i in range(4)]
+        node = Standardize("s", {"fit_split": "train",
+                                 "features": ["ret_lag_00"]})
+        with pytest.raises(ValueError, match="ret_lag_00"):
+            node.run(split_ctx, {"rows": rows})
+
+    def test_a_feature_some_fit_row_carries_is_learned_as_before(
+        self, split_ctx
+    ):
+        """The refusal is about a feature with NO usable value in the
+        whole fit split; per-row absence is a different case and keeps
+        its documented policy."""
+        mixed = TRAIN_ROWS + [{"contract": "N-0", "asof_ms": DAY + 9, "x": None}]
+        out = Standardize("s", {"fit_split": "train", "features": ["x"]}).run(
+            split_ctx, {"rows": mixed}
+        )
         assert out["transform"].state["mean"]["x"] == pytest.approx(2.5)
 
     def test_the_state_is_json_able_by_construction(self, split_ctx):

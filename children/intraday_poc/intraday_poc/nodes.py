@@ -205,7 +205,11 @@ class WindowRows(ReturnWindows):
     where ``ret_lag_0`` is the return ENDING at ``asof_ms`` and ``y_next``
     the return of the following bar — the label a next-bar model trains
     on. Sparse rows (missing/non-positive price) are dropped and counted,
-    never crashed on.
+    never crashed on. Two bars of one symbol on the SAME instant (two
+    ``ts`` spellings flattening onto one ``asof_ms``) keep the STREAM's
+    order, which is the store's own ``ts`` order — the pack breaks the
+    tie by stream position. The pre-ADR-0040 implementation ordered them
+    by PRICE, an accident of sorting ``(asof_ms, price)`` tuples.
 
     Everything above the domain is the pack's (ADR-0040): the grouping,
     the ordering, the gap-split, the log return, the lags, the forward

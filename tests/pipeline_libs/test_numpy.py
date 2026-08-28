@@ -388,6 +388,27 @@ class TestCausalityGuard:
         )
         assert out["metrics"]["n_rows"] == 16  # the leak runs, unchecked
 
+    def test_the_guards_default_has_ONE_name(self, tmp_path, monkeypatch):
+        """``causality_check``'s default was a bare ``True`` written in
+        ``validate_params`` AND on the run path — the exact "a default
+        belongs to ONE name" shape, in the module whose docstring now
+        advertises defaults-named-once as its discipline.
+
+        Both sites are pinned by rebinding the constant: the run path
+        must stop screening, and the knob gate must judge the new value.
+        Nothing else in this module can tell the two readers apart.
+        """
+        import dskit.pipeline.libs.numpy as pack
+
+        monkeypatch.setattr(pack, "DEFAULT_CAUSALITY_CHECK", False)
+        out = _GlobalZScore("z", {}).run(ctx(tmp_path), {"records": stream()})
+        assert out["metrics"]["n_rows"] == 16, "the run path read the constant"
+
+        monkeypatch.setattr(pack, "DEFAULT_CAUSALITY_CHECK", "yes")
+        assert any(
+            "causality_check" in p for p in _GlobalZScore.validate_params({})
+        ), "the knob gate read the constant"
+
     def test_an_apply_that_refuses_prefixes_is_named(self, tmp_path):
         def refuser(arrays):
             if len(arrays["mid"]) < 6:
@@ -518,6 +539,28 @@ class TestArrayFeaturesRows:
             ctx(tmp_path), {"records": records}
         )["rows"]
         assert {row["group"] for row in rows} == {"AAA:g0"}
+
+    def test_a_group_the_envelope_could_not_hold_rides_as_absent(self, tmp_path):
+        """The row's ``group`` is the CLUSTER id, and the envelope's rule
+        for one is a non-empty string or nothing.
+
+        A dict record is interchangeable with an envelope everywhere
+        else in this pack, so a dict carrying ``group: 5`` must land the
+        same way ``MarketRecord`` would have it — absent, not 5. It is
+        not cosmetic: ``RandomSplitConfig.split_of`` hashes
+        ``f"{seed}:{cluster}"``, so ``"0:5"`` and ``"0:None"`` put the
+        row in different buckets, and ``distinct_by="group"`` counts it
+        differently.
+        """
+        records = [
+            {"instrument": "AAA", "contract": f"A-{i}", "asof_ms": BASE_MS + i,
+             "mid": 1.0 + i, "group": 5}
+            for i in range(3)
+        ]
+        rows = TrailingReturns("r", {"window": 1}).run(
+            ctx(tmp_path), {"records": records}
+        )["rows"]
+        assert {row["group"] for row in rows} == {None}
 
     def test_a_record_without_a_contract_feeds_arrays_but_yields_no_row(self, tmp_path):
         records = [
@@ -922,6 +965,41 @@ class TestTierOneTruthIsImported:
         assert pack._WRITEBACK["mid"] is core.price_ok
         assert pack._WRITEBACK["lead_frac"] is core.lead_frac_ok
 
+    def test_the_decision_instant_field_has_ONE_home(self):
+        """``asof_ms`` is the ENVELOPE's decision instant, so the packs
+        that default to it read the envelope's name rather than each
+        typing the literal.
+
+        Two modules added by ADR-0040 default to this field — the numpy
+        pack (what a stream is ordered by) and ``fitted.py`` (what a
+        fitted transform's split cuts on) — and they are the same fact
+        about the same rows. Unpinned, retuning one leaves a fitted
+        transform downstream of a window node cutting on a field the
+        rows no longer carry, and the refusal names the wrong cause.
+        """
+        import dskit.pipeline.libs.numpy as pack
+        from dskit.pipeline import fitted
+        from dskit.pipeline.records import ASOF_FIELD
+
+        assert pack.DEFAULT_ORDER_FIELD == ASOF_FIELD
+        assert fitted.DEFAULT_ORDER_FIELD == ASOF_FIELD
+
+    def test_the_row_cluster_rule_is_the_envelope_s(self):
+        """The pack normalizes a carried ``group`` by the envelope's own
+        cluster rule, imported — never a second copy of "a non-empty
+        string or nothing"."""
+        import dskit.pipeline.libs.numpy as pack
+        from dskit.pipeline import records as core
+
+        assert pack.cluster_ok is core.cluster_ok
+        assert core.CLUSTER_FIELD in pack.DEFAULT_CARRY_FIELDS
+        assert core.cluster_ok("day-1") and not core.cluster_ok(5)
+        assert not core.cluster_ok("") and not core.cluster_ok(None)
+        # The envelope is the predicate's other reader, so loosening the
+        # rule moves both, exactly as it does for price/lead_frac.
+        with pytest.raises(ValueError, match="group must be"):
+            rec("AAA", 0, 0.4, group=5)
+
     def test_the_envelope_itself_uses_the_same_predicates(self):
         # Deliberate second reader: loosening the core bound must move
         # BOTH the envelope and the pack, or the pack drifts again.
@@ -1170,6 +1248,38 @@ class TestLatestRows:
         # The newest minute prints no usable price: absent, never stale.
         records.append({"sym": "A", "t": BASE_MS + 6 * MINUTE_MS, "px": 0.0})
         assert node.latest_rows(records) == {}
+
+    def test_the_serving_contract_holds_WITHOUT_the_drop_incomplete_knob(
+        self, tmp_path
+    ):
+        """``drop_incomplete`` is a TRAINING emission knob, not a serving
+        one — and the serving contract is unconditional.
+
+        The docstring promises the newest COMPLETE row or absence, but
+        completeness used to be enforced only when a caller happened to
+        set the knob (its default is False). A consumer building a live
+        loop on the pack's published serving API with default params was
+        handed a partially-warm vector — ``lag_2`` None — where the
+        contract promises nothing at all.
+        """
+        node = ReturnWindows("w", {**FOREIGN, "lookback": 3,
+                                   "max_gap": 5 * MINUTE_MS})
+        assert node.drop_incomplete() is False, "the default this pins"
+        assert node.latest_rows(bars("A", [0, 1, 2])) == {}
+        # A fully warm newest position still serves, knob or no knob.
+        served = node.latest_rows(bars("A", range(5)))["A"]
+        assert served["t"] == BASE_MS + 4 * MINUTE_MS
+        assert all(served[f"lag_{i}"] is not None for i in range(3))
+
+    def test_the_training_emission_still_keeps_its_warm_up_rows(self, tmp_path):
+        """The other half: serving completeness must not leak into what
+        ``run`` emits, which is what the knob actually governs."""
+        rows = ReturnWindows("w", {**FOREIGN, "lookback": 3,
+                                   "max_gap": 5 * MINUTE_MS}).run(
+            ctx(tmp_path), {"records": bars("A", range(5))}
+        )["rows"]
+        assert len(rows) == 5
+        assert rows[0]["lag_2"] is None
 
     def test_a_masked_out_position_further_back_still_serves(self, tmp_path):
         """The rule is about the NEWEST position, not any dropped one —

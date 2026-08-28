@@ -593,6 +593,40 @@ def test_window_rows_pins_todays_gap_and_sparse_semantics():
     assert msft["ret_lag_0"] == pytest.approx(math.log(203.0 / 201.0))
 
 
+def test_window_rows_orders_same_instant_bars_by_the_STREAM(price_field="close"):
+    """The one place the port CHANGED what the child computes, pinned.
+
+    Two bars of one symbol can share an ``asof_ms``: ``BarsFromStore``
+    orders by ``(asof_ms, symbol, ts)`` and two ``ts`` spellings can
+    flatten onto one instant (ADR-0037). The pre-port implementation
+    sorted ``(asof_ms, price)`` TUPLES, so those two ordered BY PRICE —
+    an accident of tuple comparison with no domain meaning, and not
+    reproducible for a stream whose price is absent. The pack breaks the
+    tie by STREAM POSITION, which is the store's own ``ts`` order, so
+    the chain reads them the way the vendor published them.
+
+    Declared rather than silent: this is the divergence the port pin
+    (distinct stamps only) cannot see.
+    """
+    rows = [
+        {"symbol": "AAPL", "asof_ms": _ms(0), "close": 100.0},
+        {"symbol": "AAPL", "asof_ms": _ms(1), "close": 103.0},
+        {"symbol": "AAPL", "asof_ms": _ms(1), "close": 101.0},  # same instant
+        {"symbol": "AAPL", "asof_ms": _ms(2), "close": 102.0},
+        {"symbol": "AAPL", "asof_ms": _ms(3), "close": 104.0},
+    ]
+    out = WindowRows("window", {"lookback": 2}).run(None, {"records": rows})["records"]
+
+    assert [r["asof_ms"] for r in out] == [_ms(1), _ms(2)]
+    # 100 -> 103 -> 101 -> 102 -> 104, in the order the stream carried
+    # them; a price-ordered tie-break would read 100 -> 101 -> 103.
+    assert out[0]["ret_lag_1"] == pytest.approx(math.log(103.0 / 100.0))
+    assert out[0]["ret_lag_0"] == pytest.approx(math.log(101.0 / 103.0))
+    assert out[0]["y_next"] == pytest.approx(math.log(102.0 / 101.0))
+    assert out[1]["ret_lag_0"] == pytest.approx(math.log(102.0 / 101.0))
+    assert out[1]["y_next"] == pytest.approx(math.log(104.0 / 102.0))
+
+
 def test_window_rows_narrowed_every_accessor_it_answers():
     """The pack's rule, held here (ADR-0040).
 

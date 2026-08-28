@@ -46,8 +46,10 @@ PURE and ROW-INDEPENDENT. :attr:`purity_check` (default true, the
 re-applies ``apply_state`` to a sampled row ALONE and refuses when the
 answer differs from that row's answer in the full call — which catches
 the family's classic leak, an ``apply_state`` that recomputes a
-statistic over the rows it was handed. It cannot prove purity, and
-turning it off is a decision the document owns.
+statistic over the rows it was handed. The comparison is NaN-EQUAL
+(:func:`_same`), because marking a value absent the way the rest of this
+repo marks one is not drift. It cannot prove purity, and turning it off
+is a decision the document owns.
 
 :class:`ApplyTransform` (kind ``apply-transform``) projects a SECOND
 stream through a carrier this family emits. ONE apply kind serves every
@@ -73,6 +75,7 @@ from dskit.pipeline.node import (
     TrainableNode,
     reject_unknown_params,
 )
+from dskit.pipeline.records import ASOF_FIELD
 from dskit.pipeline.split_policy import SplitFrame
 
 __all__ = [
@@ -95,8 +98,11 @@ SIDECAR_NAME = "fitted.json"
 #: The row field naming its DECISION INSTANT. Fit rows are ordered by it
 #: (so a fit that depends on row order is reproducible) and the split
 #: frame is built from it (so a stream with a foreign vocabulary is cut
-#: on the instant it actually carries).
-DEFAULT_ORDER_FIELD = "asof_ms"
+#: on the instant it actually carries). Read from the ENVELOPE's own
+#: name: the numpy pack defaults to the same field for the same rows,
+#: and a fitted transform wired downstream of a window node whose
+#: default was retuned would cut on a field its rows no longer carry.
+DEFAULT_ORDER_FIELD = ASOF_FIELD
 
 #: The purity screen is ON unless the document says otherwise.
 DEFAULT_PURITY_CHECK = True
@@ -122,9 +128,43 @@ def _class_ref(cls):
     return f"{cls.__module__}:{cls.__qualname__}"
 
 
+def _same(a, b):
+    """Say whether two transformed values agree, a NaN counting as itself.
+
+    NaN-as-absent is this repo's convention (``libs/numpy.py`` emits
+    warm-up NaNs), and ``nan == nan`` is False — so a plain ``==`` over
+    two transformed rows reads a member that MARKS an absence as one
+    that read the rows it was handed. The screen must widen what
+    compares equal without widening what passes, so this recurses into
+    the containers a row is built from and falls back to ``==``
+    everywhere else. The numpy half solves the same problem with
+    ``_prefix_equal``; tier-1 cannot import numpy, hence the stdlib
+    twin.
+    """
+    if isinstance(a, float) and isinstance(b, float):
+        return a == b or (math.isnan(a) and math.isnan(b))
+    if isinstance(a, dict) and isinstance(b, dict):
+        return len(a) == len(b) and all(
+            key in b and _same(value, b[key]) for key, value in a.items()
+        )
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return (
+            isinstance(b, type(a))
+            and len(a) == len(b)
+            and all(_same(x, y) for x, y in zip(a, b))
+        )
+    return a == b
+
+
 def _sample_positions(n):
     """Choose the purity screen's probe positions — deterministic, no RNG."""
     return sorted({0, n // 2, n - 1}) if n else []
+
+
+def _carrier_row_problems(carrier, rows):
+    """Ask a carrier for its member's row rule; silent when it has none."""
+    ask = getattr(carrier, "row_problems", None)
+    return list(ask(rows)) if callable(ask) else []
 
 
 #: The split KIND whose assignment is a pure function of the row's
@@ -201,6 +241,22 @@ class TransformCarrier:
             that moved, or a purity screen that caught row dependence.
         """
         return self._node.applied(self.state, list(rows))
+
+    def row_problems(self, rows):
+        """Ask the fitting node whether it can project ``rows``.
+
+        Parameters
+        ----------
+        rows : list
+            The second stream, before anything is projected.
+
+        Returns
+        -------
+        list of str
+            Whatever :meth:`FittedTransform.row_problems` answers — the
+            member's own rule, reaching the stream it never fitted.
+        """
+        return list(self._node.row_problems(rows))
 
     def __repr__(self):
         """Name the class and the state's keys — never the values."""
@@ -311,16 +367,19 @@ class FittedTransform(TrainableNode):
         Returns
         -------
         list of str
-            One problem when ``rows`` is not a list, plus the wired-pin
-            check every artifact-restoring node shares.
+            One problem when ``rows`` is not a list, the member's own
+            :meth:`row_problems`, and the wired-pin check every
+            artifact-restoring node shares.
         """
         problems = []
-        if not isinstance((inputs or {}).get("rows"), list):
+        rows = (inputs or {}).get("rows")
+        if not isinstance(rows, list):
             problems.append(
                 "rows must be a list of rows (a one-shot iterable is refused, "
-                "never consumed by validation), got "
-                f"{type((inputs or {}).get('rows')).__name__}"
+                f"never consumed by validation), got {type(rows).__name__}"
             )
+        else:
+            problems.extend(self.row_problems(rows))
         problems.extend(
             self.pin_port_problems(
                 inputs, "artifact_path",
@@ -328,6 +387,29 @@ class FittedTransform(TrainableNode):
             )
         )
         return problems
+
+    def row_problems(self, rows):
+        """Ways ``rows`` break THIS member's own shape rule; none by default.
+
+        Asked in TWO places: when this node validates its own stream,
+        and when :class:`ApplyTransform` validates the SECOND stream a
+        carrier of this class was wired to. One rule, both doorways —
+        otherwise the sibling half of the family projects unvalidated
+        rows and dies at execute inside ``apply_state``, naming neither
+        the node nor the port.
+
+        Parameters
+        ----------
+        rows : list
+            The stream, already known to be a list.
+
+        Returns
+        -------
+        list of str
+            One problem per broken row; empty when the member can
+            project them.
+        """
+        return []
 
     # -- the hooks a member implements -------------------------------------
 
@@ -539,7 +621,7 @@ class FittedTransform(TrainableNode):
         """Re-apply to a sampled row alone and refuse any drift."""
         for i in _sample_positions(len(rows)):
             alone = list(self.apply_state(state, [rows[i]], self.params))
-            if len(alone) == 1 and alone[0] == out[i]:
+            if len(alone) == 1 and _same(alone[0], out[i]):
                 continue
             raise ValueError(
                 f"{self.key}: apply_state is not row-independent — row {i} "
@@ -767,14 +849,15 @@ class ApplyTransform(Node):
         Returns
         -------
         list of str
-            One problem per port that cannot be projected through.
+            One problem per port that cannot be projected through —
+            including the MEMBER's own row rule, asked of the carrier,
+            so the second stream is held to the same shape the fitting
+            node holds its own to.
         """
         problems = []
-        if not isinstance((inputs or {}).get("rows"), list):
-            problems.append(
-                "rows must be a list of rows, got "
-                f"{type((inputs or {}).get('rows')).__name__}"
-            )
+        rows = (inputs or {}).get("rows")
+        if not isinstance(rows, list):
+            problems.append(f"rows must be a list of rows, got {type(rows).__name__}")
         carrier = (inputs or {}).get("transform")
         if not callable(getattr(carrier, "apply", None)):
             problems.append(
@@ -782,6 +865,8 @@ class ApplyTransform(Node):
                 f".apply), got {type(carrier).__name__} — wire a "
                 "fitted_transform node's 'transform' output"
             )
+        elif isinstance(rows, list):
+            problems.extend(_carrier_row_problems(carrier, rows))
         return problems
 
     def run(self, ctx, inputs):
@@ -816,7 +901,11 @@ class Standardize(FittedTransform):
     A zero-variance feature scales by 1.0 rather than dividing by zero,
     so a constant column becomes a constant zero instead of NaN. A row
     whose feature is absent or non-numeric keeps its absence: no value is
-    invented to make the arithmetic work.
+    invented to make the arithmetic work. But a feature with no usable
+    value ANYWHERE in the fit split REFUSES by name — nothing to learn
+    from is indistinguishable from a misspelt name, and the 0.0/1.0
+    identity a lenient fit would learn is exactly the silent wrong run
+    default-deny exists to prevent.
 
     Parameters
     ----------
@@ -871,32 +960,28 @@ class Standardize(FittedTransform):
             )
         return problems
 
-    def validate_common_inputs(self, inputs):
-        """Problems that hold in either mode, empty when none.
+    def row_problems(self, rows):
+        """Refuse a row this scaler cannot rebuild: one that is not a mapping.
 
         Parameters
         ----------
-        inputs : dict
-            ``rows`` and the optional pin.
+        rows : list
+            The stream, whichever doorway asked.
 
         Returns
         -------
         list of str
-            The base's problems, plus one when a row is not a mapping —
-            this member rebuilds rows as dicts.
+            One problem naming the first non-mapping row, or none.
         """
-        problems = super().validate_common_inputs(inputs)
-        if problems:
-            return problems
-        for i, row in enumerate(inputs["rows"]):
+        for i, row in enumerate(rows):
             if isinstance(row, dict):
                 continue
-            problems.append(
-                f"rows[{i}] is a {type(row).__name__} — Standardize rebuilds "
-                "each row as a mapping, so every row must be one"
-            )
-            break
-        return problems
+            return [
+                f"rows[{i}] is a {type(row).__name__} — "
+                f"{type(self).__name__} rebuilds each row as a mapping, so "
+                "every row must be one"
+            ]
+        return []
 
     def state_problems(self, state):
         """Refuse a restored state that does not cover the declared features.
@@ -954,21 +1039,41 @@ class Standardize(FittedTransform):
         Returns
         -------
         dict
-            ``{"mean": {feature: float}, "std": {feature: float}}``; a
-            feature no row carries usably centres at 0.0 and scales by
-            1.0, so it passes through untouched rather than exploding.
+            ``{"mean": {feature: float}, "std": {feature: float}}``, one
+            entry per declared feature.
+
+        Raises
+        ------
+        ValueError
+            When a declared feature has NO usable value anywhere in the
+            fit split. Learning 0.0/1.0 for it would be an identity
+            transform nobody asked for: a typo'd name emits a clean,
+            successful, wrong run — the real column unscaled, the
+            phantom counted in ``n_features``, and the load-mode
+            cross-check agreeing with itself because declared and
+            covered are the same wrong name. Per-row absence is a
+            different case and keeps the documented policy.
         """
-        mean, std = {}, {}
+        mean, std, unlearnable = {}, {}, []
         for name in self.features():
             values = [v for v in (_numeric(_field(row, name)) for row in rows)
                       if v is not None]
             if not values:
-                mean[name], std[name] = 0.0, 1.0
+                unlearnable.append(name)
                 continue
             centre = sum(values) / len(values)
             spread = math.sqrt(sum((v - centre) ** 2 for v in values) / len(values))
             mean[name] = centre
             std[name] = spread if spread > 0.0 else 1.0
+        if unlearnable:
+            raise ValueError(
+                f"{self.key}: not one of the {len(rows)} fit row(s) carries a "
+                f"usable number for {unlearnable} — a feature with nothing to "
+                "learn from is indistinguishable from a misspelt one, and "
+                "standardizing it by 0.0/1.0 would leave the column raw while "
+                "every document said it was scaled. Check the spelling against "
+                "the rows the upstream node emits, or drop the feature"
+            )
         return {"mean": mean, "std": std}
 
     def apply_state(self, state, rows, params):
