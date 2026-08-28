@@ -86,6 +86,7 @@ __all__ = [
     "EVENT_ATOMIC_POLICIES",
     "EventBounds",
     "SPLIT_POLICIES",
+    "SplitFrame",
     "event_bounds_from_records",
     "merge_event_bounds",
     "policy_instant",
@@ -107,12 +108,29 @@ class EventBounds:
     Observed, never assumed. One project learned this the hard way — a
     fixed duration cap under-purged events built with 200h windows, so the
     honest key is the min/max actually present in the store.
+
+    Parameters
+    ----------
+    open_ms : int
+        The first instant the event was seen, in epoch milliseconds.
+    close_ms : int
+        The last; never earlier than ``open_ms``.
+
+    Examples
+    --------
+    One event's extent, and how long it ran::
+
+        bounds = EventBounds(open_ms=1_700_000_000_000,
+                             close_ms=1_700_000_060_000)
+        bounds.span_ms
+        # -> 60000
     """
 
     open_ms: int
     close_ms: int
 
     def __post_init__(self):
+        """Refuse a non-int instant or a backward span (see ``Raises``)."""
         for name in ("open_ms", "close_ms"):
             v = getattr(self, name)
             if isinstance(v, bool) or not isinstance(v, int):
@@ -125,6 +143,13 @@ class EventBounds:
 
     @property
     def span_ms(self) -> int:
+        """Give how long the event was observed for, in milliseconds.
+
+        Returns
+        -------
+        int
+            ``close_ms - open_ms``; zero for an event seen once.
+        """
         return self.close_ms - self.open_ms
 
 
@@ -137,10 +162,27 @@ SPLIT_POLICIES: dict = {}
 def register_split_policy(name, instant_of, *, needs_bounds, doc="") -> None:
     """Bind a policy ``name`` to its ``instant_of(frame, bounds)``.
 
-    ``needs_bounds`` declares whether the policy reads the event-bounds map;
-    a split validating itself uses it to refuse an unresolvable run EARLY,
-    rather than at the first record. Duplicates raise, as everywhere else in
-    the toolkit."""
+    Parameters
+    ----------
+    name : str
+        The policy's declared name, non-empty; the spelling a document's
+        ``splits.policy`` writes.
+    instant_of : callable
+        ``instant_of(frame, bounds)`` answering the epoch-ms instant the
+        frame is cut on, or ``None`` to drop the record.
+    needs_bounds : bool
+        Whether the policy reads the event-bounds map. A split validating
+        itself uses this to refuse an unresolvable run EARLY, rather than
+        at the first record.
+    doc : str, optional
+        One line describing the policy, for reports.
+
+    Raises
+    ------
+    ValueError
+        When a knob is unusable, or ``name`` is already registered —
+        duplicates raise, as everywhere else in the toolkit.
+    """
     if not isinstance(name, str) or not name:
         raise ValueError(f"split policy name must be a non-empty string, got {name!r}")
     if not callable(instant_of):
@@ -161,7 +203,24 @@ def register_split_policy(name, instant_of, *, needs_bounds, doc="") -> None:
 
 
 def split_policy(name) -> dict:
-    """The registered policy, failing loudly and naming the family."""
+    """Look one policy up, failing loudly and naming the family.
+
+    Parameters
+    ----------
+    name : str
+        The registered policy name.
+
+    Returns
+    -------
+    dict
+        The registry entry: ``instant_of``, ``needs_bounds``, ``doc``.
+
+    Raises
+    ------
+    ValueError
+        When nothing is registered under ``name``; the message lists
+        what is.
+    """
     entry = SPLIT_POLICIES.get(name)
     if entry is None:
         raise ValueError(
@@ -172,7 +231,24 @@ def split_policy(name) -> dict:
 
 
 def policy_instant(name, frame, bounds):
-    """The instant ``frame`` is cut on under policy ``name``."""
+    """Give the instant ``frame`` is cut on under policy ``name``.
+
+    Parameters
+    ----------
+    name : str
+        The registered policy name.
+    frame : SplitFrame
+        The row's frame — an instant and a cluster.
+    bounds : dict or None
+        The resolved ``cluster -> EventBounds`` map, or ``None`` when
+        the run never built one.
+
+    Returns
+    -------
+    int or None
+        The epoch-ms instant to compare against the cuts, or ``None``
+        when the policy drops the record.
+    """
     return split_policy(name)["instant_of"](frame, bounds)
 
 
@@ -180,7 +256,7 @@ def policy_instant(name, frame, bounds):
 
 
 def _instant_record(frame, bounds):
-    """The record's own decision instant. Bounds unused."""
+    """Take the record's own decision instant; bounds unused."""
     return frame.asof_ms
 
 
@@ -206,21 +282,18 @@ def _event_instant(frame, bounds, edge):
     return got.close_ms if edge == "close" else got.open_ms
 
 
+# A straddler moves WHOLLY FORWARD into the later split: data is
+# withheld from the earlier one, and no post-cut instant is dragged back.
 def _instant_event_close(frame, bounds):
-    """The event's LAST observed instant — an event straddling a cut moves
-    WHOLLY FORWARD into the later split. Withholds data from the earlier
-    split; never drags post-cut instants backward."""
+    """Take the event's LAST observed instant."""
     return _event_instant(frame, bounds, "close")
 
 
+# A straddler moves WHOLLY BACKWARD, which closes the straddle but pulls
+# post-cut leads into the earlier block. Registered for walk-forward
+# designs where the open IS the decision instant; not for train/val/test.
 def _instant_event_open(frame, bounds):
-    """The event's FIRST observed instant — an event straddling a cut moves
-    WHOLLY BACKWARD into the earlier split.
-
-    Closes the straddle but pulls post-cut leads into the earlier block, so
-    a fit consumes instants from the selection window. Registered because
-    walk-forward designs where the OPEN is the decision instant need it;
-    NOT recommended for train/val/test."""
+    """Take the event's FIRST observed instant."""
     return _event_instant(frame, bounds, "open")
 
 
@@ -261,11 +334,29 @@ def _field(record, name):
 
 
 def event_bounds_from_records(records) -> dict:
-    """``cluster -> EventBounds`` from a record stream: min/max ``asof_ms``.
+    """Derive each cluster's observed extent from a record stream.
 
-    OBSERVED extent, computed from the same records the run will assign, so
-    the bounds can never disagree with the data being cut. One pass, no
-    store read, no new data path."""
+    Computed from the same records the run will assign, so the bounds
+    can never disagree with the data being cut. One pass, no store read,
+    no new data path.
+
+    Parameters
+    ----------
+    records : iterable
+        The stream; every record must carry ``cluster`` and an int
+        ``asof_ms`` (attribute or key).
+
+    Returns
+    -------
+    dict
+        ``cluster -> EventBounds``, the min/max ``asof_ms`` seen.
+
+    Raises
+    ------
+    ValueError
+        When a record carries no ``cluster``/``asof_ms``, or its
+        ``asof_ms`` is not an int.
+    """
     lo: dict = {}
     hi: dict = {}
     for record in records:
@@ -284,14 +375,25 @@ def event_bounds_from_records(records) -> dict:
 
 
 def merge_event_bounds(*maps) -> dict:
-    """Union of several bounds maps, widening any cluster seen in more than
-    one.
+    """Union several bounds maps, widening any cluster seen in more than one.
 
-    Unlike a trailing split's ANCHOR — where two sources offering an edge is
-    an ambiguity the driver refuses to resolve — two sources offering bounds
-    is not ambiguous: the keys are event tickers, so the union is exact, and
-    a cluster genuinely present in both is widened to cover both views
-    rather than arbitrarily taking one."""
+    Unlike a trailing split's ANCHOR — where two sources offering an edge
+    is an ambiguity the driver refuses to resolve — two sources offering
+    bounds is not ambiguous: the keys are event tickers, so the union is
+    exact, and a cluster present in both is widened to cover both views
+    rather than arbitrarily taking one.
+
+    Parameters
+    ----------
+    *maps : dict or None
+        Any number of ``cluster -> EventBounds`` maps; empty ones are
+        skipped.
+
+    Returns
+    -------
+    dict
+        One ``cluster -> EventBounds`` map covering every input.
+    """
     out: dict = {}
     for m in maps:
         if not m:
@@ -313,20 +415,33 @@ def merge_event_bounds(*maps) -> dict:
 
 
 def straddle_report(splits, records, *, bounds=None) -> dict:
-    """Count the events that land in more than one split — the leak, as a
-    number.
+    """Count the events landing in more than one split — the leak, as a number.
 
-    A straddle count of ZERO is the proof an event-atomic policy worked; a
-    non-zero count under ``record`` is exactly the leak the owner should
-    see. ``boundaries`` names WHICH cut each event straddles, because
-    ``val|test`` is the one that puts an event in both selection and
-    scoring, and is therefore the serious one.
+    A straddle count of ZERO is the proof an event-atomic policy worked;
+    a non-zero count under ``record`` is exactly the leak the owner
+    should see. ``boundaries`` names WHICH cut each event straddles,
+    because ``val|test`` is the one that puts an event in both selection
+    and scoring, and is therefore the serious one. ``rows_by_split``
+    rides alongside because moving events between splits moves training
+    rows with them: a policy that fixes the leak while emptying train is
+    not a fix, and only the row counts show that.
 
-    ``rows_by_split`` is reported alongside, because moving events between
-    splits moves training rows with them: a policy that fixes the leak while
-    emptying train is not a fix, and only the row counts show that.
+    Parameters
+    ----------
+    splits : object
+        The split config under audit; its ``split_of`` is what assigns.
+    records : iterable
+        The stream to assign, each carrying ``cluster`` and ``asof_ms``.
+    bounds : dict or None, optional
+        The ``cluster -> EventBounds`` map; taken off ``splits``, then
+        derived from the records, when not given.
 
-    Returns a plain JSON-safe dict, so any report sink can carry it.
+    Returns
+    -------
+    dict
+        A plain JSON-safe summary, so any report sink can carry it:
+        the policy, the straddle counts and names, the per-split row
+        counts, and how many rows no split claimed.
     """
     records = list(records)
     if bounds is None:
@@ -340,7 +455,7 @@ def straddle_report(splits, records, *, bounds=None) -> dict:
     unassigned = 0
     for record in records:
         cluster = _field(record, "cluster")
-        frame = _SplitFrame(_field(record, "asof_ms"), cluster)
+        frame = SplitFrame(_field(record, "asof_ms"), cluster)
         split = splits.split_of(frame)
         if split is None:
             unassigned += 1
@@ -372,10 +487,32 @@ def straddle_report(splits, records, *, bounds=None) -> dict:
     }
 
 
-class _SplitFrame:
-    """The duck-typed frame every ``split_of`` reads: an instant and a
-    cluster. A real class so a missing field fails as an AttributeError,
-    not a silent ``None`` — the same shape the venue adapters build."""
+class SplitFrame:
+    """The frame every ``split_of`` reads: an instant and a cluster.
+
+    A real class rather than a namespace, so a policy asking for a field
+    this frame does not carry fails as an ``AttributeError`` instead of
+    silently reading ``None`` — the shape the venue adapters build, and
+    the ONE definition of it: a caller that copies these two slots
+    instead of importing this name keeps working the day a policy starts
+    reading a third, while its own copy dies inside the assignment.
+
+    Parameters
+    ----------
+    asof_ms : int
+        The row's decision instant, in epoch milliseconds.
+    cluster : str or None
+        The row's dependence group — the event, the trading day. A
+        cluster-keyed split reads ONLY this.
+
+    Examples
+    --------
+    Ask a split which side of its cuts one row falls on::
+
+        frame = SplitFrame(1_700_000_000_000, "EVENT-1")
+        splits.split_of(frame)
+        # -> 'train'
+    """
 
     __slots__ = ("asof_ms", "cluster")
 

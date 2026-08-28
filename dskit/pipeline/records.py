@@ -63,7 +63,7 @@ __all__ = [
 ]
 
 
-def price_ok(value) -> bool:
+def price_ok(value):
     """Say whether ``value`` is a price this envelope can hold.
 
     The envelope's price rule, PUBLIC so that nothing restates it. A
@@ -92,7 +92,7 @@ def price_ok(value) -> bool:
     )
 
 
-def lead_frac_ok(value) -> bool:
+def lead_frac_ok(value):
     """Say whether ``value`` is a ``lead_frac`` this envelope can hold.
 
     The sibling of :func:`price_ok`, public for the same reason.

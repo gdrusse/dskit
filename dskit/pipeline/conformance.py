@@ -60,6 +60,10 @@ import sys
 from dataclasses import dataclass, field
 
 from dskit.pipeline.base import ConfigError
+
+# TRAINABLE_ROLES is the GRAMMAR's own tuple, IMPORTED and never
+# mirrored: a second copy here is exactly how a new trainable family
+# would get this bar silently skipped.
 from dskit.pipeline.document import TRAINABLE_ROLES, PipelineDocument
 from dskit.pipeline.node import Node, NodeContext, NodeKindRegistry, TrainableNode
 from dskit.pipeline.planner import plan
@@ -98,11 +102,6 @@ DEFAULT_BLOCKED_IMPORTS = (
 
 #: Roles whose identity the driver hashes into the run identity.
 FINGERPRINTED_ROLES = ("data", "labels")
-
-#: Roles that may carry ``mode``/``artifact`` — the GRAMMAR's own tuple,
-#: re-exported because packs import the name from here. IMPORTED, never
-#: mirrored: a second copy is exactly how a new trainable family would
-#: get its structural bar silently skipped.
 
 #: Keys no node has a knob named — SEVERAL, so a validator that
 #: special-cases one probe literal still fails (F-222 FN-7).

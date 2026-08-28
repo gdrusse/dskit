@@ -17,12 +17,18 @@ at run otherwise:
 
 * under train mode ``fit_split`` is REQUIRED and must name a declared
   split;
-* **a declared ``fit_split`` with no splits section at all refuses at
-  plan**, rather than quietly fitting on everything;
-* under load mode nothing is fit, so ``fit_split`` is not required —
-  and when present it is checked against the sidecar's record of what
-  the restored state ACTUALLY saw, so a document can restate what a
-  state is, never misdescribe it.
+* **a FITTING document with no splits section at all refuses at plan**,
+  rather than quietly fitting on everything — a ``walkforward`` section
+  counts, because its folds materialize their own cuts;
+* under load mode nothing is fit, so none of the plan rules apply — and
+  a ``fit_split`` that IS present is checked at run against the
+  sidecar's record of what the restored state ACTUALLY saw, alongside
+  :meth:`FittedTransform.state_problems`, the member's own half of the
+  rule. A document can restate what a state is, never misdescribe it;
+* under a CLUSTER-KEYED cut every fit-candidate row must carry an
+  identity, or the fit refuses: a random split assigns by hashing the
+  cluster, so identity-less rows all hash alike and land in ONE bucket
+  — and a ``fit_split`` catching that bucket catches the whole stream.
 
 **The ``rows`` port carries EVERY input row, transformed, in both
 modes.** ``fit_split`` governs what the state is LEARNED FROM, never
@@ -67,6 +73,7 @@ from dskit.pipeline.node import (
     TrainableNode,
     reject_unknown_params,
 )
+from dskit.pipeline.split_policy import SplitFrame
 
 __all__ = [
     "ApplyTransform",
@@ -85,8 +92,10 @@ __all__ = [
 #: a pin may point at either the file or the directory holding it.
 SIDECAR_NAME = "fitted.json"
 
-#: What fit rows are ordered by before :meth:`FittedTransform.fit` sees
-#: them, so a fit that depends on row order is reproducible.
+#: The row field naming its DECISION INSTANT. Fit rows are ordered by it
+#: (so a fit that depends on row order is reproducible) and the split
+#: frame is built from it (so a stream with a foreign vocabulary is cut
+#: on the instant it actually carries).
 DEFAULT_ORDER_FIELD = "asof_ms"
 
 #: The purity screen is ON unless the document says otherwise.
@@ -118,19 +127,23 @@ def _sample_positions(n):
     return sorted({0, n // 2, n - 1}) if n else []
 
 
-class _SplitFrame:
-    """The duck-typed frame every ``split_of`` reads.
+#: The split KIND whose assignment is a pure function of the row's
+#: cluster. Named here because the leak it causes is this module's to
+#: refuse; ``tests/pipeline/test_fitted.py`` pins it against what the
+#: configs actually do, so the name cannot drift from the behaviour.
+_CLUSTER_KEYED_KIND = "random"
 
-    An instant and a cluster, as a real class so a missing field fails
-    as an AttributeError rather than a silent ``None`` — the same shape
-    ``split_policy`` builds.
+
+def _assigns_by_cluster(splits):
+    """Say whether a split assignment READS the row's cluster (bool).
+
+    Two shapes do, and both make an identity-less row unassignable: the
+    random family hashes the cluster by construction, and a time split
+    under an event policy resolves the event's bounds by cluster
+    (``needs_event_bounds`` — the driver asks the same way).
     """
-
-    __slots__ = ("asof_ms", "cluster")
-
-    def __init__(self, asof_ms, cluster):
-        self.asof_ms = asof_ms
-        self.cluster = cluster
+    return (getattr(splits, "kind", None) == _CLUSTER_KEYED_KIND
+            or bool(getattr(splits, "needs_event_bounds", False)))
 
 
 class TransformCarrier:
@@ -209,8 +222,10 @@ class FittedTransform(TrainableNode):
     params : dict
         ``fit_split`` (which split the state is learned from; required
         under train mode), ``order_field`` (str, default ``"asof_ms"`` —
-        what fit rows are ordered by), ``purity_check`` (bool, default
-        ``True``), plus whatever the member declares.
+        the field carrying each row's decision instant, which is both
+        what fit rows are ordered by and what the split cuts on),
+        ``purity_check`` (bool, default ``True``), plus whatever the
+        member declares.
 
     Examples
     --------
@@ -240,7 +255,10 @@ class FittedTransform(TrainableNode):
         return self.params.get("fit_split")
 
     def order_field(self):
-        """Name the field fit rows are ordered by (str)."""
+        """Name the field carrying a row's decision instant (str).
+
+        Fit rows are ordered by it, and :meth:`frame_of` cuts on it.
+        """
         return self.params.get("order_field", DEFAULT_ORDER_FIELD)
 
     def purity_check(self):
@@ -361,6 +379,30 @@ class FittedTransform(TrainableNode):
         """
         raise NotImplementedError
 
+    def state_problems(self, state):
+        """Ways a RESTORED state contradicts this document; none by default.
+
+        The member's half of "a document may restate what a state is,
+        never misdescribe it". The base already checks the two facts it
+        owns — the class that fitted the state and the split it saw —
+        but only the member knows whether its own knobs DESCRIBE the
+        state or merely sit beside it. A knob that ``apply_state`` never
+        reads is exactly where train/serve skew hides: nothing differs,
+        nothing fails, and the served rows are quietly wrong.
+
+        Parameters
+        ----------
+        state : dict
+            The restored state, as :meth:`fit` returned it.
+
+        Returns
+        -------
+        list of str
+            One problem per disagreement; empty when the document and
+            the state describe the same transform.
+        """
+        return []
+
     def state_metrics(self, state):
         """Numeric metrics describing a fitted state; none by default.
 
@@ -435,8 +477,9 @@ class FittedTransform(TrainableNode):
         ------
         ValueError
             When nothing pins an artifact, when the sidecar belongs to
-            another class, or when a declared ``fit_split`` contradicts
-            what the state actually saw.
+            another class, when a declared ``fit_split`` contradicts
+            what the state actually saw, or when the member's own knobs
+            misdescribe the restored state.
         """
         payload = self._sidecar(
             self.pinned_artifact(
@@ -520,6 +563,32 @@ class FittedTransform(TrainableNode):
             "metrics": metrics,
         }
 
+    def frame_of(self, row):
+        """Build the frame the run's splits assign this row by.
+
+        The instant comes from the DECLARED :meth:`order_field`, never a
+        hardcoded name: the pack's other half exists so a stream with a
+        foreign vocabulary can enter, and a fitted transform that read
+        ``asof_ms`` regardless would put every such row in NO split and
+        then blame the split bounds. The identity is the row's
+        ``cluster``, or its ``contract`` when it has no explicit one —
+        the same fallback :attr:`MarketRecord.cluster` makes.
+
+        Parameters
+        ----------
+        row : dict or object
+            One input row, read attr-or-key.
+
+        Returns
+        -------
+        dskit.pipeline.split_policy.SplitFrame
+            The frame handed to ``split_of``.
+        """
+        return SplitFrame(
+            _field(row, self.order_field()),
+            _field(row, "cluster") or _field(row, "contract"),
+        )
+
     def _fit_rows(self, ctx, rows):
         """Select the declared split's rows, ordered — or refuse by name."""
         split = self.fit_split()
@@ -537,20 +606,45 @@ class FittedTransform(TrainableNode):
                 "fit on EVERYTHING, which is the leak this knob exists to "
                 "refuse"
             )
-        keep = [
-            row for row in rows
-            if splits.split_of(
-                _SplitFrame(_field(row, "asof_ms"),
-                            _field(row, "cluster") or _field(row, "contract"))
-            ) == split
-        ]
+        frames = [self.frame_of(row) for row in rows]
+        self._refuse_unassignable(splits, frames)
+        keep = [row for row, frame in zip(rows, frames)
+                if splits.split_of(frame) == split]
         if not keep:
             raise ValueError(
                 f"{self.key}: fit_split={split!r} matched no row of the "
-                f"{len(rows)} wired — fitting on nothing would emit a state "
-                "no reader can question, so it refuses instead"
+                f"{len(rows)} wired — each row's split is read from its "
+                f"{self.order_field()!r} instant and its cluster/contract "
+                "identity, so check those before the cuts. Fitting on nothing "
+                "would emit a state no reader can question, so it refuses "
+                "instead"
             )
         return self._ordered(keep)
+
+    def _refuse_unassignable(self, splits, frames):
+        """Refuse a row the run's splits cannot honestly place.
+
+        Under a CLUSTER-KEYED cut every identity-less row hashes the
+        same string, so they all land in ONE bucket — and when that
+        bucket is ``fit_split`` the fit silently sees the whole stream,
+        val and test included, with ordinary-looking metrics and no
+        refusal anywhere. That is the exact leak this family exists to
+        make impossible, so it is refused by name.
+        """
+        if not _assigns_by_cluster(splits):
+            return
+        for i, frame in enumerate(frames):
+            if frame.cluster is not None:
+                continue
+            raise ValueError(
+                f"{self.key}: row {i} carries no split identity (neither "
+                "'cluster' nor 'contract') and this run cuts BY CLUSTER — "
+                "every such row is assigned by hashing the same missing "
+                "value, so they all land in ONE split and a fit_split that "
+                "catches them fits on the WHOLE stream, val and test "
+                "included. Carry the identity onto the rows, or cut this "
+                "run on time"
+            )
 
     def _ordered(self, rows):
         """Fit rows in the declared order; input order when it cannot be read."""
@@ -606,6 +700,12 @@ class FittedTransform(TrainableNode):
         if not isinstance(payload.get("state"), dict):
             raise ValueError(
                 f"{self.key}: {path} carries no fitted state"
+            )
+        problems = self.state_problems(payload["state"])
+        if problems:
+            raise ValueError(
+                f"{self.key}: {'; '.join(problems)} — a document may restate "
+                "what a state is, never misdescribe it"
             )
         return payload
 
@@ -797,6 +897,34 @@ class Standardize(FittedTransform):
             )
             break
         return problems
+
+    def state_problems(self, state):
+        """Refuse a restored state that does not cover the declared features.
+
+        ``apply_state`` iterates the STATE, so a serving document naming
+        a feature the state never learned would scale nothing and say
+        nothing: the model is fed one raw column forever, the metrics
+        look identical, and no refusal fires. That is the train/serve
+        skew this family exists to make impossible.
+
+        Parameters
+        ----------
+        state : dict
+            The restored ``{"mean": ..., "std": ...}``.
+
+        Returns
+        -------
+        list of str
+            One problem when the declared features and the state's
+            covered features are not the same set.
+        """
+        covered = sorted(state.get("mean", {}))
+        declared = sorted(self.features())
+        if covered == declared:
+            return []
+        return [
+            f"features {declared} but the restored state covers {covered}"
+        ]
 
     def state_metrics(self, state):
         """Report how many features the state covers.

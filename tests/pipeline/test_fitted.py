@@ -17,18 +17,25 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
 from dskit.pipeline import DEFAULT_NODE_KINDS
-from dskit.pipeline.base import ConfigError, OutputsConfig, TimeSplitConfig
-from dskit.pipeline.document import NodeSpec, PipelineDocument
+from dskit.pipeline.base import (
+    ConfigError,
+    OutputsConfig,
+    RandomSplitConfig,
+    TimeSplitConfig,
+)
+from dskit.pipeline.document import NodeSpec, PipelineDocument, WalkForwardSpec
 from dskit.pipeline.driver import run_document
 from dskit.pipeline.fitted import (
     SIDECAR_NAME,
     ApplyTransform,
     FittedTransform,
     Standardize,
+    _assigns_by_cluster,
 )
 from dskit.pipeline.node import NodeContext, resolve_uses
 from dskit.pipeline.planner import plan
@@ -71,7 +78,8 @@ def split_ctx(tmp_path):
     )
 
 
-def _document(params, *, splits=None, mode=None, artifact="", run_root=""):
+def _document(params, *, splits=None, mode=None, artifact="", run_root="",
+              walkforward=None):
     return PipelineDocument(
         name="fitted-doc",
         pipeline={
@@ -88,6 +96,7 @@ def _document(params, *, splits=None, mode=None, artifact="", run_root=""):
             ),
         },
         splits=splits,
+        walkforward=walkforward,
         outputs=OutputsConfig(run_root=run_root),
     )
 
@@ -178,6 +187,23 @@ class TestLeakageIsRefused:
         with pytest.raises(ConfigError, match="declares none"):
             plan(_document({"fit_split": "train", "features": ["x"]}))
 
+    def test_a_walk_forward_document_needs_no_splits_section(self):
+        """Folds REPLACE the splits section wholesale, so a walk-forward
+        document carries none BY DESIGN — the same exemption the
+        document grammar already grants a ``split`` param. Without it
+        this family could never appear in a rolling-origin study at all,
+        while the reason given ("would fit on EVERYTHING") is untrue:
+        every fold materializes its own cuts before anything is fit.
+        """
+        document = _document(
+            {"fit_split": "train", "features": ["x"]},
+            walkforward=WalkForwardSpec(
+                objective="$scaler.metrics.n_rows", val_days=21,
+                first="1973-01-01", step_days=7, count=2,
+            ),
+        )
+        assert plan(document).role_of("scaler") == "fitted_transform"
+
     def test_an_undeclared_fit_split_refuses_at_plan_under_train_mode(self):
         with pytest.raises(ConfigError, match="fit_split"):
             plan(_document({"features": ["x"]}, splits=TIME_SPLITS))
@@ -204,6 +230,109 @@ class TestLeakageIsRefused:
         node = Standardize("scaler", {"fit_split": "test", "features": ["x"]})
         with pytest.raises(ValueError, match="no row"):
             node.run(split_ctx, {"rows": TRAIN_ROWS})
+
+    def test_identity_less_rows_under_a_cluster_keyed_split_refuse(
+        self, tmp_path
+    ):
+        """THE silent leak: a random cut assigns by hashing the row's
+        CLUSTER, so rows carrying none all hash the same string and land
+        in ONE bucket. When that bucket is ``fit_split`` the scaler fits
+        on the entire stream — val and test included — and reports it as
+        an ordinary fit, with the right metrics and no refusal anywhere.
+
+        The row shape is the one the README's own example wires: a
+        window node's output, keyed on ``symbol``/``asof_ms``.
+        """
+        rows = [{"symbol": "AAPL", "asof_ms": i, "x": float(i)}
+                for i in range(100)]
+        ctx = NodeContext(
+            name="f", asof=ASOF, run_dir=str(tmp_path),
+            splits=RandomSplitConfig(train_frac=0.6, val_frac=0.2, seed=1),
+        )
+        node = Standardize("scaler", {"fit_split": "train", "features": ["x"]})
+        with pytest.raises(ValueError, match="no split identity"):
+            node.run(ctx, {"rows": rows})
+
+    def test_identity_less_rows_are_fine_when_the_split_cuts_ON_TIME(
+        self, split_ctx
+    ):
+        """The refusal is about the split that READS an identity, not
+        about identity — a time cut reads the instant, so the window
+        rows the README wires must keep planning and running."""
+        rows = [{"symbol": "AAPL", "asof_ms": DAY + i, "x": float(i)}
+                for i in range(4)]
+        out = Standardize("s", {"fit_split": "train", "features": ["x"]}).run(
+            split_ctx, {"rows": rows}
+        )
+        assert out["metrics"]["n_fit_rows"] == 4
+
+    def test_the_split_instant_is_read_from_the_declared_order_field(
+        self, split_ctx
+    ):
+        """ADR-0040's other half exists so a foreign-vocabulary stream
+        can enter. A fitted transform that read a hardcoded ``asof_ms``
+        would put every such row in NO split and then blame the split
+        bounds — a refusal naming the wrong cause sends the operator to
+        the wrong file.
+        """
+        rows = [{"contract": f"C-{i}", "t": DAY + i, "x": float(1 + i)}
+                for i in range(4)]
+        rows += [{"contract": f"V-{i}", "t": 15 * DAY + i, "x": 1000.0 + i}
+                 for i in range(4)]
+        out = Standardize("s", {"fit_split": "train", "features": ["x"],
+                                "order_field": "t"}).run(
+            split_ctx, {"rows": rows}
+        )
+        assert out["metrics"]["n_fit_rows"] == 4
+        assert out["transform"].state["mean"]["x"] == pytest.approx(2.5)
+
+    def test_a_carried_cluster_satisfies_a_random_cut(self, tmp_path):
+        """And the same rows WITH an identity assign per cluster, which
+        is what a random cut promised in the first place."""
+        rows = [{"cluster": f"day-{i}", "asof_ms": i, "x": float(i)}
+                for i in range(100)]
+        ctx = NodeContext(
+            name="f", asof=ASOF, run_dir=str(tmp_path),
+            splits=RandomSplitConfig(train_frac=0.6, val_frac=0.2, seed=1),
+        )
+        out = Standardize("s", {"fit_split": "train", "features": ["x"]}).run(
+            ctx, {"rows": rows}
+        )
+        assert 0 < out["metrics"]["n_fit_rows"] < len(rows)
+
+
+class TestWhichSplitsReadAnIdentity:
+    """``_assigns_by_cluster`` decides when the identity refusal bites,
+    and it names one fact the split configs own ("the random family
+    hashes the cluster"). The pin DERIVES the answer from the configs
+    themselves rather than restating it, so the day a config changes
+    what it reads, the tuple is caught rather than the leak."""
+
+    @staticmethod
+    def _really_reads_a_cluster(config):
+        """Derived: does this config's answer move with the cluster
+        alone? A config that RAISES on an unknown one read it too."""
+        answers = set()
+        for i in range(32):
+            frame = SimpleNamespace(asof_ms=5 * DAY, cluster=f"probe-{i}")
+            try:
+                answers.add(config.split_of(frame))
+            except Exception:
+                return True
+        return len(answers) > 1
+
+    @pytest.mark.parametrize("config", [
+        TIME_SPLITS,
+        TimeSplitConfig(train_end_ms=10 * DAY, val_end_ms=20 * DAY,
+                        test_end_ms=30 * DAY, policy="event-close"),
+        RandomSplitConfig(train_frac=0.6, val_frac=0.2, seed=1),
+    ], ids=["time-record", "time-event-close", "random"])
+    def test_the_predicate_agrees_with_what_the_config_actually_does(
+        self, config
+    ):
+        assert _assigns_by_cluster(config) is self._really_reads_a_cluster(
+            config
+        )
 
 
 class TestThePurityScreen:
@@ -301,6 +430,40 @@ class TestLoadMode:
         resolved = plan(_document({"features": ["x"]}, splits=TIME_SPLITS,
                                   mode="load", artifact=str(tmp_path / "s.json")))
         assert resolved.role_of("scaler") == "fitted_transform"
+
+    def test_a_serving_document_may_restate_fit_split_with_no_splits(
+        self, tmp_path
+    ):
+        """The serving shape: no splits section, a restated ``fit_split``.
+
+        A document that never fits declares no splits — that IS what a
+        serving document looks like — and the no-splits refusal exists
+        to stop a FIT from seeing everything. Refusing here would put
+        the sidecar cross-check ("may restate, never misdescribe") out
+        of reach of exactly the documents it was written for.
+        """
+        resolved = plan(_document({"features": ["x"], "fit_split": "train"},
+                                  mode="load",
+                                  artifact=str(tmp_path / "s.json")))
+        assert resolved.role_of("scaler") == "fitted_transform"
+
+    def test_the_restored_state_must_cover_the_features_the_document_names(
+        self, split_ctx
+    ):
+        """A serving document may restate what a state is, never
+        misdescribe it — the same rule ``node_class`` and ``fit_split``
+        already carry, on the knob that says WHAT was scaled.
+
+        Unchecked, a retuned or typo'd feature list feeds the model an
+        unscaled column forever: ``apply_state`` iterates the STATE, so
+        the declared name is simply never read and nothing differs.
+        """
+        _fitted, _trained, sidecar = self._fit(split_ctx)
+        served = Standardize("scaler", {"features": ["other"]},
+                             mode="load", artifact=sidecar)
+        bare = NodeContext(name="f", asof=ASOF, run_dir=split_ctx.run_dir)
+        with pytest.raises(ValueError, match="features"):
+            served.run(bare, {"rows": VAL_ROWS})
 
 
 class TestApplyTransform:

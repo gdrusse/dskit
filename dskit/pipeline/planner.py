@@ -325,24 +325,26 @@ def _fitted_errors(key, spec, cls, document):
         ``mode`` means whatever the class says it means, so the rule
         cannot key on ``spec.mode`` alone.
     document : dskit.pipeline.document.PipelineDocument
-        The whole document, read for its splits section.
+        The whole document, read for its splits and walkforward
+        sections.
 
     Returns
     -------
     list of str
         One problem per broken rule; empty when the declaration is
         honourable.
+
+    Notes
+    -----
+    Every rule here is about the FITTING path, so all of them are
+    skipped under ``mode="load"`` — a node that never fits cannot fit on
+    everything, and a serving document is precisely the one that
+    declares no splits. Under load a restated ``fit_split`` is checked
+    at RUN against the sidecar's record of what the state actually saw.
     """
     errors = []
     fit_split = spec.params.get("fit_split")
     declared = fit_split is not None and not is_node_ref(fit_split)
-    if declared and document.splits is None:
-        errors.append(
-            f"pipeline.{key}: fit_split {fit_split!r} names a split but the "
-            "document declares none — a fitted transform with no splits would "
-            "fit on EVERYTHING, which is the leak the knob exists to refuse. "
-            "Declare splits, or drop the node"
-        )
     mode = spec.mode if spec.mode is not None else getattr(cls, "default_mode", "train")
     if mode == "load":
         return errors  # nothing is fit; the sidecar is checked at run
@@ -356,6 +358,16 @@ def _fitted_errors(key, spec, cls, document):
         errors.append(
             f"pipeline.{key}: fit_split must be one of "
             f"{'/'.join(SPLIT_NAMES)}, got {fit_split!r}"
+        )
+    elif declared and document.splits is None and document.walkforward is None:
+        # A walkforward section COUNTS: folds replace the splits section
+        # wholesale and materialize their own cuts before anything fits
+        # — the same exemption the grammar grants a 'split' param.
+        errors.append(
+            f"pipeline.{key}: fit_split {fit_split!r} names a split but the "
+            "document declares none — a fitted transform with no splits would "
+            "fit on EVERYTHING, which is the leak the knob exists to refuse. "
+            "Declare splits (a walkforward section counts), or drop the node"
         )
     return errors
 

@@ -166,9 +166,10 @@ kinds resolve. Two more verbs — `demo`
   top-level `env` / `outputs` / `schedule` sections excluded.
 - **Roles** are declared BY the node class, never by the config:
   `data, labels, transform, tensor, accrual, gate, search, signal, train,
-  score, stat_test, capital, report`. The planner attaches rules to roles
-  (data nodes take no inputs, `capital` requires a `stat_test` upstream,
-  `search` objectives must read `val`, …).
+  score, stat_test, capital, report, fitted_transform`. The planner attaches
+  rules to roles (data nodes take no inputs, `capital` requires a `stat_test`
+  upstream, `search` objectives must read `val`, `fitted_transform` must
+  declare the split it fits on, …).
 - A `clock` section is parseable but refuses to run — declared design,
   not yet executable.
 
@@ -215,11 +216,16 @@ the toolkit's statistics are not swappable by config.
 transform that LEARNS — a scaler's means, a selector's surviving columns —
 cannot live with the pure transforms, whose causality guard depends on purity.
 So it declares `fit_split`: which split the state is learned from, refused at
-plan when the document declares no splits, and checked against the sidecar
-when a pinned state is restored. The `rows` port carries EVERY input row
+plan when a FITTING document declares no splits (a `walkforward` section
+counts — folds materialize their own), and checked against the sidecar when a
+pinned state is restored. A serving document (`mode: "load"`) fits nothing, so
+none of those plan rules apply to it. The `rows` port carries EVERY input row
 transformed — applying a train-fit state to val and test IS the required
-behaviour; the leak would be FITTING on them. Write a member by implementing
-two methods:
+behaviour; the leak would be FITTING on them. Under a CLUSTER-KEYED cut
+(`splits.kind: "random"`, or a time split on an event policy) every row must
+carry a `cluster`/`contract`, or the fit is refused: identity-less rows all
+hash alike and would land in one bucket, which is the whole stream. Write a
+member by implementing two methods:
 
 ```jsonc
 "scaler": {
@@ -340,9 +346,10 @@ class MyTransform(Node):
 register_node_kind("my-transform", MyTransform)   # at your package's import
 ```
 
-A **trainable role** (`train`/`signal`) subclasses `TrainableNode` instead
-(ADR-0038) — it is the only role a document may give `mode`/`artifact`, and
-the base owns that dispatch. `run` and `validate_inputs` are template methods:
+A **trainable role** — `TRAINABLE_ROLES`, today `train`/`signal`/
+`fitted_transform` — subclasses `TrainableNode` instead (ADR-0038): those are
+the only roles a document may give `mode`/`artifact`, and the base owns that
+dispatch. `run` and `validate_inputs` are template methods:
 write `run_train`/`run_load` (both required, so an incomplete trainable refuses
 at construction) and, when validation differs by mode,
 `validate_common_inputs` / `validate_train_inputs` / `validate_load_inputs`. A

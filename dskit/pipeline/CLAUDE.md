@@ -73,7 +73,11 @@ on it without breaking its rulings.
   yours to handle. Two rules bite: `apply_state` must be PURE and
   ROW-INDEPENDENT (the screen re-applies it to one row alone), and the
   `rows` port carries EVERY input row — `fit_split` says what was
-  LEARNED from, never what is emitted.
+  LEARNED from, never what is emitted. Override `state_problems(state)`
+  when a knob DESCRIBES the state rather than sitting beside it (the
+  scaler's `features` does): under `mode="load"` a document may restate
+  what a state is and never misdescribe it, and a knob `apply_state`
+  never reads is where train/serve skew hides.
 - **Conformance** — point `conformance_suite(registry=, probes=,
   expected_roles=)` at any pack; probes are behavioural, not optional
   (`require_probes=False` is a written-down decision).
@@ -156,6 +160,11 @@ on it without breaking its rulings.
   class fails to construct. The mirror rule: every per-knob check in that
   pack is guarded by `if "<knob>" in cls._PARAMS`, or a narrowing subclass
   would be refused for omitting a knob it does not have.
+- **`keep_mask` compacts, and `latest_rows` therefore checks the MASK.**
+  Dropping a position makes the survivors adjacent, which is what
+  TRAINING wants and what SERVING must not have: a group whose newest
+  position was masked out is ABSENT from `latest_rows`, never served the
+  newest survivor wearing a one-bar-old stamp.
 - **Base `Node.validate_params` accepts anything.** The deny lives in
   each class (`_PARAMS` + `_reject_unknown`); forget it and typos pass.
 - **Owned kinds** (`validate`, `stat_test`, `run-report`): documents

@@ -496,14 +496,16 @@ class Node(ABC):
 class TrainableNode(Node):
     """A node whose ``mode`` decides whether it FITS or RESTORES.
 
-    The trainable roles (``train``/``signal``) are the only ones a document
-    may give ``mode``/``artifact``, and every one of them used to hand-roll
-    the same dispatch inside ``run``. Here it is a template method: ``run``
-    and ``validate_inputs`` are the base's, and a subclass supplies the
-    per-mode hooks instead of branching (ADR-0038). Abstract by
-    construction — both run hooks are ``@abstractmethod``, so an
+    The trainable roles — :data:`~dskit.pipeline.document.TRAINABLE_ROLES`,
+    today ``train``/``signal``/``fitted_transform`` — are the only ones a
+    document may give ``mode``/``artifact``, and every one of them used to
+    hand-roll the same dispatch inside ``run``. Here it is a template
+    method: ``run`` and ``validate_inputs`` are the base's, and a subclass
+    supplies the per-mode hooks instead of branching (ADR-0038). Abstract
+    by construction — both run hooks are ``@abstractmethod``, so an
     incomplete trainable refuses to CONSTRUCT rather than failing halfway
-    through a fit — and never registered as a kind.
+    through a fit — and never registered as a kind. A new family joins by
+    adding its role to that tuple, never by widening this rule locally.
 
     A pinned-inference kind (one that always loads) sets
     ``default_mode = "load"`` and implements :meth:`run_train` as its
