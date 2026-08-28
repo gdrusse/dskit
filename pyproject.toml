@@ -109,6 +109,7 @@ convention = "numpy"
 "dskit/onboarding/coverage.py" = ["D"]
 "dskit/onboarding/default_model.py" = ["D"]
 "dskit/onboarding/layout.py" = ["D"]
+"dskit/onboarding/libs/localfiles.py" = ["D"]
 "dskit/onboarding/libs/restapi.py" = ["D"]
 "dskit/onboarding/observations.py" = ["D"]
 "dskit/onboarding/publish.py" = ["D"]

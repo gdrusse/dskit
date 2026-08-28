@@ -45,8 +45,12 @@ def test_check_fails_fast_on_bad_or_empty_paths(conn, tmp_path, config):
 
 def test_default_encoding_is_one_named_constant(conn, config, monkeypatch):
     # discover() and read() must both fall back to the SAME module constant
-    # rather than each hardcoding their own "utf-8" literal.
+    # rather than each hardcoding their own "utf-8" literal. Rebind the
+    # constant to a sentinel value: a call site that hardcoded "utf-8"
+    # instead of reading the constant would keep seeing "utf-8" here and
+    # the test would fail.
     assert localfiles._DEFAULT_ENCODING == "utf-8"
+    monkeypatch.setattr(localfiles, "_DEFAULT_ENCODING", "utf-8-sig")
 
     seen = []
     real_rows = LocalFilesConnector._rows
@@ -59,7 +63,16 @@ def test_default_encoding_is_one_named_constant(conn, config, monkeypatch):
     conn.discover(config)
     list(conn.read(config, ["prices"], {}, "live"))
     assert seen
-    assert all(enc == localfiles._DEFAULT_ENCODING for enc in seen)
+    assert all(enc == "utf-8-sig" for enc in seen)
+
+
+def test_encoding_default_pinned_in_prose(conn):
+    # The default is stated in prose in both the module docstring and the
+    # spec() note; pin both to the constant so a later change to the
+    # constant cannot silently leave the prose saying the old value.
+    expected = f"default {localfiles._DEFAULT_ENCODING}"
+    assert expected in localfiles.__doc__
+    assert expected in conn.spec()["params"]["encoding"]["notes"]
 
 
 def test_discover_one_stream_per_file(conn, config):

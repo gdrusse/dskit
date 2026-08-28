@@ -37,9 +37,9 @@ Config knobs (default-deny, per ``spec()``):
 - ``since_param`` — query param that receives the stream's cursor so a
   server that can filter does; the client-side cursor filter still
   applies regardless, so an over-returning server stays harmless.
-- ``timeout`` — request timeout in seconds (default {_DEFAULT_TIMEOUT}).
+- ``timeout`` — request timeout in seconds (default 30).
 - ``max_retries`` — extra attempts on 429/5xx/network errors with
-  exponential backoff (default {_DEFAULT_MAX_RETRIES}).
+  exponential backoff (default 3).
 
 Cursor semantics are localfiles' exactly: state maps stream ->
 ``{"cursor": <max effective_date emitted>}`` and the logic is identical
@@ -80,10 +80,6 @@ _BACKOFF = 0.5
 #: never drift from what ``_conf`` actually applies.
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_RETRIES = 3
-
-__doc__ = __doc__.replace(
-    "{_DEFAULT_TIMEOUT}", str(_DEFAULT_TIMEOUT)
-).replace("{_DEFAULT_MAX_RETRIES}", str(_DEFAULT_MAX_RETRIES))
 
 # Default-deny key sets for the nested declarations.
 _STREAM_KEYS = ("path", "params", "records_path", "schema", "primary_key", "notes")

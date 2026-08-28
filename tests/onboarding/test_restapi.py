@@ -104,22 +104,27 @@ def test_bad_shapes_refused(conn, config):
         conn.check({**config, "auth_name": "Authorization"})
 
 
-def test_timeout_and_retries_defaults_are_named_constants(conn, config):
+def test_timeout_and_retries_defaults_are_named_constants(conn, config, monkeypatch):
     # The module docstring and spec() notes state these defaults in prose;
-    # a single constant per default is the only way that prose can't drift
-    # from the code that actually applies it.
+    # pin both to the CURRENT constant value so a later change to the
+    # constant without updating the static prose text goes red.
     assert restapi._DEFAULT_TIMEOUT == 30
     assert restapi._DEFAULT_MAX_RETRIES == 3
 
-    cfg = conn._conf(config)
-    assert cfg["timeout"] == restapi._DEFAULT_TIMEOUT
-    assert cfg["max_retries"] == restapi._DEFAULT_MAX_RETRIES
-
     notes = conn.spec()["params"]
-    assert str(restapi._DEFAULT_TIMEOUT) in notes["timeout"]["notes"]
-    assert str(restapi._DEFAULT_MAX_RETRIES) in notes["max_retries"]["notes"]
-    assert str(restapi._DEFAULT_TIMEOUT) in restapi.__doc__
-    assert str(restapi._DEFAULT_MAX_RETRIES) in restapi.__doc__
+    assert f"default {restapi._DEFAULT_TIMEOUT}" in notes["timeout"]["notes"]
+    assert f"default {restapi._DEFAULT_MAX_RETRIES}" in notes["max_retries"]["notes"]
+    assert f"default {restapi._DEFAULT_TIMEOUT}" in restapi.__doc__
+    assert f"default {restapi._DEFAULT_MAX_RETRIES}" in restapi.__doc__
+
+    # Rebind the constants to sentinel values: a call site that hardcoded
+    # 30 / 3 instead of reading the constant would keep resolving to the
+    # old default here and the test would fail.
+    monkeypatch.setattr(restapi, "_DEFAULT_TIMEOUT", 99)
+    monkeypatch.setattr(restapi, "_DEFAULT_MAX_RETRIES", 7)
+    cfg = conn._conf(config)
+    assert cfg["timeout"] == 99
+    assert cfg["max_retries"] == 7
 
 
 # -- check ------------------------------------------------------------------
