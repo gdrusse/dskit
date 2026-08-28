@@ -173,6 +173,16 @@ on it without breaking its rulings.
   excludes it, so every walker composed of that predicate steps over it
   and outside a template it rides through as a literal. Substituted as a
   WHOLE value only; as a params dict KEY it refuses.
+- **A `foreach` template may not pin a node-level `artifact`** — which
+  refuses `mode: "load"` templates, since the grammar couples the two.
+  Rule 3 substitutes into `params` only and whole-value only, so the
+  per-instance PATH cannot be spelled at all; a shared pin would bind N
+  instances to one stored model while their training half wrote an
+  artifact dir each (`Node.artifact_dir` keys on the node key), and only
+  the loud half of that asymmetry is visible. The expressible forms are a
+  `default_mode = "load"` kind taking its reference from a param or a
+  wired port, or longhand nodes. ADR-0039 is silent here; this is the
+  reading, and widening it later is additive.
 - **A search `space` key is the one node reference spelled without a
   `$`** — an override PATH, `'<node>.<param.path>'` — so the `foreach`
   expansion re-aims it exactly as it re-aims a wire (ADR-0039, "search

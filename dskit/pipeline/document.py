@@ -183,9 +183,12 @@ _SLUG_BAD = r"[^a-z0-9_]"
 #: foreach template is therefore re-aimed exactly as a reference is
 #: (ADR-0039: "search spaces come for free"). Named ONCE here and
 #: imported by the planner and the driver, which read the same map; each
-#: search KIND still declares the knob in its own ``_PARAMS`` (a
-#: default-deny vocabulary is a deliberate independent restatement),
-#: pinned by ``tests/pipeline/test_foreach.py``.
+#: search KIND still names the knob itself — in its ``_PARAMS``
+#: default-deny vocabulary, or in its own ``validate_params`` where it
+#: declares none — because a validator sourcing its vocabulary from the
+#: thing it validates asserts nothing. EVERY shipped search kind is
+#: pinned to this spelling by ``tests/pipeline/test_foreach.py``, which
+#: DISCOVERS them from the tree rather than naming one.
 SEARCH_SPACE_PARAM = "space"
 
 
@@ -194,15 +197,25 @@ SEARCH_SPACE_PARAM = "space"
 # ---------------------------------------------------------------------------
 
 
-def is_node_ref(value) -> bool:
-    """True iff ``value`` is a node-output reference string (``"$..."``).
+def is_node_ref(value):
+    """Report whether ``value`` is a node-output reference (``"$..."``).
 
-    Grammar validity is :func:`parse_node_ref`'s business — this only
-    detects the FORM, so a malformed ``$`` string is still routed into
-    the parser and refused there, never passed through as a literal.
-    The one exception is :data:`EACH_TOKEN`: it is a reserved fan-out
-    placeholder, not a wire, so it is not a reference and every walker
-    composed of this predicate steps over it.
+    Grammar validity is :func:`parse_node_ref`'s business — this detects
+    only the FORM, so a malformed ``$`` string is still routed into the
+    parser and refused there, never passed through as a literal.
+
+    Parameters
+    ----------
+    value : object
+        Any inputs or params value, of any type.
+
+    Returns
+    -------
+    bool
+        True for a string beginning ``$`` OTHER than :data:`EACH_TOKEN`.
+        The token is a reserved fan-out placeholder, not a wire, so it is
+        not a reference and every walker composed of this predicate steps
+        over it (ADR-0039 rule 3).
     """
     return isinstance(value, str) and value.startswith("$") and value != EACH_TOKEN
 
@@ -1044,6 +1057,18 @@ def _template_node_errors(where, spec):
                 "reference to a template key already rewrites to this "
                 "instance"
             )
+    if spec.artifact:
+        errors.append(
+            f"{where}: a template may not pin a node-level artifact "
+            f"({spec.artifact!r}) — the pin names ONE stored model, so every "
+            "instance would restore that same one while the TRAIN half of the "
+            "same fan-out writes an artifact dir per instance, and nothing "
+            f"would say so. Rule 3 cannot rescue it: {EACH_TOKEN!r} is a "
+            "whole-value params substitution, so here it is a literal and not "
+            "a path, and this grammar builds no interpolation. Pin the "
+            "artifact through a param or a wired port on a kind whose "
+            "default_mode is 'load', or write the loading nodes longhand"
+        )
     errors.extend(_each_key_errors(f"{where}.params", spec.params))
     return errors
 
@@ -1087,8 +1112,12 @@ class ForeachSpec:
     ConfigError
         Listing every shape problem at once — an empty or duplicated key
         list, a ``$``-prefixed key, an empty template map, a template
-        using :data:`EACH_TOKEN` as a params key, or a template declaring
-        a ``<base>__each`` port.
+        using :data:`EACH_TOKEN` as a params key, a template declaring a
+        ``<base>__each`` port, or a template pinning a node-level
+        ``artifact``. That last one is refused because the pin names ONE
+        stored model and the grammar has no interpolation: N instances
+        would silently restore one artifact while their TRAIN half wrote
+        one dir each.
 
     Examples
     --------
@@ -1816,7 +1845,19 @@ class PipelineDocument:
         notes stripped and env/outputs/schedule/tracking excluded."""
         return config_hash(self, exclude=DOC_NON_IDENTITY_SECTIONS)
 
-    def to_obj(self) -> dict:
+    def to_obj(self):
+        """Serialize everything this document STORES, nothing it derives.
+
+        Returns
+        -------
+        dict
+            ``name`` and ``pipeline`` always; the six always-emitted
+            sections as objects or ``None``; ``walkforward`` and
+            ``foreach`` ONLY when present; then ``notes``. The derived
+            pair (``expanded``, ``foreach_groups``) NEVER appears — the
+            identity hash reads this method alone, so what it cannot say
+            can never be hash material (ADR-0039).
+        """
         obj = {
             "name": self.name,
             "pipeline": {k: v.to_obj() for k, v in self.pipeline.items()},
@@ -1841,7 +1882,28 @@ class PipelineDocument:
         return obj
 
     @classmethod
-    def from_obj(cls, obj) -> "PipelineDocument":
+    def from_obj(cls, obj):
+        """Rebuild one document from its serialized form.
+
+        Parameters
+        ----------
+        obj : dict
+            The document's sections; any key outside the known set is
+            refused by name. ``pipeline`` may be absent or empty when a
+            ``foreach`` section declares the templates that fan out.
+
+        Returns
+        -------
+        PipelineDocument
+            The validated document, its expansion already derived.
+
+        Raises
+        ------
+        ConfigError
+            Listing every problem at once: an unknown key, a node that is
+            not an object, a section that refuses, and every shape,
+            expansion and cross-field rule the constructor accumulates.
+        """
         _reject_unknown(
             obj,
             (

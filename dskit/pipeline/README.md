@@ -133,7 +133,12 @@ kinds resolve. Two more verbs — `demo`
   to that instance inside a template and to every instance in a shared search
   node, so tuning N instances is ONE declaration rather than N copies nothing
   pins together. `pipeline` may
-  be empty when a `foreach` is declared. No expressions, no conditionals, no
+  be empty when a `foreach` is declared, and a template may NOT pin a
+  node-level `artifact` (so no `mode: "load"` template): the pin names ONE
+  stored model and the grammar has no interpolation, so every instance would
+  silently restore that same one while the training half wrote a dir each —
+  restore through a param or a wired port instead, or spell those nodes
+  longhand. No expressions, no conditionals, no
   nesting — this is fan-out, not templating. The section IS identity (adding a
   key is a different computation) while the expansion is DERIVED
   (`document.expanded`, never emitted, never hashed), which is why every

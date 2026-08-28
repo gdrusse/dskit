@@ -13,6 +13,8 @@ result. That is what proves the section is fan-out over the ONE execution
 path, not a second one.
 """
 
+import ast
+import importlib
 import json
 import os
 import pathlib
@@ -21,6 +23,7 @@ from dataclasses import replace
 
 import pytest
 
+import dskit.pipeline
 from dskit.pipeline.__main__ import main
 from dskit.pipeline.base import ConfigError, OutputsConfig
 from dskit.pipeline.document import (
@@ -37,7 +40,6 @@ from dskit.pipeline.document import (
 )
 from dskit.pipeline.driver import run_document
 from dskit.pipeline.io import load_config
-from dskit.pipeline.kinds_search import HpoGrid
 from dskit.pipeline.planner import plan
 
 ASOF = "2026-01-01"
@@ -201,10 +203,56 @@ def message(exc):
     return " | ".join(exc.value.errors)
 
 
+def _declares_search_role(class_def):
+    """True when a parsed class body assigns ``role = "search"``."""
+    return any(
+        isinstance(stmt, ast.Assign)
+        and any(getattr(t, "id", None) == "role" for t in stmt.targets)
+        and isinstance(stmt.value, ast.Constant)
+        and stmt.value.value == "search"
+        for stmt in class_def.body
+    )
+
+
+def search_role_classes():
+    """Every search-role class the toolkit ships, tier 1 and tier 2.
+
+    Found by PARSING the tree rather than by naming the modules, so a
+    third search kind joins the pin by existing; imported afterwards, so
+    the assertion reads the real ``_PARAMS`` (inherited ones included)
+    rather than a literal. Importing a pack is safe at tier 1 — the
+    purity rule keeps a pack's own library out of its module level.
+
+    Returns
+    -------
+    list
+        The classes, in file then declaration order.
+    """
+    package = pathlib.Path(dskit.pipeline.__file__).parent
+    found = []
+    for path in sorted(package.glob("*.py")) + sorted(package.glob("libs/*.py")):
+        parsed = ast.parse(path.read_text(encoding="utf-8"))
+        classes = [
+            node.name
+            for node in parsed.body
+            if isinstance(node, ast.ClassDef) and _declares_search_role(node)
+        ]
+        if not classes:
+            continue
+        suffix = ".libs" if path.parent.name == "libs" else ""
+        module = importlib.import_module(f"dskit.pipeline{suffix}.{path.stem}")
+        found.extend(getattr(module, name) for name in classes)
+    return found
+
+
 #: The grid the tuned documents below search, declared ONCE so the
 #: ``foreach`` document and its longhand twin cannot drift apart in the
 #: one place the whole search-space rule is about.
 MIN_TRAIN_GRID = [1, 2]
+
+#: One well-formed ``space`` value, for asking a search kind whether it
+#: reads the knob under the name the expansion rewrites.
+MIN_TRAIN_SPACE = {"qhat.min_train": MIN_TRAIN_GRID}
 
 
 def tuned_shared(space):
@@ -376,6 +424,47 @@ class TestForeachSpecShape:
                 },
             )
         assert "rows__each" in message(exc)
+
+    def test_a_template_may_not_pin_a_node_level_artifact(self):
+        # The pin names ONE stored model. Fanned out it would bind every
+        # instance to it — AAPL's model scoring MSFT — while the TRAIN
+        # half of the same fan-out writes an artifact dir per instance
+        # (`Node.artifact_dir` keys on the node key). The grammar has no
+        # interpolation, so the per-instance path cannot be spelled;
+        # refusing by name is the only honest answer.
+        with pytest.raises(ConfigError) as exc:
+            ForeachSpec(
+                keys=["a", "b"],
+                pipeline={
+                    "qhat": NodeSpec(
+                        uses="x", mode="load", artifact="runs/qhat-a/model.json"
+                    )
+                },
+            )
+        assert "artifact" in message(exc)
+        assert "runs/qhat-a/model.json" in message(exc)
+
+    def test_the_reserved_token_may_not_ride_through_an_artifact(self):
+        # The spelling an author reaches for once the refusal above
+        # lands. It is refused by the same rule rather than riding onto
+        # every instance as a literal, which is the ride-through the
+        # `$each`-as-a-params-KEY refusal exists to prevent.
+        with pytest.raises(ConfigError) as exc:
+            ForeachSpec(
+                keys=["a"],
+                pipeline={"q": NodeSpec(uses="x", mode="load", artifact=EACH_TOKEN)},
+            )
+        assert EACH_TOKEN in message(exc)
+
+    def test_a_training_template_is_still_legal(self):
+        # The refusal is keyed on the PIN, not on `mode`: a fit fans out
+        # correctly because each instance owns its artifact dir, and only
+        # the load half has one path for N instances.
+        spec = ForeachSpec(
+            keys=["a"], pipeline={"t": NodeSpec(uses="x", mode="train")}
+        )
+        assert spec.pipeline["t"].mode == "train"
+        assert spec.pipeline["t"].artifact == ""
 
     def test_a_template_may_not_take_the_reserved_splits_name(self):
         with pytest.raises(ConfigError) as exc:
@@ -671,10 +760,25 @@ class TestIdentity:
         assert foreach_document().hash != longhand_document().hash
 
     def test_dataclasses_replace_re_derives_the_expansion(self):
-        # Children call `replace(document, outputs=...)` to redirect a run
-        # dir. The derived fields are init=False, so `replace` skips them
-        # and __post_init__ rebuilds them — a pin, because a derived field
+        # Children call `replace(document, ...)` to redirect a run dir.
+        # The derived fields are init=False, so `replace` skips them and
+        # __post_init__ rebuilds them — a pin, because a derived field
         # that `replace` carried STALE would run yesterday's graph.
+        # Replace the identity field that DRIVES the expansion: a stale
+        # carry survives replacing `outputs` (the map cannot differ
+        # either way), so only this form can go red.
+        rekeyed = replace(
+            foreach_document(),
+            foreach=ForeachSpec(
+                keys=["ZED"], pipeline=dict(foreach_document().foreach.pipeline)
+            ),
+        )
+        assert list(rekeyed.expanded) == ["dataset", "both", "rows__zed"]
+        assert rekeyed.foreach_groups == {"rows": ("rows__zed",)}
+        assert rekeyed.expanded["both"].inputs == {"records__zed": "$rows__zed.records"}
+        assert rekeyed.hash != foreach_document().hash  # the key list IS identity
+
+    def test_replacing_a_non_identity_section_moves_neither_graph_nor_hash(self):
         moved = replace(
             foreach_document(), outputs=OutputsConfig(run_root="/tmp/elsewhere")
         )
@@ -724,7 +828,12 @@ class TestLonghandEquivalence:
         assert fan.exit_code == 0 and hand.exit_code == 0
         assert fan.outputs["both"]["merged"] == hand.outputs["both"]["merged"]
         assert len(fan.outputs["both"]["merged"]) == 12
-        assert sorted(fan.node_states) == sorted(hand.node_states)
+        # The MAP, not `sorted(...)` of it: sorting a dict yields its
+        # keys, so that spelling compared node NAMES — a fact the
+        # node-for-node test above already pins — and would hold with
+        # every fanned node halted and every longhand node ok.
+        assert fan.node_states == hand.node_states
+        assert set(fan.node_states.values()) == {"ok"}
 
 
 # ---------------------------------------------------------------------------
@@ -741,8 +850,11 @@ class TestEngineReadsExpanded:
     def test_the_example_validates_and_reports_what_runs(self, capsys):
         assert main(["validate", FOREACH_EXAMPLE]) == 0
         out = capsys.readouterr().out
-        assert "nodes: 4" in out
-        assert "foreach" in out
+        # Assert the SECTIONS LINE, never the whole capture: `foreach`
+        # appears in the echoed path and in the run name regardless, so
+        # a bare `"foreach" in out` would pass with the section missing
+        # from the CLI's tuple — a pin that claims a coverage it lacks.
+        assert "nodes: 4  sections: outputs, foreach" in out
 
     def test_the_example_plans_over_the_expanded_graph(self, capsys):
         assert main(["plan", FOREACH_EXAMPLE]) == 0
@@ -757,12 +869,14 @@ class TestEngineReadsExpanded:
     def test_a_foreach_only_document_is_not_mistaken_for_the_stage_grammar(
         self, tmp_path, capsys
     ):
+        # NO `pipeline` key at all — that is what reaches the sentinel's
+        # `or "foreach" in doc`. Spelling `"pipeline": {}` here would
+        # satisfy the first clause and leave the widened half untested.
         path = tmp_path / "templates-only.json"
         path.write_text(
             json.dumps(
                 {
                     "name": "templates-only",
-                    "pipeline": {},
                     "foreach": {
                         "keys": ["a"],
                         "pipeline": {
@@ -888,10 +1002,25 @@ class TestSearchSpaceFanOut:
         assert "qhat__syna.min_train" in message(exc)
         assert "qhat.min_train" in message(exc)
 
-    def test_the_space_param_name_agrees_with_the_search_kind(self):
+    def test_every_shipped_search_kind_names_the_space_param(self):
         # The document layer rewrites the key map the search kinds
-        # actually read; two spellings would silently stop expanding.
-        assert SEARCH_SPACE_PARAM in HpoGrid._PARAMS
+        # actually READ; two spellings would silently stop expanding.
+        # EVERY kind, DISCOVERED from the tree — naming one class would
+        # claim a coverage it lacks (`libs/optuna.py` and
+        # `synthetic_nodes.py` each restate the knob independently), and
+        # asked BEHAVIOURALLY rather than through `_PARAMS`, which one of
+        # the three does not declare.
+        kinds = search_role_classes()
+        assert {"HpoGrid", "OptunaSearch", "SynthSearch"} <= {
+            cls.__name__ for cls in kinds
+        }
+        for cls in kinds:
+            absent = cls.validate_params({"objective": "$val.metrics.loss"})
+            assert [p for p in absent if SEARCH_SPACE_PARAM in p], cls.__name__
+            present = cls.validate_params(
+                {"objective": "$val.metrics.loss", SEARCH_SPACE_PARAM: MIN_TRAIN_SPACE}
+            )
+            assert not [p for p in present if SEARCH_SPACE_PARAM in p], cls.__name__
 
     def test_both_tuned_documents_run_to_the_same_winner(self, tmp_path):
         fan = run_document(
