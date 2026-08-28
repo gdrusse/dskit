@@ -319,15 +319,36 @@ class TestTracking:
         assert logged["events.n_events"] == 432
         assert logged["clip.lo"] == 0.02
         assert logged["size.stake_frac"] == 0.1
-        assert logged["size.bankroll"] == {
-            "$prev": "size.final_bankroll",
-            "default": 1000.0,
-        }
         assert logged["name"] == doc.name
         assert logged["asof"] == ASOF
         assert logged["document_hash"] == doc.hash
         assert logged["run_hash"] == result.run_hash
         assert logged["nodes"].startswith("events,")
+
+    def test_logged_params_are_the_values_the_run_actually_used(
+        self, tmp_path, registry
+    ):
+        # A reference is not a value: logging the carry SPEC would give
+        # every run in a series an identical 'size.bankroll', none of which
+        # the run after the first ever sized against — a sink filter would
+        # read a number the run never had. The MATERIALIZED value is logged.
+        self.register_memory()
+
+        def run(asof):
+            doc = bdoc(
+                tmp_path, tracking=TrackingConfig(sinks=(SinkConfig(kind="memory"),))
+            )
+            return run_document(doc, asof=asof, registry=registry)
+
+        first = run("2026-01-01")
+        assert MemoryTracker.instances[-1].logged_params[
+            "size.bankroll"
+        ] == pytest.approx(1000.0)  # the carry's default: no prior run
+        second = run("2026-01-08")
+        assert MemoryTracker.instances[-1].logged_params[
+            "size.bankroll"
+        ] == pytest.approx(first.outputs["size"]["final_bankroll"])
+        assert second.prev_run == first.run_dir
 
     def test_sink_closes_even_when_a_node_errors(self, tmp_path, registry):
         self.register_memory()

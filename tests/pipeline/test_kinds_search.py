@@ -532,6 +532,40 @@ class TestSpaceKeyGrammarParity:
             },
         )
 
+    @staticmethod
+    def _leaf_paths(value, prefix=()):
+        """Every path to a leaf, walked NAIVELY — no grammar applied.
+
+        Deliberate independent restatement: an assertion sourced from the
+        flattener would assert nothing, so this walk descends every
+        non-empty dict and lets the grammar (not the walk) do the
+        filtering."""
+        if isinstance(value, dict) and value:
+            for name, inner in value.items():
+                yield from TestSpaceKeyGrammarParity._leaf_paths(inner, (*prefix, name))
+        else:
+            yield prefix
+
+    def test_every_tunable_leaf_is_emitted(self):
+        # The CONVERSE pin. Forward-only ("every emitted key is legal") goes
+        # green when the flattener emits nothing, so it cannot see an
+        # under-emission: a knob hpo-grid tunes and the driver overrides,
+        # missing from the payload, is the very 'cannot filter runs by lr'
+        # gap this logging exists to close.
+        flat = flatten_param_paths("qhat", self.PARAMS)
+        checked = 0
+        for path in self._leaf_paths(self.PARAMS):
+            key = ".".join(("qhat", *path))
+            if HpoGrid.validate_params(
+                {"space": {key: [1]}, "objective": "$validate.metrics.loss"}
+            ):
+                continue  # the space grammar refuses this key: not tunable
+            target = copy.deepcopy(self.PARAMS)
+            _apply_param_override(target, "qhat", path, "SENTINEL")
+            checked += 1
+            assert key in flat, f"{key} is tunable and overridable but unlogged"
+        assert checked >= 6  # a vacuous loop would prove nothing
+
     def test_every_flattened_key_resolves_to_the_leaf_it_came_from(self):
         flat = flatten_param_paths("qhat", self.PARAMS)
         for key in flat:
@@ -781,6 +815,26 @@ class TestEndToEndParabola:
         assert val_entries[-1]["metrics.loss"] == 0.0  # winner re-log
         theta_entries = [m for node, m in sink.metrics if node == "theta"]
         assert theta_entries[-1]["value"] == 3.0
+
+    def test_logged_params_are_the_winner_s_not_the_declared_ones(
+        self, tmp_path, registry
+    ):
+        # The whole point of logging params: ask a sink for "the runs at
+        # theta=3.0" and get this one. Logging the DECLARED theta would
+        # file the winner's score under a config no pass ever executed —
+        # worse than logging nothing, and the reason this item blocks HPO.
+        doc = parabola_document(
+            tmp_path,
+            tracking=TrackingConfig(
+                sinks=(SinkConfig(kind="dskit.pipeline.testing:MemoryTracker"),)
+            ),
+        )
+        result = run_document(doc, asof=ASOF, registry=registry)
+        logged = MemoryTracker.instances[-1].logged_params
+        winner = result.outputs["search"]["best_params"]["theta.theta"]
+        assert winner != doc.pipeline["theta"].params["theta"]  # else vacuous
+        assert logged["theta.theta"] == winner
+        assert logged["src.x"] == doc.pipeline["src"].params["x"]  # untouched node
 
 
 # ---------------------------------------------------------------------------

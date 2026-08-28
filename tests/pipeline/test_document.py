@@ -104,22 +104,42 @@ class TestFlattenParamPaths:
         flat = flatten_param_paths("clip", {"lo": 0.02, "on": True, "cuts": [1, 2]})
         assert flat == {"clip.lo": 0.02, "clip.on": True, "clip.cuts": [1, 2]}
 
-    def test_descent_stops_where_an_override_cannot_go(self):
-        # An override navigates existing dict keys only, so a $prev carry,
-        # an empty dict and a dict with non-segment keys are LEAVES —
-        # descending would emit a key no override could ever address.
-        carry = {"$prev": "size.final_bankroll", "default": 1000.0}
-        flat = flatten_param_paths(
-            "size", {"bankroll": carry, "empty": {}, "by_day": {"1d": 3}}
-        )
-        assert flat == {
-            "size.bankroll": carry,
-            "size.empty": {},
-            "size.by_day": {"1d": 3},
+    def test_descent_stops_where_there_is_no_dict_left_to_walk(self):
+        # An override navigates existing dict keys, so a dict with nothing
+        # inside is where the walk ends — there is no key below it to name.
+        assert flatten_param_paths("size", {"empty": {}}) == {"size.empty": {}}
+
+    def test_unaddressable_names_are_dropped_key_by_key(self):
+        # Per KEY, never per dict: a name the grammar cannot spell is
+        # unfilterable in a sink and untunable by a space key, so it is
+        # dropped — but it must not take its addressable SIBLINGS with it
+        # (an override addresses 'n.opt.lr' happily beside '1st_moment').
+        assert flatten_param_paths("size", {"1d": 3, "ok": 1}) == {"size.ok": 1}
+        assert flatten_param_paths("n", {"opt": {"lr": 0.001, "1st_moment": 0.9}}) == {
+            "n.opt.lr": 0.001
         }
 
-    def test_unaddressable_top_level_names_are_dropped(self):
-        assert flatten_param_paths("size", {"1d": 3, "ok": 1}) == {"size.ok": 1}
+    def test_a_dict_with_nothing_spellable_inside_is_itself_the_leaf(self):
+        # hpo-grid's own 'space' is this shape: every key is a dotted
+        # override target, none of them a path SEGMENT. The block is
+        # addressable as a whole ('search.space'), so it is logged whole —
+        # dropping it would hide the searched grid from every sink.
+        space = {"theta.theta": [0.0, 3.0]}
+        assert flatten_param_paths("search", {"space": space}) == {
+            "search.space": space
+        }
+        assert flatten_param_paths("n", {"by_day": {"1d": 3}}) == {
+            "n.by_day": {"1d": 3}
+        }
+
+    def test_a_carry_spec_yields_its_addressable_default(self):
+        # A raw $prev carry only reaches the flattener outside the driver
+        # (which flattens MATERIALIZED params); '$prev' is no segment, and
+        # 'default' is an existing param an override may set.
+        carry = {"$prev": "size.final_bankroll", "default": 1000.0}
+        assert flatten_param_paths("size", {"bankroll": carry}) == {
+            "size.bankroll.default": 1000.0
+        }
 
     def test_no_params_flatten_to_nothing(self):
         assert flatten_param_paths("bank", {}) == {}

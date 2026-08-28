@@ -197,23 +197,50 @@ def _open_sinks(tracking):
     return _Trackers(sinks)
 
 
-def _tracked_params(document, asof, run_hash, order):
-    """The log_params payload: run identity plus every node's declared
-    params, flattened to the '<node>.<param.path>' keys hpo-grid tunes.
-
-    Identity alone left runs unfilterable in a sink — you could not ask
-    for "the runs at hidden_size=64". Flattened keys always carry a dot,
-    so they never shadow the undotted identity fields.
-    """
-    payload = {
+def _tracked_identity(document, asof, run_hash, order):
+    """What this run IS — logged at run start, so a crash still lands it."""
+    return {
         "name": document.name,
         "asof": asof,
         "document_hash": document.hash,
         "run_hash": run_hash,
         "nodes": ",".join(order),
     }
+
+
+def _tracked_params(effective, order):
+    """The hyperparameters the run RAN with, flattened for the sinks.
+
+    Identity alone left runs unfilterable — you could not ask a sink for
+    "the runs at hidden_size=64". What makes that answer TRUE is logging
+    the effective params, never the document's text: a ``$prev`` carry or
+    a ``$node`` reference is a reference, not a value, and a search node's
+    winner overrides what the document declared. Logging the declaration
+    would file the winner's score under a config no pass ever executed —
+    worse than logging nothing, which is why this payload is sent after
+    the nodes have run rather than beside the identity fields.
+
+    Parameters
+    ----------
+    effective : dict
+        ``node key -> the materialized params that node ran with`` (the
+        winner pass's, where a search re-executed it). A node that never
+        reached execution is absent: it has no params-in-effect, and
+        substituting its declaration would be the same lie in miniature.
+    order : tuple of str
+        Plan order, so the payload is built deterministically.
+
+    Returns
+    -------
+    dict
+        ``"<node>.<param.path>"`` -> value, the spelling ``hpo-grid``
+        space keys use. Every key carries a dot, so none can shadow the
+        undotted identity fields logged beside them.
+    """
+    payload = {}
     for key in order:
-        payload.update(flatten_param_paths(key, document.pipeline[key].params))
+        if key in effective:
+            payload.update(flatten_param_paths(key, effective[key]))
     return payload
 
 
@@ -353,6 +380,11 @@ class _SearchSeam:
 
     ``calls`` counts every ``rerun`` invocation — surfaced as
     ``trials_executed`` in the search node's record.
+
+    ``params_used`` holds the MATERIALIZED params of the most recent pass,
+    keyed by node — the driver reads it after :meth:`apply_winner` so the
+    sinks log the params the winner actually ran with, not the ones the
+    document declared and the search then overrode.
     """
 
     def __init__(self, key, the_plan, node_outputs, splits_info, prev, trial_ctx):
@@ -364,6 +396,7 @@ class _SearchSeam:
         self._prev = prev
         self._trial_ctx = trial_ctx
         self.calls = 0
+        self.params_used = {}
         # The planner guaranteed the objective is a $-ref into a declared
         # val-split score node before anything could execute.
         target, path = parse_node_ref(self._specs[key].params["objective"])
@@ -451,6 +484,7 @@ class _SearchSeam:
             dirty |= self._plan.descendants(head)
         subgraph = tuple(k for k in self._plan.order if k in self.needed and k in dirty)
         seconds = {}
+        self.params_used = {}
         for k in subgraph:
             spec = self._specs[k]
             t0 = time.perf_counter()
@@ -465,6 +499,7 @@ class _SearchSeam:
                 self._prev,
                 bindings,
             )
+            self.params_used[k] = params
             inputs = {
                 port: _materialize(
                     ref,
@@ -946,13 +981,16 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
     node_outputs = {}
     seconds = {}
     search_meta = {}
+    effective_params = {}  # what each node RAN with — the tracked payload
     halted = set()
     halted_at = ""
     error_text = ""
     state = "ran"
 
     try:
-        trackers.log_params(_tracked_params(document, asof, run_hash, the_plan.order))
+        trackers.log_params(
+            _tracked_identity(document, asof, run_hash, the_plan.order)
+        )
         for key in the_plan.order:
             spec = document.pipeline[key]
             if key in halted:
@@ -971,6 +1009,7 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
                     prev,
                     prev_bindings,
                 )
+                effective_params[key] = params
                 inputs = {
                     port: _materialize(
                         ref,
@@ -1014,6 +1053,9 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
                             winner, ctx, prev_bindings
                         )
                         search_meta[key]["winner_reran"] = list(winner_reran)
+                        # The winner pass is the pass that stands, so its
+                        # params are the ones the run ran with.
+                        effective_params.update(seam.params_used)
             except Exception:  # noqa: BLE001 — recorded, then abort
                 if seam is not None:
                     search_meta[key] = {"trials_executed": seam.calls}
@@ -1056,6 +1098,11 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
                 )
         for key in the_plan.order:
             node_states.setdefault(key, "not_run")
+        # The hyperparameters go out only now: a search node's winner is
+        # not known until it has run, and a reference is only a value once
+        # materialized. Disjoint keys from the identity payload (dotted vs
+        # undotted), so no sink is ever asked to restate a param.
+        trackers.log_params(_tracked_params(effective_params, the_plan.order))
 
         # -- 6 RECORD ---------------------------------------------------
         nodes_dir = os.path.join(run_dir, "nodes")

@@ -224,24 +224,21 @@ def parse_prev_ref(value):
     return parts[0], tuple(parts[1:]), value["default"]
 
 
-def _param_branch(value) -> bool:
-    """Whether an override path may descend INTO this params value — a
-    non-empty dict every key of which is a legal path segment (which is
-    also what makes a ``$prev`` carry a leaf: ``$prev`` is no segment)."""
-    return (
-        isinstance(value, dict)
-        and bool(value)
-        and all(isinstance(k, str) and re.match(_SEGMENT_OK, k) for k in value)
-    )
-
-
-def _flatten_into(out, prefix, value) -> None:
-    """Emit ``prefix`` -> leaf for one params subtree."""
-    if _param_branch(value):
-        for name, inner in value.items():
-            _flatten_into(out, f"{prefix}.{name}", inner)
+def _flatten_into(out, prefix, value):
+    """Emit ``prefix`` -> leaf for one params subtree, key by key."""
+    inside = _spellable_keys(value)
+    if inside:
+        for name in inside:
+            _flatten_into(out, f"{prefix}.{name}", value[name])
     else:
         out[prefix] = value
+
+
+def _spellable_keys(value):
+    """The keys of ``value`` a path segment can name — () for a non-dict."""
+    if not isinstance(value, dict):
+        return ()
+    return tuple(k for k in value if isinstance(k, str) and re.match(_SEGMENT_OK, k))
 
 
 def flatten_param_paths(node_key, params):
@@ -250,12 +247,18 @@ def flatten_param_paths(node_key, params):
     This is the override grammar read FORWARDS —
     :func:`dskit.pipeline.driver._apply_param_override` resolves such a
     path, ``hpo-grid`` tunes one, and the driver logs one per knob to the
-    tracking sinks. The walk therefore descends exactly where an override
-    could descend: through non-empty dicts whose keys are legal path
-    segments. A ``$prev`` carry, an empty dict, a list, and a dict
-    holding an unaddressable key are LEAVES (descending would spell a key
-    no override could ever address), and a top-level param whose name is
-    not a legal segment is dropped for the same reason.
+    tracking sinks. The walk descends a dict exactly where an override
+    could descend, KEY BY KEY: a key that is no legal path segment
+    (``$prev``, ``1d``, a dotted space target) is skipped, since nothing
+    could ever spell it, while its siblings ride along — dropping a whole
+    dict for one unspellable key would hide knobs that ARE tunable
+    (``n.opt.lr`` beside ``n.opt.1st_moment``).
+
+    A value with no spellable key below it is the LEAF and is emitted
+    whole: a scalar, a list, an empty dict, and a block like ``hpo-grid``'s
+    ``space`` (whose keys are all dotted targets) — that block is itself
+    addressable as ``search.space``, and dropping it would hide the
+    searched grid from every sink.
 
     Values pass through unchanged — rendering belongs to the sink, so a
     numeric knob stays comparable as a number.
@@ -265,7 +268,10 @@ def flatten_param_paths(node_key, params):
     node_key : str
         The node's key in the document's ``pipeline`` map.
     params : dict
-        That node's declared params, as written in the document.
+        That node's params. The driver passes the MATERIALIZED params —
+        the values the node ran with — so a reference never reaches here;
+        a caller that passes the document's text gets the reference
+        spelled as written.
 
     Returns
     -------
