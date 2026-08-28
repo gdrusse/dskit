@@ -76,10 +76,21 @@ _RETRY_STATUSES = (429, 500, 502, 503, 504)
 _BACKOFF = 0.5
 
 #: Default ``config.timeout`` (seconds) and ``config.max_retries`` — named
-#: once so the module docstring and spec() notes can reference them and
-#: never drift from what ``_conf`` actually applies.
+#: once so ``_conf`` and the spec() notes (f-strings) share one value. The
+#: module docstring above states them as STATIC prose, deliberately: it is
+#: read from source far more often than it is imported, and substituting
+#: into ``__doc__`` would vanish under ``python -OO``. That prose is held
+#: honest instead by ``test_timeout_and_retries_defaults_are_named_constants``,
+#: which compares each owning bullet against these constants.
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_RETRIES = 3
+
+#: Default ``pagination.start`` for the ``page`` strategy. Both the
+#: validator (``check``) and the walk (``_pages``) resolve it here, so
+#: validation can never approve a first page the walk does not request.
+#: The docstring's ``start`` clause is pinned by
+#: ``test_page_start_default_is_one_named_constant``.
+_DEFAULT_PAGE_START = 1
 
 # Default-deny key sets for the nested declarations.
 _STREAM_KEYS = ("path", "params", "records_path", "schema", "primary_key", "notes")
@@ -229,7 +240,7 @@ class RestApiConnector(Connector):
                 elif strategy == "page":
                     _check_str(errors, "config.pagination.param",
                                pagination.get("param", ""))
-                    start = pagination.get("start", 1)
+                    start = pagination.get("start", _DEFAULT_PAGE_START)
                     if not isinstance(start, int) or start < 0:
                         errors.append(
                             f"config.pagination.start must be an int >= 0, got {start!r}"
@@ -412,7 +423,7 @@ class RestApiConnector(Connector):
         strategy = pag["strategy"]
         label = f"stream {stream!r}"
         records = []
-        page = pag.get("start", 1)
+        page = pag.get("start", _DEFAULT_PAGE_START)
         offset = 0
         token = None
         next_url = None

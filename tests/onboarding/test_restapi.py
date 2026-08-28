@@ -114,11 +114,16 @@ def test_timeout_and_retries_defaults_are_named_constants(conn, config, monkeypa
     # spec() notes are BUILT from the constants (f-strings), so they can
     # never independently drift — no separate pin is meaningful there.
     # The module docstring is static prose, so it's the one text that can
-    # go stale; anchor on the whole "(default N)." bullet ending so the
-    # short max_retries needle ("3).") cannot match inside the longer
-    # timeout needle ("30).") or vice versa.
-    assert f"(default {restapi._DEFAULT_TIMEOUT})." in restapi.__doc__
-    assert f"(default {restapi._DEFAULT_MAX_RETRIES})." in restapi.__doc__
+    # go stale. Anchor each assertion on the OWNING bullet's own words: a
+    # bare "(default N)." needle would still match with the two values
+    # swapped between bullets, which is a real way for the prose to lie.
+    assert (
+        f"``timeout`` — request timeout in seconds "
+        f"(default {restapi._DEFAULT_TIMEOUT})."
+    ) in restapi.__doc__
+    assert (
+        f"exponential backoff (default {restapi._DEFAULT_MAX_RETRIES})."
+    ) in restapi.__doc__
 
     # Rebind the constants to sentinel values: a call site that hardcoded
     # 30 / 3 instead of reading the constant would keep resolving to the
@@ -274,6 +279,32 @@ def test_page_numbers_until_empty_or_short(conn, config):
     records = [m for m in _read(conn, config, ["prices"]) if m["type"] == "RECORD"]
     assert len(records) == 3 and len(calls) == 2  # short page -> no empty probe
     assert "per_page=2" in calls[0][0]
+
+
+def test_page_start_default_is_one_named_constant(conn, config, monkeypatch):
+    # `check` validates the start default and `_pages` walks from it. Two
+    # literals would let validation approve a page number the walk never
+    # requests, so both must read the same constant: rebind it and watch
+    # BOTH sides move. A call site still hardcoding 1 would keep the old
+    # behaviour here and go red.
+    assert restapi._DEFAULT_PAGE_START == 1
+    # The module docstring restates it in prose; anchor on the owning
+    # clause so the prose cannot drift away from the constant either.
+    assert (
+        f"``start`` (default {restapi._DEFAULT_PAGE_START})"
+    ) in restapi.__doc__
+    config = {**config, "pagination": {"strategy": "page", "param": "page"}}
+
+    monkeypatch.setattr(restapi, "_DEFAULT_PAGE_START", 5)
+    calls = script(conn, {"data": [{"date": "2026-01-02"}]}, {"data": []})
+    _read(conn, config, ["prices"])
+    assert "page=5" in calls[0][0] and "page=6" in calls[1][0]
+
+    # ...and the validator reasons about the same number: a default the
+    # validator itself would reject must be reported, not silently walked.
+    monkeypatch.setattr(restapi, "_DEFAULT_PAGE_START", -1)
+    with pytest.raises(AssetError, match="pagination.start must be an int"):
+        conn.check(config)
 
 
 def test_offset_walks_until_short_page(conn, config):

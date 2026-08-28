@@ -81,7 +81,7 @@ class LocalFilesConnector(Connector):
         return os.path.abspath(os.path.expanduser(path))
 
     def _files(self, config) -> dict:
-        """Stream name -> file path, for every recognized data file."""
+        """stream name -> file path, for every recognized data file."""
         directory = self._dir(config)
         if not os.path.isdir(directory):
             raise AssetError([f"config.path is not a directory: {directory!r}"])
@@ -119,7 +119,7 @@ class LocalFilesConnector(Connector):
     # -- the four verbs ----------------------------------------------------
 
     def check(self, config) -> None:
-        """Check the directory exists, is readable, and holds a file."""
+        """The directory exists, is readable, and holds at least one file."""
         if not self._files(config):
             raise AssetError(
                 [f"no *.csv / *.jsonl files under {self._dir(config)!r}"]
