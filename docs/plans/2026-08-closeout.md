@@ -814,8 +814,8 @@ Intentional-move log (append `document → old-prefix → new-prefix → card`):
 | B1 | MERGED | b3237a7 | torch #1 · 5-round loop + orchestrator round-5 rulings (plan-time guard kept; sentence-equality pin + _ADAPTER_SUBJECT; docstrings to standard); new core helper abstract_class_problem; suite 2456/108, hash gate empty |
 | B2 | MERGED | ec0a3c7 | torch #2 · 5 loop rounds + orchestrator rulings (rogue ADR-0038 entry REVERTED — numbering is G1's; objective threaded from the node's one read so adapter_params cannot shadow it; promise re-keyed on both hooks; duck-typed adapters keep pre-knob behaviour); suite 2647/109, hash gate empty |
 | B3 | MERGED | d157848 | CLEAN loop (3 rounds, no intervention — first); AST-identity proof of the mechanical move; kinds_flow converted + ignore drained; suite 2577/108, hash gate empty |
-| ADR-A…F | pending | | drafts ∥ W1 |
-| G1 | pending | | all W1 merged + ADRs approved |
+| ADR-A…F | ACCEPTED | a1aa3e7 | ADR-0038…0043 in the decision log. Drafted in parallel, 5 adversarial rounds each, then CONDENSED by the orchestrator: 2164 → 583 lines, because review had driven them far past house style (25–62) into specifying mechanism the log should not carry — and the over-specification was generating its own contradictions. Substantive rulings folded in, not sent round again (see the commit message) |
+| G1 | PASSED | a1aa3e7 | All 12 W1 cards merged + all six ADRs approved. Cross-checks done: 0042 is a MEMBER of 0040's fitted-transform family (not a second seam), both build on 0038's TrainableNode, 0041's head consumes B2's loss knob, every record states its identity-hash consequences. **Wave 2 is open.** |
 | C1 | pending | | |
 | C2 | pending | | |
 | C3 | pending | | after C4 |
