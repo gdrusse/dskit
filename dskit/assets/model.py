@@ -378,7 +378,7 @@ class AssetModel:
             },
         )
         len(model_hash(model))    # sha256 hex — the governance pin
-        64
+        # -> 64
 
     The same model as a JSON document (what :func:`load_model` reads)::
 

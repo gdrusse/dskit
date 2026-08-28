@@ -225,10 +225,11 @@ class WindowRows(Node):
 
 **Examples are illustrative and must NEVER use `>>>`** — use an indented `::`
 block. `>>>` promises a suite verified it, and nothing here collects doctests.
-Mark expected output with a trailing `# value` comment on the producing line,
-or a leading `# ->` comment on its own line when the value spans lines or
-follows a raised exception — never a bare unmarked line, which reads as more
-code.
+Mark expected output with a leading `# ->` comment on its own line — the
+general form, and required when the value spans lines or follows a raised
+exception — or, for a short single-line value whose producing line has a free
+trailing-comment slot, a trailing `# value` comment on that line instead.
+Never leave a bare unmarked line, which reads as more code.
 
 **Enforced** by ruff `D` (numpy), with a `per-file-ignores` entry per
 unconverted module. **Delete the entry when you convert the module** — that
