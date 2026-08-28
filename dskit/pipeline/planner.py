@@ -22,7 +22,10 @@ The role rules (spec §5), enforced over the DAG:
   ``score`` node that reads the VALIDATION split (selection never sees
   test); ``space`` must be a non-empty dict whose keys address declared
   nodes' EXISTING params (head key checked here; deeper segments at
-  execute) with non-empty lists of JSON scalars as values; and the
+  execute); each value is either a non-empty list of JSON scalars or a
+  non-empty DICT — the search KIND's own range-spec form, which that
+  kind validates at execute (a search node's params always defer, its
+  ``objective`` being a ``$``-reference by contract); and the
   winner-consistency rule holds — every consumer of a node the search
   would re-execute (a space-addressed node or any of its descendants)
   must itself be re-executed (an ancestor of the objective), be the
@@ -513,8 +516,11 @@ def _search_errors(key, spec, specs, roles, edges):
     measurement instruments, never fingerprinted identity), and the node
     is an ancestor of the objective (an override that cannot move the
     objective is a knob the search cannot turn — the winner value would
-    be noise and would never be re-applied to the live run); values must
-    be non-empty lists of JSON scalars. The winner-consistency rule then
+    be noise and would never be re-applied to the live run); and a value
+    is either a non-empty list of JSON scalars or a non-empty dict — the
+    dict form is the search kind's own range-spec grammar, passed through
+    untouched here and validated by that kind at execute (a search node's
+    params always defer). The winner-consistency rule then
     guarantees no node can consume stale pre-winner outputs: every
     consumer of a dirty-candidate node (a space-addressed node or any of
     its descendants) must be re-executed with the winner (an ancestor of
@@ -596,13 +602,19 @@ def _search_errors(key, spec, specs, roles, edges):
                     )
             # The STRUCTURAL half of the space rule is the planner's
             # (keys address declared params; winner-consistency below).
-            # The VALUE grammar is the search KIND's — hpo-grid takes
-            # scalar lists, optuna-search adds {"low","high"} range specs
-            # — and every kind's validate_params already runs at plan
-            # (spec §9), so a bad grid still refuses before anything
-            # executes. The planner checks only the one shape every kind
-            # shares: a list grid, when given, holds JSON scalars; a dict
-            # spec is the kind's to validate.
+            # The VALUE half is SPLIT: the planner owns the one shape
+            # every search kind shares — a list grid, when given, is
+            # non-empty and holds JSON scalars — and passes a DICT
+            # through untouched, because that is the kind's range-spec
+            # form (hpo-grid takes scalar lists only; optuna-search adds
+            # {"low","high"}). The kind's own grammar bites at EXECUTE,
+            # not here: a search node's `objective` is a $-reference BY
+            # CONTRACT, so its params always carry an unresolved ref and
+            # _has_unresolved_ref DEFERS its validate_params — the checks
+            # below are the only plan-time guard a space value meets, and
+            # a range spec offered to hpo-grid refuses when the node is
+            # constructed mid-run (both pinned in
+            # tests/pipeline/test_kinds_search.py::TestPlannerRules).
             if isinstance(grid, (list, tuple)):
                 if not grid:
                     problems.append(

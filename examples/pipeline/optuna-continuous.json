@@ -1,6 +1,6 @@
 {
   "name": "optuna-continuous-demo",
-  "notes": "The CONTINUOUS half of the docs/24 §8 search seam: optuna-search.json's twin, differing only in the shape of `space`. Here clip.lo is a range spec — {\"low\", \"high\"} plus the optional \"log\"/\"int\" flags — so the seeded TPE sampler draws a real-valued threshold instead of picking from a list. Reach for this form whenever the knob is genuinely continuous (a learning rate, a threshold, a regularization weight): a list would force you to guess the resolution up front, and hpo-grid REFUSES range specs because exhaustive enumeration over an interval is meaningless. The planner checks only that the space keys address existing params of ancestors of the objective; the range grammar itself belongs to OptunaSearch (dskit/pipeline/libs/optuna.py:_spec_problems), which is why this document needs the optuna extra to run but plans without it. Every `uses` is an import reference, so it runs against the bare toolkit with zero registrations: python -m dskit.pipeline run examples/pipeline/optuna-continuous.json --asof 2026-01-01",
+  "notes": "The CONTINUOUS half of the docs/24 §8 search seam: optuna-search.json's twin, differing only in its `name` and the shape of `space` — an agreement PINNED by tests/pipeline_libs/test_optuna.py so neither document can drift from it silently. Here clip.lo is a range spec — {\"low\", \"high\"} plus the optional \"log\"/\"int\" flags — so the seeded TPE sampler draws a real-valued threshold instead of picking from a list. Reach for this form whenever the knob is genuinely continuous (a learning rate, a threshold, a regularization weight): a list would force you to guess the resolution up front, and hpo-grid REFUSES range specs because exhaustive enumeration over an interval is meaningless. The planner owns the STRUCTURAL space rules (key shape, keys addressing existing params of ancestors of the objective, winner-consistency); the range grammar itself belongs to OptunaSearch (dskit/pipeline/libs/optuna.py:_spec_problems), which is why this document plans without the optuna extra but needs it to run. Note where a MALFORMED range refuses: a search node's `objective` is a $-reference, so its params defer plan-time validation and the spec grammar bites when the node is constructed during the run, not at plan. Every `uses` is an import reference, so it runs against the bare toolkit with zero registrations: python -m dskit.pipeline run examples/pipeline/optuna-continuous.json --asof 2026-01-01",
   "pipeline": {
     "events": {
       "uses": "dskit.pipeline.synthetic_nodes:SynthEvents",
@@ -43,11 +43,11 @@
       "params": {
         "space": { "clip.lo": { "low": 0.3, "high": 0.55 } },
         "objective": "$validate.metrics.loss",
-        "n_trials": 8,
+        "n_trials": 6,
         "seed": 0,
         "direction": "minimize"
       },
-      "notes": "the range spec: low/high are REQUIRED finite numbers with low < high; add \"log\": true for scale-free knobs (needs low > 0) and \"int\": true for integer knobs (integer bounds). A degenerate range is a one-value categorical — write it as a list. 8 trials is the whole budget: unlike a grid there is nothing to enumerate, so n_trials alone decides how long the search runs."
+      "notes": "the range spec: low/high are REQUIRED finite numbers with low < high; add \"log\": true for scale-free knobs (needs low > 0) and \"int\": true for integer knobs (integer bounds). A degenerate range is a one-value categorical — write it as a list. n_trials is the whole budget: unlike a grid there is nothing to enumerate, so it alone decides how long the search runs (6 here, matching the twin's grid so the two documents differ in one thing only)."
     },
     "report": {
       "uses": "dskit.pipeline.synthetic_nodes:SynthReport",

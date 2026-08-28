@@ -26,15 +26,21 @@ be CONTINUOUS specs — ``{"low": .., "high": ..[, "log": true][, "int":
 true]}`` — alongside the grid's list-of-scalars (categorical) form.
 Both forms share the grid's ``"<node>.<param.path>"`` key grammar
 (:data:`dskit.pipeline.kinds_search._SPACE_KEY_OK`, imported, not
-copied) and both plan: the planner owns the STRUCTURAL space rules
-(keys address existing params of ancestors of the objective;
-winner-consistency) and defers the VALUE grammar to the search kind, so
-:func:`_spec_problems` below is the ONE place the range form is
-defined. ``hpo-grid`` refuses range specs on purpose — exhaustive
-enumeration over a real interval is meaningless — and pins that refusal
-itself. The two shipped documents are
+copied) and both plan. What the planner defers is the RANGE form
+specifically, not the value grammar wholesale: it owns the STRUCTURAL
+space rules (keys address existing params of ancestors of the
+objective; winner-consistency) AND still checks that a LIST value is
+non-empty and holds JSON scalars, while passing a DICT through
+untouched — so :func:`_spec_problems` below is the ONE place the range
+form is defined. ``hpo-grid`` refuses range specs on purpose —
+exhaustive enumeration over a real interval is meaningless — and pins
+that refusal itself. Note WHERE a malformed range refuses: a search
+node's ``objective`` is a ``$``-reference, so its params defer
+plan-time ``validate_params`` and this grammar bites when the node is
+constructed during the run. The two shipped documents are
 ``examples/pipeline/optuna-search.json`` (categorical) and
-``optuna-continuous.json`` (range).
+``optuna-continuous.json`` (range) — twins differing only in ``name``
+and that shape, pinned in ``tests/pipeline_libs/test_optuna.py``.
 
 Determinism: the TPE sampler is seeded with the REQUIRED ``seed`` param
 and suggestions are drawn over the space's SORTED keys, so the RNG

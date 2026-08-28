@@ -85,12 +85,23 @@ on it without breaking its rulings.
 - **Walk-forward folds are separate run series** — the driver suffixes
   each derived document's name `-wf-<cutoff>`, so a `$prev` carry binds
   within one fold's history, never across folds.
-- **A search `space` value's grammar belongs to the KIND, not the
-  planner** — the planner checks the structural rules (key shape,
-  declared params, ancestors of the objective, winner-consistency) and
-  passes any non-empty list or dict through. `optuna-search` accepts
-  both forms; `hpo-grid` refuses range dicts and pins that refusal
-  itself. Adding a search kind means writing its own value grammar.
+- **A search `space` value's grammar is SPLIT, not the kind's alone** —
+  the planner owns the structural rules (key shape, declared params,
+  ancestors of the objective, winner-consistency) AND the one shape
+  every search kind shares: a LIST value must be non-empty and hold
+  JSON scalars (`planner._is_json_scalar` — restated in
+  `kinds_search`, the two pinned to agree). A DICT value it passes
+  through untouched: that is the kind's range-spec form.
+  `optuna-search` accepts both; `hpo-grid` refuses range dicts and pins
+  that refusal itself. Adding a search kind means writing that value
+  grammar **within** the list/dict shapes above — a list of objects is
+  refused by the planner before your kind is consulted.
+- **A search node's params ALWAYS defer plan-time `validate_params`** —
+  its `objective` is a `$`-ref by contract, so `_has_unresolved_ref`
+  defers it. No search kind's value grammar runs at plan: a bad range
+  spec refuses when the node is CONSTRUCTED mid-run, after the upstream
+  nodes have executed. Restoring a plan-time gate would be a new
+  planner↔kind protocol — ADR first.
 - **An occupied run dir refuses** — reruns need a new asof or name.
 - **`runs.py` reads RECORDS, never `report.md`** — a `metrics` dict is
   summarized out of `nodes/NN-*.json` and recovered from `carry.json`;
