@@ -763,8 +763,29 @@ def _collect_flags(order, node_outputs):
 #: What a search node PRODUCES, and the name the run RECORDS it under
 #: (ADR-0043). Two names, because the outputs are the kind's vocabulary
 #: (``best_params`` is what a search kind returns) and the record is the
-#: run's (``winner`` is what a reader of a summary asks about).
+#: run's (``winner`` is what a reader of a summary asks about). The
+#: WINNER ITSELF is first; the rest merely describe it. This is the one
+#: owner of both spellings — the record writes through it and the
+#: walk-forward diagnostic reads back through :func:`_winner_names`.
 _SEARCH_WINNER_FIELDS = (("best_params", "winner"), ("best_score", "winner_score"))
+
+
+def _winner_names():
+    """Name the winner field, as ``(produced, recorded)``.
+
+    The summary's readers ask here instead of re-spelling
+    ``best_params``/``winner`` beside the constant that owns them: a
+    reader that fell out of step with the writer would report every fold
+    as winner-less and print agreement where the folds disagreed.
+
+    Returns
+    -------
+    tuple
+        The two names of :data:`_SEARCH_WINNER_FIELDS`' first entry: the
+        output a search kind produces its winner under, and the key the
+        run's record carries it as.
+    """
+    return _SEARCH_WINNER_FIELDS[0]
 
 
 def _search_record(seam, outputs):
@@ -1909,9 +1930,10 @@ def _winner_identity(meta):
         identifies it, or None when it was dropped and so cannot be
         compared with any other fold's.
     """
-    if "winner" in meta:
-        return True, _json_text(meta["winner"])
-    if "best_params" in meta.get("winner_dropped", ()):
+    produced, recorded = _winner_names()
+    if recorded in meta:
+        return True, _json_text(meta[recorded])
+    if produced in meta.get("winner_dropped", ()):
         return True, None
     return False, None
 
@@ -1986,17 +2008,70 @@ def _aggregate_folds(folds, select):
     return aggregate
 
 
+def _md_cell(text):
+    """Escape one free-form value for a markdown table cell.
+
+    A pipe ENDS a cell, so a value carrying one would split its row into
+    an extra column and misalign the table. Every other cell the reports
+    print is a constrained token — a cutoff, a state, a node key — and
+    the winner is the only one that prints a value a user chose.
+
+    Parameters
+    ----------
+    text : str
+        The rendered value.
+
+    Returns
+    -------
+    str
+        The same text with every pipe backslash-escaped, which GFM
+        renders as a literal pipe inside the cell.
+    """
+    return text.replace("|", "\\|")
+
+
 def _winner_cell(meta):
     """Render one fold's winner for the report.
 
     Its canonical JSON, a named drop when JSON could not hold it, or a
     dash for no winner at all.
     """
-    if "winner" in meta:
-        return f"`{_json_text(meta['winner'])}`"
-    if "best_params" in meta.get("winner_dropped", ()):
+    produced, recorded = _winner_names()
+    if recorded in meta:
+        return f"`{_md_cell(_json_text(meta[recorded]))}`"
+    if produced in meta.get("winner_dropped", ()):
         return "dropped (not JSON-legal)"
     return "—"
+
+
+def _search_cost_line(folds):
+    """State what the folds ACTUALLY paid for their searches.
+
+    Counted, never predicted (ADR-0043 §1): every number here is read
+    off the records the folds wrote, so a fold that halted before the
+    search node is not billed for one, and a fold whose search raised is
+    not billed for the winner pass it never reached.
+
+    Parameters
+    ----------
+    folds : list of dict
+        The fold rows, each carrying a ``search`` map when its fold ran
+        one.
+
+    Returns
+    -------
+    str
+        One sentence: folds that searched, trials executed, and winner
+        passes applied.
+    """
+    records = [meta for fold in folds for meta in fold.get("search", {}).values()]
+    searched = sum(1 for fold in folds if fold.get("search"))
+    trials = sum(meta.get("trials_executed", 0) for meta in records)
+    passes = sum(1 for meta in records if "winner_reran" in meta)
+    return (
+        f"Cost, counted: {searched} fold(s) searched, {trials} trial(s) "
+        f"executed, {passes} winner pass(es) applied."
+    )
 
 
 def _walkforward_search_lines(folds, aggregate):
@@ -2005,10 +2080,10 @@ def _walkforward_search_lines(folds, aggregate):
     An HPO-free evaluation must read exactly as it did before ADR-0043,
     so this returns an EMPTY list rather than an empty section. When
     folds did search, it prints what the ADR exists for: per node, how
-    many folds chose a winner and how many DIFFERENT winners they chose,
-    then the per-fold winners themselves — and the run's cost COUNTED
-    (folds x one base pass + the trials each executed + one winner
-    pass), never predicted.
+    many folds chose a winner, how many DIFFERENT winners they chose and
+    how many winners could not be compared at all, then the per-fold
+    winners themselves — and the run's cost as counted by
+    :func:`_search_cost_line`.
 
     Parameters
     ----------
@@ -2025,27 +2100,21 @@ def _walkforward_search_lines(folds, aggregate):
     search = aggregate.get("search")
     if not search:
         return []
-    trials = sum(
-        meta.get("trials_executed", 0)
-        for fold in folds
-        for meta in fold.get("search", {}).values()
-    )
     lines = [
         "",
         "## Search — per-fold re-tune",
         "",
         "Every fold re-tuned independently, which MEASURES the tuning "
         "procedure (ADR-0043): a winner below is that fold's, never a "
-        f"shipped configuration. Cost: {aggregate['n_folds']} fold(s) x "
-        f"(one base pass + its trials + one winner pass), {trials} "
-        "trial(s) executed.",
+        f"shipped configuration. {_search_cost_line(folds)}",
         "",
-        "| search node | folds with a winner | distinct winners |",
-        "|---|---|---|",
+        "| search node | folds with a winner | distinct winners | dropped |",
+        "|---|---|---|---|",
     ]
     lines += [
         f"| {key} | {search[key]['n_folds_with_winner']} | "
-        f"{search[key]['n_distinct_winners']} |"
+        f"{search[key]['n_distinct_winners']} | "
+        f"{search[key].get('n_folds_dropped', 0)} |"
         for key in sorted(search)
     ]
     lines += ["", "| fold cutoff | search node | trials | winner |", "|---|---|---|---|"]

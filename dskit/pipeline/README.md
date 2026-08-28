@@ -129,10 +129,13 @@ kinds resolve. Two more verbs — `demo`
   model (nothing de-biases a fold's score: a fold's evaluation window IS
   its val split, which is what the search optimized). **It costs
   folds x (one base pass + the trials that fold executed + one winner
-  pass)**, counted in the summary, never predicted. The summary prints
-  each fold's winner plus, per search node, how many folds chose one and
-  how many DISTINCT ones they chose — folds may legitimately disagree,
-  and that is a number to read, not folklore. **What ships is the plain
+  pass)** — and the summary's cost line COUNTS what the folds paid (folds
+  that searched, trials executed, winner passes applied), never what the
+  shape predicts they would. The summary prints each fold's winner plus,
+  per search node, how many folds chose one, how many DISTINCT ones they
+  chose, and how many winners JSON could not hold — that third number is
+  what makes the first two add up. Folds may legitimately disagree, and
+  that is a number to read, not folklore. **What ships is the plain
   `run`**: freezing a winner means EDITING the document — pin the values,
   drop the search node — which moves its hash by design, because a
   different computation is a different identity. A summary whose folds

@@ -166,8 +166,11 @@ on it without breaking its rulings.
   evaluation window IS its val split, the planner forces every search
   objective onto a `val` score node, and folds refuse a cal band, so
   nothing de-biases a fold's own score. Cost is folds x (one base pass +
-  that fold's executed trials + one winner pass), COUNTED in the summary
-  and never predicted. Shipping is the plain `run`; freezing a winner is
+  that fold's executed trials + one winner pass) — but the summary's cost
+  line prints only what `_search_cost_line` COUNTED off the fold records
+  (folds that searched, trials executed, winner passes applied), because
+  a fold that halted before the search node, or whose search raised,
+  never paid the shape. Shipping is the plain `run`; freezing a winner is
   an EDIT of the document (pin the values, drop the search node) and
   moves its hash by design — there is deliberately no `freeze` knob and
   no `search_mode`, and adding one would be a second way to say it. The
@@ -188,7 +191,12 @@ on it without breaking its rulings.
   into a printable stand-in the search never chose. It is populated
   BEFORE `apply_winner`, so a winner-flip refusal still reports the
   winner that caused it. `_json_text` is the single JSON-legality rule
-  the record and `carry.json` share.
+  the record and `carry.json` share, and `_SEARCH_WINNER_FIELDS` (read
+  back through `_winner_names`) is the single owner of the two spellings
+  — a reader that re-spelled `winner` would silently report every fold as
+  winner-less. The aggregate row prints the dropped count beside the
+  distinct one: without it, "2 folds with a winner, 1 distinct" reads
+  exactly like two folds that agreed.
 - **Read `document.expanded`, never `document.pipeline`, in the engine**
   (ADR-0039). `pipeline` is what was WRITTEN; `expanded` is what RUNS —
   and with no `foreach` section it IS `pipeline`, the same object, so the
