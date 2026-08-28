@@ -69,6 +69,35 @@ refused by name, never silently dropped. Any split/causality cut is the
 DOCUMENT's job (an upstream ``filter`` node someone can read); this pack
 fits exactly what was wired in.
 
+**The estimator cookbook.** Because ``estimator`` is a declared param on
+a ``train``-role node, a search space over ``model.estimator`` IS a model
+sweep — ``examples/pipeline/model-sweep.json`` runs exactly the list
+below and picks a winner on the val split. There is deliberately no
+registry of per-model classes: each would re-do what the doorway already
+does, and be one more place to drift. Spell the estimator as a DOTTED
+import path (``module.ClassName``); a colon separator is refused at plan.
+
+| estimator | family | reach for it when |
+|---|---|---|
+| ``sklearn.linear_model.LinearRegression`` | linear | you want the honest baseline every other row must beat |
+| ``sklearn.linear_model.Ridge`` | linear, penalized | features are collinear or wide relative to the row count |
+| ``sklearn.ensemble.RandomForestRegressor`` | bagged trees | interactions and non-linearity, with little tuning |
+| ``sklearn.ensemble.GradientBoostingRegressor`` | boosted trees | the same, traded for accuracy over fit time |
+| ``sklearn.svm.SVR`` | kernel | few rows, smooth structure, features already scaled |
+| ``sklearn.neighbors.KNeighborsRegressor`` | instance-based | local structure with no global form to assume |
+| ``lightgbm.LGBMRegressor`` | boosted trees | many rows or many features — needs the ``lightgbm`` extra, no pack |
+
+The ``lightgbm`` row is the pattern for every sklearn-compatible library:
+install the extra, name the class, done. Classifier counterparts
+(``LogisticRegression``, ``RandomForestClassifier``, …) swap in the same
+way with ``predict_method="predict_proba"``.
+
+One params block serves every candidate in a sweep, so it may carry only
+knobs they ALL accept: ``estimator_params`` and ``seed`` are omitted from
+the example on purpose (``LinearRegression``/``SVR``/``KNeighbors`` take
+no ``random_state``, and this pack refuses a seed the estimator would
+never read).
+
 Import cost: stdlib + ``dskit.pipeline`` only. sklearn and joblib are
 imported inside the run path exclusively (``tests/pipeline/test_purity.py``
 enforces it) so documents plan on machines without them.

@@ -805,3 +805,138 @@ def test_example_document_runs_end_to_end(tmp_path):
     scored = result.outputs["validate"]["metrics"]
     assert scored["n"] >= 5
     assert 0.0 <= scored["loss"] <= 1.0  # brier over real predict_proba beliefs
+
+
+# ---------------------------------------------------------------------------
+# The model-sweep cookbook — the doorway IS the model registry
+# ---------------------------------------------------------------------------
+
+SWEEP_EXAMPLE = (
+    pathlib.Path(__file__).parents[2] / "examples" / "pipeline" / "model-sweep.json"
+)
+
+#: The candidate list, restated INDEPENDENTLY of the document and the
+#: docstring table both tests below check — an expectation sourced from
+#: its own subject would assert nothing (CLAUDE.md, the deliberate
+#: restatement exception).
+SWEPT_ESTIMATORS = (
+    "sklearn.linear_model.LinearRegression",
+    "sklearn.linear_model.Ridge",
+    "sklearn.ensemble.RandomForestRegressor",
+    "sklearn.ensemble.GradientBoostingRegressor",
+    "sklearn.svm.SVR",
+    "sklearn.neighbors.KNeighborsRegressor",
+)
+
+
+def sweep_space():
+    """The shipped example's ``sweep.space["model.estimator"]`` list."""
+    obj = json.loads(SWEEP_EXAMPLE.read_text())
+    return obj["pipeline"]["sweep"]["params"]["space"]["model.estimator"]
+
+
+def docs_table_estimators():
+    """Every ``estimator`` cell of the pack docstring's cookbook table, in
+    document order — the table is the docs half of the pin below."""
+    import dskit.pipeline.libs.sklearn as pack
+
+    out = []
+    for line in pack.__doc__.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("| ``"):
+            continue
+        out.append(stripped.split("|")[1].strip().strip("`"))
+    return out
+
+
+def test_model_sweep_example_loads_hashes_and_plans():
+    doc = PipelineDocument.from_obj(json.loads(SWEEP_EXAMPLE.read_text()))
+    assert len(doc.hash) == 64
+    planned = plan(doc)  # default registry: hpo-grid and validate are owned
+    assert planned.role_of("sweep") == "search"
+    assert planned.role_of("model") == "train"
+    assert planned.order.index("model") < planned.order.index("sweep")
+    assert ("sweep", "report") in planned.edges
+
+
+def test_model_sweep_space_is_the_documented_candidate_list():
+    # The list lives in TWO places by necessity — the runnable document
+    # and the pack's docs table — so the agreement is pinned, not hoped.
+    assert tuple(sweep_space()) == SWEPT_ESTIMATORS
+    table = docs_table_estimators()
+    assert tuple(e for e in table if e.startswith("sklearn.")) == SWEPT_ESTIMATORS
+
+
+def test_model_sweep_ships_without_the_lightgbm_extra():
+    # The table documents "lightgbm.LGBMRegressor" as a candidate; the
+    # SHIPPED space must stay sklearn-only, or the example stops running
+    # for anyone who installed dskit[sklearn] and nothing else.
+    assert "lightgbm.LGBMRegressor" in docs_table_estimators()
+    assert all(e.startswith("sklearn.") for e in sweep_space())
+
+
+def test_model_sweep_example_runs_end_to_end_and_picks_a_winner(tmp_path):
+    pytest.importorskip("sklearn")
+    obj = json.loads(SWEEP_EXAMPLE.read_text())
+    obj["outputs"] = {"run_root": str(tmp_path)}  # hash-excluded override
+    result = run_document(PipelineDocument.from_obj(obj), asof=ASOF)
+    assert result.state == "ran" and result.exit_code == 0
+    sweep = result.outputs["sweep"]
+    # Exhaustive: one trial per candidate, each actually fitted.
+    tried = [t["overrides"]["model.estimator"] for t in sweep["trials"]]
+    assert tuple(tried) == SWEPT_ESTIMATORS
+    assert sweep["best_score"] == min(t["score"] for t in sweep["trials"])
+    # The sweep SELECTS, it does not merely run: the ensemble beats every
+    # deterministic linear/kernel/neighbour candidate here by ~2x (the
+    # runner-up scores 0.056), so the bar is comfortably clear of the
+    # unseeded forest's spread.
+    assert sweep["best_params"] == {
+        "model.estimator": "sklearn.ensemble.RandomForestRegressor"
+    }
+    assert sweep["best_score"] < 0.05
+    # The winner pass is what downstream consumed.
+    assert result.outputs["model"]["metrics"]["loaded"] == 0.0
+    assert os.path.isfile(result.outputs["model"]["artifact_path"])
+
+
+def test_lightgbm_resolves_through_the_doorway_with_no_wrapper(tmp_path):
+    # The TODO's claim, RUN: LightGBM's sklearn-compatible API needs the
+    # extra and nothing else — no pack, no wrapper class, no new kind.
+    pytest.importorskip("lightgbm")
+    params = {
+        "estimator": "lightgbm.LGBMRegressor",
+        "estimator_params": {"n_estimators": 5, "min_child_samples": 1, "verbose": -1},
+        "features": ["x"],
+        "label": "y",
+        "seed": 3,
+    }
+    assert SklearnFit.validate_params(params) == []
+    node = SklearnFit("lgbm", params)
+    ctx = NodeContext(name="t", asof=ASOF, run_dir=str(tmp_path))
+    out = node.run(ctx, {"rows": rows_linear(n=40)})
+    signal = out["signal"]
+    assert isinstance(signal, SklearnSignal) and signal.loaded is False
+    assert isinstance(signal.predict({"x": 0.5}), float)
+    sidecar = json.loads(pathlib.Path(out["artifact_path"] + ".json").read_text())
+    assert sidecar["estimator"] == "lightgbm.LGBMRegressor"
+    # The doorway is the point: this pack exports two nodes and one
+    # signal, never a per-model class.
+    import dskit.pipeline.libs.sklearn as pack
+
+    assert not [n for n in pack.__all__ if "LGBM" in n or "Regressor" in n]
+
+
+def test_lightgbm_extra_is_declared_and_covered_by_all():
+    # The requirement string necessarily appears twice — its own extra and
+    # the `all` bundle the libs suite installs from — so the agreement is
+    # pinned. An `all` that misses it would leave CI green while the
+    # cookbook's documented candidate is unimportable.
+    import tomllib
+
+    root = pathlib.Path(__file__).parents[2]
+    with open(root / "pyproject.toml", "rb") as fh:
+        extras = tomllib.load(fh)["project"]["optional-dependencies"]
+    assert extras["lightgbm"] == ["lightgbm>=4.0"]
+    assert set(extras["lightgbm"]) <= set(extras["all"])
+    # And it is an EXTRA, never a pack: no lightgbm module under libs/.
+    assert not list((root / "dskit" / "pipeline" / "libs").glob("*lightgbm*"))

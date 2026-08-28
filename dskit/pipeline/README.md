@@ -170,7 +170,11 @@ the toolkit's statistics are not swappable by config.
 
 `libs/` packs register nothing by import; use their kinds via
 `register()`/`--adapter` or reference classes by import path:
-**sklearn** `sklearn-fit`/`sklearn-predict` (the document names the estimator);
+**sklearn** `sklearn-fit`/`sklearn-predict` (the document names the estimator —
+so a search space over `model.estimator` IS a model sweep, with no per-model
+classes: `examples/pipeline/model-sweep.json` plus the pack docstring's
+estimator table; `lightgbm.LGBMRegressor` joins via the `lightgbm` extra, not
+a pack of its own);
 **torch** `torch-train`/`torch-predict` (DECLARED, ADR-0025: the document
 names the `nn.Module` class — no subclass, validated at plan time) +
 `torch-linear-train`/`torch-linear-predict` + `TorchTrain`/`TorchPredict`
