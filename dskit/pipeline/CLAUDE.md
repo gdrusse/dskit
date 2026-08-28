@@ -91,7 +91,10 @@ on it without breaking its rulings.
 - **`runs.py` reads RECORDS, never `report.md`** — prose is written for
   a human and free to change wording. A node's `metrics` DICT is
   summarized away in `nodes/NN-*.json` and survives only in
-  `carry.json`, so the reader overlays the two. The numeric-leaf rule
+  `carry.json`, so the reader overlays the two. The numeric-output rule
+  (top-level scalars plus the `metrics` dict's DIRECT numeric values —
+  one level, never recursed; a dict nested inside `metrics` reaches
+  neither the sinks nor the table)
   has ONE name — `runs.node_metrics`, which `driver._node_metrics` IS
   (an alias, pinned by `tests/pipeline/test_runs.py::TestMetricRulePin`);
   the run root default has one name too (`runs.resolve_run_root`, used
@@ -106,14 +109,20 @@ on it without breaking its rulings.
   nothing. `cmd_runs` prints the table, the `--limit` count, the `notes`
   list and the `skipped` list; a loud-not-silent mechanism the only
   user-facing surface never prints IS the silent truncation it replaced.
-  The same default-deny covers the flags: `--limit` below 1 and a
-  `--metric` no scanned run ever reported are both REFUSED — a blank
-  cell must mean "this run did not measure it" and nothing else.
+  The same default-deny covers the flags: `--limit` below 1, a
+  `--metric` no scanned run ever reported, and a `--param` path no
+  scanned run's config declares are all REFUSED — a blank cell must
+  mean "this run did not measure (or declare) it" and nothing else.
 - **The run-dir layout has one home** — `runs.RESULT_FILE` /
-  `CONFIG_FILE` / `CARRY_FILE` / `NODES_DIR`. `driver.py` and
-  `resolve.py` write through those names; `dskit/assets/ingest.py`
-  cannot import the pipeline package (the tiers are independent), so its
-  copy is PINNED in `tests/pipeline/test_runs.py::TestRunDirLayout`.
+  `CONFIG_FILE` / `CARRY_FILE` / `NODES_DIR`. `driver.py` writes
+  through those names; `dskit/assets/ingest.py` cannot import the
+  pipeline package (the tiers are independent), so its copy is PINNED
+  in `tests/pipeline/test_runs.py::TestRunDirLayout`. `resolve.py`'s
+  stage-list tree is a SEPARATE legacy layout that owns its own
+  `config.json` — welding it to the driver's constant would rename the
+  legacy tree whenever the driver layout renames (pinned in the same
+  class), and its `{data_root}/pipeline_runs` default is likewise its
+  own knob, distinct from `runs.DEFAULT_RUN_ROOT`.
 - The purity gate (`tests/pipeline/test_purity.py`) fails on ANY
   module-level import outside stdlib + this package — heavy imports go
   inside `run()`.

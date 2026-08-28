@@ -42,9 +42,12 @@ def render_cell(value):
     Parameters
     ----------
     value : object
-        Any scalar or container. None and the empty string read as
-        :data:`MISSING` — a cell with nothing in it is indistinguishable
-        from a rendering bug, so nothing renders as one. Booleans read as
+        Any scalar or container. None and any string with nothing left
+        once line breaks are flattened (the empty string, a lone
+        newline) read as :data:`MISSING` — a cell with nothing in it is
+        indistinguishable from a rendering bug, so nothing renders as
+        one, which is why the emptiness check runs AFTER the
+        flattening. Booleans read as
         ``yes``/``no`` (a verdict, not a number), floats to 6 significant
         figures, and containers as their size — a table row is not a
         place to dump a payload.
@@ -58,7 +61,7 @@ def render_cell(value):
         boundary — a multi-line cell would split the row and shift every
         value after the break onto the wrong heading.
     """
-    if value is None or (isinstance(value, str) and not value):
+    if value is None:
         return MISSING
     if isinstance(value, bool):
         return "yes" if value else "no"
@@ -71,6 +74,9 @@ def render_cell(value):
     else:
         text = str(value)
     text = "⏎".join(text.splitlines())
+    if not text:
+        # "" and a line-break-only string both flatten to nothing.
+        return MISSING
     if len(text) > MAX_CELL:
         text = text[:MAX_CELL] + "…"
     return text.replace("|", r"\|")

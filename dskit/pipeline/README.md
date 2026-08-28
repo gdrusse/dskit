@@ -152,10 +152,12 @@ Anything the table cannot show, it **names** in a `notes` block under the
 table: a metric that reached disk as text rather than as a number (a diverged
 `inf`, a `metrics` dict too big to carry), a node record that would not parse,
 a missing `nodes/`, an unreadable `config.json`. An empty cell therefore means
-one thing only — that run did not measure it — which holds for `--metric` too:
-a key **no** scanned run ever reported is refused outright (a typo would
-otherwise render a confident column of blanks), while a key only some runs
-measured renders honestly with blanks for the rest.
+one thing only — that run did not measure (or declare) it — which holds for
+`--metric` and `--param` alike: a metric key **no** scanned run ever reported,
+or a param path **no** scanned run's config declares, is refused outright (a
+typo would otherwise render a confident column of blanks), while a key only
+some runs measured — or a knob only some documents declare — renders honestly
+with blanks for the rest.
 
 Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 

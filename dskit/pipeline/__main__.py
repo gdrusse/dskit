@@ -12,11 +12,13 @@ One command line for every project and venue (docs/24 §9, D-145 ruling
   halted, 1 a fold errored.
 * ``plan <config.json>`` — print the resolved DAG (plan.json), no
   execution.
-* ``runs [--root DIR]`` — tabulate the runs under a run root (default
-  ``./pipeline_runs``): name, asof, hashes and metrics, newest first,
-  read from the structured records. The cross-run view, with no
-  dependency on a tracking server. ``--metric``/``--param`` select
-  columns; ``--limit`` shows the newest N and counts the rest.
+* ``runs [--root DIR]`` — tabulate the runs under a run root (default:
+  :data:`~dskit.pipeline.runs.DEFAULT_RUN_ROOT`, where a document
+  declaring no ``outputs.run_root`` writes): name, asof, hashes and
+  metrics, newest first, read from the structured records. The
+  cross-run view, with no dependency on a tracking server.
+  ``--metric``/``--param`` select columns; ``--limit`` shows the newest
+  N and counts the rest.
 * ``validate <config.json>`` — shape + hash only. Dispatches on the
   document's own shape: a ``pipeline`` node map validates under the
   docs/24 grammar; anything else falls through to the stage-list
@@ -55,6 +57,7 @@ from dskit.pipeline.base import (
     TimeSplitConfig,
     ValidationConfig,
 )
+from dskit.pipeline.runs import DEFAULT_RUN_ROOT
 
 
 def demo_config(data_dir="~/dskit_data") -> PipelineConfig:
@@ -376,8 +379,9 @@ def cmd_runs(root=None, metrics=(), params=(), limit=None):
     Parameters
     ----------
     root : str, optional
-        The run root to scan; default ``./pipeline_runs``, where a
-        document declaring no ``outputs.run_root`` writes.
+        The run root to scan; default
+        :data:`~dskit.pipeline.runs.DEFAULT_RUN_ROOT`, where a document
+        declaring no ``outputs.run_root`` writes.
     metrics : sequence of str, optional
         Metric columns to show; default every metric any run reported.
         A key NO scanned run reported is refused
@@ -386,7 +390,11 @@ def cmd_runs(root=None, metrics=(), params=(), limit=None):
         "these runs never measured it" — the same default-deny as
         ``--limit``.
     params : sequence of str, optional
-        Dotted ``config.json`` paths to add as columns.
+        Dotted ``config.json`` paths to add as columns. A path NO
+        scanned run's config declares is refused the same way
+        (:func:`~dskit.pipeline.runs.unknown_params`): ``param_at``'s
+        None is an honest blank only for a knob some run actually
+        declares.
     limit : int, optional
         Show only the newest N runs (N >= 1, refused by :func:`_a_shown_count`
         otherwise). The count of the rest is printed — a truncation nobody
@@ -395,8 +403,9 @@ def cmd_runs(root=None, metrics=(), params=(), limit=None):
     Returns
     -------
     int
-        0 — the scan is a read; 1 when the run root does not exist or a
-        ``--metric`` names a key no scanned run reported.
+        0 — the scan is a read; 1 when the run root does not exist, a
+        ``--metric`` names a key no scanned run reported, or a
+        ``--param`` names a path no scanned run's config declares.
 
     Notes
     -----
@@ -408,7 +417,12 @@ def cmd_runs(root=None, metrics=(), params=(), limit=None):
     (:attr:`~dskit.pipeline.runs.RunSummary.notes`) — a blank cell would
     otherwise read as "this run never measured it".
     """
-    from dskit.pipeline.runs import format_runs, scan_runs, unknown_metrics
+    from dskit.pipeline.runs import (
+        format_runs,
+        scan_runs,
+        unknown_metrics,
+        unknown_params,
+    )
 
     try:
         runs, problems = scan_runs(root)
@@ -422,6 +436,15 @@ def cmd_runs(root=None, metrics=(), params=(), limit=None):
             'blanks would read as "never measured"; run without --metric '
             "to see every metric that exists)"
         )
+    bad_params = unknown_params(runs, params) if runs else ()
+    if bad_params:
+        print(
+            f"no scanned run's config declares: {', '.join(bad_params)} "
+            '(a column of blanks would read as "not set by these '
+            "documents\"; check the dotted path against a run's "
+            "config.json)"
+        )
+    if typos or bad_params:
         return 1
     shown = runs if limit is None else runs[:limit]
     print(format_runs(shown, metrics=metrics, params=params))
@@ -541,7 +564,7 @@ def main(argv=None) -> int:
         "--root",
         default=None,
         metavar="DIR",
-        help="the run root to scan (default ./pipeline_runs)",
+        help=f"the run root to scan (default {DEFAULT_RUN_ROOT})",
     )
     runs_p.add_argument(
         "--metric",
@@ -558,7 +581,8 @@ def main(argv=None) -> int:
         default=[],
         metavar="PATH",
         help="dotted config.json path(s) to show as columns, "
-        "e.g. pipeline.qhat.params.epochs",
+        "e.g. pipeline.qhat.params.epochs (a PATH no scanned run's "
+        "config declares is refused, not rendered as blanks)",
     )
     runs_p.add_argument(
         "--limit",

@@ -154,15 +154,23 @@ class TestScan:
         runs, _ = scan_runs(DEFAULT_RUN_ROOT)
         assert [r.run_dir for r in runs] == [result.run_dir]
 
-    def test_only_one_module_names_the_default_run_root(self):
-        """Every writer of a run root resolves it through ONE name — a
-        second copy is how the walk-forward default drifts unnoticed."""
-        hits = sorted(
-            path.name
-            for path in (REPO / "dskit").rglob("*.py")
-            if '"./pipeline_runs"' in path.read_text(encoding="utf-8")
-        )
-        assert hits == ["runs.py"]
+    def test_the_default_run_root_is_named_in_one_module_per_layout(self):
+        """`DEFAULT_RUN_ROOT` (the driver layout's default) has one home,
+        runs.py — checked in ANY spelling, because the previous
+        quote-anchored grep missed a copy without the ``./`` prefix and
+        the restatements in `__main__.py`'s help and docstrings. The one
+        other permitted hit is resolve.py: its legacy stage-list tree
+        defaults to ``{data_root}/pipeline_runs``, a DIFFERENT knob for a
+        different layout that must not be welded to the driver's (see
+        TestRunDirLayout::test_the_legacy_stage_list_writer_owns_its_own_names).
+        The verb's ``--help`` derives from the constant instead of
+        restating it (TestVerb::test_the_help_states_the_default_from_the_constant)."""
+        hits = []
+        for path in (REPO / "dskit").rglob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            if "./pipeline_runs" in source or '"pipeline_runs"' in source:
+                hits.append(path.name)
+        assert sorted(hits) == ["resolve.py", "runs.py"]
 
     def test_resolve_run_root_is_what_the_declaration_means(self, tmp_path):
         assert resolve_run_root("") == os.path.abspath(DEFAULT_RUN_ROOT)
@@ -200,6 +208,40 @@ class TestTable:
         assert "no runs" in format_runs(())
 
 
+class TestParamDeny:
+    """--param is default-deny the same way --metric is. `param_at`'s
+    None is an honest blank for a knob SOME scanned run declares; a path
+    NO scanned run's config declares is a typo, and a full column of
+    dashes would read as "these documents do not set it"."""
+
+    def _run(self, config):
+        return RunSummary(
+            run_dir="/x/demo-2026-01-01-0badc0de",
+            name="demo",
+            asof=FIRST,
+            state="ran",
+            run_hash="0" * 64,
+            document_hash="1" * 64,
+            config=config,
+        )
+
+    def test_a_knob_declared_null_is_declared(self):
+        """A null VALUE is not an absent PATH — the distinction the
+        deny-check exists to draw."""
+        run = self._run({"a": {"b": None}})
+        assert runs_mod.unknown_params([run], ("a.b",)) == ()
+
+    def test_undeclared_paths_are_named_in_request_order(self):
+        run = self._run({"a": {"b": None}, "name": "demo"})
+        # "name.x" walks THROUGH a non-dict — undeclared, not an error.
+        bad = runs_mod.unknown_params([run], ("a.c", "name.x", "a.b"))
+        assert bad == ("a.c", "name.x")
+
+    def test_declared_by_any_scanned_run_is_enough(self):
+        runs = [self._run({"a": 1}), self._run({"b": 2})]
+        assert runs_mod.unknown_params(runs, ("a", "b")) == ()
+
+
 class TestMetricRulePin:
     """One rule, one name: the driver's write-side extraction and the
     reader's are the SAME function object, not two copies held together
@@ -220,6 +262,14 @@ class TestMetricRulePin:
         assert node_metrics(self.CASES[1]) == {"metrics.loss": 0.25, "metrics.n": 12}
         assert node_metrics(self.CASES[2]) == {"n": 3}
         assert node_metrics(self.CASES[3]) == {}
+
+    def test_the_metrics_dict_is_read_one_level_never_recursed(self):
+        """A dict nested INSIDE `metrics` is a payload, not a measurement:
+        its numbers reach neither the tracking sinks nor the runs table.
+        The docstring states the one-level rule; this pins the statement
+        to the code so neither can drift alone."""
+        nested = {"metrics": {"top": 2, "train": {"loss": 0.1}}}
+        assert node_metrics(nested) == {"metrics.top": 2}
 
 
 class TestSummarizedMetrics:
@@ -376,12 +426,25 @@ class TestRunDirLayout:
             assert os.path.isfile(os.path.join(run_dir, name)), name
         assert os.path.isdir(os.path.join(run_dir, NODES_DIR))
 
-    def test_the_pipeline_writers_do_not_restate_the_layout(self):
-        """driver.py and resolve.py write THROUGH the reader's names."""
-        for module in ("driver.py", "resolve.py"):
-            source = (REPO / "dskit/pipeline" / module).read_text(encoding="utf-8")
-            for name in (RESULT_FILE, CONFIG_FILE, CARRY_FILE):
-                assert f'"{name}"' not in source, f"{module} restates {name}"
+    def test_the_driver_does_not_restate_the_layout(self):
+        """driver.py — the writer of THIS layout — writes THROUGH the
+        reader's names. resolve.py is deliberately absent: its stage-list
+        tree is an independent legacy layout (see
+        test_the_legacy_stage_list_writer_owns_its_own_names)."""
+        source = (REPO / "dskit/pipeline/driver.py").read_text(encoding="utf-8")
+        for name in (RESULT_FILE, CONFIG_FILE, CARRY_FILE):
+            assert f'"{name}"' not in source, f"driver.py restates {name}"
+
+    def test_the_legacy_stage_list_writer_owns_its_own_names(self):
+        """`resolve.write_run_dir` writes a DIFFERENT tree — config.json
+        + resolved.json, no result.json, which the scan lists as skipped
+        — so its filenames are its own, equal to the driver's by shared
+        history and NOT by agreement. Welded to `runs.CONFIG_FILE`, a
+        legitimate rename of the driver's config record would silently
+        rename the legacy tree too, breaking its own readers."""
+        source = (REPO / "dskit/pipeline/resolve.py").read_text(encoding="utf-8")
+        assert '"config.json"' in source
+        assert "from dskit.pipeline.runs import" not in source
 
     def test_the_other_run_dir_reader_reads_the_same_names(self):
         """dskit/assets/ingest.py reads run dirs too and cannot import
@@ -527,6 +590,15 @@ class TestSharedRenderer:
         with pytest.raises(ValueError, match="2 column"):
             pipe_table(("a", "b"), [[1, 2, 3]])
 
+    def test_a_line_break_only_value_is_missing_not_blank(self):
+        """Flattening must run BEFORE the emptiness check: a value that
+        is nothing but line breaks flattens to nothing, and nothing
+        renders as MISSING — never as the blank cell the module's own
+        docstring declares impossible."""
+        for text in ("\n", "\r\n", "\r"):
+            assert render_cell(text) == MISSING, repr(text)
+        assert f"| {MISSING} | 1 |" in pipe_table(("a", "b"), [["\n", 1]])[2]
+
     def test_a_newline_in_a_value_cannot_break_the_row(self):
         """A `|` opens a phantom COLUMN; a newline opens a phantom ROW —
         and the width check counts cells before the join, so it cannot
@@ -608,12 +680,26 @@ class TestVerb:
         assert "size.final_bankrol" in out  # the refusal names the key
         assert MISSING not in out  # and no table of dashes is printed
 
+    def test_a_param_no_scanned_run_declares_is_refused(self, two_runs, capsys):
+        """A typo'd --param would render the same confident column of
+        dashes a typo'd --metric would; `param_at`'s None is an honest
+        blank only for a knob SOME scanned run's config declares."""
+        root, _ = two_runs
+        argv = ["runs", "--root", root]
+        assert main([*argv, "--param", "pipeline.validate.params.splt"]) == 1
+        out = capsys.readouterr().out
+        assert "pipeline.validate.params.splt" in out  # the refusal names it
+        assert MISSING not in out  # and no table of dashes is printed
+        # The path with the typo fixed renders.
+        assert main([*argv, "--param", "pipeline.validate.params.split"]) == 0
+
     def test_a_metric_only_an_unshown_run_reported_still_renders(
         self, tmp_path, capsys
     ):
         """The check is against every SCANNED run, not the --limit'd
-        view: a metric only an older run measured is a real key, and a
-        column of dashes over the shown runs is then a true statement."""
+        view: a metric only an older run measured — or a param only an
+        older run's document declared — is a real key, and a column of
+        dashes over the shown runs is then a true statement."""
         root = str(tmp_path / "pipeline_runs")
         registry = make_registry()
         run_document(
@@ -636,9 +722,23 @@ class TestVerb:
             registry=registry,
         )
         argv = ["runs", "--root", root, "--limit", "1"]
-        assert main([*argv, "--metric", "size.final_bankroll"]) == 0
+        # The shown (newest) run neither measured this metric nor
+        # declares this param; the unshown older run does both.
+        assert (
+            main(
+                [
+                    *argv,
+                    "--metric",
+                    "size.final_bankroll",
+                    "--param",
+                    "pipeline.validate.params.split",
+                ]
+            )
+            == 0
+        )
         out = capsys.readouterr().out
         assert "size.final_bankroll" in out
+        assert "pipeline.validate.params.split" in out
         table = out.partition("\n\n")[0]  # the notes block also names runs
         assert table.count("synth-banking") == 1  # only the newest is shown
         assert FIRST not in table
@@ -658,6 +758,15 @@ class TestVerb:
         with pytest.raises(SystemExit):
             main(["--help"])
         assert "runs" in capsys.readouterr().out
+
+    def test_the_help_states_the_default_from_the_constant(self, capsys):
+        """The --root help derives from `DEFAULT_RUN_ROOT` rather than
+        restating the literal, so moving the constant moves the help
+        with it — a help text that names a root the driver no longer
+        writes to would send the operator to an empty directory."""
+        with pytest.raises(SystemExit):
+            main(["runs", "--help"])
+        assert DEFAULT_RUN_ROOT in capsys.readouterr().out
 
 
 class TestDocsCurrency:

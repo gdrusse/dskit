@@ -18,7 +18,7 @@ Two records are needed for metrics because the writer splits them: a
 node's top-level numeric outputs survive into its record, but a `metrics`
 DICT is summarized there as ``{"type": "dict", "len": n}`` and its numbers
 survive only in ``carry.json``. The reader overlays the two and applies
-the numeric-leaf rule :func:`node_metrics` — the very function the driver
+the numeric-output rule :func:`node_metrics` — the very function the driver
 applies when feeding its tracking sinks — to the result. Where the
 overlay fails (a metrics dict too large or non-finite to carry), what
 remains is that SUMMARY MARKER, and the marker is a note about a
@@ -59,6 +59,7 @@ __all__ = [
     "resolve_run_root",
     "scan_runs",
     "unknown_metrics",
+    "unknown_params",
 ]
 
 #: Where runs land when a document declares no ``outputs.run_root`` — the
@@ -115,8 +116,10 @@ def resolve_run_root(declared):
 def node_metrics(outputs):
     """Extract the numeric view of one node's outputs.
 
-    Top-level numeric scalars, plus every numeric leaf of an output
-    literally named ``metrics`` — never bulk payloads, and never
+    Top-level numeric scalars, plus the numeric values sitting DIRECTLY
+    inside an output literally named ``metrics`` — one level, never
+    recursed: a dict nested inside ``metrics`` is a payload, and its
+    numbers reach neither the tracking sinks nor the runs table. Never
     booleans (``True`` is a verdict, not a measurement).
 
     This is THE rule, one name: ``driver._node_metrics`` is this
@@ -134,7 +137,8 @@ def node_metrics(outputs):
     -------
     dict
         ``{metric name: float or int}``; ``metrics.<key>`` for the
-        nested leaves. Empty when the node measured nothing.
+        ``metrics`` dict's direct numeric values. Empty when the node
+        measured nothing.
     """
     out = {}
     for key, value in outputs.items():
@@ -162,14 +166,26 @@ def param_at(config, path):
     object or None
         The value, or None where the path does not exist — an absent knob
         is a legitimate answer when comparing runs of different documents,
-        not an error.
+        not an error. (A path absent from EVERY scanned run's config is a
+        typo instead, and :func:`unknown_params` exists to refuse it.)
+    """
+    return _walk(config, path)[1]
+
+
+def _walk(config, path):
+    """Walk a dotted path in a config mapping: ``(declared, value)``.
+
+    The one walker under both :func:`param_at` (which wants the value)
+    and :func:`unknown_params` (which wants the DISTINCTION between a
+    knob declared null and a path never declared — a distinction the
+    value alone cannot carry).
     """
     node = config
     for part in path.split("."):
         if not isinstance(node, dict) or part not in node:
-            return None
+            return False, None
         node = node[part]
-    return node
+    return True, node
 
 
 @dataclass(frozen=True)
@@ -514,6 +530,37 @@ def unknown_metrics(runs, metrics):
     """
     known = set(_all_metrics(runs))
     return tuple(key for key in metrics if key not in known)
+
+
+def unknown_params(runs, params):
+    """Name the requested param paths NO scanned run's config declares.
+
+    :func:`param_at` documents None as a legitimate answer — for a knob
+    a PARTICULAR document never declared while others did. A path no
+    scanned run declares at all is not that: it is a typo, and a full
+    column of blanks would read as "these documents do not set it" — the
+    same confidently wrong table :func:`unknown_metrics` refuses for
+    metrics. A knob declared with a null value counts as declared.
+
+    Parameters
+    ----------
+    runs : sequence of RunSummary
+        Every scanned run — not the ``--limit``'d view, for the same
+        reason as :func:`unknown_metrics`.
+    params : sequence of str
+        The requested dotted ``config.json`` paths.
+
+    Returns
+    -------
+    tuple of str
+        The paths of ``params`` no run's config declares, in request
+        order; empty when every path is real.
+    """
+    return tuple(
+        path
+        for path in params
+        if not any(_walk(run.config, path)[0] for run in runs)
+    )
 
 
 def _all_metrics(runs):

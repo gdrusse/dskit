@@ -59,7 +59,6 @@ from dskit.pipeline.base import (
 from dskit.pipeline.env import load_env
 from dskit.pipeline.metrics import METRICS
 from dskit.pipeline.registry import DEFAULT_REGISTRY
-from dskit.pipeline.runs import CONFIG_FILE
 from dskit.pipeline.stats import CORRECTIONS
 
 __all__ = [
@@ -394,7 +393,12 @@ def write_run_dir(resolved) -> str:
     rd["pipeline_hash"] = new_hash
     resolved_text = json.dumps(rd, indent=2, sort_keys=True, allow_nan=False)
     os.makedirs(run_dir, exist_ok=True)
-    with open(os.path.join(run_dir, CONFIG_FILE), "w", encoding="utf-8") as fh:
+    # The legacy stage-list tree's OWN filename — equal to the driver
+    # layout's `runs.CONFIG_FILE` by shared history, not by agreement:
+    # the two trees are independent layouts, and a rename of the
+    # driver's config record must not silently rename this one (pinned
+    # in tests/pipeline/test_runs.py::TestRunDirLayout).
+    with open(os.path.join(run_dir, "config.json"), "w", encoding="utf-8") as fh:
         fh.write(config_text + "\n")
     with open(os.path.join(run_dir, "resolved.json"), "w", encoding="utf-8") as fh:
         fh.write(resolved_text + "\n")
