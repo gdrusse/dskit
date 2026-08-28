@@ -57,7 +57,7 @@ import os
 
 from dskit.pipeline.base import import_ref, is_class_ref
 from dskit.pipeline.kinds_stats import _check_int, _reject_unknown
-from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
+from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, TrainableNode
 
 __all__ = [
     "ARTIFACT_FORMAT",
@@ -144,7 +144,14 @@ class Sb3PolicySignal:
 class _Sb3Base(Node):
     """The artifact protocol the three kinds share — save, verify,
     restore; refuse by name. Mirrors the torch pack's S2-A discipline:
-    the content hash covers the model-zip bytes AND the sidecar."""
+    the content hash covers the model-zip bytes AND the sidecar.
+
+    A plain :class:`~dskit.pipeline.node.Node`, deliberately: ADR-0038
+    re-parents the two trainable kinds and NOT this base, because
+    :class:`Sb3Eval` (role ``score``) also inherits it and carries no
+    mode at all. It defines neither template method, so the two trainable
+    kinds may keep it ahead of :class:`~dskit.pipeline.node.TrainableNode`
+    in their bases and still resolve both to the base."""
 
     _PARAMS = ()
     #: Sidecar fields cross-checked against DECLARED params at load. The
@@ -276,7 +283,7 @@ class _Sb3Base(Node):
             )
 
 
-class Sb3Train(_Sb3Base):
+class Sb3Train(_Sb3Base, TrainableNode):
     """The declared RL trainer (role ``train``, kind ``sb3-train``).
 
     Knobs: ``algo`` (required SB3 class name), ``env`` (required import
@@ -320,17 +327,17 @@ class Sb3Train(_Sb3Base):
         _params_dict_problem(problems, "algo_params", params.get("algo_params"))
         return problems
 
-    def run(self, ctx, inputs):
-        if self.mode == "load":
-            sidecar = self._read_sidecar(self.artifact)
-            model = self._load_model(self.artifact, sidecar)
-            self.log.info("restored %s from %s", sidecar["algo"], self.artifact)
-            return {
-                "policy": Sb3PolicySignal(model, self.artifact, loaded=True),
-                "artifact_path": self.artifact,
-                "metrics": {"loaded": 1, "seed": sidecar["seed"]},
-            }
+    def run_load(self, ctx, inputs):
+        sidecar = self._read_sidecar(self.artifact)
+        model = self._load_model(self.artifact, sidecar)
+        self.log.info("restored %s from %s", sidecar["algo"], self.artifact)
+        return {
+            "policy": Sb3PolicySignal(model, self.artifact, loaded=True),
+            "artifact_path": self.artifact,
+            "metrics": {"loaded": 1, "seed": sidecar["seed"]},
+        }
 
+    def run_train(self, ctx, inputs):
         algo_name = self.params["algo"]
         env_ref = self.params["env"]
         env_params = self.params.get("env_params", {})
@@ -385,7 +392,7 @@ class Sb3Train(_Sb3Base):
         }
 
 
-class Sb3Policy(_Sb3Base):
+class Sb3Policy(_Sb3Base, TrainableNode):
     """Inference-only restore of a pinned sb3 artifact (role ``signal``,
     kind ``sb3-policy``) — it always loads, it never trains.
 
@@ -397,6 +404,7 @@ class Sb3Policy(_Sb3Base):
 
     role = "signal"
     outputs = ("policy",)
+    default_mode = "load"
 
     _PARAMS = ("algo", "artifact", "env", "env_params", "policy")
 
@@ -414,36 +422,32 @@ class Sb3Policy(_Sb3Base):
         _params_dict_problem(problems, "env_params", params.get("env_params"))
         return problems
 
-    def validate_inputs(self, inputs):
-        path = inputs.get("artifact_path")
-        if path is not None and (not isinstance(path, str) or not path):
-            return [
-                "artifact_path must be a non-empty string (wire it from a "
-                f"train node's artifact_path output), got {path!r}"
-            ]
-        return []
+    def validate_common_inputs(self, inputs):
+        # The port is checked in EITHER mode: a document that wires it
+        # wired it wrong regardless of which mode it also declared.
+        return self.pin_port_problems(
+            inputs,
+            "artifact_path",
+            hint="wire it from a train node's artifact_path output",
+        )
 
-    def run(self, ctx, inputs):
-        if self.mode == "train":
-            raise NotImplementedError(
-                f"{self.key}: sb3-policy is inference-only — mode='train' "
-                "trains nothing here; train with sb3-train and pin its "
-                "artifact"
-            )
-        if self.mode == "load":
-            reference = self.artifact
-            if not reference:
-                self._refuse("mode='load' was given an empty artifact reference")
-        else:
-            reference = self.params.get("artifact") or (inputs or {}).get(
-                "artifact_path"
-            )
-            if not reference:
-                self._refuse(
-                    "no artifact reference — set mode='load' + artifact, "
-                    "params['artifact'], or wire inputs['artifact_path'] from "
-                    "an sb3-train node"
-                )
+    def run_train(self, ctx, inputs):
+        raise NotImplementedError(
+            f"{self.key}: sb3-policy is inference-only — mode='train' "
+            "trains nothing here; train with sb3-train and pin its "
+            "artifact"
+        )
+
+    def run_load(self, ctx, inputs):
+        reference = self.pinned_artifact(
+            self.params.get("artifact"),
+            (inputs or {}).get("artifact_path"),
+            missing=(
+                "no artifact reference — set mode='load' + artifact, "
+                "params['artifact'], or wire inputs['artifact_path'] from "
+                "an sb3-train node"
+            ),
+        )
         sidecar = self._read_sidecar(reference)
         model = self._load_model(reference, sidecar)
         self.log.info("restored %s from %s", sidecar["algo"], reference)
@@ -517,23 +521,24 @@ class Sb3Eval(_Sb3Base):
         return problems
 
     def validate_inputs(self, inputs):
-        path = inputs.get("artifact_path")
-        if path is not None and (not isinstance(path, str) or not path):
-            return [
-                "artifact_path must be a non-empty string (wire it from an "
-                f"sb3-train node), got {path!r}"
-            ]
-        return []
+        return self.pin_port_problems(
+            inputs, "artifact_path", hint="wire it from an sb3-train node"
+        )
 
     def run(self, ctx, inputs):
         from stable_baselines3.common.evaluation import evaluate_policy
 
-        reference = self.params.get("artifact") or (inputs or {}).get("artifact_path")
-        if not reference:
-            self._refuse(
+        # A score role carries no node-level pin — Node.node_level_pin
+        # says so — but the two remaining sources, and the refusal when
+        # neither answers, are the same service the policy kind uses.
+        reference = self.pinned_artifact(
+            self.params.get("artifact"),
+            (inputs or {}).get("artifact_path"),
+            missing=(
                 "no artifact reference — set params['artifact'] or wire "
                 "inputs['artifact_path'] from an sb3-train node"
-            )
+            ),
+        )
         sidecar = self._read_sidecar(reference)
         env_ref = self.params.get("env") or sidecar["env"]
         env_params = self.params.get("env_params")

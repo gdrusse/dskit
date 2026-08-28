@@ -19,7 +19,7 @@ from dskit.pipeline.libs.sb3 import (
     Sb3Train,
     register,
 )
-from dskit.pipeline.node import NodeContext, NodeKindRegistry
+from dskit.pipeline.node import Node, NodeContext, NodeKindRegistry, TrainableNode
 
 gymnasium = pytest.importorskip("gymnasium")
 pytest.importorskip("stable_baselines3")
@@ -232,6 +232,33 @@ def test_policy_refuses_mode_train_and_missing_references(tmp_path):
         tmp_path,
         "empty artifact reference",
     )
+
+
+def test_only_the_two_trainable_kinds_carry_the_dispatch(tmp_path):
+    """ADR-0038's sb3 rule: the shared base is NOT re-parented, because
+    the eval kind (role 'score') inherits it and carries no mode at all.
+    The services it needs sit on Node, reachable without the dispatch."""
+    for cls in (Sb3Train, Sb3Policy):
+        assert issubclass(cls, TrainableNode)
+        assert cls.run is TrainableNode.run
+        assert cls.validate_inputs is TrainableNode.validate_inputs
+    assert not issubclass(Sb3Eval, TrainableNode)
+    assert Sb3Eval.pinned_artifact is Node.pinned_artifact
+    assert Sb3Eval.pin_port_problems is Node.pin_port_problems
+
+
+def test_policy_refuses_a_node_level_pin_that_contradicts_the_param(tmp_path):
+    """ADR-0038's declared delta: under mode='load' a contradicting
+    params['artifact'] is refused rather than silently outranked."""
+    artifact = train(tmp_path)["artifact_path"]
+    refuses(
+        Sb3Policy("pi", {"artifact": str(tmp_path / "other.zip")}, mode="load",
+                  artifact=artifact),
+        tmp_path,
+        "disagree",
+    )
+    agreeing = Sb3Policy("pi", {"artifact": artifact}, mode="load", artifact=artifact)
+    assert agreeing.run(ctx(tmp_path, "agree"), {})["policy"].loaded is True
 
 
 def test_load_refuses_missing_files_tampering_and_mismatches(tmp_path):
