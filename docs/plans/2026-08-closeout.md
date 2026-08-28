@@ -794,7 +794,7 @@ Intentional-move log (append `document → old-prefix → new-prefix → card`):
 | A1 | MERGED | 3d8ccf6 | 5-round loop + orchestrator round-5 intervention (README skew twin, note brevity); monitor scoped to run-backtest only (run-train wires no val_rows — engine refuses; skew declared+pinned); child hashes moved as declared; suite 2440/108, child 74/11 |
 | A2 | pending | | |
 | A4 | MERGED | 97ac471 | 5-round loop (10→6→5→1→1) + orchestrator needle-termination fix (mutation-proven); +_DEFAULT_PAGE_START bonus; ignores restored per touched-only ruling; suite 2483/108, hash gate empty |
-| A5 | pending | | |
+| A5 | MERGED | 86816c0 | 5-round loop + orchestrator directive-disposal fixes (lineage envelope verified byte-exact); NOTE for owner: CLAUDE.md Docstrings gained an output-marking rule (# ->) ratified by the loop; suite 2483/108, hash gate empty |
 | E1 | MERGED | 2e6fda9 | 4 loop rounds + limit-killed round, orchestrator arbitration (declared-tree keys / run values / references-as-declared; single log_params call) + 1 confirming round (4 findings) + directed fixes; suite 2479/108, hash gate empty. E3 UNBLOCKED |
 | E2 | pending | | |
 | E3 | pending | | after E1 |

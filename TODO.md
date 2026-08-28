@@ -99,10 +99,15 @@ REMAINING, in the plan's risk order:
 - [ ] **Drain the pre-standard ignore list.** 73 modules sit in
       `pyproject.toml` under `per-file-ignores`; delete a module's entry when
       you convert it. That list IS the remaining work, in config form.
-- [ ] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
+- [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,
       `assets/ingest.py:68`, `onboarding/coverage.py`.
+      **Landed this run (2026-08-28, A5):** grep clean; CLAUDE.md gained
+      the `# ->` output-marking rule the conversion needed; doctest
+      directives disposed of honestly (wildcards not re-marked literal;
+      the lineage envelope verified byte-exact by execution; unrunnable
+      sketches say so).
 
 ## Configurability
 
