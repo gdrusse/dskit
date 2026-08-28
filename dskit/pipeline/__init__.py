@@ -127,15 +127,9 @@ from dskit.pipeline.driver import (
 from dskit.pipeline.env import Secrets, load_env
 from dskit.pipeline.features import apply_stream_steps
 from dskit.pipeline.io import load_config, save_config
-from dskit.pipeline.kinds_flow import (
-    BankingReport,
-    Concat,
-    Derive,
-    Eligibility,
-    EventBank,
-    Filter,
-    Join,
-)
+from dskit.pipeline.kinds_banking import BankingReport, Eligibility, EventBank
+from dskit.pipeline.kinds_banking import register as _register_banking_kinds
+from dskit.pipeline.kinds_flow import Concat, Derive, Filter, Join
 from dskit.pipeline.kinds_flow import register as _register_flow_kinds
 from dskit.pipeline.kinds_report import RunReport
 from dskit.pipeline.kinds_report import register as _register_report_kinds
@@ -190,8 +184,14 @@ from dskit.pipeline.runs import (
 #: validate and run-report as OWNED doctrine kinds, plus filter /
 #: derive / concat / join / event-bank / eligibility / banking-report /
 #: hpo-grid / table-file / table-write.
+#:
+#: EVERY kinds module's register() must be called here: the flow verbs
+#: and the banking chain ship from two modules, and a document naming a
+#: kind whose register() was left out stops resolving while every unit
+#: test still passes.
 _register_stats_kinds()
 _register_flow_kinds()
+_register_banking_kinds()
 _register_search_kinds()
 _register_report_kinds()
 _register_table_kinds()

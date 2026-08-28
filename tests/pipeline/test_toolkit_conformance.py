@@ -21,7 +21,7 @@ Two deliberate deviations from a typical adapter hookup:
   dependent (an adapter registers into it whenever any test
   imports it), and a conformance bar over a registry whose membership
   depends on what ran first is not a bar.
-* no ``module=`` — the kinds span five modules, and tier-1 import
+* no ``module=`` — the kinds span six modules, and tier-1 import
   purity (stdlib-only, heavy libraries blocked) is already enforced for
   every ``dskit/pipeline`` module by ``tests/pipeline/test_purity.py``.
 
@@ -36,15 +36,8 @@ import hashlib
 import json
 
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
-from dskit.pipeline.kinds_flow import (
-    BankingReport,
-    Concat,
-    Derive,
-    Eligibility,
-    EventBank,
-    Filter,
-    Join,
-)
+from dskit.pipeline.kinds_banking import BankingReport, Eligibility, EventBank
+from dskit.pipeline.kinds_flow import Concat, Derive, Filter, Join
 from dskit.pipeline.kinds_report import RunReport
 from dskit.pipeline.kinds_search import HpoGrid
 from dskit.pipeline.kinds_stats import StatTest, Validate

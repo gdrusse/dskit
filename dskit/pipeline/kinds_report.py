@@ -612,7 +612,7 @@ class RunReport(Node):
             problems.append(f"max_rows must be an int >= 1, got {max_rows!r}")
         bar = params.get("min_events")
         # No default, ever. The admission bar is stated by the gate that
-        # applies it (dskit.pipeline.kinds_flow), and a report that
+        # applies it (dskit.pipeline.kinds_banking), and a report that
         # invented one would be describing a threshold no run used.
         if bar is not None and (
             isinstance(bar, bool) or not isinstance(bar, int) or bar < 1

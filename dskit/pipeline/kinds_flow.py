@@ -1,15 +1,16 @@
-"""The ordinary flow kinds — ``filter``, ``event-bank``, ``eligibility``,
-``banking-report`` (spec §10 step 3) — and the RELATIONAL kinds
-``concat``, ``join``, ``derive``, which combine streams instead of
-reading one.
+"""The record-flow kinds: ``filter``, ``concat``, ``join``, ``derive``.
 
-These are the toolkit's plain, un-owned kinds: the record filter, the
-★BANKING counter, the admission gate, and the banking ledger — the
-``bank -> eligible_family -> banking_report`` spine of
-``examples/pipeline/PROPOSAL-node-map.jsonc``. They are registered with
+One verb reads a single stream; the RELATIONAL three combine streams
+instead of reading one.
+
+These are toolkit's plain, un-owned kinds, registered with
 ``owned=False`` (any project may shadow them with its own class via an
 import path); the doctrine kinds (``stat_test``, ``validate``) are a
-separate, owned matter.
+separate, owned matter. The banking/admission chain that once shared
+this module — ``event-bank``, ``eligibility``, ``banking-report`` — is
+one cohesive story of its own and now lives in
+:mod:`dskit.pipeline.kinds_banking` (TODO 3e); kinds register by NAME,
+so that move changed no document and no identity hash.
 
 The relational three are the vocabulary a document needs before two
 data sources can share ONE bankroll: without a verb that says "and
@@ -19,22 +20,29 @@ arithmetic performed after the fact on runs that never competed. They
 are venue-blind by construction and take N inputs, never two (D-137: no
 venue is privileged, and nothing here may special-case a pair).
 
-Record tolerance — one rule for the four single-stream kinds: records
-flowing through them are either plain dicts or objects with attributes
-(e.g. :class:`~dskit.pipeline.records.MarketRecord`), and every field
-access goes through the single :func:`_field` accessor. A record that
-lacks a needed field is DROPPED or SKIPPED, never crashed on — sparse
-records are data, not shape errors (each class documents its exact
-semantics). The relational three deliberately do the OPPOSITE and
-REFUSE; the section comment above :class:`Concat` says why, and every
-relaxation has to be declared in the document before it is allowed.
+Record tolerance — the rule for the single-stream verbs, here and in
+:mod:`dskit.pipeline.kinds_banking`: records flowing through them are
+either plain dicts or objects with attributes (e.g.
+:class:`~dskit.pipeline.records.MarketRecord`), and every field access
+goes through the single :func:`_field` accessor, which the banking
+module imports from here rather than restating. A record that lacks a
+needed field is DROPPED or SKIPPED, never crashed on — sparse records
+are data, not shape errors (each class documents its exact semantics).
+The relational three deliberately do the OPPOSITE and REFUSE; the
+section comment above :class:`Concat` says why, and every relaxation
+has to be declared in the document before it is allowed.
 
 Validator convention: params may legally arrive as unmaterialized
-``$``-references at plan time (``"$splits.train_end_ms"`` is the
-designed use for ``strictly_before``); validators tolerate the
-``$``-form and check the real value when construction sees the
-materialized params. ``$prev`` carries never reach a validator raw —
-the planner substitutes their literal defaults first.
+``$``-references at plan time; validators tolerate the ``$``-form and
+check the real value when construction sees the materialized params.
+``$prev`` carries never reach a validator raw — the planner substitutes
+their literal defaults first.
+
+``is_node_ref`` and ``_reject_unknown`` are imported here from their
+homes (:mod:`dskit.pipeline.document` and
+:mod:`dskit.pipeline.kinds_stats`) and stay reachable through this
+module for one release, because that is the path a sibling could be
+importing them by.
 
 No import-time side effects: nothing registers until :func:`register`
 is called.
@@ -53,11 +61,8 @@ from dskit.pipeline.kinds_stats import _reject_unknown
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
 
 __all__ = [
-    "BankingReport",
     "Concat",
     "Derive",
-    "Eligibility",
-    "EventBank",
     "Filter",
     "Join",
     "register",
@@ -67,55 +72,19 @@ __all__ = [
 #: real value a field could hold (``None`` included).
 _MISSING = object()
 
-#: What ``event-bank`` may count DISTINCT occurrences of.
-#:
-#: ``"group"`` is the DEFAULT (I-224): one EVENT counts once, however many
-#: times it was observed. Identity is the record's ``group`` — the
-#: statistical-dependence cluster :class:`~dskit.pipeline.records.MarketRecord`
-#: defines — falling back to ``contract`` when ``group`` is ``None`` or
-#: absent, which is that envelope's own stated meaning ("the contract is
-#: its own cluster"). ``"contract"`` counts distinct tradeable units.
-#: ``"record"`` counts every input record and is the ONLY way to ask for
-#: that: it must be declared, because a counter feeding a
-#: ``min_events`` bar may never over-count by omission.
-_DISTINCT_FIELDS = ("group", "contract", "record")
-
 
 def _field(record, name):
-    """THE attr-or-key accessor: ``record[name]`` for mappings,
-    ``record.name`` for objects, :data:`_MISSING` when absent. Every
-    record field read in this module goes through here — dicts and
+    """Read one field: ``record[name]`` for mappings, ``record.name`` for objects.
+
+    Returns :data:`_MISSING` when absent. THE accessor — every record
+    field read in this module and in
+    :mod:`dskit.pipeline.kinds_banking` goes through here, so dicts and
     :class:`~dskit.pipeline.records.MarketRecord`-like objects are
-    interchangeable by construction."""
+    interchangeable by construction.
+    """
     if isinstance(record, dict):
         return record.get(name, _MISSING)
     return getattr(record, name, _MISSING)
-
-
-def _require_min_events(problems, params) -> None:
-    """The stated admission bar: ``min_events`` is REQUIRED (no default —
-    the bar must be stated, never assumed) and must be an int >= 1."""
-    if "min_events" not in params:
-        problems.append(
-            "min_events is required — the admission bar must be stated "
-            "explicitly, there is no default"
-        )
-        return
-    bar = params["min_events"]
-    if isinstance(bar, bool) or not isinstance(bar, int) or bar < 1:
-        problems.append(f"min_events must be an int >= 1, got {bar!r}")
-
-
-def _counts_problems(port, counts):
-    """Problems with a banked-counts input: a ``{instrument: n}`` dict
-    with int counts >= 0 (bools excluded), empty when none."""
-    if not isinstance(counts, dict):
-        return [f"{port} must be a counts dict ({{instrument: n}}), got {counts!r}"]
-    return [
-        f"{port}[{instrument!r}] must be an int >= 0, got {n!r}"
-        for instrument, n in counts.items()
-        if isinstance(n, bool) or not isinstance(n, int) or n < 0
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -161,10 +130,13 @@ def _clause_problems(name, clause):
 
 
 def _clause_holds(record, clause) -> bool:
-    """Whether ``record`` passes one where clause. A clause can only PASS
-    on a present, comparable field: a missing field fails it (even under
-    ``!=``), and so does an incomparable pair (``TypeError`` — e.g. a
-    string against an int bound, or ``in`` against a non-container)."""
+    """Whether ``record`` passes one where clause.
+
+    A clause can only PASS on a present, comparable field: a missing
+    field fails it (even under ``!=``), and so does an incomparable pair
+    (``TypeError`` — e.g. a string against an int bound, or ``in``
+    against a non-container).
+    """
     value = _field(record, clause["field"])
     if value is _MISSING:
         return False
@@ -175,18 +147,9 @@ def _clause_holds(record, clause) -> bool:
 
 
 class Filter(Node):
-    """Keep the records that pass every declared condition (role
-    ``transform``) — the toolkit's ``filter`` kind.
+    """Keep the records that pass every declared condition.
 
-    Inputs: ``records`` (dicts or record objects); OPTIONAL
-    ``instruments`` — an allow-list, keeping only records whose
-    ``instrument`` is in it (the PROPOSAL wires the eligible family
-    here, so the universe grows with zero config edits).
-
-    Params: ``require_usable`` (bool, default False) drops records whose
-    ``usable`` field is falsy; ``where`` is a list of
-    ``{"field", "op", "value"}`` clauses over :data:`_OPS`, ALL of which
-    must hold.
+    Role ``transform`` — the toolkit's ``filter`` kind.
 
     Sparse-record semantics, by design: a record missing a tested field
     (or carrying an incomparable value) is DROPPED — a filter never
@@ -196,6 +159,27 @@ class Filter(Node):
     ``instrument`` field = cannot prove membership = dropped).
 
     Input order is preserved; kept/total is logged.
+
+    Parameters
+    ----------
+    params : dict
+        ``require_usable`` (bool, default ``False``) drops records whose
+        ``usable`` field is falsy; ``where`` (list, default ``[]``) is a
+        list of ``{"field", "op", "value"}`` clauses over :data:`_OPS`,
+        ALL of which must hold.
+
+    Examples
+    --------
+    Keep the usable records of one venue::
+
+        node = Filter(
+            "usable",
+            {
+                "require_usable": True,
+                "where": [{"field": "venue", "op": "==", "value": "kalshi"}],
+            },
+        )
+        out = node.run(ctx, {"records": records})
     """
 
     role = "transform"
@@ -206,6 +190,19 @@ class Filter(Node):
 
     @classmethod
     def validate_params(cls, params):
+        """Problems with this node's declared knobs, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's ``params`` block, possibly carrying unmaterialized
+            ``$``-references.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when the params are legal.
+        """
         problems = []
         _reject_unknown(problems, params, cls._PARAMS)
         require_usable = params.get("require_usable", False)
@@ -225,6 +222,22 @@ class Filter(Node):
         return problems
 
     def validate_inputs(self, inputs):
+        """Problems with the materialized inputs, empty when none.
+
+        Parameters
+        ----------
+        inputs : dict
+            ``records`` (list of dicts or record objects) and OPTIONAL
+            ``instruments`` — an allow-list (list/tuple/set) keeping only
+            records whose ``instrument`` is in it. The PROPOSAL wires the
+            eligible family here, so the universe grows with zero config
+            edits.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when the inputs are usable.
+        """
         problems = []
         if not isinstance(inputs.get("records"), list):
             problems.append(
@@ -239,6 +252,20 @@ class Filter(Node):
         return problems
 
     def run(self, ctx, inputs):
+        """Keep the records that pass every condition, in input order.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The run frame; unused here beyond the node's own logging.
+        inputs : dict
+            As validated by :meth:`validate_inputs`.
+
+        Returns
+        -------
+        dict
+            ``records`` — the kept rows (list), in input order.
+        """
         records = inputs["records"]
         allowed = inputs.get("instruments")
         require_usable = self.params.get("require_usable", False)
@@ -257,303 +284,6 @@ class Filter(Node):
                 kept.append(record)
         self.log.info("filter kept %d/%d record(s)", len(kept), len(records))
         return {"records": kept}
-
-
-# ---------------------------------------------------------------------------
-# event-bank — the ★BANKING counter (role: accrual)
-# ---------------------------------------------------------------------------
-
-
-class EventBank(Node):
-    """★BANKING: count banked events per instrument (role ``accrual``) —
-    the toolkit's ``event-bank`` kind, the week-over-week
-    ``12 -> 27 -> 43 -> 51`` counter the admission gate reads.
-
-    Inputs: ``events`` — records carrying ``instrument``, ``contract``,
-    ``asof_ms``; OPTIONAL ``outcomes`` — ``{contract: settled-YES?}``,
-    whose KEYS mark settledness (a settled NO is settled: presence in
-    the dict is what counts, the bool is the direction).
-
-    Params: ``count`` — ``"settled"`` (default; count only events whose
-    contract is present in ``outcomes``, which the input contract
-    therefore requires at execute) or ``"all"``; ``strictly_before`` —
-    optional int epoch-ms cut, arriving pre-materialized (the designed
-    wiring is ``"$splits.train_end_ms"``-style references). Knowable-
-    at-T1 doctrine: only events with ``asof_ms`` STRICTLY below the cut
-    count — an event at or past the cut is never banked.
-
-    Sparse-record semantics: an event missing ``instrument`` or
-    ``contract``, or whose ``asof_ms`` is not an int, cannot prove where
-    (or when) it banks and is SKIPPED, never crashed on; skips are
-    logged.
-
-    Outputs: ``counts`` — ``{instrument: n}`` DISTINCT events (see
-    ``distinct_by``); ``extents`` — ``{instrument: {"first_ms",
-    "last_ms"}}`` over every OBSERVATION that fed those counts, not over
-    the first sighting of each event, so the extent stays the honest
-    span of the banked data.
-    """
-
-    role = "accrual"
-    outputs = ("counts", "extents")
-
-    #: ``distinct_by`` — WHAT one "event" is in the stream you wired in.
-    #: DEFAULT ``"group"`` (I-224, 2026-08-15): one event counts ONCE
-    #: however many times it was observed. A market ladder carries every
-    #: lead time of every strike contract, so counting records reports a
-    #: multiple of the truth and a ``min_events`` gate opens on a fraction
-    #: of the evidence it names — the over-count is silent, and the gate
-    #: it feeds decides which markets get tested at all, so the default is
-    #: the one that CANNOT overstate evidence. ``"contract"`` counts
-    #: distinct tradeable units; ``"record"`` counts every input record
-    #: (right when one record IS one event) and must be said out loud.
-
-    #: The class's own knobs — anything else is refused by name.
-    _PARAMS = ("count", "distinct_by", "strictly_before")
-
-    @classmethod
-    def validate_params(cls, params):
-        problems = []
-        _reject_unknown(problems, params, cls._PARAMS)
-        count = params.get("count", "settled")
-        if count not in ("settled", "all"):
-            problems.append(f"count must be 'settled' or 'all', got {count!r}")
-        cut = params.get("strictly_before")
-        if (
-            cut is not None
-            and not is_node_ref(cut)
-            and (isinstance(cut, bool) or not isinstance(cut, int))
-        ):
-            problems.append(
-                f"strictly_before must be an int epoch-ms (or a $-reference "
-                f"that materializes to one), got {cut!r}"
-            )
-        distinct_by = params.get("distinct_by")
-        if distinct_by is not None and distinct_by not in _DISTINCT_FIELDS:
-            problems.append(
-                f"distinct_by must be one of {list(_DISTINCT_FIELDS)} (or "
-                f"absent, defaulting to 'group' — one event counted once), "
-                f"got {distinct_by!r}"
-            )
-        return problems
-
-    def validate_inputs(self, inputs):
-        problems = []
-        if not isinstance(inputs.get("events"), list):
-            problems.append(
-                f"events must be a list of records, got {inputs.get('events')!r}"
-            )
-        if self.params.get("count", "settled") == "settled" and not isinstance(
-            inputs.get("outcomes"), dict
-        ):
-            problems.append(
-                "count='settled' requires the outcomes input "
-                f"({{contract: settled-YES?}}) to know which events are "
-                f"settled, got {inputs.get('outcomes')!r}"
-            )
-        return problems
-
-    def run(self, ctx, inputs):
-        count_settled = self.params.get("count", "settled") == "settled"
-        cut = self.params.get("strictly_before")
-        distinct_by = self.params.get("distinct_by", "group")
-        outcomes = inputs.get("outcomes")
-        counts = {}
-        extents = {}
-        seen = set()
-        skipped = 0
-        observations = 0
-        for event in inputs["events"]:
-            instrument = _field(event, "instrument")
-            contract = _field(event, "contract")
-            asof_ms = _field(event, "asof_ms")
-            if (
-                instrument is _MISSING
-                or contract is _MISSING
-                or isinstance(asof_ms, bool)
-                or not isinstance(asof_ms, int)
-            ):
-                skipped += 1
-                continue
-            if cut is not None and asof_ms >= cut:
-                continue  # knowable-at-T1: at-or-past the cut never counts
-            if count_settled and contract not in outcomes:
-                continue
-            # Every observation that survived the filters widens the extent,
-            # whether or not it is the first sighting of its event — the
-            # extent describes the DATA, the counts describe the EVENTS.
-            observations += 1
-            extent = extents.get(instrument)
-            if extent is None:
-                extents[instrument] = {"first_ms": asof_ms, "last_ms": asof_ms}
-            else:
-                extent["first_ms"] = min(extent["first_ms"], asof_ms)
-                extent["last_ms"] = max(extent["last_ms"], asof_ms)
-            if distinct_by != "record":
-                identity = contract
-                if distinct_by == "group":
-                    # group is the cluster id; None (or absent) is the
-                    # envelope's own "this contract is its own cluster",
-                    # NOT one shared bucket every record collapses into.
-                    group = _field(event, "group")
-                    if group is not _MISSING and group is not None:
-                        identity = group
-                if (instrument, identity) in seen:
-                    continue
-                seen.add((instrument, identity))
-            counts[instrument] = counts.get(instrument, 0) + 1
-        self.log.info(
-            "banked %d event(s) across %d instrument(s) from %d observation(s) "
-            "(distinct_by=%s, %d skipped as malformed)",
-            sum(counts.values()),
-            len(counts),
-            observations,
-            distinct_by,
-            skipped,
-        )
-        return {"counts": counts, "extents": extents}
-
-
-# ---------------------------------------------------------------------------
-# eligibility — the admission gate (role: gate)
-# ---------------------------------------------------------------------------
-
-
-class Eligibility(Node):
-    """The admission bar (role ``gate``) — the toolkit's ``eligibility``
-    kind: instruments whose banked count clears ``min_events`` form the
-    family; an empty family is a NO-GO, and THAT is this node's point —
-    the driver halts every DAG descendant on the verdict, so nothing
-    downstream ever runs on an inadmissible universe.
-
-    Inputs: ``banked`` — the ``event-bank`` counts dict. Params:
-    ``min_events`` — REQUIRED int >= 1, no default: the admission bar
-    must be stated, never assumed.
-
-    Outputs: ``instruments`` — the sorted family; ``verdict`` — ``"GO"``
-    iff the family is non-empty, else ``"NO-GO"``.
-    """
-
-    role = "gate"
-    outputs = ("instruments", "verdict")
-
-    #: The class's own knobs — anything else is refused by name.
-    _PARAMS = ("min_events",)
-
-    @classmethod
-    def validate_params(cls, params):
-        problems = []
-        _reject_unknown(problems, params, cls._PARAMS)
-        _require_min_events(problems, params)
-        return problems
-
-    def validate_inputs(self, inputs):
-        return _counts_problems("banked", inputs.get("banked"))
-
-    def run(self, ctx, inputs):
-        bar = self.params["min_events"]
-        banked = inputs["banked"]
-        family = sorted(instrument for instrument, n in banked.items() if n >= bar)
-        verdict = "GO" if family else "NO-GO"
-        self.log.info(
-            "eligibility: %d/%d instrument(s) >= %d — %s",
-            len(family),
-            len(banked),
-            bar,
-            verdict,
-        )
-        return {"instruments": family, "verdict": verdict}
-
-
-# ---------------------------------------------------------------------------
-# banking-report — the weekly ledger (role: report)
-# ---------------------------------------------------------------------------
-
-
-class BankingReport(Node):
-    """The banking ledger (role ``report``) — the toolkit's
-    ``banking-report`` kind: who is IN the family, who is pending at
-    43/50, and how far each has to go.
-
-    Inputs: ``banked`` (counts), ``family`` (the eligible instruments),
-    OPTIONAL ``extents`` (per-instrument first/last banked ms). Params:
-    ``min_events`` — REQUIRED int >= 1, the same stated bar the gate
-    applied.
-
-    Writes ``banking.json`` into this node's artifact dir: per
-    instrument ``{banked, in_family, gap}`` with
-    ``gap = max(0, min_events - n)`` (plus ``first_ms``/``last_ms`` when
-    extents are wired), and totals. Rows cover the union of banked and
-    family instruments, so a family member with no counts row still
-    appears (banked 0) instead of vanishing from the ledger.
-
-    Outputs: ``path`` — the artifact; ``summary`` — ``{"in": k,
-    "pending": m}``.
-    """
-
-    role = "report"
-    outputs = ("path", "summary")
-
-    #: The class's own knobs — anything else is refused by name.
-    _PARAMS = ("min_events",)
-
-    @classmethod
-    def validate_params(cls, params):
-        problems = []
-        _reject_unknown(problems, params, cls._PARAMS)
-        _require_min_events(problems, params)
-        return problems
-
-    def validate_inputs(self, inputs):
-        problems = _counts_problems("banked", inputs.get("banked"))
-        family = inputs.get("family")
-        if not isinstance(family, (list, tuple)):
-            problems.append(
-                f"family must be a list of eligible instruments, got {family!r}"
-            )
-        extents = inputs.get("extents")
-        if extents is not None and not isinstance(extents, dict):
-            problems.append(
-                f"extents must be a dict ({{instrument: {{first_ms, last_ms}}}}) "
-                f"when wired, got {extents!r}"
-            )
-        return problems
-
-    def run(self, ctx, inputs):
-        bar = self.params["min_events"]
-        banked = inputs["banked"]
-        family = set(inputs["family"])
-        extents = inputs.get("extents") or {}
-        instruments = {}
-        for instrument in sorted(set(banked) | family):
-            n = banked.get(instrument, 0)
-            row = {
-                "banked": n,
-                "in_family": instrument in family,
-                "gap": max(0, bar - n),
-            }
-            extent = extents.get(instrument)
-            if isinstance(extent, dict):
-                row["first_ms"] = extent.get("first_ms")
-                row["last_ms"] = extent.get("last_ms")
-            instruments[instrument] = row
-        in_family = sum(1 for row in instruments.values() if row["in_family"])
-        pending = len(instruments) - in_family
-        payload = {
-            "min_events": bar,
-            "instruments": instruments,
-            "totals": {
-                "instruments": len(instruments),
-                "in_family": in_family,
-                "pending": pending,
-                "banked_events": sum(banked.values()),
-            },
-        }
-        path = self.write_artifact(ctx, "banking.json", payload)
-        self.log.info(
-            "banking report: %d in / %d pending -> %s", in_family, pending, path
-        )
-        return {"path": path, "summary": {"in": in_family, "pending": pending}}
 
 
 # ---------------------------------------------------------------------------
@@ -621,7 +351,7 @@ def _row_schema(row):
 
 
 def _schema_text(schema) -> str:
-    """A schema rendered for a refusal message."""
+    """Render a schema for a refusal message."""
     if isinstance(schema, frozenset):
         return f"fields {sorted(schema)}"
     if schema is float:
@@ -638,9 +368,11 @@ def _bool_problems(problems, params, names) -> None:
 
 
 def _field_list(value):
-    """``value`` as a tuple of field names, or ``None`` when it is not a
-    field name / non-empty list of them. One reader for ``key`` and
-    ``schema`` so the two knobs cannot drift apart."""
+    """Read ``value`` as a tuple of field names, or ``None`` when it is not one.
+
+    A field name or a non-empty list of them qualifies. One reader for
+    ``key`` and ``schema`` so the two knobs cannot drift apart.
+    """
     names = (value,) if isinstance(value, str) else value
     if not isinstance(names, (list, tuple)) or not names:
         return None
@@ -650,9 +382,9 @@ def _field_list(value):
 
 
 def _declared_tables_problems(problems, params, *, values_must_be):
-    """Shape problems with a ``tables`` block — ports supplied by
-    DECLARATION rather than by wire.
+    """Append the shape problems with a ``tables`` block.
 
+    A ``tables`` block supplies ports by DECLARATION rather than by wire.
     Wired ports carry another node's output; declared ports carry document
     data. Per-series fee rates are exactly that (I-001: rates are API data
     transcribed into the document, never computed and never defaulted),
@@ -679,9 +411,9 @@ def _declared_tables_problems(problems, params, *, values_must_be):
 
 
 def _mapping_row(node_key, verb, row, index):
-    """Refuse a row a projection cannot lawfully rewrite — returns nothing,
-    raises naming the node.
+    """Refuse a row a projection cannot lawfully rewrite.
 
+    Returns nothing; raises naming the node.
     ``join`` and ``derive`` both ADD a field to a row, and a row that is
     not a mapping has nowhere to put one. The venue envelope this toolkit
     passes around (:class:`~dskit.pipeline.records.MarketRecord`) is a
@@ -710,8 +442,9 @@ def _mapping_row(node_key, verb, row, index):
 
 
 class Concat(Node):
-    """Union N inputs into one (role ``transform``) — the toolkit's
-    ``concat`` kind, and the vocabulary two venues need to share ONE
+    """Union N inputs into one — the toolkit's ``concat`` kind.
+
+    Role ``transform``, and the vocabulary two venues need to share ONE
     bankroll.
 
     Two documents with two ``replay`` nodes have two ``final_bankroll``
@@ -736,8 +469,8 @@ class Concat(Node):
     what turns "one venue's stream wired into the other venue's port" from
     an invisible conflation into a refusal.
 
-    Params
-    ------
+    Parameters
+    ----------
     ``shape`` (REQUIRED, no default)
         ``"records"`` (sequences of rows) or ``"table"`` (mappings).
     ``provenance`` (``"records"`` only)
@@ -789,6 +522,16 @@ class Concat(Node):
         field, how many distinct values — the census that proves the
         disjointness check ran and shows at a glance which source is
         carrying the run.
+
+    Examples
+    --------
+    Union two venues' record streams, tagged and namespace-disjoint::
+
+        node = Concat(
+            "both_venues",
+            {"shape": "records", "provenance": "venue", "key": "contract"},
+        )
+        out = node.run(ctx, {"kalshi": kalshi_rows, "poly": poly_rows})
     """
 
     role = "transform"
@@ -808,6 +551,21 @@ class Concat(Node):
 
     @classmethod
     def validate_params(cls, params):
+        """Problems with this node's declared knobs, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's ``params`` block, possibly carrying unmaterialized
+            ``$``-references. Shape-specific knobs are cross-checked here:
+            a ``"table"``-only knob under ``shape="records"`` (and the
+            reverse) is a problem, not a silently ignored key.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when the params are legal.
+        """
         problems = []
         _reject_unknown(problems, params, cls._PARAMS)
         _bool_problems(problems, params, ("allow_empty", "allow_overlap"))
@@ -926,8 +684,11 @@ class Concat(Node):
         return problems
 
     def _rows(self, port, value, shape):
-        """``[(identity, row), ...]`` for one port — identity is the
-        mapping key in ``"table"`` shape and ``None`` in ``"records"``."""
+        """Read one port as ``[(identity, row), ...]``.
+
+        Identity is the mapping key in ``"table"`` shape and ``None`` in
+        ``"records"``.
+        """
         if shape == "table":
             if not isinstance(value, dict):
                 raise ValueError(
@@ -945,8 +706,10 @@ class Concat(Node):
         return [(None, row) for row in value]
 
     def _checked_schema(self, port, index, row, reference, declared):
-        """The reference schema after checking ``row`` against it — the
-        first row sets it when the document declared none."""
+        """Check ``row`` against the reference schema and return it.
+
+        The first row sets the reference when the document declared none.
+        """
         if declared is not None and not isinstance(row, dict):
             raise ValueError(
                 f"{self.key}: schema declares {sorted(declared)}, but port "
@@ -1009,6 +772,30 @@ class Concat(Node):
         return None if owner == port else (field, value, owner, port)
 
     def run(self, ctx, inputs):
+        """Merge every port in sorted port-name order.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The run frame; unused here beyond the node's own logging.
+        inputs : dict
+            The wired ports; declared ports come from ``params.tables``.
+
+        Returns
+        -------
+        dict
+            ``merged`` — the union (a list under ``shape="records"``, a
+            dict under ``shape="table"``); ``sources`` — the per-port
+            census described in the class docstring.
+
+        Raises
+        ------
+        ValueError
+            On an empty port, a schema mismatch, an untagged or
+            mis-tagged row, a row that cannot prove disjointness, or an
+            undeclared namespace overlap — every relaxation must be
+            DECLARED in the document before it is allowed.
+        """
         shape = self.params["shape"]
         ports = dict(inputs)
         ports.update(self.params.get("tables") or {})
@@ -1090,8 +877,9 @@ class Concat(Node):
 
 
 class Join(Node):
-    """Align a record stream against N side tables on a declared key (role
-    ``transform``) — the toolkit's ``join`` kind.
+    """Align a record stream against N side tables on a declared key.
+
+    Role ``transform`` — the toolkit's ``join`` kind.
 
     A side table is any lookup a row needs and does not carry: a fee
     schedule, a settlement ledger, a category map. The stream arrives on
@@ -1103,8 +891,8 @@ class Join(Node):
     has nowhere to put one (see :func:`_mapping_row`); the refusal names
     the alternatives rather than quietly producing a different row type.
 
-    Params
-    ------
+    Parameters
+    ----------
     ``key`` (REQUIRED)
         The field on each row whose value indexes every side table.
     ``how`` (REQUIRED, no default)
@@ -1133,6 +921,13 @@ class Join(Node):
     ``matched``
         Per port matched/unmatched counts plus rows in, out and dropped —
         the census that shows a join quietly matching nothing.
+
+    Examples
+    --------
+    Attach a settlement ledger, refusing any row it does not cover::
+
+        node = Join("settled", {"key": "contract", "how": "strict"})
+        out = node.run(ctx, {"records": rows, "outcome": ledger})
     """
 
     role = "transform"
@@ -1146,6 +941,19 @@ class Join(Node):
 
     @classmethod
     def validate_params(cls, params):
+        """Problems with this node's declared knobs, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's ``params`` block, possibly carrying unmaterialized
+            ``$``-references.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when the params are legal.
+        """
         problems = []
         _reject_unknown(problems, params, cls._PARAMS)
         _bool_problems(problems, params, ("allow_fanout",))
@@ -1227,8 +1035,11 @@ class Join(Node):
         return problems
 
     def _match_fields(self, port, match):
-        """One match rendered as the fields it contributes: a mapping
-        contributes its own pairs, anything else the port's name."""
+        """Render one match as the fields it contributes.
+
+        A mapping contributes its own pairs, anything else the port's
+        name.
+        """
         return dict(match) if isinstance(match, dict) else {port: match}
 
     def _lookup(self, port, table, identity, index):
@@ -1276,6 +1087,31 @@ class Join(Node):
         return out
 
     def run(self, ctx, inputs):
+        """Align every row against every side table, in input order.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The run frame; unused here beyond the node's own logging.
+        inputs : dict
+            The stream on ``records`` plus the wired side tables;
+            declared side tables come from ``params.tables``.
+
+        Returns
+        -------
+        dict
+            ``records`` — the joined rows (list), in input order;
+            ``matched`` — the per-port census described in the class
+            docstring.
+
+        Raises
+        ------
+        ValueError
+            On a non-mapping row, a row with no join key or an unusable
+            one, an undeclared fan-out (or one spanning two tables), a
+            field two tables both contribute, or — under
+            ``how="strict"`` — a row nothing matched.
+        """
         key = self.params["key"]
         how = self.params["how"]
         fill = self.params.get("unmatched_fill") or {}
@@ -1357,8 +1193,9 @@ class Join(Node):
 
 
 class Derive(Node):
-    """Add one field by a declared conditional (role ``transform``) — the
-    toolkit's ``derive`` kind, and the only FAIL-CLOSED projection.
+    """Add one field by a declared conditional — the ``derive`` kind.
+
+    Role ``transform``, and the only FAIL-CLOSED projection.
 
     Each case is ``{"when": [clauses], "value": X}``; the clauses are the
     same ``{"field", "op", "value"}`` DSL :class:`Filter` uses (one DSL,
@@ -1386,6 +1223,33 @@ class Derive(Node):
     ``branches`` (rows per case, positionally) — a branch that took zero
     rows is logged, because a dead case is usually a case that was meant
     to fire.
+
+    Parameters
+    ----------
+    params : dict
+        ``field`` (str, REQUIRED) — the field this node adds; ``cases``
+        (non-empty list, REQUIRED) — the ``{"when": [clauses], "value":
+        X}`` cases, first match wins, a final empty ``when`` being the
+        only lawful catch-all; ``overwrite`` (bool, default ``False``) —
+        whether a row may already carry ``field``.
+
+    Examples
+    --------
+    Price each venue's fee schedule, refusing any third venue::
+
+        node = Derive(
+            "fee_rate",
+            {
+                "field": "fee_rate",
+                "cases": [
+                    {"when": [{"field": "venue", "op": "==", "value": "a"}],
+                     "value": 0.07},
+                    {"when": [{"field": "venue", "op": "==", "value": "b"}],
+                     "value": 0.02},
+                ],
+            },
+        )
+        out = node.run(ctx, {"records": rows})
     """
 
     role = "transform"
@@ -1396,6 +1260,21 @@ class Derive(Node):
 
     @classmethod
     def validate_params(cls, params):
+        """Problems with this node's declared knobs, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's ``params`` block, possibly carrying unmaterialized
+            ``$``-references.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when the params are legal. A
+            catch-all case that is not LAST is one of them — it shadows
+            every case after it, which is a default in disguise.
+        """
         problems = []
         _reject_unknown(problems, params, cls._PARAMS)
         _bool_problems(problems, params, ("overwrite",))
@@ -1457,7 +1336,7 @@ class Derive(Node):
         return []
 
     def _unmatched(self, index, row, cases):
-        """The refusal for a row no case claimed, showing what was tested."""
+        """Refuse a row no case claimed, showing what was tested."""
         tested = sorted({clause["field"] for case in cases for clause in case["when"]})
         seen = {
             name: ("<missing>" if _field(row, name) is _MISSING else _field(row, name))
@@ -1473,6 +1352,28 @@ class Derive(Node):
         )
 
     def run(self, ctx, inputs):
+        """Project every row through the first case that matches it.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The run frame; unused here beyond the node's own logging.
+        inputs : dict
+            ``records`` — the rows to project (list or tuple).
+
+        Returns
+        -------
+        dict
+            ``records`` — the projected rows (list), in input order;
+            ``branches`` — rows per case, positionally (list of int).
+
+        Raises
+        ------
+        ValueError
+            On a non-mapping row, a row that already carries the field
+            without ``overwrite``, or a row NO case claimed — derive is
+            fail-closed by design.
+        """
         field = self.params["field"]
         cases = self.params["cases"]
         overwrite = self.params.get("overwrite", False)
@@ -1519,13 +1420,11 @@ class Derive(Node):
 # registration
 # ---------------------------------------------------------------------------
 
-#: The kinds this module ships, in registration order — the four
-#: single-stream verbs, then the three relational ones.
+#: The kinds this module ships, in registration order — the
+#: single-stream verb, then the three relational ones. The banking chain
+#: registers separately, from :mod:`dskit.pipeline.kinds_banking`.
 _KINDS = (
     ("filter", Filter),
-    ("event-bank", EventBank),
-    ("eligibility", Eligibility),
-    ("banking-report", BankingReport),
     ("concat", Concat),
     ("join", Join),
     ("derive", Derive),
@@ -1533,14 +1432,23 @@ _KINDS = (
 
 
 def register(registry=None):
-    """Register the seven flow kinds into ``registry`` (default
-    :data:`~dskit.pipeline.node.DEFAULT_NODE_KINDS`), ``owned=False``.
+    """Register the four record-flow kinds, ``owned=False``.
 
     Idempotent by SKIPPING any name already present — never shadowing an
     existing registration (deliberate re-binding goes through the
-    registry itself, which refuses duplicates loudly). Returns the
-    registry for chaining. Nothing registers at import time; calling
-    this is the explicit opt-in.
+    registry itself, which refuses duplicates loudly). Nothing registers
+    at import time; calling this is the explicit opt-in.
+
+    Parameters
+    ----------
+    registry : NodeKindRegistry or None
+        Where to register; ``None`` means
+        :data:`~dskit.pipeline.node.DEFAULT_NODE_KINDS`.
+
+    Returns
+    -------
+    NodeKindRegistry
+        The same registry, for chaining.
     """
     registry = DEFAULT_NODE_KINDS if registry is None else registry
     for name, cls in _KINDS:

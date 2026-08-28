@@ -1,6 +1,10 @@
 """The flow kinds: filter / event-bank / eligibility / banking-report,
 and the relational three: concat / join / derive.
 
+The banking three now ship from ``dskit/pipeline/kinds_banking.py``
+(TODO 3e) and their behaviour is still tested here, next to the ★BANKING
+spine they belong to; ``test_kinds_banking.py`` pins the SPLIT itself.
+
 Unit tests construct nodes directly (dict records AND MarketRecord
 objects — the one accessor must serve both); the integration run proves
 the ★BANKING spine (events -> event-bank -> eligibility ->
@@ -25,16 +29,9 @@ import pytest
 from dskit.pipeline.base import ConfigError, OutputsConfig, TimeSplitConfig
 from dskit.pipeline.document import NodeSpec, PipelineDocument
 from dskit.pipeline.driver import run_document
-from dskit.pipeline.kinds_flow import (
-    BankingReport,
-    Concat,
-    Derive,
-    Eligibility,
-    EventBank,
-    Filter,
-    Join,
-    register,
-)
+from dskit.pipeline.kinds_banking import BankingReport, Eligibility, EventBank
+from dskit.pipeline.kinds_banking import register as register_banking
+from dskit.pipeline.kinds_flow import Concat, Derive, Filter, Join, register
 from dskit.pipeline.node import NodeContext, NodeKindRegistry
 from dskit.pipeline.records import MarketRecord
 from dskit.pipeline.synthetic_nodes import SynthClip, SynthEvents, SynthLabels
@@ -899,21 +896,10 @@ class TestDerive:
 
 
 class TestRegister:
-    def test_registers_all_seven_unowned(self):
+    def test_registers_all_four_unowned(self):
         reg = register(NodeKindRegistry())
-        assert {
-            "filter",
-            "event-bank",
-            "eligibility",
-            "banking-report",
-            "concat",
-            "join",
-            "derive",
-        } <= set(reg.kinds())
+        assert {"filter", "concat", "join", "derive"} <= set(reg.kinds())
         assert reg.get("filter") == (Filter, False)
-        assert reg.get("event-bank") == (EventBank, False)
-        assert reg.get("eligibility") == (Eligibility, False)
-        assert reg.get("banking-report") == (BankingReport, False)
         assert reg.get("concat") == (Concat, False)
         assert reg.get("join") == (Join, False)
         assert reg.get("derive") == (Derive, False)
@@ -924,7 +910,7 @@ class TestRegister:
         register(reg)
         register(reg)  # second call: no duplicate-registration raise
         assert reg.get("filter") == (SynthClip, False)  # skipped, not shadowed
-        assert reg.get("event-bank") == (EventBank, False)
+        assert reg.get("concat") == (Concat, False)
 
     def test_defaults_to_the_global_registry(self, monkeypatch):
         import dskit.pipeline.kinds_flow as kinds_flow
@@ -932,7 +918,7 @@ class TestRegister:
         private = NodeKindRegistry()
         monkeypatch.setattr(kinds_flow, "DEFAULT_NODE_KINDS", private)
         assert kinds_flow.register() is private
-        assert "banking-report" in private
+        assert "derive" in private
 
 
 # ---------------------------------------------------------------------------
@@ -942,11 +928,12 @@ class TestRegister:
 
 def flow_registry():
     """A PRIVATE registry: the synthetic data/labels classes registered
-    individually, plus the four flow kinds."""
+    individually, plus the flow kinds and the banking chain — the spine
+    spans both modules, so both register() calls are needed."""
     registry = NodeKindRegistry()
     registry.register("synth-events", SynthEvents)
     registry.register("synth-labels", SynthLabels)
-    return register(registry)
+    return register_banking(register(registry))
 
 
 def flow_document(tmp_path, min_events):

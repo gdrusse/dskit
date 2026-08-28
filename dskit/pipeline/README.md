@@ -250,7 +250,9 @@ dskit/pipeline/
 │                      run_walk_forward (one derived run per fold + summary)
 ├── runs.py            reads run dirs back: scan_runs / format_runs (the `runs` verb)
 ├── split_policy.py    split-assignment policies (record / event-open / event-close) + EventBounds
-├── kinds_flow.py      filter, derive, concat, join, event-bank, eligibility, banking-report
+├── kinds_flow.py      filter, derive, concat, join — the record-flow verbs
+├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
+│                      accrual -> gate -> ledger spine
 ├── kinds_table.py     table-file, table-write (digest-verified keyed tables)
 ├── kinds_stats.py     owned validate + stat_test (plain + studentized bootstrap-t, corrections)
 ├── kinds_search.py    hpo-grid (the ctx.rerun seam)
