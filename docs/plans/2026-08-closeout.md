@@ -797,6 +797,7 @@ Intentional-move log (append `document → old-prefix → new-prefix → card`):
 - children/…/configs/run-backtest.json → `4db5b7904d19b73c…` → `5e1c24b0fad3ae1b…` → A1
 - examples/pipeline/optuna-continuous.json → NEW → `5560a479eacc071e…` → E4 (ledger now 15 documents)
 - examples/pipeline/model-sweep.json → NEW → `c01ae84ec899e1d8…` → E5 (ledger now 16 documents)
+- examples/pipeline/foreach-fanout.json → NEW → `242120e437f7adc6…` → C3 (ledger now 17 documents)
 
 ## 10. STATE — orchestrator updates as it goes
 
@@ -818,7 +819,7 @@ Intentional-move log (append `document → old-prefix → new-prefix → card`):
 | G1 | PASSED | a1aa3e7 | All 12 W1 cards merged + all six ADRs approved. Cross-checks done: 0042 is a MEMBER of 0040's fitted-transform family (not a second seam), both build on 0038's TrainableNode, 0041's head consumes B2's loss knob, every record states its identity-hash consequences. **Wave 2 is open.** |
 | C1 | MERGED | 5548780 | ADR-0038 ported across five packs. FIRST card under the new convergence floor: clean in 2 rounds (7→5 findings, no BLOCKER/MAJOR surviving) using 8 agents against wave 1's ~15 — and the first run with skeptics SERIAL per the owner's no-parallel ruling. Nine `if mode ==` sites dead; hash gate empty; suite 2718→2746 |
 | C2 | pending | | |
-| C3 | pending | | after C4 |
+| C3 | MERGED | aaf6932 | ADR-0039. Clean in 3 rounds; 44 new tests, 6 mutation proofs. Flagship holds: a two-key foreach expands to its longhand twin node-for-node and both run e2e byte-equal. New example foreach-fanout.json in the ledger (17 docs). planner.py ignore entry drained; driver.py left for C7 by ruling. Test scope run: tests/pipeline (1410 passed) + ruff whole-tree + hash gate. NOTE for a future card: the `synthetic_nodes` demo classes accept ANY unknown param (they predate default-deny and are private/demo-registry only) — surfaced while pinning that a non-search kind carrying `space` is refused at plan; not a foreach defect, would be its own card across 11 classes |
 | C4 | MERGED | 59922ba | clean in 2 rounds / 6 agents. CORRECTED THE CARD: I had told it torch.py held no long method left; it measured by AST and found ADR-0038 had RENAMED `TorchTrain.run` to `run_train`, still 216 lines. Six bodies decomposed, not four. Ceiling now PINNED (test_method_lengths.py, allowlist grows as modules are decomposed); kinds_report.py ignore entry drained, driver.py/torch.py deferred to C3/C6 by ruling. Suite 2753, hash gate empty |
 | C5 | pending | | |
 | C6 | pending | | |

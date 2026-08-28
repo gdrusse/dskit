@@ -407,7 +407,7 @@ child hardcodes what should be config, and the pipeline cannot express
       sites were consolidated into one `connectors.bar_timeframe()`, so
       the agreement is single-sourced and the remaining work is to promote
       it to config.
-- [ ] **A `foreach` section in the document grammar — needs an ADR.**
+- [x] **A `foreach` section in the document grammar — needs an ADR.**
       "One model per symbol" is written longhand: adding a third symbol
       means four new nodes in `run-train.json` and six in
       `run-backtest.json`, plus extending both `concat` blocks. The
@@ -419,6 +419,23 @@ child hardcodes what should be config, and the pipeline cannot express
       ONLY — general templating would make configs a programming
       language and dissolve the identity hash. A `foreach` section IS
       identity: it changes what the run computes.
+      **Landed this run (2026-08-28, C3) via ADR-0039.** The document
+      STORES what was written and DERIVES what runs: `foreach` is one
+      hash-bearing field, while `expanded`/`foreach_groups` never reach
+      `to_obj` — and with no `foreach` declared, `expanded` IS the
+      `pipeline` object itself, which is what makes every engine site
+      that switched to reading it byte-identical. **The flagship proof:**
+      a two-key `foreach` document expands to exactly its hand-written
+      longhand twin — node for node, port for port, same plan order —
+      and both run e2e to byte-equal output, so this is fan-out and not a
+      second execution path. Identity pinned BOTH ways (a `foreach` twin
+      hashes differently; `foreach.notes` does not), with six mutation
+      proofs. `$each` is whole-value only and refused as a params KEY;
+      port fan-out is opt-in via `<base>__each`; collisions, empty key
+      lists and `$`-prefixed keys refuse by name. Search spaces fan out
+      per instance — the N unpinned duplicate space keys the capstone
+      needed. New example `examples/pipeline/foreach-fanout.json` is in
+      the ledger. `planner.py` converted and its ignore entry drained.
 
 - [x] Create a concise `CLAUDE.md` for this project.
 - [x] ADR-0020 integrity-parity pass (2026-08-24) closed the deferred
