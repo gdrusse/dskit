@@ -2,63 +2,52 @@
 
 Refreshed by `/wrap`. Where things stand — read this first.
 
-## This session (2026-08-27): the code standard + an audit of `intraday_poc`
+## This session (2026-08-27, evening): the closeout orchestration plan
 
-**Branch:** `main` (no feature branch; docs plus one low-risk
-consolidation) · **Tests:** 2440 passed, 108 optional-lib skips ·
-**ruff:** clean · **All 14 document identity hashes verified unmoved.**
+**Branch:** `main`, docs-only · **Tests:** 2440 passed / 108 skipped,
+~29s · **ruff:** clean · **Hashes:** all 14 verified unmoved.
 
-A review session, not a build session. Read `intraday_poc` end to end,
-audited it, and wrote down what the audit taught.
+A planning session. No code changed; the environment was completed and
+the closeout run was fully specified.
 
-- **Landed (code):** the `validate_params` helper family went from FOUR
-  definitions to one, now PUBLIC as `reject_unknown_params` /
-  `check_int_param` in `pipeline/node.py` — beside the protocol they
-  serve, and public so children import instead of copying (the skeleton
-  now does). `base.py:144,189` keep same-named privates ON PURPOSE:
-  they serve the opposite protocol (raise-immediately, for `from_obj`).
-- **Landed (standard):** a docstring standard in `CLAUDE.md` — NumPy
-  sections, an `Examples` block instantiating each class, types in the
-  docstring TEXT, `>>>` banned (nothing collects doctests; 81 such
-  lines already rot in `assets`/`onboarding`). Enforced by ruff `D`
-  with a per-file ignore per unconverted module — **that list is the
-  remaining work, in config form; delete an entry when you convert it.**
-  The ANN family is deliberately absent: the docstring already carries
-  the type, so an annotation would state it twice unpinned.
-- **Landed (doctrine):** `CLAUDE.md` now carries the OOP pillars
-  (extend a seam, never branch beside it), "inventory `libs/` before
-  claiming a gap" — the node registry is BLIND to import-path packs —
-  and "read the `_PARAMS` tuple, never the config file", which is the
-  highest-yield review move here.
+- **`docs/plans/2026-08-closeout.md`** — the complete orchestrator
+  brief: 25 task cards covering every TODO item added by `93ed7e2`
+  (the two long-term sections excluded), in dependency waves with
+  serialized conflict chains (torch.py / driver.py / child), worktree +
+  merge law, the TDD + adversarial-skeptic-loop protocol, per-card
+  model/effort assignments, the pre-authorized ADR batch rule
+  (skeptic-loop to zero findings + orchestrator holistic approval; the
+  owner is NOT pinged mid-run), and the captured baseline hash ledger.
+- **Owner rulings recorded there:** ignore-list drain = touched modules
+  only; ADR approval pre-authorized; a selection-demo task (D1: select
+  features, sweep two models, use the best) precedes the capstone;
+  success = all in-scope boxes checked, merged, TODO marked, wrapped,
+  pushed.
+- **Environment:** `.venv` now carries `.[all,dev]` +
+  stable-baselines3 + matplotlib + alpaca-py — the full 2440/108
+  baseline env. (Earlier optuna test failures were the missing extras,
+  not code.) `children/intraday_poc/.env` is present.
 
-## Open — everything is in `TODO.md`, seven sections, reasoning inline
+## Next step — launch the orchestrator
 
-Nothing depends on the session transcript. Highest value first:
+Fresh session, **Fable @ effort high**, prompt:
 
-- **`epochs` is unpinned between the two intraday documents** and the
-  test that exists to pin them omits it. One string; biggest
-  fix-to-effort ratio in the repo.
-- **3b/3c/3d/3e** of the code standard: `TorchAdapter` → real ABC;
-  `TrainableNode` (**ADR first** — and do NOT split trainables into
-  train/load classes: `mode` is in the identity hash and
-  `transformers.py:612` would refuse every existing checkpoint while
-  torch/sklearn stay green); decompose long methods; split
-  `kinds_flow.py` (seven unrelated kinds).
-- **Six HIGH audit findings** in `intraday_poc`, all the same shape — a
-  value in two places with nothing pinning them.
-- **Experiments are NOT plug-and-play.** `log_params` sends five fields
-  and no node params, so nothing can be compared by hyperparameter;
-  that blocks the rest. A `dskit.pipeline runs` verb would cover most
-  of the need with zero dependencies.
-- **Owner-approved, not started:** continuous optuna ranges; a
-  gap-aware vectorized window transform (extend `ArrayFeatures`, do not
-  build a new seam); model + feature selection (pycaret RULED OUT —
-  architectural, it would own a workflow the document is supposed to
-  own); a torch time-series architecture zoo.
-- **Long-term:** a generic serving loop (live trading, framed
-  generically) and Hugging Face integration (blocked on one decision —
-  how pretrained weights enter without breaking identity; recommended
-  answer is that a model download is an ACQUISITION).
-- **Carried over:** the 2M-bar Alpaca `ob/` store is not on this
-  machine — re-acquire before any real backtest. pmquant §13 gaps
-  5/6/7/9/11/12 stay on the owner's word.
+> Read ~/dskit/docs/plans/2026-08-closeout.md (WSL2) and execute it as
+> the orchestrator, start to finish.
+
+## Previous session (2026-08-27): the code standard + intraday_poc audit
+
+Landed: `validate_params` family consolidated to one PUBLIC pair in
+`pipeline/node.py`; the docstring standard + ruff `D` gate; the OOP
+pillars doctrine in `CLAUDE.md`. Everything the audit found is in
+`TODO.md`, seven sections, reasoning inline — now the plan's mandate.
+
+## Open
+
+- The in-scope closeout work: see the plan (its STATE table tracks
+  progress) and `TODO.md`.
+- Carried over, out of this run's scope: pmquant §13 gaps
+  5/6/7/9/10/11/12 and the two Deferred entries; the long-term serving
+  loop and Hugging Face sections (recorded in `TODO.md`, not now).
+- The `ob/` store re-acquisition is plan card D2 (capstone
+  prerequisite), no longer a loose end.
