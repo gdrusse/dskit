@@ -62,14 +62,20 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
   `--mode live` acquire through it (ADR-0014 keys the cursors). A second
   source name would put live bars in a tree the run documents never read
   — that bug shipped once; `test_one_source_name_carries_both_pulls`
-  pins it shut.
+  pins it shut. The modes differ in ONE place: a pull with no cursor
+  starts at `start` (backfill) or at most `live_lookback_minutes` ago
+  (live) — unbounded, a first live pull would re-commit the whole
+  history as a second acquisition.
 - **SIP vs IEX**: every STORE pull uses `feed=sip` (free, consolidated,
   end clamped 16 min back). Only the forward loop's own fetch uses IEX
   (`live.py:LIVE_FEED`), because real-time SIP is not on the free tier —
   sparse minutes possible, gap discipline handles it, never bridge.
 - **`live.py` restates nothing**: price field, gap bound and module class
-  come from `<run-dir>/config.json`, vendor knobs from the source config
-  (`--source-config`). Node keys `qhat_aapl`/`qhat_msft` are the default
+  come from `<run-dir>/config.json`; vendor knobs AND the symbol universe
+  from the source config (`--source-config`), resolved through the
+  connector's public `resolve_knobs`. The bar interval is one constant
+  (`connectors.BAR_INTERVAL`) both fetch paths build from.
+  Node keys `qhat_aapl`/`qhat_msft` are the default
   artifact convention (`artifacts/qhat_<symbol>`); a document that names
   them differently is served with `--artifact SYMBOL=PATH`, never an
   edit to the loop.

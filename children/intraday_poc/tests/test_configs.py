@@ -216,7 +216,7 @@ def test_source_configs_validate_against_the_connectors_spec():
         with open(_path(name), encoding="utf-8") as fh:
             config = json.load(fh)
         check_config(connector, config)  # default-deny against spec()
-        connector._knobs(config)  # and the knob gate itself accepts them
+        connector.resolve_knobs(config)  # and the knob gate accepts them
 
 
 def test_one_source_name_carries_both_pulls():
@@ -255,6 +255,33 @@ def test_one_source_name_carries_both_pulls():
     assert "AssetError" in readme, (
         "the README once claimed a mistyped source yields an empty scan; "
         "it raises — see test_a_mistyped_source_refuses_loudly"
+    )
+
+
+def test_the_forward_top_up_is_declared_and_documented():
+    """The live mode's window is CONFIG, and the README quotes it.
+
+    Deleting the second source config removed the only place a
+    live-mode start could be declared; ``live_lookback_minutes``
+    replaced it, and it is the knob that keeps the first live pull from
+    re-committing the entire backfill as a duplicate acquisition. A
+    number written in the config and a different one in the prose is
+    the same defect this card exists to kill, so the two are pinned to
+    each other here — and declaring the knob at all is what makes it
+    visible and tunable rather than an invisible engine default.
+    """
+    with open(_path(SOURCE_CONFIGS[0]), encoding="utf-8") as fh:
+        config = json.load(fh)
+    lookback = config.get("live_lookback_minutes")
+    assert isinstance(lookback, int) and lookback > 0, (
+        "the source config must DECLARE how far back a first live pull "
+        "reaches; undeclared, nobody can see or tune it"
+    )
+    with open(os.path.join(CHILD_ROOT, "README.md"), encoding="utf-8") as fh:
+        readme = fh.read()
+    assert f"`live_lookback_minutes` ({lookback}" in readme, (
+        "the README must quote the declared window, or the two stories "
+        "drift"
     )
 
 

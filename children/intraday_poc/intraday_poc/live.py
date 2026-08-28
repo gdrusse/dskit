@@ -21,17 +21,24 @@ Run-path only (torch, pyomo, alpaca-py) — never imported by
 **This loop re-declares nothing the run already declared.** The
 modelling knobs — the price field, the gap discipline, the module class
 — are READ from ``<run-dir>/config.json``, the whole training document
-the driver writes; the vendor knobs come from the acquisition source
-config the puller registered (``--source-config``). Only operational
-flags (symbols, quantity, dry-run, log dir, artifact overrides) live on
-the CLI, and there is deliberately no third config file: it would
-duplicate both of those.
+the driver writes; the vendor knobs AND the symbol universe come from
+the acquisition source config the puller registered
+(``--source-config``). Only operational flags (quantity, dry-run, log
+dir, artifact overrides, history window) live on the CLI, and there is
+deliberately no third config file: it would duplicate both of those.
 
-The one vendor knob neither file can supply is the FEED. The store is
-built from SIP history and real-time SIP is not sold on the free tier,
-so the forward fetch must ask for IEX (:data:`LIVE_FEED`) — the child's
-single declared train/serve vendor difference, carried in README's
-"What to know before trusting the numbers".
+Two vendor knobs come from neither file, for different reasons:
+
+* the FEED — the store is built from SIP history and real-time SIP is
+  not sold on the free tier, so the forward fetch must ask for IEX
+  (:data:`LIVE_FEED`). That is the child's one declared train/serve
+  vendor DIVERGENCE, carried in README's "What to know before trusting
+  the numbers".
+* the BAR INTERVAL — not a config knob on either side yet (a
+  ``timeframe`` knob on the connector spec is an open TODO). It is ONE
+  constant, ``connectors.BAR_INTERVAL``, and this loop asks for it
+  through the connector's own ``bar_timeframe()``, so the served bars
+  cannot drift from the ones the store was built from.
 
 Every iteration appends one JSON line to ``decisions.jsonl`` in
 ``--log-dir`` — predictions, pick, action taken — so the forward run
@@ -41,7 +48,7 @@ Usage::
 
     python -m intraday_poc.live --run-dir <run dir of run-train.json> \
         --source-config configs/source-backfill.json \
-        --symbols AAPL MSFT --qty 1 [--once] [--dry-run] \
+        --qty 1 [--once] [--dry-run] \
         [--artifact AAPL=artifacts/qhat_aapl]
 
 Credentials come from the environment (``.env`` beside the CWD is read
@@ -59,9 +66,13 @@ import os
 import sys
 import time
 
-from dskit.pipeline.base import import_library_class
+from dskit.pipeline.base import (
+    import_library_class,
+    import_ref,
+    is_class_ref,
+)
 
-from .connectors import AlpacaBarsConnector
+from .connectors import AlpacaBarsConnector, bar_timeframe
 from .nodes import (
     DEFAULT_MAX_GAP_MINUTES,
     DEFAULT_PRICE_FIELD,
@@ -153,10 +164,22 @@ def load_run_document(run_dir):
     return document
 
 
-def _nodes_using(document, kind):
-    """Return the nodes declaring ``kind``, by node key."""
+def _is_window(uses):
+    """Say whether ``uses`` names WindowRows — kind name or class ref."""
+    if uses == _WINDOW_KIND:
+        return True
+    if not is_class_ref(uses):
+        return False
+    try:
+        return import_ref(uses) is WindowRows
+    except ValueError:
+        return False  # a class this machine cannot import is not ours
+
+
+def _window_nodes(document):
+    """Return the document's window nodes, by node key."""
     return {key: node for key, node in document["pipeline"].items()
-            if isinstance(node, dict) and node.get("uses") == kind}
+            if isinstance(node, dict) and _is_window(node.get("uses"))}
 
 
 def window_knobs(document):
@@ -164,7 +187,10 @@ def window_knobs(document):
 
     Both are the WindowRows knobs, resolved exactly as that node
     resolves them — an undeclared knob falls back to the node's own
-    module constant, never to a second copy of the value.
+    module constant, never to a second copy of the value. The node is
+    found by either spelling the document grammar allows: the registered
+    kind name, or a class reference that imports to
+    :class:`~intraday_poc.nodes.WindowRows`.
 
     Parameters
     ----------
@@ -183,11 +209,12 @@ def window_knobs(document):
         When the document declares no window node, or declares several
         that disagree — one forward loop cannot serve two windowings.
     """
-    windows = _nodes_using(document, _WINDOW_KIND)
+    windows = _window_nodes(document)
     if not windows:
         raise SystemExit(
-            f"the run declares no {_WINDOW_KIND} node — this loop cannot "
-            "tell how its features were built"
+            f"the run declares no {_WINDOW_KIND} node (by kind name or by "
+            "class reference) — this loop cannot tell how its features "
+            "were built"
         )
     resolved = set()
     for node in windows.values():
@@ -248,9 +275,11 @@ def declared_module(document):
 def source_knobs(path):
     """Resolve the acquisition source config's vendor knobs.
 
-    Read through the CONNECTOR's own knob gate, so an undeclared knob
-    lands on the connector's default rather than a copy of it living
-    here, and a config this loop accepts is one the puller accepts too.
+    Read through the CONNECTOR's own public knob gate, so an undeclared
+    knob lands on the connector's default rather than a copy of it
+    living here, and a config this loop accepts is one the puller
+    accepts too. The universe it serves comes from here for the same
+    reason.
 
     Parameters
     ----------
@@ -261,7 +290,8 @@ def source_knobs(path):
     -------
     dict
         The resolved knobs (``symbols``, ``start``, ``feed``,
-        ``adjustment``, the credential env-var names).
+        ``adjustment``, ``live_lookback_minutes``, the credential
+        env-var names).
 
     Raises
     ------
@@ -284,9 +314,9 @@ def source_knobs(path):
         raise SystemExit(
             f"the source config {path} is not valid JSON: {exc}"
         ) from exc
-    # The connector's gate, not a copy of it: same vocabulary, same
-    # defaults, same refusals (its own module, same package).
-    return AlpacaBarsConnector()._knobs(config)
+    # The connector's own PUBLIC gate, not a copy of it: same
+    # vocabulary, same defaults, same refusals.
+    return AlpacaBarsConnector().resolve_knobs(config)
 
 
 def parse_artifact_overrides(values):
@@ -600,12 +630,16 @@ def bar_series(bars, price_field):
 
 
 def fetch_bars(symbols, minutes, price_field, adjustment):
-    """Fetch the last ``minutes`` of 1-minute bars per symbol.
+    """Fetch the last ``minutes`` of bars per symbol.
+
+    The interval comes from the connector's ``bar_timeframe()`` — the
+    store and the served series must be the same series, so it is one
+    constant there, never a literal here.
 
     Parameters
     ----------
     symbols : sequence of str
-        Symbols to fetch.
+        Symbols to fetch — the source config's universe.
     minutes : int
         How far back to ask.
     price_field : str
@@ -622,14 +656,13 @@ def fetch_bars(symbols, minutes, price_field, adjustment):
     from alpaca.data.enums import Adjustment, DataFeed
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest
-    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
     client = StockHistoricalDataClient(
         os.environ["APCA_API_KEY_ID"], os.environ["APCA_API_SECRET_KEY"])
     start = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=minutes)
     bars = client.get_stock_bars(StockBarsRequest(
         symbol_or_symbols=list(symbols),
-        timeframe=TimeFrame(1, TimeFrameUnit.Minute),
+        timeframe=bar_timeframe(),
         start=start,
         feed=DataFeed(LIVE_FEED),
         adjustment=Adjustment(adjustment),
@@ -699,8 +732,7 @@ def _parser():
     parser.add_argument("--source-config", required=True,
                         help="the connector config the source was "
                              "registered with — the live fetch takes its "
-                             "vendor knobs from it")
-    parser.add_argument("--symbols", nargs="+", default=["AAPL", "MSFT"])
+                             "vendor knobs AND the symbol universe from it")
     parser.add_argument("--artifact", action="append", default=[],
                         metavar="SYMBOL=PATH",
                         help="artifact dir for one symbol, relative to "
@@ -720,7 +752,11 @@ def _parser():
 
 
 def main(argv=None) -> int:
-    """Run the forward loop.
+    """Run the forward loop over the declared universe.
+
+    The symbols are the source config's, not the CLI's: they are the
+    universe the store was acquired for, and serving a different one is
+    the same train/serve skew as serving a different price field.
 
     Parameters
     ----------
@@ -751,7 +787,8 @@ def main(argv=None) -> int:
     document = load_run_document(args.run_dir)
     price_field, max_gap_minutes = window_knobs(document)
     module_ref = declared_module(document)
-    adjustment = source_knobs(args.source_config)["adjustment"]
+    knobs = source_knobs(args.source_config)
+    symbols, adjustment = knobs["symbols"], knobs["adjustment"]
 
     from alpaca.trading.client import TradingClient
 
@@ -759,7 +796,7 @@ def main(argv=None) -> int:
                             os.environ["APCA_API_SECRET_KEY"], paper=True)
 
     signals, lookback = restore_signals(
-        args.run_dir, args.symbols,
+        args.run_dir, symbols,
         parse_artifact_overrides(args.artifact), module_ref)
     print(f"models restored for {list(signals)} ({module_ref}, lookback "
           f"{lookback}, {price_field} bars, adjustment {adjustment}, feed "
@@ -774,7 +811,7 @@ def main(argv=None) -> int:
             record["action"] = "market closed — no decision"
             print(record["action"], f"(next open {clock.next_open})")
         else:
-            bars = fetch_bars(args.symbols, args.history_minutes,
+            bars = fetch_bars(symbols, args.history_minutes,
                               price_field, adjustment)
             preds = {}
             for symbol, (module, features) in signals.items():
@@ -790,7 +827,7 @@ def main(argv=None) -> int:
                 record["action"] = "no coverage — holding as-is"
             else:
                 winner = solve_pick(preds)
-                losers = [s for s in args.symbols if s != winner]
+                losers = [s for s in symbols if s != winner]
                 actions = flip_to(trading, winner, losers, args.qty,
                                   args.dry_run)
                 record["pick"] = winner

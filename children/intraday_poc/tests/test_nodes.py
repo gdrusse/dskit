@@ -7,8 +7,10 @@ suite passes on a bare install of dskit alone; the full chain only
 proves itself where the child's real deps are installed.
 """
 
+import ast
 import hashlib
 import importlib.util
+import inspect
 import json
 import math
 import os
@@ -232,6 +234,44 @@ def test_the_window_defaults_are_named_once(monkeypatch):
     assert out["records"] == []
 
 
+def _binding_of(module, name):
+    """How ``module``'s source binds ``name``: ('import', <from>) / ('assign',
+    None) / (None, None) — the two are not exclusive, and assignment wins."""
+    tree = ast.parse(inspect.getsource(module))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == name:
+                    return "assign", None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if any(alias.name == name for alias in node.names):
+                return "import", "." * node.level + (node.module or "")
+    return None, None
+
+
+@pytest.mark.parametrize("name", ["BAR_STREAM", "BAR_KEY_FIELDS"])
+def test_the_bar_constants_are_imported_never_restated(name):
+    """``nodes.py`` must BIND each bar constant by importing it.
+
+    The identity assertion this replaces (``nodes.BAR_STREAM is
+    connectors.BAR_STREAM``) could not fail: CPython interns
+    identifier-shaped string constants across modules, so a restated
+    ``BAR_STREAM = "bars"`` in ``nodes.py`` satisfied ``is`` while the
+    writer was free to rename the stream underneath the reader. The
+    behavioural halves below cannot see it either — they monkeypatch
+    ``nodes``' own global, which a local copy provides. Only the
+    BINDING distinguishes the two, so that is what this reads.
+    """
+    how, source = _binding_of(nodes, name)
+    assert (how, source) == ("import", ".connectors"), (
+        f"nodes.py binds {name} as {how!r} from {source!r} — it must import "
+        "it from .connectors, or the reader can look for a spelling the "
+        "writer abandoned"
+    )
+    assert getattr(nodes, name) == getattr(connectors, name)
+
+
 def test_the_bars_stream_default_is_named_once(tmp_path, monkeypatch):
     """The stream name is the connector's, and the node borrows it.
 
@@ -240,9 +280,6 @@ def test_the_bars_stream_default_is_named_once(tmp_path, monkeypatch):
     for a spelling the writer stopped using. Both of the node's own
     consumers — the knob gate and the scan — must read it.
     """
-    assert nodes.BAR_STREAM is connectors.BAR_STREAM, (
-        "nodes.py must IMPORT the stream name, never restate it"
-    )
     root = str(tmp_path / "ob")
     path = _write_store(root, n_minutes=3, symbols=("AAPL",))
 
@@ -282,9 +319,6 @@ def test_the_bar_primary_key_has_one_source_of_truth(tmp_path, monkeypatch):
     in ``test_connectors.py``; this half proves the node reads the same
     object.
     """
-    assert nodes.BAR_KEY_FIELDS is connectors.BAR_KEY_FIELDS, (
-        "nodes.py must IMPORT the key tuple, never restate it"
-    )
     root = str(tmp_path / "ob")
     _write_store(root, n_minutes=3, symbols=("AAPL",))
     monkeypatch.setattr(nodes, "BAR_KEY_FIELDS", ("symbol", "nosuchfield"))
@@ -548,7 +582,7 @@ def test_select_one_empty_forecasts_skip_the_solver():
 # -- the serving loop READS what the run already declared -------------------
 
 
-def _run_dir(tmp_path, window_params):
+def _run_dir(tmp_path, window_params, uses="intraday_poc-window"):
     """A REAL run dir for a bars -> window document.
 
     The driver writes the whole document to ``<run-dir>/config.json``,
@@ -563,7 +597,7 @@ def _run_dir(tmp_path, window_params):
         "pipeline": {
             "bars": {"uses": "intraday_poc-bars",
                      "params": {"root": root, "source": "alpaca"}},
-            "window": {"uses": "intraday_poc-window",
+            "window": {"uses": uses,
                        "inputs": {"records": "$bars.records"},
                        "params": dict(window_params)},
         },
@@ -627,6 +661,32 @@ def test_live_refuses_a_run_dir_it_cannot_read(tmp_path):
         window_knobs(two)
 
 
+def test_live_serves_a_document_that_names_the_class_directly(tmp_path):
+    """A window node declared by CLASS REFERENCE is still readable.
+
+    The document grammar accepts ``"uses": "<kind or pkg.module:Class>"``
+    and the engine plans either spelling, so a loop that matches only
+    the registered kind name refuses a legitimately-trained run — and
+    blames the document for its own lookup. The knobs must resolve off
+    the class the reference names, whichever spelling wrote it.
+    """
+    from intraday_poc.live import load_run_document, window_knobs
+
+    run_dir = _run_dir(tmp_path, {"lookback": 3, "price_field": "vwap",
+                                  "max_gap_minutes": 7},
+                       uses="intraday_poc.nodes:WindowRows")
+    assert window_knobs(load_run_document(run_dir)) == ("vwap", 7.0)
+
+    # A reference to some OTHER class is not a window node, and a
+    # reference that cannot be imported is not one either — neither may
+    # be mistaken for one, and neither may raise anything but the
+    # loop's own refusal.
+    for other in ("intraday_poc.nodes:ForecastRows", "no.such:Module"):
+        with pytest.raises(SystemExit, match="intraday_poc-window"):
+            window_knobs({"pipeline": {"w": {"uses": other,
+                                             "params": {"lookback": 3}}}})
+
+
 def test_live_reads_the_declared_module_from_the_run_document():
     """ADR-0025's seam: the document names the module class, so the
     serving loop must too. A literal in the loop makes swapping the
@@ -686,11 +746,81 @@ def test_live_vendor_knobs_come_from_the_source_config(tmp_path):
     bare.write_text(json.dumps({"symbols": ["AAPL"], "start": "2026-01-01"}),
                     encoding="utf-8")
     assert source_knobs(str(bare))["adjustment"] == \
-        AlpacaBarsConnector()._knobs({"symbols": ["AAPL"],
-                                      "start": "2026-01-01"})["adjustment"]
+        AlpacaBarsConnector().resolve_knobs(
+            {"symbols": ["AAPL"], "start": "2026-01-01"})["adjustment"]
 
     with pytest.raises(SystemExit, match="source config"):
         source_knobs(str(tmp_path / "nope.json"))
+
+
+def test_live_resolves_knobs_through_the_connectors_public_gate(tmp_path,
+                                                                monkeypatch):
+    """``source_knobs`` calls the connector's PUBLIC gate.
+
+    ``__all__`` plus the ``_`` prefix is this package's API contract, so
+    a serving loop reaching into a method the connector declares private
+    is pinned to a name that module is free to rename — and would break
+    at serve time with nothing having warned. Rebinding the public gate
+    must move the loop.
+    """
+    from intraday_poc.live import source_knobs
+
+    monkeypatch.setattr(AlpacaBarsConnector, "resolve_knobs",
+                        lambda self, config: {"resolved": config})
+    bare = tmp_path / "source.json"
+    bare.write_text(json.dumps({"symbols": ["AAPL"], "start": "2026-01-01"}),
+                    encoding="utf-8")
+    assert source_knobs(str(bare)) == \
+        {"resolved": {"symbols": ["AAPL"], "start": "2026-01-01"}}
+
+
+def test_live_serves_the_universe_the_source_config_declares(tmp_path,
+                                                             monkeypatch):
+    """The symbol universe is READ, never restated on the CLI.
+
+    ``symbols`` is a vendor knob the source config already declares —
+    the same list the store was acquired for — and the loop resolves
+    that config anyway. A default list in the argparse flag is the same
+    train/serve skew as a restated price field: add a ticker to the
+    config, retrain, and every invocation without the flag keeps
+    trading the old universe with nothing raising.
+    """
+    pytest.importorskip("alpaca.trading.client")
+    import alpaca.trading.client as trading_client
+
+    from intraday_poc import live
+
+    run_dir = tmp_path / "run"
+    (run_dir / "artifacts").mkdir(parents=True)
+    (run_dir / "config.json").write_text(json.dumps({"pipeline": {
+        "window": {"uses": "intraday_poc-window",
+                   "params": {"lookback": 3}},
+        "qhat_aapl": {"uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+                      "params": {"module": "intraday_poc.models:NextBarLSTM"}},
+    }}), encoding="utf-8")
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps({"symbols": ["AAPL", "MSFT", "GOOG"],
+                                  "start": "2026-01-01"}), encoding="utf-8")
+
+    seen = {}
+    monkeypatch.setattr(live, "fetch_bars",
+                        lambda symbols, *a, **kw: seen.update(
+                            symbols=list(symbols)) or {})
+    monkeypatch.setattr(live, "restore_model",
+                        lambda directory, ref: (SimpleNamespace(lookback=3),
+                                                ["ret_lag_0"]))
+    monkeypatch.setattr(trading_client, "TradingClient",
+                        lambda *a, **kw: SimpleNamespace(
+                            get_clock=lambda: SimpleNamespace(
+                                is_open=True, next_open="")))
+    monkeypatch.setenv("APCA_API_KEY_ID", "stub-key")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "stub-secret")
+
+    assert live.main(["--run-dir", str(run_dir),
+                      "--source-config", str(source),
+                      "--once", "--dry-run",
+                      "--log-dir", str(tmp_path)]) == 0
+    assert seen["symbols"] == ["AAPL", "MSFT", "GOOG"], seen
 
 
 def test_live_main_fetches_with_the_knobs_it_read(tmp_path, monkeypatch):
@@ -733,11 +863,12 @@ def test_live_main_fetches_with_the_knobs_it_read(tmp_path, monkeypatch):
     rc = live.main(["--run-dir", str(run_dir),
                     "--source-config", os.path.join(CONFIGS,
                                                     "source-backfill.json"),
-                    "--symbols", "AAPL", "--once", "--dry-run",
+                    "--once", "--dry-run",
                     "--log-dir", str(tmp_path)])
     assert rc == 0
     assert seen["price_field"] == "vwap", seen
     assert seen["adjustment"] == "all", seen
+    assert seen["symbols"] == ["AAPL", "MSFT"], seen  # the config's universe
 
 
 # -- end-to-end: store -> train -> artifact -> live restore/select ---------

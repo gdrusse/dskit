@@ -11,7 +11,8 @@ resolve them in an end-to-end acquisition exactly like the production
 class.
 
 Extra knob (test-only): ``bars_per_symbol`` — how many one-minute bars
-each symbol yields from ``start``; default 90.
+each symbol yields from ``start``
+(:data:`DEFAULT_BARS_PER_SYMBOL` when undeclared).
 """
 
 from __future__ import annotations
@@ -23,36 +24,103 @@ from dskit.onboarding import parse_utc
 
 from .connectors import AlpacaBarsConnector
 
-__all__ = ["StubBarsConnector"]
+__all__ = ["DEFAULT_BARS_PER_SYMBOL", "StubBarsConnector"]
+
+#: How many bars each symbol yields when the config declares none —
+#: one name, read by the knob gate AND by ``spec()``'s note.
+DEFAULT_BARS_PER_SYMBOL = 90
 
 
 class StubBarsConnector(AlpacaBarsConnector):
-    """The production connector minus the network. See module docs."""
+    """The production connector minus the network.
+
+    Parameters
+    ----------
+    None
+        Stateless, like the class it doubles; the extra
+        ``bars_per_symbol`` knob rides on the config.
+
+    Examples
+    --------
+    Pull a short deterministic history without credentials::
+
+        conn = StubBarsConnector()
+        msgs = list(conn.read({"symbols": ["AAPL"],
+                               "start": "2026-01-05T14:30:00+00:00",
+                               "bars_per_symbol": 10},
+                              ["bars"], {}, "backfill"))
+    """
 
     def spec(self) -> dict:
+        """Extend the production catalogue with the one test-only knob.
+
+        Returns
+        -------
+        dict
+            ``spec()`` as :class:`AlpacaBarsConnector` declares it, with
+            ``bars_per_symbol`` added.
+        """
         spec = super().spec()
         spec["params"]["bars_per_symbol"] = {
-            "notes": "TEST-ONLY: bars each symbol yields from start; "
-                     "default 90.",
+            "notes": f"TEST-ONLY: bars each symbol yields from start; "
+                     f"default {DEFAULT_BARS_PER_SYMBOL}.",
         }
         return spec
 
-    def _knobs(self, config) -> dict:
-        knobs = super()._knobs(
+    def resolve_knobs(self, config) -> dict:
+        """Resolve the production knobs, plus the stub's own.
+
+        Parameters
+        ----------
+        config : dict
+            A source config, optionally carrying ``bars_per_symbol``.
+
+        Returns
+        -------
+        dict
+            The production knobs plus ``bars_per_symbol`` (int).
+
+        Raises
+        ------
+        AssetError
+            Whatever the production gate refuses.
+        """
+        knobs = super().resolve_knobs(
             {k: v for k, v in config.items() if k != "bars_per_symbol"})
-        knobs["bars_per_symbol"] = config.get("bars_per_symbol", 90)
+        knobs["bars_per_symbol"] = config.get("bars_per_symbol",
+                                              DEFAULT_BARS_PER_SYMBOL)
         return knobs
 
     def _credentials(self, knobs) -> tuple:
+        """No vendor, no credentials."""
         return "stub-key", "stub-secret"
 
     def check(self, config) -> None:
-        self._knobs(config)  # knob gate only — there is no vendor to ping
+        """Run the knob gate only — there is no vendor to ping.
+
+        Parameters
+        ----------
+        config : dict
+            The config to check.
+
+        Returns
+        -------
+        None
+            Silence means the knobs are valid.
+
+        Raises
+        ------
+        AssetError
+            On any invalid knob.
+        """
+        self.resolve_knobs(config)
 
     def _fetch(self, knobs, start_dt, end_dt):
-        """A smooth deterministic walk per symbol, one bar per minute
-        from the CONFIG start — the window bounds filter, exactly as the
-        vendor's server would."""
+        """Yield a smooth deterministic walk, one bar per minute per symbol.
+
+        Bars run from the CONFIG start and the window bounds filter
+        them, exactly as the vendor's server would.
+        """
         base = parse_utc(knobs["start"])
         for symbol in sorted(knobs["symbols"]):
             anchor = 100.0 + sum(ord(c) for c in symbol) % 50

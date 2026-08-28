@@ -70,13 +70,23 @@ python -m dskit.onboarding acquire --root ./ob --source alpaca --stream bars --m
 stream, mode), so backfill and live never fight — which is exactly why a
 *second source* would be wrong here: observations land in
 `observations/<source>/` and a run document reads one source, so bars
-acquired under another name are invisible to the model. Re-run the live
-acquire on any cadence; each pull takes only what is new. Its cursor
-starts empty (hence at the config's `start`), so run it after the
-backfill has caught up — the overlap is deduped, never duplicated. On
-the free tier this pull trails the tape by ~16 minutes, the SIP gate the
-connector clamps for; the forward *loop* below does its own real-time
-IEX fetch and does not wait for it.
+acquired under another name are invisible to the model.
+
+The two modes differ in exactly one place: **where a pull with no cursor
+starts.** Backfill starts at the config's `start` — all the history
+there is. The live cursor is empty until its own first pull, so live
+starts no further back than `live_lookback_minutes` (1440 — a day);
+windowing it from `start` would re-fetch every bar since 2021 and write
+them as a second full acquisition, so every later scan would carry two
+copies of the whole store. The trade-off is the seam: bars older than
+that window and newer than the backfill's cursor belong to NO pull, so
+widen the knob or let the backfill catch up to within it before
+switching live on. After that first pull the cursor carries it, and each
+pull takes only what is new.
+
+On the free tier this pull trails the tape by ~16 minutes, the SIP gate
+the connector clamps for; the forward *loop* below does its own
+real-time IEX fetch and does not wait for it.
 
 ## How the pulled data reaches the model
 
@@ -142,12 +152,14 @@ position to the winner. Decisions land in `decisions.jsonl`.
 
 **The loop declares nothing twice.** The price field, the gap bound and
 the model class come from `<run-dir>/config.json` — the whole training
-document, which the driver writes; the adjustment comes from the source
-config the puller registered (`--source-config`). Only operational flags
-live on the CLI: `--symbols`, `--qty`, `--log-dir`, `--once`,
-`--dry-run`, `--history-minutes`, and `--artifact SYMBOL=PATH` when a
-document names its trainer nodes something other than `qhat_<symbol>`.
-There is no third config file, by doctrine: it would duplicate both.
+document, which the driver writes; the adjustment **and the symbol
+universe** come from the source config the puller registered
+(`--source-config`), so adding a ticker there and retraining is all it
+takes. Only operational flags live on the CLI: `--qty`, `--log-dir`,
+`--once`, `--dry-run`, `--history-minutes`, and `--artifact SYMBOL=PATH`
+when a document names its trainer nodes something other than
+`qhat_<symbol>`. There is no third config file, by doctrine: it would
+duplicate both.
 
 ## What to know before trusting the numbers
 
@@ -157,10 +169,16 @@ There is no third config file, by doctrine: it would duplicate both.
 - **The forward loop's own fetch is IEX-only** (~2.5% of volume), because
   real-time SIP is not sold on the free tier: a minute with no IEX trade
   has no bar, and IEX prints can sit 5–50 bps off consolidated NBBO. That
-  is the child's ONE declared train/serve vendor difference (`LIVE_FEED`
-  in `live.py`); every other vendor knob the loop uses comes from the
-  source config. Paper fills simulate against this — treat forward PnL as
-  signal validation, not execution realism.
+  is the child's ONE declared train/serve vendor *divergence*
+  (`LIVE_FEED` in `live.py`); every other vendor knob the loop uses comes
+  from the source config. Paper fills simulate against this — treat
+  forward PnL as signal validation, not execution realism.
+- **The bar interval is a constant, not yet a knob** (`BAR_INTERVAL` in
+  `connectors.py`): one minute, on both sides. The connector's pull and
+  the loop's fetch both build their vendor `TimeFrame` from it, so they
+  cannot drift; making it configurable (`timeframe` on `spec()`) is an
+  open TODO, and would also have to move the loop's minute cadence and
+  the window node's gap bound.
 - Windows never bridge gaps (`max_gap_minutes`); rows the model cannot
   cover are skipped, never imputed.
 
