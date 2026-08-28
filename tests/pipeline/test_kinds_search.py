@@ -34,7 +34,9 @@ from dskit.pipeline.document import (
 )
 from dskit.pipeline.driver import _apply_param_override, run_document
 from dskit.pipeline.kinds_search import HpoGrid, _grid, _subsample, register
+from dskit.pipeline.kinds_search import _is_json_scalar as _grid_is_json_scalar
 from dskit.pipeline.node import Node, NodeContext, NodeKindRegistry
+from dskit.pipeline.planner import _is_json_scalar as _planner_is_json_scalar
 from dskit.pipeline.planner import plan
 from dskit.pipeline.synthetic_nodes import (
     SynthClip,
@@ -668,6 +670,40 @@ class TestSpaceKeyGrammarParity:
 # ---------------------------------------------------------------------------
 
 
+class TestScalarRuleAgreement:
+    """The 'JSON scalar' line is drawn in TWO modules — the tier-1 engine
+    (``planner``, which may not import a kind) and ``kinds_search`` — so
+    the agreement is pinned, not assumed."""
+
+    #: (value, is-a-JSON-scalar) — restated INDEPENDENTLY of both
+    #: implementations, so a matching drift in both still fails here.
+    CASES = (
+        (None, True),
+        (True, True),
+        (False, True),
+        (0, True),
+        (-2, True),
+        (1.5, True),
+        ("", True),
+        ("s", True),
+        (float("nan"), False),
+        (float("inf"), False),
+        ([], False),
+        ([1], False),
+        ({}, False),
+        ({"low": 0.0, "high": 1.0}, False),
+        ((1,), False),
+    )
+
+    def test_both_gates_draw_the_same_line(self):
+        # A document that passed the plan-time check and then died at the
+        # kind's construction check (or the reverse) would be this rule
+        # having two meanings; the two refusals must be the same refusal.
+        for value, expected in self.CASES:
+            assert _planner_is_json_scalar(value) is expected, value
+            assert _grid_is_json_scalar(value) is expected, value
+
+
 class TestPlannerRules:
     def test_parabola_document_plans(self, tmp_path, registry):
         plan(parabola_document(tmp_path), registry)
@@ -740,6 +776,18 @@ class TestPlannerRules:
         with pytest.raises(ConfigError, match="space must be a non-empty dict"):
             plan(parabola_document(tmp_path, pipeline=pipeline), registry)
 
+    def test_a_search_node_defers_plan_time_validate_params(self, tmp_path, registry):
+        # The fact the whole division of labour rests on, pinned: a search
+        # node's `objective` is a $-reference BY CONTRACT (spec §8), so its
+        # params always carry an unresolved ref and plan() DEFERS the
+        # kind's validate_params to execute (planner._has_unresolved_ref).
+        # No search kind's value grammar is ever consulted at plan — which
+        # is why the planner's own space checks are the only plan-time
+        # guard, and why the refusal below lands during the run.
+        the_plan = plan(parabola_document(tmp_path), registry)
+        assert "search" in the_plan.deferred_params
+        assert the_plan.to_obj()["nodes"]["search"]["params_validation"] == "deferred"
+
     def test_a_range_spec_document_dies_before_a_grid_trial_runs(
         self, tmp_path, registry
     ):
@@ -748,6 +796,9 @@ class TestPlannerRules:
         # planner may not know about kinds), the document plans, and the
         # run then refuses at hpo-grid's construction naming the offending
         # space key — no trial is ever enumerated over an interval.
+        # The cost is real and deliberate, not an oversight: because the
+        # search node's params defer (above), this refusal lands AFTER the
+        # upstream nodes have executed, so a run dir exists by then.
         pipeline = parabola_pipeline(
             search_params={"space": {"theta.theta": {"low": 0.0, "high": 5.0}}}
         )

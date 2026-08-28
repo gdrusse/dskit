@@ -45,10 +45,25 @@ ASOF = "2026-01-01"
 #: Trivially-valid splits for score nodes that never read ctx.splits.
 FLAT_SPLITS = TimeSplitConfig(train_end_ms=1, val_end_ms=2, test_end_ms=3)
 
+
 def _example(name):
     return os.path.join(
         os.path.dirname(__file__), "..", "..", "examples", "pipeline", name
     )
+
+
+def _document_obj(path):
+    """One shipped document as raw JSON, every ``notes`` field dropped."""
+
+    def strip(obj):
+        if isinstance(obj, dict):
+            return {k: strip(v) for k, v in obj.items() if k != "notes"}
+        if isinstance(obj, list):
+            return [strip(v) for v in obj]
+        return obj
+
+    with open(path, encoding="utf-8") as handle:
+        return strip(json.load(handle))
 
 
 EXAMPLE = _example("optuna-search.json")
@@ -751,6 +766,23 @@ class TestContinuousExampleDocument:
         space = load_document(CONTINUOUS_EXAMPLE).pipeline["search"].params["space"]
         assert space == {"clip.lo": {"low": 0.3, "high": 0.55}}
 
+    def test_the_twins_differ_only_in_name_and_the_space_shape(self):
+        # BOTH documents' notes assert this relationship in prose; a claim
+        # in two places with nothing pinning it is a scheduled bug, so
+        # this is the pin. `notes` is stripped (it is excluded from
+        # identity), so what is compared is what the two documents
+        # COMPUTE — wiring, params, splits, budget. Only `name` (two run
+        # series) and the space VALUE may differ; a later edit to either
+        # document's pipeline now falsifies both notes loudly.
+        categorical = _document_obj(EXAMPLE)
+        continuous = _document_obj(CONTINUOUS_EXAMPLE)
+        assert categorical.pop("name") != continuous.pop("name")
+        grid = categorical["pipeline"]["search"]["params"].pop("space")
+        spec = continuous["pipeline"]["search"]["params"].pop("space")
+        assert isinstance(grid["clip.lo"], list)  # the categorical form
+        assert isinstance(spec["clip.lo"], dict)  # the range form
+        assert categorical == continuous
+
     def test_loads_and_hashes_stably(self):
         doc = load_document(CONTINUOUS_EXAMPLE)
         assert doc.name == "optuna-continuous-demo"
@@ -769,7 +801,7 @@ class TestContinuousExampleDocument:
         result = run_document(load_document(CONTINUOUS_EXAMPLE), asof=ASOF)
         assert result.state == "ran"
         search = result.outputs["search"]
-        assert len(search["trials"]) == 8
+        assert len(search["trials"]) == 6
         lo = search["best_params"]["clip.lo"]
         assert 0.3 < lo < 0.55  # a sampled interior float, not a bound
         assert all(0.3 <= t["overrides"]["clip.lo"] <= 0.55 for t in search["trials"])
@@ -778,7 +810,7 @@ class TestContinuousExampleDocument:
             search["best_score"]
         )
         record = read_json(result.run_dir, "nodes", "07-search.json")
-        assert record["trials_executed"] == 8
+        assert record["trials_executed"] == 6
         assert "clip" in record["winner_reran"]
 
 
