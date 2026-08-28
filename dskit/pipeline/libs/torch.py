@@ -153,6 +153,15 @@ _SHAPE_PARAMS = ("features", "label")
 #: Keys every sidecar must carry — an artifact without them is refused.
 _SIDECAR_KEYS = ("format", "module_class", "params", "seed", "state_hash")
 
+#: The word every adapter doorway reports under — resolution
+#: (``_resolve_adapter``), plan (``validate_params``) and run
+#: (``build_adapter``) all name the same subject, so a refusal reads the
+#: same whichever door it came from. Named ONCE because the plan sentence
+#: and the run sentence are pinned EQUAL by
+#: ``tests/pipeline_libs/test_torch_adapter.py``: four copies of a literal
+#: is exactly the unpinned duplication where one changes silently.
+_ADAPTER_SUBJECT = "torch adapter"
+
 
 def _value(record, name):
     """Key-or-attr numeric lookup on one row: a finite float, or ``None``
@@ -328,36 +337,99 @@ class TorchAdapter(ABC):
     the class is ABSTRACT in exactly these four — an adapter missing one
     is refused at construction, never deep inside a training loop:
 
-    1. ``prepare`` — rows in, a :class:`TorchBatches` out. This is where a
-       row list becomes tensors, panels, or anything else; unusable rows
-       are counted here and never fabricated.
-    2. ``select`` — the examples at an index (a ``LongTensor`` of
-       positions), or the WHOLE split. Only the adapter knows how to slice
-       a batch whose shape it invented.
-    3. ``loss`` — the objective: the scalar that is backpropagated.
-    4. ``predict`` — one record to one belief, which is what
+    1. ``prepare`` — ``prepare(rows, params, *, where)``: a list of rows
+       in, a :class:`TorchBatches` out. This is where a row list becomes
+       tensors, panels, or anything else; unusable rows are counted here
+       (``n_skipped``) and never fabricated. ``where`` (str) names the
+       port (``"rows"``/``"val_rows"``) so a refusal says which wire is
+       wrong.
+    2. ``select`` — ``select(batches, index)``: the examples at ``index``
+       (a ``LongTensor`` of positions), or the WHOLE split when ``index``
+       is ``None``. Only the adapter knows how to slice a batch whose
+       shape it invented.
+    3. ``loss`` — ``loss(module, batch)``: the objective, a scalar tensor
+       that is backpropagated.
+    4. ``predict`` — ``predict(module, record)``: one record to one float
+       belief (or ``None`` for no coverage), which is what
        :class:`TorchSignal` serves downstream.
 
     Everything else has a WORKING default and stays optional, so an
-    adapter implements it only when its shape demands it: ``module_params``
-    (constructor kwargs the DATA implies — a vocab size, a token width —
-    merged UNDER the document's own, so a declared value always wins and
-    nothing the data says can silently override the config), ``beliefs``
-    (the calibrated probabilities + matching labels that
-    :func:`~dskit.pipeline.trainlog.probability_metrics` scores per epoch;
-    one metrics helper, every adapter), ``to_device``, ``fitted``, and the
-    ``save_state``/``load_state`` pair.
-
-    ``requires_features`` says whether the node's ``features`` knob is
-    meaningful for this adapter. The default row-vector adapter needs it;
-    an adapter that builds its examples some other way sets it ``False``
-    so the node stops demanding a feature list it would never read.
+    adapter implements it only when its shape demands it:
+    :meth:`module_params` (constructor kwargs the DATA implies — a vocab
+    size, a token width — merged UNDER the document's own, so a declared
+    value always wins and nothing the data says can silently override the
+    config), :meth:`beliefs` (the calibrated probabilities + matching
+    labels that :func:`~dskit.pipeline.trainlog.probability_metrics`
+    scores per epoch; one metrics helper, every adapter),
+    :meth:`to_device`, :meth:`fitted`, and the
+    :meth:`save_state`/:meth:`load_state` pair.
 
     Adapters are DECLARED, not subclassed into the node: a document names
     one in ``adapter`` with ``adapter_params`` as its kwargs, exactly the
     ``module``/``module_params`` and ``estimator``/``estimator_params``
     grammar the pack already uses. Import torch INSIDE methods, never at
     module scope (``tests/pipeline/test_purity.py``).
+
+    Parameters
+    ----------
+    params : dict or None
+        The node's params with the document's ``adapter_params`` layered
+        ON TOP, kept as ``self.params``; ``None`` means ``{}``. The node
+        passes its WHOLE params dict so an adapter can read
+        ``features``/``label`` without the document restating them.
+
+    Attributes
+    ----------
+    requires_features : bool
+        Class-level, default ``True``. Whether the node's ``features``
+        knob is meaningful for this adapter. The default row-vector
+        adapter needs it; an adapter that builds its examples some other
+        way sets it ``False`` so the node stops demanding a feature list
+        it would never read.
+    _PARAMS : tuple of str
+        Class-level, default ``()``. The adapter's OWN declarable knobs,
+        which :meth:`validate_params` enforces default-deny at plan time
+        — so a typo in ``adapter_params`` is refused by name.
+
+    Examples
+    --------
+    A minimal COMPLETE adapter — the four hooks and nothing else — over
+    rows carrying one value ``v`` and a label ``y``::
+
+        import torch
+        from dskit.pipeline.libs.torch import TorchAdapter, TorchBatches
+
+        class ScalarAdapter(TorchAdapter):
+            requires_features = False
+
+            def prepare(self, rows, params, *, where):
+                xs = [[float(r["v"])] for r in rows]
+                ys = [float(r["y"]) for r in rows]
+                return TorchBatches(
+                    len(xs),
+                    (
+                        torch.tensor(xs, dtype=torch.float32),
+                        torch.tensor(ys, dtype=torch.float32),
+                    ),
+                )
+
+            def select(self, batches, index):
+                x, y = batches.payload
+                return (x, y) if index is None else (x[index], y[index])
+
+            def loss(self, module, batch):
+                x, y = batch
+                return torch.nn.functional.mse_loss(module(x).reshape(-1), y)
+
+            def predict(self, module, record):
+                with torch.no_grad():
+                    x = torch.tensor([[float(record["v"])]])
+                    return float(module(x).reshape(-1)[0])
+
+        adapter = ScalarAdapter({"label": "y"})
+
+    Leave one of those four out and the class stays declarable but
+    refuses to CONSTRUCT, naming the hooks that are missing.
     """
 
     #: Does the node's ``features`` list mean anything here?
@@ -1367,7 +1439,9 @@ class _DeclaredParams:
         if not path or library_path_problems("adapter", path, example="x.y:A"):
             return None
         try:
-            return import_library_class(path, "torch adapter", requires=("prepare",))
+            return import_library_class(
+                path, _ADAPTER_SUBJECT, requires=("prepare",)
+            )
         except ValueError:
             return None
 
@@ -1425,7 +1499,7 @@ class _DeclaredParams:
             # refusal — the channel argument that keeps
             # ``import_library_class`` structural does not apply here.
             abstract = abstract_class_problem(
-                adapter, "torch adapter", repr(params["adapter"])
+                adapter, _ADAPTER_SUBJECT, repr(params["adapter"])
             )
             if abstract:
                 problems.append(abstract)
@@ -1435,27 +1509,52 @@ class _DeclaredParams:
         return problems
 
     def build_adapter(self, params):
-        """The declared adapter, or the flat-vector default when a document
-        names none — which is why the seam changed nothing for documents
-        written before it existed.
+        """The declared adapter, or the flat-vector default when none is named.
 
-        Two DIFFERENT failures are told apart here. An adapter that never
-        implemented some of :class:`TorchAdapter`'s abstract hooks is
-        refused before construction, naming those hooks (core's
-        :func:`~dskit.pipeline.base.abstract_class_problem` — asked, never
-        restated) — the fix is code, and the document may be perfect. Only
-        a complete class that still rejects its kwargs reaches the
-        ``adapter_params`` diagnosis below.
+        The default is why the seam changed nothing for documents written
+        before it existed. Two DIFFERENT failures are told apart here. An
+        adapter that never implemented some of :class:`TorchAdapter`'s
+        abstract hooks is refused BEFORE construction, naming those hooks
+        (core's :func:`~dskit.pipeline.base.abstract_class_problem` —
+        asked, never restated); the fix is code, and the document may be
+        perfect. Only a complete class that still rejects its kwargs
+        reaches the ``adapter_params`` diagnosis.
+
+        Parameters
+        ----------
+        params : dict
+            The node's params. ``adapter`` (str, optional) is the
+            adapter's ``pkg.module:Class`` path — absent or empty means
+            the default; ``adapter_params`` (dict, optional) are the
+            adapter's OWN knobs, layered ON TOP of ``params`` so an
+            adapter knob is never shadowed by a same-named node knob.
+
+        Returns
+        -------
+        TorchAdapter
+            The constructed adapter — a :class:`RowVectorAdapter` over
+            ``params`` when no ``adapter`` is declared.
+
+        Raises
+        ------
+        ValueError
+            When the declared path does not resolve to a class carrying
+            ``prepare``
+            (:func:`~dskit.pipeline.base.import_library_class`); when the
+            resolved class is still ABSTRACT, in a sentence naming every
+            unimplemented hook; or when a complete adapter's own
+            constructor rejects its ``adapter_params``, naming that knob
+            dict so the author reads JSON rather than code.
         """
         path = params.get("adapter")
         if not path:
             return RowVectorAdapter(params)
-        cls = import_library_class(path, "torch adapter", requires=("prepare",))
+        cls = import_library_class(path, _ADAPTER_SUBJECT, requires=("prepare",))
         # Asked HERE and at plan (``validate_params``) — never at resolution:
         # plan-time callers rightly treat a resolution failure as "library
         # may be missing on this machine", and an abstractness refusal must
         # never hide in that channel.
-        problem = abstract_class_problem(cls, "torch adapter", repr(path))
+        problem = abstract_class_problem(cls, _ADAPTER_SUBJECT, repr(path))
         if problem:
             raise ValueError(problem)
         kwargs = dict(params.get("adapter_params") or {})

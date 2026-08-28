@@ -218,16 +218,23 @@ def test_a_declared_incomplete_adapter_is_refused_by_its_missing_hooks():
     name the hooks that were never implemented, not ``adapter_params``,
     which here is empty and entirely correct and would send the author to
     inspect JSON knobs instead of writing the three missing methods.
+
+    Pinned by EQUALITY, in the same words as the plan-side test above:
+    the two doorways say one sentence between them, and the whole point
+    of ``validate_params`` reporting at plan what ``build_adapter`` would
+    raise at run is that the two cannot drift. Substring checks would let
+    the run copy say ``"torch adapters"`` — or name a different subject
+    entirely — while still passing. The literal is restated here on
+    purpose: a test that sourced its expected wording from the module it
+    validates would assert nothing.
     """
     node = DeclaredTrain("k", {**FLAT_PARAMS, "module": MODULE_REF})
+    ref = ref_to(IncompleteAdapter)
     with pytest.raises(ValueError) as caught:
-        node.build_adapter(
-            {"adapter": ref_to(IncompleteAdapter), "adapter_params": {}}
-        )
-    message = str(caught.value)
-    assert ref_to(IncompleteAdapter) in message
-    assert all(hook in message for hook in ABSTRACT_HOOKS - {"prepare"})
-    assert "adapter_params" not in message
+        node.build_adapter({"adapter": ref, "adapter_params": {}})
+    assert str(caught.value) == abstract_class_problem(
+        IncompleteAdapter, "torch adapter", repr(ref)
+    )
 
 
 def test_a_mis_typed_adapter_knob_still_names_adapter_params():

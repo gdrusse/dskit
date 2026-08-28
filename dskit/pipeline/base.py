@@ -976,15 +976,25 @@ def library_path_problems(name, value, *, example):
 def abstract_class_problem(cls, where, subject=None):
     """Why ``cls`` cannot be constructed, when hooks are still abstract.
 
-    The ONE place this repo words that defect. Ask it wherever the
-    pipeline COMMITS to a class — the doorways that construct one or
-    approve it for a run: :func:`~dskit.pipeline.node.node_class_errors`
-    (which serves BOTH kind registration and ``uses`` import-path
-    resolution, so a Node reference is refused at whichever boundary it
-    enters through) and the torch pack's adapter doorway, at run
-    (``build_adapter``) and at plan (``validate_params``). Asking every
-    such door to say core's sentence is what keeps it from drifting
-    between sites and a pack from re-deriving it.
+    The ONE place this repo words that defect. Three doorways ask it
+    today, and that list is exhaustive:
+    :func:`~dskit.pipeline.node.node_class_errors` (which serves BOTH
+    kind registration and ``uses`` import-path resolution, so a Node
+    reference is refused at whichever boundary it enters through), and
+    the torch pack's adapter doorway twice — at run
+    (``_DeclaredParams.build_adapter``) and at plan
+    (``_DeclaredParams.validate_params``), saying the same sentence in
+    both. Asking every such door to say core's sentence is what keeps it
+    from drifting between sites and a pack from re-deriving it.
+
+    Not yet universal, and deliberately not claimed to be:
+    ``_DeclaredModule.build_module`` constructs the document's declared
+    ``nn.Module`` WITHOUT asking, so an abstract module class is still
+    reported there as its constructor's ``TypeError``, rewrapped as a
+    "rejected module_params" refusal — the same mis-diagnosis the adapter
+    doorway was fixed for. Queued for the ``TrainableNode`` /
+    long-method decomposition work (TODO 3c/3d), which rebuilds that
+    doorway.
 
     The one resolver that deliberately does NOT ask is
     :func:`import_library_class`: its ``ValueError`` already means "the
