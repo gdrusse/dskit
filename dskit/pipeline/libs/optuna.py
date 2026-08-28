@@ -26,12 +26,14 @@ be CONTINUOUS specs — ``{"low": .., "high": ..[, "log": true][, "int":
 true]}`` — alongside the grid's list-of-scalars (categorical) form.
 Both forms share the grid's ``"<node>.<param.path>"`` key grammar
 (:data:`dskit.pipeline.kinds_search._SPACE_KEY_OK`, imported, not
-copied) and both plan. What the planner defers is the RANGE form
-specifically, not the value grammar wholesale: it owns the STRUCTURAL
-space rules (keys address existing params of ancestors of the
-objective; winner-consistency) AND still checks that EITHER value
-shape is non-empty (``{}`` refuses at plan like ``[]``), passing a
-non-empty DICT through untouched — so :func:`_spec_problems` below is
+copied) and both plan. What the planner defers is the RANGE form's
+INTERNALS specifically, not the value grammar wholesale: its plan-time
+checks — the structural rules plus the value shapes every search kind
+shares — are stated ONCE, in
+:func:`dskit.pipeline.planner._search_errors` and
+``dskit/pipeline/CLAUDE.md``, and deliberately not re-enumerated here;
+what this pack relies on is that a non-empty dict passes plan
+untouched — so :func:`_spec_problems` below is
 the ONE place the range form's internals are defined. ``hpo-grid`` refuses range specs on purpose —
 exhaustive enumeration over a real interval is meaningless — and pins
 that refusal itself. Note WHERE a malformed range refuses: a search
