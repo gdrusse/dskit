@@ -1042,3 +1042,151 @@ def test_lightgbm_extra_is_declared_and_covered_by_all():
     assert set(extras["lightgbm"]) <= set(extras["all"])
     # And it is an EXTRA, never a pack: no lightgbm module under libs/.
     assert not list((root / "dskit" / "pipeline" / "libs").glob("*lightgbm*"))
+
+
+# ---------------------------------------------------------------------------
+# The cookbook's remaining prose claims, pinned against the engine
+# ---------------------------------------------------------------------------
+
+
+def pack_docstring():
+    """The sklearn pack's module docstring — the tier-2 cookbook text."""
+    import dskit.pipeline.libs.sklearn as pack
+
+    return pack.__doc__
+
+
+def test_colon_spelling_is_refused_at_plan_only_in_the_base_params(tmp_path):
+    # Two DIFFERENT answers from the engine, so the prose may not give one.
+    # A colon in the node's own params block is a plan-time shape problem;
+    # a colon inside a search SPACE is not shape-checked at plan (the
+    # planner never constructs trial params), so it plans clean, hashes,
+    # and kills the run mid-sweep — after earlier candidates already fitted.
+    pytest.importorskip("sklearn")
+    obj = json.loads(SWEEP_EXAMPLE.read_text())
+    base = json.loads(json.dumps(obj))
+    base["pipeline"]["model"]["params"]["estimator"] = "lightgbm:LGBMRegressor"
+    with pytest.raises(ConfigError, match="dotted import path"):
+        plan(PipelineDocument.from_obj(base))
+
+    spaced = json.loads(json.dumps(obj))
+    spaced["pipeline"]["sweep"]["params"]["space"]["model.estimator"] = [
+        RIDGE,
+        "lightgbm:LGBMRegressor",
+    ]
+    doc = PipelineDocument.from_obj(spaced)
+    plan(doc)  # NOT refused — the claim the note used to make
+    assert len(doc.hash) == 64
+    spaced["outputs"] = {"run_root": str(tmp_path)}
+    result = run_document(PipelineDocument.from_obj(spaced), asof=ASOF)
+    assert result.state == "error" and result.exit_code != 0
+    assert result.outputs.get("sweep") is None
+
+    # The note must describe THAT, not a plan-time refusal it never gets.
+    note = obj["pipeline"]["sweep"]["notes"]
+    assert "mid-run" in note
+    assert "refused at plan" not in note
+
+
+def test_unseeded_forest_moves_between_runs_of_one_identity(tmp_path):
+    # The reproducibility caveat, pinned. One params block serves six
+    # candidates, so it may carry no `seed` (three of them take no
+    # random_state) — which leaves the forest unseeded and its recorded
+    # trial score different on every run of the SAME identity hash. The
+    # selection is stable regardless; the notes must say both.
+    pytest.importorskip("sklearn")
+    forest = "sklearn.ensemble.RandomForestRegressor"
+    boosted = "sklearn.ensemble.GradientBoostingRegressor"
+    first = run_sweep_example(tmp_path / "a")
+    second = run_sweep_example(tmp_path / "b")
+
+    def score(result, estimator):
+        return next(
+            trial["score"]
+            for trial in result.outputs["sweep"]["trials"]
+            if trial["overrides"]["model.estimator"] == estimator
+        )
+
+    assert score(first, forest) != score(second, forest)
+    # ...while every deterministic rival, and the WINNER, hold still.
+    assert score(first, boosted) == score(second, boosted)
+    assert first.outputs["sweep"]["best_params"] == second.outputs["sweep"]["best_params"]
+    assert "same identity" in json.loads(SWEEP_EXAMPLE.read_text())["notes"]
+
+
+def test_cookbook_figures_are_the_ones_the_engine_produces(tmp_path):
+    # Every measured number the prose quotes, pinned to a real run — the
+    # notes and the pack docstring both quote them, and the fields they
+    # derive from (dataset params, split boundaries) are exactly what the
+    # cookbook invites a reader to change.
+    pytest.importorskip("sklearn")
+    forest = "sklearn.ensemble.RandomForestRegressor"
+    obj = json.loads(SWEEP_EXAMPLE.read_text())
+    doc = PipelineDocument.from_obj(obj)
+    honest = run_sweep_example(tmp_path / "honest", json.loads(json.dumps(obj)))
+
+    counts = {"train": 0, "val": 0, "test": 0}
+    for event in honest.outputs["dataset"]["events"]:
+        name = doc.splits.split_of(
+            SimpleNamespace(asof_ms=event["asof_ms"], cluster=event["cluster"])
+        )
+        if name in counts:
+            counts[name] += 1
+    assert counts == {"train": 146, "val": 30, "test": 32}
+    assert "146 train rows, 30 val, 32 test" in obj["splits"]["notes"]
+
+    scores = {
+        trial["overrides"]["model.estimator"]: trial["score"]
+        for trial in honest.outputs["sweep"]["trials"]
+    }
+    # HONEST: the forest is the WORST of the six, inside the quoted band.
+    assert max(scores, key=scores.get) == forest
+    assert 0.22 < scores[forest] < 0.26
+
+    leaky = json.loads(json.dumps(obj))
+    leaky["pipeline"]["model"]["inputs"]["rows"] = "$dataset.events"
+    leaked = run_sweep_example(tmp_path / "leaky", leaky)
+    leaky_scores = {
+        trial["overrides"]["model.estimator"]: trial["score"]
+        for trial in leaked.outputs["sweep"]["trials"]
+    }
+    # LEAKY: the same forest "wins", an order of magnitude better.
+    assert min(leaky_scores, key=leaky_scores.get) == forest
+    assert leaky_scores[forest] < 0.05
+    for text in (obj["pipeline"]["train_rows"]["notes"], pack_docstring()):
+        assert "~0.03" in text and "0.23" in text
+
+
+def test_docstring_names_no_extra_that_pyproject_does_not_declare():
+    # "Never document an escape hatch you did not build." The cookbook
+    # table's non-sklearn row leans on an EXTRA; every extra the pack's
+    # prose names must exist, or `pip install 'dskit[...]'` errors out.
+    import re
+    import tomllib
+
+    root = pathlib.Path(__file__).parents[2]
+    with open(root / "pyproject.toml", "rb") as fh:
+        declared = set(tomllib.load(fh)["project"]["optional-dependencies"])
+    prose = (
+        pack_docstring()
+        + json.loads(SWEEP_EXAMPLE.read_text())["pipeline"]["sweep"]["notes"]
+    )
+    named = set(re.findall(r"dskit\[([a-z0-9_-]+)\]", prose))
+    named |= set(re.findall(r"``([a-z0-9_-]+)`` extra", prose))
+    assert named, "the cookbook must still point at the extra it needs"
+    assert named <= declared, sorted(named - declared)
+
+
+def test_docstring_classifier_line_carries_the_binary_only_caveat():
+    # The module docstring offers classifier counterparts with
+    # predict_method="predict_proba"; the seam refuses >2 classes at
+    # PREDICT time (pinned in
+    # test_multiclass_predict_proba_refuses_rather_than_guessing), which
+    # is long after the document planned and fitted. Unqualified, that
+    # sentence sends a reader into a mid-run refusal.
+    block = next(
+        para
+        for para in pack_docstring().split("\n\n")
+        if "predict_proba" in para and "LogisticRegression" in para
+    )
+    assert "binary" in block

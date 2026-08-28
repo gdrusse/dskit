@@ -77,9 +77,12 @@ example leaves it out) and picks a winner on the val split, fitting on
 train rows only through a ``filter`` node the document declares. There
 is deliberately no registry of per-model classes: each would re-do what
 the doorway already does, and be one more place to drift. Spell the
-estimator as a DOTTED import path (``module.ClassName``); a colon
-separator is refused at plan (pinned in
-``tests/pipeline_libs/test_sklearn.py``).
+estimator as a DOTTED import path (``module.ClassName``), never a colon
+— and note WHERE the two spellings part company: a colon in a node's own
+``estimator`` param is a plan-time shape problem, while a colon inside a
+search SPACE is not (the planner never builds trial params), so that
+document plans, hashes, and dies mid-run on the offending trial. Both
+answers are pinned in ``tests/pipeline_libs/test_sklearn.py``.
 
 | estimator | family | reach for it when |
 |---|---|---|
@@ -91,10 +94,16 @@ separator is refused at plan (pinned in
 | ``sklearn.neighbors.KNeighborsRegressor`` | instance-based | local structure with no global form to assume |
 | ``lightgbm.LGBMRegressor`` | boosted trees | many rows or many features — needs the ``lightgbm`` extra, no pack |
 
-The ``lightgbm`` row is the pattern for every sklearn-compatible library:
-install the extra, name the class, done. Classifier counterparts
-(``LogisticRegression``, ``RandomForestClassifier``, …) swap in the same
-way with ``predict_method="predict_proba"``.
+The ``lightgbm`` row is the only non-sklearn extra declared today; it is
+the shape any other sklearn-compatible library WOULD take (declare the
+extra in ``pyproject.toml``, then name the class — no pack, no wrapper),
+which is how xgboost and catboost would enter. Do not reach for an extra
+that is not in ``pyproject.toml``: the prose here is pinned against the
+declared list. Classifier counterparts (``LogisticRegression``,
+``RandomForestClassifier``, …) swap in the same way with
+``predict_method="predict_proba"`` — but that seam is binary-only (it
+serves ``P(classes_[1])``), and a third class is refused at PREDICT
+time, long after the document planned and fitted.
 
 One params block serves every candidate in a sweep, so it may carry only
 knobs they ALL accept: ``estimator_params`` and ``seed`` are omitted from
@@ -106,8 +115,9 @@ A sweep is only as honest as its cut. Because this pack fits exactly what
 was wired in, a document that wires the FULL stream into the candidates
 and scores them on its own val rows selects in-sample, and the ranking it
 reports is a memorisation ranking — on the cookbook's synthetic market
-that inverts the result outright (measured: the forest "wins" at ~0.03
-leaky and comes LAST at ~0.24 honest, while the plain linear baseline it
+that inverts the result outright (measured and pinned: the forest "wins"
+at ~0.03 leaky and comes LAST at 0.23-0.25 honest — a band, not a point,
+because that candidate is unseeded — while the plain linear baseline it
 beat becomes the winner). Put the train cut upstream, in a node.
 
 Import cost: stdlib + ``dskit.pipeline`` only. sklearn and joblib are
