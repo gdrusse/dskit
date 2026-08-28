@@ -16,7 +16,7 @@ never editing the package.
 
 Wrapping a standard DS/ML library is encouraged when it earns its place
 (see `dskit/pipeline/libs/`: numpy, sklearn, torch, transformers, optuna, pyomo,
-sb3, matplotlib).
+sb3, matplotlib, mlflow).
 Wrap the *library*, generically — never a project's use of it.
 
 ## Working agreement

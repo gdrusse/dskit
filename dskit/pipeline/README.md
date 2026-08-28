@@ -191,6 +191,31 @@ artifact); **transformers** `transformers-fit` (declared)
 hooks); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures` and
 wire by import path. Heavy imports live inside `run()` — the tier rule.
 
+**mlflow** is the odd pack out: it ships no node kind at all, because it fills
+the TRACKING-sink registry instead. Call `dskit.pipeline.libs.mlflow.register()`
+(idempotent — the seam `testing.register_synthetic()` uses for the test
+`memory` sink) and a document may then declare where its metrics land:
+
+```jsonc
+"tracking": {
+  "sinks": [{
+    "kind": "mlflow",
+    "params": { "tracking_uri": "sqlite:///mlruns.db", "experiment": "my-study" },
+    "notes": "Local sqlite store — serverless. Runs land with every node's params flattened to '<node>.<param.path>' keys, so you can filter by hyperparameter."
+  }]
+}
+```
+
+Knobs: `tracking_uri` (default `sqlite:///mlruns.db`; schemes `""`/`file`/
+`http`/`https`/`sqlite`), `experiment`, `run_name`, `tags`, `connect_timeout`.
+Skipping `register()` is fine — spell the class instead:
+`"kind": "dskit.pipeline.libs.mlflow:MlflowTracker"`, validated by the same
+rules. **The sink is loud on purpose**: unknown knobs and an unreachable
+destination (a missing store directory, a server that refuses a TCP connection)
+fail at *plan* time, because the driver deliberately SWALLOWS sink exceptions at
+run time so telemetry can never kill a run — an unchecked misconfiguration
+would log nothing and say nothing. Install it with `pip install "dskit[mlflow]"`.
+
 Synthetic nodes (`synthetic_nodes.py`) mirror every role for demos and tests;
 they register only into private registries, never the default one.
 
@@ -278,7 +303,8 @@ dskit/pipeline/
 ├── io.py, resolve.py  stage-list load/save + resolution
 ├── registry.py        venue-backend registry mechanism (no venues ship)
 ├── libs/              tier-2 packs: numpy, sklearn, torch, transformers, optuna,
-│                      pyomo, sb3, matplotlib
+│                      pyomo, sb3, matplotlib, mlflow (the tracking SINK pack —
+│                      registers into SINK_KINDS, no node kinds)
 ├── README.md          this file
 └── CLAUDE.md          agent orientation
 ```

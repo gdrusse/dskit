@@ -76,9 +76,15 @@ __all__ = [
 #: resolved (and therefore its classes imported) at PLAN, on machines that
 #: may have none of these installed — so a top-level ``import pandas``
 #: anywhere in a node module stops documents planning there.
+#:
+#: The purity gate's behavioural half blocks exactly this tuple while it
+#: imports every tier-2 pack, so a pack whose library is MISSING here is
+#: checked only statically — which is why ``mlflow`` is listed even though
+#: it backs a tracking sink rather than a node.
 DEFAULT_BLOCKED_IMPORTS = (
     "highspy",
     "matplotlib",
+    "mlflow",
     "numpy",
     "optuna",
     "pandas",

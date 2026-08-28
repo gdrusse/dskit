@@ -28,8 +28,10 @@ on it without breaking its rulings.
   a child package (`children/README.md`), NEVER here — and the child is
   the WHOLE adapter unit (ADR-0032): `pipeline_<venue>` sibling packages
   are retired; do not reintroduce the pattern in code or prose.
-- **Library packs** — `libs/<lib>.py`: name the library only inside
-  `run()`; expose a `NODE_KINDS` tuple + `register()`; ship abstract
+- **Library packs** — `libs/<lib>.py`: name the library only inside a
+  method (`run()` for node packs); expose a `NODE_KINDS` tuple +
+  `register()` — `libs/mlflow.py` keeps `NODE_KINDS` empty and its
+  `register()` claims a `SINK_KINDS` entry instead; ship abstract
   bases with a small hook (`build_module`, `build_model`, `apply`) so
   tier-3 code writes the domain, not the plumbing. The DECLARED kinds
   (`torch-train`/`torch-predict`, `transformers-fit`) go further: the
@@ -57,10 +59,26 @@ on it without breaking its rulings.
 
 - **`SINK_KINDS` is the TRACKING-sink registry**, not "this node writes
   something": `factory(params)` must return a `Tracker` (consumed by
-  `driver.py`/`runner.py`). Only the test `memory` sink exists, and only
-  after `testing.register_synthetic()`. A file-writer registered there
-  breaks the tracking path — file output is a `report`-role node or
-  `table-write`.
+  `driver.py`/`runner.py`). Two sinks ship, both application-side and
+  idempotent: the test `memory` sink (`testing.register_synthetic()`)
+  and `mlflow` (`libs.mlflow.register()`). A file-writer registered
+  there breaks the tracking path — file output is a `report`-role node
+  or `table-write`.
+- **`_Trackers` SWALLOWS every sink exception** (`driver.py:139-153`) so
+  telemetry can never kill a run. Deliberate, and never to be "fixed" —
+  the consequence is that a misconfigured sink logs nothing and SAYS
+  nothing, so a sink must validate LOUDLY where the swallow cannot
+  reach: `validate_params` (runs in `SinkConfig.__post_init__`, i.e. at
+  plan) and the constructor (`_open_sinks` runs before the node loop).
+  `libs/mlflow.py` is the worked example — default-deny knobs plus a
+  stdlib reachability probe of the tracking URI, both at plan time.
+- **Tracking config is NOT hash-excluded.**
+  `DOC_NON_IDENTITY_SECTIONS` is `("env", "outputs", "schedule")` only,
+  so the `tracking` section IS graded: changing a sink's URI renames the
+  run. Arguably wrong (it reads like `outputs`), but moving it orphans
+  every run dir of every document that declares a sink — so it is pinned
+  in `tests/pipeline_libs/test_mlflow.py::TestHashPlacement` and any
+  move must trip that test first.
 - **The numpy pack registers no kinds** — `ArrayMap`/`ArrayFeatures`
   subclasses wired by import path only.
 - **Base `Node.validate_params` accepts anything.** The deny lives in
@@ -159,7 +177,7 @@ dskit/pipeline/
 ├── io.py, resolve.py  stage-list load/save + resolution
 ├── registry.py        venue-backend registry (no venues ship)
 ├── libs/              numpy, sklearn, torch, transformers, optuna, pyomo,
-│                      sb3, matplotlib
+│                      sb3, matplotlib, mlflow (tracking SINK pack, no nodes)
 ├── README.md          user-facing docs
 └── CLAUDE.md          this file
 ```
