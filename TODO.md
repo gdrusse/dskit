@@ -176,6 +176,15 @@ found by diffing the documents against `DeclaredTrain._BASE_PARAMS` +
       interval is meaningless). Pruning stays deliberately absent: the
       `ctx.rerun` seam returns one float per trial, so there is nothing to
       prune against until a per-epoch reporting seam lands.
+      **Landed this run (2026-08-28, E4) — with a correction:** the
+      planner half was ALREADY in the baseline (the pin was already
+      flipped at `93ed7e2`; this item's planner claim was stale). What
+      was genuinely missing shipped: a continuous document proven e2e
+      through the real driver, the shipped twin example
+      `examples/pipeline/optuna-continuous.json` (in the hash ledger),
+      pins for `hpo-grid`'s range-spec refusal (it had none and was the
+      only guard), the INTEGRATION FLAG retired, and the ref-driven
+      deferral truth stated where the docs overclaimed it.
 
 - [ ] **Gap-aware vectorized window transform — extend `ArrayFeatures`, do
       NOT build a new seam.** Owner-approved 2026-08-27, needs an ADR first.
@@ -458,9 +467,10 @@ across runs is what is missing**, plus the wiring below.
       experiment.
 
 Also required before the numbers mean anything, tracked above: `monitor`
-unset (you would be comparing last-epoch models, not best-epoch), `epochs`
-unpinned between the two documents, and continuous optuna ranges being
-plan-refused.
+unset (you would be comparing last-epoch models, not best-epoch) and
+`epochs` unpinned between the two documents — both landed this run, as
+did continuous optuna ranges (proven e2e; the plan-refusal claim was
+stale).
 
 ### DO THIS LAST — wire HPO into `intraday_poc`
 
@@ -492,6 +502,8 @@ plan-refused.
       - **No `runs` verb / no sink** → nowhere to SEE the comparison.
       - **Continuous ranges plan-refused** → `lr` can only be tuned as a
         categorical list, which is the wrong shape for a learning rate.
+        *(Closed this run, E4: range specs plan AND run e2e —
+        `examples/pipeline/optuna-continuous.json`.)*
       - **No `foreach`** → `qhat_aapl` and `qhat_msft` need duplicate space
         keys with nothing pinning them, so the two symbols can silently be
         tuned to different architectures.
