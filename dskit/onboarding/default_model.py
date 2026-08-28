@@ -47,7 +47,7 @@ def onboarding_model() -> AssetModel:
         m = onboarding_model()
         sorted(m.kinds)
         # -> ['acquisition_job', 'certification', 'published_version', 'snapshot',
-        #     'source_config', 'validation_result']
+        # ->  'source_config', 'validation_result']
         sorted(k for k, ks in m.kinds.items() if ks.states)  # governed kinds
         # -> ['source_config']
         m.kinds["acquisition_job"].fields["mode"].required   # mode is first-class
