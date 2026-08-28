@@ -37,9 +37,10 @@ untouched — so :func:`_spec_problems` below is
 the ONE place the range form's internals are defined. ``hpo-grid`` refuses range specs on purpose —
 exhaustive enumeration over a real interval is meaningless — and pins
 that refusal itself. Note WHERE a malformed range refuses: a search
-node's ``objective`` is a ``$``-reference, so its params defer
-plan-time ``validate_params`` and this grammar bites when the node is
-constructed during the run. The two shipped documents are
+node's ``objective`` is a ``$``-reference, so its params normally carry
+an unresolved ref and plan defers ``validate_params`` — this grammar
+then bites when the node is constructed during the run (with no ref in
+params, it bites at plan instead). The two shipped documents are
 ``examples/pipeline/optuna-search.json`` (categorical) and
 ``optuna-continuous.json`` (range) — twins differing only in ``name``
 and that shape, pinned in ``tests/pipeline_libs/test_optuna.py``.

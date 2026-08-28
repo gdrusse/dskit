@@ -609,14 +609,16 @@ def _search_errors(key, spec, specs, roles, edges):
             # — and past that passes a DICT through untouched, because
             # its INTERNALS are the kind's range-spec form (hpo-grid
             # takes scalar lists only; optuna-search adds
-            # {"low","high"}). The kind's own grammar bites at EXECUTE,
-            # not here: a search node's `objective` is a $-reference BY
-            # CONTRACT, so its params always carry an unresolved ref and
-            # _has_unresolved_ref DEFERS its validate_params — the checks
-            # below are the only plan-time guard a space value meets, and
-            # a range spec offered to hpo-grid refuses when the node is
-            # constructed mid-run (both pinned in
-            # tests/pipeline/test_kinds_search.py::TestPlannerRules).
+            # {"low","high"}). The kind's own grammar normally bites at
+            # EXECUTE, not here: a search node's `objective` is a
+            # $-reference BY CONTRACT, so its params carry an unresolved
+            # ref and _has_unresolved_ref DEFERS its validate_params —
+            # under that contract the checks below are the only plan-time
+            # guard a space value meets, and a range spec offered to
+            # hpo-grid refuses when the node is constructed mid-run (both
+            # pinned in tests/pipeline/test_kinds_search.py::
+            # TestPlannerRules). The deferral is ref-driven: params with
+            # no ref anywhere ARE validated by the kind at plan.
             if isinstance(grid, (list, tuple)):
                 if not grid:
                     problems.append(

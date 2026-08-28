@@ -805,11 +805,11 @@ class TestPlannerRules:
     def test_a_search_node_defers_plan_time_validate_params(self, tmp_path, registry):
         # The fact the whole division of labour rests on, pinned: a search
         # node's `objective` is a $-reference BY CONTRACT (spec §8), so its
-        # params always carry an unresolved ref and plan() DEFERS the
-        # kind's validate_params to execute (planner._has_unresolved_ref).
-        # No search kind's value grammar is ever consulted at plan — which
-        # is why the planner's own space checks are the only plan-time
-        # guard, and why the refusal below lands during the run.
+        # params carry an unresolved ref and plan() DEFERS the kind's
+        # validate_params to execute (planner._has_unresolved_ref). The
+        # deferral is ref-driven, not kind-driven — strip every ref from a
+        # search node's params and the kind's grammar runs at plan — but
+        # under the contract the refusal below lands during the run.
         the_plan = plan(parabola_document(tmp_path), registry)
         assert "search" in the_plan.deferred_params
         assert the_plan.to_obj()["nodes"]["search"]["params_validation"] == "deferred"

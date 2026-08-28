@@ -98,12 +98,13 @@ on it without breaking its rulings.
   grammar **within** the list/dict shapes above — a list of objects, or
   an empty value of either shape, is refused by the planner before your
   kind is consulted.
-- **A search node's params ALWAYS defer plan-time `validate_params`** —
-  its `objective` is a `$`-ref by contract, so `_has_unresolved_ref`
-  defers it. No search kind's value grammar runs at plan: a bad range
-  spec refuses when the node is CONSTRUCTED mid-run, after the upstream
-  nodes have executed. Restoring a plan-time gate would be a new
-  planner↔kind protocol — ADR first.
+- **A search node's params defer plan-time `validate_params` whenever a
+  param carries an unresolved `$`-ref** — the `objective` contract
+  normally guarantees one, so a bad range spec usually refuses when the
+  node is CONSTRUCTED mid-run, after the upstream nodes executed. The
+  deferral is ref-driven, not kind-driven: with no ref anywhere in
+  params, the kind's validator DOES run at plan. A guaranteed plan-time
+  gate would be a new planner↔kind protocol — ADR first.
 - **An occupied run dir refuses** — reruns need a new asof or name.
 - **`runs.py` reads RECORDS, never `report.md`** — a `metrics` dict is
   summarized out of `nodes/NN-*.json` and recovered from `carry.json`;

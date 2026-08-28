@@ -34,7 +34,12 @@ import os
 
 import pytest
 
-from dskit.pipeline.base import ConfigError, OutputsConfig, TimeSplitConfig
+from dskit.pipeline.base import (
+    ConfigError,
+    OutputsConfig,
+    TimeSplitConfig,
+    _strip_notes,
+)
 from dskit.pipeline.document import NodeSpec, PipelineDocument, load_document
 from dskit.pipeline.driver import run_document
 from dskit.pipeline.libs.optuna import NODE_KINDS, OptunaSearch, register
@@ -55,17 +60,10 @@ def _example(name):
 
 
 def _document_obj(path):
-    """One shipped document as raw JSON, every ``notes`` field dropped."""
-
-    def strip(obj):
-        if isinstance(obj, dict):
-            return {k: strip(v) for k, v in obj.items() if k != "notes"}
-        if isinstance(obj, list):
-            return [strip(v) for v in obj]
-        return obj
-
+    """One shipped document as raw JSON, stripped by the identity
+    contract's own ``base._strip_notes`` — never a local copy of it."""
     with open(path, encoding="utf-8") as handle:
-        return strip(json.load(handle))
+        return _strip_notes(json.load(handle))
 
 
 EXAMPLE = _example("optuna-search.json")
