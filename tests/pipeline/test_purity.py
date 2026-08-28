@@ -266,17 +266,20 @@ def test_core_imports_with_heavy_libraries_blocked():
 # ---------------------------------------------------------------------------
 
 
-def test_library_packs_name_their_library_only_inside_run():
-    """A pack may ``import torch`` — inside ``run()``. At module level a
+def test_library_packs_name_their_library_only_inside_a_method():
+    """A pack may ``import torch`` — inside a METHOD. At module level a
     pack obeys the same rule as the core (stdlib or ``dskit.pipeline``):
-    D-146 lets it name its library only inside ``run()``, and a blocklist
-    of known-heavy roots would miss e.g. joblib or yaml."""
+    D-146 lets it name its library only inside a method, and a blocklist
+    of known-heavy roots would miss e.g. joblib or yaml. The method is
+    ``run()`` for a node pack; ``libs/mlflow.py`` is a tracking SINK and
+    names mlflow in ``_open``/``log_params``/``log_metrics`` instead —
+    what the gate checks is the module LEVEL, not the method's name."""
     offenders = []
     for path in _tier2_files():
         offenders.extend(_module_level_offenders(path, LIBS_PACKAGE))
     assert not offenders, (
-        "library packs must import their library inside run(), not at module "
-        f"level: {offenders}"
+        "library packs must import their library inside a method, not at "
+        f"module level: {offenders}"
     )
 
 

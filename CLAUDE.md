@@ -240,7 +240,7 @@ list is the remaining work.
   | Tier | Path | Rule |
   |---|---|---|
   | 1. Core | `dskit/<pkg>/*.py` | stdlib only; domain-neutral |
-  | 2. Library packs | `dskit/<pkg>/libs/<lib>.py` | generic wrappers for standard DS/ML libraries; name the library **only inside `run()`** |
+  | 2. Library packs | `dskit/<pkg>/libs/<lib>.py` | generic wrappers for standard DS/ML libraries; name the library **only inside a method** (`run()` for a node pack; `libs/mlflow.py` is a tracking SINK and has none) |
   | 3. Adapters | your own package, outside `dskit` | domain-specific; may import anything |
 
 - **The core stays importable with nothing installed.** Heavy imports go *inside*
@@ -306,7 +306,8 @@ the rl_stocks-driven capability set (0025 + 0027…0030: the
 declared-model seam + trainlog, walk-forward + embargoed splits, the
 sb3 and matplotlib packs, the onboarding coverage ledger) and the
 proposal still awaiting the owner (0026), the §14/§13 graduation round
-(0033…0036), and the observations read seam (0037). New
+(0033…0036), the observations read seam (0037), and the mlflow
+tracking-sink pack (0038). New
 significant design decisions still require an ADR in
 `docs/architecture/decision-log.md` before code — no decision
 undocumented.

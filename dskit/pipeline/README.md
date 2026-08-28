@@ -191,8 +191,9 @@ artifact); **transformers** `transformers-fit` (declared)
 hooks); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures` and
 wire by import path. Heavy imports live inside `run()` — the tier rule.
 
-**mlflow** is the odd pack out: it ships no node kind at all, because it fills
-the TRACKING-sink registry instead. Call `dskit.pipeline.libs.mlflow.register()`
+**mlflow** is the odd pack out (ADR-0038): it ships no node kind at all, because
+it fills the TRACKING-sink registry instead. Call
+`dskit.pipeline.libs.mlflow.register()`
 (idempotent — the seam `testing.register_synthetic()` uses for the test
 `memory` sink) and a document may then declare where its metrics land:
 
@@ -211,17 +212,23 @@ Knobs: `tracking_uri` (default `sqlite:///mlruns.db`; schemes `""`/`file`/
 The default is sqlite and not the older `./mlruns` DIRECTORY for a reason: the
 two directory spellings — a bare path and `file:` — reach a store that mlflow
 3.x put into maintenance mode and **refuses** unless `MLFLOW_ALLOW_FILE_STORE`
-is set in your environment, and this pack sets no environment variable on your
-behalf. They stay in the vocabulary for mlflow 2.x and for anyone who has opted
-in; on a modern mlflow they plan clean and then raise at sink construction,
-carrying mlflow's own message. Prefer `sqlite:` unless you know otherwise.
+is set in your environment, and this pack never opts you in. They stay in the
+vocabulary for mlflow 2.x and for anyone who has opted in; on a modern mlflow
+they plan clean and then raise at sink construction, carrying mlflow's own
+message and leaving nothing on disk. Prefer `sqlite:` unless you know otherwise.
 Skipping `register()` is fine — spell the class instead:
 `"kind": "dskit.pipeline.libs.mlflow:MlflowTracker"`, validated by the same
-rules. **The sink is loud on purpose**: unknown knobs and an unreachable
+rules. **The sink is loud on purpose**: unknown knobs, an unreachable
 destination (a missing store directory, a server that refuses a TCP connection)
-fail at *plan* time, because the driver deliberately SWALLOWS sink exceptions at
-run time so telemetry can never kill a run — an unchecked misconfiguration
-would log nothing and say nothing. Install it with `pip install "dskit[mlflow]"`.
+and a DELETED experiment all fail before the run, because the driver
+deliberately SWALLOWS sink exceptions at run time so telemetry can never kill a
+run — an unchecked misconfiguration would log nothing and say nothing. The one
+case that is loud but **not** fatal is a server that accepted the plan-time
+connection and is now failing: that is the store's condition, not your
+document's, so the sink disables itself with a logged warning and your run
+proceeds. `connect_timeout` is the budget for both the probe and the sink's own
+mlflow calls, so a degraded server cannot stall the run either. Install it with
+`pip install "dskit[mlflow]"`.
 
 Synthetic nodes (`synthetic_nodes.py`) mirror every role for demos and tests;
 they register only into private registries, never the default one.

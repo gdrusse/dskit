@@ -71,7 +71,21 @@ on it without breaking its rulings.
   reach: `validate_params` (runs in `SinkConfig.__post_init__`, i.e. at
   plan) and the constructor (`_open_sinks` runs before the node loop).
   `libs/mlflow.py` is the worked example — default-deny knobs plus a
-  stdlib reachability probe of the tracking URI, both at plan time.
+  stdlib reachability probe of the tracking URI, both at plan time
+  (ADR-0038).
+- **…but a sink that RAISES at construction kills the run.**
+  `_open_sinks` is called at `driver.py:823`, one line ABOVE the `try`
+  that `run_document`'s body lives in, so a `ConfigError` from a sink
+  factory aborts the run before a single node executes. That is right
+  for a MISconfiguration and wrong for a destination having a bad day,
+  and the two look identical from inside the `except`. `libs/mlflow.py`
+  splits them by origin: mlflow missing, a non-active experiment, or any
+  failure of a LOCAL store (already proved writable at plan time) raise;
+  an `http`/`https` store that passed the TCP probe and then fails
+  disables the sink and logs a warning. A new sink pack must make the
+  same split, and must bound its own remote calls — a telemetry
+  destination that HANGS stalls the run just as fatally as one that
+  raises, and no swallow catches a hang.
 - **`Tracker.close()` carries no status** and the driver calls it from a
   `finally` on every path, so a sink cannot tell a crashed run from a
   clean one — an mlflow run reads `FINISHED` either way. Giving it one
