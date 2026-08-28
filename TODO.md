@@ -83,7 +83,7 @@ REMAINING, in the plan's risk order:
       child's declared-but-unread `artifact` knob. A new pin freezes the
       four recorded class refs and both `build_module` identities, the
       invariant only loading a pre-change `.pt` would otherwise catch.
-- [ ] **3d — decompose the long methods** (after 3b/3c, so the seams are
+- [x] **3d — decompose the long methods** (after 3b/3c, so the seams are
       stable): `driver.py:730` `run_document` (399 lines; its six phase
       comments ARE the boundaries), `kinds_report.py:1227` `RunReport.run`
       (252, no docstring), `libs/torch.py:960` `TorchTrain.run` (230, no
@@ -92,6 +92,18 @@ REMAINING, in the plan's risk order:
       **Scope note: 3d is about long METHODS, not large FILES.** Splitting
       modules is 3e; decomposing `run_document` shrinks `driver.py` only as
       a side effect.
+      **Landed this run (2026-08-28, C4).** Longest body per file is now 86 /
+      72 / 89 lines. Six bodies were decomposed, not four: `TorchTrain.run`
+      had been RENAMED `run_train` by ADR-0038 and was still 216 lines — the
+      card wrongly said it was already short, and the agent measured by AST
+      rather than trusting it. `run_walk_forward` (219), `_summary` (119) and
+      `_family_delta` (106) were over the bar too. `WindowRows.run` is C2's.
+      The ceiling is now PINNED (`tests/pipeline/test_method_lengths.py`) on
+      an allowlist that grows as modules are decomposed, so a body cannot
+      quietly regrow; the pin's own walker is pinned to see defs at any
+      nesting depth. `kinds_report.py` converted and its ignore entry
+      drained; `driver.py` and `libs/torch.py` keep theirs by orchestrator
+      ruling — C3 and C6 still own those files and drain them.
 - [ ] **3e — split `kinds_flow.py` (1549 lines, SEVEN unrelated kinds).**
       Not covered by 3d, and not tracked anywhere before 2026-08-27. It
       holds two unrelated subjects: the record-flow verbs (`Filter:177`,

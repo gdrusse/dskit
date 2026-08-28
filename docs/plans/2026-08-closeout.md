@@ -819,7 +819,7 @@ Intentional-move log (append `document → old-prefix → new-prefix → card`):
 | C1 | MERGED | 5548780 | ADR-0038 ported across five packs. FIRST card under the new convergence floor: clean in 2 rounds (7→5 findings, no BLOCKER/MAJOR surviving) using 8 agents against wave 1's ~15 — and the first run with skeptics SERIAL per the owner's no-parallel ruling. Nine `if mode ==` sites dead; hash gate empty; suite 2718→2746 |
 | C2 | pending | | |
 | C3 | pending | | after C4 |
-| C4 | pending | | |
+| C4 | MERGED | 59922ba | clean in 2 rounds / 6 agents. CORRECTED THE CARD: I had told it torch.py held no long method left; it measured by AST and found ADR-0038 had RENAMED `TorchTrain.run` to `run_train`, still 216 lines. Six bodies decomposed, not four. Ceiling now PINNED (test_method_lengths.py, allowlist grows as modules are decomposed); kinds_report.py ignore entry drained, driver.py/torch.py deferred to C3/C6 by ruling. Suite 2753, hash gate empty |
 | C5 | pending | | |
 | C6 | pending | | |
 | C7 | pending | | |
