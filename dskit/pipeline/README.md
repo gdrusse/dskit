@@ -249,19 +249,43 @@ they register only into private registries, never the default one.
 ```python
 from dskit.pipeline.node import Node, register_node_kind
 
-class MyModel(Node):
-    role = "train"                     # from ROLES; the class declares it
-    outputs = ("signal", "artifact")   # run() must return exactly these
+class MyTransform(Node):
+    role = "transform"                 # from ROLES; the class declares it
+    outputs = ("records",)             # run() must return exactly these
 
     @classmethod
     def validate_params(cls, params):  # default-DENY: name your knobs, refuse the rest
         ...
 
     def run(self, ctx, inputs):
-        import torch                   # heavy imports go INSIDE run()
+        import numpy                   # heavy imports go INSIDE run()
         ...
 
-register_node_kind("my-model", MyModel)   # at your package's import
+register_node_kind("my-transform", MyTransform)   # at your package's import
+```
+
+A **trainable role** (`train`/`signal`) subclasses `TrainableNode` instead
+(ADR-0038) — it is the only role a document may give `mode`/`artifact`, and
+the base owns that dispatch. `run` and `validate_inputs` are template methods:
+write `run_train`/`run_load` (both required, so an incomplete trainable refuses
+at construction) and, when validation differs by mode,
+`validate_common_inputs` / `validate_train_inputs` / `validate_load_inputs`. A
+kind that only ever loads sets `default_mode = "load"` and makes `run_train`
+its refusal. **Do not override `run` or `validate_inputs`** — the conformance
+bar checks both still resolve to the base, because a wrapper is where a second
+opinion about `mode` regrows. `Node` itself carries `pinned_artifact`
+(node-level pin → declared param → wired port, refusing a contradiction) and
+`pin_port_problems`, so a non-trainable role can resolve a pin too.
+
+```python
+from dskit.pipeline.node import TrainableNode
+
+class MyModel(TrainableNode):
+    role = "train"
+    outputs = ("signal", "artifact_path")
+
+    def run_train(self, ctx, inputs): ...
+    def run_load(self, ctx, inputs): ...      # restore the pin; NEVER refit
 ```
 
 Reference it as `"uses": "yourpkg.nodes:MyModel"` (no registration needed) or
@@ -298,7 +322,7 @@ dskit/pipeline/
 ├── __init__.py        public surface; auto-registers the default kinds
 ├── __main__.py        the CLI: python -m dskit.pipeline
 ├── document.py        PipelineDocument / NodeSpec / ROLES / splits + walkforward specs / refs
-├── node.py            Node ABC, NodeContext, NodeKindRegistry, register_node_kind
+├── node.py            Node + TrainableNode ABCs, NodeContext, NodeKindRegistry, register_node_kind
 ├── planner.py         document -> Plan: topo order, role rules, wire checks
 ├── driver.py          LOAD -> IMPORT -> PLAN -> RESOLVE -> EXECUTE -> RECORD; run dirs;
 │                      run_walk_forward (one derived run per fold + summary)

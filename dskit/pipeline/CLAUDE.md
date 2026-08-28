@@ -28,6 +28,17 @@ on it without breaking its rulings.
   a child package (`children/README.md`), NEVER here — and the child is
   the WHOLE adapter unit (ADR-0032): `pipeline_<venue>` sibling packages
   are retired; do not reintroduce the pattern in code or prose.
+- **Trainable kinds** — a `train`/`signal` role subclasses
+  `TrainableNode` (ADR-0038), the only role a document may give
+  `mode`/`artifact`. `run` and `validate_inputs` are TEMPLATE methods:
+  implement `run_train`/`run_load` (both abstract) and the
+  `validate_common_inputs`/`validate_train_inputs`/`validate_load_inputs`
+  hooks; set `default_mode = "load"` for a kind that only ever loads and
+  make `run_train` its refusal. Never override either template method —
+  the conformance bar checks both still resolve to the base. Resolving a
+  pin is `Node.pinned_artifact` (node-level pin → declared param → wired
+  port) plus `Node.pin_port_problems`; they sit on `Node`, not the
+  trainable base, because `sb3-eval` (role `score`) needs them too.
 - **Library packs** — `libs/<lib>.py`: name the library only inside a
   method (`run()` for node packs); expose a `NODE_KINDS` tuple +
   `register()` — `libs/mlflow.py` keeps `NODE_KINDS` empty and its
@@ -193,7 +204,7 @@ dskit/pipeline/
 ├── __init__.py        public surface; auto-registers the default kinds
 ├── __main__.py        the CLI: python -m dskit.pipeline
 ├── document.py        PipelineDocument / NodeSpec / ROLES / splits + walkforward / refs
-├── node.py            Node ABC, NodeContext, registry, register_node_kind
+├── node.py            Node + TrainableNode ABCs, NodeContext, registry, register_node_kind
 ├── planner.py         document -> Plan; role rules live here
 ├── driver.py          run_document: LOAD..RECORD, run dirs, $prev carry;
 │                      run_walk_forward (ADR-0027)
