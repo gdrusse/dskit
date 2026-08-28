@@ -105,13 +105,18 @@ Knobs the toolkit ALREADY offers that `intraday_poc` leaves unset (2026-08-27,
 found by diffing the documents against `DeclaredTrain._BASE_PARAMS` +
 `_EXTRA_PARAMS`). All config-only unless marked:
 
-- [ ] **`monitor` is never set, though `val_rows` IS wired.** ADR-0035
+- [x] **`monitor` is never set, though `val_rows` IS wired.** ADR-0035
       shipped val-metric checkpoint selection; `run-backtest.json` computes
       per-epoch val loss into `training_curve.json` and then keeps the LAST
       epoch's weights anyway. Five epochs of validation, computed and
       discarded. Set `"monitor": "val_loss"` on both trainer nodes —
       one line, and it is the difference between the backtest scoring the
       best model and scoring whichever epoch happened to be last.
+      **Landed this run (2026-08-27, A1):** set on both `run-backtest.json`
+      trainers. `run-train.json` wires no `val_rows`, so the engine refuses
+      a validation monitor there — left undeclared, and the resulting
+      best-vs-last-epoch skew is declared in both documents + README and
+      pinned deliberate by `test_configs.py`.
 - [ ] **No `loss` knob exists in the torch pack** — NOT config-only, a real
       gap. `RowVectorAdapter.loss` (`libs/torch.py:493`) hardcodes
       `mse_loss`, and neither `_BASE_PARAMS` nor `_EXTRA_PARAMS` carries a
@@ -119,12 +124,16 @@ found by diffing the documents against `DeclaredTrain._BASE_PARAMS` +
       fat-tailed return series — requires writing an adapter subclass. The
       pack exposes `optimizer` as a declared import path; `loss` should
       work the same way.
-- [ ] **`device` is never declared** — CPU-only by default. The knob exists
+- [x] **`device` is never declared** — CPU-only by default. The knob exists
       (`libs/torch.py:873`, validated as a string, availability
       deliberately unchecked at plan). A GPU run is a document edit today
-      only because nobody wrote it.
-- [ ] **`optimizer_params` unused** — no `weight_decay`, no betas. Adam at
-      defaults.
+      only because nobody wrote it. **Landed this run (2026-08-27, A1):**
+      `"device": "cpu"` declared on all four trainer nodes with notes;
+      presence pinned by `DECLARED_TRAINER_KNOBS`.
+- [x] **`optimizer_params` unused** — no `weight_decay`, no betas. Adam at
+      defaults. **Landed this run (2026-08-27, A1):** declared at Adam
+      defaults (`{"weight_decay": 0.0}`) on all four trainers with notes;
+      presence pinned.
 - [ ] **`WindowRows` hardcodes the key field names it reads** —
       `row.get("symbol")` / `row.get("asof_ms")` (`nodes.py:204-206`) while
       `price_field` IS a knob. One of three field names configurable, two
@@ -211,11 +220,16 @@ HIGH — silent wrong behavior:
       `"price_field": "vwap"` and the backtest trains on VWAP while live
       feeds close returns into the same weights. Pure train/serve skew.
       `test_live_window_parity` uses `close` on both sides, so it is blind.
-- [ ] **`epochs: 5` is the one knob the pinning test omits** —
+- [x] **`epochs: 5` is the one knob the pinning test omits** —
       `run-train.json:38`/`:54`, `run-backtest.json:166`/`:224`.
       `tests/test_configs.py:64-65` pins seven knobs between the documents;
       `epochs` is not among them, though the test's docstring claims it
       proves the documents share their modelling core. **One-string fix.**
+      **Landed this run (2026-08-27, A1):** grew past the one-string fix —
+      the pin now compares the trainers' params dicts whole (monitor the
+      one declared divergence, its values pinned too), plus presence,
+      symbol-twin, and monitor/val_rows-coupling pins; each proven able
+      to fail.
 - [ ] **`adjustment` disagrees three ways** — `all`
       (`source-backfill.json:6`), `raw` (`source-live.json:6`), and the
       vendor default (`live.py:178-183` passes none). Training is

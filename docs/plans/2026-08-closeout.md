@@ -784,13 +784,14 @@ startup). Identity hashes (`python -m dskit.pipeline validate <f>`):
 prints them. Prefixes above are for eyeballing drift.)
 
 Intentional-move log (append `document → old-prefix → new-prefix → card`):
-- _none yet_
+- children/…/configs/run-train.json → `187658f8b58b91a1…` → `85fff271bfdd05ec…` → A1
+- children/…/configs/run-backtest.json → `4db5b7904d19b73c…` → `5e1c24b0fad3ae1b…` → A1
 
 ## 10. STATE — orchestrator updates as it goes
 
 | Card | Status | Branch/SHA | Notes |
 |---|---|---|---|
-| A1 | pending | | |
+| A1 | MERGED | 3d8ccf6 | 5-round loop + orchestrator round-5 intervention (README skew twin, note brevity); monitor scoped to run-backtest only (run-train wires no val_rows — engine refuses; skew declared+pinned); child hashes moved as declared; suite 2440/108, child 74/11 |
 | A2 | pending | | |
 | A4 | pending | | |
 | A5 | pending | | |
