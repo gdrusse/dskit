@@ -139,6 +139,26 @@ class TestScan:
         with pytest.raises(OSError, match="no run root"):
             scan_runs(str(tmp_path / "nope"))
 
+    def test_a_binary_result_json_is_a_skip_not_a_crash(self, two_runs, capsys):
+        """UnicodeDecodeError is a ValueError, not a JSONDecodeError: a
+        foreign directory holding binary bytes named result.json must
+        become a RunProblem — `_load_json` says "never raises", and the
+        verb's table must survive the encounter."""
+        root, _ = two_runs
+        foreign = os.path.join(root, "some-binary-artifact")
+        os.mkdir(foreign)
+        with open(os.path.join(foreign, RESULT_FILE), "wb") as fh:
+            fh.write(b"\xff\xfe\x00\x00PK\x03\x04")
+        runs, problems = scan_runs(root)
+        assert len(runs) == 2  # the good runs still tabulate
+        (problem,) = problems
+        assert problem.entry == "some-binary-artifact"
+        assert "unreadable" in problem.reason
+        assert main(["runs", "--root", root]) == 0
+        out = capsys.readouterr().out
+        assert "| name | asof | state |" in out  # the table still prints
+        assert "some-binary-artifact" in out
+
     def test_a_null_result_json_is_skipped_with_a_reason(self, tmp_path):
         """`null` is the one JSON payload that parses and is not a dict;
         it must not slip out as a RunProblem with a BLANK reason — the
@@ -188,6 +208,41 @@ class TestScan:
         assert resolve_run_root("") == os.path.abspath(DEFAULT_RUN_ROOT)
         assert resolve_run_root(None) == os.path.abspath(DEFAULT_RUN_ROOT)
         assert resolve_run_root(str(tmp_path)) == str(tmp_path)
+
+    def test_same_asof_runs_tiebreak_on_mtime_newest_first(self, tmp_path):
+        """Two runs of DIFFERENT documents share one asof (their hashes —
+        and so their dir names — differ): the newer directory mtime wins
+        the tiebreak. The mtimes are set explicitly, against creation
+        order, so nothing but the documented key can pass this."""
+        root = str(tmp_path / "pipeline_runs")
+        registry = make_registry()
+        first = run_document(
+            banking_document(outputs=OutputsConfig(run_root=root)),
+            asof=FIRST,
+            registry=registry,
+        )
+        pipeline = {
+            "events": NodeSpec(uses="synth-events", params={"n_events": 8}),
+            "diverged": NodeSpec(
+                uses="tests.pipeline.test_runs:DivergedScalarNode",
+                inputs={"events": "$events.events"},
+            ),
+        }
+        second = run_document(
+            banking_document(
+                pipeline=pipeline, outputs=OutputsConfig(run_root=root)
+            ),
+            asof=FIRST,
+            registry=registry,
+        )
+        assert first.run_hash != second.run_hash
+        # The FIRST-created dir becomes the newer one.
+        os.utime(second.run_dir, (1_000_000_000, 1_000_000_000))
+        os.utime(first.run_dir, (2_000_000_000, 2_000_000_000))
+        runs, problems = scan_runs(root)
+        assert problems == ()
+        assert [r.asof for r in runs] == [FIRST, FIRST]  # the tiebreak case
+        assert [r.run_dir for r in runs] == [first.run_dir, second.run_dir]
 
 
 class TestTable:
@@ -407,6 +462,28 @@ class TestLostMeasurements:
         os.rmdir(os.path.join(victim, NODES_DIR))
         newest = scan_runs(root)[0][0]
         assert any(NODES_DIR in note for note in newest.notes)
+
+    def test_an_unlistable_nodes_dir_is_named_not_fatal(self, two_runs):
+        """`os.listdir` can refuse (permissions) even when `nodes/`
+        exists. The run must still tabulate — with the refusal as a note
+        on that run, and whatever `carry.json` holds still shown — and
+        the scan must reach every other run."""
+        root, results = two_runs
+        nodes = os.path.join(results[1].run_dir, NODES_DIR)
+        os.chmod(nodes, 0)
+        try:
+            runs, problems = scan_runs(root)
+            assert problems == ()
+            assert [r.run_dir for r in runs] == [
+                results[1].run_dir,
+                results[0].run_dir,
+            ]
+            newest = runs[0]
+            assert any(NODES_DIR in note for note in newest.notes)
+            assert "validate.metrics.loss" in newest.metrics  # carry survives
+        finally:
+            # The tmp dir must stay removable after the test.
+            os.chmod(nodes, 0o755)
 
     def test_an_unreadable_config_is_named_not_read_as_an_absent_knob(
         self, two_runs
@@ -635,7 +712,7 @@ class TestVerb:
         assert main(["runs", "--root", root, "--metric", "size.final_bankrol"]) == 1
         out = capsys.readouterr().out
         assert "size.final_bankrol" in out  # the refusal names the key
-        assert MISSING not in out  # and no table of dashes is printed
+        assert "|" not in out  # and no table of dashes is printed
 
     def test_a_param_no_scanned_run_declares_is_refused(self, two_runs, capsys):
         """A typo'd --param would render the same confident column of
@@ -646,9 +723,47 @@ class TestVerb:
         assert main([*argv, "--param", "pipeline.validate.params.splt"]) == 1
         out = capsys.readouterr().out
         assert "pipeline.validate.params.splt" in out  # the refusal names it
-        assert MISSING not in out  # and no table of dashes is printed
+        assert "|" not in out  # and no table of dashes is printed
         # The path with the typo fixed renders.
         assert main([*argv, "--param", "pipeline.validate.params.split"]) == 0
+
+    def test_the_metric_refusal_still_prints_the_notes(self, two_runs, capsys):
+        """An unreadable carry.json can be exactly WHY no scanned run
+        reports a metric. Refusing without the notes misdiagnoses a
+        broken record as an operator typo — so the notes (and skipped)
+        blocks print BEFORE a refusal that no longer asserts what the
+        module cannot know."""
+        root, results = two_runs
+        for result in results:
+            with open(
+                os.path.join(result.run_dir, CARRY_FILE), "w", encoding="utf-8"
+            ) as fh:
+                fh.write("{trunc")
+        # The metric is real, but it survived only in carry.json.
+        assert main(["runs", "--root", root, "--metric", "validate.metrics.loss"]) == 1
+        out = capsys.readouterr().out
+        assert "carried metrics are not tabulated" in out  # the note shows
+        assert "no scanned run reported" in out  # and so does the refusal
+        assert out.index("carried metrics are not tabulated") < out.index(
+            "no scanned run reported"
+        )
+
+    def test_the_param_refusal_still_prints_the_notes(self, two_runs, capsys):
+        """The --param twin: an unreadable config.json is exactly why no
+        scanned run declares the path; the note names it, before the
+        refusal."""
+        root, results = two_runs
+        for result in results:
+            with open(
+                os.path.join(result.run_dir, CONFIG_FILE), "w", encoding="utf-8"
+            ) as fh:
+                fh.write("{trunc")
+        argv = ["runs", "--root", root, "--param", "pipeline.validate.params.split"]
+        assert main(argv) == 1
+        out = capsys.readouterr().out
+        assert "no declared param is shown" in out  # the note shows
+        assert "config declares" in out  # and so does the refusal
+        assert out.index("no declared param is shown") < out.index("config declares")
 
     def test_a_metric_only_an_unshown_run_reported_still_renders(
         self, tmp_path, capsys

@@ -415,7 +415,10 @@ def cmd_runs(root=None, metrics=(), params=(), limit=None):
     that was not a run, and the ``notes`` list names every measurement
     that reached disk as text rather than as a number
     (:attr:`~dskit.pipeline.runs.RunSummary.notes`) — a blank cell would
-    otherwise read as "this run never measured it".
+    otherwise read as "this run never measured it". A refusal prints the
+    notes and skipped blocks FIRST — for every scanned run, since an
+    unreadable record can be exactly why a key is unknown, and a bare
+    refusal would misdiagnose that record as an operator typo.
     """
     from dskit.pipeline.runs import (
         format_runs,
@@ -430,37 +433,54 @@ def cmd_runs(root=None, metrics=(), params=(), limit=None):
         print(exc)
         return 1
     typos = unknown_metrics(runs, metrics) if runs else ()
-    if typos:
-        print(
-            f"no scanned run reported: {', '.join(typos)} (a column of "
-            'blanks would read as "never measured"; run without --metric '
-            "to see every metric that exists)"
-        )
     bad_params = unknown_params(runs, params) if runs else ()
-    if bad_params:
-        print(
-            f"no scanned run's config declares: {', '.join(bad_params)} "
-            '(a column of blanks would read as "not set by these '
-            "documents\"; check the dotted path against a run's "
-            "config.json)"
-        )
     if typos or bad_params:
+        # The refusal was judged against every scanned run, so the notes
+        # cover every scanned run too — and they print first: the module
+        # cannot know whether the key is a typo or a casualty of the
+        # unreadable records the notes name.
+        _print_notes(runs)
+        _print_skipped(problems)
+        if typos:
+            print(
+                f"no scanned run reported: {', '.join(typos)} — the notes "
+                "above name any record that could not be read; run without "
+                "--metric to see every metric that was recovered"
+            )
+        if bad_params:
+            print(
+                f"no scanned run's config declares: {', '.join(bad_params)} "
+                "— the notes above name any config that could not be read; "
+                "check the dotted path against a run's config.json"
+            )
         return 1
     shown = runs if limit is None else runs[:limit]
     print(format_runs(shown, metrics=metrics, params=params))
     if len(shown) < len(runs):
         print(f"\n({len(runs) - len(shown)} older run(s) not shown — --limit)")
-    noted = [run for run in shown if run.notes]
-    if noted:
-        print("\nnotes (measured, but not recoverable as a number):")
-        for run in noted:
-            for note in run.notes:
-                print(f"- {run.name} {run.asof} {run.run_hash[:8]}: {note}")
-    if problems:
-        print(f"\nskipped (not runs): {len(problems)}")
-        for problem in problems:
-            print(f"- {problem.entry}: {problem.reason}")
+    _print_notes(shown)
+    _print_skipped(problems)
     return 0
+
+
+def _print_notes(runs) -> None:
+    """Print each run's notes — what was measured but not recoverable."""
+    noted = [run for run in runs if run.notes]
+    if not noted:
+        return
+    print("\nnotes (measured, but not recoverable as a number):")
+    for run in noted:
+        for note in run.notes:
+            print(f"- {run.name} {run.asof} {run.run_hash[:8]}: {note}")
+
+
+def _print_skipped(problems) -> None:
+    """Print every directory entry the scan could not read as a run."""
+    if not problems:
+        return
+    print(f"\nskipped (not runs): {len(problems)}")
+    for problem in problems:
+        print(f"- {problem.entry}: {problem.reason}")
 
 
 def cmd_nodemap() -> int:

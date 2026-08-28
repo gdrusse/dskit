@@ -332,13 +332,13 @@ def _read_run(run_dir):
 
 
 def _load_json(path):
-    """``(payload, "")`` or ``(None, reason)`` — never raises."""
+    """``(payload, "")`` or ``(None, reason)`` — never raises: ValueError covers JSONDecodeError AND the UnicodeDecodeError binary bytes raise."""
     try:
         with open(path, encoding="utf-8") as fh:
             return json.load(fh), ""
     except FileNotFoundError:
         return None, f"no {os.path.basename(path)}"
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         return None, f"unreadable {os.path.basename(path)}: {exc}"
 
 
@@ -422,8 +422,15 @@ def _node_outputs(run_dir):
     nodes_dir = os.path.join(run_dir, NODES_DIR)
     if not os.path.isdir(nodes_dir):
         return {}, [f"no {NODES_DIR}/ — per-node records are not tabulated"]
+    try:
+        entries = sorted(os.listdir(nodes_dir))
+    except OSError as exc:
+        # Existing but unlistable (permissions, I/O): name it on this
+        # run and let the scan go on — one refusing directory must not
+        # take the whole table down.
+        return {}, [f"unlistable {NODES_DIR}/: {exc} — per-node records are not tabulated"]
     out, notes = {}, []
-    for entry in sorted(os.listdir(nodes_dir)):
+    for entry in entries:
         record, reason = _load_json(os.path.join(nodes_dir, entry))
         if not isinstance(record, dict):
             notes.append(
