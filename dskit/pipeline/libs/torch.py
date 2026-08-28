@@ -88,7 +88,7 @@ import json
 import math
 import os
 import time
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from collections.abc import Mapping
 
 from dskit.pipeline.base import (
@@ -312,7 +312,7 @@ class TorchBatches:
         return self.n
 
 
-class TorchAdapter:
+class TorchAdapter(ABC):
     """HOW ROWS BECOME MODEL INPUT — the seam :class:`TorchTrain` was missing.
 
     Before this, the trainer hardcoded one dataset shape: every row is a
@@ -368,8 +368,10 @@ class TorchAdapter:
         _reject_unknown(problems, params, cls._PARAMS)
         return problems
 
-    # -- the four hooks ----------------------------------------------------
+    # -- the four hooks (abstract: an incomplete adapter refuses to be
+    #    constructed, rather than raising deep inside a training loop) -----
 
+    @abstractmethod
     def prepare(self, rows, params, *, where):
         """``rows`` -> :class:`TorchBatches`. ``where`` names the port
         (``"rows"``/``"val_rows"``) so a refusal says which wire is wrong."""
@@ -379,11 +381,13 @@ class TorchAdapter:
         """Constructor kwargs the DATA implies; ``{}`` when none do."""
         return {}
 
+    @abstractmethod
     def select(self, batches, index):
         """The batch at ``index`` (a ``LongTensor`` of example positions),
         or the WHOLE split when ``index`` is ``None``."""
         raise NotImplementedError
 
+    @abstractmethod
     def loss(self, module, batch):
         """A scalar tensor to backpropagate."""
         raise NotImplementedError
@@ -445,6 +449,7 @@ class TorchAdapter:
         """
         return None
 
+    @abstractmethod
     def predict(self, module, record):
         """One record -> one float, or ``None`` for no coverage."""
         raise NotImplementedError

@@ -90,11 +90,28 @@ def test_the_row_vector_adapter_moves_its_own_two_tuple():
     assert x.device.type == "cpu" and y.device.type == "cpu"
 
 
+class _NoMoveAdapter(TorchAdapter):
+    """Complete enough to construct, and deliberately silent about
+    ``to_device`` — the seam's inherited default, under test below."""
+
+    def prepare(self, rows, params, *, where):
+        raise AssertionError("not exercised")
+
+    def select(self, batches, index):
+        raise AssertionError("not exercised")
+
+    def loss(self, module, batch):
+        raise AssertionError("not exercised")
+
+    def predict(self, module, record):
+        raise AssertionError("not exercised")
+
+
 def test_the_base_adapter_declines_rather_than_guessing():
     """An adapter that has not implemented the move gets its batch back —
     which meets a moved module as a loud device mismatch, not a wrong fit."""
     sentinel = object()
-    assert TorchAdapter({}).to_device(sentinel, "cuda") is sentinel
+    assert _NoMoveAdapter({}).to_device(sentinel, "cuda") is sentinel
 
 
 # ---------------------------------------------------------------------------

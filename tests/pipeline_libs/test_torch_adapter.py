@@ -114,6 +114,52 @@ MODULE_REF = "torch.nn.Linear"
 ADAPTER_REF = ref_to(DoubleAdapter)
 
 
+class IncompleteAdapter(TorchAdapter):
+    """Prepares rows and stops — the half-written adapter the ABC exists to
+    catch. Declaring it must stay legal; CONSTRUCTING it must not."""
+
+    def prepare(self, rows, params, *, where):
+        return TorchBatches(0, None)
+
+
+#: The hooks an adapter genuinely cannot inherit: rows -> batches, the batch
+#: at an index, the objective, and one record -> one belief. Pinned as a set
+#: because ADDING one silently breaks every out-of-repo adapter at
+#: construction, and DROPPING one puts the raise back at call time — the
+#: failure this ABC replaced.
+ABSTRACT_HOOKS = {"prepare", "select", "loss", "predict"}
+
+
+def test_the_adapter_seam_declares_exactly_its_four_abstract_hooks():
+    assert set(TorchAdapter.__abstractmethods__) == ABSTRACT_HOOKS
+
+
+def test_an_incomplete_adapter_refuses_at_construction():
+    """Abstract means abstract: the missing hooks are named by TypeError at
+    construction, not by NotImplementedError deep in a training loop."""
+    with pytest.raises(TypeError) as caught:
+        IncompleteAdapter({})
+    message = str(caught.value)
+    assert "IncompleteAdapter" in message
+    assert all(hook in message for hook in ABSTRACT_HOOKS - {"prepare"})
+
+
+def test_the_optional_hooks_stay_optional():
+    """Only the four are abstract — an adapter that accepts the defaults for
+    ``module_params``/``beliefs``/``to_device``/``fitted``/the state pair
+    constructs, exactly as ``DoubleAdapter`` and ``RowVectorAdapter`` do."""
+    for cls in (RowVectorAdapter, DoubleAdapter):
+        assert not getattr(cls, "__abstractmethods__", frozenset())
+        assert isinstance(cls({}), TorchAdapter)
+
+
+def test_a_declared_adapter_is_still_resolved_structurally():
+    """The import-path grammar checks for a callable ``prepare`` and nothing
+    more, so making the base abstract left declared adapters untouched."""
+    assert import_library_class(ref_to(DoubleAdapter), "a", requires=("prepare",))
+    assert import_library_class(ref_to(IncompleteAdapter), "a", requires=("prepare",))
+
+
 def test_the_default_adapter_is_the_row_vector_one():
     """No ``adapter`` declared = the flat behaviour the pack always had."""
     node = LinearRegressor("k", FLAT_PARAMS, mode="train")
