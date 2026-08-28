@@ -133,6 +133,12 @@ ARTIFACT_FORMAT = "dskit-torch-v1"
 LOADER_PARAMS = ("batch_size", "shuffle", "seed")
 
 LOADER_DEFAULTS = {"batch_size": 32, "shuffle": True, "seed": 0}
+#: The objective when a document names none — the same callable this pack
+#: always applied, now reached through the ``loss`` knob's OWN doorway so
+#: the default and a declared value resolve by ONE path, not two. Spelled
+#: as an import path (never imported here: the core stays importable with
+#: no torch installed).
+DEFAULT_LOSS = "torch.nn.functional:mse_loss"
 DEFAULT_EPOCHS = 5
 DEFAULT_LR = 0.01
 DEFAULT_LABEL = "label"
@@ -245,6 +251,23 @@ def _optimizer_problems(params):
     return problems
 
 
+def _loss_problems(params):
+    """Problems with the declared ``loss`` import path — shape only, at plan.
+
+    Exactly the ``optimizer`` grammar (``library_path_problems``), for
+    exactly its reason: the objective is part of a model's DEFINITION —
+    a fat-tailed target fitted under MSE trains to a different model than
+    under Huber, silently and with no error — and whether the path
+    IMPORTS is settled at execute, where the library is due.
+    """
+    path = params.get("loss")
+    if path is None:
+        return []
+    return library_path_problems(
+        "loss", path, example="torch.nn.functional:smooth_l1_loss"
+    )
+
+
 def _feature_problems(params, *, required):
     """Problems with the ``features``/``label`` row-key params."""
     problems = []
@@ -348,7 +371,10 @@ class TorchAdapter(ABC):
        is ``None``. Only the adapter knows how to slice a batch whose
        shape it invented.
     3. ``loss`` — ``loss(module, batch)``: the objective, a scalar tensor
-       that is backpropagated.
+       that is backpropagated. WHICH objective is declarable: the node's
+       ``loss`` knob names a callable by import path and
+       :meth:`build_loss` resolves it (MSE when undeclared), so an
+       adapter applies it rather than hardcoding one.
     4. ``predict`` — ``predict(module, record)``: one record to one float
        belief (or ``None`` for no coverage), which is what
        :class:`TorchSignal` serves downstream.
@@ -438,6 +464,12 @@ class TorchAdapter(ABC):
     #: The adapter's OWN declarable knobs, for its ``validate_params``.
     _PARAMS: tuple = ()
 
+    #: The resolved objective, memoized by :meth:`build_loss`. Class-level
+    #: ``None`` so an adapter that overrides ``__init__`` without calling
+    #: ``super()`` still resolves rather than raising an AttributeError deep
+    #: in the training loop.
+    _loss_fn = None
+
     def __init__(self, params=None):
         self.params = dict(params or {})
 
@@ -471,6 +503,43 @@ class TorchAdapter(ABC):
     def loss(self, module, batch):
         """A scalar tensor to backpropagate."""
         raise NotImplementedError
+
+    def build_loss(self):
+        """The objective callable this adapter's :meth:`loss` applies.
+
+        The ``loss`` knob's resolution doorway, and the reason the knob can
+        exist at all without a registry: the document names an import path
+        (``torch.nn.functional:smooth_l1_loss``) exactly as it names an
+        ``optimizer``, and anything callable answers — a functional loss, a
+        ``nn.Module`` loss instance, a project's own objective. Declarable
+        because the objective is part of a model's DEFINITION: a fat-tailed
+        return series fitted under MSE trains to a different model than
+        under Huber, silently and with no error.
+
+        Resolution is memoized on the instance, so the training loop pays
+        the import lookup once per fit rather than once per batch.
+
+        Returns
+        -------
+        callable
+            The declared objective, or the callable behind
+            :data:`DEFAULT_LOSS` (``torch.nn.functional.mse_loss``) when the
+            document named none — the same object this pack always applied.
+
+        Raises
+        ------
+        ValueError
+            When the declared path names no importable module/attribute, or
+            resolves to something that is not callable
+            (:func:`~dskit.pipeline.base.import_library_class`).
+        """
+        if self._loss_fn is None:
+            self._loss_fn = import_library_class(
+                self.params.get("loss") or DEFAULT_LOSS,
+                "torch loss",
+                requires=("__call__",),
+            )
+        return self._loss_fn
 
     def beliefs(self, module, batch):
         """``(preds, labels)`` in ``[0, 1]`` for the per-epoch probability
@@ -543,6 +612,11 @@ class RowVectorAdapter(TorchAdapter):
     ``torch.tensor(xs)`` matrix, same ``mse_loss(module(x).reshape(-1), y)``,
     same ``module(row)`` prediction. It is the default precisely so that
     adding the seam changed nothing for any document already in flight.
+
+    The objective is the one thing a document may swap without leaving this
+    shape: ``loss`` names a callable applied to
+    ``(module(features).reshape(-1), label)``, and the default resolves to
+    that same ``mse_loss``.
     """
 
     def prepare(self, rows, params, *, where):
@@ -573,10 +647,10 @@ class RowVectorAdapter(TorchAdapter):
         return x.to(device), y.to(device)
 
     def loss(self, module, batch):
-        import torch
-
+        """The objective over one ``(features, label)`` batch: whatever the
+        document's ``loss`` names, MSE when it names nothing (:meth:`build_loss`)."""
         features, label = batch
-        return torch.nn.functional.mse_loss(module(features).reshape(-1), label)
+        return self.build_loss()(module(features).reshape(-1), label)
 
     def beliefs(self, module, batch):
         features, label = batch
@@ -908,7 +982,10 @@ class TorchTrain(_TorchModel):
     ``build_module`` (plus optionally ``loss``; default MSE).
 
     Knobs: ``features`` (required list of row keys), ``label`` (default
-    ``"label"``), ``epochs``, ``lr``, and the docs/24 §3 ``loader`` block
+    ``"label"``), ``epochs``, ``lr``, ``optimizer``/``optimizer_params``
+    and ``loss`` (import paths — the objective is part of the model's
+    definition, so Huber over MSE is a document edit, never a subclass;
+    default :data:`DEFAULT_LOSS`), and the docs/24 §3 ``loader`` block
     (``batch_size``/``shuffle``/``seed`` — default-deny inside, I-227).
     Input port ``rows`` is a LIST of dict/record rows; rows missing a
     finite feature or label are skipped and counted, never fabricated.
@@ -961,6 +1038,7 @@ class TorchTrain(_TorchModel):
         "label",
         "loader",
         "log_every",
+        "loss",
         "lr",
         "max_log_lines",
         "monitor",
@@ -1011,6 +1089,7 @@ class TorchTrain(_TorchModel):
             )
         problems.extend(_loader_problems(params.get("loader", {})))
         problems.extend(_optimizer_problems(params))
+        problems.extend(_loss_problems(params))
         problems.extend(
             _feature_problems(params, required=cls._features_required(params))
         )
@@ -1037,9 +1116,10 @@ class TorchTrain(_TorchModel):
 
     def loss(self, module, batch):
         """The training objective for one batch — delegated to the adapter
-        (:class:`RowVectorAdapter` = MSE over ``(features, label)``).
-        Override for another objective; return a scalar tensor the loop can
-        backpropagate."""
+        (:class:`RowVectorAdapter` = the declared ``loss``, MSE by default,
+        over ``(features, label)``). Declare ``loss`` to swap the objective;
+        override this only for one no import path can express. Returns a
+        scalar tensor the loop can backpropagate."""
         return (self._adapter or self.build_adapter(self.params)).loss(module, batch)
 
     def run(self, ctx, inputs):
