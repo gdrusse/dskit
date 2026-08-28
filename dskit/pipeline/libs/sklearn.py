@@ -150,7 +150,7 @@ from collections.abc import Mapping
 
 from dskit.pipeline.node import (
     DEFAULT_NODE_KINDS,
-    Node,
+    TrainableNode,
     reject_unknown_params,
 )
 
@@ -555,7 +555,18 @@ class SklearnSignal:
 # ---------------------------------------------------------------------------
 
 
-class SklearnFit(Node):
+def _rows_problems(rows):
+    """The wired ``rows`` port must be a materialized list — one message,
+    written once, for every mode that reads it."""
+    if isinstance(rows, list):
+        return []
+    return [
+        "rows must be a list of feature rows (a one-shot iterable "
+        f"would be consumed by validation), got {rows!r}"
+    ]
+
+
+class SklearnFit(TrainableNode):
     """Fit any sklearn-style estimator on feature rows (role ``train``).
 
     ``mode`` is honored for real, both ways. ``"train"`` (or unset) fits
@@ -622,25 +633,18 @@ class SklearnFit(Node):
             problems += _predict_method_problems(params["predict_method"])
         return problems
 
-    def validate_inputs(self, inputs):
-        rows = inputs.get("rows")
-        if rows is None and self.mode == "load":
-            return []  # a load never reads them; a document may omit the wire
-        if not isinstance(rows, list):
-            return [
-                "rows must be a list of feature rows (a one-shot iterable "
-                f"would be consumed by validation), got {rows!r}"
-            ]
-        return []
+    def validate_train_inputs(self, inputs):
+        return _rows_problems(inputs.get("rows"))
 
-    def run(self, ctx, inputs):
-        if self.mode == "load":
-            return self._load(ctx)
-        return self._train(ctx, inputs)
+    def validate_load_inputs(self, inputs):
+        rows = inputs.get("rows")
+        if rows is None:
+            return []  # a load never reads them; a document may omit the wire
+        return _rows_problems(rows)
 
     # -- mode="load" ---------------------------------------------------------
 
-    def _load(self, ctx):
+    def run_load(self, ctx, inputs):
         estimator, sidecar = _load_artifact(self.artifact, self.key)
         mismatches = _identity_mismatches(sidecar, self.params)
         if mismatches:
@@ -683,7 +687,7 @@ class SklearnFit(Node):
 
     # -- mode="train" (or unset) ----------------------------------------------
 
-    def _train(self, ctx, inputs):
+    def run_train(self, ctx, inputs):
         params = self.params
         path = params["estimator"]
         features = list(params["features"])
@@ -768,21 +772,22 @@ class SklearnFit(Node):
         return version if isinstance(version, str) else None
 
 
-class SklearnPredict(Node):
+class SklearnPredict(TrainableNode):
     """Inference-only: the signal behind a pinned artifact (role ``signal``).
 
     Always loads — the same verified path :class:`SklearnFit` uses under
     ``mode="load"`` — from ``params.artifact``; the sidecar supplies the
     feature order and predict method, so nothing about the fit is
-    restated (or restatable, wrongly) in the document. No mode
-    gymnastics: ``mode="train"`` is refused by name (this node never
-    fits — that is :class:`SklearnFit`'s job), and a node-level
-    ``artifact`` that contradicts ``params.artifact`` is refused rather
-    than silently picking one.
+    restated (or restatable, wrongly) in the document. ``default_mode``
+    is ``"load"``, so an unset ``mode`` loads; ``mode="train"`` is refused
+    by name (this node never fits — that is :class:`SklearnFit`'s job),
+    and a node-level ``artifact`` that contradicts ``params.artifact`` is
+    refused rather than silently picking one.
     """
 
     role = "signal"
     outputs = ("signal",)
+    default_mode = "load"
 
     _PARAMS = ("artifact",)
 
@@ -801,19 +806,20 @@ class SklearnPredict(Node):
             )
         return problems
 
-    def run(self, ctx, inputs):
-        if self.mode == "train":
-            raise ValueError(
-                f"{self.key}: mode='train' — this node never fits; it always "
-                "loads its pinned params.artifact (train with sklearn-fit)"
-            )
-        pinned = self.params["artifact"]
-        if self.artifact and self.artifact != pinned:
-            raise ValueError(
-                f"{self.key}: node-level artifact {self.artifact!r} contradicts "
-                f"params.artifact {pinned!r} — one pinned artifact, one source "
-                "of truth (mode='load' may restate it, never replace it)"
-            )
+    def run_train(self, ctx, inputs):
+        raise ValueError(
+            f"{self.key}: mode='train' — this node never fits; it always "
+            "loads its pinned params.artifact (train with sklearn-fit)"
+        )
+
+    def run_load(self, ctx, inputs):
+        pinned = self.pinned_artifact(
+            self.params.get("artifact"),
+            missing=(
+                "no artifact reference — this node always loads; set "
+                "params.artifact (mode='load' may restate it)"
+            ),
+        )
         estimator, sidecar = _load_artifact(pinned, self.key)
         self.log.info(
             "serving %s from %s (fitted on %d row(s))",

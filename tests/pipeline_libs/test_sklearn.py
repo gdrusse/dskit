@@ -716,6 +716,17 @@ def test_predict_node_refuses_a_contradictory_node_level_artifact(tmp_path):
         node.run(_ctx(tmp_path, "serverun"), {})
 
 
+def test_predict_node_refuses_an_empty_node_level_pin(tmp_path):
+    """ADR-0038's declared delta: an EMPTY node-level pin refuses instead
+    of quietly falling through to params.artifact — torch's and sb3's
+    stricter rule, kept as the single one. Document-unreachable (the
+    document already refuses mode='load' without an artifact), so it
+    takes direct construction to reach."""
+    node = SklearnPredict("serve", {"artifact": "a/model.joblib"}, mode="load")
+    with pytest.raises(ValueError, match="empty artifact reference"):
+        node.run(_ctx(tmp_path, "serverun"), {})
+
+
 def test_predict_node_refuses_a_missing_artifact_by_name(tmp_path):
     node = SklearnPredict("serve", {"artifact": str(tmp_path / "gone.joblib")})
     with pytest.raises(ValueError, match="does not exist"):
