@@ -15,8 +15,9 @@ import json
 import logging
 import math
 import pathlib
-import time
+import sys
 import tracemalloc
+import types
 from dataclasses import dataclass
 
 import numpy as np
@@ -1079,6 +1080,48 @@ class TestTierOneTruthIsImported:
         with pytest.raises(ValueError, match="group must be"):
             rec("AAA", 0, 0.4, group=5)
 
+    @pytest.mark.parametrize("value", ["A", "", None, 5, True, 0, 3.5])
+    def test_ONE_identity_rule_answers_for_every_place_the_pack_reads_one(
+        self, value, tmp_path
+    ):
+        """Three sites read "is this a usable identity"; one rule owns it.
+
+        The pack asks the question in three places — the GROUP key a
+        record is lifted under, a ``require_fields`` id a row must carry,
+        and the CLUSTER column it carries onward — and each one used to
+        answer it in its own words. Unpinned, the standing resolution
+        for admitting a wider id ("change ``cluster_ok``, tier-1, one
+        place") moves only the third: the same record is carried by one
+        site, refused as a group key by the second, and dropped by the
+        third. One record, three answers.
+
+        So the expectation here is COMPUTED from ``cluster_ok`` rather
+        than written out: loosen the tier-1 rule and this test moves with
+        it, and any site that restated it fails.
+        """
+        import dskit.pipeline.libs.numpy as pack
+        from dskit.pipeline import records as core
+
+        usable = core.cluster_ok(value)
+
+        # 1. the group key: a record whose key is unusable cannot be placed.
+        groups, unlifted = pack._lift(
+            [{"sym": value, "t": 0, "px": 1.0}], "sym", "t", ("px",)
+        )
+        assert (not unlifted) is usable, (value, groups, unlifted)
+
+        # 2. a required identity field: a row missing one is no row.
+        rows = _Passthrough(
+            "p", {**FOREIGN, "require_fields": ["tag"]}
+        ).run(ctx(tmp_path), {"records": [
+            {"sym": "A", "t": BASE_MS, "px": 1.0, "tag": value}
+        ]})["rows"]
+        assert bool(rows) is usable, (value, rows)
+
+        # 3. the carried cluster column, already the envelope's rule.
+        assert (pack._carried_column(core.CLUSTER_FIELD, [value])[0]
+                is not None) is usable
+
     def test_the_envelope_itself_uses_the_same_predicates(self):
         # Deliberate second reader: loosening the core bound must move
         # BOTH the envelope and the pack, or the pack drifts again.
@@ -1454,15 +1497,58 @@ def _per_row_windows(records, lookback, gap_ms):
     return out
 
 
-def _timed(fn):
-    """Seconds one call took, the process's own clock."""
-    start = time.perf_counter()
-    fn()
-    return time.perf_counter() - start
+class _CountingNumpy(types.ModuleType):
+    """``numpy``, with every attribute the pack reaches for tallied.
+
+    The pack imports numpy INSIDE each function (the tier rule keeps the
+    dependency out of import time), so every ``np.<op>`` it performs is a
+    fresh ``sys.modules`` lookup followed by one attribute read on the
+    module. Standing in for the module therefore counts the pack's
+    whole-array operations, and nothing else — no clock, no scheduler.
+    """
+
+    def __init__(self, real):
+        super().__init__(real.__name__)
+        self._real = real
+        self.touches = 0
+
+    def __getattr__(self, name):
+        self.touches += 1
+        return getattr(self._real, name)
+
+
+def _numpy_ops(fn):
+    """Count the numpy operations one call performs (int)."""
+    import numpy as real
+
+    proxy = _CountingNumpy(real)
+    saved = sys.modules["numpy"]
+    sys.modules["numpy"] = proxy
+    try:
+        fn()
+    finally:
+        sys.modules["numpy"] = saved
+    return proxy.touches
 
 
 class TestVectorization:
-    """The 2M-bar benchmark, measured — not asserted (ADR-0037's spirit)."""
+    """The 2M-bar benchmark, measured — not asserted (ADR-0037's spirit).
+
+    Measured by OPERATION COUNT, not by the clock. A wall-clock ratio
+    against a different workload (the per-row chain) is a load detector
+    rather than a regression detector: the array build loses more to
+    memory and CPU contention than a pure-Python loop does, so a bound
+    tight enough to catch the 1.2x first cut of this port failed in 6 of
+    6 concurrent runs on this box while passing 5 of 5 alone, and a bound
+    loose enough to survive contention could no longer catch it. The
+    property the card actually asked for — whole-array work, not per-row
+    work — is exactly expressible as a count that does not move when the
+    rows do, and that count is the same on a busy box as on an idle one.
+
+    For the record, wall clock WAS measured while these were written:
+    0.79-0.82x the per-row chain here and 0.79x on the child's own 468k
+    -bar shape, with the screen at ~1.42x the unscreened build.
+    """
 
     def test_apply_runs_once_per_segment_not_once_per_row(self, tmp_path):
         node = _CountingWindows(
@@ -1509,76 +1595,93 @@ class TestVectorization:
         assert peak / n_rows < 2800, f"peak {peak / n_rows:.0f} B/row"
         assert _current / n_rows < 2000, f"resident {_current / n_rows:.0f} B/row"
 
-    def test_the_build_is_faster_than_the_per_row_chain_it_replaced(
-        self, tmp_path
-    ):
-        """The axis the card named, measured on the shape it named.
+    def test_the_build_s_numpy_work_counts_SEGMENTS_not_ROWS(self, tmp_path):
+        """The vectorization property itself, as a number.
 
-        The memory pin above cannot see wall time — worse, tracemalloc
-        taxes per-value Python allocation ~4x harder than whole-array
-        ops, so measuring UNDER it flatters the array build and hides a
-        wall-clock regression. So this runs untraced, against a compact
-        restatement of the per-row Python chain the port replaced (the
-        child's pre-ADR-0040 node, same windows, same gap rule): the
-        vectorized build must be FASTER, not merely tidier.
+        A whole-array build performs a FIXED set of operations per
+        segment however long that segment is; a per-row chain performs
+        one per row. So the count is taken at two sizes forty times
+        apart and must be IDENTICAL — the regression this replaces a
+        stopwatch with, and the one the first cut of this port (1.2x the
+        loop it replaced) would have failed on the spot.
 
-        Best-of-three per side, because a shared machine's noise is
-        one-sided — a slow sample is noise, a fast one is not.
+        The second half keeps the counter honest: it must move when the
+        SEGMENT count moves, or a counter stuck at zero would pass the
+        first half forever.
         """
-        records = _session_bars(symbols=3, sessions=40)
         node = ReturnWindows(
             "w",
             {**FOREIGN, "lookback": 30, "max_gap": 5 * MINUTE_MS,
              "drop_incomplete": True, "causality_check": False},
         )
         run_ctx = ctx(tmp_path)
-        rows = node.run(run_ctx, {"records": records})["rows"]
-        reference = _per_row_windows(records, 30, 5 * MINUTE_MS)
-        assert len(rows) == len(reference), "same work, or the race is a lie"
 
-        def best(fn):
-            return min(_timed(fn) for _ in range(3))
+        def ops(minutes):
+            records = bars("A", minutes)
+            return _numpy_ops(lambda: node.run(run_ctx, {"records": records}))
 
-        vectorized = best(lambda: node.run(run_ctx, {"records": records}))
-        per_row = best(lambda: _per_row_windows(records, 30, 5 * MINUTE_MS))
-        # Measured 0.79-0.82x here and 0.79x on the child's own 468k-bar
-        # shape; the bar keeps ~10% of margin for a noisy box. What must
-        # never happen again is a port that costs MORE than the loop it
-        # replaced — the first cut of this one cost 1.2x.
-        assert vectorized < 0.9 * per_row, (
-            f"vectorized {vectorized:.3f}s vs per-row {per_row:.3f}s"
+        small, large = ops(range(500)), ops(range(20_000))
+        assert small == large, f"{small} ops at 500 rows, {large} at 20000"
+
+        # Four sessions of the same total length: four times the framing,
+        # and a count that noticed.
+        four = ops([m for m in range(20_000) if m % 500 >= 10])
+        assert four > large, f"{four} ops over 4 segments vs {large} over 1"
+
+    def test_the_build_computes_the_windows_the_per_row_chain_did(
+        self, tmp_path
+    ):
+        """Same windows as the loop it replaced, value for value.
+
+        The reference is deliberately independent — a compact
+        restatement of the child's pre-ADR-0040 per-row chain — so this
+        is the one test that would catch the port computing something
+        FASTER and different.
+        """
+        records = _session_bars(symbols=3, sessions=4)
+        node = ReturnWindows(
+            "w",
+            {**FOREIGN, "lookback": 30, "max_gap": 5 * MINUTE_MS,
+             "drop_incomplete": True, "causality_check": False},
         )
+        rows = node.run(ctx(tmp_path), {"records": records})["rows"]
+        reference = _per_row_windows(records, 30, 5 * MINUTE_MS)
+        assert len(rows) == len(reference) > 0
+        for row, want in zip(rows, reference):
+            assert (row["sym"], row["t"]) == (want["sym"], want["t"])
+            assert row["label"] == pytest.approx(want["label"])
+            assert [row[f"lag_{i}"] for i in range(30)] == pytest.approx(
+                [want[f"lag_{i}"] for i in range(30)]
+            )
 
     def test_the_causality_screen_costs_a_FACTOR_not_an_order(self, tmp_path):
         """The screen is the one cost the ADR added, so it is priced.
 
-        It re-runs ``apply`` on four prefixes per segment, which is real
-        work and not a defect — but it is the difference between the
-        node's default and the unscreened build above, and an accidental
-        quadratic in it would only show on the 2M-bar run. Both bounds
-        are measured, not asserted: ~1.42x over the unscreened build and
-        ~1.15x over the per-row chain, on a node whose ``apply`` is a
-        thirty-column window.
+        It re-runs ``apply`` on the four default cut prefixes per
+        segment, which is real work and not a defect. What would be a
+        defect is that work growing with the ROWS — an accidental
+        quadratic there would only ever show on the 2M-bar run. So the
+        factor is counted, not timed: five ``apply`` calls per segment
+        where the unscreened build makes one, a numpy-operation count
+        under five times the unscreened build's, and both of them flat
+        in the number of rows.
         """
-        records = _session_bars(symbols=3, sessions=40)
         knobs = {**FOREIGN, "lookback": 30, "max_gap": 5 * MINUTE_MS,
                  "drop_incomplete": True}
-        screened_node = ReturnWindows("w", knobs)
-        plain_node = ReturnWindows("w", {**knobs, "causality_check": False})
         run_ctx = ctx(tmp_path)
 
-        def best(node):
-            node.run(run_ctx, {"records": records})
-            return min(_timed(lambda: node.run(run_ctx, {"records": records}))
-                       for _ in range(3))
+        def ops(node, minutes):
+            records = bars("A", minutes)
+            return _numpy_ops(lambda: node.run(run_ctx, {"records": records}))
 
-        screened, unscreened = best(screened_node), best(plain_node)
-        per_row = min(_timed(lambda: _per_row_windows(records, 30,
-                                                     5 * MINUTE_MS))
-                      for _ in range(3))
-        assert screened < 1.8 * unscreened, (
-            f"screened {screened:.3f}s vs unscreened {unscreened:.3f}s"
-        )
-        assert screened < 1.4 * per_row, (
-            f"screened {screened:.3f}s vs per-row {per_row:.3f}s"
-        )
+        screened = ReturnWindows("w", knobs)
+        plain = ReturnWindows("w", {**knobs, "causality_check": False})
+        small, large = ops(screened, range(500)), ops(screened, range(20_000))
+        assert small == large, "the screen must be flat in the rows too"
+        assert large < 5 * ops(plain, range(20_000))
+
+        # And the exact factor, at the seam the screen actually re-runs:
+        # one apply per segment plus one per default cut point.
+        counting = _CountingWindows("w", knobs)
+        counting.run(run_ctx, {"records": bars("A", range(500))})
+        assert len(counting.calls) == 5, counting.calls

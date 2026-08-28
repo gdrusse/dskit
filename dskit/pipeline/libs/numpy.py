@@ -108,10 +108,14 @@ emit zero rows and exit 0, so that refuses by name. A row missing a
 ``require_fields`` id is skipped (a feature row with no identity is
 unusable downstream) — the record still participates in the arrays, so
 later trailing windows see it. A carried CLUSTER the envelope could not
-hold rides as absent, by the envelope's own imported rule
-(:func:`~dskit.pipeline.records.cluster_ok`), because a dict record and
-an envelope are interchangeable here and a random split buckets on that
-value. Which positions participate at all is the
+hold rides as absent, because a dict record and an envelope are
+interchangeable here and a random split buckets on that value. Those
+three questions — the GROUP key a record is lifted under, a
+``require_fields`` id, and the carried cluster — are one question ("is
+this a usable identity") and they read one imported answer,
+:func:`~dskit.pipeline.records.cluster_ok`: a private copy of it is how
+one record gets three answers the day the envelope's rule widens.
+Which positions participate at all is the
 ``keep_mask`` hook: the base keeps every lifted record, and a subclass
 whose domain says otherwise ("a bar with no usable price is not a bar")
 answers with a vectorized mask and the base compacts around it. Those
@@ -519,11 +523,6 @@ def _order_value(value):
     return None
 
 
-def _identity_ok(value) -> bool:
-    """Say whether a required identity field is present and non-empty."""
-    return isinstance(value, str) and bool(value)
-
-
 def _carried_column(name, values):
     """One carried field's COLUMN of row values, the envelope's rule applied.
 
@@ -584,7 +583,11 @@ def _lift(records, group_field, order_field, fields):
             order = getattr(record, order_field, None)
         if type(order) is not int:  # the common case first; bool is not one
             order = _order_value(order)
-        if not isinstance(group, str) or not group or order is None:
+        # `cluster_ok` decides what a usable identity IS — imported, never
+        # restated (the tier rule): a group key, a `require_fields` id and
+        # a carried cluster are the same question, and a private copy here
+        # would answer it differently the day the envelope's rule moves.
+        if order is None or not cluster_ok(group):
             unlifted.append(idx)
             continue
         by_group.setdefault(group, []).append((order, idx))
@@ -1374,7 +1377,12 @@ class ArrayFeatures(_ArrayApply):
         return tuple(self.params.get("carry_fields", DEFAULT_CARRY_FIELDS))
 
     def require_fields(self):
-        """Identity fields a row must carry to be emitted (tuple of str)."""
+        """Identity fields a row must carry to be emitted (tuple of str).
+
+        "Carry" means hold a value :func:`~dskit.pipeline.records.
+        cluster_ok` accepts — the same bar the group key and the carried
+        cluster are held to.
+        """
         return tuple(self.params.get("require_fields", DEFAULT_REQUIRE_FIELDS))
 
     def drop_incomplete(self):
@@ -1499,7 +1507,7 @@ class ArrayFeatures(_ArrayApply):
                     no_row += 1
                     continue
                 if required and any(
-                    not _identity_ok(_field(records[idx], name))
+                    not cluster_ok(_field(records[idx], name))
                     for name in required
                 ):
                     no_row += 1
