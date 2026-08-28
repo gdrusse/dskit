@@ -88,8 +88,8 @@ on it without breaking its rulings.
   stdlib reachability probe of the tracking URI, both at plan time; its
   module docstring carries the whole rationale.
 - **…but a sink that RAISES at construction kills the run.**
-  `_open_sinks` is called at `driver.py:823`, one line ABOVE the `try`
-  that `run_document`'s body lives in, so a `ConfigError` from a sink
+  `run_document` calls `_open_sinks` one line ABOVE the `try` that wraps
+  `_resolve_run`, so a `ConfigError` from a sink
   factory aborts the run before a single node executes. That is right
   for a MISconfiguration and wrong for a destination having a bad day,
   and the two look identical from inside the `except`. `libs/mlflow.py`
