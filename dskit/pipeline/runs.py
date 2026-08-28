@@ -1,38 +1,19 @@
 """Cross-run comparison: reading back the run directories a driver left.
 
-`driver.run_document` writes one directory per run —
-``{name}-{asof}-{run_hash[:8]}/`` holding ``config.json`` (the document as
-declared), ``resolved.json``, ``result.json`` (the machine verdict),
-``carry.json``, per-node records under ``nodes/``, and a human
-``report.md``. Nothing read anything BACK: comparing two runs meant
-opening two ``report.md`` files by hand.
+``driver.run_document`` writes one directory per run; nothing read them
+BACK — comparing runs meant opening ``report.md`` files by hand. This
+module is the reader, and it is deliberately structural: every value
+comes from a JSON record (``result.json``, ``nodes/NN-*.json`` plus
+``carry.json``, ``config.json``), never from ``report.md``, whose prose
+is written for a human and free to change wording.
 
-This module is the reader. It is deliberately structural — every value it
-reports comes from a JSON record (``result.json`` for identity and state,
-``nodes/NN-*.json`` plus ``carry.json`` for metrics, ``config.json`` for
-declared params) and never from ``report.md``, whose prose is written for
-a human and is free to change wording. A run directory missing its
-report still tabulates.
-
-Two records are needed for metrics because the writer splits them: a
-node's top-level numeric outputs survive into its record, but a `metrics`
-DICT is summarized there as ``{"type": "dict", "len": n}`` and its numbers
-survive only in ``carry.json``. The reader overlays the two and applies
-the numeric-output rule :func:`node_metrics` — the very function the driver
-applies when feeding its tracking sinks — to the result. Where the
-overlay fails (a metrics dict too large or non-finite to carry), what
-remains is that SUMMARY MARKER, and the marker is a note about a
-measurement, not a measurement: mining its ``len`` would report a dict's
-key count as a number someone could plot. The reader drops it and says so
-(:attr:`RunSummary.notes`).
-
-Saying so is the module's whole discipline, and it holds for every way a
-number can fail to arrive: a non-finite scalar that survives only as the
-text ``"inf"``, a truncated node record, an unreadable ``carry.json`` or
-``config.json``, a missing ``nodes/``. Each renders the same empty cell
-as a node that measured nothing, and only the last of those is routine —
-so the reader never leaves the cell to speak for itself. The verb prints
-every note; a note nobody sees is the silent truncation it replaced.
+Metrics overlay two records because the writer splits them: a `metrics`
+DICT is summarized out of the node record as ``{"type": "dict", "len":
+n}`` and its numbers survive only in ``carry.json``. The reader drops
+the bare marker (its ``len`` is a key count, not a measurement) and
+NOTES every number it could not recover (:attr:`RunSummary.notes`) — a
+blank cell must mean "never measured", nothing else, and the verb prints
+every note.
 
 Tier 1: stdlib only, no knowledge of any domain.
 """
@@ -42,8 +23,6 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-
-from dskit.pipeline.markdown import pipe_table
 
 __all__ = [
     "CARRY_FILE",
@@ -62,15 +41,15 @@ __all__ = [
     "unknown_params",
 ]
 
-#: Where runs land when a document declares no ``outputs.run_root`` — the
-#: ONE name for that default. The driver resolves its own write path
-#: through :func:`resolve_run_root` rather than restating the literal.
+#: Where runs land when a document declares no ``outputs.run_root`` —
+#: the reader's name for the default the driver writes to; the agreement
+#: is pinned in tests/pipeline/test_runs.py (TestScan).
 DEFAULT_RUN_ROOT = "./pipeline_runs"
 
-#: The run-dir layout, as ONE set of names: the driver writes through
-#: these and every reader reads through them, so a rename cannot land on
-#: one side only. `report.md` is absent on purpose — prose is never a
-#: data source.
+#: The run-dir layout, as the reader names it. `driver.py` and
+#: `dskit/assets/ingest.py` restate the names, so the agreement is
+#: PINNED in tests/pipeline/test_runs.py::TestRunDirLayout. `report.md`
+#: is absent on purpose — prose is never a data source.
 RESULT_FILE = "result.json"
 CONFIG_FILE = "config.json"
 CARRY_FILE = "carry.json"
@@ -106,9 +85,9 @@ def resolve_run_root(declared):
     Returns
     -------
     str
-        The absolute path, with ``~`` expanded. Both the driver's
-        per-run writer and its walk-forward writer resolve through here,
-        so the default cannot move in one and not the other.
+        The absolute path, with ``~`` expanded — the same resolution the
+        driver applies to its write path (the agreement is pinned by the
+        default-root test in tests/pipeline/test_runs.py).
     """
     return os.path.abspath(os.path.expanduser(declared or DEFAULT_RUN_ROOT))
 
@@ -122,11 +101,12 @@ def node_metrics(outputs):
     numbers reach neither the tracking sinks nor the runs table. Never
     booleans (``True`` is a verdict, not a measurement).
 
-    This is THE rule, one name: ``driver._node_metrics`` is this
-    function, applied to live outputs on the writing side. It sees real
-    outputs only — the reader strips the writer's summary markers before
-    calling it (see :func:`_run_metrics`), so a node whose metrics are a
-    literal ``{"type": ..., "len": ...}`` mapping still measures.
+    The same rule the writer applies when feeding its tracking sinks
+    (``driver._node_metrics``); the two copies are pinned case for case
+    by ``tests/pipeline/test_runs.py::TestMetricRulePin``. This side sees
+    real outputs only — the reader strips the writer's summary markers
+    before calling it (see :func:`_run_metrics`), so a node whose metrics
+    are a literal ``{"type": ..., "len": ...}`` mapping still measures.
 
     Parameters
     ----------
@@ -461,6 +441,52 @@ def _node_outputs(run_dir):
     return out, notes
 
 
+#: What an absent value reads as — never the empty string: a blank cell
+#: is indistinguishable from a rendering bug.
+_MISSING = "—"
+
+#: Longest cell rendered in full; beyond this a table stops being a table.
+_MAX_CELL = 120
+
+
+def _render_cell(value):
+    """One cell as trustworthy text: absent reads as the dash, booleans as a verdict, floats to 6 s.f., containers as their size; ``|`` is escaped and line breaks flatten to ``⏎`` so a value cannot open a phantom column or row."""
+    if value is None:
+        return _MISSING
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    if isinstance(value, (list, tuple, set, frozenset)):
+        text = f"({len(value)} item(s))"
+    elif isinstance(value, dict):
+        text = f"({len(value)} key(s))"
+    else:
+        text = str(value)
+    # Flatten BEFORE the emptiness check: a line-break-only value must
+    # read as MISSING, not as the blank cell declared impossible above.
+    text = "⏎".join(text.splitlines())
+    if not text:
+        return _MISSING
+    if len(text) > _MAX_CELL:
+        text = text[:_MAX_CELL] + "…"
+    return text.replace("|", r"\|")
+
+
+def _render_table(columns, rows):
+    """Header, separator, one line per row — order preserved, every cell through :func:`_render_cell`."""
+    header = [_render_cell(column) for column in columns]
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "|" + "---|" * len(header),
+    ]
+    lines += [
+        "| " + " | ".join(_render_cell(value) for value in row) + " |"
+        for row in rows
+    ]
+    return lines
+
+
 def format_runs(runs, metrics=(), params=()):
     """Tabulate scanned runs as a markdown pipe table.
 
@@ -478,10 +504,10 @@ def format_runs(runs, metrics=(), params=()):
     Returns
     -------
     str
-        The table, rendered by :func:`~dskit.pipeline.markdown.pipe_table`
-        so a value reads the same here as in a run report, or a single
-        ``no runs`` line when there is nothing to show — an empty table
-        would read as a rendering failure.
+        The table, cells escaped (a ``|`` or a line break in a value
+        cannot shift a column or split a row), or a single ``no runs``
+        line when there is nothing to show — an empty table would read
+        as a rendering failure.
     """
     runs = tuple(runs)
     if not runs:
@@ -500,7 +526,7 @@ def format_runs(runs, metrics=(), params=()):
         )
         for run in runs
     ]
-    return "\n".join(pipe_table(columns, rows))
+    return "\n".join(_render_table(columns, rows))
 
 
 def unknown_metrics(runs, metrics):

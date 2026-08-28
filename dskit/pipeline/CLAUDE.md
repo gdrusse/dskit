@@ -88,41 +88,18 @@ on it without breaking its rulings.
 - **Optuna continuous specs are planner-refused** (categorical only) —
   documented at the top of `libs/optuna.py`.
 - **An occupied run dir refuses** — reruns need a new asof or name.
-- **`runs.py` reads RECORDS, never `report.md`** — prose is written for
-  a human and free to change wording. A node's `metrics` DICT is
-  summarized away in `nodes/NN-*.json` and survives only in
-  `carry.json`, so the reader overlays the two. The numeric-output rule
-  (top-level scalars plus the `metrics` dict's DIRECT numeric values —
-  one level, never recursed; a dict nested inside `metrics` reaches
-  neither the sinks nor the table)
-  has ONE name — `runs.node_metrics`, which `driver._node_metrics` IS
-  (an alias, pinned by `tests/pipeline/test_runs.py::TestMetricRulePin`);
-  the run root default has one name too (`runs.resolve_run_root`, used
-  by both driver writers). A `metrics` dict too large or non-finite to
-  carry survives only as the `{"type": ..., "len": n}` summary marker:
-  the reader DROPS it and says so in `RunSummary.notes` — mining its
-  `len` would publish a key count as a measurement.
-- **Every note is PRINTED by the verb.** A dropped metrics dict, a
-  non-finite scalar recorded as the text `"inf"`, a truncated
-  `nodes/NN-*.json`, an unreadable `carry.json`/`config.json` — each
-  would otherwise render the same blank cell as a node that measured
-  nothing. `cmd_runs` prints the table, the `--limit` count, the `notes`
-  list and the `skipped` list; a loud-not-silent mechanism the only
-  user-facing surface never prints IS the silent truncation it replaced.
-  The same default-deny covers the flags: `--limit` below 1, a
-  `--metric` no scanned run ever reported, and a `--param` path no
-  scanned run's config declares are all REFUSED — a blank cell must
-  mean "this run did not measure (or declare) it" and nothing else.
-- **The run-dir layout has one home** — `runs.RESULT_FILE` /
-  `CONFIG_FILE` / `CARRY_FILE` / `NODES_DIR`. `driver.py` writes
-  through those names; `dskit/assets/ingest.py` cannot import the
-  pipeline package (the tiers are independent), so its copy is PINNED
-  in `tests/pipeline/test_runs.py::TestRunDirLayout`. `resolve.py`'s
-  stage-list tree is a SEPARATE legacy layout that owns its own
-  `config.json` — welding it to the driver's constant would rename the
-  legacy tree whenever the driver layout renames (pinned in the same
-  class), and its `{data_root}/pipeline_runs` default is likewise its
-  own knob, distinct from `runs.DEFAULT_RUN_ROOT`.
+- **`runs.py` reads RECORDS, never `report.md`** — a `metrics` dict is
+  summarized out of `nodes/NN-*.json` and recovered from `carry.json`;
+  the numeric rule is restated by `driver._node_metrics`, the two copies
+  pinned in `test_runs.py::TestMetricRulePin` (same for the run root).
+- **Every `RunSummary.note` is PRINTED by the verb** — on refusals too,
+  and BEFORE the refusal. `--limit` < 1, a `--metric` nothing scanned
+  reported, and a `--param` path nothing scanned declares are refused,
+  so a blank cell means "did not measure (or declare) it", nothing else.
+- **The run-dir layout is named by `runs.RESULT_FILE`…`NODES_DIR`**;
+  `dskit/assets/ingest.py` cannot import pipeline, so its copy is pinned
+  in `test_runs.py::TestRunDirLayout`. `resolve.py`'s legacy stage-list
+  tree and `{data_root}/pipeline_runs` default are SEPARATE knobs.
 - The purity gate (`tests/pipeline/test_purity.py`) fails on ANY
   module-level import outside stdlib + this package — heavy imports go
   inside `run()`.
@@ -141,7 +118,6 @@ dskit/pipeline/
 ├── driver.py          run_document: LOAD..RECORD, run dirs, $prev carry;
 │                      run_walk_forward (ADR-0027)
 ├── runs.py            the READER: scan_runs/format_runs over a run root (`runs` verb)
-├── markdown.py        render_cell/pipe_table — every markdown table goes through it
 ├── split_policy.py    split policies (record/event-open/event-close) + EventBounds
 ├── kinds_flow.py      filter, derive, concat, join, event-bank, eligibility, banking-report
 ├── kinds_table.py     table-file, table-write

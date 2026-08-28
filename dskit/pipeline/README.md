@@ -133,31 +133,19 @@ kinds resolve. Two more verbs — `demo`
 
 ## What ships
 
-Verbs: `run`, `walkforward`, `plan`, `validate`, `nodemap` — and **`runs`**,
-the cross-run view (`runs.py`, tier-1 stdlib, no tracking server needed):
+The **`runs`** verb (`runs.py`, tier-1 stdlib, no tracking server) is the
+cross-run view:
 
 ```bash
 python -m dskit.pipeline runs [--root DIR] [--metric NAME]... [--param PATH]... [--limit N]
 ```
 
-It scans a run root, reads each run's **structured records** — `result.json`
-for name/asof/state/hashes, `nodes/NN-*.json` + `carry.json` for metrics
-(`<node>.<metric>`), `config.json` for `--param` columns — and prints one
-markdown row per run, newest first. `report.md` is never read: prose is not a
-data source. Foreign or partial directories (a walk-forward summary dir, a
-half-written run) are listed as skipped with a reason rather than dropped, and
-`--limit` counts what it did not show.
-
-Anything the table cannot show, it **names** in a `notes` block under the
-table: a metric that reached disk as text rather than as a number (a diverged
-`inf`, a `metrics` dict too big to carry), a node record that would not parse,
-a missing `nodes/`, an unreadable `config.json`. An empty cell therefore means
-one thing only — that run did not measure (or declare) it — which holds for
-`--metric` and `--param` alike: a metric key **no** scanned run ever reported,
-or a param path **no** scanned run's config declares, is refused outright (a
-typo would otherwise render a confident column of blanks), while a key only
-some runs measured — or a knob only some documents declare — renders honestly
-with blanks for the rest.
+One row per run, newest first, from the **structured records** — never
+`report.md`. What the table cannot show it prints beside it: skipped non-run
+directories, the `--limit` count, and `notes` naming every measurement
+recoverable only as text (a diverged `inf`, a truncated record). A `--metric`
+or `--param` **no** scanned run reported (or declares) is refused, never
+rendered as a confident column of blanks.
 
 Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 
@@ -260,7 +248,6 @@ dskit/pipeline/
 ├── driver.py          LOAD -> IMPORT -> PLAN -> RESOLVE -> EXECUTE -> RECORD; run dirs;
 │                      run_walk_forward (one derived run per fold + summary)
 ├── runs.py            reads run dirs back: scan_runs / format_runs (the `runs` verb)
-├── markdown.py        the ONE pipe-table renderer every table here is built by
 ├── split_policy.py    split-assignment policies (record / event-open / event-close) + EventBounds
 ├── kinds_flow.py      filter, derive, concat, join, event-bank, eligibility, banking-report
 ├── kinds_table.py     table-file, table-write (digest-verified keyed tables)

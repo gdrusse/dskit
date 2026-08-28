@@ -113,7 +113,6 @@ import csv
 import io
 from datetime import datetime, timezone
 
-from dskit.pipeline.markdown import pipe_table, render_cell
 from dskit.pipeline.node import (
     DEFAULT_NODE_KINDS,
     Node,
@@ -147,9 +146,20 @@ SECTIONS = ("summary", "trades", "edge_test", "family", "decisions", "stages")
 _reject_unknown = reject_unknown_params
 
 
-#: One cell of a rendered table — the package-wide renderer, so a
-#: boolean knob reads the same here as in the cross-run `runs` table.
-_fmt = render_cell
+def _fmt(value):
+    """One cell of a rendered table."""
+    if value is None:
+        return "—"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return f"({len(value)} item(s))"
+    if isinstance(value, dict):
+        return f"({len(value)} key(s))"
+    text = str(value)
+    return text if len(text) <= 120 else text[:120] + "…"
 
 
 def _table(rows, key_header):
@@ -161,19 +171,16 @@ def _table(rows, key_header):
     )
     if not columns:
         return [f"- {key}" for key in sorted(rows)]
-    return pipe_table(
-        [key_header, *columns],
-        [
-            [
-                str(key),
-                *(
-                    (rows[key] if isinstance(rows[key], dict) else {}).get(column)
-                    for column in columns
-                ),
-            ]
-            for key in sorted(rows, key=str)
-        ],
-    )
+    lines = [
+        "| " + " | ".join([key_header, *columns]) + " |",
+        "|" + "---|" * (len(columns) + 1),
+    ]
+    for key in sorted(rows, key=str):
+        row = rows[key] if isinstance(rows[key], dict) else {}
+        lines.append(
+            "| " + " | ".join([str(key), *(_fmt(row.get(c)) for c in columns)]) + " |"
+        )
+    return lines
 
 
 def _fixed_table(columns, rows):
@@ -183,7 +190,13 @@ def _fixed_table(columns, rows):
     ledger and a decision sheet have a stated column order and a
     meaningful row order (chronological, ranked), and neither survives an
     alphabetical sort."""
-    return pipe_table(columns, [[row.get(column) for column in columns] for row in rows])
+    lines = [
+        "| " + " | ".join(columns) + " |",
+        "|" + "---|" * len(columns),
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(_fmt(row.get(c)) for c in columns) + " |")
+    return lines
 
 
 #: Rows of one table rendered into the markdown before it is truncated with

@@ -17,7 +17,6 @@ from dskit.pipeline import runs as runs_mod
 from dskit.pipeline.base import OutputsConfig
 from dskit.pipeline.document import NodeSpec
 from dskit.pipeline.driver import run_document
-from dskit.pipeline.markdown import MISSING, pipe_table, render_cell
 from dskit.pipeline.node import Node
 from dskit.pipeline.runs import (
     CARRY_FILE,
@@ -39,6 +38,17 @@ from tests.pipeline.dochelpers import banking_document, make_registry
 FIRST = "2026-01-01"
 SECOND = "2026-02-01"
 REPO = pathlib.Path(__file__).parents[2]
+
+#: What an absent cell reads as — restated independently of runs.py on
+#: purpose: an assertion sourced from its subject asserts nothing.
+MISSING = "—"
+
+
+def _spells(source, name):
+    """True when `source` states `name` as a string literal — single OR
+    double quotes: a quote-anchored pin is exactly what a respelled copy
+    slips past."""
+    return re.search(rf"['\"]{re.escape(name)}['\"]", source) is not None
 
 
 class DivergedScalarNode(Node):
@@ -154,23 +164,25 @@ class TestScan:
         runs, _ = scan_runs(DEFAULT_RUN_ROOT)
         assert [r.run_dir for r in runs] == [result.run_dir]
 
-    def test_the_default_run_root_is_named_in_one_module_per_layout(self):
-        """`DEFAULT_RUN_ROOT` (the driver layout's default) has one home,
-        runs.py — checked in ANY spelling, because the previous
-        quote-anchored grep missed a copy without the ``./`` prefix and
-        the restatements in `__main__.py`'s help and docstrings. The one
-        other permitted hit is resolve.py: its legacy stage-list tree
-        defaults to ``{data_root}/pipeline_runs``, a DIFFERENT knob for a
-        different layout that must not be welded to the driver's (see
-        TestRunDirLayout::test_the_legacy_stage_list_writer_owns_its_own_names).
-        The verb's ``--help`` derives from the constant instead of
-        restating it (TestVerb::test_the_help_states_the_default_from_the_constant)."""
-        hits = []
-        for path in (REPO / "dskit").rglob("*.py"):
-            source = path.read_text(encoding="utf-8")
-            if "./pipeline_runs" in source or '"pipeline_runs"' in source:
-                hits.append(path.name)
-        assert sorted(hits) == ["resolve.py", "runs.py"]
+    def test_the_default_run_root_is_spelled_only_where_pinned(self):
+        """Where ``pipeline_runs`` may be spelled in dskit — matched in
+        ANY quoting, single or double, with or without the ``./`` prefix,
+        because a quote-anchored grep is exactly the pin a respelled copy
+        slips past. The three permitted homes: runs.py owns
+        `DEFAULT_RUN_ROOT`; driver.py restates it and the agreement is
+        behavioural (test_default_run_root_agrees_with_the_driver);
+        resolve.py's legacy ``{data_root}/pipeline_runs`` is a DIFFERENT
+        knob for a different layout (see TestRunDirLayout). Anywhere else
+        is a new restatement nothing pins — `__main__.py`'s ``--help``
+        derives from the constant instead
+        (TestVerb::test_the_help_states_the_default_from_the_constant)."""
+        spelled = re.compile(r"['\"](?:\./)?pipeline_runs['\"]")
+        hits = sorted(
+            path.name
+            for path in (REPO / "dskit").rglob("*.py")
+            if spelled.search(path.read_text(encoding="utf-8"))
+        )
+        assert hits == ["driver.py", "resolve.py", "runs.py"]
 
     def test_resolve_run_root_is_what_the_declaration_means(self, tmp_path):
         assert resolve_run_root("") == os.path.abspath(DEFAULT_RUN_ROOT)
@@ -243,25 +255,30 @@ class TestParamDeny:
 
 
 class TestMetricRulePin:
-    """One rule, one name: the driver's write-side extraction and the
-    reader's are the SAME function object, not two copies held together
-    by a case list that can omit the knob someone adds next."""
+    """The numeric-output rule exists twice — `driver._node_metrics` on
+    the writing side (driver.py's content is pinned to main's) and
+    `runs.node_metrics` on the reading side — a value in two places, so
+    the agreement is pinned here, case for case."""
 
     CASES = (
         {"score": 0.5, "flag": True, "name": "x", "rows": [1, 2]},
         {"metrics": {"loss": 0.25, "n": 12, "label": "val", "ok": False}},
         {"metrics": "not a dict", "n": 3},
+        {"metrics": {"top": 2, "train": {"loss": 0.1}}},
         {},
     )
 
-    def test_the_driver_uses_this_very_function(self):
-        assert driver_mod._node_metrics is node_metrics
+    def test_the_drivers_copy_agrees_case_for_case(self):
+        """Drift in either copy — a numeric type added to one, a recursion
+        added to one — goes red here before it splits sink from table."""
+        for case in self.CASES:
+            assert driver_mod._node_metrics(case) == node_metrics(case), case
 
     def test_the_rule_itself(self):
         assert node_metrics(self.CASES[0]) == {"score": 0.5}
         assert node_metrics(self.CASES[1]) == {"metrics.loss": 0.25, "metrics.n": 12}
         assert node_metrics(self.CASES[2]) == {"n": 3}
-        assert node_metrics(self.CASES[3]) == {}
+        assert node_metrics(self.CASES[4]) == {}
 
     def test_the_metrics_dict_is_read_one_level_never_recursed(self):
         """A dict nested INSIDE `metrics` is a payload, not a measurement:
@@ -426,15 +443,6 @@ class TestRunDirLayout:
             assert os.path.isfile(os.path.join(run_dir, name)), name
         assert os.path.isdir(os.path.join(run_dir, NODES_DIR))
 
-    def test_the_driver_does_not_restate_the_layout(self):
-        """driver.py — the writer of THIS layout — writes THROUGH the
-        reader's names. resolve.py is deliberately absent: its stage-list
-        tree is an independent legacy layout (see
-        test_the_legacy_stage_list_writer_owns_its_own_names)."""
-        source = (REPO / "dskit/pipeline/driver.py").read_text(encoding="utf-8")
-        for name in (RESULT_FILE, CONFIG_FILE, CARRY_FILE):
-            assert f'"{name}"' not in source, f"driver.py restates {name}"
-
     def test_the_legacy_stage_list_writer_owns_its_own_names(self):
         """`resolve.write_run_dir` writes a DIFFERENT tree — config.json
         + resolved.json, no result.json, which the scan lists as skipped
@@ -443,7 +451,7 @@ class TestRunDirLayout:
         legitimate rename of the driver's config record would silently
         rename the legacy tree too, breaking its own readers."""
         source = (REPO / "dskit/pipeline/resolve.py").read_text(encoding="utf-8")
-        assert '"config.json"' in source
+        assert _spells(source, "config.json")
         assert "from dskit.pipeline.runs import" not in source
 
     def test_the_other_run_dir_reader_reads_the_same_names(self):
@@ -451,8 +459,8 @@ class TestRunDirLayout:
         the pipeline package (the tiers are independent), so the
         agreement is pinned instead: move a name and this goes red."""
         source = (REPO / "dskit/assets/ingest.py").read_text(encoding="utf-8")
-        assert f'"{RESULT_FILE}"' in source
-        assert f'"{NODES_DIR}"' in source
+        assert _spells(source, RESULT_FILE)
+        assert _spells(source, NODES_DIR)
 
     def test_the_other_run_dir_reader_requires_the_same_keys(self):
         """Both readers require the same `result.json` key set, or the
@@ -463,7 +471,7 @@ class TestRunDirLayout:
         source = (REPO / "dskit/assets/ingest.py").read_text(encoding="utf-8")
         match = re.search(r"for key in \(([^)]*)\)", source)
         assert match, "ingest.py no longer states its required result.json keys"
-        theirs = set(re.findall(r'"(\w+)"', match.group(1)))
+        theirs = set(re.findall(r"['\"](\w+)['\"]", match.group(1)))
         assert theirs == set(runs_mod._REQUIRED)
 
     def test_a_blank_or_null_identity_field_is_not_a_run(self, two_runs):
@@ -501,63 +509,17 @@ class TestRunDirLayout:
         assert "document_hash" in problems[0].reason
 
 
-class TestSharedRenderer:
-    """Every markdown table this package emits is built by ONE renderer."""
-
-    def test_only_one_module_builds_a_markdown_table(self):
-        """The pattern is the SEPARATOR ITSELF, not a quoted copy of it:
-        a hand-built `|---|---|---|` is exactly what must be caught."""
-        hits = sorted(
-            path.name
-            for path in (REPO / "dskit").rglob("*.py")
-            if "---|" in path.read_text(encoding="utf-8")
-        )
-        assert hits == ["markdown.py"]
-
-    def test_the_run_report_node_table_goes_through_the_renderer(self):
-        """A hand-built table restates the renderer's decisions and
-        drifts: `str(0.000123456789)` where render_cell gives 6 s.f., and
-        no escaping where the renderer escapes."""
-        lines = driver_mod._node_table(
-            ("a|b", "plain"),
-            lambda key: "transform",
-            {"a|b": "ok", "plain": "not_run"},
-            {"a|b": 0.000123456789},
-        )
-        assert lines[0] == "| node | role | status | seconds |"
-        assert r"a\|b" in lines[2]
-        assert "0.000123457" in lines[2]
-        assert lines[3].endswith(f"| {MISSING} |")  # never ran, never timed
-
-    def test_the_walk_forward_table_goes_through_the_renderer(self):
-        lines = driver_mod._fold_table(
-            [
-                {
-                    "cutoff": "2026-01-01",
-                    "state": "ran|x",
-                    "score": 0.000123456789,
-                    "run_dir": "/r/demo-2026-01-01-0badc0de",
-                },
-                {
-                    "cutoff": "2026-02-01",
-                    "state": "error",
-                    "score": None,
-                    "run_dir": "",
-                },
-            ]
-        )
-        assert lines[0] == "| fold cutoff | state | score | run |"
-        assert r"ran\|x" in lines[2]
-        assert "0.000123457" in lines[2]
-        assert "`demo-2026-01-01-0badc0de`" in lines[2]
-        assert lines[3].count(MISSING) == 2  # no score, no run dir
+class TestTableRendering:
+    """The verb's table is rendered defensively: an absent value reads as
+    a dash (never a blank), and cell content can never masquerade as
+    table structure."""
 
     def test_the_empty_string_is_not_a_blank_cell(self):
-        """markdown.py's own rule: a blank cell is indistinguishable from
-        a rendering bug, so nothing may render as one."""
-        assert render_cell("") == MISSING
+        """A blank cell is indistinguishable from a rendering bug, so
+        nothing may render as one."""
+        assert runs_mod._render_cell("") == MISSING
 
-    def test_a_boolean_reads_the_same_everywhere(self):
+    def test_a_boolean_param_reads_as_a_verdict(self):
         run = RunSummary(
             run_dir="/x/demo-2026-01-01-0badc0de",
             name="demo",
@@ -567,7 +529,7 @@ class TestSharedRenderer:
             document_hash="1" * 64,
             config={"strict": True},
         )
-        assert render_cell(True) == "yes"
+        assert runs_mod._render_cell(True) == "yes"
         assert "| yes |" in format_runs([run], params=("strict",))
 
     def test_a_pipe_in_a_value_cannot_shift_the_columns(self):
@@ -586,29 +548,24 @@ class TestSharedRenderer:
         assert len(re.findall(delimiters, row)) == len(re.findall(delimiters, header))
         assert r"a\|b" in row
 
-    def test_a_row_of_the_wrong_width_is_refused(self):
-        with pytest.raises(ValueError, match="2 column"):
-            pipe_table(("a", "b"), [[1, 2, 3]])
-
     def test_a_line_break_only_value_is_missing_not_blank(self):
         """Flattening must run BEFORE the emptiness check: a value that
         is nothing but line breaks flattens to nothing, and nothing
-        renders as MISSING — never as the blank cell the module's own
-        docstring declares impossible."""
+        renders as MISSING — never as a blank cell."""
         for text in ("\n", "\r\n", "\r"):
-            assert render_cell(text) == MISSING, repr(text)
-        assert f"| {MISSING} | 1 |" in pipe_table(("a", "b"), [["\n", 1]])[2]
+            assert runs_mod._render_cell(text) == MISSING, repr(text)
+        table = runs_mod._render_table(("a", "b"), [["\n", 1]])
+        assert f"| {MISSING} | 1 |" in table[2]
 
     def test_a_newline_in_a_value_cannot_break_the_row(self):
-        """A `|` opens a phantom COLUMN; a newline opens a phantom ROW —
-        and the width check counts cells before the join, so it cannot
-        catch it. A two-line `notes` in a config is ordinary; it must
-        render as one line a reader can follow."""
+        """A `|` opens a phantom COLUMN; a newline opens a phantom ROW.
+        A two-line `notes` in a config is ordinary; it must render as
+        one line a reader can follow."""
         for text in ("a\nb", "a\r\nb", "a\rb"):
-            cell = render_cell(text)
+            cell = runs_mod._render_cell(text)
             assert "\n" not in cell and "\r" not in cell
             assert "a" in cell and "b" in cell  # both halves survive
-        assert "\n" not in pipe_table(("x", "y"), [["a\nb", 1]])[2]
+        assert "\n" not in runs_mod._render_table(("x", "y"), [["a\nb", 1]])[2]
         run = RunSummary(
             run_dir="/x/demo-2026-01-01-0badc0de",
             name="demo",
@@ -774,9 +731,6 @@ class TestDocsCurrency:
         readme = (REPO / "dskit/pipeline/README.md").read_text(encoding="utf-8")
         claude = (REPO / "dskit/pipeline/CLAUDE.md").read_text(encoding="utf-8")
         assert "runs.py" in readme and "runs.py" in claude
-        # markdown.py is a new module too — a tree that omits it sends the
-        # next agent to write a fourth table renderer.
-        assert "markdown.py" in readme and "markdown.py" in claude
         assert "dskit.pipeline runs" in readme
         what_ships = readme.split("## What ships")[1].split("\n## ")[0]
         assert "runs" in what_ships

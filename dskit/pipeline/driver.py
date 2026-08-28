@@ -84,15 +84,6 @@ from dskit.pipeline.env import load_env
 from dskit.pipeline.node import Node, NodeContext
 from dskit.pipeline.planner import _UNSEARCHABLE_ROLES
 from dskit.pipeline.planner import plan as plan_document
-from dskit.pipeline.markdown import pipe_table
-from dskit.pipeline.runs import (
-    CARRY_FILE,
-    CONFIG_FILE,
-    NODES_DIR,
-    RESULT_FILE,
-    node_metrics,
-    resolve_run_root,
-)
 
 __all__ = ["DocumentRunResult", "WalkForwardRunResult", "run_document", "run_walk_forward"]
 
@@ -648,7 +639,7 @@ def _find_prev_run(run_root, name, own_dir):
         matched = pattern.match(entry)
         if matched is None:
             continue
-        if not os.path.isfile(os.path.join(full, CARRY_FILE)):
+        if not os.path.isfile(os.path.join(full, "carry.json")):
             continue
         candidates.append((matched.group(1), os.path.getmtime(full), full))
     if not candidates:
@@ -684,68 +675,6 @@ def _carryable(value):
     return value, True
 
 
-def _node_table(order, role_of, states, seconds):
-    """The run report's per-node table, through the one renderer.
-
-    Parameters
-    ----------
-    order : sequence of str
-        Node keys in execution order — the order the table shows.
-    role_of : callable
-        ``key -> role``, the plan's own answer.
-    states : dict
-        ``{node key: status}``.
-    seconds : dict
-        ``{node key: float}``; a node that never ran has no entry, and an
-        absent duration renders as the renderer's MISSING rather than as
-        a hand-written dash.
-
-    Returns
-    -------
-    list of str
-        Header, separator, one line per node — rendered by
-        :func:`~dskit.pipeline.markdown.pipe_table`, so a duration reads
-        the same here as in every other table the package prints.
-    """
-    return pipe_table(
-        ("node", "role", "status", "seconds"),
-        [(key, role_of(key), states[key], seconds.get(key)) for key in order],
-    )
-
-
-def _fold_table(folds):
-    """The walk-forward summary's per-fold table, through the one renderer.
-
-    Parameters
-    ----------
-    folds : sequence of dict
-        One mapping per fold with ``cutoff``, ``state``, ``score`` (None
-        where the fold did not score) and ``run_dir`` (empty where no run
-        dir exists).
-
-    Returns
-    -------
-    list of str
-        Header, separator, one line per fold. The run dir is shown as its
-        basename in backticks; a fold state carrying a ``|`` is escaped
-        rather than allowed to shift every column right of it.
-    """
-    return pipe_table(
-        ("fold cutoff", "state", "score", "run"),
-        [
-            (
-                fold["cutoff"],
-                fold["state"],
-                fold["score"],
-                f"`{os.path.basename(fold['run_dir'])}`"
-                if os.path.basename(fold["run_dir"])
-                else None,
-            )
-            for fold in folds
-        ],
-    )
-
-
 def _collect_flags(order, node_outputs):
     """Findings any node raised, split ``(loud, notes)``.
 
@@ -771,10 +700,19 @@ def _collect_flags(order, node_outputs):
     return loud, notes
 
 
-#: What a node's outputs contribute to the sinks. ONE name for the rule:
-#: `runs.node_metrics` reads the same rule back off the records, and two
-#: copies would drift the first time a numeric type is added here.
-_node_metrics = node_metrics
+def _node_metrics(outputs) -> dict:
+    """What a node's outputs contribute to the sinks: top-level numeric
+    scalars, plus every numeric leaf of an output literally named
+    ``metrics`` — never bulk payloads."""
+    out = {}
+    for key, value in outputs.items():
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[key] = value
+        elif key == "metrics" and isinstance(value, dict):
+            for mk, mv in value.items():
+                if isinstance(mv, (int, float)) and not isinstance(mv, bool):
+                    out[f"metrics.{mk}"] = mv
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -949,8 +887,11 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
         )
 
         outputs_cfg = document.outputs
-        run_root = resolve_run_root(
-            outputs_cfg.run_root if outputs_cfg is not None else ""
+        run_root = os.path.abspath(
+            os.path.expanduser(
+                (outputs_cfg.run_root if outputs_cfg is not None else "")
+                or "./pipeline_runs"
+            )
         )
         run_dir = os.path.join(run_root, f"{document.name}-{asof}-{run_hash[:8]}")
         if os.path.isdir(run_dir) and os.listdir(run_dir):
@@ -962,11 +903,11 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
         prev_dir = _find_prev_run(run_root, document.name, run_dir)
         prev = {}
         if prev_dir is not None:
-            with open(os.path.join(prev_dir, CARRY_FILE), encoding="utf-8") as fh:
+            with open(os.path.join(prev_dir, "carry.json"), encoding="utf-8") as fh:
                 prev = json.load(fh)
 
         os.makedirs(run_dir, exist_ok=True)
-        _write_json(os.path.join(run_dir, CONFIG_FILE), document.to_obj())
+        _write_json(os.path.join(run_dir, "config.json"), document.to_obj())
         _write_json(os.path.join(run_dir, "plan.json"), the_plan.to_obj())
         prev_bindings = {}
         resolved_payload = {
@@ -1150,7 +1091,7 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
             node_states.setdefault(key, "not_run")
 
         # -- 6 RECORD ---------------------------------------------------
-        nodes_dir = os.path.join(run_dir, NODES_DIR)
+        nodes_dir = os.path.join(run_dir, "nodes")
         os.makedirs(nodes_dir, exist_ok=True)
         for i, key in enumerate(the_plan.order, start=1):
             record = {
@@ -1178,7 +1119,7 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
                     kept[name] = carried
             if kept:
                 carry[key] = kept
-        _write_json(os.path.join(run_dir, CARRY_FILE), carry)
+        _write_json(os.path.join(run_dir, "carry.json"), carry)
 
         resolved_payload["prev_bindings"] = prev_bindings
         _write_json(os.path.join(run_dir, "resolved.json"), resolved_payload)
@@ -1196,7 +1137,7 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
             seconds=seconds,
         )
         _write_json(
-            os.path.join(run_dir, RESULT_FILE),
+            os.path.join(run_dir, "result.json"),
             {
                 "name": document.name,
                 "asof": asof,
@@ -1233,8 +1174,14 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
             f"- document hash: `{document.hash[:16]}…`",
             f"- previous run: {os.path.basename(prev_dir) if prev_dir else '— (first of the series)'}",
             "",
+            "| node | role | status | seconds |",
+            "|---|---|---|---|",
         ]
-        lines += _node_table(the_plan.order, the_plan.role_of, node_states, seconds)
+        lines += [
+            f"| {key} | {the_plan.role_of(key)} | {node_states[key]} | "
+            f"{seconds.get(key, '—')} |"
+            for key in the_plan.order
+        ]
         _atomic_write_text(os.path.join(run_dir, "report.md"), "\n".join(lines) + "\n")
         return result
     finally:
@@ -1389,8 +1336,11 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
     spec = document.walkforward
     target, obj_path = parse_node_ref(spec.objective)
     outputs_cfg = document.outputs
-    run_root = resolve_run_root(
-        outputs_cfg.run_root if outputs_cfg is not None else ""
+    run_root = os.path.abspath(
+        os.path.expanduser(
+            (outputs_cfg.run_root if outputs_cfg is not None else "")
+            or "./pipeline_runs"
+        )
     )
     summary_dir = os.path.join(
         run_root, f"{document.name}-walkforward-{asof}-{document.hash[:8]}"
@@ -1523,7 +1473,13 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
             f"best ({spec.select}) {aggregate['best_score']:.6g} at "
             f"{aggregate['best_cutoff']}"
         )
-    lines += ["", *_fold_table(folds)]
+    lines += ["", "| fold cutoff | state | score | run |", "|---|---|---|---|"]
+    for fold in folds:
+        score = "—" if fold["score"] is None else f"{fold['score']:.6g}"
+        run_name = os.path.basename(fold["run_dir"]) or "—"
+        lines.append(
+            f"| {fold['cutoff']} | {fold['state']} | {score} | `{run_name}` |"
+        )
     _atomic_write_text(os.path.join(summary_dir, "report.md"), "\n".join(lines) + "\n")
     return WalkForwardRunResult(
         summary_dir=summary_dir,
