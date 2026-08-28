@@ -52,7 +52,6 @@ class LocalFilesConnector(Connector):
     """Files in a local directory, one stream per file. See module docs."""
 
     def spec(self) -> dict:
-        """Declare this connector's config knobs. See module docs."""
         return {
             "params": {
                 "path": {

@@ -111,11 +111,14 @@ def test_timeout_and_retries_defaults_are_named_constants(conn, config, monkeypa
     assert restapi._DEFAULT_TIMEOUT == 30
     assert restapi._DEFAULT_MAX_RETRIES == 3
 
-    notes = conn.spec()["params"]
-    assert f"default {restapi._DEFAULT_TIMEOUT}" in notes["timeout"]["notes"]
-    assert f"default {restapi._DEFAULT_MAX_RETRIES}" in notes["max_retries"]["notes"]
-    assert f"default {restapi._DEFAULT_TIMEOUT}" in restapi.__doc__
-    assert f"default {restapi._DEFAULT_MAX_RETRIES}" in restapi.__doc__
+    # spec() notes are BUILT from the constants (f-strings), so they can
+    # never independently drift — no separate pin is meaningful there.
+    # The module docstring is static prose, so it's the one text that can
+    # go stale; anchor on the whole "(default N)." bullet ending so the
+    # short max_retries needle ("3).") cannot match inside the longer
+    # timeout needle ("30).") or vice versa.
+    assert f"(default {restapi._DEFAULT_TIMEOUT})." in restapi.__doc__
+    assert f"(default {restapi._DEFAULT_MAX_RETRIES})." in restapi.__doc__
 
     # Rebind the constants to sentinel values: a call site that hardcoded
     # 30 / 3 instead of reading the constant would keep resolving to the
