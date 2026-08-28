@@ -417,6 +417,43 @@ class TestTracking:
         assert "size.cfg.lr" not in first_logged  # descent never enters a ref
         assert set(first_logged) == set(second_logged)
 
+    def test_a_node_whose_entire_params_block_is_a_carry_logs_no_keys(
+        self, tmp_path, registry
+    ):
+        # Round-5 ruling (finding 1, refining 1+2+3): a root-level carry
+        # is pure wiring — the node declares no addressable knob, and the
+        # params block has no path of its own to be emitted under — so it
+        # contributes NOTHING. Descending it logged the carry's 'default'
+        # plumbing as knobs ('size.default.*') whose values contradict
+        # every run after the first.
+        self.register_memory()
+
+        def run(asof):
+            pipeline = banking_pipeline()
+            pipeline["size"] = NodeSpec(
+                uses="synth-capital",
+                inputs=dict(pipeline["size"].inputs),
+                params={
+                    "$prev": "size.no_such_output",  # misses -> default binds
+                    "default": {"bankroll": 1000.0, "stake_frac": 0.1},
+                },
+            )
+            doc = bdoc(
+                tmp_path,
+                pipeline=pipeline,
+                tracking=TrackingConfig(sinks=(SinkConfig(kind="memory"),)),
+            )
+            return run_document(doc, asof=asof, registry=registry)
+
+        first = run("2026-01-01")
+        first_logged = dict(MemoryTracker.instances[-1].logged_params)
+        second = run("2026-01-08")
+        second_logged = dict(MemoryTracker.instances[-1].logged_params)
+        assert first.state == "ran" and second.state == "ran"
+        assert second.prev_run == first.run_dir  # a real series
+        assert not [k for k in first_logged if k.startswith("size.")]
+        assert not [k for k in second_logged if k.startswith("size.")]
+
     def test_a_param_wired_to_a_node_output_logs_the_REFERENCE(
         self, tmp_path, registry
     ):

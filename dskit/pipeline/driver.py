@@ -198,7 +198,7 @@ def _open_sinks(tracking):
 
 
 def _tracked_params(pipeline, order):
-    """The document's declared hyperparameters, flattened for the sinks.
+    """Flatten the document's declared hyperparameters for the sinks.
 
     Identity alone left runs unfilterable — you could not ask a sink for
     "the runs at hidden_size=64". The payload is the DECLARED

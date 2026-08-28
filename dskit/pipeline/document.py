@@ -227,13 +227,13 @@ def parse_prev_ref(value):
 def _flatten_into(out, prefix, value):
     """Emit ``prefix`` -> leaf for one params subtree, key by key.
 
-    A reference is one leaf, as declared — descent never enters it (the
-    ``$prev`` carry is the only dict-shaped reference; ``$``-strings are
-    leaves by shape). A block that holds a key no path segment can name
-    is emitted WHOLE as well as descended, so the walk never drops a
-    value.
+    A reference is one leaf, as declared — descent never enters it (both
+    reference predicates, as every sibling walker composes them, though
+    only the ``$prev`` carry is dict-shaped). A block that holds a key no
+    path segment can name is emitted WHOLE as well as descended, so the
+    walk never drops a value.
     """
-    if is_prev_ref(value):
+    if is_node_ref(value) or is_prev_ref(value):
         out[prefix] = value
         return
     inside = _spellable_keys(value)
@@ -244,7 +244,7 @@ def _flatten_into(out, prefix, value):
 
 
 def _spellable_keys(value):
-    """The keys of ``value`` a path segment can name — () for a non-dict."""
+    """Return the keys of ``value`` a path segment can name — () for a non-dict."""
     if not isinstance(value, dict):
         return ()
     return tuple(k for k in value if isinstance(k, str) and re.match(_SEGMENT_OK, k))
@@ -268,8 +268,9 @@ def flatten_param_paths(node_key, params):
     only in ``opt.1st_moment`` still log differently. Emission therefore
     never depends on whether a value happens to have a spellable sibling
     — the one asymmetry left is the node's own params dict, which has no
-    path of its own (``"size"`` is no override target), so an unspellable
-    TOP-level param name is unrecoverable.
+    path of its own (``"size"`` is no override target): an unspellable
+    TOP-level param name is unrecoverable, and a params block that IS a
+    reference emits nothing at all.
 
     A value with no spellable key below it is the LEAF and is emitted
     whole: a scalar, a list, an empty dict, and a block like ``hpo-grid``'s
@@ -279,14 +280,16 @@ def flatten_param_paths(node_key, params):
 
     A REFERENCE is wiring, not a dict of knobs, and is one leaf logged
     exactly as declared: a ``$node.port``/``$splits...`` string rides
-    through as written, and a ``$prev`` carry is emitted whole with
-    descent never entering it (its ``default`` is reference plumbing, so
-    it gets no key of its own). That keeps the emitted key set equal to
-    the declared tree — stable across a run series, where a carry's
-    RESOLUTION changes shape run over run — and keeps every key an
-    address the override/space grammar can spell. What a reference bound
-    to lives where it happened: outputs, ``carry.json``,
-    ``resolved.json``.
+    through as written, and a ``$prev`` carry is emitted whole — never
+    entered (its ``default`` is reference plumbing, so it gets no key of
+    its own). A params block that IS a reference at the ROOT emits no
+    keys at all: the node declares no addressable knob, and the block
+    has no path of its own to be emitted under. All of that keeps the
+    emitted key set equal to the declared tree — stable across a run
+    series, where a carry's RESOLUTION changes shape run over run — and
+    keeps every key an address the override/space grammar can spell.
+    What a reference bound to lives where it happened: outputs,
+    ``carry.json``, ``resolved.json``.
 
     Values otherwise pass through unchanged — rendering belongs to the
     sink, so a numeric knob stays comparable as a number.
@@ -306,10 +309,13 @@ def flatten_param_paths(node_key, params):
     dict
         ``"<node_key>.<param.path>"`` -> the declared value at that path
         (a leaf, or a block that also holds something unspellable);
-        empty when the node declares no addressable params. Every key
-        contains at least one dot, so these never collide with the
-        undotted run-identity fields a tracker logs beside them.
+        empty when the node declares no addressable params — none at
+        all, or a whole-block reference. Every key contains at least one
+        dot, so these never collide with the undotted run-identity
+        fields a tracker logs beside them.
     """
+    if is_node_ref(params) or is_prev_ref(params):
+        return {}
     out = {}
     for name, value in params.items():
         if isinstance(name, str) and re.match(_SEGMENT_OK, name):

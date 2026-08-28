@@ -517,14 +517,21 @@ class TestSpaceKeyGrammarParity:
     """
 
     #: One node's params covering every shape the walk can meet — and the
-    #: whole SEGMENT alphabet: ``T_max`` (uppercase head) and ``useAmp``
-    #: (uppercase inside) pin that neither grammar quietly narrows to
-    #: lowercase, which an all-lowercase fixture would let pass unseen.
+    #: whole SEGMENT alphabet: ``T_max``/``useAmp`` (uppercase head and
+    #: inside), ``beta2`` (digit tail), ``_warm`` (underscore head) pin
+    #: that neither grammar quietly narrows its segment class — a fixture
+    #: of plain lowercase words would let letters-only or no-underscore
+    #: mutations of either regex pass unseen (round-5 finding 2).
     PARAMS = {
         "hidden_size": 32,
         "lr": 0.001,
         "monitor": "val_loss",
-        "opt": {"kind": "adam", "sched": {"warmup": 10, "T_max": 100}},
+        "opt": {
+            "kind": "adam",
+            "beta2": 0.999,
+            "_warm": 5,
+            "sched": {"warmup": 10, "T_max": 100},
+        },
         "cuts": [1, 2],
         "empty": {},
         "useAmp": True,

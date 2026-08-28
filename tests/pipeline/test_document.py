@@ -160,6 +160,16 @@ class TestFlattenParamPaths:
             "clip.note": "$events.instruments"
         }
 
+    def test_a_root_level_carry_flattens_to_nothing(self):
+        # Round-5 ruling (finding 1, refining 1+2+3): when the ENTIRE
+        # params block is a carry, the node's params are pure wiring —
+        # no addressable knob exists, and the params dict has no path of
+        # its own to be emitted under (the same asymmetry that makes an
+        # unspellable top-level name unrecoverable) — so the flattener
+        # emits NO keys, never the carry's 'default' plumbing as knobs.
+        carry = {"$prev": "size.positions", "default": {"stake_frac": 0.1}}
+        assert flatten_param_paths("size", carry) == {}
+
     def test_no_params_flatten_to_nothing(self):
         assert flatten_param_paths("bank", {}) == {}
 
