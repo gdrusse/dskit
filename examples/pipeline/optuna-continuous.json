@@ -1,0 +1,68 @@
+{
+  "name": "optuna-continuous-demo",
+  "notes": "The CONTINUOUS half of the docs/24 §8 search seam: optuna-search.json's twin, differing only in the shape of `space`. Here clip.lo is a range spec — {\"low\", \"high\"} plus the optional \"log\"/\"int\" flags — so the seeded TPE sampler draws a real-valued threshold instead of picking from a list. Reach for this form whenever the knob is genuinely continuous (a learning rate, a threshold, a regularization weight): a list would force you to guess the resolution up front, and hpo-grid REFUSES range specs because exhaustive enumeration over an interval is meaningless. The planner checks only that the space keys address existing params of ancestors of the objective; the range grammar itself belongs to OptunaSearch (dskit/pipeline/libs/optuna.py:_spec_problems), which is why this document needs the optuna extra to run but plans without it. Every `uses` is an import reference, so it runs against the bare toolkit with zero registrations: python -m dskit.pipeline run examples/pipeline/optuna-continuous.json --asof 2026-01-01",
+  "pipeline": {
+    "events": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthEvents",
+      "params": { "n_events": 96, "n_instruments": 1, "seed": 11 },
+      "notes": "role 'data': the deterministic synthetic market"
+    },
+    "labels": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthLabels",
+      "inputs": { "events": "$events.events" }
+    },
+    "clip": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthClip",
+      "inputs": { "events": "$events.events" },
+      "params": { "lo": 0.35, "hi": 0.97 },
+      "notes": "clip.lo is the tuned knob; the value here is the base-pass default the search overrides — overrides address EXISTING params only"
+    },
+    "market": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthMarketSignal",
+      "inputs": { "events": "$clip.events" }
+    },
+    "qhat": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthTrain",
+      "mode": "train",
+      "inputs": { "events": "$clip.events" },
+      "params": { "min_train": 5 }
+    },
+    "validate": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthScore",
+      "inputs": {
+        "events": "$clip.events",
+        "signal": "$qhat.signal",
+        "baseline": "$market.signal",
+        "outcomes": "$labels.outcomes"
+      },
+      "params": { "split": "val", "min_events": 5 },
+      "notes": "the objective's source: a score node reading 'val' — selection never sees test (spec §8)"
+    },
+    "search": {
+      "uses": "dskit.pipeline.libs.optuna:OptunaSearch",
+      "params": {
+        "space": { "clip.lo": { "low": 0.3, "high": 0.55 } },
+        "objective": "$validate.metrics.loss",
+        "n_trials": 8,
+        "seed": 0,
+        "direction": "minimize"
+      },
+      "notes": "the range spec: low/high are REQUIRED finite numbers with low < high; add \"log\": true for scale-free knobs (needs low > 0) and \"int\": true for integer knobs (integer bounds). A degenerate range is a one-value categorical — write it as a list. 8 trials is the whole budget: unlike a grid there is nothing to enumerate, so n_trials alone decides how long the search runs."
+    },
+    "report": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthReport",
+      "inputs": {
+        "best_score": "$search.best_score",
+        "loss": "$validate.metrics.loss"
+      },
+      "notes": "downstream of the search: consumes the winner pass"
+    }
+  },
+  "splits": {
+    "kind": "random",
+    "train_frac": 0.8,
+    "val_frac": 0.2,
+    "seed": 7
+  },
+  "outputs": { "run_root": "" }
+}

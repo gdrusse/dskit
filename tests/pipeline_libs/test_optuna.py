@@ -8,13 +8,14 @@ Four layers, mirroring ``tests/pipeline/test_kinds_search.py``:
   optimum, tie-breaking, direction, int/log/categorical suggestion
   domains), determinism (same seed = same trial sequence), registration;
 * planner — the spec §8 rules asserted THROUGH ``plan()`` (bad
-  objective/space/stale consumers refused), plus the pinned integration
-  gap: continuous specs validate on the node but today fail the
-  planner's list-of-scalars space grammar;
+  objective/space/stale consumers refused), including the continuous
+  form: the planner owns the STRUCTURAL space rules and leaves the
+  range-spec grammar to this kind, so a spec-dict document plans and a
+  malformed one still refuses;
 * driver — end-to-end ``run_document`` with a PRIVATE registry on the
-  parabola fixture (analytic argmin), the winner re-applied by the
-  driver so downstream consumes the tuned pass, plus run-level
-  determinism and loud trial failures;
+  parabola fixture (analytic argmin), for BOTH space forms, the winner
+  re-applied by the driver so downstream consumes the tuned pass, plus
+  run-level determinism and loud trial failures;
 * conformance — the suite over the pack's NODE_KINDS with the module
   imported under blocked heavy libraries. ``run()`` needs the driver's
   ``ctx.rerun`` seam, so the probe is not runnable — search is not a
@@ -44,14 +45,16 @@ ASOF = "2026-01-01"
 #: Trivially-valid splits for score nodes that never read ctx.splits.
 FLAT_SPLITS = TimeSplitConfig(train_end_ms=1, val_end_ms=2, test_end_ms=3)
 
-EXAMPLE = os.path.join(
-    os.path.dirname(__file__),
-    "..",
-    "..",
-    "examples",
-    "pipeline",
-    "optuna-search.json",
-)
+def _example(name):
+    return os.path.join(
+        os.path.dirname(__file__), "..", "..", "examples", "pipeline", name
+    )
+
+
+EXAMPLE = _example("optuna-search.json")
+
+#: The range-spec twin of EXAMPLE: same seam, continuous space.
+CONTINUOUS_EXAMPLE = _example("optuna-continuous.json")
 
 
 # ---------------------------------------------------------------------------
@@ -652,6 +655,41 @@ class TestEndToEndParabola:
         for key in ("src", "theta", "val", "search"):
             assert a.outputs[key] == b.outputs[key], key
 
+    def test_a_continuous_space_runs_end_to_end(self, tmp_path, registry):
+        # The whole point of the range-spec form: a continuous document
+        # PLANS (the planner owns the structural space rules only) and
+        # RUNS — the TPE sampler draws real-valued theta off any grid,
+        # and the driver re-applies the winner so downstream consumes the
+        # tuned pass exactly as it does for the categorical form.
+        pipeline = parabola_pipeline(
+            search_params={
+                "space": {"theta.theta": {"low": 0.0, "high": 6.0}},
+                "n_trials": 25,
+                "seed": 3,
+            }
+        )
+        result = run_document(
+            parabola_document(tmp_path, pipeline=pipeline),
+            asof=ASOF,
+            registry=registry,
+        )
+        assert result.state == "ran"
+        search = result.outputs["search"]
+        assert len(search["trials"]) == 25
+        theta = search["best_params"]["theta.theta"]
+        # Off-grid float inside the declared interval, converged onto the
+        # analytic argmin 3.0 (seeded: this is a fact, not a hope).
+        assert 0.0 < theta < 6.0
+        assert theta != int(theta)
+        assert abs(theta - 3.0) < 0.5
+        assert search["best_score"] == min(t["score"] for t in search["trials"])
+        # The winner pass is what downstream consumed.
+        assert result.outputs["theta"]["value"] == theta
+        assert result.outputs["val"]["metrics"]["loss"] == search["best_score"]
+        record = read_json(result.run_dir, "nodes", "04-search.json")
+        assert record["trials_executed"] == 25
+        assert record["winner_reran"] == ["theta", "val"]
+
     def test_trial_node_failure_names_the_trial(self, tmp_path, registry):
         pipeline = parabola_pipeline(
             search_params={"space": {"theta.theta": ["boom"]}, "n_trials": 1}
@@ -667,7 +705,7 @@ class TestEndToEndParabola:
 
 
 # ---------------------------------------------------------------------------
-# The example document: loads, hashes, PLANS and RUNS for real
+# The example documents (both space forms): load, hash, PLAN and RUN for real
 # ---------------------------------------------------------------------------
 
 
@@ -697,6 +735,50 @@ class TestExampleDocument:
         )
         record = read_json(result.run_dir, "nodes", "07-search.json")
         assert record["trials_executed"] == 6
+        assert "clip" in record["winner_reran"]
+
+
+class TestContinuousExampleDocument:
+    """``optuna-continuous.json`` — the categorical example's twin, and
+    the shipped proof that the range-spec form survives the whole path:
+    JSON on disk, the real planner, a completed run."""
+
+    def test_the_document_ships_the_range_spec_form(self):
+        # The example EARNS its place by being continuous; if a later
+        # edit turned this space back into a list, the run test below
+        # would still pass and the example would silently duplicate
+        # optuna-search.json.
+        space = load_document(CONTINUOUS_EXAMPLE).pipeline["search"].params["space"]
+        assert space == {"clip.lo": {"low": 0.3, "high": 0.55}}
+
+    def test_loads_and_hashes_stably(self):
+        doc = load_document(CONTINUOUS_EXAMPLE)
+        assert doc.name == "optuna-continuous-demo"
+        assert load_document(CONTINUOUS_EXAMPLE).hash == doc.hash
+
+    def test_plans_via_the_real_planner(self):
+        # The gap this example exists to prove closed: a spec-dict space
+        # reaches plan() and passes it, with no registration needed (every
+        # `uses` is an import reference).
+        the_plan = plan(load_document(CONTINUOUS_EXAMPLE))
+        assert the_plan.role_of("search") == "search"
+        assert ("search", "report") in the_plan.edges
+
+    def test_runs_end_to_end_via_the_real_driver(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)  # outputs.run_root "" -> ./pipeline_runs
+        result = run_document(load_document(CONTINUOUS_EXAMPLE), asof=ASOF)
+        assert result.state == "ran"
+        search = result.outputs["search"]
+        assert len(search["trials"]) == 8
+        lo = search["best_params"]["clip.lo"]
+        assert 0.3 < lo < 0.55  # a sampled interior float, not a bound
+        assert all(0.3 <= t["overrides"]["clip.lo"] <= 0.55 for t in search["trials"])
+        # The winner pass is what downstream consumed.
+        assert result.outputs["validate"]["metrics"]["loss"] == pytest.approx(
+            search["best_score"]
+        )
+        record = read_json(result.run_dir, "nodes", "07-search.json")
+        assert record["trials_executed"] == 8
         assert "clip" in record["winner_reran"]
 
 

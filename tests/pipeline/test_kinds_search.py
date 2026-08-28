@@ -303,6 +303,33 @@ class TestValidateParams:
         problems = HpoGrid.validate_params(self.good(space={"train.lr": scalar}))
         assert any("JSON scalars" in p for p in problems)
 
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            {"low": 0.0, "high": 1.0},
+            {"low": 1e-4, "high": 1e-1, "log": True},
+            {"low": 1, "high": 8, "int": True},
+        ],
+    )
+    def test_a_continuous_range_spec_is_refused(self, spec):
+        # The optuna pack's range-spec form, offered to the grid: REFUSED,
+        # deliberately and forever — exhaustive enumeration over a real
+        # interval is meaningless, and `itertools.product` over a dict
+        # would silently enumerate its KEYS ('low', 'high') as if they
+        # were grid values. The planner no longer stands in the way (it
+        # owns the structural space rules and passes any non-empty dict
+        # through to the kind), so this refusal is the only guard left.
+        problems = HpoGrid.validate_params(self.good(space={"train.lr": spec}))
+        assert any("non-empty list of JSON scalars" in p for p in problems)
+
+    def test_a_range_spec_cannot_construct_the_grid(self):
+        # Same rule at the other gate: a search node's $-ref objective
+        # defers plan-time validate_params, so CONSTRUCTION is where a
+        # document carrying a range spec dies — before any enumeration.
+        params = self.good(space={"train.lr": {"low": 0.0, "high": 1.0}})
+        with pytest.raises(ConfigError, match="non-empty list of JSON scalars"):
+            HpoGrid("search", params)
+
     def test_objective_required_and_ref_shaped(self):
         params = self.good()
         del params["objective"]
@@ -712,6 +739,24 @@ class TestPlannerRules:
         pipeline["search"] = spec
         with pytest.raises(ConfigError, match="space must be a non-empty dict"):
             plan(parabola_document(tmp_path, pipeline=pipeline), registry)
+
+    def test_a_range_spec_document_dies_before_a_grid_trial_runs(
+        self, tmp_path, registry
+    ):
+        # The division of labour, pinned end to end: the planner accepts
+        # the range-spec SHAPE (it is the optuna kind's grammar, and the
+        # planner may not know about kinds), the document plans, and the
+        # run then refuses at hpo-grid's construction naming the offending
+        # space key — no trial is ever enumerated over an interval.
+        pipeline = parabola_pipeline(
+            search_params={"space": {"theta.theta": {"low": 0.0, "high": 5.0}}}
+        )
+        document = parabola_document(tmp_path, pipeline=pipeline)
+        plan(document, registry)
+        result = run_document(document, asof=ASOF, registry=registry)
+        assert result.state == "error"
+        assert "must be a non-empty list of JSON scalars" in result.error
+        assert "'theta.theta'" in result.error
 
     def test_deep_path_segments_defer_to_execute(self, tmp_path, registry):
         # Head key 'opt' exists; 'momentum' below it is only checkable at
