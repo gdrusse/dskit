@@ -290,7 +290,8 @@ THIS = "tests.pipeline.test_class_refs"
 
 class TestAbstractClassProblem:
     """``abstract_class_problem`` — core's ONE wording of "hooks left
-    abstract", asked wherever a class is about to be CONSTRUCTED."""
+    abstract", asked wherever the pipeline COMMITS to a class: the
+    doorways that construct one, or approve one for a run."""
 
     def test_a_complete_class_is_no_problem(self):
         assert abstract_class_problem(object, "x") is None
@@ -319,7 +320,8 @@ class TestAbstractClassProblem:
         Its ``ValueError`` already means "the library may rightly be
         missing on this machine", and plan-time callers swallow it — an
         abstractness refusal riding that channel would silently disable
-        an adapter's own plan-time ``validate_params``. Construction
-        doorways refuse instead, with the sentence above."""
+        an adapter's own plan-time ``validate_params``. The doorways that
+        commit refuse instead — with the sentence above, on channels of
+        their own (a raise, or a problems list)."""
         cls = import_library_class(f"{THIS}:HalfWrittenPlain", "x")
         assert cls is HalfWrittenPlain

@@ -1417,6 +1417,18 @@ class _DeclaredParams:
             # here, so its knobs are checked at plan by the class that owns
             # them — never restated (or allowed to drift) on this node.
             adapter = cls._resolve_adapter(params)
+            # An adapter that imported fine but can never construct is a
+            # plan-time fact: say NOW what ``build_adapter`` would raise at
+            # run, in the same sentence. This problems list swallows
+            # nothing, so a machine genuinely missing the library
+            # (``_resolve_adapter`` -> ``None``) still gets no false
+            # refusal — the channel argument that keeps
+            # ``import_library_class`` structural does not apply here.
+            abstract = abstract_class_problem(
+                adapter, "torch adapter", repr(params["adapter"])
+            )
+            if abstract:
+                problems.append(abstract)
             validator = getattr(adapter, "validate_params", None)
             if validator is not None and isinstance(adapter_params, dict):
                 problems += [f"adapter_params.{p}" for p in validator(adapter_params)]
@@ -1439,9 +1451,10 @@ class _DeclaredParams:
         if not path:
             return RowVectorAdapter(params)
         cls = import_library_class(path, "torch adapter", requires=("prepare",))
-        # Asked HERE and not at resolution: plan-time callers rightly treat a
-        # resolution failure as "library may be missing on this machine", and
-        # an abstractness refusal must never hide in that channel.
+        # Asked HERE and at plan (``validate_params``) — never at resolution:
+        # plan-time callers rightly treat a resolution failure as "library
+        # may be missing on this machine", and an abstractness refusal must
+        # never hide in that channel.
         problem = abstract_class_problem(cls, "torch adapter", repr(path))
         if problem:
             raise ValueError(problem)

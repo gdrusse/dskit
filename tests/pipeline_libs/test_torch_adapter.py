@@ -16,7 +16,7 @@ import re
 
 import pytest
 
-from dskit.pipeline.base import import_library_class
+from dskit.pipeline.base import abstract_class_problem, import_library_class
 from dskit.pipeline.libs.torch import (
     DeclaredPredict,
     DeclaredTrain,
@@ -264,6 +264,29 @@ def test_plan_still_validates_an_incomplete_adapters_knobs():
         }
     )
     assert any("adapter_params" in p and "nn_groups" in p for p in problems), problems
+
+
+def test_plan_refuses_an_adapter_that_can_never_construct():
+    """Plan-time truth, the other half: an adapter that IMPORTED fine but
+    can never be constructed is a plan-time fact, and ``validate_params``
+    must report it — in exactly the sentence ``build_adapter`` would raise
+    at run, so ``python -m dskit.pipeline validate`` never pronounces
+    sound a document whose trainer is guaranteed to refuse. This is a
+    problems LIST, not ``import_library_class``'s swallowed ``ValueError``
+    channel: a machine genuinely missing the library still gets ``None``
+    from ``_resolve_adapter`` and no false refusal."""
+    problems = DeclaredTrain.validate_params(
+        {
+            **FLAT_PARAMS,
+            "module": MODULE_REF,
+            "adapter": ref_to(IncompleteAdapter),
+            "adapter_params": {},
+        }
+    )
+    expected = abstract_class_problem(
+        IncompleteAdapter, "torch adapter", repr(ref_to(IncompleteAdapter))
+    )
+    assert expected in problems, problems
 
 
 def test_plan_still_reads_an_incomplete_adapters_requires_features():

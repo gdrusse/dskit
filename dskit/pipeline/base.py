@@ -976,15 +976,22 @@ def library_path_problems(name, value, *, example):
 def abstract_class_problem(cls, where, subject=None):
     """Why ``cls`` cannot be constructed, when hooks are still abstract.
 
-    The ONE place this repo words that defect. Ask it wherever a class is
-    about to be CONSTRUCTED — kind registration
-    (:func:`~dskit.pipeline.node.node_class_errors`) and the torch pack's
-    adapter doorway both do — so the sentence cannot drift between sites
-    and a pack never re-derives it. Deliberately NOT asked by
-    :func:`import_library_class`: resolution is structural, and its
-    ``ValueError`` already means "the library may rightly be missing on
-    this machine" — a meaning plan-time callers swallow, which would
-    swallow this refusal with it.
+    The ONE place this repo words that defect. Ask it wherever the
+    pipeline COMMITS to a class — the doorways that construct one or
+    approve it for a run: :func:`~dskit.pipeline.node.node_class_errors`
+    (which serves BOTH kind registration and ``uses`` import-path
+    resolution, so a Node reference is refused at whichever boundary it
+    enters through) and the torch pack's adapter doorway, at run
+    (``build_adapter``) and at plan (``validate_params``). Asking every
+    such door to say core's sentence is what keeps it from drifting
+    between sites and a pack from re-deriving it.
+
+    The one resolver that deliberately does NOT ask is
+    :func:`import_library_class`: its ``ValueError`` already means "the
+    library may rightly be missing on this machine" — a meaning
+    plan-time callers swallow, which would swallow this refusal with it.
+    A doorway that wants the refusal asks AFTER resolving, on a channel
+    of its own: its own raise, or a problems list.
 
     Parameters
     ----------
