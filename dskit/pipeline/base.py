@@ -976,11 +976,15 @@ def library_path_problems(name, value, *, example):
 def abstract_class_problem(cls, where, subject=None):
     """Why ``cls`` cannot be constructed, when hooks are still abstract.
 
-    The ONE place this repo words that defect. A class reaches the engine
-    through two doors — kind registration (:func:`node_class_errors`) and
-    a declared import path (:func:`import_library_class`) — and both ask
-    here, so the sentence cannot drift between them and a pack never has
-    a reason to re-derive it.
+    The ONE place this repo words that defect. Ask it wherever a class is
+    about to be CONSTRUCTED — kind registration
+    (:func:`~dskit.pipeline.node.node_class_errors`) and the torch pack's
+    adapter doorway both do — so the sentence cannot drift between sites
+    and a pack never re-derives it. Deliberately NOT asked by
+    :func:`import_library_class`: resolution is structural, and its
+    ``ValueError`` already means "the library may rightly be missing on
+    this machine" — a meaning plan-time callers swallow, which would
+    swallow this refusal with it.
 
     Parameters
     ----------
@@ -992,8 +996,8 @@ def abstract_class_problem(cls, where, subject=None):
         says which door it came from.
     subject : str or None
         How to NAME the class in the message; defaults to ``cls.__name__``.
-        The import doors pass ``repr(path)`` instead, because the path is
-        what the document actually wrote.
+        A doorway resolving a declared path passes ``repr(path)`` instead,
+        because the path is what the document actually wrote.
 
     Returns
     -------
@@ -1019,11 +1023,7 @@ def import_library_class(path, where, *, requires=()):
     ``requires`` names methods the class must expose (``("fit",)`` for an
     estimator); a class lacking one is refused BY NAME rather than
     failing later inside a training loop, where the cause would be much
-    harder to read. For the same reason, a class that INHERITS a hook it
-    never implemented is refused here too
-    (:func:`abstract_class_problem`) — ``requires`` sees the abstract
-    method and is satisfied, while constructing it would raise a bare
-    ``ABCMeta`` TypeError wherever the caller happens to build it.
+    harder to read.
     """
     module_name, _, cls_name = (
         path.rpartition(":") if ":" in path else path.rpartition(".")
@@ -1047,9 +1047,6 @@ def import_library_class(path, where, *, requires=()):
             raise ValueError(
                 f"{where}: {path!r} has no {method}() method — not usable here"
             )
-    problem = abstract_class_problem(cls, where, repr(path))
-    if problem:
-        raise ValueError(problem)
     return cls
 
 

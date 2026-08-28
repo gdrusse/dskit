@@ -135,6 +135,16 @@ class IncompleteAdapter(TorchAdapter):
         return TorchBatches(0, None)
 
 
+class IncompleteKnobAdapter(IncompleteAdapter):
+    """Half-written AND knobbed. Its class-side contract (``_PARAMS``,
+    ``requires_features``, ``validate_params``) must keep serving plan time
+    even though the class can never construct — abstractness is a defect of
+    CONSTRUCTION, not of resolution."""
+
+    requires_features = False
+    _PARAMS = ("n_groups",)
+
+
 #: The hooks an adapter genuinely cannot inherit: rows -> batches, the batch
 #: at an index, the objective, and one record -> one belief. Pinned as a set
 #: because ADDING one silently breaks every out-of-repo adapter at
@@ -186,29 +196,28 @@ def test_a_complete_declared_adapter_resolves():
     assert import_library_class(ref_to(DoubleAdapter), "a", requires=("prepare",))
 
 
-def test_an_incomplete_declared_adapter_is_refused_by_CORE_at_the_doorway():
-    """The pack does not own this refusal, and must not restate it.
-
-    ``import_library_class`` is core's shared door for every declared
-    library class, and core refuses an unimplemented hook there in ONE
-    wording (pinned against ``node_class_errors`` in
-    ``tests/pipeline/test_class_refs.py``). This test only proves the torch
-    adapter path goes through that door — a half-written adapter, having
-    written ``prepare`` first, passes ``requires`` and is caught anyway.
+def test_an_incomplete_adapter_still_RESOLVES_structurally():
+    """The TODO's claim, kept true on purpose: adapters named by import
+    path are checked STRUCTURALLY at resolution and are unaffected by the
+    ABC. A half-written adapter, having written ``prepare`` first, passes
+    ``requires`` — because ``import_library_class``'s ``ValueError``
+    already means "the library may rightly be missing HERE" and plan-time
+    callers swallow it, an abstractness refusal must not ride that
+    channel. Construction is where the ABC bites.
     """
-    with pytest.raises(ValueError, match="is abstract"):
-        import_library_class(ref_to(IncompleteAdapter), "a", requires=("prepare",))
+    cls = import_library_class(ref_to(IncompleteAdapter), "a", requires=("prepare",))
+    assert cls is IncompleteAdapter
 
 
 def test_a_declared_incomplete_adapter_is_refused_by_its_missing_hooks():
     """The declared path end to end, and the half the ABC changed.
 
-    ``build_adapter`` resolves then CONSTRUCTS. Resolution now refuses, so
-    the ABC's raw ``TypeError`` never reaches the ``adapter_params`` branch
-    below — the refusal must name the hooks that were never implemented,
-    not ``adapter_params``, which here is empty and entirely correct and
-    would send the author to inspect JSON knobs instead of writing the
-    three missing methods.
+    ``build_adapter`` resolves then CONSTRUCTS, and asks core's
+    ``abstract_class_problem`` in between — so the ABC's raw ``TypeError``
+    never reaches the ``adapter_params`` branch below. The refusal must
+    name the hooks that were never implemented, not ``adapter_params``,
+    which here is empty and entirely correct and would send the author to
+    inspect JSON knobs instead of writing the three missing methods.
     """
     node = DeclaredTrain("k", {**FLAT_PARAMS, "module": MODULE_REF})
     with pytest.raises(ValueError) as caught:
@@ -236,6 +245,35 @@ def test_a_mis_typed_adapter_knob_still_names_adapter_params():
     message = str(caught.value)
     assert ref_to(StrictKnobAdapter) in message
     assert "adapter_params" in message
+
+
+def test_plan_still_validates_an_incomplete_adapters_knobs():
+    """Abstractness must not be smuggled into the "cannot be imported HERE"
+    channel. ``_resolve_adapter`` swallows ``ValueError`` because a plan
+    machine may rightly lack the library — but an incomplete adapter
+    IMPORTS fine, and its ``validate_params`` (a classmethod) works fine,
+    so a mis-typed knob must still be refused at plan exactly as it is for
+    a complete adapter. Validation approving a knob the run never uses is
+    the drift shape this repo's standards name."""
+    problems = DeclaredTrain.validate_params(
+        {
+            **FLAT_PARAMS,
+            "module": MODULE_REF,
+            "adapter": ref_to(IncompleteKnobAdapter),
+            "adapter_params": {"nn_groups": 3},
+        }
+    )
+    assert any("adapter_params" in p and "nn_groups" in p for p in problems), problems
+
+
+def test_plan_still_reads_an_incomplete_adapters_requires_features():
+    """Same channel, other consumer: ``requires_features = False`` on an
+    incomplete adapter still lifts the ``features`` demand at plan."""
+    params = {k: v for k, v in FLAT_PARAMS.items() if k != "features"}
+    problems = DeclaredTrain.validate_params(
+        {**params, "module": MODULE_REF, "adapter": ref_to(IncompleteKnobAdapter)}
+    )
+    assert not any("features is required" in p for p in problems), problems
 
 
 def test_the_default_adapter_is_the_row_vector_one():

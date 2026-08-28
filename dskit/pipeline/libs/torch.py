@@ -92,6 +92,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 
 from dskit.pipeline.base import (
+    abstract_class_problem,
     import_library_class,
     import_ref,
     is_class_ref,
@@ -376,8 +377,7 @@ class TorchAdapter(ABC):
         _reject_unknown(problems, params, cls._PARAMS)
         return problems
 
-    # -- the four hooks (abstract: an incomplete adapter refuses to be
-    #    constructed, rather than raising deep inside a training loop) -----
+    # -- the four hooks ----------------------------------------------------
 
     @abstractmethod
     def prepare(self, rows, params, *, where):
@@ -1427,22 +1427,24 @@ class _DeclaredParams:
         names none — which is why the seam changed nothing for documents
         written before it existed.
 
-        Two DIFFERENT failures are told apart here. A class that never
+        Two DIFFERENT failures are told apart here. An adapter that never
         implemented some of :class:`TorchAdapter`'s abstract hooks is
-        refused BY CORE, at the doorway, naming those hooks — the fix is
-        code, and the document may be perfect. Only a class that is
-        complete and still rejects its kwargs reaches the
+        refused before construction, naming those hooks (core's
+        :func:`~dskit.pipeline.base.abstract_class_problem` — asked, never
+        restated) — the fix is code, and the document may be perfect. Only
+        a complete class that still rejects its kwargs reaches the
         ``adapter_params`` diagnosis below.
         """
         path = params.get("adapter")
         if not path:
             return RowVectorAdapter(params)
-        # The doorway asks both structural questions: ``requires`` proves the
-        # class LOOKS like an adapter (which a half-written one, having
-        # written ``prepare`` first, does) and core refuses the hooks it left
-        # abstract — so the ABC's TypeError never reaches the kwargs branch
-        # below to be misread as a knob problem.
         cls = import_library_class(path, "torch adapter", requires=("prepare",))
+        # Asked HERE and not at resolution: plan-time callers rightly treat a
+        # resolution failure as "library may be missing on this machine", and
+        # an abstractness refusal must never hide in that channel.
+        problem = abstract_class_problem(cls, "torch adapter", repr(path))
+        if problem:
+            raise ValueError(problem)
         kwargs = dict(params.get("adapter_params") or {})
         # The adapter sees the node's params (it needs ``features``/``label``)
         # with its OWN declared knobs layered ON TOP, so an adapter knob is

@@ -13,6 +13,7 @@ from dskit.pipeline.base import (
     OptimizationConfig,
     SinkConfig,
     TrackingConfig,
+    abstract_class_problem,
     import_library_class,
     import_ref,
     is_class_ref,
@@ -28,8 +29,7 @@ HELPERS = "tests.pipeline.refhelpers"
 
 class HalfWrittenNode(Node):
     """A Node subclass that declares a hook and never implements it — the
-    shape both doorways must refuse, and the ONE class through which their
-    wording is compared."""
+    shape kind registration must refuse, in core's one wording."""
 
     role = "transform"
 
@@ -43,8 +43,9 @@ class HalfWrittenNode(Node):
 
 class HalfWrittenPlain(ABC):
     """The same defect on a class that is NOT a Node — what a declared
-    library class (a torch adapter, an nn.Module) actually looks like, and
-    therefore what the import doorway alone can refuse."""
+    library class (a torch adapter, an nn.Module) actually looks like.
+    Resolution must KEEP it (structural checks only); a construction
+    doorway asks :func:`abstract_class_problem` about it."""
 
     @abstractmethod
     def step(self):
@@ -278,42 +279,47 @@ class TestOptimizerAndCustomStages:
         assert opt.payload["cap"] == len(result.survivors)  # wired from report
 
 
-#: The one sentence core says about an unimplemented hook. Both doorways
-#: below must END with it, which is what makes "the pack imports the rule"
-#: checkable: a second, differently-worded copy anywhere fails this.
+#: The one sentence core says about an unimplemented hook. Every doorway
+#: that refuses one must END with it, which is what makes "ask core, never
+#: restate" checkable: a second, differently-worded copy anywhere fails
+#: this. (The torch adapter doorway's copy is pinned in its pack tests.)
 ABSTRACT_TAIL = "is abstract (missing ['step'])"
 
 THIS = "tests.pipeline.test_class_refs"
 
 
-class TestLibraryClassDoorway:
-    """``import_library_class`` — the shared door EVERY declared library
-    class enters through (torch module, torch optimizer, torch adapter,
-    transformer config/model)."""
+class TestAbstractClassProblem:
+    """``abstract_class_problem`` — core's ONE wording of "hooks left
+    abstract", asked wherever a class is about to be CONSTRUCTED."""
 
-    def test_a_class_with_unimplemented_hooks_is_refused_by_the_doorway(self):
-        """Not usable here for the same reason ``requires=`` exists: refused
-        BY NAME at the door rather than as a raw ``ABCMeta`` TypeError deep
-        inside a training loop."""
-        with pytest.raises(ValueError) as caught:
-            import_library_class(f"{THIS}:HalfWrittenPlain", "torch adapter")
-        message = str(caught.value)
-        assert f"{THIS}:HalfWrittenPlain" in message
-        assert message.endswith(ABSTRACT_TAIL)
+    def test_a_complete_class_is_no_problem(self):
+        assert abstract_class_problem(object, "x") is None
 
-    def test_a_complete_class_still_passes(self):
-        cls = import_library_class("dskit.pipeline.synthetic_nodes:SynthClip", "x")
-        assert cls.__name__ == "SynthClip"
+    def test_missing_hooks_are_named(self):
+        problem = abstract_class_problem(HalfWrittenPlain, "door")
+        assert problem == f"door: HalfWrittenPlain {ABSTRACT_TAIL}"
 
-    def test_both_core_doorways_word_abstractness_identically(self):
-        """The pin behind "a tier-2 pack never restates tier-1 truth": the
-        registration door (``node_class_errors``) and the import door say
-        the same sentence about the same defect, because they ask the same
-        core helper. Two copies drift; one cannot."""
+    def test_a_declared_path_can_name_the_class_as_the_document_wrote_it(self):
+        path = f"{THIS}:HalfWrittenPlain"
+        problem = abstract_class_problem(HalfWrittenPlain, "door", repr(path))
+        assert problem == f"door: '{path}' {ABSTRACT_TAIL}"
+
+    def test_the_registration_door_asks_core(self):
+        """The pin behind "ask the rule, never restate it": kind
+        registration (``node_class_errors``) says exactly core's sentence
+        about the same defect. A re-inlined wording drifts; this cannot."""
         registration = [
             p for p in node_class_errors(HalfWrittenNode, "here") if "abstract" in p
         ]
-        with pytest.raises(ValueError) as caught:
-            import_library_class(f"{THIS}:HalfWrittenNode", "here")
-        assert registration and registration[0].endswith(ABSTRACT_TAIL)
-        assert str(caught.value).endswith(ABSTRACT_TAIL)
+        assert registration == [abstract_class_problem(HalfWrittenNode, "here")]
+        assert registration[0].endswith(ABSTRACT_TAIL)
+
+    def test_resolution_stays_structural(self):
+        """Deliberate: ``import_library_class`` KEEPS an abstract class.
+        Its ``ValueError`` already means "the library may rightly be
+        missing on this machine", and plan-time callers swallow it — an
+        abstractness refusal riding that channel would silently disable
+        an adapter's own plan-time ``validate_params``. Construction
+        doorways refuse instead, with the sentence above."""
+        cls = import_library_class(f"{THIS}:HalfWrittenPlain", "x")
+        assert cls is HalfWrittenPlain
