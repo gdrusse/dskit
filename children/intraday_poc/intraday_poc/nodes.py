@@ -16,7 +16,12 @@ Four kinds carry the whole PoC:
   ``ret_lag_{L-1}``, labelled with the NEXT bar's return ``y_next``.
   Windows never span a gap larger than ``max_gap_minutes`` (session
   boundaries, halted or untraded minutes) — such chains break, they are
-  never bridged.
+  never bridged. The MECHANISM is the toolkit's
+  (:class:`~dskit.pipeline.libs.numpy.ReturnWindows`, ADR-0040): this
+  class supplies only the domain — the vocabulary its documents speak,
+  and the one rule the pack cannot know, that a bar with no usable
+  price is not a bar. It writes no chain arithmetic of its own, and
+  inherits the causality screen it never had.
 - ``intraday_poc-forecast`` (role ``score``) — applies a torch node's
   ``signal`` to labelled rows, one belief per row; a row the signal
   refuses (missing/non-finite feature) is skipped and counted, never
@@ -40,6 +45,7 @@ from __future__ import annotations
 import math
 
 from dskit.onboarding.observations import scan_stream, stream_digest
+from dskit.pipeline.libs.numpy import ReturnWindows, narrow_params
 from dskit.pipeline.libs.pyomo import PyomoSolve
 from dskit.pipeline.node import Node, register_node_kind, reject_unknown_params
 
@@ -56,18 +62,20 @@ __all__ = [
     "build_select_model",
 ]
 
-#: Each default has ONE name, read by the knob gate AND by the run — the
-#: `libs/torch.py` ``DEFAULT_EPOCHS`` idiom. Written twice, validation
-#: approves a value the run never uses and nothing catches it. Public
-#: because ``live.py`` reads them: the serving loop resolves the same
-#: fallbacks the training document's window node did.
+#: Each default has ONE name, read by the knob gate AND by the accessor
+#: the run resolves through — the `libs/torch.py` ``DEFAULT_EPOCHS``
+#: idiom. Written twice, validation approves a value the run never uses
+#: and nothing catches it. The serving loop holds no copy at all: it
+#: CONSTRUCTS the document's window node and asks it (``live.py``), so
+#: rebinding either name here moves training and serving together.
 DEFAULT_PRICE_FIELD = "close"
 DEFAULT_MAX_GAP_MINUTES = 5
 
 
 class BarsFromStore(Node):
-    """Emit the store's deduplicated bar records (role ``data``) — the
-    ``intraday_poc-bars`` kind.
+    """Emit the store's deduplicated bar records (role ``data``).
+
+    The ``intraday_poc-bars`` kind.
 
     Params: ``root`` (REQUIRED) — the onboarding root; ``source``
     (REQUIRED) — the registered source name; ``stream`` — default
@@ -93,6 +101,19 @@ class BarsFromStore(Node):
 
     @classmethod
     def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            One problem per unknown knob, missing ``root``/``source``,
+            or unusable ``stream``.
+        """
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
         for name in ("root", "source"):
@@ -124,17 +145,40 @@ class BarsFromStore(Node):
         return self._snap
 
     def fingerprint(self):
-        """Content-derived: moves whenever any bar a run would consume
-        changes — count-only fingerprints are content-blind.
-        ``stream_digest`` is byte-parity with the frozen whole-dump
-        recipe; identity holds for any store with one ``ts`` spelling
-        per instant (ADR-0037 review amendments — same-instant spelling
-        duplicates now order by the ``ts`` string, not scan order)."""
+        """Answer this source's content-derived data identity.
+
+        It moves whenever any bar a run would consume changes —
+        count-only fingerprints are content-blind. ``stream_digest`` is
+        byte-parity with the frozen whole-dump recipe; identity holds
+        for any store with one ``ts`` spelling per instant (ADR-0037
+        review amendments — same-instant spelling duplicates now order
+        by the ``ts`` string, not scan order).
+
+        Returns
+        -------
+        dict
+            ``{"kind", "rows", "sha256"}`` — JSON-small, hashed into the
+            run identity.
+        """
         records = self._scan()
         return {"kind": "intraday_poc-bars", "rows": len(records),
                 "sha256": stream_digest(records)}
 
     def run(self, ctx, inputs):
+        """Emit the store's bar records.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext
+            The run frame; unused — a source reads only its params.
+        inputs : dict
+            Empty: role ``data`` takes no inputs.
+
+        Returns
+        -------
+        dict
+            ``{"records": [...]}`` — the memoized snapshot itself.
+        """
         # The snapshot itself is emitted — no dict-per-row copy. Safe:
         # the driver runs the pinned instance ONCE per run (fingerprint
         # at resolve, run at execute, never again), and record streams
@@ -144,9 +188,10 @@ class BarsFromStore(Node):
         return {"records": records}
 
 
-class WindowRows(Node):
-    """Per-symbol lagged-return windows with a next-bar label (role
-    ``transform``) — the ``intraday_poc-window`` kind.
+class WindowRows(ReturnWindows):
+    """Per-symbol lagged-return windows with a next-bar label.
+
+    Role ``transform`` — the ``intraday_poc-window`` kind.
 
     Inputs: ``records`` — bar rows carrying ``symbol``, ``asof_ms`` and
     the price field. Params: ``lookback`` (REQUIRED, int >= 2) — window
@@ -154,30 +199,192 @@ class WindowRows(Node):
     (``"close"``); ``max_gap_minutes`` — default
     ``DEFAULT_MAX_GAP_MINUTES`` (5): consecutive bars further apart than
     this break the return chain (never bridged, never interpolated).
+    The toolkit's ``causality_check`` and ``cuts`` ride too.
 
     Output rows: ``{symbol, asof_ms, ret_lag_0 .. ret_lag_{L-1}, y_next}``
     where ``ret_lag_0`` is the return ENDING at ``asof_ms`` and ``y_next``
     the return of the following bar — the label a next-bar model trains
     on. Sparse rows (missing/non-positive price) are dropped and counted,
     never crashed on.
+
+    Everything above the domain is the pack's (ADR-0040): the grouping,
+    the ordering, the gap-split, the log return, the lags, the forward
+    label, the causality screen and the serving call all come from
+    :class:`~dskit.pipeline.libs.numpy.ReturnWindows`. What is left here
+    is what only this project knows — the SPELLINGS its documents use,
+    and the rule that a bar with no usable price is not a bar. Each
+    accessor it answers narrows that knob away, per the pack's rule.
+
+    Parameters
+    ----------
+    params : dict
+        ``lookback``, ``price_field``, ``max_gap_minutes``,
+        ``causality_check``, ``cuts``.
+
+    Examples
+    --------
+    Thirty one-minute log returns that never bridge a session break::
+
+        node = WindowRows("window", {"lookback": 30, "max_gap_minutes": 5})
+        out = node.run(ctx, {"records": bars})
+        # -> {"records": [{"symbol": ..., "ret_lag_0": ..., "y_next": ...}]}
     """
 
     role = "transform"
     outputs = ("records",)
 
-    _PARAMS = ("lookback", "price_field", "max_gap_minutes")
+    #: A next-bar model needs at least two returns to have a window.
+    min_lookback = 2
+
+    _PARAMS = narrow_params(
+        ReturnWindows._PARAMS,
+        "carry_fields",
+        "drop_incomplete",
+        "fields",
+        "group_field",
+        "label_lead",
+        "label_name",
+        "lag_prefix",
+        "max_gap",
+        "order_field",
+        "require_fields",
+        "return_kind",
+    ) + ("max_gap_minutes", "price_field")
+
+    # -- the vocabulary this project's documents speak ---------------------
+
+    def group_field(self):
+        """Name the bar field the series is keyed on (str)."""
+        return "symbol"
+
+    def order_field(self):
+        """Name the bar field the series is ordered by (str)."""
+        return "asof_ms"
+
+    def price_field(self):
+        """Name the bar field windows are priced on (str)."""
+        return self.params.get("price_field", DEFAULT_PRICE_FIELD)
+
+    def fields(self):
+        """Lift the declared price field, and nothing else."""
+        return (self.price_field(),)
+
+    def max_gap_minutes(self):
+        """Give the gap bound in MINUTES — this project's unit (float)."""
+        return float(self.params.get("max_gap_minutes",
+                                     DEFAULT_MAX_GAP_MINUTES))
+
+    def max_gap(self):
+        """Give the same bound in the order field's units (epoch ms)."""
+        return self.max_gap_minutes() * 60_000
+
+    def carry_fields(self):
+        """Carry the two identity fields downstream reads."""
+        return (self.group_field(), self.order_field())
+
+    def require_fields(self):
+        """Require no id beyond the two carried: bars have no contract."""
+        return ()
+
+    def drop_incomplete(self):
+        """Emit only rows whose whole window AND label are present."""
+        return True
+
+    def return_kind(self):
+        """Take LOG returns — what the models here are trained on."""
+        return "log"
+
+    def label_lead(self):
+        """Label with the NEXT bar's return: one step forward."""
+        return 1
+
+    def lag_prefix(self):
+        """Name the lag columns ``ret_lag_0`` … (str)."""
+        return "ret_lag_"
+
+    def label_name(self):
+        """Name the label column ``y_next`` (str)."""
+        return "y_next"
+
+    # -- the one rule the pack cannot know ---------------------------------
+
+    def keep_mask(self, arrays):
+        """Say which bars are bars: those with a usable price.
+
+        A minute the vendor published no price for is not a data point
+        to interpolate across — it is absent, and the SURVIVORS chain
+        (the gap bound then judges the wider step they leave). Kept
+        vectorized: a per-record predicate over a 2M-bar backfill is the
+        cost this pack exists to avoid.
+
+        Parameters
+        ----------
+        arrays : dict of str -> numpy.ndarray
+            One symbol's lifted arrays.
+
+        Returns
+        -------
+        numpy.ndarray
+            A bool array: finite and strictly positive prices.
+        """
+        import numpy as np
+
+        price = arrays[self.price_field()]
+        return np.isfinite(price) & (price > 0.0)
+
+    def sort_rows(self, rows):
+        """Emit in ``(asof_ms, symbol)`` order — the backtest's order.
+
+        Parameters
+        ----------
+        rows : list of dict
+            The built window rows, in the input stream's order.
+
+        Returns
+        -------
+        list of dict
+            The same rows, time-major.
+        """
+        return sorted(rows, key=lambda row: (row[self.order_field()],
+                                             row[self.group_field()]))
+
+    def emit(self, rows, metrics):
+        """Package the rows as this kind's ``records`` output.
+
+        Parameters
+        ----------
+        rows : list of dict
+            The ordered window rows.
+        metrics : dict
+            The pack's numeric summary; this kind's output contract has
+            no place for it, and the log line already carries the counts.
+
+        Returns
+        -------
+        dict
+            ``{"records": rows}``.
+        """
+        return {"records": rows}
 
     @classmethod
     def validate_params(cls, params):
-        problems = []
-        reject_unknown_params(problems, params, cls._PARAMS)
-        lookback = params.get("lookback")
-        if "lookback" not in params:
-            problems.append("lookback is required — the window width must "
-                            "be stated, there is no default")
-        elif isinstance(lookback, bool) or not isinstance(lookback, int) \
-                or lookback < 2:
-            problems.append(f"lookback must be an int >= 2, got {lookback!r}")
+        """Problems with ``params``, empty when none.
+
+        The pack's checks, plus this project's two knobs — each read
+        through the SAME module constant the run resolves, so rebinding
+        one moves the gate and the run together.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            One problem per broken knob.
+        """
+        problems = super().validate_params(params)
         price_field = params.get("price_field", DEFAULT_PRICE_FIELD)
         if not isinstance(price_field, str) or not price_field:
             problems.append(
@@ -191,69 +398,11 @@ class WindowRows(Node):
             )
         return problems
 
-    def validate_inputs(self, inputs):
-        if not isinstance(inputs.get("records"), list):
-            return [f"records must be a list of bar rows, got "
-                    f"{inputs.get('records')!r}"]
-        return []
-
-    def run(self, ctx, inputs):
-        lookback = self.params["lookback"]
-        price_field = self.params.get("price_field", DEFAULT_PRICE_FIELD)
-        gap_ms = float(
-            self.params.get("max_gap_minutes", DEFAULT_MAX_GAP_MINUTES)
-        ) * 60_000
-
-        by_symbol = {}
-        sparse = 0
-        for row in inputs["records"]:
-            symbol = row.get("symbol") if isinstance(row, dict) else None
-            price = row.get(price_field) if isinstance(row, dict) else None
-            asof = row.get("asof_ms") if isinstance(row, dict) else None
-            if (not isinstance(symbol, str) or isinstance(price, bool)
-                    or not isinstance(price, (int, float)) or price <= 0
-                    or isinstance(asof, bool) or not isinstance(asof, int)):
-                sparse += 1
-                continue
-            by_symbol.setdefault(symbol, []).append((asof, float(price)))
-
-        out = []
-        for symbol in sorted(by_symbol):
-            bars = sorted(by_symbol[symbol])
-            # Contiguous chains: a gap larger than gap_ms starts a new one.
-            chains = []
-            chain = []  # [(asof_ms, log_return)] — return ENDING at asof_ms
-            for i in range(1, len(bars)):
-                if bars[i][0] - bars[i - 1][0] > gap_ms:
-                    if chain:
-                        chains.append(chain)
-                    chain = []
-                    continue
-                chain.append((bars[i][0], math.log(bars[i][1] / bars[i - 1][1])))
-            if chain:
-                chains.append(chain)
-            for chain in chains:
-                # Window of `lookback` returns ending at index i; the label
-                # is the return at i+1 — a chain's last return has no label
-                # and yields no row.
-                for i in range(lookback - 1, len(chain) - 1):
-                    row = {"symbol": symbol, "asof_ms": chain[i][0],
-                           "y_next": chain[i + 1][1]}
-                    for lag in range(lookback):
-                        row[f"ret_lag_{lag}"] = chain[i - lag][1]
-                    out.append(row)
-        out.sort(key=lambda r: (r["asof_ms"], r["symbol"]))
-        self.log.info(
-            "windowed %d row(s) from %d bar(s) across %d symbol(s); "
-            "%d sparse bar(s) dropped",
-            len(out), len(inputs["records"]), len(by_symbol), sparse,
-        )
-        return {"records": out}
-
 
 class ForecastRows(Node):
-    """One belief per labelled row from a torch ``signal`` (role
-    ``score``) — the ``intraday_poc-forecast`` kind.
+    """One belief per labelled row from a torch ``signal``.
+
+    Role ``score`` — the ``intraday_poc-forecast`` kind.
 
     Inputs: ``signal`` — a torch node's signal output (its ``predict``
     answers a float or ``None``); ``records`` — the rows to predict on,
@@ -276,6 +425,19 @@ class ForecastRows(Node):
 
     @classmethod
     def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            One problem per unknown knob, and one when ``split`` does
+            not name which split these rows come from.
+        """
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
         if params.get("split") not in ("train", "val", "cal", "test"):
@@ -286,6 +448,18 @@ class ForecastRows(Node):
         return problems
 
     def validate_inputs(self, inputs):
+        """Problems with ``inputs``, empty when none.
+
+        Parameters
+        ----------
+        inputs : dict
+            ``records`` (a list) and ``signal`` (a torch signal).
+
+        Returns
+        -------
+        list of str
+            One problem per port that cannot be scored through.
+        """
         problems = []
         if not isinstance(inputs.get("records"), list):
             problems.append(f"records must be a list of rows, got "
@@ -298,6 +472,21 @@ class ForecastRows(Node):
         return problems
 
     def run(self, ctx, inputs):
+        """Score every row the signal has coverage for.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext
+            The run frame; unused.
+        inputs : dict
+            ``signal`` and the ``records`` to predict on.
+
+        Returns
+        -------
+        dict
+            ``{"forecasts": [{"symbol", "asof_ms", "pred"}]}``; a row the
+            signal declines is skipped and counted, never fabricated.
+        """
         signal = inputs["signal"]
         forecasts = []
         skipped = 0
@@ -315,13 +504,24 @@ class ForecastRows(Node):
 
 
 def build_select_model(per_t: dict):
-    """The PoC's one constraint as a pyomo ConcreteModel: for each
-    timestamp pick EXACTLY ONE of its candidate symbols, maximizing the
-    summed predicted return. ``per_t`` maps ``asof_ms -> {symbol: pred}``.
+    """Build the PoC's one constraint as a pyomo ConcreteModel.
 
-    Shared by :class:`SelectOne` (the backtest) and ``live.py`` (the
-    forward loop, one timestamp at a time) so both sides decide with the
-    SAME program. Imports pyomo — call only from run-path code.
+    For each timestamp pick EXACTLY ONE of its candidate symbols,
+    maximizing the summed predicted return. Shared by
+    :class:`SelectOne` (the backtest) and ``live.py`` (the forward loop,
+    one timestamp at a time) so both sides decide with the SAME program.
+    Imports pyomo — call only from run-path code.
+
+    Parameters
+    ----------
+    per_t : dict
+        ``asof_ms -> {symbol: predicted return}``; must be non-empty.
+
+    Returns
+    -------
+    pyomo.environ.ConcreteModel
+        The model, with binary ``x[t, s]`` and one equality per
+        timestamp.
     """
     import pyomo.environ as pyo
 
@@ -340,9 +540,10 @@ def build_select_model(per_t: dict):
 
 
 class SelectOne(PyomoSolve):
-    """Pick exactly one symbol per timestamp, maximizing predicted
-    next-bar return — the ``intraday_poc-select-one`` kind, on the
-    toolkit's PyomoSolve doorway.
+    """Pick exactly one symbol per timestamp by predicted return.
+
+    The ``intraday_poc-select-one`` kind, on the toolkit's PyomoSolve
+    doorway.
 
     Inputs: ``forecasts`` — ``[{symbol, asof_ms, pred}]`` (typically a
     ``concat`` of per-symbol forecast nodes); ``labeled`` — the window
@@ -368,6 +569,19 @@ class SelectOne(PyomoSolve):
 
     @classmethod
     def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            The doorway's problems, plus one when ``split`` does not
+            name which split these forecasts come from.
+        """
         problems = super().validate_params(params)
         if params.get("split") not in ("train", "val", "cal", "test"):
             problems.append(
@@ -377,6 +591,18 @@ class SelectOne(PyomoSolve):
         return problems
 
     def validate_inputs(self, inputs):
+        """Problems with ``inputs``, empty when none.
+
+        Parameters
+        ----------
+        inputs : dict
+            ``forecasts`` and ``labeled``, both lists.
+
+        Returns
+        -------
+        list of str
+            One problem per port that is not a list.
+        """
         problems = []
         if not isinstance(inputs.get("forecasts"), list):
             problems.append(f"forecasts must be a list, got "
@@ -402,6 +628,21 @@ class SelectOne(PyomoSolve):
         return per_t
 
     def build_model(self, inputs, params):
+        """Build the selection program over the grouped forecasts.
+
+        Parameters
+        ----------
+        inputs : dict
+            The node's inputs; already grouped by ``run``.
+        params : dict
+            This node's params; unused — the program has no knobs.
+
+        Returns
+        -------
+        pyomo.environ.ConcreteModel
+            The model :func:`build_select_model` returns, carrying the
+            grouping for :meth:`extract`.
+        """
         # run() grouped the forecasts once (streams are single-pass);
         # underscore-prefixed model attrs are plain bookkeeping for
         # extract(), invisible to pyomo — the BudgetedSelect precedent.
@@ -410,6 +651,22 @@ class SelectOne(PyomoSolve):
         return model
 
     def extract(self, model, results):
+        """Read the picks back out of the solved model.
+
+        Parameters
+        ----------
+        model : pyomo.environ.ConcreteModel
+            The solved model.
+        results : object
+            The solver's result object; unused — the values are on the
+            model.
+
+        Returns
+        -------
+        dict
+            ``{"picks": [...], "metrics": {...}}``; ``realized`` is
+            ``None`` where no label row matched.
+        """
         import pyomo.environ as pyo
 
         per_t = model._per_t
@@ -446,6 +703,22 @@ class SelectOne(PyomoSolve):
         return {"picks": picks, "metrics": metrics}
 
     def run(self, ctx, inputs):
+        """Group the forecasts, then solve — or select nothing, loudly.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext
+            The run frame, handed on to the doorway.
+        inputs : dict
+            ``forecasts`` and the ``labeled`` rows to realize against.
+
+        Returns
+        -------
+        dict
+            ``{"picks": [...], "metrics": {...}}``. An empty forecast
+            set selects nothing WITHOUT invoking the solver — the
+            doorway's empty-gate doctrine.
+        """
         # Group once — the forecast port is a record stream and streams
         # are single-pass. An empty forecast set selects nothing WITHOUT
         # invoking the solver — the doorway's empty-gate doctrine.

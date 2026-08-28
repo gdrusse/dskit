@@ -51,7 +51,17 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
 - **Lookback is pinned in three places** — the window node's `lookback`,
   the LSTM's `module_params.lookback`, and the `ret_lag_*` feature list.
   `test_configs.py::test_lookback_agrees_everywhere` pins the agreement;
-  the module also refuses a width mismatch at run.
+  the module also refuses a width mismatch at run, and `live.main`
+  refuses a run whose artifacts and window node disagree.
+- **`WindowRows` owns no chain arithmetic** (ADR-0040). It subclasses
+  `dskit.pipeline.libs.numpy:ReturnWindows` and supplies only the
+  domain: the knob SPELLINGS (`price_field`, `max_gap_minutes`), the
+  column names, and `keep_mask` — "a bar with no usable price is not a
+  bar", vectorized. Every accessor it overrides is narrowed out of
+  `_PARAMS` (`narrow_params`), and the pack REFUSES the class if you
+  forget. The serving path calls `latest_rows` on the SAME node, so
+  there is no second implementation to drift — `latest_feature_row` is
+  gone.
 - **Streams are single-pass**: `SelectOne.run` groups forecasts ONCE and
   caches for `build_model`; never re-iterate an input port.
 - **`select-one` is role `score`, not `capital`** — deliberate: it scores

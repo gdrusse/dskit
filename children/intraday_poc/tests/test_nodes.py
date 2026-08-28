@@ -275,28 +275,31 @@ def test_the_bar_constants_are_imported_never_restated(name):
 
 @pytest.mark.parametrize("name", ["DEFAULT_PRICE_FIELD",
                                   "DEFAULT_MAX_GAP_MINUTES"])
-def test_the_serving_loop_imports_the_window_defaults(name):
-    """``live.py`` must BIND each window default by importing it.
+def test_the_serving_loop_binds_no_window_default_at_all(name):
+    """``live.py`` must bind NEITHER window default — it asks the node.
 
-    The same un-failable-``is`` trap as the bar constants above, and it
-    costs more here: ``"close"`` is identifier-shaped so CPython
-    interns it and ``5`` is a cached small int, so a restated
-    ``DEFAULT_PRICE_FIELD = "close"`` in ``live.py`` satisfies
-    ``live.X is nodes.X``. Monkeypatching ``live``'s own global cannot
-    see the divergence either — a local copy is patched just as
-    happily. Only the BINDING tells the two apart, and the day the node
-    is retuned to ``"vwap"`` a copy would keep feeding close returns
-    into vwap-trained weights: the exact train/serve skew this loop
-    exists not to have.
+    The earlier bar was "import it, never restate it", because a
+    restated ``DEFAULT_PRICE_FIELD = "close"`` satisfies
+    ``live.X is nodes.X`` (CPython interns identifier-shaped strings and
+    caches small ints) and monkeypatching ``live``'s own global patches
+    a local copy just as happily. Since ADR-0040 the loop resolves the
+    knobs by CONSTRUCTING the document's window node, so the honest bar
+    is stronger: the name must not appear in ``live.py`` in any form.
+    Either binding is a copy waiting to drift, and the day the node is
+    retuned to ``"vwap"`` a copy keeps feeding close returns into
+    vwap-trained weights — the train/serve skew this loop exists not to
+    have. The behavioural half is
+    ``test_live_falls_back_to_the_window_nodes_own_defaults``.
     """
     from intraday_poc import live
 
     how, source = _binding_of(live, name)
-    assert (how, source) == ("import", ".nodes"), (
-        f"live.py binds {name} as {how!r} from {source!r} — it must import "
-        "it from .nodes, or the serving loop windows on a default the "
-        "training node abandoned"
+    assert (how, source) == (None, None), (
+        f"live.py binds {name} as {how!r} from {source!r} — the serving "
+        "loop must read the knob off the window node it constructs, so it "
+        "needs no binding of its own"
     )
+    assert not hasattr(live, name)
 
 
 def test_the_serving_loop_declares_its_public_surface():
@@ -628,40 +631,53 @@ def _vendor_bars():
 
 
 @pytest.mark.parametrize("price_field", ["close", "vwap"])
-def test_live_window_parity(price_field):
-    """live and WindowRows agree bit-for-bit on the lag construction AND
-    on WHICH FIELD they price — the train/serve-skew guard.
+def test_live_serves_the_training_row_for_the_same_key(price_field):
+    """A SERVING row equals the TRAINING row for the same (symbol, bar).
 
-    The close-only version of this test was blind to the skew that
-    matters: set ``price_field`` to anything else and the backtest
-    trained on that series while the loop fed close returns into the
-    same weights. The vwap case fails against a loop that prices on
-    close, however right its arithmetic.
+    The parity test this replaces compared two implementations of the
+    lag construction; a mechanism-only parity test cannot catch a
+    differing FIELD, which was the actual defect (audit HIGH-4). Now
+    there is one implementation — the loop calls ``latest_rows`` on the
+    very node the document declares — so what is worth asserting is that
+    the two CALLS agree, key for key, including which series they price.
+    The vwap case still fails against any loop that prices on close.
     """
-    from intraday_poc.live import bar_series, latest_feature_row
+    from intraday_poc.live import bar_series, window_records
 
-    prices = _CLOSES if price_field == "close" else _VWAPS
     rows = [{"symbol": "AAPL", "asof_ms": _ms(i), "close": close,
              "vwap": vwap}
             for i, (close, vwap) in enumerate(zip(_CLOSES, _VWAPS))]
     node = WindowRows("window", {"lookback": 3, "price_field": price_field,
                                  "max_gap_minutes": 5})
-    out = node.run(None, {"records": rows})["records"]
+    trained = {row["asof_ms"]: row
+               for row in node.run(None, {"records": rows})["records"]}
 
-    # The live row ends at the newest bar (t5, no label needed forward).
-    live_row = latest_feature_row(bar_series(_vendor_bars(), price_field),
-                                  lookback=3, max_gap_minutes=5)
-    assert live_row is not None
-    for lag in range(3):
-        expect = math.log(prices[5 - lag] / prices[4 - lag])
-        assert live_row[f"ret_lag_{lag}"] == pytest.approx(expect)
-    # The node's newest LABELLED row is the same construction one bar
-    # back — same lag orientation, same values.
-    newest = out[-1]
-    assert newest["asof_ms"] == _ms(4)
+    # The vendor's bars, through the loop's own extraction, minus the
+    # newest one — so the serving row lands on a bar that HAS a label
+    # row to be compared against.
+    series = window_records("AAPL", bar_series(_vendor_bars(), price_field),
+                            price_field)
+    served = node.latest_rows(series[:-1])["AAPL"]
+
+    training = trained[served["asof_ms"]]
+    assert served == {k: v for k, v in training.items() if k != "y_next"}
+    prices = _CLOSES if price_field == "close" else _VWAPS
     for lag in range(3):
         expect = math.log(prices[4 - lag] / prices[3 - lag])
-        assert newest[f"ret_lag_{lag}"] == pytest.approx(expect)
+        assert served[f"ret_lag_{lag}"] == pytest.approx(expect)
+
+
+def test_the_serving_row_never_carries_a_label(price_field="close"):
+    """``y_next`` does not exist yet at the newest bar — and a serving
+    row that carried one would be reading the future."""
+    from intraday_poc.live import bar_series, window_records
+
+    node = WindowRows("window", {"lookback": 3, "max_gap_minutes": 5})
+    series = window_records("AAPL", bar_series(_vendor_bars(), price_field),
+                            price_field)
+    served = node.latest_rows(series)["AAPL"]
+    assert "y_next" not in served
+    assert served["asof_ms"] == _ms(len(_CLOSES) - 1)
 
 
 def test_bar_series_refuses_a_field_the_vendor_does_not_carry():
@@ -674,13 +690,30 @@ def test_bar_series_refuses_a_field_the_vendor_does_not_carry():
         bar_series(_vendor_bars(), "mid")
 
 
-def test_live_window_refuses_gaps_and_short_history():
-    from intraday_poc.live import latest_feature_row
+def test_the_third_copy_of_the_chain_semantics_is_gone():
+    """``latest_feature_row`` DIES (ADR-0040).
 
-    bars = [(_ms(i), 100.0 + i) for i in range(4)]
-    assert latest_feature_row(bars, lookback=5, max_gap_minutes=5) is None
-    gapped = bars[:2] + [(_ms(30), 105.0), (_ms(31), 106.0)]
-    assert latest_feature_row(gapped, lookback=3, max_gap_minutes=5) is None
+    It restated the chain on a HARDCODED price field — the train/serve
+    skew of audit HIGH-4 — and no parity test over the mechanism could
+    see it. The serving path now calls the window node itself.
+    """
+    from intraday_poc import live
+
+    assert not hasattr(live, "latest_feature_row")
+    assert "latest_feature_row" not in live.__all__
+
+
+def test_live_serving_refuses_gaps_and_short_history():
+    """Coverage the window cannot support serves NOTHING — never a
+    staler row, never a bridged session break."""
+    node = WindowRows("window", {"lookback": 3, "max_gap_minutes": 5})
+    bars = [{"symbol": "AAPL", "asof_ms": _ms(i), "close": 100.0 + i}
+            for i in range(4)]
+
+    assert WindowRows("window", {"lookback": 5}).latest_rows(bars) == {}
+    gapped = bars[:2] + [{"symbol": "AAPL", "asof_ms": _ms(30), "close": 105.0},
+                         {"symbol": "AAPL", "asof_ms": _ms(31), "close": 106.0}]
+    assert node.latest_rows(gapped) == {}
 
 
 @pytest.mark.skipif(not HAVE_SOLVER, reason="pyomo/highspy not installed")
@@ -772,12 +805,11 @@ def test_live_falls_back_to_the_window_nodes_own_defaults(tmp_path,
                                                           monkeypatch):
     """An undeclared knob resolves to the NODE's constant.
 
-    That the loop BINDS those constants by import rather than keeping a
-    copy is pinned structurally by
-    ``test_the_serving_loop_imports_the_window_defaults`` — an identity
-    assertion here could not have shown it, since CPython interns
-    ``"close"`` and caches ``5``. This half is the behaviour: whatever
-    the loop is bound to is what an undeclared knob resolves to.
+    The behavioural half of
+    ``test_the_serving_loop_binds_no_window_default_at_all``: rebinding
+    the constant in ``nodes`` moves the SERVING answer, which nothing
+    but reading it through the node can do. A copy in ``live.py`` — the
+    defect — would leave this answer where it was.
     """
     from intraday_poc import live
 
@@ -785,8 +817,8 @@ def test_live_falls_back_to_the_window_nodes_own_defaults(tmp_path,
     document = live.load_run_document(run_dir)
     assert live.window_knobs(document) == (nodes.DEFAULT_PRICE_FIELD,
                                            float(nodes.DEFAULT_MAX_GAP_MINUTES))
-    monkeypatch.setattr(live, "DEFAULT_PRICE_FIELD", "vwap")
-    monkeypatch.setattr(live, "DEFAULT_MAX_GAP_MINUTES", 9)
+    monkeypatch.setattr(nodes, "DEFAULT_PRICE_FIELD", "vwap")
+    monkeypatch.setattr(nodes, "DEFAULT_MAX_GAP_MINUTES", 9)
     assert live.window_knobs(document) == ("vwap", 9.0)
 
 
@@ -1241,11 +1273,11 @@ def test_train_document_to_live_chain_end_to_end(tmp_path):
     verification, predicts, and the pyomo program picks a symbol."""
     from intraday_poc.live import (
         declared_module,
-        latest_feature_row,
         load_run_document,
         predict,
         restore_model,
         solve_pick,
+        window_node,
     )
 
     root = str(tmp_path / "ob")
@@ -1266,14 +1298,19 @@ def test_train_document_to_live_chain_end_to_end(tmp_path):
     result = run_document(document, asof="2026-01-06")
     assert result.state == "ran", (result.state, result.error)
 
-    bars = {symbol: [(_ms(i), _close(symbol, i)) for i in range(120)]
-            for symbol in ("AAPL", "MSFT")}
+    bars = [{"symbol": symbol, "asof_ms": _ms(i), "close": _close(symbol, i)}
+            for symbol in ("AAPL", "MSFT") for i in range(120)]
 
     # The loop reads the class the DOCUMENT declared off the run dir the
     # driver just wrote — the ADR-0025 seam, end to end.
     written = load_run_document(result.run_dir)
     module_ref = declared_module(written)
     assert module_ref == doc["pipeline"]["qhat_aapl"]["params"]["module"]
+
+    # The serving features come off the DOCUMENT'S OWN window node —
+    # the same object the run trained through, not a second reading of
+    # what it did.
+    served = window_node(written).latest_rows(bars)
 
     preds = {}
     for symbol, node_key in (("AAPL", "qhat_aapl"), ("MSFT", "qhat_msft")):
@@ -1283,9 +1320,8 @@ def test_train_document_to_live_chain_end_to_end(tmp_path):
         module, features = restore_model(artifact_dir, module_ref)
         assert module.lookback == 30
         assert features[0] == "ret_lag_0" and len(features) == 30
-        row = latest_feature_row(bars[symbol], lookback=30,
-                                 max_gap_minutes=5)
-        assert row is not None
+        row = served[symbol]
+        assert "y_next" not in row
         pred = predict(module, features, row)
         assert pred is not None and math.isfinite(pred)
         preds[symbol] = pred

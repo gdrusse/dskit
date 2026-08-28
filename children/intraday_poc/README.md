@@ -198,7 +198,10 @@ duplicate both.
   open TODO, and would also have to move the loop's minute cadence and
   the window node's gap bound.
 - Windows never bridge gaps (`max_gap_minutes`); rows the model cannot
-  cover are skipped, never imputed.
+  cover are skipped, never imputed. Training and serving build them with
+  the SAME node — the loop calls `latest_rows` on the window node it
+  rebuilds from the run's own document (ADR-0040), so a retuned
+  `price_field` cannot leave the loop pricing on the old series.
 
 ## Tests
 

@@ -229,8 +229,22 @@ artifact); **transformers** `transformers-fit` (declared)
 (categorical lists AND `{"low", "high"[, "log"][, "int"]}` continuous ranges;
 `hpo-grid` keeps refusing ranges — enumerating an interval is meaningless);
 **pyomo** `pyomo-budgeted-select` + `PyomoSolve` base (`build_model`/`extract`
-hooks); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures` and
-wire by import path. Heavy imports live inside `run()` — the tier rule.
+hooks); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures`
+(or the concrete `ReturnWindows`) and wire by import path. Heavy imports live
+inside `run()` — the tier rule.
+
+The numpy pack's lifting is DECLARED (ADR-0040): `group_field`, `order_field`,
+`fields` and `max_gap` on both doorways, plus `carry_fields`,
+`require_fields` and `drop_incomplete` on `ArrayFeatures`, each read through a
+public accessor a subclass may override — and **an override must narrow that
+knob out of `_PARAMS`** (`narrow_params`), which the pack refuses at
+construction if you forget. `max_gap` splits each ordered group into
+gap-free SEGMENTS before any offset arithmetic, so no lag, lead or return
+spans a session boundary; absent, there is one segment per group and the
+behaviour is what it always was. `ReturnWindows` composes the vectorized ops
+(`lag`, `lead`, `log_return`, `pct_return`) into lags plus a forward label,
+and a forward-reading column DECLARES its horizon (`lookahead_columns`)
+rather than escaping the causality screen.
 
 **mlflow** is the odd pack out (see its module docstring for the whole
 rationale): it ships no node kind at all, because it fills the TRACKING-sink

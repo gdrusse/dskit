@@ -138,7 +138,15 @@ on it without breaking its rulings.
   `test_driver.py::test_the_run_hash_ignores_the_tracking_section` —
   the driver keeps its own copy of the recipe.
 - **The numpy pack registers no kinds** — `ArrayMap`/`ArrayFeatures`
-  subclasses wired by import path only.
+  (and the concrete `ReturnWindows`) subclasses wired by import path only.
+- **An overridden numpy accessor NARROWS `_PARAMS`** (ADR-0040). Answer
+  `fields()`/`max_gap()`/… from your own vocabulary and you must drop that
+  knob with `narrow_params`, or default-deny approves a value the run
+  discards. It is a REFUSAL, not a convention:
+  `accessor_narrowing_problems` reports through `validate_params`, so the
+  class fails to construct. The mirror rule: every per-knob check in that
+  pack is guarded by `if "<knob>" in cls._PARAMS`, or a narrowing subclass
+  would be refused for omitting a knob it does not have.
 - **Base `Node.validate_params` accepts anything.** The deny lives in
   each class (`_PARAMS` + `_reject_unknown`); forget it and typos pass.
 - **Owned kinds** (`validate`, `stat_test`, `run-report`): documents

@@ -8,8 +8,10 @@ Run-path only (torch, pyomo, alpaca-py) — never imported by
 2. pull the latest 1-minute bars for the configured symbols over REST
    (IEX feed — the free tier's real-time-eligible feed; bars publish
    ~2–3 s after the minute closes, and a minute in which a symbol did
-   not print on IEX simply has no bar — the window helper refuses,
-   never bridges);
+   not print on IEX simply has no bar) and hand them to the RUN'S OWN
+   window node (``latest_rows``), which refuses rather than bridges —
+   there is one implementation of the chain, not a serving copy of it
+   (ADR-0040);
 3. restore each symbol's model from the run's artifact — sidecar
    verified (state_hash, S2-A) and the module class refused by name
    against the one the RUN declared, the pack's own load discipline;
@@ -75,13 +77,13 @@ import argparse
 import datetime as dt
 import hashlib
 import json
-import math
 import os
 import sys
 import time
 
 from dskit.onboarding import AssetError
 from dskit.pipeline.base import (
+    ConfigError,
     EnvConfig,
     import_library_class,
     import_ref,
@@ -95,13 +97,7 @@ from .connectors import (
     bar_timeframe,
     resolve_credentials,
 )
-from .nodes import (
-    DEFAULT_MAX_GAP_MINUTES,
-    DEFAULT_PRICE_FIELD,
-    NODE_KINDS,
-    WindowRows,
-    build_select_model,
-)
+from .nodes import NODE_KINDS, WindowRows, build_select_model
 
 __all__ = [
     "LIVE_FEED",
@@ -110,7 +106,6 @@ __all__ = [
     "credentials",
     "declared_module",
     "fetch_bars",
-    "latest_feature_row",
     "load_run_document",
     "main",
     "parse_artifact_overrides",
@@ -119,6 +114,8 @@ __all__ = [
     "solve_pick",
     "source_knobs",
     "window_knobs",
+    "window_node",
+    "window_records",
 ]
 
 #: The forward fetch's feed. Deliberately NOT read from the source
@@ -240,15 +237,66 @@ def _window_nodes(document):
             if _is_window(spec.uses)}
 
 
+def window_node(document):
+    """Rebuild the window node the run trained through.
+
+    The serving path's whole feature construction, in one object: the
+    node is CONSTRUCTED from the document's own params, so the price
+    field, the gap bound, the lag orientation, the label horizon and the
+    causality screen are the run's — not a second reading of what the
+    run did. ``latest_rows`` on this node is what the loop calls, and it
+    is the same code the training rows came out of. The node is found by
+    either spelling the document grammar allows: the registered kind
+    name, or a class reference that imports to
+    :class:`~intraday_poc.nodes.WindowRows`.
+
+    Parameters
+    ----------
+    document : dskit.pipeline.document.PipelineDocument
+        A training document, as :func:`load_run_document` returns it.
+
+    Returns
+    -------
+    intraday_poc.nodes.WindowRows
+        The node, constructed and therefore validated.
+
+    Raises
+    ------
+    SystemExit
+        When the document declares no window node, when it declares
+        several that disagree — one forward loop cannot serve two
+        windowings — or when the declared params do not validate.
+    """
+    windows = _window_nodes(document)
+    if not windows:
+        raise SystemExit(
+            f"the run declares no {_WINDOW_KIND} node (by kind name or by "
+            "class reference) — this loop cannot tell how its features "
+            "were built"
+        )
+    built = {}
+    for key, spec in sorted(windows.items()):
+        try:
+            node = WindowRows(key, spec.params)
+        except ConfigError as exc:
+            raise SystemExit(str(exc)) from exc
+        built[(node.price_field(), node.max_gap_minutes(), node.lookback())] = node
+    if len(built) > 1:
+        raise SystemExit(
+            f"the run's {_WINDOW_KIND} nodes disagree on how bars are "
+            f"windowed ({sorted(built)}) — one loop cannot serve both"
+        )
+    return next(iter(built.values()))
+
+
 def window_knobs(document):
     """How the run windowed its bars: the price field and the gap bound.
 
-    Both are the WindowRows knobs, resolved exactly as that node
-    resolves them — an undeclared knob falls back to the node's own
-    module constant, never to a second copy of the value. The node is
-    found by either spelling the document grammar allows: the registered
-    kind name, or a class reference that imports to
-    :class:`~intraday_poc.nodes.WindowRows`.
+    Read off the node itself (:func:`window_node`), so an undeclared
+    knob resolves through the node's own accessor to the node's own
+    module constant — this loop holds no copy of either value, and a
+    copy is what would keep feeding close returns into vwap-trained
+    weights the day the document is retuned.
 
     Parameters
     ----------
@@ -264,28 +312,10 @@ def window_knobs(document):
     Raises
     ------
     SystemExit
-        When the document declares no window node, or declares several
-        that disagree — one forward loop cannot serve two windowings.
+        Whatever :func:`window_node` refuses.
     """
-    windows = _window_nodes(document)
-    if not windows:
-        raise SystemExit(
-            f"the run declares no {_WINDOW_KIND} node (by kind name or by "
-            "class reference) — this loop cannot tell how its features "
-            "were built"
-        )
-    resolved = set()
-    for spec in windows.values():
-        resolved.add((
-            spec.params.get("price_field", DEFAULT_PRICE_FIELD),
-            float(spec.params.get("max_gap_minutes", DEFAULT_MAX_GAP_MINUTES)),
-        ))
-    if len(resolved) > 1:
-        raise SystemExit(
-            f"the run's {_WINDOW_KIND} nodes disagree on how bars are "
-            f"windowed ({sorted(resolved)}) — one loop cannot serve both"
-        )
-    return resolved.pop()
+    node = window_node(document)
+    return node.price_field(), node.max_gap_minutes()
 
 
 def declared_module(document):
@@ -563,42 +593,33 @@ def _restore_signals(run_dir, symbols, overrides, module_ref):
     return signals, lookback
 
 
-def latest_feature_row(bars, lookback, max_gap_minutes):
-    """Build the newest ``ret_lag_*`` vector these bars can support.
+def window_records(symbol, series, price_field):
+    """Turn one symbol's fetched series into records the window node reads.
 
-    The same chain semantics as ``WindowRows``: a gap wider than
-    ``max_gap_minutes`` breaks the chain and nothing is bridged, so the
-    caller passes the bound the RUN declared rather than a default of
-    its own.
+    The whole adapter between the vendor fetch and the training node:
+    the node consumes the same record shape the store emits, so the
+    serving path hands it that shape and nothing else. It restates no
+    chain arithmetic — there is only one implementation of that now, and
+    it is the node's (ADR-0040).
 
     Parameters
     ----------
-    bars : list of tuple
-        ``(asof_ms, price)`` ascending, one symbol.
-    lookback : int
-        How many one-bar log returns the row carries.
-    max_gap_minutes : float
-        Bars further apart than this never chain.
+    symbol : str
+        The symbol these bars belong to.
+    series : list of tuple
+        ``(asof_ms, price)`` ascending, as :func:`bar_series` returns it.
+    price_field : str
+        The field the RUN trained on, read off its window node — the key
+        the record carries the price under, so the node finds it where
+        the document says it is.
 
     Returns
     -------
-    dict or None
-        ``{"ret_lag_0": ..., ...}`` with ``ret_lag_0`` the most recent
-        return, or ``None`` when coverage or gap discipline refuses.
+    list of dict
+        ``[{"symbol": ..., "asof_ms": ..., <price_field>: ...}]``.
     """
-    if len(bars) < lookback + 1:
-        return None
-    gap_ms = max_gap_minutes * 60_000
-    tail = bars[-(lookback + 1):]
-    rets = []
-    for i in range(1, len(tail)):
-        if tail[i][0] - tail[i - 1][0] > gap_ms:
-            return None
-        if tail[i][1] <= 0 or tail[i - 1][1] <= 0:
-            return None
-        rets.append(math.log(tail[i][1] / tail[i - 1][1]))
-    return {f"ret_lag_{lag}": rets[len(rets) - 1 - lag]
-            for lag in range(lookback)}
+    return [{"symbol": symbol, "asof_ms": asof_ms, price_field: price}
+            for asof_ms, price in series]
 
 
 def predict(module, features, row) -> float | None:
@@ -853,7 +874,8 @@ def main(argv=None) -> int:
     # Everything the run and the pull already declared, read back —
     # the credential env-var NAMES among them.
     document = load_run_document(args.run_dir)
-    price_field, max_gap_minutes = window_knobs(document)
+    window = window_node(document)
+    price_field, max_gap_minutes = window.price_field(), window.max_gap_minutes()
     module_ref = declared_module(document)
     knobs = source_knobs(args.source_config)
     symbols, adjustment = knobs["symbols"], knobs["adjustment"]
@@ -866,9 +888,19 @@ def main(argv=None) -> int:
     signals, lookback = _restore_signals(
         args.run_dir, symbols,
         parse_artifact_overrides(args.artifact), module_ref)
+    if lookback != window.lookback():
+        # One pin, not two: the artifacts and the document must agree on
+        # the window, or the loop would build rows of one width and feed
+        # them to weights trained on another — silently, as "no
+        # coverage", forever.
+        raise SystemExit(
+            f"the artifacts were trained on lookback {lookback} but the "
+            f"run's window node declares {window.lookback()} — retrain, or "
+            "serve the run whose document matches these artifacts"
+        )
     print(f"models restored for {list(signals)} ({module_ref}, lookback "
-          f"{lookback}, {price_field} bars, adjustment {adjustment}, feed "
-          f"{LIVE_FEED})")
+          f"{lookback}, {price_field} bars, {max_gap_minutes:g}-minute gap "
+          f"bound, adjustment {adjustment}, feed {LIVE_FEED})")
 
     log_path = os.path.join(args.log_dir, "decisions.jsonl")
     while True:
@@ -881,10 +913,15 @@ def main(argv=None) -> int:
         else:
             bars = fetch_bars(symbols, args.history_minutes,
                               price_field, adjustment, key, secret)
+            # ONE call, through the run's own window node: the serving
+            # rows and the training rows come out of the same code.
+            rows = window.latest_rows([
+                record for symbol, series in sorted(bars.items())
+                for record in window_records(symbol, series, price_field)
+            ])
             preds = {}
             for symbol, (module, features) in signals.items():
-                row = latest_feature_row(bars.get(symbol, []), lookback,
-                                         max_gap_minutes)
+                row = rows.get(symbol)
                 if row is None:
                     continue  # coverage refused — no fabricated belief
                 pred = predict(module, features, row)
