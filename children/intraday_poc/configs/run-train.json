@@ -41,7 +41,7 @@
         "loader": { "batch_size": 512, "shuffle": true, "seed": 7 },
         "device": "cpu"
       },
-      "notes": "ADR-0025 declared seam: the document names the child's nn.Module and the optimizer; the module owns the flat-lag-vector -> LSTM-sequence resequencing, so the pack's default RowVectorAdapter carries it. features MUST stay ret_lag_0..ret_lag_{lookback-1} in order and module_params.lookback must equal the window node's lookback — the module refuses a width mismatch at run. device is declared explicitly (not left to sniff whatever the box has) so a GPU box's run stays reproducible on CPU until a GPU device string is deliberately swapped in. optimizer_params names Adam's other knobs (weight_decay etc.) explicitly at their library defaults, so the knob is visible and adjustable rather than a silent zero. No monitor is set here: this document wires no val_rows (it trains on every published bar), and ADR-0035's monitor selects on validation telemetry — the run refuses a monitor with no val_rows wired, so declaring one would only break the production fit."
+      "notes": "ADR-0025 declared seam: the document names the child's nn.Module and the optimizer; the module owns the flat-lag-vector -> LSTM-sequence resequencing, so the pack's default RowVectorAdapter carries it. features MUST stay ret_lag_0..ret_lag_{lookback-1} in order and module_params.lookback must equal the window node's lookback — the module refuses a width mismatch at run. device is declared explicitly as cpu so the compute target is visible in the document — the engine's undeclared default is already CPU (dskit never sniffs a GPU; torch.py's device is 'declared, never sniffed'), so this line documents the choice rather than guarding against drift, and gives this GPU box a single line to change if a device string is deliberately substituted. optimizer_params names Adam's other knobs (weight_decay etc.) explicitly at their library defaults, so the knob is visible and adjustable rather than a silent zero. No monitor is set here: this document wires no val_rows (it trains on every published bar). ADR-0035 exempts monitor='train_loss' from the val_rows requirement (torch.py's _MONITORS); every OTHER monitor value selects on validation telemetry and the run refuses to start without val_rows wired (torch.py:1024). So a non-train_loss monitor would break the production fit outright, and a train_loss monitor here would just reselect on the same signal training already optimizes — adding cost without changing the outcome — which is why this card leaves monitor undeclared rather than wiring val_rows, a training-semantics change outside its scope."
     },
     "qhat_msft": {
       "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
@@ -59,7 +59,7 @@
         "loader": { "batch_size": 512, "shuffle": true, "seed": 7 },
         "device": "cpu"
       },
-      "notes": "The MSFT twin of qhat_aapl — same architecture, its own weights. device/optimizer_params mirror qhat_aapl's rationale: an explicit CPU knob for this GPU box and Adam's other kwargs named at their library defaults. No monitor here either, for the same reason: no val_rows wired on this document."
+      "notes": "The MSFT twin of qhat_aapl — same architecture, its own weights. device/optimizer_params mirror qhat_aapl's rationale: an explicitly documented CPU compute target and Adam's other kwargs named at their library defaults. No monitor here either, for the same reason: no val_rows wired on this document."
     }
   },
   "outputs": {

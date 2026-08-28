@@ -1,6 +1,6 @@
 {
   "name": "intraday_poc-backtest",
-  "notes": "The intraday BACKTEST as a walk-forward document (ADR-0027): python -m dskit.pipeline walkforward configs/run-backtest.json --asof 2026-08-25 --adapter intraday_poc. Per fold: train each symbol's LSTM on everything up to the cutoff (minus the embargo), forecast the fold's validation window, and let the select-one program pick exactly one symbol per minute — the aggregate objective is the summed realized next-bar log return of those picks. Same nodes, same configs as the production fit; only the split filters and the walkforward section differ.",
+  "notes": "The intraday BACKTEST as a walk-forward document (ADR-0027): python -m dskit.pipeline walkforward configs/run-backtest.json --asof 2026-08-25 --adapter intraday_poc. Per fold: train each symbol's LSTM on everything up to the cutoff (minus the embargo), forecast the fold's validation window, and let the select-one program pick exactly one symbol per minute — the aggregate objective is the summed realized next-bar log return of those picks. The trainer nodes' modelling core (module/features/label/optimizer/optimizer_params/epochs/lr/loader/device) is pinned identical to the production fit by test_configs.py; the split filters, the walkforward section, and this document's monitor: val_loss (absent from run-train.json, which wires no val_rows) differ by design. Note: the same val_rows that monitor selects the fold's checkpoint against are also the rows fc_aapl/fc_msft forecast and select scores as total_realized — see qhat_aapl's notes.",
   "pipeline": {
     "bars": {
       "uses": "intraday_poc-bars",
@@ -176,7 +176,7 @@
         "device": "cpu",
         "monitor": "val_loss"
       },
-      "notes": "Fresh weights every fold (expanding train window); per-epoch train/val loss lands in training_curve.json beside the fold's artifact. monitor selects the fold's best-epoch checkpoint by validation loss (ADR-0035) instead of keeping whichever epoch trained last — val_rows is already wired, so the five epochs of validation this was computing and discarding now decide the fold's weights. device is declared explicitly (not sniffed) so the backtest runs reproducibly on CPU on this GPU box until a GPU device string is deliberately swapped in. optimizer_params names Adam's other knobs (weight_decay etc.) explicitly at their library defaults, so the knob is visible and adjustable rather than a silent zero."
+      "notes": "Fresh weights every fold (expanding train window); per-epoch train/val loss lands in training_curve.json beside the fold's artifact. monitor selects the fold's best-epoch checkpoint by validation loss (ADR-0035) instead of keeping whichever epoch trained last — val_rows is already wired, so the five epochs of validation this was computing and discarding now decide the fold's weights. CAVEAT: aapl_val is both the monitor's validation set AND the set fc_aapl forecasts and select scores into total_realized (the walkforward objective) — best-epoch selection here is therefore chosen against the same rows the fold is graded on, an optimism the objective does not correct for. This card only makes the knob visible (it was implicitly train_loss/last-epoch before); it does not add a held-out selection split, which a future change should consider before building HPO on total_realized (TODO.md). device is declared explicitly as cpu so the compute target is visible in the document — the engine's undeclared default is already CPU (dskit never sniffs a GPU; torch.py's device is 'declared, never sniffed'), so this line documents the choice rather than guarding against drift. optimizer_params names Adam's other knobs (weight_decay etc.) explicitly at their library defaults, so the knob is visible and adjustable rather than a silent zero."
     },
     "qhat_msft": {
       "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
@@ -239,7 +239,7 @@
         "device": "cpu",
         "monitor": "val_loss"
       },
-      "notes": "The MSFT twin of qhat_aapl — device/optimizer_params/monitor mirror its rationale: explicit CPU on this GPU box, Adam's other kwargs named at their library defaults, and best-epoch selection by validation loss (ADR-0035)."
+      "notes": "The MSFT twin of qhat_aapl — device/optimizer_params/monitor mirror its rationale: an explicitly documented CPU compute target, Adam's other kwargs named at their library defaults, and best-epoch selection by validation loss (ADR-0035), with the same msft_val-is-also-the-scored-set caveat noted on qhat_aapl."
     },
     "fc_aapl": {
       "uses": "intraday_poc-forecast",

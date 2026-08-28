@@ -62,7 +62,8 @@ def test_the_two_documents_share_their_modelling_core():
         t = train["pipeline"][key]["params"]
         b = backtest["pipeline"][key]["params"]
         for knob in ("module", "module_params", "features", "label",
-                     "optimizer", "epochs", "lr", "loader"):
+                     "optimizer", "optimizer_params", "epochs", "lr",
+                     "loader", "device"):
             assert t[knob] == b[knob], (key, knob)
 
 
