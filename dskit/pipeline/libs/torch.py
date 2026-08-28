@@ -1417,11 +1417,28 @@ class _DeclaredParams:
     def build_adapter(self, params):
         """The declared adapter, or the flat-vector default when a document
         names none — which is why the seam changed nothing for documents
-        written before it existed."""
+        written before it existed.
+
+        Two DIFFERENT failures are told apart here. A class that never
+        implemented some of :class:`TorchAdapter`'s abstract hooks is
+        refused by those hook NAMES — the fix is code, and the document may
+        be perfect. Only a class that is complete and still rejects its
+        kwargs is reported against ``adapter_params``.
+        """
         path = params.get("adapter")
         if not path:
             return RowVectorAdapter(params)
         cls = import_library_class(path, "torch adapter", requires=("prepare",))
+        # Asked BEFORE construction, so the ABC's TypeError never reaches the
+        # kwargs branch below and gets read as a knob problem. ``requires``
+        # above only proves the class LOOKS like an adapter — which a
+        # half-written one, having written ``prepare`` first, does.
+        missing = sorted(getattr(cls, "__abstractmethods__", ()) or ())
+        if missing:
+            raise ValueError(
+                f"{path} is an incomplete adapter: it never implements "
+                f"{', '.join(missing)} — implement the hook(s) on the class"
+            )
         kwargs = dict(params.get("adapter_params") or {})
         # The adapter sees the node's params (it needs ``features``/``label``)
         # with its OWN declared knobs layered ON TOP, so an adapter knob is

@@ -103,6 +103,18 @@ class KnobbedAdapter(DoubleAdapter):
     _PARAMS = ("n_groups",)
 
 
+class StrictKnobAdapter(DoubleAdapter):
+    """Reads its knob EAGERLY, so a mis-typed one is a ``TypeError`` raised
+    by the adapter's own constructor — the case the ``adapter_params``
+    refusal was written for, and the one it must keep."""
+
+    _PARAMS = ("n_groups",)
+
+    def __init__(self, params=None):
+        super().__init__(params)
+        self.n_groups = int(self.params["n_groups"])
+
+
 def ref_to(cls):
     return f"{cls.__module__}:{cls.__qualname__}"
 
@@ -153,11 +165,50 @@ def test_the_optional_hooks_stay_optional():
         assert isinstance(cls({}), TorchAdapter)
 
 
-def test_a_declared_adapter_is_still_resolved_structurally():
-    """The import-path grammar checks for a callable ``prepare`` and nothing
-    more, so making the base abstract left declared adapters untouched."""
+def test_a_declared_adapter_is_still_RESOLVED_structurally():
+    """RESOLUTION is the half the ABC left alone: the import-path grammar
+    asks for a callable ``prepare`` and nothing more, so an incomplete class
+    still resolves. It is CONSTRUCTION that now refuses — pinned below, and
+    this test deliberately claims nothing about it."""
     assert import_library_class(ref_to(DoubleAdapter), "a", requires=("prepare",))
     assert import_library_class(ref_to(IncompleteAdapter), "a", requires=("prepare",))
+
+
+def test_a_declared_incomplete_adapter_is_refused_by_its_missing_hooks():
+    """The other half of the declared path, and the half the ABC changed.
+
+    ``build_adapter`` resolves then CONSTRUCTS, and construction of an
+    incomplete class now raises. The refusal must name the hooks that were
+    never implemented — not ``adapter_params``, which here is empty and
+    entirely correct, and which would send the author to inspect JSON knobs
+    instead of writing the three missing methods.
+    """
+    node = DeclaredTrain("k", {**FLAT_PARAMS, "module": MODULE_REF})
+    with pytest.raises(ValueError) as caught:
+        node.build_adapter(
+            {"adapter": ref_to(IncompleteAdapter), "adapter_params": {}}
+        )
+    message = str(caught.value)
+    assert ref_to(IncompleteAdapter) in message
+    assert all(hook in message for hook in ABSTRACT_HOOKS - {"prepare"})
+    assert "adapter_params" not in message
+
+
+def test_a_mis_typed_adapter_knob_still_names_adapter_params():
+    """The other side of the same discrimination: a COMPLETE adapter whose
+    own constructor rejects a knob still gets the ``adapter_params``
+    diagnosis, which the abstract-hook guard must not have swallowed."""
+    node = DeclaredTrain("k", {**FLAT_PARAMS, "module": MODULE_REF})
+    with pytest.raises(ValueError) as caught:
+        node.build_adapter(
+            {
+                "adapter": ref_to(StrictKnobAdapter),
+                "adapter_params": {"n_groups": ["not", "an", "int"]},
+            }
+        )
+    message = str(caught.value)
+    assert ref_to(StrictKnobAdapter) in message
+    assert "adapter_params" in message
 
 
 def test_the_default_adapter_is_the_row_vector_one():
