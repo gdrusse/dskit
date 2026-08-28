@@ -130,7 +130,6 @@ convention = "numpy"
 "dskit/pipeline/kinds_table.py" = ["D"]
 "dskit/pipeline/libs/matplotlib.py" = ["D"]
 "dskit/pipeline/libs/numpy.py" = ["D"]
-"dskit/pipeline/libs/optuna.py" = ["D"]
 "dskit/pipeline/libs/pyomo.py" = ["D"]
 "dskit/pipeline/libs/sb3.py" = ["D"]
 "dskit/pipeline/libs/sklearn.py" = ["D"]

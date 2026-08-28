@@ -1,5 +1,6 @@
-"""The ``optuna`` library pack — ``OptunaSearch``, TPE-sampled search
-(docs/25 §2 row 5, tier 2 per D-146).
+"""The ``optuna`` library pack: ``OptunaSearch``, TPE-sampled search.
+
+Tier 2 per D-146, docs/25 §2 row 5.
 
 This is the optuna-sampled variant of the SAME contract ``hpo-grid``
 (:mod:`dskit.pipeline.kinds_search`) reference-implements — shared
@@ -25,7 +26,15 @@ be CONTINUOUS specs — ``{"low": .., "high": ..[, "log": true][, "int":
 true]}`` — alongside the grid's list-of-scalars (categorical) form.
 Both forms share the grid's ``"<node>.<param.path>"`` key grammar
 (:data:`dskit.pipeline.kinds_search._SPACE_KEY_OK`, imported, not
-copied).
+copied) and both plan: the planner owns the STRUCTURAL space rules
+(keys address existing params of ancestors of the objective;
+winner-consistency) and defers the VALUE grammar to the search kind, so
+:func:`_spec_problems` below is the ONE place the range form is
+defined. ``hpo-grid`` refuses range specs on purpose — exhaustive
+enumeration over a real interval is meaningless — and pins that refusal
+itself. The two shipped documents are
+``examples/pipeline/optuna-search.json`` (categorical) and
+``optuna-continuous.json`` (range).
 
 Determinism: the TPE sampler is seeded with the REQUIRED ``seed`` param
 and suggestions are drawn over the space's SORTED keys, so the RNG
@@ -38,16 +47,6 @@ values reported mid-trial, and the ``ctx.rerun`` seam returns exactly
 one float per trial — there is nothing to prune against. Adding pruner
 knobs here would be dead configuration; if a per-epoch reporting seam
 ever lands (an I-222 spec ruling), pruning becomes buildable.
-
-INTEGRATION FLAG (for the planner's owner): continuous dict specs
-validate clean HERE but are refused at PLAN today —
-``dskit.pipeline.planner._search_errors`` hard-codes the
-list-of-JSON-scalars space grammar for EVERY search-role node, so a
-document carrying ``{"low": .., "high": ..}`` fails ``plan()`` before
-this class is consulted. Categorical documents plan and run end to end
-now; continuous ones need the planner to learn the spec-dict grammar
-(this file may not edit the planner). The gap is pinned by a test in
-``tests/pipeline_libs/test_optuna.py``.
 
 Import cost: stdlib + ``dskit.pipeline`` at module level; ``optuna``
 is imported ONLY inside ``run()`` (test-enforced by
@@ -145,27 +144,52 @@ def _spec_problems(target, spec) -> list:
 
 
 class OptunaSearch(Node):
-    """Seeded-TPE search over document params (role ``search``,
-    registered kind ``optuna-search``) — ``hpo-grid``'s contract, optuna's
-    sampler.
+    """Seeded-TPE search over document params (kind ``optuna-search``).
 
-    Params: ``space`` (required — ``"node.param.path"`` -> non-empty
-    JSON-scalar list (categorical) OR ``{"low", "high"[, "log"][,
-    "int"]}`` continuous spec), ``objective`` (required — a
-    ``$``-reference into a val-split score node's output), ``n_trials``
-    (required int >= 1 — the trial budget; optuna may revisit a
-    categorical point, and each visit is a real re-execution),
-    ``seed`` (required int >= 0 — seeds the TPE sampler; determinism is
-    a contract, not a default), ``direction`` (``minimize``/``maximize``,
-    default ``minimize``). Outputs mirror ``hpo-grid``: ``best_params``
-    (the winning overrides), ``best_score``, ``trials`` (every evaluated
-    trial as ``{"overrides", "score"}``, in execution order).
+    Role ``search`` — ``hpo-grid``'s contract, optuna's sampler. Outputs
+    mirror the grid's: ``best_params`` (the winning overrides),
+    ``best_score``, ``trials`` (every evaluated trial as
+    ``{"overrides", "score"}``, in execution order).
 
     A trial reporting a NON-FINITE objective (NaN/±inf) fails the search
     loudly, named by its overrides — ``hpo-grid``'s rule, imported not
     copied (:func:`~dskit.pipeline.kinds_search._finite_objective`);
     optuna's own NaN handling (mark FAIL, keep going) would let this
     node's ledger crown the NaN trial anyway.
+
+    Parameters
+    ----------
+    key : str
+        The node's key in the document.
+    params : dict
+        ``space`` (dict, required) maps ``"<node>.<param.path>"`` to a
+        non-empty list of JSON scalars (categorical) or to a
+        ``{"low", "high"[, "log"][, "int"]}`` range spec;
+        ``objective`` (str, required) is a ``$``-reference into a
+        val-split score node's output; ``n_trials`` (int >= 1, required)
+        is the trial budget — optuna may revisit a categorical point,
+        and each visit is a real re-execution; ``seed`` (int >= 0,
+        required) seeds the TPE sampler, because determinism here is a
+        contract, not a default; ``direction`` (str, ``"minimize"`` or
+        ``"maximize"``, default ``"minimize"``).
+
+    Examples
+    --------
+    Tune a log-scaled learning rate and a categorical width together,
+    minimizing a val-split loss::
+
+        node = OptunaSearch(
+            "search",
+            {
+                "space": {
+                    "train.lr": {"low": 1e-4, "high": 1e-1, "log": True},
+                    "train.units": [32, 64, 128],
+                },
+                "objective": "$validate.metrics.loss",
+                "n_trials": 20,
+                "seed": 0,
+            },
+        )
     """
 
     role = "search"
@@ -178,6 +202,19 @@ class OptunaSearch(Node):
 
     @classmethod
     def validate_params(cls, params):
+        """Every problem with one node's params, empty when there are none.
+
+        Parameters
+        ----------
+        params : dict
+            The document's ``params`` block for this node.
+
+        Returns
+        -------
+        list of str
+            One message per problem, refusing unknown knobs BY NAME
+            (default-deny); empty when the params are legal.
+        """
         problems = []
         _reject_unknown(problems, params, cls._PARAMS)
         space = params.get("space")
@@ -243,6 +280,33 @@ class OptunaSearch(Node):
         return problems
 
     def run(self, ctx, inputs):
+        """Run the seeded TPE study and return the winner and its ledger.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext
+            The execute-time context. ``ctx.rerun`` — the driver's
+            subgraph re-execution seam — is REQUIRED: this node owns no
+            DAG of its own.
+        inputs : dict
+            Unused. The search addresses the DOCUMENT through ``space``,
+            never wired ports.
+
+        Returns
+        -------
+        dict
+            ``best_params`` (the winning overrides), ``best_score`` (its
+            objective) and ``trials`` (every evaluated trial as
+            ``{"overrides", "score"}``, in execution order).
+
+        Raises
+        ------
+        RuntimeError
+            If ``ctx.rerun`` is absent — the node ran outside the driver.
+        ValueError
+            If any trial reports a non-finite objective, named by its
+            overrides.
+        """
         if ctx.rerun is None:
             raise RuntimeError(
                 "optuna-search runs under the driver — ctx.rerun (the "
@@ -328,9 +392,19 @@ NODE_KINDS = (("optuna-search", OptunaSearch),)
 
 
 def register(registry=None) -> None:
-    """Register this pack's kinds into ``registry`` (default the toolkit
-    registry), SKIPPING any name already taken — callable any number of
-    times, no import-time side effects."""
+    """Register this pack's kinds, skipping any name already taken.
+
+    Callable any number of times; there are no import-time side effects.
+
+    Parameters
+    ----------
+    registry : dskit.pipeline.node.NodeKindRegistry or None
+        The target registry; ``None`` means the toolkit's default.
+
+    Returns
+    -------
+    None
+    """
     target = DEFAULT_NODE_KINDS if registry is None else registry
     for name, cls in NODE_KINDS:
         if name not in target:

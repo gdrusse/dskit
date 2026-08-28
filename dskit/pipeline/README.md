@@ -181,7 +181,8 @@ artifacts are hash-pinned); **matplotlib** `mpl-figure` + `FigureNode` base
 (ADR-0029: declared line/scatter/bar/hist marks over a row stream → a PNG
 artifact); **transformers** `transformers-fit` (declared)
 + `transformers-tiny-fit`/`transformers-predict`; **optuna** `optuna-search`
-(categorical spaces; continuous specs are planner-refused, documented);
+(categorical lists AND `{"low", "high"[, "log"][, "int"]}` continuous ranges;
+`hpo-grid` keeps refusing ranges — enumerating an interval is meaningless);
 **pyomo** `pyomo-budgeted-select` + `PyomoSolve` base (`build_model`/`extract`
 hooks); **numpy** registers no kinds — subclass `ArrayMap`/`ArrayFeatures` and
 wire by import path. Heavy imports live inside `run()` — the tier rule.

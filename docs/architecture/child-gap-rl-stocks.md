@@ -27,7 +27,7 @@ single-commit snapshot.
 | model factory if/elif + processor wiring hardcoded in `build_features.py` | `uses: "pkg.module:Class"` + kind registries | config never names a class |
 | PIT discipline "trust-based, not enforced" | numpy pack `ArrayMap`/`ArrayFeatures` + the mechanical causality guard | look-ahead by convention |
 | MIO: pyomo + HiGHS/GLPK/CBC cascade + greedy fallback (root docs still say "Gurobi/CPLEX" — stale) | `PyomoSolve` doorway (solver knob, options pass-through) | — |
-| Optuna TPE + SuccessiveHalving with a per-epoch pruning hook | `optuna-search` + `hpo-grid` + the `ctx.rerun` seam (continuous spaces stay planner-refused, documented — a child needing them runs optuna inside its own tier-3 search node) | two fold-declaration mechanisms |
+| Optuna TPE + SuccessiveHalving with a per-epoch pruning hook | `optuna-search` + `hpo-grid` + the `ctx.rerun` seam (continuous spaces now plan and run — declare a `{"low", "high"}` range; pruning stays absent until a per-epoch reporting seam exists) | two fold-declaration mechanisms |
 | two INCOMPATIBLE checkpoint schemas; loader gloms newest-by-mtime; no feature-schema fingerprint checked at load | the torch artifact protocol (sidecar + content hash + refuse-by-name) + `dskit.assets` registry/lineage | silent checkpoint drift |
 | TensorBoard + ad-hoc `summary.json` | `training_curve.json` curves (`trainlog.py`) + `run-report` evidence + the tracker sink seam | — |
 | `.env` loading, `setup_logging` | `env.py` + Secrets, per-run `run.log` | — |

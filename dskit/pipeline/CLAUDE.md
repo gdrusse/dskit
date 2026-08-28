@@ -85,8 +85,12 @@ on it without breaking its rulings.
 - **Walk-forward folds are separate run series** — the driver suffixes
   each derived document's name `-wf-<cutoff>`, so a `$prev` carry binds
   within one fold's history, never across folds.
-- **Optuna continuous specs are planner-refused** (categorical only) —
-  documented at the top of `libs/optuna.py`.
+- **A search `space` value's grammar belongs to the KIND, not the
+  planner** — the planner checks the structural rules (key shape,
+  declared params, ancestors of the objective, winner-consistency) and
+  passes any non-empty list or dict through. `optuna-search` accepts
+  both forms; `hpo-grid` refuses range dicts and pins that refusal
+  itself. Adding a search kind means writing its own value grammar.
 - **An occupied run dir refuses** — reruns need a new asof or name.
 - **`runs.py` reads RECORDS, never `report.md`** — a `metrics` dict is
   summarized out of `nodes/NN-*.json` and recovered from `carry.json`;
