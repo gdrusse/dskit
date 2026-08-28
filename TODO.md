@@ -256,10 +256,12 @@ MEDIUM:
       `run-backtest.json:126`/`:184`). Swapping the declared module — the
       whole point of the ADR-0025 seam — breaks serving. Loud, but it undoes
       the seam.
-- [ ] **`utf-8` written twice in the localfiles pack** —
+- [x] **`utf-8` written twice in the localfiles pack** —
       `libs/localfiles.py:126` (`discover`) and `:153` (`read`). Diverge and
       the schema is inferred under one encoding while rows decode under
-      another: mojibake, no exception.
+      another: mojibake, no exception. **Landed this run (2026-08-28, A4):**
+      one `_DEFAULT_ENCODING`, both call sites, prose pinned to the
+      constant with a terminated needle.
 - [ ] **`source-live.json` is disconnected.** It registers as `alpaca-live`;
       both run documents read `"source": "alpaca"`. Live-acquired bars never
       reach the modelling path — no error, just an unused store.
@@ -278,6 +280,10 @@ LOW:
       (`30`) and `:42`/`:159`/`:278` (`3`); `_skeleton/yourproject/
       connectors.py:42` `_DEFAULT_START` vs its `spec()` note at `:57` —
       doc-drift only, but the skeleton's copy propagates to every child.
+      **restapi half landed this run (2026-08-28, A4):** `_DEFAULT_TIMEOUT`
+      / `_DEFAULT_MAX_RETRIES` (+ `_DEFAULT_PAGE_START`, same defect class),
+      spec() notes read the constants, module prose pinned by test.
+      Skeleton half rides with the child card (A2).
 
 Confirmed CORRECT — do not "fix": `suite-bars.json:33` restating the symbol
 vocabulary (an assertion reading its expectation from the thing it validates
