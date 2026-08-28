@@ -111,6 +111,7 @@ from __future__ import annotations
 
 import csv
 import io
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from dskit.pipeline.node import (
@@ -163,9 +164,11 @@ def _fmt(value):
 
 
 def _table(rows, key_header):
-    """Markdown table from ``{key: {field: scalar}}``; columns are the
-    union of every row's keys so a field only some rows carry still
-    shows (as ``—`` elsewhere) instead of vanishing."""
+    """Render ``{key: {field: scalar}}`` as a markdown table.
+
+    Columns are the union of every row's keys, so a field only some rows
+    carry still shows (as ``—`` elsewhere) instead of vanishing.
+    """
     columns = sorted(
         {field for row in rows.values() if isinstance(row, dict) for field in row}
     )
@@ -184,12 +187,14 @@ def _table(rows, key_header):
 
 
 def _fixed_table(columns, rows):
-    """Markdown table over an ORDERED column list and a list of dict rows,
-    preserving row order. :func:`_table` sorts by key and unions columns,
-    which is right for an evidence blob whose shape is unknown; a trade
-    ledger and a decision sheet have a stated column order and a
+    """Render dict rows as a markdown table over an ORDERED column list.
+
+    Row order is preserved. :func:`_table` sorts by key and unions
+    columns, which is right for an evidence blob whose shape is unknown;
+    a trade ledger and a decision sheet have a stated column order and a
     meaningful row order (chronological, ranked), and neither survives an
-    alphabetical sort."""
+    alphabetical sort.
+    """
     lines = [
         "| " + " | ".join(columns) + " |",
         "|" + "---|" * len(columns),
@@ -222,8 +227,11 @@ _DEFAULT_COMPANION_METRICS = ("mwr", "total_return_naive", "trading_pnl")
 
 
 def _is_row_table(value):
-    """``True`` for a non-empty ``{key: {field: ...}}`` — a table of rows,
-    not a scalar and not a bag of values."""
+    """Say whether ``value`` is a non-empty ``{key: {field: ...}}``.
+
+    That shape is a table of rows — not a scalar, and not a bag of
+    values.
+    """
     return (
         isinstance(value, dict)
         and bool(value)
@@ -232,9 +240,12 @@ def _is_row_table(value):
 
 
 def _iso(ms):
-    """An epoch-ms stamp as a readable UTC instant, or ``None``. A trade
-    ledger read by a human is read in time, not in milliseconds — but the
-    raw ``t_ms`` stays in the CSV, because that is the audit value."""
+    """Render an epoch-ms stamp as a readable UTC instant, or ``None``.
+
+    A trade ledger read by a human is read in time, not in milliseconds —
+    but the raw ``t_ms`` stays in the CSV, because that is the audit
+    value.
+    """
     if isinstance(ms, bool) or not isinstance(ms, (int, float)):
         return None
     try:
@@ -246,13 +257,14 @@ def _iso(ms):
 
 
 def _pick(row, names, default=None):
-    """The first of ``names`` this row actually carries.
+    """Return the first of ``names`` this row actually carries.
 
     Producers name the same quantity differently (``filled``/``qty``,
     ``avg_price``/``vwap_fill``), and a report that recognised only one
     spelling would silently blank a column that was in fact recorded.
     Aliasing is READING, never renaming: the CSV keeps the canonical
-    name so downstream tooling has one vocabulary."""
+    name so downstream tooling has one vocabulary.
+    """
     for name in names:
         if isinstance(row, dict) and name in row and row[name] is not None:
             return row[name]
@@ -260,18 +272,22 @@ def _pick(row, names, default=None):
 
 
 def _num(value):
-    """``value`` as a float when it is a real number, else ``None`` — so a
-    missing field never enters a sum as a zero."""
+    """Return ``value`` as a float when it is a real number, else ``None``.
+
+    A missing field must never enter a sum as a zero.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
 
 
 def _total(rows, key):
-    """Sum of ``key`` over ``rows``, or ``None`` when NO row carries it.
+    """Sum ``key`` over ``rows``, or return ``None`` when NO row carries it.
+
     The distinction is the point: a zero is a result, a blank is an
     absence, and a ledger that renders both as ``0.00`` is lying about
-    one of them."""
+    one of them.
+    """
     values = [_num(row.get(key)) for row in rows]
     present = [v for v in values if v is not None]
     return sum(present) if present else None
@@ -288,8 +304,11 @@ def _csv_text(columns, rows):
 
 
 def _truncation_note(rows, shown, where):
-    """The one line that keeps a truncated RENDER honest about the whole
-    RECORD."""
+    """Keep a truncated RENDER honest about the whole RECORD.
+
+    One line naming where the rows that were not shown still live, or no
+    line at all when nothing was cut.
+    """
     if len(rows) <= shown:
         return []
     return [f"_… {len(rows) - shown} more row(s) — the full list is in `{where}`._"]
@@ -338,8 +357,11 @@ _TRADE_REQUIRED = (
 
 
 def _trade_rows(trades):
-    """Every trade as a canonical row. Nothing is computed: each cell is
-    a field some producer recorded, read through its known spellings."""
+    """Read every trade into a canonical row.
+
+    Nothing is computed: each cell is a field some producer recorded,
+    read through its known spellings.
+    """
     rows = []
     for entry in trades:
         row = {name: _pick(entry, names) for name, names in _TRADE_FIELDS}
@@ -405,12 +427,50 @@ def _hit_rate(rows):
     A hit rate over trades whose P&L was never recorded would be a rate
     over an unknown denominator, so the denominator is reported beside
     it and a ledger with no P&L at all yields ``None`` rather than a
-    confident ``0%``."""
+    confident ``0%``.
+    """
     scored = [_num(row.get("pnl")) for row in rows]
     scored = [v for v in scored if v is not None]
     if not scored:
         return None, 0
     return sum(1 for v in scored if v > 0) / len(scored), len(scored)
+
+
+# ---------------------------------------------------------------------------
+# Performance (requirement 10)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Performance:
+    """Every number the performance section reports, read ONCE.
+
+    The section renders three ways — a headline, a metric table and a
+    notes/flags list — over the same figures. Reading the evidence once
+    into this record is what keeps the three from drifting: a fee that a
+    note cross-checks is the same fee the table printed, because there is
+    only one of it.
+    """
+
+    capital: dict
+    return_key: str
+    deposits_key: str
+    companions: tuple
+    net: float = None
+    gross: float = None
+    final: float = None
+    deposited: float = None
+    returned: object = None
+    fees_implied: float = None
+    fees_ledger: float = None
+    realized: float = None
+    rate: float = None
+    n_scored: int = 0
+    drawdown: float = None
+    drawdown_src: str = ""
+    n_fills: int = 0
+    n_reduces: int = 0
+    any_rows: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -435,10 +495,13 @@ DECISION_COLUMNS = ("contract", *(name for name, _ in _DECISION_FIELDS))
 
 
 def _decision_rows(decisions):
-    """Every optimizer candidate as a canonical row, ranked by the size of
-    the belief edge so the render's first screen carries the decisions
-    that drove the sizing. Ranking is ORDERING, not selection: the CSV
-    carries every row, and no market is excluded from the comparison."""
+    """Read every optimizer candidate into a canonical row, ranked by |edge|.
+
+    Ranking by the size of the belief edge puts the decisions that drove
+    the sizing on the render's first screen. It is ORDERING, not
+    selection: the CSV carries every row, and no market is excluded from
+    the comparison.
+    """
     rows = []
     for contract, entry in decisions.items():
         row = {"contract": contract}
@@ -454,6 +517,22 @@ def _decision_rows(decisions):
 # ---------------------------------------------------------------------------
 # Stage rendering (the evidence convention)
 # ---------------------------------------------------------------------------
+
+
+def _render_flags(flags):
+    """Render the findings, LOUD ones first — the lists a reader must not miss."""
+    lines = []
+    loud = [f for f in flags if f["level"] == "LOUD"]
+    if loud:
+        lines += ["## LOUD", ""]
+        lines += [f"- **{f['code']}** — {f['message']}" for f in loud]
+        lines.append("")
+    quiet = [f for f in flags if f["level"] != "LOUD"]
+    if quiet:
+        lines += ["## Notes", ""]
+        lines += [f"- {f['code']} — {f['message']}" for f in quiet]
+        lines.append("")
+    return lines
 
 
 def _render_stage(port, evidence, max_rows, skip=()):
@@ -519,10 +598,46 @@ def _render_stage(port, evidence, max_rows, skip=()):
     return lines
 
 
+# ---------------------------------------------------------------------------
+# The assembled evidence
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _Assembly:
+    """One report's evidence, between reading the ports and rendering it.
+
+    Assembling and rendering are two jobs and this is the seam between
+    them: each ``_add_*`` method fills its own fields and appends to the
+    shared ``payload``/``flags``, and every ``_render_*`` method then
+    reads from ONE object instead of a dozen positional arguments. That
+    is what keeps the rendered markdown and ``evidence.json`` describing
+    the same run — the record and the read come from the same fields.
+    """
+
+    inputs: dict
+    sections: tuple
+    max_rows: int
+    trades_artifact: str
+    decisions_artifact: str
+    survivors: object = None
+    lots: object = None
+    stages: dict = field(default_factory=dict)
+    flags: list = field(default_factory=list)
+    payload: dict = field(default_factory=dict)
+    trades: object = None
+    rows: object = None
+    missing_columns: tuple = ()
+    summary_notes: list = field(default_factory=list)
+    delta: object = None
+    decision_rows: object = None
+
+
 class RunReport(Node):
-    """The run evaluator (role ``report``) — the toolkit's ``run-report``
-    kind: one artifact that says, per stage, per instrument and per
-    split, what the run actually did with its data and its capital.
+    """The run evaluator (role ``report``) — the ``run-report`` kind.
+
+    One artifact that says, per stage, per instrument and per split, what
+    the run actually did with its data and its capital.
 
     Stage inputs (ALL optional, so a partial pipeline still reports on
     itself): ``training``, ``validation``, ``edge``, ``sizing``,
@@ -552,16 +667,6 @@ class RunReport(Node):
         This round's ``{instrument: n}`` counts and the admitted family
         (requirement 11).
 
-    Params: ``title`` (heading); ``sections`` (which of
-    :data:`SECTIONS` to render, default all); ``max_rows`` (render cap
-    per table, default 25 — the RECORD is never capped); ``min_events``
-    (the stated admission bar, needed to report the family delta);
-    ``prev_family`` / ``prev_banked`` (the PREVIOUS round's family and
-    counts, wired as ``$prev`` carries — carries are legal only in
-    params); ``return_metric`` / ``deposits_metric`` (what the capital
-    stage calls its return and its deposits); ``trades_artifact`` /
-    ``decisions_artifact`` (CSV filenames for the exhaustive lists).
-
     Writes ``evidence.json`` (the whole structured record) and
     ``evidence.md`` (the human read) into this node's artifact dir, plus
     the two CSVs when their inputs are wired.
@@ -569,6 +674,31 @@ class RunReport(Node):
     Outputs: ``path`` — the JSON artifact; ``summary`` — ``{"stages": k,
     "flags": n, "loud": m}``; ``flags`` — the findings list, which the
     driver lifts to the top of ``report.md``.
+
+    Parameters
+    ----------
+    params : dict
+        ``title`` (str, the heading); ``sections`` (list drawn from
+        :data:`SECTIONS`, default all); ``max_rows`` (int >= 1, render
+        cap per table, default 25 — the RECORD is never capped);
+        ``min_events`` (int >= 1, the stated admission bar, needed to
+        report the family delta); ``prev_family`` / ``prev_banked`` (the
+        PREVIOUS round's family list and counts dict, wired as ``$prev``
+        carries — carries are legal only in params); ``return_metric`` /
+        ``deposits_metric`` (str, what the capital stage calls its return
+        and its deposits); ``companion_metrics`` (list of str rendered
+        beside the declared return); ``trades_artifact`` /
+        ``decisions_artifact`` (str CSV filenames for the exhaustive
+        lists).
+
+    Examples
+    --------
+    Report on a run whose edge test found survivors and whose sizer
+    deployed nothing — the LOUD case this kind exists for::
+
+        node = RunReport("run_report", {"title": "nightly", "max_rows": 10})
+        out = node.run(ctx, {"survivors": ["MARKET-A"], "lots": 0})
+        # -> out["summary"]["loud"] == 1
     """
 
     role = "report"
@@ -591,6 +721,18 @@ class RunReport(Node):
 
     @classmethod
     def validate_params(cls, params):
+        """Refuse an unknown knob by name, and a known one of the wrong shape.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list
+            One string per problem; empty when the params are usable.
+        """
         problems = []
         _reject_unknown(problems, params, cls._PARAMS)
         title = params.get("title", "")
@@ -651,6 +793,21 @@ class RunReport(Node):
         return problems
 
     def validate_inputs(self, inputs):
+        """Check the shape of every wired port; every one of them is optional.
+
+        A partial pipeline still reports on itself, so absence is never a
+        problem here — only a port wired to the wrong SHAPE is.
+
+        Parameters
+        ----------
+        inputs : dict
+            The materialized inputs, port name to value.
+
+        Returns
+        -------
+        list
+            One string per problem; empty when the inputs are usable.
+        """
         problems = []
         for port in EVIDENCE_PORTS:
             evidence = inputs.get(port)
@@ -711,8 +868,11 @@ class RunReport(Node):
     # -- flags -------------------------------------------------------------
 
     def _flags(self, survivors, lots):
-        """The findings. Kept apart from rendering so the condition is
-        readable on its own and testable without an artifact dir."""
+        """Evaluate the deployment findings.
+
+        Kept apart from rendering so the condition is readable on its own
+        and testable without an artifact dir.
+        """
         flags = []
         if survivors is None or lots is None:
             # A flag that cannot be evaluated must SAY it cannot be
@@ -769,10 +929,10 @@ class RunReport(Node):
 
     # -- requirement 10: performance summary --------------------------------
 
-    def _summary(self, replay, trades, rows, capital):
-        """Performance, as ``(headline, metric rows, notes, flags)``.
+    def _summary(self, replay, rows, capital):
+        """Summarize performance as ``(headline, rows, notes, flags)``.
 
-        The rule this method exists to enforce: once capital is deposited
+        The rule this section exists to enforce: once capital is deposited
         into a running bankroll, ``final_bankroll`` STOPS being a
         performance number — a $1 deposit and a $1 profit move it
         identically. So the closing balance is rendered LABELLED as a
@@ -780,46 +940,98 @@ class RunReport(Node):
         the capital stage publishes. When money went in and no return
         metric came out, that is a note naming the key that was looked
         for, never a blank the reader might read as zero.
+
+        Parameters
+        ----------
+        replay : dict or None
+            The replay stage's evidence dict; its ``totals`` carry the
+            P&L the headline leads on.
+        rows : list or None
+            The canonical trade rows (:func:`_trade_rows`), or ``None``
+            when no fill ledger was wired.
+        capital : dict or None
+            The capital stage's own block, when one was wired.
+
+        Returns
+        -------
+        tuple
+            ``(headline str, metric rows list, notes list, flags list)``.
+            The metric rows are ``metric``/``value``/``source`` dicts in
+            reading order.
         """
-        return_key = self.params.get("return_metric") or _DEFAULT_RETURN_METRIC
-        deposits_key = self.params.get("deposits_metric") or _DEFAULT_DEPOSITS_METRIC
-        companions = self.params.get("companion_metrics")
-        if companions is None:
-            companions = _DEFAULT_COMPANION_METRICS
+        figures = self._figures(replay, rows, capital)
+        notes, flags = self._summary_notes(figures)
+        return self._headline(figures), self._metric_rows(figures), notes, flags
+
+    def _figures(self, replay, rows, capital):
+        """Read the wired evidence once into a :class:`_Performance`."""
         totals = replay.get("totals") if isinstance(replay, dict) else None
         totals = totals if isinstance(totals, dict) else {}
         capital = capital if isinstance(capital, dict) else {}
-
+        companions = self.params.get("companion_metrics")
+        return_key = self.params.get("return_metric") or _DEFAULT_RETURN_METRIC
+        deposits_key = self.params.get("deposits_metric") or _DEFAULT_DEPOSITS_METRIC
         net = _num(totals.get("net_pnl"))
         gross = _num(totals.get("gross_pnl"))
-        final = _num(totals.get("final_bankroll"))
-        deposited = _num(capital.get(deposits_key))
-        returned = capital.get(return_key)
-        fees_implied = None if (net is None or gross is None) else gross - net
-        fees_ledger = _total(rows, "fee") if rows is not None else None
-        realized = _total(rows, "pnl") if rows is not None else None
         rate, n_scored = _hit_rate(rows or [])
         drawdown, drawdown_src = self._drawdown(capital, replay)
-
-        n_fills = sum(1 for r in (rows or []) if r.get("kind") != "reduce")
-        n_reduces = sum(1 for r in (rows or []) if r.get("kind") == "reduce")
-
-        metrics = [
-            ("net P&L (after fees)", net, "replay.totals.net_pnl"),
-            ("gross P&L (before fees)", gross, "replay.totals.gross_pnl"),
-            ("fees paid (gross − net)", fees_implied, "replay.totals"),
-            ("fees paid (Σ over trades)", fees_ledger, "trades"),
-            ("realized P&L (Σ over trades)", realized, "trades"),
-            ("trades — fills", n_fills if rows else None, "trades"),
-            ("trades — reduces", n_reduces if rows else None, "trades"),
-            (
-                f"hit rate (of {n_scored} trade(s) carrying a P&L)",
-                rate,
-                "trades" if n_scored else "no trade carries a P&L field",
+        return _Performance(
+            capital=capital,
+            return_key=return_key,
+            deposits_key=deposits_key,
+            companions=(
+                _DEFAULT_COMPANION_METRICS if companions is None else companions
             ),
-            ("max drawdown", drawdown, drawdown_src),
-            (f"total deposited ({deposits_key})", deposited, "capital"),
-            (f"RETURN — {return_key}", returned, "capital"),
+            net=net,
+            gross=gross,
+            final=_num(totals.get("final_bankroll")),
+            deposited=_num(capital.get(deposits_key)),
+            returned=capital.get(return_key),
+            fees_implied=None if (net is None or gross is None) else gross - net,
+            fees_ledger=_total(rows, "fee") if rows is not None else None,
+            realized=_total(rows, "pnl") if rows is not None else None,
+            rate=rate,
+            n_scored=n_scored,
+            drawdown=drawdown,
+            drawdown_src=drawdown_src,
+            n_fills=sum(1 for r in (rows or []) if r.get("kind") != "reduce"),
+            n_reduces=sum(1 for r in (rows or []) if r.get("kind") == "reduce"),
+            any_rows=bool(rows),
+        )
+
+    @staticmethod
+    def _headline(figures):
+        """Build the line the section leads on: P&L, then the declared return."""
+        headline = "net P&L " + (
+            "—" if figures.net is None else f"{figures.net:,.2f}"
+        )
+        if figures.returned is not None:
+            return headline + f" · {figures.return_key} {_fmt(figures.returned)}"
+        return headline + f" · {figures.return_key} NOT WIRED"
+
+    @staticmethod
+    def _metric_rows(figures):
+        """Build the performance table's rows, in reading order."""
+        metrics = [
+            ("net P&L (after fees)", figures.net, "replay.totals.net_pnl"),
+            ("gross P&L (before fees)", figures.gross, "replay.totals.gross_pnl"),
+            ("fees paid (gross − net)", figures.fees_implied, "replay.totals"),
+            ("fees paid (Σ over trades)", figures.fees_ledger, "trades"),
+            ("realized P&L (Σ over trades)", figures.realized, "trades"),
+            ("trades — fills", figures.n_fills if figures.any_rows else None, "trades"),
+            (
+                "trades — reduces",
+                figures.n_reduces if figures.any_rows else None,
+                "trades",
+            ),
+            (
+                f"hit rate (of {figures.n_scored} trade(s) carrying a P&L)",
+                figures.rate,
+                "trades" if figures.n_scored else "no trade carries a P&L field",
+            ),
+            ("max drawdown", figures.drawdown, figures.drawdown_src),
+            (f"total deposited ({figures.deposits_key})", figures.deposited, "capital"),
+            (f"RETURN — {figures.return_key}", figures.returned, "capital"),
             *(
                 # The companion returns the capital stage publishes beside
                 # the headline one — money-weighted, deposit-inflated,
@@ -829,39 +1041,41 @@ class RunReport(Node):
                 # comparing them to the declared return IS the read: when
                 # total_return_naive sits visibly above twr, the gap is the
                 # deposits, and that is the whole point of the section.
-                (f"— {key}", capital.get(key), "capital")
-                for key in companions
-                if key in capital
+                (f"— {key}", figures.capital.get(key), "capital")
+                for key in figures.companions
+                if key in figures.capital
             ),
             (
                 "final bankroll — A BALANCE, NOT PERFORMANCE "
                 "(deposits move it exactly like profits do)",
-                final,
+                figures.final,
                 "replay.totals.final_bankroll",
             ),
         ]
         # A LIST, not a dict: these rows have a reading order (P&L first,
         # the balance last and labelled) and ``_table`` sorts its keys.
-        rendered = [
+        return [
             {"metric": label, "value": value, "source": source}
             for label, value, source in metrics
         ]
 
-        headline = "net P&L " + ("—" if net is None else f"{net:,.2f}")
-        if returned is not None:
-            headline += f" · {return_key} {_fmt(returned)}"
-        else:
-            headline += f" · {return_key} NOT WIRED"
+    @staticmethod
+    def _summary_notes(figures):
+        """Collect the section's caveats as ``(notes, flags)``.
 
+        Every one of them is a statement about what was NOT wired, or
+        about what two sources disagree on — never a number this node
+        computed itself.
+        """
         notes, flags = [], []
-        if returned is None:
+        if figures.returned is None:
             message = (
                 f"no return metric on the capital input: this report reads "
-                f"`capital.{return_key}` (set by the `return_metric` param). "
-                f"Until it is wired, P&L is the only performance number on "
-                f"this page and the closing bankroll is NOT one — with "
-                f"deposits flowing, a balance that rose may simply have been "
-                f"paid into."
+                f"`capital.{figures.return_key}` (set by the `return_metric` "
+                f"param). Until it is wired, P&L is the only performance "
+                f"number on this page and the closing bankroll is NOT one — "
+                f"with deposits flowing, a balance that rose may simply have "
+                f"been paid into."
             )
             notes.append(message)
             flags.append(
@@ -871,23 +1085,24 @@ class RunReport(Node):
                     "message": message,
                 }
             )
-        if deposited:
+        if figures.deposited:
             notes.append(
-                f"{deposited:,.2f} was DEPOSITED during this run — compare "
-                f"P&L and {return_key}, never the change in bankroll"
+                f"{figures.deposited:,.2f} was DEPOSITED during this run — "
+                f"compare P&L and {figures.return_key}, never the change in "
+                f"bankroll"
             )
         if (
-            fees_implied is not None
-            and fees_ledger is not None
-            and abs(fees_implied - fees_ledger) > 0.005
+            figures.fees_implied is not None
+            and figures.fees_ledger is not None
+            and abs(figures.fees_implied - figures.fees_ledger) > 0.005
         ):
             notes.append(
-                f"fee cross-check: gross − net = {fees_implied:,.2f} but the "
-                f"trade ledger sums to {fees_ledger:,.2f} — the difference is "
-                f"fees charged outside the fill ledger (or a ledger gap), not "
-                f"a second opinion on either number"
+                f"fee cross-check: gross − net = {figures.fees_implied:,.2f} "
+                f"but the trade ledger sums to {figures.fees_ledger:,.2f} — "
+                f"the difference is fees charged outside the fill ledger (or "
+                f"a ledger gap), not a second opinion on either number"
             )
-        return headline, rendered, notes, flags
+        return notes, flags
 
     @staticmethod
     def _drawdown(capital, replay=None):
@@ -922,7 +1137,7 @@ class RunReport(Node):
     # -- requirement 11: the round-over-round family delta -------------------
 
     def _family_delta(self, banked, family):
-        """Who NEWLY cleared the bar, who left, and who is closest.
+        """Report who NEWLY cleared the bar, who left, and who is closest.
 
         The previous round arrives as ``$prev`` params — carries are legal
         only in params, and ``carry.json`` already persists the gate's
@@ -931,90 +1146,35 @@ class RunReport(Node):
         of a series) is reported as "no prior round", which is NOT the
         same statement as an empty prior family and must not render like
         one.
+
+        Parameters
+        ----------
+        banked : dict
+            This round's ``{instrument: n}`` counts.
+        family : list
+            This round's admitted instruments (list of str).
+
+        Returns
+        -------
+        tuple
+            ``(delta dict, flags list)`` — the delta is the block written
+            to ``evidence.json`` under ``family`` and rendered by
+            :meth:`_render_family`.
         """
         bar = self.params.get("min_events")
         prev_family = self.params.get("prev_family")
-        prev_banked = self.params.get("prev_banked") or {}
         family = sorted(family)
-        rows, notes, flags = {}, [], []
-
+        notes = []
         if bar is None:
             notes.append(
                 "min_events is not declared on this report node — the family "
                 "delta names a bar, so it cannot be rendered without one. "
                 "Declare the SAME bar the eligibility gate applies."
             )
-        if prev_family is None:
-            notes.append(
-                "no prior round wired: this is the first run of the series, or "
-                "params.prev_family / params.prev_banked are unset. Wire "
-                '{"$prev": "<gate-node>.instruments", "default": null} and '
-                '{"$prev": "<bank-node>.counts", "default": null} to make the '
-                "round-over-round delta computable — carry.json already "
-                "persists both."
-            )
-            entered, exited = [], []
-        else:
-            previous = set(prev_family)
-            entered = sorted(set(family) - previous)
-            exited = sorted(previous - set(family))
-            for instrument in entered:
-                rows[instrument] = {
-                    "change": "ENTERED",
-                    "events_now": banked.get(instrument),
-                    "events_prev": prev_banked.get(instrument),
-                    "bar": bar,
-                }
-            for instrument in exited:
-                rows[instrument] = {
-                    "change": "exited",
-                    "events_now": banked.get(instrument),
-                    "events_prev": prev_banked.get(instrument),
-                    "bar": bar,
-                }
-            if exited:
-                notes.append(
-                    f"{len(exited)} market(s) LEFT the family — a count that "
-                    f"falls means the counter's window moved (a trailing cut) "
-                    f"or its input changed; it is not a settlement being "
-                    f"un-banked"
-                )
-
-        pending = {}
-        if bar is not None:
-            in_family = set(family)
-            for instrument, n in banked.items():
-                if instrument in in_family:
-                    continue
-                count = n if isinstance(n, int) and not isinstance(n, bool) else 0
-                pending[instrument] = {"events": count, "gap": max(0, bar - count)}
-            mismatched = sorted(
-                [i for i in family if (banked.get(i) or 0) < bar]
-                + [
-                    i
-                    for i, n in banked.items()
-                    if isinstance(n, int)
-                    and not isinstance(n, bool)
-                    and n >= bar
-                    and i not in in_family
-                ]
-            )
-            if mismatched and banked:
-                flags.append(
-                    {
-                        "level": "LOUD",
-                        "code": "family-bar-mismatch",
-                        "message": (
-                            f"this report names min_events={bar} but the family "
-                            f"that actually ran disagrees on "
-                            f"{len(mismatched)} market(s) ({mismatched[:10]}). "
-                            f"Every family number on this page describes a "
-                            f"different threshold from the gate's until the "
-                            f"two are reconciled — fix the report's declared "
-                            f"bar, never the gate's."
-                        ),
-                    }
-                )
+        entered, exited, rows, round_notes = self._round_over_round(
+            banked, family, prev_family, self.params.get("prev_banked") or {}, bar
+        )
+        pending, flags = self._pending_to_the_bar(banked, family, bar)
         return {
             "bar": bar,
             "n_family": len(family),
@@ -1025,8 +1185,100 @@ class RunReport(Node):
             "changes": rows,
             "pending": pending,
             "prior_round_wired": prev_family is not None,
-            "notes": notes,
+            "notes": notes + round_notes,
         }, flags
+
+    @staticmethod
+    def _round_over_round(banked, family, prev_family, prev_banked, bar):
+        """Diff this round's family against the previous one.
+
+        Returns ``(entered, exited, change rows, notes)``. An unwired
+        prior round yields no change at all and says so — reporting it as
+        an empty prior family would claim every market entered this
+        round.
+        """
+        if prev_family is None:
+            return (
+                [],
+                [],
+                {},
+                [
+                    "no prior round wired: this is the first run of the series, "
+                    "or params.prev_family / params.prev_banked are unset. Wire "
+                    '{"$prev": "<gate-node>.instruments", "default": null} and '
+                    '{"$prev": "<bank-node>.counts", "default": null} to make '
+                    "the round-over-round delta computable — carry.json already "
+                    "persists both."
+                ],
+            )
+        previous = set(prev_family)
+        entered = sorted(set(family) - previous)
+        exited = sorted(previous - set(family))
+        rows = {
+            instrument: {
+                "change": change,
+                "events_now": banked.get(instrument),
+                "events_prev": prev_banked.get(instrument),
+                "bar": bar,
+            }
+            for change, group in (("ENTERED", entered), ("exited", exited))
+            for instrument in group
+        }
+        notes = []
+        if exited:
+            notes.append(
+                f"{len(exited)} market(s) LEFT the family — a count that "
+                f"falls means the counter's window moved (a trailing cut) "
+                f"or its input changed; it is not a settlement being "
+                f"un-banked"
+            )
+        return entered, exited, rows, notes
+
+    @staticmethod
+    def _pending_to_the_bar(banked, family, bar):
+        """Who is short of the bar and by how much, as ``(pending, flags)``.
+
+        The LOUD flag here fires when the bar this report NAMES disagrees
+        with the family that actually ran — which would make every family
+        number on the page a statement about a different threshold.
+        """
+        if bar is None:
+            return {}, []
+        in_family = set(family)
+        pending = {}
+        for instrument, n in banked.items():
+            if instrument in in_family:
+                continue
+            count = n if isinstance(n, int) and not isinstance(n, bool) else 0
+            pending[instrument] = {"events": count, "gap": max(0, bar - count)}
+        mismatched = sorted(
+            [i for i in family if (banked.get(i) or 0) < bar]
+            + [
+                i
+                for i, n in banked.items()
+                if isinstance(n, int)
+                and not isinstance(n, bool)
+                and n >= bar
+                and i not in in_family
+            ]
+        )
+        if not (mismatched and banked):
+            return pending, []
+        return pending, [
+            {
+                "level": "LOUD",
+                "code": "family-bar-mismatch",
+                "message": (
+                    f"this report names min_events={bar} but the family "
+                    f"that actually ran disagrees on "
+                    f"{len(mismatched)} market(s) ({mismatched[:10]}). "
+                    f"Every family number on this page describes a "
+                    f"different threshold from the gate's until the "
+                    f"two are reconciled — fix the report's declared "
+                    f"bar, never the gate's."
+                ),
+            }
+        ]
 
     # -- rendering ----------------------------------------------------------
 
@@ -1223,15 +1475,11 @@ class RunReport(Node):
         lines.append("")
         return lines
 
-    # -- execution ----------------------------------------------------------
+    # -- assembly -----------------------------------------------------------
 
-    def run(self, ctx, inputs):
+    def _open_assembly(self, inputs):
+        """Read the ports and the knobs into a fresh :class:`_Assembly`."""
         params = self.params
-        sections = tuple(params.get("sections", SECTIONS))
-        max_rows = params.get("max_rows", _MAX_TABLE_ROWS)
-        trades_artifact = params.get("trades_artifact") or "trades.csv"
-        decisions_artifact = params.get("decisions_artifact") or "decisions.csv"
-
         survivors = inputs.get("survivors")
         survivors = None if survivors is None else list(survivors)
         lots = inputs.get("lots")
@@ -1241,241 +1489,294 @@ class RunReport(Node):
             if isinstance(inputs.get(port), dict)
         }
         flags = self._flags(survivors, lots)
-
-        payload = {
-            "title": params.get("title", "") or self.key,
-            "deployment": {
-                "survivors": survivors,
-                "n_survivors": None if survivors is None else len(survivors),
-                "lots": lots,
+        return _Assembly(
+            inputs=inputs,
+            sections=tuple(params.get("sections", SECTIONS)),
+            max_rows=params.get("max_rows", _MAX_TABLE_ROWS),
+            trades_artifact=params.get("trades_artifact") or "trades.csv",
+            decisions_artifact=params.get("decisions_artifact") or "decisions.csv",
+            survivors=survivors,
+            lots=lots,
+            stages=stages,
+            flags=flags,
+            payload={
+                "title": params.get("title", "") or self.key,
+                "deployment": {
+                    "survivors": survivors,
+                    "n_survivors": None if survivors is None else len(survivors),
+                    "lots": lots,
+                },
+                "flags": flags,
+                "stages": stages,
             },
-            "flags": flags,
-            "stages": stages,
-        }
+        )
 
-        # -- requirement 8: the trades -----------------------------------
-        # The ``trades`` PORT wins; a ``fills`` key on the replay stage's
-        # evidence is the fallback. Both exist because the loop already
-        # HAS the ledger — it writes every fill to its own artifact — and
-        # the cheapest way for it to reach this report is the evidence
-        # dict it already returns. Neither path reconstructs a trade.
-        trades = inputs.get("trades")
+    def _add_trades(self, ctx, ev):
+        """Bank the fill ledger (requirement 8) and write its CSV.
+
+        The ``trades`` PORT wins; a ``fills`` key on the replay stage's
+        evidence is the fallback. Both exist because the loop already HAS
+        the ledger — it writes every fill to its own artifact — and the
+        cheapest way for it to reach this report is the evidence dict it
+        already returns. Neither path reconstructs a trade.
+        """
+        trades = ev.inputs.get("trades")
         if trades is None:
-            carried = (stages.get("replay") or {}).get("fills")
+            carried = (ev.stages.get("replay") or {}).get("fills")
             if isinstance(carried, (list, tuple)) and all(
                 isinstance(entry, dict) for entry in carried
             ):
                 trades = list(carried)
-        rows = None if trades is None else _trade_rows(trades)
-        missing_columns = ()
-        if rows is not None:
-            missing_columns = (
-                tuple(
-                    name
-                    for name in _TRADE_REQUIRED
-                    if all(row.get(name) is None for row in rows)
-                )
-                if rows
-                else ()
+        ev.trades = trades
+        ev.rows = rows = None if trades is None else _trade_rows(trades)
+        if rows is None:
+            return
+        ev.missing_columns = missing_columns = (
+            tuple(
+                name
+                for name in _TRADE_REQUIRED
+                if all(row.get(name) is None for row in rows)
             )
-            rollup_key, rollup = _by_market(rows)
-            payload["trades"] = {
-                "n": len(rows),
-                "rolled_up_by": rollup_key,
-                "by_market": rollup,
-                "columns_not_recorded": list(missing_columns),
-                "artifact": trades_artifact,
-            }
-            self.write_artifact_text(
-                ctx, trades_artifact, _csv_text(("when", *TRADE_COLUMNS), rows)
-            )
-            if missing_columns:
-                flags.append(
-                    {
-                        "level": "note",
-                        "code": "trade-columns-not-recorded",
-                        "message": (
-                            f"the trade ledger records no {list(missing_columns)} "
-                            f"— those columns render blank, which is NOT a zero. "
-                            f"The producing stage has to carry them onto each "
-                            f"fill for the trade list to be complete."
-                        ),
-                    }
-                )
-
-        # -- requirement 10: performance ---------------------------------
-        # Only when there is money to report on. A predict-only pipeline
-        # has no performance, and a table of dashes claiming otherwise is
-        # noise a reader has to learn to skip — which is how a real blank
-        # eventually gets skipped too.
-        replay_totals = (stages.get("replay") or {}).get("totals")
-        # Same seam once more: the ``capital`` PORT wins, and a ``returns``
-        # key on the replay evidence is the fallback — a replay loop
-        # already builds that whole flow-aware ``capital_returns`` block,
-        # and it is the named output that has to replace the closing
-        # bankroll.
-        capital = inputs.get("capital")
-        dedicated = isinstance(capital, dict)
-        if not dedicated:
-            carried = (stages.get("replay") or {}).get("returns")
-            if isinstance(carried, dict):
-                capital, dedicated = carried, True
-            elif (
-                isinstance(replay_totals, dict)
-                and (params.get("return_metric") or _DEFAULT_RETURN_METRIC)
-                in replay_totals
-            ):
-                # The shipping shape: the replay flattens its return block
-                # into its own totals. Read it there, but do NOT re-render
-                # it as a "capital block" — the stage section below already
-                # prints totals in full, and one table twice trains a
-                # reader to skim both.
-                capital = replay_totals
-            else:
-                capital = None
-        has_performance = (
-            bool(replay_totals) or trades is not None or isinstance(capital, dict)
+            if rows
+            else ()
         )
-        summary_notes = []
-        if "summary" in sections and has_performance:
-            headline, metrics, summary_notes, summary_flags = self._summary(
-                stages.get("replay"), trades, rows, capital
-            )
-            flags.extend(summary_flags)
-            payload["summary_metrics"] = metrics
-            payload["headline"] = headline
-            # Everything the capital stage published, verbatim and
-            # unfiltered. The declared return is promoted into the table
-            # above; this keeps mwr, trading_pnl, total_return_naive and
-            # anything that stage adds LATER from being dropped by a
-            # reader that only knows today's key names.
-            if dedicated and capital:
-                payload["capital_block"] = {
-                    k: v for k, v in capital.items() if not isinstance(v, (list, dict))
+        rollup_key, rollup = _by_market(rows)
+        ev.payload["trades"] = {
+            "n": len(rows),
+            "rolled_up_by": rollup_key,
+            "by_market": rollup,
+            "columns_not_recorded": list(missing_columns),
+            "artifact": ev.trades_artifact,
+        }
+        self.write_artifact_text(
+            ctx, ev.trades_artifact, _csv_text(("when", *TRADE_COLUMNS), rows)
+        )
+        if missing_columns:
+            ev.flags.append(
+                {
+                    "level": "note",
+                    "code": "trade-columns-not-recorded",
+                    "message": (
+                        f"the trade ledger records no {list(missing_columns)} "
+                        f"— those columns render blank, which is NOT a zero. "
+                        f"The producing stage has to carry them onto each "
+                        f"fill for the trade list to be complete."
+                    ),
                 }
+            )
 
-        # -- requirement 11: the family delta ----------------------------
-        banked = inputs.get("banked")
-        family = inputs.get("family")
-        delta = None
-        if "family" in sections and (banked is not None or family is not None):
-            delta, family_flags = self._family_delta(banked or {}, family or [])
-            flags.extend(family_flags)
-            payload["family"] = delta
+    def _capital_block(self, ev, replay_totals):
+        """Find the capital evidence, as ``(block, dedicated)``.
 
-        # -- requirement 12: the optimizer's q vs price ------------------
-        # Same seam as the trades: the ``decisions`` PORT wins, and a
-        # ``candidates`` key on the sizing stage's evidence is the
-        # fallback — the sizer builds exactly that table on its way to the
-        # solver (it is the only place the belief and the price it was
-        # formed against exist together) and writes it to its own
-        # artifact. Reading it here copies it; it does not re-derive it.
-        decisions = inputs.get("decisions")
+        Same seam as the trades: the ``capital`` PORT wins, and a
+        ``returns`` key on the replay evidence is the fallback — a replay
+        loop already builds that whole flow-aware ``capital_returns``
+        block, and it is the named output that has to replace the closing
+        bankroll. ``dedicated`` is False for the third shape, where the
+        replay flattened its return block into its own ``totals``: read it
+        there, but do NOT re-render it as a capital block, because the
+        stage section already prints totals in full and one table twice
+        trains a reader to skim both.
+        """
+        capital = ev.inputs.get("capital")
+        if isinstance(capital, dict):
+            return capital, True
+        carried = (ev.stages.get("replay") or {}).get("returns")
+        if isinstance(carried, dict):
+            return carried, True
+        return_key = self.params.get("return_metric") or _DEFAULT_RETURN_METRIC
+        if isinstance(replay_totals, dict) and return_key in replay_totals:
+            return replay_totals, False
+        return None, False
+
+    def _add_performance(self, ev):
+        """Bank the performance section (requirement 10).
+
+        Only when there is money to report on: a predict-only pipeline
+        has no performance, and a table of dashes claiming otherwise is
+        noise a reader has to learn to skip — which is how a real blank
+        eventually gets skipped too.
+        """
+        replay_totals = (ev.stages.get("replay") or {}).get("totals")
+        capital, dedicated = self._capital_block(ev, replay_totals)
+        has_performance = (
+            bool(replay_totals) or ev.trades is not None or isinstance(capital, dict)
+        )
+        if "summary" not in ev.sections or not has_performance:
+            return
+        headline, metrics, ev.summary_notes, summary_flags = self._summary(
+            ev.stages.get("replay"), ev.rows, capital
+        )
+        ev.flags.extend(summary_flags)
+        ev.payload["summary_metrics"] = metrics
+        ev.payload["headline"] = headline
+        # Everything the capital stage published, verbatim and unfiltered.
+        # The declared return is promoted into the table above; this keeps
+        # mwr, trading_pnl, total_return_naive and anything that stage adds
+        # LATER from being dropped by a reader that only knows today's key
+        # names.
+        if dedicated and capital:
+            ev.payload["capital_block"] = {
+                k: v for k, v in capital.items() if not isinstance(v, (list, dict))
+            }
+
+    def _add_family(self, ev):
+        """Bank the round-over-round family delta (requirement 11)."""
+        banked = ev.inputs.get("banked")
+        family = ev.inputs.get("family")
+        if "family" not in ev.sections or (banked is None and family is None):
+            return
+        ev.delta, family_flags = self._family_delta(banked or {}, family or [])
+        ev.flags.extend(family_flags)
+        ev.payload["family"] = ev.delta
+
+    def _add_decisions(self, ctx, ev):
+        """Bank the optimizer's q-vs-price sheet (requirement 12), with its CSV.
+
+        Same seam as the trades: the ``decisions`` PORT wins, and a
+        ``candidates`` key on the sizing stage's evidence is the fallback —
+        the sizer builds exactly that table on its way to the solver (it is
+        the only place the belief and the price it was formed against exist
+        together) and writes it to its own artifact. Reading it here copies
+        it; it does not re-derive it.
+        """
+        decisions = ev.inputs.get("decisions")
         if decisions is None:
-            carried = (stages.get("sizing") or {}).get("candidates")
+            carried = (ev.stages.get("sizing") or {}).get("candidates")
             if isinstance(carried, dict):
                 decisions = carried
-        decision_rows = None
-        if decisions is not None:
-            decision_rows = _decision_rows(decisions)
-            payload["decisions"] = {
-                "n": len(decision_rows),
-                "n_priced": sum(
-                    1 for r in decision_rows if _num(r.get("q")) is not None
-                ),
-                "artifact": decisions_artifact,
-                "rows": decision_rows,
-            }
-            self.write_artifact_text(
-                ctx,
-                decisions_artifact,
-                _csv_text(
-                    ("contract", "decided_at", *DECISION_COLUMNS[1:]), decision_rows
-                ),
-            )
+        if decisions is None:
+            return
+        ev.decision_rows = rows = _decision_rows(decisions)
+        ev.payload["decisions"] = {
+            "n": len(rows),
+            "n_priced": sum(1 for r in rows if _num(r.get("q")) is not None),
+            "artifact": ev.decisions_artifact,
+            "rows": rows,
+        }
+        self.write_artifact_text(
+            ctx,
+            ev.decisions_artifact,
+            _csv_text(("contract", "decided_at", *DECISION_COLUMNS[1:]), rows),
+        )
 
-        path = self.write_artifact(ctx, "evidence.json", payload)
+    # -- the human read -----------------------------------------------------
 
-        # -- the human read ----------------------------------------------
-        title = payload["title"]
-        lines = [f"# {title}", ""]
-        loud = [f for f in flags if f["level"] == "LOUD"]
-        if loud:
-            lines += ["## LOUD", ""]
-            lines += [f"- **{f['code']}** — {f['message']}" for f in loud]
-            lines.append("")
-        quiet = [f for f in flags if f["level"] != "LOUD"]
-        if quiet:
-            lines += ["## Notes", ""]
-            lines += [f"- {f['code']} — {f['message']}" for f in quiet]
-            lines.append("")
+    def _render(self, ev):
+        """Render the whole human read, as a list of markdown lines."""
+        payload = ev.payload
+        lines = [f"# {payload['title']}", ""]
+        lines += _render_flags(ev.flags)
         if "headline" in payload:
             lines += self._render_summary(
                 payload["headline"],
                 payload["summary_metrics"],
-                summary_notes,
+                ev.summary_notes,
                 payload.get("capital_block"),
             )
         lines += [
             "## Deployment",
             "",
-            f"- survivors: {'—' if survivors is None else len(survivors)}"
-            + (f" ({sorted(survivors)})" if survivors else ""),
-            f"- lots deployed: {'—' if lots is None else lots}",
+            f"- survivors: {'—' if ev.survivors is None else len(ev.survivors)}"
+            + (f" ({sorted(ev.survivors)})" if ev.survivors else ""),
+            f"- lots deployed: {'—' if ev.lots is None else ev.lots}",
             "",
         ]
-        if "trades" in sections and rows is not None:
+        if "trades" in ev.sections and ev.rows is not None:
             lines += self._render_trades(
-                rows, missing_columns, trades_artifact, max_rows
+                ev.rows, ev.missing_columns, ev.trades_artifact, ev.max_rows
             )
-        if "edge_test" in sections and "edge" in stages:
-            lines += self._render_edge(stages["edge"], max_rows)
-        if delta is not None:
-            lines += self._render_family(delta, max_rows)
-        if "decisions" in sections and decision_rows is not None:
-            lines += self._render_decisions(decision_rows, decisions_artifact, max_rows)
-        if "stages" in sections:
-            if stages:
-                # Keys a dedicated section above already rendered in full.
-                promoted = {
-                    "replay": tuple(
-                        key
-                        for key, used in (
-                            ("fills", rows is not None),
-                            ("returns", "capital_block" in payload),
-                        )
-                        if used
-                    ),
-                    "sizing": ("candidates",) if decision_rows is not None else (),
-                }
-                lines += ["## Stages", ""]
-                for port in EVIDENCE_PORTS:
-                    if port in stages:
-                        lines += _render_stage(
-                            port, stages[port], max_rows, promoted.get(port, ())
-                        )
-            else:
-                lines += ["_(no stage evidence was wired into this report)_", ""]
-        self.write_artifact_text(ctx, "evidence.md", "\n".join(lines) + "\n")
+        if "edge_test" in ev.sections and "edge" in ev.stages:
+            lines += self._render_edge(ev.stages["edge"], ev.max_rows)
+        if ev.delta is not None:
+            lines += self._render_family(ev.delta, ev.max_rows)
+        if "decisions" in ev.sections and ev.decision_rows is not None:
+            lines += self._render_decisions(
+                ev.decision_rows, ev.decisions_artifact, ev.max_rows
+            )
+        if "stages" in ev.sections:
+            lines += self._render_stages(ev)
+        return lines
 
-        for flag in flags:
+    @staticmethod
+    def _render_stages(ev):
+        """Render the per-stage dump, minus what a section already showed."""
+        if not ev.stages:
+            return ["_(no stage evidence was wired into this report)_", ""]
+        # Keys a dedicated section above already rendered in full.
+        promoted = {
+            "replay": tuple(
+                key
+                for key, used in (
+                    ("fills", ev.rows is not None),
+                    ("returns", "capital_block" in ev.payload),
+                )
+                if used
+            ),
+            "sizing": ("candidates",) if ev.decision_rows is not None else (),
+        }
+        lines = ["## Stages", ""]
+        for port in EVIDENCE_PORTS:
+            if port in ev.stages:
+                lines += _render_stage(
+                    port, ev.stages[port], ev.max_rows, promoted.get(port, ())
+                )
+        return lines
+
+    # -- execution ----------------------------------------------------------
+
+    def run(self, ctx, inputs):
+        """Assemble the run's evidence, write it down, and report the findings.
+
+        Nothing here computes a new number: every section renders what
+        some other stage already produced, and the flags are conditions
+        over those numbers.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The run frame — its artifact dir receives ``evidence.json``,
+            ``evidence.md`` and the two CSVs.
+        inputs : dict
+            As validated by :meth:`validate_inputs`; every port optional.
+
+        Returns
+        -------
+        dict
+            ``path`` — the ``evidence.json`` artifact; ``summary`` —
+            ``{"stages": k, "flags": n, "loud": m}``; ``flags`` — the
+            findings list the driver lifts to the top of ``report.md``.
+        """
+        ev = self._open_assembly(inputs)
+        self._add_trades(ctx, ev)
+        self._add_performance(ev)
+        self._add_family(ev)
+        self._add_decisions(ctx, ev)
+        path = self.write_artifact(ctx, "evidence.json", ev.payload)
+        self.write_artifact_text(ctx, "evidence.md", "\n".join(self._render(ev)) + "\n")
+        return self._announce(ev, path)
+
+    def _announce(self, ev, path):
+        """Log every finding and return this node's declared outputs."""
+        for flag in ev.flags:
             log = self.log.warning if flag["level"] == "LOUD" else self.log.info
             log("%s: %s", flag["code"], flag["message"])
+        loud = sum(1 for f in ev.flags if f["level"] == "LOUD")
         self.log.info(
             "run report: %d stage(s), %d flag(s) (%d loud) -> %s",
-            len(stages),
-            len(flags),
-            len(loud),
+            len(ev.stages),
+            len(ev.flags),
+            loud,
             path,
         )
         return {
             "path": path,
             "summary": {
-                "stages": len(stages),
-                "flags": len(flags),
-                "loud": len(loud),
+                "stages": len(ev.stages),
+                "flags": len(ev.flags),
+                "loud": loud,
             },
-            "flags": flags,
+            "flags": ev.flags,
         }
 
 
@@ -1488,10 +1789,22 @@ _KINDS = (("run-report", RunReport),)
 
 
 def register(registry=None) -> None:
-    """Claim ``run-report`` in ``registry`` (default
-    :data:`~dskit.pipeline.node.DEFAULT_NODE_KINDS`) as ``owned=True``.
-    Idempotent: a name already present is SKIPPED, never shadowed.
-    Called by the orchestrator, never at import time.
+    """Claim ``run-report`` in ``registry`` as ``owned=True``.
+
+    ``registry`` defaults to
+    :data:`~dskit.pipeline.node.DEFAULT_NODE_KINDS`. Idempotent: a name
+    already present is SKIPPED, never shadowed. Called by the
+    orchestrator, never at import time.
+
+    Parameters
+    ----------
+    registry : NodeKindRegistry, optional
+        Where the kind is claimed; the toolkit registry by default.
+
+    Returns
+    -------
+    None
+        The registry is mutated in place.
     """
     registry = DEFAULT_NODE_KINDS if registry is None else registry
     for name, cls in _KINDS:

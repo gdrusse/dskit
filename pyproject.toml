@@ -133,7 +133,6 @@ convention = "numpy"
 "dskit/pipeline/env.py" = ["D"]
 "dskit/pipeline/features.py" = ["D"]
 "dskit/pipeline/io.py" = ["D"]
-"dskit/pipeline/kinds_report.py" = ["D"]
 "dskit/pipeline/kinds_search.py" = ["D"]
 "dskit/pipeline/kinds_stats.py" = ["D"]
 "dskit/pipeline/kinds_table.py" = ["D"]
