@@ -9,6 +9,12 @@ from dskit.pipeline import (
     PositionOutcome,
     settle_position,
 )
+from dskit.pipeline.records import (
+    CLUSTER_FIELD,
+    CONTRACT_FIELD,
+    cluster_of,
+    cluster_ok,
+)
 
 
 def _rec(**overrides):
@@ -73,6 +79,39 @@ class TestMarketRecordShape:
     def test_native_rides_verbatim(self):
         native = object()
         assert _rec(native=native).native is native
+
+
+class TestTheClusterIdentityIsOneRule:
+    """``cluster_of`` is the ONE place the group-or-contract fallback is
+    written. Three modules used to spell it — the envelope's property,
+    the numpy pack's carried fields and the fitted family's split frame
+    — and the day one of them read a different field, the fit silently
+    changed which rows it saw."""
+
+    def test_the_envelopes_property_and_the_function_answer_alike(self):
+        assert cluster_of(_rec()) == _rec().cluster == "SER-EV1-C1"
+        grouped = _rec(group="SER-EV1")
+        assert cluster_of(grouped) == grouped.cluster == "SER-EV1"
+
+    def test_a_dict_row_is_read_by_the_fields_it_actually_carries(self):
+        """The vocabulary the toolkit EMITS: ``ArrayFeatures`` carries
+        the cluster under ``CLUSTER_FIELD`` and the id under
+        ``CONTRACT_FIELD`` — there is no ``cluster`` key on a feature
+        row, only the envelope's property of that name."""
+        assert cluster_of({CLUSTER_FIELD: "EV-1", CONTRACT_FIELD: "C-1"}) == "EV-1"
+        assert cluster_of({CONTRACT_FIELD: "C-1"}) == "C-1"
+        assert cluster_of({"cluster": "EV-9", CLUSTER_FIELD: "EV-1"}) == "EV-9"
+
+    @pytest.mark.parametrize("value", ["", None, 0, 7, True, ("a",)])
+    def test_only_an_identity_THE_ENVELOPE_CAN_HOLD_counts(self, value):
+        """``cluster_ok`` is the bar, not presence: an empty string
+        hashes exactly like a missing one, so a caller testing
+        ``is not None`` would bucket a whole stream together."""
+        assert not cluster_ok(value)
+        assert cluster_of({CLUSTER_FIELD: value, CONTRACT_FIELD: value}) is None
+
+    def test_an_unusable_group_falls_back_the_way_the_envelope_would(self):
+        assert cluster_of({CLUSTER_FIELD: 3, CONTRACT_FIELD: "C-1"}) == "C-1"
 
 
 class TestAccountingSplit:

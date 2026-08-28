@@ -58,6 +58,7 @@ import os
 from dskit.pipeline.base import import_ref, is_class_ref
 from dskit.pipeline.kinds_stats import _check_int, _reject_unknown
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, TrainableNode
+from dskit.pipeline.split_policy import SPLIT_NAMES
 
 __all__ = [
     "ARTIFACT_FORMAT",
@@ -512,10 +513,11 @@ class Sb3Eval(_Sb3Base):
         # The planner enforces this for every score node in a document;
         # repeated here so a directly-constructed node refuses too (the
         # kinds_stats wording).
-        if params.get("split") not in ("train", "val", "cal", "test"):
+        if params.get("split") not in SPLIT_NAMES:
             problems.append(
                 f"split must declare which split this node reads "
-                f"('train'/'val'/'cal'/'test'), got {params.get('split')!r}"
+                f"({'/'.join(repr(s) for s in SPLIT_NAMES)}), got "
+                f"{params.get('split')!r}"
             )
         _algo_problem(problems, params.get("algo"), required=False)
         policy = params.get("policy")

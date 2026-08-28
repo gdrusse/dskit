@@ -73,9 +73,15 @@ from dskit.pipeline.node import (
     DEFAULT_NODE_KINDS,
     Node,
     TrainableNode,
+    class_ref,
     reject_unknown_params,
 )
-from dskit.pipeline.records import ASOF_FIELD
+from dskit.pipeline.records import (
+    ASOF_FIELD,
+    CLUSTER_FIELD,
+    CONTRACT_FIELD,
+    cluster_of,
+)
 from dskit.pipeline.split_policy import SplitFrame
 
 __all__ = [
@@ -121,11 +127,6 @@ def _numeric(value):
         return None
     out = float(value)
     return out if math.isfinite(out) else None
-
-
-def _class_ref(cls):
-    """Spell a class the way a document references one: ``module:Class``."""
-    return f"{cls.__module__}:{cls.__qualname__}"
 
 
 def _same(a, b):
@@ -528,7 +529,7 @@ class FittedTransform(TrainableNode):
         fit_rows = self._fit_rows(ctx, rows)
         state = self._checked_state(self.fit(fit_rows, self.params))
         path = self.write_artifact(ctx, SIDECAR_NAME, {
-            "node_class": _class_ref(type(self)),
+            "node_class": class_ref(type(self)),
             "fit_split": self.fit_split(),
             "n_fit_rows": len(fit_rows),
             "state": state,
@@ -652,9 +653,17 @@ class FittedTransform(TrainableNode):
         hardcoded name: the pack's other half exists so a stream with a
         foreign vocabulary can enter, and a fitted transform that read
         ``asof_ms`` regardless would put every such row in NO split and
-        then blame the split bounds. The identity is the row's
-        ``cluster``, or its ``contract`` when it has no explicit one —
-        the same fallback :attr:`MarketRecord.cluster` makes.
+        then blame the split bounds.
+
+        The identity is :func:`~dskit.pipeline.records.cluster_of` — the
+        envelope's own rule, IMPORTED rather than restated. It matters
+        which: an envelope publishes the derived ``cluster`` as a
+        property, but the toolkit's feature rows carry the RAW
+        ``group``/``contract`` fields instead, so a frame reading only
+        ``cluster`` fell through to the per-ROW contract and cut a
+        cluster-keyed run by an identity no other split-assignment site
+        in the engine uses — every event straddling the fit boundary,
+        silently.
 
         Parameters
         ----------
@@ -666,10 +675,7 @@ class FittedTransform(TrainableNode):
         dskit.pipeline.split_policy.SplitFrame
             The frame handed to ``split_of``.
         """
-        return SplitFrame(
-            _field(row, self.order_field()),
-            _field(row, "cluster") or _field(row, "contract"),
-        )
+        return SplitFrame(_field(row, self.order_field()), cluster_of(row))
 
     def _fit_rows(self, ctx, rows):
         """Select the declared split's rows, ordered — or refuse by name."""
@@ -696,8 +702,9 @@ class FittedTransform(TrainableNode):
             raise ValueError(
                 f"{self.key}: fit_split={split!r} matched no row of the "
                 f"{len(rows)} wired — each row's split is read from its "
-                f"{self.order_field()!r} instant and its cluster/contract "
-                "identity, so check those before the cuts. Fitting on nothing "
+                f"{self.order_field()!r} instant and its cluster identity "
+                f"('cluster', {CLUSTER_FIELD!r} or {CONTRACT_FIELD!r}), so "
+                "check those before the cuts. Fitting on nothing "
                 "would emit a state no reader can question, so it refuses "
                 "instead"
             )
@@ -706,12 +713,17 @@ class FittedTransform(TrainableNode):
     def _refuse_unassignable(self, splits, frames):
         """Refuse a row the run's splits cannot honestly place.
 
-        Under a CLUSTER-KEYED cut every identity-less row hashes the
-        same string, so they all land in ONE bucket — and when that
-        bucket is ``fit_split`` the fit silently sees the whole stream,
-        val and test included, with ordinary-looking metrics and no
-        refusal anywhere. That is the exact leak this family exists to
-        make impossible, so it is refused by name.
+        Under a CLUSTER-KEYED cut every row without a USABLE identity
+        hashes the same string, so they all land in ONE bucket — and
+        when that bucket is ``fit_split`` the fit silently sees the
+        whole stream, val and test included, with ordinary-looking
+        metrics and no refusal anywhere. That is the exact leak this
+        family exists to make impossible, so it is refused by name.
+
+        Usable, not merely present: ``""`` and ``0`` hash exactly the
+        way a missing value does, so :func:`~dskit.pipeline.records.
+        cluster_of` has already dropped them and the check reads its
+        answer rather than testing the raw field.
         """
         if not _assigns_by_cluster(splits):
             return
@@ -719,9 +731,10 @@ class FittedTransform(TrainableNode):
             if frame.cluster is not None:
                 continue
             raise ValueError(
-                f"{self.key}: row {i} carries no split identity (neither "
-                "'cluster' nor 'contract') and this run cuts BY CLUSTER — "
-                "every such row is assigned by hashing the same missing "
+                f"{self.key}: row {i} carries no usable split identity "
+                f"(none of 'cluster', {CLUSTER_FIELD!r}, {CONTRACT_FIELD!r} "
+                "holds a non-empty string) and this run cuts BY CLUSTER — "
+                "every such row is assigned by hashing the same unusable "
                 "value, so they all land in ONE split and a fit_split that "
                 "catches them fits on the WHOLE stream, val and test "
                 "included. Carry the identity onto the rows, or cut this "
@@ -764,7 +777,7 @@ class FittedTransform(TrainableNode):
             raise ValueError(
                 f"{self.key}: cannot read the fitted state at {path}: {exc}"
             ) from exc
-        declared = _class_ref(type(self))
+        declared = class_ref(type(self))
         if payload.get("node_class") != declared:
             raise ValueError(
                 f"{self.key}: {path} records node_class "

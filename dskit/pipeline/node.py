@@ -55,6 +55,7 @@ __all__ = [
     "ResolvedUse",
     "TrainableNode",
     "check_int_param",
+    "class_ref",
     "node_class_errors",
     "register_node_kind",
     "reject_unknown_params",
@@ -157,6 +158,38 @@ def check_int_param(problems, name, value, *, ge) -> None:
     """
     if isinstance(value, bool) or not isinstance(value, int) or value < ge:
         problems.append(f"{name} must be an int >= {ge}, got {value!r}")
+
+
+def class_ref(cls) -> str:
+    """Spell a class the way a document and a sidecar reference one.
+
+    ``module:QualName`` — the SAME grammar
+    :func:`~dskit.pipeline.base.is_class_ref` recognizes in a ``uses``
+    field. It lives here, beside :class:`Node`, because it is the
+    ARTIFACT IDENTITY: every family that persists state records this
+    string and load mode refuses a state whose recorded class is not
+    the node's own. Three packs wrote the f-string out for themselves,
+    and the failure that shape schedules is not a wrong answer but an
+    orphaned artifact — the one thing this comparison exists to
+    prevent.
+
+    Parameters
+    ----------
+    cls : type
+        The class to spell.
+
+    Returns
+    -------
+    str
+        ``"package.module:QualName"``.
+
+    Examples
+    --------
+    What a sidecar records for a node class::
+
+        class_ref(Node)     # 'dskit.pipeline.node:Node'
+    """
+    return f"{cls.__module__}:{cls.__qualname__}"
 
 
 @dataclass(frozen=True)

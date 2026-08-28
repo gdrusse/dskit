@@ -593,8 +593,53 @@ def test_window_rows_pins_todays_gap_and_sparse_semantics():
     assert msft["ret_lag_0"] == pytest.approx(math.log(203.0 / 201.0))
 
 
+def test_window_rows_admits_and_refuses_the_DEGENERATE_bars_it_now_does():
+    """The port's other divergences, on degenerate input — declared.
+
+    Three of them, none visible in the value pins above because those
+    feed well-formed bars. The pre-port node read ``symbol``/``asof_ms``
+    with its own predicates; the pack reads them with the ENVELOPE's,
+    which is stricter in one direction and wider in two:
+
+    * an EMPTY symbol was its own series and is now no series at all —
+      an empty group key is not an identity the toolkit can hold
+      (``cluster_ok``), and a stream of ONLY such bars now refuses by
+      name where it used to answer an empty list;
+    * a FLOAT ``asof_ms`` was dropped and now lifts (the pack's order
+      predicate takes a finite float, which is what lets a foreign
+      vocabulary in at all);
+    * an attribute-bearing record was dropped and now lifts, because
+      dicts and envelopes are interchangeable everywhere in the pack.
+
+    All three are degenerate-input behaviour, which is exactly why they
+    need a pin: nothing else in this suite would notice them moving.
+    """
+    def rows_for(records):
+        return WindowRows("w", {"lookback": 2}).run(
+            None, {"records": records})["records"]
+
+    good = [{"symbol": "AAPL", "asof_ms": _ms(i), "close": 100.0 + i}
+            for i in range(5)]
+    nameless = [{"symbol": "", "asof_ms": _ms(i), "close": 50.0 + i}
+                for i in range(5)]
+    assert [r["symbol"] for r in rows_for(good + nameless)] == ["AAPL"] * 2
+    with pytest.raises(ValueError, match="was unlifted"):
+        rows_for(nameless)
+
+    floated = [{"symbol": "AAPL", "asof_ms": float(_ms(i)), "close": 100.0 + i}
+               for i in range(5)]
+    assert len(rows_for(floated)) == 2
+
+    objects = [SimpleNamespace(symbol="AAPL", asof_ms=_ms(i), close=100.0 + i)
+               for i in range(5)]
+    assert len(rows_for(objects)) == 2
+
+
 def test_window_rows_orders_same_instant_bars_by_the_STREAM(price_field="close"):
-    """The one place the port CHANGED what the child computes, pinned.
+    """The FIRST of the places the port changed what the child computes.
+
+    (The others — degenerate symbols, float stamps and non-dict records
+    — are pinned by the test above.)
 
     Two bars of one symbol can share an ``asof_ms``: ``BarsFromStore``
     orders by ``(asof_ms, symbol, ts)`` and two ``ts`` spellings can
@@ -638,13 +683,18 @@ def test_window_rows_narrowed_every_accessor_it_answers():
     document's author, not for the class's.
     """
     from dskit.pipeline.libs.numpy import (
-        ACCESSOR_KNOBS,
+        ReturnWindows,
         accessor_narrowing_problems,
     )
 
     assert accessor_narrowing_problems(WindowRows) == []
-    overridden = [knob for knob, owner in ACCESSOR_KNOBS.items()
-                  if getattr(WindowRows, knob) is not getattr(owner, knob)]
+    # Derived from the class itself, not from a table the pack keeps:
+    # every accessor this node answers differently from the pack.
+    overridden = [
+        knob for knob in ReturnWindows._PARAMS
+        if getattr(WindowRows, knob, None) is not getattr(ReturnWindows, knob, None)
+    ]
+    assert len(overridden) == 11, overridden
     assert set(overridden) & set(WindowRows._PARAMS) == set()
     # And the knobs that DID survive are the ones the documents write.
     assert set(WindowRows._PARAMS) == {"causality_check", "cuts", "lookback",

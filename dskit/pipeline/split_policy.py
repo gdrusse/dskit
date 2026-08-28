@@ -85,6 +85,7 @@ __all__ = [
     "DEFAULT_SPLIT_POLICY",
     "EVENT_ATOMIC_POLICIES",
     "EventBounds",
+    "SPLIT_NAMES",
     "SPLIT_POLICIES",
     "SplitFrame",
     "event_bounds_from_records",
@@ -94,6 +95,17 @@ __all__ = [
     "split_policy",
     "straddle_report",
 ]
+
+#: The split names a run may address: the three the split specs carve,
+#: plus the ``cal`` band ADR-0034 added. It lives HERE, in the lowest
+#: module of the split family, because every reader can import from here
+#: — the planner's role rules, the fitted family, the stats/synthetic
+#: score nodes, the sb3 pack and this module's own straddle report.
+#: ``document.py`` re-exports it as the DOCUMENT's vocabulary. One
+#: tuple: ``cal`` was added to it once already, and a module carrying a
+#: private copy would have gone on refusing the band the planner
+#: accepted, with nothing comparing the two.
+SPLIT_NAMES = ("train", "val", "cal", "test")
 
 #: The policy every split carries unless the DOCUMENT declares otherwise.
 #: Historical behaviour, kept as the default deliberately: moving it would
@@ -469,7 +481,7 @@ def straddle_report(splits, records, *, bounds=None) -> dict:
         if len(splits_seen) < 2:
             continue
         straddlers.append(cluster)
-        ordered = [s for s in ("train", "val", "cal", "test") if s in splits_seen]
+        ordered = [s for s in SPLIT_NAMES if s in splits_seen]
         for a, b in zip(ordered, ordered[1:]):
             key = f"{a}|{b}"
             boundaries[key] = boundaries.get(key, 0) + 1

@@ -223,8 +223,11 @@ none of those plan rules apply to it. The `rows` port carries EVERY input row
 transformed — applying a train-fit state to val and test IS the required
 behaviour; the leak would be FITTING on them. Under a CLUSTER-KEYED cut
 (`splits.kind: "random"`, or a time split on an event policy) every row must
-carry a `cluster`/`contract`, or the fit is refused: identity-less rows all
-hash alike and would land in one bucket, which is the whole stream. A member's
+carry a USABLE identity — `records.cluster_of` reads `cluster`, then `group`,
+then `contract`, the same rule and the same vocabulary the feature rows are
+built with — or the fit is refused: an absent or unusable id (`""`, an int)
+hashes like every other, so those rows land in one bucket, which is the whole
+stream. A member's
 own row rule (`row_problems`) is asked on BOTH doorways — its own stream and
 the second stream an `apply-transform` wires its carrier to — and `standardize`
 refuses a declared feature that no fit row carries, because a typo is an error,
@@ -268,7 +271,9 @@ The numpy pack's lifting is DECLARED (ADR-0040): `group_field`, `order_field`,
 `require_fields` and `drop_incomplete` on `ArrayFeatures`, each read through a
 public accessor a subclass may override — and **an override must narrow that
 knob out of `_PARAMS`** (`narrow_params`), which the pack refuses at
-construction if you forget. `max_gap` splits each ordered group into
+construction if you forget. That refusal reads the MRO, not a list of knob
+names, so it covers knobs your own subclass invents too. `max_gap` splits each
+ordered group into
 gap-free SEGMENTS before any offset arithmetic, so no lag, lead or return
 spans a session boundary; absent, there is one segment per group and the
 behaviour is what it always was. `ReturnWindows` composes the vectorized ops
@@ -277,7 +282,11 @@ and a forward-reading column DECLARES its horizon (`lookahead_columns`)
 rather than escaping the causality screen. `latest_rows` is the SERVING call —
 the newest row per group with the forward columns dropped — and its "complete,
 or absent" rule is UNCONDITIONAL: `drop_incomplete` governs what `run` emits,
-never what serving publishes.
+never what serving publishes. Positions a `keep_mask` rejects are counted
+(`n_dropped`) and logged, so a rule that quietly eats a stream is visible.
+The build is whole-column throughout — measured against the per-row Python
+chain it replaced, not asserted (`tests/pipeline_libs/test_numpy.py::
+TestVectorization`).
 
 **mlflow** is the odd pack out (see its module docstring for the whole
 rationale): it ships no node kind at all, because it fills the TRACKING-sink

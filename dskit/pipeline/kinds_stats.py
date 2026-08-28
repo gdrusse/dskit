@@ -41,6 +41,7 @@ from dskit.pipeline.node import (
     check_int_param,
     reject_unknown_params,
 )
+from dskit.pipeline.split_policy import SPLIT_NAMES
 from dskit.pipeline.stats import (
     CORRECTIONS,
     METHODS,
@@ -514,10 +515,10 @@ class Validate(Node):
         problems = []
         _reject_unknown(problems, params, cls._PARAMS)
         split = params.get("split")
-        if split not in ("train", "val", "cal", "test"):
+        if split not in SPLIT_NAMES:
             problems.append(
                 f"split must declare which split this node reads "
-                f"('train'/'val'/'cal'/'test'), got {split!r}"
+                f"({'/'.join(repr(s) for s in SPLIT_NAMES)}), got {split!r}"
             )
         metric = params.get("metric", "logloss")
         # isinstance first: METRICS is a dict, and membership against it

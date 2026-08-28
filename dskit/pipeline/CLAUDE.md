@@ -84,6 +84,14 @@ on it without breaking its rulings.
   validate clean and die inside `apply_state`. The screen's comparison
   is nan-equal (`_same`), so a member may mark an absence the way the
   rest of the repo does.
+- **One name per shared vocabulary.** `node.class_ref(cls)` is the
+  `module:QualName` an artifact sidecar RECORDS and load mode compares —
+  three modules used to write that f-string out, and a divergence there
+  orphans stored artifacts rather than returning a wrong number.
+  `split_policy.SPLIT_NAMES` is the split vocabulary (`document.py`
+  re-exports it as the document's), because the score nodes, the sb3
+  pack and the straddle report all ask it and `cal` was added to it once
+  already.
 - **Conformance** — point `conformance_suite(registry=, probes=,
   expected_roles=)` at any pack; probes are behavioural, not optional
   (`require_probes=False` is a written-down decision).
@@ -163,9 +171,12 @@ on it without breaking its rulings.
   knob with `narrow_params`, or default-deny approves a value the run
   discards. It is a REFUSAL, not a convention:
   `accessor_narrowing_problems` reports through `validate_params`, so the
-  class fails to construct. The mirror rule: every per-knob check in that
-  pack is guarded by `if "<knob>" in cls._PARAMS`, or a narrowing subclass
-  would be refused for omitting a knob it does not have.
+  class fails to construct — and it is DERIVED from the MRO, never a
+  table of knob names, so a knob that gains an accessor (including one
+  YOUR subclass invents) is covered the day it exists rather than the day
+  someone remembers to list it. The mirror rule: every per-knob check in
+  that pack is guarded by `if "<knob>" in cls._PARAMS`, or a narrowing
+  subclass would be refused for omitting a knob it does not have.
 - **`keep_mask` compacts, and `latest_rows` therefore checks the MASK.**
   Dropping a position makes the survivors adjacent, which is what
   TRAINING wants and what SERVING must not have: a group whose newest
@@ -180,6 +191,19 @@ on it without breaking its rulings.
   so a `group` the envelope would refuse rides as absent: a random split
   hashes `"{seed}:{cluster}"`, and passing `5` through would bucket the
   row differently from the envelope's own answer.
+- **A row's split identity is `records.cluster_of`, one function.** The
+  envelope publishes `cluster` as a PROPERTY, but a feature row carries
+  the raw `group`/`contract` it was built from and no `cluster` key at
+  all — so a reader that picked one vocabulary silently mis-cut the
+  other. `cluster_of` reads `cluster`, then `CLUSTER_FIELD`, then
+  `CONTRACT_FIELD`, each held to `cluster_ok`: an unusable id (`""`, an
+  int) hashes exactly like a missing one, so it must not become a bucket
+  of its own.
+- **`keep_mask` drops are COUNTED** (`n_dropped`, and the `array
+  features`/`array map` log lines). Compaction destroys the evidence, so
+  the count is taken before it — a vendor outage that zeroes prices has
+  to be visible somewhere, and "everything is counted and logged" is the
+  pack's promise.
 - **Base `Node.validate_params` accepts anything.** The deny lives in
   each class (`_PARAMS` + `_reject_unknown`); forget it and typos pass.
 - **Owned kinds** (`validate`, `stat_test`, `run-report`): documents

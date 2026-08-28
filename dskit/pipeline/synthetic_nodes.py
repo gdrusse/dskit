@@ -33,6 +33,7 @@ import math
 from types import SimpleNamespace
 
 from dskit.pipeline.node import Node, TrainableNode, check_int_param
+from dskit.pipeline.split_policy import SPLIT_NAMES
 
 __all__ = [
     "DEMO_SPLITS",
@@ -295,10 +296,10 @@ class SynthScore(Node):
     def validate_params(cls, params):
         problems = []
         split = params.get("split")
-        if split not in ("train", "val", "cal", "test"):
+        if split not in SPLIT_NAMES:
             problems.append(
                 f"split must declare which split this node reads "
-                f"('train'/'val'/'cal'/'test'), got {split!r}"
+                f"({'/'.join(repr(s) for s in SPLIT_NAMES)}), got {split!r}"
             )
         _check_int(problems, "min_events", params.get("min_events", 1), ge=1)
         return problems

@@ -39,6 +39,7 @@ from dskit.pipeline.fitted import (
 )
 from dskit.pipeline.node import NodeContext, resolve_uses
 from dskit.pipeline.planner import plan
+from dskit.pipeline.records import MarketRecord
 
 DAY = 24 * 60 * 60 * 1000
 ASOF = "2026-01-01"
@@ -250,7 +251,7 @@ class TestLeakageIsRefused:
             splits=RandomSplitConfig(train_frac=0.6, val_frac=0.2, seed=1),
         )
         node = Standardize("scaler", {"fit_split": "train", "features": ["x"]})
-        with pytest.raises(ValueError, match="no split identity"):
+        with pytest.raises(ValueError, match="no usable split identity"):
             node.run(ctx, {"rows": rows})
 
     def test_identity_less_rows_are_fine_when_the_split_cuts_ON_TIME(
@@ -299,6 +300,86 @@ class TestLeakageIsRefused:
             ctx, {"rows": rows}
         )
         assert 0 < out["metrics"]["n_fit_rows"] < len(rows)
+
+    def test_the_cluster_a_TOOLKIT_row_actually_carries_is_the_one_read(self):
+        """The vocabulary the toolkit EMITS, not the one a fixture picks.
+
+        No dskit node emits a row key spelled ``cluster`` — that name is
+        a *property* on the envelope. ``ArrayFeatures`` carries the
+        cluster under ``records.CLUSTER_FIELD`` (``group``), so a
+        ``frame_of`` reading only ``cluster`` falls through to
+        ``contract``, which is PER ROW: every event straddles the fit
+        boundary and the scaler fits on the very clusters that supply
+        the val rows. Four events x three contracts, each event wholly
+        one cluster — the fit must see whole events or none.
+        """
+        node = Standardize("s", {"fit_split": "train", "features": ["y"]})
+        splits = RandomSplitConfig(train_frac=0.6, val_frac=0.2, seed=1)
+        seen = {}
+        for event in range(4):
+            for contract in range(3):
+                row = {"instrument": f"I-{contract}",
+                       "contract": f"C-{contract}",
+                       "group": f"event-{event}",
+                       "asof_ms": 1_000 * event, "y": 1.0}
+                assert node.frame_of(row).cluster == f"event-{event}"
+                seen.setdefault(f"event-{event}", set()).add(
+                    splits.split_of(node.frame_of(row))
+                )
+        assert all(len(s) == 1 for s in seen.values()), seen
+
+    def test_an_envelope_still_assigns_by_the_property_it_publishes(self):
+        """And the envelope's own answer is unmoved: ``MarketRecord``
+        publishes ``cluster`` as a property doing the group-or-contract
+        fallback, and that is what a record stream must still be cut by.
+        """
+        node = Standardize("s", {"fit_split": "train", "features": ["y"]})
+        envelope = dict(instrument="I", contract="C", venue="V", asof_ms=5,
+                        usable=True, reason="ok")
+        grouped = MarketRecord(**envelope, group="EV-1")
+        assert node.frame_of(grouped).cluster == grouped.cluster == "EV-1"
+        bare = MarketRecord(**envelope)
+        assert node.frame_of(bare).cluster == bare.cluster == "C"
+
+    def test_an_EMPTY_identity_is_refused_and_not_hashed_as_one(
+        self, tmp_path
+    ):
+        """``""`` hashes to the same ``f"{seed}:"`` for every row exactly
+        as ``None`` does, so a check testing ``is not None`` lets the
+        whole-stream leak through with ordinary-looking metrics. The bar
+        is a USABLE identity — the envelope's own ``cluster_ok`` — not a
+        present one. Empty identity columns are ordinary in
+        CSV/table-sourced streams.
+        """
+        rows = [{"contract": "", "asof_ms": i, "x": float(i)}
+                for i in range(100)]
+        ctx = NodeContext(
+            name="f", asof=ASOF, run_dir=str(tmp_path),
+            splits=RandomSplitConfig(train_frac=0.6, val_frac=0.2, seed=1),
+        )
+        node = Standardize("scaler", {"fit_split": "train", "features": ["x"]})
+        with pytest.raises(ValueError, match="no usable split identity"):
+            node.run(ctx, {"rows": rows})
+
+    def test_an_unusable_identity_is_refused_by_the_ENVELOPE_rule(
+        self, tmp_path
+    ):
+        """An integer cluster id is not one the envelope can hold
+        (``cluster_ok`` — a non-empty string), and the pack already
+        lands such a value as ABSENT on the rows it carries. The refusal
+        must therefore fire, and must name the real cause: the old
+        message said the row carried no identity at all, which sent the
+        operator looking for a field that was right there.
+        """
+        rows = [{"cluster": i % 3, "asof_ms": i, "x": float(i)}
+                for i in range(100)]
+        ctx = NodeContext(
+            name="f", asof=ASOF, run_dir=str(tmp_path),
+            splits=RandomSplitConfig(train_frac=0.6, val_frac=0.2, seed=1),
+        )
+        node = Standardize("scaler", {"fit_split": "train", "features": ["x"]})
+        with pytest.raises(ValueError, match="non-empty string"):
+            node.run(ctx, {"rows": rows})
 
 
 class TestWhichSplitsReadAnIdentity:

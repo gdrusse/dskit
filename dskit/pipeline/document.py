@@ -67,6 +67,7 @@ from dskit.pipeline.base import (
     config_hash,
     is_class_ref,
 )
+from dskit.pipeline.split_policy import SPLIT_NAMES as _SPLIT_NAMES
 
 __all__ = [
     "CADENCES",
@@ -127,10 +128,12 @@ ROLES = (
 #: are trainable" is three places for a new family to be forgotten.
 TRAINABLE_ROLES = ("train", "signal", "fitted_transform")
 
-#: The split names a document may address: the three the split specs
-#: carve, plus the ``cal`` band ADR-0034 added. Read by every role rule
+#: The split names a document may address — RE-EXPORTED from
+#: :mod:`~dskit.pipeline.split_policy`, which owns the tuple because the
+#: modules below this one read it too (the stats and synthetic score
+#: nodes, the sb3 pack, the straddle report). Read by every role rule
 #: that asks a node WHICH split it reads or fits on.
-SPLIT_NAMES = ("train", "val", "cal", "test")
+SPLIT_NAMES = _SPLIT_NAMES
 
 #: Node cadences under a clock (spec §3/§7). Omitted = ``once``; anything
 #: other than ``once`` is only meaningful when the document has a clock.

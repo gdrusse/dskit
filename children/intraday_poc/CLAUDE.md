@@ -65,12 +65,18 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
   bar is read through (the survivors chain), while a priceless NEWEST
   minute makes the symbol absent from `latest_rows` rather than serving
   a one-minute-stale vector as current.
-- **Same-instant bars follow the STREAM** — the one semantic the port
-  MOVED. Two `ts` spellings can flatten onto one `asof_ms`; the pack
-  breaks that tie by stream position, which is the store's own `ts`
-  order, where the pre-port code sorted `(asof_ms, price)` tuples and so
-  ordered them by PRICE. Pinned in `tests/test_nodes.py::
-  test_window_rows_orders_same_instant_bars_by_the_STREAM`.
+- **Same-instant bars follow the STREAM** — the semantic the port moved
+  on well-formed input. Two `ts` spellings can flatten onto one
+  `asof_ms`; the pack breaks that tie by stream position, which is the
+  store's own `ts` order, where the pre-port code sorted
+  `(asof_ms, price)` tuples and so ordered them by PRICE. Pinned in
+  `tests/test_nodes.py::test_window_rows_orders_same_instant_bars_by_the_STREAM`.
+- **Three DEGENERATE-input shapes moved too**, and the `WindowRows`
+  docstring lists all four together: an empty `symbol` is now no series
+  (it used to be one of its own, and a stream of only such bars now
+  refuses by name), while a float `asof_ms` and a non-dict record now
+  LIFT (both were dropped). Pinned in `tests/test_nodes.py::
+  test_window_rows_admits_and_refuses_the_DEGENERATE_bars_it_now_does`.
 - **Streams are single-pass**: `SelectOne.run` groups forecasts ONCE and
   caches for `build_model`; never re-iterate an input port.
 - **`select-one` is role `score`, not `capital`** — deliberate: it scores

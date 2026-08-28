@@ -204,12 +204,26 @@ class WindowRows(ReturnWindows):
     Output rows: ``{symbol, asof_ms, ret_lag_0 .. ret_lag_{L-1}, y_next}``
     where ``ret_lag_0`` is the return ENDING at ``asof_ms`` and ``y_next``
     the return of the following bar — the label a next-bar model trains
-    on. Sparse rows (missing/non-positive price) are dropped and counted,
-    never crashed on. Two bars of one symbol on the SAME instant (two
-    ``ts`` spellings flattening onto one ``asof_ms``) keep the STREAM's
-    order, which is the store's own ``ts`` order — the pack breaks the
-    tie by stream position. The pre-ADR-0040 implementation ordered them
-    by PRICE, an accident of sorting ``(asof_ms, price)`` tuples.
+    on. Sparse bars (missing/non-positive price) are dropped, counted
+    (``n_dropped``, and the pack's log line) and never crashed on.
+
+    **Everything the port changed about what this node computes**, all
+    of it pinned in ``tests/test_nodes.py``:
+
+    * two bars of one symbol on the SAME instant (two ``ts`` spellings
+      flattening onto one ``asof_ms``) keep the STREAM's order, which is
+      the store's own ``ts`` order — the pack breaks the tie by stream
+      position, where the pre-ADR-0040 code sorted ``(asof_ms, price)``
+      tuples and so ordered them by PRICE;
+    * an EMPTY ``symbol`` is no series at all, where it used to be a
+      series of its own — the pack keys on an identity the toolkit can
+      hold, and a stream of ONLY such bars refuses by name;
+    * a FLOAT ``asof_ms`` and an attribute-bearing (non-dict) record now
+      LIFT, where the pre-port predicates dropped both.
+
+    The last two are degenerate-input shapes no store this child reads
+    produces; they are stated because a change to what the child
+    computes is declared, not discovered.
 
     Everything above the domain is the pack's (ADR-0040): the grouping,
     the ordering, the gap-split, the log return, the lags, the forward

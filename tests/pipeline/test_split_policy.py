@@ -28,10 +28,13 @@ The properties this file pins:
 PURE-TOOLKIT suite: stdlib plus ``dskit.pipeline`` only.
 """
 
+import pathlib
+import re
 from types import SimpleNamespace
 
 import pytest
 
+import dskit.pipeline
 from dskit.pipeline.base import (
     ConfigError,
     OutputsConfig,
@@ -42,6 +45,7 @@ from dskit.pipeline.document import TrailingSplitSpec, doc_split_from_obj
 from dskit.pipeline.driver import _bind_event_bounds, run_document
 from dskit.pipeline.node import Node
 from dskit.pipeline.split_policy import (
+    SPLIT_NAMES,
     SPLIT_POLICIES,
     EventBounds,
     event_bounds_from_records,
@@ -373,3 +377,27 @@ def test_run_document_binds_at_resolve_and_refuses_loudly(tmp_path):
     with pytest.raises(ConfigError, match="do not implement event_bounds"):
         run_document(doc, asof="2026-01-01", registry=make_registry())
     assert not any(tmp_path.iterdir())
+
+
+def test_the_split_vocabulary_is_spelled_ONCE_in_the_tree():
+    """One tuple, one home — the rest IMPORT it.
+
+    ``cal`` was added to this vocabulary by ADR-0034, and the shape that
+    made that a risky edit is a literal copy of the tuple in a module
+    that never hears about the change: the planner and the fitted family
+    would accept a document that ``sb3-eval``, ``validate`` and
+    ``SynthScore`` then refuse, with nothing comparing the tuples. The
+    scan is over source because that IS the defect — a second copy is
+    invisible at runtime until the day the two disagree.
+    """
+    root = pathlib.Path(dskit.pipeline.__file__).parent
+    quoted = [f'"{name}"' for name in ("train", "val", "cal", "test")]
+    literal = re.compile(r"\s*,\s*".join(quoted))
+    offenders = [
+        f"{path.relative_to(root)}:{n}"
+        for path in sorted(root.rglob("*.py"))
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if literal.search(line) and "SPLIT_NAMES =" not in line
+    ]
+    assert offenders == [], offenders
+    assert SPLIT_NAMES == ("train", "val", "cal", "test"), "the value itself"

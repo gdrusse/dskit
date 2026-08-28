@@ -114,7 +114,11 @@ an envelope are interchangeable here and a random split buckets on that
 value. Which positions participate at all is the
 ``keep_mask`` hook: the base keeps every lifted record, and a subclass
 whose domain says otherwise ("a bar with no usable price is not a bar")
-answers with a vectorized mask and the base compacts around it.
+answers with a vectorized mask and the base compacts around it. Those
+rejections are counted BEFORE compaction destroys the evidence and
+reported as ``n_dropped`` and in the log line — a domain rule quietly
+eating a stream (a vendor outage zeroing prices) must be visible
+somewhere.
 
 Subclass knobs: extend ``_PARAMS`` (which keeps the default-deny and the
 conformance fuzz covering the new names) and override ``validate_params``,
@@ -139,13 +143,13 @@ from dskit.pipeline.node import Node, reject_unknown_params
 from dskit.pipeline.records import (
     ASOF_FIELD,
     CLUSTER_FIELD,
+    CONTRACT_FIELD,
     cluster_ok,
     lead_frac_ok,
     price_ok,
 )
 
 __all__ = [
-    "ACCESSOR_KNOBS",
     "ArrayFeatures",
     "ArrayMap",
     "DEFAULT_CARRY_FIELDS",
@@ -201,12 +205,15 @@ DEFAULT_MAX_GAP = None
 #: column may not take one of these names (it would silently clobber the
 #: row's identity).
 DEFAULT_CARRY_FIELDS = (
-    DEFAULT_GROUP_FIELD, "contract", DEFAULT_ORDER_FIELD, CLUSTER_FIELD,
+    DEFAULT_GROUP_FIELD, CONTRACT_FIELD, DEFAULT_ORDER_FIELD, CLUSTER_FIELD,
 )
 
 #: Identity fields a row must carry to be emitted at all — a row with no
-#: identity is unusable downstream.
-DEFAULT_REQUIRE_FIELDS = ("contract",)
+#: identity is unusable downstream. The envelope's own name again
+#: (:data:`~dskit.pipeline.records.CONTRACT_FIELD`): a fitted transform
+#: cuts on the identity these rows carry, so the two sides are renamed
+#: together or not at all.
+DEFAULT_REQUIRE_FIELDS = (CONTRACT_FIELD,)
 
 #: Keep every row, warm-up NaNs included; a supervised windowing document
 #: turns this on to drop the rows whose window or label is incomplete.
@@ -405,6 +412,14 @@ def narrow_params(params, *knobs):
     return tuple(p for p in params if p not in knobs)
 
 
+def _accessor_owner(cls, knob):
+    """Name the most-base class in ``cls``'s MRO defining a callable ``knob``."""
+    for base in reversed(cls.__mro__):
+        if callable(vars(base).get(knob)):
+            return base
+    return None
+
+
 def accessor_narrowing_problems(cls):
     """Why ``cls`` breaks the accessor-narrowing rule — empty when it does not.
 
@@ -412,6 +427,14 @@ def accessor_narrowing_problems(cls):
     not merely a convention: a class that answers a knob from its own
     vocabulary while still advertising the knob would let a document set
     a value the run discards.
+
+    The knob set is DERIVED from the classes, never listed: each
+    declared knob is looked up in the MRO, and the class that first
+    defined its accessor is the owner to compare against. A listed table
+    would cover exactly the knobs someone remembered to add — a knob
+    that gained an accessor without an entry would get no refusal at
+    all, and a SUBCLASS's own knobs (the shape every child writes) would
+    never be covered by a pack-side table in the first place.
 
     Parameters
     ----------
@@ -424,19 +447,19 @@ def accessor_narrowing_problems(cls):
         One problem per knob that is both overridden and still declared.
     """
     problems = []
-    for knob, owner in ACCESSOR_KNOBS.items():
-        if not issubclass(cls, owner):
-            continue
+    for knob in cls._PARAMS:
+        owner = _accessor_owner(cls, knob)
+        if owner is None:
+            continue  # a knob with no accessor — nothing to narrow
         if getattr(cls, knob) is getattr(owner, knob):
             continue  # the accessor is the owner's — the knob is live
-        if knob in cls._PARAMS:
-            problems.append(
-                f"{cls.__name__} overrides the {knob}() accessor but still "
-                f"declares {knob!r} in _PARAMS — an overridden accessor "
-                "NARROWS the knob set (numpy pack, ADR-0040): drop it with "
-                "narrow_params(), or the document may set a value the run "
-                "discards"
-            )
+        problems.append(
+            f"{cls.__name__} overrides the {knob}() accessor but still "
+            f"declares {knob!r} in _PARAMS — an overridden accessor "
+            "NARROWS the knob set (numpy pack, ADR-0040): drop it with "
+            "narrow_params(), or the document may set a value the run "
+            "discards"
+        )
     return problems
 
 
@@ -501,19 +524,20 @@ def _identity_ok(value) -> bool:
     return isinstance(value, str) and bool(value)
 
 
-def _carried_value(name, value):
-    """One carried field's row value, the envelope's rule applied.
+def _carried_column(name, values):
+    """One carried field's COLUMN of row values, the envelope's rule applied.
 
     The CLUSTER field is normalized by :func:`cluster_ok` — imported,
     never restated: a dict record is interchangeable with an envelope
     everywhere else here, so a ``group`` the envelope would refuse must
     land the way the envelope would have had it (absent), not ride into
     a random split as a bucket of its own. Every other field rides as
-    it is, with an absent one as ``None``.
+    it is. A column, not a value, because the rule is decided once per
+    FIELD where a per-value call decides it once per cell.
     """
     if name == CLUSTER_FIELD:
-        return value if cluster_ok(value) else None
-    return None if value is _MISSING else value
+        return [v if cluster_ok(v) else None for v in values]
+    return values
 
 
 def _lift(records, group_field, order_field, fields):
@@ -548,8 +572,18 @@ def _lift(records, group_field, order_field, fields):
     by_group = {}
     unlifted = []
     for idx, record in enumerate(records):
-        group = _field(record, group_field)
-        order = _order_value(_field(record, order_field))
+        # The two reads are spelled out rather than routed through
+        # `_field`: this loop runs once per record on the 2M-bar
+        # benchmark, and two function calls per record is the whole
+        # difference between the port and the loop it replaced.
+        if isinstance(record, dict):
+            group = record.get(group_field)
+            order = record.get(order_field)
+        else:
+            group = getattr(record, group_field, None)
+            order = getattr(record, order_field, None)
+        if type(order) is not int:  # the common case first; bool is not one
+            order = _order_value(order)
         if not isinstance(group, str) or not group or order is None:
             unlifted.append(idx)
             continue
@@ -560,8 +594,13 @@ def _lift(records, group_field, order_field, fields):
         indices = [idx for _order, idx in pairs]
         arrays = {}
         for name in fields:
+            # Spelled out for the same reason as the loop above: one
+            # field of one record is the innermost step of the whole
+            # pack, run once per (record, declared field).
             arrays[name] = np.asarray(
-                [_num(_field(records[idx], name)) for idx in indices],
+                [_num(records[idx].get(name)) if isinstance(records[idx], dict)
+                 else _num(getattr(records[idx], name, _MISSING))
+                 for idx in indices],
                 dtype=np.float64,
             )
         # The order array is written LAST and therefore always wins: the
@@ -579,6 +618,14 @@ def _lift(records, group_field, order_field, fields):
 #: newest SURVIVOR, and a serving call cannot tell that apart from the
 #: newest position (which is how a stale row gets served as current).
 _Group = namedtuple("_Group", ("indices", "columns", "newest_kept"))
+
+#: One stream's built state: the surviving groups, the indices no group
+#: could take, how many lifted positions ``keep_mask`` rejected, and the
+#: pinned column schema. ``dropped`` rides HERE because compaction
+#: destroys it and the module's promise is that everything is counted —
+#: a bar the domain rule rejected (a vendor outage zeroing prices) would
+#: otherwise appear in no counter and no log line at all.
+_Built = namedtuple("_Built", ("groups", "unlifted", "dropped", "schema"))
 
 
 def _compact(indices, arrays, mask):
@@ -711,10 +758,21 @@ def _prefix_equal(a, b) -> bool:
     """Compare two column prefixes exactly, or nan-equally.
 
     ``equal_nan`` chokes on non-numeric dtypes (strings), where plain
-    equality is the right bar anyway.
+    equality is the right bar anyway. The float path is spelled out
+    rather than delegated to ``array_equal(equal_nan=True)``: this runs
+    once per (column, cut, segment) — tens of thousands of times on the
+    benchmark stream — and ``array_equal``'s NaN branch pays for two
+    boolean-indexed COPIES where a mask does not.
     """
     import numpy as np
 
+    if a.shape != b.shape:
+        return False
+    if a.dtype.kind == "f" and b.dtype.kind == "f":
+        same = a == b
+        if bool(same.all()):
+            return True
+        return bool((same | (np.isnan(a) & np.isnan(b))).all())
     try:
         return bool(np.array_equal(a, b, equal_nan=True))
     except (TypeError, ValueError):
@@ -757,11 +815,15 @@ def _row_cells(columns, names, n):
             cells[name] = column.tolist()
             continue
         present = np.isfinite(column)
-        complete &= present
-        cells[name] = [
-            value if ok else None
-            for value, ok in zip(column.tolist(), present.tolist())
-        ]
+        values = column.tolist()
+        if not bool(present.all()):
+            complete &= present
+            # Only the ABSENCES are touched from Python — a warm-up NaN
+            # is a handful of positions, where a per-value branch over
+            # the whole column is one Python step per cell.
+            for i in np.flatnonzero(~present).tolist():
+                values[i] = None
+        cells[name] = values
     return cells, complete.tolist()
 
 
@@ -997,10 +1059,7 @@ class _ArrayApply(Node):
         """Class-specific column-name rule; the base accepts any name."""
 
     def _grouped_columns(self, records):
-        """Build ``group -> _Group`` for one input stream.
-
-        Also answers the unlifted indices and the pinned column schema.
-        """
+        """Build one input stream's :class:`_Built` state."""
         groups, unlifted = _lift(
             records, self.group_field(), self.order_field(), self.fields()
         )
@@ -1014,19 +1073,21 @@ class _ArrayApply(Node):
             )
         out = {}
         schema = None
+        dropped = 0
         for group in sorted(groups):
             indices, arrays = groups[group]
             # Read the flag BEFORE compaction destroys the evidence:
             # `indices` arrives newest-last, so mask[-1] is that position.
             mask = self.keep_mask(arrays)
             newest_kept = bool(len(mask)) and bool(mask[-1])
-            indices, arrays = _compact(indices, arrays, mask)
-            if not indices:
+            kept, arrays = _compact(indices, arrays, mask)
+            dropped += len(indices) - len(kept)
+            if not kept:
                 continue
             columns = self._segmented_columns(group, arrays, schema)
             schema = _check_schema(self.key, schema, columns, group)
-            out[group] = _Group(indices, columns, newest_kept)
-        return out, unlifted, schema
+            out[group] = _Group(kept, columns, newest_kept)
+        return _Built(out, unlifted, dropped, schema)
 
     def _segmented_columns(self, group, arrays, schema):
         """Run one group through ``apply``, a gap-free segment at a time.
@@ -1218,7 +1279,8 @@ class ArrayMap(_ArrayApply):
             rebuilt immutably where a value was written.
         """
         records = inputs["records"]
-        grouped, unlifted, _schema = self._grouped_columns(records)
+        built = self._grouped_columns(records)
+        grouped = built.groups
         rebuilt = list(records)
         written = unchanged = 0
         for group in sorted(grouped):
@@ -1247,11 +1309,12 @@ class ArrayMap(_ArrayApply):
         self.log.info(
             "array map wrote %d value(s) across %d group(s); "
             "%d value(s) left unchanged (unwritable), %d record(s) passed "
-            "through unlifted",
+            "through unlifted, %d dropped by keep_mask",
             written,
             len(grouped),
             unchanged,
-            len(unlifted),
+            len(built.unlifted),
+            built.dropped,
         )
         return {"records": rebuilt}
 
@@ -1274,8 +1337,9 @@ class ArrayFeatures(_ArrayApply):
     may not take a carried field's name — refused by name.
 
     ``metrics`` carries the numeric summary (``n_rows``, ``n_records``,
-    ``n_instruments`` — the group count — and ``n_columns``) for the
-    sinks; the bulk rows ride under ``rows``, never under ``metrics``.
+    ``n_instruments`` — the group count — ``n_columns``, and
+    ``n_dropped``, the positions ``keep_mask`` rejected) for the sinks;
+    the bulk rows ride under ``rows``, never under ``metrics``.
 
     Parameters
     ----------
@@ -1392,43 +1456,56 @@ class ArrayFeatures(_ArrayApply):
                 "the feature columns"
             )
 
-    def _carried(self, record):
-        """Copy the declared identity fields, each by the envelope's rule."""
-        return {
-            name: _carried_value(name, _field(record, name))
-            for name in self.carry_fields()
-        }
+    def _carried_columns(self, records, indices, carry):
+        """Read the carried identity fields as COLUMNS, the envelope's rule applied.
+
+        A column at a time, not a row at a time: the field's rule is
+        resolved once per FIELD instead of once per (row, field), which
+        is the same reason :func:`_row_cells` converts whole arrays.
+        """
+        return [
+            _carried_column(name, [
+                record.get(name) if isinstance(record, dict)
+                else getattr(record, name, None)
+                for record in map(records.__getitem__, indices)
+            ])
+            for name in carry
+        ]
 
     def _feature_rows(self, records, drop=(), complete_only=False):
         """Build every emittable row, keyed by its input index.
 
-        Answers ``(grouped, rows_by_index, unlifted, schema, no_row)``
-        and is shared by :meth:`run` and :meth:`latest_rows`; ``drop``
-        names columns to leave OUT of the emitted rows, and
-        ``complete_only`` requires completeness whatever the knob says —
-        the serving caller's unconditional rule.
+        Answers ``(built, rows_by_index, no_row)`` and is shared by
+        :meth:`run` and :meth:`latest_rows`; ``drop`` names columns to
+        leave OUT of the emitted rows, and ``complete_only`` requires
+        completeness whatever the knob says — the serving caller's
+        unconditional rule.
         """
-        grouped, unlifted, schema = self._grouped_columns(records)
-        required = self.require_fields()
+        built = self._grouped_columns(records)
+        carry = tuple(self.carry_fields())
+        required = tuple(self.require_fields())
         incomplete_is_no_row = complete_only or self.drop_incomplete()
         rows_by_index = {}
         no_row = 0
-        for built in grouped.values():
-            indices, columns = built.indices, built.columns
-            names = [name for name in sorted(columns) if name not in drop]
-            cells, complete = _row_cells(columns, names, len(indices))
-            for j, idx in enumerate(indices):
-                record = records[idx]
-                if incomplete_is_no_row and not complete[j]:
+        for group in built.groups.values():
+            indices = group.indices
+            names = [name for name in sorted(group.columns) if name not in drop]
+            cells, complete = _row_cells(group.columns, names, len(indices))
+            keys = carry + tuple(names)
+            values = self._carried_columns(records, indices, carry)
+            values += [cells[name] for name in names]
+            for idx, cell_row, whole in zip(indices, zip(*values), complete):
+                if incomplete_is_no_row and not whole:
                     no_row += 1
                     continue
-                if any(not _identity_ok(_field(record, name)) for name in required):
+                if required and any(
+                    not _identity_ok(_field(records[idx], name))
+                    for name in required
+                ):
                     no_row += 1
                     continue
-                row = self._carried(record)
-                row.update({name: cells[name][j] for name in names})
-                rows_by_index[idx] = row
-        return grouped, rows_by_index, unlifted, schema, no_row
+                rows_by_index[idx] = dict(zip(keys, cell_row))
+        return built, rows_by_index, no_row
 
     def run(self, ctx, inputs):
         """Build the feature rows and their numeric summary.
@@ -1447,21 +1524,23 @@ class ArrayFeatures(_ArrayApply):
             ``{"rows": [...], "metrics": {...}}``.
         """
         records = inputs["records"]
-        grouped, rows_by_index, unlifted, schema, no_row = self._feature_rows(records)
+        built, rows_by_index, no_row = self._feature_rows(records)
         rows = [rows_by_index[idx] for idx in range(len(records)) if idx in rows_by_index]
         metrics = {
             "n_rows": len(rows),
             "n_records": len(records),
-            "n_instruments": len(grouped),
-            "n_columns": len(schema or ()),
+            "n_instruments": len(built.groups),
+            "n_columns": len(built.schema or ()),
+            "n_dropped": built.dropped,
         }
         self.log.info(
             "array features: %d row(s) x %d column(s) from %d record(s) "
-            "(%d unlifted, %d without a usable row)",
+            "(%d unlifted, %d dropped by keep_mask, %d without a usable row)",
             metrics["n_rows"],
             metrics["n_columns"],
             metrics["n_records"],
-            len(unlifted),
+            len(built.unlifted),
+            metrics["n_dropped"],
             no_row,
         )
         return self.emit(self.sort_rows(rows), metrics)
@@ -1504,14 +1583,14 @@ class ArrayFeatures(_ArrayApply):
             class declares in ``lookahead_columns`` left out. A group
             whose newest position is dropped or incomplete is ABSENT.
         """
-        grouped, rows_by_index, _unlifted, _schema, _no_row = self._feature_rows(
+        built, rows_by_index, _no_row = self._feature_rows(
             records, drop=tuple(self.lookahead_columns()), complete_only=True
         )
         latest = {}
-        for group, built in grouped.items():
-            if not built.newest_kept:
+        for group, group_state in built.groups.items():
+            if not group_state.newest_kept:
                 continue
-            row = rows_by_index.get(built.indices[-1])
+            row = rows_by_index.get(group_state.indices[-1])
             if row is not None:
                 latest[group] = row
         return latest
@@ -1824,26 +1903,6 @@ class ReturnWindows(ArrayFeatures):
         return columns
 
 
-#: Knob -> the class that OWNS its accessor. The narrowing rule
-#: (:func:`accessor_narrowing_problems`) reads this: a subclass whose
-#: accessor is not the owner's has overridden it and must have narrowed
-#: the knob away. Built after the classes so each entry names a real one.
-ACCESSOR_KNOBS = {
-    "group_field": _ArrayApply,
-    "order_field": _ArrayApply,
-    "fields": _ArrayApply,
-    "max_gap": _ArrayApply,
-    "causality_check": _ArrayApply,
-    "cuts": _ArrayApply,
-    "carry_fields": ArrayFeatures,
-    "require_fields": ArrayFeatures,
-    "drop_incomplete": ArrayFeatures,
-    "lookback": ReturnWindows,
-    "return_kind": ReturnWindows,
-    "label_lead": ReturnWindows,
-    "lag_prefix": ReturnWindows,
-    "label_name": ReturnWindows,
-}
 
 #: Deliberately EMPTY — this pack registers nothing. The two bases are
 #: abstract (``node_class_errors`` refuses them at registration and at

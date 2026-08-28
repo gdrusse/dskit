@@ -74,7 +74,7 @@ from dskit.pipeline.base import (
     library_path_problems,
 )
 from dskit.pipeline.kinds_stats import _check_int, _reject_unknown
-from dskit.pipeline.node import DEFAULT_NODE_KINDS, TrainableNode
+from dskit.pipeline.node import DEFAULT_NODE_KINDS, TrainableNode, class_ref
 from dskit.pipeline.trainlog import (
     DEFAULT_MAX_LINES,
     TrainingCurve,
@@ -153,11 +153,6 @@ def identity_digest(path, sidecar):
         ).encode("utf-8")
     )
     return digest.hexdigest()
-
-
-def _class_ref(cls):
-    """The ``module:QualName`` reference the sidecar records."""
-    return f"{cls.__module__}:{cls.__qualname__}"
 
 
 def _field_or_none(row, name):
@@ -545,8 +540,8 @@ class TransformerFit(TrainableNode):
         config_text = json.dumps(model.config.to_dict(), sort_keys=True, default=str)
         sidecar = {
             "family": _FAMILY,
-            "node_class": _class_ref(type(self)),
-            "model_class": _class_ref(type(model)),
+            "node_class": class_ref(type(self)),
+            "model_class": class_ref(type(model)),
             "seed": seed,
             "params": self.params,
             "config_hash": hashlib.sha256(config_text.encode("utf-8")).hexdigest(),
@@ -560,7 +555,7 @@ class TransformerFit(TrainableNode):
             fh.write(sidecar_text + "\n")
         self.log.info(
             "fitted %s on %d row(s), %d step(s); checkpoint digest %s",
-            _class_ref(type(model)),
+            class_ref(type(model)),
             len(rows),
             steps,
             digest[:12],
@@ -611,11 +606,11 @@ class TransformerFit(TrainableNode):
         where = f"{self.key} (mode='load')"
         sidecar, digest = _read_sidecar(where, self.artifact)
         recorded = sidecar.get("node_class")
-        if recorded != _class_ref(type(self)):
+        if recorded != class_ref(type(self)):
             raise ValueError(
                 f"{where}: artifact {self.artifact!r} was fitted by "
                 f"{recorded!r}, not by this node class "
-                f"{_class_ref(type(self))!r} — refusing a checkpoint whose "
+                f"{class_ref(type(self))!r} — refusing a checkpoint whose "
                 "encode/build contract may differ"
             )
         fitted = sidecar.get("params", {})

@@ -55,10 +55,12 @@ from dataclasses import dataclass
 __all__ = [
     "ASOF_FIELD",
     "CLUSTER_FIELD",
+    "CONTRACT_FIELD",
     "BinaryAccounting",
     "MarkToMarketAccounting",
     "MarketRecord",
     "PositionOutcome",
+    "cluster_of",
     "cluster_ok",
     "lead_frac_ok",
     "price_ok",
@@ -77,6 +79,19 @@ ASOF_FIELD = "asof_ms"
 #: CLUSTER. Same reason: a row's cluster is what randomized splits and
 #: cluster bootstraps key off, so its spelling belongs to one name.
 CLUSTER_FIELD = "group"
+
+#: The envelope field naming the TRADEABLE UNIT — and the identity a
+#: row falls back to when it declares no cluster of its own. Named for
+#: the same reason its two siblings are: the numpy pack carries it onto
+#: every feature row and the fitted family cuts on it, so a rename must
+#: move both together.
+CONTRACT_FIELD = "contract"
+
+#: Where a row's dependence cluster is read from, in order: the
+#: envelope's own derived name (:attr:`MarketRecord.cluster`, a
+#: property), then the raw cluster field a dict row carries, then the
+#: contract. One tuple, because :func:`cluster_of` is its only reader.
+_CLUSTER_SOURCES = ("cluster", CLUSTER_FIELD, CONTRACT_FIELD)
 
 
 def price_ok(value):
@@ -155,6 +170,41 @@ def cluster_ok(value):
         cluster) is not a cluster ID and answers ``False``.
     """
     return isinstance(value, str) and bool(value)
+
+
+def cluster_of(row):
+    """Name the dependence cluster a ROW belongs to, or ``None``.
+
+    :attr:`MarketRecord.cluster` answers this for an envelope; this is
+    the same rule for anything a generic stage is handed, envelope or
+    dict, read attr-or-key (the ``kinds_flow`` convention). It exists
+    because the two vocabularies differ and a caller that picked one
+    silently mis-cut the other: an envelope publishes the derived
+    ``cluster`` as a property, while a feature row from a pack carries
+    the RAW :data:`CLUSTER_FIELD` and :data:`CONTRACT_FIELD` it was
+    built from and no ``cluster`` key at all. Every candidate is held to
+    :func:`cluster_ok`, so an id the envelope could not hold — an empty
+    string, an int — falls through rather than becoming a bucket of its
+    own: an unusable identity hashes exactly like a missing one, which
+    is how a whole stream lands in a single split.
+
+    Parameters
+    ----------
+    row : object
+        A record or row: a mapping, or anything with attributes.
+
+    Returns
+    -------
+    str or None
+        The first usable identity of ``cluster``, :data:`CLUSTER_FIELD`,
+        :data:`CONTRACT_FIELD`; ``None`` when the row carries no
+        identity a cluster-keyed split could honestly assign.
+    """
+    for name in _CLUSTER_SOURCES:
+        value = row.get(name) if isinstance(row, dict) else getattr(row, name, None)
+        if cluster_ok(value):
+            return value
+    return None
 
 
 def _require_str(name, value):
@@ -256,7 +306,10 @@ class MarketRecord:
         """Name the dependence cluster this record belongs to.
 
         ``group`` when it has one, else the contract itself. Randomized
-        splits and cluster bootstraps key off this.
+        splits and cluster bootstraps key off this. Construction already
+        held both to :func:`cluster_ok`, which is why this needs no
+        further check; :func:`cluster_of` answers the same question for
+        a row that is NOT an envelope, and reads this property first.
         """
         return self.group if self.group is not None else self.contract
 

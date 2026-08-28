@@ -12,8 +12,10 @@ path) exercised end to end.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import pathlib
+import time
 import tracemalloc
 from dataclasses import dataclass
 
@@ -32,8 +34,10 @@ from dskit.pipeline.libs.numpy import (
     LogMid,
     ReturnWindows,
     TrailingReturns,
+    _accessor_owner,
     _cut_points,
     _prefix_equal,
+    accessor_narrowing_problems,
     lag,
     lead,
     log_return,
@@ -602,6 +606,7 @@ class TestArrayFeaturesRows:
             "n_records": 16,
             "n_instruments": 2,
             "n_columns": 1,
+            "n_dropped": 0,
         }
 
     def test_an_unliftable_record_yields_no_row(self, tmp_path):
@@ -954,6 +959,55 @@ class TestAccessorNarrowing:
         with pytest.raises(ValueError, match="stale"):
             narrow_params(ArrayFeatures._PARAMS, "no_such_knob")
 
+    def test_the_rule_is_DERIVED_from_the_classes_not_a_listed_table(self):
+        """A knob nobody wrote down is narrowed all the same.
+
+        The refusal used to read a hand-maintained knob -> owner table,
+        so it covered exactly the knobs someone remembered to add: a
+        knob that GAINED an accessor without an entry got no refusal at
+        all, which is the ``fields: ["bid"]`` hole (validate clean, die
+        at execute with a bare KeyError) reopened for the new knob. It
+        also never covered a SUBCLASS's own knobs — the shape every
+        child writes. Deriving the owner from the MRO closes both:
+        nothing to keep in step, so nothing to forget.
+        """
+        class _Scaled(ReturnWindows):
+            _PARAMS = ReturnWindows._PARAMS + ("scale",)
+
+            def scale(self):
+                return self.params.get("scale", 1.0)
+
+        class _Hardcoded(_Scaled):
+            def scale(self):
+                return 2.0
+
+        assert accessor_narrowing_problems(_Scaled) == [], "the owner is fine"
+        problems = accessor_narrowing_problems(_Hardcoded)
+        assert any("scale" in p and "_PARAMS" in p for p in problems), problems
+        with pytest.raises(ConfigError, match="NARROWS"):
+            _Hardcoded("h", {"lookback": 2})
+        # And a narrowing subclass of the same knob validates clean.
+        class _Narrowed(_Scaled):
+            _PARAMS = narrow_params(_Scaled._PARAMS, "scale")
+
+            def scale(self):
+                return 2.0
+
+        assert accessor_narrowing_problems(_Narrowed) == []
+
+    def test_every_pack_knob_with_an_accessor_is_covered(self):
+        """The census the old table claimed to be, derived instead: for
+        each shipped class, every ``_PARAMS`` name resolving to a method
+        is one the rule can see. A param with NO accessor
+        (``TrailingReturns.window``) is untouched by it."""
+        for cls in (ArrayMap, ArrayFeatures, LogMid, TrailingReturns,
+                    ReturnWindows):
+            for knob in cls._PARAMS:
+                if callable(getattr(cls, knob, None)):
+                    assert _accessor_owner(cls, knob) is not None, (cls, knob)
+        assert "window" in TrailingReturns._PARAMS
+        assert _accessor_owner(TrailingReturns, "window") is None
+
 
 class TestTierOneTruthIsImported:
     def test_the_writeback_rules_ARE_the_envelope_s(self):
@@ -983,6 +1037,31 @@ class TestTierOneTruthIsImported:
 
         assert pack.DEFAULT_ORDER_FIELD == ASOF_FIELD
         assert fitted.DEFAULT_ORDER_FIELD == ASOF_FIELD
+
+    def test_the_identity_a_ROW_carries_is_the_one_a_SPLIT_reads(self, tmp_path):
+        """The pack carries the identity; the fitted family cuts on it.
+
+        Three names had to agree and only two were pinned: the pack
+        wrote ``"contract"`` as a literal in two constants while its
+        sibling read the identity through the envelope's own rule. If
+        the envelope renames the field, ``ArrayFeatures`` must stop
+        emitting it and ``cluster_of`` must stop finding it in the SAME
+        change — which is what reading one name buys.
+        """
+        import dskit.pipeline.libs.numpy as pack
+        from dskit.pipeline import records as core
+
+        assert core.CONTRACT_FIELD in pack.DEFAULT_CARRY_FIELDS
+        assert pack.DEFAULT_REQUIRE_FIELDS == (core.CONTRACT_FIELD,)
+        # And the value the pack CARRIES is one `cluster_of` reads back.
+        rows = TrailingReturns("w", {"window": 1}).run(
+            ctx(tmp_path), {"records": [rec("AAA", i, 0.4 + i * 0.01)
+                                        for i in range(4)]}
+        )["rows"]
+        assert rows, "well-formed records must still carry the required id"
+        row = rows[-1]
+        assert core.cluster_of(row) == row[core.CONTRACT_FIELD]
+        assert core.cluster_of({**row, core.CLUSTER_FIELD: "EV-1"}) == "EV-1"
 
     def test_the_row_cluster_rule_is_the_envelope_s(self):
         """The pack normalizes a carried ``group`` by the envelope's own
@@ -1196,6 +1275,33 @@ class TestKeepMask:
         assert [row["t"] for row in rows] == [BASE_MS + 3 * MINUTE_MS]
         assert rows[0]["lag_0"] == pytest.approx(math.log(103.0 / 101.0))
 
+    def test_a_masked_position_is_COUNTED_and_logged(self, tmp_path, caplog):
+        """"Everything is counted and logged" has to include this one.
+
+        A position the domain rule rejects was compacted away with no
+        counter anywhere: the log reported ``unlifted`` and ``no_row``
+        only, and the three bars a vendor outage zeroed appeared in
+        neither — an operator watching this line for exactly that outage
+        saw nothing. The warm-up positions are NOT the same number and
+        must not be mistaken for it.
+        """
+        node = _PricedWindows("w", {**FOREIGN, "lookback": 2,
+                                    "max_gap": 5 * MINUTE_MS,
+                                    "drop_incomplete": True})
+        records = bars("A", range(20))
+        for i in (5, 9, 13):
+            records[i] = {**records[i], "px": 0.0}
+        with caplog.at_level(logging.INFO):
+            out = node.run(ctx(tmp_path), {"records": records})
+
+        assert out["metrics"]["n_dropped"] == 3
+        assert out["metrics"]["n_records"] == 20
+        # 17 survivors, of which the warm-up/label ends carry no row —
+        # a different count, which is why one cannot stand in for the other.
+        assert out["metrics"]["n_dropped"] != 20 - out["metrics"]["n_rows"]
+        line = "\n".join(r.getMessage() for r in caplog.records)
+        assert "3 dropped" in line, line
+
 
 class TestLatestRows:
     def test_the_newest_row_per_group_carries_no_label(self, tmp_path):
@@ -1293,6 +1399,68 @@ class TestLatestRows:
         assert node.latest_rows(records)["A"]["t"] == BASE_MS + 5 * MINUTE_MS
 
 
+def _session_bars(symbols=3, sessions=40, minutes=390):
+    """A benchmark stream shaped like the child's: minute bars, one
+    session-length gap a day, prices that never repeat."""
+    day = 24 * 60 * MINUTE_MS
+    out = []
+    for s in range(symbols):
+        price = 100.0 + s
+        for d in range(sessions):
+            base = d * day + 9 * 60 * MINUTE_MS
+            for m in range(minutes):
+                price += ((m * 7 + d * 13 + s) % 11 - 5) * 0.001
+                out.append({"sym": f"S{s}", "t": base + m * MINUTE_MS,
+                            "px": price})
+    return out
+
+
+def _per_row_windows(records, lookback, gap_ms):
+    """The per-row Python chain the pack's array build replaced.
+
+    Deliberately independent — a benchmark whose reference is the thing
+    under test measures nothing. This is the pre-ADR-0040 child node's
+    algorithm, trimmed to the same output.
+    """
+    by_group = {}
+    for row in records:
+        sym, t, px = row.get("sym"), row.get("t"), row.get("px")
+        if (not isinstance(sym, str) or not sym
+                or isinstance(t, bool) or not isinstance(t, int)
+                or isinstance(px, bool) or not isinstance(px, (int, float))
+                or px <= 0):
+            continue
+        by_group.setdefault(sym, []).append((t, float(px)))
+    out = []
+    for sym in sorted(by_group):
+        series = sorted(by_group[sym])
+        chains, chain = [], []
+        for i in range(1, len(series)):
+            if series[i][0] - series[i - 1][0] > gap_ms:
+                if chain:
+                    chains.append(chain)
+                chain = []
+                continue
+            chain.append((series[i][0],
+                          math.log(series[i][1] / series[i - 1][1])))
+        if chain:
+            chains.append(chain)
+        for chain in chains:
+            for i in range(lookback - 1, len(chain) - 1):
+                row = {"sym": sym, "t": chain[i][0], "label": chain[i + 1][1]}
+                for step in range(lookback):
+                    row[f"lag_{step}"] = chain[i - step][1]
+                out.append(row)
+    return out
+
+
+def _timed(fn):
+    """Seconds one call took, the process's own clock."""
+    start = time.perf_counter()
+    fn()
+    return time.perf_counter() - start
+
+
 class TestVectorization:
     """The 2M-bar benchmark, measured — not asserted (ADR-0037's spirit)."""
 
@@ -1340,3 +1508,77 @@ class TestVectorization:
         # over 2M bars is the defect ADR-0037 costed at 650 B/row.
         assert peak / n_rows < 2800, f"peak {peak / n_rows:.0f} B/row"
         assert _current / n_rows < 2000, f"resident {_current / n_rows:.0f} B/row"
+
+    def test_the_build_is_faster_than_the_per_row_chain_it_replaced(
+        self, tmp_path
+    ):
+        """The axis the card named, measured on the shape it named.
+
+        The memory pin above cannot see wall time — worse, tracemalloc
+        taxes per-value Python allocation ~4x harder than whole-array
+        ops, so measuring UNDER it flatters the array build and hides a
+        wall-clock regression. So this runs untraced, against a compact
+        restatement of the per-row Python chain the port replaced (the
+        child's pre-ADR-0040 node, same windows, same gap rule): the
+        vectorized build must be FASTER, not merely tidier.
+
+        Best-of-three per side, because a shared machine's noise is
+        one-sided — a slow sample is noise, a fast one is not.
+        """
+        records = _session_bars(symbols=3, sessions=40)
+        node = ReturnWindows(
+            "w",
+            {**FOREIGN, "lookback": 30, "max_gap": 5 * MINUTE_MS,
+             "drop_incomplete": True, "causality_check": False},
+        )
+        run_ctx = ctx(tmp_path)
+        rows = node.run(run_ctx, {"records": records})["rows"]
+        reference = _per_row_windows(records, 30, 5 * MINUTE_MS)
+        assert len(rows) == len(reference), "same work, or the race is a lie"
+
+        def best(fn):
+            return min(_timed(fn) for _ in range(3))
+
+        vectorized = best(lambda: node.run(run_ctx, {"records": records}))
+        per_row = best(lambda: _per_row_windows(records, 30, 5 * MINUTE_MS))
+        # Measured 0.79-0.82x here and 0.79x on the child's own 468k-bar
+        # shape; the bar keeps ~10% of margin for a noisy box. What must
+        # never happen again is a port that costs MORE than the loop it
+        # replaced — the first cut of this one cost 1.2x.
+        assert vectorized < 0.9 * per_row, (
+            f"vectorized {vectorized:.3f}s vs per-row {per_row:.3f}s"
+        )
+
+    def test_the_causality_screen_costs_a_FACTOR_not_an_order(self, tmp_path):
+        """The screen is the one cost the ADR added, so it is priced.
+
+        It re-runs ``apply`` on four prefixes per segment, which is real
+        work and not a defect — but it is the difference between the
+        node's default and the unscreened build above, and an accidental
+        quadratic in it would only show on the 2M-bar run. Both bounds
+        are measured, not asserted: ~1.42x over the unscreened build and
+        ~1.15x over the per-row chain, on a node whose ``apply`` is a
+        thirty-column window.
+        """
+        records = _session_bars(symbols=3, sessions=40)
+        knobs = {**FOREIGN, "lookback": 30, "max_gap": 5 * MINUTE_MS,
+                 "drop_incomplete": True}
+        screened_node = ReturnWindows("w", knobs)
+        plain_node = ReturnWindows("w", {**knobs, "causality_check": False})
+        run_ctx = ctx(tmp_path)
+
+        def best(node):
+            node.run(run_ctx, {"records": records})
+            return min(_timed(lambda: node.run(run_ctx, {"records": records}))
+                       for _ in range(3))
+
+        screened, unscreened = best(screened_node), best(plain_node)
+        per_row = min(_timed(lambda: _per_row_windows(records, 30,
+                                                     5 * MINUTE_MS))
+                      for _ in range(3))
+        assert screened < 1.8 * unscreened, (
+            f"screened {screened:.3f}s vs unscreened {unscreened:.3f}s"
+        )
+        assert screened < 1.4 * per_row, (
+            f"screened {screened:.3f}s vs per-row {per_row:.3f}s"
+        )
