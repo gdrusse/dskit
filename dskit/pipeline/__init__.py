@@ -50,14 +50,17 @@ migrating to, built spec-first against a synthetic Node set (D-145):
 * :mod:`~dskit.pipeline.driver` — the universal execution engine
   (LOAD → IMPORT → PLAN → RESOLVE → EXECUTE → RECORD);
   :func:`run_document` → :class:`DocumentRunResult`.
+* :mod:`~dskit.pipeline.runs` — the other direction: reading run
+  directories BACK for cross-run comparison; :func:`scan_runs` →
+  :class:`RunSummary`, :func:`format_runs`.
 * :mod:`~dskit.pipeline.synthetic_nodes` — one deterministic Node per
   role; the set the runner is proven against.
 
 Runnable commands (``python -m dskit.pipeline ...``): ``run <doc>
 [--asof]`` / ``walkforward <doc>`` / ``plan <doc>`` / ``validate
-<config>`` (dispatches on the document's shape) / ``nodemap`` (the
-banking demo on synthetic nodes); stage-list: ``demo`` (default) and
-``synthetic``.
+<config>`` (dispatches on the document's shape) / ``runs`` (tabulate a
+run root) / ``nodemap`` (the banking demo on synthetic nodes);
+stage-list: ``demo`` (default) and ``synthetic``.
 """
 
 from dskit.pipeline.base import (
@@ -175,6 +178,12 @@ from dskit.pipeline.resolve import (
     write_run_dir,
 )
 from dskit.pipeline.runner import RunContext, Runner, RunResult, StageResult
+from dskit.pipeline.runs import (
+    RunProblem,
+    RunSummary,
+    format_runs,
+    scan_runs,
+)
 
 #: The toolkit-owned kinds claim their names the moment the package
 #: imports (idempotent — a re-import never re-registers): stat_test,
@@ -220,6 +229,10 @@ __all__ = [
     "resolve_uses",
     "run_document",
     "run_walk_forward",
+    "RunProblem",
+    "RunSummary",
+    "format_runs",
+    "scan_runs",
     "save_document",
     "parse_stage_entry",
     "is_class_ref",

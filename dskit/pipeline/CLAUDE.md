@@ -88,6 +88,14 @@ on it without breaking its rulings.
 - **Optuna continuous specs are planner-refused** (categorical only) —
   documented at the top of `libs/optuna.py`.
 - **An occupied run dir refuses** — reruns need a new asof or name.
+- **`runs.py` reads RECORDS, never `report.md`** — prose is written for
+  a human and free to change wording. A node's `metrics` DICT is
+  summarized away in `nodes/NN-*.json` and survives only in
+  `carry.json`, so the reader overlays the two; `runs.node_metrics`
+  restates `driver._node_metrics` (the driver is pre-standard and owes
+  its docstring conversion a commit of its own) and the two are pinned
+  together by `tests/pipeline/test_runs.py::TestMetricRulePin` — change
+  one and change both.
 - The purity gate (`tests/pipeline/test_purity.py`) fails on ANY
   module-level import outside stdlib + this package — heavy imports go
   inside `run()`.
@@ -105,6 +113,7 @@ dskit/pipeline/
 ├── planner.py         document -> Plan; role rules live here
 ├── driver.py          run_document: LOAD..RECORD, run dirs, $prev carry;
 │                      run_walk_forward (ADR-0027)
+├── runs.py            the READER: scan_runs/format_runs over a run root (`runs` verb)
 ├── split_policy.py    split policies (record/event-open/event-close) + EventBounds
 ├── kinds_flow.py      filter, derive, concat, join, event-bank, eligibility, banking-report
 ├── kinds_table.py     table-file, table-write

@@ -17,6 +17,7 @@ python -m dskit.pipeline plan <doc.json>                          # resolved DAG
 python -m dskit.pipeline validate <doc.json>                      # shape + identity hash
 python -m dskit.pipeline run <doc.json> --adapter yourpkg         # import = registration
 python -m dskit.pipeline walkforward examples/pipeline/walk-forward.json --asof 1973-08-01
+python -m dskit.pipeline runs                                     # every run so far, newest first
 ```
 
 Exit codes: **0** ran · **3** halted at a NO-GO gate (a halt is a result) ·
@@ -70,6 +71,8 @@ kinds resolve. Two more verbs — `demo`
   `apply_winner` runs it once more and that pass replaces those outputs.
 - **Series and folds** — `_find_prev_run` + `_materialize` bind `$prev`;
   `run_walk_forward` + `_fold_splits` → `WalkForwardRunResult` (`driver.py`).
+- **Reading runs back** — `scan_runs` → `RunSummary` / `RunProblem`,
+  `format_runs`, `param_at` (`runs.py`), behind the `runs` verb.
 
 ## The document
 
@@ -129,6 +132,21 @@ kinds resolve. Two more verbs — `demo`
   not yet executable.
 
 ## What ships
+
+Verbs: `run`, `walkforward`, `plan`, `validate`, `nodemap` — and **`runs`**,
+the cross-run view (`runs.py`, tier-1 stdlib, no tracking server needed):
+
+```bash
+python -m dskit.pipeline runs [--root DIR] [--metric NAME]... [--param PATH]... [--limit N]
+```
+
+It scans a run root, reads each run's **structured records** — `result.json`
+for name/asof/state/hashes, `nodes/NN-*.json` + `carry.json` for metrics
+(`<node>.<metric>`), `config.json` for `--param` columns — and prints one
+markdown row per run, newest first. `report.md` is never read: prose is not a
+data source. Foreign or partial directories (a walk-forward summary dir, a
+half-written run) are listed as skipped with a reason rather than dropped, and
+`--limit` counts what it did not show.
 
 Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 
@@ -230,6 +248,7 @@ dskit/pipeline/
 ├── planner.py         document -> Plan: topo order, role rules, wire checks
 ├── driver.py          LOAD -> IMPORT -> PLAN -> RESOLVE -> EXECUTE -> RECORD; run dirs;
 │                      run_walk_forward (one derived run per fold + summary)
+├── runs.py            reads run dirs back: scan_runs / format_runs (the `runs` verb)
 ├── split_policy.py    split-assignment policies (record / event-open / event-close) + EventBounds
 ├── kinds_flow.py      filter, derive, concat, join, event-bank, eligibility, banking-report
 ├── kinds_table.py     table-file, table-write (digest-verified keyed tables)

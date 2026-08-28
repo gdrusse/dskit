@@ -12,6 +12,11 @@ One command line for every project and venue (docs/24 §9, D-145 ruling
   halted, 1 a fold errored.
 * ``plan <config.json>`` — print the resolved DAG (plan.json), no
   execution.
+* ``runs [--root DIR]`` — tabulate the runs under a run root (default
+  ``./pipeline_runs``): name, asof, hashes and metrics, newest first,
+  read from the structured records. The cross-run view, with no
+  dependency on a tracking server. ``--metric``/``--param`` select
+  columns; ``--limit`` shows the newest N and counts the rest.
 * ``validate <config.json>`` — shape + hash only. Dispatches on the
   document's own shape: a ``pipeline`` node map validates under the
   docs/24 grammar; anything else falls through to the stage-list
@@ -53,12 +58,22 @@ from dskit.pipeline.base import (
 
 
 def demo_config(data_dir="~/dskit_data") -> PipelineConfig:
-    """The grammar showcase: every section, tagged families included.
+    """Build the grammar showcase: every section, tagged families included.
 
     Deliberately on the toolkit's OWN reference venue (D-146): a demo in
     the pure core that named an adapter's venue tag and its real tickers
     made the toolkit read as if it knew what that venue was. It never
     did — and now nothing in tiers 1–2 says otherwise.
+
+    Parameters
+    ----------
+    data_dir : str, optional
+        Where the demo's data would live; default ``"~/dskit_data"``.
+
+    Returns
+    -------
+    PipelineConfig
+        The stage-list demo config, ready to hash or round-trip.
     """
     return PipelineConfig(
         name="demo-synthetic",
@@ -91,6 +106,14 @@ def demo_config(data_dir="~/dskit_data") -> PipelineConfig:
 
 
 def cmd_demo() -> int:
+    """Build, round-trip and hash the demo stage-list config.
+
+    Returns
+    -------
+    int
+        0 — the round-trip is asserted, so a failure raises rather than
+        returning a code.
+    """
     cfg = demo_config()
     roundtrip = PipelineConfig.from_obj(cfg.to_obj())
     assert roundtrip.hash == cfg.hash, "canonical round-trip must preserve identity"
@@ -100,6 +123,13 @@ def cmd_demo() -> int:
 
 
 def cmd_synthetic() -> int:
+    """Run the full staged pipeline on the synthetic venue, in a temp dir.
+
+    Returns
+    -------
+    int
+        0 — the staged runner raises on failure rather than grading.
+    """
     from dskit.pipeline.runner import Runner
     from dskit.pipeline.testing import (
         TEST_END_MS,
@@ -191,8 +221,23 @@ def _doc_validate(path) -> int:
 
 
 def cmd_validate(path, adapters) -> int:
-    """Dispatch on the document's own shape: a ``pipeline`` node map is
-    the docs/24 grammar; everything else is the stage list."""
+    """Validate a config file, whichever grammar it is written in.
+
+    Dispatches on the document's own shape: a ``pipeline`` node map is
+    the docs/24 grammar; everything else is the stage list.
+
+    Parameters
+    ----------
+    path : str
+        Path to the config JSON.
+    adapters : sequence of str
+        Adapter modules to import first (import IS registration).
+
+    Returns
+    -------
+    int
+        0 valid, 1 refused (the reason is printed).
+    """
     try:
         with open(path, encoding="utf-8") as fh:
             doc = json.load(fh)
@@ -230,6 +275,20 @@ def _import_adapters(adapters) -> None:
 
 
 def cmd_plan(path, adapters=()) -> int:
+    """Print a document's resolved DAG as JSON; execute nothing.
+
+    Parameters
+    ----------
+    path : str
+        Path to the node-map document JSON.
+    adapters : sequence of str, optional
+        Adapter modules to import first (import IS registration).
+
+    Returns
+    -------
+    int
+        0 planned, 1 refused (the reason is printed).
+    """
     from dskit.pipeline.document import load_document
     from dskit.pipeline.planner import plan
 
@@ -244,6 +303,23 @@ def cmd_plan(path, adapters=()) -> int:
 
 
 def cmd_run(path, asof, adapters=()) -> int:
+    """Execute one node-map document and print its report.
+
+    Parameters
+    ----------
+    path : str
+        Path to the node-map document JSON.
+    asof : str or None
+        ``YYYY-MM-DD``; None means today (UTC).
+    adapters : sequence of str, optional
+        Adapter modules to import first (import IS registration).
+
+    Returns
+    -------
+    int
+        The run's exit code — 0 ran, 3 halted at a NO-GO gate (a halt is
+        a result), 1 error or a pre-flight refusal.
+    """
     from dskit.pipeline.driver import run_document
 
     try:
@@ -259,6 +335,24 @@ def cmd_run(path, asof, adapters=()) -> int:
 
 
 def cmd_walkforward(path, asof, adapters=()) -> int:
+    """Run a document's declared walk-forward folds and print the summary.
+
+    Parameters
+    ----------
+    path : str
+        Path to the node-map document JSON; it must declare a
+        ``walkforward`` section (ADR-0027).
+    asof : str or None
+        The evaluation's asof, ``YYYY-MM-DD``; None means today (UTC).
+    adapters : sequence of str, optional
+        Adapter modules to import first (import IS registration).
+
+    Returns
+    -------
+    int
+        0 every fold ran, 3 a fold halted, 1 a fold errored or the
+        section was refused pre-flight.
+    """
     from dskit.pipeline.driver import run_walk_forward
 
     try:
@@ -273,7 +367,56 @@ def cmd_walkforward(path, asof, adapters=()) -> int:
     return result.exit_code
 
 
+def cmd_runs(root=None, metrics=(), params=(), limit=None) -> int:
+    """Tabulate the runs under a run root, newest first.
+
+    The cross-run view: identity, state and metrics for every run in one
+    place, read from the structured records (never from ``report.md``).
+
+    Parameters
+    ----------
+    root : str, optional
+        The run root to scan; default ``./pipeline_runs``, where a
+        document declaring no ``outputs.run_root`` writes.
+    metrics : sequence of str, optional
+        Metric columns to show; default every metric any run reported.
+    params : sequence of str, optional
+        Dotted ``config.json`` paths to add as columns.
+    limit : int, optional
+        Show only the newest N runs. The count of the rest is printed —
+        a truncation nobody sees is a lie about what ran.
+
+    Returns
+    -------
+    int
+        0 — the scan is a read; 1 when the run root does not exist.
+    """
+    from dskit.pipeline.runs import format_runs, scan_runs
+
+    try:
+        runs, problems = scan_runs(root)
+    except OSError as exc:
+        print(exc)
+        return 1
+    shown = runs[:limit] if limit else runs
+    print(format_runs(shown, metrics=metrics, params=params))
+    if len(shown) < len(runs):
+        print(f"\n({len(runs) - len(shown)} older run(s) not shown — --limit)")
+    if problems:
+        print(f"\nskipped (not runs): {len(problems)}")
+        for problem in problems:
+            print(f"- {problem.entry}: {problem.reason}")
+    return 0
+
+
 def cmd_nodemap() -> int:
+    """Run the demo banking node map on synthetic nodes, in a temp dir.
+
+    Returns
+    -------
+    int
+        The demo run's exit code (0 ran, 3 halted, 1 error).
+    """
     from dskit.pipeline.base import OutputsConfig
     from dskit.pipeline.driver import run_document
     from dskit.pipeline.synthetic_nodes import demo_document, demo_registry
@@ -299,6 +442,20 @@ def _add_adapter_flag(parser) -> None:
 
 
 def main(argv=None) -> int:
+    """Parse the command line and dispatch to one verb.
+
+    Parameters
+    ----------
+    argv : sequence of str, optional
+        The arguments; None reads ``sys.argv[1:]``. An empty sequence
+        falls through to ``demo``.
+
+    Returns
+    -------
+    int
+        The chosen verb's exit code — 0 ran, 3 halted at a NO-GO gate,
+        1 error.
+    """
     parser = argparse.ArgumentParser(prog="python -m dskit.pipeline")
     sub = parser.add_subparsers(dest="command")
     run_p = sub.add_parser(
@@ -328,6 +485,40 @@ def main(argv=None) -> int:
     plan_p = sub.add_parser("plan", help="print the resolved DAG, no execution")
     plan_p.add_argument("path", help="path to the document JSON")
     _add_adapter_flag(plan_p)
+    runs_p = sub.add_parser(
+        "runs",
+        help="tabulate the runs under a run root — name, asof, hashes and "
+        "metrics, newest first (cross-run comparison, no dependencies)",
+    )
+    runs_p.add_argument(
+        "--root",
+        default=None,
+        metavar="DIR",
+        help="the run root to scan (default ./pipeline_runs)",
+    )
+    runs_p.add_argument(
+        "--metric",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="metric column(s) to show, e.g. score.metrics.loss "
+        "(default: every metric any run reported)",
+    )
+    runs_p.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="dotted config.json path(s) to show as columns, "
+        "e.g. pipeline.qhat.params.epochs",
+    )
+    runs_p.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="show only the newest N runs (the rest are counted, not hidden)",
+    )
     sub.add_parser(
         "nodemap",
         help="the full node-map banking run against the synthetic Node set",
@@ -344,6 +535,8 @@ def main(argv=None) -> int:
         return cmd_walkforward(args.path, args.asof, args.adapter)
     if args.command == "plan":
         return cmd_plan(args.path, args.adapter)
+    if args.command == "runs":
+        return cmd_runs(args.root, args.metric, args.param, args.limit)
     if args.command == "nodemap":
         return cmd_nodemap()
     if args.command == "synthetic":

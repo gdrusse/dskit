@@ -116,7 +116,6 @@ convention = "numpy"
 "dskit/onboarding/snapshot.py" = ["D"]
 "dskit/onboarding/state.py" = ["D"]
 "dskit/onboarding/validate.py" = ["D"]
-"dskit/pipeline/__main__.py" = ["D"]
 "dskit/pipeline/base.py" = ["D"]
 "dskit/pipeline/conformance.py" = ["D"]
 "dskit/pipeline/document.py" = ["D"]
