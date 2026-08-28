@@ -98,9 +98,11 @@ _UNSEARCHABLE_ROLES = {
 
 
 def _substitute_prev_defaults(obj):
-    """A deep copy of ``obj`` with every ``$prev`` carry replaced by its
-    ``default`` — the params a FIRST run would see, which is what plan-
-    time validation can honestly check."""
+    """Copy ``obj``, replacing every ``$prev`` carry with its ``default``.
+
+    Those are the params a FIRST run would see, which is what plan-time
+    validation can honestly check.
+    """
     if is_prev_ref(obj):
         return parse_prev_ref(obj)[2]
     if isinstance(obj, dict):
@@ -111,11 +113,14 @@ def _substitute_prev_defaults(obj):
 
 
 def _has_unresolved_ref(obj) -> bool:
-    """Whether any reference the planner cannot resolve remains in ``obj``
-    — ``$node`` outputs (exist at execute) OR ``$splits`` fields (exist at
-    resolve). Params carrying either DEFER validation: a kind's validator
-    must see values, never raw ``$`` strings ($prev carries substitute
-    their literal defaults first, so they do not defer)."""
+    """Report whether ``obj`` still holds a reference the planner cannot resolve.
+
+    Those are ``$node`` outputs (which exist at execute) and ``$splits``
+    fields (which exist at resolve). Params carrying either DEFER
+    validation: a kind's validator must see values, never raw ``$``
+    strings. ``$prev`` carries substitute their literal defaults first,
+    so they do not defer.
+    """
     if is_prev_ref(obj):
         return False
     if is_node_ref(obj):
@@ -131,9 +136,36 @@ def _has_unresolved_ref(obj) -> bool:
 class Plan:
     """The resolved DAG: what runs, in what order, under which classes.
 
-    ``resolved`` maps node key -> :class:`~dskit.pipeline.node.
-    ResolvedUse`; ``deferred_params`` names nodes whose params still
-    carry ``$node`` references and validate only at execute time.
+    Built by :func:`plan`, never by hand — every field is a product of
+    the cross-checks that function performs, so an instance constructed
+    around them would claim a validation that never happened.
+
+    Parameters
+    ----------
+    document : PipelineDocument
+        The document this plan resolves. Its ``expanded`` map is what
+        the order and the edges are over.
+    order : tuple of str
+        Execution order — a deterministic toposort, ties broken on
+        declaration order.
+    resolved : dict
+        Node key -> :class:`~dskit.pipeline.node.ResolvedUse`: the
+        imported class behind each ``uses``.
+    edges : tuple
+        ``(source, destination)`` pairs, one per ``$node`` reference.
+    deferred_params : tuple of str, optional
+        Nodes whose params still carry ``$node``/``$splits`` references
+        and therefore validate only at execute time.
+    warnings : tuple of str, optional
+        Non-fatal notes the caller should surface.
+
+    Examples
+    --------
+    Plan a document and read its order::
+
+        the_plan = plan(document, registry)
+        the_plan.order          # ('dataset', 'qhat', 'validate')
+        the_plan.role_of('qhat')  # 'train'
     """
 
     document: PipelineDocument
@@ -144,22 +176,67 @@ class Plan:
     warnings: tuple = ()
 
     def role_of(self, key) -> str:
-        """The CLASS-declared role of one planned node."""
+        """Report the CLASS-declared role of one planned node.
+
+        Parameters
+        ----------
+        key : str
+            A node key present in this plan.
+
+        Returns
+        -------
+        str
+            The role the node's class declares — never the config's
+            optional ``role`` label, which is only cross-checked.
+        """
         return self.resolved[key].cls.role
 
     def descendants(self, key) -> set:
-        """Every node downstream of ``key`` (transitively) — the set a
-        NO-GO verdict at ``key`` halts."""
+        """Collect every node downstream of ``key``, transitively.
+
+        Parameters
+        ----------
+        key : str
+            A node key present in this plan.
+
+        Returns
+        -------
+        set of str
+            The nodes a NO-GO verdict at ``key`` halts. ``key`` itself
+            is not included.
+        """
         return _descendants_of(key, self.edges)
 
     def ancestors(self, key) -> set:
-        """Every node upstream of ``key`` (transitively) — with ``key``
-        itself added, the minimal subgraph that can produce its outputs
-        (the search seam's ``needed`` set, docs/24 §8)."""
+        """Collect every node upstream of ``key``, transitively.
+
+        Parameters
+        ----------
+        key : str
+            A node key present in this plan.
+
+        Returns
+        -------
+        set of str
+            The nodes that feed ``key``. With ``key`` itself added this
+            is the minimal subgraph that can produce its outputs — the
+            search seam's ``needed`` set (docs/24 §8).
+        """
         return _ancestors_of(key, self.edges)
 
     def to_obj(self) -> dict:
-        """The ``plan.json`` payload — deterministic, human-diffable."""
+        """Render the ``plan.json`` payload — deterministic, human-diffable.
+
+        Returns
+        -------
+        dict
+            The document hash, the execution order, one entry per node
+            (its ``uses``, resolved class, role, ownership, cadence,
+            inputs and whether its params deferred), the edge list and
+            the warnings. Node entries are read from the document's
+            EXPANDED map, so a fanned-out instance appears exactly as a
+            hand-written node would (ADR-0039).
+        """
         return {
             "document_hash": self.document.hash,
             "order": list(self.order),
@@ -184,8 +261,10 @@ class Plan:
 
 
 def _toposort(keys, deps):
-    """Deterministic Kahn: among ready nodes, declaration order wins.
-    Returns ``(order, leftover)`` — a non-empty leftover is a cycle."""
+    """Order the graph — deterministic Kahn, ties broken on declaration order.
+
+    Returns ``(order, leftover)``; a non-empty leftover is a cycle.
+    """
     remaining = {k: set(d) for k, d in deps.items()}
     order = []
     while True:
@@ -201,7 +280,7 @@ def _toposort(keys, deps):
 
 
 def _accepts_split(cls):
-    """Does this class take a ``split`` knob at all?
+    """Report whether this class takes a ``split`` knob at all.
 
     The distinction the whole splits-required rule turns on: a capital
     node that REPLAYS a time series has a ``split`` (and defaults it, so
@@ -487,8 +566,10 @@ def _descendants_of(key, edges) -> set:
 
 
 def _ancestors_of(key, edges) -> set:
-    """Every node upstream of ``key`` (transitively) — the mirror of
-    :func:`_descendants_of`, walking edges source-ward."""
+    """Walk edges source-ward — the mirror of :func:`_descendants_of`.
+
+    Returns every node upstream of ``key``, transitively.
+    """
     parents = {}
     for src, dst in edges:
         parents.setdefault(dst, set()).add(src)
@@ -502,14 +583,14 @@ def _ancestors_of(key, edges) -> set:
 
 
 def _is_json_scalar(value) -> bool:
-    """A JSON-legal scalar grid value: null, bool, finite number, string."""
+    """Report whether ``value`` is a JSON-legal scalar: null/bool/number/string."""
     if value is None or isinstance(value, (bool, str)):
         return True
     return isinstance(value, (int, float)) and math.isfinite(value)
 
 
 def _search_errors(key, spec, specs, roles, edges):
-    """The search node's wiring rules (spec §8), as plan errors.
+    """Collect the search node's wiring-rule violations (spec §8) as plan errors.
 
     Beyond the objective checks: ``space`` keys must be
     ``'<node>.<param.path>'`` where the node is declared, the HEAD param

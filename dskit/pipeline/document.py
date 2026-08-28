@@ -1166,7 +1166,16 @@ class ForeachSpec:
                 )
 
     def to_obj(self) -> dict:
-        """This section as plain JSON-able data — the identity payload."""
+        """Serialize this section — the identity payload, all of it.
+
+        Returns
+        -------
+        dict
+            ``keys`` (a sorted list), ``pipeline`` (each template
+            serialized as a node) and ``notes``. Nothing DERIVED appears
+            here: the expansion belongs to the document, and what
+            ``to_obj`` cannot say can never be hash material.
+        """
         return {
             "keys": list(self.keys),
             "pipeline": {k: v.to_obj() for k, v in self.pipeline.items()},

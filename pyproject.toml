@@ -145,7 +145,6 @@ convention = "numpy"
 "dskit/pipeline/libs/transformers.py" = ["D"]
 "dskit/pipeline/metrics.py" = ["D"]
 "dskit/pipeline/node.py" = ["D"]
-"dskit/pipeline/planner.py" = ["D"]
 "dskit/pipeline/protocols.py" = ["D"]
 "dskit/pipeline/records.py" = ["D"]
 "dskit/pipeline/registry.py" = ["D"]
