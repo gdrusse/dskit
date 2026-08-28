@@ -1324,3 +1324,61 @@ permission-denied `observations/` PARENT refuses via the wrong-root
 message rather than a denial diagnosis — every path through that
 branch refuses, so denial can never read as an empty store; only the
 wording misattributes.
+
+## ADR-0038 — The declared objective: `loss`/`loss_params` and the `applies_loss` promise
+
+**Status:** proposed (drafted with the B2 implementation, 2026-08-28 —
+awaiting owner ratification; filed so the extension contract the code
+now enforces is not an undocumented decision).
+
+**Context.** The torch pack hardcoded `mse_loss` in
+`RowVectorAdapter.loss` while exposing `optimizer`/`optimizer_params`
+as declared import paths (TODO "No loss knob exists in the torch
+pack"): Huber on a fat-tailed target required an adapter subclass.
+Naively adding the knob is not enough — `loss()` is an extension hook
+(adapter, node override, or mixin), so a declared objective can be
+silently IGNORED by an implementation that computes its own, which
+trains a different model than the document declares, with no error.
+Review rounds proved every extension path could walk past a bolt-on
+refusal.
+
+**Decision.** Two knobs and one promise, engine-side in
+`dskit/pipeline/libs/torch.py`:
+
+- **The doorway mirrors `optimizer` exactly:** `loss` is an import
+  path (default `DEFAULT_LOSS = torch.nn.functional:mse_loss`,
+  resolved through the same doorway so default and declared share one
+  path) and `loss_params` are the objective's own kwargs — a resolved
+  CLASS is constructed with them (`torch.nn:HuberLoss` + `delta`), a
+  resolved callable carries a non-empty block as call-time keywords
+  (`functools.partial`); absent/empty leaves the callable the very
+  same object. No registry: the import-path grammar is the pattern.
+- **`applies_loss` (class-level, default False)** is the promise that
+  a class's `loss()` applies the declared objective via
+  `build_loss()`. The `_LossPromise` mixin binds the promise to the
+  `loss` implementation visible where it is declared and resets it
+  for any subclass whose RESOLVED `loss` is a different function —
+  default-deny applied to inheritance, node and adapter alike.
+- **One refusal doorway:** `_TorchModel._adapter_for_fit` (used by
+  `run` and the direct `loss()` path) asks both implementations that
+  could answer `loss()` — the node and the adapter it built — and
+  refuses a declared `loss`/`loss_params` nothing applies, in the
+  same sentence plan (`validate_params`) says. The plan/run adapter
+  identity is stated once (`_ADAPTER`); a family overriding
+  `build_adapter` alone answers cannot-tell at plan and the fit's
+  doorway settles it.
+- **Device threading:** `build_loss(device)` receives the fit's one
+  `device` read as an argument (as batch moves do) and never re-reads
+  it from adapter params, where a same-named adapter knob could point
+  somewhere the batches never go; a constructed `nn.Module` objective
+  is moved, a bare callable is returned untouched.
+
+**Consequences.** Huber/MAE at their own knobs is a document edit
+(`examples/pipeline/torch-declared.json` teaches the spelling);
+existing documents' hashes are unmoved (emitted-only-when-present);
+an out-of-repo adapter or family that overrides `loss()` must
+declare `applies_loss = True` beside it or a declared objective is
+refused BY NAME rather than ignored — the new mandatory contract this
+ADR exists to record. Pinned by `tests/pipeline_libs/`
+`test_torch_adapter.py` (promise reset, both-doorway refusal wording
+equality, sentinel-through-the-loop, device threading).

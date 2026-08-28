@@ -588,6 +588,18 @@ def recording_huber(prediction, target):
     return torch.nn.functional.smooth_l1_loss(prediction, target)
 
 
+#: Every ``delta`` the parametrized sentinel was CALLED with — proves a
+#: declared ``loss_params`` reaches the training step, not just validation.
+PARAM_LOSS_CALLS = []
+
+
+def recording_param_huber(prediction, target, delta=1.0):
+    """A functional Huber whose own knob records its calls — the sentinel
+    for ``loss_params`` carrying a kwarg all the way into the loop."""
+    PARAM_LOSS_CALLS.append(delta)
+    return torch.nn.functional.huber_loss(prediction, target, delta=delta)
+
+
 def test_the_default_objective_is_still_mse():
     """The default is the SAME callable the adapter hardcoded — resolved
     through the knob's own doorway, so there is one loss path, not two."""
@@ -776,6 +788,138 @@ def test_a_loss_whose_instances_are_not_callable_is_refused_by_name():
 
 
 # ---------------------------------------------------------------------------
+# ``loss_params`` — the objective's OWN kwargs, exactly as
+# ``optimizer_params`` carries the optimizer's. Huber's ``delta`` IS the
+# tail cutoff on a return-scale target: without this knob the library
+# default (1.0) is the only reachable value, and Huber at delta=1.0 on
+# small residuals is exactly 0.5x MSE — the declared objective silently
+# training the MSE model.
+# ---------------------------------------------------------------------------
+
+
+def test_a_loss_class_carries_its_declared_params():
+    """A resolved CLASS is constructed with ``loss_params`` as kwargs —
+    the same resolution ``optimizer``/``optimizer_params`` already has."""
+    fn = RowVectorAdapter(
+        {**FLAT_PARAMS, "loss": "torch.nn:HuberLoss", "loss_params": {"delta": 0.05}}
+    ).build_loss()
+    assert isinstance(fn, torch.nn.HuberLoss)
+    assert fn.delta == 0.05
+
+
+def test_a_functional_loss_carries_its_declared_params():
+    """A resolved FUNCTION carries ``loss_params`` as call-time kwargs, so
+    ``torch.nn.functional:huber_loss`` can declare its ``delta`` too."""
+    fn = RowVectorAdapter(
+        {
+            **FLAT_PARAMS,
+            "loss": "torch.nn.functional:huber_loss",
+            "loss_params": {"delta": 0.05},
+        }
+    ).build_loss()
+    # Residuals BETWEEN the two deltas (0.05 < |r| < 1.0): linear under the
+    # declared knob, quadratic under the library default — the regime where
+    # an unreachable ``delta`` silently trains the MSE model.
+    p = torch.tensor([0.5, -0.4, 0.3])
+    t = torch.tensor([0.0, 0.1, -0.2])
+    assert torch.equal(fn(p, t), torch.nn.functional.huber_loss(p, t, delta=0.05))
+    assert not torch.equal(fn(p, t), torch.nn.functional.huber_loss(p, t))
+
+
+def test_an_empty_loss_params_leaves_the_default_untouched():
+    """No kwargs means the very same callable — the default path stays
+    byte-identical whether ``loss_params`` is absent or ``{}``."""
+    adapter = RowVectorAdapter({**FLAT_PARAMS, "loss_params": {}})
+    assert adapter.build_loss() is torch.nn.functional.mse_loss
+
+
+def test_loss_params_are_accepted_beside_loss_at_plan():
+    params = {
+        **FLAT_PARAMS,
+        "loss": "torch.nn:HuberLoss",
+        "loss_params": {"delta": 0.05},
+    }
+    assert LinearRegressor.validate_params(params) == []
+
+
+@pytest.mark.parametrize(
+    "params,needle",
+    [
+        ({"loss_params": 3}, "loss_params must be a dict"),
+        ({"loss_params": {1: "delta"}}, "loss_params must be a dict"),
+    ],
+)
+def test_loss_params_are_refused_by_name_at_plan(params, needle):
+    problems = LinearRegressor.validate_params({**FLAT_PARAMS, **params})
+    assert any(needle in p for p in problems), problems
+
+
+def test_a_loss_class_that_rejects_its_params_is_refused_by_name():
+    """A mis-typed loss knob is caught by the loss, named as the knob the
+    author must edit — ``optimizer_params``'s own refusal, mirrored."""
+    adapter = RowVectorAdapter(
+        {**FLAT_PARAMS, "loss": "torch.nn:HuberLoss", "loss_params": {"nope": 1}}
+    )
+    with pytest.raises(ValueError, match="loss_params"):
+        adapter.build_loss()
+
+
+def test_a_loss_class_needing_arguments_takes_them_from_loss_params():
+    """The constructor-argument refusal now has a config-only exit: declare
+    the arguments in ``loss_params`` instead of writing Python."""
+    fn = RowVectorAdapter(
+        {
+            **FLAT_PARAMS,
+            "loss": f"{__name__}:NeedsAnArgumentLoss",
+            "loss_params": {"weight": 2.0},
+        }
+    ).build_loss()
+    assert fn.weight == 2.0
+
+
+def test_declared_loss_params_reach_the_training_step(tmp_path):
+    """The kwarg is not paperwork either: every batch's backward pass was
+    taken on the objective AT the declared knob value."""
+    PARAM_LOSS_CALLS.clear()
+    DeclaredTrain(
+        "h",
+        {
+            **DECLARED_FLAT,
+            "loss": f"{__name__}:recording_param_huber",
+            "loss_params": {"delta": 0.05},
+        },
+        mode="train",
+    ).run(ctx(tmp_path), {"rows": flat_rows()})
+    assert PARAM_LOSS_CALLS, "the declared loss was never called by the fit"
+    assert all(delta == 0.05 for delta in PARAM_LOSS_CALLS)
+
+
+def test_declared_loss_params_actually_change_the_fit(tmp_path):
+    """Same objective class, different knob, different model — or the knob
+    changed nothing."""
+    wide = DeclaredTrain(
+        "a", {**DECLARED_FLAT, "loss": "torch.nn:HuberLoss"}, mode="train"
+    ).run(ctx(tmp_path, "a"), {"rows": flat_rows()})
+    narrow = DeclaredTrain(
+        "b",
+        {**DECLARED_FLAT, "loss": "torch.nn:HuberLoss", "loss_params": {"delta": 0.01}},
+        mode="train",
+    ).run(ctx(tmp_path, "b"), {"rows": flat_rows()})
+    a = torch.load(wide["artifact_path"], map_location="cpu", weights_only=True)
+    b = torch.load(narrow["artifact_path"], map_location="cpu", weights_only=True)
+    assert not all(torch.equal(a[k], b[k]) for k in a)
+
+
+def test_an_adapter_that_ignores_the_objective_refuses_loss_params_too():
+    """``loss_params`` on an adapter that computes its own objective is as
+    silently ignored as ``loss`` itself — same refusal, same sentence."""
+    problems = DeclaredTrain.validate_params(
+        declared_loss_params(DoubleAdapter, loss_params={"delta": 0.5})
+    )
+    assert any("applies_loss" in p and "DoubleAdapter" in p for p in problems), problems
+
+
+# ---------------------------------------------------------------------------
 # The promise belongs to the ``loss()`` IMPLEMENTATION, not to the class —
 # so every documented way to write one's own objective (an adapter
 # subclass, a family that swaps the adapter, a family that answers loss()
@@ -897,22 +1041,83 @@ class BufferedLoss(torch.nn.Module):
         return ((prediction - target) ** 2 * self.w).mean()
 
 
-def test_a_stateful_loss_class_is_moved_to_the_declared_device():
+def test_a_stateful_loss_class_is_moved_to_the_fits_device():
     """``device`` moves the module and every batch; a constructed loss
     module's own state must ride along, or a stateful loss dies mid-fit
     with a raw cross-device error — the obscure failure ``build_loss``
-    exists to prevent."""
+    exists to prevent. The device arrives as an ARGUMENT, threaded from
+    the node's one device read exactly as every batch's move is."""
+    adapter = RowVectorAdapter({**FLAT_PARAMS, "loss": ref_to(BufferedLoss)})
+    assert adapter.build_loss("meta").w.device.type == "meta"
+
+
+def test_the_loss_device_is_the_nodes_read_not_the_adapters_params():
+    """The adapter's params dict may carry a same-named ``device`` (a node
+    knob passed through, or an adapter's OWN ``_PARAMS`` knob layered on
+    top) — ``build_loss`` must never read it, or the loss lands somewhere
+    the batches never go."""
     adapter = RowVectorAdapter(
         {**FLAT_PARAMS, "device": "meta", "loss": ref_to(BufferedLoss)}
     )
-    assert adapter.build_loss().w.device.type == "meta"
+    assert adapter.build_loss().w.device.type == "cpu"
 
 
 def test_a_functional_loss_ignores_the_device_knob():
     """A functional objective carries no state, so ``device`` must leave it
     the very same object — the default path stays byte-identical."""
-    adapter = RowVectorAdapter({**FLAT_PARAMS, "device": "meta"})
-    assert adapter.build_loss() is torch.nn.functional.mse_loss
+    adapter = RowVectorAdapter(FLAT_PARAMS)
+    assert adapter.build_loss("meta") is torch.nn.functional.mse_loss
+
+
+class DeviceKnobAdapter(RowVectorAdapter):
+    """An adapter with its OWN ``device`` knob — legitimate (``_PARAMS`` is
+    the adapter's own declarable surface) and layered OVER the node's
+    params by the declared doorway, so a loss that read the ADAPTER's
+    params would land on this knob's device, not the fit's."""
+
+    _PARAMS = ("device",)
+
+
+class DeviceRecordingAdapter(RowVectorAdapter):
+    """Records every ``device`` its ``build_loss`` receives — the witness
+    that the fit THREADS its one device read, before the first batch."""
+
+    seen = []
+
+    def build_loss(self, device=None):
+        type(self).seen.append(device)
+        return super().build_loss(device)
+
+
+def test_the_fit_threads_its_device_read_into_the_loss(tmp_path):
+    """The node's ONE device read (the one that moves the module and every
+    batch) is the one the objective resolves under — passed as an argument
+    before the first batch, so there is no second read to drift."""
+    DeviceRecordingAdapter.seen.clear()
+    DeclaredTrain(
+        "k",
+        {**DECLARED_FLAT, "adapter": ref_to(DeviceRecordingAdapter), "device": "cpu"},
+        mode="train",
+    ).run(ctx(tmp_path), {"rows": flat_rows()})
+    assert DeviceRecordingAdapter.seen
+    assert DeviceRecordingAdapter.seen[0] == "cpu"
+
+
+def test_the_loss_lands_where_the_batches_do(tmp_path):
+    """End to end: the node declares no device (CPU batches), the adapter's
+    own ``device`` knob points elsewhere — the stateful loss must follow
+    the BATCHES, or the fit dies with a cross-device error."""
+    out = DeclaredTrain(
+        "k",
+        {
+            **DECLARED_FLAT,
+            "adapter": ref_to(DeviceKnobAdapter),
+            "adapter_params": {"device": "meta"},
+            "loss": ref_to(BufferedLoss),
+        },
+        mode="train",
+    ).run(ctx(tmp_path), {"rows": flat_rows()})
+    assert out["metrics"]["final_loss"] >= 0.0
 
 
 class HardcodedLossMixin:

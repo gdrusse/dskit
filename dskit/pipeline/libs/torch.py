@@ -83,6 +83,7 @@ enforces this twice).
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
 import json
 import math
@@ -139,6 +140,11 @@ LOADER_DEFAULTS = {"batch_size": 32, "shuffle": True, "seed": 0}
 #: as an import path (never imported here: the core stays importable with
 #: no torch installed).
 DEFAULT_LOSS = "torch.nn.functional:mse_loss"
+#: The objective's declared knob pair — named ONCE so the plan-time gate,
+#: the ignored-objective check, and the fit's doorway all interrogate the
+#: same two spellings, and a third spelling cannot appear in one of them
+#: silently.
+_LOSS_KNOBS = ("loss", "loss_params")
 DEFAULT_EPOCHS = 5
 DEFAULT_LR = 0.01
 DEFAULT_LABEL = "label"
@@ -258,24 +264,31 @@ def _optimizer_problems(params):
 
 
 def _loss_problems(params):
-    """Problems with the declared ``loss`` import path — shape only, at plan.
+    """Problems with the declared ``loss``/``loss_params`` — shape only, at plan.
 
-    Exactly the ``optimizer`` grammar (``library_path_problems``), for
-    exactly its reason: the objective is part of a model's DEFINITION —
-    a fat-tailed target fitted under MSE trains to a different model than
-    under Huber, silently and with no error — and whether the path
-    IMPORTS is settled at execute, where the library is due.
+    Exactly the ``optimizer`` grammar (``library_path_problems`` for the
+    path, a kwargs dict beside it), for exactly its reason: the objective
+    is part of a model's DEFINITION — a fat-tailed target fitted under MSE
+    trains to a different model than under Huber, silently and with no
+    error — and whether the path IMPORTS is settled at execute, where the
+    library is due. Unlike ``optimizer_params`` there is no reserved key
+    inside the block: the node owns no knob a loss kwarg could shadow.
     """
+    problems = []
     path = params.get("loss")
-    if path is None:
-        return []
-    return library_path_problems(
-        "loss", path, example="torch.nn.functional:smooth_l1_loss"
-    )
+    if path is not None:
+        problems += library_path_problems(
+            "loss", path, example="torch.nn.functional:smooth_l1_loss"
+        )
+    block = params.get("loss_params", {})
+    if not isinstance(block, dict) or any(not isinstance(k, str) for k in block):
+        problems.append(f"loss_params must be a dict of loss kwargs, got {block!r}")
+    return problems
 
 
 def _loss_ignored_problem(subject, params):
-    """Why a declared ``loss`` would never be applied by ``subject``, or None.
+    """Why a declared ``loss``/``loss_params`` would never be applied by
+    ``subject``, or None.
 
     ONE sentence said wherever a ``loss()`` implementation is chosen —
     plan (``validate_params``) and the fit (``_adapter_for_fit``) — the
@@ -287,18 +300,18 @@ def _loss_ignored_problem(subject, params):
     an instance (run); ``None`` means this machine cannot tell (the
     library may rightly be absent, and run settles it).
     """
-    path = params.get("loss")
+    declared = [f"{k} {params[k]!r}" for k in _LOSS_KNOBS if params.get(k)]
     # ``getattr`` because the adapter doorway is STRUCTURAL (it requires
     # ``prepare``, not a base class): a class that never heard of the flag
     # has not promised anything, which is the deny side of default-deny.
-    if not path or subject is None or getattr(subject, "applies_loss", False):
+    if not declared or subject is None or getattr(subject, "applies_loss", False):
         return None
     name = subject.__name__ if isinstance(subject, type) else type(subject).__name__
     return (
-        f"loss {path!r} would be IGNORED: {name} computes its own objective "
-        "(applies_loss is False) — have loss() apply the declared objective "
-        "(self.build_loss()(...) in an adapter, super().loss(...) in a node) "
-        "and set applies_loss = True, or drop the loss param"
+        f"{' and '.join(declared)} would be IGNORED: {name} computes its own "
+        "objective (applies_loss is False) — have loss() apply the declared "
+        "objective (self.build_loss()(...) in an adapter, super().loss(...) "
+        "in a node) and set applies_loss = True, or drop the loss param"
     )
 
 
@@ -594,7 +607,7 @@ class TorchAdapter(_LossPromise, ABC):
         """A scalar tensor to backpropagate."""
         raise NotImplementedError
 
-    def build_loss(self):
+    def build_loss(self, device=None):
         """The objective callable this adapter's :meth:`loss` applies.
 
         The ``loss`` knob's resolution doorway, and the reason the knob can
@@ -607,14 +620,28 @@ class TorchAdapter(_LossPromise, ABC):
         Two things a path may name, and the difference is exactly the one
         :meth:`~TorchTrain.build_optimizer` already makes. A CLASS
         (``torch.nn:HuberLoss``) is a loss factory and is CONSTRUCTED here
-        with no arguments — the spelling a torch user reaches for first, and
-        the one the grammar's own refusal asks for; an objective that needs
-        constructor arguments is named as a module-level callable which
-        carries them (a ``functools.partial``, say). Anything else callable
-        is used as it stands — a functional loss, a project's own objective.
+        with ``loss_params`` as its constructor kwargs — exactly how
+        ``optimizer_params`` reaches the optimizer, and the only reachable
+        home for a knob like Huber's ``delta``, which on a return-scale
+        target IS the tail cutoff. Anything else callable is used as it
+        stands — a functional loss, a project's own objective — with a
+        non-empty ``loss_params`` carried as call-time kwargs
+        (:func:`functools.partial`); when the block is absent or empty the
+        callable is returned as the very same object, so the default path
+        stays byte-identical.
 
         Resolution is memoized on the instance, so the training loop pays
         the import lookup once per fit rather than once per batch.
+
+        Parameters
+        ----------
+        device : str or None
+            Where the fit runs — THREADED from the node's single ``device``
+            read (:meth:`TorchTrain.run`), exactly as every batch's move
+            is, and never re-read from this adapter's own params, where a
+            same-named adapter knob could point somewhere the batches never
+            go. ``None`` (the default, and every direct call outside a
+            fit) moves nothing.
 
         Returns
         -------
@@ -623,27 +650,28 @@ class TorchAdapter(_LossPromise, ABC):
             of the resolved class — or the callable behind
             :data:`DEFAULT_LOSS` (``torch.nn.functional.mse_loss``) when the
             document named none, which is the same object this pack always
-            applied. A constructed ``nn.Module`` objective is moved to the
-            node's ``device`` first, exactly as the fit moves the module
-            and every batch — a stateful loss (registered buffers) must
-            live where the tensors it meets do, or it dies mid-fit with a
-            raw cross-device error. A functional objective is returned as
-            the very same object, ``device`` or not.
+            applied. A constructed ``nn.Module`` objective is moved to
+            ``device`` first, exactly as the fit moves the module and every
+            batch — a stateful loss (registered buffers) must live where
+            the tensors it meets do, or it dies mid-fit with a raw
+            cross-device error. A functional objective is returned as the
+            very same object, ``device`` or not.
 
         Raises
         ------
         ValueError
             When the declared path names no importable module or attribute
             (:func:`~dskit.pipeline.base.import_library_class`); when a
-            resolved CLASS rejects a no-argument construction; or when what
-            the path finally yields is not callable — each refused by name
-            here rather than as an obscure error mid-fit.
+            resolved CLASS rejects ``loss_params`` as its constructor
+            kwargs; or when what the path yields is not callable — each
+            refused by name here rather than as an obscure error mid-fit.
         """
         if self._loss_fn is None:
             path = self.params.get("loss") or DEFAULT_LOSS
             resolved = import_library_class(path, _LOSS_SUBJECT)
-            built = self._construct_loss(resolved, path)
-            device = self.params.get("device")
+            built = self._construct_loss(
+                resolved, path, dict(self.params.get("loss_params") or {})
+            )
             if device:
                 import torch
 
@@ -658,27 +686,29 @@ class TorchAdapter(_LossPromise, ABC):
         return self._loss_fn
 
     @staticmethod
-    def _construct_loss(resolved, path):
+    def _construct_loss(resolved, path, kwargs):
         """The callable a resolved loss path yields, or a refusal naming it.
 
-        A resolved CLASS is constructed (``nn`` loss modules take no
-        required arguments); anything else is used as it stands. Then the
-        RESULT is asked whether it is callable, because that is the only
-        thing that can answer: ``import_library_class(..., requires=)``
-        interrogates the class, and every class carries ``type.__call__``,
-        so a class whose INSTANCES are not callable would sail past a
-        structural check and die inside the batch loop.
+        A resolved CLASS is constructed with ``kwargs`` (the document's
+        ``loss_params``, refused BY that class's own constructor when
+        mis-typed — the ``optimizer_params`` diagnosis, mirrored); anything
+        else is used as it stands, with a non-empty ``kwargs`` bound as
+        call-time keywords. The RESULT is asked whether it is callable
+        before any binding, because only the constructed object can answer:
+        ``import_library_class(..., requires=)`` interrogates the class,
+        and every class carries ``type.__call__``, so a class whose
+        INSTANCES are not callable would sail past a structural check and
+        die inside the batch loop.
         """
         built = resolved
         if isinstance(resolved, type):
             try:
-                built = resolved()
+                built = resolved(**kwargs)
             except TypeError as exc:
                 raise ValueError(
-                    f"{_LOSS_SUBJECT}: {path!r} names a class that needs "
-                    f"constructor arguments ({exc}) — an import path carries "
-                    "none, so name a module-level callable that already has "
-                    "them instead"
+                    f"{_LOSS_SUBJECT}: {path!r} rejected loss_params ({exc}) "
+                    "— a loss class's constructor kwargs are declared there, "
+                    "exactly as optimizer_params carries the optimizer's"
                 ) from exc
         if not callable(built):
             raise ValueError(
@@ -686,6 +716,8 @@ class TorchAdapter(_LossPromise, ABC):
                 "callable — name a loss function, or a loss class whose "
                 "instances are"
             )
+        if not isinstance(resolved, type) and kwargs:
+            built = functools.partial(built, **kwargs)
         return built
 
     def beliefs(self, module, batch):
@@ -1266,10 +1298,11 @@ class TorchTrain(_TorchModel):
 
     Knobs: ``features`` (required list of row keys), ``label`` (default
     ``"label"``), ``epochs``, ``lr``, ``optimizer``/``optimizer_params``
-    and ``loss`` (import paths — the objective is part of the model's
-    definition, so Huber over MSE is a document edit, never a subclass;
-    default :data:`DEFAULT_LOSS`, and an adapter that computes its own
-    objective refuses the knob rather than ignoring it, by name at plan),
+    and ``loss``/``loss_params`` (an import path plus the objective's own
+    kwargs — the objective is part of the model's definition, so Huber at
+    a declared ``delta`` is a document edit, never a subclass; default
+    :data:`DEFAULT_LOSS`, and an adapter that computes its own objective
+    refuses both knobs rather than ignoring them, by name at plan),
     and the docs/24 §3 ``loader`` block
     (``batch_size``/``shuffle``/``seed`` — default-deny inside, I-227).
     Input port ``rows`` is a LIST of dict/record rows; rows missing a
@@ -1330,6 +1363,7 @@ class TorchTrain(_TorchModel):
         "loader",
         "log_every",
         "loss",
+        "loss_params",
         "lr",
         "max_log_lines",
         "monitor",
@@ -1383,10 +1417,12 @@ class TorchTrain(_TorchModel):
         problems.extend(_loss_problems(params))
         # Both implementations that could answer ``loss()`` — this family
         # (it may have overridden ``loss``) and the adapter it will build.
-        for subject in (cls, cls._loss_adapter(params)):
-            ignored = _loss_ignored_problem(subject, params)
-            if ignored:
-                problems.append(ignored)
+        # Only worth interrogating when an objective knob is declared.
+        if any(params.get(k) for k in _LOSS_KNOBS):
+            for subject in (cls, cls._loss_adapter(params)):
+                ignored = _loss_ignored_problem(subject, params)
+                if ignored:
+                    problems.append(ignored)
         problems.extend(
             _feature_problems(params, required=cls._features_required(params))
         )
@@ -1531,6 +1567,12 @@ class TorchTrain(_TorchModel):
         if device:
             module.to(device)
             self.log.info("training on device %r", device)
+        # The objective resolves HERE, against the fit's ONE device read —
+        # the same read that just moved the module and moves every batch
+        # below — never against the adapter's own params, where a
+        # same-named adapter knob could point somewhere the batches never
+        # go. Memoized: every later loss() call gets this object.
+        adapter.build_loss(device)
         optimizer = self.build_optimizer(module, self.params)
         order_gen = torch.Generator().manual_seed(seed)  # pins the shuffle
         curve = TrainingCurve(

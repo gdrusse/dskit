@@ -22,7 +22,7 @@
         "lr": 0.1,
         "loader": {"batch_size": 16, "shuffle": true, "seed": 7}
       },
-      "notes": "optimizer is an import path with optimizer_params as its kwargs; lr stays the node's own knob (declaring it inside optimizer_params refuses). The per-epoch curve is written to artifacts/qhat/training_curve.json."
+      "notes": "optimizer is an import path with optimizer_params as its kwargs; lr stays the node's own knob (declaring it inside optimizer_params refuses). The objective is the same doorway: loss is an import path (default torch.nn.functional:mse_loss — this run's objective) with loss_params as ITS kwargs, so Huber at its own delta is 'loss': 'torch.nn:HuberLoss', 'loss_params': {'delta': 0.05} — a document edit, never a subclass. The per-epoch curve is written to artifacts/qhat/training_curve.json."
     },
     "predict": {
       "uses": "dskit.pipeline.libs.torch:DeclaredPredict",
