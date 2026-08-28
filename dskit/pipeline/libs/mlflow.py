@@ -523,7 +523,7 @@ class MlflowTracker:
         client.set_terminated(self._run_id, "FINISHED")
 
 
-def register() -> None:
+def register():
     """Claim ``"mlflow"`` in the tracking-sink registry.
 
     Explicit and idempotent — the seam ``testing.register_synthetic``
