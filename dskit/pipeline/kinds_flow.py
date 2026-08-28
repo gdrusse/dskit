@@ -229,9 +229,9 @@ class Filter(Node):
         inputs : dict
             ``records`` (list of dicts or record objects) and OPTIONAL
             ``instruments`` — an allow-list (list/tuple/set) keeping only
-            records whose ``instrument`` is in it. The PROPOSAL wires the
-            eligible family here, so the universe grows with zero config
-            edits.
+            records whose ``instrument`` is in it. The banking chain's
+            eligible family is what gets wired here, so the universe grows
+            with zero config edits.
 
         Returns
         -------
@@ -646,11 +646,25 @@ class Concat(Node):
         return problems
 
     def validate_inputs(self, inputs):
-        """Container shapes only — never a walk.
+        """Problems with the materialized inputs, empty when none.
 
-        Walking here would consume a one-shot stream and hand ``run`` an
-        exhausted iterator (F-220 #6), so a generator is refused BY NAME
-        and every row-level check waits for ``run``.
+        Container shapes only — never a walk. Walking here would consume a
+        one-shot stream and hand ``run`` an exhausted iterator (F-220 #6),
+        so a generator is refused BY NAME and every row-level check waits
+        for ``run``.
+
+        Parameters
+        ----------
+        inputs : dict
+            One entry per WIRED port: a list or tuple of records under
+            ``shape="records"``, a dict under ``shape="table"``. Ports
+            declared in ``params.tables`` are supplied there instead, and
+            supplying one BOTH ways is a problem.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when the inputs are usable.
         """
         shape = self.params.get("shape")
         tables = self.params.get("tables") or {}
@@ -1003,7 +1017,25 @@ class Join(Node):
         return problems
 
     def validate_inputs(self, inputs):
-        """Container shapes only — the stream is never walked here."""
+        """Problems with the materialized inputs, empty when none.
+
+        Container shapes only — the stream is never walked here, because a
+        one-shot iterable consumed by validation would reach ``run``
+        exhausted.
+
+        Parameters
+        ----------
+        inputs : dict
+            The ``records`` stream (list or tuple of rows) plus one port
+            per WIRED side table, each a dict keyed by the join key. Side
+            tables declared in ``params.tables`` are supplied there
+            instead, and supplying one BOTH ways is a problem.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when the inputs are usable.
+        """
         problems = []
         records = inputs.get(self._LEFT)
         if isinstance(records, (str, bytes, dict)) or not isinstance(
@@ -1324,7 +1356,23 @@ class Derive(Node):
         return problems
 
     def validate_inputs(self, inputs):
-        """Container shape only — the stream is never walked here."""
+        """Problems with the materialized inputs, empty when none.
+
+        Container shape only — the stream is never walked here, because a
+        one-shot iterable consumed by validation would reach ``run``
+        exhausted; the per-row case matching waits for ``run``.
+
+        Parameters
+        ----------
+        inputs : dict
+            ``records`` — a list or tuple of rows (dicts or record
+            objects); the only port this kind reads.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when the inputs are usable.
+        """
         records = inputs.get("records")
         if isinstance(records, (str, bytes, dict)) or not isinstance(
             records, (list, tuple)

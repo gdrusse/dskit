@@ -3,11 +3,13 @@
 Spec §10 step 3. Three kinds, one story: the ★BANKING counter accrues evidence per
 instrument, the admission gate decides which instruments have enough of
 it to be tested at all, and the ledger writes down who is in, who is
-pending and how far each still has to go. That is the
-``bank -> eligible_family -> banking_report`` spine of
-``examples/pipeline/PROPOSAL-node-map.jsonc``, and it is why the three
-live together rather than beside the record-flow verbs they were
-originally written next to (TODO 3e).
+pending and how far each still has to go. That
+``bank -> family -> report`` spine is why the three live together rather
+than beside the record-flow verbs they were originally written next to
+(TODO 3e). To read the spine wired end to end, see
+:func:`~dskit.pipeline.synthetic_nodes.demo_pipeline` — its ``bank`` ->
+``family`` -> ``report`` nodes are these three against the synthetic
+kinds, and ``python -m dskit.pipeline nodemap`` runs that document.
 
 They are registered with ``owned=False`` — any project may shadow them
 with its own class via an import path; the doctrine kinds (``stat_test``,
@@ -64,6 +66,23 @@ __all__ = [
 #: ``min_events`` bar may never over-count by omission.
 _DISTINCT_FIELDS = ("group", "contract", "record")
 
+#: The ONE name for ``event-bank``'s ``distinct_by`` default.
+#:
+#: The vocabulary above says what may be counted; this says what is counted
+#: when nobody chose. It is read by ``validate_params`` (including its
+#: refusal message), by ``validate_inputs`` and by ``run`` — a default
+#: restated as a literal in each of those is the copy that drifts.
+_DEFAULT_DISTINCT_BY = "group"
+
+#: The ONE name for ``event-bank``'s ``count`` default.
+#:
+#: ``"settled"`` counts only events whose contract is present in the
+#: ``outcomes`` input, which is why the default also decides whether that
+#: port is REQUIRED: ``validate_inputs`` demands it and ``run`` reads it,
+#: so the two must read the same name or the gate guards a port ``run``
+#: does not use (or misses one it does).
+_DEFAULT_COUNT = "settled"
+
 
 def _require_min_events(problems, params) -> None:
     """Append the ``min_events`` problems: REQUIRED, no default, int >= 1."""
@@ -107,10 +126,11 @@ class EventBank(Node):
     Parameters
     ----------
     params : dict
-        ``count`` (str, default ``"settled"``) — ``"settled"`` counts only
-        events whose contract is present in ``outcomes`` (which the input
-        contract therefore requires at execute), ``"all"`` counts every
-        surviving event. ``distinct_by`` (str, default ``"group"``, one of
+        ``count`` (str, default :data:`_DEFAULT_COUNT`) — ``"settled"``
+        counts only events whose contract is present in ``outcomes`` (which
+        the input contract therefore requires at execute), ``"all"`` counts
+        every surviving event. ``distinct_by`` (str, default
+        :data:`_DEFAULT_DISTINCT_BY`, one of
         :data:`_DISTINCT_FIELDS`) — WHAT one "event" is in the stream you
         wired in. A market ladder carries every lead time of every strike
         contract, so counting records reports a multiple of the truth and
@@ -157,7 +177,7 @@ class EventBank(Node):
         """
         problems = []
         _reject_unknown(problems, params, cls._PARAMS)
-        count = params.get("count", "settled")
+        count = params.get("count", _DEFAULT_COUNT)
         if count not in ("settled", "all"):
             problems.append(f"count must be 'settled' or 'all', got {count!r}")
         cut = params.get("strictly_before")
@@ -174,8 +194,8 @@ class EventBank(Node):
         if distinct_by is not None and distinct_by not in _DISTINCT_FIELDS:
             problems.append(
                 f"distinct_by must be one of {list(_DISTINCT_FIELDS)} (or "
-                f"absent, defaulting to 'group' — one event counted once), "
-                f"got {distinct_by!r}"
+                f"absent, defaulting to {_DEFAULT_DISTINCT_BY!r} — one event "
+                f"counted once), got {distinct_by!r}"
             )
         return problems
 
@@ -200,7 +220,7 @@ class EventBank(Node):
             problems.append(
                 f"events must be a list of records, got {inputs.get('events')!r}"
             )
-        if self.params.get("count", "settled") == "settled" and not isinstance(
+        if self.params.get("count", _DEFAULT_COUNT) == "settled" and not isinstance(
             inputs.get("outcomes"), dict
         ):
             problems.append(
@@ -229,9 +249,9 @@ class EventBank(Node):
             not over the first sighting of each event, so the extent stays
             the honest span of the banked data.
         """
-        count_settled = self.params.get("count", "settled") == "settled"
+        count_settled = self.params.get("count", _DEFAULT_COUNT) == "settled"
         cut = self.params.get("strictly_before")
-        distinct_by = self.params.get("distinct_by", "group")
+        distinct_by = self.params.get("distinct_by", _DEFAULT_DISTINCT_BY)
         outcomes = inputs.get("outcomes")
         counts = {}
         extents = {}

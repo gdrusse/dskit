@@ -14,26 +14,46 @@ file pins the two things a mechanical move can still break:
   path sibling modules could be using.
 
 The three classes' behaviour is exercised where it always was, in
-``test_kinds_flow.py`` — this file pins the SPLIT, not the nodes.
+``test_kinds_flow.py`` — this file pins the SPLIT, not the nodes. The one
+exception is :class:`TestEventBankDefaultsHaveOneName`: ``EventBank``
+restated its ``count`` and ``distinct_by`` defaults in ``validate_params``,
+``validate_inputs``, ``run`` and a validator message, and the move made
+those copies this module's problem to keep honest.
 """
+
+import pytest
 
 import dskit.pipeline as pipeline
 from dskit.pipeline import kinds_banking, kinds_flow
 from dskit.pipeline.document import is_node_ref as canonical_is_node_ref
 from dskit.pipeline.kinds_banking import (
+    _DEFAULT_COUNT,
+    _DEFAULT_DISTINCT_BY,
+    _DISTINCT_FIELDS,
     BankingReport,
     Eligibility,
     EventBank,
     register,
 )
 from dskit.pipeline.kinds_stats import _reject_unknown as canonical_reject_unknown
-from dskit.pipeline.node import NodeKindRegistry
+from dskit.pipeline.node import NodeContext, NodeKindRegistry
 from dskit.pipeline.synthetic_nodes import SynthClip
 
 #: The kinds each module owns after the split — the pin that catches a
 #: class drifting back across the boundary.
 BANKING_KINDS = ("event-bank", "eligibility", "banking-report")
 FLOW_KINDS = ("filter", "concat", "join", "derive")
+
+
+def _rec(instrument, contract, asof_ms, **extra):
+    """A plain-dict event record."""
+    return {"instrument": instrument, "contract": contract, "asof_ms": asof_ms, **extra}
+
+
+@pytest.fixture
+def ctx(tmp_path):
+    """A minimal :class:`NodeContext` — the nodes here read only ``run_dir``."""
+    return NodeContext(name="banking", asof="2026-01-01", run_dir=str(tmp_path))
 
 
 class TestModuleHome:
@@ -106,3 +126,58 @@ class TestBothRegistersReachableFromThePackage:
         assert pipeline.BankingReport is BankingReport
         for name in ("EventBank", "Eligibility", "BankingReport"):
             assert name in pipeline.__all__
+
+
+class TestEventBankDefaultsHaveOneName:
+    """Each ``EventBank`` default is ONE name, honoured everywhere.
+
+    ``count`` was read in three methods and ``distinct_by`` in two plus a
+    validator message. Changing one copy and missing another is silent and
+    incoherent: ``count`` flipped in ``run`` alone leaves ``validate_inputs``
+    demanding an ``outcomes`` port ``run`` ignores — or, the other way, lets
+    a wiring with no ``outcomes`` past the gate and into a ``contract not in
+    None`` TypeError. These pins read the constant and assert the omitted
+    param is indistinguishable from the spelled-out one, so a literal that
+    drifts away from the constant fails.
+    """
+
+    def test_the_defaults_are_legal_values_of_their_own_vocabularies(self):
+        assert _DEFAULT_COUNT in ("settled", "all")
+        assert _DEFAULT_DISTINCT_BY in _DISTINCT_FIELDS
+
+    def test_omitting_count_runs_as_the_default_spelled_out(self, ctx):
+        events = [_rec("A", "A-0", 10), _rec("A", "A-1", 11), _rec("B", "B-0", 12)]
+        inputs = {"events": events, "outcomes": {"A-0": True, "B-0": False}}
+        assert EventBank("bank").run(ctx, inputs) == EventBank(
+            "bank", {"count": _DEFAULT_COUNT}
+        ).run(ctx, inputs)
+
+    def test_omitting_distinct_by_runs_as_the_default_spelled_out(self, ctx):
+        events = [
+            _rec("A", "A-0", 10, group="G"),
+            _rec("A", "A-1", 11, group="G"),
+            _rec("A", "A-2", 12),
+        ]
+        inputs = {"events": events, "outcomes": {}}
+        spelled = {"count": "all", "distinct_by": _DEFAULT_DISTINCT_BY}
+        assert EventBank("bank", {"count": "all"}).run(ctx, inputs) == EventBank(
+            "bank", spelled
+        ).run(ctx, inputs)
+
+    def test_validate_inputs_gates_on_the_same_default_run_obeys(self, ctx):
+        """The port contract and the code reading it must agree."""
+        bare = EventBank("bank")
+        spelled = EventBank("bank", {"count": _DEFAULT_COUNT})
+        no_outcomes = {"events": []}
+        assert bare.validate_inputs(no_outcomes) == spelled.validate_inputs(no_outcomes)
+        # and the gate's verdict matches what run() actually needs
+        if bare.validate_inputs(no_outcomes) == []:
+            bare.run(ctx, no_outcomes)  # must not raise on the missing port
+
+    def test_the_distinct_by_message_names_the_default_it_documents(self):
+        # The phrase, not the bare repr: the message also renders the whole
+        # vocabulary, so "'group' appears somewhere" passes even when the
+        # sentence names a different default.
+        problems = EventBank.validate_params({"distinct_by": "nope"})
+        phrase = f"defaulting to {_DEFAULT_DISTINCT_BY!r}"
+        assert any(phrase in problem for problem in problems), problems
