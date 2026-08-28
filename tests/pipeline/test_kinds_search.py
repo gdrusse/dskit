@@ -776,6 +776,25 @@ class TestPlannerRules:
         with pytest.raises(ConfigError, match="space must be a non-empty dict"):
             plan(parabola_document(tmp_path, pipeline=pipeline), registry)
 
+    def test_the_space_refusal_names_both_value_forms(self, tmp_path, registry):
+        # The refusal a user misreads first: it is the planner's ONE
+        # statement of the space rule that is not a comment, so it must
+        # name the same two value forms the planner actually accepts
+        # (list OR range dict) — a message saying only 'list of values'
+        # sends an author writing the continuous form looking for a bug
+        # that is not there.
+        spec = NodeSpec(
+            uses="hpo-grid",
+            params={"objective": "$val.metrics.loss", "space": ["theta.theta"]},
+        )
+        pipeline = parabola_pipeline()
+        pipeline["search"] = spec
+        with pytest.raises(ConfigError) as excinfo:
+            plan(parabola_document(tmp_path, pipeline=pipeline), registry)
+        message = str(excinfo.value)
+        assert "non-empty list of JSON scalars" in message
+        assert "range-spec dict" in message
+
     def test_a_search_node_defers_plan_time_validate_params(self, tmp_path, registry):
         # The fact the whole division of labour rests on, pinned: a search
         # node's `objective` is a $-reference BY CONTRACT (spec §8), so its

@@ -10,8 +10,10 @@ Four layers, mirroring ``tests/pipeline/test_kinds_search.py``:
 * planner — the spec §8 rules asserted THROUGH ``plan()`` (bad
   objective/space/stale consumers refused), including the continuous
   form: the planner owns the STRUCTURAL space rules and leaves the
-  range-spec grammar to this kind, so a spec-dict document plans and a
-  malformed one still refuses;
+  range-spec grammar to this kind, so a spec-dict document plans — and
+  so does a MALFORMED one, because a search node's params always defer
+  plan-time ``validate_params``; that refusal lands at node
+  construction, mid-run;
 * driver — end-to-end ``run_document`` with a PRIVATE registry on the
   parabola fixture (analytic argmin), for BOTH space forms, the winner
   re-applied by the driver so downstream consumes the tuned pass, plus
@@ -593,10 +595,11 @@ class TestPlannerRules:
 
     def test_continuous_specs_now_plan(self, tmp_path, registry):
         # Flipped DELIBERATELY at integration (the round-1 pinned gap):
-        # the planner now owns only the STRUCTURAL space rules (keys
-        # address declared params, winner-consistency) and leaves the
-        # VALUE grammar to the search kind's validate_params — which also
-        # runs at plan, so a malformed range spec still refuses there.
+        # the planner owns the STRUCTURAL space rules (keys address
+        # declared params, winner-consistency) plus the LIST shape, and
+        # passes a range DICT through untouched. The RANGE grammar is
+        # this kind's and it does NOT run at plan — see the next test for
+        # where it bites.
         search_params = {"space": {"theta.theta": {"low": 0.0, "high": 5.0}}}
         node_params = {
             "space": search_params["space"],
@@ -609,18 +612,26 @@ class TestPlannerRules:
         the_plan = plan(parabola_document(tmp_path, pipeline=pipeline), registry)
         assert "search" in the_plan.order
 
-    def test_a_malformed_range_spec_still_refuses_before_the_search_runs(self):
-        # The value grammar is the KIND's. A search node's params always
-        # carry a $-ref objective, so plan-time validate_params DEFERS
-        # (planner spec §9) — for hpo-grid's space values exactly as much
-        # as for these range specs. The kind's validator then refuses at
-        # NODE CONSTRUCTION, before the search executes anything.
+    def test_a_malformed_range_spec_refuses_at_construction_not_at_plan(
+        self, tmp_path, registry
+    ):
+        # WHERE the range grammar bites, pinned rather than asserted in
+        # prose. A search node's params always carry a $-ref objective, so
+        # plan-time validate_params DEFERS (planner._has_unresolved_ref) —
+        # for hpo-grid's space values exactly as much as for these range
+        # specs. So an INVERTED range plans clean: the kind's validator
+        # refuses at NODE CONSTRUCTION, which during a run lands after the
+        # upstream nodes have executed and the run dir exists.
+        bad_space = {"theta.theta": {"low": 5.0, "high": 0.0}}
         bad = {
-            "space": {"theta.theta": {"low": 5.0, "high": 0.0}},
+            "space": bad_space,
             "objective": "$val.metrics.loss",
             "n_trials": 4,
             "seed": 0,
         }
+        pipeline = parabola_pipeline(search_params={"space": bad_space})
+        the_plan = plan(parabola_document(tmp_path, pipeline=pipeline), registry)
+        assert "search" in the_plan.deferred_params
         problems = OptunaSearch.validate_params(bad)
         assert any("low" in p for p in problems)
         with pytest.raises(ConfigError, match="low"):

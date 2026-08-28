@@ -560,7 +560,8 @@ def _search_errors(key, spec, specs, roles, edges):
     if not isinstance(space, dict) or not space:
         problems.append(
             f"pipeline.{key}: search.space must be a non-empty dict of "
-            f"'node.param.path' -> list of values, got {space!r}"
+            f"'node.param.path' -> a non-empty list of JSON scalars or a "
+            f"non-empty range-spec dict, got {space!r}"
         )
     else:
         for target, grid in space.items():
