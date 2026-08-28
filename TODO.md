@@ -491,7 +491,7 @@ across runs is what is missing**, plus the wiring below.
       start, five fields kept; keys follow the declared post-override
       tree, references log as declared (never resolved); grammar parity
       with space keys pinned BOTH halves, mutation-proven.
-- [ ] **No tracking sink ships.** The seam is complete and deliberate —
+- [x] **No tracking sink ships.** The seam is complete and deliberate —
       `Tracker` protocol (`protocols.py:86`), `SINK_KINDS` +
       `register_sink_kind` (`base.py:1232`), a `tracking.sinks` config
       section — with only a test `memory` sink registered.
@@ -501,6 +501,21 @@ across runs is what is missing**, plus the wiring below.
       Gotcha to design around: `_Trackers` SWALLOWS per-sink exceptions
       (`driver.py:139-153`) so tracking can never fail a run — meaning a
       misconfigured sink logs nothing and says nothing.
+      **Landed this run (2026-08-28, E3):** the pack ships, defaulting to
+      a local sqlite store so it needs no server. The swallowing gotcha is
+      answered by validating LOUDLY at plan — an unknown scheme, an
+      unwritable path or an unreachable server fails `plan()`, never the
+      run — while a genuinely transient failure (sqlite lock contention)
+      degrades, because tracking must never kill a good run.
+      **This card also closed a latent identity defect:** `tracking` was
+      hash-GRADED, so declaring a sink — or merely repointing its store —
+      changed a document's identity and would have orphaned every run
+      directory keyed to it. `tracking` now joins `env`/`outputs`/
+      `schedule` as non-identity, via `NULLED_IDENTITY_SECTIONS`: it is
+      rendered UNDECLARED rather than removed, because every hash ever
+      written counted a `"tracking": null` key and popping it would have
+      moved them all. Absent, store A and store B now hash alike, and all
+      16 ledger hashes are byte-identical (that is the proof).
 - [x] **No cross-run comparison exists at all.** The CLI has
       `run`/`walkforward`/`plan`/`validate`/`nodemap` and nothing that
       lists runs with their metrics. Today you read `report.md` files by
