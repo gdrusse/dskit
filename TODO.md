@@ -563,9 +563,26 @@ across runs is what is missing**, plus the wiring below.
       That is defensible nested CV, but it costs folds x trials runs and
       yields a DIFFERENT winner per fold, so there is no single best config
       to ship. Decide the semantics, then test it.
-- [ ] **The intraday store is not on this machine** — `./ob` must be
+- [x] **The intraday store is not on this machine** — `./ob` must be
       re-acquired before any of this runs. Blocker zero for an actual
       experiment.
+      **Closed this run (2026-08-28, D2) — and the premise was stale:** the
+      store WAS on the machine (1.2 GB, last written Aug 26), so this was a
+      catch-up, not a re-acquisition. Brought current through the README
+      recipe: acquire → validate → certify → publish, every step exit 0.
+      **2,016,587 bars** (AAPL 1,097,321 / MSFT 919,266), 2021-01-01 →
+      2026-08-28T19:06Z, zero duplicate `(symbol, ts)` rows, and the seam
+      between the old and new snapshots is contiguous — old max 23:13Z, new
+      min 23:14Z, no overlap and no gap. `verify` reports 0 problems before
+      and after. Peak RSS 138 MB, nowhere near the 18 GB ceiling.
+      The card also proved A2's single-source `--mode` rewrite is a
+      behavioural NO-OP against a store acquired under the old config: the
+      registered source record still carries the pre-A2 payload, and
+      resolving both through `resolve_knobs` yields identical effective
+      knobs, so no re-registration was needed. NOT yet exercised:
+      `--mode live` (this card was scoped to backfill); the backfill cursor
+      is now within the free-tier 16-minute SIP clamp of the tape, which is
+      the safe moment to turn live on.
 
 Also required before the numbers mean anything, tracked above: `monitor`
 unset (you would be comparing last-epoch models, not best-epoch) and

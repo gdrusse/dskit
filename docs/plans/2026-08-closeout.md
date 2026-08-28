@@ -824,7 +824,7 @@ Intentional-move log (append `document → old-prefix → new-prefix → card`):
 | C6 | pending | | |
 | C7 | pending | | |
 | D1 | pending | | |
-| D2 | pending | | |
+| D2 | DONE | (no code; gitignored store) | Store was ALREADY present (1.2 GB, Aug 26) — the plan's "not on this machine" was stale, so this was catch-up not re-acquisition. 2,016,587 bars, 2021-01-01 → 2026-08-28T19:06Z, 0 duplicates, contiguous seam, verify clean before AND after, all CLI steps exit 0, peak RSS 138 MB. Also PROVED A2's single-source `--mode` rewrite is a behavioural no-op vs the pre-A2 store (identical resolved knobs; no re-registration). `--mode live` NOT exercised — D3 is the first consumer |
 | D3 | pending | | capstone |
 | D4 | pending | | |
 | D5 | pending | | wrap |
