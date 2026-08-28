@@ -96,6 +96,12 @@ REMAINING, in the plan's risk order:
       (1440) is one pytest-class factory, `driver.py` (1444) is long
       methods → 3d. Size alone is not the trigger; **doing several
       unrelated jobs is.**
+      **Landed this run (2026-08-28, B3):** clean 3-round loop; move
+      proven mechanical by AST-identity diff + empty hash gate; both
+      registers pinned reachable; re-export kept as a pinned safety net
+      (grep found NO live importer through kinds_flow); kinds_flow fully
+      converted, its ignore entry drained; banking behaviour tests stay
+      beside the driver integration run by design.
 - [ ] **Drain the pre-standard ignore list.** 73 modules sit in
       `pyproject.toml` under `per-file-ignores`; delete a module's entry when
       you convert it. That list IS the remaining work, in config form.

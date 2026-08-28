@@ -803,7 +803,7 @@ Intentional-move log (append `document → old-prefix → new-prefix → card`):
 | E5 | pending | | |
 | B1 | MERGED | b3237a7 | torch #1 · 5-round loop + orchestrator round-5 rulings (plan-time guard kept; sentence-equality pin + _ADAPTER_SUBJECT; docstrings to standard); new core helper abstract_class_problem; suite 2456/108, hash gate empty |
 | B2 | pending | | torch #2 |
-| B3 | pending | | |
+| B3 | MERGED | d157848 | CLEAN loop (3 rounds, no intervention — first); AST-identity proof of the mechanical move; kinds_flow converted + ignore drained; suite 2577/108, hash gate empty |
 | ADR-A…F | pending | | drafts ∥ W1 |
 | G1 | pending | | all W1 merged + ADRs approved |
 | C1 | pending | | |
