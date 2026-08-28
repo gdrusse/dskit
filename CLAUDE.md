@@ -284,6 +284,7 @@ python -m dskit.pipeline nodemap                 # synthetic demo run
 python -m dskit.pipeline run  <doc.json> --asof <YYYY-MM-DD> [--adapter yourpkg]
 python -m dskit.pipeline walkforward <doc.json> --asof <YYYY-MM-DD>  # one run per fold + summary
 python -m dskit.pipeline plan <doc.json>         # resolved DAG, no execution
+python -m dskit.pipeline runs [--root DIR]       # cross-run table: name/asof/hashes/metrics
 python -m dskit.pipeline validate <doc.json>     # shape + identity hash
 # also: demo / synthetic (legacy stage-list grammar)
 

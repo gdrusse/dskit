@@ -249,6 +249,7 @@ dskit/pipeline/
 ├── driver.py          LOAD -> IMPORT -> PLAN -> RESOLVE -> EXECUTE -> RECORD; run dirs;
 │                      run_walk_forward (one derived run per fold + summary)
 ├── runs.py            reads run dirs back: scan_runs / format_runs (the `runs` verb)
+├── markdown.py        the ONE pipe-table renderer every table here is built by
 ├── split_policy.py    split-assignment policies (record / event-open / event-close) + EventBounds
 ├── kinds_flow.py      filter, derive, concat, join, event-bank, eligibility, banking-report
 ├── kinds_table.py     table-file, table-write (digest-verified keyed tables)

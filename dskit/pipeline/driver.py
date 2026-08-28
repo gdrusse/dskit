@@ -84,6 +84,7 @@ from dskit.pipeline.env import load_env
 from dskit.pipeline.node import Node, NodeContext
 from dskit.pipeline.planner import _UNSEARCHABLE_ROLES
 from dskit.pipeline.planner import plan as plan_document
+from dskit.pipeline.runs import node_metrics, resolve_run_root
 
 __all__ = ["DocumentRunResult", "WalkForwardRunResult", "run_document", "run_walk_forward"]
 
@@ -700,19 +701,10 @@ def _collect_flags(order, node_outputs):
     return loud, notes
 
 
-def _node_metrics(outputs) -> dict:
-    """What a node's outputs contribute to the sinks: top-level numeric
-    scalars, plus every numeric leaf of an output literally named
-    ``metrics`` — never bulk payloads."""
-    out = {}
-    for key, value in outputs.items():
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            out[key] = value
-        elif key == "metrics" and isinstance(value, dict):
-            for mk, mv in value.items():
-                if isinstance(mv, (int, float)) and not isinstance(mv, bool):
-                    out[f"metrics.{mk}"] = mv
-    return out
+#: What a node's outputs contribute to the sinks. ONE name for the rule:
+#: `runs.node_metrics` reads the same rule back off the records, and two
+#: copies would drift the first time a numeric type is added here.
+_node_metrics = node_metrics
 
 
 # ---------------------------------------------------------------------------
@@ -887,11 +879,8 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
         )
 
         outputs_cfg = document.outputs
-        run_root = os.path.abspath(
-            os.path.expanduser(
-                (outputs_cfg.run_root if outputs_cfg is not None else "")
-                or "./pipeline_runs"
-            )
+        run_root = resolve_run_root(
+            outputs_cfg.run_root if outputs_cfg is not None else ""
         )
         run_dir = os.path.join(run_root, f"{document.name}-{asof}-{run_hash[:8]}")
         if os.path.isdir(run_dir) and os.listdir(run_dir):
@@ -1336,11 +1325,8 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
     spec = document.walkforward
     target, obj_path = parse_node_ref(spec.objective)
     outputs_cfg = document.outputs
-    run_root = os.path.abspath(
-        os.path.expanduser(
-            (outputs_cfg.run_root if outputs_cfg is not None else "")
-            or "./pipeline_runs"
-        )
+    run_root = resolve_run_root(
+        outputs_cfg.run_root if outputs_cfg is not None else ""
     )
     summary_dir = os.path.join(
         run_root, f"{document.name}-walkforward-{asof}-{document.hash[:8]}"

@@ -18,8 +18,13 @@ Two records are needed for metrics because the writer splits them: a
 node's top-level numeric outputs survive into its record, but a `metrics`
 DICT is summarized there as ``{"type": "dict", "len": n}`` and its numbers
 survive only in ``carry.json``. The reader overlays the two and applies
-the same numeric-leaf rule the driver applies when feeding its tracking
-sinks (see :func:`node_metrics`).
+the numeric-leaf rule :func:`node_metrics` — the very function the driver
+applies when feeding its tracking sinks — to the result. Where the
+overlay fails (a metrics dict too large or non-finite to carry), what
+remains is that SUMMARY MARKER, and the marker is a note about a
+measurement, not a measurement: mining its ``len`` would report a dict's
+key count as a number someone could plot. The reader drops it and says so
+(:attr:`RunSummary.notes`).
 
 Tier 1: stdlib only, no knowledge of any domain.
 """
@@ -30,6 +35,8 @@ import json
 import os
 from dataclasses import dataclass, field
 
+from dskit.pipeline.markdown import pipe_table
+
 __all__ = [
     "DEFAULT_RUN_ROOT",
     "RunProblem",
@@ -37,12 +44,13 @@ __all__ = [
     "format_runs",
     "node_metrics",
     "param_at",
+    "resolve_run_root",
     "scan_runs",
 ]
 
-#: Where runs land when a document declares no ``outputs.run_root``. The
-#: driver holds the same default; ``test_runs.py`` pins the agreement by
-#: running a rootless document and reading it back from here.
+#: Where runs land when a document declares no ``outputs.run_root`` — the
+#: ONE name for that default. The driver resolves its own write path
+#: through :func:`resolve_run_root` rather than restating the literal.
 DEFAULT_RUN_ROOT = "./pipeline_runs"
 
 #: The files a run directory is read through. `report.md` is absent on
@@ -58,21 +66,38 @@ _REQUIRED = ("name", "asof", "run_hash", "state")
 #: The fixed left-hand columns of the table, before params and metrics.
 _FIXED_COLUMNS = ("name", "asof", "state", "run", "doc")
 
-_MISSING = "—"
+
+def resolve_run_root(declared):
+    """Resolve what a document's ``run_root`` declaration means on disk.
+
+    Parameters
+    ----------
+    declared : str or None
+        ``outputs.run_root`` as declared; empty or None means
+        :data:`DEFAULT_RUN_ROOT`.
+
+    Returns
+    -------
+    str
+        The absolute path, with ``~`` expanded. Both the driver's
+        per-run writer and its walk-forward writer resolve through here,
+        so the default cannot move in one and not the other.
+    """
+    return os.path.abspath(os.path.expanduser(declared or DEFAULT_RUN_ROOT))
 
 
-def node_metrics(outputs) -> dict:
+def node_metrics(outputs):
     """Extract the numeric view of one node's outputs.
 
     Top-level numeric scalars, plus every numeric leaf of an output
     literally named ``metrics`` — never bulk payloads, and never
     booleans (``True`` is a verdict, not a measurement).
 
-    This restates ``driver._node_metrics``, which applies the same rule
-    to LIVE outputs on the writing side. The two are held together by a
-    pin (``TestMetricRulePin``) rather than shared, because ``driver.py``
-    is a pre-standard module whose docstring conversion is owed its own
-    commit.
+    This is THE rule, one name: ``driver._node_metrics`` is this
+    function, applied to live outputs on the writing side. It sees real
+    outputs only — the reader strips the writer's summary markers before
+    calling it (see :func:`_run_metrics`), so a node whose metrics are a
+    literal ``{"type": ..., "len": ...}`` mapping still measures.
 
     Parameters
     ----------
@@ -172,6 +197,11 @@ class RunSummary:
         The document as declared, for :func:`param_at`.
     mtime : float
         Directory mtime — the recency tiebreak between same-asof reruns.
+    notes : tuple of str, optional
+        What the run measured but this reader could not recover — a
+        metrics dict the writer summarized and could not carry. A blank
+        column and a missing measurement look identical, so the
+        difference is stated.
 
     Examples
     --------
@@ -200,17 +230,7 @@ class RunSummary:
     metrics: dict = field(default_factory=dict)
     config: dict = field(default_factory=dict)
     mtime: float = 0.0
-
-    @property
-    def dir_name(self) -> str:
-        """The run directory's own name, the label an operator recognises.
-
-        Returns
-        -------
-        str
-            The basename of ``run_dir``.
-        """
-        return os.path.basename(self.run_dir)
+    notes: tuple = ()
 
 
 def scan_runs(root=None):
@@ -236,7 +256,7 @@ def scan_runs(root=None):
         The run root does not exist — an empty root is a legitimate "no
         runs yet", a missing one is a wrong path.
     """
-    root = os.path.abspath(os.path.expanduser(root or DEFAULT_RUN_ROOT))
+    root = resolve_run_root(root)
     if not os.path.isdir(root):
         raise NotADirectoryError(f"no run root at {root}")
     runs, problems = [], []
@@ -263,6 +283,7 @@ def _read_run(run_dir):
     if absent:
         return None, f"{RESULT_FILE} is missing {', '.join(absent)}"
     config, _ = _load_json(os.path.join(run_dir, CONFIG_FILE))
+    metrics, notes = _run_metrics(run_dir)
     return (
         RunSummary(
             run_dir=run_dir,
@@ -271,9 +292,10 @@ def _read_run(run_dir):
             state=str(result["state"]),
             run_hash=str(result["run_hash"]),
             document_hash=str(result.get("document_hash", "")),
-            metrics=_run_metrics(run_dir),
+            metrics=metrics,
             config=config if isinstance(config, dict) else {},
             mtime=os.path.getmtime(run_dir),
+            notes=notes,
         ),
         "",
     )
@@ -290,22 +312,44 @@ def _load_json(path):
         return None, f"unreadable {os.path.basename(path)}: {exc}"
 
 
-def _run_metrics(run_dir) -> dict:
-    """Every node's numeric outputs, keyed ``<node>.<metric>``."""
+def _is_summary_marker(value):
+    """Report whether a value is ``driver._summarize``'s container marker."""
+    return (
+        isinstance(value, dict)
+        and set(value) == {"type", "len"}
+        and isinstance(value["type"], str)
+        and isinstance(value["len"], int)
+        and not isinstance(value["len"], bool)
+    )
+
+
+def _run_metrics(run_dir):
+    """Collect ``(metrics, notes)`` for one run directory.
+
+    Every node's numeric outputs, keyed ``<node>.<metric>``, plus a note
+    per measurement the records could not give back.
+    """
     carry, _ = _load_json(os.path.join(run_dir, CARRY_FILE))
     carried = carry if isinstance(carry, dict) else {}
-    metrics = {}
+    metrics, notes = {}, []
     for key, outputs in _node_outputs(run_dir).items():
-        merged = dict(outputs)
+        merged = {k: v for k, v in outputs.items() if not _is_summary_marker(v)}
         node_carry = carried.get(key)
         if isinstance(node_carry, dict):
             merged.update(node_carry)
+        recorded = outputs.get("metrics")
+        if _is_summary_marker(recorded) and recorded["type"] == "dict":
+            if "metrics" not in merged:
+                notes.append(
+                    f"{key}: its metrics dict was summarized in the record "
+                    "and too large or non-finite to carry — not tabulated"
+                )
         for metric, value in node_metrics(merged).items():
             metrics[f"{key}.{metric}"] = value
-    return metrics
+    return metrics, tuple(notes)
 
 
-def _node_outputs(run_dir) -> dict:
+def _node_outputs(run_dir):
     """``{node key: recorded outputs}`` from ``nodes/NN-<key>.json``."""
     nodes_dir = os.path.join(run_dir, NODES_DIR)
     if not os.path.isdir(nodes_dir):
@@ -321,7 +365,7 @@ def _node_outputs(run_dir) -> dict:
     return out
 
 
-def format_runs(runs, metrics=(), params=()) -> str:
+def format_runs(runs, metrics=(), params=()):
     """Tabulate scanned runs as a markdown pipe table.
 
     Parameters
@@ -338,8 +382,10 @@ def format_runs(runs, metrics=(), params=()) -> str:
     Returns
     -------
     str
-        The table, or a single ``no runs`` line when there is nothing to
-        show — an empty table would read as a rendering failure.
+        The table, rendered by :func:`~dskit.pipeline.markdown.pipe_table`
+        so a value reads the same here as in a run report, or a single
+        ``no runs`` line when there is nothing to show — an empty table
+        would read as a rendering failure.
     """
     runs = tuple(runs)
     if not runs:
@@ -353,30 +399,14 @@ def format_runs(runs, metrics=(), params=()) -> str:
             run.state,
             run.run_hash[:8],
             run.document_hash[:8],
-            *(_cell(param_at(run.config, path)) for path in params),
-            *(_cell(run.metrics.get(key)) for key in metric_columns),
+            *(param_at(run.config, path) for path in params),
+            *(run.metrics.get(key) for key in metric_columns),
         )
         for run in runs
     ]
-    lines = [
-        "| " + " | ".join(columns) + " |",
-        "|" + "---|" * len(columns),
-    ]
-    lines += ["| " + " | ".join(row) + " |" for row in rows]
-    return "\n".join(lines)
+    return "\n".join(pipe_table(columns, rows))
 
 
-def _all_metrics(runs) -> tuple:
+def _all_metrics(runs):
     """Every metric key any run reported, sorted."""
     return tuple(sorted({key for run in runs for key in run.metrics}))
-
-
-def _cell(value) -> str:
-    """One table cell: absent reads as a dash, never as an empty column."""
-    if value is None:
-        return _MISSING
-    if isinstance(value, float):
-        return f"{value:.6g}"
-    if isinstance(value, (dict, list, tuple)):
-        return json.dumps(value, sort_keys=True, default=str)
-    return str(value)

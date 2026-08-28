@@ -367,7 +367,7 @@ def cmd_walkforward(path, asof, adapters=()) -> int:
     return result.exit_code
 
 
-def cmd_runs(root=None, metrics=(), params=(), limit=None) -> int:
+def cmd_runs(root=None, metrics=(), params=(), limit=None):
     """Tabulate the runs under a run root, newest first.
 
     The cross-run view: identity, state and metrics for every run in one
@@ -383,8 +383,9 @@ def cmd_runs(root=None, metrics=(), params=(), limit=None) -> int:
     params : sequence of str, optional
         Dotted ``config.json`` paths to add as columns.
     limit : int, optional
-        Show only the newest N runs. The count of the rest is printed —
-        a truncation nobody sees is a lie about what ran.
+        Show only the newest N runs (N >= 1, refused by :func:`_a_shown_count`
+        otherwise). The count of the rest is printed — a truncation nobody
+        sees is a lie about what ran.
 
     Returns
     -------
@@ -398,7 +399,7 @@ def cmd_runs(root=None, metrics=(), params=(), limit=None) -> int:
     except OSError as exc:
         print(exc)
         return 1
-    shown = runs[:limit] if limit else runs
+    shown = runs if limit is None else runs[:limit]
     print(format_runs(shown, metrics=metrics, params=params))
     if len(shown) < len(runs):
         print(f"\n({len(runs) - len(shown)} older run(s) not shown — --limit)")
@@ -428,6 +429,22 @@ def cmd_nodemap() -> int:
             print(fh.read())
         print(f"(artifacts were written under {result.run_dir} — temporary dir)")
     return result.exit_code
+
+
+def _a_shown_count(text):
+    """``--limit N`` as an int >= 1 — a row count nobody could mean as 0."""
+    try:
+        count = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"--limit must be a whole number, got {text!r}"
+        ) from None
+    if count < 1:
+        raise argparse.ArgumentTypeError(
+            f"--limit must be at least 1, got {count} — showing zero or "
+            "negative runs is not a view of anything"
+        )
+    return count
 
 
 def _add_adapter_flag(parser) -> None:
@@ -514,10 +531,11 @@ def main(argv=None) -> int:
     )
     runs_p.add_argument(
         "--limit",
-        type=int,
+        type=_a_shown_count,
         default=None,
         metavar="N",
-        help="show only the newest N runs (the rest are counted, not hidden)",
+        help="show only the newest N runs, N >= 1 (the rest are counted, "
+        "not hidden)",
     )
     sub.add_parser(
         "nodemap",

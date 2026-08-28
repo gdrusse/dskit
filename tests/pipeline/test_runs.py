@@ -8,11 +8,15 @@ writer moved.
 import json
 import os
 import pathlib
+import re
 
 import pytest
 
+from dskit.pipeline import driver as driver_mod
 from dskit.pipeline.base import OutputsConfig
-from dskit.pipeline.driver import _node_metrics, run_document
+from dskit.pipeline.document import NodeSpec
+from dskit.pipeline.driver import run_document
+from dskit.pipeline.markdown import pipe_table, render_cell
 from dskit.pipeline.runs import (
     DEFAULT_RUN_ROOT,
     RunProblem,
@@ -20,6 +24,7 @@ from dskit.pipeline.runs import (
     format_runs,
     node_metrics,
     param_at,
+    resolve_run_root,
     scan_runs,
 )
 from dskit.pipeline.__main__ import main
@@ -113,6 +118,21 @@ class TestScan:
         runs, _ = scan_runs(DEFAULT_RUN_ROOT)
         assert [r.run_dir for r in runs] == [result.run_dir]
 
+    def test_only_one_module_names_the_default_run_root(self):
+        """Every writer of a run root resolves it through ONE name — a
+        second copy is how the walk-forward default drifts unnoticed."""
+        hits = sorted(
+            path.name
+            for path in (REPO / "dskit").rglob("*.py")
+            if '"./pipeline_runs"' in path.read_text(encoding="utf-8")
+        )
+        assert hits == ["runs.py"]
+
+    def test_resolve_run_root_is_what_the_declaration_means(self, tmp_path):
+        assert resolve_run_root("") == os.path.abspath(DEFAULT_RUN_ROOT)
+        assert resolve_run_root(None) == os.path.abspath(DEFAULT_RUN_ROOT)
+        assert resolve_run_root(str(tmp_path)) == str(tmp_path)
+
 
 class TestTable:
     def test_tabulates_the_declared_columns(self, two_runs):
@@ -145,9 +165,9 @@ class TestTable:
 
 
 class TestMetricRulePin:
-    """`node_metrics` restates the driver's private extraction rule (the
-    driver may not be edited to share it — it is a pre-standard module
-    cleared in its own commit). This pin is what keeps the two honest."""
+    """One rule, one name: the driver's write-side extraction and the
+    reader's are the SAME function object, not two copies held together
+    by a case list that can omit the knob someone adds next."""
 
     CASES = (
         {"score": 0.5, "flag": True, "name": "x", "rows": [1, 2]},
@@ -156,15 +176,108 @@ class TestMetricRulePin:
         {},
     )
 
-    def test_agrees_with_the_driver(self):
-        for case in self.CASES:
-            assert node_metrics(case) == _node_metrics(case), case
+    def test_the_driver_uses_this_very_function(self):
+        assert driver_mod._node_metrics is node_metrics
 
     def test_the_rule_itself(self):
         assert node_metrics(self.CASES[0]) == {"score": 0.5}
         assert node_metrics(self.CASES[1]) == {"metrics.loss": 0.25, "metrics.n": 12}
         assert node_metrics(self.CASES[2]) == {"n": 3}
         assert node_metrics(self.CASES[3]) == {}
+
+
+class TestSummarizedMetrics:
+    """A `metrics` dict the writer could not carry survives in the record
+    only as ``{"type": "dict", "len": n}``. That marker is a note about a
+    measurement, not a measurement."""
+
+    @pytest.fixture
+    def diverged_root(self, tmp_path):
+        """A run whose one scored node reports a non-finite loss — which
+        `driver._carryable` refuses, so carry.json cannot restore it."""
+        root = str(tmp_path / "pipeline_runs")
+        pipeline = {
+            "events": NodeSpec(uses="synth-events", params={"n_events": 8}),
+            "diverged": NodeSpec(
+                uses="tests.pipeline.test_driver:InfMetricsNode",
+                inputs={"events": "$events.events"},
+            ),
+        }
+        run_document(
+            banking_document(
+                pipeline=pipeline, outputs=OutputsConfig(run_root=root)
+            ),
+            asof=FIRST,
+            registry=make_registry(),
+        )
+        return root
+
+    def test_the_marker_is_never_mined_for_a_number(self, diverged_root):
+        (run,), problems = scan_runs(diverged_root)
+        assert problems == ()
+        assert "diverged.metrics.len" not in run.metrics
+        assert run.metrics["diverged.n"] == 3  # real metrics still tabulate
+
+    def test_the_unavailable_metrics_are_said_out_loud(self, diverged_root):
+        (run,), _ = scan_runs(diverged_root)
+        assert any("diverged" in note and "metrics" in note for note in run.notes)
+
+    def test_the_verb_prints_the_note(self, diverged_root, capsys):
+        assert main(["runs", "--root", diverged_root]) == 0
+        out = capsys.readouterr().out
+        assert "metrics.len" not in out
+        assert "diverged" in out.split("note")[-1]
+
+    def test_a_real_metrics_dict_is_not_mistaken_for_the_marker(self):
+        assert node_metrics({"metrics": {"type": 2, "len": 3}}) == {
+            "metrics.type": 2,
+            "metrics.len": 3,
+        }
+
+
+class TestSharedRenderer:
+    """Every markdown table this package emits is built by ONE renderer."""
+
+    def test_only_one_module_builds_a_markdown_table(self):
+        hits = sorted(
+            path.name
+            for path in (REPO / "dskit").rglob("*.py")
+            if '"---|"' in path.read_text(encoding="utf-8")
+        )
+        assert hits == ["markdown.py"]
+
+    def test_a_boolean_reads_the_same_everywhere(self):
+        run = RunSummary(
+            run_dir="/x/demo-2026-01-01-0badc0de",
+            name="demo",
+            asof=FIRST,
+            state="ran",
+            run_hash="0" * 64,
+            document_hash="1" * 64,
+            config={"strict": True},
+        )
+        assert render_cell(True) == "yes"
+        assert "| yes |" in format_runs([run], params=("strict",))
+
+    def test_a_pipe_in_a_value_cannot_shift_the_columns(self):
+        run = RunSummary(
+            run_dir="/x/demo-2026-01-01-0badc0de",
+            name="demo",
+            asof=FIRST,
+            state="ran",
+            run_hash="0" * 64,
+            document_hash="1" * 64,
+            metrics={"scorer.score": 1},
+            config={"tag": "a|b"},
+        )
+        header, _sep, row = format_runs([run], params=("tag",)).splitlines()
+        delimiters = r"(?<!\\)\|"  # the escaped pipe is content, not a column
+        assert len(re.findall(delimiters, row)) == len(re.findall(delimiters, header))
+        assert r"a\|b" in row
+
+    def test_a_row_of_the_wrong_width_is_refused(self):
+        with pytest.raises(ValueError, match="2 column"):
+            pipe_table(("a", "b"), [[1, 2, 3]])
 
 
 class TestVerb:
@@ -205,6 +318,15 @@ class TestVerb:
         assert out.count("synth-banking") == 1
         assert "1 older run" in out
 
+    def test_a_non_positive_limit_is_refused_not_ignored(self, two_runs, capsys):
+        """`--limit 0` asked for nothing; printing everything is the
+        opposite answer, and a negative slices from the wrong end."""
+        root, _ = two_runs
+        for bad in ("0", "-5"):
+            with pytest.raises(SystemExit):
+                main(["runs", "--root", root, "--limit", bad])
+            assert "at least 1" in capsys.readouterr().err
+
     def test_skipped_entries_are_printed(self, two_runs, capsys):
         root, _ = two_runs
         os.mkdir(os.path.join(root, "someone-elses-dir"))
@@ -227,9 +349,19 @@ class TestDocsCurrency:
         readme = (REPO / "dskit/pipeline/README.md").read_text(encoding="utf-8")
         claude = (REPO / "dskit/pipeline/CLAUDE.md").read_text(encoding="utf-8")
         assert "runs.py" in readme and "runs.py" in claude
+        # markdown.py is a new module too — a tree that omits it sends the
+        # next agent to write a fourth table renderer.
+        assert "markdown.py" in readme and "markdown.py" in claude
         assert "dskit.pipeline runs" in readme
         what_ships = readme.split("## What ships")[1].split("\n## ")[0]
         assert "runs" in what_ships
+
+    def test_the_repo_wide_command_list_carries_the_verb(self):
+        """CLAUDE.md's Commands block is the canonical CLI inventory an
+        agent reads first; a verb absent from it does not exist to them."""
+        root_claude = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
+        commands = root_claude.split("## Commands")[1].split("\n## ")[0]
+        assert "dskit.pipeline runs" in commands
 
 
 def test_the_reader_is_on_the_package_surface():
