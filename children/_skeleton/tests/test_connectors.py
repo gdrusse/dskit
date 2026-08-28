@@ -69,6 +69,30 @@ def test_discover_names_the_stream(conn):
     assert stream["primary_key"] == ["id"]
 
 
+def test_the_start_date_default_is_named_once(conn, monkeypatch):
+    """``_DEFAULT_START`` is the ONE place the fallback date is written.
+
+    Three consumers read it — ``spec()``'s note (the knob catalogue a
+    config author reads), ``check``'s fail-fast gate, and the row
+    generator — and the template propagates to every child, so a
+    restated literal here becomes a restated literal everywhere.
+    Rebinding the constant must move all three; a copy survives the
+    rebinding and fails here.
+    """
+    from yourproject import connectors
+
+    monkeypatch.setattr(connectors, "_DEFAULT_START", "2030-06-01")
+    assert f"default {connectors._DEFAULT_START}." in \
+        conn.spec()["params"]["start_date"]["notes"]
+    records = [m for m in _read(conn, {"rows": 1}, ["samples"])
+               if m["type"] == "RECORD"]
+    assert [m["effective_date"] for m in records] == ["2030-06-01"]
+
+    monkeypatch.setattr(connectors, "_DEFAULT_START", "not-a-date")
+    with pytest.raises(AssetError, match="not an ISO"):
+        conn.check({"rows": 1})
+
+
 def test_read_emits_schema_records_then_state(conn):
     msgs = _read(conn, _config(), ["samples"])
     assert [m["type"] for m in msgs] == \

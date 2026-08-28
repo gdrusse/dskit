@@ -53,8 +53,11 @@ class SampleConnector(Connector):
                     "notes": "How many records one full pull yields.",
                 },
                 "start_date": {
+                    # BUILT from the constant, never restated: spec() is
+                    # the knob catalogue a config author reads, and a
+                    # note advertising a stale default is a config lie.
                     "notes": "ISO date of the first record (one day per "
-                             "row from here); default 2026-01-01.",
+                             f"row from here); default {_DEFAULT_START}.",
                 },
             },
         }
