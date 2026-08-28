@@ -1,27 +1,38 @@
 {
   "name": "model-sweep-demo",
-  "notes": "The 'compare many models' cookbook, built from pieces that already exist: SklearnFit is a DOORWAY (the estimator is named by the document, not by a wrapper class), and `estimator` is one of its declared params, so an ordinary search space over `model.estimator` IS the model sweep. There are no per-model classes anywhere in this document or in the pack — adding a candidate is one more string in the list below. Run: python -m dskit.pipeline run examples/pipeline/model-sweep.json --asof 2026-01-01",
+  "notes": "The 'compare many models' cookbook, built from pieces that already exist: SklearnFit is a DOORWAY (the estimator is named by the document, not by a wrapper class), and `estimator` is one of its declared params, so an ordinary search space over `model.estimator` IS the model sweep. There are no per-model classes anywhere in this document or in the pack — adding a candidate is one more string in the list below. The other half of an honest comparison is the CUT: `train_rows` keeps the sweep off the rows it selects on, and it is a readable node, not a hidden framework rule. Run: python -m dskit.pipeline run examples/pipeline/model-sweep.json --asof 2026-01-01",
   "pipeline": {
     "dataset": {
       "uses": "dskit.pipeline.synthetic_nodes:SynthEvents",
       "params": { "n_events": 104, "n_instruments": 2, "seed": 4 },
-      "notes": "role 'data': deterministic settled events with a mid that under-reacts to the truth. Swap this node for your own data source and the sweep below is unchanged — the candidates never mention the domain."
+      "notes": "role 'data': deterministic settled events with a mid that under-reacts to the truth, one per day per instrument from day 1000 (1972-09-27) — 104 days x 2 instruments = 208 events. Swap this node for your own data source and the sweep below is unchanged — the candidates never mention the domain."
     },
     "labels": {
       "uses": "dskit.pipeline.synthetic_nodes:SynthLabels",
       "inputs": { "events": "$dataset.events" }
     },
+    "train_rows": {
+      "uses": "filter",
+      "inputs": { "records": "$dataset.events" },
+      "params": {
+        "require_usable": false,
+        "where": [
+          { "field": "asof_ms", "op": "<=", "value": "$splits.train_end_ms" }
+        ]
+      },
+      "notes": "THE node that makes the comparison mean something. SklearnFit fits exactly what is wired into it and applies no split cut of its own (that is the pack's contract, deliberately: the cut must be a node someone can read). Without this filter every candidate would be fitted on the same val rows it is then scored on, and the sweep would crown whichever model memorises hardest rather than whichever generalises — measured on this document, rewiring `rows` to `$dataset.events` made RandomForest the 'winner' at ~0.03 on rows it had just been fitted on, while its honest score here is ~0.24 — LAST of the six, behind the plain linear baseline it appeared to beat. The `$splits.train_end_ms` reference is the walk-forward idiom, so this node moves with the cut instead of restating it."
+    },
     "model": {
       "uses": "dskit.pipeline.libs.sklearn:SklearnFit",
       "mode": "train",
-      "inputs": { "rows": "$dataset.events" },
+      "inputs": { "rows": "$train_rows.records" },
       "params": {
-        "estimator": "sklearn.linear_model.LinearRegression",
+        "estimator": "sklearn.linear_model.Ridge",
         "features": ["mid"],
         "label": "settled_yes",
         "predict_method": "predict"
       },
-      "notes": "The estimator named here is the BASE pass; the sweep overrides it per trial, so this value is only the fallback the document runs with when nobody searches. `estimator_params` is deliberately absent: one params block serves every candidate, so it may carry only knobs they ALL accept (a constructor kwarg one candidate has never heard of is refused by that candidate at fit time). `seed` is absent for the same reason — SklearnFit refuses a seed the estimator would never read, and LinearRegression/SVR/KNeighbors take no random_state, so the forest here is unseeded on purpose. To tune ONE model's hyperparameters instead, pin `estimator` and put its own knobs in the space (e.g. 'model.estimator_params.alpha')."
+      "notes": "The estimator named here is the BASE pass; the sweep overrides it per trial, so this value is only the fallback the document runs with when nobody searches — deliberately NOT the candidate that wins, so a reader can see in artifacts/model/model.joblib.json which estimator the surviving pass actually fitted. `estimator_params` is deliberately absent: one params block serves every candidate, so it may carry only knobs they ALL accept (a constructor kwarg one candidate has never heard of is refused by that candidate at fit time). `seed` is absent for the same reason — SklearnFit refuses a seed the estimator would never read, and LinearRegression/SVR/KNeighbors take no random_state, so the forest here is unseeded on purpose. To tune ONE model's hyperparameters instead: pin `estimator`, add `estimator_params` to this params block with a starting value, and only then address its knobs in the space (e.g. 'model.estimator_params.alpha'). All three steps — overrides may address only params the node ALREADY declares, so skipping the second one refuses at plan."
     },
     "validate": {
       "uses": "validate",
@@ -31,7 +42,7 @@
         "outcomes": "$labels.outcomes"
       },
       "params": { "split": "val", "metric": "brier", "min_events": 5 },
-      "notes": "The comparison metric — the ONE criterion every candidate is judged by, declared here rather than hidden inside a framework. Selection reads the val split only; the planner refuses a search whose objective comes from train or test."
+      "notes": "The comparison metric — the ONE criterion every candidate is judged by, declared here rather than hidden inside a framework. It reads the val split of the full stream, which is disjoint from `train_rows` by construction; the planner separately refuses a search whose objective comes from train or test, and the test split is never read by this document at all."
     },
     "sweep": {
       "uses": "hpo-grid",
@@ -49,7 +60,7 @@
         "objective": "$validate.metrics.loss",
         "select": "min"
       },
-      "notes": "The estimator LIST is config, not code — this is the whole 'sweep the common models' feature. Exhaustive by default (no n_trials): 6 candidates, 6 trials, one fit each, then the winner is re-applied so downstream consumes the tuned pass. The list is sklearn-only ON PURPOSE so this example runs on dskit[sklearn] alone; boosted-tree libraries with an sklearn-compatible API drop straight in once installed — add 'lightgbm.LGBMRegressor' (pip install 'dskit[lightgbm]') beside these, and xgboost/catboost the same way. Spelling: SklearnFit takes a DOTTED import path (module.ClassName); 'lightgbm:LGBMRegressor' with a colon is refused at plan. Swap `uses` to 'dskit.pipeline.libs.optuna:OptunaSearch' for TPE sampling over the same list."
+      "notes": "The estimator LIST is config, not code — this is the whole 'sweep the common models' feature. Exhaustive by default (no n_trials): 6 candidates, 6 trials, one fit each, then the winner is re-applied so downstream consumes the tuned pass. On this synthetic market the plain LinearRegression wins, because the quoted mid is a shrunken affine function of the truth and there is no interaction for a tree to find — a useful reminder that a sweep answers which model fits THIS data, never which family is better. The list is sklearn-only ON PURPOSE so this example runs on dskit[sklearn] alone; boosted-tree libraries with an sklearn-compatible API drop straight in once installed — add 'lightgbm.LGBMRegressor' (pip install 'dskit[lightgbm]') beside these, and xgboost/catboost the same way, always as a DOTTED import path ('lightgbm:LGBMRegressor' with a colon is refused at plan). To sample the same space with TPE instead, swapping `uses` to 'dskit.pipeline.libs.optuna:OptunaSearch' is NOT enough on its own — that node declares its own knobs, so also drop `select`, add `direction` ('minimize'), and add the required `n_trials` and `seed` (its sampler's determinism contract). examples/pipeline/optuna-search.json is that shape, worked."
     },
     "report": {
       "uses": "dskit.pipeline.synthetic_nodes:SynthReport",
@@ -61,10 +72,11 @@
     }
   },
   "splits": {
-    "kind": "random",
-    "train_frac": 0.8,
-    "val_frac": 0.2,
-    "seed": 7
+    "kind": "time",
+    "train_end_ms": 92620800000,
+    "val_end_ms": 93916800000,
+    "test_end_ms": 95299200000,
+    "notes": "TIME cuts, not `kind: random`, because `train_rows` above has to be able to NAME the train boundary — a random assignment hashes the event's cluster and exposes no instant a filter could reference. The three values are days 1072 / 1087 / 1103 in epoch-ms, splitting the dataset's 104-day span 73 / 15 / 16 (146 train rows, 30 val, 32 test). Test is reserved and never read here: selection is a val-split job."
   },
   "outputs": { "run_root": "" }
 }

@@ -71,11 +71,15 @@ fits exactly what was wired in.
 
 **The estimator cookbook.** Because ``estimator`` is a declared param on
 a ``train``-role node, a search space over ``model.estimator`` IS a model
-sweep — ``examples/pipeline/model-sweep.json`` runs exactly the list
-below and picks a winner on the val split. There is deliberately no
-registry of per-model classes: each would re-do what the doorway already
-does, and be one more place to drift. Spell the estimator as a DOTTED
-import path (``module.ClassName``); a colon separator is refused at plan.
+sweep — ``examples/pipeline/model-sweep.json`` sweeps the six
+``sklearn.`` rows below (the seventh needs an extra, so the shipped
+example leaves it out) and picks a winner on the val split, fitting on
+train rows only through a ``filter`` node the document declares. There
+is deliberately no registry of per-model classes: each would re-do what
+the doorway already does, and be one more place to drift. Spell the
+estimator as a DOTTED import path (``module.ClassName``); a colon
+separator is refused at plan (pinned in
+``tests/pipeline_libs/test_sklearn.py``).
 
 | estimator | family | reach for it when |
 |---|---|---|
@@ -97,6 +101,14 @@ knobs they ALL accept: ``estimator_params`` and ``seed`` are omitted from
 the example on purpose (``LinearRegression``/``SVR``/``KNeighbors`` take
 no ``random_state``, and this pack refuses a seed the estimator would
 never read).
+
+A sweep is only as honest as its cut. Because this pack fits exactly what
+was wired in, a document that wires the FULL stream into the candidates
+and scores them on its own val rows selects in-sample, and the ranking it
+reports is a memorisation ranking — on the cookbook's synthetic market
+that inverts the result outright (measured: the forest "wins" at ~0.03
+leaky and comes LAST at ~0.24 honest, while the plain linear baseline it
+beat becomes the winner). Put the train cut upstream, in a node.
 
 Import cost: stdlib + ``dskit.pipeline`` only. sklearn and joblib are
 imported inside the run path exclusively (``tests/pipeline/test_purity.py``

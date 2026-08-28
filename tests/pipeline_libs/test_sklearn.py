@@ -12,9 +12,11 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+from types import SimpleNamespace
 
 import pytest
 
+from dskit.pipeline.base import ConfigError
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.document import PipelineDocument
 from dskit.pipeline.driver import run_document
@@ -122,6 +124,13 @@ def test_fit_params_unknown_keys_refused_by_name():
         ("estimator", "Ridge", "dotted import path"),
         ("estimator", "sklearn..Ridge", "dotted import path"),
         ("estimator", "1bad.Thing", "dotted import path"),
+        # The COLON form. Both the pack docstring and the model-sweep
+        # cookbook tell readers a colon is refused; TODO.md's own
+        # model-selection items spell it the other way
+        # ("lightgbm:LGBMRegressor"). Two claims, opposite signs — so the
+        # engine's answer is pinned here rather than left to prose.
+        ("estimator", "lightgbm:LGBMRegressor", "dotted import path"),
+        ("estimator", "sklearn.ensemble:RandomForestRegressor", "dotted import path"),
         ("estimator", "", "dotted import path"),
         ("estimator", 5, "dotted import path"),
         ("features", [], "non-empty list"),
@@ -875,28 +884,121 @@ def test_model_sweep_ships_without_the_lightgbm_extra():
     assert all(e.startswith("sklearn.") for e in sweep_space())
 
 
+def run_sweep_example(run_root, obj=None):
+    """Run the shipped cookbook (or a mutated copy of it) and return the
+    driver result. ``run_root`` is hash-excluded, so overriding it leaves
+    the document's identity untouched."""
+    obj = json.loads(SWEEP_EXAMPLE.read_text()) if obj is None else obj
+    obj["outputs"] = {"run_root": str(run_root)}
+    return run_document(PipelineDocument.from_obj(obj), asof=ASOF)
+
+
 def test_model_sweep_example_runs_end_to_end_and_picks_a_winner(tmp_path):
     pytest.importorskip("sklearn")
-    obj = json.loads(SWEEP_EXAMPLE.read_text())
-    obj["outputs"] = {"run_root": str(tmp_path)}  # hash-excluded override
-    result = run_document(PipelineDocument.from_obj(obj), asof=ASOF)
+    result = run_sweep_example(tmp_path)
     assert result.state == "ran" and result.exit_code == 0
     sweep = result.outputs["sweep"]
     # Exhaustive: one trial per candidate, each actually fitted.
     tried = [t["overrides"]["model.estimator"] for t in sweep["trials"]]
     assert tuple(tried) == SWEPT_ESTIMATORS
     assert sweep["best_score"] == min(t["score"] for t in sweep["trials"])
-    # The sweep SELECTS, it does not merely run: the ensemble beats every
-    # deterministic linear/kernel/neighbour candidate here by ~2x (the
-    # runner-up scores 0.056), so the bar is comfortably clear of the
+    # The sweep SELECTS, it does not merely run — and on an HONEST
+    # train-only fit the plain linear baseline wins this synthetic market
+    # (its mid is a shrunken affine function of the truth, so there is no
+    # interaction for a tree to find and the forest is the WORST of the
+    # six at ~0.24). Every rival here is deterministic; the winner's
+    # margin over the runner-up (kNN, 0.176) sits far outside the
     # unseeded forest's spread.
     assert sweep["best_params"] == {
-        "model.estimator": "sklearn.ensemble.RandomForestRegressor"
+        "model.estimator": "sklearn.linear_model.LinearRegression"
     }
-    assert sweep["best_score"] < 0.05
-    # The winner pass is what downstream consumed.
-    assert result.outputs["model"]["metrics"]["loaded"] == 0.0
-    assert os.path.isfile(result.outputs["model"]["artifact_path"])
+    assert sweep["best_score"] < 0.17
+
+
+def test_model_sweep_fits_on_the_train_split_only(tmp_path):
+    # THE leakage pin. A "compare many models" cookbook that fits on the
+    # rows it selects on crowns whichever candidate memorises hardest —
+    # verified: wired to the full stream the forest "won" at ~0.03 while
+    # scoring ~0.24 honestly. The `train_rows` filter upstream of `model`
+    # is what makes the comparison mean anything, so the row COUNTS are
+    # pinned: rewiring `model` back to `$dataset.events` moves n_rows to
+    # the full population and fails here.
+    pytest.importorskip("sklearn")
+    obj = json.loads(SWEEP_EXAMPLE.read_text())
+    doc = PipelineDocument.from_obj(obj)
+    result = run_sweep_example(tmp_path, obj)
+    assert result.state == "ran"
+    events = result.outputs["dataset"]["events"]
+    by_split = {"train": 0, "val": 0}
+    for event in events:
+        name = doc.splits.split_of(
+            SimpleNamespace(asof_ms=event["asof_ms"], cluster=event["cluster"])
+        )
+        if name in by_split:
+            by_split[name] += 1
+    assert by_split["train"] and by_split["val"]
+    assert by_split["train"] < len(events)  # a real cut, not the whole stream
+    assert result.outputs["model"]["metrics"]["n_rows"] == float(by_split["train"])
+    assert result.outputs["validate"]["metrics"]["n"] == by_split["val"]
+
+
+def test_model_sweep_winner_pass_is_what_downstream_consumed(tmp_path):
+    # `report` reads $validate.metrics.loss, and the document's notes say
+    # that is the WINNING model's loss — true only because the driver
+    # re-executes the dirty subgraph with the winning overrides. The
+    # sidecar records which estimator the surviving pass fitted, so it
+    # distinguishes the winner pass from the base pass; `loaded`/file
+    # existence do not (both hold for every train-mode pass).
+    pytest.importorskip("sklearn")
+    result = run_sweep_example(tmp_path)
+    artifact = result.outputs["model"]["artifact_path"]
+    assert os.path.isfile(artifact)
+    sidecar = json.loads(pathlib.Path(artifact + ".json").read_text())
+    winner = result.outputs["sweep"]["best_params"]["model.estimator"]
+    base = json.loads(SWEEP_EXAMPLE.read_text())["pipeline"]["model"]["params"]
+    assert winner != base["estimator"]  # else this pins nothing
+    assert sidecar["estimator"] == winner
+    assert result.outputs["validate"]["metrics"]["loss"] == pytest.approx(
+        result.outputs["sweep"]["best_score"]
+    )
+
+
+def test_model_sweep_optuna_swap_note_is_a_working_recipe():
+    # "Never document an escape hatch you did not build." The sweep note
+    # offers OptunaSearch over the same list; OptunaSearch's knobs are
+    # NOT hpo-grid's, so the note must state every edit. This pins the
+    # stated recipe against the engine, and the bare `uses` swap against
+    # the refusal it actually earns.
+    from dskit.pipeline.libs.optuna import OptunaSearch
+
+    sweep = json.loads(SWEEP_EXAMPLE.read_text())["pipeline"]["sweep"]
+    bare = OptunaSearch.validate_params(sweep["params"])
+    assert bare, "a bare `uses` swap must not be presented as sufficient"
+    swapped = {k: v for k, v in sweep["params"].items() if k != "select"}
+    swapped.update({"direction": "minimize", "n_trials": 6, "seed": 0})
+    assert OptunaSearch.validate_params(swapped) == []
+    # The note must NAME every knob the working recipe needed.
+    for knob in ("select", "direction", "n_trials", "seed"):
+        assert knob in sweep["notes"], knob
+
+
+def test_model_sweep_single_model_tuning_note_is_a_working_recipe():
+    # The `model` note's alternate recipe: pin the estimator and search
+    # its own knobs. Overrides may only address EXISTING params, so the
+    # recipe needs `estimator_params` declared in the node's params
+    # block — an edit the note must state, because the same note removes
+    # `estimator_params` from the shipped document.
+    obj = json.loads(SWEEP_EXAMPLE.read_text())
+    model = obj["pipeline"]["model"]
+    model["params"]["estimator"] = RIDGE
+    obj["pipeline"]["sweep"]["params"]["space"] = {
+        "model.estimator_params.alpha": [0.1, 1.0, 10.0]
+    }
+    with pytest.raises(ConfigError, match="declares no param 'estimator_params'"):
+        plan(PipelineDocument.from_obj(obj))
+    model["params"]["estimator_params"] = {"alpha": 1.0}
+    plan(PipelineDocument.from_obj(obj))  # the stated recipe, whole
+    assert "add `estimator_params`" in model["notes"]
 
 
 def test_lightgbm_resolves_through_the_doorway_with_no_wrapper(tmp_path):
