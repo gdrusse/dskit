@@ -510,14 +510,18 @@ class TestSpaceKeyGrammarParity:
     from.
     """
 
-    #: One node's params covering every shape the walk can meet.
+    #: One node's params covering every shape the walk can meet — and the
+    #: whole SEGMENT alphabet: ``T_max`` (uppercase head) and ``useAmp``
+    #: (uppercase inside) pin that neither grammar quietly narrows to
+    #: lowercase, which an all-lowercase fixture would let pass unseen.
     PARAMS = {
         "hidden_size": 32,
         "lr": 0.001,
         "monitor": "val_loss",
-        "opt": {"kind": "adam", "sched": {"warmup": 10}},
+        "opt": {"kind": "adam", "sched": {"warmup": 10, "T_max": 100}},
         "cuts": [1, 2],
         "empty": {},
+        "useAmp": True,
         "bankroll": {"$prev": "size.final_bankroll", "default": 1000.0},
     }
 

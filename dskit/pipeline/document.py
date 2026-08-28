@@ -279,9 +279,12 @@ def flatten_param_paths(node_key, params):
     node_key : str
         The node's key in the document's ``pipeline`` map.
     params : dict
-        That node's params. The driver passes the MATERIALIZED params —
-        the values the node ran with — so a reference never reaches here;
-        a caller that passes the document's text gets the reference
+        That node's params. The driver passes the MATERIALIZED params
+        filtered through its wiring rule
+        (:func:`dskit.pipeline.driver._tracked_value`), so most values
+        are the ones the node ran with but a param wired to another
+        node's output arrives as the ``$node.port`` string as written; a
+        caller that passes the document's text gets every reference
         spelled as written.
 
     Returns

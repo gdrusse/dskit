@@ -239,6 +239,12 @@ def _tracked_value(declared, resolved):
     """
     if is_node_ref(declared):
         return resolved if parse_node_ref(declared)[0] == SPLITS_SOURCE else declared
+    if is_prev_ref(declared):
+        # A carry SPEC is itself a dict, so it must resolve WHOLE before
+        # the dict branch below can walk it spec-against-value — a carry
+        # whose value is a dict would otherwise log a husk of Nones
+        # under the spec's own keys.
+        return resolved
     if isinstance(declared, dict) and isinstance(resolved, dict):
         return {k: _tracked_value(v, resolved.get(k)) for k, v in declared.items()}
     if isinstance(declared, list) and isinstance(resolved, list):
@@ -266,11 +272,13 @@ def _tracked_params(effective, order):
     effective : dict
         ``node key -> the params that node ran with`` (the winner pass's,
         where a search re-executed it), materialized and passed through
-        :func:`_tracked_value`. A node the run never REACHED — halted, or
-        after an abort — is absent: it has no params-in-effect, and
-        substituting its declaration would be the same lie in miniature.
-        A node that failed is present, since it was built and entered
-        with those params, and that config is what the failure is about.
+        :func:`_tracked_value`. A node with no params-in-effect is absent
+        — one the run never REACHED (halted, or after an abort), and one
+        whose FAILURE was the params materialization itself: substituting
+        the declaration would file references as values, the same lie in
+        miniature. A node that failed at or after construction is
+        present, since it was built and entered with those params, and
+        that config is what the failure is about.
     order : tuple of str
         Plan order, so the payload is built deterministically.
 

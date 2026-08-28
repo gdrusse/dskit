@@ -374,6 +374,43 @@ class TestTracking:
         ] == pytest.approx(first.outputs["size"]["final_bankroll"])
         assert second.prev_run == first.run_dir
 
+    def test_a_dict_valued_carry_logs_the_dict_the_run_used(
+        self, tmp_path, registry
+    ):
+        # A carry SPEC is a dict, so a carry whose VALUE is also a dict
+        # must not be walked spec-against-value — that files neither the
+        # spec nor the value but a husk of Nones under the spec's keys.
+        # The carry resolves whole, whatever shape it resolves to.
+        self.register_memory()
+
+        def run(asof):
+            pipeline = banking_pipeline()
+            pipeline["size"] = NodeSpec(
+                uses="synth-capital",
+                inputs=dict(pipeline["size"].inputs),
+                params={
+                    **pipeline["size"].params,
+                    "cfg": {"$prev": "size.positions", "default": {"lr": 0.1}},
+                },
+            )
+            doc = bdoc(
+                tmp_path,
+                pipeline=pipeline,
+                tracking=TrackingConfig(sinks=(SinkConfig(kind="memory"),)),
+            )
+            return run_document(doc, asof=asof, registry=registry)
+
+        first = run("2026-01-01")
+        logged = MemoryTracker.instances[-1].logged_params
+        assert first.state == "ran"
+        assert logged["size.cfg.lr"] == 0.1  # the dict default, first run
+        second = run("2026-01-08")
+        logged = MemoryTracker.instances[-1].logged_params
+        assert second.prev_run == first.run_dir
+        # Contract keys ('SYNA-0000') are unspellable, so the carried
+        # dict lands whole under the param's own path.
+        assert logged["size.cfg"] == first.outputs["size"]["positions"]
+
     def test_a_param_wired_to_a_node_output_logs_the_REFERENCE(
         self, tmp_path, registry
     ):
@@ -430,10 +467,36 @@ class TestTracking:
         # No key is ever re-sent with a DIFFERENT value (mlflow refuses that).
         assert all(last[k] == v for k, v in sink.payloads[0].items())
 
+    def test_a_node_whose_params_never_materialized_logs_none_of_them(
+        self, tmp_path, registry
+    ):
+        # 'Params in effect' means params that took effect. A node whose
+        # FAILURE is the params materialization never had any — logging its
+        # declaration would file references as values — so it contributes
+        # nothing, even though its state is 'error', not 'not_run'.
+        self.register_memory()
+        pipeline = banking_pipeline()
+        pipeline["clip"] = NodeSpec(
+            uses="synth-clip",
+            inputs=dict(pipeline["clip"].inputs),
+            params={**pipeline["clip"].params, "bad": "$splits.no_such_key"},
+        )
+        doc = bdoc(
+            tmp_path,
+            pipeline=pipeline,
+            tracking=TrackingConfig(sinks=(SinkConfig(kind="memory"),)),
+        )
+        result = run_document(doc, asof=ASOF, registry=registry)
+        logged = MemoryTracker.instances[-1].logged_params
+        assert result.node_states["clip"] == "error"
+        assert not [k for k in logged if k.startswith("clip.")]
+        assert logged["events.n_events"] == 432  # upstream still lands
+
     def test_a_node_that_never_ran_logs_no_params(self, tmp_path, registry):
         # 'Params in effect' means params that took effect: a node the run
-        # never reached has none. A node that FAILED does — it was built and
-        # entered with them, and that config is the point of the payload.
+        # never reached has none. A node that failed INSIDE ITS RUN does —
+        # it was built and entered with them, and that config is the point
+        # of the payload.
         self.register_memory()
         pipeline = banking_pipeline()
         pipeline["qhat"] = NodeSpec(
