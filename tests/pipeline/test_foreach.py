@@ -40,6 +40,7 @@ from dskit.pipeline.document import (
 )
 from dskit.pipeline.driver import run_document
 from dskit.pipeline.io import load_config
+from dskit.pipeline.node import DEFAULT_NODE_KINDS, resolve_uses
 from dskit.pipeline.planner import plan
 
 ASOF = "2026-01-01"
@@ -355,7 +356,8 @@ def tuned_longhand(**overrides):
         params={"shape": "table"},
     )
     # Template-major, key-minor — the expansion's fixed emission order,
-    # so the two node maps compare key for key and not just as sets.
+    # asserted key for key by the test of that name below (a `==` alone
+    # would compare the two maps as sets and leave this layout unpinned).
     for each_key in KEYS:
         shared[f"rows__{each_key.lower()}"] = replace(
             rows_template(),
@@ -555,7 +557,39 @@ class TestExpansion:
         )
         assert doc.expanded["rows__a"].params["tag"] == "prefix-$each"
 
-    def test_each_outside_a_template_is_legal_and_untouched(self):
+    def test_each_on_a_shared_node_of_a_foreach_document_is_untouched(self):
+        # The document MUST declare a `foreach`, or `_expand` returns
+        # before any expansion code runs and this pins nothing but
+        # `is_node_ref` tolerating the token. With one declared, the
+        # contrast IS rule 3: the same params dict, substituted inside
+        # the template and riding through as the literal token on the
+        # shared node beside it.
+        where = [{"field": "instrument", "op": "==", "value": EACH_TOKEN}]
+        doc = foreach_document(
+            pipeline={
+                "dataset": dataset_node(),
+                "keep": NodeSpec(
+                    uses="filter",
+                    inputs={"records": "$dataset.events"},
+                    params={"where": where},
+                ),
+                "both": NodeSpec(
+                    uses="concat",
+                    inputs={"records__each": "$rows.records"},
+                    params=concat_params(),
+                ),
+            }
+        )
+        assert doc.expanded["keep"].params["where"][0]["value"] == EACH_TOKEN
+        assert doc.expanded["rows__syna"].params["where"][0]["value"] == "SYNA"
+        # Untouched to the OBJECT: nothing rebuilt the shared node at all,
+        # which is the `_expand` docstring's "keeps their spec objects".
+        assert doc.expanded["keep"] is doc.pipeline["keep"]
+
+    def test_each_in_a_document_with_no_foreach_at_all_is_untouched(self):
+        # The other tail, kept beside the pin above rather than instead
+        # of it: with no `foreach` the expansion never runs and
+        # `expanded` IS the declared map, so the token is trivially safe.
         doc = PipelineDocument(
             name="outside",
             pipeline={
@@ -971,7 +1005,14 @@ class TestSearchSpaceFanOut:
         assert "qhat.min_train" not in space
 
     def test_the_expanded_space_is_the_longhand_twin_key_for_key(self):
-        assert tuned_document().expanded == tuned_longhand().pipeline
+        # "Key for key" means the ORDER too, spelled the way the flagship
+        # spells it: the toposort breaks ties on declaration order, so a
+        # `==` alone would compare these as sets and leave the fixture's
+        # template-major/key-minor layout — the emission order this whole
+        # comparison rests on — asserted by nothing.
+        expanded, longhand = tuned_document().expanded, tuned_longhand().pipeline
+        assert list(expanded.keys()) == list(longhand.keys())
+        assert expanded == longhand
 
     def test_a_shared_search_over_a_template_plans(self):
         the_plan = plan(tuned_document())
@@ -1001,6 +1042,64 @@ class TestSearchSpaceFanOut:
             )
         assert "qhat__syna.min_train" in message(exc)
         assert "qhat.min_train" in message(exc)
+
+    def test_a_non_search_kind_carrying_a_space_param_is_refused_at_plan(self):
+        # The rewrite is applied to the top-level `space` of EVERY shared
+        # node, not to search-role nodes only: roles live on the node
+        # CLASS and resolve at plan, while this is the shape layer, which
+        # resolves no classes. So a `filter` declaring one DOES come back
+        # re-aimed — and that is harmless only because it never reaches
+        # the engine. This is the pin that makes it so, not an assumption.
+        doc = foreach_document(
+            pipeline={
+                "dataset": dataset_node(),
+                "keep": NodeSpec(
+                    uses="filter",
+                    inputs={"records": "$dataset.events"},
+                    params={
+                        "where": [],
+                        SEARCH_SPACE_PARAM: {"rows.require_usable": [True]},
+                    },
+                ),
+                "both": NodeSpec(
+                    uses="concat",
+                    inputs={"records__each": "$rows.records"},
+                    params=concat_params(),
+                ),
+            }
+        )
+        assert doc.expanded["keep"].params[SEARCH_SPACE_PARAM] == {
+            "rows__syna.require_usable": [True],
+            "rows__synb.require_usable": [True],
+        }
+        with pytest.raises(ConfigError) as exc:
+            plan(doc)
+        assert "pipeline.keep" in message(exc)
+        assert SEARCH_SPACE_PARAM in message(exc)
+
+    def test_no_shipped_kind_but_the_search_ones_accepts_a_space_param(self):
+        # The refusal above, held across the whole shipped `uses:`
+        # vocabulary rather than for the one kind that fixture happens to
+        # name. DISCOVERED from the registry — which IS that vocabulary —
+        # so a kind added later joins this pin by existing rather than by
+        # someone remembering to extend a literal list. The registry is
+        # the honest scope, not a convenient one: `synthetic_nodes` is a
+        # test double that enumerates no allowed params at all, so it
+        # refuses no unknown one — an absence that predates `foreach` and
+        # says nothing about `space`.
+        kinds = sorted(DEFAULT_NODE_KINDS.kinds())
+        assert kinds, "the default registry is empty — this pin would be vacuous"
+        for name in kinds:
+            cls = resolve_uses(name).cls
+            named = [
+                p
+                for p in cls.validate_params({SEARCH_SPACE_PARAM: MIN_TRAIN_SPACE})
+                if SEARCH_SPACE_PARAM in p
+            ]
+            if cls.role == "search":
+                assert not named, name
+            else:
+                assert named, name
 
     def test_every_shipped_search_kind_names_the_space_param(self):
         # The document layer rewrites the key map the search kinds

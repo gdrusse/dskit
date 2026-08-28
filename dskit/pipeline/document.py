@@ -1326,7 +1326,7 @@ def _space_instances(target, targets):
 
 
 def _fanned_space(where, params, targets):
-    """Re-aim a search space's override paths at the fanned-out instances.
+    """Re-aim ANY node's top-level ``space`` paths at the instances.
 
     A ``space`` key is the one place the grammar spells a node key
     WITHOUT a ``$`` — it is an override path, not a wire — so rule 2
@@ -1334,6 +1334,25 @@ def _fanned_space(where, params, targets):
     that is not a node. ADR-0039 says a space key naming a template param
     expands per instance instead, which is what stops N instances from
     needing N unpinned copies of the same declaration.
+
+    This fans the top-level ``space`` key of EVERY node it is handed, not
+    of search-role nodes only, and it cannot do better: a role lives on
+    the node CLASS and is resolved at plan, while this is the shape
+    layer, which deliberately resolves no classes — teaching it to would
+    buy a cosmetic narrowing with a real architectural break. Within the
+    dict only keys whose HEAD names a foreach template are re-aimed;
+    every other key is carried across as written. So a non-search kind
+    declaring a top-level ``space`` does come back rewritten, and that is
+    harmless because such a document never reaches the engine: ``space``
+    is not among that kind's declared params, so default-deny refuses it
+    at plan. Pinned, rather than assumed, by
+    ``test_a_non_search_kind_carrying_a_space_param_is_refused_at_plan``
+    and — across the whole shipped kind vocabulary —
+    ``test_no_shipped_kind_but_the_search_ones_accepts_a_space_param``.
+    The harmlessness is exactly as wide as default-deny is: a class that
+    enumerates no allowed set (``synthetic_nodes``, the demo double)
+    refuses no unknown param at all, which is a property of that class
+    and not of ``space``.
 
     Unlike port fan-out this needs no opt-in marker: a ``Node`` declares
     no port set, so a port's fannability is unknowable, while a space
@@ -1384,9 +1403,9 @@ def _fanned_space(where, params, targets):
 def _instantiate(template, template_keys, key, slug, where):
     """One template node as its instance for one foreach key (rules 2-3).
 
-    Returns ``(spec, errors)``; the space keys of a search node inside a
-    template are re-aimed at THIS instance, the same way its references
-    are.
+    Returns ``(spec, errors)``; a top-level ``space`` inside a template
+    has its keys re-aimed at THIS instance, the same way its references
+    are — on any node, for the reason :func:`_fanned_space` gives.
     """
     rewritten = _rewrite_refs(template.params, template_keys, slug)
     params, errors = _fanned_space(
@@ -1739,8 +1758,11 @@ class PipelineDocument:
         derived map stays the declared one — the same object.
 
         A shared node is REBUILT only where the fan-out touched it — an
-        opt-in port, or a search space naming a template — so a document
-        whose shared nodes are all untouched keeps their spec objects.
+        opt-in port, or a top-level ``space`` naming a template — so a
+        document whose shared nodes are all untouched keeps their spec
+        objects. ``$each`` is NOT touched here: rule 3 substitutes inside
+        a template only, so the token rides through a shared node as the
+        literal string.
         """
         if self.foreach is None:
             return []
