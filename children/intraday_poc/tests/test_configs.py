@@ -51,20 +51,37 @@ def test_run_backtest_is_a_valid_walkforward_document():
 def test_the_two_documents_share_their_modelling_core():
     """Backtest and production fit must consume identical features or
     the backtest proves nothing — pinned by comparing the shared nodes'
-    params verbatim."""
+    params verbatim, modulo the one knob the two documents are allowed
+    to diverge on.
+
+    ``monitor`` is that knob: run-backtest.json wires val_rows and
+    selects each fold's checkpoint by validation loss (ADR-0035);
+    run-train.json wires no val_rows and leaves monitor undeclared. A
+    whitelist of hand-picked knob names would miss any OTHER knob
+    declared on only one document (an unpinned ``adapter``, a stray
+    ``max_log_lines``) and would miss ``monitor`` itself drifting off
+    its expected value — so this compares the full params dicts minus
+    the declared divergence, and pins the divergence's values too.
+    """
     with open(_path("run-train.json"), encoding="utf-8") as fh:
         train = json.load(fh)
     with open(_path("run-backtest.json"), encoding="utf-8") as fh:
         backtest = json.load(fh)
     assert train["pipeline"]["window"]["params"] == \
         backtest["pipeline"]["window"]["params"]
+    divergent = {"monitor"}
     for key in ("qhat_aapl", "qhat_msft"):
         t = train["pipeline"][key]["params"]
         b = backtest["pipeline"][key]["params"]
-        for knob in ("module", "module_params", "features", "label",
-                     "optimizer", "optimizer_params", "epochs", "lr",
-                     "loader", "device"):
-            assert t[knob] == b[knob], (key, knob)
+        t_core = {k: v for k, v in t.items() if k not in divergent}
+        b_core = {k: v for k, v in b.items() if k not in divergent}
+        assert t_core == b_core, key
+        assert "monitor" not in t, (
+            key, "run-train.json wires no val_rows; monitor must stay undeclared"
+        )
+        assert b["monitor"] == "val_loss", (
+            key, "run-backtest.json must select each fold's checkpoint on val_loss"
+        )
 
 
 def test_asset_model_validates_and_keeps_its_shape():
