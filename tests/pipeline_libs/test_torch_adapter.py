@@ -650,6 +650,114 @@ def test_a_loss_that_cannot_be_imported_is_refused_at_run(tmp_path):
         node.run(ctx(tmp_path), {"rows": flat_rows()})
 
 
+#: Rows the DoubleAdapter family reads — one value ``v`` and a label.
+def double_rows(n=16):
+    return [{"v": i / 10.0, "y": float(i % 2)} for i in range(n)]
+
+
+#: The knob is only real for an adapter that APPLIES it, and the declared
+#: family is where a foreign adapter arrives. ``DoubleAdapter`` hardcodes
+#: its objective (it does not set ``applies_loss``); this one goes through
+#: the doorway, which is the whole difference.
+class ObjectiveAdapter(DoubleAdapter):
+    """A declared adapter that applies the node's declared objective."""
+
+    applies_loss = True
+
+    def loss(self, module, batch):
+        x, y = batch
+        return self.build_loss()(module(x).reshape(-1), y)
+
+
+def declared_loss_params(adapter, **extra):
+    return {
+        "module": "torch.nn.Linear",
+        "adapter": ref_to(adapter),
+        "epochs": 2,
+        "loader": {"batch_size": 4, "seed": 3},
+        **extra,
+    }
+
+
+def test_an_adapter_that_ignores_the_objective_refuses_the_knob_at_plan():
+    """The knob is accepted by the NODE but applied by the ADAPTER, so an
+    adapter that hardcodes its objective must refuse ``loss`` by name — a
+    silently-ignored objective trains a different model than the document
+    declares, which is the exact defect the knob exists to prevent."""
+    problems = DeclaredTrain.validate_params(
+        declared_loss_params(DoubleAdapter, loss="torch.nn.functional:smooth_l1_loss")
+    )
+    assert any("applies_loss" in p and "DoubleAdapter" in p for p in problems), problems
+
+
+def test_an_adapter_that_ignores_the_objective_refuses_the_knob_at_run():
+    """The SAME sentence at ``build_adapter``, for the machine whose plan
+    could not import the adapter and so could not tell — a fit never
+    proceeds under an objective nobody applies. Pinned by equality against
+    the plan-side wording, as the abstract-hook refusal already is: two
+    doorways, one sentence, and no room to drift."""
+    declared = declared_loss_params(
+        DoubleAdapter, loss="torch.nn.functional:smooth_l1_loss"
+    )
+    node = DeclaredTrain("k", declared_loss_params(ObjectiveAdapter), mode="train")
+    with pytest.raises(ValueError) as caught:
+        node.build_adapter(declared)
+    assert str(caught.value) == "\n".join(
+        p for p in DeclaredTrain.validate_params(declared) if "applies_loss" in p
+    )
+
+
+def test_an_adapter_that_applies_the_objective_gets_the_declared_one(tmp_path):
+    """And the other side of that discrimination: an adapter that answers
+    through ``build_loss`` trains on the callable the document named."""
+    LOSS_CALLS.clear()
+    params = declared_loss_params(ObjectiveAdapter, loss=f"{__name__}:recording_huber")
+    assert DeclaredTrain.validate_params(params) == []
+    DeclaredTrain("k", params, mode="train").run(
+        ctx(tmp_path), {"rows": double_rows()}
+    )
+    assert LOSS_CALLS, "the declared loss was never called by the fit"
+
+
+def test_an_adapter_declares_whether_it_applies_the_objective():
+    """Default-deny: the ABC promises nothing, the shipped row-vector
+    adapter promises it, so the flag is a declaration and never a guess."""
+    assert TorchAdapter.applies_loss is False
+    assert RowVectorAdapter.applies_loss is True
+
+
+def test_a_module_loss_class_is_instantiated_like_an_optimizer(tmp_path):
+    """``torch.nn:HuberLoss`` is the spelling a torch user reaches for, and
+    the grammar says "name me a CLASS" — so a resolved class is CONSTRUCTED
+    here exactly as ``optimizer`` is, never called with the batch as its
+    constructor kwargs."""
+    fn = RowVectorAdapter({**FLAT_PARAMS, "loss": "torch.nn:HuberLoss"}).build_loss()
+    assert isinstance(fn, torch.nn.HuberLoss)
+    value = fn(torch.tensor([1.0, 2.0]), torch.tensor([1.0, 3.0]))
+    assert value.ndim == 0
+    out = DeclaredTrain(
+        "k", {**DECLARED_FLAT, "loss": "torch.nn:HuberLoss"}, mode="train"
+    ).run(ctx(tmp_path), {"rows": flat_rows()})
+    assert out["metrics"]["final_loss"] >= 0.0
+
+
+class NeedsAnArgumentLoss:
+    """A loss class whose constructor takes a required argument — no import
+    path can supply it, so the doorway must say so BY NAME."""
+
+    def __init__(self, weight):
+        self.weight = weight
+
+    def __call__(self, prediction, target):
+        return prediction.sum() * self.weight
+
+
+def test_a_loss_class_that_cannot_be_constructed_is_refused_by_name():
+    adapter = RowVectorAdapter({**FLAT_PARAMS, "loss": f"{__name__}:NeedsAnArgumentLoss"})
+    with pytest.raises(ValueError, match="NeedsAnArgumentLoss"):
+        adapter.build_loss()
+
+
 def test_import_library_class_requires_the_named_methods():
     """``requires`` refuses a resolvable path whose class lacks the method
     BY NAME — the plan-time honesty the declared grammar rests on."""
