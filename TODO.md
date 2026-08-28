@@ -133,13 +133,22 @@ found by diffing the documents against `DeclaredTrain._BASE_PARAMS` +
       a validation monitor there — left undeclared, and the resulting
       best-vs-last-epoch skew is declared in both documents + README and
       pinned deliberate by `test_configs.py`.
-- [ ] **No `loss` knob exists in the torch pack** — NOT config-only, a real
+- [x] **No `loss` knob exists in the torch pack** — NOT config-only, a real
       gap. `RowVectorAdapter.loss` (`libs/torch.py:493`) hardcodes
       `mse_loss`, and neither `_BASE_PARAMS` nor `_EXTRA_PARAMS` carries a
       `loss` entry, so changing to Huber/MAE — the obvious choice for
       fat-tailed return series — requires writing an adapter subclass. The
       pack exposes `optimizer` as a declared import path; `loss` should
       work the same way.
+      **Landed this run (2026-08-28, B2):** `loss` + `loss_params` as
+      declared import paths, optimizer parity, default
+      `torch.nn.functional:mse_loss` byte-identical. Three defects the
+      review caught and closed: the node's params are the ONLY read
+      (threaded as arguments, so an adapter's own knob can never shadow
+      the plan-validated objective); the `applies_loss` promise witnesses
+      BOTH hooks of the flow, so replacing either without re-declaring
+      ends it; a duck-typed adapter with no doorway keeps its pre-knob
+      behaviour and is refused BY NAME when an objective is declared.
 - [x] **`device` is never declared** — CPU-only by default. The knob exists
       (`libs/torch.py:873`, validated as a string, availability
       deliberately unchecked at plan). A GPU run is a document edit today

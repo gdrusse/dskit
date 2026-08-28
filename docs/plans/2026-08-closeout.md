@@ -812,7 +812,7 @@ Intentional-move log (append `document → old-prefix → new-prefix → card`):
 | E4 | MERGED | d24a088 | planner half was ALREADY in baseline (stale TODO claim); shipped the proof layer: continuous e2e, optuna-continuous.json example (ledger), hpo-grid refusal pins, flag retired; orchestrator round-5 fixes (ref-driven deferral truth ×4 sites, _strip_notes import); suite 2561/108 |
 | E5 | MERGED | d33385a | verify-first RAN the sweep (RF wins 6-candidate e2e); TWO TODO corrections proven by running (colon spelling refused — estimator grammar is dotted; mixed sweep cannot carry estimator_params/seed); lightgbm extra self-sufficient (transformers precedent); model-sweep.json in ledger c01ae84e…; suite 2598/109 |
 | B1 | MERGED | b3237a7 | torch #1 · 5-round loop + orchestrator round-5 rulings (plan-time guard kept; sentence-equality pin + _ADAPTER_SUBJECT; docstrings to standard); new core helper abstract_class_problem; suite 2456/108, hash gate empty |
-| B2 | pending | | torch #2 |
+| B2 | MERGED | ec0a3c7 | torch #2 · 5 loop rounds + orchestrator rulings (rogue ADR-0038 entry REVERTED — numbering is G1's; objective threaded from the node's one read so adapter_params cannot shadow it; promise re-keyed on both hooks; duck-typed adapters keep pre-knob behaviour); suite 2647/109, hash gate empty |
 | B3 | MERGED | d157848 | CLEAN loop (3 rounds, no intervention — first); AST-identity proof of the mechanical move; kinds_flow converted + ignore drained; suite 2577/108, hash gate empty |
 | ADR-A…F | pending | | drafts ∥ W1 |
 | G1 | pending | | all W1 merged + ADRs approved |
