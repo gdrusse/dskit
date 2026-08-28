@@ -725,12 +725,14 @@ class PinnedSearch(Node):
 
     @classmethod
     def validate_params(cls, params):
-        known = {"emit_winner", "infinite_winner", "objective", "space", "winner"}
+        known = {"boom", "emit_winner", "infinite_winner", "objective", "space", "winner"}
         return [] if set(params) <= known else ["unknown params"]
 
     def run(self, ctx, inputs):
         probe = {"theta.theta": 3.0}
         score = ctx.rerun(dict(probe))
+        if self.params.get("boom"):
+            raise RuntimeError("the search itself failed")
         out = {"best_score": score, "trials": [{"overrides": probe, "score": score}]}
         if self.params.get("infinite_winner"):
             out["best_params"] = {"theta.theta": float("inf")}
@@ -916,6 +918,26 @@ def test_the_winner_that_caused_a_flip_refusal_is_still_reported(tmp_path):
     meta = result.folds[0]["search"]["tune"]
     assert meta["winner"] == {"theta.theta": 2.0}  # the winner that flipped the gate
     assert "winner_reran" not in meta  # the apply never completed
+
+
+def test_a_search_that_failed_still_reports_the_trials_it_burned(tmp_path):
+    """The other winner-failure path: the search node itself raised, so
+    there is no winner to report — but the trials it executed were paid
+    for, and the fold row says how many."""
+    pipeline = hpo_pipeline(
+        switch_between_folds(),
+        uses="tests.pipeline.test_walkforward:PinnedSearch",
+        search_params={"boom": True},
+    )
+    result = run_walk_forward(
+        hpo_doc(tmp_path, pipeline, objective="$tune.best_score", folds=["2025-01-01"]),
+        asof=ASOF,
+    )
+    assert result.state == "error"
+    assert result.folds[0]["search"] == {"tune": {"trials_executed": 1}}
+    assert result.aggregate["search"] == {
+        "tune": {"n_folds_with_winner": 0, "n_distinct_winners": 0}
+    }
 
 
 def test_an_hpo_free_summary_is_byte_identical(tmp_path):
