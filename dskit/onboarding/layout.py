@@ -64,10 +64,10 @@ class OnboardingRoot:
         import tempfile
         ob = OnboardingRoot.create(tempfile.mkdtemp() + "/ob")
         ob.registry().model.name
-        'onboarding'
+        # -> 'onboarding'
         ob.state_path("vendor", "prices", "live").endswith(
             "state/vendor/prices-live.json")
-        True
+        # -> True
     """
 
     def __init__(self, root):

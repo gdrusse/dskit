@@ -100,9 +100,9 @@ class SqliteStore(Store):
         vid = store.put_record(
             AssetRecord(kind="entity", payload={"name": "AAPL"}, refs={}))
         store.get_record(vid).payload["name"]
-        'AAPL'
+        # -> 'AAPL'
         store.list_records("entity") == [vid]
-        True
+        # -> True
     """
 
     def __init__(self, root):

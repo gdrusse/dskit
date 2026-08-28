@@ -225,7 +225,10 @@ class WindowRows(Node):
 
 **Examples are illustrative and must NEVER use `>>>`** — use an indented `::`
 block. `>>>` promises a suite verified it, and nothing here collects doctests.
-(81 such lines already exist in `assets`/`onboarding`; convert on touch.)
+Mark expected output with a trailing `# value` comment on the producing line,
+or a leading `# ->` comment on its own line when the value spans lines or
+follows a raised exception — never a bare unmarked line, which reads as more
+code.
 
 **Enforced** by ruff `D` (numpy), with a `per-file-ignores` entry per
 unconverted module. **Delete the entry when you convert the module** — that

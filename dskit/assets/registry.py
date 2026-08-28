@@ -57,14 +57,14 @@ class Registry:
         e = reg.register("entity", {"name": "AAPL"}, origin="doctest")
         f = reg.register("feature", {"name": "mom_20d"}, refs={"entity": e})
         reg.state(f)                      # lifecycle starts at the model's initial
-        'draft'
+        # -> 'draft'
         reg.transition(f, "validated", origin="doctest")
         reg.state(f)
-        'validated'
+        # -> 'validated'
         reg.find("feature", "mom_20d") == [f]
-        True
+        # -> True
         reg.register("feature", {"name": "mom_20d"}, refs={"entity": e}) == f
-        True
+        # -> True
     """
 
     def __init__(self, store, model):

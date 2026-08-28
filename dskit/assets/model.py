@@ -78,9 +78,9 @@ class FieldSpec:
     Build a required field and an optional one::
 
         FieldSpec(type="string", required=True)   # the mandatory name field
-        FieldSpec(type='string', required=True, notes='')
+        # -> FieldSpec(type='string', required=True, notes='')
         FieldSpec(type="number", notes="row count at certification")
-        FieldSpec(type='number', required=False, notes='row count at certification')
+        # -> FieldSpec(type='number', required=False, notes='row count at certification')
 
     JSON form: ``{"type": "number", "notes": "row count at certification"}``.
     """
@@ -139,9 +139,9 @@ class RefSpec:
     Build a required ref and an optional one::
 
         RefSpec(kind="entity", required=True)   # a feature must name its entity
-        RefSpec(kind='entity', required=True, notes='')
+        # -> RefSpec(kind='entity', required=True, notes='')
         RefSpec(kind="source")                  # optional provenance pointer
-        RefSpec(kind='source', required=False, notes='')
+        # -> RefSpec(kind='source', required=False, notes='')
 
     JSON form: ``{"kind": "entity", "required": true}``.
     """
@@ -467,7 +467,7 @@ def load_model(path) -> AssetModel:
     --------
     Load a model document from disk::
 
-        model = load_model("examples/assets/model.json")   # doctest: +SKIP
+        model = load_model("examples/assets/model.json")
     """
     try:
         with open(path, encoding="utf-8") as fh:

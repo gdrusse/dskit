@@ -45,13 +45,13 @@ def onboarding_model() -> AssetModel:
     Build the model and inspect its kinds::
 
         m = onboarding_model()
-        sorted(m.kinds)  # doctest: +NORMALIZE_WHITESPACE
-        ['acquisition_job', 'certification', 'published_version', 'snapshot',
-         'source_config', 'validation_result']
+        sorted(m.kinds)
+        # -> ['acquisition_job', 'certification', 'published_version', 'snapshot',
+        #     'source_config', 'validation_result']
         sorted(k for k, ks in m.kinds.items() if ks.states)  # governed kinds
-        ['source_config']
+        # -> ['source_config']
         m.kinds["acquisition_job"].fields["mode"].required   # mode is first-class
-        True
+        # -> True
     """
     obj = {
         "name": "onboarding",

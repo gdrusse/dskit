@@ -53,15 +53,15 @@ class Lineage:
         run = reg.register("run_observation", {"name": "run-1"})
         out = reg.register("output", {"name": "signal"}, refs={"run": run})
         lin.add(run, out, relation="produced", phase="execution", origin="doctest")
-        True
+        # -> True
         lin.add(run, out, relation="produced", phase="execution")   # idempotent
-        False
+        # -> False
         lin.parents(out) == [run] and lin.descendants(run) == [out]
-        True
-        lin.add(out, run, relation="loops", phase="execution")  # doctest: +ELLIPSIS
-        Traceback (most recent call last):
-        ...
-        dskit.assets.base.AssetError: ...would create a cycle...
+        # -> True
+        lin.add(out, run, relation="loops", phase="execution")
+        # -> Traceback (most recent call last):
+        # ->     ...
+        # -> dskit.assets.base.AssetError: ...would create a cycle...
     """
 
     def __init__(self, registry):

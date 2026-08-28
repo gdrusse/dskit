@@ -90,12 +90,12 @@ def check_payload(spec, payload, refs):
             refs={"source": RefSpec(kind="source", required=True)})
         check_payload(spec, {"name": "prices"}, {"source": "ab" * 32})  # ok
         check_payload(spec, {"rows": True}, {})
-        Traceback (most recent call last):
-        ...
-        dskit.assets.base.AssetError: invalid asset operation (3 problems):
-          payload.rows must be number, got True
-          payload missing required field(s) ['name']
-          refs missing required ref(s) ['source']
+        # -> Traceback (most recent call last):
+        # ->     ...
+        # -> dskit.assets.base.AssetError: invalid asset operation (3 problems):
+        # ->   payload.rows must be number, got True
+        # ->   payload missing required field(s) ['name']
+        # ->   refs missing required ref(s) ['source']
     """
     errors = []
     if not isinstance(spec, KindSpec):
@@ -157,9 +157,9 @@ class AssetRecord:
         r.version_id() == AssetRecord(kind="entity", payload={"name": "AAPL"},
             refs={}, registered_at="2026-08-22T00:00:00+00:00",
             origin="cli", notes="doc").version_id()   # provenance never changes identity
-        True
+        # -> True
         len(r.version_id())
-        64
+        # -> 64
     """
 
     kind: str

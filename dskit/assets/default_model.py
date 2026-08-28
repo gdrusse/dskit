@@ -67,13 +67,13 @@ def default_model() -> AssetModel:
 
         m = default_model()
         len(m.kinds)
-        12
+        # -> 12
         sorted(k for k, ks in m.kinds.items() if not ks.states)  # record-only
-        ['artifact', 'output', 'run_observation']
+        # -> ['artifact', 'output', 'run_observation']
         m.kinds["feature"].refs["entity"].required     # features belong to entities
-        True
+        # -> True
         "feature" in str(m.kinds["target"].refs)       # targets ref no feature
-        False
+        # -> False
     """
     obj = {
         "name": "default",
