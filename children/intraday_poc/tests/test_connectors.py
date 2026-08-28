@@ -28,6 +28,10 @@ from intraday_poc.testing import StubBarsConnector
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIGS = os.path.join(CHILD_ROOT, "configs")
 
+#: The one shipped connector config — one source name, both modes
+#: (see test_configs.py::test_one_source_name_carries_both_pulls).
+SOURCE_CONFIG = "source-backfill.json"
+
 #: A small, past-dated stub config — 90 minutes of bars per symbol.
 STUB_CONFIG = {
     "symbols": ["AAPL", "MSFT"],
@@ -57,10 +61,9 @@ def _read(conn, config, streams, state=None, mode="live"):
 
 def test_spec_passes_its_own_gate():
     conn = AlpacaBarsConnector()
-    for name in ("source-backfill.json", "source-live.json"):
-        check_config(conn, _shipped(name))
+    check_config(conn, _shipped(SOURCE_CONFIG))
     with pytest.raises(AssetError, match="unknown key"):
-        check_config(conn, {**_shipped("source-live.json"), "surprise": 1})
+        check_config(conn, {**_shipped(SOURCE_CONFIG), "surprise": 1})
     with pytest.raises(AssetError, match="required knob"):
         check_config(conn, {"start": "2026-01-01"})
 

@@ -36,9 +36,10 @@ intraday_poc/
 │                   #   / select-one (score, on the PyomoSolve doorway)
 ├── models.py       # NextBarLSTM — run-path only, torch at top (see above)
 ├── live.py         # forward loop: clock gate → IEX bars → verified
-│                   #   artifact restore → the SAME pyomo pick → paper order
+│                   #   artifact restore → the SAME pyomo pick → paper order;
+│                   #   every knob READ from the run dir + source config
 └── testing.py      # StubBarsConnector — deterministic, no network
-configs/            # source-backfill / source-live / suite-bars /
+configs/            # source-backfill (the ONE source config) / suite-bars /
                     #   run-backtest (walkforward) / run-train / asset-model
 tests/              # conftest bootstrap + connectors/nodes/configs suites
 pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
@@ -56,11 +57,22 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
 - **`select-one` is role `score`, not `capital`** — deliberate: it scores
   the rule. Sizing cash with it means restoring the doorway's default
   `capital` role and wiring a `stat_test` survivors gate.
-- **SIP vs IEX**: historical pulls use `feed=sip` (free, consolidated,
-  end clamped 16 min back); live pulls use `feed=iex` (real-time-eligible,
-  sparse minutes possible — gap discipline handles it, never bridge).
-- Node keys `qhat_aapl`/`qhat_msft` are a CONTRACT with
-  `live.py:DEFAULT_ARTIFACTS` — rename both sides together.
+- **One source name, two modes**: `alpaca` is registered once with
+  `configs/source-backfill.json` and BOTH `--mode backfill` and
+  `--mode live` acquire through it (ADR-0014 keys the cursors). A second
+  source name would put live bars in a tree the run documents never read
+  — that bug shipped once; `test_one_source_name_carries_both_pulls`
+  pins it shut.
+- **SIP vs IEX**: every STORE pull uses `feed=sip` (free, consolidated,
+  end clamped 16 min back). Only the forward loop's own fetch uses IEX
+  (`live.py:LIVE_FEED`), because real-time SIP is not on the free tier —
+  sparse minutes possible, gap discipline handles it, never bridge.
+- **`live.py` restates nothing**: price field, gap bound and module class
+  come from `<run-dir>/config.json`, vendor knobs from the source config
+  (`--source-config`). Node keys `qhat_aapl`/`qhat_msft` are the default
+  artifact convention (`artifacts/qhat_<symbol>`); a document that names
+  them differently is served with `--artifact SYMBOL=PATH`, never an
+  edit to the loop.
 - `live.py` only ever constructs `TradingClient(..., paper=True)`.
   Keep it that way.
 

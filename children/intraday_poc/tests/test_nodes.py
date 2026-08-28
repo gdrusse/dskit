@@ -316,6 +316,15 @@ def test_bars_store_dedupes_bitemporally(tmp_path):
                                                      for r in records)
 
 
+def test_a_mistyped_source_refuses_loudly(tmp_path):
+    """A source name nothing ever acquired is an ERROR, not an empty
+    scan — the README said the opposite for a while, and an empty scan
+    would train a model on nothing and report success."""
+    node = BarsFromStore("bars", {"root": str(tmp_path), "source": "typo"})
+    with pytest.raises(AssetError, match="typo"):
+        node.run(None, {})
+
+
 def test_bars_fingerprint_digest_is_the_whole_snapshot_dump(tmp_path):
     """The digest recipe is FROZEN: sha256 of json.dumps(records,
     sort_keys=True) over the emitted snapshot. However the hash is

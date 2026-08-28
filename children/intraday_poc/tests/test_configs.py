@@ -26,6 +26,12 @@ BACKTEST_NODES = {"bars", "window", "aapl_train", "aapl_val", "msft_train",
 TRAINERS = ("qhat_aapl", "qhat_msft")
 DOCUMENTS = ("run-train.json", "run-backtest.json")
 
+#: ONE registered source, ONE connector config: both acquisition modes
+#: run through it, so live-acquired bars land in the tree the documents
+#: read (ADR-0014 keys the cursors, not the source name).
+SOURCE_NAME = "alpaca"
+SOURCE_CONFIGS = ("source-backfill.json",)
+
 #: Every knob each trainer node must DECLARE, in both documents. The
 #: engine has a working default for most of these; declaring them is
 #: the point — an undeclared knob is one nobody can see or tune. Note
@@ -206,11 +212,50 @@ def test_suite_bars_validates_and_names_its_rules():
 
 def test_source_configs_validate_against_the_connectors_spec():
     connector = AlpacaBarsConnector()
-    for name in ("source-backfill.json", "source-live.json"):
+    for name in SOURCE_CONFIGS:
         with open(_path(name), encoding="utf-8") as fh:
             config = json.load(fh)
         check_config(connector, config)  # default-deny against spec()
         connector._knobs(config)  # and the knob gate itself accepts them
+
+
+def test_one_source_name_carries_both_pulls():
+    """The registered source name, the documents, and the README tell
+    ONE story — because a second source name silently breaks modelling.
+
+    The child used to ship a second connector config registering
+    ``alpaca-live`` while both run documents read ``source: "alpaca"``.
+    Observations live at ``observations/<source>/`` and a document reads
+    one source, so every live-acquired bar landed in a tree nothing read
+    — no error, just an unused store. ADR-0014 already keys checkpoints
+    per (source, stream, MODE), which is precisely what makes the second
+    SOURCE unnecessary: one registration, two modes, two independent
+    cursors, one tree the documents can see.
+    """
+    shipped = sorted(name for name in os.listdir(CONFIGS)
+                     if name.startswith("source-"))
+    assert shipped == list(SOURCE_CONFIGS), (
+        "one connector config, or the modes can disagree on vendor knobs "
+        "again"
+    )
+    for doc_name in DOCUMENTS:
+        with open(_path(doc_name), encoding="utf-8") as fh:
+            doc = json.load(fh)
+        assert doc["pipeline"]["bars"]["params"]["source"] == SOURCE_NAME
+
+    with open(os.path.join(CHILD_ROOT, "README.md"), encoding="utf-8") as fh:
+        readme = fh.read()
+    assert f"register-source {SOURCE_NAME} " in readme
+    assert f"--config @configs/{SOURCE_CONFIGS[0]}" in readme
+    for mode in ("backfill", "live"):
+        assert f"--source {SOURCE_NAME} --stream bars --mode {mode}" in readme, (
+            f"the README must show the {mode} pull against the one "
+            "registered source"
+        )
+    assert "AssetError" in readme, (
+        "the README once claimed a mistyped source yields an empty scan; "
+        "it raises — see test_a_mistyped_source_refuses_loudly"
+    )
 
 
 def test_lookback_agrees_everywhere():

@@ -1,7 +1,0 @@
-{
-  "notes": "The FORWARD pull: the same connector class as the backfill, different knobs — two configs, one class (ADR-0014: backfill and live hold independent cursors because the platform keys checkpoints per (source, stream, mode), never because the connector branches). feed=iex because IEX is the free tier's real-time-eligible feed; a minute in which a symbol printed no IEX trade simply has no bar (downstream windowing refuses gaps rather than bridging them). Register as its own source and acquire with --mode live on a cadence (e.g. every minute or every few minutes during the session): python -m dskit.onboarding register-source alpaca-live --catalog-source alpaca-live-src --connector intraday_poc.connectors:AlpacaBarsConnector --config @configs/source-live.json --activate. start anchors the FIRST live pull only; from then on the mode's own cursor drives.",
-  "symbols": ["AAPL", "MSFT"],
-  "start": "2026-08-25",
-  "feed": "iex",
-  "adjustment": "raw"
-}

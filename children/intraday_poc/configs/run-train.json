@@ -1,6 +1,6 @@
 {
   "name": "intraday_poc-train",
-  "notes": "The PRODUCTION fit: one LSTM per symbol over every published bar, artifacts the live loop restores. Run from the child root after the backfill is published: python -m dskit.pipeline run configs/run-train.json --asof 2026-08-25 --adapter intraday_poc. Then point the forward loop at the run dir: python -m intraday_poc.live --run-dir <run dir>. The node keys qhat_aapl / qhat_msft are a CONTRACT with live.py's DEFAULT_ARTIFACTS table — rename both sides together or pass --artifact overrides.",
+  "notes": "The PRODUCTION fit: one LSTM per symbol over every published bar, artifacts the live loop restores. Run from the child root after the backfill is published: python -m dskit.pipeline run configs/run-train.json --asof 2026-08-25 --adapter intraday_poc. Then point the forward loop at the run dir: python -m intraday_poc.live --run-dir <run dir> --source-config configs/source-backfill.json. The loop reads THIS document back out of the run dir (config.json) for the price field, the gap bound and the declared module class, so none of it is restated there. The node keys qhat_aapl / qhat_msft are the artifact convention the loop falls back to (artifacts/qhat_<symbol>); rename them and serve with --artifact SYMBOL=PATH, never an edit to live.py.",
   "pipeline": {
     "bars": {
       "uses": "intraday_poc-bars",

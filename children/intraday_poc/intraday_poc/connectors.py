@@ -1,18 +1,27 @@
 """``connectors`` — the child's onboarding seam (four verbs, ADR-0013).
 
 One connector, one vendor: Alpaca Market Data v2 stock bars for the two
-symbols this PoC trades. The same class serves both pulls — the platform
-keys checkpoints per (source, stream, mode), so ``backfill`` (SIP
-consolidated history, free back to 2016, ``end`` clamped 16 minutes into
-the past per the free-tier gate) and ``live`` (IEX real-time, polled
-forward from its own cursor) are two SOURCE CONFIGS over this one class,
-never two classes (ADR-0014).
+symbols this PoC trades. ONE registered source (``alpaca``) and ONE
+config serve both pulls: the platform keys checkpoints per (source,
+stream, mode), so ``backfill`` (all the history there is) and ``live``
+(polled forward on a cadence) hold independent cursors without this
+connector branching and without a second source (ADR-0014). A second
+SOURCE NAME would be the bug this child once shipped — observations live
+at ``observations/<source>/`` and a run document reads one source, so
+bars acquired under another name reach no model.
+
+Both modes therefore pull the same feed: SIP consolidated history, free
+back to 2016, with ``end`` clamped 16 minutes into the past per the
+free-tier gate — which a live-mode pull simply trails by that much. The
+IEX feed is real-time-eligible and stays available as a knob, but the
+STORE is deliberately homogeneous; the forward loop's own real-time
+fetch (``live.py``) is where IEX is used.
 
 Cursor semantics, identical to the reference ``localfiles`` connector:
 state maps stream -> ``{"cursor": <max effective RFC-3339 ts emitted>}``;
 a pull fetches from ``max(config.start, cursor)`` and emits only bars
 strictly after the cursor, then checkpoints once. The cursor is shared
-across the configured symbols (one fetch returns both); an IEX minute in
+across the configured symbols (one fetch returns both); a minute in
 which only ONE symbol printed is still safe — the other symbol's bar for
 that minute arrives in a later pull and is client-side filtered only
 against the cursor, which cannot pass it, so the next pull's fetch window
