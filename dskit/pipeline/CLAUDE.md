@@ -173,6 +173,17 @@ on it without breaking its rulings.
   excludes it, so every walker composed of that predicate steps over it
   and outside a template it rides through as a literal. Substituted as a
   WHOLE value only; as a params dict KEY it refuses.
+- **A search `space` key is the one node reference spelled without a
+  `$`** — an override PATH, `'<node>.<param.path>'` — so the `foreach`
+  expansion re-aims it exactly as it re-aims a wire (ADR-0039, "search
+  spaces come for free"): at THIS instance inside a template, at EVERY
+  instance in a shared node, so N instances take one declaration instead
+  of N copies nothing pins. It needs no `__each` opt-in, because a head
+  either names a template or does not, where a port's fannability is
+  unknowable. The param name is `document.SEARCH_SPACE_PARAM`, imported
+  by the planner and the driver; a new params key whose KEYS address
+  other nodes must join that rewrite or it will address a template that
+  is not a node.
 - **A search `space` value's grammar is SPLIT, not the kind's alone** —
   the planner owns the structural rules (key shape, declared params,
   ancestors of the objective, winner-consistency) AND the one shape

@@ -82,6 +82,7 @@ __all__ = [
     "RandomSplitSpec",
     "ROLES",
     "ScheduleConfig",
+    "SEARCH_SPACE_PARAM",
     "SPLITS_SOURCE",
     "TrailingSplitSpec",
     "WalkForwardSpec",
@@ -170,8 +171,22 @@ FOREACH_SEP = "__"
 _EACH_PORT = FOREACH_SEP + EACH_TOKEN[1:]
 
 #: Every character a node key may not hold — replaced by ``_`` when a
-#: foreach key is slugged into one.
+#: foreach key is slugged into one. It restates the legal-character half
+#: of :data:`_NODE_KEY_OK`, which is why every GENERATED instance key is
+#: checked against that grammar in :meth:`PipelineDocument._expand`: the
+#: two must agree, and a runtime refusal is what pins them.
 _SLUG_BAD = r"[^a-z0-9_]"
+
+#: The search node's param whose dict KEYS are override PATHS addressing
+#: OTHER nodes' params (``'<node>.<param.path>'``) rather than values —
+#: the one place a node key is spelled without a ``$``. A head naming a
+#: foreach template is therefore re-aimed exactly as a reference is
+#: (ADR-0039: "search spaces come for free"). Named ONCE here and
+#: imported by the planner and the driver, which read the same map; each
+#: search KIND still declares the knob in its own ``_PARAMS`` (a
+#: default-deny vocabulary is a deliberate independent restatement),
+#: pinned by ``tests/pipeline/test_foreach.py``.
+SEARCH_SPACE_PARAM = "space"
 
 
 # ---------------------------------------------------------------------------
@@ -975,7 +990,7 @@ class WalkForwardSpec:
 
 
 def foreach_slug(key):
-    """The node-key-safe slug of one ``foreach`` key.
+    """Slug one ``foreach`` key into the name half of an instance key.
 
     Parameters
     ----------
@@ -1019,7 +1034,7 @@ def _each_key_errors(where, obj):
 
 
 def _template_node_errors(where, spec):
-    """The refusals a template node earns before any key is applied."""
+    """Collect the refusals a template node earns before any key is applied."""
     errors = []
     for port in spec.inputs:
         if port.endswith(_EACH_PORT):
@@ -1035,17 +1050,20 @@ def _template_node_errors(where, spec):
 
 @dataclass(frozen=True, slots=True)
 class ForeachSpec:
-    """Declared fan-out over a key list (ADR-0039): ONE template subgraph,
-    instantiated once per key at document construction.
+    """Declared fan-out over a key list (ADR-0039).
+
+    ONE template subgraph, instantiated once per key at document
+    construction.
 
     "One model per symbol" written longhand is N byte-identical node pairs
     whose only difference is a name and one param — and N unpinned copies
     of every search-space key. This section collapses that to one
     declaration. It is deliberately NOT a template language: no
     expressions, no conditionals, no nesting. The whole vocabulary is the
-    key list, the suffixing rule, reference rewrite inside the template,
-    the :data:`EACH_TOKEN` whole-value substitution, and a shared node's
-    opt-in ``<base>__each`` port.
+    key list, the suffixing rule, reference rewrite inside the template
+    (including a search space's override PATHS, which name nodes without
+    a ``$``), the :data:`EACH_TOKEN` whole-value substitution, and a
+    shared node's opt-in ``<base>__each`` port.
 
     ``keys`` is SORTED and pinned as a tuple: keys are a set, so sorting
     beats refusing-unless-sorted. A key beginning ``$`` refuses, because
@@ -1098,6 +1116,7 @@ class ForeachSpec:
     notes: str = ""
 
     def __post_init__(self):
+        """Validate the section and pin its key list, or raise ConfigError."""
         errors = []
         self._check_keys(errors)
         self._check_templates(errors)
@@ -1165,7 +1184,7 @@ class ForeachSpec:
                     _template_node_errors(f"foreach.pipeline.{key}", spec)
                 )
 
-    def to_obj(self) -> dict:
+    def to_obj(self):
         """Serialize this section — the identity payload, all of it.
 
         Returns
@@ -1183,7 +1202,7 @@ class ForeachSpec:
         }
 
     @classmethod
-    def from_obj(cls, obj) -> "ForeachSpec":
+    def from_obj(cls, obj):
         """Rebuild one ``foreach`` section from its serialized form.
 
         Parameters
@@ -1232,9 +1251,11 @@ class ForeachSpec:
 
 
 def _rewrite_refs(obj, template_keys, slug):
-    """``obj`` with every reference naming a template key aimed at that
-    template's instance for one key (ADR-0039 rule 2). Shared-node and
-    ``$splits`` references pass untouched."""
+    """Aim every reference naming a template key at that template's instance.
+
+    ADR-0039 rule 2, for one key. Shared-node and ``$splits`` references
+    pass untouched.
+    """
     if is_prev_ref(obj):
         node, path, default = parse_prev_ref(obj)
         head = _instance_key(node, slug) if node in template_keys else node
@@ -1252,9 +1273,11 @@ def _rewrite_refs(obj, template_keys, slug):
 
 
 def _substitute_each(obj, key):
-    """``obj`` with every value that is EXACTLY :data:`EACH_TOKEN` replaced
-    by ``key``, at any depth (ADR-0039 rule 3). Whole values only — a
-    string that merely CONTAINS the token is left alone."""
+    """Replace every value that is EXACTLY :data:`EACH_TOKEN` with ``key``.
+
+    ADR-0039 rule 3, at any depth. Whole values only — a string that
+    merely CONTAINS the token is left alone.
+    """
     if isinstance(obj, str):
         return key if obj == EACH_TOKEN else obj
     if isinstance(obj, dict):
@@ -1264,14 +1287,108 @@ def _substitute_each(obj, key):
     return obj
 
 
-def _instantiate(template, template_keys, key, slug):
-    """One template node as its instance for one foreach key (rules 2–3)."""
+def _space_instances(target, targets):
+    """Name the key(s) one space key becomes — itself, or one per instance."""
+    head = target.split(".", 1)[0] if isinstance(target, str) else None
+    names = targets.get(head)
+    if not names:
+        return (target,)
+    return tuple(name + target[len(head) :] for name in names)
+
+
+def _fanned_space(where, params, targets):
+    """Re-aim a search space's override paths at the fanned-out instances.
+
+    A ``space`` key is the one place the grammar spells a node key
+    WITHOUT a ``$`` — it is an override path, not a wire — so rule 2
+    would step straight over it and leave the key addressing a template
+    that is not a node. ADR-0039 says a space key naming a template param
+    expands per instance instead, which is what stops N instances from
+    needing N unpinned copies of the same declaration.
+
+    Unlike port fan-out this needs no opt-in marker: a ``Node`` declares
+    no port set, so a port's fannability is unknowable, while a space
+    key's head either names a template or does not, and a head naming one
+    could not have been a legal document before. Only the TOP-LEVEL
+    params key is read, exactly where the planner and the driver read it
+    — a nested dict that happens to be called ``space`` is data.
+
+    Parameters
+    ----------
+    where : str
+        The node's error prefix, e.g. ``"pipeline.tune"``.
+    params : dict
+        The node's params, already reference-rewritten.
+    targets : dict
+        Template key -> the instance names one of its space keys becomes:
+        the single instance inside a template, and every instance for a
+        shared node.
+
+    Returns
+    -------
+    tuple
+        ``(params, errors)``: the params — the ORIGINAL object when no
+        key moved, so a node nothing touched keeps its spec — and the
+        list of problems, one per name two space keys both address.
+    """
+    space = params.get(SEARCH_SPACE_PARAM)
+    if not isinstance(space, dict):
+        return params, []
+    out, errors, sources = {}, [], {}
+    for target, grid in space.items():
+        for name in _space_instances(target, targets):
+            if name in out:
+                errors.append(
+                    f"{where}: search.{SEARCH_SPACE_PARAM} addresses {name!r} "
+                    f"twice — once as {sources[name]!r} and once as "
+                    f"{target!r}. A key naming a foreach template expands to "
+                    "EVERY instance, so naming an instance as well leaves two "
+                    "grids for one param and one of them silently loses"
+                )
+            sources[name] = target
+            out[name] = grid
+    if out == space:
+        return params, errors
+    return {**params, SEARCH_SPACE_PARAM: out}, errors
+
+
+def _instantiate(template, template_keys, key, slug, where):
+    """One template node as its instance for one foreach key (rules 2-3).
+
+    Returns ``(spec, errors)``; the space keys of a search node inside a
+    template are re-aimed at THIS instance, the same way its references
+    are.
+    """
     rewritten = _rewrite_refs(template.params, template_keys, slug)
-    return replace(
-        template,
-        inputs=_rewrite_refs(template.inputs, template_keys, slug),
-        params=_substitute_each(rewritten, key),
+    params, errors = _fanned_space(
+        where,
+        _substitute_each(rewritten, key),
+        {t: (_instance_key(t, slug),) for t in template_keys},
     )
+    return (
+        replace(
+            template,
+            inputs=_rewrite_refs(template.inputs, template_keys, slug),
+            params=params,
+        ),
+        errors,
+    )
+
+
+def _instance_name_errors(groups):
+    """Refuse a generated name the node-key grammar itself would not accept."""
+    errors = []
+    for tkey, instances in groups.items():
+        for name in instances:
+            if not re.match(_NODE_KEY_OK, name):
+                errors.append(
+                    f"foreach: instance key {name!r} (template {tkey!r}) does "
+                    f"not match the node-key grammar {_NODE_KEY_OK} — the slug "
+                    f"rule ({_SLUG_BAD}) and that grammar have drifted apart, "
+                    "and a generated key no declared key could spell would "
+                    "reach the plan, the run dir and the $prev namespace"
+                )
+    return errors
 
 
 def _collision_errors(shared, groups):
@@ -1301,7 +1418,7 @@ def _collision_errors(shared, groups):
 
 
 def _reach_message(key, where, source, groups):
-    """The one refusal text for a shared node naming a template key."""
+    """Word the one refusal a shared node naming a template key earns."""
     return (
         f"pipeline.{key}: {where} references the foreach template {source!r}, "
         f"which is not a node — the template exists once per key "
@@ -1329,7 +1446,7 @@ def _reach_errors(key, spec, groups):
 
 
 def _fanned_inputs(key, spec, groups, keys, slugs):
-    """A shared node's inputs after opt-in port fan-out (rule 4).
+    """Fan a shared node's opt-in ``<base>__each`` ports out (rule 4).
 
     Returns ``(inputs, errors)``. ``inputs`` is None when the node
     declares no ``<base>__each`` port (the caller then reuses the node
@@ -1528,6 +1645,7 @@ class PipelineDocument:
     )
 
     def __post_init__(self):
+        """Validate every section, derive the expansion, or raise ConfigError."""
         errors = []
         _check_str(errors, "name", self.name)
         if (
@@ -1590,6 +1708,10 @@ class PipelineDocument:
         shared nodes in declaration order, then template-major and
         key-minor. With no ``foreach`` nothing is installed and the
         derived map stays the declared one — the same object.
+
+        A shared node is REBUILT only where the fan-out touched it — an
+        opt-in port, or a search space naming a template — so a document
+        whose shared nodes are all untouched keeps their spec objects.
         """
         if self.foreach is None:
             return []
@@ -1599,7 +1721,9 @@ class PipelineDocument:
             t: tuple(_instance_key(t, slugs[k]) for k in keys)
             for t in self.foreach.pipeline
         }
-        errors = _collision_errors(self.pipeline, groups)
+        errors = _instance_name_errors(groups) + _collision_errors(
+            self.pipeline, groups
+        )
         if errors:
             return errors
         expanded = {}
@@ -1607,14 +1731,24 @@ class PipelineDocument:
             inputs, problems = _fanned_inputs(key, spec, groups, keys, slugs)
             errors.extend(problems)
             errors.extend(_reach_errors(key, spec, groups))
-            expanded[key] = spec if inputs is None else replace(spec, inputs=inputs)
+            params, problems = _fanned_space(f"pipeline.{key}", spec.params, groups)
+            errors.extend(problems)
+            changes = {}
+            if inputs is not None:
+                changes["inputs"] = inputs
+            if params is not spec.params:
+                changes["params"] = params
+            expanded[key] = replace(spec, **changes) if changes else spec
         templates = set(self.foreach.pipeline)
         for tkey, template in self.foreach.pipeline.items():
             # `groups[tkey]` was built from `keys` in that order two
             # statements above, so the zip pairs each instance NAME with
             # the key it was named for — one source, never two lists.
             for name, key in zip(groups[tkey], keys):
-                expanded[name] = _instantiate(template, templates, key, slugs[key])
+                expanded[name], problems = _instantiate(
+                    template, templates, key, slugs[key], f"pipeline.{name}"
+                )
+                errors.extend(problems)
         if errors:
             return errors
         object.__setattr__(self, "expanded", expanded)

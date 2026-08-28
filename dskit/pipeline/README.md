@@ -128,7 +128,11 @@ kinds resolve. Two more verbs — `demo`
   naming a template key rewrites to that key's instance; a `params` value that
   is EXACTLY `"$each"` becomes the key string (whole values only — never
   substring interpolation, and never a params KEY); and a SHARED node fans a
-  port out only when it opts in by writing it `<base>__each`. `pipeline` may
+  port out only when it opts in by writing it `<base>__each`. A search
+  `space` key naming a template — `"qhat.min_train"` — expands the same way,
+  to that instance inside a template and to every instance in a shared search
+  node, so tuning N instances is ONE declaration rather than N copies nothing
+  pins together. `pipeline` may
   be empty when a `foreach` is declared. No expressions, no conditionals, no
   nesting — this is fan-out, not templating. The section IS identity (adding a
   key is a different computation) while the expansion is DERIVED

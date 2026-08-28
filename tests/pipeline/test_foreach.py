@@ -16,6 +16,7 @@ path, not a second one.
 import json
 import os
 import pathlib
+import re
 from dataclasses import replace
 
 import pytest
@@ -23,8 +24,10 @@ import pytest
 from dskit.pipeline.__main__ import main
 from dskit.pipeline.base import ConfigError, OutputsConfig
 from dskit.pipeline.document import (
+    _NODE_KEY_OK,
     EACH_TOKEN,
     FOREACH_SEP,
+    SEARCH_SPACE_PARAM,
     ForeachSpec,
     NodeSpec,
     PipelineDocument,
@@ -33,17 +36,22 @@ from dskit.pipeline.document import (
     save_document,
 )
 from dskit.pipeline.driver import run_document
+from dskit.pipeline.io import load_config
+from dskit.pipeline.kinds_search import HpoGrid
 from dskit.pipeline.planner import plan
 
 ASOF = "2026-01-01"
 
 EXAMPLES = pathlib.Path(__file__).parents[2] / "examples" / "pipeline"
 
-#: Every shipped node-map/stage example's identity hash, restated here
-#: INDEPENDENTLY of the documents themselves (CLAUDE.md: a validation
-#: suite must not source its expectation from its subject). ADR-0039's
-#: hard constraint is that adding the ``foreach`` section moves none of
-#: them; this is what proves it. A new example ADDS a line — an existing
+#: Every shipped example's identity hash — node-map, ``foreach`` and the
+#: one stage-list document alike — restated here INDEPENDENTLY of the
+#: documents themselves (CLAUDE.md: a validation suite must not source
+#: its expectation from its subject). ADR-0039's hard constraint is that
+#: adding the ``foreach`` section moves none of them; this is what proves
+#: it. The test ENUMERATES the directory and requires a pin for every
+#: file it finds, so a new example that forgot its line fails here rather
+#: than shipping unpinned: a new example ADDS a line, and an existing
 #: line that has to change is a breaking identity move.
 PINNED_EXAMPLE_HASHES = {
     "model-sweep.json": (
@@ -87,6 +95,12 @@ PINNED_EXAMPLE_HASHES = {
     ),
     "foreach-fanout.json": (
         "242120e437f7adc6be129c109d8bcd68909d8d620e892f7f5e1b1391836b88dd"
+    ),
+    # The one STAGE-LIST example: a different grammar with its own
+    # loader and its own identity recipe, pinned here for the same
+    # reason — an example nothing pins can move unnoticed.
+    "synthetic.json": (
+        "4351c116ab2271e20956bb1524abdc908bffedfbc4e10a02656154c01b420cda"
     ),
 }
 
@@ -185,6 +199,132 @@ def longhand_document(**overrides):
 def message(exc):
     """One string holding every accumulated error of a ConfigError."""
     return " | ".join(exc.value.errors)
+
+
+#: The grid the tuned documents below search, declared ONCE so the
+#: ``foreach`` document and its longhand twin cannot drift apart in the
+#: one place the whole search-space rule is about.
+MIN_TRAIN_GRID = [1, 2]
+
+
+def tuned_shared(space):
+    """The shared nodes of a document tuning one template knob.
+
+    Parameters
+    ----------
+    space : dict
+        The search node's ``space``, the ONE thing the ``foreach`` form
+        and its longhand twin spell differently.
+
+    Returns
+    -------
+    dict
+        Node key -> :class:`NodeSpec`: the source, its labels, the
+        ``concat`` that fans the per-instance signals back into one
+        table, the val-split score over that table, and the search node
+        whose objective it is.
+    """
+    return {
+        "dataset": NodeSpec(
+            uses="dskit.pipeline.synthetic_nodes:SynthEvents",
+            params={"n_events": 40, "n_instruments": 2, "seed": 3},
+        ),
+        "labels": NodeSpec(
+            uses="dskit.pipeline.synthetic_nodes:SynthLabels",
+            inputs={"events": "$dataset.events"},
+        ),
+        "signals": NodeSpec(
+            uses="concat",
+            inputs={"signal__each": "$qhat.signal"},
+            params={"shape": "table"},
+        ),
+        "val": NodeSpec(
+            uses="dskit.pipeline.synthetic_nodes:SynthScore",
+            inputs={
+                "events": "$dataset.events",
+                "signal": "$signals.merged",
+                "outcomes": "$labels.outcomes",
+            },
+            params={"split": "val", "min_events": 1},
+        ),
+        "tune": NodeSpec(
+            uses="hpo-grid", params={"objective": "$val.metrics.loss", "space": space}
+        ),
+    }
+
+
+def qhat_template():
+    """The trainable template whose ``min_train`` the search overrides."""
+    return NodeSpec(
+        uses="dskit.pipeline.synthetic_nodes:SynthTrain",
+        mode="train",
+        inputs={"events": "$rows.records"},
+        params={"min_train": 1},
+    )
+
+
+def rows_template():
+    """The per-key filter template both tuned documents start from."""
+    return NodeSpec(
+        uses="filter",
+        inputs={"records": "$dataset.events"},
+        params={"where": [{"field": "instrument", "op": "==", "value": EACH_TOKEN}]},
+    )
+
+
+def tuned_document(**overrides):
+    """A ``foreach`` document whose SHARED search node tunes the template.
+
+    One space key names the template — ADR-0039's "search spaces come
+    for free" — where the longhand twin below spells one key per key.
+    """
+    base = {
+        "name": "tuned-fanout",
+        "pipeline": tuned_shared({"qhat.min_train": MIN_TRAIN_GRID}),
+        "splits": RandomSplitSpec(train_frac=0.8, val_frac=0.2),
+        "foreach": ForeachSpec(
+            keys=list(KEYS), pipeline={"rows": rows_template(), "qhat": qhat_template()}
+        ),
+    }
+    base.update(overrides)
+    return PipelineDocument(**base)
+
+
+def tuned_longhand(**overrides):
+    """The hand-written twin: two instances, and one space key per instance."""
+    shared = tuned_shared(
+        {
+            "qhat__syna.min_train": MIN_TRAIN_GRID,
+            "qhat__synb.min_train": MIN_TRAIN_GRID,
+        }
+    )
+    shared["signals"] = NodeSpec(
+        uses="concat",
+        inputs={
+            "signal__syna": "$qhat__syna.signal",
+            "signal__synb": "$qhat__synb.signal",
+        },
+        params={"shape": "table"},
+    )
+    # Template-major, key-minor — the expansion's fixed emission order,
+    # so the two node maps compare key for key and not just as sets.
+    for each_key in KEYS:
+        shared[f"rows__{each_key.lower()}"] = replace(
+            rows_template(),
+            params={"where": [{"field": "instrument", "op": "==", "value": each_key}]},
+        )
+    for each_key in KEYS:
+        slug = each_key.lower()
+        shared[f"qhat__{slug}"] = replace(
+            qhat_template(), inputs={"events": f"$rows__{slug}.records"}
+        )
+    base = {
+        "name": "tuned-fanout",
+        "pipeline": shared,
+        "splits": RandomSplitSpec(train_frac=0.8, val_frac=0.2),
+    }
+    base.update(overrides)
+    return PipelineDocument(**base)
 
 
 # ---------------------------------------------------------------------------
@@ -482,14 +622,21 @@ class TestIdentity:
         assert doc.foreach_groups == {}
 
     def test_the_shipped_example_hashes_are_unmoved(self):
-        for name, pinned in PINNED_EXAMPLE_HASHES.items():
+        # ENUMERATE the directory, never the pin dict: a test that walked
+        # its own expectations could not see the example nobody pinned,
+        # and would claim a coverage it lacks.
+        shipped = sorted(path.name for path in EXAMPLES.glob("*.json"))
+        assert shipped == sorted(PINNED_EXAMPLE_HASHES), (
+            "every document in examples/pipeline needs an identity pin here"
+        )
+        for name in shipped:
             path = EXAMPLES / name
-            if not path.exists():  # pragma: no cover — a stage-grammar example
-                continue
             raw = json.loads(path.read_text(encoding="utf-8"))
-            if "pipeline" not in raw and "foreach" not in raw:
-                continue
-            assert load_document(path).hash == pinned, name
+            # The CLI's own sentinel, restated: a node map or a `foreach`
+            # is the docs/24 grammar, anything else is the stage list.
+            node_map = "pipeline" in raw or "foreach" in raw
+            document = load_document(path) if node_map else load_config(path)
+            assert document.hash == PINNED_EXAMPLE_HASHES[name], name
 
     def test_foreach_is_hash_material(self):
         one = foreach_document(
@@ -591,61 +738,6 @@ class TestEngineReadsExpanded:
         assert set(the_plan.order) == {"dataset", "rows__syna", "rows__synb", "both"}
         assert the_plan.order.index("both") > the_plan.order.index("rows__syna")
 
-    def test_a_space_key_naming_a_template_says_so(self):
-        # ADR-0039 leaves override-path rewriting out of the grammar: a
-        # `space` key is a plain string, and only $-references rewrite.
-        # The refusal must therefore POINT — "no node 'qhat'" alone would
-        # bewilder an author who wrote `qhat` two lines above.
-        doc = PipelineDocument(
-            name="tune-per-key",
-            pipeline={
-                "dataset": dataset_node(),
-                "labels": NodeSpec(
-                    uses="dskit.pipeline.synthetic_nodes:SynthLabels",
-                    inputs={"events": "$dataset.events"},
-                ),
-                "market": NodeSpec(
-                    uses="dskit.pipeline.synthetic_nodes:SynthMarketSignal",
-                    inputs={"events": "$dataset.events"},
-                ),
-            },
-            splits=RandomSplitSpec(train_frac=0.8, val_frac=0.2),
-            foreach=ForeachSpec(
-                keys=["a"],
-                pipeline={
-                    "qhat": NodeSpec(
-                        uses="dskit.pipeline.synthetic_nodes:SynthTrain",
-                        mode="train",
-                        inputs={"events": "$dataset.events"},
-                        params={"min_train": 5},
-                    ),
-                    "val": NodeSpec(
-                        uses="dskit.pipeline.synthetic_nodes:SynthScore",
-                        inputs={
-                            "events": "$dataset.events",
-                            "signal": "$qhat.signal",
-                            "baseline": "$market.signal",
-                            "outcomes": "$labels.outcomes",
-                        },
-                        params={"split": "val", "min_events": 5},
-                    ),
-                    "tune": NodeSpec(
-                        uses="hpo-grid",
-                        params={
-                            "objective": "$val.metrics.loss",
-                            "space": {"qhat.min_train": [3, 5]},
-                        },
-                    ),
-                },
-            ),
-        )
-        # Rule 2 DID rewrite every reference, including the objective.
-        assert doc.expanded["tune__a"].params["objective"] == "$val__a.metrics.loss"
-        with pytest.raises(ConfigError) as exc:
-            plan(doc)
-        assert "qhat__a" in message(exc)
-        assert "foreach TEMPLATE" in message(exc)
-
     def test_the_example_validates_and_reports_what_runs(self, capsys):
         assert main(["validate", FOREACH_EXAMPLE]) == 0
         out = capsys.readouterr().out
@@ -685,3 +777,176 @@ class TestEngineReadsExpanded:
         )
         assert main(["validate", str(path)]) == 0
         assert "nodes: 1" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Search spaces come for free (ADR-0039)
+# ---------------------------------------------------------------------------
+
+
+def per_key_tuned_document(**overrides):
+    """A document whose search node lives INSIDE the template.
+
+    The other placement: one search per key, each tuning its own
+    instance, where :func:`tuned_document` shares one search over all of
+    them.
+    """
+    base = {
+        "name": "tune-per-key",
+        "pipeline": {
+            "dataset": dataset_node(),
+            "labels": NodeSpec(
+                uses="dskit.pipeline.synthetic_nodes:SynthLabels",
+                inputs={"events": "$dataset.events"},
+            ),
+            "market": NodeSpec(
+                uses="dskit.pipeline.synthetic_nodes:SynthMarketSignal",
+                inputs={"events": "$dataset.events"},
+            ),
+        },
+        "splits": RandomSplitSpec(train_frac=0.8, val_frac=0.2),
+        "foreach": ForeachSpec(
+            keys=["a"],
+            pipeline={
+                "qhat": NodeSpec(
+                    uses="dskit.pipeline.synthetic_nodes:SynthTrain",
+                    mode="train",
+                    inputs={"events": "$dataset.events"},
+                    params={"min_train": 1},
+                ),
+                "val": NodeSpec(
+                    uses="dskit.pipeline.synthetic_nodes:SynthScore",
+                    inputs={
+                        "events": "$dataset.events",
+                        "signal": "$qhat.signal",
+                        "baseline": "$market.signal",
+                        "outcomes": "$labels.outcomes",
+                    },
+                    params={"split": "val", "min_events": 1},
+                ),
+                "tune": NodeSpec(
+                    uses="hpo-grid",
+                    params={
+                        "objective": "$val.metrics.loss",
+                        "space": {"qhat.min_train": MIN_TRAIN_GRID},
+                    },
+                ),
+            },
+        ),
+    }
+    base.update(overrides)
+    return PipelineDocument(**base)
+
+
+class TestSearchSpaceFanOut:
+    """ADR-0039: a space key naming a template param expands per instance.
+
+    A ``space`` key is an override PATH whose HEAD names a node, so a
+    head naming a template is re-aimed exactly as a ``$``-reference is —
+    at THIS instance inside a template, and at every instance in a
+    shared node. That is what turns the N unpinned duplicate keys the
+    ADR's context names into one declaration.
+    """
+
+    def test_a_shared_search_space_expands_to_every_instance(self):
+        space = tuned_document().expanded["tune"].params[SEARCH_SPACE_PARAM]
+        assert space == {
+            "qhat__syna.min_train": MIN_TRAIN_GRID,
+            "qhat__synb.min_train": MIN_TRAIN_GRID,
+        }
+        assert "qhat.min_train" not in space
+
+    def test_the_expanded_space_is_the_longhand_twin_key_for_key(self):
+        assert tuned_document().expanded == tuned_longhand().pipeline
+
+    def test_a_shared_search_over_a_template_plans(self):
+        the_plan = plan(tuned_document())
+        assert the_plan.order == plan(tuned_longhand()).order
+        assert "qhat__synb" in the_plan.ancestors("val")
+
+    def test_a_space_key_inside_a_template_aims_at_its_own_instance(self):
+        doc = per_key_tuned_document()
+        assert doc.expanded["tune__a"].params["objective"] == "$val__a.metrics.loss"
+        assert doc.expanded["tune__a"].params[SEARCH_SPACE_PARAM] == {
+            "qhat__a.min_train": MIN_TRAIN_GRID
+        }
+        assert plan(doc).role_of("tune__a") == "search"
+
+    def test_a_space_key_naming_a_shared_node_is_untouched(self):
+        doc = tuned_document(pipeline=tuned_shared({"dataset.n_events": [20, 40]}))
+        assert doc.expanded["tune"].params[SEARCH_SPACE_PARAM] == {
+            "dataset.n_events": [20, 40]
+        }
+
+    def test_a_space_key_colliding_with_a_written_instance_key_refuses(self):
+        with pytest.raises(ConfigError) as exc:
+            tuned_document(
+                pipeline=tuned_shared(
+                    {"qhat.min_train": MIN_TRAIN_GRID, "qhat__syna.min_train": [3]}
+                )
+            )
+        assert "qhat__syna.min_train" in message(exc)
+        assert "qhat.min_train" in message(exc)
+
+    def test_the_space_param_name_agrees_with_the_search_kind(self):
+        # The document layer rewrites the key map the search kinds
+        # actually read; two spellings would silently stop expanding.
+        assert SEARCH_SPACE_PARAM in HpoGrid._PARAMS
+
+    def test_both_tuned_documents_run_to_the_same_winner(self, tmp_path):
+        fan = run_document(
+            tuned_document(outputs=OutputsConfig(run_root=str(tmp_path / "fan"))),
+            asof=ASOF,
+        )
+        hand = run_document(
+            tuned_longhand(outputs=OutputsConfig(run_root=str(tmp_path / "hand"))),
+            asof=ASOF,
+        )
+        assert fan.exit_code == 0 and hand.exit_code == 0
+        assert fan.outputs["tune"]["best_params"] == hand.outputs["tune"]["best_params"]
+        assert set(fan.outputs["tune"]["best_params"]) == {
+            "qhat__syna.min_train",
+            "qhat__synb.min_train",
+        }
+        assert fan.outputs["val"]["metrics"] == hand.outputs["val"]["metrics"]
+
+
+# ---------------------------------------------------------------------------
+# Generated names are node keys
+# ---------------------------------------------------------------------------
+
+
+class TestGeneratedInstanceNames:
+    """The slug rule and the node-key grammar, pinned to each other.
+
+    ``_SLUG_BAD`` restates the legal-character half of ``_NODE_KEY_OK``,
+    and nothing else would notice if one moved: an instance key is
+    GENERATED, so the declared-key check never reads it.
+    """
+
+    def test_hostile_keys_still_mint_legal_node_keys(self):
+        doc = PipelineDocument(
+            name="hostile-keys",
+            pipeline={"dataset": dataset_node()},
+            foreach=ForeachSpec(
+                keys=["BTC-USD", "eth/usd", "2x", "a b", "Ünïcode"],
+                pipeline={"rows": rows_template()},
+            ),
+        )
+        for name in doc.expanded:
+            assert re.match(_NODE_KEY_OK, name), name
+        assert "rows__btc_usd" in doc.expanded
+
+    def test_a_narrowed_key_grammar_refuses_the_generated_name(self, monkeypatch):
+        # The runtime refusal that pins the two: narrow the node-key
+        # grammar until the slug rule out-runs it, and the expansion must
+        # say so BY NAME instead of minting a key the grammar forbids.
+        monkeypatch.setattr("dskit.pipeline.document._NODE_KEY_OK", r"^[a-z]+$")
+        with pytest.raises(ConfigError) as exc:
+            PipelineDocument(
+                name="narrowed",
+                pipeline={"dataset": dataset_node()},
+                foreach=ForeachSpec(keys=["a"], pipeline={"rows": rows_template()}),
+            )
+        assert "rows__a" in message(exc)
+

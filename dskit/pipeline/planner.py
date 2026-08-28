@@ -50,6 +50,7 @@ from dataclasses import dataclass
 
 from dskit.pipeline.base import ConfigError
 from dskit.pipeline.document import (
+    SEARCH_SPACE_PARAM,
     SPLITS_SOURCE,
     PipelineDocument,
     is_node_ref,
@@ -516,11 +517,7 @@ def plan(document, registry=None) -> Plan:
                         f"correction {corr!r} does not use weights"
                     )
         if role == "search":
-            errors.extend(
-                _search_errors(
-                    key, spec, specs, roles, edges, document.foreach_groups
-                )
-            )
+            errors.extend(_search_errors(key, spec, specs, roles, edges))
         if spec.mode is not None and role not in _TRAINABLE_ROLES:
             errors.append(
                 f"pipeline.{key}: mode/artifact apply to trainable roles "
@@ -593,20 +590,7 @@ def _is_json_scalar(value) -> bool:
     return isinstance(value, (int, float)) and math.isfinite(value)
 
 
-def _template_head_hint(head, groups):
-    """Name the instances when an unknown space head is a foreach template."""
-    instances = groups.get(head)
-    if not instances:
-        return ""
-    return (
-        f" — {head!r} is a foreach TEMPLATE, which exists once per key "
-        f"({list(instances)}). A space key is an override PATH, not a "
-        "$-reference, so it is never rewritten per instance (ADR-0039); "
-        "address an instance by name"
-    )
-
-
-def _search_errors(key, spec, specs, roles, edges, groups=None):
+def _search_errors(key, spec, specs, roles, edges):
     """Collect the search node's wiring-rule violations (spec §8) as plan errors.
 
     Beyond the objective checks: ``space`` keys must be
@@ -656,7 +640,7 @@ def _search_errors(key, spec, specs, roles, edges, groups=None):
         if target_node is not None
         else None
     )
-    space = spec.params.get("space")
+    space = spec.params.get(SEARCH_SPACE_PARAM)
     heads = set()
     if not isinstance(space, dict) or not space:
         problems.append(
@@ -672,7 +656,6 @@ def _search_errors(key, spec, specs, roles, edges, groups=None):
                 problems.append(
                     f"pipeline.{key}: search.space addresses {target!r} but no "
                     f"node {head!r} is declared"
-                    + _template_head_hint(head, groups or {})
                 )
             elif len(parts) < 2:
                 problems.append(

@@ -71,6 +71,7 @@ from dskit.pipeline.base import (
 )
 from dskit.pipeline.document import (
     DOC_NON_IDENTITY_SECTIONS,
+    SEARCH_SPACE_PARAM,
     SPLITS_SOURCE,
     PipelineDocument,
     TrailingSplitSpec,
@@ -389,7 +390,7 @@ class _SearchSeam:
         target, path = parse_node_ref(self._specs[key].params["objective"])
         self._target, self._obj_path = target, path
         self.needed = the_plan.ancestors(target) | {target}
-        space = self._specs[key].params.get("space")
+        space = self._specs[key].params.get(SEARCH_SPACE_PARAM)
         heads = set()
         if isinstance(space, dict):
             heads = {

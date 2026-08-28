@@ -20,9 +20,11 @@ One command line for every project and venue (docs/24 §9, D-145 ruling
   ``--metric``/``--param`` select columns; ``--limit`` shows the newest
   N and counts the rest.
 * ``validate <config.json>`` — shape + hash only. Dispatches on the
-  document's own shape: a ``pipeline`` node map validates under the
-  docs/24 grammar; anything else falls through to the stage-list
-  validator.
+  document's own shape: a ``pipeline`` node map — or a ``foreach``
+  section, since ``pipeline`` may be empty when one is declared
+  (ADR-0039) — validates under the docs/24 grammar; anything else falls
+  through to the stage-list validator. Its node count reports what RUNS,
+  so a fanned-out document counts its instances.
 
 ``--adapter MODULE`` (repeatable) applies to all three: it imports the
 named module BEFORE the document is read, which is how a document that

@@ -3,7 +3,7 @@
   "notes": "The `foreach` grammar (ADR-0039): one template subgraph, instantiated once per declared key, so 'one node per symbol' stops being N hand-copied nodes. The document STORES this section (it is identity — adding a key is a different computation) and DERIVES what runs; nothing here is a template language, only fan-out over a key list. Run it: python -m dskit.pipeline run examples/pipeline/foreach-fanout.json --asof 2026-01-01",
   "foreach": {
     "keys": ["SYNA", "SYNB"],
-    "notes": "The two synthetic instruments. Keys are a SET — declared in any order, sorted at construction — and each one names the instances it builds: template `rows` becomes rows__syna and rows__synb (node keys take the key's slug; `$each` substitutes the RAW key). Add a third instrument by adding a key here, and nothing else.",
+    "notes": "The two synthetic instruments. Keys are a SET — declared in any order, sorted at construction — and each one names the instances it builds: template `rows` becomes rows__syna and rows__synb (node keys take the key's slug; `$each` substitutes the RAW key). Add a third instrument by adding a key here, and nothing else. That last sentence is the point of the section, and it holds for a SEARCH node too: a space key naming a template ('rows.require_usable') expands to one key per instance, so tuning N instances stays one declaration instead of the N copies nothing pins together — write it in a shared search node to address every instance, or inside the template to address that instance alone.",
     "pipeline": {
       "rows": {
         "uses": "filter",
