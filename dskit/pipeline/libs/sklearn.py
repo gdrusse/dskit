@@ -116,9 +116,17 @@ was wired in, a document that wires the FULL stream into the candidates
 and scores them on its own val rows selects in-sample, and the ranking it
 reports is a memorisation ranking — on the cookbook's synthetic market
 that inverts the result outright (measured and pinned: the forest "wins"
-at ~0.03 leaky and comes LAST at 0.23-0.25 honest — a band, not a point,
-because that candidate is unseeded — while the plain linear baseline it
-beat becomes the winner). Put the train cut upstream, in a node.
+at ~0.03 leaky and trails at 0.22-0.25 honest — a band, not a point,
+because that candidate is unseeded, and usually last: the odd run edges
+it past the boosted trees — while the plain linear baseline it beat
+becomes the winner). Put the train cut upstream, in a node.
+
+Match the metric to the belief's RANGE, not to the outcome's: unbounded
+``predict`` beliefs score with ``squared_error``/``absolute_error``,
+never ``brier``/``logloss`` — those two enforce a [0, 1] belief, and a
+linear or kernel extrapolation on a nearby dataset crosses it and kills
+the run mid-sweep (measured; the cookbook's validate note carries the
+numbers). The probability pair belongs with ``predict_proba``.
 
 Import cost: stdlib + ``dskit.pipeline`` only. sklearn and joblib are
 imported inside the run path exclusively (``tests/pipeline/test_purity.py``

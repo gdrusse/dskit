@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -876,12 +877,32 @@ def test_model_sweep_space_is_the_documented_candidate_list():
     assert tuple(e for e in table if e.startswith("sklearn.")) == SWEPT_ESTIMATORS
 
 
+def readme_sklearn_bullet():
+    """The pipeline README's sklearn entry — the third prose copy of the
+    cookbook's names (extra, estimator class), folded into the pins below
+    so it cannot drift alone."""
+    text = (
+        pathlib.Path(__file__).parents[2] / "dskit" / "pipeline" / "README.md"
+    ).read_text()
+    start = text.index("**sklearn**")
+    return text[start : text.index("**torch**", start)]
+
+
 def test_model_sweep_ships_without_the_lightgbm_extra():
     # The table documents "lightgbm.LGBMRegressor" as a candidate; the
     # SHIPPED space must stay sklearn-only, or the example stops running
     # for anyone who installed dskit[sklearn] and nothing else.
     assert "lightgbm.LGBMRegressor" in docs_table_estimators()
     assert all(e.startswith("sklearn.") for e in sweep_space())
+    # The README restates the non-sklearn class path; every such path it
+    # names must be a row of the docs table, so renaming the row without
+    # the README (or vice versa) fails here rather than shipping a
+    # reader-facing name the doorway no longer documents.
+    readme_classes = set(
+        re.findall(r"\b([a-z]\w*(?:\.\w+)*\.[A-Z]\w+)\b", readme_sklearn_bullet())
+    )
+    assert "lightgbm.LGBMRegressor" in readme_classes
+    assert readme_classes <= set(docs_table_estimators()), sorted(readme_classes)
 
 
 def run_sweep_example(run_root, obj=None):
@@ -905,21 +926,44 @@ def test_model_sweep_example_runs_end_to_end_and_picks_a_winner(tmp_path):
     # The sweep SELECTS, it does not merely run — and on an HONEST
     # train-only fit the plain linear baseline wins this synthetic market
     # (its mid is a shrunken affine function of the truth, so there is no
-    # interaction for a tree to find and the forest is the WORST of the
-    # six at ~0.24). Every rival here is deterministic; the winner's
-    # margin over the runner-up (kNN, 0.176) sits far outside the
-    # unseeded forest's spread.
+    # interaction for a tree to find and the forest trails at ~0.22-0.25).
+    # Every rival here is deterministic; the winner's margin over the
+    # runner-up (kNN, 0.176) sits far outside the unseeded forest's
+    # spread.
     assert sweep["best_params"] == {
         "model.estimator": "sklearn.linear_model.LinearRegression"
     }
     assert sweep["best_score"] < 0.17
 
 
+def test_model_sweep_survives_the_dataset_swap_its_notes_invite(tmp_path):
+    # The dataset note promises "Swap this node for your own data source
+    # and the sweep below is unchanged" — so the metric may not be a
+    # landmine under nearby data. All six candidates predict through
+    # UNBOUNDED `predict`, and on this exact nearby dataset (measured)
+    # SVR extrapolates a belief of ~1.025: `brier` guards a [0, 1] belief
+    # contract and would kill the whole sweep mid-run on it. The document
+    # therefore scores with `squared_error` — the same mean-squared loss
+    # without the belief bound (ADR-0025's mark-to-market sibling) — and
+    # its validate note must say why, because the brier pairing looks
+    # equally plausible on the page (examples/pipeline/sklearn-fit.json
+    # pairs brier CORRECTLY: bounded predict_proba beliefs).
+    pytest.importorskip("sklearn")
+    obj = json.loads(SWEEP_EXAMPLE.read_text())
+    obj["pipeline"]["dataset"]["params"].update({"seed": 22, "n_instruments": 1})
+    result = run_sweep_example(tmp_path, obj)
+    assert result.state == "ran" and result.exit_code == 0
+    assert result.outputs["sweep"]["best_params"]["model.estimator"] in SWEPT_ESTIMATORS
+    shipped = json.loads(SWEEP_EXAMPLE.read_text())
+    assert shipped["pipeline"]["validate"]["params"]["metric"] == "squared_error"
+    assert "brier" in shipped["pipeline"]["validate"]["notes"]
+
+
 def test_model_sweep_fits_on_the_train_split_only(tmp_path):
     # THE leakage pin. A "compare many models" cookbook that fits on the
     # rows it selects on crowns whichever candidate memorises hardest —
     # verified: wired to the full stream the forest "won" at ~0.03 while
-    # scoring ~0.24 honestly. The `train_rows` filter upstream of `model`
+    # scoring ~0.22-0.25 honestly. The `train_rows` filter upstream of `model`
     # is what makes the comparison mean anything, so the row COUNTS are
     # pinned: rewiring `model` back to `$dataset.events` moves n_rows to
     # the full population and fails here.
@@ -1114,11 +1158,34 @@ def test_unseeded_forest_moves_between_runs_of_one_identity(tmp_path):
     assert "same identity" in json.loads(SWEEP_EXAMPLE.read_text())["notes"]
 
 
+def quoted_forest_figures():
+    """The honest band and leaky point the cookbook quotes about the
+    unseeded forest — parsed OUT OF the pack docstring, with the two
+    document copies required to quote the same figures verbatim (the
+    agreement half of the pin: three restatements, one source of truth,
+    per CLAUDE.md's duplication rule). Returns ``(lo, hi, leaky)``."""
+    doc = pack_docstring()
+    band = re.search(r"(\d\.\d+)-(\d\.\d+) honest", doc)
+    approx = re.search(r"~(\d\.\d+) leaky", doc)
+    assert band and approx, "the docstring must quote both measured figures"
+    obj = json.loads(SWEEP_EXAMPLE.read_text())
+    for text in (obj["notes"], obj["pipeline"]["train_rows"]["notes"]):
+        assert f"{band.group(1)}-{band.group(2)}" in text
+    assert f"~{approx.group(1)}" in obj["pipeline"]["train_rows"]["notes"]
+    return float(band.group(1)), float(band.group(2)), float(approx.group(1))
+
+
 def test_cookbook_figures_are_the_ones_the_engine_produces(tmp_path):
     # Every measured number the prose quotes, pinned to a real run — the
     # notes and the pack docstring both quote them, and the fields they
     # derive from (dataset params, split boundaries) are exactly what the
-    # cookbook invites a reader to change.
+    # cookbook invites a reader to change. The forest's figures are
+    # parsed from the prose rather than restated here, so a drifted copy
+    # fails; the tolerances around the quoted values are what their "~"
+    # promises, sized so an unseeded candidate cannot flake the pin
+    # (measured envelopes over 65 honest / 25 leaky runs: 0.219-0.257
+    # honest and 0.027-0.044 leaky — the old hand-picked `0.22 <` floor
+    # and the last-of-six claim both broke at ~2.5% per run).
     pytest.importorskip("sklearn")
     forest = "sklearn.ensemble.RandomForestRegressor"
     obj = json.loads(SWEEP_EXAMPLE.read_text())
@@ -1139,9 +1206,11 @@ def test_cookbook_figures_are_the_ones_the_engine_produces(tmp_path):
         trial["overrides"]["model.estimator"]: trial["score"]
         for trial in honest.outputs["sweep"]["trials"]
     }
-    # HONEST: the forest is the WORST of the six, inside the quoted band.
-    assert max(scores, key=scores.get) == forest
-    assert 0.22 < scores[forest] < 0.26
+    lo, hi, leaky_point = quoted_forest_figures()
+    # HONEST: the forest lands inside the quoted band, far behind the
+    # deterministic winner (min observed gap 0.058 — outside any spread).
+    assert lo - 0.02 <= scores[forest] <= hi + 0.02
+    assert scores[forest] > honest.outputs["sweep"]["best_score"]
 
     leaky = json.loads(json.dumps(obj))
     leaky["pipeline"]["model"]["inputs"]["rows"] = "$dataset.events"
@@ -1150,18 +1219,18 @@ def test_cookbook_figures_are_the_ones_the_engine_produces(tmp_path):
         trial["overrides"]["model.estimator"]: trial["score"]
         for trial in leaked.outputs["sweep"]["trials"]
     }
-    # LEAKY: the same forest "wins", an order of magnitude better.
+    # LEAKY: the same forest "wins", near the quoted ~0.03 (its closest
+    # rival, the boosted trees, memorises to a deterministic 0.065).
     assert min(leaky_scores, key=leaky_scores.get) == forest
-    assert leaky_scores[forest] < 0.05
-    for text in (obj["pipeline"]["train_rows"]["notes"], pack_docstring()):
-        assert "~0.03" in text and "0.23" in text
+    assert leaky_point - 0.025 <= leaky_scores[forest] <= leaky_point + 0.025
 
 
 def test_docstring_names_no_extra_that_pyproject_does_not_declare():
     # "Never document an escape hatch you did not build." The cookbook
     # table's non-sklearn row leans on an EXTRA; every extra the pack's
     # prose names must exist, or `pip install 'dskit[...]'` errors out.
-    import re
+    # The README's sklearn bullet is the third copy of that name, so it
+    # is scanned too (single backticks there, double in the docstring).
     import tomllib
 
     root = pathlib.Path(__file__).parents[2]
@@ -1170,10 +1239,12 @@ def test_docstring_names_no_extra_that_pyproject_does_not_declare():
     prose = (
         pack_docstring()
         + json.loads(SWEEP_EXAMPLE.read_text())["pipeline"]["sweep"]["notes"]
+        + readme_sklearn_bullet()
     )
     named = set(re.findall(r"dskit\[([a-z0-9_-]+)\]", prose))
     named |= set(re.findall(r"``([a-z0-9_-]+)`` extra", prose))
-    assert named, "the cookbook must still point at the extra it needs"
+    named |= set(re.findall(r"(?<!`)`([a-z0-9_-]+)` extra", prose))
+    assert "lightgbm" in named, "the README bullet must still name the extra"
     assert named <= declared, sorted(named - declared)
 
 
