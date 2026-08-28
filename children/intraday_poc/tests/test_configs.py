@@ -84,6 +84,33 @@ def test_the_two_documents_share_their_modelling_core():
         )
 
 
+def test_monitor_agrees_with_the_val_rows_wiring():
+    """A declared monitor must have the telemetry it selects on.
+
+    ADR-0035: every monitor except ``train_loss`` reads validation
+    telemetry, and the engine refuses to fit when one is declared with
+    no ``val_rows`` input. That refusal fires at fit time — mid-fold,
+    after a walk-forward has already spent its train windows — so the
+    coupling is pinned here too, where rewiring a document's splits is
+    what breaks it. The value side is pinned by
+    ``test_the_two_documents_share_their_modelling_core``; this pins
+    that the value is runnable.
+    """
+    for doc_name in ("run-train.json", "run-backtest.json"):
+        with open(_path(doc_name), encoding="utf-8") as fh:
+            doc = json.load(fh)
+        for key in ("qhat_aapl", "qhat_msft"):
+            node = doc["pipeline"][key]
+            monitor = node["params"].get("monitor")
+            if monitor is None or monitor == "train_loss":
+                continue
+            assert "val_rows" in node.get("inputs", {}), (
+                doc_name, key,
+                f"monitor {monitor!r} selects on validation telemetry; "
+                "wire val_rows or drop monitor",
+            )
+
+
 def test_asset_model_validates_and_keeps_its_shape():
     model = load_model(_path("asset-model.json"))
     assert set(model.kinds) == {"artifact", "dataset"}, (
