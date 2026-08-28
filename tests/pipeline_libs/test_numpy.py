@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import math
 import pathlib
+import tracemalloc
 from dataclasses import dataclass
 
 import numpy as np
@@ -25,11 +26,19 @@ from dskit.pipeline.document import NodeSpec, PipelineDocument, load_document
 from dskit.pipeline.driver import run_document
 from dskit.pipeline.libs.numpy import (
     NODE_KINDS,
+    RETURN_KINDS,
     ArrayFeatures,
     ArrayMap,
     LogMid,
+    ReturnWindows,
     TrailingReturns,
     _cut_points,
+    _prefix_equal,
+    lag,
+    lead,
+    log_return,
+    narrow_params,
+    pct_return,
 )
 from dskit.pipeline.node import NodeContext, node_class_errors, resolve_uses
 from dskit.pipeline.planner import plan
@@ -741,3 +750,443 @@ class TestShippedExample:
         result = run_document(PipelineDocument.from_obj(obj), asof="2026-01-01")
         assert result.state == "ran" and result.exit_code == 0
         assert result.outputs["features"]["metrics"]["n_rows"] == 96
+
+
+# ---------------------------------------------------------------------------
+# ADR-0040 — declared lifting fields, the narrowing rule, gap-aware
+# framing, the ops, and the serving call
+# ---------------------------------------------------------------------------
+
+
+def bars(symbol, minutes, price=100.0, field="px"):
+    """A foreign-vocabulary stream: no envelope field name anywhere."""
+    return [
+        {"sym": symbol, "t": BASE_MS + m * MINUTE_MS, field: price + m}
+        for m in minutes
+    ]
+
+
+#: The whole vocabulary declared away from the envelope's, which is what
+#: a keyed time series with other names needs in order to enter at all.
+FOREIGN = {
+    "group_field": "sym",
+    "order_field": "t",
+    "fields": ["px"],
+    "carry_fields": ["sym", "t"],
+    "require_fields": [],
+}
+
+
+class _Passthrough(ArrayFeatures):
+    """Emits the lifted value back, pointwise — the framing under test,
+    with nothing of its own to get wrong."""
+
+    def apply(self, arrays, params):
+        return {"value": arrays[self.fields()[0]] * 1.0}
+
+
+class _CountingWindows(ReturnWindows):
+    """ReturnWindows that records the length of every array apply saw."""
+
+    def __init__(self, key, params=None, *, mode=None, artifact=""):
+        super().__init__(key, params, mode=mode, artifact=artifact)
+        self.calls = []
+
+    def apply(self, arrays, params):
+        self.calls.append(len(arrays[self.fields()[0]]))
+        return super().apply(arrays, params)
+
+
+class TestDeclaredLiftingFields:
+    def test_a_foreign_vocabulary_stream_lifts_through_the_knobs(self, tmp_path):
+        rows = _Passthrough("p", FOREIGN).run(
+            ctx(tmp_path), {"records": bars("XYZ", range(4))}
+        )["rows"]
+        assert [row["sym"] for row in rows] == ["XYZ"] * 4
+        assert [row["value"] for row in rows] == [100.0, 101.0, 102.0, 103.0]
+
+    def test_the_order_array_rides_under_its_declared_name(self, tmp_path):
+        seen = {}
+
+        class _Peek(_Passthrough):
+            def apply(self, arrays, params):
+                seen.update({name: len(arr) for name, arr in arrays.items()})
+                return super().apply(arrays, params)
+
+        _Peek("p", FOREIGN).run(ctx(tmp_path), {"records": bars("XYZ", range(3))})
+        assert sorted(seen) == ["px", "t"]
+
+    def test_a_finite_float_order_value_lifts_and_a_bool_does_not(self, tmp_path):
+        records = [
+            {"sym": "A", "t": 1.5, "px": 1.0},
+            {"sym": "A", "t": 2.5, "px": 2.0},
+            {"sym": "A", "t": True, "px": 3.0},
+            {"sym": "A", "t": float("inf"), "px": 4.0},
+        ]
+        rows = _Passthrough("p", FOREIGN).run(ctx(tmp_path), {"records": records})[
+            "rows"
+        ]
+        assert [row["t"] for row in rows] == [1.5, 2.5]
+
+    def test_an_all_unlifted_stream_refuses_by_name(self, tmp_path):
+        # The typo case: a declared field matching NOTHING passes through
+        # record by record, so it used to emit zero rows and exit 0.
+        node = _Passthrough("p", {**FOREIGN, "group_field": "symbol"})
+        with pytest.raises(ValueError, match="unlifted"):
+            node.run(ctx(tmp_path), {"records": bars("XYZ", range(4))})
+
+    def test_an_empty_stream_refuses_nothing(self, tmp_path):
+        assert (
+            _Passthrough("p", FOREIGN).run(ctx(tmp_path), {"records": []})["rows"] == []
+        )
+
+    def test_the_declared_field_knobs_are_checked_at_plan(self):
+        for bad in (
+            {"group_field": ""},
+            {"order_field": 7},
+            {"fields": []},
+            {"fields": ["a", "a"]},
+            {"max_gap": 0},
+            {"max_gap": "soon"},
+            {"carry_fields": [""]},
+            {"drop_incomplete": "yes"},
+        ):
+            assert _Passthrough.validate_params(bad), bad
+
+
+class TestAccessorNarrowing:
+    """The rule in three directions (ADR-0040)."""
+
+    def test_overriding_an_accessor_while_keeping_the_knob_is_refused(self):
+        class _Broken(ArrayFeatures):
+            def fields(self):
+                return ("mid",)
+
+            def apply(self, arrays, params):
+                return {"x": arrays["mid"]}
+
+        problems = _Broken.validate_params({})
+        assert any("fields" in p and "_PARAMS" in p for p in problems), problems
+        with pytest.raises(ConfigError, match="NARROWS"):
+            _Broken("b", {})
+
+    def test_the_shipped_subclasses_narrowed_the_knob_they_hardcode(self):
+        # The live hole this closes: both index arrays["mid"] by name, so
+        # `fields: ["bid"]` validated clean and died at execute with a
+        # bare KeyError.
+        for cls in (LogMid, TrailingReturns):
+            assert "fields" not in cls._PARAMS
+            assert any(
+                "fields" in p
+                for p in cls.validate_params({"window": 2, "fields": ["bid"]})
+            )
+        assert LogMid.validate_params({}) == []
+
+    def test_a_narrowed_subclass_is_not_refused_for_the_knob_it_dropped(self):
+        class _Priced(ReturnWindows):
+            _PARAMS = narrow_params(ReturnWindows._PARAMS, "fields")
+
+            def fields(self):
+                return ("px",)
+
+        # ReturnWindows REQUIRES fields; without the `if knob in _PARAMS`
+        # guard that requirement would refuse every narrowing subclass —
+        # which is why the guard is load-bearing, not style.
+        assert _Priced.validate_params({"lookback": 2}) == []
+        assert any(
+            "fields" in p for p in ReturnWindows.validate_params({"lookback": 2})
+        )
+
+    def test_narrow_params_refuses_a_stale_name(self):
+        with pytest.raises(ValueError, match="stale"):
+            narrow_params(ArrayFeatures._PARAMS, "no_such_knob")
+
+
+class TestTierOneTruthIsImported:
+    def test_the_writeback_rules_ARE_the_envelope_s(self):
+        """HIGH-2: the pack's private price/lead copies are gone."""
+        import dskit.pipeline.libs.numpy as pack
+        from dskit.pipeline import records as core
+
+        assert not hasattr(pack, "_price_ok") and not hasattr(pack, "_lead_ok")
+        assert pack._WRITEBACK["mid"] is core.price_ok
+        assert pack._WRITEBACK["lead_frac"] is core.lead_frac_ok
+
+    def test_the_envelope_itself_uses_the_same_predicates(self):
+        # Deliberate second reader: loosening the core bound must move
+        # BOTH the envelope and the pack, or the pack drifts again.
+        from dskit.pipeline.records import lead_frac_ok, price_ok
+
+        assert price_ok(0.5) and not price_ok(0.0) and not price_ok(True)
+        assert lead_frac_ok(0.5) and not lead_frac_ok(1.0)
+        with pytest.raises(ValueError, match="finite and > 0"):
+            rec("AAA", 0, float("inf"))
+
+
+class TestGapAwareFraming:
+    def test_absent_max_gap_is_one_segment_per_group(self, tmp_path):
+        node = _CountingWindows(
+            "w", {**FOREIGN, "lookback": 2, "causality_check": False}
+        )
+        node.run(ctx(tmp_path), {"records": bars("A", [0, 1, 2, 40, 41])})
+        assert node.calls == [5], "absent max_gap must reproduce today exactly"
+
+    def test_a_gap_wider_than_the_bound_splits_the_group(self, tmp_path):
+        node = _CountingWindows(
+            "w",
+            {
+                **FOREIGN,
+                "lookback": 2,
+                "max_gap": 5 * MINUTE_MS,
+                "causality_check": False,
+            },
+        )
+        node.run(ctx(tmp_path), {"records": bars("A", [0, 1, 2, 40, 41])})
+        assert node.calls == [3, 2]
+
+    def test_a_gap_exactly_at_the_bound_does_not_split(self, tmp_path):
+        node = _CountingWindows(
+            "w",
+            {
+                **FOREIGN,
+                "lookback": 2,
+                "max_gap": 5 * MINUTE_MS,
+                "causality_check": False,
+            },
+        )
+        node.run(ctx(tmp_path), {"records": bars("A", [0, 5, 10])})
+        assert node.calls == [3], "a step EQUAL to max_gap must chain"
+
+    def test_no_return_lag_or_label_spans_a_boundary(self, tmp_path):
+        prices = {0: 100.0, 1: 101.0, 2: 102.0, 3: 103.0,
+                  40: 200.0, 41: 202.0, 42: 204.0, 43: 206.0}
+        records = [
+            {"sym": "A", "t": BASE_MS + m * MINUTE_MS, "px": p}
+            for m, p in prices.items()
+        ]
+        rows = ReturnWindows(
+            "w",
+            {
+                **FOREIGN,
+                "lookback": 2,
+                "max_gap": 5 * MINUTE_MS,
+                "drop_incomplete": True,
+            },
+        ).run(ctx(tmp_path), {"records": records})["rows"]
+        # One complete row per segment, and every value in the second
+        # comes from the second segment alone — nothing reaches back
+        # across the 37-minute hole.
+        assert [row["t"] for row in rows] == [
+            BASE_MS + 2 * MINUTE_MS,
+            BASE_MS + 42 * MINUTE_MS,
+        ]
+        assert rows[1]["lag_0"] == pytest.approx(math.log(204.0 / 202.0))
+        assert rows[1]["lag_1"] == pytest.approx(math.log(202.0 / 200.0))
+        assert rows[1]["label"] == pytest.approx(math.log(206.0 / 204.0))
+
+    def test_a_segment_shorter_than_the_window_yields_no_row(self, tmp_path):
+        records = bars("A", [0, 1, 2]) + bars("A", [40, 41])
+        rows = ReturnWindows(
+            "w",
+            {
+                **FOREIGN,
+                "lookback": 2,
+                "max_gap": 5 * MINUTE_MS,
+                "drop_incomplete": True,
+            },
+        ).run(ctx(tmp_path), {"records": records})["rows"]
+        assert rows == []
+
+    def test_a_one_record_segment_gives_the_guard_no_leverage_and_no_row(
+        self, tmp_path
+    ):
+        records = bars("A", [0, 1, 2, 3, 4]) + bars("A", [90])
+        rows = ReturnWindows(
+            "w",
+            {
+                **FOREIGN,
+                "lookback": 2,
+                "max_gap": 5 * MINUTE_MS,
+                "drop_incomplete": True,
+            },
+        ).run(ctx(tmp_path), {"records": records})["rows"]
+        assert [row["t"] for row in rows] == [
+            BASE_MS + 2 * MINUTE_MS,
+            BASE_MS + 3 * MINUTE_MS,
+        ]
+
+
+class TestOps:
+    def test_lag_reads_the_past_and_leads_the_future(self):
+        values = np.array([1.0, 2.0, 4.0, 8.0])
+        assert _prefix_equal(lag(values, 0), values)
+        assert _prefix_equal(lag(values, 2), np.array([np.nan, np.nan, 1.0, 2.0]))
+        assert _prefix_equal(lead(values, 1), np.array([2.0, 4.0, 8.0, np.nan]))
+
+    def test_a_shift_past_the_end_is_all_nan(self):
+        values = np.array([1.0, 2.0])
+        assert np.isnan(lag(values, 5)).all() and np.isnan(lead(values, 5)).all()
+
+    def test_a_negative_shift_is_refused_by_name(self):
+        with pytest.raises(ValueError, match="lead"):
+            lag(np.array([1.0]), -1)
+        with pytest.raises(ValueError, match="lag"):
+            lead(np.array([1.0]), -1)
+
+    def test_the_return_ops_warm_up_with_nan(self):
+        values = np.array([100.0, 110.0, 121.0])
+        got_pct = pct_return(values)
+        assert math.isnan(got_pct[0])
+        assert list(got_pct[1:]) == pytest.approx([0.1, 0.1])
+        got = log_return(values)
+        assert math.isnan(got[0])
+        assert got[1] == pytest.approx(math.log(1.1))
+
+    def test_a_non_positive_price_answers_absent_not_infinite(self):
+        # -inf would ride into a row as a number no reader can use
+        assert np.isnan(log_return(np.array([0.0, 5.0]))).all()
+
+    def test_the_return_vocabulary_is_a_registry_not_a_branch(self):
+        assert sorted(RETURN_KINDS) == ["log", "pct"]
+        assert RETURN_KINDS["log"] is log_return
+
+
+class TestLookaheadIsDeclaredNotExempt:
+    def test_the_declared_label_survives_the_guard(self, tmp_path):
+        # causality_check ON: the label reads forward BY CONSTRUCTION and
+        # is held to its declared horizon rather than waved through.
+        node = ReturnWindows("w", {**FOREIGN, "lookback": 2, "label_lead": 1})
+        rows = node.run(ctx(tmp_path), {"records": bars("A", range(8))})["rows"]
+        assert node.params.get("causality_check", True) is True
+        assert len(rows) == 8
+
+    def test_an_undeclared_forward_column_is_still_refused(self, tmp_path):
+        class _Sneaky(_Passthrough):
+            def apply(self, arrays, params):
+                return {"value": lead(arrays["px"], 1)}
+
+        with pytest.raises(ValueError, match="not causal"):
+            _Sneaky("s", FOREIGN).run(ctx(tmp_path), {"records": bars("A", range(8))})
+
+    def test_a_leak_in_a_lag_column_is_still_refused(self, tmp_path):
+        class _Leaky(ReturnWindows):
+            def apply(self, arrays, params):
+                columns = super().apply(arrays, params)
+                columns["lag_0"] = columns["lag_0"] * 0 + np.nanmean(arrays["px"])
+                return columns
+
+        with pytest.raises(ValueError, match="lag_0"):
+            _Leaky("w", {**FOREIGN, "lookback": 2}).run(
+                ctx(tmp_path), {"records": bars("A", range(8))}
+            )
+
+
+class TestKeepMask:
+    def test_a_masked_position_is_compacted_out_and_the_survivors_chain(
+        self, tmp_path
+    ):
+        class _PricedOnly(ReturnWindows):
+            def keep_mask(self, arrays):
+                price = arrays["px"]
+                return np.isfinite(price) & (price > 0.0)
+
+        records = [
+            {"sym": "A", "t": BASE_MS + m * MINUTE_MS, "px": p}
+            for m, p in {0: 100.0, 1: 101.0, 2: None, 3: 103.0, 4: 104.0}.items()
+        ]
+        rows = _PricedOnly(
+            "w",
+            {
+                **FOREIGN,
+                "lookback": 2,
+                "max_gap": 5 * MINUTE_MS,
+                "drop_incomplete": True,
+            },
+        ).run(ctx(tmp_path), {"records": records})["rows"]
+        # The survivors become adjacent: t3 reads THROUGH the priceless
+        # minute, and the gap bound then judges the two-minute step.
+        assert [row["t"] for row in rows] == [BASE_MS + 3 * MINUTE_MS]
+        assert rows[0]["lag_0"] == pytest.approx(math.log(103.0 / 101.0))
+
+
+class TestLatestRows:
+    def test_the_newest_row_per_group_carries_no_label(self, tmp_path):
+        node = ReturnWindows("w", {**FOREIGN, "lookback": 2,
+                                   "max_gap": 5 * MINUTE_MS,
+                                   "drop_incomplete": True})
+        records = bars("A", range(5)) + bars("B", range(5), price=50.0)
+        latest = node.latest_rows(records)
+
+        assert sorted(latest) == ["A", "B"]
+        assert "label" not in latest["A"]
+        assert latest["A"]["t"] == BASE_MS + 4 * MINUTE_MS
+
+    def test_a_serving_row_equals_the_training_row_for_the_same_key(self, tmp_path):
+        node = ReturnWindows("w", {**FOREIGN, "lookback": 2,
+                                   "max_gap": 5 * MINUTE_MS,
+                                   "drop_incomplete": True})
+        records = bars("A", range(6))
+        trained = {row["t"]: row
+                   for row in node.run(ctx(tmp_path), {"records": records})["rows"]}
+        # The newest LABELLED row is one bar back; serve on that prefix
+        # and the two must agree feature for feature.
+        serving = node.latest_rows(records[:-1])["A"]
+        training = trained[serving["t"]]
+        assert {k: v for k, v in training.items() if k != "label"} == serving
+
+    def test_an_incomplete_newest_position_serves_nothing(self, tmp_path):
+        node = ReturnWindows("w", {**FOREIGN, "lookback": 3,
+                                   "max_gap": 5 * MINUTE_MS,
+                                   "drop_incomplete": True})
+        assert node.latest_rows(bars("A", [0, 1, 2])) == {}
+        # a fresh session leaves the newest bar with no window behind it
+        assert node.latest_rows(bars("A", [0, 1, 2, 3, 4, 40])) == {}
+
+
+class TestVectorization:
+    """The 2M-bar benchmark, measured — not asserted (ADR-0037's spirit)."""
+
+    def test_apply_runs_once_per_segment_not_once_per_row(self, tmp_path):
+        node = _CountingWindows(
+            "w",
+            {
+                **FOREIGN,
+                "lookback": 30,
+                "max_gap": 5 * MINUTE_MS,
+                "causality_check": False,
+            },
+        )
+        minutes = [m for m in range(2000) if m % 500 >= 10]  # ten-minute holes
+        node.run(ctx(tmp_path), {"records": bars("A", minutes)})
+        assert len(node.calls) == 4, node.calls
+        assert sum(node.calls) == len(minutes)
+
+    def test_the_window_build_holds_arrays_not_python_floats(self, tmp_path):
+        n_rows = 60_000
+        records = bars("A", range(n_rows))
+        node = ReturnWindows(
+            "w",
+            {
+                **FOREIGN,
+                "lookback": 30,
+                "max_gap": 5 * MINUTE_MS,
+                "drop_incomplete": True,
+                "causality_check": False,
+            },
+        )
+        tracemalloc.start()
+        try:
+            rows = node.run(ctx(tmp_path), {"records": records})["rows"]
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        assert len(rows) == n_rows - 31
+        # The rows themselves are 31 keys of dict each and dominate the
+        # RESIDENT cost (~1.7 kB/row, measured); the budget is about what
+        # the build holds ON TOP of them. Measured 2.27 kB/row peak with
+        # whole-array ops; the per-cell version this replaced measured
+        # ~3x the wall time for the same peak, and a per-row Python chain
+        # over 2M bars is the defect ADR-0037 costed at 650 B/row.
+        assert peak / n_rows < 2800, f"peak {peak / n_rows:.0f} B/row"
+        assert _current / n_rows < 2000, f"resident {_current / n_rows:.0f} B/row"

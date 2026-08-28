@@ -57,8 +57,63 @@ __all__ = [
     "MarkToMarketAccounting",
     "MarketRecord",
     "PositionOutcome",
+    "lead_frac_ok",
+    "price_ok",
     "settle_position",
 ]
+
+
+def price_ok(value) -> bool:
+    """Say whether ``value`` is a price this envelope can hold.
+
+    The envelope's price rule, PUBLIC so that nothing restates it. A
+    tier-2 pack that re-derives this bound drifts the moment the envelope
+    loosens one — audit HIGH-2, where ``libs/numpy.py`` carried its own
+    copy and failed silently through a pass-through path.
+
+    Parameters
+    ----------
+    value : object
+        The candidate. Anything at all: a non-number is simply not a
+        price, so this answers ``False`` rather than raising.
+
+    Returns
+    -------
+    bool
+        True for a finite, strictly positive ``int`` or ``float``.
+        ``bool`` is excluded explicitly — it is an ``int`` in Python, so
+        without the check ``True`` would pass as a price of 1.
+    """
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(value)
+        and value > 0.0
+    )
+
+
+def lead_frac_ok(value) -> bool:
+    """Say whether ``value`` is a ``lead_frac`` this envelope can hold.
+
+    The sibling of :func:`price_ok`, public for the same reason.
+
+    Parameters
+    ----------
+    value : object
+        The candidate; a non-number answers ``False``.
+
+    Returns
+    -------
+    bool
+        True for a finite ``int`` or ``float`` strictly inside (0, 1),
+        with ``bool`` excluded as in :func:`price_ok`.
+    """
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(value)
+        and 0.0 < float(value) < 1.0
+    )
 
 
 def _require_str(name, value):
@@ -72,7 +127,7 @@ def _require_price(name, value):
         return
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{name} must be a number or None, got {value!r}")
-    if not math.isfinite(value) or value <= 0.0:
+    if not price_ok(value):
         raise ValueError(f"{name} must be finite and > 0, got {value!r}")
 
 
@@ -151,7 +206,7 @@ class MarketRecord:
             lf = self.lead_frac
             if isinstance(lf, bool) or not isinstance(lf, (int, float)):
                 raise ValueError(f"lead_frac must be a number or None, got {lf!r}")
-            if not (0.0 < float(lf) < 1.0):
+            if not lead_frac_ok(lf):
                 raise ValueError(f"lead_frac must lie in (0, 1), got {lf!r}")
 
     @property
