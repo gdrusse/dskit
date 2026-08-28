@@ -544,24 +544,38 @@ pipeline can live under a grammar that owns the pipeline.
 
 **First, what already exists — do NOT rebuild it.** `SklearnFit` is already
 the doorway ("a DOORWAY, not a model registry: the estimator is named by the
-document" — `libs/sklearn.py:17`). `"estimator": "sklearn.ensemble:RandomForestRegressor"`
-works today, and `estimator` is in `_PARAMS` with `train` a searchable role,
+document" — `libs/sklearn.py:17`). `"estimator": "sklearn.ensemble.RandomForestRegressor"`
+works today *(spelling corrected this run, E5: the estimator grammar is the
+DOTTED path — the colon form is the `uses:` grammar and is refused at
+plan)*, and `estimator` is in `_PARAMS` with `train` a searchable role,
 so `space: {"model.estimator": [...]}` on an existing search node is already
 the model sweep. **Per-model wrapper classes would be ~20 classes each
 re-doing what the doorway does, and 20 new places to drift. Do not write
 them.**
 
-- [ ] **LightGBM as an optional extra.** It ships an sklearn-compatible API,
-      so `"lightgbm:LGBMRegressor"` already resolves through `SklearnFit` —
-      it only needs `lightgbm = ["lightgbm>=4.0"]` in `pyproject.toml` (and
-      the `all` extra). No pack, no wrapper. Same for xgboost/catboost if
-      wanted later.
-- [ ] **A documented estimator LIST — as config, not code.** The "common
+- [x] **LightGBM as an optional extra.** It ships an sklearn-compatible API,
+      so `"lightgbm.LGBMRegressor"` (dotted — see the spelling correction
+      above) resolves through `SklearnFit` — no pack, no wrapper. Same for
+      xgboost/catboost if wanted later.
+      **Landed this run (2026-08-28, E5):** extra ships self-sufficient
+      (`lightgbm`, `scikit-learn`, `joblib` — the transformers precedent:
+      the path runs THROUGH the sklearn doorway) + in `all`; the doorway
+      proven by a fitted LGBMRegressor under importorskip; declared
+      contents pinned from pyproject.
+- [x] **A documented estimator LIST — as config, not code.** The "common
       models" ask is a cookbook: a worked `examples/pipeline/model-sweep.json`
       whose search space enumerates the usual candidates (linear, ridge, RF,
       gradient boosting, SVM, kNN, LGBM), plus a table in the sklearn pack's
       docs. VERIFY the sweep actually plans and runs before writing the
       cookbook — the reasoning above is from reading the rules, not a run.
+      **Landed this run (2026-08-28, E5):** verified BY RUNNING first (6
+      candidates e2e, RandomForest wins); shipped as the cookbook example
+      (in the hash ledger) + the pack-docstring table, candidate list
+      triple-pinned; sweep constraints discovered by running are in the
+      example's notes (one params block serves every trial → no
+      estimator_params/seed on a mixed sweep; unclipped regressor beliefs
+      → squared_error on this binary venue as the documented tier-1
+      exception).
 - [ ] **Feature selection — genuinely absent, real new capability.** Grepped:
       zero hits for any selector anywhere in `dskit/`.
 

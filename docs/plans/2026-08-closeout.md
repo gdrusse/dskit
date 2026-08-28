@@ -787,6 +787,7 @@ Intentional-move log (append `document → old-prefix → new-prefix → card`):
 - children/…/configs/run-train.json → `187658f8b58b91a1…` → `85fff271bfdd05ec…` → A1
 - children/…/configs/run-backtest.json → `4db5b7904d19b73c…` → `5e1c24b0fad3ae1b…` → A1
 - examples/pipeline/optuna-continuous.json → NEW → `5560a479eacc071e…` → E4 (ledger now 15 documents)
+- examples/pipeline/model-sweep.json → NEW → `c01ae84ec899e1d8…` → E5 (ledger now 16 documents)
 
 ## 10. STATE — orchestrator updates as it goes
 
@@ -800,7 +801,7 @@ Intentional-move log (append `document → old-prefix → new-prefix → card`):
 | E2 | MERGED | fc316b0 | 5-round loop + orchestrator rulings (markdown.py renderer retrofit REVERTED — driver/kinds_report byte-identical to main; tolerance MAJORs fixed; refusal path prints notes; pins made structural) + confirming round + 4 directed fixes; suite 2547/108, hash gate empty |
 | E3 | pending | | after E1 |
 | E4 | MERGED | d24a088 | planner half was ALREADY in baseline (stale TODO claim); shipped the proof layer: continuous e2e, optuna-continuous.json example (ledger), hpo-grid refusal pins, flag retired; orchestrator round-5 fixes (ref-driven deferral truth ×4 sites, _strip_notes import); suite 2561/108 |
-| E5 | pending | | |
+| E5 | MERGED | d33385a | verify-first RAN the sweep (RF wins 6-candidate e2e); TWO TODO corrections proven by running (colon spelling refused — estimator grammar is dotted; mixed sweep cannot carry estimator_params/seed); lightgbm extra self-sufficient (transformers precedent); model-sweep.json in ledger c01ae84e…; suite 2598/109 |
 | B1 | MERGED | b3237a7 | torch #1 · 5-round loop + orchestrator round-5 rulings (plan-time guard kept; sentence-equality pin + _ADAPTER_SUBJECT; docstrings to standard); new core helper abstract_class_problem; suite 2456/108, hash gate empty |
 | B2 | pending | | torch #2 |
 | B3 | MERGED | d157848 | CLEAN loop (3 rounds, no intervention — first); AST-identity proof of the mechanical move; kinds_flow converted + ignore drained; suite 2577/108, hash gate empty |
