@@ -302,6 +302,33 @@ class TestTracking:
         assert "metrics.loss" in logged["validate"]
         assert logged["size"]["final_bankroll"] == pytest.approx(1020.0)
 
+    def test_node_params_reach_the_sink_beside_the_identity_fields(
+        self, tmp_path, registry
+    ):
+        # Identity alone made runs unfilterable: with only name/asof/hashes
+        # in the payload you could not ask a sink for "the runs at
+        # n_events=432". Every node's params ride along, flattened to the
+        # same '<node>.<param.path>' keys hpo-grid tunes.
+        self.register_memory()
+        doc = bdoc(
+            tmp_path,
+            tracking=TrackingConfig(sinks=(SinkConfig(kind="memory"),)),
+        )
+        result = run_document(doc, asof=ASOF, registry=registry)
+        logged = MemoryTracker.instances[-1].logged_params
+        assert logged["events.n_events"] == 432
+        assert logged["clip.lo"] == 0.02
+        assert logged["size.stake_frac"] == 0.1
+        assert logged["size.bankroll"] == {
+            "$prev": "size.final_bankroll",
+            "default": 1000.0,
+        }
+        assert logged["name"] == doc.name
+        assert logged["asof"] == ASOF
+        assert logged["document_hash"] == doc.hash
+        assert logged["run_hash"] == result.run_hash
+        assert logged["nodes"].startswith("events,")
+
     def test_sink_closes_even_when_a_node_errors(self, tmp_path, registry):
         self.register_memory()
         pipeline = banking_pipeline()

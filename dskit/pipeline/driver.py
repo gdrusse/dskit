@@ -73,6 +73,7 @@ from dskit.pipeline.document import (
     SPLITS_SOURCE,
     PipelineDocument,
     TrailingSplitSpec,
+    flatten_param_paths,
     is_node_ref,
     is_prev_ref,
     load_document,
@@ -194,6 +195,26 @@ def _open_sinks(tracking):
                 ]
             )
     return _Trackers(sinks)
+
+
+def _tracked_params(document, asof, run_hash, order):
+    """The log_params payload: run identity plus every node's declared
+    params, flattened to the '<node>.<param.path>' keys hpo-grid tunes.
+
+    Identity alone left runs unfilterable in a sink — you could not ask
+    for "the runs at hidden_size=64". Flattened keys always carry a dot,
+    so they never shadow the undotted identity fields.
+    """
+    payload = {
+        "name": document.name,
+        "asof": asof,
+        "document_hash": document.hash,
+        "run_hash": run_hash,
+        "nodes": ",".join(order),
+    }
+    for key in order:
+        payload.update(flatten_param_paths(key, document.pipeline[key].params))
+    return payload
 
 
 def _canonical_hash(payload) -> str:
@@ -931,15 +952,7 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
     state = "ran"
 
     try:
-        trackers.log_params(
-            {
-                "name": document.name,
-                "asof": asof,
-                "document_hash": document.hash,
-                "run_hash": run_hash,
-                "nodes": ",".join(the_plan.order),
-            }
-        )
+        trackers.log_params(_tracked_params(document, asof, run_hash, the_plan.order))
         for key in the_plan.order:
             spec = document.pipeline[key]
             if key in halted:

@@ -12,6 +12,7 @@ Three layers, mirroring the seam's contract:
   must EQUAL a from-scratch pinned run of the same document.
 """
 
+import copy
 import json
 import os
 
@@ -24,7 +25,7 @@ from dskit.pipeline.base import (
     TimeSplitConfig,
     TrackingConfig,
 )
-from dskit.pipeline.document import NodeSpec, PipelineDocument
+from dskit.pipeline.document import NodeSpec, PipelineDocument, flatten_param_paths
 from dskit.pipeline.driver import _apply_param_override, run_document
 from dskit.pipeline.kinds_search import HpoGrid, _grid, _subsample, register
 from dskit.pipeline.node import Node, NodeContext, NodeKindRegistry
@@ -496,6 +497,52 @@ class TestApplyOverride:
     def test_non_dict_cursor_is_an_error(self):
         with pytest.raises(ValueError, match="not an existing param"):
             _apply_param_override({"opt": 5}, "t", ("opt", "lr"), 0.9)
+
+
+class TestSpaceKeyGrammarParity:
+    """``flatten_param_paths`` (what the tracker logs) and the space-key
+    grammar (what ``hpo-grid`` tunes) must be the SAME spelling.
+
+    Two writers of one grammar is exactly the duplication that diverges,
+    so nothing here restates an expected key list: every key the flattener
+    emits is fed BACK to ``HpoGrid``'s space validation and to the
+    driver's override resolver, and must address the very leaf it came
+    from.
+    """
+
+    #: One node's params covering every shape the walk can meet.
+    PARAMS = {
+        "hidden_size": 32,
+        "lr": 0.001,
+        "monitor": "val_loss",
+        "opt": {"kind": "adam", "sched": {"warmup": 10}},
+        "cuts": [1, 2],
+        "empty": {},
+        "bankroll": {"$prev": "size.final_bankroll", "default": 1000.0},
+    }
+
+    def test_every_flattened_key_is_a_space_key_hpo_grid_accepts(self):
+        flat = flatten_param_paths("qhat", self.PARAMS)
+        assert flat  # a vacuous loop would prove nothing
+        HpoGrid(
+            "search",
+            {
+                "space": {key: [1, 2] for key in flat},
+                "objective": "$validate.metrics.loss",
+            },
+        )
+
+    def test_every_flattened_key_resolves_to_the_leaf_it_came_from(self):
+        flat = flatten_param_paths("qhat", self.PARAMS)
+        for key in flat:
+            node, _, path = key.partition(".")
+            target = copy.deepcopy(self.PARAMS)
+            _apply_param_override(target, node, path.split("."), "SENTINEL")
+            after = flatten_param_paths(node, target)
+            assert after[key] == "SENTINEL"
+            assert {k: v for k, v in after.items() if k != key} == {
+                k: v for k, v in flat.items() if k != key
+            }
 
 
 # ---------------------------------------------------------------------------

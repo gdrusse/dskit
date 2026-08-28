@@ -79,6 +79,7 @@ __all__ = [
     "TrailingSplitSpec",
     "WalkForwardSpec",
     "doc_split_from_obj",
+    "flatten_param_paths",
     "is_node_ref",
     "is_prev_ref",
     "load_document",
@@ -221,6 +222,64 @@ def parse_prev_ref(value):
             ]
         )
     return parts[0], tuple(parts[1:]), value["default"]
+
+
+def _param_branch(value) -> bool:
+    """Whether an override path may descend INTO this params value — a
+    non-empty dict every key of which is a legal path segment (which is
+    also what makes a ``$prev`` carry a leaf: ``$prev`` is no segment)."""
+    return (
+        isinstance(value, dict)
+        and bool(value)
+        and all(isinstance(k, str) and re.match(_SEGMENT_OK, k) for k in value)
+    )
+
+
+def _flatten_into(out, prefix, value) -> None:
+    """Emit ``prefix`` -> leaf for one params subtree."""
+    if _param_branch(value):
+        for name, inner in value.items():
+            _flatten_into(out, f"{prefix}.{name}", inner)
+    else:
+        out[prefix] = value
+
+
+def flatten_param_paths(node_key, params):
+    """One node's params as ``"<node>.<param.path>"`` override targets.
+
+    This is the override grammar read FORWARDS —
+    :func:`dskit.pipeline.driver._apply_param_override` resolves such a
+    path, ``hpo-grid`` tunes one, and the driver logs one per knob to the
+    tracking sinks. The walk therefore descends exactly where an override
+    could descend: through non-empty dicts whose keys are legal path
+    segments. A ``$prev`` carry, an empty dict, a list, and a dict
+    holding an unaddressable key are LEAVES (descending would spell a key
+    no override could ever address), and a top-level param whose name is
+    not a legal segment is dropped for the same reason.
+
+    Values pass through unchanged — rendering belongs to the sink, so a
+    numeric knob stays comparable as a number.
+
+    Parameters
+    ----------
+    node_key : str
+        The node's key in the document's ``pipeline`` map.
+    params : dict
+        That node's declared params, as written in the document.
+
+    Returns
+    -------
+    dict
+        ``"<node_key>.<param.path>"`` -> the leaf value at that path;
+        empty when the node declares no addressable params. Every key
+        contains at least one dot, so these never collide with the
+        undotted run-identity fields a tracker logs beside them.
+    """
+    out = {}
+    for name, value in params.items():
+        if isinstance(name, str) and re.match(_SEGMENT_OK, name):
+            _flatten_into(out, f"{node_key}.{name}", value)
+    return out
 
 
 def _check_ref_tree(errors, where, obj, *, allow_prev):

@@ -13,6 +13,7 @@ from dskit.pipeline.document import (
     ScheduleConfig,
     TrailingSplitSpec,
     doc_split_from_obj,
+    flatten_param_paths,
     is_node_ref,
     is_prev_ref,
     load_document,
@@ -80,6 +81,48 @@ class TestRefGrammar:
         assert is_prev_ref({"$prev": "a.b", "default": 0})
         assert is_prev_ref({"$prev": "half-formed"})  # routed to parser, refused there
         assert not is_prev_ref({"default": 0})
+
+
+class TestFlattenParamPaths:
+    """The override-target grammar read FORWARDS: one node's params as the
+    ``"<node>.<param.path>"`` keys an override (or a search space) uses."""
+
+    def test_nested_params_flatten_to_dotted_paths(self):
+        flat = flatten_param_paths(
+            "qhat",
+            {"hidden_size": 32, "model": {"kind": "gru", "layers": {"depth": 2}}},
+        )
+        assert flat == {
+            "qhat.hidden_size": 32,
+            "qhat.model.kind": "gru",
+            "qhat.model.layers.depth": 2,
+        }
+
+    def test_leaves_keep_their_native_values(self):
+        # Sinks own rendering; the core never stringifies a knob (a filter
+        # on hidden_size == 32 should compare numbers, not "32").
+        flat = flatten_param_paths("clip", {"lo": 0.02, "on": True, "cuts": [1, 2]})
+        assert flat == {"clip.lo": 0.02, "clip.on": True, "clip.cuts": [1, 2]}
+
+    def test_descent_stops_where_an_override_cannot_go(self):
+        # An override navigates existing dict keys only, so a $prev carry,
+        # an empty dict and a dict with non-segment keys are LEAVES —
+        # descending would emit a key no override could ever address.
+        carry = {"$prev": "size.final_bankroll", "default": 1000.0}
+        flat = flatten_param_paths(
+            "size", {"bankroll": carry, "empty": {}, "by_day": {"1d": 3}}
+        )
+        assert flat == {
+            "size.bankroll": carry,
+            "size.empty": {},
+            "size.by_day": {"1d": 3},
+        }
+
+    def test_unaddressable_top_level_names_are_dropped(self):
+        assert flatten_param_paths("size", {"1d": 3, "ok": 1}) == {"size.ok": 1}
+
+    def test_no_params_flatten_to_nothing(self):
+        assert flatten_param_paths("bank", {}) == {}
 
 
 # ---------------------------------------------------------------------------
