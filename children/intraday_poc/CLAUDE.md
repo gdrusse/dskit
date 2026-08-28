@@ -61,7 +61,10 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
   `_PARAMS` (`narrow_params`), and the pack REFUSES the class if you
   forget. The serving path calls `latest_rows` on the SAME node, so
   there is no second implementation to drift — `latest_feature_row` is
-  gone.
+  gone. `keep_mask` cuts both ways: a priceless minute BEHIND the newest
+  bar is read through (the survivors chain), while a priceless NEWEST
+  minute makes the symbol absent from `latest_rows` rather than serving
+  a one-minute-stale vector as current.
 - **Streams are single-pass**: `SelectOne.run` groups forecasts ONCE and
   caches for `build_model`; never re-iterate an input port.
 - **`select-one` is role `score`, not `capital`** — deliberate: it scores

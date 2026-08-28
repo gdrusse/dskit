@@ -764,6 +764,30 @@ def test_live_serving_refuses_gaps_and_short_history():
     assert node.latest_rows(gapped) == {}
 
 
+def test_live_serving_refuses_a_newest_bar_with_no_usable_price():
+    """A priceless newest minute makes the symbol ABSENT, not stale.
+
+    ``keep_mask`` drops that bar and the survivors chain — right for
+    TRAINING, wrong for SERVING: the newest survivor is a minute old,
+    and a loop handed it would trade a stale feature vector with no
+    signal that it did. The deleted ``latest_feature_row`` refused
+    exactly this (``if tail[i][1] <= 0: return None``), so this is the
+    regression bar for its replacement.
+    """
+    node = WindowRows("window", {"lookback": 2, "max_gap_minutes": 5})
+    bars = [{"symbol": "AAPL", "asof_ms": _ms(i), "close": 100.0 + i}
+            for i in range(6)]
+    assert node.latest_rows(bars)["AAPL"]["asof_ms"] == _ms(5)
+
+    bars.append({"symbol": "AAPL", "asof_ms": _ms(6), "close": 0.0})
+    assert node.latest_rows(bars) == {}
+
+    # A hole BEHIND the newest bar is the case the chain reads through.
+    bars[3] = {"symbol": "AAPL", "asof_ms": _ms(3), "close": 0.0}
+    bars[-1] = {"symbol": "AAPL", "asof_ms": _ms(6), "close": 106.0}
+    assert node.latest_rows(bars)["AAPL"]["asof_ms"] == _ms(6)
+
+
 @pytest.mark.skipif(not HAVE_SOLVER, reason="pyomo/highspy not installed")
 def test_select_one_picks_the_larger_prediction(tmp_path):
     """Per timestamp the larger predicted return wins, and realized PnL

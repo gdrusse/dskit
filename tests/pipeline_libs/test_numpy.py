@@ -785,6 +785,16 @@ class _Passthrough(ArrayFeatures):
         return {"value": arrays[self.fields()[0]] * 1.0}
 
 
+class _PricedWindows(ReturnWindows):
+    """ReturnWindows carrying the domain rule the pack cannot know: a
+    position with no usable price is not a position, so it is compacted
+    out and the survivors chain."""
+
+    def keep_mask(self, arrays):
+        px = arrays[self.fields()[0]]
+        return np.isfinite(px) & (px > 0.0)
+
+
 class _CountingWindows(ReturnWindows):
     """ReturnWindows that records the length of every array apply saw."""
 
@@ -1141,6 +1151,36 @@ class TestLatestRows:
         assert node.latest_rows(bars("A", [0, 1, 2])) == {}
         # a fresh session leaves the newest bar with no window behind it
         assert node.latest_rows(bars("A", [0, 1, 2, 3, 4, 40])) == {}
+
+    def test_a_masked_out_newest_position_serves_nothing(self, tmp_path):
+        """The newest position is taken AS-IS — mask included.
+
+        ``keep_mask`` compacts a dropped position out indices and all,
+        so the newest SURVIVOR is not the newest position. Serving that
+        survivor hands the live loop a stale feature vector wearing a
+        stale stamp, with no signal that it is stale — which is the one
+        thing this method's contract forbids.
+        """
+        node = _PricedWindows("w", {**FOREIGN, "lookback": 2,
+                                    "max_gap": 5 * MINUTE_MS,
+                                    "drop_incomplete": True})
+        records = bars("A", range(6))
+        assert node.latest_rows(records)["A"]["t"] == BASE_MS + 5 * MINUTE_MS
+
+        # The newest minute prints no usable price: absent, never stale.
+        records.append({"sym": "A", "t": BASE_MS + 6 * MINUTE_MS, "px": 0.0})
+        assert node.latest_rows(records) == {}
+
+    def test_a_masked_out_position_further_back_still_serves(self, tmp_path):
+        """The rule is about the NEWEST position, not any dropped one —
+        a hole behind the newest bar is exactly what the survivors chain
+        exists to read through."""
+        node = _PricedWindows("w", {**FOREIGN, "lookback": 2,
+                                    "max_gap": 5 * MINUTE_MS,
+                                    "drop_incomplete": True})
+        records = bars("A", [0, 1, 3, 4, 5])
+        records.insert(2, {"sym": "A", "t": BASE_MS + 2 * MINUTE_MS, "px": 0.0})
+        assert node.latest_rows(records)["A"]["t"] == BASE_MS + 5 * MINUTE_MS
 
 
 class TestVectorization:

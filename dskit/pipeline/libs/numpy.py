@@ -125,6 +125,7 @@ from __future__ import annotations
 
 import math
 from abc import abstractmethod
+from collections import namedtuple
 from dataclasses import is_dataclass, replace
 
 from dskit.pipeline.document import is_node_ref
@@ -527,6 +528,15 @@ def _lift(records, group_field, order_field, fields):
         arrays[order_field] = np.asarray([order for order, _ in pairs])
         groups[group] = (indices, arrays)
     return groups, unlifted
+
+
+#: One group's built state: the surviving stream indices, the columns
+#: ``apply`` answered for them, and whether the group's NEWEST lifted
+#: position survived ``keep_mask``. The flag rides here because it is the
+#: one fact compaction destroys — afterwards ``indices[-1]`` is the
+#: newest SURVIVOR, and a serving call cannot tell that apart from the
+#: newest position (which is how a stale row gets served as current).
+_Group = namedtuple("_Group", ("indices", "columns", "newest_kept"))
 
 
 def _compact(indices, arrays, mask):
@@ -934,7 +944,7 @@ class _ArrayApply(Node):
         """Class-specific column-name rule; the base accepts any name."""
 
     def _grouped_columns(self, records):
-        """Build ``group -> (indices, columns)`` for one input stream.
+        """Build ``group -> _Group`` for one input stream.
 
         Also answers the unlifted indices and the pinned column schema.
         """
@@ -953,12 +963,16 @@ class _ArrayApply(Node):
         schema = None
         for group in sorted(groups):
             indices, arrays = groups[group]
-            indices, arrays = _compact(indices, arrays, self.keep_mask(arrays))
+            # Read the flag BEFORE compaction destroys the evidence:
+            # `indices` arrives newest-last, so mask[-1] is that position.
+            mask = self.keep_mask(arrays)
+            newest_kept = bool(len(mask)) and bool(mask[-1])
+            indices, arrays = _compact(indices, arrays, mask)
             if not indices:
                 continue
             columns = self._segmented_columns(group, arrays, schema)
             schema = _check_schema(self.key, schema, columns, group)
-            out[group] = (indices, columns)
+            out[group] = _Group(indices, columns, newest_kept)
         return out, unlifted, schema
 
     def _segmented_columns(self, group, arrays, schema):
@@ -1155,7 +1169,7 @@ class ArrayMap(_ArrayApply):
         rebuilt = list(records)
         written = unchanged = 0
         for group in sorted(grouped):
-            indices, columns = grouped[group]
+            indices, columns = grouped[group].indices, grouped[group].columns
             for name in sorted(columns):
                 accept = _WRITEBACK[name]
                 values = columns[name]
@@ -1345,7 +1359,8 @@ class ArrayFeatures(_ArrayApply):
         incomplete_is_no_row = self.drop_incomplete()
         rows_by_index = {}
         no_row = 0
-        for _group, (indices, columns) in grouped.items():
+        for built in grouped.values():
+            indices, columns = built.indices, built.columns
             names = [name for name in sorted(columns) if name not in drop]
             cells, complete = _row_cells(columns, names, len(indices))
             for j, idx in enumerate(indices):
@@ -1405,9 +1420,16 @@ class ArrayFeatures(_ArrayApply):
         yet. Same lifting, same gap bound, same guard, same ``apply`` —
         so a serving row and the training row for the same
         ``(group, order)`` agree by construction rather than by a second
-        implementation agreeing with the first. The newest position is
-        taken as-is: when ITS row is incomplete the group is absent,
-        never silently served a staler row.
+        implementation agreeing with the first.
+
+        **The newest LIFTED position is taken as-is, mask included.** It
+        is absent from the answer when its row is incomplete AND when
+        ``keep_mask`` dropped it — because compaction makes the newest
+        SURVIVOR adjacent, and serving that survivor would hand a live
+        loop a stale feature vector wearing a stale stamp with nothing
+        marking it stale. Training WANTS the survivors to chain; serving
+        wants the truth about now. (A record that could not be lifted at
+        all belongs to no group, so it cannot make one stale.)
 
         Parameters
         ----------
@@ -1418,14 +1440,17 @@ class ArrayFeatures(_ArrayApply):
         -------
         dict
             Group value -> the newest complete row, with every column the
-            class declares in ``lookahead_columns`` left out.
+            class declares in ``lookahead_columns`` left out. A group
+            whose newest position is dropped or incomplete is ABSENT.
         """
         grouped, rows_by_index, _unlifted, _schema, _no_row = self._feature_rows(
             records, drop=tuple(self.lookahead_columns())
         )
         latest = {}
-        for group, (indices, _columns) in grouped.items():
-            row = rows_by_index.get(indices[-1])
+        for group, built in grouped.items():
+            if not built.newest_kept:
+                continue
+            row = rows_by_index.get(built.indices[-1])
             if row is not None:
                 latest[group] = row
         return latest
