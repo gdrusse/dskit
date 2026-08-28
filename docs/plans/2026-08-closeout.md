@@ -221,16 +221,25 @@ through the loop. Status line on commit:
 Orchestrator: model/effort set by the owner at launch (recommendation:
 **fable, effort high**). Subagents (Workflow `agent()` opts / Agent tool):
 
+**AMENDED 2026-08-28 (owner ruling, mid-run): FABLE IS UNAVAILABLE — out of
+credits. Do not dispatch a fable subagent; every fable row below is served by
+opus at the same effort.** Opus and sonnet are unaffected. The effort ladder
+is what carries the sophistication now, so keep xhigh where the table says
+xhigh. Restore the original mapping only when the owner says fable is funded
+again. (Mechanically: the card-loop script passes a `model` override ONLY when
+the args name one, so omitting it inherits the session model — a safe default
+when a tier goes dry mid-run.)
+
 | Tier | Used for | Cards |
 |---|---|---|
-| **fable, xhigh** | hardest design-adjacent implementation | C1, C2, C5, C6, D1 |
-| **fable, high** | ADR drafting; identity-bearing grammar | ADR-A…F drafts, C3 |
+| **~~fable~~ → opus, xhigh** | hardest design-adjacent implementation | C1, C2, C5, C6, D1 |
+| **~~fable~~ → opus, high** | ADR drafting; identity-bearing grammar | ADR-A…F drafts, C3 |
 | **opus, high** | hard bounded implementation | A2, E3, E4, C4, D3 |
 | **opus, medium** | bounded engine/child work | E1, E2, E5, B1, B2, B3, C7, D2 |
 | **sonnet, medium** | mechanical with care | A1, A5 |
 | **sonnet, low** | trivia | A4, D4 assist |
 | Skeptics (default) | 2×/round | **opus, high** |
-| Skeptics (escalated) | 3×/round | **fable, high** — for ADR drafts, C1, C2, C5, C6, D1 |
+| Skeptics (escalated) | 3×/round | **~~fable~~ → opus, high** — for ADR drafts, C1, C2, C5, C6, D1 |
 | Verifier delegate | context guard only | opus, high |
 
 Lens split when 2 skeptics: #1 correctness/test-integrity, #2
