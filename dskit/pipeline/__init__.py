@@ -128,6 +128,8 @@ from dskit.pipeline.driver import (
 )
 from dskit.pipeline.env import Secrets, load_env
 from dskit.pipeline.features import apply_stream_steps
+from dskit.pipeline.fitted import ApplyTransform, FittedTransform, Standardize
+from dskit.pipeline.fitted import register as _register_fitted_kinds
 from dskit.pipeline.io import load_config, save_config
 from dskit.pipeline.kinds_banking import BankingReport, Eligibility, EventBank
 from dskit.pipeline.kinds_banking import register as _register_banking_kinds
@@ -198,8 +200,10 @@ _register_banking_kinds()
 _register_search_kinds()
 _register_report_kinds()
 _register_table_kinds()
+_register_fitted_kinds()
 
 __all__ = [
+    "ApplyTransform",
     "BankingReport",
     "ClockConfig",
     "Concat",
@@ -209,6 +213,7 @@ __all__ = [
     "Eligibility",
     "EventBank",
     "Filter",
+    "FittedTransform",
     "ForeachSpec",
     "HpoGrid",
     "Join",
@@ -221,6 +226,7 @@ __all__ = [
     "RandomSplitSpec",
     "RunReport",
     "ScheduleConfig",
+    "Standardize",
     "StatTest",
     "TableFile",
     "TrailingSplitSpec",

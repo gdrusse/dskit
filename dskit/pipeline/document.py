@@ -84,6 +84,9 @@ __all__ = [
     "ScheduleConfig",
     "SEARCH_SPACE_PARAM",
     "SPLITS_SOURCE",
+    "SPLIT_NAMES",
+    "ScheduleConfig",
+    "TRAINABLE_ROLES",
     "TrailingSplitSpec",
     "WalkForwardSpec",
     "doc_split_from_obj",
@@ -114,7 +117,20 @@ ROLES = (
     "stat_test",
     "capital",
     "report",
+    "fitted_transform",
 )
+
+#: Roles that may carry ``mode``/``artifact``: the ones whose node either
+#: FITS or RESTORES (:class:`~dskit.pipeline.node.TrainableNode`). ONE
+#: tuple — the planner's rule, the conformance bar's census and the
+#: family definitions all read it, because three copies of "which roles
+#: are trainable" is three places for a new family to be forgotten.
+TRAINABLE_ROLES = ("train", "signal", "fitted_transform")
+
+#: The split names a document may address: the three the split specs
+#: carve, plus the ``cal`` band ADR-0034 added. Read by every role rule
+#: that asks a node WHICH split it reads or fits on.
+SPLIT_NAMES = ("train", "val", "cal", "test")
 
 #: Node cadences under a clock (spec §3/§7). Omitted = ``once``; anything
 #: other than ``once`` is only meaningful when the document has a clock.

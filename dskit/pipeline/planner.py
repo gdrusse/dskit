@@ -51,7 +51,9 @@ from dataclasses import dataclass
 from dskit.pipeline.base import ConfigError
 from dskit.pipeline.document import (
     SEARCH_SPACE_PARAM,
+    SPLIT_NAMES,
     SPLITS_SOURCE,
+    TRAINABLE_ROLES,
     PipelineDocument,
     is_node_ref,
     is_prev_ref,
@@ -63,8 +65,10 @@ from dskit.pipeline.stats import CORRECTIONS
 
 __all__ = ["Plan", "plan"]
 
-#: Roles that may carry ``mode``/``artifact`` (spec §5: trainable).
-_TRAINABLE_ROLES = ("train", "signal")
+#: Roles that may carry ``mode``/``artifact`` (spec §5: trainable). The
+#: grammar's own tuple, imported — a second copy here is how a new
+#: trainable family would silently be refused its ``mode``.
+_TRAINABLE_ROLES = TRAINABLE_ROLES
 
 #: Roles a search space may NEVER address, and why. Two families: the
 #: measurement instruments (score/stat_test/gate — a space that can
@@ -301,6 +305,61 @@ def _accepts_split(cls):
     return False
 
 
+def _fitted_errors(key, spec, cls, document):
+    """Leakage rules for one ``fitted_transform`` node (ADR-0040).
+
+    A fitted transform learns from ONE split and applies to the others,
+    so which split it learned from must be readable from the document —
+    the same discipline the ``score`` role's ``split`` carries, for the
+    stronger reason: a transform fitted on validation rows leaks
+    invisibly, because nothing fails and the scores merely improve.
+
+    Parameters
+    ----------
+    key : str
+        The node's key, prefixed onto every message.
+    spec : dskit.pipeline.document.NodeSpec
+        The declared node.
+    cls : type
+        The resolved class, read for its ``default_mode``: an OMITTED
+        ``mode`` means whatever the class says it means, so the rule
+        cannot key on ``spec.mode`` alone.
+    document : dskit.pipeline.document.PipelineDocument
+        The whole document, read for its splits section.
+
+    Returns
+    -------
+    list of str
+        One problem per broken rule; empty when the declaration is
+        honourable.
+    """
+    errors = []
+    fit_split = spec.params.get("fit_split")
+    declared = fit_split is not None and not is_node_ref(fit_split)
+    if declared and document.splits is None:
+        errors.append(
+            f"pipeline.{key}: fit_split {fit_split!r} names a split but the "
+            "document declares none — a fitted transform with no splits would "
+            "fit on EVERYTHING, which is the leak the knob exists to refuse. "
+            "Declare splits, or drop the node"
+        )
+    mode = spec.mode if spec.mode is not None else getattr(cls, "default_mode", "train")
+    if mode == "load":
+        return errors  # nothing is fit; the sidecar is checked at run
+    if fit_split is None:
+        errors.append(
+            f"pipeline.{key}: role 'fitted_transform' must declare which split "
+            f"it FITS on (params.fit_split in {'/'.join(SPLIT_NAMES)}) — an "
+            "undeclared fit split is a leak nobody can see"
+        )
+    elif declared and fit_split not in SPLIT_NAMES:
+        errors.append(
+            f"pipeline.{key}: fit_split must be one of "
+            f"{'/'.join(SPLIT_NAMES)}, got {fit_split!r}"
+        )
+    return errors
+
+
 def plan(document, registry=None) -> Plan:
     """Resolve, cross-check, and order one document (spec §9 steps 2–3).
 
@@ -466,9 +525,13 @@ def plan(document, registry=None) -> Plan:
                     "node's output into one of its inputs — un-gated capital "
                     "refuses to plan (spec §5)"
                 )
+        if role == "fitted_transform":
+            errors.extend(
+                _fitted_errors(key, spec, resolved[key].cls, document)
+            )
         if role == "score":
             split = spec.params.get("split")
-            if split not in ("train", "val", "cal", "test"):
+            if split not in SPLIT_NAMES:
                 errors.append(
                     f"pipeline.{key}: role 'score' must declare which split "
                     f"it reads (params.split in train/val/cal/test), got {split!r}"

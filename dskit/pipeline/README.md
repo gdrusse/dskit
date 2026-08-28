@@ -202,12 +202,33 @@ Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 | `eligibility` | gate | admission bar `min_events`; empty family ⇒ NO-GO |
 | `banking-report` | report | the banked/in-family/gap ledger |
 | `hpo-grid` | search | grid search over `"node.param.path"` via the rerun seam |
+| `standardize` | fitted_transform | centre/scale declared features on `fit_split`'s statistics |
+| `apply-transform` | transform | project a second stream through a wired fitted carrier |
 | `validate` † | score | model-vs-baseline per-record loss on a declared split |
 | `stat_test` † | stat_test | per-instrument cluster bootstrap (`method`: plain \| studentized bootstrap-t) + family correction; weighted corrections take a `weights` input |
 | `run-report` † | report | renders stage evidence to `evidence.json`/`.md` |
 
 † **owned**: documents may not substitute these kinds with their own class —
 the toolkit's statistics are not swappable by config.
+
+**Fitted transforms are a family, not a kind** (`fitted.py`, ADR-0040). A
+transform that LEARNS — a scaler's means, a selector's surviving columns —
+cannot live with the pure transforms, whose causality guard depends on purity.
+So it declares `fit_split`: which split the state is learned from, refused at
+plan when the document declares no splits, and checked against the sidecar
+when a pinned state is restored. The `rows` port carries EVERY input row
+transformed — applying a train-fit state to val and test IS the required
+behaviour; the leak would be FITTING on them. Write a member by implementing
+two methods:
+
+```jsonc
+"scaler": {
+  "uses": "standardize",
+  "inputs": { "rows": "$window.records" },
+  "params": { "fit_split": "train", "features": ["ret_lag_0", "ret_lag_1"] },
+  "notes": "Fit on train only; every row is emitted, scaled by the train state."
+}
+```
 
 `libs/` packs register nothing by import; use their kinds via
 `register()`/`--adapter` or reference classes by import path:
@@ -391,6 +412,9 @@ dskit/pipeline/
 ├── kinds_stats.py     owned validate + stat_test (plain + studentized bootstrap-t, corrections)
 ├── kinds_search.py    hpo-grid (the ctx.rerun seam)
 ├── kinds_report.py    owned run-report (evidence.json / evidence.md)
+├── fitted.py          the fitted-transform family: FittedTransform (role
+│                      fitted_transform, fit/apply_state hooks, fit_split +
+│                      the purity screen), standardize, apply-transform
 ├── conformance.py     conformance_suite + NodeProbe — the reusable pack bar
 ├── synthetic_nodes.py every role, deterministic, for demos/tests
 ├── metrics.py         logloss / brier / squared_error / absolute_error + register_metric

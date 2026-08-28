@@ -65,6 +65,15 @@ on it without breaking its rulings.
 - **Stage-list seams** — `register_transform_kind`,
   `register_optimizer_kind` (empty by design), `register_sink_kind`,
   `BackendRegistry` (zero venues ship — the mechanism is the product).
+- **Fitted transforms** — subclass `FittedTransform` (`fitted.py`) and
+  implement `fit(rows, params) -> state` + `apply_state(state, rows,
+  params) -> rows`. The base owns the rest: the `fit_split` selection,
+  the JSON sidecar, the restore under `mode="load"`, the purity screen,
+  and the metrics. It is `TrainableNode`'s subclass, so `mode` is never
+  yours to handle. Two rules bite: `apply_state` must be PURE and
+  ROW-INDEPENDENT (the screen re-applies it to one row alone), and the
+  `rows` port carries EVERY input row — `fit_split` says what was
+  LEARNED from, never what is emitted.
 - **Conformance** — point `conformance_suite(registry=, probes=,
   expected_roles=)` at any pack; probes are behavioural, not optional
   (`require_probes=False` is a written-down decision).
@@ -306,6 +315,7 @@ dskit/pipeline/
 ├── kinds_stats.py     owned validate + stat_test
 ├── kinds_search.py    hpo-grid (ctx.rerun seam)
 ├── kinds_report.py    owned run-report
+├── fitted.py          FittedTransform family: standardize, apply-transform
 ├── conformance.py     conformance_suite + NodeProbe
 ├── synthetic_nodes.py demo/test nodes, private registries only
 ├── metrics.py         logloss / brier / squared_error / absolute_error + register_metric

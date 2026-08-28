@@ -1,0 +1,906 @@
+"""The fitted-transform family — state LEARNED from a declared split.
+
+A fitted transform learns something from one split and applies it to the
+others: a scaler's means, a selector's surviving columns, an encoder's
+vocabulary. That is structurally forbidden in the pure-transform family,
+whose causality guard DEPENDS on ``apply`` being pure — it re-runs the
+method on truncated prefixes and refuses when the answer moves, which a
+fitted transform trips by design. So this is an explicit SIBLING of that
+family, never a slot in it (ADR-0040).
+
+**Leakage is the one hard rule.** A transform fitted on validation rows
+leaks invisibly: nothing fails, the scores just come out better. The
+seam therefore makes "which split did you fit on" DECLARED and
+checkable — ``fit_split``, the same shape the ``score`` role already
+uses for ``split`` — and refuses at PLAN where the document can be read,
+at run otherwise:
+
+* under train mode ``fit_split`` is REQUIRED and must name a declared
+  split;
+* **a declared ``fit_split`` with no splits section at all refuses at
+  plan**, rather than quietly fitting on everything;
+* under load mode nothing is fit, so ``fit_split`` is not required —
+  and when present it is checked against the sidecar's record of what
+  the restored state ACTUALLY saw, so a document can restate what a
+  state is, never misdescribe it.
+
+**The ``rows`` port carries EVERY input row, transformed, in both
+modes.** ``fit_split`` governs what the state is LEARNED FROM, never
+what is emitted — the deliberate departure from the ``score`` role's
+skip-outside-the-split precedent, because a scaler that emitted only its
+fit slice would silently truncate the stream its downstream reads.
+Applying a train-fit state to val and test rows is the REQUIRED
+behaviour; the leak would be FITTING on them.
+
+**Two hooks, and purity lives per hook.** :meth:`FittedTransform.fit`
+answers a JSON-able state from the fit rows;
+:meth:`FittedTransform.apply_state` projects rows through it and must be
+PURE and ROW-INDEPENDENT. :attr:`purity_check` (default true, the
+``causality_check`` idiom) is a mechanical SCREEN, not a proof: it
+re-applies ``apply_state`` to a sampled row ALONE and refuses when the
+answer differs from that row's answer in the full call — which catches
+the family's classic leak, an ``apply_state`` that recomputes a
+statistic over the rows it was handed. It cannot prove purity, and
+turning it off is a decision the document owns.
+
+:class:`ApplyTransform` (kind ``apply-transform``) projects a SECOND
+stream through a carrier this family emits. ONE apply kind serves every
+member, so a document that scales its training rows and then scales its
+serving rows wires the same carrier twice rather than fitting twice.
+
+Import cost: stdlib only — this is tier-1, the ``codec.py`` /
+``observations.py`` precedent. The numerics a member needs live in the
+member; nothing here imports a library.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+from abc import abstractmethod
+
+from dskit.pipeline.document import SPLIT_NAMES, is_node_ref
+from dskit.pipeline.node import (
+    DEFAULT_NODE_KINDS,
+    Node,
+    TrainableNode,
+    reject_unknown_params,
+)
+
+__all__ = [
+    "ApplyTransform",
+    "DEFAULT_ORDER_FIELD",
+    "DEFAULT_PURITY_CHECK",
+    "FittedTransform",
+    "NODE_KINDS",
+    "SIDECAR_NAME",
+    "Standardize",
+    "TransformCarrier",
+    "register",
+]
+
+#: The file a fitted state is persisted as, under the node's artifact
+#: directory. Named once: the writer and the loader read this name, and
+#: a pin may point at either the file or the directory holding it.
+SIDECAR_NAME = "fitted.json"
+
+#: What fit rows are ordered by before :meth:`FittedTransform.fit` sees
+#: them, so a fit that depends on row order is reproducible.
+DEFAULT_ORDER_FIELD = "asof_ms"
+
+#: The purity screen is ON unless the document says otherwise.
+DEFAULT_PURITY_CHECK = True
+
+
+def _field(row, name):
+    """Read one field of a row, attr-or-key (the ``kinds_flow`` convention)."""
+    if isinstance(row, dict):
+        return row.get(name)
+    return getattr(row, name, None)
+
+
+def _numeric(value):
+    """Return ``value`` as a float when it is a real finite number, else ``None``."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    out = float(value)
+    return out if math.isfinite(out) else None
+
+
+def _class_ref(cls):
+    """Spell a class the way a document references one: ``module:Class``."""
+    return f"{cls.__module__}:{cls.__qualname__}"
+
+
+def _sample_positions(n):
+    """Choose the purity screen's probe positions — deterministic, no RNG."""
+    return sorted({0, n // 2, n - 1}) if n else []
+
+
+class _SplitFrame:
+    """The duck-typed frame every ``split_of`` reads.
+
+    An instant and a cluster, as a real class so a missing field fails
+    as an AttributeError rather than a silent ``None`` — the same shape
+    ``split_policy`` builds.
+    """
+
+    __slots__ = ("asof_ms", "cluster")
+
+    def __init__(self, asof_ms, cluster):
+        self.asof_ms = asof_ms
+        self.cluster = cluster
+
+
+class TransformCarrier:
+    """A fitted transform bound to its state — what ``transform`` carries.
+
+    The pairing a downstream consumer needs and nothing more: the class
+    that knows how to project, and the state it learned. Calling
+    :meth:`apply` runs the SAME code the fitting node ran, screen
+    included, so a second stream cannot drift from the first.
+
+    Parameters
+    ----------
+    node : FittedTransform
+        The node that fitted the state; its ``apply_state`` and params
+        are what :meth:`apply` uses.
+    state : dict
+        The fitted state, JSON-able.
+
+    Examples
+    --------
+    Project a second stream through a carrier a fit produced::
+
+        carrier = fitted.run(ctx, {"rows": train_rows})["transform"]
+        served = carrier.apply(live_rows)
+    """
+
+    __slots__ = ("_node", "state")
+
+    def __init__(self, node, state):
+        self._node = node
+        self.state = state
+
+    @property
+    def node_class(self):
+        """The class this state belongs to (a type)."""
+        return type(self._node)
+
+    def apply(self, rows):
+        """Project ``rows`` through the carried state.
+
+        Parameters
+        ----------
+        rows : list
+            The stream to transform.
+
+        Returns
+        -------
+        list
+            One transformed row per input row, in order.
+
+        Raises
+        ------
+        ValueError
+            When the transform breaks its own contract — a row count
+            that moved, or a purity screen that caught row dependence.
+        """
+        return self._node.applied(self.state, list(rows))
+
+    def __repr__(self):
+        """Name the class and the state's keys — never the values."""
+        return f"TransformCarrier({self.node_class.__name__}, {sorted(self.state)})"
+
+
+class FittedTransform(TrainableNode):
+    """A transform whose state is LEARNED from a declared split.
+
+    Abstract: a member implements :meth:`fit` and :meth:`apply_state` and
+    inherits everything else — the split selection, the persistence, the
+    restore, the purity screen and the metrics. It subclasses
+    :class:`~dskit.pipeline.node.TrainableNode` and overrides NEITHER
+    template method, so ``mode`` is handled once, in one place, and no
+    member or consumer of this family ever sees it (ADR-0038/0040).
+
+    Parameters
+    ----------
+    params : dict
+        ``fit_split`` (which split the state is learned from; required
+        under train mode), ``order_field`` (str, default ``"asof_ms"`` —
+        what fit rows are ordered by), ``purity_check`` (bool, default
+        ``True``), plus whatever the member declares.
+
+    Examples
+    --------
+    A member is two methods; the base is the rest::
+
+        class Demean(FittedTransform):
+            def fit(self, rows, params):
+                return {"mean": sum(r["x"] for r in rows) / len(rows)}
+
+            def apply_state(self, state, rows, params):
+                return [{**r, "x": r["x"] - state["mean"]} for r in rows]
+
+        node = Demean("demean", {"fit_split": "train"})
+        out = node.run(ctx, {"rows": rows})
+        # -> {"transform": ..., "rows": [...], "metrics": {...}}
+    """
+
+    role = "fitted_transform"
+    outputs = ("transform", "rows", "metrics")
+
+    _PARAMS = ("fit_split", "order_field", "purity_check")
+
+    # -- the knobs ---------------------------------------------------------
+
+    def fit_split(self):
+        """Name the split the state is learned from, or ``None``."""
+        return self.params.get("fit_split")
+
+    def order_field(self):
+        """Name the field fit rows are ordered by (str)."""
+        return self.params.get("order_field", DEFAULT_ORDER_FIELD)
+
+    def purity_check(self):
+        """Say whether the purity screen runs (bool)."""
+        return bool(self.params.get("purity_check", DEFAULT_PURITY_CHECK))
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        The split NAME is checked here; whether the document declares
+        that split, and whether this node needed one at all, are plan-time
+        questions the planner answers because only it can see the
+        document.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            One problem per broken knob.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        split = params.get("fit_split")
+        if split is not None and not is_node_ref(split) and split not in SPLIT_NAMES:
+            problems.append(
+                f"fit_split must name one of {list(SPLIT_NAMES)} — the split "
+                f"the state is LEARNED from, got {split!r}"
+            )
+        field = params.get("order_field", DEFAULT_ORDER_FIELD)
+        if not is_node_ref(field) and (not isinstance(field, str) or not field):
+            problems.append(f"order_field must be a non-empty string, got {field!r}")
+        flag = params.get("purity_check", DEFAULT_PURITY_CHECK)
+        if not is_node_ref(flag) and not isinstance(flag, bool):
+            problems.append(f"purity_check must be a bool, got {flag!r}")
+        return problems
+
+    def validate_common_inputs(self, inputs):
+        """Problems that hold in either mode, empty when none.
+
+        Parameters
+        ----------
+        inputs : dict
+            ``rows`` (the stream) and the optional ``artifact_path`` pin.
+
+        Returns
+        -------
+        list of str
+            One problem when ``rows`` is not a list, plus the wired-pin
+            check every artifact-restoring node shares.
+        """
+        problems = []
+        if not isinstance((inputs or {}).get("rows"), list):
+            problems.append(
+                "rows must be a list of rows (a one-shot iterable is refused, "
+                "never consumed by validation), got "
+                f"{type((inputs or {}).get('rows')).__name__}"
+            )
+        problems.extend(
+            self.pin_port_problems(
+                inputs, "artifact_path",
+                hint="wire the run dir's fitted sidecar, or pin it node-level",
+            )
+        )
+        return problems
+
+    # -- the hooks a member implements -------------------------------------
+
+    @abstractmethod
+    def fit(self, rows, params):
+        """Learn this transform's state from the fit split's rows.
+
+        Parameters
+        ----------
+        rows : list
+            The rows of the declared ``fit_split``, in ``order_field``
+            order. Never empty — an empty fit split is refused before
+            this is called.
+        params : dict
+            ``self.params``, passed through for convenience.
+
+        Returns
+        -------
+        dict
+            The state, JSON-able: it is written to the run's artifact
+            and restored verbatim under load mode.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def apply_state(self, state, rows, params):
+        """Project rows through a fitted state.
+
+        MUST be pure and ROW-INDEPENDENT: the answer for a row may
+        depend on that row and on ``state``, and on nothing else. The
+        purity screen re-applies this method to a sampled row ALONE and
+        refuses when the answer moves — which is what catches the
+        family's classic leak, a method that recomputes a statistic over
+        the rows it was handed.
+
+        Parameters
+        ----------
+        state : dict
+            What :meth:`fit` learned, or what load mode restored.
+        rows : list
+            EVERY row of the input stream, whatever split it came from.
+        params : dict
+            ``self.params``, passed through for convenience.
+
+        Returns
+        -------
+        list
+            One transformed row per input row, in the same order.
+        """
+        raise NotImplementedError
+
+    def state_metrics(self, state):
+        """Numeric metrics describing a fitted state; none by default.
+
+        Parameters
+        ----------
+        state : dict
+            The fitted state.
+
+        Returns
+        -------
+        dict
+            Extra entries for the ``metrics`` output.
+        """
+        return {}
+
+    # -- the two mode hooks (ADR-0038 dispatches to these) -----------------
+
+    def run_train(self, ctx, inputs):
+        """Fit on the declared split, apply to everything, persist.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext
+            The run frame; its ``splits`` decide which rows are fit on.
+        inputs : dict
+            ``rows``, the whole stream.
+
+        Returns
+        -------
+        dict
+            ``transform`` (a :class:`TransformCarrier`), ``rows`` (every
+            input row, transformed) and ``metrics``.
+
+        Raises
+        ------
+        ValueError
+            When ``fit_split`` is absent, names a split the run did not
+            materialize, or matches no row.
+        """
+        rows = inputs["rows"]
+        fit_rows = self._fit_rows(ctx, rows)
+        state = self._checked_state(self.fit(fit_rows, self.params))
+        path = self.write_artifact(ctx, SIDECAR_NAME, {
+            "node_class": _class_ref(type(self)),
+            "fit_split": self.fit_split(),
+            "n_fit_rows": len(fit_rows),
+            "state": state,
+        })
+        self.log.info(
+            "fitted on %d of %d row(s) from split %r; state written to %s",
+            len(fit_rows), len(rows), self.fit_split(), path,
+        )
+        return self._emit(state, rows, len(fit_rows))
+
+    def run_load(self, ctx, inputs):
+        """Restore a fitted state and apply it — never fit.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext
+            The run frame; unused — nothing about a restore depends on
+            the run's splits, which is the whole point of the pin.
+        inputs : dict
+            ``rows``, and optionally a wired ``artifact_path``.
+
+        Returns
+        -------
+        dict
+            The same three outputs a fit returns, with ``n_fit_rows`` 0.
+
+        Raises
+        ------
+        ValueError
+            When nothing pins an artifact, when the sidecar belongs to
+            another class, or when a declared ``fit_split`` contradicts
+            what the state actually saw.
+        """
+        payload = self._sidecar(
+            self.pinned_artifact(
+                wired=(inputs or {}).get("artifact_path"),
+                missing="mode='load' needs the artifact this transform was "
+                        "fitted into — pin it node-level, or wire artifact_path",
+            )
+        )
+        rows = inputs["rows"]
+        self.log.info(
+            "restored a state fitted on %s row(s) of split %r",
+            payload.get("n_fit_rows"), payload.get("fit_split"),
+        )
+        return self._emit(payload["state"], rows, 0)
+
+    # -- the base's own machinery ------------------------------------------
+
+    def applied(self, state, rows):
+        """Project ``rows`` through ``state``, held to the contract.
+
+        The single path every projection takes — the fit's own emission,
+        a load's, and :meth:`TransformCarrier.apply` — so the row-count
+        contract and the purity screen cannot be true of one and not the
+        others.
+
+        Parameters
+        ----------
+        state : dict
+            The fitted state.
+        rows : list
+            The stream to transform.
+
+        Returns
+        -------
+        list
+            One transformed row per input row.
+
+        Raises
+        ------
+        ValueError
+            When the row count moved, or the purity screen caught row
+            dependence.
+        """
+        out = list(self.apply_state(state, rows, self.params))
+        if len(out) != len(rows):
+            raise ValueError(
+                f"{self.key}: apply_state returned {len(out)} row(s) for "
+                f"{len(rows)} — one row out per row in; a transform that "
+                "drops rows would silently truncate the stream its "
+                "downstream reads (filter them upstream instead)"
+            )
+        if self.purity_check():
+            self._screen(state, rows, out)
+        return out
+
+    def _screen(self, state, rows, out):
+        """Re-apply to a sampled row alone and refuse any drift."""
+        for i in _sample_positions(len(rows)):
+            alone = list(self.apply_state(state, [rows[i]], self.params))
+            if len(alone) == 1 and alone[0] == out[i]:
+                continue
+            raise ValueError(
+                f"{self.key}: apply_state is not row-independent — row {i} "
+                "transformed differently on its own than it did in the full "
+                "call, which means the method reads the ROWS IT WAS HANDED "
+                "and not only the fitted state. That is this family's classic "
+                "leak: the answer for a serving row would depend on which "
+                "other rows happened to arrive with it. Fix apply_state; "
+                "purity_check=false skips this screen, and turning it off is "
+                "a decision the document owns."
+            )
+
+    def _emit(self, state, rows, n_fit_rows):
+        """Build the three outputs from a state and the whole stream."""
+        transformed = self.applied(state, rows)
+        metrics = {"n_rows": len(transformed), "n_fit_rows": n_fit_rows}
+        metrics.update(self.state_metrics(state))
+        return {
+            "transform": TransformCarrier(self, state),
+            "rows": transformed,
+            "metrics": metrics,
+        }
+
+    def _fit_rows(self, ctx, rows):
+        """Select the declared split's rows, ordered — or refuse by name."""
+        split = self.fit_split()
+        if split is None:
+            raise ValueError(
+                f"{self.key}: fit_split is required when this node FITS — an "
+                "undeclared fit split is a leak nobody can see, so it is "
+                "stated in the document or not run at all"
+            )
+        splits = getattr(ctx, "splits", None)
+        if splits is None:
+            raise ValueError(
+                f"{self.key}: fit_split={split!r} names a split but the run "
+                "materialized none — a fitted transform with no splits would "
+                "fit on EVERYTHING, which is the leak this knob exists to "
+                "refuse"
+            )
+        keep = [
+            row for row in rows
+            if splits.split_of(
+                _SplitFrame(_field(row, "asof_ms"),
+                            _field(row, "cluster") or _field(row, "contract"))
+            ) == split
+        ]
+        if not keep:
+            raise ValueError(
+                f"{self.key}: fit_split={split!r} matched no row of the "
+                f"{len(rows)} wired — fitting on nothing would emit a state "
+                "no reader can question, so it refuses instead"
+            )
+        return self._ordered(keep)
+
+    def _ordered(self, rows):
+        """Fit rows in the declared order; input order when it cannot be read."""
+        field = self.order_field()
+        keyed = [(_numeric(_field(row, field)), i, row) for i, row in enumerate(rows)]
+        if any(key is None for key, _i, _row in keyed):
+            return rows
+        return [row for _key, _i, row in sorted(keyed, key=lambda t: (t[0], t[1]))]
+
+    def _checked_state(self, state):
+        """Hold a fitted state to its contract: a JSON-able dict."""
+        if not isinstance(state, dict):
+            raise ValueError(
+                f"{self.key}: fit() must return a dict of JSON-able state, got "
+                f"{type(state).__name__} — the state is persisted verbatim and "
+                "restored under mode='load'"
+            )
+        try:
+            json.dumps(state, allow_nan=False, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{self.key}: fit() returned a state that is not JSON-able "
+                f"({exc}) — a state no artifact can hold is a state serving "
+                "can never restore"
+            ) from exc
+        return state
+
+    def _sidecar(self, ref):
+        """Read and verify the sidecar behind an artifact reference."""
+        path = os.path.join(ref, SIDECAR_NAME) if os.path.isdir(ref) else ref
+        try:
+            with open(path, encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except (OSError, ValueError) as exc:
+            raise ValueError(
+                f"{self.key}: cannot read the fitted state at {path}: {exc}"
+            ) from exc
+        declared = _class_ref(type(self))
+        if payload.get("node_class") != declared:
+            raise ValueError(
+                f"{self.key}: {path} records node_class "
+                f"{payload.get('node_class')!r}, not {declared!r} — wrong "
+                "artifact for this node; a state means nothing apart from the "
+                "class that projects with it"
+            )
+        split = self.fit_split()
+        if split is not None and payload.get("fit_split") != split:
+            raise ValueError(
+                f"{self.key}: fit_split={split!r} but the restored state was "
+                f"fitted on {payload.get('fit_split')!r} — a document may "
+                "restate what a state saw, never misdescribe it"
+            )
+        if not isinstance(payload.get("state"), dict):
+            raise ValueError(
+                f"{self.key}: {path} carries no fitted state"
+            )
+        return payload
+
+
+class ApplyTransform(Node):
+    """Project a SECOND stream through a wired carrier (kind ``apply-transform``).
+
+    ONE apply kind serves every member of the family: a document that
+    fits a scaler on training rows and needs the same scaling on another
+    stream wires the fit node's ``transform`` output here rather than
+    fitting twice. Role ``transform`` — nothing is learned, so nothing
+    about a split matters.
+
+    Parameters
+    ----------
+    params : dict
+        None: the carrier already holds everything.
+
+    Examples
+    --------
+    Scale a second stream with the state the first fit learned::
+
+        node = ApplyTransform("scale_test", {})
+        out = node.run(ctx, {"transform": carrier, "rows": test_rows})
+        # -> {"rows": [...]}
+    """
+
+    role = "transform"
+    outputs = ("rows",)
+
+    _PARAMS = ()
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none — this kind has no knobs.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            One problem naming any knob that was set.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Problems with ``inputs``, empty when none.
+
+        Parameters
+        ----------
+        inputs : dict
+            ``transform`` (a carrier) and ``rows`` (the stream).
+
+        Returns
+        -------
+        list of str
+            One problem per port that cannot be projected through.
+        """
+        problems = []
+        if not isinstance((inputs or {}).get("rows"), list):
+            problems.append(
+                "rows must be a list of rows, got "
+                f"{type((inputs or {}).get('rows')).__name__}"
+            )
+        carrier = (inputs or {}).get("transform")
+        if not callable(getattr(carrier, "apply", None)):
+            problems.append(
+                "transform must be a fitted transform's carrier (has "
+                f".apply), got {type(carrier).__name__} — wire a "
+                "fitted_transform node's 'transform' output"
+            )
+        return problems
+
+    def run(self, ctx, inputs):
+        """Transform the wired stream with the wired state.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext
+            The run frame; unused — a projection reads no run state.
+        inputs : dict
+            ``transform`` and ``rows``.
+
+        Returns
+        -------
+        dict
+            ``{"rows": [...]}`` — one row per input row.
+        """
+        rows = inputs["transform"].apply(inputs["rows"])
+        self.log.info("projected %d row(s) through a fitted transform", len(rows))
+        return {"rows": rows}
+
+
+class Standardize(FittedTransform):
+    """Centre and scale declared features on the fit split's statistics.
+
+    The family's first member, and the shape every later one follows:
+    two methods, no mode handling, no leakage rule of its own. The state
+    is a mean and a standard deviation per feature, learned from
+    ``fit_split`` alone and applied to every row — which is exactly the
+    train/val/test discipline a hand-rolled scaler gets wrong.
+
+    A zero-variance feature scales by 1.0 rather than dividing by zero,
+    so a constant column becomes a constant zero instead of NaN. A row
+    whose feature is absent or non-numeric keeps its absence: no value is
+    invented to make the arithmetic work.
+
+    Parameters
+    ----------
+    params : dict
+        ``features`` (a non-empty list of row field names, required)
+        plus :class:`FittedTransform`'s knobs.
+
+    Examples
+    --------
+    Scale two features on the training split::
+
+        node = Standardize("scaler", {
+            "fit_split": "train", "features": ["ret_lag_0", "ret_lag_1"],
+        })
+        out = node.run(ctx, {"rows": rows})
+        # -> {"transform": ..., "rows": [...], "metrics": {...}}
+    """
+
+    _PARAMS = FittedTransform._PARAMS + ("features",)
+
+    def features(self):
+        """Name the row fields this scaler standardizes (tuple of str)."""
+        return tuple(self.params["features"])
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            The base's problems, plus one when ``features`` is missing or
+            is not a non-empty list of field names.
+        """
+        problems = super().validate_params(params)
+        features = params.get("features")
+        if is_node_ref(features):
+            return problems
+        if (
+            not isinstance(features, (list, tuple))
+            or not features
+            or any(not isinstance(name, str) or not name for name in features)
+        ):
+            problems.append(
+                "features is required and must be a non-empty list of row "
+                f"field names — there is no default, got {features!r}"
+            )
+        return problems
+
+    def validate_common_inputs(self, inputs):
+        """Problems that hold in either mode, empty when none.
+
+        Parameters
+        ----------
+        inputs : dict
+            ``rows`` and the optional pin.
+
+        Returns
+        -------
+        list of str
+            The base's problems, plus one when a row is not a mapping —
+            this member rebuilds rows as dicts.
+        """
+        problems = super().validate_common_inputs(inputs)
+        if problems:
+            return problems
+        for i, row in enumerate(inputs["rows"]):
+            if isinstance(row, dict):
+                continue
+            problems.append(
+                f"rows[{i}] is a {type(row).__name__} — Standardize rebuilds "
+                "each row as a mapping, so every row must be one"
+            )
+            break
+        return problems
+
+    def state_metrics(self, state):
+        """Report how many features the state covers.
+
+        Parameters
+        ----------
+        state : dict
+            The fitted state.
+
+        Returns
+        -------
+        dict
+            ``{"n_features": ...}``.
+        """
+        return {"n_features": len(state.get("mean", {}))}
+
+    def fit(self, rows, params):
+        """Learn a mean and a standard deviation per declared feature.
+
+        Parameters
+        ----------
+        rows : list of dict
+            The fit split's rows.
+        params : dict
+            This node's params; the features are read through the accessor.
+
+        Returns
+        -------
+        dict
+            ``{"mean": {feature: float}, "std": {feature: float}}``; a
+            feature no row carries usably centres at 0.0 and scales by
+            1.0, so it passes through untouched rather than exploding.
+        """
+        mean, std = {}, {}
+        for name in self.features():
+            values = [v for v in (_numeric(_field(row, name)) for row in rows)
+                      if v is not None]
+            if not values:
+                mean[name], std[name] = 0.0, 1.0
+                continue
+            centre = sum(values) / len(values)
+            spread = math.sqrt(sum((v - centre) ** 2 for v in values) / len(values))
+            mean[name] = centre
+            std[name] = spread if spread > 0.0 else 1.0
+        return {"mean": mean, "std": std}
+
+    def apply_state(self, state, rows, params):
+        """Centre and scale each row's features by the fitted statistics.
+
+        Pure and row-independent by construction: nothing but the row and
+        the state is read.
+
+        Parameters
+        ----------
+        state : dict
+            ``{"mean": ..., "std": ...}``.
+        rows : list of dict
+            Every row of the stream.
+        params : dict
+            This node's params; unused — the state carries the numbers.
+
+        Returns
+        -------
+        list of dict
+            One rebuilt row per input row; untouched columns ride along,
+            and a feature this row lacks stays as it was.
+        """
+        mean, std = state["mean"], state["std"]
+        out = []
+        for row in rows:
+            scaled = dict(row)
+            for name, centre in mean.items():
+                value = _numeric(row.get(name))
+                if value is None:
+                    continue
+                scaled[name] = (value - centre) / std[name]
+            out.append(scaled)
+        return out
+
+
+#: kind name -> class, for the registry and the conformance census.
+NODE_KINDS = (("standardize", Standardize), ("apply-transform", ApplyTransform))
+
+
+def register(registry=None):
+    """Register the fitted-transform kinds, ``owned=False``.
+
+    Idempotent by SKIPPING any name already present — never shadowing an
+    existing registration. Nothing registers at import time; calling this
+    is the explicit opt-in.
+
+    Parameters
+    ----------
+    registry : NodeKindRegistry or None
+        Where to register; ``None`` means
+        :data:`~dskit.pipeline.node.DEFAULT_NODE_KINDS`.
+
+    Returns
+    -------
+    NodeKindRegistry
+        The same registry, for chaining.
+    """
+    registry = DEFAULT_NODE_KINDS if registry is None else registry
+    for name, cls in NODE_KINDS:
+        if name not in registry:
+            registry.register(name, cls, owned=False)
+    return registry

@@ -27,23 +27,28 @@ Two deliberate deviations from a typical adapter hookup:
 
 Every probe is built from small in-memory records (plain dicts — the
 kinds accept dicts and attribute-bearing records interchangeably); only
-the table pair touches ``tmp_path``, because a digest-pinned file on
-disk IS that pair's subject. ``stream_ports`` is set EXPLICITLY on
+the table pair and the fitted family touch ``tmp_path``, because a
+digest-pinned file on disk IS that pair's subject and a restore check
+needs a state that really exists. ``stream_ports`` is set EXPLICITLY on
 every probe that carries ``inputs``, ``()`` where no port is a stream.
 """
 
 import hashlib
 import json
+import os
 
+from dskit.pipeline.base import TimeSplitConfig
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
+from dskit.pipeline.fitted import SIDECAR_NAME, ApplyTransform, Standardize
 from dskit.pipeline.kinds_banking import BankingReport, Eligibility, EventBank
 from dskit.pipeline.kinds_flow import Concat, Derive, Filter, Join
 from dskit.pipeline.kinds_report import RunReport
 from dskit.pipeline.kinds_search import HpoGrid
 from dskit.pipeline.kinds_stats import StatTest, Validate
 from dskit.pipeline.kinds_table import TableFile, TableWrite
+from dskit.pipeline.node import NodeContext
 
-#: The thirteen toolkit kinds, paired explicitly (see module docstring
+#: The fifteen toolkit kinds, paired explicitly (see module docstring
 #: for why this is not DEFAULT_NODE_KINDS).
 TOOLKIT_NODE_KINDS = (
     ("stat_test", StatTest),
@@ -59,6 +64,8 @@ TOOLKIT_NODE_KINDS = (
     ("derive", Derive),
     ("table-file", TableFile),
     ("table-write", TableWrite),
+    ("standardize", Standardize),
+    ("apply-transform", ApplyTransform),
 )
 
 #: The independent role census (docs/24 §5 + the pipeline CLAUDE.md kind
@@ -82,6 +89,11 @@ TOOLKIT_ROLES = {
     # writer materialises one and proves it (report).
     "table-file": "transform",
     "table-write": "report",
+    # The fitted-transform family: the scaler LEARNS (a trainable role,
+    # so ADR-0038's structural bar covers it); the apply kind only
+    # projects, so it is an ordinary transform.
+    "standardize": "fitted_transform",
+    "apply-transform": "transform",
 }
 
 
@@ -128,12 +140,55 @@ def _book(tmp_path):
     }
 
 
+def _fitted(tmp_path):
+    """A REAL fitted scaler: its ctx, its carrier, and its sidecar path.
+
+    The fitted family's load check needs an artifact that actually
+    exists — a state restored from nothing proves nothing — so the probe
+    factory fits once, under splits that put one record in ``train``.
+    """
+    splits = TimeSplitConfig(train_end_ms=11, val_end_ms=20, test_end_ms=30)
+    ctx = NodeContext(
+        name="conformance",
+        asof="2026-01-01",
+        run_dir=str(tmp_path / "fitrun"),
+        splits=splits,
+        splits_info=splits.to_obj(),
+    )
+    node = Standardize("standardize", {"fit_split": "train", "features": ["mid"]})
+    out = node.run(ctx, {"rows": _records()})
+    return ctx, out["transform"], os.path.join(node.artifact_dir(ctx), SIDECAR_NAME)
+
+
 def probes(tmp_path):
-    """One NodeProbe per kind. Only the table pair needs ``tmp_path``
-    (everything else is in-memory); the factory signature is the suite's
-    contract."""
+    """One NodeProbe per kind. Only the table pair and the fitted family
+    need ``tmp_path`` (everything else is in-memory); the factory
+    signature is the suite's contract."""
     records = _records()
+    fit_ctx, carrier, sidecar = _fitted(tmp_path)
     return {
+        # The fitted family. `fit_split` is NOT listed as required: it is
+        # refused at PLAN (the planner can see the splits section) rather
+        # than by validate_params, which cannot.
+        "standardize": NodeProbe(
+            params={"fit_split": "train", "features": ["mid"]},
+            required=("features",),
+            inputs={"rows": _records()},
+            stream_ports=("rows",),
+            runnable=True,
+            ctx=fit_ctx,
+            load_artifact=sidecar,
+            verify_loaded=lambda out: (
+                out["metrics"]["n_fit_rows"] == 0
+                and out["transform"].state == carrier.state
+            ),
+        ),
+        "apply-transform": NodeProbe(
+            params={},
+            inputs={"transform": carrier, "rows": _records()},
+            stream_ports=("rows",),
+            runnable=True,
+        ),
         "stat_test": NodeProbe(
             params={"alpha": 0.05, "correction": "bh", "n_boot": 1000, "seed": 0},
             inputs={
