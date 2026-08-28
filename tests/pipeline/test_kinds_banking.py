@@ -170,9 +170,14 @@ class TestEventBankDefaultsHaveOneName:
         spelled = EventBank("bank", {"count": _DEFAULT_COUNT})
         no_outcomes = {"events": []}
         assert bare.validate_inputs(no_outcomes) == spelled.validate_inputs(no_outcomes)
-        # and the gate's verdict matches what run() actually needs
-        if bare.validate_inputs(no_outcomes) == []:
-            bare.run(ctx, no_outcomes)  # must not raise on the missing port
+        # ...and the other direction, asserted unconditionally: the count the
+        # gate DOES pass without an ``outcomes`` port is one ``run`` can serve
+        # without one. Guarding this behind "if the gate said []" makes it dead
+        # code while the default requires outcomes, so it is spelled out.
+        lax = EventBank("bank", {"count": "all"})
+        events = {"events": [_rec("A", "A-0", 10)]}
+        assert lax.validate_inputs(events) == []
+        assert lax.run(ctx, events)["counts"] == {"A": 1}  # no ``outcomes``: no raise
 
     def test_the_distinct_by_message_names_the_default_it_documents(self):
         # The phrase, not the bare repr: the message also renders the whole

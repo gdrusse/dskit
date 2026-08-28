@@ -176,7 +176,7 @@ class Filter(Node):
             "usable",
             {
                 "require_usable": True,
-                "where": [{"field": "venue", "op": "==", "value": "kalshi"}],
+                "where": [{"field": "venue", "op": "==", "value": "examplevenue"}],
             },
         )
         out = node.run(ctx, {"records": records})
@@ -531,7 +531,7 @@ class Concat(Node):
             "both_venues",
             {"shape": "records", "provenance": "venue", "key": "contract"},
         )
-        out = node.run(ctx, {"kalshi": kalshi_rows, "poly": poly_rows})
+        out = node.run(ctx, {"examplevenue": rows_a, "othervenue": rows_b})
     """
 
     role = "transform"

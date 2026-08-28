@@ -6,10 +6,13 @@ it to be tested at all, and the ledger writes down who is in, who is
 pending and how far each still has to go. That
 ``bank -> family -> report`` spine is why the three live together rather
 than beside the record-flow verbs they were originally written next to
-(TODO 3e). To read the spine wired end to end, see
-:func:`~dskit.pipeline.synthetic_nodes.demo_pipeline` — its ``bank`` ->
-``family`` -> ``report`` nodes are these three against the synthetic
-kinds, and ``python -m dskit.pipeline nodemap`` runs that document.
+(TODO 3e). To read THESE THREE wired end to end under the driver, see
+``flow_document`` in ``tests/pipeline/test_kinds_flow.py`` and the
+integration case that runs it — a document naming ``event-bank`` ->
+``eligibility`` -> ``banking-report`` by kind. (The synthetic
+``demo_pipeline`` sketches the same SHAPE, but with the stand-in kinds
+``synth-bank``/``synth-eligibility``/``synth-report``, whose ports
+differ; it is not these classes.)
 
 They are registered with ``owned=False`` — any project may shadow them
 with its own class via an import path; the doctrine kinds (``stat_test``,
