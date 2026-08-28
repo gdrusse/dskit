@@ -6,6 +6,7 @@ import pytest
 
 from dskit.pipeline.base import ConfigError, TimeSplitConfig
 from dskit.pipeline.document import (
+    MODES,
     ClockConfig,
     NodeSpec,
     PipelineDocument,
@@ -238,6 +239,22 @@ class TestNodeSpec:
         with pytest.raises(ConfigError) as exc:
             NodeSpec(uses="k", every="hourly", mode="test", role="banker")
         assert len(exc.value.errors) == 3
+
+    def test_the_mode_refusal_names_the_WHOLE_vocabulary(self):
+        """The check grades ``mode`` against :data:`MODES`, so the refusal
+        must QUOTE that tuple rather than restate it as literals: grow
+        MODES and a hand-copied message advertises a vocabulary the check
+        no longer enforces. Prefix matches ("mode must be") survive that
+        drift, which is why the agreement is pinned here."""
+        with pytest.raises(ConfigError) as exc:
+            NodeSpec(uses="k", mode="infer")
+        message = "; ".join(exc.value.errors)
+        assert str(list(MODES)) in message, (
+            f"the refusal restates the vocabulary instead of quoting "
+            f"{list(MODES)}: {message!r}"
+        )
+        omitted = [m for m in MODES if repr(m) not in message]
+        assert not omitted, f"refusal omits {omitted}: {message!r}"
 
     def test_refs_gathers_inputs_and_params(self):
         spec = NodeSpec(

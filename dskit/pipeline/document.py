@@ -459,7 +459,8 @@ class NodeSpec:
             errors.append(f"every must be one of {list(CADENCES)}, got {self.every!r}")
         if self.mode is not None and self.mode not in MODES:
             errors.append(
-                f"mode must be 'train' or 'load' (or absent), got {self.mode!r}"
+                f"mode must be one of {list(MODES)} (or absent), "
+                f"got {self.mode!r}"
             )
         _check_str(errors, "artifact", self.artifact, non_empty=False)
         if self.mode == "load" and not self.artifact:

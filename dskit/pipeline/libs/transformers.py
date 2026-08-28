@@ -701,8 +701,19 @@ class TransformerPredict(TrainableNode):
 
     @property
     def _where(self):
-        """This node's self-description, quoted into every refusal it
-        raises in EITHER mode — one wording, one place."""
+        """This node's self-description — the key PLUS the pack locator.
+
+        Quoted into the refusals this PACK raises: ``mode='train'``
+        below, and the sidecar/restore checks it is handed to. NOT into
+        the artifact-PIN refusals (nothing pinned, an empty pin, a
+        node-level pin contradicting ``artifact_dir``): ADR-0038 moved
+        those to :meth:`~dskit.pipeline.node.Node.pinned_artifact`, a
+        tier-1 service that can only prefix the bare ``self.key`` —
+        stdlib-only core never calls a tier-2 wrapper, and the pack's
+        share of that wording is the ``missing`` text alone. So this node
+        names itself two ways by design: one wording per refusal SOURCE,
+        not one per node.
+        """
         return f"{self.key} (transformers predict)"
 
     def run_train(self, ctx, inputs):

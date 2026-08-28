@@ -1229,8 +1229,20 @@ class _TorchModel(_LossPromise, TrainableNode):
         return getattr(cls.build_module, "__func__", cls.build_module)
 
     def _refuse(self, why):
-        """Refuse a load BY NAME — every message names the artifact, so a
-        refusal is never mistaken for an unrelated crash."""
+        """Refuse a load BY NAME, with this pack's ``cannot load
+        artifact`` tail, so a refusal is never mistaken for an unrelated
+        crash.
+
+        The convention does NOT reach every load refusal. Since ADR-0038
+        the artifact-PIN refusals — nothing pinned, an empty node-level
+        pin, a node-level pin contradicting ``params['artifact']`` — are
+        raised by tier-1
+        :meth:`~dskit.pipeline.node.Node.pinned_artifact`: they name the
+        node key and carry the pack's ``missing`` wording, but not this
+        tail, because a stdlib-only base cannot call a tier-2 wrapper.
+        A NEW refusal about the artifact's CONTENT belongs here; one
+        about WHICH artifact was pinned belongs to that service.
+        """
         raise ValueError(
             f"{self.key}: cannot load artifact — {why}. mode='load' restores "
             "a pinned artifact exactly; it never refits."

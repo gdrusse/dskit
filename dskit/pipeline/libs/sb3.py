@@ -143,8 +143,13 @@ class Sb3PolicySignal:
 
 class _Sb3Base(Node):
     """The artifact protocol the three kinds share — save, verify,
-    restore; refuse by name. Mirrors the torch pack's S2-A discipline:
-    the content hash covers the model-zip bytes AND the sidecar.
+    restore; refuse by name through :meth:`_refuse`. Mirrors the torch
+    pack's S2-A discipline: the content hash covers the model-zip bytes
+    AND the sidecar.
+
+    :meth:`_refuse` is the convention for refusals about the artifact's
+    CONTENT only. The artifact-PIN refusals are tier-1's since ADR-0038
+    — see that method.
 
     A plain :class:`~dskit.pipeline.node.Node`, deliberately: ADR-0038
     re-parents the two trainable kinds and NOT this base, because
@@ -161,6 +166,20 @@ class _Sb3Base(Node):
     _SIDECAR_CHECK = ("algo", "env", "env_params", "policy")
 
     def _refuse(self, why):
+        """Refuse a load BY NAME, with this pack's ``cannot load
+        artifact`` tail — the convention for every refusal about the
+        artifact's CONTENT.
+
+        It does NOT reach the artifact-PIN refusals: nothing pinned, an
+        empty node-level pin, a node-level pin contradicting
+        ``params['artifact']``. Since ADR-0038 those are raised by
+        tier-1 :meth:`~dskit.pipeline.node.Node.pinned_artifact`, which
+        names the node key and quotes the pack's ``missing`` wording but
+        cannot add this tail — a stdlib-only base never calls a tier-2
+        wrapper. ``sb3-eval`` reaches that same service while carrying no
+        mode at all. Route a NEW refusal about WHICH artifact was pinned
+        there, not here.
+        """
         raise ValueError(
             f"{self.key}: cannot load artifact — {why}. A pinned artifact "
             "restores exactly; it is never refit."
