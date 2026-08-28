@@ -4,8 +4,11 @@ The two-stock intraday proof of concept, and the worked example of the
 child pattern: **AAPL and MSFT 1-minute bars from Alpaca, one LSTM per
 symbol predicting the next bar's return, and a pyomo program that picks
 exactly one symbol per minute** — backtested walk-forward, then run
-forward against Alpaca paper trading with the same models and the same
-selection program.
+forward against Alpaca paper trading with the same modelling core and the
+same selection program. One declared skew: the backtest selects each
+fold's best epoch by validation loss (`monitor`), while the production
+fit ships its last epoch — the run documents' notes carry the
+consequence.
 
 A child consumes dskit, never modifies it: tier-3 code plus JSON configs
 over the three seams — a connector (onboarding), registered node kinds
