@@ -90,12 +90,14 @@ on it without breaking its rulings.
   ancestors of the objective, winner-consistency) AND the one shape
   every search kind shares: a LIST value must be non-empty and hold
   JSON scalars (`planner._is_json_scalar` — restated in
-  `kinds_search`, the two pinned to agree). A DICT value it passes
-  through untouched: that is the kind's range-spec form.
+  `kinds_search`, the two pinned to agree), and a DICT value must be
+  non-empty — `{}` refuses at plan like `[]`. Past that a dict passes
+  through untouched: its INTERNALS are the kind's range-spec form.
   `optuna-search` accepts both; `hpo-grid` refuses range dicts and pins
   that refusal itself. Adding a search kind means writing that value
-  grammar **within** the list/dict shapes above — a list of objects is
-  refused by the planner before your kind is consulted.
+  grammar **within** the list/dict shapes above — a list of objects, or
+  an empty value of either shape, is refused by the planner before your
+  kind is consulted.
 - **A search node's params ALWAYS defer plan-time `validate_params`** —
   its `objective` is a `$`-ref by contract, so `_has_unresolved_ref`
   defers it. No search kind's value grammar runs at plan: a bad range

@@ -605,9 +605,10 @@ def _search_errors(key, spec, specs, roles, edges):
             # (keys address declared params; winner-consistency below).
             # The VALUE half is SPLIT: the planner owns the one shape
             # every search kind shares — a list grid, when given, is
-            # non-empty and holds JSON scalars — and passes a DICT
-            # through untouched, because that is the kind's range-spec
-            # form (hpo-grid takes scalar lists only; optuna-search adds
+            # non-empty and holds JSON scalars; a dict must be non-empty
+            # — and past that passes a DICT through untouched, because
+            # its INTERNALS are the kind's range-spec form (hpo-grid
+            # takes scalar lists only; optuna-search adds
             # {"low","high"}). The kind's own grammar bites at EXECUTE,
             # not here: a search node's `objective` is a $-reference BY
             # CONTRACT, so its params always carry an unresolved ref and

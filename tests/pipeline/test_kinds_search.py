@@ -768,6 +768,13 @@ class TestPlannerRules:
         pipeline = parabola_pipeline(search_params={"space": {"theta.theta": [[1, 2]]}})
         with pytest.raises(ConfigError, match="JSON scalars"):
             plan(parabola_document(tmp_path, pipeline=pipeline), registry)
+        # An EMPTY dict refuses at PLAN too — the planner's pass-through
+        # of the range form starts past non-emptiness, so `{}` never
+        # reaches any kind's grammar (which defers to execute anyway).
+        # No kind may assign `{}` a meaning without a planner change.
+        pipeline = parabola_pipeline(search_params={"space": {"theta.theta": {}}})
+        with pytest.raises(ConfigError, match="non-empty range-spec dict"):
+            plan(parabola_document(tmp_path, pipeline=pipeline), registry)
 
     def test_missing_space_refused_at_plan(self, tmp_path, registry):
         spec = NodeSpec(uses="hpo-grid", params={"objective": "$val.metrics.loss"})

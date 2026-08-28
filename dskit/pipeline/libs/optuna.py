@@ -29,10 +29,10 @@ Both forms share the grid's ``"<node>.<param.path>"`` key grammar
 copied) and both plan. What the planner defers is the RANGE form
 specifically, not the value grammar wholesale: it owns the STRUCTURAL
 space rules (keys address existing params of ancestors of the
-objective; winner-consistency) AND still checks that a LIST value is
-non-empty and holds JSON scalars, while passing a DICT through
-untouched — so :func:`_spec_problems` below is the ONE place the range
-form is defined. ``hpo-grid`` refuses range specs on purpose —
+objective; winner-consistency) AND still checks that EITHER value
+shape is non-empty (``{}`` refuses at plan like ``[]``), passing a
+non-empty DICT through untouched — so :func:`_spec_problems` below is
+the ONE place the range form's internals are defined. ``hpo-grid`` refuses range specs on purpose —
 exhaustive enumeration over a real interval is meaningless — and pins
 that refusal itself. Note WHERE a malformed range refuses: a search
 node's ``objective`` is a ``$``-reference, so its params defer

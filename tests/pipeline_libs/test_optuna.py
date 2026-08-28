@@ -596,10 +596,12 @@ class TestPlannerRules:
     def test_continuous_specs_now_plan(self, tmp_path, registry):
         # Flipped DELIBERATELY at integration (the round-1 pinned gap):
         # the planner owns the STRUCTURAL space rules (keys address
-        # declared params, winner-consistency) plus the LIST shape, and
-        # passes a range DICT through untouched. The RANGE grammar is
-        # this kind's and it does NOT run at plan — see the next test for
-        # where it bites.
+        # declared params, winner-consistency) plus non-emptiness of
+        # either value shape, and passes a NON-EMPTY range DICT through
+        # untouched ({} refuses at plan — pinned in
+        # tests/pipeline/test_kinds_search.py). The RANGE grammar is
+        # this kind's and it does NOT run at plan — see the next test
+        # for where it bites.
         search_params = {"space": {"theta.theta": {"low": 0.0, "high": 5.0}}}
         node_params = {
             "space": search_params["space"],
