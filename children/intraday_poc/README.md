@@ -86,7 +86,11 @@ pull takes only what is new.
 
 On the free tier this pull trails the tape by ~16 minutes, the SIP gate
 the connector clamps for; the forward *loop* below does its own
-real-time IEX fetch and does not wait for it.
+real-time IEX fetch and does not wait for it. That clamp also bounds the
+knob: on `sip` a `live_lookback_minutes` of 16 or less would window from
+`now - lookback` to `now - 16min` — an empty window, every pull, with
+nothing acquired and nothing said — so the connector refuses that
+combination outright.
 
 ## How the pulled data reaches the model
 
@@ -152,13 +156,19 @@ position to the winner. Decisions land in `decisions.jsonl`.
 
 **The loop declares nothing twice.** The price field, the gap bound and
 the model class come from `<run-dir>/config.json` — the whole training
-document, which the driver writes; the adjustment **and the symbol
-universe** come from the source config the puller registered
-(`--source-config`), so adding a ticker there and retraining is all it
-takes. Only operational flags live on the CLI: `--qty`, `--log-dir`,
-`--once`, `--dry-run`, `--history-minutes`, and `--artifact SYMBOL=PATH`
-when a document names its trainer nodes something other than
-`qhat_<symbol>`. There is no third config file, by doctrine: it would
+document, which the driver writes; the adjustment, the symbol
+**universe** and the credential env-var **names**
+(`key_env`/`secret_env`) come from the source config the puller
+registered (`--source-config`), so adding a ticker there and retraining
+is all it takes — and the loop always authenticates as the puller did.
+The values behind those names are loaded by dskit's own `env.py` (`.env`
+beside the CWD, process environment winning, `export ` and quotes per
+its documented format); the loop parses no dotenv of its own. Only
+operational flags live on the CLI: `--qty`, `--log-dir`, `--once`,
+`--dry-run`, `--history-minutes`, and `--artifact SYMBOL=PATH` when a
+document names its trainer nodes something other than `qhat_<symbol>`
+(an override for a symbol the config does not declare is refused, never
+ignored). There is no third config file, by doctrine: it would
 duplicate both.
 
 ## What to know before trusting the numbers

@@ -227,6 +227,34 @@ def test_the_live_lookback_default_is_named_once(conn):
     assert f"Default {default}." in notes, notes
 
 
+def test_a_live_lookback_the_sip_clamp_swallows_is_refused(conn):
+    """A lookback inside the SIP clamp is a permanent silent no-op.
+
+    On ``feed=sip`` a cursor-less live pull runs from ``now -
+    live_lookback_minutes`` to ``now - 16min``, so any lookback at or
+    below the clamp gives an EMPTY window: no records, no error, and an
+    empty cursor, so the next pull repeats the no-op forever. An
+    operator tightening the knob for a lean top-up would get a live mode
+    that never acquires and never complains. The gate refuses it, and
+    reads the bound off the clamp so the two cannot drift.
+    """
+    clamp = connectors._SIP_LAG.total_seconds() / 60
+    with pytest.raises(AssetError, match="live_lookback_minutes"):
+        conn.resolve_knobs({**STUB_CONFIG, "feed": "sip",
+                            "live_lookback_minutes": clamp})
+
+    knobs = conn.resolve_knobs({**STUB_CONFIG, "feed": "sip",
+                                "live_lookback_minutes": clamp + 1})
+    start, end = conn._window(knobs, "", "live")
+    assert start is not None and end > start
+
+    # iex is not clamped, so the same lookback is legitimate there —
+    # the refusal is about the INTERACTION, not the number.
+    assert conn.resolve_knobs(
+        {**STUB_CONFIG, "feed": "iex", "live_lookback_minutes": clamp}
+    )["live_lookback_minutes"] == clamp
+
+
 def test_the_mode_vocabulary_comes_from_the_platform():
     """The forward mode's NAME is unpacked from ``MODES`` (ADR-0014), so
     a platform that grows a third mode breaks this connector at import —
@@ -268,7 +296,7 @@ def test_both_fetch_paths_pull_one_bar_interval(monkeypatch):
     knobs = AlpacaBarsConnector().resolve_knobs(STUB_CONFIG)
     start, end = AlpacaBarsConnector()._window(knobs, "", "backfill")
     list(AlpacaBarsConnector()._fetch(knobs, start, end))
-    live.fetch_bars(["AAPL"], 30, "close", "all")
+    live.fetch_bars(["AAPL"], 30, "close", "all", "stub-key", "stub-secret")
 
     assert seen == ["5Min", "5Min"], seen
 

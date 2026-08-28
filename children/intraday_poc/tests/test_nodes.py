@@ -272,6 +272,32 @@ def test_the_bar_constants_are_imported_never_restated(name):
     assert getattr(nodes, name) == getattr(connectors, name)
 
 
+@pytest.mark.parametrize("name", ["DEFAULT_PRICE_FIELD",
+                                  "DEFAULT_MAX_GAP_MINUTES"])
+def test_the_serving_loop_imports_the_window_defaults(name):
+    """``live.py`` must BIND each window default by importing it.
+
+    The same un-failable-``is`` trap as the bar constants above, and it
+    costs more here: ``"close"`` is identifier-shaped so CPython
+    interns it and ``5`` is a cached small int, so a restated
+    ``DEFAULT_PRICE_FIELD = "close"`` in ``live.py`` satisfies
+    ``live.X is nodes.X``. Monkeypatching ``live``'s own global cannot
+    see the divergence either — a local copy is patched just as
+    happily. Only the BINDING tells the two apart, and the day the node
+    is retuned to ``"vwap"`` a copy would keep feeding close returns
+    into vwap-trained weights: the exact train/serve skew this loop
+    exists not to have.
+    """
+    from intraday_poc import live
+
+    how, source = _binding_of(live, name)
+    assert (how, source) == ("import", ".nodes"), (
+        f"live.py binds {name} as {how!r} from {source!r} — it must import "
+        "it from .nodes, or the serving loop windows on a default the "
+        "training node abandoned"
+    )
+
+
 def test_the_bars_stream_default_is_named_once(tmp_path, monkeypatch):
     """The stream name is the connector's, and the node borrows it.
 
@@ -624,12 +650,17 @@ def test_live_reads_the_window_knobs_the_run_declared(tmp_path):
 
 def test_live_falls_back_to_the_window_nodes_own_defaults(tmp_path,
                                                           monkeypatch):
-    """An undeclared knob resolves to the NODE's constant — the same
-    object, not a copy of its value."""
+    """An undeclared knob resolves to the NODE's constant.
+
+    That the loop BINDS those constants by import rather than keeping a
+    copy is pinned structurally by
+    ``test_the_serving_loop_imports_the_window_defaults`` — an identity
+    assertion here could not have shown it, since CPython interns
+    ``"close"`` and caches ``5``. This half is the behaviour: whatever
+    the loop is bound to is what an undeclared knob resolves to.
+    """
     from intraday_poc import live
 
-    assert live.DEFAULT_PRICE_FIELD is nodes.DEFAULT_PRICE_FIELD
-    assert live.DEFAULT_MAX_GAP_MINUTES is nodes.DEFAULT_MAX_GAP_MINUTES
     run_dir = _run_dir(tmp_path, {"lookback": 3})
     document = live.load_run_document(run_dir)
     assert live.window_knobs(document) == (nodes.DEFAULT_PRICE_FIELD,
@@ -729,6 +760,112 @@ def test_artifact_paths_default_by_convention_and_bend_by_flag(tmp_path):
     absolute = artifact_dirs("/runs/r1", ["AAPL"],
                              {"AAPL": str(tmp_path / "elsewhere")})
     assert absolute["AAPL"] == str(tmp_path / "elsewhere")
+
+
+def test_an_artifact_override_for_an_unserved_symbol_is_refused():
+    """A typo in ``--artifact`` is an error, not a silent default.
+
+    The mapping is consumed by lookup, so an override keyed to a symbol
+    the source config does not declare is simply never read: an
+    operator who retrains MSFT and mistypes ``--artifact
+    MFST=...artifacts/qhat_msft_v2`` gets the OLD model restored, a
+    cheerful "models restored for ['AAPL', 'MSFT']", and trades on the
+    weights they explicitly tried to replace. Default-deny says refuse,
+    naming the universe.
+    """
+    from intraday_poc.live import artifact_dirs
+
+    with pytest.raises(SystemExit, match="MFST"):
+        artifact_dirs("/runs/r1", ["AAPL", "MSFT"],
+                      {"MFST": "artifacts/qhat_msft_v2"})
+
+
+def test_live_takes_the_credential_env_names_from_the_source_config(
+        tmp_path, monkeypatch):
+    """The credential knobs are knobs: ``key_env``/``secret_env``.
+
+    ``spec()`` advertises them, the PULLER honours them, and the loop
+    resolves the very same config — so a loop that reads
+    ``APCA_API_KEY_ID`` out of the environment regardless is restating a
+    vendor knob it already has. The failure is not theoretical: a config
+    naming another account's pair acquires fine and then serves under
+    whatever the default names happen to hold.
+    """
+    pytest.importorskip("alpaca.trading.client")
+    import alpaca.trading.client as trading_client
+
+    from intraday_poc import live
+
+    monkeypatch.chdir(tmp_path)
+    run_dir = tmp_path / "run"
+    (run_dir / "artifacts").mkdir(parents=True)
+    (run_dir / "config.json").write_text(json.dumps({"pipeline": {
+        "window": {"uses": "intraday_poc-window",
+                   "params": {"lookback": 3}},
+        "qhat_aapl": {"uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+                      "params": {"module": "intraday_poc.models:NextBarLSTM"}},
+    }}), encoding="utf-8")
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps({"symbols": ["AAPL"], "start": "2026-01-01",
+                                  "key_env": "ALPACA_KEY_A",
+                                  "secret_env": "ALPACA_SECRET_A"}),
+                      encoding="utf-8")
+
+    seen = {}
+    monkeypatch.setattr(live, "fetch_bars",
+                        lambda *a, **kw: seen.update(fetch=(a, kw)) or {})
+    monkeypatch.setattr(live, "restore_model",
+                        lambda directory, ref: (SimpleNamespace(lookback=3),
+                                                ["ret_lag_0"]))
+    monkeypatch.setattr(trading_client, "TradingClient",
+                        lambda *a, **kw: seen.update(trading=(a, kw))
+                        or SimpleNamespace(
+                            get_clock=lambda: SimpleNamespace(
+                                is_open=True, next_open="")))
+    for name in ("APCA_API_KEY_ID", "APCA_API_SECRET_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ALPACA_KEY_A", "pk-a")
+    monkeypatch.setenv("ALPACA_SECRET_A", "sk-a")
+
+    assert live.main(["--run-dir", str(run_dir),
+                      "--source-config", str(source),
+                      "--once", "--dry-run",
+                      "--log-dir", str(tmp_path)]) == 0
+    assert seen["trading"][0][:2] == ("pk-a", "sk-a"), seen["trading"]
+    assert seen["fetch"][0][-2:] == ("pk-a", "sk-a"), seen["fetch"]
+
+
+def test_live_reads_dotenv_through_the_toolkits_own_parser(tmp_path,
+                                                           monkeypatch):
+    """The dotenv rules are dskit's, imported, not re-derived.
+
+    ``dskit.pipeline.env`` documents the format the child's ``.env``
+    follows — an optional ``export `` prefix, matched quotes stripped,
+    process environment winning. A second parser here diverges silently:
+    a key written the documented way loads WITH its quotes, and the
+    vendor rejects credentials from a file that looks correct.
+    """
+    from intraday_poc import live
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "# the toolkit's documented format\n"
+        'export ALPACA_KEY_A="pk-quoted"\n'
+        "ALPACA_SECRET_A='sk-quoted'\n",
+        encoding="utf-8")
+    for name in ("ALPACA_KEY_A", "ALPACA_SECRET_A"):
+        monkeypatch.delenv(name, raising=False)
+    knobs = {"key_env": "ALPACA_KEY_A", "secret_env": "ALPACA_SECRET_A"}
+    assert live.credentials(knobs) == ("pk-quoted", "sk-quoted")
+
+    # The process environment still wins over the file.
+    monkeypatch.setenv("ALPACA_KEY_A", "pk-process")
+    assert live.credentials(knobs)[0] == "pk-process"
+
+    # And a name the file never declares is a loud refusal that names it.
+    missing = {"key_env": "ALPACA_KEY_B", "secret_env": "ALPACA_SECRET_A"}
+    with pytest.raises(SystemExit, match="ALPACA_KEY_B"):
+        live.credentials(missing)
 
 
 def test_live_vendor_knobs_come_from_the_source_config(tmp_path):
@@ -844,7 +981,7 @@ def test_live_main_fetches_with_the_knobs_it_read(tmp_path, monkeypatch):
 
     seen = {}
 
-    def fake_fetch(symbols, minutes, price_field, adjustment):
+    def fake_fetch(symbols, minutes, price_field, adjustment, key, secret):
         seen.update(symbols=list(symbols), minutes=minutes,
                     price_field=price_field, adjustment=adjustment)
         return {}  # no coverage: the iteration decides nothing, loudly

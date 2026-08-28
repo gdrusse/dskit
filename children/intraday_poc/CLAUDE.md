@@ -65,7 +65,9 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
   pins it shut. The modes differ in ONE place: a pull with no cursor
   starts at `start` (backfill) or at most `live_lookback_minutes` ago
   (live) — unbounded, a first live pull would re-commit the whole
-  history as a second acquisition.
+  history as a second acquisition. On `sip` that lookback must also
+  EXCEED the 16-minute clamp the window ends at; the gate refuses a
+  smaller one rather than pulling an empty window forever, silently.
 - **SIP vs IEX**: every STORE pull uses `feed=sip` (free, consolidated,
   end clamped 16 min back). Only the forward loop's own fetch uses IEX
   (`live.py:LIVE_FEED`), because real-time SIP is not on the free tier —
@@ -73,12 +75,16 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
 - **`live.py` restates nothing**: price field, gap bound and module class
   come from `<run-dir>/config.json`; vendor knobs AND the symbol universe
   from the source config (`--source-config`), resolved through the
-  connector's public `resolve_knobs`. The bar interval is one constant
+  connector's public `resolve_knobs` — the credential env-var NAMES
+  (`key_env`/`secret_env`) among them, so the loop authenticates as the
+  puller does, with the values loaded by dskit's `env.py` rather than a
+  dotenv parser of the child's own. The bar interval is one constant
   (`connectors.BAR_INTERVAL`) both fetch paths build from.
   Node keys `qhat_aapl`/`qhat_msft` are the default
   artifact convention (`artifacts/qhat_<symbol>`); a document that names
   them differently is served with `--artifact SYMBOL=PATH`, never an
-  edit to the loop.
+  edit to the loop — and an override for a symbol the config does not
+  declare is refused, not dropped.
 - `live.py` only ever constructs `TradingClient(..., paper=True)`.
   Keep it that way.
 

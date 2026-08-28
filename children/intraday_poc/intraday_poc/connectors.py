@@ -50,7 +50,10 @@ Config knobs (default-deny, per ``spec()``):
 - ``live_lookback_minutes`` — how far back a live pull with no cursor
   reaches (default :data:`DEFAULT_LIVE_LOOKBACK_MINUTES`). Widen it if
   the backfill's tail is further behind than that; the bars between the
-  backfill cursor and this floor belong to no pull.
+  backfill cursor and this floor belong to no pull. On ``sip`` it must
+  also exceed the 16-minute clamp below — a live window that ends
+  before it starts emits nothing and checkpoints nothing, so the gate
+  refuses that combination rather than shipping a silent no-op.
 - ``key_env`` / ``secret_env`` — NAMES of the env vars holding the
   Alpaca key pair (defaults ``APCA_API_KEY_ID`` / ``APCA_API_SECRET_KEY``).
   The material itself never enters a config, a snapshot, or any hash —
@@ -120,7 +123,10 @@ _ADJUSTMENTS = ("raw", "split", "dividend", "all")
 
 #: The free tier refuses SIP queries whose ``end`` is inside the last 15
 #: minutes; clamp with a minute of slack rather than erroring mid-pull.
+#: The knob gate reads the same clamp (in minutes) to refuse a live
+#: lookback the clamp would swallow whole.
 _SIP_LAG = timedelta(minutes=16)
+_SIP_LAG_MINUTES = _SIP_LAG.total_seconds() / 60
 
 
 def bar_timeframe():
@@ -196,7 +202,10 @@ class AlpacaBarsConnector(Connector):
                     # advertising a stale default is a config lie.
                     "notes": "How far back a live-mode pull with no "
                              "cursor reaches; the history is backfill's "
-                             f"job. Default {DEFAULT_LIVE_LOOKBACK_MINUTES}.",
+                             f"job. Default {DEFAULT_LIVE_LOOKBACK_MINUTES}. "
+                             f"On feed sip it must exceed the "
+                             f"{_SIP_LAG_MINUTES:g}-minute clamp a live "
+                             "pull ends at, or the window is empty.",
                 },
                 "key_env": {
                     "notes": "Env var NAME holding the Alpaca key id; "
@@ -236,8 +245,10 @@ class AlpacaBarsConnector(Connector):
         Raises
         ------
         AssetError
-            Listing EVERY invalid knob at once, then the stamp problems
-            ``parse_utc`` finds in ``start``.
+            Listing EVERY invalid knob at once — including a
+            ``live_lookback_minutes`` the declared feed's clamp would
+            swallow, which no pull could ever emit from — then the stamp
+            problems ``parse_utc`` finds in ``start``.
         """
         problems = []
         symbols = config.get("symbols")
@@ -266,6 +277,16 @@ class AlpacaBarsConnector(Connector):
             problems.append(
                 f"config.live_lookback_minutes must be a positive number, "
                 f"got {lookback!r}"
+            )
+        elif feed == "sip" and lookback <= _SIP_LAG_MINUTES:
+            # A window from now-lookback to now-clamp is EMPTY, so the
+            # pull would emit nothing, checkpoint nothing and repeat
+            # forever — silently. Refuse the combination by name.
+            problems.append(
+                f"config.live_lookback_minutes must exceed the "
+                f"{_SIP_LAG_MINUTES:g}-minute free-tier SIP clamp on "
+                f"feed 'sip' (a live pull ends there), got {lookback!r} — "
+                f"widen it, or declare feed 'iex', which is not clamped"
             )
         if problems:
             raise AssetError(problems)

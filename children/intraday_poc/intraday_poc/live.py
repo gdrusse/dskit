@@ -51,8 +51,11 @@ Usage::
         --qty 1 [--once] [--dry-run] \
         [--artifact AAPL=artifacts/qhat_aapl]
 
-Credentials come from the environment (``.env`` beside the CWD is read
-first, process env winning — the toolkit's ``env.py`` precedence).
+Credentials are read the same way: the source config NAMES the two env
+vars (``key_env``/``secret_env``), and the toolkit's own ``env.py``
+loader materializes them — ``.env`` beside the CWD, process environment
+winning. The loop authenticates as the puller does, and no dotenv rule
+is re-derived here.
 """
 
 from __future__ import annotations
@@ -67,10 +70,12 @@ import sys
 import time
 
 from dskit.pipeline.base import (
+    EnvConfig,
     import_library_class,
     import_ref,
     is_class_ref,
 )
+from dskit.pipeline.env import load_env
 
 from .connectors import AlpacaBarsConnector, bar_timeframe
 from .nodes import (
@@ -94,29 +99,40 @@ _WINDOW_KIND = next(name for name, cls in NODE_KINDS.items()
                     if cls is WindowRows)
 
 
-def load_dotenv(path: str = ".env") -> None:
-    """Load ``KEY=VALUE`` lines into ``os.environ``; process env wins.
+def credentials(knobs):
+    """Materialize the key pair the source config's knobs NAME.
+
+    Both halves are read, never restated: the NAMES are the connector's
+    ``key_env``/``secret_env`` knobs, so the loop authenticates as the
+    puller does, and the VALUES come from dskit's own ``env.py`` loader
+    — ``.env`` beside the CWD, process environment winning, ``export ``
+    prefixes and matched quotes handled the one way the toolkit
+    documents. A second dotenv parser here would drift from that rule
+    the moment either side changed.
 
     Parameters
     ----------
-    path : str
-        The dotenv file to read; a missing file is not an error.
+    knobs : dict
+        Resolved source knobs, as :func:`source_knobs` returns them.
 
     Returns
     -------
-    None
-        ``os.environ`` is updated in place, never overwritten (the
-        dotenv convention dskit's ``env.py`` follows).
+    tuple of (str, str)
+        The Alpaca key id and secret, in that order.
+
+    Raises
+    ------
+    SystemExit
+        When a NAMED variable is missing from both the process
+        environment and ``.env``, or the config names something that is
+        not a valid environment variable name.
     """
-    if not os.path.isfile(path):
-        return
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            os.environ.setdefault(key.strip(), value.strip())
+    names = (knobs["key_env"], knobs["secret_env"])
+    try:
+        secrets = load_env(EnvConfig(require=names))
+    except ValueError as exc:
+        raise SystemExit(f"{exc} — fill in .env (see .env.example)") from exc
+    return secrets[names[0]], secrets[names[1]]
 
 
 def load_run_document(run_dir):
@@ -370,7 +386,21 @@ def artifact_dirs(run_dir, symbols, overrides):
     -------
     dict
         Symbol -> artifact directory.
+
+    Raises
+    ------
+    SystemExit
+        When an override names a symbol the universe does not carry —
+        nothing would ever look it up, so the loop would restore the
+        model the operator was replacing and say nothing.
     """
+    unknown = sorted(set(overrides) - set(symbols))
+    if unknown:
+        raise SystemExit(
+            f"--artifact names {unknown}, which the source config does not "
+            f"declare (its universe is {list(symbols)}) — a mistyped ticker "
+            "would silently keep the artifact it was meant to replace"
+        )
     return {
         symbol: os.path.join(
             run_dir,
@@ -629,7 +659,7 @@ def bar_series(bars, price_field):
     return sorted(series)
 
 
-def fetch_bars(symbols, minutes, price_field, adjustment):
+def fetch_bars(symbols, minutes, price_field, adjustment, key, secret):
     """Fetch the last ``minutes`` of bars per symbol.
 
     The interval comes from the connector's ``bar_timeframe()`` — the
@@ -647,6 +677,11 @@ def fetch_bars(symbols, minutes, price_field, adjustment):
     adjustment : str
         The corporate-action adjustment the SOURCE config declares, so
         the served series is adjusted the way the trained one was.
+    key : str
+        The Alpaca key id, from the env var the source config NAMES
+        (see :func:`credentials`).
+    secret : str
+        The matching secret.
 
     Returns
     -------
@@ -657,8 +692,7 @@ def fetch_bars(symbols, minutes, price_field, adjustment):
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest
 
-    client = StockHistoricalDataClient(
-        os.environ["APCA_API_KEY_ID"], os.environ["APCA_API_SECRET_KEY"])
+    client = StockHistoricalDataClient(key, secret)
     start = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=minutes)
     bars = client.get_stock_bars(StockBarsRequest(
         symbol_or_symbols=list(symbols),
@@ -777,23 +811,18 @@ def main(argv=None) -> int:
     """
     args = _parser().parse_args(argv)
 
-    load_dotenv()
-    for name in ("APCA_API_KEY_ID", "APCA_API_SECRET_KEY"):
-        if not os.environ.get(name):
-            raise SystemExit(f"{name} is not set — fill in .env "
-                             "(see .env.example)")
-
-    # Everything the run and the pull already declared, read back.
+    # Everything the run and the pull already declared, read back —
+    # the credential env-var NAMES among them.
     document = load_run_document(args.run_dir)
     price_field, max_gap_minutes = window_knobs(document)
     module_ref = declared_module(document)
     knobs = source_knobs(args.source_config)
     symbols, adjustment = knobs["symbols"], knobs["adjustment"]
+    key, secret = credentials(knobs)
 
     from alpaca.trading.client import TradingClient
 
-    trading = TradingClient(os.environ["APCA_API_KEY_ID"],
-                            os.environ["APCA_API_SECRET_KEY"], paper=True)
+    trading = TradingClient(key, secret, paper=True)
 
     signals, lookback = restore_signals(
         args.run_dir, symbols,
@@ -812,7 +841,7 @@ def main(argv=None) -> int:
             print(record["action"], f"(next open {clock.next_open})")
         else:
             bars = fetch_bars(symbols, args.history_minutes,
-                              price_field, adjustment)
+                              price_field, adjustment, key, secret)
             preds = {}
             for symbol, (module, features) in signals.items():
                 row = latest_feature_row(bars.get(symbol, []), lookback,
