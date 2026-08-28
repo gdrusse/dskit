@@ -475,6 +475,11 @@ _MISSING = "—"
 _MAX_CELL = 120
 
 
+def _escape_pipe(text):
+    """Escape every markdown pipe in ``text``: a raw ``|`` ENDS a cell, so an unescaped one hands the row a phantom column — `driver._md_cell` takes the rule from here rather than restating it, because a table's FORMAT is taste and its ESCAPING is correctness."""
+    return text.replace("|", r"\|")
+
+
 def _render_cell(value):
     """One cell as trustworthy text: absent reads as the dash, booleans as a verdict, floats to 6 s.f., containers as their size; ``|`` is escaped and line breaks flatten to ``⏎`` so a value cannot open a phantom column or row."""
     if value is None:
@@ -496,7 +501,7 @@ def _render_cell(value):
         return _MISSING
     if len(text) > _MAX_CELL:
         text = text[:_MAX_CELL] + "…"
-    return text.replace("|", r"\|")
+    return _escape_pipe(text)
 
 
 def _render_table(columns, rows):

@@ -95,6 +95,7 @@ from dskit.pipeline.env import load_env
 from dskit.pipeline.node import Node, NodeContext
 from dskit.pipeline.planner import _UNSEARCHABLE_ROLES
 from dskit.pipeline.planner import plan as plan_document
+from dskit.pipeline.runs import _escape_pipe
 
 __all__ = ["DocumentRunResult", "WalkForwardRunResult", "run_document", "run_walk_forward"]
 
@@ -765,8 +766,9 @@ def _collect_flags(order, node_outputs):
 #: (``best_params`` is what a search kind returns) and the record is the
 #: run's (``winner`` is what a reader of a summary asks about). The
 #: WINNER ITSELF is first; the rest merely describe it. This is the one
-#: owner of both spellings — the record writes through it and the
-#: walk-forward diagnostic reads back through :func:`_winner_names`.
+#: owner of both spellings — the record writes through it, and every
+#: reader of either name (the driver's own apply step included) asks
+#: :func:`_winner_names`, so no site can be missed when it is edited.
 _SEARCH_WINNER_FIELDS = (("best_params", "winner"), ("best_score", "winner_score"))
 
 
@@ -1304,7 +1306,8 @@ def _run_one_node(attempt, key, spec, the_plan, ctx, run, instances):
     # Recorded BEFORE the winner is applied (ADR-0043): a winner-flip
     # refusal must still report the winner that caused it.
     run.search_meta[key] = _search_record(attempt.seam, out)
-    winner = out.get("best_params")
+    produced, _ = _winner_names()
+    winner = out.get(produced)
     if winner:
         attempt.winner_reran, attempt.winner_seconds = attempt.seam.apply_winner(
             winner, ctx, run.prev_bindings
@@ -2016,6 +2019,13 @@ def _md_cell(text):
     print is a constrained token — a cutoff, a state, a node key — and
     the winner is the only one that prints a value a user chose.
 
+    The rule itself is :func:`dskit.pipeline.runs._escape_pipe`, not a
+    copy of it. This package emits markdown in two places and the
+    accepted ruling was that their FORMATS may differ — a table's shape
+    is taste. Its ESCAPING is not: a missed pipe corrupts the row, so
+    the rule has one owner and a fix to it cannot reach one report and
+    miss the other. What differs here is only WHICH values need it.
+
     Parameters
     ----------
     text : str
@@ -2027,7 +2037,7 @@ def _md_cell(text):
         The same text with every pipe backslash-escaped, which GFM
         renders as a literal pipe inside the cell.
     """
-    return text.replace("|", "\\|")
+    return _escape_pipe(text)
 
 
 def _winner_cell(meta):

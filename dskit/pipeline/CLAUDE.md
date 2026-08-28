@@ -255,6 +255,14 @@ on it without breaking its rulings.
   summarized out of `nodes/NN-*.json` and recovered from `carry.json`;
   the numeric rule is restated by `driver._node_metrics`, the two copies
   pinned in `test_runs.py::TestMetricRulePin` (same for the run root).
+- **Two markdown emitters, ONE pipe-escape.** `runs.py` and
+  `driver.py` both print tables and their FORMATS are free to differ —
+  a table's shape is taste, which is the ruling that let the second
+  emitter ship. Escaping is not taste: a raw `|` ends a cell and hands
+  the row a phantom column, so `runs._escape_pipe` is the single owner
+  and `driver._md_cell` calls it. What each emitter still decides for
+  itself is WHICH values need escaping. Pinned in
+  `test_runs.py::TestTableRendering`.
 - **Every `RunSummary.note` is PRINTED by the verb** — on refusals too,
   and BEFORE the refusal. `--limit` < 1, a `--metric` nothing scanned
   reported, and a `--param` path nothing scanned declares are refused,

@@ -712,6 +712,19 @@ class TestTableRendering:
         assert len(re.findall(delimiters, row)) == len(re.findall(delimiters, header))
         assert r"a\|b" in row
 
+    def test_the_pipe_escape_is_one_rule_both_emitters_take(self):
+        """This package ships TWO markdown emitters, and card E2 let
+        their FORMATS diverge on purpose — a table's shape is taste, not
+        a repo value. The ESCAPE is not: a raw `|` ends a cell and hands
+        the row a phantom column, so a third copy of the rule is a fix
+        that lands in one report and not the other. `driver._md_cell`
+        and this module's `_render_cell` take it from one owner."""
+        assert driver_mod._escape_pipe is runs_mod._escape_pipe
+        for text in ("a|b", "|", "||", r"a\|b", "no pipes"):
+            escaped = runs_mod._escape_pipe(text)
+            assert driver_mod._md_cell(text) == escaped, repr(text)
+            assert runs_mod._render_cell(text) == escaped, repr(text)
+
     def test_a_line_break_only_value_is_missing_not_blank(self):
         """Flattening must run BEFORE the emptiness check: a value that
         is nothing but line breaks flattens to nothing, and nothing

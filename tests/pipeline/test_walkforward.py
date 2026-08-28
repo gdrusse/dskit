@@ -915,10 +915,37 @@ def test_a_winner_json_cannot_hold_is_dropped_never_coerced(tmp_path):
         assert "dropped (not JSON-legal)" in fh.read()
 
 
-def test_the_winner_that_caused_a_flip_refusal_is_still_reported(tmp_path):
+def test_the_winner_that_caused_a_flip_refusal_is_still_reported(tmp_path, monkeypatch):
     """Population happens BEFORE the winner is applied, so the fold that
-    refused to ride a stale GO still names the winner that caused it."""
+    refused to ride a stale GO still names the winner that caused it.
+
+    The ORDER needs a witness of its own, because no VALUE below can be
+    one: ``_execute_plan``'s except-handler rebuilds the record from the
+    same seam and the same ``attempt.outputs``, so writing it AFTER
+    ``apply_winner`` leaves every assertion on the fold row, the summary
+    and the report unchanged — they would pin the guarantee while the
+    clause that delivers it was gone. What only the ordering can produce
+    is the record standing on ``run`` ALREADY as the raise leaves
+    ``_run_one_node``, which is what makes the caller's rebuild
+    redundancy rather than the mechanism. So that is what is asserted.
+    """
+    import copy
     from dataclasses import replace
+
+    from dskit.pipeline import driver
+
+    escaped = []
+    run_one_node = driver._run_one_node
+
+    def witness(attempt, key, spec, the_plan, ctx, run, instances):
+        """Snapshot the run's search records as a node's raise escapes."""
+        try:
+            return run_one_node(attempt, key, spec, the_plan, ctx, run, instances)
+        except Exception:
+            escaped.append((key, copy.deepcopy(run.search_meta)))
+            raise
+
+    monkeypatch.setattr(driver, "_run_one_node", witness)
 
     pipeline = hpo_pipeline(
         switch_between_folds(), search_params={"select": "max"}, theta=1.0
@@ -936,6 +963,18 @@ def test_the_winner_that_caused_a_flip_refusal_is_still_reported(tmp_path):
     meta = result.folds[0]["search"]["tune"]
     assert meta["winner"] == {"theta.theta": 2.0}  # the winner that flipped the gate
     assert "winner_reran" not in meta  # the apply never completed
+    # ...and it survives into the artifact the refusing fold leaves.
+    nodes_dir = os.path.join(result.folds[0]["run_dir"], "nodes")
+    tune_record = next(f for f in sorted(os.listdir(nodes_dir)) if f.endswith("-tune.json"))
+    node_record = read_json(nodes_dir, tune_record)
+    assert node_record["status"] == "error"
+    assert node_record["winner"] == {"theta.theta": 2.0}
+    # The ordering clause itself. The search node is the node whose raise
+    # escaped, and its record was already written when it did.
+    assert [key for key, _ in escaped] == ["tune"]
+    at_raise = escaped[0][1]
+    assert "tune" in at_raise, "the winner was recorded only AFTER apply_winner"
+    assert at_raise["tune"] == meta
 
 
 def test_a_search_that_failed_still_reports_the_trials_it_burned(tmp_path):
