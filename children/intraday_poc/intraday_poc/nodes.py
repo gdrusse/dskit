@@ -41,9 +41,13 @@ import math
 
 from dskit.onboarding.observations import scan_stream, stream_digest
 from dskit.pipeline.libs.pyomo import PyomoSolve
-from dskit.pipeline.node import Node, register_node_kind
+from dskit.pipeline.node import Node, register_node_kind, reject_unknown_params
+
+from .connectors import BAR_KEY_FIELDS, BAR_STREAM
 
 __all__ = [
+    "DEFAULT_MAX_GAP_MINUTES",
+    "DEFAULT_PRICE_FIELD",
     "BarsFromStore",
     "ForecastRows",
     "NODE_KINDS",
@@ -52,15 +56,13 @@ __all__ = [
     "build_select_model",
 ]
 
-
-def _reject_unknown(problems, params, allowed) -> None:
-    """Default-deny on this class's own knobs — the child keeps its own
-    copy of the toolkit idiom."""
-    unknown = sorted(set(params) - set(allowed))
-    if unknown:
-        problems.append(
-            f"unknown param(s) {unknown} — this kind allows {sorted(allowed)}"
-        )
+#: Each default has ONE name, read by the knob gate AND by the run — the
+#: `libs/torch.py` ``DEFAULT_EPOCHS`` idiom. Written twice, validation
+#: approves a value the run never uses and nothing catches it. Public
+#: because ``live.py`` reads them: the serving loop resolves the same
+#: fallbacks the training document's window node did.
+DEFAULT_PRICE_FIELD = "close"
+DEFAULT_MAX_GAP_MINUTES = 5
 
 
 class BarsFromStore(Node):
@@ -69,7 +71,8 @@ class BarsFromStore(Node):
 
     Params: ``root`` (REQUIRED) — the onboarding root; ``source``
     (REQUIRED) — the registered source name; ``stream`` — default
-    ``"bars"``. All literal, per the data-role rule.
+    ``BAR_STREAM`` (``"bars"``), the connector's own stream name. All
+    literal, per the data-role rule.
 
     Records are the normalized rows' ``data`` payloads flattened, plus
     ``asof_ms`` (the bar timestamp as epoch ms — what split filters cut
@@ -91,7 +94,7 @@ class BarsFromStore(Node):
     @classmethod
     def validate_params(cls, params):
         problems = []
-        _reject_unknown(problems, params, cls._PARAMS)
+        reject_unknown_params(problems, params, cls._PARAMS)
         for name in ("root", "source"):
             value = params.get(name)
             if not isinstance(value, str) or not value:
@@ -99,7 +102,7 @@ class BarsFromStore(Node):
                     f"{name} is required and must be a non-empty string, "
                     f"got {value!r}"
                 )
-        stream = params.get("stream", "bars")
+        stream = params.get("stream", BAR_STREAM)
         if not isinstance(stream, str) or not stream:
             problems.append(f"stream must be a non-empty string, got {stream!r}")
         return problems
@@ -113,8 +116,8 @@ class BarsFromStore(Node):
         self._snap = scan_stream(
             self.params["root"],
             self.params["source"],
-            self.params.get("stream", "bars"),
-            key_fields=("symbol", "ts"),
+            self.params.get("stream", BAR_STREAM),
+            key_fields=BAR_KEY_FIELDS,
             ts_field="ts",
             shared_fields=("symbol",),
         )
@@ -147,8 +150,9 @@ class WindowRows(Node):
 
     Inputs: ``records`` — bar rows carrying ``symbol``, ``asof_ms`` and
     the price field. Params: ``lookback`` (REQUIRED, int >= 2) — window
-    width in returns; ``price_field`` — default ``"close"``;
-    ``max_gap_minutes`` — default 5: consecutive bars further apart than
+    width in returns; ``price_field`` — default ``DEFAULT_PRICE_FIELD``
+    (``"close"``); ``max_gap_minutes`` — default
+    ``DEFAULT_MAX_GAP_MINUTES`` (5): consecutive bars further apart than
     this break the return chain (never bridged, never interpolated).
 
     Output rows: ``{symbol, asof_ms, ret_lag_0 .. ret_lag_{L-1}, y_next}``
@@ -166,7 +170,7 @@ class WindowRows(Node):
     @classmethod
     def validate_params(cls, params):
         problems = []
-        _reject_unknown(problems, params, cls._PARAMS)
+        reject_unknown_params(problems, params, cls._PARAMS)
         lookback = params.get("lookback")
         if "lookback" not in params:
             problems.append("lookback is required — the window width must "
@@ -174,12 +178,12 @@ class WindowRows(Node):
         elif isinstance(lookback, bool) or not isinstance(lookback, int) \
                 or lookback < 2:
             problems.append(f"lookback must be an int >= 2, got {lookback!r}")
-        price_field = params.get("price_field", "close")
+        price_field = params.get("price_field", DEFAULT_PRICE_FIELD)
         if not isinstance(price_field, str) or not price_field:
             problems.append(
                 f"price_field must be a non-empty string, got {price_field!r}"
             )
-        gap = params.get("max_gap_minutes", 5)
+        gap = params.get("max_gap_minutes", DEFAULT_MAX_GAP_MINUTES)
         if isinstance(gap, bool) or not isinstance(gap, (int, float)) \
                 or not math.isfinite(gap) or gap <= 0:
             problems.append(
@@ -195,8 +199,10 @@ class WindowRows(Node):
 
     def run(self, ctx, inputs):
         lookback = self.params["lookback"]
-        price_field = self.params.get("price_field", "close")
-        gap_ms = float(self.params.get("max_gap_minutes", 5)) * 60_000
+        price_field = self.params.get("price_field", DEFAULT_PRICE_FIELD)
+        gap_ms = float(
+            self.params.get("max_gap_minutes", DEFAULT_MAX_GAP_MINUTES)
+        ) * 60_000
 
         by_symbol = {}
         sparse = 0
@@ -271,7 +277,7 @@ class ForecastRows(Node):
     @classmethod
     def validate_params(cls, params):
         problems = []
-        _reject_unknown(problems, params, cls._PARAMS)
+        reject_unknown_params(problems, params, cls._PARAMS)
         if params.get("split") not in ("train", "val", "cal", "test"):
             problems.append(
                 f"split must declare which split this node reads "

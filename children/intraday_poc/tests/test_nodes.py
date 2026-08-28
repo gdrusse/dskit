@@ -25,6 +25,7 @@ from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.document import load_document
 from dskit.pipeline.node import NodeContext
 
+from intraday_poc import connectors, nodes
 from intraday_poc.nodes import (
     NODE_KINDS,
     BarsFromStore,
@@ -189,6 +190,105 @@ TestConformance = conformance_suite(
     expected_roles=EXPECTED_ROLES,
     name="TestConformance",
 )
+
+
+# -- one name per default --------------------------------------------------
+
+
+def test_the_window_defaults_are_named_once(monkeypatch):
+    """``price_field`` and ``max_gap_minutes`` each have ONE name.
+
+    The defect this pins is the repo's commonest: the same default
+    written in ``validate_params`` AND in ``run``, so validation
+    approves a value the run never uses and nothing notices. Rebinding
+    each constant must move BOTH consumers — a restated literal in
+    either survives the rebinding and fails here.
+    """
+    # The validation side reads them: rebound to junk, a document that
+    # declares neither knob is refused on both.
+    monkeypatch.setattr(nodes, "DEFAULT_PRICE_FIELD", 7)
+    monkeypatch.setattr(nodes, "DEFAULT_MAX_GAP_MINUTES", 0)
+    problems = WindowRows.validate_params({"lookback": 2})
+    assert any("price_field" in p for p in problems), problems
+    assert any("max_gap_minutes" in p for p in problems), problems
+
+    # The run side reads them too. Bars two minutes apart, close and
+    # vwap deliberately different series.
+    rows = [{"symbol": "AAPL", "asof_ms": _ms(2 * i), "close": 100.0,
+             "vwap": 100.0 + i} for i in range(4)]
+    monkeypatch.setattr(nodes, "DEFAULT_PRICE_FIELD", "vwap")
+    monkeypatch.setattr(nodes, "DEFAULT_MAX_GAP_MINUTES", 5)
+    out = WindowRows("window", {"lookback": 2}).run(None, {"records": rows})
+    (row,) = out["records"]
+    assert row["ret_lag_0"] == pytest.approx(math.log(102.0 / 101.0)), (
+        "the run priced on close, not the declared default field"
+    )
+
+    # ... and the gap tolerance: one minute breaks a two-minute chain.
+    monkeypatch.setattr(nodes, "DEFAULT_MAX_GAP_MINUTES", 1)
+    out = WindowRows("window", {"lookback": 2}).run(None, {"records": rows})
+    assert out["records"] == []
+
+
+def test_the_bars_stream_default_is_named_once(tmp_path, monkeypatch):
+    """The stream name is the connector's, and the node borrows it.
+
+    ``BAR_STREAM`` lives in ``connectors.py`` (the module that emits the
+    stream) and ``nodes.py`` imports it, so the reader can never look
+    for a spelling the writer stopped using. Both of the node's own
+    consumers — the knob gate and the scan — must read it.
+    """
+    assert nodes.BAR_STREAM is connectors.BAR_STREAM, (
+        "nodes.py must IMPORT the stream name, never restate it"
+    )
+    root = str(tmp_path / "ob")
+    path = _write_store(root, n_minutes=3, symbols=("AAPL",))
+
+    monkeypatch.setattr(nodes, "BAR_STREAM", 5)
+    problems = BarsFromStore.validate_params({"root": root,
+                                              "source": "alpaca"})
+    assert any("stream" in p for p in problems), problems
+
+    monkeypatch.setattr(nodes, "BAR_STREAM", "ticks")
+    os.rename(path, os.path.join(os.path.dirname(path), "ticks.jsonl"))
+    node = BarsFromStore("bars", {"root": root, "source": "alpaca"})
+    assert len(node.run(None, {})["records"]) == 3
+
+
+def test_the_default_prose_states_the_constants_values():
+    """The class docstrings quote each default for a reader, and prose
+    is the one text that can go stale on its own — the code around it
+    now reads the constants. Each needle is anchored on its OWNING
+    knob's words, so two values swapped between knobs still fails."""
+    window = " ".join(WindowRows.__doc__.split())
+    assert (f'``price_field`` — default ``DEFAULT_PRICE_FIELD`` '
+            f'(``"{nodes.DEFAULT_PRICE_FIELD}"``);') in window, window
+    assert (f'``max_gap_minutes`` — default ``DEFAULT_MAX_GAP_MINUTES`` '
+            f'({nodes.DEFAULT_MAX_GAP_MINUTES}):') in window, window
+    bars = " ".join(BarsFromStore.__doc__.split())
+    assert (f'``stream`` — default ``BAR_STREAM`` '
+            f'(``"{nodes.BAR_STREAM}"``),') in bars, bars
+
+
+def test_the_bar_primary_key_has_one_source_of_truth(tmp_path, monkeypatch):
+    """The node's dedup key IS the connector's declared primary key.
+
+    ``connectors.discover`` publishes ``primary_key`` and the store's
+    bitemporal dedup keys off whatever the NODE passes; two copies of
+    that tuple means the store can dedupe on a different key than the
+    platform advertised, silently. The connector half of this pin lives
+    in ``test_connectors.py``; this half proves the node reads the same
+    object.
+    """
+    assert nodes.BAR_KEY_FIELDS is connectors.BAR_KEY_FIELDS, (
+        "nodes.py must IMPORT the key tuple, never restate it"
+    )
+    root = str(tmp_path / "ob")
+    _write_store(root, n_minutes=3, symbols=("AAPL",))
+    monkeypatch.setattr(nodes, "BAR_KEY_FIELDS", ("symbol", "nosuchfield"))
+    node = BarsFromStore("bars", {"root": root, "source": "alpaca"})
+    with pytest.raises(AssetError, match="nosuchfield"):
+        node.run(None, {})
 
 
 # -- domain math -----------------------------------------------------------

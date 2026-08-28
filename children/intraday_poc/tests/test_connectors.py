@@ -21,6 +21,7 @@ from dskit.onboarding import (
     run_suite,
 )
 
+from intraday_poc import connectors
 from intraday_poc.connectors import AlpacaBarsConnector
 from intraday_poc.testing import StubBarsConnector
 
@@ -88,10 +89,27 @@ def test_credentials_refused_by_env_var_name(monkeypatch):
 
 
 def test_discover_names_the_stream(conn):
+    """The frozen shape, restated independently of the code — an
+    assertion that read its expectation from the constants would assert
+    nothing. That the CODE reads those constants is
+    ``test_discover_reads_the_stream_and_key_constants``."""
     (stream,) = conn.discover(STUB_CONFIG)
     assert stream["stream"] == "bars"
     assert stream["primary_key"] == ["symbol", "ts"]
     assert "close" in stream["schema"]["fields"]
+
+
+def test_discover_reads_the_stream_and_key_constants(conn, monkeypatch):
+    """``discover`` publishes the module's constants, so the node that
+    imports them cannot key its dedup off a different tuple than the
+    platform advertises. Rebinding each constant must move the
+    published record; the node half of the pin lives in
+    ``test_nodes.py``."""
+    monkeypatch.setattr(connectors, "BAR_STREAM", "ticks")
+    monkeypatch.setattr(connectors, "BAR_KEY_FIELDS", ("symbol",))
+    (stream,) = conn.discover(STUB_CONFIG)
+    assert stream["stream"] == "ticks"
+    assert stream["primary_key"] == ["symbol"]
 
 
 def test_read_emits_schema_records_then_state(conn):

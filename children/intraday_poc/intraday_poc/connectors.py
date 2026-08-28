@@ -44,9 +44,18 @@ from datetime import datetime, timedelta, timezone
 
 from dskit.onboarding import PROTOCOL, AssetError, Connector, parse_utc
 
-__all__ = ["AlpacaBarsConnector"]
+__all__ = ["BAR_KEY_FIELDS", "BAR_STREAM", "AlpacaBarsConnector"]
 
-_STREAM = "bars"
+#: The stream this source offers and the tuple that IDENTIFIES a bar.
+#: Both are public because ``nodes.py`` imports them (same package): the
+#: node scans the stream this connector writes and dedupes on the key
+#: this connector publishes as ``primary_key``. Two copies of either
+#: value would let the reader look for a spelling the writer abandoned,
+#: or the store dedupe on a different tuple than the platform advertised
+#: — silently, in both directions.
+BAR_STREAM = "bars"
+BAR_KEY_FIELDS = ("symbol", "ts")
+
 _FIELDS = ["symbol", "ts", "open", "high", "low", "close", "volume",
            "trade_count", "vwap"]
 
@@ -214,9 +223,9 @@ class AlpacaBarsConnector(Connector):
     def discover(self, config) -> list:
         self._knobs(config)
         return [{
-            "stream": _STREAM,
+            "stream": BAR_STREAM,
             "schema": {"fields": list(_FIELDS)},
-            "primary_key": ["symbol", "ts"],
+            "primary_key": list(BAR_KEY_FIELDS),
         }]
 
     def read(self, config, streams, state, mode):
@@ -229,9 +238,10 @@ class AlpacaBarsConnector(Connector):
         new_state = {k: dict(v) for k, v in state.items()}
 
         for stream in streams:
-            if stream != _STREAM:
+            if stream != BAR_STREAM:
                 raise AssetError(
-                    [f"unknown stream {stream!r} — discovered: [{_STREAM!r}]"]
+                    [f"unknown stream {stream!r} — discovered: "
+                     f"[{BAR_STREAM!r}]"]
                 )
             cursor = state.get(stream, {}).get("cursor", "")
             cursor_dt = parse_utc(cursor) if cursor else None
