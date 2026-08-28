@@ -91,6 +91,7 @@ import os
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from dskit.pipeline.base import (
     abstract_class_problem,
@@ -1413,6 +1414,33 @@ class _TorchModel(_LossPromise, TrainableNode):
         return module, sidecar
 
 
+@dataclass
+class _Fit:
+    """One training run's live frame: what the epoch loop reads and writes.
+
+    Every field is settled before the first epoch and none is re-read from
+    ``params`` afterwards, which is the point: the device the module moved
+    to, the device every batch moves to, and the device the metrics report
+    are one value, not three reads of one knob. ``best_state`` is the only
+    field the loop writes — the monitor's snapshot, None until an epoch is
+    the best one.
+    """
+
+    module: object
+    optimizer: object
+    adapter: object
+    train_set: object
+    val_set: object
+    device: object
+    batch_size: int
+    shuffle: bool
+    order_gen: object
+    curve: object
+    monitor: str
+    epochs: int
+    best_state: dict = None
+
+
 class TorchTrain(_TorchModel):
     """The generic torch trainer (role ``train``) — subclass and implement
     ``build_module`` (plus optionally ``loss``; default MSE).
@@ -1634,21 +1662,19 @@ class TorchTrain(_TorchModel):
             "metrics": {"loaded": 1, "seed": sidecar["seed"]},
         }
 
-    def run_train(self, ctx, inputs):
-        import torch
+    def _fit_datasets(self, adapter, inputs, features, label):
+        """Prepare the train and validation sets, as ``(train_set, val_set)``.
 
-        loader = dict(LOADER_DEFAULTS)
-        loader.update(self.params.get("loader", {}))
-        seed, batch_size = loader["seed"], loader["batch_size"]
-        epochs = self.params.get("epochs", DEFAULT_EPOCHS)
-        features = list(self.params.get("features") or ())
-        label = self.params.get("label", DEFAULT_LABEL)
+        THE DATASET SEAM. What an "example" is belongs to the adapter, so
+        the epoch loop is the same whether the batch is a feature matrix
+        or a ladder panel — and the default adapter makes it identical to
+        what this node did before the seam existed.
 
-        # THE DATASET SEAM. What an "example" is belongs to the adapter, so
-        # the loop below is the same whether the batch is a feature matrix
-        # or a ladder panel — and the default adapter makes it identical to
-        # what this node did before the seam existed.
-        adapter = self._adapter = self._adapter_for_fit(self.params)
+        The validation port is optional: absent is fine (the curve then
+        tracks train loss), present is what makes the fit's generalization
+        visible per epoch. A port that was WIRED and yielded no example is
+        a refusal, never a silent fall back to training blind.
+        """
         train_set = adapter.prepare(inputs["rows"], self.params, where="rows")
         if not len(train_set):
             raise ValueError(
@@ -1656,10 +1682,6 @@ class TorchTrain(_TorchModel):
                 f"could build no example from features {features} + label "
                 f"{label!r} ({train_set.n_skipped} row(s) seen)"
             )
-
-        # The optional validation port — a val-split row list the DOCUMENT
-        # wires. Absent is fine (the curve then tracks train loss); present
-        # is what makes the fit's generalization visible per epoch.
         val_set, val_rows = None, inputs.get("val_rows")
         if val_rows:
             val_set = adapter.prepare(val_rows, self.params, where="val_rows")
@@ -1671,11 +1693,16 @@ class TorchTrain(_TorchModel):
                     f"({val_set.n_skipped} row(s) seen) — fix the wiring rather "
                     "than training blind"
                 )
+        return train_set, val_set
 
-        # ADR-0035: every monitor except train_loss is validation
-        # telemetry — its row key only exists when val_rows are wired. A
-        # declared selection rule that silently degraded to train-loss
-        # selection is exactly the trap the seam exists to close.
+    def _fit_monitor(self, val_set):
+        """The declared selection objective, refused when nothing can read it.
+
+        ADR-0035: every monitor except ``train_loss`` is validation
+        telemetry — its row key only exists when ``val_rows`` are wired. A
+        declared selection rule that silently degraded to train-loss
+        selection is exactly the trap the seam exists to close.
+        """
         monitor = self.params.get("monitor")
         if monitor and monitor != "train_loss" and val_set is None:
             raise ValueError(
@@ -1683,7 +1710,19 @@ class TorchTrain(_TorchModel):
                 "telemetry but no val_rows are wired — wire val_rows or "
                 "drop monitor"
             )
+        return monitor
 
+    def _build_fit(self, adapter, train_set, val_set, monitor, loader, epochs):
+        """Seed, build and assemble everything one fit needs, as a :class:`_Fit`.
+
+        Order is the determinism contract: ``torch.manual_seed`` pins the
+        weight init BEFORE the module is built, and the shuffle gets its
+        OWN generator, so two trains with one seed produce identical state
+        dicts.
+        """
+        import torch
+
+        seed = loader["seed"]
         torch.manual_seed(seed)  # pins the init: one seed, one state dict
         # Data-implied constructor kwargs go UNDER the document's own, so a
         # declared value always wins and the data can never silently
@@ -1705,150 +1744,257 @@ class TorchTrain(_TorchModel):
         # objective or a device the batches never reach. Memoized: every
         # later loss() call gets this object.
         self._thread_loss(adapter, device)
-        optimizer = self.build_optimizer(module, self.params)
-        order_gen = torch.Generator().manual_seed(seed)  # pins the shuffle
-        curve = TrainingCurve(
-            self.key,
-            self.log,
-            total_epochs=epochs,
-            objective=monitor or ("val_loss" if val_set else "train_loss"),
-            log_every=self.params.get("log_every", 1),
-            max_lines=self.params.get("max_log_lines", DEFAULT_MAX_LINES),
+        return _Fit(
+            module=module,
+            optimizer=self.build_optimizer(module, self.params),
+            adapter=adapter,
+            train_set=train_set,
+            val_set=val_set,
+            device=device,
+            batch_size=loader["batch_size"],
+            shuffle=loader["shuffle"],
+            order_gen=torch.Generator().manual_seed(seed),  # pins the shuffle
+            curve=TrainingCurve(
+                self.key,
+                self.log,
+                total_epochs=epochs,
+                objective=monitor or ("val_loss" if val_set else "train_loss"),
+                log_every=self.params.get("log_every", 1),
+                max_lines=self.params.get("max_log_lines", DEFAULT_MAX_LINES),
+            ),
+            monitor=monitor,
+            epochs=epochs,
         )
-        best_state = None  # the monitor's snapshot; None until a best epoch
-        n = len(train_set)
-        for epoch in range(1, epochs + 1):
-            started = time.monotonic()
-            module.train()
-            if loader["shuffle"]:
-                order = torch.randperm(n, generator=order_gen)
-            else:
-                order = torch.arange(n)
-            batch_loss_sum, n_batches = 0.0, 0
-            for start in range(0, n, batch_size):
-                idx = order[start : start + batch_size]
-                optimizer.zero_grad()
-                batch_loss = self.loss(
-                    module, _on_device(adapter, train_set, idx, device)
-                )
-                batch_loss.backward()
-                optimizer.step()
-                batch_loss_sum += float(batch_loss.detach())
-                n_batches += 1
-            train_loss = batch_loss_sum / max(n_batches, 1)
 
-            val_loss, scored = None, {}
-            if val_set is not None:
-                module.eval()
-                with torch.no_grad():
-                    val_batch = _on_device(adapter, val_set, None, device)
-                    val_loss = float(self.loss(module, val_batch))
-                    preds, val_labels = adapter.beliefs(module, val_batch)
-                if preds is not None:
-                    scored = probability_metrics(preds, val_labels)
-                if monitor and monitor not in ("train_loss", "val_loss") and monitor not in scored:
-                    # A diverged epoch (non-finite predictions) drops the
-                    # probability metrics entirely; the monitored key must
-                    # still be PRESENT — as a None the curve records but
-                    # never selects — or the strict curve would abort the
-                    # whole fit instead of restoring the pre-divergence
-                    # best (ADR-0035).
-                    scored = dict(scored)
-                    scored[monitor] = None
-            row = curve.record(
+    def _train_epoch(self, fit):
+        """Take one epoch of batched gradient steps; returns the mean loss."""
+        import torch
+
+        fit.module.train()
+        n = len(fit.train_set)
+        if fit.shuffle:
+            order = torch.randperm(n, generator=fit.order_gen)
+        else:
+            order = torch.arange(n)
+        batch_loss_sum, n_batches = 0.0, 0
+        for start in range(0, n, fit.batch_size):
+            idx = order[start : start + fit.batch_size]
+            fit.optimizer.zero_grad()
+            batch_loss = self.loss(
+                fit.module, _on_device(fit.adapter, fit.train_set, idx, fit.device)
+            )
+            batch_loss.backward()
+            fit.optimizer.step()
+            batch_loss_sum += float(batch_loss.detach())
+            n_batches += 1
+        return batch_loss_sum / max(n_batches, 1)
+
+    def _score_epoch(self, fit):
+        """Score one epoch on the validation set, as ``(val_loss, metrics)``.
+
+        ``(None, {})`` when no ``val_rows`` are wired. A diverged epoch
+        (non-finite predictions) drops the probability metrics entirely;
+        the monitored key must still be PRESENT — as a None the curve
+        records but never selects — or the strict curve would abort the
+        whole fit instead of restoring the pre-divergence best (ADR-0035).
+        """
+        import torch
+
+        if fit.val_set is None:
+            return None, {}
+        fit.module.eval()
+        with torch.no_grad():
+            val_batch = _on_device(fit.adapter, fit.val_set, None, fit.device)
+            val_loss = float(self.loss(fit.module, val_batch))
+            preds, val_labels = fit.adapter.beliefs(fit.module, val_batch)
+        scored = {}
+        if preds is not None:
+            scored = probability_metrics(preds, val_labels)
+        monitor = fit.monitor
+        if (
+            monitor
+            and monitor not in ("train_loss", "val_loss")
+            and monitor not in scored
+        ):
+            scored = dict(scored)
+            scored[monitor] = None
+        return val_loss, scored
+
+    @staticmethod
+    def _snapshot(module):
+        """Copy the live weights off the training module.
+
+        The ``state_dict``'s tensors alias the live training weights, so
+        the copy is mandatory, and to-CPU means a cuda fit holds one extra
+        host copy, never 2x device memory. One snapshot lives at a time.
+        Non-tensor entries (a module's ``get_extra_state()``) are
+        deep-copied — they have no ``.detach()``.
+        """
+        return {
+            k: (
+                v.detach().to("cpu", copy=True)
+                if hasattr(v, "detach")
+                else copy.deepcopy(v)
+            )
+            for k, v in module.state_dict().items()
+        }
+
+    def _train_epochs(self, fit) -> None:
+        """Run every epoch, recording the curve and the monitor's best."""
+        for epoch in range(1, fit.epochs + 1):
+            started = time.monotonic()
+            train_loss = self._train_epoch(fit)
+            val_loss, scored = self._score_epoch(fit)
+            row = fit.curve.record(
                 epoch,
                 train_loss,
                 val_loss=val_loss,
                 metrics=scored,
                 seconds=time.monotonic() - started,
             )
-            if monitor and row["best"]:
-                # Snapshot NOW: the state_dict's tensors alias the live
-                # training weights, so the copy is mandatory, and to-CPU
-                # means a cuda fit holds one extra host copy, never 2x
-                # device memory. One snapshot lives at a time. Non-tensor
-                # entries (a module's get_extra_state()) are deep-copied —
-                # they have no .detach().
-                best_state = {
-                    k: (
-                        v.detach().to("cpu", copy=True)
-                        if hasattr(v, "detach")
-                        else copy.deepcopy(v)
-                    )
-                    for k, v in module.state_dict().items()
-                }
-        curve.log_final()
+            if fit.monitor and row["best"]:
+                fit.best_state = self._snapshot(fit.module)
+        fit.curve.log_final()
 
-        if monitor:
-            if best_state is None:
-                raise ValueError(
-                    f"{self.key}: monitor {monitor!r} never recorded a "
-                    "finite value — every epoch's tracked objective was "
-                    "missing or non-finite; there is nothing to select"
-                )
-            # Restore BEFORE final_loss and adapter.fitted: the persisted
-            # artifact, the serving state, and the final metrics must all
-            # describe the SELECTED weights, not the last epoch's.
-            module.load_state_dict(best_state)
-            self.log.info(
-                "%s: restored epoch %d weights (best %s %.6g)",
-                self.key,
-                curve.best_epoch,
-                monitor,
-                curve.best_value,
-            )
+    def _restore_best(self, fit) -> None:
+        """Put the monitor's selected weights back, before anything reads them.
 
-        module.eval()
-        with torch.no_grad():
-            final_loss = float(
-                self.loss(module, _on_device(adapter, train_set, None, device))
+        Restore BEFORE final_loss and ``adapter.fitted``: the persisted
+        artifact, the serving state and the final metrics must all
+        describe the SELECTED weights, not the last epoch's.
+        """
+        if not fit.monitor:
+            return
+        if fit.best_state is None:
+            raise ValueError(
+                f"{self.key}: monitor {fit.monitor!r} never recorded a "
+                "finite value — every epoch's tracked objective was "
+                "missing or non-finite; there is nothing to select"
             )
-        # Serving may need the FITTED model (a lookup to materialize, a
-        # temperature to calibrate). Once, here, never per prediction.
-        adapter.fitted(module, train_set, val_set)
-        if device:
-            # The ARTIFACT is device-independent: a fit on cuda must restore
-            # on a CPU-only machine, and the served module answers single
-            # records where a device transfer costs more than the forward.
-            module.to("cpu")
-        # The curve is DURABLE, not just streamed: the run report reads the
-        # artifact, and a strided stream never loses an epoch here.
-        self.write_artifact(ctx, "training_curve.json", curve.payload())
-        artifact_path = self._save_artifact(ctx, module, seed, adapter=adapter)
+        fit.module.load_state_dict(fit.best_state)
         self.log.info(
-            "trained %s on %d example(s) (%d skipped), %d epoch(s), seed %d -> %s",
-            self._class_ref(),
-            n,
-            train_set.n_skipped,
-            epochs,
-            seed,
-            artifact_path,
+            "%s: restored epoch %d weights (best %s %.6g)",
+            self.key,
+            fit.curve.best_epoch,
+            fit.monitor,
+            fit.curve.best_value,
         )
+
+    @staticmethod
+    def _fit_metrics(fit, final_loss, seed):
+        """The fit's reported metrics — what it saw, and what it selected."""
         metrics = {
-            "n_rows": n,
-            "n_skipped": train_set.n_skipped,
-            "epochs": epochs,
+            "n_rows": len(fit.train_set),
+            "n_skipped": fit.train_set.n_skipped,
+            "epochs": fit.epochs,
             "seed": seed,
             "final_loss": final_loss,
-            "device": device or "cpu",
+            "device": fit.device or "cpu",
         }
-        if val_set is not None:
-            metrics["n_val_rows"] = len(val_set)
-            metrics["n_val_skipped"] = val_set.n_skipped
-        metrics.update(curve.summary())
-        if monitor:
+        if fit.val_set is not None:
+            metrics["n_val_rows"] = len(fit.val_set)
+            metrics["n_val_skipped"] = fit.val_set.n_skipped
+        metrics.update(fit.curve.summary())
+        if fit.monitor:
             # selected_epoch is THE contract key: which epoch's weights
             # were persisted. best_epoch (from the summary) agrees here by
             # construction, but a consumer must not have to know that.
-            metrics["monitor"] = monitor
-            metrics["selected_epoch"] = curve.best_epoch
-            metrics["monitor_value"] = curve.best_value
+            metrics["monitor"] = fit.monitor
+            metrics["selected_epoch"] = fit.curve.best_epoch
+            metrics["monitor_value"] = fit.curve.best_value
+        return metrics
+
+    def _final_loss(self, fit):
+        """The selected weights' loss over the whole training set."""
+        import torch
+
+        fit.module.eval()
+        with torch.no_grad():
+            return float(
+                self.loss(
+                    fit.module,
+                    _on_device(fit.adapter, fit.train_set, None, fit.device),
+                )
+            )
+
+    def _persist_fit(self, ctx, fit, seed):
+        """Write the curve and the model artifact; returns the artifact path.
+
+        The curve is DURABLE, not just streamed: the run report reads the
+        artifact, and a strided stream never loses an epoch here.
+        """
+        self.write_artifact(ctx, "training_curve.json", fit.curve.payload())
+        artifact_path = self._save_artifact(
+            ctx, fit.module, seed, adapter=fit.adapter
+        )
+        self.log.info(
+            "trained %s on %d example(s) (%d skipped), %d epoch(s), seed %d -> %s",
+            self._class_ref(),
+            len(fit.train_set),
+            fit.train_set.n_skipped,
+            fit.epochs,
+            seed,
+            artifact_path,
+        )
+        return artifact_path
+
+    def run_train(self, ctx, inputs):
+        """Fit the declared module and persist it (mode ``train``).
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The run frame; its artifact dir receives ``model.pt``, the
+            ``model.json`` sidecar and ``training_curve.json``.
+        inputs : dict
+            ``rows`` (required list) and the optional ``val_rows``, as
+            validated by :meth:`validate_inputs`.
+
+        Returns
+        -------
+        dict
+            ``signal`` — a :class:`TorchSignal` over the fitted module;
+            ``artifact_path`` — the persisted ``model.pt``; ``metrics`` —
+            the fit's telemetry, including the selected epoch when a
+            ``monitor`` is declared.
+
+        Raises
+        ------
+        ValueError
+            No usable rows, a wired ``val_rows`` yielding no example, a
+            ``monitor`` nothing can read, or a ``monitor`` that never
+            recorded a finite value.
+        """
+        loader = dict(LOADER_DEFAULTS)
+        loader.update(self.params.get("loader", {}))
+        seed = loader["seed"]
+        epochs = self.params.get("epochs", DEFAULT_EPOCHS)
+        features = list(self.params.get("features") or ())
+        adapter = self._adapter = self._adapter_for_fit(self.params)
+        train_set, val_set = self._fit_datasets(
+            adapter, inputs, features, self.params.get("label", DEFAULT_LABEL)
+        )
+        fit = self._build_fit(
+            adapter, train_set, val_set, self._fit_monitor(val_set), loader, epochs
+        )
+        self._train_epochs(fit)
+        self._restore_best(fit)
+        final_loss = self._final_loss(fit)
+        # Serving may need the FITTED model (a lookup to materialize, a
+        # temperature to calibrate). Once, here, never per prediction.
+        adapter.fitted(fit.module, train_set, val_set)
+        if fit.device:
+            # The ARTIFACT is device-independent: a fit on cuda must restore
+            # on a CPU-only machine, and the served module answers single
+            # records where a device transfer costs more than the forward.
+            fit.module.to("cpu")
+        artifact_path = self._persist_fit(ctx, fit, seed)
         return {
             "signal": TorchSignal(
-                module, features, artifact_path, loaded=False, adapter=adapter
+                fit.module, features, artifact_path, loaded=False, adapter=adapter
             ),
             "artifact_path": artifact_path,
-            "metrics": metrics,
+            "metrics": self._fit_metrics(fit, final_loss, seed),
         }
 
 
