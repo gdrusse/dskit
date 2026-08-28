@@ -47,22 +47,24 @@ class Registry:
 
     Examples
     --------
-    >>> import tempfile
-    >>> from dskit.assets.default_model import default_model
-    >>> from dskit.assets.store import FileStore
-    >>> m = default_model()
-    >>> reg = Registry(FileStore.create(tempfile.mkdtemp(), m), m)
-    >>> e = reg.register("entity", {"name": "AAPL"}, origin="doctest")
-    >>> f = reg.register("feature", {"name": "mom_20d"}, refs={"entity": e})
-    >>> reg.state(f)                      # lifecycle starts at the model's initial
-    'draft'
-    >>> reg.transition(f, "validated", origin="doctest")
-    >>> reg.state(f)
-    'validated'
-    >>> reg.find("feature", "mom_20d") == [f]
-    True
-    >>> reg.register("feature", {"name": "mom_20d"}, refs={"entity": e}) == f
-    True
+    Register an entity and a feature, transition state, and look it up::
+
+        import tempfile
+        from dskit.assets.default_model import default_model
+        from dskit.assets.store import FileStore
+        m = default_model()
+        reg = Registry(FileStore.create(tempfile.mkdtemp(), m), m)
+        e = reg.register("entity", {"name": "AAPL"}, origin="doctest")
+        f = reg.register("feature", {"name": "mom_20d"}, refs={"entity": e})
+        reg.state(f)                      # lifecycle starts at the model's initial
+        'draft'
+        reg.transition(f, "validated", origin="doctest")
+        reg.state(f)
+        'validated'
+        reg.find("feature", "mom_20d") == [f]
+        True
+        reg.register("feature", {"name": "mom_20d"}, refs={"entity": e}) == f
+        True
     """
 
     def __init__(self, store, model):

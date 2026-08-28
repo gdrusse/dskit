@@ -91,16 +91,18 @@ class SqliteStore(Store):
 
     Examples
     --------
-    >>> import tempfile
-    >>> from dskit.assets.default_model import default_model
-    >>> from dskit.assets.record import AssetRecord
-    >>> store = SqliteStore.create(tempfile.mkdtemp() + "/s", default_model())
-    >>> vid = store.put_record(
-    ...     AssetRecord(kind="entity", payload={"name": "AAPL"}, refs={}))
-    >>> store.get_record(vid).payload["name"]
-    'AAPL'
-    >>> store.list_records("entity") == [vid]
-    True
+    Create a store, write a record, and read it back::
+
+        import tempfile
+        from dskit.assets.default_model import default_model
+        from dskit.assets.record import AssetRecord
+        store = SqliteStore.create(tempfile.mkdtemp() + "/s", default_model())
+        vid = store.put_record(
+            AssetRecord(kind="entity", payload={"name": "AAPL"}, refs={}))
+        store.get_record(vid).payload["name"]
+        'AAPL'
+        store.list_records("entity") == [vid]
+        True
     """
 
     def __init__(self, root):

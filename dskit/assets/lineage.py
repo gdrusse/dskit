@@ -41,25 +41,27 @@ class Lineage:
 
     Examples
     --------
-    >>> import tempfile
-    >>> from dskit.assets.default_model import default_model
-    >>> from dskit.assets.registry import Registry
-    >>> from dskit.assets.store import FileStore
-    >>> m = default_model()
-    >>> reg = Registry(FileStore.create(tempfile.mkdtemp(), m), m)
-    >>> lin = Lineage(reg)
-    >>> run = reg.register("run_observation", {"name": "run-1"})
-    >>> out = reg.register("output", {"name": "signal"}, refs={"run": run})
-    >>> lin.add(run, out, relation="produced", phase="execution", origin="doctest")
-    True
-    >>> lin.add(run, out, relation="produced", phase="execution")   # idempotent
-    False
-    >>> lin.parents(out) == [run] and lin.descendants(run) == [out]
-    True
-    >>> lin.add(out, run, relation="loops", phase="execution")  # doctest: +ELLIPSIS
-    Traceback (most recent call last):
-    ...
-    dskit.assets.base.AssetError: ...would create a cycle...
+    Add a lineage edge, add it again idempotently, and reject a cycle::
+
+        import tempfile
+        from dskit.assets.default_model import default_model
+        from dskit.assets.registry import Registry
+        from dskit.assets.store import FileStore
+        m = default_model()
+        reg = Registry(FileStore.create(tempfile.mkdtemp(), m), m)
+        lin = Lineage(reg)
+        run = reg.register("run_observation", {"name": "run-1"})
+        out = reg.register("output", {"name": "signal"}, refs={"run": run})
+        lin.add(run, out, relation="produced", phase="execution", origin="doctest")
+        True
+        lin.add(run, out, relation="produced", phase="execution")   # idempotent
+        False
+        lin.parents(out) == [run] and lin.descendants(run) == [out]
+        True
+        lin.add(out, run, relation="loops", phase="execution")  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        dskit.assets.base.AssetError: ...would create a cycle...
     """
 
     def __init__(self, registry):

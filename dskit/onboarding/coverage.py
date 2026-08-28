@@ -125,12 +125,14 @@ class CoverageLedger:
 
     Examples
     --------
-    >>> import tempfile, os
-    >>> led = CoverageLedger(os.path.join(tempfile.mkdtemp(), "cov.sqlite"))
-    >>> led.mark("vendor", "prices", "AAPL", ["2026-01-05"], status="fetched")
-    1
-    >>> led.missing("vendor", "prices", ["AAPL"], ["2026-01-05", "2026-01-06"])
-    {'AAPL': ['2026-01-06']}
+    Mark one unit-period fetched and query what is still missing::
+
+        import tempfile, os
+        led = CoverageLedger(os.path.join(tempfile.mkdtemp(), "cov.sqlite"))
+        led.mark("vendor", "prices", "AAPL", ["2026-01-05"], status="fetched")
+        1
+        led.missing("vendor", "prices", ["AAPL"], ["2026-01-05", "2026-01-06"])
+        {'AAPL': ['2026-01-06']}
     """
 
     def __init__(self, path):

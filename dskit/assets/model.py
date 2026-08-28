@@ -75,10 +75,12 @@ class FieldSpec:
 
     Examples
     --------
-    >>> FieldSpec(type="string", required=True)   # the mandatory name field
-    FieldSpec(type='string', required=True, notes='')
-    >>> FieldSpec(type="number", notes="row count at certification")
-    FieldSpec(type='number', required=False, notes='row count at certification')
+    Build a required field and an optional one::
+
+        FieldSpec(type="string", required=True)   # the mandatory name field
+        FieldSpec(type='string', required=True, notes='')
+        FieldSpec(type="number", notes="row count at certification")
+        FieldSpec(type='number', required=False, notes='row count at certification')
 
     JSON form: ``{"type": "number", "notes": "row count at certification"}``.
     """
@@ -134,10 +136,12 @@ class RefSpec:
 
     Examples
     --------
-    >>> RefSpec(kind="entity", required=True)   # a feature must name its entity
-    RefSpec(kind='entity', required=True, notes='')
-    >>> RefSpec(kind="source")                  # optional provenance pointer
-    RefSpec(kind='source', required=False, notes='')
+    Build a required ref and an optional one::
+
+        RefSpec(kind="entity", required=True)   # a feature must name its entity
+        RefSpec(kind='entity', required=True, notes='')
+        RefSpec(kind="source")                  # optional provenance pointer
+        RefSpec(kind='source', required=False, notes='')
 
     JSON form: ``{"kind": "entity", "required": true}``.
     """
@@ -199,22 +203,22 @@ class KindSpec:
 
     Examples
     --------
-    A governed kind with a lifecycle:
+    A governed kind with a lifecycle::
 
-    >>> dataset = KindSpec(
-    ...     fields={"name": FieldSpec(type="string", required=True),
-    ...             "rows": FieldSpec(type="number")},
-    ...     refs={"source": RefSpec(kind="source", required=True)},
-    ...     states=("draft", "certified", "retired"),
-    ...     initial="draft",
-    ...     transitions={"draft": ("certified",), "certified": ("retired",)},
-    ... )
+        dataset = KindSpec(
+            fields={"name": FieldSpec(type="string", required=True),
+                    "rows": FieldSpec(type="number")},
+            refs={"source": RefSpec(kind="source", required=True)},
+            states=("draft", "certified", "retired"),
+            initial="draft",
+            transitions={"draft": ("certified",), "certified": ("retired",)},
+        )
 
     A record-only kind — no lifecycle at all (ADR-0007: observations are
-    registered once, never transitioned):
+    registered once, never transitioned)::
 
-    >>> observation = KindSpec(
-    ...     fields={"name": FieldSpec(type="string", required=True)})
+        observation = KindSpec(
+            fields={"name": FieldSpec(type="string", required=True)})
 
     JSON form of ``dataset``::
 
@@ -361,18 +365,20 @@ class AssetModel:
 
     Examples
     --------
-    >>> model = AssetModel(
-    ...     name="minimal",
-    ...     kinds={
-    ...         "source": KindSpec(
-    ...             fields={"name": FieldSpec(type="string", required=True)}),
-    ...         "dataset": KindSpec(
-    ...             fields={"name": FieldSpec(type="string", required=True)},
-    ...             refs={"source": RefSpec(kind="source", required=True)}),
-    ...     },
-    ... )
-    >>> len(model_hash(model))    # sha256 hex — the governance pin
-    64
+    Build a two-kind model and hash it::
+
+        model = AssetModel(
+            name="minimal",
+            kinds={
+                "source": KindSpec(
+                    fields={"name": FieldSpec(type="string", required=True)}),
+                "dataset": KindSpec(
+                    fields={"name": FieldSpec(type="string", required=True)},
+                    refs={"source": RefSpec(kind="source", required=True)}),
+            },
+        )
+        len(model_hash(model))    # sha256 hex — the governance pin
+        64
 
     The same model as a JSON document (what :func:`load_model` reads)::
 
@@ -459,7 +465,9 @@ def load_model(path) -> AssetModel:
 
     Examples
     --------
-    >>> model = load_model("examples/assets/model.json")   # doctest: +SKIP
+    Load a model document from disk::
+
+        model = load_model("examples/assets/model.json")   # doctest: +SKIP
     """
     try:
         with open(path, encoding="utf-8") as fh:

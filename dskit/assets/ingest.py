@@ -89,8 +89,10 @@ def ingest_run(registry, run_dir, origin="ingest-run") -> dict:
 
     Examples
     --------
-    >>> summary = ingest_run(reg, "pipeline_runs/my-run-2026-01-01-5ce0d310")
-    ... # doctest: +SKIP
+    Ingest a completed run::
+
+        summary = ingest_run(reg, "pipeline_runs/my-run-2026-01-01-5ce0d310")
+        # doctest: +SKIP
     """
     errors = []
     if not isinstance(registry, Registry):

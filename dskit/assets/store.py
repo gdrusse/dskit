@@ -403,19 +403,21 @@ class FileStore(Store):
 
     Examples
     --------
-    >>> import tempfile
-    >>> from dskit.assets.default_model import default_model
-    >>> from dskit.assets.record import AssetRecord
-    >>> store = FileStore.create(tempfile.mkdtemp(), default_model())
-    >>> vid = store.put_record(
-    ...     AssetRecord(kind="entity", payload={"name": "AAPL"}, refs={}))
-    >>> store.put_record(
-    ...     AssetRecord(kind="entity", payload={"name": "AAPL"}, refs={})) == vid
-    True
-    >>> store.get_record(vid).payload["name"]
-    'AAPL'
-    >>> store.list_records("entity") == [vid]
-    True
+    Create a store, write a record twice, and read it back::
+
+        import tempfile
+        from dskit.assets.default_model import default_model
+        from dskit.assets.record import AssetRecord
+        store = FileStore.create(tempfile.mkdtemp(), default_model())
+        vid = store.put_record(
+            AssetRecord(kind="entity", payload={"name": "AAPL"}, refs={}))
+        store.put_record(
+            AssetRecord(kind="entity", payload={"name": "AAPL"}, refs={})) == vid
+        True
+        store.get_record(vid).payload["name"]
+        'AAPL'
+        store.list_records("entity") == [vid]
+        True
     """
 
     def __init__(self, root):

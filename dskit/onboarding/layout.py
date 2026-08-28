@@ -59,13 +59,15 @@ class OnboardingRoot:
 
     Examples
     --------
-    >>> import tempfile
-    >>> ob = OnboardingRoot.create(tempfile.mkdtemp() + "/ob")
-    >>> ob.registry().model.name
-    'onboarding'
-    >>> ob.state_path("vendor", "prices", "live").endswith(
-    ...     "state/vendor/prices-live.json")
-    True
+    Create a root and check its layout::
+
+        import tempfile
+        ob = OnboardingRoot.create(tempfile.mkdtemp() + "/ob")
+        ob.registry().model.name
+        'onboarding'
+        ob.state_path("vendor", "prices", "live").endswith(
+            "state/vendor/prices-live.json")
+        True
     """
 
     def __init__(self, root):

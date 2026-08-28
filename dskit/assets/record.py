@@ -81,19 +81,21 @@ def check_payload(spec, payload, refs):
 
     Examples
     --------
-    >>> from dskit.assets.model import FieldSpec, KindSpec, RefSpec
-    >>> spec = KindSpec(
-    ...     fields={"name": FieldSpec(type="string", required=True),
-    ...             "rows": FieldSpec(type="number")},
-    ...     refs={"source": RefSpec(kind="source", required=True)})
-    >>> check_payload(spec, {"name": "prices"}, {"source": "ab" * 32})  # ok
-    >>> check_payload(spec, {"rows": True}, {})
-    Traceback (most recent call last):
-    ...
-    dskit.assets.base.AssetError: invalid asset operation (3 problems):
-      payload.rows must be number, got True
-      payload missing required field(s) ['name']
-      refs missing required ref(s) ['source']
+    Check a valid payload, then one that fails on multiple grounds::
+
+        from dskit.assets.model import FieldSpec, KindSpec, RefSpec
+        spec = KindSpec(
+            fields={"name": FieldSpec(type="string", required=True),
+                    "rows": FieldSpec(type="number")},
+            refs={"source": RefSpec(kind="source", required=True)})
+        check_payload(spec, {"name": "prices"}, {"source": "ab" * 32})  # ok
+        check_payload(spec, {"rows": True}, {})
+        Traceback (most recent call last):
+        ...
+        dskit.assets.base.AssetError: invalid asset operation (3 problems):
+          payload.rows must be number, got True
+          payload missing required field(s) ['name']
+          refs missing required ref(s) ['source']
     """
     errors = []
     if not isinstance(spec, KindSpec):
@@ -149,13 +151,15 @@ class AssetRecord:
 
     Examples
     --------
-    >>> r = AssetRecord(kind="entity", payload={"name": "AAPL"}, refs={})
-    >>> r.version_id() == AssetRecord(kind="entity", payload={"name": "AAPL"},
-    ...     refs={}, registered_at="2026-08-22T00:00:00+00:00",
-    ...     origin="cli", notes="doc").version_id()   # provenance never changes identity
-    True
-    >>> len(r.version_id())
-    64
+    Construct a record and check that provenance never changes identity::
+
+        r = AssetRecord(kind="entity", payload={"name": "AAPL"}, refs={})
+        r.version_id() == AssetRecord(kind="entity", payload={"name": "AAPL"},
+            refs={}, registered_at="2026-08-22T00:00:00+00:00",
+            origin="cli", notes="doc").version_id()   # provenance never changes identity
+        True
+        len(r.version_id())
+        64
     """
 
     kind: str
