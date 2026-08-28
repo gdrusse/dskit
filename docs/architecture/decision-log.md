@@ -1324,3 +1324,580 @@ permission-denied `observations/` PARENT refuses via the wrong-root
 message rather than a denial diagnosis — every path through that
 branch refuses, so denial can never read as an empty store; only the
 wording misattributes.
+
+## ADR-0038 — `TrainableNode`: the mode dispatch becomes a template method
+
+**Status:** accepted (2026-08-28; owner pre-authorized 2026-08-27, skeptic-loop + orchestrator approval)
+
+**Context.** Nine `run()` methods across five modules hand-roll one `mode`
+dispatch: fit kinds branch to a load path (`sklearn.py:571`,
+`synthetic_nodes.py:257`, `torch.py:960`, `transformers.py:457`, `sb3.py:323`);
+pinned-inference kinds refuse `mode="train"` by name then resolve an artifact
+reference (`sklearn.py:739`, `torch.py:1237`, `transformers.py:699`,
+`sb3.py:426`); two `validate_inputs` restate the guard. CLAUDE.md names the
+smell. The conformance bar can only SNIFF — it asserts `"mode"` appears in a
+trainable's bytecode (`conformance.py:1213-1227`) — because no class expresses
+the contract structurally.
+
+**Hard constraints (TODO 3c), restated.** Do NOT split each trainable into train
+and load classes: `mode` is a node-level document field INSIDE the identity hash
+(measured `4039ddf1…` → `2c9d9925…`). Existing class names must NOT change —
+`transformers.py:612` refuses any artifact whose sidecar `node_class` mismatches,
+and `torch.py:708/776-790` additionally pins the recorded class ref AND the
+identity of the `build_module` function reached through the MRO, so relocating
+that mixin method would orphan every existing `.pt` artifact. Torch and sklearn
+would stay green, so the suite would not catch either. Port order: sklearn →
+synthetic_nodes → torch → transformers → sb3.
+
+**Decision.** `TrainableNode(Node)` in `dskit/pipeline/node.py` (tier-1,
+stdlib-only), never registered — `node_class_errors` refuses abstract classes.
+
+- **Hooks.** Two `@abstractmethod`s — `run_train(ctx, inputs)` /
+  `run_load(ctx, inputs)` — plus `default_mode` (what an UNSET `mode` means) and
+  a read-only `effective_mode = self.mode or type(self).default_mode`.
+  **Named `run_<mode>`, NOT `train`/`load`:** the legacy model-family protocol
+  owns that pair (`registry.py:96-106`) and `resolve.py:273-282` refuses a
+  `model.name` class lacking callable `train`/`load`. Reusing the names would
+  disarm a live plan-time guard and degrade its refusal to a mid-run
+  `AttributeError`.
+- **`run()` becomes the template method:** `effective_mode == "load"` →
+  `run_load`, else `run_train`. Pinned-inference kinds set
+  `default_mode = "load"` and implement `run_train` as today's refusal — exception
+  type and wording verbatim, since the behavioural bar reads the message.
+- **`validate_inputs` becomes a second template method**, dispatching additively
+  to `validate_common_inputs` then, BY `effective_mode`, `validate_train_inputs` /
+  `validate_load_inputs`. Assignment is decided per class in the port; a shared
+  message is written once, pack-locally.
+- **Two services move to `Node`, not `TrainableNode`**, because a non-trainable
+  caller (`Sb3Eval`, role `score`) already carries copies: `pin_port_problems`
+  (the non-empty check written three times) and `pinned_artifact`, which resolves
+  in order — a node-level pin contradicting a declared param refuses ("one pin,
+  not two"); else the node-level pin; else the declared param, then the wired
+  port; refusing by name when none is present. **A falsy value counts as absent
+  at every step**, matching every call site being replaced (`x or y` throughout)
+  — so `params: {"artifact": null}` keeps refusing by name rather than crashing
+  downstream.
+- **`node_level_pin()` is a hook, never `isinstance(self, TrainableNode)` inside
+  `Node`** — a type test there is the branch this ADR deletes, relocated to the
+  most-inherited class in the package. It is the design's only raw-`mode` read,
+  because a node-level `artifact` exists **iff** the document wrote `mode="load"`.
+  `planner.py`'s plan-time document check is untouched and unweakened.
+- **Port order and the base-order rule.** Re-parent from `Node`: `SklearnFit`,
+  `SklearnPredict`, `SynthTrain`, `TransformerFit`, `TransformerPredict`, and
+  `_TorchModel` ONCE (covering the torch pairs and their declared subclasses). In
+  sb3 only `Sb3Train` and `Sb3Policy` — NOT `_Sb3Base`, which `Sb3Eval` also
+  inherits. **The bar is that BOTH template methods resolve to `TrainableNode`:**
+  a pack base may precede it only if it defines NEITHER `run` nor
+  `validate_inputs`. Kind names, `_PARAMS`, roles and output contracts are
+  untouched.
+- **The conformance bar becomes structural.** The bytecode sniff becomes: for
+  every kind of a trainable role, assert `issubclass(cls, TrainableNode)` and that
+  `run` and `validate_inputs` are still the base's. The sniff cannot merely stay —
+  after the port a child's own code never names `mode`, so it would hard-fail
+  every ported class. The validation half is the likelier breach, so it names the
+  hook to override instead.
+- **The MRO walks must SKIP the new base, through one seam.** Three conformance
+  loops walk `cls.__mro__` breaking at `Node`; inserting a class widens all three,
+  and `TrainableNode.node_level_pin` reads `self.artifact` — a DECLARED knob of
+  three pinned-inference kinds, which the base would then vouch for unread.
+  One private `_evidence_bases(cls)` generator encodes the rule (walk, break at
+  `Node`, `continue` past `TrainableNode`) and all three loops iterate it.
+  Toolkit code is never evidence about a child.
+- **`save` is deliberately NOT a hook** — four persistence models share no shape
+  a tier-1 signature could pin without restating tier-2 truth, and that seam is
+  already pinned behaviourally.
+- **The selector seam (ADR-0042) is NOT decided here.** TODO directs it be
+  `TrainableNode`'s SIBLING; this ADR guarantees either shape works, because the
+  services a fitted non-model node needs sit on `Node`, reachable without
+  inheriting the dispatch.
+
+**Consequences.** **Zero identity movement, provably:** the hash is a function of
+the document JSON alone, and no document field, param tuple, kind name, default or
+class name changes. Behaviour deltas, all narrow: pinned-inference kinds under
+`mode="load"` now refuse a contradicting `params.artifact` instead of silently
+preferring one; `TransformerFit` under load stops demanding a `rows` wire it never
+reads; two predict kinds with an empty node-level pin now refuse where they fell
+through to a param — the price of keeping torch's and sb3's stricter rule as the
+single one. The last are document-unreachable and need direct construction.
+Refusal wording keeps every substring the existing tests match. Nine `run()`
+branches, two guards and three duplicated port checks delete; an incomplete
+trainable now refuses at CONSTRUCTION rather than at call time. The cost is real:
+the bar constrains SHAPE — a pack wanting to wrap `run()` must override a hook —
+and `TrainableNode` becomes a published extension point owed compatibility.
+
+## ADR-0039 — A `foreach` section: declared fan-out over a key list
+
+**Status:** accepted (2026-08-28; owner pre-authorized 2026-08-27, skeptic-loop + orchestrator approval)
+
+**Context.** "One model per symbol" is written longhand: a third symbol in
+`run-train.json` means duplicating the filter + trainer pair — `qhat_msft` is
+`qhat_aapl` with its input reference changed and byte-identical params — and the
+duplicate puts N unpinned space keys in any search node, so two symbols can
+silently tune to different architectures. The reference grammar has only
+`$node.path` and `$prev`, and an inventory finds no subgraph expansion of any kind
+(`join`'s `allow_fanout` is row-multiplication, not this). But the precedent
+exists: `run_walk_forward` already derives N documents from one via `to_obj` →
+mutate → `from_obj`. Owner's scoping, restated: fan-out over a **declared key list
+only**; **no expressions, no conditionals**; a `foreach` **is identity**; existing
+hashes **provably unmoved**.
+
+**Decision.** A top-level `foreach` section, expanded at document construction:
+the document **stores what was written and derives what runs**.
+
+**Grammar.** A `ForeachSpec`, one per document, no nesting:
+
+```jsonc
+"foreach": {
+  "keys": ["aapl", "msft"],                  // non-empty; unique non-empty strings; none starting "$"
+  "pipeline": { "rows": {…}, "qhat": {…} },  // the template subgraph, non-empty
+  "notes": ""
+}
+```
+
+Each template is normalized exactly as a node is, so `{"uses": "x"}` and its
+fully-spelled twin hash identically. `keys` is SORTED and pinned as a tuple —
+keys are a set, so sorting beats refusing-unless-sorted. A key beginning `$`
+refuses, because rule 3 substitutes the raw key as a params value and `"$window.records"`
+would expand into a live reference. `pipeline` stays required but may be `{}` when
+a `foreach` is declared; the CLI's node-map sentinel widens to match, or a
+`foreach`-without-`pipeline` file would fall through to the legacy stage grammar
+and print the wrong error.
+
+**Data model.** `PipelineDocument` gains ONE identity field, `foreach` (hash
+material, type-guarded like every peer section), and two DERIVED fields:
+`expanded` (shared nodes with fanned-out ports, plus every instance) and
+`foreach_groups` (template key → instance keys). The derived pair is **never
+emitted by `to_obj`**, so it is provably not hash material — the hash reads
+`to_obj` only — and `expanded` **is `self.pipeline` itself when `foreach` is
+absent**, so every engine site that switches to reading `expanded` is
+byte-identical today. Seven sites make that switch: plan, `Plan.to_obj`, the
+search seam, the resolve and execute loops, the cross-field checks, and
+`validate`'s node count, which reports what RUNS.
+
+**Expansion**, per key in sorted order, under the same guard as the other
+cross-field checks. Emission order is fixed — declaration order for shared nodes,
+then template-major/key-minor — because the toposort breaks ties on it.
+
+1. **Suffixing.** `t` → `t__<slug>`. Shared, template and instance keys must be
+   pairwise distinct; a collision refuses naming both provenances.
+2. **Reference rewrite.** Inside a template, `$t.path` and `$prev` targets naming
+   a template key rewrite to the instance. Shared-node and `$splits` references
+   pass untouched.
+3. **The `$each` token.** In template `params`, a value that is EXACTLY `"$each"`
+   becomes the key string, recursively at any depth. Whole-value only, never
+   substring interpolation — that is the line between fan-out and templating. As a
+   params dict KEY it refuses: key substitution is not built, and letting the token
+   ride onto all N instances is the literal ride-through the grammar exists to
+   refuse. Outside a template it stays legal and untouched.
+4. **Port fan-out is OPT-IN.** A shared node fans a port out only when the port is
+   written `<base>__each` and its value names a template key. Automatic fan-out was
+   rejected because `Node` declares no port set, so the engine cannot know which
+   ports are fannable.
+
+**Search spaces come for free.** A space key naming a template param expands per
+instance, which is the point: the N duplicate keys that nothing pinned become one
+declaration.
+
+**Not decided here.** No new plan-time refusal keyed on split kind: the one
+considered — refusing a `data`-role template under trailing splits — would reject
+documents whose walk-forward path never materializes that split at all, since
+folds replace the splits section wholesale. The driver's existing run-time rules
+govern; this ADR adds no refusal the document cannot already earn.
+
+**Consequences.** Existing hashes provably unmoved: `foreach` is optional and
+emitted only when present, the derived fields never reach `to_obj`, and with no
+`foreach` the expanded map IS the declared map — the same object. A `foreach`
+document's identity covers the keys and the template, so adding a key is a
+different computation and a different identity, which is correct. The engine gains
+one section, one spec type and one expansion pass; nothing gains a mode branch.
+The child's longhand duplication collapses, and its search space stops being N
+unpinned copies. The cost: a second key namespace (instance keys are generated, so
+a document's node names are no longer all literal), and `foreach` is one more
+thing a reader of a document must know. **Deferred:** nesting, expressions, and
+key substitution in params keys — each would move this from fan-out toward
+templating, which the owner ruled out.
+
+## ADR-0040 — Gap-aware vectorized windows in the numpy pack, and the fitted-transform family
+
+**Status:** accepted (2026-08-28; owner pre-authorized 2026-08-27, skeptic-loop + orchestrator approval)
+
+**Context.** The tier-2 array seam is the mandated home (extend `ArrayFeatures`,
+do NOT build a new seam), and three defects block real use. (1) `_lift` is welded
+to the `MarketRecord` envelope — it groups on `instrument`, orders on `asof_ms`
+and lifts exactly the envelope four (`libs/numpy.py:106,174-188`), so a keyed
+time series with other names cannot enter. (2) The pack RESTATES tier-1 truth:
+`_price_ok`/`_lead_ok` (`:113-120`) re-derive `records.py:69-76,150-155`, and
+they fail SILENTLY through the writeback pass-through — audit HIGH-2. (3)
+Positional offsets bridge session gaps: `TrailingReturns` computes
+`mid[window:] / mid[:-window]` straight across any boundary (`:682`).
+
+The child mirrors all three: `WindowRows` welds `symbol`/`asof_ms` while
+`price_field` IS a knob, writes every default twice, keeps a private
+`_reject_unknown` that tier-1 made public, and restates the chain semantics a
+third time in `live.py:latest_feature_row` on a hardcoded price field — the
+train/serve skew of audit HIGH-4. Gap discipline is the one thing the child gets
+right, and a naive port would lose it.
+
+Separately, nothing normalizes features (folded in per the TODO). A scaler fits
+on a DECLARED split and carries to the others, so it is stateful — and the
+causality guard DEPENDS on `apply` being pure, re-running it on prefixes and
+refusing drift. A fitted transform is structurally forbidden in `_ArrayApply`.
+That story is designed ONCE below; the selector seam (ADR-0042) is its second
+consumer and conforms to it. This record carries both halves because that is the
+owner's sequencing, not two independent decisions.
+
+**Hard constraints, restated.** All 14 identity hashes stay byte-identical: this
+is a refactor plus defaults-off knobs. That also forbids ADDING a param to either
+child document. The pack must IMPORT tier-1 record rules, never restate them.
+Vectorized — the 2M-bar run is the benchmark. End state: `WindowRows` collapses to
+one `apply()` under the lookahead screen, and `live.py:latest_feature_row` is gone.
+
+**Decision.**
+
+**1. Declared lifting fields, read through hooks.** `_ArrayApply._PARAMS` gains
+`group_field`, `order_field`, `fields`, `max_gap`; `ArrayFeatures` adds
+`carry_fields`, `require_fields`, `drop_incomplete`. Each is read through a
+public one-line accessor returning `self.params.get("<literal>", <CONSTANT>)`, so
+a subclass whose document speaks different SPELLINGS overrides the accessor
+instead of forcing its knobs into the pack's names. Defaults are module constants
+named once and reproduce today's behaviour exactly.
+
+**An accessor override NARROWS `_PARAMS`, and hardcoding IS an override.** A
+subclass overriding an accessor MUST drop that knob from `_PARAMS`, or
+default-deny accepts a value the run discards. This also closes a live hole in the
+shipped subclasses: `LogMid` and `TrailingReturns` index `arrays["mid"]`, so a
+document writing `"fields": ["bid"]` would validate clean and die at execute with
+a bare `KeyError`. Both override `fields()` and give up the knob. Because
+`validate_params` is a classmethod it cannot evaluate an accessor, so **every
+per-knob check is guarded by `if "<knob>" in cls._PARAMS`** — without that guard
+the narrowing rule is unplannable and `validate` would refuse both child
+documents. One test pins the rule in three directions.
+
+`_lift` reads the accessors and exposes the order array under its DECLARED name.
+The order predicate is part of that contract: a non-bool `int` (today's rule) or a
+finite `float`, with `max_gap` in those units. Since per-record failures pass
+through and never raise, a declared field matching NOTHING would emit zero rows and
+exit 0 — so `_ArrayApply` REFUSES by name when the input is non-empty and every
+record was unlifted. `ArrayMap`'s writeback table does NOT widen: `fields` governs
+what `_lift` READS, never what `ArrayMap` writes, because a foreign name has no
+acceptance predicate the pack could honestly supply.
+
+**2. Import tier-1 truth (HIGH-2).** `records.py` exports its price and lead
+predicates; the pack imports them and its private copies die. A tier-2 pack never
+re-derives a core validator.
+
+**3. Gap-aware framing.** `max_gap` splits each ordered group into segments before
+any offset arithmetic, so no lag, lead or return ever spans a session boundary.
+Absent `max_gap` reproduces today's behaviour exactly. This is the one thing the
+child got right, now owned by the pack and inherited with the causality screen.
+
+**4. The ops.** Group, order, gap-split, log/pct return, lag N, and lead N (the
+forward label) — vectorized, with the lookahead screen applying to every one.
+
+**5. The child collapses.** `WindowRows` becomes one `apply()` over the pack,
+keeping its own knob spellings via accessor overrides, and inherits the causality
+screen it never had. `live.py:latest_feature_row` is DELETED in favour of a
+`latest_rows` call on the same node, which is what kills the train/serve skew: the
+serving path stops restating the chain and reads the declared price field. The
+existing parity test is REPLACED, not deleted, by one that compares a serving row
+against the training row for the same `(group, order)` — a mechanism-only parity
+test cannot catch a differing FIELD, which is the actual defect.
+
+**6. The fitted-transform family — the authoritative story.** A fitted transform
+learns state from a DECLARED split and applies it elsewhere, which the purity
+assumption forbids, so it is an explicit SIBLING of the pure-transform family,
+never a slot in it. One new tier-1 module, `dskit/pipeline/fitted.py`,
+stdlib-only — the `codec.py` / `observations.py` precedent.
+
+- `FittedTransform(TrainableNode)` — abstract, new role `"fitted_transform"`,
+  outputs `("transform", "rows", "metrics")`, params `fit_split`, `order_field`,
+  `purity_check`. It subclasses ADR-0038's `TrainableNode` and overrides NEITHER
+  template method: mode handling is A's dispatch, the mode hooks are A's
+  `run_train`/`run_load`, and input validation rides A's additive seam. No
+  subclass and no consumer ever sees `mode`. If ADR-0038 does not land, the family
+  carries the identical hook pair over a private one-line dispatch and re-parents
+  mechanically — role, params, hooks, sidecar and every hash unmoved.
+- **Two `@abstractmethod` hooks:** `fit(rows, params) -> state` (a JSON-able
+  dict) and `apply_state(state, rows, params) -> rows`, which must be pure and
+  ROW-INDEPENDENT. Purity lives per hook, not per node. `transform` carries a
+  carrier binding (class, state) with `.apply(rows)`.
+- **The `rows` port carries EVERY input row, transformed, in both modes.**
+  `fit_split` governs what the state is LEARNED FROM, never what is emitted —
+  the deliberate departure from the score node's skip-outside-split precedent,
+  because a scaler emitting only its fit slice would silently truncate the stream
+  its downstream reads. Applying a train-fit state to val/test rows is the
+  REQUIRED behaviour; the leak would be FITTING on them.
+- **Leakage is refused at plan where the document can be read, and at run
+  otherwise.** `fit_split` is required under train mode and must name a declared
+  split. **When the document declares no splits at all, a declared `fit_split`
+  refuses at plan by name** rather than silently fitting on everything. **Under
+  load mode nothing is fit, so `fit_split` is not required**; when present it is
+  checked against the sidecar's record of what the state ACTUALLY saw, and a
+  disagreement refuses rather than letting the document misdescribe a restored
+  state.
+- **A mechanical screen, not a proof.** `purity_check` (default true, the
+  `causality_check` idiom) re-applies `apply_state` to a sampled row ALONE and
+  refuses when the answer differs from that row's answer in the full call —
+  catching the family's classic leak, an `apply_state` that recomputes a statistic
+  over the rows it was handed. Turning it off is a decision the document owns.
+- `ApplyTransform(Node)` — concrete kind `"apply-transform"`, role `transform`,
+  inputs `("transform", "rows")`: projects a SECOND stream through a wired
+  carrier. ONE apply kind serves the scaler, ADR-0042's selector, and every later
+  fitted transform.
+- The first member is a standardizing scaler, fit on train only.
+
+**Consequences.** All 14 existing identity hashes unmoved — every new knob is
+absent-by-default and the child documents gain no param. The numpy pack stops
+restating tier-1 record rules, so loosening a bound in `records.py` can no longer
+silently drop legitimate writebacks. The child sheds its private helper, its
+doubled defaults and its third copy of the chain semantics, and gains a causality
+screen it never had. The engine gains one tier-1 module, one role and two kinds;
+`TRAINABLE_ROLES` widens to include `fitted_transform`, so ADR-0038's structural bar
+covers the new family for free. The cost: a published extension point with a purity
+obligation the base can screen but not prove, and one more role in the planner's
+vocabulary. **Deferred:** widening `ArrayMap`'s writeback table to foreign column
+names is a separate decision, not taken here.
+
+## ADR-0041 — A time-series architecture zoo: one node pair over an arch registry
+
+**Status:** accepted (2026-08-28; owner pre-authorized 2026-08-27, skeptic-loop + orchestrator approval)
+
+**Context.** Children rewrite standard nets: `intraday_poc` hand-rolls a plain
+LSTM regressor over a flat lag vector. Nothing about it is domain knowledge, and
+the next child would write it again. The owner's ask is that a project start by
+NAMING an architecture instead of writing one. One constraint decides the shape:
+the purity gate forbids an `nn.Module` subclass at module level anywhere in
+`dskit/pipeline/` — it scans class bodies too — so the sanctioned pattern is the
+existing `_LinearModule`, which defines the net INSIDE `build_module`. The sidecar
+compares `build_module` FUNCTION identity, so artifact loading stays safe.
+
+**Decision.**
+
+1. **One new tier-2 module**, `dskit/pipeline/libs/torch_ts.py` — the pack's
+   CATALOG beside its engine. `torch.py` owns the artifact/loop protocol and stays
+   BYTE-IDENTICAL, so the zoo carries zero risk to its four registered kinds.
+   Purity is placement-independent; the sibling is scanned identically.
+   Registration is pack doctrine: its own `NODE_KINDS` and an explicit
+   `register()`. The "one module per library" line is amended to name it.
+
+2. **One node pair** — `TimeSeriesTrain` / `TimeSeriesPredict`, kinds
+   `torch-ts-train` / `torch-ts-predict` — over ONE `_TsModel` mixin, so
+   `build_module` is a single function and the sidecar class-match passes across
+   the pair. **`arch`, `head` and `seq_len` are REQUIRED on the trainer and
+   OPTIONAL on the predictor**, through the pack's existing required-knob hook
+   rather than a new mechanism. Optional-on-predict is load-bearing, not cosmetic:
+   a predict node pinning `arch` would kill the sweep below, because a rerun
+   rebuilds descendants from their own params and every off-arch trial would die
+   on the cross-check. The predictor builds nothing from its own `arch` anyway —
+   the module comes from the sidecar. Where the trainer left a knob defaulted, the
+   pair compares against the DEFAULT rather than by presence, so a defaulted knob
+   stays pinnable.
+
+3. **One input contract — no "sequence arch" class.** Every arch maps
+   `(B, seq_len, channels)` to `(B, 1)`. `seq_len`, `channels` and `order` are NODE
+   knobs, because they describe the dataset, not an architecture; `channels` is
+   DECLARED, never derived. Types and bounds are checked with the tier-1 helper the
+   pack already imports, and **they run BEFORE any arithmetic** — the totality fuzz
+   substitutes `None` and `{}` into every declared knob, so a `seq_len * channels`
+   reached first would explode inside `validate_params` and fail the "a validator
+   must RETURN problems, never explode" bar. Every cross-knob check, including
+   `len(features) == seq_len * channels`, runs ONLY when both names are declared and
+   cleared their own checks; a predictor omitting `features` skips it, safe because
+   the module is rebuilt from the sidecar. Equality is the point: a derived
+   `len(features) // seq_len` would accept every divisor, silently training a
+   two-channel model over one channel of lags. The flat row is pinned
+   CHANNEL-MAJOR, with `order` naming the lag direction, and the ONE reshape lives
+   in `build_module`, never in a builder.
+
+4. **The registry.** `_ARCHS: name -> {build, problems, defaults, doc}` — the
+   split-policy metadata shape — plus `register_arch(name, build, *, problems,
+   defaults, doc="")`, with `problems` and `defaults` required keyword-only so an
+   arch cannot enter unvalidated. A registry table is the repo's sanctioned middle
+   ground; a string switch inside `run()` is what the pillars forbid.
+   **`arch_params` is keyed by ARCH NAME** — `{"lstm": {…}, "dlinear": {…}}` — so
+   ONE document carries knobs for every candidate and `space: {"model.arch": [...]}`
+   sweeps architectures directly. **Arch names use the node-key character class
+   (underscores, not hyphens)**, because they are also `arch_params` keys and a
+   hyphen would put a second spelling rule in the grammar. Plan-time validation
+   runs the SELECTED arch's defaults-merged params through its own `problems`
+   function, and additionally every declared `arch_params` sub-dict, so a candidate
+   is checked before a sweep ever reaches it; a sub-dict that is not a mapping is
+   refused by name rather than handed to a builder's validator.
+
+5. **Ships:** `dlinear` and `nlinear` FIRST — the honest baselines (Zeng et al.
+   2023); if an LSTM cannot beat DLinear on your series, that is the finding — then
+   `mlp`, `lstm`, `gru`, `lstm_attn`, `gru_attn`, `tcn`, `cnn1d`, `patchtst`.
+   N-BEATS excluded as heaviest and least general.
+
+6. **The head, and how it consumes the `loss` knob.** `_HEADS: name -> adapter
+   class`, `"regression"` and `"binary"`; an unknown head is refused at plan naming
+   the vocabulary. **There is no `register_head`, deliberately** — a head is an
+   interpretation of the shared `(B, 1)` output plus a default objective, and the
+   pack already has the open doorway for objectives: the `loss` import path. So a
+   head SELECTS a default loss and a document overrides it by naming one, which is
+   why the zoo needs no head-dependent output width and no `if head ==` chain.
+   Binary markets are first class, matching the existing accounting split.
+
+7. **The child follows.** `intraday_poc` NAMES the zoo LSTM and its hand-rolled
+   `NextBarLSTM` is deleted — that switch is the proof the zoo is generic.
+   `models.py` STAYS, permanently, as the seam for an architecture a project
+   genuinely invents. The child's own `lookback >= 2` refusal is replaced by the
+   pack's `seq_len` floor. Its document hash MOVES, intentionally and declared.
+
+**Consequences.** Zero identity movement for every existing document: `torch.py`
+is byte-identical, no existing kind, param tuple or default changes, and the new
+kinds are new names. The child's two documents move by design when they adopt the
+zoo, which is a declared ledger entry, not drift. A child stops rewriting standard
+nets; a new architecture is a `register_arch` call, and architecture becomes a
+SWEPT param rather than a document edit. The purity gate is untouched and still
+passing, because every net is defined inside `build_module`. Costs: a second torch
+module to keep current, a published registry the toolkit owes compatibility to, and
+ten builders whose numerics the toolkit now maintains. **Deferred:** `register_head`
+(closed on purpose above), N-BEATS, and any arch needing an output width other than
+`(B, 1)` — that would reopen decision 3's single contract.
+
+## ADR-0042 — Feature selection: a fitted transform whose state is the surviving columns
+
+**Status:** accepted (2026-08-28; owner pre-authorized 2026-08-27, skeptic-loop + orchestrator approval)
+
+**Context.** Feature selection is genuinely absent: a grep finds zero selectors
+anywhere in `dskit/`. It is also the one capability the owner's model-selection
+design needs that cannot be assembled from existing parts, because **a selector is
+FITTED**. It learns which columns survive from TRAINING data, while every existing
+transform — `Filter`, `Derive`, `Concat`, `Join`, `ArrayMap`, `ArrayFeatures` — is
+stateless and pure, and `_ArrayApply`'s causality guard DEPENDS on that purity: it
+re-runs `apply` on truncated prefixes and refuses when the output moves, which a
+fitted selector trips by design. So it cannot be a slot in the transform family.
+
+**Leakage is the one hard rule.** A selector that sees validation rows leaks
+invisibly — nothing fails, the scores just come out better. The seam must make
+"which split did you fit on" DECLARED and checkable at plan, the way the `score`
+role already declares `split`.
+
+**Relationship to the sibling drafts, decided WITH them, not against them.**
+ADR-0040 designs the fitted-transform family — `FittedTransform`, its `fit` /
+`apply_state` hooks, the `fit_split` rules, the purity screen and the
+`apply-transform` kind — and names this seam its second consumer. This ADR does
+not build a second seam; it adds ONE member to that family. TODO.md asks that the
+selector be `TrainableNode`'s **sibling**, and the reason it gives is "or the two
+abstractions get designed against each other." That reason is honoured here by
+deciding all three together; the letter is not, and deliberately: `FittedTransform`
+subclasses ADR-0038's `TrainableNode` because the lifecycle IS identical — fit and
+persist, or restore a pinned state — and A's base encodes ONLY that lifecycle, not
+model-ness. Writing a second mode dispatch for the selector would be the duplication
+both drafts exist to remove. A selector is therefore a fitted transform that happens
+to select, and inherits A's structural conformance bar for free.
+
+**Decision.** `FeatureSelector(FittedTransform)` in `dskit/pipeline/fitted.py`,
+abstract, role `fitted_transform`.
+
+- **ONE library-agnostic hook:** `surviving_features(rows, params) -> names`. That
+  is the whole extension contract. The base owns everything else — fitting on the
+  declared split, persisting, projecting, and the metrics — so a pack supplies a
+  selection RULE and nothing else.
+- **The fitted state IS the surviving column list**, JSON-able by construction,
+  which is what makes this family member cheap: `apply_state` projects each row to
+  those columns and is pure and row-independent, exactly as C's purity screen
+  requires. The base implements it once; no subclass writes it.
+- **The list is an ARTIFACT, not just projected rows.** Serving must consume the
+  identical columns in the identical order, so the state is written to the sidecar
+  and restored under load mode — the same mechanism that stops a serving loop from
+  re-deriving what training decided. `metrics` carries `n_candidates` and
+  `n_selected`.
+- **Leakage refusal is inherited, not restated.** `fit_split` is C's knob with C's
+  rules: required under train mode, must name a declared split, refused at plan when
+  the document declares no splits at all, and checked against the sidecar under
+  load. The selector adds no rule of its own, which is the point of putting it in
+  the family.
+- **The sklearn pack supplies selectors BY IMPORT PATH** — `SelectKBest`, `RFE`,
+  `SelectFromModel`, `VarianceThreshold`, mutual-information — through the doorway
+  pattern `SklearnFit` already establishes ("the estimator is named by the
+  document"). **Never a registry of wrapper classes**: that would be ~5 classes
+  re-doing what the doorway does and 5 new places to drift, the same argument that
+  killed per-model wrappers. Estimator paths use the DOTTED spelling the pack
+  already validates.
+- **The torch pack supplies importance-from-a-fitted-net through the SAME hook**,
+  so a deep model's notion of importance is a selection rule like any other and
+  composes with everything below.
+
+**The three owner flows are document edits over ONE node.** This is the design
+target — not three code paths:
+
+1. *One feature set, sweep models*: selector upstream of the model; space over
+   `model.estimator`.
+2. *Per model, select then score*: same graph, space over BOTH keys — the search
+   enumerates the pair, which `hpo-grid` already does across multiple space keys.
+3. *Select once by a stated method, then sweep*: selector upstream with fixed
+   params; space over `model.estimator` only.
+
+Because the selector's method and params are ordinary declared knobs on a
+searchable role, all three fall out of where the node sits and what the space
+covers.
+
+**Consequences.** Existing identity hashes unmoved: this adds a role member, kinds
+and packs' selectors, and changes no existing document, param tuple or default.
+Feature selection becomes declarative and leak-refusing by construction rather than
+by reviewer diligence, and the selected columns become a first-class artifact, which
+is what lets serving and training agree. The toolkit gains the capability the
+pycaret-shaped ask wanted without adopting a framework that owns its own pipeline —
+the reason that was ruled out is unchanged: a second, opaque process declaration
+inside a document that is supposed to BE the declaration, with internals outside the
+identity hash. Costs: one more member of a family whose purity obligation the base
+can screen but not prove, and the selection rules' numerics become the toolkit's to
+maintain. **Deferred:** selection over anything but named columns (interactions,
+embeddings), and any selector whose state is not JSON-able — both would reopen C's
+state contract rather than extend this one.
+
+## ADR-0043 — HPO × walk-forward: per-fold re-tune measures, the plain run ships
+
+**Status:** accepted (2026-08-28; owner pre-authorized 2026-08-27, skeptic-loop + orchestrator approval)
+
+**Context.** Every fold runs through `run_document` (`driver.py:1329`), so a fold
+carrying a search node builds its own `_SearchSeam`, re-tunes independently and
+applies that fold's winner downstream (`driver.py:979-1003`). Mechanically
+supported, semantically undecided, untested. TODO.md calls this "defensible
+nested CV"; **that label is wrong.** A fold's evaluation window IS its val split
+(`driver.py:1198-1200`), the planner forces every search objective onto a
+`split: "val"` score node (`planner.py:536-546`), and folds refuse a cal band
+(`driver.py:1271-1282`) — no outer band de-biases the fold's score. Winners may
+differ per fold and nothing surfaces it: the summary aggregates scores only.
+
+**Decision.** Keep both paths. The seam already distinguishes them, so no new run
+mechanism, no `search_mode` knob, no freeze section.
+
+1. **Per-fold re-tune stands, as MEASUREMENT.** It is the rolling-origin
+   performance of the *tuning procedure*, not an unbiased estimate of a tuned
+   model. Valid for comparing procedures under one fold plan; never a deployment
+   estimate. Its cost is folds × (one pass + executed trials + one winner pass),
+   counted and reported, never predicted.
+2. **Shipping is the plain `run`.** One search; every downstream node, persisting
+   trainers included, consumes the winner pass. Freezing a winner means EDITING
+   the document — pin the values, drop the search node — which moves its hash BY
+   DESIGN, because a different computation is a different identity. That is the
+   whole mechanism; a `freeze` knob would be a second way to say it.
+3. **A run surfaces its search.** The existing per-node `search_meta` is carried
+   onto the run result as one node-keyed dict, so K>1 search nodes stay
+   distinguishable: trials executed, and the winner and its score WHEN the kind
+   produced them. Presence, not value, distinguishes "no winner produced" from "a
+   winner of `None`" — a search kind is not obliged to emit one. A winner that is
+   not JSON-legal is recorded as dropped rather than coerced; population happens
+   before the winner is applied, so a winner-flip refusal still reports the winner
+   that caused it.
+4. **The walk-forward summary carries it**, on the fold row and in the aggregate:
+   per search node, how many folds reported a winner and how many DISTINCT winners
+   there were. Emitted only when non-empty, so an HPO-free summary stays
+   byte-identical. This is the point of the ADR — per-fold winner instability
+   becomes a printed diagnostic instead of folklore.
+5. **Tests pin it** in `tests/pipeline/test_walkforward.py`, which today contains
+   no HPO at all: differing per-fold winners with a distinct-winner count, each
+   winner state (produced / absent / dropped), both winner-failure paths, and the
+   absence of the section when no search node exists. Implementation lands as C7.
+
+**Consequences.** Zero identity movement, provably: no config surface changes —
+the walk-forward spec, the search kinds' params and the fold-document derivation
+are untouched, and the hash reads canonical config JSON only. Summaries, node
+records and result objects are run outputs, never hash material. Shipping by
+pinning moves the edited document's hash, which is the intended signal. The engine
+gains no mode branch, no extra plan call and no new validation surface.
+**Deferred:** a fold-internal outer band (an ADR-0034-shaped inner-val/outer-eval
+carve) is the only route to an unbiased tuned-pipeline estimate. Not C7.
