@@ -89,7 +89,8 @@ def ingest_run(registry, run_dir, origin="ingest-run") -> dict:
 
     Examples
     --------
-    Ingest a completed run::
+    A sketch, not runnable as-is — it needs a live ``Registry`` and an
+    existing run directory under ``pipeline_runs/``::
 
         summary = ingest_run(reg, "pipeline_runs/my-run-2026-01-01-5ce0d310")
     """

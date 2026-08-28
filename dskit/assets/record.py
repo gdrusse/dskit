@@ -90,8 +90,6 @@ def check_payload(spec, payload, refs):
             refs={"source": RefSpec(kind="source", required=True)})
         check_payload(spec, {"name": "prices"}, {"source": "ab" * 32})  # ok
         check_payload(spec, {"rows": True}, {})
-        # -> Traceback (most recent call last):
-        # ->     ...
         # -> dskit.assets.base.AssetError: invalid asset operation (3 problems):
         # ->   payload.rows must be number, got True
         # ->   payload missing required field(s) ['name']

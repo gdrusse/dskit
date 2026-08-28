@@ -59,9 +59,8 @@ class Lineage:
         lin.parents(out) == [run] and lin.descendants(run) == [out]
         # -> True
         lin.add(out, run, relation="loops", phase="execution")
-        # -> Traceback (most recent call last):
-        # ->     ...
-        # -> dskit.assets.base.AssetError: ...would create a cycle...
+        # -> dskit.assets.base.AssetError: invalid asset operation (1 problem):
+        # ->   edge 2fa48efe1878... -> 493116b3745e... would create a cycle — lineage is a DAG
     """
 
     def __init__(self, registry):
