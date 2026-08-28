@@ -69,8 +69,10 @@ def test_default_encoding_is_one_named_constant(conn, config, monkeypatch):
 def test_encoding_default_pinned_in_prose(conn):
     # The default is stated in prose in both the module docstring and the
     # spec() note; pin both to the constant so a later change to the
-    # constant cannot silently leave the prose saying the old value.
-    expected = f"default {localfiles._DEFAULT_ENCODING}"
+    # constant cannot silently leave the prose saying the old value. The
+    # trailing period terminates the needle, so a drifted "utf-8-sig"
+    # cannot pass on the shared prefix.
+    expected = f"default {localfiles._DEFAULT_ENCODING}."
     assert expected in localfiles.__doc__
     assert expected in conn.spec()["params"]["encoding"]["notes"]
 
