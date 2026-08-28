@@ -40,6 +40,7 @@ from dskit.pipeline.libs.mlflow import (
     MlflowTracker,
     register,
 )
+from dskit.pipeline.node import DEFAULT_NODE_KINDS
 from tests.pipeline.dochelpers import banking_document, make_registry
 
 ASOF = "2026-01-01"
@@ -182,6 +183,24 @@ class TestParamValidation:
         assert "postgresql" in str(exc.value)
         assert TRACKING_URI_SCHEMES == ("", "file", "http", "https", "sqlite")
 
+    def test_the_class_docstring_states_the_default_and_the_vocabulary(self):
+        # CLAUDE.md routes a reader to the class's params tuple, so the
+        # class docstring is the SECOND copy of both values. It drifted
+        # from the constants in the very commit that introduced them
+        # (it said "./mlruns" and omitted sqlite), so pin the agreement
+        # rather than trusting prose: change the constant, change here.
+        doc = MlflowTracker.__doc__
+        assert f'``"{DEFAULT_TRACKING_URI}"``' in doc
+        for scheme in TRACKING_URI_SCHEMES:
+            token = '``""``' if scheme == "" else f"``{scheme}``"
+            assert token in doc, f"scheme {scheme!r} missing from the docstring"
+        # The Examples block must instantiate something that WORKS; the
+        # first version documented a directory store, which current
+        # mlflow refuses outright (see TestDirectoryStore below). The
+        # block this asserts is EXECUTED, verbatim, by
+        # test_the_default_store_is_resolved_in_one_place.
+        assert f'MlflowTracker({{"tracking_uri": "{DEFAULT_TRACKING_URI}"}})' in doc
+
     def test_the_default_store_is_local_and_serverless(self, tmp_path, monkeypatch):
         # mlflow put the ./mlruns DIRECTORY store into maintenance mode and
         # refuses it unless MLFLOW_ALLOW_FILE_STORE is set; the pack sets no
@@ -217,6 +236,48 @@ class TestReachability:
     def test_a_file_uri_resolves_to_its_path(self, tmp_path):
         sink_config(tracking_uri=(tmp_path / "mlruns").as_uri())
 
+
+class TestDirectoryStore:
+    """The two DIRECTORY spellings, and what the README may claim of them.
+
+    A bare path and ``file:`` name mlflow's plain-directory file store,
+    which mlflow 3.x put into maintenance mode and REFUSES unless
+    ``MLFLOW_ALLOW_FILE_STORE`` is set. The pack sets no environment
+    variable on the reader's behalf, so the schemes stay in the
+    vocabulary (correct on mlflow 2.x, and for anyone who opted in) and
+    the refusal, when it comes, is the installed mlflow's — not the
+    document's. What must NOT vary with the mlflow version is HOW that
+    refusal arrives: never a raw ``MlflowException`` escaping the pack,
+    always a ``ConfigError`` naming the URI, at construction, before a
+    node runs. `README.md` states exactly that split; this pins it.
+    """
+
+    def test_a_directory_store_plans_clean_whatever_mlflow_thinks_of_it(
+        self, tmp_path
+    ):
+        # Reachability is the document's business; whether the store
+        # family is ALLOWED is the installed mlflow's, which the
+        # stdlib-only plan-time probe cannot and must not decide.
+        assert MlflowTracker.validate_params({"tracking_uri": str(tmp_path)}) == []
+
+    def test_a_directory_store_either_works_or_refuses_as_a_ConfigError(
+        self, tmp_path
+    ):
+        pytest.importorskip("mlflow")
+        uri = str(tmp_path / "mlruns")
+        try:
+            sink = MlflowTracker({"tracking_uri": uri, "experiment": "dirstore"})
+        except ConfigError as exc:
+            # The mlflow 3.x path. The pack wrapped it: the reader is
+            # told which sink, which experiment and which URI, instead
+            # of an unattributed MlflowException from inside a tracker.
+            assert SINK_KIND in str(exc) and uri in str(exc)
+        else:
+            # The mlflow 2.x / MLFLOW_ALLOW_FILE_STORE path: it really
+            # works, and the pack created the directory itself.
+            sink.close()
+            assert pathlib.Path(uri).is_dir()
+
     def test_an_unreachable_server_fails_the_plan_not_the_run(self, tmp_path):
         # The whole point of the pack's loudness: _Trackers would swallow
         # this at run time and the run would report success having logged
@@ -237,25 +298,36 @@ class TestReachability:
 
 
 class TestHashPlacement:
-    def test_sink_config_never_reaches_the_pipeline_section(self, tmp_path):
-        # The pack ships no node kind and no node params, so nothing it
-        # owns can be spelled inside `pipeline`.
-        doc = tracked_document(tmp_path, store_uri(tmp_path))
-        for spec in doc.pipeline.values():
-            assert "tracking_uri" not in spec.params
+    def test_nothing_this_pack_owns_can_be_spelled_inside_pipeline(self):
+        # The claim is about the NODE registry, so pin it THERE. (The
+        # first version asserted that no node of a document this test
+        # itself built carried a 'tracking_uri' param — true of every
+        # document ever written, and unfalsifiable by any change to this
+        # pack.) register() must leave the node registry untouched:
+        # empty NODE_KINDS covers every name, and the kind name this
+        # pack does claim must resolve as a SINK and nothing else.
+        assert NODE_KINDS == ()
+        assert SINK_KIND in SINK_KINDS
+        assert SINK_KIND not in DEFAULT_NODE_KINDS
 
     def test_identity_recipe_is_pinned_so_moving_tracking_trips_here(
         self, tmp_path
     ):
         """The exclusion list, pinned — a move in EITHER direction fails.
 
-        `tracking` is NOT in `DOC_NON_IDENTITY_SECTIONS` today, so the
-        section IS hash-graded: two runs differing only in WHERE their
-        metrics land carry different identities. Whether that is right is
-        a design question (it reads like `outputs`, which IS excluded);
-        what is not in question is that changing it renames every
-        document that declares a sink and orphans their run dirs. So it
-        must trip a test first — this one.
+        `tracking` is NOT in `DOC_NON_IDENTITY_SECTIONS`, so the section
+        IS hash-graded: two runs differing only in WHERE their metrics
+        land carry different identities. Whether that is right is a
+        design question (it reads like `outputs`, which IS excluded) —
+        what is settled is that moving it is not this pack's to make.
+        `PipelineDocument.to_obj` emits `"tracking": null` ALWAYS
+        (`document.py`), and `config_hash` pops excluded top-level keys
+        before hashing, so excluding `tracking` moves EVERY document's
+        hash — not only those declaring a sink. Measured:
+        `examples/pipeline/mpl-figure.json`, which declares no tracking
+        at all, goes e9d5f60c… -> 314cea4d… . That orphans every run dir
+        and every stored artifact in the repo, so it needs an ADR and a
+        baseline re-cut, and it must trip a test first — this one.
         """
         assert DOC_NON_IDENTITY_SECTIONS == ("env", "outputs", "schedule")
         untracked = banking_document(
@@ -313,13 +385,30 @@ class TestEndToEnd:
 
     def test_the_default_store_is_resolved_in_one_place(self, tmp_path, monkeypatch):
         # The classic defect is params.get(k, <literal>) in BOTH the
-        # validator and the run: validation approves a value the run never
-        # uses. Prove they agree by letting the default do the work end to
-        # end — the store the run actually opened must be the one the
-        # validator probed.
+        # validator and the run: validation approves a store the run never
+        # opens. Observe the path EACH half resolved, separately.
         monkeypatch.chdir(tmp_path)
+        # The VALIDATOR's: park a directory where the default sqlite FILE
+        # belongs. Only a validator that resolved exactly ./mlruns.db can
+        # refuse this — one resolving anything else sees a clean parent
+        # and approves.
+        (tmp_path / "mlruns.db").mkdir()
+        problems = MlflowTracker.validate_params({})
+        assert problems and "mlruns.db" in problems[0]
+        (tmp_path / "mlruns.db").rmdir()
+        assert MlflowTracker.validate_params({}) == []
+        # The RUN's: the same path, created for real — and these four
+        # lines are the class docstring's Examples block VERBATIM, so the
+        # standard's "copy it and have a working object" is executed, not
+        # asserted. (The first version documented "/tmp/mlruns", a
+        # DIRECTORY store, which mlflow 3.x refuses at construction.)
+        # Keep this the suite's ONLY user of the relative default URI:
+        # mlflow caches one engine per URI STRING, so a second test
+        # chdir-ing elsewhere would silently share this one's store.
         pytest.importorskip("mlflow")
-        sink = MlflowTracker({"experiment": "defaulted"})
+        sink = MlflowTracker({"tracking_uri": DEFAULT_TRACKING_URI})
+        sink.log_params({"name": "demo", "train.lr": 0.001})
+        sink.log_metrics("validate", {"metrics.loss": 0.31})
         sink.close()
         assert (tmp_path / "mlruns.db").is_file()
 
@@ -330,6 +419,7 @@ class TestEndToEnd:
         store = store_uri(tmp_path)
         client = mlflow_client(store)
         sink = MlflowTracker({"tracking_uri": store, "experiment": "closes"})
+        sink.log_params({"name": "closes"})
         sink.close()
         sink.close()
         assert client.get_run(sink.run_id).info.status == "FINISHED"
@@ -356,7 +446,99 @@ class TestEndToEnd:
                 "tags": {"owner": "pipeline"},
             }
         )
+        sink.log_params({"name": "tagged"})
         sink.close()
         run = client.get_run(sink.run_id)
         assert run.data.tags["owner"] == "pipeline"
         assert run.info.run_name == "named-run"
+
+
+# ---------------------------------------------------------------------------
+# What the sink must NOT leave behind
+# ---------------------------------------------------------------------------
+
+
+class TestNoEmptyRuns:
+    """A run appears in the store only once something was logged to it.
+
+    The driver constructs sinks BEFORE resolve finishes and closes them
+    on every pre-execution refusal (``driver.py``'s
+    ``except BaseException`` around resolve — its comment even says "an
+    mlflow-style tracker may hold a remote run from ``__init__``"). A
+    sink that opened its mlflow run in ``__init__`` therefore wrote an
+    EMPTY, FINISHED run for each refusal, indistinguishable when browsing
+    from a successful one — poisoning the very cross-run comparison this
+    pack exists to provide. Construction still proves the store usable;
+    only the RUN is deferred to the first log.
+    """
+
+    def test_a_sink_that_never_logged_leaves_no_run(self, tmp_path):
+        store = store_uri(tmp_path)
+        client = mlflow_client(store)
+        sink = MlflowTracker({"tracking_uri": store, "experiment": "empty"})
+        assert sink.run_id == ""
+        sink.close()
+        experiment = client.get_experiment_by_name("empty")
+        # Construction is still LOUD: it opened the store and the
+        # experiment, which is what proves the config honourable.
+        assert experiment is not None
+        assert len(client.search_runs([experiment.experiment_id])) == 0
+
+    def test_a_refused_rerun_adds_no_run(self, tmp_path):
+        # The documented normal case: same name+asof+identity refuses,
+        # "reruns need a new asof or name". That refusal happens after
+        # the sinks are open.
+        store = store_uri(tmp_path)
+        client = mlflow_client(store)
+        run_document(
+            tracked_document(tmp_path, store, experiment="reruns"),
+            asof=ASOF,
+            registry=make_registry(),
+        )
+        with pytest.raises(ValueError):
+            run_document(
+                tracked_document(tmp_path, store, experiment="reruns"),
+                asof=ASOF,
+                registry=make_registry(),
+            )
+        experiment = client.get_experiment_by_name("reruns")
+        runs = client.search_runs([experiment.experiment_id])
+        assert len(runs) == 1
+        assert runs[0].data.params["asof"] == ASOF
+
+    def test_a_lost_experiment_creation_race_does_not_abort_the_run(
+        self, tmp_path, monkeypatch
+    ):
+        # Two run_document processes against one store both observe
+        # get_experiment_by_name() -> None and both call
+        # create_experiment(); the loser used to take an exception out of
+        # __init__ as a ConfigError, i.e. TRACKING killed a correctly
+        # configured run. A lost race is not a misconfiguration.
+        store = store_uri(tmp_path)
+        client = mlflow_client(store)
+        expected = client.create_experiment("race")
+
+        class LosesTheRace:
+            """A client that reports the experiment missing exactly once."""
+
+            def __init__(self, inner):
+                self._inner = inner
+                self._lied = False
+
+            def get_experiment_by_name(self, name):
+                if not self._lied:
+                    self._lied = True
+                    return None
+                return self._inner.get_experiment_by_name(name)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        monkeypatch.setattr(
+            "mlflow.tracking.MlflowClient",
+            lambda tracking_uri=None: LosesTheRace(client),
+        )
+        sink = MlflowTracker({"tracking_uri": store, "experiment": "race"})
+        sink.log_params({"name": "raced"})
+        sink.close()
+        assert client.get_run(sink.run_id).info.experiment_id == expected
