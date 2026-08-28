@@ -467,7 +467,7 @@ def load_model(path) -> AssetModel:
     --------
     Load a model document from disk::
 
-        model = load_model("examples/assets/model.json")
+        model = load_model("examples/assets/custom-model.json")
     """
     try:
         with open(path, encoding="utf-8") as fh:
