@@ -106,6 +106,9 @@ on it without breaking its rulings.
   nothing. `cmd_runs` prints the table, the `--limit` count, the `notes`
   list and the `skipped` list; a loud-not-silent mechanism the only
   user-facing surface never prints IS the silent truncation it replaced.
+  The same default-deny covers the flags: `--limit` below 1 and a
+  `--metric` no scanned run ever reported are both REFUSED — a blank
+  cell must mean "this run did not measure it" and nothing else.
 - **The run-dir layout has one home** — `runs.RESULT_FILE` /
   `CONFIG_FILE` / `CARRY_FILE` / `NODES_DIR`. `driver.py` and
   `resolve.py` write through those names; `dskit/assets/ingest.py`

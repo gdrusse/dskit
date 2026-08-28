@@ -13,6 +13,7 @@ import re
 import pytest
 
 from dskit.pipeline import driver as driver_mod
+from dskit.pipeline import runs as runs_mod
 from dskit.pipeline.base import OutputsConfig
 from dskit.pipeline.document import NodeSpec
 from dskit.pipeline.driver import run_document
@@ -127,6 +128,21 @@ class TestScan:
     def test_a_missing_root_refuses(self, tmp_path):
         with pytest.raises(OSError, match="no run root"):
             scan_runs(str(tmp_path / "nope"))
+
+    def test_a_null_result_json_is_skipped_with_a_reason(self, tmp_path):
+        """`null` is the one JSON payload that parses and is not a dict;
+        it must not slip out as a RunProblem with a BLANK reason — the
+        verb prints the reason verbatim after a colon."""
+        root = str(tmp_path / "pipeline_runs")
+        os.makedirs(os.path.join(root, "nulldir"))
+        path = os.path.join(root, "nulldir", RESULT_FILE)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("null")
+        _runs, problems = scan_runs(root)
+        (problem,) = problems
+        assert problem.reason, "a skip with no reason is a silent skip"
+        assert RESULT_FILE in problem.reason
+        assert "not an object" in problem.reason
 
     def test_default_run_root_agrees_with_the_driver(self, tmp_path, monkeypatch):
         """The reader's default root and the writer's are the same place."""
@@ -375,6 +391,38 @@ class TestRunDirLayout:
         assert f'"{RESULT_FILE}"' in source
         assert f'"{NODES_DIR}"' in source
 
+    def test_the_other_run_dir_reader_requires_the_same_keys(self):
+        """Both readers require the same `result.json` key set, or the
+        two disagree about what counts as a run — assets would ingest a
+        directory the `runs` table lists as skipped, or vice versa. The
+        agreement is a value in two places, so it is pinned: change
+        either side's set and this goes red."""
+        source = (REPO / "dskit/assets/ingest.py").read_text(encoding="utf-8")
+        match = re.search(r"for key in \(([^)]*)\)", source)
+        assert match, "ingest.py no longer states its required result.json keys"
+        theirs = set(re.findall(r'"(\w+)"', match.group(1)))
+        assert theirs == set(runs_mod._REQUIRED)
+
+    def test_a_blank_or_null_identity_field_is_not_a_run(self, two_runs):
+        """Key PRESENCE is not enough: an empty run_hash renders the
+        MISSING dash in an identity cell, and a null document_hash
+        renders the literal ``None`` — a fabricated 8-char "hash prefix".
+        The other reader (`ingest._check_str`) requires non-empty
+        strings, and so does this one."""
+        root, results = two_runs
+        path = os.path.join(results[0].run_dir, RESULT_FILE)
+        with open(path, encoding="utf-8") as fh:
+            payload = json.load(fh)
+        payload["run_hash"] = ""
+        payload["document_hash"] = None
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        runs, problems = scan_runs(root)
+        assert len(runs) == 1
+        (problem,) = problems
+        assert "run_hash" in problem.reason
+        assert "document_hash" in problem.reason
+
     def test_a_result_without_a_document_hash_is_not_a_run(self, two_runs):
         """A blank identity cell would read as a rendering failure; the
         other run-dir reader requires the field, and so does this one."""
@@ -479,6 +527,28 @@ class TestSharedRenderer:
         with pytest.raises(ValueError, match="2 column"):
             pipe_table(("a", "b"), [[1, 2, 3]])
 
+    def test_a_newline_in_a_value_cannot_break_the_row(self):
+        """A `|` opens a phantom COLUMN; a newline opens a phantom ROW —
+        and the width check counts cells before the join, so it cannot
+        catch it. A two-line `notes` in a config is ordinary; it must
+        render as one line a reader can follow."""
+        for text in ("a\nb", "a\r\nb", "a\rb"):
+            cell = render_cell(text)
+            assert "\n" not in cell and "\r" not in cell
+            assert "a" in cell and "b" in cell  # both halves survive
+        assert "\n" not in pipe_table(("x", "y"), [["a\nb", 1]])[2]
+        run = RunSummary(
+            run_dir="/x/demo-2026-01-01-0badc0de",
+            name="demo",
+            asof=FIRST,
+            state="ran",
+            run_hash="0" * 64,
+            document_hash="1" * 64,
+            config={"notes": "line1\nline2"},
+        )
+        lines = format_runs([run], params=("notes",)).splitlines()
+        assert len(lines) == 3  # header, separator, ONE row
+
 
 class TestVerb:
     def test_tabulates_two_runs(self, two_runs, capsys):
@@ -526,6 +596,52 @@ class TestVerb:
             with pytest.raises(SystemExit):
                 main(["runs", "--root", root, "--limit", bad])
             assert "at least 1" in capsys.readouterr().err
+
+    def test_a_metric_no_scanned_run_reported_is_refused(self, two_runs, capsys):
+        """A typo'd --metric would render a confident column of dashes
+        that reads as "these runs never measured it" — the same
+        default-deny as --limit: a typo is an error, not a silent
+        default."""
+        root, _ = two_runs
+        assert main(["runs", "--root", root, "--metric", "size.final_bankrol"]) == 1
+        out = capsys.readouterr().out
+        assert "size.final_bankrol" in out  # the refusal names the key
+        assert MISSING not in out  # and no table of dashes is printed
+
+    def test_a_metric_only_an_unshown_run_reported_still_renders(
+        self, tmp_path, capsys
+    ):
+        """The check is against every SCANNED run, not the --limit'd
+        view: a metric only an older run measured is a real key, and a
+        column of dashes over the shown runs is then a true statement."""
+        root = str(tmp_path / "pipeline_runs")
+        registry = make_registry()
+        run_document(
+            banking_document(outputs=OutputsConfig(run_root=root)),
+            asof=FIRST,
+            registry=registry,
+        )
+        pipeline = {
+            "events": NodeSpec(uses="synth-events", params={"n_events": 8}),
+            "diverged": NodeSpec(
+                uses="tests.pipeline.test_runs:DivergedScalarNode",
+                inputs={"events": "$events.events"},
+            ),
+        }
+        run_document(
+            banking_document(
+                pipeline=pipeline, outputs=OutputsConfig(run_root=root)
+            ),
+            asof=SECOND,
+            registry=registry,
+        )
+        argv = ["runs", "--root", root, "--limit", "1"]
+        assert main([*argv, "--metric", "size.final_bankroll"]) == 0
+        out = capsys.readouterr().out
+        assert "size.final_bankroll" in out
+        table = out.partition("\n\n")[0]  # the notes block also names runs
+        assert table.count("synth-banking") == 1  # only the newest is shown
+        assert FIRST not in table
 
     def test_skipped_entries_are_printed(self, two_runs, capsys):
         root, _ = two_runs

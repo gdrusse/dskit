@@ -380,6 +380,11 @@ def cmd_runs(root=None, metrics=(), params=(), limit=None):
         document declaring no ``outputs.run_root`` writes.
     metrics : sequence of str, optional
         Metric columns to show; default every metric any run reported.
+        A key NO scanned run reported is refused
+        (:func:`~dskit.pipeline.runs.unknown_metrics`): a typo would
+        otherwise render a confident column of blanks that reads as
+        "these runs never measured it" — the same default-deny as
+        ``--limit``.
     params : sequence of str, optional
         Dotted ``config.json`` paths to add as columns.
     limit : int, optional
@@ -390,7 +395,8 @@ def cmd_runs(root=None, metrics=(), params=(), limit=None):
     Returns
     -------
     int
-        0 — the scan is a read; 1 when the run root does not exist.
+        0 — the scan is a read; 1 when the run root does not exist or a
+        ``--metric`` names a key no scanned run reported.
 
     Notes
     -----
@@ -402,12 +408,20 @@ def cmd_runs(root=None, metrics=(), params=(), limit=None):
     (:attr:`~dskit.pipeline.runs.RunSummary.notes`) — a blank cell would
     otherwise read as "this run never measured it".
     """
-    from dskit.pipeline.runs import format_runs, scan_runs
+    from dskit.pipeline.runs import format_runs, scan_runs, unknown_metrics
 
     try:
         runs, problems = scan_runs(root)
     except OSError as exc:
         print(exc)
+        return 1
+    typos = unknown_metrics(runs, metrics) if runs else ()
+    if typos:
+        print(
+            f"no scanned run reported: {', '.join(typos)} (a column of "
+            'blanks would read as "never measured"; run without --metric '
+            "to see every metric that exists)"
+        )
         return 1
     shown = runs if limit is None else runs[:limit]
     print(format_runs(shown, metrics=metrics, params=params))
@@ -535,7 +549,8 @@ def main(argv=None) -> int:
         default=[],
         metavar="NAME",
         help="metric column(s) to show, e.g. score.metrics.loss "
-        "(default: every metric any run reported)",
+        "(default: every metric any run reported; a NAME no scanned run "
+        "reported is refused, not rendered as blanks)",
     )
     runs_p.add_argument(
         "--param",

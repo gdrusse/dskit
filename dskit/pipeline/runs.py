@@ -58,6 +58,7 @@ __all__ = [
     "param_at",
     "resolve_run_root",
     "scan_runs",
+    "unknown_metrics",
 ]
 
 #: Where runs land when a document declares no ``outputs.run_root`` — the
@@ -74,11 +75,14 @@ CONFIG_FILE = "config.json"
 CARRY_FILE = "carry.json"
 NODES_DIR = "nodes"
 
-#: Keys `result.json` must carry for a directory to count as a run. The
-#: identity fields are all required: a run whose document_hash is absent
-#: would render a BLANK identity cell, which reads as a rendering bug
-#: rather than as the unreadable directory it is (the other run-dir
-#: reader, `dskit.assets.ingest`, requires the same four).
+#: Keys `result.json` must carry AS NON-EMPTY STRINGS for a directory to
+#: count as a run. Presence alone is not enough: an empty run_hash would
+#: render the MISSING dash in an identity cell — which reads as a
+#: rendering bug rather than as the unreadable directory it is — and a
+#: null document_hash would render the literal ``None``, a fabricated
+#: "hash prefix". The other run-dir reader, `dskit.assets.ingest`,
+#: requires the same five the same way (`_check_str`); the agreement is
+#: pinned in tests/pipeline/test_runs.py::TestRunDirLayout.
 _REQUIRED = ("name", "asof", "run_hash", "state", "document_hash")
 
 #: What `driver._summarize` leaves behind for a non-finite float: `inf`
@@ -298,13 +302,17 @@ def _read_run(run_dir):
     if not os.path.isdir(run_dir):
         return None, "not a directory"
     result, reason = _load_json(os.path.join(run_dir, RESULT_FILE))
-    if result is None:
-        return None, reason
     if not isinstance(result, dict):
-        return None, f"{RESULT_FILE} is not an object"
-    absent = [key for key in _REQUIRED if key not in result]
-    if absent:
-        return None, f"{RESULT_FILE} is missing {', '.join(absent)}"
+        # A file holding `null` parses to None with no reason of its own,
+        # and a skip with a blank reason is a silent skip.
+        return None, reason or f"{RESULT_FILE} is not an object"
+    bad = [
+        key
+        for key in _REQUIRED
+        if not (isinstance(result.get(key), str) and result[key])
+    ]
+    if bad:
+        return None, f"{RESULT_FILE} is missing a usable {', '.join(bad)}"
     config, config_reason = _load_json(os.path.join(run_dir, CONFIG_FILE))
     metrics, notes = _run_metrics(run_dir)
     if not isinstance(config, dict):
@@ -477,6 +485,35 @@ def format_runs(runs, metrics=(), params=()):
         for run in runs
     ]
     return "\n".join(pipe_table(columns, rows))
+
+
+def unknown_metrics(runs, metrics):
+    """Name the requested metric keys that NO scanned run ever reported.
+
+    A metric column exists only because some run measured it — there is
+    no "declared but unmeasured" concept for metrics (unlike a declared
+    param, where :func:`param_at` documents None as a legitimate answer).
+    A key absent from every run is therefore a typo, and rendering it as
+    a full column of blanks would read as "these runs never measured it"
+    — a confidently wrong table. The verb refuses instead.
+
+    Parameters
+    ----------
+    runs : sequence of RunSummary
+        Every scanned run — not the ``--limit``'d view: a metric only an
+        older run measured is a real key, and blanks over the shown runs
+        are then a true statement.
+    metrics : sequence of str
+        The requested metric column keys.
+
+    Returns
+    -------
+    tuple of str
+        The keys of ``metrics`` no run in ``runs`` reported, in request
+        order; empty when every key is real.
+    """
+    known = set(_all_metrics(runs))
+    return tuple(key for key in metrics if key not in known)
 
 
 def _all_metrics(runs):

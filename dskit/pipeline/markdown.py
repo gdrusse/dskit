@@ -13,9 +13,13 @@ not a pin but a single name.
 Cells are ESCAPED, not trusted. A value carrying a ``|`` — a regex
 alternation in a declared param, a column expression — would otherwise
 open a column the header never declared and shift every value right of
-it onto the wrong heading. A table that silently misattributes numbers is
-worse than no table, so the delimiter is escaped and rows whose width
-disagrees with the header are REFUSED rather than rendered crooked.
+it onto the wrong heading; a value carrying a newline — a two-line
+``notes`` field is ordinary — would shatter the row and open a phantom
+ROW, which the width check cannot catch because widths are counted
+before the join. A table that silently misattributes numbers is worse
+than no table, so the delimiter is escaped, line breaks are flattened to
+a visible ``⏎``, and rows whose width disagrees with the header are
+REFUSED rather than rendered crooked.
 
 Tier 1: stdlib only, no knowledge of any domain.
 """
@@ -48,8 +52,11 @@ def render_cell(value):
     Returns
     -------
     str
-        The cell, truncated at :data:`MAX_CELL` characters and with every
-        ``|`` escaped so it cannot be read as a column boundary.
+        The cell, truncated at :data:`MAX_CELL` characters, with every
+        ``|`` escaped so it cannot be read as a column boundary and every
+        line break replaced by ``⏎`` so it cannot be read as a ROW
+        boundary — a multi-line cell would split the row and shift every
+        value after the break onto the wrong heading.
     """
     if value is None or (isinstance(value, str) and not value):
         return MISSING
@@ -63,6 +70,7 @@ def render_cell(value):
         text = f"({len(value)} key(s))"
     else:
         text = str(value)
+    text = "⏎".join(text.splitlines())
     if len(text) > MAX_CELL:
         text = text[:MAX_CELL] + "…"
     return text.replace("|", r"\|")
