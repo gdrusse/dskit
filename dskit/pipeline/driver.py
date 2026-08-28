@@ -768,8 +768,609 @@ class DocumentRunResult:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _ResolvedRun:
+    """Everything RESOLVE settled, before the first node runs.
+
+    The phase's whole job is to make a run identifiable and refuse it
+    loudly while nothing has been written: the sources are built and
+    fingerprinted, the cuts are materialized and bound, and the identity
+    hash those two determine names the run directory. Every field here is
+    read by EXECUTE or RECORD; nothing is recomputed downstream, which is
+    what keeps the recorded identity and the executed run the same run.
+    """
+
+    run_dir: str
+    run_hash: str
+    prev_dir: str
+    prev: dict
+    splits: object
+    splits_info: dict
+    instances: dict
+    payload: dict
+
+
+@dataclass
+class _Execution:
+    """What the EXECUTE pass produced, node by node.
+
+    Mutable and shared by the pass, because a node's outputs are the next
+    node's inputs and the halt set grows as gates decide. It is also the
+    complete record RECORD writes down: after the pass this object holds
+    every status, timing, output, ``$prev`` binding and search tally the
+    run dir is built from.
+    """
+
+    node_states: dict = field(default_factory=dict)
+    node_outputs: dict = field(default_factory=dict)
+    seconds: dict = field(default_factory=dict)
+    search_meta: dict = field(default_factory=dict)
+    prev_bindings: dict = field(default_factory=dict)
+    halted: set = field(default_factory=set)
+    halted_at: str = ""
+    error_text: str = ""
+    state: str = "ran"
+
+
+@dataclass
+class _NodeAttempt:
+    """One node's attempt at running — its outputs and its search seam.
+
+    The seam is carried on the attempt rather than returned because the
+    ERROR path needs it too: a search node that fails after its trials
+    still has to record how many it executed, and a value returned by a
+    call that raised is a value nobody has.
+    """
+
+    outputs: dict = None
+    seam: object = None
+    winner_reran: tuple = ()
+    winner_seconds: dict = field(default_factory=dict)
+
+
+def _run_root(document) -> str:
+    """Where this document's run directories live, absolute and expanded."""
+    outputs_cfg = document.outputs
+    return os.path.abspath(
+        os.path.expanduser(
+            (outputs_cfg.run_root if outputs_cfg is not None else "")
+            or "./pipeline_runs"
+        )
+    )
+
+
+def _validated_asof(asof) -> str:
+    """Today (UTC) when none was given, and always a ``YYYY-MM-DD`` string."""
+    if asof is None:
+        from datetime import datetime, timezone
+
+        asof = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if not isinstance(asof, str) or not re.match(_ASOF_OK, asof):
+        raise ConfigError([f"asof must be 'YYYY-MM-DD', got {asof!r}"])
+    return asof
+
+
+def _source_instances(document, the_plan):
+    """Build and fingerprint the ``data``- and ``labels``-role nodes.
+
+    Sources AND labels: what a run consumed is its features and its
+    outcomes both. Fingerprinting only the features lets two runs over
+    the same ladder and OPPOSITE outcomes hash the same, which would put
+    the second in the first's run dir. Labels params may carry references
+    (only ``data`` is required fully literal), and a node whose params are
+    not yet resolved cannot be built here — those simply contribute
+    nothing.
+
+    Every instance built is PINNED for execution. A labels node rebuilt at
+    execute would re-scan a store that may have grown mid-run (live
+    recorders append), handing the run outcomes its identity never hashed;
+    the pinned instance lets the node serve ``run()`` from the same scan
+    its ``fingerprint()`` saw.
+
+    Parameters
+    ----------
+    document : PipelineDocument
+        The document being run.
+    the_plan : Plan
+        The resolved plan, for roles and node classes.
+
+    Returns
+    -------
+    tuple
+        ``(instances, fingerprints, edges, declines)`` — the pinned nodes
+        by key, their fingerprints, the data edges each source reported,
+        and the source keys whose class does not implement ``data_edge``.
+    """
+    instances = {}
+    fingerprints = {}
+    edges = {}
+    declines = set()
+    for key in the_plan.order:
+        role = the_plan.role_of(key)
+        if role not in ("data", "labels") or key in the_plan.deferred_params:
+            continue
+        spec = document.pipeline[key]
+        node = the_plan.resolved[key].cls(
+            key, spec.params, mode=spec.mode, artifact=spec.artifact
+        )
+        fp = node.fingerprint()
+        if fp is not None:
+            fingerprints[key] = fp
+        instances[key] = node
+        if role != "data":
+            continue  # only a source anchors a split or declares an edge
+        if type(node).data_edge is Node.data_edge:
+            declines.add(key)  # the class does not implement the hook
+        edge = node.data_edge()
+        if edge is not None:
+            edges[key] = edge
+    return instances, fingerprints, edges, declines
+
+
+def _run_splits(document, the_plan, instances, edges, declines):
+    """Settle the cuts this run will use, as ``(splits, splits_info)``.
+
+    Trailing splits materialize HERE and nowhere else: their windows are
+    counted backward from the data's edge, which only a source knows, and
+    the sources are complete the instant they are built. WHERE the cuts
+    are is then settled, but WHICH INSTANT each record is cut on may still
+    need the per-event extents — so bounds bind after materialization, and
+    a trailing spec's policy rides through.
+    """
+    splits = _materialize_splits(
+        document.splits,
+        edges,
+        sorted(k for k in instances if the_plan.role_of(k) == "data"),
+        declines=declines,
+    )
+    splits = _bind_event_bounds(splits, instances, the_plan.role_of)
+    return splits, (splits.to_obj() if splits is not None else {})
+
+
+def _open_run_dir(document, asof, run_hash):
+    """Claim this run's directory and find the one before it.
+
+    Returns ``(run_dir, prev_dir, prev)``. An occupied directory is a
+    refusal, not an overwrite: same name + asof + identity means this
+    exact run already happened.
+    """
+    run_root = _run_root(document)
+    run_dir = os.path.join(run_root, f"{document.name}-{asof}-{run_hash[:8]}")
+    if os.path.isdir(run_dir) and os.listdir(run_dir):
+        raise ValueError(
+            f"run dir {run_dir} already exists and is not empty — same "
+            "name+asof+identity means this exact run already happened; "
+            "remove it deliberately to repeat"
+        )
+    prev_dir = _find_prev_run(run_root, document.name, run_dir)
+    prev = {}
+    if prev_dir is not None:
+        with open(os.path.join(prev_dir, "carry.json"), encoding="utf-8") as fh:
+            prev = json.load(fh)
+    return run_dir, prev_dir, prev
+
+
+def _resolve_run(document, the_plan, asof) -> _ResolvedRun:
+    """Run step 4 RESOLVE: fingerprint, cut, hash, and claim the run dir.
+
+    Parameters
+    ----------
+    document : PipelineDocument
+        The document being run.
+    the_plan : Plan
+        The resolved plan.
+    asof : str
+        The validated ``YYYY-MM-DD`` as-of date.
+
+    Returns
+    -------
+    _ResolvedRun
+        Everything EXECUTE and RECORD read. ``config.json``,
+        ``plan.json`` and a first ``resolved.json`` are on disk by the
+        time it returns.
+    """
+    instances, fingerprints, edges, declines = _source_instances(document, the_plan)
+    splits, splits_info = _run_splits(document, the_plan, instances, edges, declines)
+    identity = _strip_non_identity(
+        _strip_notes(document.to_obj()), DOC_NON_IDENTITY_SECTIONS
+    )
+    run_hash = _canonical_hash({"document": identity, "data_fingerprint": fingerprints})
+    run_dir, prev_dir, prev = _open_run_dir(document, asof, run_hash)
+
+    os.makedirs(run_dir, exist_ok=True)
+    _write_json(os.path.join(run_dir, "config.json"), document.to_obj())
+    _write_json(os.path.join(run_dir, "plan.json"), the_plan.to_obj())
+    payload = {
+        "document_hash": document.hash,
+        "run_hash": run_hash,
+        "asof": asof,
+        "splits": splits_info,
+        "data_fingerprint": fingerprints,
+        "prev_run": prev_dir or "",
+        "driver_version": DRIVER_VERSION,
+    }
+    _write_json(os.path.join(run_dir, "resolved.json"), payload)
+    return _ResolvedRun(
+        run_dir=run_dir,
+        run_hash=run_hash,
+        prev_dir=prev_dir or "",
+        prev=prev,
+        splits=splits,
+        splits_info=splits_info,
+        instances=instances,
+        payload=payload,
+    )
+
+
+def _open_run_log(run_dir):
+    """Attach this run's log sinks; returns what :func:`_close_run_log` needs.
+
+    The run.log file alone is not enough: a long run (a training node's
+    epochs, a search node's trials) showed the operator NOTHING until the
+    summary table printed at the end, because run.log was the only sink. A
+    model that diverges at epoch 2 has to be visible at epoch 2. So the
+    driver also streams to stderr — stdout carries the run's REPORT, which
+    is piped and parsed — and only when the caller has not already
+    installed their own handler, so an embedding application's logging
+    setup is never doubled.
+    """
+    pipeline_logger = logging.getLogger("dskit.pipeline")
+    handler = logging.FileHandler(os.path.join(run_dir, "run.log"), encoding="utf-8")
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
+    )
+    prior_level = pipeline_logger.level
+    pipeline_logger.addHandler(handler)
+    stream_handler = None
+    if not any(
+        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+        for h in (*pipeline_logger.handlers, *logging.getLogger().handlers)
+    ):
+        stream_handler = logging.StreamHandler(sys.stderr)
+        stream_handler.setFormatter(logging.Formatter("%(message)s"))
+        pipeline_logger.addHandler(stream_handler)
+    pipeline_logger.setLevel(logging.INFO)
+    return pipeline_logger, handler, stream_handler, prior_level
+
+
+def _close_run_log(pipeline_logger, handler, stream_handler, prior_level) -> None:
+    """Detach what :func:`_open_run_log` attached and restore the level."""
+    pipeline_logger.removeHandler(handler)
+    handler.close()
+    if stream_handler is not None:
+        pipeline_logger.removeHandler(stream_handler)
+        stream_handler.close()
+    pipeline_logger.setLevel(prior_level)
+
+
+def _run_one_node(attempt, key, spec, the_plan, ctx, run, instances) -> None:
+    """Materialize, build, validate and run ONE node, onto ``attempt``.
+
+    The uniform per-node lifecycle (D-145 ruling 4):
+    ``validate_params -> validate_inputs -> run -> validate_outputs``.
+    A ``search``-role node — and only a search node — is handed the
+    subgraph re-execution seam (docs/24 §8); every other node's context is
+    untouched and ``ctx.rerun`` stays None.
+
+    Parameters
+    ----------
+    attempt : _NodeAttempt
+        Filled in place, so a raise still leaves the seam readable.
+    key : str
+        The node's key in the document.
+    spec : NodeSpec
+        The node's declared spec.
+    the_plan : Plan
+        The resolved plan.
+    ctx : NodeContext
+        The run frame every node shares.
+    run : _Execution
+        The pass's state — read for prior outputs, written for bindings.
+    instances : dict
+        The nodes RESOLVE pinned, by key; a key absent here is built now.
+
+    Returns
+    -------
+    None
+        Everything the caller needs is on ``attempt``.
+    """
+    params = _materialize(
+        spec.params,
+        f"pipeline.{key}.params",
+        run.node_outputs,
+        ctx.splits_info,
+        ctx.prev,
+        run.prev_bindings,
+    )
+    inputs = {
+        port: _materialize(
+            ref,
+            f"pipeline.{key}.inputs.{port}",
+            run.node_outputs,
+            ctx.splits_info,
+            ctx.prev,
+            run.prev_bindings,
+        )
+        for port, ref in spec.inputs.items()
+    }
+    node = instances.get(key) or the_plan.resolved[key].cls(
+        key, params, mode=spec.mode, artifact=spec.artifact
+    )
+    problems = node.validate_inputs(inputs)
+    if problems:
+        raise ConfigError([f"{key}: {p}" for p in problems])
+    node_ctx = ctx
+    if the_plan.role_of(key) == "search":
+        attempt.seam = _SearchSeam(
+            key,
+            the_plan,
+            run.node_outputs,
+            ctx.splits_info,
+            ctx.prev,
+            trial_ctx=replace(ctx, tracker=None),
+        )
+        node_ctx = replace(ctx, rerun=attempt.seam)
+    out = node.run(node_ctx, inputs)
+    problems = node.validate_outputs(out)
+    if problems:
+        raise ConfigError([f"{key}: {p}" for p in problems])
+    attempt.outputs = out
+    if attempt.seam is None:
+        return
+    run.search_meta[key] = {"trials_executed": attempt.seam.calls}
+    winner = out.get("best_params")
+    if winner:
+        attempt.winner_reran, attempt.winner_seconds = attempt.seam.apply_winner(
+            winner, ctx, run.prev_bindings
+        )
+        run.search_meta[key]["winner_reran"] = list(attempt.winner_reran)
+
+
+def _record_error(run, key, t0) -> None:
+    """Record the node that failed and stop the pass at it."""
+    run.seconds[key] = round(time.perf_counter() - t0, 6)
+    run.node_states[key] = "error"
+    run.halted_at, run.state = key, "error"
+    run.error_text = traceback.format_exc()
+    _log.error("node %s: FAILED\n%s", key, run.error_text)
+
+
+def _record_success(run, key, attempt, trackers, t0) -> None:
+    """Record a completed node, plus any nodes a search winner re-ran.
+
+    Records and sinks must reflect the FINAL pass (spec §8): the winner
+    re-execution replaced those nodes' outputs, so their timings and
+    metrics are restated from that pass.
+    """
+    run.seconds[key] = round(time.perf_counter() - t0, 6)
+    run.node_outputs[key] = attempt.outputs
+    run.node_states[key] = "ok"
+    trackers.log_metrics(key, _node_metrics(attempt.outputs))
+    _log.info("node %s: ok in %.3fs", key, run.seconds[key])
+    for reran in attempt.winner_reran:
+        run.seconds[reran] = attempt.winner_seconds[reran]
+        trackers.log_metrics(reran, _node_metrics(run.node_outputs[reran]))
+        _log.info(
+            "node %s: re-executed with %s's winning overrides in %.3fs",
+            reran,
+            key,
+            run.seconds[reran],
+        )
+
+
+def _apply_verdict(run, key, the_plan, outputs) -> None:
+    """Halt every DAG descendant of a gate that said NO-GO.
+
+    Not a linear break — independent branches keep running, and a halt is
+    a RESULT (exit code 3), never an error.
+    """
+    if (
+        the_plan.role_of(key) not in ("gate", "stat_test")
+        or outputs.get("verdict") != "NO-GO"
+    ):
+        return
+    downstream = the_plan.descendants(key)
+    run.halted |= downstream
+    if not run.halted_at:
+        run.halted_at, run.state = key, "halted"
+    _log.info(
+        "node %s: NO-GO — halting %d descendant(s): %s",
+        key,
+        len(downstream),
+        sorted(downstream),
+    )
+
+
+def _execute_plan(document, the_plan, ctx, resolved, trackers) -> _Execution:
+    """Run step 5 EXECUTE: every node in plan order, recording each outcome.
+
+    ONE ``log_params`` per run goes first (the Tracker contract): the five
+    identity fields plus every node's declared params, flattened to the
+    override spelling — dotted, so no knob can shadow an identity field.
+    Sent before any node runs, so however far the run gets, its full
+    config is findable in every sink.
+
+    Parameters
+    ----------
+    document : PipelineDocument
+        The document being run.
+    the_plan : Plan
+        The resolved plan, whose ``order`` is the execution order.
+    ctx : NodeContext
+        The run frame every node shares.
+    resolved : _ResolvedRun
+        RESOLVE's products; its pinned instances are reused here.
+    trackers : Tracker
+        The open tracking sinks.
+
+    Returns
+    -------
+    _Execution
+        Every node's status, timing and outputs — including the nodes
+        that never ran.
+    """
+    run = _Execution()
+    trackers.log_params(
+        {
+            "name": document.name,
+            "asof": ctx.asof,
+            "document_hash": document.hash,
+            "run_hash": resolved.run_hash,
+            "nodes": ",".join(the_plan.order),
+            **_tracked_params(document.pipeline, the_plan.order),
+        }
+    )
+    for key in the_plan.order:
+        spec = document.pipeline[key]
+        if key in run.halted:
+            run.node_states[key] = "halted"
+            continue
+        _log.info("node %s: start (%s)", key, the_plan.resolved[key].ref)
+        t0 = time.perf_counter()
+        attempt = _NodeAttempt()
+        try:
+            _run_one_node(attempt, key, spec, the_plan, ctx, run, resolved.instances)
+        except Exception:  # noqa: BLE001 — recorded, then abort
+            if attempt.seam is not None:
+                run.search_meta[key] = {"trials_executed": attempt.seam.calls}
+            _record_error(run, key, t0)
+            break
+        _record_success(run, key, attempt, trackers, t0)
+        _apply_verdict(run, key, the_plan, attempt.outputs)
+    for key in the_plan.order:
+        run.node_states.setdefault(key, "not_run")
+    return run
+
+
+def _write_node_records(run_dir, the_plan, run) -> None:
+    """Write one JSON record per node, in execution order."""
+    nodes_dir = os.path.join(run_dir, "nodes")
+    os.makedirs(nodes_dir, exist_ok=True)
+    for i, key in enumerate(the_plan.order, start=1):
+        record = {
+            "node": key,
+            "uses": the_plan.resolved[key].ref,
+            "role": the_plan.role_of(key),
+            "status": run.node_states[key],
+            "seconds": run.seconds.get(key),
+            "outputs": {
+                name: _summarize(value)
+                for name, value in run.node_outputs.get(key, {}).items()
+            },
+        }
+        record.update(run.search_meta.get(key, {}))
+        if run.node_states[key] == "error":
+            record["error"] = run.error_text
+        _write_json(os.path.join(nodes_dir, f"{i:02d}-{key}.json"), record)
+
+
+def _write_carry(run_dir, node_outputs) -> None:
+    """Write ``carry.json`` — every JSON-small output the next run may bind."""
+    carry = {}
+    for key, outs in node_outputs.items():
+        kept = {}
+        for name, value in outs.items():
+            carried, ok = _carryable(value)
+            if ok:
+                kept[name] = carried
+        if kept:
+            carry[key] = kept
+    _write_json(os.path.join(run_dir, "carry.json"), carry)
+
+
+def _report_lines(document, asof, the_plan, resolved, run, result):
+    """Build ``report.md`` — the human read of one run.
+
+    Findings come FIRST, above the identity block and above the node
+    table (I-232). "all 14 node(s) completed" is true of a healthy run and
+    of one that found an edge and deployed nothing, so a report that leads
+    with node status buries the only line that separates them. A flag is a
+    finding a human reads, never a machine verdict: it does NOT touch
+    ``result.state`` or the exit code (owner ruling, 2026-08-15 — the
+    contract stays 0 ran / 3 NO-GO / 1 error).
+    """
+    lines = [f"**{result.verdict}**", ""]
+    loud, notes = _collect_flags(the_plan.order, run.node_outputs)
+    if loud:
+        lines += ["## ⚠ LOUD", ""]
+        lines += [f"- **[{key}] {code}** — {message}" for key, code, message in loud]
+        lines.append("")
+    if notes:
+        lines += ["## Notes", ""]
+        lines += [f"- [{key}] {code} — {message}" for key, code, message in notes]
+        lines.append("")
+    previous = (
+        os.path.basename(resolved.prev_dir)
+        if resolved.prev_dir
+        else "— (first of the series)"
+    )
+    lines += [
+        f"- run: `{document.name}-{asof}-{resolved.run_hash[:8]}`",
+        f"- document hash: `{document.hash[:16]}…`",
+        f"- previous run: {previous}",
+        "",
+        "| node | role | status | seconds |",
+        "|---|---|---|---|",
+    ]
+    lines += [
+        f"| {key} | {the_plan.role_of(key)} | {run.node_states[key]} | "
+        f"{run.seconds.get(key, '—')} |"
+        for key in the_plan.order
+    ]
+    return lines
+
+
+def _record_run(document, asof, the_plan, resolved, run) -> DocumentRunResult:
+    """Run step 6 RECORD: write everything down and return the result.
+
+    Reached however the pass ended — clean run, NO-GO halt or node error —
+    because from the moment the run dir exists every outcome is a RESULT,
+    never a traceback lost to the caller.
+    """
+    _write_node_records(resolved.run_dir, the_plan, run)
+    _write_carry(resolved.run_dir, run.node_outputs)
+    resolved.payload["prev_bindings"] = run.prev_bindings
+    _write_json(os.path.join(resolved.run_dir, "resolved.json"), resolved.payload)
+
+    result = DocumentRunResult(
+        run_dir=resolved.run_dir,
+        state=run.state,
+        node_states=run.node_states,
+        outputs=run.node_outputs,
+        run_hash=resolved.run_hash,
+        halted_at=run.halted_at,
+        error=run.error_text,
+        prev_run=resolved.prev_dir,
+        warnings=the_plan.warnings,
+        seconds=run.seconds,
+    )
+    _write_json(
+        os.path.join(resolved.run_dir, "result.json"),
+        {
+            "name": document.name,
+            "asof": asof,
+            "document_hash": document.hash,
+            "run_hash": resolved.run_hash,
+            "state": run.state,
+            "exit_code": result.exit_code,
+            "halted_at": run.halted_at,
+            "node_states": run.node_states,
+            "prev_run": resolved.prev_dir,
+        },
+    )
+    lines = _report_lines(document, asof, the_plan, resolved, run, result)
+    _atomic_write_text(
+        os.path.join(resolved.run_dir, "report.md"), "\n".join(lines) + "\n"
+    )
+    return result
+
+
 def run_document(document, asof=None, registry=None) -> DocumentRunResult:
     """Execute one node-map document end to end (docs/24 §9).
+
+    LOAD → IMPORT + PLAN → RESOLVE → EXECUTE → RECORD, one call per
+    phase. Steps 1–4 fail loudly BEFORE a run directory exists; from the
+    moment the run dir is written, every outcome is RECORDED.
 
     Parameters
     ----------
@@ -781,6 +1382,11 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
     registry : NodeKindRegistry, optional
         Where registered kinds resolve; default the toolkit registry.
 
+    Returns
+    -------
+    DocumentRunResult
+        The run's state, per-node statuses and outputs, and its run dir.
+
     Raises
     ------
     ConfigError / ValueError / OSError
@@ -789,11 +1395,8 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
         in the occupied-dir case, nothing at all. Once execution starts,
         failures are recorded in the run dir instead of raised.
     """
-    # -- 1 LOAD ------------------------------------------------------------
     if not isinstance(document, PipelineDocument):
         document = load_document(document)
-
-    # -- 2+3 IMPORT + PLAN -------------------------------------------------
     the_plan = plan_document(document, registry)
     if document.clock is not None:
         raise ConfigError(
@@ -803,15 +1406,7 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
                 "refuses until the ruling lands"
             ]
         )
-
-    # -- 4 RESOLVE ---------------------------------------------------------
-    if asof is None:
-        from datetime import datetime, timezone
-
-        asof = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    if not isinstance(asof, str) or not re.match(_ASOF_OK, asof):
-        raise ConfigError([f"asof must be 'YYYY-MM-DD', got {asof!r}"])
-
+    asof = _validated_asof(asof)
     if isinstance(document.splits, TrailingSplitSpec):
         # Cheap pre-check, before any source is constructed or scanned: a
         # spec that materialize() will refuse anyway must not cost a full
@@ -822,377 +1417,31 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
 
     secrets = load_env(document.env)  # raises listing every missing name
     trackers = _open_sinks(document.tracking)
-
     try:
-        # Data fingerprints: data- and labels-role nodes constructed now
-        # (data params are fully literal by the data-is-a-source rule;
-        # labels params are literal in every shipped adapter) and kept
-        # for execution.
-        instances = {}
-        fingerprints = {}
-        edges = {}
-        declines = set()
-        for key in the_plan.order:
-            role = the_plan.role_of(key)
-            # Sources AND labels: what a run consumed is its features and
-            # its outcomes both. Fingerprinting only the features lets two
-            # runs over the same ladder and OPPOSITE outcomes hash the
-            # same, which would put the second in the first's run dir.
-            # Labels params may carry references (only `data` is required
-            # fully literal), and a node whose params are not yet resolved
-            # cannot be built here — those simply contribute nothing.
-            if role not in ("data", "labels") or key in the_plan.deferred_params:
-                continue
-            spec = document.pipeline[key]
-            node = the_plan.resolved[key].cls(
-                key, spec.params, mode=spec.mode, artifact=spec.artifact
-            )
-            fp = node.fingerprint()
-            if fp is not None:
-                fingerprints[key] = fp
-            # Pin the fingerprinted instance — data AND labels — so execute
-            # reuses it. A labels node rebuilt at execute would re-scan a
-            # store that may have grown mid-run (live recorders append),
-            # handing the run outcomes its identity never hashed; the
-            # pinned instance lets the node serve run() from the same scan
-            # its fingerprint() saw.
-            instances[key] = node
-            if role != "data":
-                continue  # only a source anchors a split or declares an edge
-            if type(node).data_edge is Node.data_edge:
-                declines.add(key)  # the class does not implement the hook
-            edge = node.data_edge()
-            if edge is not None:
-                edges[key] = edge
-
-        # Trailing splits materialize HERE and nowhere else: their windows
-        # are counted backward from the data's edge, which only a source
-        # knows, and the sources are complete the instant they are built.
-        splits = _materialize_splits(
-            document.splits,
-            edges,
-            sorted(k for k in instances if the_plan.role_of(k) == "data"),
-            declines=declines,
-        )
-        # WHERE the cuts are is settled; WHICH INSTANT each record is cut on
-        # may still need the per-event extents. Bound here, after
-        # materialization, so a trailing spec's policy rides through.
-        splits = _bind_event_bounds(splits, instances, the_plan.role_of)
-        splits_info = splits.to_obj() if splits is not None else {}
-
-        identity = _strip_non_identity(
-            _strip_notes(document.to_obj()), DOC_NON_IDENTITY_SECTIONS
-        )
-        run_hash = _canonical_hash(
-            {"document": identity, "data_fingerprint": fingerprints}
-        )
-
-        outputs_cfg = document.outputs
-        run_root = os.path.abspath(
-            os.path.expanduser(
-                (outputs_cfg.run_root if outputs_cfg is not None else "")
-                or "./pipeline_runs"
-            )
-        )
-        run_dir = os.path.join(run_root, f"{document.name}-{asof}-{run_hash[:8]}")
-        if os.path.isdir(run_dir) and os.listdir(run_dir):
-            raise ValueError(
-                f"run dir {run_dir} already exists and is not empty — same "
-                "name+asof+identity means this exact run already happened; "
-                "remove it deliberately to repeat"
-            )
-        prev_dir = _find_prev_run(run_root, document.name, run_dir)
-        prev = {}
-        if prev_dir is not None:
-            with open(os.path.join(prev_dir, "carry.json"), encoding="utf-8") as fh:
-                prev = json.load(fh)
-
-        os.makedirs(run_dir, exist_ok=True)
-        _write_json(os.path.join(run_dir, "config.json"), document.to_obj())
-        _write_json(os.path.join(run_dir, "plan.json"), the_plan.to_obj())
-        prev_bindings = {}
-        resolved_payload = {
-            "document_hash": document.hash,
-            "run_hash": run_hash,
-            "asof": asof,
-            "splits": splits_info,
-            "data_fingerprint": fingerprints,
-            "prev_run": prev_dir or "",
-            "driver_version": DRIVER_VERSION,
-        }
-        _write_json(os.path.join(run_dir, "resolved.json"), resolved_payload)
+        resolved = _resolve_run(document, the_plan, asof)
     except BaseException:
         # A resolve-time refusal must not strand open sinks (an mlflow-
         # style tracker may hold a remote run from __init__).
         trackers.close()
         raise
 
-    # -- 5 EXECUTE -----------------------------------------------------
-    pipeline_logger = logging.getLogger("dskit.pipeline")
-    handler = logging.FileHandler(os.path.join(run_dir, "run.log"), encoding="utf-8")
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
-    )
-    prior_level = pipeline_logger.level
-    pipeline_logger.addHandler(handler)
-    # The file alone is not enough: a long run (a training node's epochs, a
-    # search node's trials) showed the operator NOTHING until the summary
-    # table printed at the end, because run.log was the only sink. A model
-    # that diverges at epoch 2 has to be visible at epoch 2. Stream to
-    # stderr — stdout carries the run's REPORT, which is piped and parsed —
-    # and only when the caller has not already installed their own handler,
-    # so an embedding application's logging setup is never doubled.
-    stream_handler = None
-    if not any(
-        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
-        for h in (*pipeline_logger.handlers, *logging.getLogger().handlers)
-    ):
-        stream_handler = logging.StreamHandler(sys.stderr)
-        stream_handler.setFormatter(logging.Formatter("%(message)s"))
-        pipeline_logger.addHandler(stream_handler)
-    pipeline_logger.setLevel(logging.INFO)
-
+    log_state = _open_run_log(resolved.run_dir)
     ctx = NodeContext(
         name=document.name,
         asof=asof,
-        run_dir=run_dir,
-        splits=splits,
-        splits_info=splits_info,
+        run_dir=resolved.run_dir,
+        splits=resolved.splits,
+        splits_info=resolved.splits_info,
         secrets=secrets,
         tracker=trackers,
-        prev=prev,
+        prev=resolved.prev,
     )
-    node_states = {}
-    node_outputs = {}
-    seconds = {}
-    search_meta = {}
-    halted = set()
-    halted_at = ""
-    error_text = ""
-    state = "ran"
-
     try:
-        # ONE log_params per run, at run start (the Tracker contract): the
-        # five identity fields plus every node's declared params, flattened
-        # to the override spelling — dotted, so no knob can shadow an
-        # identity field. Sent before any node runs, so however far the
-        # run gets, its full config is findable in every sink.
-        trackers.log_params(
-            {
-                "name": document.name,
-                "asof": asof,
-                "document_hash": document.hash,
-                "run_hash": run_hash,
-                "nodes": ",".join(the_plan.order),
-                **_tracked_params(document.pipeline, the_plan.order),
-            }
-        )
-        for key in the_plan.order:
-            spec = document.pipeline[key]
-            if key in halted:
-                node_states[key] = "halted"
-                continue
-            _log.info("node %s: start (%s)", key, the_plan.resolved[key].ref)
-            t0 = time.perf_counter()
-            seam = None
-            winner_reran, winner_seconds = (), {}
-            try:
-                params = _materialize(
-                    spec.params,
-                    f"pipeline.{key}.params",
-                    node_outputs,
-                    splits_info,
-                    prev,
-                    prev_bindings,
-                )
-                inputs = {
-                    port: _materialize(
-                        ref,
-                        f"pipeline.{key}.inputs.{port}",
-                        node_outputs,
-                        splits_info,
-                        prev,
-                        prev_bindings,
-                    )
-                    for port, ref in spec.inputs.items()
-                }
-                node = instances.get(key) or the_plan.resolved[key].cls(
-                    key, params, mode=spec.mode, artifact=spec.artifact
-                )
-                problems = node.validate_inputs(inputs)
-                if problems:
-                    raise ConfigError([f"{key}: {p}" for p in problems])
-                node_ctx = ctx
-                if the_plan.role_of(key) == "search":
-                    # docs/24 §8: search nodes ALONE receive the subgraph
-                    # re-execution seam; every other node's context is
-                    # untouched (ctx.rerun stays None).
-                    seam = _SearchSeam(
-                        key,
-                        the_plan,
-                        node_outputs,
-                        splits_info,
-                        prev,
-                        trial_ctx=replace(ctx, tracker=None),
-                    )
-                    node_ctx = replace(ctx, rerun=seam)
-                out = node.run(node_ctx, inputs)
-                problems = node.validate_outputs(out)
-                if problems:
-                    raise ConfigError([f"{key}: {p}" for p in problems])
-                if seam is not None:
-                    search_meta[key] = {"trials_executed": seam.calls}
-                    winner = out.get("best_params")
-                    if winner:
-                        winner_reran, winner_seconds = seam.apply_winner(
-                            winner, ctx, prev_bindings
-                        )
-                        search_meta[key]["winner_reran"] = list(winner_reran)
-            except Exception:  # noqa: BLE001 — recorded, then abort
-                if seam is not None:
-                    search_meta[key] = {"trials_executed": seam.calls}
-                seconds[key] = round(time.perf_counter() - t0, 6)
-                node_states[key] = "error"
-                halted_at, state = key, "error"
-                error_text = traceback.format_exc()
-                _log.error("node %s: FAILED\n%s", key, error_text)
-                break
-            seconds[key] = round(time.perf_counter() - t0, 6)
-            node_outputs[key] = out
-            node_states[key] = "ok"
-            trackers.log_metrics(key, _node_metrics(out))
-            _log.info("node %s: ok in %.3fs", key, seconds[key])
-            for reran in winner_reran:
-                # Records and sinks must reflect the FINAL pass (spec §8):
-                # the winner re-execution replaced these nodes' outputs, so
-                # their timings and metrics are restated from that pass.
-                seconds[reran] = winner_seconds[reran]
-                trackers.log_metrics(reran, _node_metrics(node_outputs[reran]))
-                _log.info(
-                    "node %s: re-executed with %s's winning overrides in %.3fs",
-                    reran,
-                    key,
-                    seconds[reran],
-                )
-            if (
-                the_plan.role_of(key) in ("gate", "stat_test")
-                and out.get("verdict") == "NO-GO"
-            ):
-                downstream = the_plan.descendants(key)
-                halted |= downstream
-                if not halted_at:
-                    halted_at, state = key, "halted"
-                _log.info(
-                    "node %s: NO-GO — halting %d descendant(s): %s",
-                    key,
-                    len(downstream),
-                    sorted(downstream),
-                )
-        for key in the_plan.order:
-            node_states.setdefault(key, "not_run")
-
-        # -- 6 RECORD ---------------------------------------------------
-        nodes_dir = os.path.join(run_dir, "nodes")
-        os.makedirs(nodes_dir, exist_ok=True)
-        for i, key in enumerate(the_plan.order, start=1):
-            record = {
-                "node": key,
-                "uses": the_plan.resolved[key].ref,
-                "role": the_plan.role_of(key),
-                "status": node_states[key],
-                "seconds": seconds.get(key),
-                "outputs": {
-                    name: _summarize(value)
-                    for name, value in node_outputs.get(key, {}).items()
-                },
-            }
-            record.update(search_meta.get(key, {}))
-            if node_states[key] == "error":
-                record["error"] = error_text
-            _write_json(os.path.join(nodes_dir, f"{i:02d}-{key}.json"), record)
-
-        carry = {}
-        for key, outs in node_outputs.items():
-            kept = {}
-            for name, value in outs.items():
-                carried, ok = _carryable(value)
-                if ok:
-                    kept[name] = carried
-            if kept:
-                carry[key] = kept
-        _write_json(os.path.join(run_dir, "carry.json"), carry)
-
-        resolved_payload["prev_bindings"] = prev_bindings
-        _write_json(os.path.join(run_dir, "resolved.json"), resolved_payload)
-
-        result = DocumentRunResult(
-            run_dir=run_dir,
-            state=state,
-            node_states=node_states,
-            outputs=node_outputs,
-            run_hash=run_hash,
-            halted_at=halted_at,
-            error=error_text,
-            prev_run=prev_dir or "",
-            warnings=the_plan.warnings,
-            seconds=seconds,
-        )
-        _write_json(
-            os.path.join(run_dir, "result.json"),
-            {
-                "name": document.name,
-                "asof": asof,
-                "document_hash": document.hash,
-                "run_hash": run_hash,
-                "state": state,
-                "exit_code": result.exit_code,
-                "halted_at": halted_at,
-                "node_states": node_states,
-                "prev_run": prev_dir or "",
-            },
-        )
-        lines = [f"**{result.verdict}**", ""]
-        # Findings come FIRST — above the identity block and above the node
-        # table (I-232). "all 14 node(s) completed" is true of a healthy run
-        # and of one that found an edge and deployed nothing, so a report
-        # that leads with node status buries the only line that separates
-        # them. A flag is a finding a human reads, never a machine verdict:
-        # it does NOT touch result.state or the exit code (owner ruling,
-        # 2026-08-15 — the contract stays 0 ran / 3 NO-GO / 1 error).
-        loud, notes = _collect_flags(the_plan.order, node_outputs)
-        if loud:
-            lines += ["## ⚠ LOUD", ""]
-            lines += [
-                f"- **[{key}] {code}** — {message}" for key, code, message in loud
-            ]
-            lines.append("")
-        if notes:
-            lines += ["## Notes", ""]
-            lines += [f"- [{key}] {code} — {message}" for key, code, message in notes]
-            lines.append("")
-        lines += [
-            f"- run: `{document.name}-{asof}-{run_hash[:8]}`",
-            f"- document hash: `{document.hash[:16]}…`",
-            f"- previous run: {os.path.basename(prev_dir) if prev_dir else '— (first of the series)'}",
-            "",
-            "| node | role | status | seconds |",
-            "|---|---|---|---|",
-        ]
-        lines += [
-            f"| {key} | {the_plan.role_of(key)} | {node_states[key]} | "
-            f"{seconds.get(key, '—')} |"
-            for key in the_plan.order
-        ]
-        _atomic_write_text(os.path.join(run_dir, "report.md"), "\n".join(lines) + "\n")
-        return result
+        run = _execute_plan(document, the_plan, ctx, resolved, trackers)
+        return _record_run(document, asof, the_plan, resolved, run)
     finally:
         trackers.close()
-        pipeline_logger.removeHandler(handler)
-        handler.close()
-        if stream_handler is not None:
-            pipeline_logger.removeHandler(stream_handler)
-            stream_handler.close()
-        pipeline_logger.setLevel(prior_level)
+        _close_run_log(*log_state)
 
 
 # ---------------------------------------------------------------------------
@@ -1270,34 +1519,15 @@ def _fold_splits(spec, cutoff, policy=DEFAULT_SPLIT_POLICY) -> TimeSplitConfig:
     )
 
 
-def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult:
-    """Run one document's declared ``walkforward`` section (ADR-0027).
+def _walkforward_refusals(document) -> None:
+    """Refuse a document walk-forward cannot honour, before any fold runs.
 
-    Per fold cutoff, a DERIVED document is built — the same pipeline with
-    ``splits`` replaced by that fold's pinned cuts carrying the document's
-    declared split ``policy`` (ADR-0031) and the name suffixed
-    ``-wf-<cutoff>`` (folds are separate run series: a ``$prev`` carry
-    binds within one fold's history, never across folds) — and executed
-    through :func:`run_document`, so every fold owns an ordinary,
-    reproducible run directory. The declared ``objective`` is collected
-    from each completed fold and aggregated (mean/std/min/max, best fold
-    by ``select``) into a summary directory
-    ``{name}-walkforward-{asof}-{hash8}`` beside the fold runs:
-    ``walkforward.json`` (the machine record) + ``report.md``.
-
-    A fold that HALTS (NO-GO) is recorded with no score and later folds
-    still run — a halt is a result. A fold that ERRORS stops the loop;
-    everything up to it is recorded. An unreadable or non-numeric
-    objective on a completed fold is an error — a fold that cannot
-    report cannot aggregate. A :class:`ConfigError` from a fold — e.g.
-    an event policy whose fold runs find no ``event_bounds()`` source
-    (ADR-0024) — propagates instead: the document, not the fold, is
-    refusing.
+    Three refusals: no ``walkforward`` section (use ``run``), a ``clock``
+    (pending the I-222 A/B ruling, exactly as ``run`` refuses), and a
+    declared cal band — ADR-0034 v1 folds replace the splits section with
+    a degenerate 1 ms test band, which leaves no room for one, and a
+    parent document declaring a cal band would silently lose it.
     """
-    import statistics
-
-    if not isinstance(document, PipelineDocument):
-        document = load_document(document)
     if document.walkforward is None:
         raise ConfigError(
             [
@@ -1312,9 +1542,6 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
                 "ruling — walkforward refuses exactly like `run`"
             ]
         )
-    # ADR-0034 v1: folds replace the splits section with a degenerate
-    # 1 ms test band, which leaves no room for a cal band — a parent
-    # document declaring one would silently lose it, so it refuses.
     if bool(
         getattr(document.splits, "cal_start_ms", None)
         or getattr(document.splits, "cal_days", 0)
@@ -1327,24 +1554,13 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
                 "section"
             ]
         )
-    if asof is None:
-        from datetime import datetime, timezone
 
-        asof = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    if not isinstance(asof, str) or not re.match(_ASOF_OK, asof):
-        raise ConfigError([f"asof must be 'YYYY-MM-DD', got {asof!r}"])
 
-    spec = document.walkforward
-    target, obj_path = parse_node_ref(spec.objective)
-    outputs_cfg = document.outputs
-    run_root = os.path.abspath(
-        os.path.expanduser(
-            (outputs_cfg.run_root if outputs_cfg is not None else "")
-            or "./pipeline_runs"
-        )
-    )
+def _walkforward_summary_dir(document, asof) -> str:
+    """Claim the summary directory that sits beside this evaluation's folds."""
     summary_dir = os.path.join(
-        run_root, f"{document.name}-walkforward-{asof}-{document.hash[:8]}"
+        _run_root(document),
+        f"{document.name}-walkforward-{asof}-{document.hash[:8]}",
     )
     if os.path.isdir(summary_dir) and os.listdir(summary_dir):
         raise ValueError(
@@ -1352,34 +1568,77 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
             "empty — same name+asof+identity means this exact evaluation "
             "already happened; remove it deliberately to repeat"
         )
-    declared_policy = DEFAULT_SPLIT_POLICY
-    if document.splits is not None:
-        declared_policy = getattr(document.splits, "policy", DEFAULT_SPLIT_POLICY)
-        _log.info(
-            "walkforward: the document's own splits section is replaced by "
-            "each fold's pinned cuts; its declared policy %r rides every "
-            "fold (ADR-0031)",
-            declared_policy,
-        )
+    return summary_dir
 
+
+def _declared_policy(document) -> str:
+    """The split policy every fold's pinned cuts carry (ADR-0031).
+
+    The document's own splits section is replaced fold by fold, but its
+    declared POLICY rides through: the cuts say WHERE, the policy says
+    WHICH INSTANT, and each fold then binds event bounds exactly as a
+    standalone run would.
+    """
+    if document.splits is None:
+        return DEFAULT_SPLIT_POLICY
+    policy = getattr(document.splits, "policy", DEFAULT_SPLIT_POLICY)
+    _log.info(
+        "walkforward: the document's own splits section is replaced by "
+        "each fold's pinned cuts; its declared policy %r rides every "
+        "fold (ADR-0031)",
+        policy,
+    )
+    return policy
+
+
+def _fold_score(result, target, obj_path, objective) -> float:
+    """The declared objective read off one completed fold, as a finite float.
+
+    An unreadable or non-numeric objective is an error, not a blank: a
+    fold that cannot report cannot aggregate, and a NaN must never rank
+    folds.
+    """
+    value = _dig(
+        result.outputs[target], obj_path, f"walkforward objective {objective!r}"
+    )
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"objective must be numeric, got {value!r}")
+    if not math.isfinite(value):
+        raise ValueError(
+            f"objective is non-finite ({value!r}) — NaN/inf cannot "
+            "aggregate and must never rank folds"
+        )
+    return float(value)
+
+
+def _run_folds(document, spec, asof, registry, policy):
+    """Run one derived document per fold cutoff, as ``(folds, state)``.
+
+    Each fold is the same pipeline with ``splits`` replaced by that fold's
+    pinned cuts and the name suffixed ``-wf-<cutoff>`` — folds are
+    separate run series, so a ``$prev`` carry binds within one fold's
+    history and never across folds.
+
+    A fold that HALTS is recorded with no score and later folds still run;
+    a halt is a result. A fold that ERRORS stops the loop with everything
+    up to it recorded. A :class:`ConfigError` propagates instead: that is
+    the DOCUMENT refusing, and it would refuse identically at every
+    cutoff, so burying it as one fold's "result" would be a lie.
+    """
     base_obj = document.to_obj()
     base_obj.pop("walkforward", None)  # the fold doc IS one fold, not the plan
+    target, obj_path = parse_node_ref(spec.objective)
     folds = []
     state = "ran"
     for cutoff in spec.fold_cutoffs():
         try:
             fold_obj = copy.deepcopy(base_obj)
             fold_obj["name"] = f"{document.name}-wf-{cutoff}"
-            fold_obj["splits"] = _fold_splits(spec, cutoff, declared_policy).to_obj()
+            fold_obj["splits"] = _fold_splits(spec, cutoff, policy).to_obj()
             fold_doc = PipelineDocument.from_obj(fold_obj)
             _log.info("walkforward: fold %s -> %s", cutoff, fold_doc.name)
             result = run_document(fold_doc, asof=asof, registry=registry)
         except ConfigError:
-            # A ConfigError is the DOCUMENT refusing, not one fold — the
-            # same pipeline refuses identically at every cutoff (e.g. the
-            # ADR-0024 bounds binding under a carried event policy,
-            # ADR-0031) — so it propagates exactly as `run` raises it,
-            # never buried in a summary as one fold's "result".
             raise
         except Exception as exc:  # noqa: BLE001 — recorded, then stop
             # run_document RAISES its pre-flight refusals (an occupied fold
@@ -1407,19 +1666,7 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
         }
         if result.state == "ran":
             try:
-                value = _dig(
-                    result.outputs[target],
-                    obj_path,
-                    f"walkforward objective {spec.objective!r}",
-                )
-                if isinstance(value, bool) or not isinstance(value, (int, float)):
-                    raise ValueError(f"objective must be numeric, got {value!r}")
-                if not math.isfinite(value):
-                    raise ValueError(
-                        f"objective is non-finite ({value!r}) — NaN/inf cannot "
-                        "aggregate and must never rank folds"
-                    )
-                fold["score"] = float(value)
+                fold["score"] = _fold_score(result, target, obj_path, spec.objective)
             except (KeyError, ValueError) as exc:
                 fold["state"] = "error"
                 fold["error"] = str(exc)
@@ -1433,35 +1680,30 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
             state = "error"
             break
         folds.append(fold)
+    return folds, state
+
+
+def _aggregate_folds(folds, select) -> dict:
+    """Aggregate the scored folds, and name the best one by ``select``."""
+    import statistics
 
     scored = [f["score"] for f in folds if f["score"] is not None]
     aggregate = {"n_folds": len(folds), "n_scored": len(scored)}
-    if scored:
-        aggregate["mean"] = statistics.fmean(scored)
-        aggregate["std"] = statistics.pstdev(scored) if len(scored) > 1 else 0.0
-        aggregate["min"] = min(scored)
-        aggregate["max"] = max(scored)
-        pick = min if spec.select == "min" else max
-        best = pick(
-            (f for f in folds if f["score"] is not None), key=lambda f: f["score"]
-        )
-        aggregate["best_cutoff"] = best["cutoff"]
-        aggregate["best_score"] = best["score"]
+    if not scored:
+        return aggregate
+    aggregate["mean"] = statistics.fmean(scored)
+    aggregate["std"] = statistics.pstdev(scored) if len(scored) > 1 else 0.0
+    aggregate["min"] = min(scored)
+    aggregate["max"] = max(scored)
+    pick = min if select == "min" else max
+    best = pick((f for f in folds if f["score"] is not None), key=lambda f: f["score"])
+    aggregate["best_cutoff"] = best["cutoff"]
+    aggregate["best_score"] = best["score"]
+    return aggregate
 
-    os.makedirs(summary_dir, exist_ok=True)
-    _write_json(
-        os.path.join(summary_dir, "walkforward.json"),
-        {
-            "name": document.name,
-            "asof": asof,
-            "document_hash": document.hash,
-            "objective": spec.objective,
-            "select": spec.select,
-            "state": state,
-            "folds": folds,
-            "aggregate": aggregate,
-        },
-    )
+
+def _walkforward_report_lines(document, spec, state, folds, aggregate):
+    """Build the walk-forward ``report.md`` — one row per fold."""
     lines = [
         f"**WALK-FORWARD {state.upper()}** — {aggregate['n_scored']}/"
         f"{aggregate['n_folds']} fold(s) scored on `{spec.objective}`",
@@ -1481,7 +1723,88 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
         lines.append(
             f"| {fold['cutoff']} | {fold['state']} | {score} | `{run_name}` |"
         )
+    return lines
+
+
+def _write_walkforward_summary(
+    summary_dir, document, asof, spec, state, folds, aggregate
+) -> None:
+    """Write the machine record and the human read of one evaluation."""
+    os.makedirs(summary_dir, exist_ok=True)
+    _write_json(
+        os.path.join(summary_dir, "walkforward.json"),
+        {
+            "name": document.name,
+            "asof": asof,
+            "document_hash": document.hash,
+            "objective": spec.objective,
+            "select": spec.select,
+            "state": state,
+            "folds": folds,
+            "aggregate": aggregate,
+        },
+    )
+    lines = _walkforward_report_lines(document, spec, state, folds, aggregate)
     _atomic_write_text(os.path.join(summary_dir, "report.md"), "\n".join(lines) + "\n")
+
+
+def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult:
+    """Run one document's declared ``walkforward`` section (ADR-0027).
+
+    Per fold cutoff, a DERIVED document is built — the same pipeline with
+    ``splits`` replaced by that fold's pinned cuts carrying the document's
+    declared split ``policy`` (ADR-0031) and the name suffixed
+    ``-wf-<cutoff>`` (folds are separate run series: a ``$prev`` carry
+    binds within one fold's history, never across folds) — and executed
+    through :func:`run_document`, so every fold owns an ordinary,
+    reproducible run directory. The declared ``objective`` is collected
+    from each completed fold and aggregated (mean/std/min/max, best fold
+    by ``select``) into a summary directory
+    ``{name}-walkforward-{asof}-{hash8}`` beside the fold runs:
+    ``walkforward.json`` (the machine record) + ``report.md``.
+
+    A fold that HALTS (NO-GO) is recorded with no score and later folds
+    still run — a halt is a result. A fold that ERRORS stops the loop;
+    everything up to it is recorded. An unreadable or non-numeric
+    objective on a completed fold is an error — a fold that cannot
+    report cannot aggregate. A :class:`ConfigError` from a fold — e.g.
+    an event policy whose fold runs find no ``event_bounds()`` source
+    (ADR-0024) — propagates instead: the document, not the fold, is
+    refusing.
+
+    Parameters
+    ----------
+    document : PipelineDocument or str
+        The document, or a path to its JSON file.
+    asof : str, optional
+        ``YYYY-MM-DD``; today (UTC) by default.
+    registry : NodeKindRegistry, optional
+        Where registered kinds resolve; default the toolkit registry.
+
+    Returns
+    -------
+    WalkForwardRunResult
+        The evaluation's state, its per-fold records and the aggregate.
+
+    Raises
+    ------
+    ConfigError / ValueError
+        No walkforward section, a clock, a declared cal band, a bad
+        ``asof``, or an occupied summary dir — all before any fold runs.
+    """
+    if not isinstance(document, PipelineDocument):
+        document = load_document(document)
+    _walkforward_refusals(document)
+    asof = _validated_asof(asof)
+    spec = document.walkforward
+    summary_dir = _walkforward_summary_dir(document, asof)
+    folds, state = _run_folds(
+        document, spec, asof, registry, _declared_policy(document)
+    )
+    aggregate = _aggregate_folds(folds, spec.select)
+    _write_walkforward_summary(
+        summary_dir, document, asof, spec, state, folds, aggregate
+    )
     return WalkForwardRunResult(
         summary_dir=summary_dir,
         state=state,
