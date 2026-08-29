@@ -1,66 +1,127 @@
 {
   "name": "intraday_poc-train",
-  "notes": "The PRODUCTION fit: one LSTM per symbol over every published bar, artifacts the live loop restores. Run from the child root after the backfill is published: python -m dskit.pipeline run configs/run-train.json --asof 2026-08-25 --adapter intraday_poc. Then point the forward loop at the run dir: python -m intraday_poc.live --run-dir <run dir> --source-config configs/source-backfill.json. The loop reads THIS document back out of the run dir (config.json) for the price field, the gap bound and the declared module class, so none of it is restated there. The node keys qhat_aapl / qhat_msft are the artifact convention the loop falls back to (artifacts/qhat_<symbol>); rename them and serve with --artifact SYMBOL=PATH, never an edit to live.py.",
+  "notes": "The PRODUCTION fit, TUNED: one LSTM per symbol, its hidden width chosen by a grid search scored on an embargoed tail the fit never sees. Run from the child root after the backfill is published: python -m dskit.pipeline run configs/run-train.json --asof 2026-08-28 --adapter intraday_poc. Then point the forward loop at the run dir: python -m intraday_poc.live --run-dir <run dir> --source-config configs/source-backfill.json --artifact AAPL=artifacts/qhat__aapl --artifact MSFT=artifacts/qhat__msft. The --artifact pair is REQUIRED here and is the loop's own documented hatch: the trainers are foreach instances, so their node keys carry the fan-out's double underscore (qhat__aapl) while the loop's default convention is artifacts/qhat_<symbol> — the hatch exists precisely so a document may rename its nodes without an edit to live.py. Everything else the loop still READS out of the run dir (config.json) — price field, gap bound, declared module class — so none of it is restated there. What changed from the untuned document, and why to accept it: the fit now stops at splits.train_end_ms instead of consuming every published bar, because a search whose objective scores rows its trials trained on grades memorization, and the biggest grid value always wins. The shipped artifact is therefore blind to the selection tail; refit after moving the cuts forward when that matters more than the tuning does.",
+  "foreach": {
+    "keys": ["AAPL", "MSFT"],
+    "notes": "The symbol universe, and the reason this document has a fan-out at all: the search's space key names the TEMPLATE (qhat.module_params.hidden_size) and the expansion re-aims it at every instance, so ONE declaration searches every symbol over ONE grid. Written longhand the same search needs a space key per symbol — copies with nothing pinning them, so editing one and forgetting the other searches the two symbols over different grids and calls the difference a result. Add a third symbol by adding a key here and to source-backfill.json's universe, and nothing else. Keys are the RAW vendor symbols because $each substitutes them whole into the filters; node keys take their lowercase slug (qhat -> qhat__aapl). What the fan-out does NOT do: tie the two symbols to one tuned VALUE. Two instances are two independent overrides and hpo-grid crosses them, so three widths over two symbols is nine trials and the winner may pair 16 with 64 — see the search node's notes.",
+    "pipeline": {
+      "rows": {
+        "uses": "filter",
+        "inputs": { "records": "$window.records" },
+        "params": {
+          "where": [
+            { "field": "symbol", "op": "==", "value": "$each" },
+            { "field": "asof_ms", "op": "<=", "value": "$splits.train_end_ms" }
+          ]
+        },
+        "notes": "One model per symbol — the PoC's design, so each series is fit on its own dynamics — up to the train cut. The band between train_end_ms and val_start_ms belongs to NO split: a next-bar label resolves in one minute, so the embargo is discipline made visible rather than a horizon the label needs."
+      },
+      "val_rows": {
+        "uses": "filter",
+        "inputs": { "records": "$window.records" },
+        "params": {
+          "where": [
+            { "field": "symbol", "op": "==", "value": "$each" },
+            { "field": "asof_ms", "op": ">=", "value": "$splits.val_start_ms" },
+            { "field": "asof_ms", "op": "<=", "value": "$splits.val_end_ms" }
+          ]
+        },
+        "notes": "The selection window: the rows the search's objective is measured on, and the ONLY rows in this document no trial ever fits. They are wired to the forecast node, never to the trainer — see qhat's notes for why no monitor is declared."
+      },
+      "qhat": {
+        "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+        "mode": "train",
+        "inputs": { "rows": "$rows.records" },
+        "params": {
+          "module": "intraday_poc.models:NextBarLSTM",
+          "module_params": { "lookback": 30, "hidden_size": 32, "num_layers": 1 },
+          "features": ["ret_lag_0", "ret_lag_1", "ret_lag_2", "ret_lag_3", "ret_lag_4", "ret_lag_5", "ret_lag_6", "ret_lag_7", "ret_lag_8", "ret_lag_9", "ret_lag_10", "ret_lag_11", "ret_lag_12", "ret_lag_13", "ret_lag_14", "ret_lag_15", "ret_lag_16", "ret_lag_17", "ret_lag_18", "ret_lag_19", "ret_lag_20", "ret_lag_21", "ret_lag_22", "ret_lag_23", "ret_lag_24", "ret_lag_25", "ret_lag_26", "ret_lag_27", "ret_lag_28", "ret_lag_29"],
+          "label": "y_next",
+          "optimizer": "torch.optim:Adam",
+          "optimizer_params": { "weight_decay": 0.0 },
+          "epochs": 5,
+          "lr": 0.001,
+          "loader": { "batch_size": 512, "shuffle": true, "seed": 7 },
+          "device": "cpu"
+        },
+        "notes": "ADR-0025 declared seam: the document names the child's nn.Module and the optimizer; the module owns the flat-lag-vector -> LSTM-sequence resequencing, so the pack's default RowVectorAdapter carries it. features MUST stay ret_lag_0..ret_lag_{lookback-1} in order and module_params.lookback must equal the window node's lookback — the module refuses a width mismatch at run. hidden_size 32 is the DECLARED baseline the search overrides per trial; leaving it at the middle of the grid keeps the untuned document runnable and keeps this fit's params identical to run-backtest.json's (pinned by test_configs.py). device: cpu makes the compute target visible (the engine's default is already CPU; device is declared, never detected). optimizer_params names Adam's other knobs at their library defaults so they are visible and tunable, not a silent zero. NO monitor, deliberately, even though val_rows now exist in this document: monitoring would select the epoch on the very rows the search's objective scores, so one set would pick both the checkpoint and the architecture — the optimism run-backtest.json's notes warn about. val_rows stay unwired here and the last epoch's weights ship, exactly as before."
+      },
+      "fc": {
+        "uses": "intraday_poc-forecast",
+        "inputs": { "signal": "$qhat.signal", "records": "$val_rows.records" },
+        "params": { "split": "val" },
+        "notes": "One belief per selection-window minute — the trainer's signal predicts straight off the fitted module; a row without full feature coverage is skipped, never fabricated. Downstream of the searched trainer, so every trial re-runs it."
+      }
+    }
+  },
   "pipeline": {
     "bars": {
       "uses": "intraday_poc-bars",
       "params": { "root": "./ob", "source": "alpaca" },
-      "notes": "Role data: the onboarding store's deduplicated bar records, bitemporally resolved (latest acquired_at wins per (symbol, ts)). root is relative to the invoking cwd — run from the child root."
+      "notes": "Role data: the onboarding store's deduplicated bar records, bitemporally resolved (latest acquired_at wins per (symbol, ts)). root is relative to the invoking cwd — run from the child root. Shared: read once, filtered per symbol, and untouched by every trial."
     },
     "window": {
       "uses": "intraday_poc-window",
       "inputs": { "records": "$bars.records" },
       "params": { "lookback": 30, "max_gap_minutes": 5 },
-      "notes": "30 one-minute log returns per row, next-bar return as label. max_gap_minutes 5 tolerates thin IEX minutes without ever bridging a session boundary; windows crossing a larger gap are dropped, not interpolated."
+      "notes": "30 one-minute log returns per row, next-bar return as label. max_gap_minutes 5 tolerates thin IEX minutes without ever bridging a session boundary; windows crossing a larger gap are dropped, not interpolated. Shared and clean, so the search re-executes only the trainers and what they feed — never this scan."
     },
-    "aapl_rows": {
-      "uses": "filter",
-      "inputs": { "records": "$window.records" },
-      "params": { "where": [ { "field": "symbol", "op": "==", "value": "AAPL" } ] },
-      "notes": "One model per symbol — the PoC's design, so each series is fit on its own dynamics."
-    },
-    "msft_rows": {
-      "uses": "filter",
-      "inputs": { "records": "$window.records" },
-      "params": { "where": [ { "field": "symbol", "op": "==", "value": "MSFT" } ] },
-      "notes": "The MSFT twin of aapl_rows."
-    },
-    "qhat_aapl": {
-      "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
-      "mode": "train",
-      "inputs": { "rows": "$aapl_rows.records" },
+    "forecasts": {
+      "uses": "concat",
+      "inputs": { "forecasts__each": "$fc.forecasts" },
       "params": {
-        "module": "intraday_poc.models:NextBarLSTM",
-        "module_params": { "lookback": 30, "hidden_size": 32, "num_layers": 1 },
-        "features": ["ret_lag_0", "ret_lag_1", "ret_lag_2", "ret_lag_3", "ret_lag_4", "ret_lag_5", "ret_lag_6", "ret_lag_7", "ret_lag_8", "ret_lag_9", "ret_lag_10", "ret_lag_11", "ret_lag_12", "ret_lag_13", "ret_lag_14", "ret_lag_15", "ret_lag_16", "ret_lag_17", "ret_lag_18", "ret_lag_19", "ret_lag_20", "ret_lag_21", "ret_lag_22", "ret_lag_23", "ret_lag_24", "ret_lag_25", "ret_lag_26", "ret_lag_27", "ret_lag_28", "ret_lag_29"],
-        "label": "y_next",
-        "optimizer": "torch.optim:Adam",
-        "optimizer_params": { "weight_decay": 0.0 },
-        "epochs": 5,
-        "lr": 0.001,
-        "loader": { "batch_size": 512, "shuffle": true, "seed": 7 },
-        "device": "cpu"
+        "shape": "records",
+        "key": "symbol",
+        "provenance_waiver": "rows already carry their symbol; the ports are split by symbol upstream, so a port tag would duplicate the field"
       },
-      "notes": "ADR-0025 declared seam: the document names the child's nn.Module and the optimizer; the module owns the flat-lag-vector -> LSTM-sequence resequencing, so the pack's default RowVectorAdapter carries it. features MUST stay ret_lag_0..ret_lag_{lookback-1} in order and module_params.lookback must equal the window node's lookback — the module refuses a width mismatch at run. device: cpu makes the compute target visible in the document (the engine's default is already CPU; device is declared, never detected). optimizer_params names Adam's other knobs at their library defaults so they are visible and tunable, not a silent zero. No monitor: this document wires no val_rows (it trains on every published bar), and the engine refuses a validation monitor without them (ADR-0035) — so the shipped artifact is the last epoch's weights, and run-backtest.json's val_loss monitor is a declared skew whose consequence its notes carry."
+      "notes": "Port fan-out is OPT-IN: the port written 'forecasts__each' becomes one port per foreach key (forecasts__aapl, forecasts__msft), so adding a symbol never edits this node. Both symbols' beliefs in one stream for the selector; key=symbol proves the ports stayed disjoint."
     },
-    "qhat_msft": {
-      "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
-      "mode": "train",
-      "inputs": { "rows": "$msft_rows.records" },
+    "labeled": {
+      "uses": "concat",
+      "inputs": { "rows__each": "$val_rows.records" },
       "params": {
-        "module": "intraday_poc.models:NextBarLSTM",
-        "module_params": { "lookback": 30, "hidden_size": 32, "num_layers": 1 },
-        "features": ["ret_lag_0", "ret_lag_1", "ret_lag_2", "ret_lag_3", "ret_lag_4", "ret_lag_5", "ret_lag_6", "ret_lag_7", "ret_lag_8", "ret_lag_9", "ret_lag_10", "ret_lag_11", "ret_lag_12", "ret_lag_13", "ret_lag_14", "ret_lag_15", "ret_lag_16", "ret_lag_17", "ret_lag_18", "ret_lag_19", "ret_lag_20", "ret_lag_21", "ret_lag_22", "ret_lag_23", "ret_lag_24", "ret_lag_25", "ret_lag_26", "ret_lag_27", "ret_lag_28", "ret_lag_29"],
-        "label": "y_next",
-        "optimizer": "torch.optim:Adam",
-        "optimizer_params": { "weight_decay": 0.0 },
-        "epochs": 5,
-        "lr": 0.001,
-        "loader": { "batch_size": 512, "shuffle": true, "seed": 7 },
-        "device": "cpu"
+        "shape": "records",
+        "key": "symbol",
+        "provenance_waiver": "rows already carry their symbol; the ports are split by symbol upstream, so a port tag would duplicate the field"
       },
-      "notes": "The MSFT twin of qhat_aapl — same architecture, its own weights; knobs and their rationale mirror qhat_aapl (including no monitor: no val_rows wired)."
+      "notes": "The selection window's rows with their y_next labels — what realizes each pick after the fact. Not downstream of the trainers, so a trial never re-runs it."
+    },
+    "select": {
+      "uses": "intraday_poc-select-one",
+      "inputs": { "forecasts": "$forecasts.merged", "labeled": "$labeled.merged" },
+      "params": { "solver": "appsi_highs", "solver_options": {}, "split": "val" },
+      "notes": "The search's OBJECTIVE node: at each minute pick exactly one symbol, maximizing predicted next-bar return; metrics.total_realized is the summed realized log return of those picks. The same program run-backtest.json scores its folds with, and the same one live.py runs a minute at a time — so the architecture chosen here is chosen by the number the PoC actually cares about, not by a proxy loss. split: val says which rows it reads, and the engine refuses an objective that reads anything else."
+    },
+    "search": {
+      "uses": "hpo-grid",
+      "params": {
+        "space": { "qhat.module_params.hidden_size": [16, 32, 64] },
+        "objective": "$select.metrics.total_realized",
+        "select": "max"
+      },
+      "notes": "The capstone, kept deliberately small: ONE categorical knob over three widths, so the first tracked experiment tests the plumbing rather than a hypothesis. select: max because total_realized is a return — minimizing it would ship the architecture that lost the most, and hpo-grid's default is min. The space key names the foreach TEMPLATE and expands to one override per symbol; the search is therefore JOINT over the pair — 3 widths x 2 symbols = 9 trials, each refitting both models — and its winner may pair different widths, which is a result to read rather than a value this document adopts. No n_trials: nine trials IS the whole grid, and subsampling something this small trades a complete comparison for a rank seed. No seeds ensemble: it multiplies an already real cost, and the trainers' loader.seed pins every fit, so a re-run reproduces the winner exactly. The driver re-executes only the dirty subgraph per trial — the trainers, fc, forecasts, select — never the store scan or the windows, then re-applies the winner once so everything downstream reads the tuned pass. The winner is REPORTED, never written back: promoting it means moving hidden_size in this document AND in run-backtest.json together (test_configs.py pins the two fits identical), and an asymmetric winner must additionally defeat test_the_symbol_twins_share_a_regime — the argument promotion should have to win."
     }
+  },
+  "splits": {
+    "kind": "time",
+    "train_end_ms": 1785974400000,
+    "val_start_ms": 1786060800000,
+    "val_end_ms": 1787961600000,
+    "test_end_ms": 1788566400000,
+    "notes": "Causal cuts as epoch-ms, the only split kind a minute-bar document may declare: 2026-08-06 ends the fit, a one-day embargo band follows, 2026-08-07..2026-08-29 is the selection window the search scores, and the test band to 2026-09-05 is declared and deliberately UNREAD — nothing in this document may consume it, and it is where an honest out-of-sample check goes when one is built. Move all four forward together as the store grows; they are what decides how much history the shipped artifact saw."
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_poc-train"
+        },
+        "notes": "A LOCAL sqlite store beside the run root — no server to start, nothing to reach over a network, and the pack proves the file writable at plan time rather than swallowing the failure at run time. Spelled as a class reference so no registration call is needed anywhere in the child's code. The path is relative to the invoking cwd, the same discipline as bars.root. What lands here: one entry per RUN, carrying every node's declared params flattened to the override spelling (search.space, qhat__aapl.module_params.hidden_size, ...) plus each node's metrics. Trials do NOT land here — the driver silences the tracker during search re-execution on purpose, so a sink records what a run SHIPPED, not what it explored; the per-trial scores live in the search node's record in the run dir and in the run report."
+      }
+    ],
+    "notes": "Excluded from the identity hash — where metrics land says nothing about what the run computes."
   },
   "outputs": {
     "run_root": "",

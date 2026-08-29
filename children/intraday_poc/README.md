@@ -31,7 +31,7 @@ intraday_poc/
 │   ├── source-backfill.json   # the ONE source config: SIP 1-min bars, both modes
 │   ├── suite-bars.json        # validation over the bars stream
 │   ├── run-backtest.json      # the walk-forward backtest document
-│   ├── run-train.json         # the production fit the live loop restores
+│   ├── run-train.json         # the TUNED production fit the live loop restores
 │   └── asset-model.json       # the child's catalog kinds
 └── tests/
     ├── conftest.py            # sys.path bootstrap — in-repo and after graduation
@@ -141,13 +141,31 @@ model on nothing.
 # walk-forward backtest: 3 expanding folds, realized pick-return objective
 python -m dskit.pipeline walkforward configs/run-backtest.json --asof 2026-08-25 --adapter intraday_poc
 
-# production fit over everything published
-python -m dskit.pipeline run configs/run-train.json --asof 2026-08-25 --adapter intraday_poc
+# production fit, hidden_size chosen by a 9-trial grid on the embargoed tail
+python -m dskit.pipeline run configs/run-train.json --asof 2026-08-28 --adapter intraday_poc
+
+# the trials' shipped scores, every run beside each other
+python -m dskit.pipeline runs --metric select.metrics.total_realized
 
 # the forward loop (paper account only; --dry-run to decide without orders)
 python -m intraday_poc.live --run-dir <run dir printed above> \
-    --source-config configs/source-backfill.json --qty 1
+    --source-config configs/source-backfill.json --qty 1 \
+    --artifact AAPL=artifacts/qhat__aapl --artifact MSFT=artifacts/qhat__msft
 ```
+
+The `--artifact` pair is **required** for `run-train.json`: its trainers
+are `foreach` instances, so their node keys carry the fan-out's double
+underscore (`qhat__aapl`) while the loop's default convention is
+`artifacts/qhat_<symbol>`. That flag is the documented hatch for exactly
+this — a document may rename its nodes without an edit to `live.py`.
+
+The fit now **stops at `splits.train_end_ms`** instead of consuming every
+published bar: a search whose objective scores rows its trials trained on
+grades memorization, so the selection window is held out behind a one-day
+embargo. Per-trial scores live in the run's own report and node records;
+the mlflow sink (`tracking` — a local `sqlite:///mlruns.db`, no server)
+records what each RUN shipped, because the driver silences the tracker
+during search re-execution on purpose.
 
 Every minute the live loop: gates on the exchange clock, pulls the
 latest IEX bars, restores each model through its hash-verified sidecar,

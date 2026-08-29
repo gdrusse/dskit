@@ -48,6 +48,29 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
 
 ## Gotchas learned building this
 
+- **`run-train.json` fans out; `run-backtest.json` does not.** The
+  train document builds its per-symbol nodes from ONE `foreach`
+  template (ADR-0039), so its trainers are `qhat__aapl`/`qhat__msft`
+  — a DOUBLE underscore — and live serving needs
+  `--artifact AAPL=artifacts/qhat__aapl` (the loop's hatch, never an
+  edit to `live.py`). Read a fanned document through
+  `document.expanded`, never `document.pipeline`: the declared map
+  holds the template, the derived map holds what RAN, and they are the
+  same object only when there is no fan-out.
+- **`foreach` pins the DECLARATION, not the tuned value.** One space
+  key naming a template expands to one override per instance, so
+  `hpo-grid` CROSSES them: three widths over two symbols is nine
+  trials and a winner may pair 16 with 64. Nothing in the grammar ties
+  two nodes' params to one value. The shipped regime stays symmetric
+  because the winner is REPORTED, not written back — promoting one
+  means moving both documents and defeating
+  `test_the_symbol_twins_share_a_regime` on purpose.
+- **The train document's search scores an embargoed tail**, so the
+  production fit stops at `splits.train_end_ms` and the shipped
+  artifact never saw the selection window. No `monitor` there,
+  deliberately: monitoring would select the epoch on the very rows the
+  objective scores.
+
 - **Lookback is pinned in three places** — the window node's `lookback`,
   the LSTM's `module_params.lookback`, and the `ret_lag_*` feature list.
   `test_configs.py::test_lookback_agrees_everywhere` pins the agreement;

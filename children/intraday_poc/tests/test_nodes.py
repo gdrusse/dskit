@@ -1180,6 +1180,40 @@ def test_live_reads_the_declared_module_from_the_run_document():
         declared_module(_document(nodemap))
 
 
+def test_the_loop_reads_the_nodes_the_run_RAN_not_the_ones_it_declared():
+    """A fanned-out document keeps its nodes in ``foreach.pipeline``.
+
+    ADR-0039 splits a document in two: ``pipeline`` is what the author
+    WROTE and ``expanded`` is what the engine RAN, and they are the same
+    object only when there is no ``foreach``. run-train.json now has
+    one, so its window node is shared (still in ``pipeline``) while its
+    trainers are template instances (only in ``expanded``) — and a loop
+    reading the declared map alone finds no ``module`` and refuses a run
+    that trained perfectly good models. Both readers therefore read what
+    RAN; documents without a fan-out are unaffected, because for them
+    the two maps ARE one.
+    """
+    from intraday_poc.live import declared_module, window_knobs
+
+    document = PipelineDocument.from_obj({
+        "name": "serving",
+        "foreach": {
+            "keys": ["AAPL", "MSFT"],
+            "pipeline": {
+                "qhat": {"uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+                         "params": {"module": "somepkg.models:OtherNet"}},
+            },
+        },
+        "pipeline": {
+            "window": {"uses": "intraday_poc-window",
+                       "params": {"lookback": 3, "price_field": "vwap",
+                                  "max_gap_minutes": 7}},
+        },
+    })
+    assert declared_module(document) == "somepkg.models:OtherNet"
+    assert window_knobs(document) == ("vwap", 7.0)
+
+
 def test_artifact_paths_default_by_convention_and_bend_by_flag(tmp_path):
     """``--artifact SYMBOL=PATH`` is the documented override; the
     convention below it is the fallback, so no table of symbols lives in
@@ -1497,9 +1531,18 @@ def test_live_main_fetches_with_the_knobs_it_read(tmp_path, monkeypatch):
                     reason="torch/pyomo/highspy not installed")
 def test_train_document_to_live_chain_end_to_end(tmp_path):
     """The shipped train document (bars root repointed at a tmp store,
-    epochs cut — placement and effort, not shape) runs end to end; the
-    live loop then restores the artifacts through its own sidecar
-    verification, predicts, and the pyomo program picks a symbol."""
+    epochs cut, split cuts moved onto the fixture's timeline, the
+    tracking sink dropped — placement and effort, not shape) runs end to
+    end, SEARCH INCLUDED; the live loop then restores the artifacts
+    through its own sidecar verification, predicts, and the pyomo
+    program picks a symbol.
+
+    The cuts move because they are absolute instants: left at the
+    store's real August window every fixture row would land in train,
+    the selection window would be empty, and ``concat`` refuses a port
+    that contributed nothing — so the document would fail on the fixture
+    for a reason that says nothing about the document.
+    """
     from intraday_poc.live import (
         declared_module,
         load_run_document,
@@ -1516,8 +1559,10 @@ def test_train_document_to_live_chain_end_to_end(tmp_path):
               encoding="utf-8") as fh:
         doc = json.load(fh)
     doc["pipeline"]["bars"]["params"]["root"] = root
-    for key in ("qhat_aapl", "qhat_msft"):
-        doc["pipeline"][key]["params"]["epochs"] = 2
+    doc["foreach"]["pipeline"]["qhat"]["params"]["epochs"] = 2
+    doc["splits"].update({"train_end_ms": _ms(90), "val_start_ms": _ms(95),
+                          "val_end_ms": _ms(119), "test_end_ms": _ms(200)})
+    doc.pop("tracking")
     doc_path = tmp_path / "run-train.json"
     doc_path.write_text(json.dumps(doc), encoding="utf-8")
 
@@ -1534,7 +1579,7 @@ def test_train_document_to_live_chain_end_to_end(tmp_path):
     # driver just wrote — the ADR-0025 seam, end to end.
     written = load_run_document(result.run_dir)
     module_ref = declared_module(written)
-    assert module_ref == doc["pipeline"]["qhat_aapl"]["params"]["module"]
+    assert module_ref == doc["foreach"]["pipeline"]["qhat"]["params"]["module"]
 
     # The serving features come off the DOCUMENT'S OWN window node —
     # the same object the run trained through, not a second reading of
@@ -1542,7 +1587,7 @@ def test_train_document_to_live_chain_end_to_end(tmp_path):
     served = window_node(written).latest_rows(bars)
 
     preds = {}
-    for symbol, node_key in (("AAPL", "qhat_aapl"), ("MSFT", "qhat_msft")):
+    for symbol, node_key in (("AAPL", "qhat__aapl"), ("MSFT", "qhat__msft")):
         artifact_dir = os.path.join(result.run_dir, "artifacts", node_key)
         with pytest.raises(SystemExit, match="wrong artifact"):
             restore_model(artifact_dir, "somepkg.models:OtherNet")
@@ -1600,9 +1645,21 @@ def test_restore_model_refuses_a_tampered_artifact(tmp_path):
               encoding="utf-8") as fh:
         doc = json.load(fh)
     doc["pipeline"]["bars"]["params"]["root"] = root
+    # The fit alone: the shared scan plus the ONE symbol's template
+    # nodes that feed it. The selection half (val_rows/fc/forecasts/
+    # labeled/select) and the search that consumes it are what this test
+    # is not about, and the tracking sink is placement.
     doc["pipeline"] = {k: v for k, v in doc["pipeline"].items()
-                       if k in ("bars", "window", "aapl_rows", "qhat_aapl")}
-    doc["pipeline"]["qhat_aapl"]["params"]["epochs"] = 1
+                       if k in ("bars", "window")}
+    doc["foreach"]["keys"] = ["AAPL"]
+    doc["foreach"]["pipeline"] = {
+        k: v for k, v in doc["foreach"]["pipeline"].items()
+        if k in ("rows", "qhat")
+    }
+    doc["foreach"]["pipeline"]["qhat"]["params"]["epochs"] = 1
+    doc["splits"].update({"train_end_ms": _ms(90), "val_start_ms": _ms(95),
+                          "val_end_ms": _ms(119), "test_end_ms": _ms(200)})
+    doc.pop("tracking")
     doc_path = tmp_path / "doc.json"
     doc_path.write_text(json.dumps(doc), encoding="utf-8")
     document = replace(load_document(str(doc_path)),
@@ -1610,7 +1667,7 @@ def test_restore_model_refuses_a_tampered_artifact(tmp_path):
     result = run_document(document, asof="2026-01-06")
     assert result.state == "ran", (result.state, result.error)
 
-    artifact_dir = os.path.join(result.run_dir, "artifacts", "qhat_aapl")
+    artifact_dir = os.path.join(result.run_dir, "artifacts", "qhat__aapl")
     state_path = os.path.join(artifact_dir, "model.pt")
     with open(state_path, "r+b") as fh:
         fh.seek(-1, os.SEEK_END)
@@ -1619,4 +1676,4 @@ def test_restore_model_refuses_a_tampered_artifact(tmp_path):
         fh.write(bytes([last[0] ^ 0xFF]))
     with pytest.raises(SystemExit, match="state_hash"):
         restore_model(artifact_dir,
-                      doc["pipeline"]["qhat_aapl"]["params"]["module"])
+                      doc["foreach"]["pipeline"]["qhat"]["params"]["module"])

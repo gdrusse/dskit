@@ -232,8 +232,8 @@ def _is_window(uses):
 
 
 def _window_nodes(document):
-    """Return the document's window nodes, by node key."""
-    return {key: spec for key, spec in document.pipeline.items()
+    """Return the window nodes the run RAN (fan-out included), by key."""
+    return {key: spec for key, spec in document.expanded.items()
             if _is_window(spec.uses)}
 
 
@@ -326,6 +326,12 @@ def declared_module(document):
     would break serving the moment the declared class changed — which
     is the whole point of the seam.
 
+    Read off the map the run RAN (``expanded``), not the one its author
+    wrote: under a ``foreach`` fan-out (ADR-0039) the trainers are
+    template instances and the declared map holds none of them. The two
+    maps are the same object when a document declares no fan-out, so
+    this is the ONE reading, never a special case.
+
     Parameters
     ----------
     document : dskit.pipeline.document.PipelineDocument
@@ -342,7 +348,7 @@ def declared_module(document):
         When no node declares ``module``, or the trainers disagree.
     """
     declared = {spec.params["module"]
-                for spec in document.pipeline.values()
+                for spec in document.expanded.values()
                 if "module" in spec.params}
     if not declared:
         raise SystemExit(

@@ -22,6 +22,10 @@ htmlcov/
 # Pipeline run outputs
 pipeline_runs/
 
+# Local tracking stores a document's mlflow sink writes beside them
+mlruns.db
+mlruns/
+
 # OS / editor
 .DS_Store
 .idea/
@@ -31,7 +35,10 @@ pipeline_runs/
 .env*
 !.env.example
 
-# Onboarding roots / asset stores created by child runs
+# Onboarding roots / asset stores created by child runs. Both spellings:
+# a run creates the directory, and a worktree may SYMLINK one store into
+# several checkouts — a trailing slash never matches the symlink.
+children/*/ob
 children/*/ob/
 children/*/asset_store/
 children/*/decisions.jsonl
