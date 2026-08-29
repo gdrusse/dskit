@@ -7,7 +7,11 @@ exactly one symbol per minute** — backtested walk-forward, then run
 forward against Alpaca paper trading with the same modelling core and the
 same selection program. The two documents now declare the SAME trainer,
 `monitor` included: both select the shipped epoch on validation loss
-(ADR-0035), each on a band nothing else in its document reads.
+(ADR-0035). They do **not** monitor on comparable bands, and that is the
+one skew left: `run-train.json` opens a third band for it (`mon_rows`,
+read by nothing else), while `run-backtest.json` monitors on the very
+val window it also forecasts and scores — so read its `total_realized`
+as an **upper bound** (see "What to know before trusting the numbers").
 
 A child consumes dskit, never modifies it: tier-3 code plus JSON configs
 over the three seams — a connector (onboarding), registered node kinds
@@ -17,7 +21,7 @@ over the three seams — a connector (onboarding), registered node kinds
 intraday_poc/
 ├── README.md                  # this file
 ├── CLAUDE.md                  # agent orientation
-├── pyproject.toml             # dskit + alpaca-py, torch, pyomo, highspy
+├── pyproject.toml             # dskit + alpaca-py, torch, pyomo, highspy, mlflow
 ├── .env.example               # Alpaca paper key pair — copy to .env, fill in
 ├── intraday_poc/
 │   ├── __init__.py            # import = registration of the node kinds
@@ -175,10 +179,21 @@ mlflow sink (`tracking` — a local `sqlite:///mlruns.db`, no server)
 carries one entry per RUN, and its two halves come from different passes:
 **params are the DECLARED ones** (logged before the search runs) while
 **metrics are the final pass's**. So a searched run whose winner differs
-from its declaration will show `hidden_size 32` beside the score of the
-model it shipped at 16 — compare architectures through the run dirs, not
-through the sink. Trials never reach a sink at all: the driver silences
-the tracker while it re-executes them.
+from its declaration shows `hidden_size 32` beside the score of the model
+it shipped at 64 — which is exactly what this machine's tuned run
+recorded — so compare architectures through the run dirs, not through the
+sink. Trials never reach a sink at all: the driver silences the tracker
+while it re-executes them.
+
+The grid CROSSES the two symbols (nine trials, six of them asymmetric),
+so a winner may pair 16 with 64. The live loop refuses such a pair rather
+than trading on it, and recovering is a config edit, not a re-run: the
+grid is enumerated and `loader.seed` pins every fit, so re-running
+reproduces the same winner. Take a symmetric trial from `carry.json`, put
+its width on the `foreach` template's `module_params` (one edit, both
+symbols) and on `run-backtest.json`'s twin pair, narrow the space, re-run.
+Per-symbol widths cannot be declared beside the template they fan from at
+all — that needs hand-expanding the fan-out.
 
 Every minute the live loop: gates on the exchange clock, pulls the
 latest IEX bars, restores each model through its hash-verified sidecar,
@@ -213,6 +228,17 @@ duplicate both.
 
 ## What to know before trusting the numbers
 
+- **The walk-forward's `total_realized` is an UPPER BOUND, not a clean
+  out-of-sample score.** In `run-backtest.json` each fold's `aapl_val` /
+  `msft_val` feeds three consumers: the trainer's `val_rows` (which
+  selects the epoch that ships), the forecaster's records, and `labeled`
+  (which realizes every pick). One band therefore both picks the
+  checkpoint and grades it, an optimism the objective does not correct —
+  the document's own notes say so, and the fix (a third band) is what
+  `run-train.json` carries. So the headline fold numbers are a ceiling on
+  what a fold would have earned, not an estimate of it. The tuned fit's
+  search score does not share the skew: it monitors on `mon_rows` and is
+  scored on the selection window after it.
 - **The store is full SIP, in both modes** (free tier serves consolidated
   history; only the last 15 minutes are gated — the connector clamps for
   it). Training and backtesting therefore see one homogeneous series.

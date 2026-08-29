@@ -93,7 +93,7 @@ from dskit.pipeline.base import (
     import_ref,
     is_class_ref,
 )
-from dskit.pipeline.document import foreach_slug, load_document
+from dskit.pipeline.document import FOREACH_SEP, foreach_slug, load_document
 from dskit.pipeline.env import load_env
 from dskit.pipeline.libs.pyomo import DEFAULT_SOLVER
 
@@ -517,16 +517,46 @@ def _trainer_keys(document):
                  if "module" in spec.params)
 
 
+def _fanned_owner(document):
+    """Instance node key -> the ``foreach`` key it was BUILT from.
+
+    The fan-out's naming rule is the engine's, applied forward here
+    rather than parsed backwards: every instance is
+    ``<template>__<slug>`` (:data:`~dskit.pipeline.document.FOREACH_SEP`
+    and :func:`~dskit.pipeline.document.foreach_slug`), so building the
+    names from ``foreach.keys`` gives an EXACT map where reading them
+    back cannot — ``qhat__brk_b`` is one name, and no rule reading it
+    alone can tell the template ``qhat`` + key ``BRK.B`` from a template
+    ``qhat__brk`` + key ``B``.
+
+    Empty for a document with no fan-out, which is the whole answer for
+    one: nothing there was generated, so nothing there has an owner.
+    """
+    fan = document.foreach
+    if fan is None:
+        return {}
+    return {f"{template}{FOREACH_SEP}{foreach_slug(key)}": key
+            for key in fan.keys for template in fan.pipeline}
+
+
 def _trainer_key(document, symbol, trainers):
     """Return the trainer node key the run wrote for ONE symbol.
 
-    The rule is the documents' own spelling, read rather than restated:
-    a per-symbol trainer's key ends in an underscore and the symbol's
-    slug — ``qhat_aapl`` written longhand, ``qhat__aapl`` when the node
-    came out of a ``foreach`` template (the fan-out's separator is the
-    second underscore). The slug is the ENGINE's
-    (:func:`~dskit.pipeline.document.foreach_slug`), so a symbol the
-    fan-out renames is looked up under the name the fan-out gave it.
+    Two rules, because the two spellings carry different evidence.
+
+    A FANNED trainer answers for exactly the ``foreach`` key it was
+    built from (:func:`_fanned_owner`) — the document names those keys,
+    so the mapping is read, not guessed. A suffix test here would serve
+    one symbol's weights for another's bars: ``qhat__brk_b`` ends in
+    ``_b``, so the symbol ``B`` would restore BRK.B's model, and the
+    pair-regime check could not see it because both symbols would be
+    reading ONE artifact. Alpaca spells real tickers that way.
+
+    A HAND-DECLARED trainer carries no such record — nothing on disk
+    says where ``qhat_aapl``'s stem ends — so it keeps the documents'
+    own spelling: a key ending in an underscore and the symbol's slug.
+    That is a heuristic, and it stays honest by refusing rather than
+    choosing when two keys both match.
 
     Parameters
     ----------
@@ -545,12 +575,15 @@ def _trainer_key(document, symbol, trainers):
     Raises
     ------
     SystemExit
-        When no trainer, or more than one, carries the symbol's slug —
-        naming every trainer the run wrote, which is what an operator
-        would pass to ``--artifact``.
+        When no trainer, or more than one, is the symbol's — naming
+        every trainer the run wrote, which is what an operator would
+        pass to ``--artifact``.
     """
+    owner = _fanned_owner(document)
     tail = f"_{foreach_slug(symbol)}"
-    matches = [key for key in trainers if key.endswith(tail)]
+    matches = [key for key in trainers
+               if (owner[key] == symbol if key in owner
+                   else key.endswith(tail))]
     if len(matches) == 1:
         return matches[0]
     problem = "no trainer" if not matches else f"{len(matches)} trainers"
@@ -752,10 +785,19 @@ def _restore_signals(document, run_dir, symbols, overrides, module_ref):
                 f"{symbol} and {regime_of} were trained under different "
                 f"regimes — their artifacts disagree on {divergent} "
                 f"({symbol}: {module_params}, {regime_of}: {regime}). The "
-                "documents declare ONE regime for every symbol, so this run "
-                "shipped a search winner that paired them differently; "
-                "re-run the fit, or promote the pairing into both documents "
-                "deliberately"
+                "documents declare ONE regime for every symbol, but a grid "
+                "search crosses the fan-out's per-instance space keys, so "
+                "this run's winner paired them differently and the driver "
+                "applied it to these artifacts. Re-running the document as "
+                "written reproduces it — the grid is enumerated and the "
+                "loaders are seeded — so pick a SYMMETRIC trial out of the "
+                "run's carry.json, set its width on the foreach template's "
+                "module_params (one edit, both symbols; the backtest's twin "
+                "pair moves with it), narrow or drop the search, and re-run. "
+                "If the symbols really should differ, hand-expand the "
+                "fan-out so each is a declared node with module_params of "
+                "its own — an instance key cannot be overridden beside the "
+                "template it comes from"
             )
     return signals, lookback
 

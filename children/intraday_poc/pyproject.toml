@@ -13,12 +13,22 @@ requires-python = ">=3.11"
 # repo. The heavy libraries are the child's own run-path deps, imported only
 # inside run()/read()/live.py so documents still plan without them; the tests
 # importorskip them so the suite passes on a bare install too.
+#
+# mlflow is here for a different reason from the rest, and it is NOT optional:
+# run-train.json declares a tracking sink from `dskit.pipeline.libs.mlflow`,
+# and the driver OPENS every sink before it resolves the run — so on an
+# install without it, `run` aborts before a single node executes (validate and
+# plan are unaffected, which is why nothing else notices). Declared here
+# rather than left to the dskit root's `[mlflow]` extra because `pip install
+# -e .` from this directory is the install path the README documents. Pinned
+# by test_configs.py::test_the_child_installs_what_its_tracking_sinks_NEED.
 dependencies = [
     "dskit",
     "alpaca-py>=0.44",
     "torch",
     "pyomo",
     "highspy",
+    "mlflow>=2.9",
 ]
 
 [tool.setuptools.packages.find]

@@ -42,7 +42,7 @@ intraday_poc/
 configs/            # source-backfill (the ONE source config) / suite-bars /
                     #   run-backtest (walkforward) / run-train / asset-model
 tests/              # conftest bootstrap + connectors/nodes/configs suites
-pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
+pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy/mlflow (run-path)
 .env.example        # Alpaca paper keys — .env is gitignored, never committed
 ```
 
@@ -51,29 +51,52 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
 - **`run-train.json` fans out; `run-backtest.json` does not.** The
   train document builds its per-symbol nodes from ONE `foreach`
   template (ADR-0039), so its trainers are `qhat__aapl`/`qhat__msft`
-  — a DOUBLE underscore. `live.py` reads that mapping off the run's own
-  document (symbol → the trainer node whose key ends in its slug), so
-  serving needs no `--artifact` flags; the flag is for a directory the
-  run did not write. Read a fanned document through
-  `document.expanded`, never `document.pipeline`: the declared map
-  holds the template, the derived map holds what RAN, and they are the
-  same object only when there is no fan-out.
+  — a DOUBLE underscore. `live.py` REBUILDS that mapping from
+  `foreach.keys` + the engine's `foreach_slug` rather than reading a key
+  backwards, so serving needs no `--artifact` flags; the flag is for a
+  directory the run did not write. Do not match a fanned key by SUFFIX:
+  `qhat__brk_b` ends in `_b`, so the symbol `B` would silently be served
+  BRK.B's weights (both are real tickers, and the pair-regime check
+  cannot see it — both symbols would share one artifact). Hand-declared
+  trainers still match by suffix, because nothing on disk says where
+  `qhat_aapl`'s stem ends; that rule refuses an ambiguous pair rather
+  than choosing. Read a fanned document through `document.expanded`,
+  never `document.pipeline`: the declared map holds the template, the
+  derived map holds what RAN, and they are the same object only when
+  there is no fan-out.
 - **`foreach` pins the DECLARATION, not the tuned value.** One space
   key naming a template expands to one override per instance, so
   `hpo-grid` CROSSES them: three widths over two symbols is nine
-  trials and a winner may pair 16 with 64. Nothing in the grammar ties
-  two nodes' params to one value, and the driver APPLIES the winner to
-  the run's artifacts — so an asymmetric pairing ships unless something
-  refuses it. `live.py` does: it compares the restored artifacts'
-  `module_params` and refuses the pair. The DOCUMENTS stay symmetric
-  separately — promoting a winner means moving both of them and
-  defeating `test_the_symbol_twins_share_a_regime` on purpose.
+  trials, SIX of them asymmetric, and a winner may pair 16 with 64.
+  Nothing in the grammar ties two nodes' params to one value (there is
+  no linked-key form, and duplicate hand-written keys cross exactly the
+  same way), and the driver APPLIES the winner to the run's artifacts —
+  so an asymmetric pairing ships unless something refuses it. `live.py`
+  does: it compares the restored artifacts' `module_params` and refuses
+  the pair. Recovering from that refusal is a CONFIG edit, never a
+  re-run — the grid is enumerated and `loader.seed` pins every fit, so
+  a re-run reproduces the same winner. Take a symmetric trial from the
+  run's `carry.json`, put its width on the template (one edit, both
+  symbols) and on run-backtest.json's twin pair, narrow the space, and
+  re-run. An ASYMMETRIC pairing cannot be promoted into the document at
+  all: an instance key may not be declared beside the template it fans
+  from, so wanting per-symbol widths means hand-expanding the fan-out.
 - **Three bands, not two.** `run-train.json` fits to
   `splits.train_end_ms`, selects each trial's checkpoint on the band the
   cuts leave open after it (`mon_rows`, `monitor: val_loss`), and scores
   the search on the selection window after THAT. Wire the monitor to the
   scored rows and one set picks both the checkpoint and the
   architecture; leave it unset and the search compares nine last epochs.
+  `run-backtest.json` still has only TWO bands — each fold's `*_val`
+  feeds the trainer's `val_rows`, the forecaster AND `labeled` — which
+  is why its `total_realized` is an upper bound, said in its notes, the
+  README and `test_the_readme_carries_the_backtests_selection_skew`.
+- **The mlflow sink is a HARD dependency of `run`.** The driver opens
+  every declared sink before it resolves the run, so a child install
+  without `mlflow` aborts `run-train.json` before node one — while
+  `validate` and `plan` stay green. The child's own `pyproject.toml`
+  therefore declares it, pinned by
+  `test_the_child_installs_what_its_tracking_sinks_NEED`.
 - **A sink's params are the DECLARED ones.** `log_params` runs before
   any node does, and trials execute with the tracker silenced, so a
   searched run's mlflow entry pairs baseline params with final-pass
@@ -149,9 +172,11 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
   the connector's public `resolve_knobs` — the credential env-var NAMES
   (`key_env`/`secret_env`) among them. The bar interval is one constant
   (`connectors.BAR_INTERVAL`) both fetch paths build from.
-  Each symbol's artifact is `artifacts/<the run's own trainer key>`,
-  found by the key ending in that symbol's slug; a symbol the run
-  trained no model for is refused, naming the trainers it DID write.
+  Each symbol's artifact is `artifacts/<the run's own trainer key>` — a
+  fanned trainer answers for the ONE `foreach` key it was built from, a
+  hand-declared one for the key ending in that symbol's slug; a symbol
+  the run trained no model for is refused, naming the trainers it DID
+  write.
   `--artifact SYMBOL=PATH` serves a directory this run did not write —
   and an override for a symbol the config does not declare is refused,
   not dropped.
