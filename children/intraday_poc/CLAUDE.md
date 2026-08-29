@@ -140,7 +140,8 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
   end clamped 16 min back). Only the forward loop's own fetch uses IEX
   (`live.py:LIVE_FEED`), because real-time SIP is not on the free tier —
   sparse minutes possible, gap discipline handles it, never bridge.
-- **`live.py` restates nothing**: price field, gap bound and module class
+- **`live.py` restates nothing**: price field, gap bound, module class,
+  which trainer belongs to which symbol, and the selector's solver all
   come from `<run-dir>/config.json`, read through the ENGINE's own
   `load_document` (typed `NodeSpec`s — never a parse of the child's, which
   would accept runs the engine refuses); vendor knobs AND the symbol
@@ -148,11 +149,12 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
   the connector's public `resolve_knobs` — the credential env-var NAMES
   (`key_env`/`secret_env`) among them. The bar interval is one constant
   (`connectors.BAR_INTERVAL`) both fetch paths build from.
-  Node keys `qhat_aapl`/`qhat_msft` are the default
-  artifact convention (`artifacts/qhat_<symbol>`); a document that names
-  them differently is served with `--artifact SYMBOL=PATH`, never an
-  edit to the loop — and an override for a symbol the config does not
-  declare is refused, not dropped.
+  Each symbol's artifact is `artifacts/<the run's own trainer key>`,
+  found by the key ending in that symbol's slug; a symbol the run
+  trained no model for is refused, naming the trainers it DID write.
+  `--artifact SYMBOL=PATH` serves a directory this run did not write —
+  and an override for a symbol the config does not declare is refused,
+  not dropped.
 - **Credentials: one rule, two sources.** Both sides take the env-var
   NAMES from the source config and both refuse a var that is missing OR
   empty, by name, through the ONE shared
