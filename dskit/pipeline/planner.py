@@ -317,7 +317,7 @@ def _accepts_split(cls):
 
 
 def _carved_splits(document):
-    """The split names this document's cuts can actually PRODUCE.
+    """Return the split names this document's cuts can actually PRODUCE.
 
     Every kind carves train/val/test; ``cal`` exists only where the
     splits section declares a band (ADR-0034), and a walk-forward section
