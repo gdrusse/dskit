@@ -11,10 +11,11 @@
         "params": {
           "where": [
             { "field": "symbol", "op": "==", "value": "$each" },
+            { "field": "asof_ms", "op": ">=", "value": 1767225600000 },
             { "field": "asof_ms", "op": "<=", "value": "$splits.train_end_ms" }
           ]
         },
-        "notes": "One model per symbol — the PoC's design, so each series is fit on its own dynamics — up to the train cut. The band between train_end_ms and val_start_ms belongs to NO split: a next-bar label resolves in one minute, so the embargo is discipline made visible rather than a horizon the label needs."
+        "notes": "One model per symbol — the PoC's design, so each series is fit on its own dynamics — over the window [2026-01-01, train_end_ms]. The band between train_end_ms and val_start_ms belongs to NO split: a next-bar label resolves in one minute, so the embargo is discipline made visible rather than a horizon the label needs. WHY the history starts in 2026 rather than at the store's 2021 open, and what to change to widen it: the engine evaluates a fit's final training loss in ONE unbatched forward pass (dskit.pipeline.libs.torch, TorchTrain._final_loss), so peak memory is O(rows x lookback x hidden_size) — 940k AAPL windows at hidden_size 64 asks for 24.3 GB and dies on a 17 GB box, measured, at trial 3 of the grid. The start bound is a MEMORY ceiling wearing a modelling choice's clothes and should be deleted the day that pass is batched; until then it is declared here where it can be seen, once, for both symbols. It is a literal because there is no train_start_ms in the splits grammar — the cuts carve the future, not the horizon."
       },
       "val_rows": {
         "uses": "filter",

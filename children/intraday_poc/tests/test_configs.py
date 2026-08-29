@@ -193,9 +193,19 @@ def test_the_search_scores_on_rows_it_never_trained_on():
         "between the fit and the rows that grade it"
     )
     template = raw["foreach"]["pipeline"]
-    assert template["rows"]["params"]["where"][-1] == {
+    fitted = template["rows"]["params"]["where"]
+    assert fitted[-1] == {
         "field": "asof_ms", "op": "<=", "value": "$splits.train_end_ms",
     }, "the fitted rows must stop at the train cut"
+    start = fitted[1]
+    assert start["field"] == "asof_ms" and start["op"] == ">=", (
+        "the fit declares where its history STARTS — see the node's notes: "
+        "it is a memory ceiling (the engine's final-loss pass is one "
+        "unbatched forward), and an undeclared one would be invisible"
+    )
+    assert start["value"] < splits["train_end_ms"], (
+        "a start bound at or past the train cut fits on nothing"
+    )
     val_bounds = template["val_rows"]["params"]["where"][1:]
     assert val_bounds == [
         {"field": "asof_ms", "op": ">=", "value": "$splits.val_start_ms"},
