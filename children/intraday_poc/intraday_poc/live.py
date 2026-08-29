@@ -826,7 +826,7 @@ def predict(module, features, row) -> float | None:
     return float(out.reshape(-1)[0])
 
 
-def solve_pick(preds: dict, solver_name: str, solver_options: dict) -> str:
+def solve_pick(preds, solver_name, solver_options):
     """Pick one symbol with the program the backtest solves.
 
     The solver is a PARAMETER, never a literal here: it is the run's own

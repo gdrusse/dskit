@@ -38,10 +38,11 @@ BACKTEST_NODES = {"bars", "window", "aapl_train", "aapl_val", "msft_train",
 #: its trainer out of a ``foreach`` template, and a fanned instance is
 #: ``<template>__<key slug>`` (``dskit.pipeline.document.FOREACH_SEP``),
 #: so the keys carry a DOUBLE underscore that the hand-written backtest
-#: does not. That spelling is what ``live.py`` needs told — its default
-#: artifact convention is ``artifacts/qhat_<symbol>``, so this document
-#: is served with ``--artifact SYMBOL=artifacts/qhat__<symbol>``, the
-#: hatch the loop already documents (README "Serve it").
+#: does not. Nothing has to be TOLD that spelling: ``live.py`` derives
+#: each symbol's artifact directory from the run's own trainer keys
+#: (``artifact_dirs``), so both documents serve with no ``--artifact``
+#: flag, and the flag is only the hatch for a directory this run did
+#: not write (README "Serve it").
 TRAINERS = {
     "run-train.json": ("qhat__aapl", "qhat__msft"),
     "run-backtest.json": ("qhat_aapl", "qhat_msft"),
@@ -64,13 +65,16 @@ SOURCE_CONFIGS = ("source-backfill.json",)
 
 #: Every knob each trainer node must DECLARE, in both documents. The
 #: engine has a working default for most of these; declaring them is
-#: the point — an undeclared knob is one nobody can see or tune. Note
-#: what is NOT here: ``monitor``, which run-train.json must not declare
-#: (it wires no val_rows), pinned by name instead. Add a knob here when
-#: you add a knob to the documents.
+#: the point — an undeclared knob is one nobody can see or tune.
+#: ``monitor`` belongs here now: it used to be run-train.json's one
+#: exemption (that document wired no ``val_rows`` and shipped its last
+#: epoch), but it opened a checkpoint band of its own, so both
+#: documents declare it and a tuple that still omitted it would be the
+#: pinning test that omits a knob CLAUDE.md calls worse than none. Add
+#: a knob here when you add a knob to the documents.
 DECLARED_TRAINER_KNOBS = frozenset({
     "module", "module_params", "features", "label", "optimizer",
-    "optimizer_params", "epochs", "lr", "loader", "device",
+    "optimizer_params", "epochs", "lr", "loader", "device", "monitor",
 })
 
 
@@ -182,6 +186,18 @@ def test_the_search_scores_on_rows_it_never_trained_on():
     trainer reads rows up to ``train_end_ms``, the scored rows start at
     ``val_start_ms``, and the band between them belongs to no split —
     the same embargo discipline run-backtest.json's folds carry.
+
+    The BOUNDS alone do not pin that, which is the trap this test was
+    named for and did not close: three filters carving three disjoint
+    bands prove nothing if the trainer is wired to the wrong one.
+    Repointing ``qhat.inputs.rows`` at ``$val_rows.records`` — fitting
+    the very rows ``select`` scores — leaves every bound assertion here
+    true, and ``plan`` emits no warning either, because the objective
+    still comes from a ``split: "val"`` node. So the input REFS are
+    pinned beside the bounds, the way
+    ``test_the_concat_ports_name_the_nodes_they_fan_from`` pins the two
+    concat ports: the trainer fits ``rows``, the forecaster reads
+    ``val_rows``, and neither may quietly swap.
     """
     raw = _raw("run-train.json")
     splits = raw["splits"]
@@ -213,6 +229,14 @@ def test_the_search_scores_on_rows_it_never_trained_on():
         {"field": "asof_ms", "op": ">=", "value": "$splits.val_start_ms"},
         {"field": "asof_ms", "op": "<=", "value": "$splits.val_end_ms"},
     ], "the scored rows must open after the embargo and close at the cut"
+    assert template["qhat"]["inputs"]["rows"].startswith("$rows."), (
+        "the trainer must FIT the fitted band; wired at val_rows every "
+        "trial grades memorization and the widest grid value always wins"
+    )
+    assert template["fc"]["inputs"]["records"].startswith("$val_rows."), (
+        "the forecaster must READ the selection window; wired at rows the "
+        "objective scores the band the trial just fit"
+    )
     for node in ("fc", ):
         assert template[node]["params"]["split"] == "val"
     assert raw["pipeline"]["select"]["params"]["split"] == "val"

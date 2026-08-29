@@ -55,6 +55,14 @@ EXPECTED_ROLES = {
     "intraday_poc-select-one": "score",
 }
 
+#: A selector declaration deliberately unlike the pyomo pack's default:
+#: another solver name, and options that are not empty. The shipped
+#: documents declare the default itself, so a test that read only THEM
+#: would pass against a loop that hardcoded ``(DEFAULT_SOLVER, {})``.
+#: Solver-agnostic on purpose — nothing here solves with it; it is read
+#: off a document and recorded at the solver's door.
+FOREIGN_SELECTOR = ("glpk", {"mipgap": 0.005, "tmlim": 30})
+
 _ACQUIRED = "2026-01-06T00:00:00+00:00"
 _BASE = datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc)
 
@@ -1389,14 +1397,84 @@ def test_the_loop_solves_with_the_solver_the_run_declared():
     same one, and this loop solves that program a minute at a time — so
     a literal here is the third place, with nothing pinning any pair.
     The document the loop already loads declares it.
+
+    The shipped documents declare exactly the pack's default
+    (``appsi_highs`` with no options), so asserting only THAT would pass
+    against a loop that returned ``(DEFAULT_SOLVER, {})`` and never read
+    a document at all — the pin would not bite the divergence
+    :func:`~intraday_poc.live.selector_knobs` exists to prevent. A
+    FOREIGN declaration is therefore read too: a different name and
+    non-empty options, so both halves have to come off the node.
     """
+    from dskit.pipeline.libs.pyomo import DEFAULT_SOLVER
+
     from intraday_poc.live import selector_knobs
 
+    name, options = FOREIGN_SELECTOR
+    assert name != DEFAULT_SOLVER and options, (
+        "the foreign declaration must differ from the pack default in BOTH "
+        "halves, or a hardcoded return would satisfy this test"
+    )
+
     document = load_document(os.path.join(CONFIGS, "run-train.json"))
-    assert selector_knobs(document) == ("appsi_highs", {})
+    assert selector_knobs(document) == (DEFAULT_SOLVER, {})
+
+    obj = _serving_obj(("qhat_aapl",))
+    obj["pipeline"]["select"]["params"].update(solver=name,
+                                               solver_options=dict(options))
+    assert selector_knobs(PipelineDocument.from_obj(obj)) == (name, options), (
+        "the solver and its options are the RUN's declaration; a literal "
+        "here would ignore a gap or limit option added to the document"
+    )
 
     with pytest.raises(SystemExit, match="selector"):
         selector_knobs(_fanned_document())
+
+
+@pytest.mark.skipif(not HAVE_SOLVER, reason="pyomo/highspy not installed")
+def test_the_declared_solver_options_reach_the_solver(monkeypatch):
+    """Reading the options is half the job; APPLYING them is the other.
+
+    ``selector_knobs`` can return a full option map and
+    :func:`~intraday_poc.live.solve_pick` still drop it on the floor —
+    the loop would then solve every live minute under the solver's own
+    defaults while the document, the backtest and the search all ran
+    with a gap or a time limit. Nothing else in this suite ever hands
+    the loop a NON-EMPTY option map, so the application loop would be
+    dead code that looks covered.
+
+    Solved against a stand-in factory rather than a real solver: what is
+    pinned is that the requested NAME and the declared options land on
+    the object the loop solves with, which no real solve can show.
+    """
+    import pyomo.environ as pyo
+
+    from intraday_poc.live import solve_pick
+
+    preds = {"AAPL": 0.002, "MSFT": -0.001}
+    name, options = FOREIGN_SELECTOR
+    seen = {}
+
+    class _Recorder:
+        """A solver that records what it was given, then picks the max."""
+
+        def __init__(self, requested):
+            self.requested = requested
+            self.options = {}
+
+        def solve(self, model):
+            seen["name"] = self.requested
+            seen["options"] = dict(self.options)
+            best = max(preds, key=preds.get)
+            for index in model.x:
+                model.x[index].value = 1.0 if index[1] == best else 0.0
+
+    monkeypatch.setattr(pyo, "SolverFactory", _Recorder)
+    assert solve_pick(preds, name, dict(options)) == "AAPL"
+    assert seen == {"name": name, "options": dict(options)}, (
+        "the run's solver name and its solver_options must reach the "
+        "solver the live minute is decided by"
+    )
 
 
 def test_live_takes_the_credential_env_names_from_the_source_config(
