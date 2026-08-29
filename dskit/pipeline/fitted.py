@@ -56,6 +56,15 @@ stream through a carrier this family emits. ONE apply kind serves every
 member, so a document that scales its training rows and then scales its
 serving rows wires the same carrier twice rather than fitting twice.
 
+:class:`FeatureSelector` is the family's second shape (ADR-0042) and the
+reason the family is worth having: a selector is FITTED — it learns which
+columns survive from training data — so it cannot be a pure transform,
+and putting it here means it inherits the leakage rules above instead of
+restating them. Its whole extension contract is ONE hook,
+:meth:`FeatureSelector.surviving_features`; the state is the surviving
+column list, which makes the projection pure by construction and the
+artifact a plain JSON list that a serving run restores verbatim.
+
 Import cost: stdlib only — this is tier-1, the ``codec.py`` /
 ``observations.py`` precedent. The numerics a member needs live in the
 member; nothing here imports a library.
@@ -89,6 +98,7 @@ __all__ = [
     "ApplyTransform",
     "DEFAULT_ORDER_FIELD",
     "DEFAULT_PURITY_CHECK",
+    "FeatureSelector",
     "FittedTransform",
     "NODE_KINDS",
     "SIDECAR_NAME",
@@ -125,6 +135,18 @@ def _field(row, name):
 def _numeric(value):
     """``value`` as a float by the envelope's own number rule, else ``None``."""
     return float(value) if number_ok(value) else None
+
+
+def _non_mapping_problem(rows, cls):
+    """Name the first row ``cls`` could not rebuild, else ``None``."""
+    for i, row in enumerate(rows):
+        if isinstance(row, dict):
+            continue
+        return (
+            f"rows[{i}] is a {type(row).__name__} — {cls.__name__} rebuilds "
+            "each row as a mapping, so every row must be one"
+        )
+    return None
 
 
 def _same(a, b):
@@ -511,6 +533,36 @@ class FittedTransform(TrainableNode):
         """
         return {}
 
+    def state_outputs(self, state):
+        """Extra OUTPUTS a member publishes from its state; none by default.
+
+        The sibling of :meth:`state_metrics`, for a member whose state is
+        something a downstream node must READ rather than merely report:
+        :class:`FeatureSelector` publishes the surviving column list, and
+        a document then declares ``"features": "$select.features"`` on
+        the model below it. Metrics could not carry that — they are
+        numbers a report summarizes, and a param reference needs the
+        value itself.
+
+        A member widening this MUST declare the names in its own
+        ``outputs`` (the planner checks every wire against that tuple),
+        and the base refuses a name that would overwrite one of the
+        family's three: the ``rows`` port is the family's contract with
+        its downstream, not a slot a member may repurpose.
+
+        Parameters
+        ----------
+        state : dict
+            The fitted state, as :meth:`fit` returned it or load mode
+            restored it.
+
+        Returns
+        -------
+        dict
+            Extra entries for this node's output dict.
+        """
+        return {}
+
     # -- the two mode hooks (ADR-0038 dispatches to these) -----------------
 
     def run_train(self, ctx, inputs):
@@ -646,15 +698,24 @@ class FittedTransform(TrainableNode):
             )
 
     def _emit(self, state, rows, n_fit_rows):
-        """Build the three outputs from a state and the whole stream."""
+        """Build the outputs from a state and the whole stream."""
         transformed = self.applied(state, rows)
         metrics = {"n_rows": len(transformed), "n_fit_rows": n_fit_rows}
         metrics.update(self.state_metrics(state))
-        return {
+        outputs = {
             "transform": TransformCarrier(self, state),
             "rows": transformed,
             "metrics": metrics,
         }
+        for name, value in self.state_outputs(state).items():
+            if name in outputs:
+                raise ValueError(
+                    f"{self.key}: state_outputs would overwrite the family's "
+                    f"{name!r} output — a member publishes its own names "
+                    "beside the three, never over them"
+                )
+            outputs[name] = value
+        return outputs
 
     def frame_of(self, row):
         """Build the frame the run's splits assign this row by.
@@ -1087,14 +1148,9 @@ class Standardize(FittedTransform):
             the declared features the whole stream lacks; none when the
             scaler can project the stream.
         """
-        for i, row in enumerate(rows):
-            if isinstance(row, dict):
-                continue
-            return [
-                f"rows[{i}] is a {type(row).__name__} — "
-                f"{type(self).__name__} rebuilds each row as a mapping, so "
-                "every row must be one"
-            ]
+        problem = _non_mapping_problem(rows, type(self))
+        if problem:
+            return [problem]
         if not rows:
             return []
         absent = [
@@ -1236,6 +1292,403 @@ class Standardize(FittedTransform):
                 scaled[name] = (value - centre) / std[name]
             out.append(scaled)
         return out
+
+
+class FeatureSelector(FittedTransform):
+    """Choose which of the declared candidate columns survive (ADR-0042).
+
+    Abstract, and abstract in ONE method: a member implements
+    :meth:`surviving_features` and inherits everything else. That is the
+    whole point of putting selection in this family rather than beside
+    it — the leakage rules, the sidecar, the restore, the purity screen
+    and the projection are the base's, so a pack supplies a selection
+    RULE and nothing more. ``fit`` and ``apply_state`` are the base's
+    too: a member that had to write either would be a second seam
+    wearing the family's name.
+
+    **The state IS the surviving column list**, which is what makes this
+    member cheap. It is JSON-able by construction, so the sidecar the
+    family already writes carries it, and ``mode="load"`` restores the
+    exact columns training chose — the mechanism that stops a serving
+    run from re-deriving what training decided. The list also leaves
+    through the ``features`` OUTPUT, so the model below reads
+    ``"features": "$select.features"`` and consumes precisely the
+    survivors, in the order the state records them.
+
+    **What the projection drops, and what it keeps.** Every REJECTED
+    candidate is dropped from every row; everything else rides along
+    untouched. A row projected to its features alone could neither be
+    trained on (the label is not a feature) nor cut into a split (the
+    instant and the cluster identity are not features either), so
+    "project to the selected columns" means the candidate space, never
+    the row.
+
+    Ordering is canonical: survivors come back in the order the document
+    DECLARED its candidates, not the order the rule ranked them. Two
+    candidates that tie on importance would otherwise order by whatever
+    the library happened to return, and the persisted list — which a
+    serving run reads as its feature vector's order — must be
+    reproducible.
+
+    Parameters
+    ----------
+    params : dict
+        ``features`` (a non-empty list of DISTINCT candidate column
+        names, required — there is no default candidate set, because
+        "every column" would silently include the label) plus
+        :class:`FittedTransform`'s knobs, of which ``fit_split`` is the
+        one that matters: it is REQUIRED under train mode and refused at
+        plan when the document carves no such split.
+
+    Examples
+    --------
+    A member is one method; the base is the rest::
+
+        class KeepPositive(FeatureSelector):
+            def surviving_features(self, rows, params):
+                return [
+                    name for name in self.features()
+                    if sum(row[name] for row in rows) > 0
+                ]
+
+        node = KeepPositive("select", {
+            "fit_split": "train", "features": ["ret_lag_0", "ret_lag_1"],
+        })
+        out = node.run(ctx, {"rows": rows})
+        # -> {"transform": ..., "rows": [...], "metrics": {...},
+        #     "features": ["ret_lag_0"]}
+    """
+
+    outputs = FittedTransform.outputs + ("features",)
+
+    _PARAMS = FittedTransform._PARAMS + ("features",)
+
+    #: The wired inputs of the fit in progress, for :meth:`wired`.
+    #: ``None`` until :meth:`run_train` sets it — a load never fits, so a
+    #: rule is never consulted and no port is ever needed.
+    _wired = None
+
+    def features(self):
+        """Name the CANDIDATE columns selection chooses among (tuple of str)."""
+        return tuple(self.params["features"])
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            The base's problems, plus one when ``features`` is missing or
+            is not a non-empty list of DISTINCT column names.
+
+        Notes
+        -----
+        Distinctness is not tidiness here either (the scaler's
+        ``validate_params`` carries the same rule for the same reason):
+        the state records the candidate list VERBATIM and
+        :meth:`state_problems` compares the two, so a repeated name
+        would have the fitting document refuse its own artifact on the
+        load-mode rerun.
+        """
+        problems = super().validate_params(params)
+        candidates = params.get("features")
+        if is_node_ref(candidates):
+            return problems
+        if (
+            not isinstance(candidates, (list, tuple))
+            or not candidates
+            or any(not isinstance(name, str) or not name for name in candidates)
+        ):
+            problems.append(
+                "features is required and must be a non-empty list of the "
+                "CANDIDATE column names selection chooses among — there is "
+                f"no default, got {candidates!r}"
+            )
+            return problems
+        dupes = sorted({f for f in candidates if list(candidates).count(f) > 1})
+        if dupes:
+            problems.append(f"features repeats {dupes} — declare each candidate once")
+        return problems
+
+    def row_problems(self, rows):
+        """Refuse a stream this selector cannot honestly choose from.
+
+        Two ways, and the second is the one that matters. A row that is
+        not a mapping cannot be projected. And a candidate that NOT ONE
+        row of a non-empty stream carries has no honest reading: the rule
+        would score it against nothing and either drop it (a column the
+        document believes it offered was never in the running) or keep it
+        (a column the model below is then told to read, forever absent).
+        A misspelt candidate is the ordinary cause, and it is invisible
+        in both directions.
+
+        Presence, not usability: what a candidate's value must BE is the
+        member's rule — a variance threshold needs numbers, a
+        mutual-information score over a categorical column does not — so
+        the base asks only whether the stream carries the column at all.
+
+        Parameters
+        ----------
+        rows : list
+            The stream, whichever doorway asked (this node's own, or the
+            second stream an ``apply-transform`` wired this carrier to).
+
+        Returns
+        -------
+        list of str
+            One problem naming the first non-mapping row, or one naming
+            the candidates the whole stream lacks; empty otherwise.
+        """
+        problem = _non_mapping_problem(rows, type(self))
+        if problem:
+            return [problem]
+        if not rows:
+            return []
+        absent = [name for name in self.features()
+                  if not any(name in row for row in rows)]
+        if absent:
+            return [
+                f"not one of the {len(rows)} row(s) carries the candidate(s) "
+                f"{absent} — a candidate the stream lacks is either dropped "
+                "from a race it never entered or kept as a column nothing "
+                "supplies. Check the spelling against the rows upstream "
+                "emits, or drop the candidate"
+            ]
+        return []
+
+    # -- the ONE hook a member implements ----------------------------------
+
+    @abstractmethod
+    def surviving_features(self, rows, params):
+        """Choose which candidates survive — the whole extension contract.
+
+        Parameters
+        ----------
+        rows : list
+            The rows of the declared ``fit_split``, and nothing else.
+            Never empty. Any other input the rule needs is a wired port
+            asked for by name (:meth:`wired`).
+        params : dict
+            ``self.params``, passed through for convenience.
+
+        Returns
+        -------
+        list of str
+            The surviving column names, each one of :meth:`features`.
+            Order is not read (the base canonicalizes to the declared
+            candidate order) and duplicates are harmless; a name that is
+            not a candidate, and an empty answer, are refused by name.
+        """
+        raise NotImplementedError
+
+    def wired(self, port):
+        """Read the value wired to ``port`` for this fit, or refuse by name.
+
+        A selection rule may need more than rows — importance read off a
+        fitted net is the ADR's own example — and the hook takes rows and
+        params by contract, so the base captures the fit's wired inputs
+        and a member asks for the one it needs BY NAME. The member also
+        declares the port in its own ``validate_train_inputs``, which is
+        where a document gets told at PLAN; this refusal is the run-time
+        backstop for a rule reading a port it never declared.
+
+        Parameters
+        ----------
+        port : str
+            The input port's name, as the document wires it.
+
+        Returns
+        -------
+        object
+            Whatever was wired there.
+
+        Raises
+        ------
+        ValueError
+            When nothing is wired to ``port`` — including every call
+            outside a fit, since a load consults no rule at all.
+        """
+        wired = self._wired or {}
+        if port not in wired:
+            raise ValueError(
+                f"{self.key}: this selection rule reads the {port!r} input "
+                "port and nothing is wired to it — wire it in the document "
+                "(a rule that needs a fitted model needs the node that "
+                "fitted one)"
+            )
+        return wired[port]
+
+    def run_train(self, ctx, inputs):
+        """Capture the wired ports, then fit exactly as the family does.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext
+            The run frame, handed straight to the family's fit.
+        inputs : dict
+            ``rows`` plus whatever else the member's rule declared.
+
+        Returns
+        -------
+        dict
+            The family's three outputs plus ``features``.
+        """
+        self._wired = dict(inputs or {})
+        return super().run_train(ctx, inputs)
+
+    # -- the family's two hooks, owned here so no member writes them -------
+
+    def fit(self, rows, params):
+        """Ask the rule, then hold its answer to the base's contract.
+
+        Parameters
+        ----------
+        rows : list
+            The fit split's rows.
+        params : dict
+            This node's params.
+
+        Returns
+        -------
+        dict
+            ``{"candidates": [...], "features": [...]}`` — what selection
+            chose among, and what survived. The candidate list is
+            recorded because :meth:`apply_state` reads the STATE to know
+            what to drop: a serving document that restated a different
+            candidate set would otherwise project a different column set
+            while every document claimed the trained one.
+        """
+        return {
+            "candidates": list(self.features()),
+            "features": self._checked_survivors(
+                self.surviving_features(rows, params)
+            ),
+        }
+
+    def apply_state(self, state, rows, params):
+        """Drop every rejected candidate from every row.
+
+        Pure and row-independent by construction: which keys go is read
+        from the state alone, so a serving row's projection cannot depend
+        on which other rows arrived with it.
+
+        Parameters
+        ----------
+        state : dict
+            ``{"candidates": ..., "features": ...}``.
+        rows : list of dict
+            Every row of the stream, whatever split it came from.
+        params : dict
+            This node's params; unused — the state carries the columns.
+
+        Returns
+        -------
+        list of dict
+            One rebuilt row per input row, carrying the surviving
+            candidates and every column that was never a candidate.
+        """
+        dropped = set(state["candidates"]) - set(state["features"])
+        return [
+            {name: value for name, value in row.items() if name not in dropped}
+            for row in rows
+        ]
+
+    def state_problems(self, state):
+        """Refuse a restored state fitted over other candidates.
+
+        The candidate list is compared as an ORDERED list, not a set: the
+        surviving order follows the candidate order, and that order IS
+        the feature vector a model below reads through
+        ``$select.features``. A reordered restatement would serve a
+        transposed vector with nothing failing.
+
+        Parameters
+        ----------
+        state : dict
+            The restored state.
+
+        Returns
+        -------
+        list of str
+            One problem when the declared candidates and the state's are
+            not the same list.
+        """
+        declared = list(self.features())
+        recorded = list(state.get("candidates") or ())
+        if recorded == declared:
+            return []
+        return [
+            f"features declares candidates {declared} but the restored state "
+            f"was fitted over {recorded}"
+        ]
+
+    def state_metrics(self, state):
+        """Report how wide the race was and how many survived.
+
+        Parameters
+        ----------
+        state : dict
+            The fitted state.
+
+        Returns
+        -------
+        dict
+            ``{"n_candidates": ..., "n_selected": ...}``.
+        """
+        return {
+            "n_candidates": len(state["candidates"]),
+            "n_selected": len(state["features"]),
+        }
+
+    def state_outputs(self, state):
+        """Publish the surviving column list as the ``features`` output.
+
+        Parameters
+        ----------
+        state : dict
+            The fitted state.
+
+        Returns
+        -------
+        dict
+            ``{"features": [...]}`` — a plain list, so a document may
+            wire it into a downstream node's ``features`` param and the
+            model consumes exactly what selection chose.
+        """
+        return {"features": list(state["features"])}
+
+    def _checked_survivors(self, chosen):
+        """Canonicalize a rule's answer, or refuse it by name."""
+        candidates = self.features()
+        if isinstance(chosen, str) or not isinstance(chosen, (list, tuple)) or any(
+            not isinstance(name, str) for name in chosen
+        ):
+            raise ValueError(
+                f"{self.key}: surviving_features must answer a list of "
+                f"candidate column names, got {chosen!r}"
+            )
+        foreign = [name for name in chosen if name not in candidates]
+        if foreign:
+            raise ValueError(
+                f"{self.key}: surviving_features answered {foreign}, which is "
+                f"not a candidate — selection chooses among {list(candidates)}, "
+                "it does not invent columns"
+            )
+        kept = [name for name in candidates if name in set(chosen)]
+        if not kept:
+            raise ValueError(
+                f"{self.key}: surviving_features selected nothing of "
+                f"{list(candidates)} — a model with no features cannot be "
+                "fitted, so an empty selection is refused here rather than "
+                "reported as an empty feature list downstream"
+            )
+        return kept
 
 
 #: kind name -> class, for the registry and the conformance census.

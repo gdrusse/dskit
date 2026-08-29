@@ -21,10 +21,12 @@ from dskit.pipeline.base import ConfigError
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.document import PipelineDocument
 from dskit.pipeline.driver import run_document
+from dskit.pipeline.fitted import SIDECAR_NAME, FeatureSelector
 from dskit.pipeline.libs.sklearn import (
     NODE_KINDS,
     SklearnFit,
     SklearnPredict,
+    SklearnSelect,
     SklearnSignal,
     register,
 )
@@ -82,7 +84,11 @@ def _fit(tmp_path, *, params=None, rows=None, run_name="fitrun"):
 
 def test_node_kinds_table_and_roles():
     table = dict(NODE_KINDS)
-    assert table == {"sklearn-fit": SklearnFit, "sklearn-predict": SklearnPredict}
+    assert table == {
+        "sklearn-fit": SklearnFit,
+        "sklearn-predict": SklearnPredict,
+        "sklearn-select": SklearnSelect,
+    }
     assert SklearnFit.role == "train"
     assert SklearnFit.outputs == ("signal", "artifact_path", "metrics")
     assert SklearnPredict.role == "signal"
@@ -93,7 +99,8 @@ def test_register_is_explicit_and_idempotent():
     registry = NodeKindRegistry()
     register(registry)
     register(registry)  # second call skips, never raises or shadows
-    assert "sklearn-fit" in registry and "sklearn-predict" in registry
+    for kind, _cls in NODE_KINDS:
+        assert kind in registry
     cls, owned = registry.get("sklearn-fit")
     assert cls is SklearnFit and owned is False
 
@@ -753,10 +760,433 @@ def test_predict_node_refuses_a_missing_artifact_by_name(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# The selector doorway (ADR-0042): sklearn selectors BY IMPORT PATH
+# ---------------------------------------------------------------------------
+
+DAY = 24 * 60 * 60 * 1000
+
+#: The three candidate columns the selection tests choose among, in the
+#: order every document below declares them.
+CANDIDATES = ["strong", "other", "flat"]
+
+VARIANCE = "sklearn.feature_selection.VarianceThreshold"
+KBEST = "sklearn.feature_selection.SelectKBest"
+RFE = "sklearn.feature_selection.RFE"
+F_REGRESSION = "sklearn.feature_selection.f_regression"
+MUTUAL_INFO = "sklearn.feature_selection.mutual_info_regression"
+
+SELECT_PARAMS = {
+    "fit_split": "train",
+    "features": list(CANDIDATES),
+    "selector": VARIANCE,
+    "selector_params": {"threshold": 0.0},
+}
+
+
+def rows_selectable(n=12, *, day=1, flat=1.0):
+    """Rows carrying columns of four different worths.
+
+    ``strong`` IS the label; ``echo`` tracks it with a wobble (weaker,
+    but real); ``other`` is a deterministic pseudo-random column with no
+    relation to it; ``flat`` is constant. Every selector below therefore
+    has one obvious answer and no tie to break — and ``echo``, which no
+    document here declares as a candidate, doubles as the non-candidate
+    column the projection must leave alone.
+    """
+    return [
+        {
+            "asof_ms": day * DAY + i,
+            "contract": f"C-{day}-{i}",
+            "strong": float(i),
+            "echo": float(i) + (i % 3),
+            "other": float((i * 13) % 7),
+            "flat": flat if flat is not None else float(i),
+            "y": float(i),
+        }
+        for i in range(n)
+    ]
+
+
+#: The val rows differ in ONE way that matters: ``flat`` varies there. A
+#: fit that saw them would keep a column the train split says is constant.
+SELECT_TRAIN_ROWS = rows_selectable(day=1)
+SELECT_VAL_ROWS = rows_selectable(day=15, flat=None)
+
+SELECT_SPLITS = {"train_end_ms": 10 * DAY, "val_end_ms": 20 * DAY,
+                 "test_end_ms": 30 * DAY}
+
+
+def _split_ctx(tmp_path, name="selectrun"):
+    from dskit.pipeline.base import TimeSplitConfig
+
+    splits = TimeSplitConfig(**SELECT_SPLITS)
+    return NodeContext(
+        name="t",
+        asof=ASOF,
+        run_dir=str(tmp_path / name),
+        splits=splits,
+        splits_info=splits.to_obj(),
+    )
+
+
+def _select(tmp_path, params=None, *, rows=None, name="selectrun"):
+    pytest.importorskip("sklearn")
+    node = SklearnSelect("select", {**SELECT_PARAMS, **(params or {})})
+    rows = SELECT_TRAIN_ROWS + SELECT_VAL_ROWS if rows is None else rows
+    return node, node.run(_split_ctx(tmp_path, name), {"rows": rows})
+
+
+def test_the_selector_is_a_member_of_the_fitted_family():
+    assert SklearnSelect.role == "fitted_transform"
+    assert SklearnSelect.outputs == ("transform", "rows", "metrics", "features")
+    assert issubclass(SklearnSelect, FeatureSelector)
+    assert SklearnSelect.surviving_features is not FeatureSelector.surviving_features
+
+
+def test_select_params_canonical_set_validates_clean():
+    assert SklearnSelect.validate_params(dict(SELECT_PARAMS)) == []
+
+
+def test_select_params_the_selector_path_is_required_and_shape_checked():
+    assert any(
+        "selector" in p
+        for p in SklearnSelect.validate_params(
+            {"fit_split": "train", "features": CANDIDATES}
+        )
+    )
+    for bad in ("", "NoDots", "sklearn.feature_selection:SelectKBest", 7):
+        problems = SklearnSelect.validate_params({**SELECT_PARAMS, "selector": bad})
+        assert any("selector" in p for p in problems), bad
+
+
+def test_select_params_unknown_keys_refused_by_name():
+    problems = SklearnSelect.validate_params({**SELECT_PARAMS, "k": 3})
+    assert any("'k'" in p or "k" in p for p in problems)
+
+
+def test_select_params_refuse_a_second_spelling_of_the_declared_knobs():
+    """``selector_params`` may not carry what the node already owns.
+
+    Two spellings of the inner estimator (or of the score function) would
+    disagree, and a search space addressing the node's own knob would
+    silently tune the loser — the ``optimizer_params``/``lr`` rule, one
+    pack over.
+    """
+    for shadowed in ("estimator", "score_func"):
+        problems = SklearnSelect.validate_params(
+            {**SELECT_PARAMS, "selector_params": {shadowed: "x.Y"}}
+        )
+        assert any(shadowed in p for p in problems), shadowed
+
+
+def test_select_params_the_optional_paths_are_shape_checked():
+    for knob, example in (("estimator", RIDGE), ("score_func", F_REGRESSION)):
+        assert SklearnSelect.validate_params({**SELECT_PARAMS, knob: example}) == []
+        problems = SklearnSelect.validate_params({**SELECT_PARAMS, knob: "NoDots"})
+        assert any(knob in p for p in problems), knob
+
+
+def test_an_unsupervised_selector_needs_no_label(tmp_path):
+    """VarianceThreshold drops the constant column and keeps the rest."""
+    _node, out = _select(tmp_path)
+    assert out["features"] == ["strong", "other"]
+    assert out["metrics"] == {
+        "n_rows": len(SELECT_TRAIN_ROWS) + len(SELECT_VAL_ROWS),
+        "n_fit_rows": len(SELECT_TRAIN_ROWS),
+        "n_candidates": 3,
+        "n_selected": 2,
+    }
+
+
+def test_the_fit_sees_the_declared_split_only(tmp_path):
+    """THE leak, in the pack: ``flat`` is constant on the train rows and
+    VARIES on the val rows, so a matrix built from the whole stream keeps
+    a column the train split says carries nothing."""
+    _node, out = _select(tmp_path)
+    assert "flat" not in out["features"]
+    assert all("flat" not in row for row in out["rows"])
+
+
+def test_a_supervised_selector_reads_the_declared_label(tmp_path):
+    _node, out = _select(
+        tmp_path,
+        {
+            "features": ["strong", "other"],
+            "selector": KBEST,
+            "selector_params": {"k": 1},
+            "score_func": F_REGRESSION,
+            "label": "y",
+        },
+    )
+    assert out["features"] == ["strong"]
+
+
+def test_a_score_func_may_be_named_by_import_path(tmp_path):
+    """Mutual information is a CALLABLE knob, so it is a path like any
+    other — the constant column scores zero and loses to the two columns
+    that carry the label's information."""
+    _node, out = _select(
+        tmp_path,
+        {
+            "features": ["strong", "echo", "flat"],
+            "selector": KBEST,
+            "selector_params": {"k": 2},
+            "score_func": MUTUAL_INFO,
+            "label": "y",
+        },
+    )
+    assert out["features"] == ["strong", "echo"]
+
+
+def test_a_wrapper_selector_takes_its_inner_estimator_by_import_path(tmp_path):
+    """RFE's ``estimator`` cannot be spelled inside a JSON kwargs block,
+    so it is the pack's OWN doorway knob — one grammar for "name me a
+    model", reused."""
+    _node, out = _select(
+        tmp_path,
+        {
+            "features": ["strong", "other"],
+            "selector": RFE,
+            "selector_params": {"n_features_to_select": 1},
+            "estimator": RIDGE,
+            "estimator_params": {"alpha": 1e-6},
+            "label": "y",
+        },
+    )
+    assert out["features"] == ["strong"]
+
+
+def test_a_supervised_selector_with_no_label_refuses_by_name(tmp_path):
+    pytest.importorskip("sklearn")
+    node = SklearnSelect(
+        "select",
+        {**SELECT_PARAMS, "selector": KBEST, "selector_params": {"k": 1}},
+    )
+    with pytest.raises(ValueError, match="label"):
+        node.run(_split_ctx(tmp_path), {"rows": SELECT_TRAIN_ROWS})
+
+
+def test_a_class_that_is_not_a_selector_refuses_by_name(tmp_path):
+    """A selector is a transformer with ``get_support`` — an estimator
+    without one has no notion of which columns survived."""
+    pytest.importorskip("sklearn")
+    node = SklearnSelect("select", {**SELECT_PARAMS, "selector": RIDGE,
+                                    "selector_params": {}, "label": "y"})
+    with pytest.raises(ValueError, match="get_support"):
+        node.run(_split_ctx(tmp_path), {"rows": SELECT_TRAIN_ROWS})
+
+
+class ShortMask:
+    """A "selector" whose support mask does not cover the candidates.
+
+    The doorway takes any class that can report its support, which means
+    the pack cannot assume the mask's LENGTH either: a selector fitted on
+    a matrix it reshaped, or one whose mask counts something other than
+    input columns, would otherwise zip silently against the candidate list
+    and drop the tail — a projection nobody asked for, reported as a
+    selection. There is no such class in sklearn today, which is exactly
+    why the check needs a fixture to be pinnable at all.
+    """
+
+    def fit(self, matrix, targets=None):
+        """Fit nothing; the mask is canned."""
+        return self
+
+    def get_support(self):
+        """One bool for three candidates — deliberately short."""
+        return [True]
+
+
+def test_a_support_mask_that_does_not_cover_the_candidates_refuses(tmp_path):
+    node = SklearnSelect(
+        "select",
+        {**SELECT_PARAMS,
+         "selector": f"{ShortMask.__module__}.{ShortMask.__name__}",
+         "selector_params": {}},
+    )
+    with pytest.raises(ValueError, match="one bool per candidate"):
+        node.run(_split_ctx(tmp_path), {"rows": SELECT_TRAIN_ROWS})
+
+
+def test_a_row_missing_a_candidate_is_refused_by_name(tmp_path):
+    pytest.importorskip("sklearn")
+    node = SklearnSelect("select", dict(SELECT_PARAMS))
+    rows = [dict(row) for row in SELECT_TRAIN_ROWS]
+    del rows[3]["other"]
+    with pytest.raises(ValueError, match="carries no 'other'"):
+        node.run(_split_ctx(tmp_path), {"rows": rows})
+
+
+def test_the_selected_columns_round_trip_through_the_artifact(tmp_path):
+    """Serving reads the columns training chose, from the sidecar."""
+    node, out = _select(tmp_path)
+    sidecar = os.path.join(node.artifact_dir(_split_ctx(tmp_path)), SIDECAR_NAME)
+    served = SklearnSelect(
+        "select", {"features": list(CANDIDATES), "selector": VARIANCE,
+                   "selector_params": {"threshold": 0.0}},
+        mode="load", artifact=sidecar,
+    )
+    restored = served.run(_ctx(tmp_path, "servingrun"), {"rows": SELECT_VAL_ROWS})
+
+    assert restored["features"] == out["features"]
+    assert restored["metrics"]["n_fit_rows"] == 0
+
+
+#: The whole composition ADR-0042 asks for, as a document: a selector
+#: chooses among two candidates, and the model BELOW reads the surviving
+#: list out of the selector's own output instead of restating a list
+#: nobody can know before the fit. ``noise`` is constant by construction,
+#: so the variance threshold must drop it and the model must never see it.
+SELECT_FLOW = {
+    "name": "select-then-fit",
+    "pipeline": {
+        "dataset": {
+            "uses": "dskit.pipeline.synthetic_nodes:SynthEvents",
+            "params": {"n_events": 104, "n_instruments": 2, "seed": 4},
+        },
+        "labels": {
+            "uses": "dskit.pipeline.synthetic_nodes:SynthLabels",
+            "inputs": {"events": "$dataset.events"},
+        },
+        "noisy": {
+            "uses": "derive",
+            "inputs": {"records": "$dataset.events"},
+            "params": {"field": "noise", "cases": [{"when": [], "value": 0.0}]},
+        },
+        "select": {
+            "uses": "dskit.pipeline.libs.sklearn:SklearnSelect",
+            "inputs": {"rows": "$noisy.records"},
+            "params": {
+                "fit_split": "train",
+                "features": ["mid", "noise"],
+                "selector": VARIANCE,
+                "selector_params": {"threshold": 0.0},
+            },
+        },
+        "train_rows": {
+            "uses": "filter",
+            "inputs": {"records": "$select.rows"},
+            "params": {
+                "where": [
+                    {"field": "asof_ms", "op": "<=", "value": "$splits.train_end_ms"}
+                ]
+            },
+        },
+        "model": {
+            "uses": "dskit.pipeline.libs.sklearn:SklearnFit",
+            "inputs": {"rows": "$train_rows.records"},
+            "params": {
+                "estimator": RIDGE,
+                "features": "$select.features",
+                "label": "settled_yes",
+            },
+        },
+        "validate": {
+            "uses": "validate",
+            "inputs": {
+                "records": "$dataset.events",
+                "signal": "$model.signal",
+                "outcomes": "$labels.outcomes",
+            },
+            "params": {"split": "val", "metric": "squared_error", "min_events": 5},
+        },
+        "sweep": {
+            "uses": "hpo-grid",
+            "params": {
+                "space": {
+                    "model.estimator": [
+                        "sklearn.linear_model.LinearRegression",
+                        RIDGE,
+                    ]
+                },
+                "objective": "$validate.metrics.loss",
+                "select": "min",
+            },
+        },
+    },
+    "splits": {
+        "kind": "time",
+        "train_end_ms": 92620800000,
+        "val_end_ms": 93916800000,
+        "test_end_ms": 95299200000,
+    },
+}
+
+
+def test_the_model_below_reads_the_surviving_list_end_to_end(tmp_path):
+    """ADR-0042 owner flows 1 and 3, run: select upstream, sweep models.
+
+    Both flows are the SAME document — a selector above the model with a
+    space over ``model.estimator`` — which is the design target: they are
+    document edits over one node, not three code paths. What distinguishes
+    them is only intent (flow 3 fixes the selector's method deliberately;
+    flow 1 treats the feature set as given).
+
+    ``$select.features`` is the wire that makes either usable: a document
+    cannot state which columns survive — that is the fit's answer — so the
+    model reads the selector's ``features`` output as its own knob.
+    """
+    pytest.importorskip("sklearn")
+    obj = json.loads(json.dumps(SELECT_FLOW))
+    obj["outputs"] = {"run_root": str(tmp_path)}
+    result = run_document(PipelineDocument.from_obj(obj), asof=ASOF)
+
+    assert result.state == "ran" and result.exit_code == 0
+    assert result.outputs["select"]["features"] == ["mid"]
+    assert all("noise" not in row for row in result.outputs["select"]["rows"])
+    # What the winner actually consumed, read off its own sidecar.
+    with open(result.outputs["model"]["artifact_path"] + ".json") as fh:
+        assert json.load(fh)["features"] == ["mid"]
+    assert result.outputs["validate"]["metrics"]["n"] >= 5
+
+    sweep = result.outputs["sweep"]
+    assert [t["overrides"]["model.estimator"] for t in sweep["trials"]] == [
+        "sklearn.linear_model.LinearRegression",
+        RIDGE,
+    ]
+    assert sweep["best_score"] == min(t["score"] for t in sweep["trials"])
+    assert sweep["best_params"]["model.estimator"] in (
+        "sklearn.linear_model.LinearRegression",
+        RIDGE,
+    )
+
+
+def test_the_flow_refuses_when_the_model_restates_the_candidates(tmp_path):
+    """The other half of the same claim: a model that declares the
+    CANDIDATE list gets a fit refusal naming the dropped column, so the
+    ``$select.features`` wire is load-bearing rather than stylistic."""
+    pytest.importorskip("sklearn")
+    obj = json.loads(json.dumps(SELECT_FLOW))
+    obj["pipeline"]["model"]["params"]["features"] = ["mid", "noise"]
+    obj["outputs"] = {"run_root": str(tmp_path)}
+    result = run_document(PipelineDocument.from_obj(obj), asof=ASOF)
+
+    assert result.state == "error" and result.exit_code != 0
+    assert "carries no 'noise'" in (result.error or "")
+
+
+# ---------------------------------------------------------------------------
 # The conformance hookup (docs/24 §10 step 8)
 # ---------------------------------------------------------------------------
 
-EXPECTED_ROLES = {"sklearn-fit": "train", "sklearn-predict": "signal"}
+EXPECTED_ROLES = {
+    "sklearn-fit": "train",
+    "sklearn-predict": "signal",
+    "sklearn-select": "fitted_transform",
+}
+
+
+def _selected(tmp_path):
+    """A REAL fitted selection: its ctx, its carrier and its sidecar path.
+
+    The family's load check needs an artifact that exists — a state
+    restored from nothing proves nothing — so the factory fits once, on
+    the split whose rows say the constant column carries nothing.
+    """
+    ctx = _split_ctx(tmp_path, "selectfixture")
+    node = SklearnSelect("fixture_select", dict(SELECT_PARAMS))
+    out = node.run(ctx, {"rows": SELECT_TRAIN_ROWS + SELECT_VAL_ROWS})
+    return ctx, out["transform"], os.path.join(node.artifact_dir(ctx), SIDECAR_NAME)
 
 
 def probes(tmp_path):
@@ -765,6 +1195,7 @@ def probes(tmp_path):
     (``y = 1 - x``), so ``verify_loaded`` discriminates a restore from a
     silent refit on the prediction itself, not just on paperwork."""
     pytest.importorskip("sklearn")
+    select_ctx, carrier, select_sidecar = _selected(tmp_path)
     fitted = SklearnFit("fixture_fit", dict(FIT_PARAMS)).run(
         _ctx(tmp_path, "fixture"), {"rows": rows_linear()}
     )
@@ -804,6 +1235,21 @@ def probes(tmp_path):
             runnable=True,
             load_artifact=pinned,
             verify_loaded=lambda out: restored(out.get("signal")),
+        ),
+        # ``fit_split`` is NOT listed as required: the planner refuses it
+        # (it can see the splits section), validate_params cannot.
+        "sklearn-select": NodeProbe(
+            params=dict(SELECT_PARAMS),
+            required=("features", "selector"),
+            inputs={"rows": SELECT_TRAIN_ROWS + SELECT_VAL_ROWS},
+            stream_ports=("rows",),
+            runnable=True,
+            ctx=select_ctx,
+            load_artifact=select_sidecar,
+            verify_loaded=lambda out: (
+                out["metrics"]["n_fit_rows"] == 0
+                and out["transform"].state == carrier.state
+            ),
         ),
     }
 

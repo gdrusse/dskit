@@ -251,9 +251,43 @@ Write a member by implementing two methods:
 }
 ```
 
+**Feature SELECTION is a member of that family** (`FeatureSelector`, ADR-0042),
+so the leakage rules above are inherited rather than restated: fitting sees the
+declared split and nothing else. Subclasses implement ONE hook,
+`surviving_features(rows, params) -> names`, and the base owns the rest — the
+state IS the surviving column list (a JSON sidecar artifact, so serving projects
+the identical columns in the identical order), `apply_state` drops only the
+REJECTED candidates (the label, the instant and the cluster id are not features
+and must ride along), survivors come back in the order the document DECLARED its
+candidates (a tie must not order by whatever the library returned), and `metrics`
+carries `n_candidates`/`n_selected`. A fourth output, `features`, is what makes
+it composable: the surviving list cannot be written into a document — it is the
+fit's answer — so the model below reads `"features": "$select.features"`.
+A member needing more than rows (importance off a fitted net) declares an input
+port and reads it with `wired(port)`.
+
+```jsonc
+"select": {
+  "uses": "sklearn-select",
+  "inputs": { "rows": "$window.records" },
+  "params": {
+    "fit_split": "train",
+    "features": ["ret_lag_0", "ret_lag_1", "spread"],
+    "selector": "sklearn.feature_selection.SelectKBest",
+    "selector_params": { "k": 2 },
+    "score_func": "sklearn.feature_selection.mutual_info_regression",
+    "label": "y"
+  },
+  "notes": "Chosen on train rows only. The model below reads $select.features."
+}
+```
+
 `libs/` packs register nothing by import; use their kinds via
 `register()`/`--adapter` or reference classes by import path:
-**sklearn** `sklearn-fit`/`sklearn-predict` (the document names the estimator —
+**sklearn** `sklearn-fit`/`sklearn-predict`/`sklearn-select` (the document names
+the estimator, and the SELECTOR the same way — `selector` plus the two arguments
+no JSON block can hold, `estimator` for a wrapper selector and `score_func` for a
+univariate one, each a dotted path; ADR-0042 —
 so a search space over `model.estimator` IS a model sweep, with no per-model
 classes: `examples/pipeline/model-sweep.json` plus the pack docstring's
 estimator table; `lightgbm.LGBMRegressor` joins via the `lightgbm` extra, not
@@ -262,7 +296,10 @@ a pack of its own);
 names the `nn.Module` class — no subclass, validated at plan time) +
 `torch-linear-train`/`torch-linear-predict` + `TorchTrain`/`TorchPredict`
 bases (`build_module` hook; optional `monitor` selects the checkpoint —
-the best epoch's weights restore before persist/serve, ADR-0035); **sb3** `sb3-train`/`sb3-policy`/`sb3-eval`
+the best epoch's weights restore before persist/serve, ADR-0035) +
+`torch-importance` (feature selection by input-gradient sensitivity: it ranks a
+net someone else fitted, wired in on the `signal` port, and trains nothing
+itself); **sb3** `sb3-train`/`sb3-policy`/`sb3-eval`
 (ADR-0028: the document names the RL algorithm AND the gymnasium env class;
 artifacts are hash-pinned); **matplotlib** `mpl-figure` + `FigureNode` base
 (ADR-0029: declared line/scatter/bar/hist marks over a row stream → a PNG
@@ -449,7 +486,8 @@ dskit/pipeline/
 ├── kinds_report.py    owned run-report (evidence.json / evidence.md)
 ├── fitted.py          the fitted-transform family: FittedTransform (role
 │                      fitted_transform, fit/apply_state hooks, fit_split +
-│                      the purity screen), standardize, apply-transform
+│                      the purity screen), standardize, apply-transform,
+│                      FeatureSelector (the surviving-columns member)
 ├── conformance.py     conformance_suite + NodeProbe — the reusable pack bar
 ├── synthetic_nodes.py every role, deterministic, for demos/tests
 ├── metrics.py         logloss / brier / squared_error / absolute_error + register_metric

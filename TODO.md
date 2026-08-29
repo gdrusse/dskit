@@ -789,7 +789,7 @@ them.**
       estimator_params/seed on a mixed sweep; unclipped regressor beliefs
       → squared_error on this binary venue as the documented tier-1
       exception).
-- [ ] **Feature selection — genuinely absent, real new capability.** Grepped:
+- [x] **Feature selection — genuinely absent, real new capability.** Grepped:
       zero hits for any selector anywhere in `dskit/`.
 
       **A selector is FITTED, so it is not a `transform`.** It learns which
@@ -814,11 +814,21 @@ them.**
       `libs/torch.py` supplies importance-from-a-fitted-net through the SAME
       interface. Outputs carry the selected feature LIST as an artifact, not
       just projected rows, so serving uses the identical columns.
-- [ ] **The governing class.** Owner: "we need some parent … we might use
+      **Landed via ADR-0042 / C6 (2026-08-29).** `FeatureSelector` is a
+      member of ADR-0040's family (not a second seam); `sklearn-select`
+      names any selector by import path; `torch-importance` ranks a wired
+      net by input-gradient magnitude. The surviving list is the sidecar.
+      `libs/torch.py` drained in the same change (last card to touch it).
+- [x] **The governing class.** Owner: "we need some parent … we might use
       this on a deep learning model at some point." Half is already
       approved — **`TrainableNode` (3c above) is the parent for the model
       side**; build it first and make the selector seam its sibling, or the
       two abstractions get designed against each other.
+      **Landed via ADR-0042 / C6 (2026-08-29).** The letter was not
+      followed (and the ADR says so): the selector subclasses
+      `FittedTransform`, which already subclasses `TrainableNode`, so the
+      lifecycle is written once. A second mode dispatch would have been
+      the duplication both ADRs exist to remove.
 - [ ] **All three owner flows fall out of ONE modular selector node** — the
       difference is only where the node sits and what the search space
       covers. Build the node right and the flows are document edits:
@@ -833,6 +843,10 @@ them.**
       So the design target is the node's interface, not three code paths.
       Keep the selector's fitted state and its declared fit-split as first
       class, and all three compose.
+      **C6 (2026-08-29) landed flows 1 and 3.** Flow 2 cannot run: ADR-0040
+      shipped `fitted_transform` as an unsearchable ROLE, so a space over
+      `select.top_k` refuses at plan. ADR-0044 proposes narrowing that to
+      the family's three leakage knobs; awaiting the owner.
 
 ## A time-series architecture zoo in the torch pack (owner ask, 2026-08-27)
 

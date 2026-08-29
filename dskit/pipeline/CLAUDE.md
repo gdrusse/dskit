@@ -97,6 +97,25 @@ on it without breaking its rulings.
   fit row cannot answer refuses by name, while a merely defaulted one
   under a cluster-keyed cut (which reads no instant at all) leaves them
   in the stream's order.
+- **Feature selectors** — subclass `FeatureSelector` (`fitted.py`,
+  ADR-0042) and implement ONE hook, `surviving_features(rows, params) ->
+  names`. `fit`/`apply_state` are the BASE's and are already written: the
+  state is `{candidates, features}`, the projection drops only the
+  REJECTED candidates (a row stripped to its features could neither be
+  trained on nor cut), and survivors are canonicalized to the order the
+  document DECLARED — return them in any order you like. The extra
+  `features` output exists because the surviving list cannot be written
+  into a document; the model below reads `"$select.features"`. Need more
+  than rows (importance off a fitted net)? Declare the port in
+  `validate_train_inputs` and read it with `wired(port)` — the hook's
+  signature is the family's and does not change. Two packs ship members:
+  `sklearn-select` (any selector by import path — `get_support` is the
+  whole requirement) and `torch-importance` (input-gradient sensitivity
+  over a wired `signal`). ADR-0042's owner flow 2 — a space over the
+  selector's OWN knobs — does not run: the unsearchable-role rule above
+  is keyed on the ROLE, and narrowing it to the base's three knobs is an
+  engine decision nobody has ruled on (pinned in
+  `tests/pipeline/test_selector.py`).
 - **One name per shared vocabulary.** `node.class_ref(cls)` is the
   `module:QualName` an artifact sidecar RECORDS and load mode compares —
   three modules used to write that f-string out, and a divergence there
@@ -383,7 +402,8 @@ dskit/pipeline/
 ├── kinds_stats.py     owned validate + stat_test
 ├── kinds_search.py    hpo-grid (ctx.rerun seam)
 ├── kinds_report.py    owned run-report
-├── fitted.py          FittedTransform family: standardize, apply-transform
+├── fitted.py          FittedTransform family: standardize, apply-transform,
+│                      FeatureSelector
 ├── conformance.py     conformance_suite + NodeProbe
 ├── synthetic_nodes.py demo/test nodes, private registries only
 ├── metrics.py         logloss / brier / squared_error / absolute_error + register_metric

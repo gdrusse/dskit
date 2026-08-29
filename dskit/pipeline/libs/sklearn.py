@@ -134,6 +134,34 @@ uncalibrated-regressor sweep on a binary venue scores ``squared_error``;
 a ``predict_proba`` document keeps the venue rule as written, as
 ``examples/pipeline/sklearn-fit.json`` does with ``brier``.
 
+**Feature selection comes through the same doorway** (``sklearn-select``,
+ADR-0042). ``selector`` names the class — ``VarianceThreshold``,
+``SelectKBest``, ``SelectPercentile``, ``RFE``, ``SelectFromModel``, or
+one this file has never heard of — and the only requirement is that it
+can say which columns survived, which in sklearn is ``get_support``. So
+there are no per-selector wrapper classes here either, for the same
+reason there are no per-model ones.
+
+Two of sklearn's selector arguments cannot be spelled inside a JSON
+kwargs block, because one is an estimator OBJECT and the other a
+FUNCTION. Each therefore gets its OWN dotted-path knob on the node:
+``estimator``/``estimator_params`` for the wrapper selectors (``RFE``,
+``SelectFromModel``) and ``score_func`` for the univariate ones
+(``mutual_info_regression``, ``f_regression``). A ``selector_params``
+entry restating either is refused by name — two spellings of one
+constructor argument would disagree, and a search space addressing the
+node's knob would tune the loser. Supervision is DECLARED: ``label``
+names the target column, and a selector that needs one when the document
+declared none is refused with the library's own words quoted, because
+sklearn's ``fit`` signature cannot be asked (``SelectKBest.fit`` spells
+``y=None`` exactly as ``VarianceThreshold.fit`` does).
+
+The cut is fitted on the declared split and nothing else — the family's
+rule, inherited, not restated — and the surviving list is an artifact, so
+serving projects the identical columns. The model BELOW reads it as
+``"features": "$select.features"``: which columns survive is the fit's
+answer, so no document can state it in advance.
+
 Import cost: stdlib + ``dskit.pipeline`` only. sklearn and joblib are
 imported inside the run path exclusively (``tests/pipeline/test_purity.py``
 enforces it) so documents plan on machines without them.
@@ -148,6 +176,7 @@ import os
 import sys
 from collections.abc import Mapping
 
+from dskit.pipeline.fitted import FeatureSelector
 from dskit.pipeline.node import (
     DEFAULT_NODE_KINDS,
     TrainableNode,
@@ -158,6 +187,7 @@ __all__ = [
     "NODE_KINDS",
     "SklearnFit",
     "SklearnPredict",
+    "SklearnSelect",
     "SklearnSignal",
     "register",
 ]
@@ -178,6 +208,24 @@ _SIDECAR_REQUIRED = (
     "predict_method",
     "sha256",
 )
+
+#: What a selector class must be able to do: fit, then say which columns
+#: survived. sklearn spells the second one ``get_support``.
+_SELECTOR_METHODS = ("fit", "get_support")
+
+#: The example a missing/malformed ``selector`` path is refused against.
+_SELECTOR_EXAMPLE = "sklearn.feature_selection.SelectKBest"
+
+#: The selector constructor arguments that CANNOT be spelled in a JSON
+#: kwargs block — one is an estimator OBJECT, the other a FUNCTION — so
+#: each gets its own dotted-path knob on the node, mapped here to the
+#: example its refusal quotes. Being the node's own knobs is what makes
+#: them addressable by a search space; being listed HERE is what makes
+#: ``selector_params`` refuse a second spelling of either.
+_SELECTOR_PATH_KNOBS = {
+    "estimator": "sklearn.linear_model.Ridge",
+    "score_func": "sklearn.feature_selection.f_regression",
+}
 
 #: numpy's seed range — refusing outside it at PLAN beats a RandomState
 #: ValueError after the feature matrix is already built.
@@ -248,13 +296,19 @@ def _seed_problems(value):
     return []
 
 
-def _estimator_params_problems(value):
+def _kwargs_problems(name, value):
     """Shape only: a dict with string keys. What is INSIDE is the
     constructor's contract — a typo'd nested key ([[I-227]]) surfaces as
-    the constructor's own refusal at fit time, wrapped by name."""
+    the constructor's own refusal at fit time, wrapped by name.
+
+    One rule for every kwargs block this pack forwards to a library
+    constructor (``estimator_params``, ``selector_params``): the shape
+    question is identical, and a second copy would be the place the two
+    drifted.
+    """
     if not isinstance(value, dict) or any(not isinstance(k, str) for k in value):
         return [
-            f"estimator_params must be a dict of constructor kwargs with "
+            f"{name} must be a dict of constructor kwargs with "
             f"string keys, got {value!r}"
         ]
     return []
@@ -297,36 +351,54 @@ def _finite_number(value):
     return out if math.isfinite(out) else None
 
 
-def _fit_matrix(rows, features, label, where):
-    """``(X, y)`` from the wired rows — every feature and the label, on
-    every row, or a refusal naming the row and the key. Silently dropping
-    rows would make ``n_rows`` a lie about what the model saw."""
+def _row_vector(row, index, columns, where):
+    """One row's finite numbers for ``columns``, or a refusal naming the
+    row and the key. Silently dropping a row would make ``n_rows`` a lie
+    about what the library saw."""
+    vector = []
+    for name in columns:
+        present, value = _row_value(row, name)
+        if not present or value is None:
+            raise ValueError(
+                f"{where}: row {index} carries no {name!r} — every row must "
+                "carry every column the fit reads (cut or repair the stream "
+                "upstream; a silently dropped row would misreport the fit)"
+            )
+        number = _finite_number(value)
+        if number is None:
+            raise ValueError(
+                f"{where}: row {index} field {name!r} is {value!r}, not a "
+                "finite number — corrupt input, refused by name"
+            )
+        vector.append(number)
+    return vector
+
+
+def _refuse_zero_rows(rows, where):
+    """Refuse an empty fit stream by name."""
     if not rows:
         raise ValueError(
             f"{where}: cannot fit on zero rows — wire a non-empty rows input"
         )
+
+
+def _fit_matrix(rows, features, label, where):
+    """``(X, y)`` from the wired rows — every feature and the label, on
+    every row, or a refusal naming the row and the key."""
+    _refuse_zero_rows(rows, where)
     matrix, targets = [], []
     for i, row in enumerate(rows):
-        vector = []
-        for name in (*features, label):
-            present, value = _row_value(row, name)
-            if not present or value is None:
-                raise ValueError(
-                    f"{where}: row {i} carries no {name!r} — training rows must "
-                    "carry every feature and the label (cut or repair the "
-                    "stream upstream; a silently dropped row would misreport "
-                    "the fit)"
-                )
-            number = _finite_number(value)
-            if number is None:
-                raise ValueError(
-                    f"{where}: row {i} field {name!r} is {value!r}, not a "
-                    "finite number — corrupt input, refused by name"
-                )
-            vector.append(number)
+        vector = _row_vector(row, i, (*features, label), where)
         matrix.append(vector[:-1])
         targets.append(vector[-1])
     return matrix, targets
+
+
+def _design_matrix(rows, features, where):
+    """``X`` alone, by the same row rule — what an UNSUPERVISED fit reads
+    (a variance threshold has no target to be given)."""
+    _refuse_zero_rows(rows, where)
+    return [_row_vector(row, i, features, where) for i, row in enumerate(rows)]
 
 
 # ---------------------------------------------------------------------------
@@ -334,30 +406,88 @@ def _fit_matrix(rows, features, label, where):
 # ---------------------------------------------------------------------------
 
 
-def _import_estimator(path, where):
-    """The estimator CLASS behind a dotted path — or a refusal naming the
-    path. Import errors here are the honest 'library not installed /
-    path typo' answer, delivered at execute where the library is due."""
+def _import_object(path, where, subject="estimator"):
+    """The object behind a dotted path — or a refusal naming the path.
+
+    Import errors here are the honest 'library not installed / path typo'
+    answer, delivered at execute where the library is due. ``subject``
+    names what the document was pointing at, because a pack that resolves
+    THREE kinds of path (an estimator class, a selector class, a scoring
+    FUNCTION) must say which one it could not find.
+    """
     import importlib
 
-    module_name, _, cls_name = path.rpartition(".")
+    module_name, _, attr_name = path.rpartition(".")
     try:
         module = importlib.import_module(module_name)
     except ImportError as exc:
         raise ValueError(
-            f"{where}: cannot import estimator {path!r} ({exc}) — is the "
+            f"{where}: cannot import {subject} {path!r} ({exc}) — is the "
             "library installed on this machine, and the path spelled as "
             "module.ClassName?"
         ) from exc
-    est_cls = getattr(module, cls_name, None)
-    if est_cls is None:
+    obj = getattr(module, attr_name, None)
+    if obj is None:
         raise ValueError(
-            f"{where}: module {module_name!r} has no attribute {cls_name!r} — "
-            f"estimator {path!r} does not exist"
+            f"{where}: module {module_name!r} has no attribute {attr_name!r} — "
+            f"{subject} {path!r} does not exist"
         )
+    return obj
+
+
+def _import_estimator(path, where):
+    """The estimator CLASS behind a dotted path — or a refusal naming the
+    path. An estimator is a thing that fits."""
+    est_cls = _import_object(path, where)
     if not callable(getattr(est_cls, "fit", None)):
         raise ValueError(f"{where}: {path!r} has no fit method — not an estimator")
     return est_cls
+
+
+def _import_selector(path, where):
+    """The selector CLASS behind a dotted path — or a refusal naming the
+    path and the method it lacks.
+
+    A selector is an estimator that also REPORTS which columns survived,
+    which in sklearn is spelled ``get_support``. Every selector in the
+    library has it (``VarianceThreshold``, ``SelectKBest``, ``RFE``,
+    ``SelectFromModel``, …), so requiring it is how this doorway stays a
+    doorway instead of a registry of the classes someone remembered.
+    """
+    cls_ = _import_object(path, where, subject="selector")
+    for method in _SELECTOR_METHODS:
+        if not callable(getattr(cls_, method, None)):
+            raise ValueError(
+                f"{where}: {path!r} has no {method} method — a feature "
+                f"selector must fit and then report which columns survived "
+                f"({'/'.join(_SELECTOR_METHODS)}); {path!r} is not one"
+            )
+    return cls_
+
+
+def _import_callable(path, where, subject):
+    """The FUNCTION behind a dotted path — or a refusal naming it. A
+    scoring function is passed to the selector, never instantiated."""
+    obj = _import_object(path, where, subject=subject)
+    if not callable(obj):
+        raise ValueError(
+            f"{where}: {subject} {path!r} is not callable — it must be a "
+            "function the selector can score columns with"
+        )
+    return obj
+
+
+def _construct(cls_, kwargs, path, where, kwargs_name):
+    """Instantiate ``cls_`` with ``kwargs`` — or refuse naming the path
+    and the block the kwargs came from."""
+    try:
+        return cls_(**kwargs)
+    except TypeError as exc:
+        raise ValueError(
+            f"{where}: {path} rejected {kwargs_name} ({exc}) — a typo'd "
+            "nested knob is caught here, by the constructor, not at plan "
+            "(I-227)"
+        ) from exc
 
 
 def _content_hash(path, sidecar):
@@ -618,7 +748,7 @@ class SklearnFit(TrainableNode):
         elif not isinstance(label, str) or not label:
             problems.append(f"label must be a non-empty row key, got {label!r}")
         estimator_params = params.get("estimator_params", {})
-        problems += _estimator_params_problems(estimator_params)
+        problems += _kwargs_problems("estimator_params", estimator_params)
         if "seed" in params:
             problems += _seed_problems(params["seed"])
             if (
@@ -695,14 +825,7 @@ class SklearnFit(TrainableNode):
         predict_method = params.get("predict_method", "predict")
         est_cls = _import_estimator(path, self.key)
         kwargs = dict(params.get("estimator_params") or {})
-        try:
-            estimator = est_cls(**kwargs)
-        except TypeError as exc:
-            raise ValueError(
-                f"{self.key}: {path} rejected estimator_params ({exc}) — a "
-                "typo'd nested knob is caught here, by the constructor, not "
-                "at plan (I-227)"
-            ) from exc
+        estimator = _construct(est_cls, kwargs, path, self.key, "estimator_params")
         self._apply_seed(estimator, path)
         matrix, targets = _fit_matrix(inputs["rows"], features, label, self.key)
         estimator.fit(matrix, targets)
@@ -838,6 +961,227 @@ class SklearnPredict(TrainableNode):
         }
 
 
+class SklearnSelect(FeatureSelector):
+    """Choose which candidate columns survive, with any sklearn selector.
+
+    A member of the fitted-transform family (ADR-0040) through
+    :class:`~dskit.pipeline.fitted.FeatureSelector` (ADR-0042): the base
+    owns the whole envelope — fitting on the DECLARED split and nothing
+    else, canonical ordering, the persisted column list, the load-mode
+    restore that never refits — and this class supplies the one hook,
+    :meth:`surviving_features`.
+
+    The selector arrives BY IMPORT PATH, the same doorway
+    :class:`SklearnFit` opens for estimators, so the pack ships no
+    per-selector wrapper class and a selector this file has never heard
+    of works the day the library ships it. What sklearn cannot express in
+    a JSON kwargs block gets its own path knob: ``estimator`` for the
+    wrapper selectors that take an inner model (``RFE``,
+    ``SelectFromModel``) and ``score_func`` for the univariate ones that
+    take a scoring function (``SelectKBest``, ``SelectPercentile``).
+    Everything else is the selector's own constructor kwargs, forwarded
+    verbatim and validated by the constructor.
+
+    Supervision is declared, not guessed: ``label`` names the target
+    column when the selector needs one, and is absent when it does not
+    (a variance threshold reads no target). A supervised selector with no
+    label refuses by name rather than raising sklearn's positional-arg
+    ``TypeError``.
+
+    Parameters
+    ----------
+    params : dict
+        ``selector`` (dotted import path, required), ``selector_params``
+        (dict of its constructor kwargs, default ``{}``), ``estimator`` /
+        ``estimator_params`` (the inner model for a wrapper selector,
+        optional), ``score_func`` (dotted path to a scoring function,
+        optional), ``label`` (target column, optional), plus
+        :class:`~dskit.pipeline.fitted.FeatureSelector`'s ``features``
+        (the candidates, required) and the family's ``fit_split`` /
+        ``order_field`` / ``purity_check``.
+
+    Examples
+    --------
+    Keep the two candidates mutual information likes best, learned from
+    the train split alone::
+
+        node = SklearnSelect("select", {
+            "fit_split": "train",
+            "features": ["ret_lag_0", "ret_lag_1", "spread"],
+            "selector": "sklearn.feature_selection.SelectKBest",
+            "selector_params": {"k": 2},
+            "score_func": "sklearn.feature_selection.mutual_info_regression",
+            "label": "y",
+        })
+        out = node.run(ctx, {"rows": rows})
+        # -> out["features"] == ["ret_lag_0", "spread"]
+    """
+
+    _PARAMS = FeatureSelector._PARAMS + (
+        "estimator",
+        "estimator_params",
+        "label",
+        "score_func",
+        "selector",
+        "selector_params",
+    )
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            The family's problems, plus one per broken knob of this
+            pack's own: a missing or malformed ``selector`` /
+            ``estimator`` / ``score_func`` path, a kwargs block that is
+            not a string-keyed dict, a non-string ``label``, and a
+            ``selector_params`` entry restating a knob this node owns.
+        """
+        problems = super().validate_params(params)
+        if "selector" not in params:
+            problems.append(
+                "selector is required — the dotted import path of the "
+                f"selector class, e.g. {_SELECTOR_EXAMPLE!r}"
+            )
+        else:
+            problems += _import_path_problems(
+                "selector", params["selector"], example=_SELECTOR_EXAMPLE
+            )
+        problems += cls._path_knob_problems(params)
+        problems += _kwargs_problems("estimator_params",
+                                     params.get("estimator_params", {}))
+        label = params.get("label")
+        if label is not None and (not isinstance(label, str) or not label):
+            problems.append(
+                f"label must be a non-empty row key naming the target the "
+                f"selector supervises on (omit it for an unsupervised "
+                f"selector), got {label!r}"
+            )
+        return problems
+
+    @classmethod
+    def _path_knob_problems(cls, params):
+        """The optional path knobs, and the second-spelling rule."""
+        problems = []
+        for knob, example in _SELECTOR_PATH_KNOBS.items():
+            if knob in params:
+                problems += _import_path_problems(knob, params[knob], example=example)
+        kwargs = params.get("selector_params", {})
+        problems += _kwargs_problems("selector_params", kwargs)
+        if not isinstance(kwargs, dict):
+            return problems
+        for knob in _SELECTOR_PATH_KNOBS:
+            if knob in kwargs:
+                problems.append(
+                    f"selector_params carries {knob!r}, which this node owns "
+                    f"as its own knob — declare it as params.{knob} (a dotted "
+                    "import path). Two spellings of one constructor argument "
+                    "would disagree, and a search space addressing the node's "
+                    "knob would tune the loser"
+                )
+        return problems
+
+    # -- the ONE hook (ADR-0042) --------------------------------------------
+
+    def surviving_features(self, rows, params):
+        """Fit the declared selector on ``rows`` and report the survivors.
+
+        Parameters
+        ----------
+        rows : list
+            The rows of the declared ``fit_split``, and nothing else —
+            the base cut them, which is the whole leakage guarantee. The
+            matrix is built HERE, from these rows, so there is no wider
+            stream for the library to see.
+        params : dict
+            ``self.params``, passed through by the base.
+
+        Returns
+        -------
+        list of str
+            The candidates whose ``get_support`` mask is true.
+
+        Raises
+        ------
+        ValueError
+            When the selector path does not import, names a class that
+            cannot report its support, rejects its kwargs, or needs a
+            target the document declared no ``label`` for.
+        """
+        candidates = list(self.features())
+        selector = self._build_selector()
+        matrix = _design_matrix(rows, candidates, self.key)
+        self._fit_selector(selector, matrix, self._targets(rows))
+        support = list(selector.get_support())
+        if len(support) != len(candidates):
+            raise ValueError(
+                f"{self.key}: {params['selector']} reported a support mask of "
+                f"{len(support)} column(s) for {len(candidates)} candidate(s) "
+                "— the mask must name one bool per candidate"
+            )
+        return [name for name, keep in zip(candidates, support) if keep]
+
+    def _build_selector(self):
+        """The constructed selector, with its path knobs resolved."""
+        params = self.params
+        path = params["selector"]
+        cls_ = _import_selector(path, self.key)
+        kwargs = dict(params.get("selector_params") or {})
+        if "estimator" in params:
+            inner = params["estimator"]
+            kwargs["estimator"] = _construct(
+                _import_estimator(inner, self.key),
+                dict(params.get("estimator_params") or {}),
+                inner,
+                self.key,
+                "estimator_params",
+            )
+        if "score_func" in params:
+            kwargs["score_func"] = _import_callable(
+                params["score_func"], self.key, "score_func"
+            )
+        return _construct(cls_, kwargs, path, self.key, "selector_params")
+
+    def _targets(self, rows):
+        """The target column for a supervised selector, or ``None``."""
+        label = self.params.get("label")
+        if label is None:
+            return None
+        return [_row_vector(row, i, (label,), self.key)[0]
+                for i, row in enumerate(rows)]
+
+    def _fit_selector(self, selector, matrix, targets):
+        """Fit it — supervised exactly when a label was declared.
+
+        The unsupervised call is wrapped because sklearn's own refusal
+        does not say what to DO about it, and cannot be anticipated: a
+        supervised selector is not identifiable from its ``fit``
+        signature (``SelectKBest.fit`` spells ``y=None``, exactly like
+        ``VarianceThreshold.fit``), and which class needs a target is a
+        library tag this pack will not mirror. So the library's own words
+        are quoted verbatim and the fix — declare ``label`` — is named
+        beside them.
+        """
+        if targets is not None:
+            selector.fit(matrix, targets)
+            return
+        try:
+            selector.fit(matrix)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{self.key}: {self.params['selector']} refused a fit with no "
+                f"target ({exc}) — if this selector supervises on one, declare "
+                "the 'label' knob naming the row key that holds it"
+            ) from exc
+
+
 # ---------------------------------------------------------------------------
 # Registration (explicit — importing this pack registers nothing)
 # ---------------------------------------------------------------------------
@@ -848,6 +1192,7 @@ class SklearnPredict(TrainableNode):
 NODE_KINDS = (
     ("sklearn-fit", SklearnFit),
     ("sklearn-predict", SklearnPredict),
+    ("sklearn-select", SklearnSelect),
 )
 
 

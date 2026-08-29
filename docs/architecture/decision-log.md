@@ -1901,3 +1901,43 @@ pinning moves the edited document's hash, which is the intended signal. The engi
 gains no mode branch, no extra plan call and no new validation surface.
 **Deferred:** a fold-internal outer band (an ADR-0034-shaped inner-val/outer-eval
 carve) is the only route to an unbiased tuned-pipeline estimate. Not C7.
+
+## ADR-0044 — Searchability of a fitted transform: per-KNOB, not per-role
+
+**Status:** PROPOSED (2026-08-29, surfaced by C6) — awaiting the owner. Nothing
+is implemented; the current behaviour is pinned as-is in
+`tests/pipeline/test_selector.py::test_the_role_is_unsearchable_so_flow_2_is_refused_today`.
+
+**Context.** Two accepted ADRs from the same round disagree on one point.
+ADR-0042 names three owner flows and says all three "fall out" of where the
+selector node sits and what the space covers, "because the selector's method and
+params are ordinary declared knobs on a searchable role". Flow 2 — *per model,
+select then score* — is a space over BOTH keys: `model.estimator` AND the
+selector's own method/params. ADR-0040 shipped `planner._UNSEARCHABLE_ROLES` with
+an entry for the whole `fitted_transform` ROLE, so a space over `select.top_k`
+refuses at plan and flow 2 cannot run. Flows 1 and 3 are implemented and run
+end to end (`tests/pipeline_libs/test_sklearn.py`).
+
+The refusal's own stated rationale is entirely about the FAMILY BASE's three
+knobs: "every knob this family's base declares re-aims it (fit_split directly,
+purity_check by switching the screen off, order_field by re-cutting which rows
+fall where), and a trial's override is never plan-checked". That argument is
+exact and must not be weakened. It does not, however, reach a MEMBER's own knob:
+`select.top_k` or `select.selector` changes what the rule DECIDES, not which
+rows it learned from — the same kind of knob as `model.estimator`, which is
+searchable.
+
+**Proposal.** Narrow the entry from per-role to per-KNOB: refuse a space key
+addressing `fit_split`, `purity_check` or `order_field` on ANY
+`fitted_transform` node (the head param, so `fit_split.x` is refused too), and
+allow a member's own params. Read the forbidden set from
+`FittedTransform._PARAMS` rather than restating it — a family base that gains a
+fourth leakage knob must not need a planner edit to protect it.
+
+**Why this needs the owner and not this card.** It changes an engine refusal that
+ADR-0040 reasoned about explicitly, and the safe direction is arguable: a
+per-knob rule is one `_PARAMS` tuple away from letting a future base knob through
+silently, while the per-role rule is one line and cannot. That is the owner's
+call, not a card's. Cost of the status quo: ADR-0042's flow 2 is documented but
+unreachable — an escape hatch named and not built, which CLAUDE.md forbids, so
+either this lands or ADR-0042's flow-2 sentence is amended to say so.

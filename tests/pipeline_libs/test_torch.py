@@ -19,6 +19,7 @@ import pytest
 
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.document import PipelineDocument, load_document
+from dskit.pipeline.fitted import SIDECAR_NAME, FeatureSelector
 from dskit.pipeline.driver import run_document
 from dskit.pipeline.libs.torch import (
     ARTIFACT_FORMAT,
@@ -27,7 +28,9 @@ from dskit.pipeline.libs.torch import (
     DeclaredTrain,
     LinearPredictor,
     LinearRegressor,
+    TorchImportance,
     TorchPredict,
+    TorchSignal,
     TorchTrain,
     register,
 )
@@ -745,6 +748,7 @@ def test_register_is_explicit_and_idempotent():
     register(registry)
     register(registry)  # idempotent: present names are skipped, never shadowed
     assert registry.kinds() == (
+        "torch-importance",
         "torch-linear-predict",
         "torch-linear-train",
         "torch-predict",
@@ -754,6 +758,7 @@ def test_register_is_explicit_and_idempotent():
     assert registry.get("torch-linear-predict") == (LinearPredictor, False)
     assert registry.get("torch-train") == (DeclaredTrain, False)
     assert registry.get("torch-predict") == (DeclaredPredict, False)
+    assert registry.get("torch-importance") == (TorchImportance, False)
 
 
 def test_abstract_bases_stay_out_of_the_kind_table():
@@ -762,6 +767,7 @@ def test_abstract_bases_stay_out_of_the_kind_table():
         "torch-predict": DeclaredPredict,
         "torch-linear-train": LinearRegressor,
         "torch-linear-predict": LinearPredictor,
+        "torch-importance": TorchImportance,
     }
     for base in (TorchTrain, TorchPredict):
         problems = node_class_errors(base, "torch pack")
@@ -916,6 +922,259 @@ def test_declared_example_loads_hashes_and_runs(tmp_path):
     )
 
 
+# -- feature selection by input gradient (ADR-0042) ------------------------------
+
+#: The candidate columns the importance tests choose among, in the order
+#: every params block below declares them.
+IMPORTANCE_CANDIDATES = ["x1", "x2", "x3"]
+
+#: What the fitted module weighs each candidate by. ``x2`` is weighed at
+#: zero, so the two survivors of a ``top_k`` of 2 are NOT a prefix of the
+#: candidate list — which is what makes the canonical-order pin able to
+#: fail.
+IMPORTANCE_WEIGHTS = [5.0, 0.0, 1.0]
+
+IMPORTANCE_PARAMS = {
+    "fit_split": "train",
+    "features": list(IMPORTANCE_CANDIDATES),
+    "top_k": 2,
+}
+
+_IMPORTANCE_SPLITS = {"train_end_ms": 100, "val_end_ms": 200, "test_end_ms": 300}
+
+
+class ReluWeights(torch.nn.Module):
+    """``sum_j w_j * relu(x_j)`` — a module whose input gradient DEPENDS
+    on the rows it is measured over.
+
+    A linear module's input gradient is its weight vector no matter what
+    rows you feed it, so it could not tell an honest fit from a leaking
+    one. Here the gradient with respect to a candidate is ``w_j`` on rows
+    where that candidate is positive and zero elsewhere, so WHICH rows
+    the importance was measured over changes the answer — which is the
+    only way the leakage pin below can fail.
+    """
+
+    def __init__(self, weights):
+        super().__init__()
+        self.weights = torch.nn.Parameter(
+            torch.tensor(list(weights), dtype=torch.float32), requires_grad=False
+        )
+
+    def forward(self, x):
+        """The weighted sum of the rectified inputs, one value per row."""
+        return torch.relu(x) @ self.weights.reshape(-1, 1)
+
+
+def importance_signal(weights=None, features=None):
+    """A :class:`TorchSignal` over :class:`ReluWeights` — the fitted model
+    a document wires into the selector's ``signal`` port."""
+    module = ReluWeights(IMPORTANCE_WEIGHTS if weights is None else weights)
+    names = IMPORTANCE_CANDIDATES if features is None else features
+    return TorchSignal(module, names, "unfitted-fixture", loaded=False)
+
+
+def importance_rows(train_x3=-1.0):
+    """Train rows plus val rows, with ``x3`` the column that moves.
+
+    On the val rows ``x3`` is the largest column there is. On the train
+    rows it is whatever ``train_x3`` says: NEGATIVE by default, so the
+    rectifier zeroes its gradient and an honest fit cannot see the
+    importance the val rows would have handed it (:data:`_LEAK_WEIGHTS`),
+    and positive when a test wants the ranking itself rather than the
+    leak.
+    """
+    train = [
+        {"asof_ms": 10 + i, "x1": 1.0 + i, "x2": 0.5, "x3": train_x3}
+        for i in range(6)
+    ]
+    val = [
+        {"asof_ms": 150 + i, "x1": 0.1, "x2": 0.5, "x3": 4.0 + i}
+        for i in range(6)
+    ]
+    return train + val
+
+
+#: Weights that make the LEAK visible: ``x2`` is weighed above ``x3``'s
+#: train-split contribution (zero — rectified away) and below the
+#: contribution ``x3`` gains from the val rows. So an honest fit keeps
+#: ``x1``/``x2`` and a fit that saw the val rows keeps ``x1``/``x3``.
+_LEAK_WEIGHTS = [5.0, 1.0, 3.0]
+
+
+def importance_ctx(tmp_path, sub="importance"):
+    from dskit.pipeline.base import TimeSplitConfig
+
+    splits = TimeSplitConfig(**_IMPORTANCE_SPLITS)
+    return NodeContext(
+        name="t",
+        asof="2026-01-01",
+        run_dir=str(tmp_path / sub),
+        splits=splits,
+        splits_info=splits.to_obj(),
+    )
+
+
+def select_by_importance(tmp_path, params=None, *, signal=None, rows=None, sub="importance"):
+    node = TorchImportance("select", {**IMPORTANCE_PARAMS, **(params or {})})
+    inputs = {
+        "rows": importance_rows() if rows is None else rows,
+        "signal": importance_signal() if signal is None else signal,
+    }
+    return node, node.run(importance_ctx(tmp_path, sub), inputs)
+
+
+def test_importance_is_a_member_of_the_family_not_a_second_seam():
+    assert issubclass(TorchImportance, FeatureSelector)
+    assert TorchImportance.role == "fitted_transform"
+    assert TorchImportance.outputs == ("transform", "rows", "metrics", "features")
+    assert dict(NODE_KINDS)["torch-importance"] is TorchImportance
+    # One hook, and only that hook: the family owns the envelope.
+    for owned in ("run", "run_train", "run_load", "fit", "apply_state"):
+        assert owned not in vars(TorchImportance), owned
+
+
+def test_importance_params_top_k_is_required_and_bounded():
+    assert TorchImportance.validate_params(dict(IMPORTANCE_PARAMS)) == []
+    for bad in (None, 0, -1, True, 1.5, "2", 4):
+        params = {**IMPORTANCE_PARAMS, "top_k": bad}
+        assert any("top_k" in p for p in TorchImportance.validate_params(params)), bad
+    missing = {k: v for k, v in IMPORTANCE_PARAMS.items() if k != "top_k"}
+    assert any("top_k" in p for p in TorchImportance.validate_params(missing))
+
+
+def test_the_module_ranks_candidates_and_survivors_keep_declared_order(tmp_path):
+    # Every candidate positive on the fit split, so this reads the RANK
+    # and nothing else: x1 is weighed 5, x3 is weighed 1, x2 is weighed 0.
+    _node, out = select_by_importance(tmp_path, rows=importance_rows(train_x3=2.0))
+    # x2 is weighed at zero, so the survivors skip it — and come back in
+    # the order the document declared, not the order importance ranked.
+    assert out["features"] == ["x1", "x3"]
+    assert out["metrics"]["n_candidates"] == 3
+    assert out["metrics"]["n_selected"] == 2
+    assert all("x2" not in row for row in out["rows"])
+    assert all("asof_ms" in row for row in out["rows"])
+
+
+def test_a_column_the_net_pushes_DOWN_is_as_important_as_one_it_pushes_up(
+    tmp_path,
+):
+    """Sensitivity is a MAGNITUDE.
+
+    ``x2`` is weighed -3 here: the net leans on it harder than on ``x3``
+    (weighed 1) and only the direction differs. A signed mean would rank
+    it last precisely because it matters second-most, and the document
+    would drop the column with the strongest relationship in the model.
+    """
+    _node, out = select_by_importance(
+        tmp_path,
+        signal=importance_signal(weights=[5.0, -3.0, 1.0]),
+        rows=importance_rows(train_x3=2.0),
+    )
+
+    assert out["features"] == ["x1", "x2"]
+
+
+def test_the_importance_is_measured_on_the_fit_split_only(tmp_path):
+    """THE leak, in this pack. ``x3`` earns nothing on the train rows (it
+    is negative there, so the rectifier zeroes its gradient) and dominates
+    on the val rows. A selector that measured the whole stream would keep
+    it and drop ``x2``."""
+    _node, out = select_by_importance(
+        tmp_path, {}, signal=importance_signal(_LEAK_WEIGHTS)
+    )
+    assert out["features"] == ["x1", "x2"]
+
+
+def test_a_val_fit_split_measures_the_val_rows(tmp_path):
+    _node, out = select_by_importance(
+        tmp_path,
+        {"fit_split": "val"},
+        signal=importance_signal(_LEAK_WEIGHTS),
+    )
+    assert out["features"] == ["x1", "x3"]
+
+
+class ModeRecorder(ReluWeights):
+    """A module that records the mode it was DIFFERENTIATED in."""
+
+    saw_training = None
+
+    def forward(self, x):
+        """Record ``self.training``, then answer as the base does."""
+        self.saw_training = self.training
+        return super().forward(x)
+
+
+def test_the_measurement_runs_in_eval_mode_and_hands_the_module_back(tmp_path):
+    """The wired module belongs to the node that fitted it.
+
+    Measuring in train mode would let dropout decide which columns
+    survive (an answer that changes with an RNG draw nobody declared),
+    and leaving the module switched afterwards would silently change what
+    the model UPSTREAM predicts next. Both halves, one test.
+    """
+    module = ModeRecorder(IMPORTANCE_WEIGHTS)
+    module.train(True)
+    signal = TorchSignal(module, IMPORTANCE_CANDIDATES, "fixture", loaded=False)
+    select_by_importance(tmp_path, signal=signal, rows=importance_rows(train_x3=2.0))
+
+    assert module.saw_training is False
+    assert module.training is True
+
+
+def test_a_row_missing_one_of_the_modules_columns_is_refused_by_name(tmp_path):
+    """The base refuses a candidate NO row carries; this is the other
+    hole — one row of many, which would otherwise reach torch as a
+    ragged batch."""
+    rows = [dict(row) for row in importance_rows(train_x3=2.0)]
+    del rows[2]["x2"]
+    with pytest.raises(ValueError, match="row 2 carries no finite 'x2'"):
+        select_by_importance(tmp_path, rows=rows)
+
+
+def test_the_signal_port_is_required_under_train_mode(tmp_path):
+    node = TorchImportance("select", dict(IMPORTANCE_PARAMS))
+    with pytest.raises(ValueError, match="signal"):
+        node.run(importance_ctx(tmp_path), {"rows": importance_rows()})
+
+
+def test_a_candidate_the_module_never_read_is_refused_by_name(tmp_path):
+    """The module's input vector is ITS features, in its order. A
+    candidate outside that list has no column to differentiate, so
+    scoring it would be reading a coordinate the net does not have.
+
+    Matched on the EXPLANATION, not on the name: without the check the
+    lookup still raises a ValueError that happens to quote the candidate
+    ("'x9' is not in list"), so a needle of ``x9`` alone would pass on
+    an accident and pin nothing.
+    """
+    with pytest.raises(ValueError, match="not input columns of the wired module"):
+        select_by_importance(
+            tmp_path,
+            {"features": ["x1", "x9"], "top_k": 1},
+            rows=[{**row, "x9": 1.0} for row in importance_rows()],
+        )
+
+
+def test_load_mode_restores_the_columns_and_needs_no_module(tmp_path):
+    """Serving has no fitted net wired and does not need one: the
+    selected column list IS the artifact."""
+    node, out = select_by_importance(tmp_path)
+    sidecar = os.path.join(node.artifact_dir(importance_ctx(tmp_path)), SIDECAR_NAME)
+    served = TorchImportance(
+        "select",
+        {"features": list(IMPORTANCE_CANDIDATES), "top_k": 2},
+        mode="load",
+        artifact=sidecar,
+    )
+    restored = served.run(
+        importance_ctx(tmp_path, "serving"), {"rows": importance_rows()}
+    )
+    assert restored["features"] == out["features"]
+    assert restored["metrics"]["n_fit_rows"] == 0
+
+
 # -- the conformance suite (pipeline/CLAUDE.md step 8) ---------------------------
 
 EXPECTED_ROLES = {
@@ -923,6 +1182,7 @@ EXPECTED_ROLES = {
     "torch-predict": "signal",
     "torch-linear-train": "train",
     "torch-linear-predict": "signal",
+    "torch-importance": "fitted_transform",
 }
 
 
@@ -994,6 +1254,13 @@ def probes(tmp_path):
             and abs(prediction - declared_expected) < 1e-9
         )
 
+    select_ctx = importance_ctx(tmp_path, "probe-select")
+    select_node = TorchImportance("fixture_select", dict(IMPORTANCE_PARAMS))
+    selected = select_node.run(
+        select_ctx, {"rows": importance_rows(), "signal": importance_signal()}
+    )
+    select_sidecar = os.path.join(select_node.artifact_dir(select_ctx), SIDECAR_NAME)
+
     return {
         "torch-train": NodeProbe(
             params=dict(DECLARED_PARAMS),
@@ -1042,6 +1309,21 @@ def probes(tmp_path):
             runnable=True,
             load_artifact=artifact,
             verify_loaded=restored,
+        ),
+        # `fit_split` is NOT listed as required: the planner refuses it
+        # (it can see the splits section), validate_params cannot.
+        "torch-importance": NodeProbe(
+            params=dict(IMPORTANCE_PARAMS),
+            required=("features", "top_k"),
+            inputs={"rows": importance_rows(), "signal": importance_signal()},
+            stream_ports=("rows",),
+            runnable=True,
+            ctx=select_ctx,
+            load_artifact=select_sidecar,
+            verify_loaded=lambda out: (
+                out["metrics"]["n_fit_rows"] == 0
+                and out["transform"].state == selected["transform"].state
+            ),
         ),
     }
 

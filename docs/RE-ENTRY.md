@@ -6,20 +6,21 @@ Refreshed by `/wrap`. Where things stand — read this first.
 
 # ▶ PICK UP HERE
 
-**State: `main` is green, clean and fully pushed.** The 2026-08 closeout run is
-**21 of 24 cards done**. Three remain: **C5, C6, D1**. Nothing is half-finished —
-every branch is merged and deleted, no worktree is left open.
+**State: C6 is on `ws/c6`, gates green, not yet pushed.** The 2026-08 closeout
+run is **22 of 24 cards done**. Two remain: **C5, D1**. D1 is unblocked.
 
-## The three remaining cards
+## The two remaining cards
 
 | Card | What it delivers | Spec (already ACCEPTED) | Start now? |
 |---|---|---|---|
-| **C6** | Feature-selection seam — a fitted selector, leakage refused at plan | **ADR-0042** in `docs/architecture/decision-log.md` | ✅ yes |
 | **C5** | Time-series architecture zoo — 10 archs behind a registry, `arch` becomes a swept param | **ADR-0041** | ✅ yes |
-| **D1** | Selection demo — select features, sweep two models, use the winner | plan §8, card D1 | ❌ needs C6 first |
+| **D1** | Selection demo — select features, sweep two models, use the winner | plan §8, card D1 | ✅ yes (needs C6 merged) |
 
-C5 and C6 touch disjoint files, so they may run **in parallel**. D1 is a small
-cookbook example once C6 exists.
+C5 must not touch `libs/torch.py` (C6 drained it; ADR-0041 says the zoo is a
+NEW sibling `libs/torch_ts.py`). D1 adds `examples/pipeline/selection-demo.json`
+and moves the ledger to 18 documents. **ADR-0044** (proposed) is the owner's
+call: flow 2 of ADR-0042 cannot run until `fitted_transform` searchability is
+narrowed from per-role to per-knob.
 
 ## How to run one, exactly
 
@@ -49,15 +50,13 @@ cookbook example once C6 exists.
 - **Do not dispatch a `fable` subagent** — that tier ran out of credits mid-run.
   Plan §7's model map is amended in the plan itself: every `fable` row is served
   by **opus at the same effort**, keeping `xhigh` where it says `xhigh`.
-- **`libs/torch.py`'s `per-file-ignores` entry is C6's to drain** — C6 is the last
-  card to touch that file. Convert the module to the docstring standard and delete
-  its entry in the same change. (`driver.py`, `planner.py`, `kinds_report.py`,
-  `libs/numpy.py`, `records.py` and the child's `nodes.py`/`live.py` are already
-  drained.)
-- **ADR-0041 requires `libs/torch.py` stay byte-identical** — the zoo goes in a NEW
-  sibling module `libs/torch_ts.py`. The purity gate forbids an `nn.Module`
+- **`libs/torch.py` is drained (C6).** C5 must leave it byte-identical; the zoo
+  goes in a NEW sibling `libs/torch_ts.py`. The purity gate forbids an `nn.Module`
   subclass at module level anywhere in `dskit/pipeline/`, including inside a class
   body, so every net is defined INSIDE `build_module`.
+- **ADR-0044 is PROPOSED, not accepted.** C6 landed ADR-0042 flows 1 and 3. Flow 2
+  (a space over the selector's own knobs) is refused by ADR-0040's per-role
+  `_UNSEARCHABLE_ROLES` entry. Implement 0044 only after the owner accepts it.
 - **Targeted tests, not the whole suite** (owner ruling). Run the suites covering
   what the card touched. Ruff over the whole tree and the hash gate run every time
   regardless — they are seconds and catch what a scoped run cannot.
@@ -102,11 +101,13 @@ because review had driven them far past house style into specifying mechanism th
 decision log should not carry — and that over-specification was manufacturing its
 own contradictions.
 
-**Wave 2 — 5 of 7.** `TrainableNode` ported across five packs, all nine
+**Wave 2 — 6 of 7.** `TrainableNode` ported across five packs, all nine
 `if mode ==` branches gone (C1); gap-aware windows, the fitted-transform family and
 the child collapse (C2); the `foreach` fan-out grammar (C3); the long-method
 decomposition, with the ceiling now pinned (C4); HPO × walk-forward semantics, so
-per-fold winner instability is a printed diagnostic (C7).
+per-fold winner instability is a printed diagnostic (C7); the feature-selection
+seam — `FeatureSelector` + `sklearn-select` + `torch-importance`, `torch.py`
+drained (C6). C5 (the architecture zoo) is the last Wave-2 card.
 
 **Waves 4–5.** The store brought current (D2), the capstone run (D3), TODO marked
 (D4), this wrap (D5).
@@ -164,6 +165,8 @@ documents, the child CLAUDE.md and the pin's docstring now say so plainly.
 - `docs/plans/2026-08-closeout.md` — the orchestrator brief. §3 merge law, §7 model
   map (amended), §8 the task cards, §9 the hash ledger and intentional-move log,
   §10 the STATE table with a row per card and what it actually did.
-- `docs/architecture/decision-log.md` — ADR-0038…0043, accepted.
+- `docs/architecture/decision-log.md` — ADR-0038…0043 accepted; ADR-0044 proposed.
 - `TODO.md` — every item carries its own reasoning; landed items carry what landed
-  and any correction the work forced. 52 checked, 24 open, verified consistent.
+  and any correction the work forced. 54 checked, 22 open after C6 (feature
+  selection + governing class landed; the three-flows item stays open until
+  ADR-0044, because flow 2 cannot run).

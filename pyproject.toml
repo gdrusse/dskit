@@ -139,7 +139,6 @@ convention = "numpy"
 "dskit/pipeline/libs/pyomo.py" = ["D"]
 "dskit/pipeline/libs/sb3.py" = ["D"]
 "dskit/pipeline/libs/sklearn.py" = ["D"]
-"dskit/pipeline/libs/torch.py" = ["D"]
 "dskit/pipeline/libs/transformers.py" = ["D"]
 "dskit/pipeline/metrics.py" = ["D"]
 "dskit/pipeline/node.py" = ["D"]
