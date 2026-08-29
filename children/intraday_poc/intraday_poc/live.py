@@ -12,17 +12,21 @@ Run-path only (torch, pyomo, alpaca-py) — never imported by
    window node (``latest_rows``), which refuses rather than bridges —
    there is one implementation of the chain, not a serving copy of it
    (ADR-0040);
-3. restore each symbol's model from the run's artifact — sidecar
-   verified (state_hash, S2-A) and the module class refused by name
-   against the one the RUN declared, the pack's own load discipline;
+3. restore each symbol's model from the run's artifact — found through
+   the run's OWN trainer node keys, sidecar verified (state_hash, S2-A),
+   the module class refused by name against the one the RUN declared
+   (the pack's own load discipline), and the pair refused outright when
+   the two artifacts were built from different ``module_params``;
 4. decide with the SAME pyomo program the backtest scores
-   (:func:`intraday_poc.nodes.build_select_model`, one timestamp);
+   (:func:`intraday_poc.nodes.build_select_model`, one timestamp),
+   under the solver the run's own selector node declares;
 5. flip the paper position when the pick changes: flatten the loser,
    market-buy the winner (TIF ``day``), through the paper endpoint.
 
 **This loop re-declares nothing the run already declared.** The
-modelling knobs — the price field, the gap discipline, the module class
-— are READ from ``<run-dir>/config.json``, the whole training document
+modelling knobs — the price field, the gap discipline, the module class,
+which trainer belongs to which symbol, the selector's solver — are READ
+from ``<run-dir>/config.json``, the whole training document
 the driver writes, through the ENGINE's own
 :func:`~dskit.pipeline.document.load_document` rather than a parse of
 this loop's: the grammar is tier-1 truth, and re-deriving it here would
@@ -56,7 +60,7 @@ Usage::
     python -m intraday_poc.live --run-dir <run dir of run-train.json> \
         --source-config configs/source-backfill.json \
         --qty 1 [--once] [--dry-run] \
-        [--artifact AAPL=artifacts/qhat_aapl]
+        [--artifact AAPL=<a dir other than the run's own trainer node>]
 
 Credentials are half read, half shared. The source config NAMES the two
 env vars (``key_env``/``secret_env``), and what COUNTS as a credential
@@ -89,15 +93,16 @@ from dskit.pipeline.base import (
     import_ref,
     is_class_ref,
 )
-from dskit.pipeline.document import load_document
+from dskit.pipeline.document import foreach_slug, load_document
 from dskit.pipeline.env import load_env
+from dskit.pipeline.libs.pyomo import DEFAULT_SOLVER
 
 from .connectors import (
     AlpacaBarsConnector,
     bar_timeframe,
     resolve_credentials,
 )
-from .nodes import NODE_KINDS, WindowRows, build_select_model
+from .nodes import NODE_KINDS, SelectOne, WindowRows, build_select_model
 
 __all__ = [
     "LIVE_FEED",
@@ -111,6 +116,7 @@ __all__ = [
     "parse_artifact_overrides",
     "predict",
     "restore_model",
+    "selector_knobs",
     "solve_pick",
     "source_knobs",
     "window_knobs",
@@ -129,6 +135,10 @@ LIVE_FEED = "iex"
 #: from the registry the child registers rather than restated here.
 _WINDOW_KIND = next(name for name, cls in NODE_KINDS.items()
                     if cls is WindowRows)
+
+#: The selector kind's name, read the same way for the same reason.
+_SELECT_KIND = next(name for name, cls in NODE_KINDS.items()
+                    if cls is SelectOne)
 
 
 def credentials(knobs):
@@ -219,16 +229,31 @@ def load_run_document(run_dir):
         raise SystemExit(str(exc)) from exc
 
 
-def _is_window(uses):
-    """Say whether ``uses`` names WindowRows — kind name or class ref."""
-    if uses == _WINDOW_KIND:
+def _declares(uses, kind, cls):
+    """Say whether ``uses`` names ``cls`` — kind name or class ref.
+
+    Both spellings the document grammar allows, in one place: a node is
+    found by the registered kind name, or by a class reference that
+    imports to the class itself.
+    """
+    if uses == kind:
         return True
     if not is_class_ref(uses):
         return False
     try:
-        return import_ref(uses) is WindowRows
+        return import_ref(uses) is cls
     except ValueError:
         return False  # a class this machine cannot import is not ours
+
+
+def _is_window(uses):
+    """Say whether ``uses`` names the child's window node."""
+    return _declares(uses, _WINDOW_KIND, WindowRows)
+
+
+def _is_select(uses):
+    """Say whether ``uses`` names the child's selector node."""
+    return _declares(uses, _SELECT_KIND, SelectOne)
 
 
 def _window_nodes(document):
@@ -363,6 +388,47 @@ def declared_module(document):
     return declared.pop()
 
 
+def selector_knobs(document):
+    """Return the solver the RUN's selector program was solved with.
+
+    The loop solves the same one-per-minute program the run scored with
+    (:func:`~intraday_poc.nodes.build_select_model`), so the solver name
+    and its options are the run's declaration, read here rather than
+    restated: written as a literal in this file they would be a third
+    copy of what both documents' ``select`` nodes already say, with
+    nothing pinning any pair, and a gap or limit option added to the
+    document would silently not apply to live decisions.
+
+    Parameters
+    ----------
+    document : dskit.pipeline.document.PipelineDocument
+        A training document, as :func:`load_run_document` returns it.
+
+    Returns
+    -------
+    tuple of (str, dict)
+        The solver name and its options, both as declared.
+
+    Raises
+    ------
+    SystemExit
+        When the document declares no selector node, or more than one —
+        there would be no single declaration to serve under.
+    """
+    selectors = [spec for spec in document.expanded.values()
+                 if _is_select(spec.uses)]
+    if len(selectors) != 1:
+        raise SystemExit(
+            f"the run's document declares {len(selectors)} selector "
+            f"({_SELECT_KIND}) nodes — this loop solves the program the run "
+            "scored with, so it reads that node's solver, and one run may "
+            "only have declared it once"
+        )
+    params = selectors[0].params
+    return params.get("solver", DEFAULT_SOLVER), dict(
+        params.get("solver_options") or {})
+
+
 def source_knobs(path):
     """Resolve the acquisition source config's vendor knobs.
 
@@ -440,16 +506,79 @@ def parse_artifact_overrides(values):
     return overrides
 
 
-def artifact_dirs(run_dir, symbols, overrides):
-    """Where each symbol's trained artifact lives.
+def _trainer_keys(document):
+    """Return the node keys whose trainers the run wrote artifacts for.
 
-    The run's own layout is the default — ``artifacts/<node key>``, and
-    the documents key their trainers by lowercased symbol — so no table
-    of symbols is written here; ``--artifact`` bends any single symbol
-    to a document that names its nodes differently.
+    A trainer is a node declaring ``module`` — the same rule
+    :func:`declared_module` reads the class off, so the two never
+    disagree about which nodes are trainers.
+    """
+    return tuple(key for key, spec in document.expanded.items()
+                 if "module" in spec.params)
+
+
+def _trainer_key(document, symbol, trainers):
+    """Return the trainer node key the run wrote for ONE symbol.
+
+    The rule is the documents' own spelling, read rather than restated:
+    a per-symbol trainer's key ends in an underscore and the symbol's
+    slug — ``qhat_aapl`` written longhand, ``qhat__aapl`` when the node
+    came out of a ``foreach`` template (the fan-out's separator is the
+    second underscore). The slug is the ENGINE's
+    (:func:`~dskit.pipeline.document.foreach_slug`), so a symbol the
+    fan-out renames is looked up under the name the fan-out gave it.
 
     Parameters
     ----------
+    document : dskit.pipeline.document.PipelineDocument
+        The run's own document.
+    symbol : str
+        The vendor symbol to serve.
+    trainers : sequence of str
+        The document's trainer node keys, from :func:`_trainer_keys`.
+
+    Returns
+    -------
+    str
+        The trainer's node key, which is also its artifact directory.
+
+    Raises
+    ------
+    SystemExit
+        When no trainer, or more than one, carries the symbol's slug —
+        naming every trainer the run wrote, which is what an operator
+        would pass to ``--artifact``.
+    """
+    tail = f"_{foreach_slug(symbol)}"
+    matches = [key for key in trainers if key.endswith(tail)]
+    if len(matches) == 1:
+        return matches[0]
+    problem = "no trainer" if not matches else f"{len(matches)} trainers"
+    raise SystemExit(
+        f"the run trained {problem} for {symbol!r}: its document keys "
+        f"trainers {list(trainers)}, and a serving path may not invent a "
+        "name the run never wrote — serve with --artifact "
+        f"{symbol}=artifacts/<one of those>, or run a document that trains "
+        "this symbol"
+    )
+
+
+def artifact_dirs(document, run_dir, symbols, overrides):
+    """Where each symbol's trained artifact lives.
+
+    Read off the RUN, never restated: the run's layout is
+    ``artifacts/<node key>`` and its own document says which trainer it
+    keyed for which symbol, so a convention written here would be this
+    loop restating a training knob (root CLAUDE.md) — and would go stale
+    the moment a document renamed its nodes, which ``foreach`` does to
+    every fanned trainer. ``--artifact`` still bends any single symbol,
+    and is consulted FIRST: it is the answer to a document this rule
+    cannot read, so the rule must not refuse before it is heard.
+
+    Parameters
+    ----------
+    document : dskit.pipeline.document.PipelineDocument
+        The run's document, as :func:`load_run_document` returns it.
     run_dir : str
         The run directory holding the artifacts.
     symbols : sequence of str
@@ -467,7 +596,8 @@ def artifact_dirs(run_dir, symbols, overrides):
     SystemExit
         When an override names a symbol the universe does not carry —
         nothing would ever look it up, so the loop would restore the
-        model the operator was replacing and say nothing.
+        model the operator was replacing and say nothing — or when the
+        run trained no single trainer for a symbol with no override.
     """
     unknown = sorted(set(overrides) - set(symbols))
     if unknown:
@@ -476,14 +606,15 @@ def artifact_dirs(run_dir, symbols, overrides):
             f"declare (its universe is {list(symbols)}) — a mistyped ticker "
             "would silently keep the artifact it was meant to replace"
         )
-    return {
-        symbol: os.path.join(
-            run_dir,
-            overrides.get(symbol,
-                          os.path.join("artifacts", f"qhat_{symbol.lower()}")),
-        )
-        for symbol in symbols
-    }
+    trainers = _trainer_keys(document)
+    dirs = {}
+    for symbol in symbols:
+        relative = overrides.get(symbol)
+        if relative is None:
+            relative = os.path.join(
+                "artifacts", _trainer_key(document, symbol, trainers))
+        dirs[symbol] = os.path.join(run_dir, relative)
+    return dirs
 
 
 def restore_model(artifact_dir, module_ref):
@@ -505,8 +636,11 @@ def restore_model(artifact_dir, module_ref):
 
     Returns
     -------
-    tuple of (object, list of str)
-        The restored module in eval mode, and its feature list.
+    tuple of (object, list of str, dict)
+        The restored module in eval mode, its feature list, and the
+        ``module_params`` the artifact was BUILT from — the regime the
+        caller cross-checks between symbols, read here because this is
+        where the sidecar is opened.
 
     Raises
     ------
@@ -551,21 +685,34 @@ def restore_model(artifact_dir, module_ref):
                                    requires=("forward",))
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    module = cls(**params.get("module_params", {}))
+    module_params = dict(params.get("module_params", {}))
+    module = cls(**module_params)
     module.load_state_dict(torch.load(state_path, weights_only=True))
     module.eval()
     features = list(params.get("features", []))
     if not features:
         raise SystemExit(f"artifact {artifact_dir}: sidecar carries no "
                          "feature list")
-    return module, features
+    return module, features, module_params
 
 
-def _restore_signals(run_dir, symbols, overrides, module_ref):
-    """Restore every symbol's module, and the lookback they all share.
+def _restore_signals(document, run_dir, symbols, overrides, module_ref):
+    """Restore every symbol's module, and the ONE regime they share.
+
+    The pair's agreement is pinned HERE because here is where it lands.
+    The documents declare one regime for every symbol — one ``foreach``
+    template in the tuned document, a pinned twin pair in the backtest —
+    but a search's winner is chosen per instance, so a grid that crosses
+    two symbols' widths can ship a run whose artifacts were built from
+    different ``module_params``. The selector then compares beliefs from
+    two architectures and calls the difference a signal. Every knob is
+    compared, not lookback alone: a pin that omits a knob claims
+    coverage it lacks.
 
     Parameters
     ----------
+    document : dskit.pipeline.document.PipelineDocument
+        The run's document, for :func:`artifact_dirs`.
     run_dir : str
         The run directory holding the artifacts.
     symbols : sequence of str
@@ -583,19 +730,33 @@ def _restore_signals(run_dir, symbols, overrides, module_ref):
     Raises
     ------
     SystemExit
-        When two artifacts disagree on lookback — they were trained
-        against different windowings and cannot be compared.
+        When two artifacts were built from different ``module_params``
+        — different windowings, or different architectures — so the
+        beliefs the selector ranks are not comparable.
     """
-    dirs = artifact_dirs(run_dir, symbols, overrides)
-    signals = {}
-    lookback = None
+    dirs = artifact_dirs(document, run_dir, symbols, overrides)
+    signals, regime, regime_of, lookback = {}, None, None, None
     for symbol in symbols:
-        module, features = restore_model(dirs[symbol], module_ref)
+        module, features, module_params = restore_model(dirs[symbol],
+                                                        module_ref)
         signals[symbol] = (module, features)
-        if lookback is None:
-            lookback = module.lookback
-        elif lookback != module.lookback:
-            raise SystemExit("artifacts disagree on lookback — retrain")
+        if regime is None:
+            regime, regime_of, lookback = module_params, symbol, module.lookback
+            continue
+        divergent = sorted(
+            knob for knob in set(regime) | set(module_params)
+            if regime.get(knob) != module_params.get(knob)
+        )
+        if divergent:
+            raise SystemExit(
+                f"{symbol} and {regime_of} were trained under different "
+                f"regimes — their artifacts disagree on {divergent} "
+                f"({symbol}: {module_params}, {regime_of}: {regime}). The "
+                "documents declare ONE regime for every symbol, so this run "
+                "shipped a search winner that paired them differently; "
+                "re-run the fit, or promote the pairing into both documents "
+                "deliberately"
+            )
     return signals, lookback
 
 
@@ -665,13 +826,23 @@ def predict(module, features, row) -> float | None:
     return float(out.reshape(-1)[0])
 
 
-def solve_pick(preds: dict) -> str:
+def solve_pick(preds: dict, solver_name: str, solver_options: dict) -> str:
     """Pick one symbol with the program the backtest solves.
+
+    The solver is a PARAMETER, never a literal here: it is the run's own
+    declaration (:func:`selector_knobs`), so the minute-by-minute
+    decision is solved by the program that scored the backtest and the
+    search.
 
     Parameters
     ----------
     preds : dict
         Symbol -> predicted next-bar return; must be non-empty.
+    solver_name : str
+        The solver the run's selector node declared.
+    solver_options : dict
+        That node's ``solver_options``, applied the way the pack applies
+        them — onto the solver's own option map.
 
     Returns
     -------
@@ -687,7 +858,9 @@ def solve_pick(preds: dict) -> str:
     import pyomo.environ as pyo
 
     model = build_select_model({0: preds})
-    solver = pyo.SolverFactory("appsi_highs")
+    solver = pyo.SolverFactory(solver_name)
+    for option, value in solver_options.items():
+        solver.options[option] = value
     solver.solve(model)
     for s in sorted(preds):
         if pyo.value(model.x[0, s]) > 0.5:
@@ -846,7 +1019,8 @@ def _parser():
                         metavar="SYMBOL=PATH",
                         help="artifact dir for one symbol, relative to "
                              "--run-dir or absolute; repeatable. Default: "
-                             "artifacts/qhat_<symbol>")
+                             "the run's own trainer node for that symbol, "
+                             "under artifacts/")
     parser.add_argument("--qty", type=float, default=1.0,
                         help="shares to hold in the picked symbol")
     parser.add_argument("--log-dir", default=".",
@@ -894,6 +1068,7 @@ def main(argv=None) -> int:
     # them — off the node, through its accessors, never a copy here.
     price_field, max_gap_minutes = window_knobs(document)
     module_ref = declared_module(document)
+    solver_name, solver_options = selector_knobs(document)
     knobs = source_knobs(args.source_config)
     symbols, adjustment = knobs["symbols"], knobs["adjustment"]
     key, secret = credentials(knobs)
@@ -903,7 +1078,7 @@ def main(argv=None) -> int:
     trading = TradingClient(key, secret, paper=True)
 
     signals, lookback = _restore_signals(
-        args.run_dir, symbols,
+        document, args.run_dir, symbols,
         parse_artifact_overrides(args.artifact), module_ref)
     if lookback != window.lookback():
         # One pin, not two: the artifacts and the document must agree on
@@ -917,7 +1092,8 @@ def main(argv=None) -> int:
         )
     print(f"models restored for {list(signals)} ({module_ref}, lookback "
           f"{lookback}, {price_field} bars, {max_gap_minutes:g}-minute gap "
-          f"bound, adjustment {adjustment}, feed {LIVE_FEED})")
+          f"bound, adjustment {adjustment}, feed {LIVE_FEED}, solver "
+          f"{solver_name})")
 
     log_path = os.path.join(args.log_dir, "decisions.jsonl")
     while True:
@@ -948,7 +1124,7 @@ def main(argv=None) -> int:
             if not preds:
                 record["action"] = "no coverage — holding as-is"
             else:
-                winner = solve_pick(preds)
+                winner = solve_pick(preds, solver_name, solver_options)
                 losers = [s for s in symbols if s != winner]
                 actions = _flip_to(trading, winner, losers, args.qty,
                                    args.dry_run)

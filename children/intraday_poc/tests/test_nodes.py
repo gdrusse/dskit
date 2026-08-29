@@ -1214,10 +1214,72 @@ def test_the_loop_reads_the_nodes_the_run_RAN_not_the_ones_it_declared():
     assert window_knobs(document) == ("vwap", 7.0)
 
 
-def test_artifact_paths_default_by_convention_and_bend_by_flag(tmp_path):
-    """``--artifact SYMBOL=PATH`` is the documented override; the
-    convention below it is the fallback, so no table of symbols lives in
-    the code."""
+def _serving_obj(trainers, **window_params):
+    """A minimal RUN document: a window node, N trainers, one selector.
+
+    What the loop READS out of a run dir, in the smallest document that
+    carries it — the window knobs, one trainer node per symbol (keyed
+    the way the documents key them), and the selector node whose solver
+    the loop solves its own minute with. Written as one helper because
+    three tests need the same shape, and a fourth spelling of it is a
+    fourth thing to update.
+    """
+    return {
+        "name": "serving",  # a run document, per the engine's grammar
+        "pipeline": {
+            "window": {"uses": "intraday_poc-window",
+                       "params": {"lookback": 3, **window_params}},
+            **{key: {"uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+                     "params": {"module": "intraday_poc.models:NextBarLSTM"}}
+               for key in trainers},
+            "select": {"uses": "intraday_poc-select-one",
+                       "params": {"solver": "appsi_highs",
+                                  "solver_options": {}, "split": "val"}},
+        },
+        # A node declaring `split` obliges the document to declare the
+        # cuts; the loop reads neither, so any causal triple will do.
+        "splits": {"kind": "time", "train_end_ms": 1, "val_end_ms": 2,
+                   "test_end_ms": 3},
+    }
+
+
+def _serving_document(trainers, **window_params):
+    """:func:`_serving_obj`, typed by the engine's own loader."""
+    return PipelineDocument.from_obj(_serving_obj(trainers, **window_params))
+
+
+def _fanned_document(keys=("AAPL", "MSFT")):
+    """A run document whose ONE trainer template fans out over ``keys``."""
+    return PipelineDocument.from_obj({
+        "name": "serving",
+        "foreach": {
+            "keys": list(keys),
+            "pipeline": {
+                "qhat": {"uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+                         "params": {
+                             "module": "intraday_poc.models:NextBarLSTM"}},
+            },
+        },
+        "pipeline": {
+            "window": {"uses": "intraday_poc-window",
+                       "params": {"lookback": 3}},
+        },
+    })
+
+
+def test_artifact_paths_come_off_the_trainer_keys_the_run_wrote(tmp_path):
+    """The loop reads the run's OWN node keys; ``--artifact`` still bends.
+
+    A convention restated here (``artifacts/qhat_<symbol>``) is a
+    serving path restating a training knob — root CLAUDE.md forbids it
+    — and it went stale the moment ``run-train.json`` fanned its trainer
+    out of a ``foreach`` template: the instance keys carry the fan-out's
+    DOUBLE underscore (``qhat__aapl``), so every operator serving the
+    shipped run had to hand-type a ``--artifact`` pair or take a startup
+    SystemExit. The mapping was already on disk: the document the loop
+    loads keys one trainer per symbol, and a trainer is the node
+    declaring ``module`` — the same rule :func:`declared_module` reads.
+    """
     from intraday_poc.live import artifact_dirs, parse_artifact_overrides
 
     assert parse_artifact_overrides(["AAPL=artifacts/other"]) == \
@@ -1225,13 +1287,40 @@ def test_artifact_paths_default_by_convention_and_bend_by_flag(tmp_path):
     with pytest.raises(SystemExit, match="SYMBOL=PATH"):
         parse_artifact_overrides(["AAPL"])
 
-    dirs = artifact_dirs("/runs/r1", ["AAPL", "MSFT"],
+    fanned = _fanned_document()
+    dirs = artifact_dirs(fanned, "/runs/r1", ["AAPL", "MSFT"], {})
+    assert dirs["AAPL"] == os.path.join("/runs/r1", "artifacts", "qhat__aapl")
+    assert dirs["MSFT"] == os.path.join("/runs/r1", "artifacts", "qhat__msft")
+
+    longhand = _serving_document(("qhat_aapl", "qhat_msft"))
+    dirs = artifact_dirs(longhand, "/runs/r1", ["AAPL", "MSFT"],
                          {"MSFT": "artifacts/other"})
     assert dirs["AAPL"] == os.path.join("/runs/r1", "artifacts", "qhat_aapl")
     assert dirs["MSFT"] == os.path.join("/runs/r1", "artifacts", "other")
-    absolute = artifact_dirs("/runs/r1", ["AAPL"],
+    absolute = artifact_dirs(longhand, "/runs/r1", ["AAPL"],
                              {"AAPL": str(tmp_path / "elsewhere")})
     assert absolute["AAPL"] == str(tmp_path / "elsewhere")
+
+
+def test_a_symbol_the_run_trained_no_model_for_is_refused_by_name():
+    """No trainer for a symbol is a refusal that NAMES what the run keyed.
+
+    Falling back to a convention here is what produced the old failure
+    mode: a path nothing wrote, then ``artifact incomplete:
+    .../model.pt is missing`` — true, and silent about the six other
+    directories sitting beside it. The refusal lists the trainer keys
+    the run actually wrote, which is also exactly what an operator would
+    pass to ``--artifact``.
+    """
+    from intraday_poc.live import artifact_dirs
+
+    with pytest.raises(SystemExit, match="qhat__aapl"):
+        artifact_dirs(_fanned_document(), "/runs/r1", ["AAPL", "GOOG"], {})
+    # ...and an override is the answer to it, so it must be consulted
+    # BEFORE the derivation, never after.
+    dirs = artifact_dirs(_fanned_document(), "/runs/r1", ["AAPL", "GOOG"],
+                         {"GOOG": "artifacts/goog_v2"})
+    assert dirs["GOOG"] == os.path.join("/runs/r1", "artifacts", "goog_v2")
 
 
 def test_an_artifact_override_for_an_unserved_symbol_is_refused():
@@ -1248,8 +1337,66 @@ def test_an_artifact_override_for_an_unserved_symbol_is_refused():
     from intraday_poc.live import artifact_dirs
 
     with pytest.raises(SystemExit, match="MFST"):
-        artifact_dirs("/runs/r1", ["AAPL", "MSFT"],
+        artifact_dirs(_fanned_document(), "/runs/r1", ["AAPL", "MSFT"],
                       {"MFST": "artifacts/qhat_msft_v2"})
+
+
+def test_the_loop_refuses_a_pair_of_artifacts_trained_at_different_widths(
+        monkeypatch):
+    """The tuned run's ONE unpinned agreement, pinned where it lands.
+
+    ``foreach`` pins the two symbols' DECLARED params to one template,
+    but ``hpo-grid`` crosses the expanded space keys, so the winner of a
+    nine-trial search may pair 16 with 64 — and the driver re-applies
+    the winner to the run's own artifacts, which is what the loop then
+    serves. The real run's margin was 0.4% between a symmetric winner
+    and an asymmetric runner-up, so this is a coin-flip away, not a
+    thought experiment. Nothing else notices: the sidecars verify
+    individually, and the config-level twin pin reads the DECLARED
+    params, which the search never touches. CLAUDE.md's rule for a value
+    that must appear twice is a test or a runtime refusal; the value
+    lands at serve time, so the refusal does too — over the WHOLE
+    ``module_params`` map, because a pin that omits a knob claims
+    coverage it lacks.
+    """
+    from intraday_poc import live
+
+    widths = {"qhat__aapl": 16, "qhat__msft": 64}
+
+    def fake_restore(directory, module_ref):
+        width = widths[os.path.basename(directory)]
+        return (SimpleNamespace(lookback=3), ["ret_lag_0"],
+                {"lookback": 3, "hidden_size": width, "num_layers": 1})
+
+    monkeypatch.setattr(live, "restore_model", fake_restore)
+    document = _fanned_document()
+    with pytest.raises(SystemExit, match="hidden_size"):
+        live._restore_signals(document, "/runs/r1", ["AAPL", "MSFT"], {},
+                              "intraday_poc.models:NextBarLSTM")
+
+    widths["qhat__msft"] = 16
+    signals, lookback = live._restore_signals(
+        document, "/runs/r1", ["AAPL", "MSFT"], {},
+        "intraday_poc.models:NextBarLSTM")
+    assert lookback == 3 and sorted(signals) == ["AAPL", "MSFT"]
+
+
+def test_the_loop_solves_with_the_solver_the_run_declared():
+    """The selector's solver is the run's, not a third copy in the loop.
+
+    ``run-backtest.json`` scores its folds with a named solver,
+    ``run-train.json``'s search objective scores its trials with the
+    same one, and this loop solves that program a minute at a time — so
+    a literal here is the third place, with nothing pinning any pair.
+    The document the loop already loads declares it.
+    """
+    from intraday_poc.live import selector_knobs
+
+    document = load_document(os.path.join(CONFIGS, "run-train.json"))
+    assert selector_knobs(document) == ("appsi_highs", {})
+
+    with pytest.raises(SystemExit, match="selector"):
+        selector_knobs(_fanned_document())
 
 
 def test_live_takes_the_credential_env_names_from_the_source_config(
@@ -1271,15 +1418,8 @@ def test_live_takes_the_credential_env_names_from_the_source_config(
     monkeypatch.chdir(tmp_path)
     run_dir = tmp_path / "run"
     (run_dir / "artifacts").mkdir(parents=True)
-    (run_dir / "config.json").write_text(json.dumps({
-        "name": "serving",  # a run document, per the engine's grammar
-        "pipeline": {
-            "window": {"uses": "intraday_poc-window",
-                       "params": {"lookback": 3}},
-            "qhat_aapl": {
-                "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
-                "params": {"module": "intraday_poc.models:NextBarLSTM"}},
-        }}), encoding="utf-8")
+    (run_dir / "config.json").write_text(
+        json.dumps(_serving_obj(("qhat_aapl",))), encoding="utf-8")
     source = tmp_path / "source.json"
     source.write_text(json.dumps({"symbols": ["AAPL"], "start": "2026-01-01",
                                   "key_env": "ALPACA_KEY_A",
@@ -1291,7 +1431,8 @@ def test_live_takes_the_credential_env_names_from_the_source_config(
                         lambda *a, **kw: seen.update(fetch=(a, kw)) or {})
     monkeypatch.setattr(live, "restore_model",
                         lambda directory, ref: (SimpleNamespace(lookback=3),
-                                                ["ret_lag_0"]))
+                                                ["ret_lag_0"],
+                                                {"lookback": 3}))
     monkeypatch.setattr(trading_client, "TradingClient",
                         lambda *a, **kw: seen.update(trading=(a, kw))
                         or SimpleNamespace(
@@ -1439,15 +1580,9 @@ def test_live_serves_the_universe_the_source_config_declares(tmp_path,
 
     run_dir = tmp_path / "run"
     (run_dir / "artifacts").mkdir(parents=True)
-    (run_dir / "config.json").write_text(json.dumps({
-        "name": "serving",  # a run document, per the engine's grammar
-        "pipeline": {
-            "window": {"uses": "intraday_poc-window",
-                       "params": {"lookback": 3}},
-            "qhat_aapl": {
-                "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
-                "params": {"module": "intraday_poc.models:NextBarLSTM"}},
-        }}), encoding="utf-8")
+    (run_dir / "config.json").write_text(
+        json.dumps(_serving_obj(("qhat_aapl", "qhat_msft", "qhat_goog"))),
+        encoding="utf-8")
     source = tmp_path / "source.json"
     source.write_text(json.dumps({"symbols": ["AAPL", "MSFT", "GOOG"],
                                   "start": "2026-01-01"}), encoding="utf-8")
@@ -1458,7 +1593,8 @@ def test_live_serves_the_universe_the_source_config_declares(tmp_path,
                             symbols=list(symbols)) or {})
     monkeypatch.setattr(live, "restore_model",
                         lambda directory, ref: (SimpleNamespace(lookback=3),
-                                                ["ret_lag_0"]))
+                                                ["ret_lag_0"],
+                                                {"lookback": 3}))
     monkeypatch.setattr(trading_client, "TradingClient",
                         lambda *a, **kw: SimpleNamespace(
                             get_clock=lambda: SimpleNamespace(
@@ -1485,15 +1621,10 @@ def test_live_main_fetches_with_the_knobs_it_read(tmp_path, monkeypatch):
 
     run_dir = tmp_path / "run"
     (run_dir / "artifacts").mkdir(parents=True)
-    (run_dir / "config.json").write_text(json.dumps({
-        "name": "serving",  # a run document, per the engine's grammar
-        "pipeline": {
-            "window": {"uses": "intraday_poc-window",
-                       "params": {"lookback": 3, "price_field": "vwap"}},
-            "qhat_aapl": {
-                "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
-                "params": {"module": "intraday_poc.models:NextBarLSTM"}},
-        }}), encoding="utf-8")
+    (run_dir / "config.json").write_text(
+        json.dumps(_serving_obj(("qhat_aapl", "qhat_msft"),
+                                price_field="vwap")),
+        encoding="utf-8")
 
     seen = {}
 
@@ -1505,7 +1636,8 @@ def test_live_main_fetches_with_the_knobs_it_read(tmp_path, monkeypatch):
     monkeypatch.setattr(live, "fetch_bars", fake_fetch)
     monkeypatch.setattr(live, "restore_model",
                         lambda directory, ref: (SimpleNamespace(lookback=3),
-                                                ["ret_lag_0"]))
+                                                ["ret_lag_0"],
+                                                {"lookback": 3}))
     monkeypatch.setattr(trading_client, "TradingClient",
                         lambda *a, **kw: SimpleNamespace(
                             get_clock=lambda: SimpleNamespace(
@@ -1544,10 +1676,12 @@ def test_train_document_to_live_chain_end_to_end(tmp_path):
     for a reason that says nothing about the document.
     """
     from intraday_poc.live import (
+        artifact_dirs,
         declared_module,
         load_run_document,
         predict,
         restore_model,
+        selector_knobs,
         solve_pick,
         window_node,
     )
@@ -1586,13 +1720,21 @@ def test_train_document_to_live_chain_end_to_end(tmp_path):
     # what it did.
     served = window_node(written).latest_rows(bars)
 
+    # No --artifact anywhere: the fanned trainers' directories are found
+    # through the document the run wrote, which is the whole point.
+    dirs = artifact_dirs(written, result.run_dir, ["AAPL", "MSFT"], {})
+    assert dirs["AAPL"] == os.path.join(result.run_dir, "artifacts",
+                                        "qhat__aapl")
+
     preds = {}
-    for symbol, node_key in (("AAPL", "qhat__aapl"), ("MSFT", "qhat__msft")):
-        artifact_dir = os.path.join(result.run_dir, "artifacts", node_key)
+    for symbol in ("AAPL", "MSFT"):
+        artifact_dir = dirs[symbol]
         with pytest.raises(SystemExit, match="wrong artifact"):
             restore_model(artifact_dir, "somepkg.models:OtherNet")
-        module, features = restore_model(artifact_dir, module_ref)
+        module, features, module_params = restore_model(artifact_dir,
+                                                        module_ref)
         assert module.lookback == 30
+        assert module_params["lookback"] == 30
         assert features[0] == "ret_lag_0" and len(features) == 30
         row = served[symbol]
         assert "y_next" not in row
@@ -1600,7 +1742,9 @@ def test_train_document_to_live_chain_end_to_end(tmp_path):
         assert pred is not None and math.isfinite(pred)
         preds[symbol] = pred
 
-    winner = solve_pick(preds)
+    # And the minute is solved by the program the RUN declared, read off
+    # the same document — not by a solver name spelled again here.
+    winner = solve_pick(preds, *selector_knobs(written))
     assert winner == max(preds, key=preds.get)
 
 
@@ -1646,19 +1790,23 @@ def test_restore_model_refuses_a_tampered_artifact(tmp_path):
         doc = json.load(fh)
     doc["pipeline"]["bars"]["params"]["root"] = root
     # The fit alone: the shared scan plus the ONE symbol's template
-    # nodes that feed it. The selection half (val_rows/fc/forecasts/
-    # labeled/select) and the search that consumes it are what this test
-    # is not about, and the tracking sink is placement.
+    # nodes that feed it — its rows and the band its checkpoint monitor
+    # reads. The selection half (val_rows/fc/forecasts/labeled/select)
+    # and the search that consumes it are what this test is not about,
+    # and the tracking sink is placement.
     doc["pipeline"] = {k: v for k, v in doc["pipeline"].items()
                        if k in ("bars", "window")}
     doc["foreach"]["keys"] = ["AAPL"]
     doc["foreach"]["pipeline"] = {
         k: v for k, v in doc["foreach"]["pipeline"].items()
-        if k in ("rows", "qhat")
+        if k in ("rows", "mon_rows", "qhat")
     }
     doc["foreach"]["pipeline"]["qhat"]["params"]["epochs"] = 1
-    doc["splits"].update({"train_end_ms": _ms(90), "val_start_ms": _ms(95),
-                          "val_end_ms": _ms(119), "test_end_ms": _ms(200)})
+    # Cuts inside the 60-minute fixture, with the monitor band OPEN: the
+    # trainer monitors on it, and an empty one is refused by the engine
+    # (rightly — a monitor with nothing to score selects nothing).
+    doc["splits"].update({"train_end_ms": _ms(45), "val_start_ms": _ms(50),
+                          "val_end_ms": _ms(58), "test_end_ms": _ms(200)})
     doc.pop("tracking")
     doc_path = tmp_path / "doc.json"
     doc_path.write_text(json.dumps(doc), encoding="utf-8")
