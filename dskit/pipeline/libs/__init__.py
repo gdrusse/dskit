@@ -1,8 +1,8 @@
 """Tier-2 library packs — generic wrappers for common DS libraries (D-146).
 
-One module per library (``pyomo.py``, ``sklearn.py``, ``torch.py``,
-``transformers.py``, ``optuna.py``, ``numpy.py``, ``sb3.py``,
-``matplotlib.py``, ``mlflow.py``). Each may NAME its
+One module per library (``pyomo.py``, ``sklearn.py``, ``torch.py`` plus
+its catalog sibling ``torch_ts.py``, ``transformers.py``, ``optuna.py``,
+``numpy.py``, ``sb3.py``, ``matplotlib.py``, ``mlflow.py``). Each may NAME its
 library, but imports it only inside a method (``run()`` for a node pack)
 — enforced twice by
 ``tests/pipeline/test_purity.py`` (statically, and by importing every

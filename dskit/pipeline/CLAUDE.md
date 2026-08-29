@@ -417,8 +417,9 @@ dskit/pipeline/
 ├── features.py        stage-list stream transforms
 ├── io.py, resolve.py  stage-list load/save + resolution
 ├── registry.py        venue-backend registry (no venues ship)
-├── libs/              numpy, sklearn, torch, transformers, optuna, pyomo,
-│                      sb3, matplotlib, mlflow (tracking SINK pack, no nodes)
+├── libs/              numpy, sklearn, torch + torch_ts (ADR-0041 zoo),
+│                      transformers, optuna, pyomo, sb3, matplotlib,
+│                      mlflow (tracking SINK pack, no nodes)
 ├── README.md          user-facing docs
 └── CLAUDE.md          this file
 ```

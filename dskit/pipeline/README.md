@@ -301,7 +301,10 @@ bases (`build_module` hook; optional `monitor` selects the checkpoint —
 the best epoch's weights restore before persist/serve, ADR-0035) +
 `torch-importance` (feature selection by input-gradient sensitivity: it ranks a
 net someone else fitted, wired in on the `signal` port, and trains nothing
-itself); **sb3** `sb3-train`/`sb3-policy`/`sb3-eval`
+itself); **torch_ts** `torch-ts-train`/`torch-ts-predict` (ADR-0041: one
+pair over an `arch` registry — DLinear/NLinear/MLP/LSTM/GRU/attention/TCN/
+CNN1d/PatchTST — `torch.py` stays byte-identical);
+**sb3** `sb3-train`/`sb3-policy`/`sb3-eval`
 (ADR-0028: the document names the RL algorithm AND the gymnasium env class;
 artifacts are hash-pinned); **matplotlib** `mpl-figure` + `FigureNode` base
 (ADR-0029: declared line/scatter/bar/hist marks over a row stream → a PNG
@@ -506,8 +509,9 @@ dskit/pipeline/
 ├── features.py        stage-list stream transforms (filter / regroup)
 ├── io.py, resolve.py  stage-list load/save + resolution
 ├── registry.py        venue-backend registry mechanism (no venues ship)
-├── libs/              tier-2 packs: numpy, sklearn, torch, transformers, optuna,
-│                      pyomo, sb3, matplotlib, mlflow (the tracking SINK pack —
+├── libs/              tier-2 packs: numpy, sklearn, torch + torch_ts
+│                      (ADR-0041 zoo), transformers, optuna, pyomo, sb3,
+│                      matplotlib, mlflow (the tracking SINK pack —
 │                      registers into SINK_KINDS, no node kinds)
 ├── README.md          this file
 └── CLAUDE.md          agent orientation
