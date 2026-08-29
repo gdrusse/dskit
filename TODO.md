@@ -19,12 +19,21 @@ for f in examples/pipeline/*.json children/intraday_poc/configs/run-*.json; do
 done
 ```
 
-Any hash that moves means the document grammar changed — revert and rethink.
-Baseline as of 2026-08-27: `examples/pipeline/torch-declared.json` =
-`4039ddf167fa65db…`, `run-train.json` = `187658f8b58b91a1…`.
+Any hash that moves means the document grammar changed — revert and rethink,
+UNLESS the change is a declared identity move (see the intentional-move log in
+`docs/plans/2026-08-closeout.md` §9).
 
-LANDED this session (ruff clean; 2440 passed / 108 skipped; all 14 document
-identity hashes byte-identical to baseline):
+**Baseline refreshed 2026-08-28 after the closeout run.** The ledger is now
+**17 documents** — it grew by `examples/pipeline/optuna-continuous.json` (E4),
+`model-sweep.json` (E5) and `foreach-fanout.json` (C3). Engine examples did NOT
+move: `examples/pipeline/torch-declared.json` is still `4039ddf167fa65db…`.
+The child documents moved intentionally, twice: `run-train.json`
+`187658f8b58b91a1…` → `85fff271bfdd05ec…` (A1: monitor/device/optimizer_params
+declared), and `run-backtest.json` `4db5b7904d19b73c…` → `5e1c24b0fad3ae1b…`
+(A1). To regenerate the whole ledger, run the loop above.
+
+LANDED in the PREVIOUS session (2026-08-27; ruff clean; 2440 passed / 108
+skipped; all 14 document identity hashes byte-identical to that baseline):
 
 - [x] The docstring standard, in `CLAUDE.md` → "Docstrings". NumPy sections,
       an `Examples` block that INSTANTIATES each class, types in the docstring
