@@ -76,11 +76,18 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
   `(asof_ms, price)` tuples and so ordered them by PRICE. Pinned in
   `tests/test_nodes.py::test_window_rows_orders_same_instant_bars_by_the_STREAM`.
 - **Three DEGENERATE-input shapes moved too**, and the `WindowRows`
-  docstring lists all four together: an empty `symbol` is now no series
+  docstring lists all five together: an empty `symbol` is now no series
   (it used to be one of its own, and a stream of only such bars now
   refuses by name), while a float `asof_ms` and a non-dict record now
   LIFT (both were dropped). Pinned in `tests/test_nodes.py::
   test_window_rows_admits_and_refuses_the_DEGENERATE_bars_it_now_does`.
+- **A NON-FINITE price is now dropped** (`keep_mask` wants a finite
+  positive price) where the pre-port `price <= 0` test — which neither
+  `inf` nor `nan` satisfies — let it into the chain and every window
+  overlapping it carried a non-finite return into training. The fifth
+  divergence, and the only one on ordinary-looking input. Pinned in
+  `tests/test_nodes.py::
+  test_window_rows_drops_a_NON_FINITE_price_the_pre_port_node_KEPT`.
 - **Streams are single-pass**: `SelectOne.run` groups forecasts ONCE and
   caches for `build_model`; never re-iterate an input port.
 - **`select-one` is role `score`, not `capital`** — deliberate: it scores

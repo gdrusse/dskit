@@ -63,6 +63,7 @@ __all__ = [
     "cluster_of",
     "cluster_ok",
     "lead_frac_ok",
+    "number_ok",
     "price_ok",
     "settle_position",
 ]
@@ -94,6 +95,37 @@ CONTRACT_FIELD = "contract"
 _CLUSTER_SOURCES = ("cluster", CLUSTER_FIELD, CONTRACT_FIELD)
 
 
+def number_ok(value):
+    """Say whether ``value`` is a REAL NUMBER the toolkit can compute on.
+
+    The base every other numeric rule here narrows: :func:`price_ok` adds
+    a sign, :func:`lead_frac_ok` adds an interval, the numpy pack asks it
+    of a lifted cell and of a stream's order key, and the fitted family
+    asks it of a row's decision instant. All of them are the one question
+    "is this cell a number", so it has one owner — a second copy drifts
+    the day the bound widens, and then the same record lifts on one side
+    of a wire and is refused on the other.
+
+    Parameters
+    ----------
+    value : object
+        The candidate. Anything at all: a non-number is simply not a
+        number, so this answers ``False`` rather than raising.
+
+    Returns
+    -------
+    bool
+        True for a finite ``int`` or ``float``. ``bool`` is excluded
+        explicitly — it is an ``int`` in Python, so without the check
+        ``True`` would pass as the number 1.
+    """
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(value)
+    )
+
+
 def price_ok(value):
     """Say whether ``value`` is a price this envelope can hold.
 
@@ -111,16 +143,10 @@ def price_ok(value):
     Returns
     -------
     bool
-        True for a finite, strictly positive ``int`` or ``float``.
-        ``bool`` is excluded explicitly — it is an ``int`` in Python, so
-        without the check ``True`` would pass as a price of 1.
+        True for a finite, strictly positive ``int`` or ``float`` —
+        :func:`number_ok` plus a sign, never a second copy of it.
     """
-    return (
-        not isinstance(value, bool)
-        and isinstance(value, (int, float))
-        and math.isfinite(value)
-        and value > 0.0
-    )
+    return number_ok(value) and value > 0.0
 
 
 def lead_frac_ok(value):
@@ -136,15 +162,10 @@ def lead_frac_ok(value):
     Returns
     -------
     bool
-        True for a finite ``int`` or ``float`` strictly inside (0, 1),
-        with ``bool`` excluded as in :func:`price_ok`.
+        True for a finite ``int`` or ``float`` strictly inside (0, 1) —
+        :func:`number_ok` plus an interval, as in :func:`price_ok`.
     """
-    return (
-        not isinstance(value, bool)
-        and isinstance(value, (int, float))
-        and math.isfinite(value)
-        and 0.0 < float(value) < 1.0
-    )
+    return number_ok(value) and 0.0 < float(value) < 1.0
 
 
 def cluster_ok(value):

@@ -635,11 +635,50 @@ def test_window_rows_admits_and_refuses_the_DEGENERATE_bars_it_now_does():
     assert len(rows_for(objects)) == 2
 
 
+def test_window_rows_drops_a_NON_FINITE_price_the_pre_port_node_KEPT():
+    """The FIFTH divergence — the only one on ordinary-looking input.
+
+    The pre-port filter was ``price <= 0``, and NEITHER ``inf`` NOR
+    ``nan`` satisfies it: both rode straight into the chain and produced
+    a non-finite log return, which every window overlapping them then
+    carried into training. ``keep_mask`` asks for a FINITE positive
+    price, so such a minute is now dropped, counted in ``n_dropped``,
+    and the survivors chain across it — the same treatment a missing or
+    non-positive price already got.
+
+    It is listed in the ``WindowRows`` docstring beside the other four
+    and pinned here, because an unlisted behaviour change in a node the
+    SERVING path also calls is how train/serve skew comes back.
+    """
+    def rows_for(bad):
+        records = [{"symbol": "AAPL", "asof_ms": _ms(i), "close": 100.0 + i}
+                   for i in range(6)]
+        if bad is not None:
+            records[3]["close"] = bad
+        else:
+            del records[3]
+        return WindowRows("w", {"lookback": 2}).run(
+            None, {"records": records})["records"]
+
+    # A dropped bar and an ABSENT bar must produce the same windows: the
+    # non-finite price is not data, and the neighbours chain across it.
+    absent = rows_for(None)
+    for bad in (float("inf"), float("-inf"), float("nan")):
+        got = rows_for(bad)
+        assert got == absent, bad
+        assert all(math.isfinite(v) for row in got for v in row.values()
+                   if isinstance(v, float)), bad
+
+    # And the claim the docstring makes about itself stays true.
+    assert "finite" in WindowRows.__doc__
+
+
 def test_window_rows_orders_same_instant_bars_by_the_STREAM(price_field="close"):
     """The FIRST of the places the port changed what the child computes.
 
     (The others — degenerate symbols, float stamps and non-dict records
-    — are pinned by the test above.)
+    — are pinned by the test above; the non-finite price by the one
+    below it.)
 
     Two bars of one symbol can share an ``asof_ms``: ``BarsFromStore``
     orders by ``(asof_ms, symbol, ts)`` and two ``ts`` spellings can

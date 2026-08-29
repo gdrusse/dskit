@@ -288,7 +288,11 @@ spans a session boundary; absent, there is one segment per group and the
 behaviour is what it always was. `ReturnWindows` composes the vectorized ops
 (`lag`, `lead`, `log_return`, `pct_return`) into lags plus a forward label,
 and a forward-reading column DECLARES its horizon (`lookahead_columns`)
-rather than escaping the causality screen. `latest_rows` is the SERVING call —
+rather than escaping the causality screen. Lags and the label share ONE
+dict, so a `label_name` that IS a lag column `lag_prefix`/`lookback`
+produce is refused at plan naming both knobs — a forward value sitting in
+a past column is the one leak that screen cannot see, so it is made
+unexpressible instead. `latest_rows` is the SERVING call —
 the newest row per group with the forward columns dropped — and its "complete,
 or absent" rule is UNCONDITIONAL: `drop_incomplete` governs what `run` emits,
 never what serving publishes. Positions a `keep_mask` rejects are counted

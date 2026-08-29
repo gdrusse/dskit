@@ -150,6 +150,7 @@ from dskit.pipeline.records import (
     CONTRACT_FIELD,
     cluster_ok,
     lead_frac_ok,
+    number_ok,
     price_ok,
 )
 
@@ -498,29 +499,23 @@ def _field(record, name):
 
 
 def _num(value) -> float:
-    """Lift one cell to ``float``.
+    """Lift one cell to ``float`` by the envelope's own number rule.
 
     A real finite number rides as ``float``; anything else (absent,
     ``None``, bool, string, inf) becomes NaN — missing is data.
     """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return float("nan")
-    out = float(value)
-    return out if math.isfinite(out) else float("nan")
+    return float(value) if number_ok(value) else float("nan")
 
 
 def _order_value(value):
     """Read the order key of one record, or ``None`` when it has none.
 
-    A non-bool int (the envelope's rule) or a finite float.
+    The SAME rule :func:`_num` lifts a cell by
+    (:func:`~dskit.pipeline.records.number_ok`), keeping the value's own
+    type: an int order key stays an int, so a stream ordered on epoch
+    milliseconds never rounds through a float on the way in.
     """
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and math.isfinite(value):
-        return value
-    return None
+    return value if number_ok(value) else None
 
 
 def _carried_column(name, values):
@@ -1742,6 +1737,22 @@ class TrailingReturns(ArrayFeatures):
         return {"trailing_return": pct_return(arrays["mid"], params["window"])}
 
 
+def _lag_name(prefix, step):
+    """Spell the column one lag rides under — the ONE owner of the format."""
+    return f"{prefix}{step}"
+
+
+def _lag_index(name, prefix):
+    """Invert :func:`_lag_name`: the step digits in ``name``, or ``None`` for none."""
+    if not name.startswith(prefix):
+        return None
+    step = name[len(prefix):]
+    if not (step.isascii() and step.isdigit()):
+        return None
+    # ``str(n)`` is unpadded, so a zero-padded name is nobody's lag column.
+    return step if step == "0" or step[0] != "0" else None
+
+
 class ReturnWindows(ArrayFeatures):
     """Lagged one-step returns with a forward label — the ops, composed.
 
@@ -1756,6 +1767,14 @@ class ReturnWindows(ArrayFeatures):
     way (``price_field`` instead of ``fields``, minutes instead of order
     units) and narrows those knobs away; it writes no chain semantics of
     its own.
+
+    **The label may never take a lag column's NAME.** Lags and the label
+    are written into ONE dict, so ``label_name`` matching
+    ``f"{lag_prefix}{step}"`` for a ``step`` inside ``lookback`` would put
+    a FORWARD value in a PAST column — silently, because the row simply
+    loses a column and the guard then holds the overwritten name to the
+    horizon :meth:`lookahead_columns` declares for it. The combination is
+    refused at plan (``validate_params``), never merely discouraged.
 
     Parameters
     ----------
@@ -1818,7 +1837,8 @@ class ReturnWindows(ArrayFeatures):
         """Problems with ``params``, empty when none.
 
         The base's, plus this class's five, each guarded by ``_PARAMS``
-        membership.
+        membership — and the one CROSS-knob rule: ``label_name`` may not
+        name a lag column ``lag_prefix`` and ``lookback`` produce.
 
         Parameters
         ----------
@@ -1845,7 +1865,7 @@ class ReturnWindows(ArrayFeatures):
 
     @classmethod
     def _window_problems(cls, problems, params):
-        """Check the windowing knobs: lookback, kind, lead, and names."""
+        """Check the windowing knobs: lookback, kind, lead, names, collision."""
         if "lookback" in cls._PARAMS:
             lookback = params.get("lookback")
             if "lookback" not in params:
@@ -1881,6 +1901,35 @@ class ReturnWindows(ArrayFeatures):
             value = params[knob]
             if not is_node_ref(value) and (not isinstance(value, str) or not value):
                 problems.append(f"{knob} must be a non-empty string, got {value!r}")
+        cls._collision_problems(problems, params)
+
+    @classmethod
+    def _collision_problems(cls, problems, params):
+        """Refuse a label whose NAME is one of the lag columns beside it."""
+        if not {"label_name", "lag_prefix", "lookback"}.issubset(cls._PARAMS):
+            return  # a narrowed class hardcodes them; nothing here to read
+        label = params.get("label_name", DEFAULT_LABEL_NAME)
+        prefix = params.get("lag_prefix", DEFAULT_LAG_PREFIX)
+        lookback = params.get("lookback")
+        if not isinstance(label, str) or not isinstance(prefix, str):
+            return  # refused by the per-knob checks, or a $-ref that defers
+        if isinstance(lookback, bool) or not isinstance(lookback, int) or lookback < 1:
+            return  # no window, no lag columns — and its own check refuses it
+        step = _lag_index(label, prefix)
+        # Compared as canonical decimals: a column NAME is not an int, and
+        # converting a five-thousand-digit one would explode a validator
+        # whose bar is to RETURN problems.
+        if step is None or (len(step), step) >= (len(f"{lookback}"), f"{lookback}"):
+            return
+        problems.append(
+            f"label_name {label!r} IS the lag column lag_prefix {prefix!r} "
+            f"emits for step {step}, which lookback={lookback} asks for — the "
+            "label is a FORWARD value and a lag is a PAST one, so the label "
+            "would silently overwrite that feature with the next bar's "
+            "return, drop a column, and pass the causality guard (which holds "
+            "a declared-forward name to a forward horizon). Rename label_name, "
+            "or move lag_prefix off it"
+        )
 
     def lookahead_columns(self):
         """Declare the label column and how far forward it reads."""
@@ -1905,7 +1954,8 @@ class ReturnWindows(ArrayFeatures):
         returns = RETURN_KINDS[self.return_kind()](arrays[self.fields()[0]])
         prefix = self.lag_prefix()
         columns = {
-            f"{prefix}{step}": lag(returns, step) for step in range(self.lookback())
+            _lag_name(prefix, step): lag(returns, step)
+            for step in range(self.lookback())
         }
         columns[self.label_name()] = lead(returns, self.label_lead())
         return columns

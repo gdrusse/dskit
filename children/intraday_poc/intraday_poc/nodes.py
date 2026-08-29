@@ -204,11 +204,12 @@ class WindowRows(ReturnWindows):
     Output rows: ``{symbol, asof_ms, ret_lag_0 .. ret_lag_{L-1}, y_next}``
     where ``ret_lag_0`` is the return ENDING at ``asof_ms`` and ``y_next``
     the return of the following bar — the label a next-bar model trains
-    on. Sparse bars (missing/non-positive price) are dropped, counted
-    (``n_dropped``, and the pack's log line) and never crashed on.
+    on. Sparse bars (a missing, non-finite or non-positive price) are
+    dropped, counted (``n_dropped``, and the pack's log line) and never
+    crashed on.
 
-    **Everything the port changed about what this node computes**, all
-    of it pinned in ``tests/test_nodes.py``:
+    **Everything the port changed about what this node computes** —
+    five divergences, all of them pinned in ``tests/test_nodes.py``:
 
     * two bars of one symbol on the SAME instant (two ``ts`` spellings
       flattening onto one ``asof_ms``) keep the STREAM's order, which is
@@ -219,9 +220,13 @@ class WindowRows(ReturnWindows):
       series of its own — the pack keys on an identity the toolkit can
       hold, and a stream of ONLY such bars refuses by name;
     * a FLOAT ``asof_ms`` and an attribute-bearing (non-dict) record now
-      LIFT, where the pre-port predicates dropped both.
+      LIFT, where the pre-port predicates dropped both;
+    * a NON-FINITE price (``inf``, ``nan``) is now DROPPED and counted
+      like a missing one, where the pre-port test — ``price <= 0``, which
+      neither satisfies — let it into the chain and every window
+      overlapping it carried a non-finite return into training.
 
-    The last two are degenerate-input shapes no store this child reads
+    The middle two are degenerate-input shapes no store this child reads
     produces; they are stated because a change to what the child
     computes is declared, not discovered.
 

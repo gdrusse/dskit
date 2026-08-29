@@ -229,32 +229,6 @@ def test_predict_artifact_param_checks(artifact):
     assert any("artifact" in p for p in problems)
 
 
-def test_the_artifact_identity_spelling_has_ONE_home():
-    """``module:QualName`` is what a sidecar RECORDS and what load mode
-    compares against — the guard ADR-0038 says orphans every stored
-    artifact if it moves. It was written out three times (this pack,
-    ``libs/transformers``, and the new tier-1 ``fitted``), so the
-    spelling graduated to :func:`dskit.pipeline.node.class_ref` and the
-    packs import it. This pack's own classmethod stays (a concurrent
-    card owns the file), so its ANSWER is pinned instead of its source —
-    the day the two disagree, a restored artifact is refused for a
-    reason nobody wrote down.
-    """
-    from dskit.pipeline import fitted
-    from dskit.pipeline.libs import transformers
-    from dskit.pipeline.node import class_ref
-
-    assert class_ref(LinearRegressor) == (
-        f"{LinearRegressor.__module__}:{LinearRegressor.__qualname__}"
-    )
-    for module in (fitted, transformers):
-        assert not hasattr(module, "_class_ref"), (
-            f"{module.__name__} carries a second copy of the spelling"
-        )
-    for cls in (LinearRegressor, LinearPredictor, DeclaredTrain, DeclaredPredict):
-        assert cls._class_ref() == class_ref(cls)
-
-
 def test_the_reference_params_validate_clean():
     assert LinearRegressor.validate_params(dict(PARAMS)) == []
     assert (

@@ -219,6 +219,47 @@ class TestLeakageIsRefused:
                                   splits=TIME_SPLITS))
         assert resolved.role_of("scaler") == "fitted_transform"
 
+    def test_a_fit_split_the_document_does_not_CARVE_refuses_at_plan(self):
+        """ADR-0040: ``fit_split`` must name a DECLARED split, and a name
+        in the vocabulary is not the same as a band the cuts produce.
+
+        ``cal`` exists only when the splits section declares one
+        (ADR-0034), so ``fit_split: "cal"`` under a plain three-way cut
+        matched nothing — and the family's own run-time refusal ("matched
+        no row") named the ROWS, sending the operator to look at the data
+        for a defect that is in the document. The ``score`` role has
+        refused exactly this since ADR-0034; the fitted family reads the
+        same answer rather than a second copy of it.
+        """
+        with pytest.raises(ConfigError, match="cal"):
+            plan(_document({"fit_split": "cal", "features": ["x"]},
+                           splits=TIME_SPLITS))
+
+    def test_a_fit_split_the_document_DOES_carve_plans_clean(self):
+        """The neighbour: declare the band and the same document plans."""
+        with_cal = TimeSplitConfig(
+            train_end_ms=10 * DAY, val_end_ms=20 * DAY, test_end_ms=30 * DAY,
+            cal_start_ms=15 * DAY,
+        )
+        resolved = plan(_document({"fit_split": "cal", "features": ["x"]},
+                                  splits=with_cal))
+        assert resolved.role_of("scaler") == "fitted_transform"
+
+    def test_walkforward_folds_carve_no_cal_band_either(self):
+        """Folds replace the splits section, and ADR-0034 v1 gives them no
+        room for a cal band — so the exemption that lets a walk-forward
+        document carry no splits must not also bless a band it cannot
+        cut."""
+        document = _document(
+            {"fit_split": "cal", "features": ["x"]},
+            walkforward=WalkForwardSpec(
+                objective="$scaler.metrics.n_rows", val_days=21,
+                first="1973-01-01", step_days=7, count=2,
+            ),
+        )
+        with pytest.raises(ConfigError, match="cal"):
+            plan(document)
+
     def test_fitting_with_no_materialized_splits_refuses_at_run(self, tmp_path):
         node = Standardize("scaler", {"fit_split": "train", "features": ["x"]})
         ctx = NodeContext(name="f", asof=ASOF, run_dir=str(tmp_path))
@@ -456,6 +497,102 @@ class TestWhichSplitsReadAnIdentity:
         assert _assigns_by_cluster(config) is self._really_reads_a_cluster(
             config
         )
+
+
+class TestTheOrderContractIsHonest:
+    """What ``fit`` promises about the order its rows arrive in.
+
+    The base's docstrings said ``order_field`` order, unconditionally,
+    while ``_ordered`` quietly handed back STREAM order whenever a fit
+    row's order value could not be read. A member whose fit depends on
+    order (a rolling statistic, an EWMA) would then learn a different
+    state from the same rows on a different day, with nothing said — and
+    non-reproducible is the one thing a persisted state may not be. So
+    the promise is kept where it is made and refused where it cannot be,
+    and the docstrings say which is which.
+    """
+
+    @staticmethod
+    def _cluster_ctx(tmp_path):
+        return NodeContext(
+            name="f", asof=ASOF, run_dir=str(tmp_path),
+            splits=RandomSplitConfig(train_frac=0.6, val_frac=0.2, seed=1),
+        )
+
+    def test_a_DECLARED_order_field_the_fit_rows_cannot_answer_refuses(
+        self, tmp_path
+    ):
+        """A document that NAMES the field asserted these rows carry it."""
+        stream = [{"cluster": f"day-{i}", "t": f"d{i}", "x": float(i)}
+                  for i in range(100)]
+        node = Standardize("scaler", {"fit_split": "train", "features": ["x"],
+                                      "order_field": "t"})
+        with pytest.raises(ValueError) as caught:
+            node.run(self._cluster_ctx(tmp_path), {"rows": stream})
+        message = str(caught.value)
+        assert "scaler" in message and "'t'" in message, message
+        assert "order" in message, message
+
+    def test_the_same_rows_with_a_READABLE_declared_field_fit_in_that_order(
+        self, tmp_path
+    ):
+        """The complement — the check is about unreadable, not declared."""
+        stream = [{"cluster": f"day-{i}", "t": 1000 - i, "x": float(i)}
+                  for i in range(100)]
+        seen = []
+
+        class _Recording(Standardize):
+            def fit(self, rows, params):
+                seen.extend(row["t"] for row in rows)
+                return super().fit(rows, params)
+
+        out = _Recording("s", {"fit_split": "train", "features": ["x"],
+                               "order_field": "t"}).run(
+            self._cluster_ctx(tmp_path), {"rows": stream}
+        )
+        assert 0 < out["metrics"]["n_fit_rows"] < len(stream)
+        assert seen == sorted(seen), "fit rows must arrive in order_field order"
+
+    def test_an_UNDECLARED_order_field_still_falls_back_under_a_cluster_cut(
+        self, tmp_path
+    ):
+        """The documented exception, which part (b) of the ruling states
+        rather than removes: with no ``order_field`` in the document the
+        module is only GUESSING the envelope's own name, and a
+        cluster-keyed cut consults no instant at all — so an unreadable
+        one is none of its business and the rows keep the stream's order.
+        The sibling pin in ``TestLeakageIsRefused`` holds the same rule
+        from the split's side.
+        """
+        stream = [{"cluster": f"day-{i}", "asof_ms": f"d{i}", "x": float(i)}
+                  for i in range(100)]
+        seen = []
+
+        class _Recording(Standardize):
+            def fit(self, rows, params):
+                seen.extend(row["cluster"] for row in rows)
+                return super().fit(rows, params)
+
+        out = _Recording("s", {"fit_split": "train", "features": ["x"]}).run(
+            self._cluster_ctx(tmp_path), {"rows": stream}
+        )
+        assert 0 < out["metrics"]["n_fit_rows"] < len(stream)
+        kept = [row["cluster"] for row in stream if row["cluster"] in set(seen)]
+        assert seen == kept, "the stream's own order, unsorted"
+
+    def test_the_promise_and_the_refusal_are_BOTH_written_down(self):
+        """A contract nobody can read is the defect this ruling names.
+
+        The three docstrings that stated the order guarantee must each
+        state its BOUNDARY too — the cluster-keyed cut that consults no
+        instant — and none may carry the old unconditional promise back.
+        """
+        for name in ("fit", "frame_of", "order_field"):
+            text = " ".join(getattr(FittedTransform, name).__doc__.split()).lower()
+            assert "cluster" in text, name
+            assert "stream" in text or "refus" in text, name
+            assert "the declared ``fit_split``, in ``order_field`` order" \
+                not in text, name
 
 
 class TestThePurityScreen:

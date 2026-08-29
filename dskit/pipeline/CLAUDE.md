@@ -89,7 +89,14 @@ on it without breaking its rulings.
   absence the way the rest of the repo does. The role is UNSEARCHABLE
   (`planner._UNSEARCHABLE_ROLES`): a trial override is never
   plan-checked, so a space addressing `fit_split` would fit on the split
-  its objective scores.
+  its objective scores. `fit_split` must name a split the document
+  actually CARVES, not merely one in the vocabulary — `fit_split: "cal"`
+  under a splits section with no cal band refuses at plan, where it used
+  to reach run and refuse naming the ROWS. And the fit rows arrive in
+  `order_field` order only so far as they can: a DECLARED `order_field` a
+  fit row cannot answer refuses by name, while a merely defaulted one
+  under a cluster-keyed cut (which reads no instant at all) leaves them
+  in the stream's order.
 - **One name per shared vocabulary.** `node.class_ref(cls)` is the
   `module:QualName` an artifact sidecar RECORDS and load mode compares —
   three modules used to write that f-string out, and a divergence there
@@ -97,7 +104,14 @@ on it without breaking its rulings.
   `split_policy.SPLIT_NAMES` is the split vocabulary (`document.py`
   re-exports it as the document's), because the score nodes, the sb3
   pack and the straddle report all ask it and `cal` was added to it once
-  already.
+  already. `records.number_ok` is "a non-bool int or a finite float" —
+  `price_ok`/`lead_frac_ok` narrow it, the numpy pack lifts cells and
+  order keys by it, and `fitted.py` reads instants and features by it; a
+  private copy is how one record lifts on one side of a wire and is
+  refused on the other. `planner._carved_splits(document)` is which
+  split names a document's cuts actually PRODUCE (`cal` only where a
+  band is declared), asked by the `score` reader and the
+  `fitted_transform` fitter alike.
 - **Conformance** — point `conformance_suite(registry=, probes=,
   expected_roles=)` at any pack; probes are behavioural, not optional
   (`require_probes=False` is a written-down decision).

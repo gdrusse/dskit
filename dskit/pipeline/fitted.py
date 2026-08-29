@@ -81,6 +81,7 @@ from dskit.pipeline.records import (
     CLUSTER_FIELD,
     CONTRACT_FIELD,
     cluster_of,
+    number_ok,
 )
 from dskit.pipeline.split_policy import SplitFrame
 
@@ -122,11 +123,8 @@ def _field(row, name):
 
 
 def _numeric(value):
-    """Return ``value`` as a float when it is a real finite number, else ``None``."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    out = float(value)
-    return out if math.isfinite(out) else None
+    """``value`` as a float by the envelope's own number rule, else ``None``."""
+    return float(value) if number_ok(value) else None
 
 
 def _same(a, b):
@@ -314,7 +312,14 @@ class FittedTransform(TrainableNode):
     def order_field(self):
         """Name the field carrying a row's decision instant (str).
 
-        Fit rows are ordered by it, and :meth:`frame_of` cuts on it.
+        :meth:`frame_of` cuts on it, and the fit rows are sorted by it —
+        with ONE stated exception. When the document DECLARES this knob,
+        a fit row whose value cannot be read refuses by name. When it
+        does not, the answer is the envelope's own
+        :data:`DEFAULT_ORDER_FIELD` — a guess, not a promise — and a
+        CLUSTER-KEYED cut reads no instant at all, so unreadable values
+        leave the fit rows in the input stream's order rather than
+        refusing a run whose split never wanted them.
         """
         return self.params.get("order_field", DEFAULT_ORDER_FIELD)
 
@@ -421,9 +426,14 @@ class FittedTransform(TrainableNode):
         Parameters
         ----------
         rows : list
-            The rows of the declared ``fit_split``, in ``order_field``
-            order. Never empty — an empty fit split is refused before
-            this is called.
+            The rows of the declared ``fit_split``. Never empty — an
+            empty fit split is refused before this is called. They
+            arrive in :meth:`order_field` order whenever every one of
+            them carries a readable value there; a DECLARED
+            ``order_field`` they do not refuses rather than degrading,
+            and a merely DEFAULTED one under a cluster-keyed cut (which
+            consults no instant) leaves them in the input stream's
+            order. A member whose fit depends on order should say so.
         params : dict
             ``self.params``, passed through for convenience.
 
@@ -655,14 +665,19 @@ class FittedTransform(TrainableNode):
         ``asof_ms`` regardless would put every such row in NO split and
         then blame the split bounds.
 
-        The instant is held to :func:`_numeric` on the way in, for the
-        same reason ``_ordered`` tolerates one that is not: this module
-        must have ONE answer about what the declared order field may
-        carry. A string timestamp — the ordinary shape of a CSV- or
-        table-sourced foreign stream — handed straight to a time cut
-        died as a bare ``TypeError`` naming neither the node nor the
-        field; unreadable becomes ``None`` here and
-        :meth:`_refuse_unassignable` names it.
+        The instant is held to :func:`_numeric` on the way in, the same
+        rule ``_ordered`` sorts the fit rows by: this module must have
+        ONE answer about what the declared order field may carry. A
+        string timestamp — the ordinary shape of a CSV- or table-sourced
+        foreign stream — handed straight to a time cut died as a bare
+        ``TypeError`` naming neither the node nor the field; unreadable
+        becomes ``None`` here and :meth:`_refuse_unassignable` names it.
+
+        A cluster-keyed cut reads only the identity, BY DESIGN, so the
+        instant half of the frame is never consulted there and an
+        unreadable one is no error — the one case in which the fit rows
+        may reach :meth:`fit` in the stream's order instead of this
+        field's (see :meth:`order_field`).
 
         The identity is :func:`~dskit.pipeline.records.cluster_of` — the
         envelope's own rule, IMPORTED rather than restated. It matters
@@ -776,13 +791,31 @@ class FittedTransform(TrainableNode):
                 "convert it to epoch milliseconds upstream"
             )
 
+    def _declares_order(self):
+        """Say whether the order field was CHOSEN, not defaulted to the envelope's."""
+        return "order_field" in self.params or self.order_field() != DEFAULT_ORDER_FIELD
+
     def _ordered(self, rows):
-        """Fit rows in the declared order; input order when it cannot be read."""
+        """Fit rows in order: refuse an unreadable DECLARED field, else stream order."""
         field = self.order_field()
         keyed = [(_numeric(_field(row, field)), i, row) for i, row in enumerate(rows)]
-        if any(key is None for key, _i, _row in keyed):
+        unreadable = next((i for key, i, _row in keyed if key is None), None)
+        if unreadable is None:
+            return [row for _key, _i, row in sorted(keyed, key=lambda t: (t[0], t[1]))]
+        if not self._declares_order():
+            # Nothing was promised: the envelope's own name is a GUESS this
+            # module makes, and a cluster-keyed cut consults no instant at
+            # all, so the stream's order is the honest answer.
             return rows
-        return [row for _key, _i, row in sorted(keyed, key=lambda t: (t[0], t[1]))]
+        raise ValueError(
+            f"{self.key}: row {unreadable} of the {self.fit_split()!r} fit "
+            f"slice carries no readable value under its DECLARED order_field "
+            f"{field!r} (got {_field(rows[unreadable], field)!r}) — fit rows "
+            "are handed to fit() in that order, so a value this cannot sort "
+            "on would silently degrade the fit to STREAM order and the state "
+            "this run persists could not be reproduced. Declare the field "
+            "these rows carry their instant under, or convert it upstream"
+        )
 
     def _checked_state(self, state):
         """Hold a fitted state to its contract: a JSON-able dict."""

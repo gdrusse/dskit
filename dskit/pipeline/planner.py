@@ -316,6 +316,33 @@ def _accepts_split(cls):
     return False
 
 
+def _carved_splits(document):
+    """The split names this document's cuts can actually PRODUCE.
+
+    Every kind carves train/val/test; ``cal`` exists only where the
+    splits section declares a band (ADR-0034), and a walk-forward section
+    can carry none at all. ONE owner, because two roles ask — the
+    ``score`` node that READS a split and the ``fitted_transform`` that
+    FITS on one — and a second copy is the shape that lets one of them
+    keep blessing a band the run cannot cut.
+
+    Parameters
+    ----------
+    document : dskit.pipeline.document.PipelineDocument
+        The document, read for its splits section.
+
+    Returns
+    -------
+    tuple of str
+        The :data:`SPLIT_NAMES` this document's cuts can return.
+    """
+    has_cal = bool(
+        getattr(document.splits, "cal_start_ms", None)
+        or getattr(document.splits, "cal_days", 0)
+    )
+    return tuple(name for name in SPLIT_NAMES if name != "cal" or has_cal)
+
+
 def _fitted_errors(key, spec, cls, document):
     """Leakage rules for one ``fitted_transform`` node (ADR-0040).
 
@@ -379,6 +406,17 @@ def _fitted_errors(key, spec, cls, document):
             "document declares none — a fitted transform with no splits would "
             "fit on EVERYTHING, which is the leak the knob exists to refuse. "
             "Declare splits (a walkforward section counts), or drop the node"
+        )
+    elif declared and fit_split not in _carved_splits(document):
+        # A name in the vocabulary is not a band the cuts produce: 'cal'
+        # exists only where one is declared (ADR-0034). Left unchecked the
+        # fit matched no row and refused at RUN naming the rows, which
+        # sends the operator to the data for a defect in the document.
+        errors.append(
+            f"pipeline.{key}: fit_split {fit_split!r} names no split this "
+            f"document CARVES ({'/'.join(_carved_splits(document))}) — set "
+            "splits.cal_start_ms (time) or splits.cal_days (trailing) to cut "
+            "the band, or fit on one of the splits it already declares"
         )
     return errors
 
@@ -564,11 +602,7 @@ def plan(document, registry=None) -> Plan:
                 # ADR-0034: the 'cal' name only exists when the declared
                 # splits carve a band — a reader of a band that cannot
                 # exist would run on zero rows and exit 0. Refuse at plan.
-                has_band = bool(
-                    getattr(document.splits, "cal_start_ms", None)
-                    or getattr(document.splits, "cal_days", 0)
-                )
-                if not has_band:
+                if split not in _carved_splits(document):
                     errors.append(
                         f"pipeline.{key}: a 'cal' reader needs a declared "
                         "cal band — set splits.cal_start_ms (time) or "

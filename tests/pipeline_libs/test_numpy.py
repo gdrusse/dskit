@@ -1122,6 +1122,39 @@ class TestTierOneTruthIsImported:
         assert (pack._carried_column(core.CLUSTER_FIELD, [value])[0]
                 is not None) is usable
 
+    @pytest.mark.parametrize("value", [
+        5, -3, 0, 2.5, -0.5, True, False, None, "7", [],
+        float("nan"), float("inf"), float("-inf"), 10**30,
+    ])
+    def test_ONE_number_rule_answers_wherever_a_REAL_NUMBER_is_read(self, value):
+        """"A non-bool int, or a finite float" had four authors.
+
+        ADR-0040 added two more statements of it — the pack's order
+        predicate and ``fitted.py``'s instant/feature reader — beside the
+        two the envelope already carried inside ``price_ok`` and
+        ``lead_frac_ok``. Every one of them decides whether a cell is a
+        number the toolkit can use, so they are one rule; unpinned, the
+        day a widened bound admits (say) a ``Decimal`` instant, the pack
+        would lift a record the fitted family then refuses to cut, and
+        the refusal names the rows.
+
+        The expectation is COMPUTED from the tier-1 owner rather than
+        written out, so loosening the rule moves this test with it and
+        any site that restated it fails instead.
+        """
+        import dskit.pipeline.libs.numpy as pack
+        from dskit.pipeline import fitted
+        from dskit.pipeline import records as core
+
+        accepted = core.number_ok(value)
+        assert (pack._order_value(value) is not None) is accepted, value
+        assert (fitted._numeric(value) is not None) is accepted, value
+        assert (not math.isnan(pack._num(value))) is accepted, value
+        # The envelope's own two are SPECIALIZATIONS: neither may accept
+        # a value the shared rule rejects.
+        assert not (core.price_ok(value) and not accepted), value
+        assert not (core.lead_frac_ok(value) and not accepted), value
+
     def test_the_envelope_itself_uses_the_same_predicates(self):
         # Deliberate second reader: loosening the core bound must move
         # BOTH the envelope and the pack, or the pack drifts again.
@@ -1289,6 +1322,123 @@ class TestLookaheadIsDeclaredNotExempt:
             _Leaky("w", {**FOREIGN, "lookback": 2}).run(
                 ctx(tmp_path), {"records": bars("A", range(8))}
             )
+
+
+class TestTheLabelMayNotTakeALagColumnsName:
+    """The collision that put a FORWARD value in a PAST column.
+
+    ``apply`` writes ``lookback`` lags under ``f"{lag_prefix}{step}"`` and
+    then the label under ``label_name``, into ONE dict. With
+    ``lag_prefix="f"`` and ``label_name="f0"`` the label OVERWROTE lag 0,
+    so a consumer reading a past-return feature got the NEXT bar's return;
+    the row silently lost a column; and the causality guard could not
+    catch it, because ``lookahead_columns`` reports ``f0`` as forward and
+    the guard then held the overwritten column to a forward horizon and
+    passed. So the combination is refused BY NAME at plan — a leak that
+    cannot be expressed is the only kind that cannot ship.
+    """
+
+    def test_a_label_named_like_a_lag_column_refuses_at_plan(self):
+        problems = ReturnWindows.validate_params(
+            {**FOREIGN, "lookback": 4, "lag_prefix": "f", "label_name": "f0"}
+        )
+        assert problems, "the collision planned clean"
+        assert any(
+            "label_name" in p and "lag_prefix" in p and "lookback" in p
+            for p in problems
+        ), problems
+
+    def test_the_colliding_document_cannot_be_built_at_all(self):
+        with pytest.raises(ConfigError, match="label_name"):
+            ReturnWindows(
+                "w", {**FOREIGN, "lookback": 4, "lag_prefix": "f", "label_name": "f0"}
+            )
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"lookback": 4, "lag_prefix": "f", "label_name": "f3"},
+            {"lookback": 1, "lag_prefix": "f", "label_name": "f0"},
+            # multi-digit: the index that IS the last lag, and one that
+            # is merely shorter than the bound — a length-blind string
+            # comparison gets exactly these two wrong.
+            {"lookback": 100, "lag_prefix": "f", "label_name": "f99"},
+            {"lookback": 100, "lag_prefix": "f", "label_name": "f9"},
+            {"lookback": 12, "lag_prefix": "ret_lag_", "label_name": "ret_lag_11"},
+        ],
+    )
+    def test_every_lag_index_inside_the_window_collides(self, params):
+        assert any(
+            "label_name" in p
+            for p in ReturnWindows.validate_params({**FOREIGN, **params})
+        ), params
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            # the neighbour ONE step past the window: lags are f0..f3
+            {"lookback": 4, "lag_prefix": "f", "label_name": "f4"},
+            # multi-digit neighbours on both sides of the bound's LENGTH
+            {"lookback": 100, "lag_prefix": "f", "label_name": "f100"},
+            {"lookback": 9, "lag_prefix": "f", "label_name": "f10"},
+            # a label sharing the prefix but not a lag INDEX
+            {"lookback": 4, "lag_prefix": "f", "label_name": "fwd"},
+            # a zero-padded index is not a name lag() ever writes
+            {"lookback": 4, "lag_prefix": "f", "label_name": "f00"},
+            # different prefixes never meet
+            {"lookback": 99, "lag_prefix": "lag_", "label_name": "y_next"},
+            # the pack's own defaults, stated and omitted
+            {"lookback": 4},
+            {"lookback": 4, "lag_prefix": "lag_", "label_name": "label"},
+        ],
+    )
+    def test_a_non_colliding_neighbour_still_plans(self, params):
+        assert ReturnWindows.validate_params({**FOREIGN, **params}) == [], params
+
+    def test_the_check_defers_on_a_reference_and_never_explodes(self):
+        # $-refs materialize later, and the totality bar says a validator
+        # RETURNS problems rather than raising on a substituted value.
+        assert ReturnWindows.validate_params(
+            {**FOREIGN, "lookback": 4, "label_name": "$knobs.name"}
+        ) == []
+        for bad in (None, {}, True, 2.5, "no", 0, -3):
+            ReturnWindows.validate_params(
+                {**FOREIGN, "lookback": bad, "lag_prefix": "f", "label_name": "f0"}
+            )
+            ReturnWindows.validate_params(
+                {**FOREIGN, "lookback": 4, "lag_prefix": bad, "label_name": bad}
+            )
+        # A column NAME is a string, not an int: converting a five-thousand
+        # digit one would raise inside the validator (CPython caps int<->str
+        # at 4300 digits) where the bar is to RETURN problems.
+        assert ReturnWindows.validate_params(
+            {**FOREIGN, "lookback": 4, "lag_prefix": "f", "label_name": "9" * 5000}
+        ) == []
+
+    def test_a_huge_lookback_is_answered_without_building_the_names(self):
+        # O(1), not O(lookback): a validator that materialized every lag
+        # name would hang the plan on a document nobody would ever run.
+        problems = ReturnWindows.validate_params(
+            {**FOREIGN, "lookback": 10**9, "lag_prefix": "f", "label_name": "f999999"}
+        )
+        assert any("label_name" in p for p in problems), problems
+
+    def test_a_narrowed_subclass_is_not_refused_for_knobs_it_dropped(self):
+        # The pack's guard rule: a class that hardcodes its spellings
+        # dropped those knobs, so the cross-knob check has nothing to
+        # read and must stay silent rather than refuse the class.
+        class _Fixed(ReturnWindows):
+            _PARAMS = narrow_params(
+                ReturnWindows._PARAMS, "label_name", "lag_prefix"
+            )
+
+            def label_name(self):
+                return "y_next"
+
+            def lag_prefix(self):
+                return "ret_lag_"
+
+        assert _Fixed.validate_params({**FOREIGN, "lookback": 4}) == []
 
 
 class TestKeepMask:
