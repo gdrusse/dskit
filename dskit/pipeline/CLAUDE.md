@@ -86,10 +86,11 @@ on it without breaking its rulings.
   duplicate `features` used to fit and write a sidecar, then have the
   same document refuse its own artifact on the load-mode rerun. The
   screen's comparison is nan-equal (`_same`), so a member may mark an
-  absence the way the rest of the repo does. The role is UNSEARCHABLE
-  (`planner._UNSEARCHABLE_ROLES`): a trial override is never
-  plan-checked, so a space addressing `fit_split` would fit on the split
-  its objective scores. `fit_split` must name a split the document
+  absence the way the rest of the repo does. The family's BASE knobs are
+  UNSEARCHABLE (`planner.unsearchable_space_why`, ADR-0044): a trial
+  override is never plan-checked, so a space addressing `fit_split`
+  would fit on the split its objective scores. A member's own knob is
+  searchable — that is owner flow 2. `fit_split` must name a split the document
   actually CARVES, not merely one in the vocabulary — `fit_split: "cal"`
   under a splits section with no cal band refuses at plan, where it used
   to reach run and refuse naming the ROWS. And the fit rows arrive in
@@ -111,11 +112,9 @@ on it without breaking its rulings.
   signature is the family's and does not change. Two packs ship members:
   `sklearn-select` (any selector by import path — `get_support` is the
   whole requirement) and `torch-importance` (input-gradient sensitivity
-  over a wired `signal`). ADR-0042's owner flow 2 — a space over the
-  selector's OWN knobs — does not run: the unsearchable-role rule above
-  is keyed on the ROLE, and narrowing it to the base's three knobs is an
-  engine decision nobody has ruled on (pinned in
-  `tests/pipeline/test_selector.py`).
+  over a wired `signal`). ADR-0044 made a member's own knobs searchable,
+  so owner flow 2 (a space over `select.n` / `select.selector`) plans
+  and runs; the family's three leakage knobs still refuse.
 - **One name per shared vocabulary.** `node.class_ref(cls)` is the
   `module:QualName` an artifact sidecar RECORDS and load mode compares —
   three modules used to write that f-string out, and a divergence there

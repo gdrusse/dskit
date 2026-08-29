@@ -6,21 +6,19 @@ Refreshed by `/wrap`. Where things stand — read this first.
 
 # ▶ PICK UP HERE
 
-**State: C6 is on `ws/c6`, gates green, not yet pushed.** The 2026-08 closeout
-run is **22 of 24 cards done**. Two remain: **C5, D1**. D1 is unblocked.
+**State: C6 is on `main` (3ede479, not pushed). ADR-0044 + D1 are on
+`ws/adr-0044`.** Closeout is **23 of 24** once that branch merges. One card
+remains: **C5**.
 
-## The two remaining cards
+## The one remaining card
 
 | Card | What it delivers | Spec (already ACCEPTED) | Start now? |
 |---|---|---|---|
 | **C5** | Time-series architecture zoo — 10 archs behind a registry, `arch` becomes a swept param | **ADR-0041** | ✅ yes |
-| **D1** | Selection demo — select features, sweep two models, use the winner | plan §8, card D1 | ✅ yes (needs C6 merged) |
 
 C5 must not touch `libs/torch.py` (C6 drained it; ADR-0041 says the zoo is a
 NEW sibling `libs/torch_ts.py`). D1 adds `examples/pipeline/selection-demo.json`
-and moves the ledger to 18 documents. **ADR-0044** (proposed) is the owner's
-call: flow 2 of ADR-0042 cannot run until `fitted_transform` searchability is
-narrowed from per-role to per-knob.
+and moves the ledger to 18 documents. ADR-0044 is accepted: flow 2 plans.
 
 ## How to run one, exactly
 
@@ -78,7 +76,7 @@ for f in examples/pipeline/*.json children/intraday_poc/configs/run-*.json; do
       | grep -oE "[0-9a-f]{64}" | head -1
 done
 ```
-The ledger is **17 documents**. Every identity hash must be unmoved unless the card
+The ledger is **18 documents**. Every identity hash must be unmoved unless the card
 DECLARES the move, in which case record it in the intentional-move log
 (`docs/plans/2026-08-closeout.md` §9). **An engine card that moves any hash is an
 automatic fail.** Current expected values live in the §9 log; regenerate with the

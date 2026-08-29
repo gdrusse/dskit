@@ -93,7 +93,7 @@ from dskit.pipeline.document import (
 )
 from dskit.pipeline.env import load_env
 from dskit.pipeline.node import Node, NodeContext
-from dskit.pipeline.planner import _UNSEARCHABLE_ROLES
+from dskit.pipeline.planner import unsearchable_space_why
 from dskit.pipeline.planner import plan as plan_document
 from dskit.pipeline.runs import _escape_pipe
 
@@ -503,7 +503,7 @@ class _SearchSeam:
             # space; this is the runtime twin, because a custom search
             # kind can hand ctx.rerun any overrides it likes.
             role = self._plan.role_of(parts[0])
-            why = _UNSEARCHABLE_ROLES.get(role)
+            why = unsearchable_space_why(role, parts[1])
             if why is not None:
                 raise ValueError(
                     f"override {target!r} addresses node {parts[0]!r} of "

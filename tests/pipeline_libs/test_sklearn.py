@@ -19,7 +19,7 @@ import pytest
 
 from dskit.pipeline.base import ConfigError
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
-from dskit.pipeline.document import PipelineDocument
+from dskit.pipeline.document import PipelineDocument, load_document
 from dskit.pipeline.driver import run_document
 from dskit.pipeline.fitted import SIDECAR_NAME, FeatureSelector
 from dskit.pipeline.libs.sklearn import (
@@ -1163,6 +1163,74 @@ def test_the_flow_refuses_when_the_model_restates_the_candidates(tmp_path):
 
     assert result.state == "error" and result.exit_code != 0
     assert "carries no 'noise'" in (result.error or "")
+
+
+SELECTION_DEMO = os.path.join(
+    os.path.dirname(__file__), "..", "..", "examples", "pipeline",
+    "selection-demo.json",
+)
+
+
+class TestSelectionDemo:
+    """``examples/pipeline/selection-demo.json`` — D1, the cookbook.
+
+    The idiom is ``TestExampleDocument`` in ``test_optuna.py``: load,
+    hash, plan through the real planner, run through the real driver.
+    Two extra pins the card asked for: the winner consumed the selected
+    columns, and it beat the loser on the declared metric.
+    """
+
+    def test_loads_and_hashes_stably(self):
+        doc = load_document(SELECTION_DEMO)
+        assert doc.name == "selection-demo"
+        assert load_document(SELECTION_DEMO).hash == doc.hash
+
+    def test_plans_via_the_real_planner(self):
+        the_plan = plan(load_document(SELECTION_DEMO))
+        assert the_plan.role_of("select") == "fitted_transform"
+        assert the_plan.role_of("sweep") == "search"
+        assert ("sweep", "report") in the_plan.edges
+
+    def test_runs_end_to_end_and_the_winner_beat_the_loser(
+        self, tmp_path, monkeypatch
+    ):
+        pytest.importorskip("sklearn")
+        monkeypatch.chdir(tmp_path)
+        result = run_document(load_document(SELECTION_DEMO), asof=ASOF)
+        assert result.state == "ran" and result.exit_code == 0
+
+        selected = result.outputs["select"]["features"]
+        assert selected == ["mid"]
+        with open(result.outputs["model"]["artifact_path"] + ".json") as fh:
+            assert json.load(fh)["features"] == selected
+
+        sweep = result.outputs["sweep"]
+        scores = {t["overrides"]["model.estimator"]: t["score"]
+                  for t in sweep["trials"]}
+        winner = sweep["best_params"]["model.estimator"]
+        loser = next(name for name in scores if name != winner)
+        assert scores[winner] < scores[loser]
+        assert result.outputs["validate"]["metrics"]["loss"] == pytest.approx(
+            sweep["best_score"]
+        )
+
+    def test_flow_2_the_same_graph_with_a_selector_key_also_plans_and_runs(
+        self, tmp_path, monkeypatch
+    ):
+        """ADR-0044: a space over BOTH keys is owner flow 2."""
+        pytest.importorskip("sklearn")
+        obj = json.loads(pathlib.Path(SELECTION_DEMO).read_text())
+        obj["pipeline"]["sweep"]["params"]["space"][
+            "select.selector_params.threshold"
+        ] = [0.0, 1e-12]
+        obj["outputs"] = {"run_root": str(tmp_path)}
+        doc = PipelineDocument.from_obj(obj)
+        plan(doc)
+        monkeypatch.chdir(tmp_path)
+        result = run_document(doc, asof=ASOF)
+        assert result.state == "ran"
+        assert len(result.outputs["sweep"]["trials"]) == 4
+        assert result.outputs["select"]["features"] == ["mid"]
 
 
 # ---------------------------------------------------------------------------

@@ -290,7 +290,9 @@ no JSON block can hold, `estimator` for a wrapper selector and `score_func` for 
 univariate one, each a dotted path; ADR-0042 —
 so a search space over `model.estimator` IS a model sweep, with no per-model
 classes: `examples/pipeline/model-sweep.json` plus the pack docstring's
-estimator table; `lightgbm.LGBMRegressor` joins via the `lightgbm` extra, not
+estimator table; `examples/pipeline/selection-demo.json` is the selector
+cookbook — fit on train, then sweep two estimators that read
+`$select.features`; `lightgbm.LGBMRegressor` joins via the `lightgbm` extra, not
 a pack of its own);
 **torch** `torch-train`/`torch-predict` (DECLARED, ADR-0025: the document
 names the `nn.Module` class — no subclass, validated at plan time) +

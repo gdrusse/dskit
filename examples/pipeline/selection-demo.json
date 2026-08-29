@@ -1,0 +1,94 @@
+{
+  "name": "selection-demo",
+  "notes": "The worked selector cookbook (ADR-0042 / D1). One fitted selector on the train split, then a two-estimator sweep that consumes `$select.features` — owner flow 1. Flow 3 is this document with the selector's method treated as a stated choice rather than a given. Flow 2 (a space over the selector's OWN knobs AND `model.estimator`) is the same graph with one more space key; it plans because ADR-0044 narrowed the fitted-transform guard to the family's three leakage knobs. `noise` is constant by construction, so the variance threshold must drop it and the winner must never see it. Both candidates are deterministic (LinearRegression / Ridge): RandomForest is the doorway's other usual pair, but a mixed sweep cannot carry `seed`, and an unseeded forest would make 'the winner beat the loser' a flake. Run: python -m dskit.pipeline run examples/pipeline/selection-demo.json --asof 2026-01-01",
+  "pipeline": {
+    "dataset": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthEvents",
+      "params": { "n_events": 104, "n_instruments": 2, "seed": 4 },
+      "notes": "The model-sweep market, so the cut and the metric mean the same thing here as there. Swap the source; move the three split instants with it."
+    },
+    "labels": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthLabels",
+      "inputs": { "events": "$dataset.events" }
+    },
+    "noisy": {
+      "uses": "derive",
+      "inputs": { "records": "$dataset.events" },
+      "params": { "field": "noise", "cases": [{ "when": [], "value": 0.0 }] },
+      "notes": "A column with no variance. The selector's job is to drop it. Declaring it on the model instead of `$select.features` is the refusal the suite pins."
+    },
+    "select": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnSelect",
+      "inputs": { "rows": "$noisy.records" },
+      "params": {
+        "fit_split": "train",
+        "features": ["mid", "noise"],
+        "selector": "sklearn.feature_selection.VarianceThreshold",
+        "selector_params": { "threshold": 0.0 }
+      },
+      "notes": "Learns on the train split only — the family's rule, inherited. The surviving list is an artifact and an output, because no document can name it in advance."
+    },
+    "train_rows": {
+      "uses": "filter",
+      "inputs": { "records": "$select.rows" },
+      "params": {
+        "where": [
+          { "field": "asof_ms", "op": "<=", "value": "$splits.train_end_ms" }
+        ]
+      },
+      "notes": "SklearnFit fits exactly what is wired in. Without this cut the sweep would select in-sample. Same node, same reason as model-sweep.json."
+    },
+    "model": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnFit",
+      "mode": "train",
+      "inputs": { "rows": "$train_rows.records" },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "features": "$select.features",
+        "label": "settled_yes",
+        "predict_method": "predict"
+      },
+      "notes": "The base pass is Ridge so a reader can see the winner is not just the typed-in estimator. `features` is a reference, not a list: which columns survived is the fit's answer."
+    },
+    "validate": {
+      "uses": "validate",
+      "inputs": {
+        "records": "$dataset.events",
+        "signal": "$model.signal",
+        "outcomes": "$labels.outcomes"
+      },
+      "params": { "split": "val", "metric": "squared_error", "min_events": 5 },
+      "notes": "Val only. squared_error is the documented exception for unclipped regressor `predict` (see model-sweep.json); brier would refuse an out-of-[0,1] belief."
+    },
+    "sweep": {
+      "uses": "hpo-grid",
+      "params": {
+        "space": {
+          "model.estimator": [
+            "sklearn.linear_model.LinearRegression",
+            "sklearn.linear_model.Ridge"
+          ]
+        },
+        "objective": "$validate.metrics.loss",
+        "select": "min"
+      },
+      "notes": "Flow 1: selector fixed, space over the doorway. Flow 2 is this block with `select.selector` (or `select.selector_params.threshold`) added beside `model.estimator`."
+    },
+    "report": {
+      "uses": "dskit.pipeline.synthetic_nodes:SynthReport",
+      "inputs": {
+        "best_score": "$sweep.best_score",
+        "loss": "$validate.metrics.loss"
+      },
+      "notes": "Downstream of the search, so `loss` is the winner's val loss, not the base pass's."
+    }
+  },
+  "splits": {
+    "kind": "time",
+    "train_end_ms": 92620800000,
+    "val_end_ms": 93916800000,
+    "test_end_ms": 95299200000,
+    "notes": "Days 1072 / 1087 / 1103, the model-sweep cut. Test is reserved and unread."
+  },
+  "outputs": { "run_root": "" }
+}

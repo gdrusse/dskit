@@ -116,6 +116,35 @@ _UNSEARCHABLE_ROLES = {
 }
 
 
+def unsearchable_space_why(role, head_param):
+    """Why a space/override addressing ``head_param`` on ``role`` is refused.
+
+    ADR-0044: ``fitted_transform`` is unsearchable per-KNOB, not per-role.
+    The forbidden set is :attr:`FittedTransform._PARAMS`, not a restated
+    list — a fourth leakage knob on the family base must be refused here
+    without a planner edit.
+
+    Parameters
+    ----------
+    role : str or None
+        The addressed node's role.
+    head_param : str
+        The first segment after the node key (``fit_split`` in
+        ``select.fit_split.x``).
+
+    Returns
+    -------
+    str or None
+        The refusal reason, or ``None`` when the key is searchable.
+    """
+    why = _UNSEARCHABLE_ROLES.get(role)
+    if why is None:
+        return None
+    if role == "fitted_transform" and head_param not in FittedTransform._PARAMS:
+        return None
+    return why
+
+
 def _substitute_prev_defaults(obj):
     """Copy ``obj``, replacing every ``$prev`` carry with its ``default``.
 
@@ -796,11 +825,8 @@ def _search_errors(key, spec, specs, roles, edges):
                         "create them"
                     )
                 role = roles.get(head)
-                why = _UNSEARCHABLE_ROLES.get(role)
-                if why is not None and not (
-                    role == "fitted_transform"
-                    and parts[1] not in FittedTransform._PARAMS
-                ):
+                why = unsearchable_space_why(role, parts[1])
+                if why is not None:
                     problems.append(
                         f"pipeline.{key}: search.space may not address "
                         f"{target!r} — node {head!r} declares role "

@@ -81,6 +81,9 @@ PINNED_EXAMPLE_HASHES = {
     "sb3-train.json": (
         "149bd150b5691ef941e65e6468656972cf0f025051147c1364e7def137adc961"
     ),
+    "selection-demo.json": (
+        "befb162c1572267f6e2836278106f501ae1af39e1e80d380382bba672f4dda0a"
+    ),
     "sklearn-fit.json": (
         "7355bfce12bf2128719f7b83cafec33c064f73d1cf28aca1d03699c2e4b0887e"
     ),

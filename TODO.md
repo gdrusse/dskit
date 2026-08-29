@@ -23,9 +23,10 @@ Any hash that moves means the document grammar changed — revert and rethink,
 UNLESS the change is a declared identity move (see the intentional-move log in
 `docs/plans/2026-08-closeout.md` §9).
 
-**Baseline refreshed 2026-08-28 after the closeout run.** The ledger is now
-**17 documents** — it grew by `examples/pipeline/optuna-continuous.json` (E4),
-`model-sweep.json` (E5) and `foreach-fanout.json` (C3). Engine examples did NOT
+**Baseline refreshed 2026-08-29 after D1.** The ledger is now
+**18 documents** — it grew by `examples/pipeline/optuna-continuous.json` (E4),
+`model-sweep.json` (E5), `foreach-fanout.json` (C3) and
+`selection-demo.json` (D1). Engine examples did NOT
 move: `examples/pipeline/torch-declared.json` is still `4039ddf167fa65db…`.
 The child documents moved intentionally, twice: `run-train.json`
 `187658f8b58b91a1…` → `85fff271bfdd05ec…` (A1: monitor/device/optimizer_params
