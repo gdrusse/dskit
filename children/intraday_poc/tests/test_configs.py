@@ -8,6 +8,7 @@ pyomo, or alpaca-py installed — the toolkit's core rule.
 
 import json
 import os
+from datetime import datetime, timezone
 
 from dskit.assets import load_model
 from dskit.onboarding import check_config, load_suite
@@ -242,6 +243,50 @@ def test_the_search_scores_on_rows_it_never_trained_on():
     assert raw["pipeline"]["select"]["params"]["split"] == "val"
 
 
+def test_the_fits_history_bound_is_quoted_wherever_it_is_documented():
+    """The one date the prose names must be the one the config cuts on.
+
+    The fitted band's start is a RAW epoch-ms literal, and it is the
+    only source of it: the splits grammar has no ``train_start_ms``, so
+    nothing derives the date, and two documents restate it in words —
+    the node's own notes ("over the window [2026-01-01, train_end_ms]")
+    and README's "What ships" ("spans ``[2026-01-01,
+    splits.train_end_ms]``"). Its sibling test asserts only that a start
+    bound EXISTS and precedes the train cut, which is deliberate — the
+    bound is meant to MOVE, and both the node's notes ("should be
+    deleted the day that pass is batched") and the splits' notes ("move
+    all four forward together") invite the edit.
+
+    That is exactly the shape CLAUDE.md calls a scheduled bug: widen the
+    history to 2025-01-01 and every assertion still passes while the
+    README goes on telling the next reader the shipped artifact saw a
+    year of history it never touched — and the artifact's blind spot is
+    the one number the child's "what to know before trusting the
+    numbers" exists to keep honest. So the prose is pinned to the
+    literal, the way ``live_lookback_minutes`` already is.
+    """
+    raw = _raw("run-train.json")
+    rows = raw["foreach"]["pipeline"]["rows"]
+    start = rows["params"]["where"][1]["value"]
+    assert isinstance(start, int) and not isinstance(start, bool), (
+        "the fit's start is an epoch-ms literal, not a $splits reference — "
+        "if that changed, this pin must follow it to its new source"
+    )
+    spelled = datetime.fromtimestamp(start / 1000, timezone.utc).date()
+    spelled = spelled.isoformat()
+
+    with open(os.path.join(CHILD_ROOT, "README.md"), encoding="utf-8") as fh:
+        readme = fh.read()
+    for where, prose in (("the rows node's notes", rows["notes"]),
+                         ("README.md", readme)):
+        assert spelled in prose, (
+            f"{where} must quote the date the fit actually starts on "
+            f"({spelled}); a bound that moved and prose that did not is "
+            "the child telling its reader the artifact saw history it "
+            "never touched"
+        )
+
+
 def test_every_trial_selects_its_checkpoint_on_rows_of_its_own():
     """Three disjoint bands: fit, monitor, score. None may overlap.
 
@@ -298,10 +343,11 @@ def test_the_two_documents_solve_the_same_selection_program():
     ``run-train.json``'s search scores every trial with it, and the live
     loop solves it a minute at a time — so the search's objective is
     only comparable to the backtest's number while all three agree about
-    the solver and the split they read. The loop reads its pair off the
-    run document (``live.py``'s ``selector_knobs``), which leaves these
-    two declarations as the copies, and CLAUDE.md's rule for a value
-    that must appear twice is to pin the agreement.
+    the solver and the split they read. The loop holds no copy at all:
+    it BUILDS the run's own selector node (``live.py``'s
+    ``selector_node``) and runs it, which leaves these two declarations
+    as the copies, and CLAUDE.md's rule for a value that must appear
+    twice is to pin the agreement.
     """
     train = _raw("run-train.json")["pipeline"]["select"]
     backtest = _raw("run-backtest.json")["pipeline"]["select"]

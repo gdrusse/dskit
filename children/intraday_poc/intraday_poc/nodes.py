@@ -530,10 +530,13 @@ def build_select_model(per_t: dict):
     """Build the PoC's one constraint as a pyomo ConcreteModel.
 
     For each timestamp pick EXACTLY ONE of its candidate symbols,
-    maximizing the summed predicted return. Shared by
-    :class:`SelectOne` (the backtest) and ``live.py`` (the forward loop,
-    one timestamp at a time) so both sides decide with the SAME program.
-    Imports pyomo — call only from run-path code.
+    maximizing the summed predicted return. Built only by
+    :class:`SelectOne`, which is the only thing that solves it: the
+    backtest scores its folds through that node, the search grades its
+    trials through it, and ``live.py`` RUNS the run's own instance of it
+    one timestamp at a time rather than assembling this model itself —
+    so the solver, its options and the doorway's refusals reach all
+    three from one place. Imports pyomo — call only from run-path code.
 
     Parameters
     ----------

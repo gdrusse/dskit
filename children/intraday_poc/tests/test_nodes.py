@@ -26,7 +26,11 @@ from dskit.onboarding.base import AssetError
 from dskit.onboarding.codec import open_text_writer
 from dskit.pipeline import OutputsConfig, run_document
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
-from dskit.pipeline.document import PipelineDocument, load_document
+from dskit.pipeline.document import (
+    FOREACH_SEP,
+    PipelineDocument,
+    load_document,
+)
 from dskit.pipeline.node import NodeContext
 
 from intraday_poc import connectors, nodes
@@ -1389,6 +1393,56 @@ def test_a_fanned_trainer_answers_only_for_the_symbol_it_was_built_for():
         artifact_dirs(ambiguous, "/runs/r1", ["B"], {})
 
 
+def test_which_instance_belongs_to_which_key_is_read_not_recomposed():
+    """The fan-out's naming is the ENGINE's answer, asked once.
+
+    ``PipelineDocument`` derives a PUBLIC ``foreach_groups`` — template
+    key -> instance keys, zipped against ``foreach.keys`` in that order
+    inside ``_expand`` — so the pairing already exists, sourced from the
+    same statement that built the names. Composing them again here
+    (``f"{template}__{slug}"``) is the engine's PRIVATE ``_instance_key``
+    written a second time with nothing pinning the pair, which is the
+    duplication class root CLAUDE.md calls a scheduled bug.
+
+    The scheduled bug, concretely: ``_instance_key`` is private exactly
+    so the engine may change how a name is assembled. Let it stop
+    slugging (or add a prefix, or join differently) and the child's
+    rebuilt names match nothing in ``expanded``; every trainer then falls
+    through to the SUFFIX branch this file's neighbour documents as
+    unsafe, ``qhat__brk_b`` answers for ``B`` again, both symbols read
+    ONE artifact, and the pair regime-check cannot see it because it is
+    comparing an artifact with itself. No ordinary assertion catches
+    that, because every test here would build its expectation the same
+    rebuilt way — so the engine's composition is REBOUND instead, and
+    the loop has to follow it.
+    """
+    from intraday_poc.live import artifact_dirs
+
+    document = _fanned_document()
+    assert artifact_dirs(document, "/runs/r1", ["AAPL"], {})["AAPL"] == \
+        os.path.join("/runs/r1", "artifacts", "qhat__aapl")
+
+    # The engine, hypothetically, stops lowercasing an instance name.
+    # Nothing else about the document changes — and a reader of
+    # `foreach_groups` needs no telling, while a rebuilder keeps its own
+    # stale spelling and matches none of the keys that ran.
+    regrouped = {template: tuple(f"{template}{FOREACH_SEP}{key}"
+                                 for key in document.foreach.keys)
+                 for template in document.foreach_groups}
+    renames = {old: new
+               for template, names in document.foreach_groups.items()
+               for old, new in zip(names, regrouped[template])}
+    object.__setattr__(document, "expanded", {
+        renames.get(key, key): spec
+        for key, spec in document.expanded.items()
+    })
+    object.__setattr__(document, "foreach_groups", regrouped)
+
+    dirs = artifact_dirs(document, "/runs/r1", ["AAPL", "MSFT"], {})
+    assert dirs["AAPL"] == os.path.join("/runs/r1", "artifacts", "qhat__AAPL")
+    assert dirs["MSFT"] == os.path.join("/runs/r1", "artifacts", "qhat__MSFT")
+
+
 def test_an_artifact_override_for_an_unserved_symbol_is_refused():
     """A typo in ``--artifact`` is an error, not a silent default.
 
@@ -1481,17 +1535,25 @@ def test_the_loop_solves_with_the_solver_the_run_declared():
     a literal here is the third place, with nothing pinning any pair.
     The document the loop already loads declares it.
 
+    What is CONSTRUCTED is the run's own selector node, the way
+    ``window_node`` constructs the run's own window node: the params go
+    through the class's knob gate at startup, and everything the pack's
+    doorway does with them — resolving the solver, refusing an unknown
+    or unavailable one BY NAME, applying ``solver_options`` through the
+    ``_solver_options`` seam a subclass may override — happens in the
+    pack, once, rather than in a copy here that can drift from it.
+
     The shipped documents declare exactly the pack's default
     (``appsi_highs`` with no options), so asserting only THAT would pass
-    against a loop that returned ``(DEFAULT_SOLVER, {})`` and never read
-    a document at all — the pin would not bite the divergence
-    :func:`~intraday_poc.live.selector_knobs` exists to prevent. A
-    FOREIGN declaration is therefore read too: a different name and
-    non-empty options, so both halves have to come off the node.
+    against a loop that never read a document at all — the pin would not
+    bite the divergence :func:`~intraday_poc.live.selector_node` exists
+    to prevent. A FOREIGN declaration is therefore read too: a different
+    name and non-empty options, so both halves have to come off the node.
     """
     from dskit.pipeline.libs.pyomo import DEFAULT_SOLVER
 
-    from intraday_poc.live import selector_knobs
+    from intraday_poc.live import selector_node
+    from intraday_poc.nodes import SelectOne
 
     name, options = FOREIGN_SELECTOR
     assert name != DEFAULT_SOLVER and options, (
@@ -1500,31 +1562,91 @@ def test_the_loop_solves_with_the_solver_the_run_declared():
     )
 
     document = load_document(os.path.join(CONFIGS, "run-train.json"))
-    assert selector_knobs(document) == (DEFAULT_SOLVER, {})
+    shipped = selector_node(document)
+    assert isinstance(shipped, SelectOne), (
+        "the live minute must be solved by the run's own selector NODE — "
+        "a second solve written here re-derives what the pack's doorway "
+        "already owns"
+    )
+    assert shipped.params["solver"] == DEFAULT_SOLVER
+    assert shipped.params["solver_options"] == {}
 
     obj = _serving_obj(("qhat_aapl",))
     obj["pipeline"]["select"]["params"].update(solver=name,
                                                solver_options=dict(options))
-    assert selector_knobs(PipelineDocument.from_obj(obj)) == (name, options), (
+    foreign = selector_node(PipelineDocument.from_obj(obj))
+    assert (foreign.params["solver"], foreign.params["solver_options"]) == \
+        (name, options), (
         "the solver and its options are the RUN's declaration; a literal "
         "here would ignore a gap or limit option added to the document"
     )
 
     with pytest.raises(SystemExit, match="selector"):
-        selector_knobs(_fanned_document())
+        selector_node(_fanned_document())
+
+
+@pytest.mark.skipif(not HAVE_SOLVER, reason="pyomo/highspy not installed")
+def test_a_solver_this_machine_lacks_refuses_before_the_first_order():
+    """An unusable solver stops the loop at STARTUP, never mid-session.
+
+    The pack's doorway refuses an unregistered name and an unavailable
+    backend BY NAME, before it solves anything
+    (``PyomoSolve._resolve_solver``). A loop that called
+    ``SolverFactory`` itself dropped both refusals: ``python -m
+    intraday_poc.live`` against a document naming ``glpk`` on a machine
+    with no ``glpsol`` started fine, printed "models restored", opened
+    the paper trading client, and then died with an uncaught pyomo
+    ``ApplicationError`` on the first minute that had coverage — leaving
+    whatever position the previous flip had opened, unmanaged.
+
+    So the preflight is the pin: one throwaway solve of the served
+    universe before any order can exist, and the pack's refusal
+    translated into this file's own currency (``SystemExit``), naming
+    the solver so an operator knows which declaration to change. ``glpk``
+    is the stand-in because :data:`FOREIGN_SELECTOR` already names it and
+    this environment installs HiGHS, not GLPK.
+    """
+    from intraday_poc.live import preflight_selector, selector_node
+
+    name, _options = FOREIGN_SELECTOR
+    obj = _serving_obj(("qhat_aapl",))
+    obj["pipeline"]["select"]["params"]["solver"] = name
+    selector = selector_node(PipelineDocument.from_obj(obj))
+    ctx = NodeContext(name="serving", asof="2026-08-28", run_dir="/runs/r1")
+
+    with pytest.raises(SystemExit, match=name) as refusal:
+        preflight_selector(selector, ctx, ["AAPL", "MSFT"])
+    assert "backend" in str(refusal.value), (
+        "the refusal must say what to DO about it — a solver name with no "
+        "remedy is the ApplicationError with better spelling"
+    )
+
+    # ...and the shipped declaration passes the very same gate, or the
+    # preflight would refuse every honest startup.
+    shipped = selector_node(load_document(os.path.join(CONFIGS,
+                                                       "run-train.json")))
+    preflight_selector(shipped, ctx, ["AAPL", "MSFT"])
 
 
 @pytest.mark.skipif(not HAVE_SOLVER, reason="pyomo/highspy not installed")
 def test_the_declared_solver_options_reach_the_solver(monkeypatch):
     """Reading the options is half the job; APPLYING them is the other.
 
-    ``selector_knobs`` can return a full option map and
-    :func:`~intraday_poc.live.solve_pick` still drop it on the floor —
-    the loop would then solve every live minute under the solver's own
-    defaults while the document, the backtest and the search all ran
-    with a gap or a time limit. Nothing else in this suite ever hands
-    the loop a NON-EMPTY option map, so the application loop would be
-    dead code that looks covered.
+    ``selector_node`` can carry a full option map and the live minute
+    still drop it on the floor — the loop would then solve every minute
+    under the solver's own defaults while the document, the backtest and
+    the search all ran with a gap or a time limit. Nothing else in this
+    suite ever hands the loop a NON-EMPTY option map, so the application
+    step would be dead code that looks covered.
+
+    The options must arrive by the pack's OWN route
+    (``PyomoSolve._solver_options``), not by a second application here:
+    that method is the documented override point for a program pinning
+    determinism or tolerances (``BudgetedSelect`` is the worked example),
+    so a copy in the loop would send the document's options to the live
+    minute and a subclass's pinned ones nowhere. Overriding it on a
+    throwaway subclass is what proves the route: the injected option can
+    only appear if the loop solved through the doorway.
 
     Solved against a stand-in factory rather than a real solver: what is
     pinned is that the requested NAME and the declared options land on
@@ -1545,6 +1667,9 @@ def test_the_declared_solver_options_reach_the_solver(monkeypatch):
             self.requested = requested
             self.options = {}
 
+        def available(self, exception_flag=False):
+            return True
+
         def solve(self, model):
             seen["name"] = self.requested
             seen["options"] = dict(self.options)
@@ -1552,11 +1677,23 @@ def test_the_declared_solver_options_reach_the_solver(monkeypatch):
             for index in model.x:
                 model.x[index].value = 1.0 if index[1] == best else 0.0
 
+    class _Pinned(SelectOne):
+        """A selector whose program pins one option of its own."""
+
+        def _solver_options(self):
+            return {"pinned": 1, **super()._solver_options()}
+
     monkeypatch.setattr(pyo, "SolverFactory", _Recorder)
-    assert solve_pick(preds, name, dict(options)) == "AAPL"
-    assert seen == {"name": name, "options": dict(options)}, (
+    ctx = NodeContext(name="serving", asof="2026-08-28", run_dir="/runs/r1")
+    selector = _Pinned("select", {"solver": name,
+                                  "solver_options": dict(options),
+                                  "split": "val"})
+    assert solve_pick(selector, ctx, preds) == "AAPL"
+    assert seen == {"name": name,
+                    "options": {"pinned": 1, **options}}, (
         "the run's solver name and its solver_options must reach the "
-        "solver the live minute is decided by"
+        "solver the live minute is decided by, through the seam a "
+        "subclass overrides to pin its own"
     )
 
 
@@ -1842,7 +1979,7 @@ def test_train_document_to_live_chain_end_to_end(tmp_path):
         load_run_document,
         predict,
         restore_model,
-        selector_knobs,
+        selector_node,
         solve_pick,
         window_node,
     )
@@ -1903,9 +2040,13 @@ def test_train_document_to_live_chain_end_to_end(tmp_path):
         assert pred is not None and math.isfinite(pred)
         preds[symbol] = pred
 
-    # And the minute is solved by the program the RUN declared, read off
-    # the same document — not by a solver name spelled again here.
-    winner = solve_pick(preds, *selector_knobs(written))
+    # And the minute is solved by the run's OWN selector node, built
+    # from the same document — not by a program and a solver name
+    # spelled again here.
+    selector = selector_node(written)
+    ctx = NodeContext(name=written.name, asof="2026-01-06",
+                      run_dir=result.run_dir)
+    winner = solve_pick(selector, ctx, preds)
     assert winner == max(preds, key=preds.get)
 
 

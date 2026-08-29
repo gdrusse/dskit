@@ -173,13 +173,27 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy/mlflow (run-path)
   (`key_env`/`secret_env`) among them. The bar interval is one constant
   (`connectors.BAR_INTERVAL`) both fetch paths build from.
   Each symbol's artifact is `artifacts/<the run's own trainer key>` — a
-  fanned trainer answers for the ONE `foreach` key it was built from, a
+  fanned trainer answers for the ONE `foreach` key it was built from
+  (READ off the document's public `foreach_groups`, never recomposed
+  from the template and the slug: that spelling is the engine's private
+  `_instance_key`, and a second copy of it falls back to the suffix rule
+  the moment the engine changes how a name is assembled), a
   hand-declared one for the key ending in that symbol's slug; a symbol
   the run trained no model for is refused, naming the trainers it DID
   write.
   `--artifact SYMBOL=PATH` serves a directory this run did not write —
   and an override for a symbol the config does not declare is refused,
   not dropped.
+- **The live minute is solved by the run's OWN selector node**, built
+  from the document the way `window_node` builds the window node and
+  then RUN (`selector_node` / `solve_pick`) — never a `SolverFactory`
+  call written here. The pack's doorway owns solver resolution, its two
+  refusals (unregistered name, missing backend) and the
+  `_solver_options` seam a subclass overrides to pin determinism; a
+  second solve in `live.py` drops all three, and the difference only
+  shows on a machine missing the backend, mid-session, with a position
+  open. `preflight_selector` solves one throwaway minute before the
+  trading client is touched, so that machine refuses at STARTUP.
 - **Credentials: one rule, two sources.** Both sides take the env-var
   NAMES from the source config and both refuse a var that is missing OR
   empty, by name, through the ONE shared

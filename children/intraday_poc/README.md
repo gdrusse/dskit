@@ -161,6 +161,14 @@ instances, so their node keys carry the fan-out's double underscore
 rather than by any convention of its own. The flag remains the hatch for
 serving a directory this run did not write.
 
+The minute is decided by the run's own `select` node, rebuilt from the
+document and run one timestamp wide — so the live pick, the backtest's
+folds and the search's trials are solved by one program, under one
+solver, with one set of options. The loop solves a throwaway minute
+before it touches the trading client: a solver the document names and
+this machine lacks is then a refusal you read at startup, not an
+exception on top of an open position.
+
 The fit **spans `[2026-01-01, splits.train_end_ms]`** rather than every
 published bar, for two different reasons that both belong in the open:
 the **start** is a memory ceiling (the engine's final-loss pass is one

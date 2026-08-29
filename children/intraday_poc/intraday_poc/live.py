@@ -17,9 +17,12 @@ Run-path only (torch, pyomo, alpaca-py) — never imported by
    the module class refused by name against the one the RUN declared
    (the pack's own load discipline), and the pair refused outright when
    the two artifacts were built from different ``module_params``;
-4. decide with the SAME pyomo program the backtest scores
-   (:func:`intraday_poc.nodes.build_select_model`, one timestamp),
-   under the solver the run's own selector node declares;
+4. decide by RUNNING the run's own selector node
+   (:class:`intraday_poc.nodes.SelectOne`, rebuilt from the document,
+   one timestamp wide) — not a second solve written here, so the
+   solver, its options and the pack's refusals in front of them are the
+   ones the backtest and the search decided under, proven solvable
+   before the first order rather than at the first minute;
 5. flip the paper position when the pick changes: flatten the loser,
    market-buy the winner (TIF ``day``), through the paper endpoint.
 
@@ -93,16 +96,17 @@ from dskit.pipeline.base import (
     import_ref,
     is_class_ref,
 )
-from dskit.pipeline.document import FOREACH_SEP, foreach_slug, load_document
+from dskit.pipeline.document import foreach_slug, load_document
 from dskit.pipeline.env import load_env
 from dskit.pipeline.libs.pyomo import DEFAULT_SOLVER
+from dskit.pipeline.node import NodeContext
 
 from .connectors import (
     AlpacaBarsConnector,
     bar_timeframe,
     resolve_credentials,
 )
-from .nodes import NODE_KINDS, SelectOne, WindowRows, build_select_model
+from .nodes import NODE_KINDS, SelectOne, WindowRows
 
 __all__ = [
     "LIVE_FEED",
@@ -115,8 +119,9 @@ __all__ = [
     "main",
     "parse_artifact_overrides",
     "predict",
+    "preflight_selector",
     "restore_model",
-    "selector_knobs",
+    "selector_node",
     "solve_pick",
     "source_knobs",
     "window_knobs",
@@ -139,6 +144,13 @@ _WINDOW_KIND = next(name for name, cls in NODE_KINDS.items()
 #: The selector kind's name, read the same way for the same reason.
 _SELECT_KIND = next(name for name, cls in NODE_KINDS.items()
                     if cls is SelectOne)
+
+#: The one timestamp a live solve carries. The selection program is
+#: per-timestamp and a forward minute has exactly one, so its LABEL is
+#: bookkeeping the picks are read back by — never a time. Which minute
+#: it was is stamped on the ``decisions.jsonl`` line instead, where the
+#: rest of the forward record lives.
+_LIVE_T = 0
 
 
 def credentials(knobs):
@@ -388,16 +400,23 @@ def declared_module(document):
     return declared.pop()
 
 
-def selector_knobs(document):
-    """Return the solver the RUN's selector program was solved with.
+def selector_node(document):
+    """Rebuild the selector node the run scored with.
 
-    The loop solves the same one-per-minute program the run scored with
-    (:func:`~intraday_poc.nodes.build_select_model`), so the solver name
-    and its options are the run's declaration, read here rather than
-    restated: written as a literal in this file they would be a third
-    copy of what both documents' ``select`` nodes already say, with
-    nothing pinning any pair, and a gap or limit option added to the
-    document would silently not apply to live decisions.
+    The same move :func:`window_node` makes, for the other half of the
+    decision: the node is CONSTRUCTED from the document's own params, so
+    the program, the solver and its options are the run's — not a
+    second implementation of them here. Everything the pack's doorway
+    owns then happens in the pack, once: it refuses an unregistered or
+    unavailable solver BY NAME before solving anything, and it applies
+    ``solver_options`` through the ``_solver_options`` seam a subclass
+    overrides to pin its own determinism or tolerances. A
+    ``SolverFactory`` call written in this file drops all three, and the
+    difference only shows on a machine missing the backend — mid-session,
+    with a position open.
+
+    Construction also validates, so a selector this loop cannot serve
+    refuses at startup rather than at the first minute with coverage.
 
     Parameters
     ----------
@@ -406,27 +425,68 @@ def selector_knobs(document):
 
     Returns
     -------
-    tuple of (str, dict)
-        The solver name and its options, both as declared.
+    intraday_poc.nodes.SelectOne
+        The node, constructed and therefore validated.
 
     Raises
     ------
     SystemExit
         When the document declares no selector node, or more than one —
-        there would be no single declaration to serve under.
+        there would be no single declaration to serve under — or when
+        the declared params do not validate.
     """
-    selectors = [spec for spec in document.expanded.values()
-                 if _is_select(spec.uses)]
+    selectors = {key: spec for key, spec in document.expanded.items()
+                 if _is_select(spec.uses)}
     if len(selectors) != 1:
         raise SystemExit(
             f"the run's document declares {len(selectors)} selector "
             f"({_SELECT_KIND}) nodes — this loop solves the program the run "
-            "scored with, so it reads that node's solver, and one run may "
-            "only have declared it once"
+            "scored with, so it builds that node, and one run may only have "
+            "declared it once"
         )
-    params = selectors[0].params
-    return params.get("solver", DEFAULT_SOLVER), dict(
-        params.get("solver_options") or {})
+    key, spec = next(iter(selectors.items()))
+    try:
+        return SelectOne(key, spec.params)
+    except ConfigError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def preflight_selector(selector, ctx, symbols):
+    """Solve one throwaway minute, so a bad solver refuses at STARTUP.
+
+    The pack resolves a solver on the run path — the installed pyomo is
+    the only thing that knows whether a name is registered and its
+    backend present — so a document naming a solver this machine lacks
+    can only be caught by trying. Trying HERE — before the credentials
+    are read, before the trading client exists — is the difference
+    between a refusal an operator reads at startup and an exception
+    thrown at the first minute with coverage, on top of whatever
+    position the previous flip opened.
+
+    Parameters
+    ----------
+    selector : intraday_poc.nodes.SelectOne
+        The run's selector node, from :func:`selector_node`.
+    ctx : dskit.pipeline.node.NodeContext
+        The frame nodes run under, as :func:`main` builds it.
+    symbols : sequence of str
+        The served universe — solved over as a whole, so the check
+        covers the program's real width, not a one-symbol corner.
+
+    Raises
+    ------
+    SystemExit
+        When the declared solver is unknown to this pyomo or its
+        backend is not installed, naming the solver and the remedy.
+    """
+    try:
+        solve_pick(selector, ctx, {symbol: 0.0 for symbol in symbols})
+    except ValueError as exc:
+        raise SystemExit(
+            f"the run's selector cannot solve on this machine: {exc} — "
+            "install that solver's backend, or serve a run whose select "
+            "node names a solver this machine has"
+        ) from exc
 
 
 def source_knobs(path):
@@ -520,14 +580,20 @@ def _trainer_keys(document):
 def _fanned_owner(document):
     """Instance node key -> the ``foreach`` key it was BUILT from.
 
-    The fan-out's naming rule is the engine's, applied forward here
-    rather than parsed backwards: every instance is
-    ``<template>__<slug>`` (:data:`~dskit.pipeline.document.FOREACH_SEP`
-    and :func:`~dskit.pipeline.document.foreach_slug`), so building the
-    names from ``foreach.keys`` gives an EXACT map where reading them
-    back cannot — ``qhat__brk_b`` is one name, and no rule reading it
-    alone can tell the template ``qhat`` + key ``BRK.B`` from a template
-    ``qhat__brk`` + key ``B``.
+    READ from the engine, never recomposed: ``foreach_groups`` is the
+    document's own derived ``template key -> instance keys`` map, built
+    inside the expansion by zipping those names against ``foreach.keys``
+    in that order, so the same zip here recovers the pairing from the
+    single statement that created it. Spelling the instance names again
+    (``f"{template}__{slug}"``) would be the engine's private
+    ``_instance_key`` written twice with nothing pinning the pair —
+    and the day the engine assembles a name differently, this map would
+    match nothing that ran and every trainer would fall back to
+    :func:`_trainer_key`'s suffix branch, silently.
+
+    An exact map is what the fallback cannot be: ``qhat__brk_b`` is one
+    name, and no rule reading it alone can tell the template ``qhat`` +
+    key ``BRK.B`` from a template ``qhat__brk`` + key ``B``.
 
     Empty for a document with no fan-out, which is the whole answer for
     one: nothing there was generated, so nothing there has an owner.
@@ -535,8 +601,9 @@ def _fanned_owner(document):
     fan = document.foreach
     if fan is None:
         return {}
-    return {f"{template}{FOREACH_SEP}{foreach_slug(key)}": key
-            for key in fan.keys for template in fan.pipeline}
+    return {name: key
+            for names in document.foreach_groups.values()
+            for name, key in zip(names, fan.keys)}
 
 
 def _trainer_key(document, symbol, trainers):
@@ -868,23 +935,28 @@ def predict(module, features, row) -> float | None:
     return float(out.reshape(-1)[0])
 
 
-def solve_pick(preds, solver_name, solver_options):
-    """Pick one symbol with the program the backtest solves.
+def solve_pick(selector, ctx, preds):
+    """Pick one symbol by RUNNING the run's own selector node.
 
-    The solver is a PARAMETER, never a literal here: it is the run's own
-    declaration (:func:`selector_knobs`), so the minute-by-minute
-    decision is solved by the program that scored the backtest and the
-    search.
+    Not "the same program under the same solver" — literally the same
+    node, one timestamp wide (:func:`selector_node`). The minute is
+    therefore decided by the object the backtest scored its folds with
+    and the search graded its trials with, so nothing about the decision
+    can drift between the three: not the program, not the solver, not
+    the options, not the pack refusals in front of them.
+
+    ``labeled`` is empty because a forward minute has no outcome yet —
+    the node's ``realized`` field comes back ``None``, and the loop's
+    ``decisions.jsonl`` is where the forward record lives instead.
 
     Parameters
     ----------
+    selector : intraday_poc.nodes.SelectOne
+        The run's selector node, from :func:`selector_node`.
+    ctx : dskit.pipeline.node.NodeContext
+        The frame nodes run under, as :func:`main` builds it.
     preds : dict
         Symbol -> predicted next-bar return; must be non-empty.
-    solver_name : str
-        The solver the run's selector node declared.
-    solver_options : dict
-        That node's ``solver_options``, applied the way the pack applies
-        them — onto the solver's own option map.
 
     Returns
     -------
@@ -893,22 +965,21 @@ def solve_pick(preds, solver_name, solver_options):
 
     Raises
     ------
+    ValueError
+        From the pack, when the declared solver is unknown to this
+        pyomo or its backend is missing — :func:`preflight_selector`
+        turns that into a startup refusal.
     RuntimeError
-        If the solver selects nothing, which a one-per-timestamp
+        If the program selects nothing, which a one-per-timestamp
         equality constraint makes impossible.
     """
-    import pyomo.environ as pyo
-
-    model = build_select_model({0: preds})
-    solver = pyo.SolverFactory(solver_name)
-    for option, value in solver_options.items():
-        solver.options[option] = value
-    solver.solve(model)
-    for s in sorted(preds):
-        if pyo.value(model.x[0, s]) > 0.5:
-            return s
-    raise RuntimeError("solver returned no selection — should be impossible "
-                       "with a non-empty prediction set")
+    forecasts = [{"symbol": symbol, "asof_ms": _LIVE_T, "pred": pred}
+                 for symbol, pred in sorted(preds.items())]
+    picks = selector.run(ctx, {"forecasts": forecasts, "labeled": []})["picks"]
+    if not picks:
+        raise RuntimeError("the selection program returned no pick — should "
+                           "be impossible with a non-empty prediction set")
+    return picks[0]["symbol"]
 
 
 def bar_series(bars, price_field):
@@ -1110,9 +1181,22 @@ def main(argv=None) -> int:
     # them — off the node, through its accessors, never a copy here.
     price_field, max_gap_minutes = window_knobs(document)
     module_ref = declared_module(document)
-    solver_name, solver_options = selector_knobs(document)
+    selector = selector_node(document)
+    # The frame a node runs under. The selection program reads nothing
+    # off it, but a served node is a node: handing it a real context
+    # costs one line and does not bet on what the pack ignores today.
+    ctx = NodeContext(
+        name=document.name,
+        asof=dt.datetime.now(dt.timezone.utc).date().isoformat(),
+        run_dir=args.run_dir,
+    )
     knobs = source_knobs(args.source_config)
     symbols, adjustment = knobs["symbols"], knobs["adjustment"]
+    # As early as the universe is known: prove the run's own selector can
+    # actually solve here. Its solver only resolves against the installed
+    # pyomo, so an absent backend is either a refusal before the trading
+    # client exists, or an exception on top of an open position.
+    preflight_selector(selector, ctx, symbols)
     key, secret = credentials(knobs)
 
     from alpaca.trading.client import TradingClient
@@ -1135,7 +1219,7 @@ def main(argv=None) -> int:
     print(f"models restored for {list(signals)} ({module_ref}, lookback "
           f"{lookback}, {price_field} bars, {max_gap_minutes:g}-minute gap "
           f"bound, adjustment {adjustment}, feed {LIVE_FEED}, solver "
-          f"{solver_name})")
+          f"{selector.params.get('solver', DEFAULT_SOLVER)})")
 
     log_path = os.path.join(args.log_dir, "decisions.jsonl")
     while True:
@@ -1166,7 +1250,7 @@ def main(argv=None) -> int:
             if not preds:
                 record["action"] = "no coverage — holding as-is"
             else:
-                winner = solve_pick(preds, solver_name, solver_options)
+                winner = solve_pick(selector, ctx, preds)
                 losers = [s for s in symbols if s != winner]
                 actions = _flip_to(trading, winner, losers, args.qty,
                                    args.dry_run)
