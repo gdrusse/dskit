@@ -5,10 +5,9 @@ child pattern: **AAPL and MSFT 1-minute bars from Alpaca, one LSTM per
 symbol predicting the next bar's return, and a pyomo program that picks
 exactly one symbol per minute** — backtested walk-forward, then run
 forward against Alpaca paper trading with the same modelling core and the
-same selection program. One declared skew: the backtest selects each
-fold's best epoch by validation loss (`monitor`), while the production
-fit ships its last epoch — the run documents' notes carry the
-consequence.
+same selection program. The two documents now declare the SAME trainer,
+`monitor` included: both select the shipped epoch on validation loss
+(ADR-0035), each on a band nothing else in its document reads.
 
 A child consumes dskit, never modifies it: tier-3 code plus JSON configs
 over the three seams — a connector (onboarding), registered node kinds
@@ -141,31 +140,45 @@ model on nothing.
 # walk-forward backtest: 3 expanding folds, realized pick-return objective
 python -m dskit.pipeline walkforward configs/run-backtest.json --asof 2026-08-25 --adapter intraday_poc
 
-# production fit, hidden_size chosen by a 9-trial grid on the embargoed tail
+# production fit, hidden_size chosen by a 9-trial grid on a held-out tail
 python -m dskit.pipeline run configs/run-train.json --asof 2026-08-28 --adapter intraday_poc
 
-# the trials' shipped scores, every run beside each other
+# what each RUN shipped, every run beside each other
 python -m dskit.pipeline runs --metric select.metrics.total_realized
 
 # the forward loop (paper account only; --dry-run to decide without orders)
 python -m intraday_poc.live --run-dir <run dir printed above> \
-    --source-config configs/source-backfill.json --qty 1 \
-    --artifact AAPL=artifacts/qhat__aapl --artifact MSFT=artifacts/qhat__msft
+    --source-config configs/source-backfill.json --qty 1
 ```
 
-The `--artifact` pair is **required** for `run-train.json`: its trainers
-are `foreach` instances, so their node keys carry the fan-out's double
-underscore (`qhat__aapl`) while the loop's default convention is
-`artifacts/qhat_<symbol>`. That flag is the documented hatch for exactly
-this — a document may rename its nodes without an edit to `live.py`.
+No `--artifact` flags: `run-train.json`'s trainers are `foreach`
+instances, so their node keys carry the fan-out's double underscore
+(`qhat__aapl`), and the loop finds them by reading the run's own document
+rather than by any convention of its own. The flag remains the hatch for
+serving a directory this run did not write.
 
-The fit now **stops at `splits.train_end_ms`** instead of consuming every
-published bar: a search whose objective scores rows its trials trained on
-grades memorization, so the selection window is held out behind a one-day
-embargo. Per-trial scores live in the run's own report and node records;
-the mlflow sink (`tracking` — a local `sqlite:///mlruns.db`, no server)
-records what each RUN shipped, because the driver silences the tracker
-during search re-execution on purpose.
+The fit **spans `[2026-01-01, splits.train_end_ms]`** rather than every
+published bar, for two different reasons that both belong in the open:
+the **start** is a memory ceiling (the engine's final-loss pass is one
+unbatched forward, so 940k windows at width 64 asks for 24 GB), and the
+**end** holds out what grades the search — a search whose objective
+scores rows its trials trained on grades memorization. Three disjoint
+bands follow from that: the fit, then the band that selects each trial's
+checkpoint (`mon_rows`, the two weeks the splits leave between
+`train_end_ms` and `val_start_ms`), then the selection window the
+objective scores.
+
+Where the numbers live: the winner is `nodes/NN-search.json` in the run
+dir and the **nine per-trial scores are in `carry.json`** (the report and
+the node record summarize the trial list, they do not enumerate it). The
+mlflow sink (`tracking` — a local `sqlite:///mlruns.db`, no server)
+carries one entry per RUN, and its two halves come from different passes:
+**params are the DECLARED ones** (logged before the search runs) while
+**metrics are the final pass's**. So a searched run whose winner differs
+from its declaration will show `hidden_size 32` beside the score of the
+model it shipped at 16 — compare architectures through the run dirs, not
+through the sink. Trials never reach a sink at all: the driver silences
+the tracker while it re-executes them.
 
 Every minute the live loop: gates on the exchange clock, pulls the
 latest IEX bars, restores each model through its hash-verified sidecar,
@@ -192,9 +205,10 @@ serves the forward loop while `acquire` refuses it by name — **export
 the pair** (`set -a; . ./.env; set +a`) and both are served. Only
 operational flags live on the CLI: `--qty`, `--log-dir`, `--once`,
 `--dry-run`, `--history-minutes`, and `--artifact SYMBOL=PATH` when a
-document names its trainer nodes something other than `qhat_<symbol>`
-(an override for a symbol the config does not declare is refused, never
-ignored). There is no third config file, by doctrine: it would
+symbol's model should come from a directory this run did not write (an
+override for a symbol the config does not declare is refused, never
+ignored; so is a symbol the run trained no model for, naming the trainer
+keys it did write). There is no third config file, by doctrine: it would
 duplicate both.
 
 ## What to know before trusting the numbers

@@ -1,9 +1,9 @@
 {
   "name": "intraday_poc-train",
-  "notes": "The PRODUCTION fit, TUNED: one LSTM per symbol, its hidden width chosen by a grid search scored on an embargoed tail the fit never sees. Run from the child root after the backfill is published: python -m dskit.pipeline run configs/run-train.json --asof 2026-08-28 --adapter intraday_poc. Then point the forward loop at the run dir: python -m intraday_poc.live --run-dir <run dir> --source-config configs/source-backfill.json --artifact AAPL=artifacts/qhat__aapl --artifact MSFT=artifacts/qhat__msft. The --artifact pair is REQUIRED here and is the loop's own documented hatch: the trainers are foreach instances, so their node keys carry the fan-out's double underscore (qhat__aapl) while the loop's default convention is artifacts/qhat_<symbol> — the hatch exists precisely so a document may rename its nodes without an edit to live.py. Everything else the loop still READS out of the run dir (config.json) — price field, gap bound, declared module class — so none of it is restated there. What changed from the untuned document, and why to accept it: the fit now stops at splits.train_end_ms instead of consuming every published bar, because a search whose objective scores rows its trials trained on grades memorization, and the biggest grid value always wins. The shipped artifact is therefore blind to the selection tail; refit after moving the cuts forward when that matters more than the tuning does.",
+  "notes": "The PRODUCTION fit, TUNED: one LSTM per symbol, its hidden width chosen by a grid search scored on a held-out tail the fit never sees. Run from the child root after the backfill is published: python -m dskit.pipeline run configs/run-train.json --asof 2026-08-28 --adapter intraday_poc. Then point the forward loop at the run dir: python -m intraday_poc.live --run-dir <run dir> --source-config configs/source-backfill.json. No --artifact flags: the loop finds each symbol's artifact through this document's own trainer keys (qhat__aapl is a foreach instance, not a convention live.py knows), and the flag stays what it always was — a hatch for serving a directory this run did not write. Everything else the loop READS out of the run dir (config.json) too: price field, gap bound, declared module class, the selector's solver. What changed from the untuned document, and why to accept it: the fit now stops at splits.train_end_ms instead of consuming every published bar, because a search whose objective scores rows its trials trained on grades memorization and the biggest grid value always wins; the band after that cut selects each trial's checkpoint, and the selection window after IT scores them. The shipped artifact is therefore blind to the last five weeks of the store; refit after moving the cuts forward when that matters more than the tuning does.",
   "foreach": {
     "keys": ["AAPL", "MSFT"],
-    "notes": "The symbol universe, and the reason this document has a fan-out at all: the search's space key names the TEMPLATE (qhat.module_params.hidden_size) and the expansion re-aims it at every instance, so ONE declaration searches every symbol over ONE grid. Written longhand the same search needs a space key per symbol — copies with nothing pinning them, so editing one and forgetting the other searches the two symbols over different grids and calls the difference a result. Add a third symbol by adding a key here and to source-backfill.json's universe, and nothing else. Keys are the RAW vendor symbols because $each substitutes them whole into the filters; node keys take their lowercase slug (qhat -> qhat__aapl). What the fan-out does NOT do: tie the two symbols to one tuned VALUE. Two instances are two independent overrides and hpo-grid crosses them, so three widths over two symbols is nine trials and the winner may pair 16 with 64 — see the search node's notes.",
+    "notes": "The symbol universe, and the reason this document has a fan-out at all: the search's space key names the TEMPLATE (qhat.module_params.hidden_size) and the expansion re-aims it at every instance, so ONE declaration searches every symbol over ONE grid. Written longhand the same search needs a space key per symbol — copies with nothing pinning them, so editing one and forgetting the other searches the two symbols over different grids and calls the difference a result. Add a third symbol by adding a key here and to source-backfill.json's universe, and nothing else: the serving loop finds each symbol's artifact through THIS document's own trainer keys, so no --artifact flag has to be kept in step. Keys are the RAW vendor symbols because $each substitutes them whole into the filters; node keys take their lowercase slug (qhat -> qhat__aapl). What the fan-out does NOT do: tie the two symbols to one tuned VALUE. Two instances are two independent overrides and hpo-grid crosses them, so three widths over two symbols is nine trials and the winner may pair 16 with 64 — see the search node's notes, and note that such a winner SHIPS (the driver re-applies it to this run's artifacts), which is why live.py refuses a pair of artifacts built from different module_params instead of trading on the difference.",
     "pipeline": {
       "rows": {
         "uses": "filter",
@@ -15,7 +15,19 @@
             { "field": "asof_ms", "op": "<=", "value": "$splits.train_end_ms" }
           ]
         },
-        "notes": "One model per symbol — the PoC's design, so each series is fit on its own dynamics — over the window [2026-01-01, train_end_ms]. The band between train_end_ms and val_start_ms belongs to NO split: a next-bar label resolves in one minute, so the embargo is discipline made visible rather than a horizon the label needs. WHY the history starts in 2026 rather than at the store's 2021 open, and what to change to widen it: the engine evaluates a fit's final training loss in ONE unbatched forward pass (dskit.pipeline.libs.torch, TorchTrain._final_loss), so peak memory is O(rows x lookback x hidden_size) — 940k AAPL windows at hidden_size 64 asks for 24.3 GB and dies on a 17 GB box, measured, at trial 3 of the grid. The start bound is a MEMORY ceiling wearing a modelling choice's clothes and should be deleted the day that pass is batched; until then it is declared here where it can be seen, once, for both symbols. It is a literal because there is no train_start_ms in the splits grammar — the cuts carve the future, not the horizon."
+        "notes": "One model per symbol — the PoC's design, so each series is fit on its own dynamics — over the window [2026-01-01, train_end_ms]. The band between train_end_ms and val_start_ms belongs to NO split, and this document gives it a job: it is the checkpoint monitor's (see mon_rows), rows no trial fits and the objective never scores. WHY the history starts in 2026 rather than at the store's 2021 open, and what to change to widen it: the engine evaluates a fit's final training loss in ONE unbatched forward pass (dskit.pipeline.libs.torch, TorchTrain._final_loss), so peak memory is O(rows x lookback x hidden_size) — 940k AAPL windows at hidden_size 64 asks for 24.3 GB and dies on a 17 GB box, measured, at trial 3 of the grid. The start bound is a MEMORY ceiling wearing a modelling choice's clothes and should be deleted the day that pass is batched; until then it is declared here where it can be seen, once, for both symbols. It is a literal because there is no train_start_ms in the splits grammar — the cuts carve the future, not the horizon."
+      },
+      "mon_rows": {
+        "uses": "filter",
+        "inputs": { "records": "$window.records" },
+        "params": {
+          "where": [
+            { "field": "symbol", "op": "==", "value": "$each" },
+            { "field": "asof_ms", "op": ">", "value": "$splits.train_end_ms" },
+            { "field": "asof_ms", "op": "<", "value": "$splits.val_start_ms" }
+          ]
+        },
+        "notes": "The CHECKPOINT band: strictly between the fit's cut and the selection window, so it is disjoint from both by construction rather than by arithmetic. Without it every trial is scored on its LAST epoch and the search compares nine last epochs — TODO.md's own warning that an unset monitor makes a search optimize epoch-5 luck. The two obvious alternatives are both wrong: monitoring on val_rows picks the checkpoint AND the architecture on one set (run-backtest.json's caveat, why it reads total_realized as an upper bound), and monitoring on the fitted rows selects the most memorized epoch. Bounds are STRICT (> and <) because an inclusive one shares a minute with the fit or with the score. Widen the band by moving train_end_ms back, never val_start_ms forward: the selection window is what the search's number means."
       },
       "val_rows": {
         "uses": "filter",
@@ -27,12 +39,12 @@
             { "field": "asof_ms", "op": "<=", "value": "$splits.val_end_ms" }
           ]
         },
-        "notes": "The selection window: the rows the search's objective is measured on, and the ONLY rows in this document no trial ever fits. They are wired to the forecast node, never to the trainer — see qhat's notes for why no monitor is declared."
+        "notes": "The selection window: the rows the search's objective is measured on. They are wired to the forecast node and to the selector's labels, never to a trainer — the checkpoint monitor reads mon_rows instead, so nothing in this document both picks a model on these rows and reports a score over them."
       },
       "qhat": {
         "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
         "mode": "train",
-        "inputs": { "rows": "$rows.records" },
+        "inputs": { "rows": "$rows.records", "val_rows": "$mon_rows.records" },
         "params": {
           "module": "intraday_poc.models:NextBarLSTM",
           "module_params": { "lookback": 30, "hidden_size": 32, "num_layers": 1 },
@@ -43,9 +55,10 @@
           "epochs": 5,
           "lr": 0.001,
           "loader": { "batch_size": 512, "shuffle": true, "seed": 7 },
-          "device": "cpu"
+          "device": "cpu",
+          "monitor": "val_loss"
         },
-        "notes": "ADR-0025 declared seam: the document names the child's nn.Module and the optimizer; the module owns the flat-lag-vector -> LSTM-sequence resequencing, so the pack's default RowVectorAdapter carries it. features MUST stay ret_lag_0..ret_lag_{lookback-1} in order and module_params.lookback must equal the window node's lookback — the module refuses a width mismatch at run. hidden_size 32 is the DECLARED baseline the search overrides per trial; leaving it at the middle of the grid keeps the untuned document runnable and keeps this fit's params identical to run-backtest.json's (pinned by test_configs.py). device: cpu makes the compute target visible (the engine's default is already CPU; device is declared, never detected). optimizer_params names Adam's other knobs at their library defaults so they are visible and tunable, not a silent zero. NO monitor, deliberately, even though val_rows now exist in this document: monitoring would select the epoch on the very rows the search's objective scores, so one set would pick both the checkpoint and the architecture — the optimism run-backtest.json's notes warn about. val_rows stay unwired here and the last epoch's weights ship, exactly as before."
+        "notes": "ADR-0025 declared seam: the document names the child's nn.Module and the optimizer; the module owns the flat-lag-vector -> LSTM-sequence resequencing, so the pack's default RowVectorAdapter carries it. features MUST stay ret_lag_0..ret_lag_{lookback-1} in order and module_params.lookback must equal the window node's lookback — the module refuses a width mismatch at run. hidden_size 32 is the DECLARED baseline the search overrides per trial; leaving it at the middle of the grid keeps the untuned document runnable and keeps this fit's params identical to run-backtest.json's (pinned by test_configs.py). device: cpu makes the compute target visible (the engine's default is already CPU; device is declared, never detected). optimizer_params names Adam's other knobs at their library defaults so they are visible and tunable, not a silent zero. monitor: val_loss over mon_rows (ADR-0035) ships each trial's BEST epoch, not its last — without it the search would compare nine last epochs and reward epoch-5 luck. val_rows here is the port name the pack gives its monitoring set; the rows are the held-out band, NOT the selection window, so the checkpoint and the architecture are chosen on different rows. That also deletes this document's last declared skew from run-backtest.json: the two trainers are now identical, monitor included."
       },
       "fc": {
         "uses": "intraday_poc-forecast",
@@ -69,23 +82,23 @@
     },
     "forecasts": {
       "uses": "concat",
-      "inputs": { "forecasts__each": "$fc.forecasts" },
+      "inputs": { "fc__each": "$fc.forecasts" },
       "params": {
         "shape": "records",
         "key": "symbol",
         "provenance_waiver": "rows already carry their symbol; the ports are split by symbol upstream, so a port tag would duplicate the field"
       },
-      "notes": "Port fan-out is OPT-IN: the port written 'forecasts__each' becomes one port per foreach key (forecasts__aapl, forecasts__msft), so adding a symbol never edits this node. Both symbols' beliefs in one stream for the selector; key=symbol proves the ports stayed disjoint."
+      "notes": "Port fan-out is OPT-IN: the port written 'fc__each' becomes one port per foreach key (fc__aapl, fc__msft), so adding a symbol never edits this node. It is named for the template it fans from because concat records every source under its PORT name — name it for anything else and the run's carry attributes these rows to a node that did not produce them. Both symbols' beliefs in one stream for the selector; key=symbol proves the ports stayed disjoint."
     },
     "labeled": {
       "uses": "concat",
-      "inputs": { "rows__each": "$val_rows.records" },
+      "inputs": { "val_rows__each": "$val_rows.records" },
       "params": {
         "shape": "records",
         "key": "symbol",
         "provenance_waiver": "rows already carry their symbol; the ports are split by symbol upstream, so a port tag would duplicate the field"
       },
-      "notes": "The selection window's rows with their y_next labels — what realizes each pick after the fact. Not downstream of the trainers, so a trial never re-runs it."
+      "notes": "The selection window's rows with their y_next labels — what realizes each pick after the fact. Not downstream of the trainers, so a trial never re-runs it. The port is 'val_rows__each' and not 'rows__each' for the reason its sibling gives: the port names the sources in the run's carry, and 'rows__aapl' is a REAL node in this document holding the fitted rows — eight times as many, from a different band."
     },
     "select": {
       "uses": "intraday_poc-select-one",
@@ -100,16 +113,16 @@
         "objective": "$select.metrics.total_realized",
         "select": "max"
       },
-      "notes": "The capstone, kept deliberately small: ONE categorical knob over three widths, so the first tracked experiment tests the plumbing rather than a hypothesis. select: max because total_realized is a return — minimizing it would ship the architecture that lost the most, and hpo-grid's default is min. The space key names the foreach TEMPLATE and expands to one override per symbol; the search is therefore JOINT over the pair — 3 widths x 2 symbols = 9 trials, each refitting both models — and its winner may pair different widths, which is a result to read rather than a value this document adopts. No n_trials: nine trials IS the whole grid, and subsampling something this small trades a complete comparison for a rank seed. No seeds ensemble: it multiplies an already real cost, and the trainers' loader.seed pins every fit, so a re-run reproduces the winner exactly. The driver re-executes only the dirty subgraph per trial — the trainers, fc, forecasts, select — never the store scan or the windows, then re-applies the winner once so everything downstream reads the tuned pass. The winner is REPORTED, never written back: promoting it means moving hidden_size in this document AND in run-backtest.json together (test_configs.py pins the two fits identical), and an asymmetric winner must additionally defeat test_the_symbol_twins_share_a_regime — the argument promotion should have to win."
+      "notes": "The capstone, kept deliberately small: ONE categorical knob over three widths, so the first tracked experiment tests the plumbing rather than a hypothesis. select: max because total_realized is a return — minimizing it would ship the architecture that lost the most, and hpo-grid's default is min. The space key names the foreach TEMPLATE and expands to one override per symbol; the search is therefore JOINT over the pair — 3 widths x 2 symbols = 9 trials, each refitting both models — and its winner may pair different widths, which is a result to read rather than a value this document adopts. No n_trials: nine trials IS the whole grid, and subsampling something this small trades a complete comparison for a rank seed. No seeds ensemble: it multiplies an already real cost, and the trainers' loader.seed pins every fit, so a re-run reproduces the winner exactly. The driver re-executes only the dirty subgraph per trial — the trainers, fc, forecasts, select — never the store scan or the windows, then re-applies the winner once so everything downstream reads the tuned pass. What that means for what SHIPS, said exactly: the winner is not written back into this DOCUMENT (promoting it means moving hidden_size here and in run-backtest.json together, which test_configs.py pins), but it IS applied to this RUN — the artifacts in the run dir are the winner's weights, and they are what live.py restores. So an asymmetric winner ships unless something refuses it, and something does: the loop compares the two artifacts' module_params and refuses the pair. Read the winner in nodes/NN-search.json and the nine scores in carry.json."
     }
   },
   "splits": {
     "kind": "time",
-    "train_end_ms": 1785974400000,
+    "train_end_ms": 1784764800000,
     "val_start_ms": 1786060800000,
     "val_end_ms": 1787961600000,
     "test_end_ms": 1788566400000,
-    "notes": "Causal cuts as epoch-ms, the only split kind a minute-bar document may declare: 2026-08-06 ends the fit, a one-day embargo band follows, 2026-08-07..2026-08-29 is the selection window the search scores, and the test band to 2026-09-05 is declared and deliberately UNREAD — nothing in this document may consume it, and it is where an honest out-of-sample check goes when one is built. Move all four forward together as the store grows; they are what decides how much history the shipped artifact saw."
+    "notes": "Causal cuts as epoch-ms, the only split kind a minute-bar document may declare: 2026-07-23 ends the fit, 2026-07-23..2026-08-07 is the band belonging to no split — here the checkpoint monitor's rows (mon_rows) — 2026-08-07..2026-08-29 is the selection window the search scores, and the test band to 2026-09-05 is declared and deliberately UNREAD: nothing in this document may consume it, and it is where an honest out-of-sample check goes when one is built. The gap between the first two cuts is two weeks rather than the one day an embargo needs, because a next-bar label resolves in a minute and the band is doing a second job; shrink it back to a day only when the monitor moves elsewhere. Move all four forward together as the store grows; they are what decides how much history the shipped artifact saw."
   },
   "tracking": {
     "sinks": [
@@ -119,7 +132,7 @@
           "tracking_uri": "sqlite:///mlruns.db",
           "experiment": "intraday_poc-train"
         },
-        "notes": "A LOCAL sqlite store beside the run root — no server to start, nothing to reach over a network, and the pack proves the file writable at plan time rather than swallowing the failure at run time. Spelled as a class reference so no registration call is needed anywhere in the child's code. The path is relative to the invoking cwd, the same discipline as bars.root. What lands here: one entry per RUN, carrying every node's declared params flattened to the override spelling (search.space, qhat__aapl.module_params.hidden_size, ...) plus each node's metrics. Trials do NOT land here — the driver silences the tracker during search re-execution on purpose, so a sink records what a run SHIPPED, not what it explored; the per-trial scores live in the search node's record in the run dir and in the run report."
+        "notes": "A LOCAL sqlite store beside the run root — no server to start, nothing to reach over a network, and the pack proves the file writable at plan time rather than swallowing the failure at run time. Spelled as a class reference so no registration call is needed anywhere in the child's code. The path is relative to the invoking cwd, the same discipline as bars.root. READ WHAT LANDS HERE CAREFULLY, because the two halves of an entry come from different passes. Params: one entry per RUN, every node's DECLARED params flattened to the override spelling (search.space, qhat__aapl.module_params.hidden_size, ...) — logged before any node runs, so for a searched document they are the BASELINE, never the winner. Metrics: the FINAL pass, so they belong to the model the run actually shipped. Read together they will therefore say 'hidden_size 32 scored 0.2274' about a run that shipped 16 — the params and the metric describe different models whenever the winner differs from the declaration. The winner is in the run dir (nodes/NN-search.json 'winner'), and the per-trial scores are in carry.json under the search node; trials never reach a sink at all, because the driver silences the tracker while it re-executes them. Comparing ARCHITECTURES across runs therefore means reading the run dirs, not this store — closing that gap is an engine change (the driver would have to re-log params after applying a winner), not a config one."
       }
     ],
     "notes": "Excluded from the identity hash — where metrics land says nothing about what the run computes."

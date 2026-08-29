@@ -51,9 +51,10 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
 - **`run-train.json` fans out; `run-backtest.json` does not.** The
   train document builds its per-symbol nodes from ONE `foreach`
   template (ADR-0039), so its trainers are `qhat__aapl`/`qhat__msft`
-  — a DOUBLE underscore — and live serving needs
-  `--artifact AAPL=artifacts/qhat__aapl` (the loop's hatch, never an
-  edit to `live.py`). Read a fanned document through
+  — a DOUBLE underscore. `live.py` reads that mapping off the run's own
+  document (symbol → the trainer node whose key ends in its slug), so
+  serving needs no `--artifact` flags; the flag is for a directory the
+  run did not write. Read a fanned document through
   `document.expanded`, never `document.pipeline`: the declared map
   holds the template, the derived map holds what RAN, and they are the
   same object only when there is no fan-out.
@@ -61,15 +62,23 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy (run-path only)
   key naming a template expands to one override per instance, so
   `hpo-grid` CROSSES them: three widths over two symbols is nine
   trials and a winner may pair 16 with 64. Nothing in the grammar ties
-  two nodes' params to one value. The shipped regime stays symmetric
-  because the winner is REPORTED, not written back — promoting one
-  means moving both documents and defeating
-  `test_the_symbol_twins_share_a_regime` on purpose.
-- **The train document's search scores an embargoed tail**, so the
-  production fit stops at `splits.train_end_ms` and the shipped
-  artifact never saw the selection window. No `monitor` there,
-  deliberately: monitoring would select the epoch on the very rows the
-  objective scores.
+  two nodes' params to one value, and the driver APPLIES the winner to
+  the run's artifacts — so an asymmetric pairing ships unless something
+  refuses it. `live.py` does: it compares the restored artifacts'
+  `module_params` and refuses the pair. The DOCUMENTS stay symmetric
+  separately — promoting a winner means moving both of them and
+  defeating `test_the_symbol_twins_share_a_regime` on purpose.
+- **Three bands, not two.** `run-train.json` fits to
+  `splits.train_end_ms`, selects each trial's checkpoint on the band the
+  cuts leave open after it (`mon_rows`, `monitor: val_loss`), and scores
+  the search on the selection window after THAT. Wire the monitor to the
+  scored rows and one set picks both the checkpoint and the
+  architecture; leave it unset and the search compares nine last epochs.
+- **A sink's params are the DECLARED ones.** `log_params` runs before
+  any node does, and trials execute with the tracker silenced, so a
+  searched run's mlflow entry pairs baseline params with final-pass
+  metrics. The winner is in `nodes/NN-search.json`, the per-trial scores
+  in `carry.json` — not in the report, and not in the sink.
 
 - **Lookback is pinned in three places** — the window node's `lookback`,
   the LSTM's `module_params.lookback`, and the `ret_lag_*` feature list.

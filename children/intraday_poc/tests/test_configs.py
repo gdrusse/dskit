@@ -24,7 +24,7 @@ CONFIGS = os.path.join(CHILD_ROOT, "configs")
 #: the shared half — see :data:`TRAIN_TEMPLATE`.
 TRAIN_SHARED_NODES = {"bars", "window", "forecasts", "labeled", "select",
                       "search"}
-TRAIN_TEMPLATE = {"rows", "val_rows", "qhat", "fc"}
+TRAIN_TEMPLATE = {"rows", "mon_rows", "val_rows", "qhat", "fc"}
 #: What run-train.json actually RUNS: the shared nodes plus one instance
 #: of every template node per symbol.
 TRAIN_NODES = TRAIN_SHARED_NODES | {
@@ -129,10 +129,12 @@ def test_one_space_key_tunes_both_symbols():
     instance keys are two independent overrides, so ``hpo-grid``
     CROSSES them — three widths over two symbols is nine trials — and
     a winner may pair 16 with 64. No grammar here can tie two nodes'
-    params to one value; what keeps the shipped regime symmetric is
-    that the winner is reported, never written back (promoting an
-    asymmetric one has to defeat ``test_the_symbol_twins_share_a_regime``
-    on the way in, which is exactly the argument that should be had).
+    params to one value, and the winner IS applied to the run's own
+    artifacts, so an asymmetric pairing does not stop at the report: it
+    ships. The pin for that is a runtime refusal where the values land
+    (``test_nodes.py::test_the_loop_refuses_a_pair_of_artifacts_trained
+    _at_different_widths``); this test pins the declaration half — that
+    both symbols are searched over ONE grid written once.
     """
     raw = _raw("run-train.json")
     assert raw["foreach"]["keys"] == ["AAPL", "MSFT"], (
@@ -216,8 +218,104 @@ def test_the_search_scores_on_rows_it_never_trained_on():
     assert raw["pipeline"]["select"]["params"]["split"] == "val"
 
 
-def test_the_trials_reach_a_tracking_sink_that_needs_no_server():
-    """Trials nobody can compare are scores with no way back to a config.
+def test_every_trial_selects_its_checkpoint_on_rows_of_its_own():
+    """Three disjoint bands: fit, monitor, score. None may overlap.
+
+    TODO.md names an unset ``monitor`` as the prerequisite that bites
+    this search hardest — trials scored on last-epoch weights make the
+    search optimize epoch-5 luck rather than the model — and the two
+    obvious wirings are both wrong. Monitoring on the scored rows picks
+    the checkpoint AND the architecture on one set (run-backtest.json's
+    own caveat, which is why it reads its ``total_realized`` as an upper
+    bound); monitoring on the fitted rows selects the most memorized
+    epoch. So the band the cuts already open between the fit and the
+    selection window — the one that belongs to NO split — carries the
+    monitor: rows no trial fits and the objective never scores, and
+    earlier in time than everything they influence.
+
+    Pinned as bounds rather than instants so moving the cuts forward
+    (which the splits' notes tell you to do as the store grows) cannot
+    quietly close the band or overlap two of the three.
+    """
+    raw = _raw("run-train.json")
+    splits = raw["splits"]
+    template = raw["foreach"]["pipeline"]
+    assert splits["train_end_ms"] < splits["val_start_ms"], (
+        "with val_start_ms at the train cut the monitor band is empty and "
+        "the engine refuses the fit — open the band, do not drop monitor"
+    )
+    assert template["mon_rows"]["params"]["where"][1:] == [
+        {"field": "asof_ms", "op": ">", "value": "$splits.train_end_ms"},
+        {"field": "asof_ms", "op": "<", "value": "$splits.val_start_ms"},
+    ], (
+        "the monitor band is STRICTLY between the cuts — an inclusive "
+        "bound at either end shares a row with the fit or with the score"
+    )
+    for key, spec in zip(TRAINERS["run-train.json"],
+                         _trainers("run-train.json")):
+        assert spec.inputs.get("val_rows") is not None, (
+            key, "a trainer with no val_rows ships its LAST epoch, so the "
+            "search compares nine last epochs"
+        )
+        assert "mon_rows" in spec.inputs["val_rows"], (
+            key, "the monitor must read the held-out band, never the rows "
+            "the objective scores"
+        )
+        assert spec.params["monitor"] == "val_loss", (
+            key, "val_rows wired with no monitor declared is a validation "
+            "curve nothing selects on"
+        )
+
+
+def test_the_two_documents_solve_the_same_selection_program():
+    """One selector program, three consumers, nothing pinning it.
+
+    ``run-backtest.json`` scores every fold with the select-one program,
+    ``run-train.json``'s search scores every trial with it, and the live
+    loop solves it a minute at a time — so the search's objective is
+    only comparable to the backtest's number while all three agree about
+    the solver and the split they read. The loop reads its pair off the
+    run document (``live.py``'s ``selector_knobs``), which leaves these
+    two declarations as the copies, and CLAUDE.md's rule for a value
+    that must appear twice is to pin the agreement.
+    """
+    train = _raw("run-train.json")["pipeline"]["select"]
+    backtest = _raw("run-backtest.json")["pipeline"]["select"]
+    assert train["uses"] == backtest["uses"] == "intraday_poc-select-one"
+    assert train["params"] == backtest["params"], (
+        "the train document's objective and the backtest's score must be "
+        "the same program under the same solver — a gap or limit option "
+        "on one of them silently re-grades the other's design"
+    )
+
+
+def test_the_concat_ports_name_the_nodes_they_fan_from():
+    """A port label that lies is provenance that misleads.
+
+    ``concat`` records each source under its PORT name, and a fanned
+    port becomes ``<stem>__<slug>`` — the same shape as a fanned node
+    key. Name the port after the wrong template and the run's carry
+    reports ``rows__aapl`` as the source of rows that came from
+    ``val_rows__aapl``, which is a real node in the same document with
+    eight times the rows. The port name is free (the sibling names it
+    ``forecasts__each``), so it costs nothing to make it true.
+    """
+    shared = _raw("run-train.json")["pipeline"]
+    for node, template in (("forecasts", "fc"), ("labeled", "val_rows")):
+        ports = shared[node]["inputs"]
+        assert len(ports) == 1, (node, "one fanned port, or the fan-out is "
+                                       "hand-expanded again")
+        port, ref = next(iter(ports.items()))
+        assert ref.startswith(f"${template}."), (node, port, ref)
+        assert port.split("__")[0] == template, (
+            node,
+            f"port {port!r} labels this concat's sources after {template!r}'s "
+            "instances, so it must be named for that template",
+        )
+
+
+def test_the_runs_sink_is_one_local_store_that_needs_no_server():
+    """A run whose params live only in its run dir cannot be compared.
 
     ``tracking`` is excluded from the identity hash (WHERE metrics land
     says nothing about what a run computes), so no other test would
@@ -226,6 +324,13 @@ def test_the_trials_reach_a_tracking_sink_that_needs_no_server():
     sink, nowhere to SEE the comparison" gap this document closes. The
     URI must stay a LOCAL store: a child config that assumed a running
     server would fail the plan on every machine that has none.
+
+    Named for what it pins, deliberately: the sink holds one entry per
+    RUN. Trials never reach it — the driver executes them with the
+    tracker silenced — so a test called "the trials reach a sink" would
+    have claimed coverage of something the engine does not do, and a
+    reader asking "are the trials tracked?" would have found it green.
+    Per-trial scores live in the run dir's ``carry.json``.
     """
     sinks = _raw("run-train.json")["tracking"]["sinks"]
     assert len(sinks) == 1, "one sink, or the comparison has two homes"
@@ -256,46 +361,35 @@ def test_run_backtest_is_a_valid_walkforward_document():
 def test_the_two_documents_share_their_modelling_core():
     """Backtest and production fit must consume identical features or
     the backtest proves nothing — pinned by comparing the shared nodes'
-    params verbatim, modulo the one knob the two documents are allowed
-    to diverge on.
+    params verbatim, with NO knob exempted.
 
-    ``monitor`` is that knob: run-backtest.json wires val_rows and
-    selects each fold's checkpoint by validation loss (ADR-0035);
-    run-train.json wires no val_rows and leaves monitor undeclared. A
-    whitelist of hand-picked knob names would miss any OTHER knob
-    declared on only one document (an unpinned ``adapter``, a stray
-    ``max_log_lines``) and would miss ``monitor`` itself drifting off
-    its expected value — so this compares the full params dicts minus
-    the declared divergence, and pins the divergence's values too.
+    ``monitor`` used to be the one declared divergence: the backtest
+    selected each fold's checkpoint on validation loss (ADR-0035) while
+    the production fit wired no val_rows and shipped its last epoch, so
+    ``total_realized`` graded a checkpoint-selection procedure the live
+    artifact never got. The train document now opens a monitor band of
+    its own (``test_every_trial_selects_its_checkpoint_on_rows_of_its
+    _own``), which closes the skew — so the exemption is gone and the
+    params compare WHOLE. A whitelist of hand-picked knob names would
+    miss any knob declared on only one document (an unpinned
+    ``adapter``, a stray ``max_log_lines``); comparing the dicts cannot.
 
-    The exemption is a real gap, not a formality, and both documents'
-    notes carry it: monitoring makes each backtest fold ship its
-    best-scoring epoch, while the production fit ships its last, so
-    total_realized grades a checkpoint-selection procedure the live
-    artifact never gets. This test pins the asymmetry as DELIBERATE —
-    it does not make it harmless. Presence of the pinned knobs is
+    Presence of the pinned knobs is
     ``test_both_documents_declare_every_trainer_knob``; agreement
     between the two symbols is ``test_the_symbol_twins_share_a_regime``.
     """
     train, backtest = _raw("run-train.json"), _raw("run-backtest.json")
     assert train["pipeline"]["window"]["params"] == \
         backtest["pipeline"]["window"]["params"]
-    divergent = {"monitor"}
     pairs = zip(_trainers("run-train.json"), _trainers("run-backtest.json"),
                 TRAINERS["run-train.json"])
     for train_spec, backtest_spec, key in pairs:
-        t, b = train_spec.params, backtest_spec.params
-        t_core = {k: v for k, v in t.items() if k not in divergent}
-        b_core = {k: v for k, v in b.items() if k not in divergent}
-        assert t_core == b_core, key
-        assert "monitor" not in t, (
-            key, "run-train.json's fit is graded by the search, not by a "
-            "checkpoint monitor: monitoring on the rows the objective "
-            "scores would select the epoch AND the architecture on one "
-            "set (run-backtest.json's own caveat)"
+        assert train_spec.params == backtest_spec.params, (
+            key, "the tuned fit and the backtest that validated it must "
+            "declare the same trainer, monitor included"
         )
-        assert b["monitor"] == "val_loss", (
-            key, "run-backtest.json must select each fold's checkpoint on val_loss"
+        assert train_spec.params["monitor"] == "val_loss", (
+            key, "both documents select the checkpoint on validation loss"
         )
 
 
