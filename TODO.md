@@ -605,11 +605,22 @@ across runs is what is missing**, plus the wiring below.
       (never report.md prose), metrics overlay record+carry, foreign and
       broken entries named loudly-but-nonfatally, restatements pinned
       (metric rule vs driver, run root, layout names), 64 new tests.
-- [ ] **Neither intraday document declares a search node.** Adding
+- [x] **Neither intraday document declares a search node.** Adding
       `hpo-grid`/`optuna-search` is config-only, but note the shape
       problem: two trainers (`qhat_aapl`, `qhat_msft`) means every tuned
       knob needs duplicate space keys that nothing pins together — the
       `foreach` gap again, surfacing in the search space this time.
+      **Landed this run (2026-08-28, D3):** `run-train.json` declares an
+      `hpo-grid` search over ONE space key naming the `foreach` template.
+      **Correction to the premise above, found by running it:** `foreach`
+      pins the DECLARATION, not the tuned VALUE. The single key expands to
+      one key PER INSTANCE and `hpo-grid` CROSSES them — 3 widths × 2
+      symbols = 9 trials, and a winner may pair 16 with 64. So it removes
+      the forgotten-copy failure (a third symbol is one line) but does NOT
+      force the two symbols to share a width; no grammar in the engine ties
+      two nodes' params to one value. Said plainly in the document notes,
+      the child CLAUDE.md and the pin's docstring, because the opposite is
+      the natural assumption.
 - [x] **HPO inside walk-forward is mechanically supported but UNTESTED and
       semantically undecided.** `run_walk_forward` puts every fold through
       `run_document`, so each fold builds its own `_SearchSeam` and re-tunes
@@ -665,12 +676,29 @@ stale).
 
 ### DO THIS LAST — wire HPO into `intraday_poc`
 
-- [ ] **Add a search node to the intraday documents.** Owner's explicit
+- [x] **Add a search node to the intraday documents.** Owner's explicit
       sequencing (2026-08-27): **this is the final item, after everything
       else in this file.** Not because it is hard — it is config-only, and
       the engine side already works — but because it is the CAPSTONE that
       consumes nearly every other fix, and doing it early produces numbers
       that quietly mean nothing.
+
+      **DONE 2026-08-28 (D3) — a real tracked experiment exists on this
+      machine.** Run on the live store (2,016,587 bars): 9/9 trials in
+      4m28s, peak RSS 8.07 GB, objective `$select.metrics.total_realized`
+      over 12,818 realized picks on the embargoed tail. Winner
+      `hidden_size` 16/16 at 0.2274; runner-up 32/16 at 0.2265; the
+      declared 32/32 base pass scored 0.0302 — i.e. the tuned arm beat the
+      value that had simply been typed in. **Reproducible:** the identical
+      document re-run gave the same `run_hash` and all nine trial scores
+      bit-for-bit equal, checked elementwise rather than on the winner
+      alone. Trials are distinguishable by params in the mlflow sink (E1's
+      flattened keys) and via the `runs` verb. `run-train.json`'s identity
+      moved intentionally, `85fff271…` → `f320458f…`, and is in the ledger.
+      The winner was deliberately NOT promoted into the documents: doing so
+      edits both documents together (the cross-document pin) and an
+      asymmetric winner would have to defeat the symbol-twin regime pin —
+      an owner call, left standing as a follow-up.
 
       To be clear about what does and does not exist: **HPO in dskit is
       built and green.** `hpo-grid` (tier-1, `kinds_search.py`) and

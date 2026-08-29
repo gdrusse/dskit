@@ -51,10 +51,12 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy/mlflow (run-path)
 - **`run-train.json` fans out; `run-backtest.json` does not.** The
   train document builds its per-symbol nodes from ONE `foreach`
   template (ADR-0039), so its trainers are `qhat__aapl`/`qhat__msft`
-  — a DOUBLE underscore. `live.py` REBUILDS that mapping from
-  `foreach.keys` + the engine's `foreach_slug` rather than reading a key
-  backwards, so serving needs no `--artifact` flags; the flag is for a
-  directory the run did not write. Do not match a fanned key by SUFFIX:
+  — a DOUBLE underscore. `live.py` READS that mapping from the document's
+  own `foreach_groups`, zipped against `foreach.keys` (`_fanned_owner`) —
+  it does not reconstruct it, and it never reads a key backwards. Serving
+  a fanned run DOES need `--artifact SYMBOL=artifacts/qhat__<slug>`,
+  because the artifact directories carry the fanned node keys; the README
+  gives the exact command. Do not match a fanned key by SUFFIX:
   `qhat__brk_b` ends in `_b`, so the symbol `B` would silently be served
   BRK.B's weights (both are real tickers, and the pair-regime check
   cannot see it — both symbols would share one artifact). Hand-declared

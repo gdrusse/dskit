@@ -798,6 +798,7 @@ Intentional-move log (append `document → old-prefix → new-prefix → card`):
 - examples/pipeline/optuna-continuous.json → NEW → `5560a479eacc071e…` → E4 (ledger now 15 documents)
 - examples/pipeline/model-sweep.json → NEW → `c01ae84ec899e1d8…` → E5 (ledger now 16 documents)
 - examples/pipeline/foreach-fanout.json → NEW → `242120e437f7adc6…` → C3 (ledger now 17 documents)
+- children/…/configs/run-train.json → `85fff271bfdd05ec…` → `f320458fc3350907…` → D3 (a search node, a foreach fan-out, a splits section and a bounded fit window — all identity-bearing). **NOTE:** D3's own report declared `be05218e…`, which was stale by three commits; the value here is the one the MERGED tree validates to, taken from the tree rather than the report. Two skeptics caught the discrepancy.
 
 ## 10. STATE — orchestrator updates as it goes
 
@@ -826,6 +827,6 @@ Intentional-move log (append `document → old-prefix → new-prefix → card`):
 | C7 | MERGED | 0292a87 | ADR-0043. Clean in 2 rounds. 8 HPO tests where test_walkforward.py had NONE; HPO-free summary byte-identity mutation-proven twice; per-fold winner instability now printed. `driver.py` DRAINED (35 D errors → 0). Two orchestrator fixes: the flip-refusal pin could not fail on the ordering it claimed (the except-handler rebuilt an identical record, so no black-box value could tell the orderings apart — now witnesses the record on `run` as the raise leaves the node), and the markdown pipe ESCAPE now has one owner shared with runs.py (my E2 ruling allowed two table FORMATS; escaping is correctness, not taste). Scope: tests/pipeline 1423 + optuna + ruff + hash gate |
 | D1 | pending | | |
 | D2 | DONE | (no code; gitignored store) | Store was ALREADY present (1.2 GB, Aug 26) — the plan's "not on this machine" was stale, so this was catch-up not re-acquisition. 2,016,587 bars, 2021-01-01 → 2026-08-28T19:06Z, 0 duplicates, contiguous seam, verify clean before AND after, all CLI steps exit 0, peak RSS 138 MB. Also PROVED A2's single-source `--mode` rewrite is a behavioural no-op vs the pre-A2 store (identical resolved knobs; no re-registration). `--mode live` NOT exercised — D3 is the first consumer |
-| D3 | pending | | capstone |
+| D3 | MERGED | 8b4185d | **THE CAPSTONE RAN.** 9/9 trials on the live 2M-bar store in 4m28s, peak RSS 8.07 GB; winner hidden_size 16/16 at total_realized 0.2274 vs the typed-in 32/32 base pass at 0.0302. Reproducible: same run_hash, all nine scores bit-for-bit equal on a second run. Trials comparable in the mlflow sink and the `runs` verb. Walk-forward backtest re-run also completed (ADR-0037 residual). Merged on the owner's PoC bar with 2 MAJOR + 2 MINOR outstanding — see Follow-ups. run-train.json hash moved as declared |
 | D4 | pending | | |
 | D5 | pending | | wrap |
