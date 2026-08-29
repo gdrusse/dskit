@@ -54,9 +54,9 @@ narrowed from per-role to per-knob.
   goes in a NEW sibling `libs/torch_ts.py`. The purity gate forbids an `nn.Module`
   subclass at module level anywhere in `dskit/pipeline/`, including inside a class
   body, so every net is defined INSIDE `build_module`.
-- **ADR-0044 is PROPOSED, not accepted.** C6 landed ADR-0042 flows 1 and 3. Flow 2
-  (a space over the selector's own knobs) is refused by ADR-0040's per-role
-  `_UNSEARCHABLE_ROLES` entry. Implement 0044 only after the owner accepts it.
+- **ADR-0044 is accepted.** A space may address a `fitted_transform` member's
+  own knobs; `FittedTransform._PARAMS` (`fit_split` / `order_field` /
+  `purity_check`) stay refused, including `fit_split.x`. Flow 2 now plans.
 - **Targeted tests, not the whole suite** (owner ruling). Run the suites covering
   what the card touched. Ruff over the whole tree and the hash gate run every time
   regardless — they are seconds and catch what a scoped run cannot.

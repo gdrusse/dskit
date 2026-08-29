@@ -1904,9 +1904,7 @@ carve) is the only route to an unbiased tuned-pipeline estimate. Not C7.
 
 ## ADR-0044 — Searchability of a fitted transform: per-KNOB, not per-role
 
-**Status:** PROPOSED (2026-08-29, surfaced by C6) — awaiting the owner. Nothing
-is implemented; the current behaviour is pinned as-is in
-`tests/pipeline/test_selector.py::test_the_role_is_unsearchable_so_flow_2_is_refused_today`.
+**Status:** accepted (2026-08-29 — owner: do A, then the rest)
 
 **Context.** Two accepted ADRs from the same round disagree on one point.
 ADR-0042 names three owner flows and says all three "fall out" of where the
@@ -1927,17 +1925,11 @@ exact and must not be weakened. It does not, however, reach a MEMBER's own knob:
 rows it learned from — the same kind of knob as `model.estimator`, which is
 searchable.
 
-**Proposal.** Narrow the entry from per-role to per-KNOB: refuse a space key
-addressing `fit_split`, `purity_check` or `order_field` on ANY
-`fitted_transform` node (the head param, so `fit_split.x` is refused too), and
-allow a member's own params. Read the forbidden set from
-`FittedTransform._PARAMS` rather than restating it — a family base that gains a
-fourth leakage knob must not need a planner edit to protect it.
-
-**Why this needs the owner and not this card.** It changes an engine refusal that
-ADR-0040 reasoned about explicitly, and the safe direction is arguable: a
-per-knob rule is one `_PARAMS` tuple away from letting a future base knob through
-silently, while the per-role rule is one line and cannot. That is the owner's
-call, not a card's. Cost of the status quo: ADR-0042's flow 2 is documented but
-unreachable — an escape hatch named and not built, which CLAUDE.md forbids, so
-either this lands or ADR-0042's flow-2 sentence is amended to say so.
+**Decision.** Narrow the entry from per-role to per-KNOB: refuse a space key
+addressing a name in `FittedTransform._PARAMS` on ANY `fitted_transform` node
+(the head param, so `fit_split.x` is refused too), and allow a member's own
+params. The forbidden set is read from that tuple, not restated — a family
+base that gains a fourth leakage knob must not need a planner edit to
+protect it. Pins: `tests/pipeline/test_selector.py` (flow 2 plans;
+`fit_split` / `fit_split.x` still refuse) and
+`tests/pipeline/test_planner.py` (the three base knobs still refuse).

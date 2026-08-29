@@ -218,21 +218,11 @@ class TestLeakageIsRefused:
         with pytest.raises(ConfigError, match="must declare which split"):
             plan(_document({"features": CANDIDATES, "n": 2}, splits=TIME_SPLITS))
 
-    def test_the_role_is_unsearchable_so_flow_2_is_refused_today(self):
-        """ADR-0042 flow 2 versus ADR-0040's shipped guard, pinned.
+    def test_a_members_own_knob_is_searchable_so_flow_2_plans(self):
+        """ADR-0044: a member knob changes what the rule DECIDES.
 
-        ADR-0042 asks for a space over BOTH keys — the model's estimator
-        AND the selector's own method/params. ADR-0040 made the whole
-        ``fitted_transform`` role unsearchable, because every knob the
-        FAMILY BASE declares re-aims what the state was learned from and
-        a trial override is never plan-checked. A member's OWN knob
-        (``n`` here) is not one of those, but the shipped refusal is
-        keyed on the ROLE, so it refuses this too.
-
-        This pin records the behaviour as it stands: narrowing the
-        refusal to the base's knobs is an engine decision the owner
-        rules on, not something this card may widen on its own — so the
-        conflict lives in the suite rather than only in prose.
+        ``select.n`` is not ``fit_split`` / ``purity_check`` / ``order_field``.
+        A space over it is owner flow 2 and must plan.
         """
         pipeline = _pipeline({"fit_split": "train", "features": CANDIDATES,
                               "n": 2})
@@ -244,12 +234,47 @@ class TestLeakageIsRefused:
                 "select": "min",
             },
         )
-        with pytest.raises(ConfigError, match="may not address 'select.n'"):
+        the_plan = plan(
+            PipelineDocument(
+                name="selector-doc", pipeline=pipeline, splits=TIME_SPLITS
+            )
+        )
+        assert the_plan.role_of("select") == "fitted_transform"
+        assert the_plan.role_of("search") == "search"
+
+    def test_a_base_knob_on_a_fitted_transform_is_still_refused(self):
+        """The ADR-0040 rationale, now keyed on FittedTransform._PARAMS.
+
+        ``fit_split.x`` is refused too: the head param is the leakage knob.
+        """
+        from dskit.pipeline.fitted import FittedTransform
+
+        pipeline = _pipeline({"fit_split": "train", "features": CANDIDATES,
+                              "n": 2})
+        pipeline["search"] = NodeSpec(
+            uses="hpo-grid",
+            params={
+                "space": {"select.fit_split": ["train", "val"]},
+                "objective": "$score.metrics.loss",
+                "select": "min",
+            },
+        )
+        with pytest.raises(ConfigError, match="may not address 'select.fit_split'"):
             plan(
                 PipelineDocument(
                     name="selector-doc", pipeline=pipeline, splits=TIME_SPLITS
                 )
             )
+        pipeline["search"].params["space"] = {"select.fit_split.x": ["train"]}
+        with pytest.raises(ConfigError, match="may not address 'select.fit_split"):
+            plan(
+                PipelineDocument(
+                    name="selector-doc", pipeline=pipeline, splits=TIME_SPLITS
+                )
+            )
+        assert FittedTransform._PARAMS == (
+            "fit_split", "order_field", "purity_check"
+        )
 
 
 class TestTheProjection:

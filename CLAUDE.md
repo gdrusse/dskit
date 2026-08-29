@@ -310,9 +310,8 @@ proposal still awaiting the owner (0026), the §14/§13 graduation round
 closeout round (0038…0043: the `TrainableNode` mode-dispatch seam, the
 `foreach` fan-out grammar, gap-aware windows + the fitted-transform
 family, the time-series architecture zoo, feature selection, and
-HPO × walk-forward semantics), plus one more proposal awaiting the owner
-(0044: per-knob searchability for `fitted_transform`, which is what
-ADR-0042's flow 2 needs and ADR-0040's shipped guard refuses). New
+HPO × walk-forward semantics), plus the follow-on (0044: per-knob searchability for
+`fitted_transform`, so ADR-0042's flow 2 can run). New
 significant design decisions still require an ADR in
 `docs/architecture/decision-log.md` before code — no decision
 undocumented.

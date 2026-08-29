@@ -60,6 +60,7 @@ from dskit.pipeline.document import (
     parse_node_ref,
     parse_prev_ref,
 )
+from dskit.pipeline.fitted import FittedTransform
 from dskit.pipeline.node import resolve_uses
 from dskit.pipeline.stats import CORRECTIONS
 
@@ -80,7 +81,9 @@ _TRAINABLE_ROLES = TRAINABLE_ROLES
 #: transform LEARNED FROM (fitted_transform — the ruler exploit one seam
 #: over: :func:`_fitted_errors` only ever sees the BASE pass's params, so
 #: a space addressing ``fit_split`` planned clean and then fitted one
-#: trial on the very split the objective scores).
+#: trial on the very split the objective scores). ADR-0044 narrows that
+#: last family from the ROLE to the family's base knobs
+#: (:attr:`FittedTransform._PARAMS`); a member's own knob is searchable.
 _UNSEARCHABLE_ROLES = {
     "score": (
         "the measurement instrument — an override could re-aim what the "
@@ -792,12 +795,16 @@ def _search_errors(key, spec, specs, roles, edges):
                         "overrides may only address EXISTING params, never "
                         "create them"
                     )
-                why = _UNSEARCHABLE_ROLES.get(roles.get(head))
-                if why is not None:
+                role = roles.get(head)
+                why = _UNSEARCHABLE_ROLES.get(role)
+                if why is not None and not (
+                    role == "fitted_transform"
+                    and parts[1] not in FittedTransform._PARAMS
+                ):
                     problems.append(
                         f"pipeline.{key}: search.space may not address "
                         f"{target!r} — node {head!r} declares role "
-                        f"{roles.get(head)!r}, {why}"
+                        f"{role!r}, {why}"
                     )
                 elif needed is not None and head not in needed:
                     problems.append(

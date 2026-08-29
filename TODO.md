@@ -829,7 +829,7 @@ them.**
       `FittedTransform`, which already subclasses `TrainableNode`, so the
       lifecycle is written once. A second mode dispatch would have been
       the duplication both ADRs exist to remove.
-- [ ] **All three owner flows fall out of ONE modular selector node** — the
+- [x] **All three owner flows fall out of ONE modular selector node** — the
       difference is only where the node sits and what the search space
       covers. Build the node right and the flows are document edits:
       1. *One feature set, sweep models*: selector upstream of the model;
@@ -843,10 +843,10 @@ them.**
       So the design target is the node's interface, not three code paths.
       Keep the selector's fitted state and its declared fit-split as first
       class, and all three compose.
-      **C6 (2026-08-29) landed flows 1 and 3.** Flow 2 cannot run: ADR-0040
-      shipped `fitted_transform` as an unsearchable ROLE, so a space over
-      `select.top_k` refuses at plan. ADR-0044 proposes narrowing that to
-      the family's three leakage knobs; awaiting the owner.
+      **Landed via ADR-0044 (2026-08-29).** C6 had 1 and 3. Flow 2 needed
+      the searchability guard narrowed from the role to
+      `FittedTransform._PARAMS`; a space over `select.n` now plans, a
+      space over `select.fit_split` still refuses.
 
 ## A time-series architecture zoo in the torch pack (owner ask, 2026-08-27)
 

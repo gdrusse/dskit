@@ -561,7 +561,8 @@ class TestSearchRules:
         family's every base knob re-aims what the state learned from —
         ``fit_split`` directly, ``purity_check`` by switching the screen
         off, ``order_field`` by re-cutting which rows fall where — so
-        the role is unsearchable whole, exactly as 'score' is.
+        those knobs stay unsearchable (ADR-0044). A member's own knob
+        is not one of them.
         """
         for knob, values in (("fit_split", ["train", "val", "test"]),
                              ("purity_check", [True, False]),
