@@ -1194,12 +1194,20 @@ def test_the_loop_reads_the_nodes_the_run_RAN_not_the_ones_it_declared():
     ADR-0039 splits a document in two: ``pipeline`` is what the author
     WROTE and ``expanded`` is what the engine RAN, and they are the same
     object only when there is no ``foreach``. run-train.json now has
-    one, so its window node is shared (still in ``pipeline``) while its
-    trainers are template instances (only in ``expanded``) — and a loop
-    reading the declared map alone finds no ``module`` and refuses a run
-    that trained perfectly good models. Both readers therefore read what
-    RAN; documents without a fan-out are unaffected, because for them
-    the two maps ARE one.
+    one, so its trainers are template instances (only in ``expanded``)
+    — and a loop reading the declared map alone finds no ``module`` and
+    refuses a run that trained perfectly good models. Both readers
+    therefore read what RAN; documents without a fan-out are unaffected,
+    because for them the two maps ARE one.
+
+    BOTH nodes are fanned here, which is the whole test: with the window
+    node left in the SHARED map (where the shipped document happens to
+    keep it) ``window_knobs`` reads the same spec off either map, so the
+    reader half of this pin did not bite — reverting ``_window_nodes``
+    to ``document.pipeline`` left the suite green. A document that fans
+    its window node is legal today, so the fixture fans it: only a
+    reader of ``expanded`` finds it, and the two instances agree, which
+    is what ``window_node`` collapses to one.
     """
     from intraday_poc.live import declared_module, window_knobs
 
@@ -1210,14 +1218,17 @@ def test_the_loop_reads_the_nodes_the_run_RAN_not_the_ones_it_declared():
             "pipeline": {
                 "qhat": {"uses": "dskit.pipeline.libs.torch:DeclaredTrain",
                          "params": {"module": "somepkg.models:OtherNet"}},
+                "window": {"uses": "intraday_poc-window",
+                           "params": {"lookback": 3, "price_field": "vwap",
+                                      "max_gap_minutes": 7}},
             },
         },
-        "pipeline": {
-            "window": {"uses": "intraday_poc-window",
-                       "params": {"lookback": 3, "price_field": "vwap",
-                                  "max_gap_minutes": 7}},
-        },
+        "pipeline": {},
     })
+    assert not document.pipeline, (
+        "both readers must have to look at `expanded`, or one of the two "
+        "halves is pinned by a map that carries the node anyway"
+    )
     assert declared_module(document) == "somepkg.models:OtherNet"
     assert window_knobs(document) == ("vwap", 7.0)
 
@@ -1331,6 +1342,53 @@ def test_a_symbol_the_run_trained_no_model_for_is_refused_by_name():
     assert dirs["GOOG"] == os.path.join("/runs/r1", "artifacts", "goog_v2")
 
 
+def test_a_fanned_trainer_answers_only_for_the_symbol_it_was_built_for():
+    """A SUFFIX match lets one symbol's model serve another's bars.
+
+    The fan-out's instance key is ``<template>__<slug>``, so a rule that
+    only asks whether a key ENDS in ``_<slug>`` reads ``qhat__brk_b`` as
+    a match for the symbol ``B``: the loop would restore BRK.B's weights,
+    push B's bars through them and hand the prediction to the selector,
+    and nothing downstream could see it — the regime cross-check compares
+    two artifacts, and here both symbols share ONE. Alpaca spells real
+    tickers this way (BRK.B, BF.B beside A, B, C), and the fan-out's own
+    notes invite exactly this edit ("add a key here").
+
+    The mapping needs no heuristic: ``foreach.keys`` plus the engine's
+    ``foreach_slug`` builds every instance key, so an instance answers
+    for the ONE key it was built from. Hand-declared trainers keep the
+    suffix rule — nothing on disk says which stem is which there — and
+    the ambiguous case among them is still the refusal it was.
+    """
+    from intraday_poc.live import artifact_dirs
+
+    # The fan-out trained BRK.B alone; B is a different symbol.
+    one = _fanned_document(keys=["BRK.B"])
+    assert sorted(one.expanded) == ["qhat__brk_b", "window"]
+    assert artifact_dirs(one, "/runs/r1", ["BRK.B"], {})["BRK.B"] == \
+        os.path.join("/runs/r1", "artifacts", "qhat__brk_b")
+    with pytest.raises(SystemExit, match="qhat__brk_b"):
+        artifact_dirs(one, "/runs/r1", ["BRK.B", "B"], {})
+
+    # ...and when the run DID train both, each gets its own — the suffix
+    # rule matched B against both keys and refused to serve at all.
+    both = _fanned_document(keys=["BRK.B", "B"])
+    dirs = artifact_dirs(both, "/runs/r1", ["BRK.B", "B"], {})
+    assert dirs["BRK.B"] == os.path.join("/runs/r1", "artifacts",
+                                         "qhat__brk_b")
+    assert dirs["B"] == os.path.join("/runs/r1", "artifacts", "qhat__b")
+
+    # A hand-written document carries no fan-out to read, so the suffix
+    # rule still serves it — and still refuses an ambiguous pair rather
+    # than picking one.
+    longhand = _serving_document(("qhat_aapl", "qhat_msft"))
+    assert artifact_dirs(longhand, "/runs/r1", ["AAPL"], {})["AAPL"] == \
+        os.path.join("/runs/r1", "artifacts", "qhat_aapl")
+    ambiguous = _serving_document(("qhat_brk_b", "qhat_b"))
+    with pytest.raises(SystemExit, match="2 trainers"):
+        artifact_dirs(ambiguous, "/runs/r1", ["B"], {})
+
+
 def test_an_artifact_override_for_an_unserved_symbol_is_refused():
     """A typo in ``--artifact`` is an error, not a silent default.
 
@@ -1357,15 +1415,29 @@ def test_the_loop_refuses_a_pair_of_artifacts_trained_at_different_widths(
     but ``hpo-grid`` crosses the expanded space keys, so the winner of a
     nine-trial search may pair 16 with 64 — and the driver re-applies
     the winner to the run's own artifacts, which is what the loop then
-    serves. The real run's margin was 0.4% between a symmetric winner
-    and an asymmetric runner-up, so this is a coin-flip away, not a
-    thought experiment. Nothing else notices: the sidecars verify
-    individually, and the config-level twin pin reads the DECLARED
-    params, which the search never touches. CLAUDE.md's rule for a value
-    that must appear twice is a test or a runtime refusal; the value
-    lands at serve time, so the refusal does too — over the WHOLE
-    ``module_params`` map, because a pin that omits a knob claims
-    coverage it lacks.
+    serves. Six of the shipped grid's nine points are asymmetric, and
+    the RUNNER-UP of the run this branch shipped is one of them (run
+    ``intraday_poc-train-2026-08-28-698e75f3``: 64/64 wins at 0.182448,
+    32/64 is second at 0.068577), so an asymmetric winner is one
+    re-tuned band away, not a thought experiment. Nothing else notices:
+    the sidecars verify individually, and the config-level twin pin
+    reads the DECLARED params, which the search never touches.
+    CLAUDE.md's rule for a value that must appear twice is a test or a
+    runtime refusal; the value lands at serve time, so the refusal does
+    too — over the WHOLE ``module_params`` map, because a pin that omits
+    a knob claims coverage it lacks.
+
+    The refusal's REMEDY is pinned with it, because the first spelling
+    of it named two that do not exist. "Re-run the fit" reproduces the
+    same winner (the grid is enumerated, the loaders are seeded, and two
+    runs of this document produced bit-identical trial lists), and
+    "promote the pairing into both documents" cannot be written down at
+    all: an asymmetric pair needs a per-instance ``module_params``, and
+    declaring ``qhat__aapl`` beside the template it fans from is refused
+    by the engine as a collision. What IS reachable is named instead —
+    the symmetric trials in the run's ``carry.json``, promoted onto the
+    TEMPLATE (one edit, both symbols) — so the operator is not sent to a
+    dead end at the moment trading stops.
     """
     from intraday_poc import live
 
@@ -1378,9 +1450,20 @@ def test_the_loop_refuses_a_pair_of_artifacts_trained_at_different_widths(
 
     monkeypatch.setattr(live, "restore_model", fake_restore)
     document = _fanned_document()
-    with pytest.raises(SystemExit, match="hidden_size"):
+    with pytest.raises(SystemExit, match="hidden_size") as refusal:
         live._restore_signals(document, "/runs/r1", ["AAPL", "MSFT"], {},
                               "intraday_poc.models:NextBarLSTM")
+    message = str(refusal.value)
+    assert "carry.json" in message and "template" in message, (
+        "the refusal must name where the symmetric trials are listed and "
+        "the one declaration that moves both symbols; without them the "
+        "operator's only documented move is a re-run that reproduces the "
+        "same winner"
+    )
+    assert "re-run the fit" not in message, (
+        "the grid is deterministic and the loaders are seeded — re-running "
+        "as declared reproduces the refused pairing"
+    )
 
     widths["qhat__msft"] = 16
     signals, lookback = live._restore_signals(

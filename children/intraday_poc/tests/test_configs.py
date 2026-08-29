@@ -371,6 +371,80 @@ def test_the_runs_sink_is_one_local_store_that_needs_no_server():
     assert sink["params"]["experiment"], "an unnamed experiment is unfindable"
 
 
+def test_the_child_installs_what_its_tracking_sinks_NEED():
+    """A sink the child cannot import aborts the run before node one.
+
+    The driver opens every declared sink BEFORE it resolves the run
+    (``driver.py``'s ``_open_sinks`` call, outside ``run_document``'s
+    try), so a document whose sink pack is not installed does not
+    degrade — it refuses, with nothing computed. ``load_document``,
+    ``validate`` and ``plan`` are all unaffected, which is exactly why
+    no other test in this file notices: they never open a sink.
+
+    The child's own ``pyproject.toml`` is what the README's install line
+    (``pip install -e .``) resolves, so the sink's package belongs in
+    THAT list, not only in the dskit root's optional extra. Derived from
+    the declared sink rather than restated: the kind is a class
+    reference into ``dskit.pipeline.libs.<pack>``, and the pack is named
+    for the distribution it needs — so adding a second sink kind fails
+    here until the child declares its package too.
+    """
+    import tomllib
+
+    with open(os.path.join(CHILD_ROOT, "pyproject.toml"), "rb") as fh:
+        declared = tomllib.load(fh)["project"]["dependencies"]
+    for doc_name in DOCUMENTS:
+        for sink in _raw(doc_name).get("tracking", {}).get("sinks", []):
+            module = sink["kind"].split(":")[0]
+            assert module.startswith("dskit.pipeline.libs."), sink["kind"]
+            pack = module.rsplit(".", 1)[1]
+            assert any(pack in requirement for requirement in declared), (
+                doc_name,
+                f"the {pack!r} sink pack is declared nowhere in the child's "
+                f"dependencies {declared} — `pip install -e .` then `run` "
+                "aborts before a single node executes",
+            )
+
+
+def test_the_readme_carries_the_backtests_selection_skew():
+    """The one caveat a reader of the headline numbers needs.
+
+    ``run-backtest.json`` wires each fold's val window to THREE
+    consumers: the trainer's ``val_rows`` (which selects the shipped
+    epoch), the forecaster's records, and ``labeled`` (which realizes
+    every pick). So one band both picks the checkpoint and grades it,
+    and the document's own notes call ``total_realized`` an upper bound.
+    run-train.json does not share the skew — it monitors on ``mon_rows``
+    — and a README sentence that describes them as one is worse than
+    silence: it tells the reader the walk-forward headline is clean
+    out-of-sample when the document says it is not.
+
+    Pinned against the WIRING, not against prose alone, so the caveat
+    can only be deleted once the overlap actually goes.
+    """
+    backtest = _raw("run-backtest.json")["pipeline"]
+    monitored = {spec["inputs"]["val_rows"].split(".")[0].lstrip("$")
+                 for key, spec in backtest.items()
+                 if key in TRAINERS["run-backtest.json"]}
+    readers = {ref.split(".")[0].lstrip("$")
+               for key, spec in backtest.items()
+               if key not in TRAINERS["run-backtest.json"]
+               for ref in spec.get("inputs", {}).values()}
+    overlap = sorted(monitored & readers)
+    assert overlap == ["aapl_val", "msft_val"], (
+        "the backtest's monitor band is read by other nodes too — that "
+        "overlap IS the skew this test guards; if it has gone, delete the "
+        "README caveat with it"
+    )
+    with open(os.path.join(CHILD_ROOT, "README.md"), encoding="utf-8") as fh:
+        readme = fh.read()
+    assert "upper bound" in readme, (
+        "the README must warn that run-backtest.json's total_realized is "
+        "an upper bound — the val window both selects the checkpoint and "
+        "scores the picks (run-backtest.json's own notes say so)"
+    )
+
+
 def test_run_backtest_is_a_valid_walkforward_document():
     document = load_document(_path("run-backtest.json"))
     assert set(document.pipeline) == BACKTEST_NODES, (
