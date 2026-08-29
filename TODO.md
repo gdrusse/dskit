@@ -104,7 +104,7 @@ REMAINING, in the plan's risk order:
       nesting depth. `kinds_report.py` converted and its ignore entry
       drained; `driver.py` and `libs/torch.py` keep theirs by orchestrator
       ruling — C3 and C6 still own those files and drain them.
-- [ ] **3e — split `kinds_flow.py` (1549 lines, SEVEN unrelated kinds).**
+- [x] **3e — split `kinds_flow.py` (1549 lines, SEVEN unrelated kinds).**
       Not covered by 3d, and not tracked anywhere before 2026-08-27. It
       holds two unrelated subjects: the record-flow verbs (`Filter:177`,
       `Concat:712`, `Join:1092`, `Derive:1359`) and the banking/admission
@@ -185,22 +185,34 @@ found by diffing the documents against `DeclaredTrain._BASE_PARAMS` +
       defaults. **Landed this run (2026-08-27, A1):** declared at Adam
       defaults (`{"weight_decay": 0.0}`) on all four trainers with notes;
       presence pinned.
-- [ ] **`WindowRows` hardcodes the key field names it reads** —
+- [x] **`WindowRows` hardcodes the key field names it reads** —
       `row.get("symbol")` / `row.get("asof_ms")` (`nodes.py:204-206`) while
       `price_field` IS a knob. One of three field names configurable, two
       welded: a second project has different names. Same shape as the
       `MarketRecord` envelope coupling.
+      **Landed this run (2026-08-28, C2) via ADR-0040:** the pack lifts DECLARED
+      key/order/value fields through public accessors, so a keyed series with
+      any vocabulary enters; `WindowRows` keeps its own spellings by
+      overriding them. An overridden accessor NARROWS the knob set — a
+      refusal, not a convention — so validation can never approve a value
+      the run discards.
 - [ ] **`BarsFromStore` hardcodes the whole scan shape** —
       `key_fields`/`ts_field`/`shared_fields` (`nodes.py:117-119`); only
       `stream` is a knob, though `scan_stream` takes all four as
       parameters.
-- [ ] **Nothing normalizes or scales features anywhere** — raw log returns
+- [x] **Nothing normalizes or scales features anywhere** — raw log returns
       go straight into the LSTM, and the toolkit ships no standardizer
       node either. Fold into the window-transform ADR: a scaler must be
       fit on TRAIN only and carried to val/test, so it is a stateful
       transform, not a formula.
+      **Landed this run (2026-08-28, C2) via ADR-0040:** the fitted-transform family ships
+      in tier-1 `fitted.py`, with a standardizing scaler as its first
+      member: `fit` learns from the DECLARED split only, `apply_state` is
+      pure and row-independent, and a `purity_check` screen catches the
+      classic leak of recomputing a statistic over the rows handed in.
+      Leakage refuses at plan where the document can be read.
 
-- [ ] **Continuous ranges in `OptunaSearch` — teach the planner the spec-dict
+- [x] **Continuous ranges in `OptunaSearch` — teach the planner the spec-dict
       grammar.** Owner-approved 2026-08-27. `{"low": .., "high": ..[,
       "log": true][, "int": true]}` already validates inside
       `libs/optuna.py:_spec_problems`, but `planner._search_errors`
@@ -227,7 +239,7 @@ found by diffing the documents against `DeclaredTrain._BASE_PARAMS` +
       only guard), the INTEGRATION FLAG retired, and the ref-driven
       deferral truth stated where the docs overclaimed it.
 
-- [ ] **Gap-aware vectorized window transform — extend `ArrayFeatures`, do
+- [x] **Gap-aware vectorized window transform — extend `ArrayFeatures`, do
       NOT build a new seam.** Owner-approved 2026-08-27, needs an ADR first.
       The tier-2 doorway already exists (`libs/numpy.py`: `ArrayMap` /
       `ArrayFeatures` / `TrailingReturns`) with per-instrument grouping and
@@ -250,6 +262,15 @@ found by diffing the documents against `DeclaredTrain._BASE_PARAMS` +
       `WindowRows` collapses to one `apply()`, inherits the lookahead
       screen, and `live.py:latest_feature_row` stops existing (killing HIGH
       finding 4).
+      **Landed this run (2026-08-28, C2) via ADR-0040:** gap-aware framing via `max_gap`
+      (absent reproduces today exactly), the ops (group/order/gap-split/
+      log+pct return/lag N/lead N), and vectorized with measured evidence.
+      The child's gap semantics were PINNED FIRST against the old node,
+      proven able to fail twice, then the rewrite landed underneath the
+      same pin untouched — that is the parity proof. `WindowRows` is now
+      one `apply()` and INHERITS the causality screen it never had;
+      `live.py:latest_feature_row` is gone, killing the third copy of the
+      chain semantics and the train/serve skew with it.
 
 Hardcoding audit (2026-08-27) — every finding is the SAME failure: one value
 in two places, nothing pinning them, so changing one and not the other is
@@ -267,12 +288,19 @@ HIGH — silent wrong behavior:
       **Landed this run (2026-08-28, A2):** each default named ONCE as a
       module constant read by both `validate_params` and the run; pinned by
       rebinding the constant and watching both follow.
-- [ ] **The numpy pack re-implements `MarketRecord`'s rules** —
+- [x] **The numpy pack re-implements `MarketRecord`'s rules** —
       `libs/numpy.py:113-120` (`_price_ok`, `_lead_ok`) and `:106`/`:110`
       restate `records.py:69-76`/`:150-155`/`:122-132`. Tier-2 duplicating
       tier-1 truth, failing SILENTLY: a value failing `_WRITEBACK` leaves the
       field unchanged, counted and logged, never raised. Loosen a bound in
       `records.py` and `ArrayMap` quietly drops legitimate writebacks.
+      **Landed this run (2026-08-28, C2) via ADR-0040:** `_price_ok`/`_lead_ok` are deleted
+      and the writeback table holds the tier-1 predicates BY IDENTITY, so
+      loosening a bound in `records.py` can no longer silently drop a
+      legitimate writeback. The review went further: `price_ok` and
+      `lead_frac_ok` were themselves the 3rd and 4th copies of one numeric
+      rule, now expressed as narrowings of a single owner,
+      `records.number_ok`.
 - [x] **The bar primary key is stated twice** — `connectors.py:219`
       (`primary_key`) and `nodes.py:117-118` (`key_fields` to `scan_stream`).
       The bitemporal dedup keys off the NODE's copy; diverge and the store
