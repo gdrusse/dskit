@@ -1956,3 +1956,6 @@ that omit it keep their hash.
 chunk, not by `n_train`. Tunable independent of the gradient batch when
 a document wants a larger eval chunk. No whole-split escape hatch —
 set `eval_batch_size` to the split length if a single forward is wanted.
+Assumes a **mean-reduced** objective (the pack default); a
+`reduction="sum"` loss would need its own weighting. Val scoring is ONE
+batched pass (loss + beliefs), not two.

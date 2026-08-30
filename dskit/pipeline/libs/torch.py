@@ -1879,8 +1879,9 @@ class TorchTrain(_TorchModel):
         records but never selects — or the strict curve would abort the
         whole fit instead of restoring the pre-divergence best (ADR-0035).
 
-        Loss and beliefs walk the val split in ``eval_batch_size`` chunks
-        (ADR-0045) so a large val set never materialises in one forward.
+        Loss and beliefs walk the val split in ONE ``eval_batch_size``
+        pass (ADR-0045) so a large val set never materialises in one
+        forward and is never scored twice.
         """
         import torch
 
@@ -1888,8 +1889,7 @@ class TorchTrain(_TorchModel):
             return None, {}
         fit.module.eval()
         with torch.no_grad():
-            val_loss = self._mean_loss(fit, fit.val_set)
-            preds, val_labels = self._beliefs_over(fit, fit.val_set)
+            val_loss, preds, val_labels = self._eval_split(fit, fit.val_set)
         scored = {}
         if preds is not None:
             scored = probability_metrics(preds, val_labels)
@@ -1910,46 +1910,56 @@ class TorchTrain(_TorchModel):
         the split when the last chunk is short — ``sum(mean_i * n_i) / N``,
         never the mean of the chunk means.
         """
-        import torch
+        loss, _preds, _labels = self._eval_split(fit, dataset, beliefs=False)
+        return loss
 
-        n = len(dataset)
-        if n == 0:
-            return float("nan")
-        total = 0.0
-        for start in range(0, n, fit.eval_batch_size):
-            idx = torch.arange(start, min(start + fit.eval_batch_size, n))
-            batch_loss = float(
-                self.loss(
-                    fit.module,
-                    _on_device(fit.adapter, dataset, idx, fit.device),
-                )
-            )
-            total += batch_loss * int(len(idx))
-        return total / n
+    def _eval_split(self, fit, dataset, *, beliefs=True):
+        """One batched walk: weighted mean loss, and optionally beliefs.
 
-    def _beliefs_over(self, fit, dataset):
-        """Concatenate ``adapter.beliefs`` over eval chunks.
+        Parameters
+        ----------
+        fit : _Fit
+            The live training frame (module, adapter, device, chunk size).
+        dataset : TorchBatches
+            The split to score.
+        beliefs : bool
+            When True (default), also concatenate ``adapter.beliefs``;
+            when False, skip that work (``_final_loss`` only needs the
+            scalar).
 
-        Adapters answer sequences (``RowVectorAdapter`` returns plain
-        lists); the metric layer wants one sequence per side, not a
-        nested list of chunks. ``(None, None)`` when the first chunk
-        answers no beliefs.
+        Returns
+        -------
+        tuple
+            ``(mean_loss, preds, labels)``. ``preds``/``labels`` are
+            ``None`` when ``beliefs`` is False or the adapter answers
+            no beliefs on the first chunk.
         """
         import torch
 
         n = len(dataset)
+        if n == 0:
+            return float("nan"), None, None
+        total = 0.0
         preds_out, labels_out = [], []
+        want_beliefs = beliefs
         for start in range(0, n, fit.eval_batch_size):
             idx = torch.arange(start, min(start + fit.eval_batch_size, n))
             batch = _on_device(fit.adapter, dataset, idx, fit.device)
-            preds, labels = fit.adapter.beliefs(fit.module, batch)
-            if preds is None:
-                return None, None
-            preds_out.extend(preds)
-            labels_out.extend(labels)
-        if not preds_out:
-            return None, None
-        return preds_out, labels_out
+            total += float(self.loss(fit.module, batch)) * int(len(idx))
+            if want_beliefs:
+                preds, labels = fit.adapter.beliefs(fit.module, batch)
+                if preds is None:
+                    want_beliefs = False
+                    preds_out, labels_out = None, None
+                else:
+                    preds_out.extend(preds)
+                    labels_out.extend(labels)
+        mean = total / n
+        if not beliefs:
+            return mean, None, None
+        if preds_out is None or not preds_out:
+            return mean, None, None
+        return mean, preds_out, labels_out
 
     @staticmethod
     def _snapshot(module):

@@ -38,7 +38,7 @@ TORCH_PY = (
 #: Content pin of ``libs/torch.py``. Recompute on a deliberate engine-pack
 #: change (ADR-0045 moved it for batched eval); accidental edits fail here.
 TORCH_PY_SHA256 = (
-    "d04e31eb31421a42953c794867d89a836dbe499f2a06c8b0a20ad47217e6eedd"
+    "c281559db34ccc587778302cbf8253acd6e2b74d7086adf876c994f95ac9423a"
 )
 
 SHIPPED = (
