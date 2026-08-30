@@ -25,6 +25,11 @@ Agent orientation template — see README.md for what the child does.
 - **A vendor knob is a `spec()` knob** — bar interval, feed, universe,
   granularity. If a second project would want it different, it cannot be
   a literal inside `_fetch`.
+- **Connector mechanism graduates.** Reusable provider auth, retries,
+  transport, normalization, and polling belong in a dskit tier-2 pack.
+  `connectors.py` subclasses/re-exports that pack and supplies only the
+  child's domain policy. Implement transport here only when it is truly
+  project-specific.
 - **A serving/live loop READS the configs, never restates them.**
   `<run-dir>/config.json` is the whole training document (the driver
   writes it), so lookback, gap discipline, and trainer node keys are
