@@ -18,7 +18,6 @@ from dskit.pipeline.libs.pyomo import PyomoSolve
 from dskit.pipeline.node import Node, register_node_kind, reject_unknown_params
 
 __all__ = [
-    "DEFAULT_LABEL_LEAD",
     "DEFAULT_MAX_GAP_MINUTES",
     "DEFAULT_PRICE_FIELD",
     "DEFAULT_SESSION_TZ",
@@ -33,7 +32,6 @@ DEFAULT_TS_FIELD = "ts"
 DEFAULT_SHARED_FIELDS = ("symbol",)
 DEFAULT_PRICE_FIELD = "close"
 DEFAULT_MAX_GAP_MINUTES = 5
-DEFAULT_LABEL_LEAD = 1
 DEFAULT_SESSION_TZ = "America/New_York"
 DEFAULT_RTH_START_MINUTES = 9 * 60 + 30
 DEFAULT_RTH_END_MINUTES = 16 * 60
@@ -211,7 +209,7 @@ class WindowRows(ReturnWindows):
             "window",
             {"lookback": 30, "label_lead": 5, "max_gap_minutes": 5},
         )
-        node.label_lead()  # 5
+        node.params["label_lead"]  # 5
     """
 
     role = "transform"
@@ -270,10 +268,6 @@ class WindowRows(ReturnWindows):
     def return_kind(self):
         """Use log returns."""
         return "log"
-
-    def label_lead(self):
-        """Read the document's horizon, defaulting to one bar."""
-        return self.params.get("label_lead", DEFAULT_LABEL_LEAD)
 
     def lag_prefix(self):
         """Name lag columns ``ret_lag_*``."""

@@ -100,6 +100,8 @@ def intents(run_doc, records, source_config=None, quantity=1, paper=True):
     AssetError
         If the document, source config, or paper gate fails.
     """
+    if not paper:
+        raise AssetError(["real-money orders are not authorized by this child"])
     if source_config is not None:
         _load_json(source_config)
     document = load_document(run_doc)
