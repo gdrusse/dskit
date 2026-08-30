@@ -31,7 +31,14 @@ from dskit.pipeline.document import NodeSpec, PipelineDocument
 from dskit.pipeline.driver import run_document
 from dskit.pipeline.kinds_banking import BankingReport, Eligibility, EventBank
 from dskit.pipeline.kinds_banking import register as register_banking
-from dskit.pipeline.kinds_flow import Concat, Derive, Filter, Join, register
+from dskit.pipeline.kinds_flow import (
+    Concat,
+    Derive,
+    EventGrid,
+    Filter,
+    Join,
+    register,
+)
 from dskit.pipeline.node import NodeContext, NodeKindRegistry
 from dskit.pipeline.records import MarketRecord
 from dskit.pipeline.synthetic_nodes import SynthClip, SynthEvents, SynthLabels
@@ -895,14 +902,74 @@ class TestDerive:
         assert any("cases[0]" in p for p in problems)
 
 
+class TestEventGrid:
+    def test_keeps_declared_clock_instants_and_preserves_order(self, ctx):
+        records = [
+            drec("A", "A-0", 1000),
+            mrec("A", "A-1", 1500),
+            drec("B", "B-0", 2000),
+            mrec("B", "B-1", 2500),
+        ]
+        whole = EventGrid(
+            "grid", {"period_ms": 1000, "offset_ms": 0}
+        ).run(ctx, {"records": records})
+        half = EventGrid(
+            "grid", {"period_ms": 1000, "offset_ms": 500}
+        ).run(ctx, {"records": records})
+        assert whole["records"] == [records[0], records[2]]
+        assert half["records"] == [records[1], records[3]]
+
+    def test_missing_or_non_integer_instants_drop(self, ctx):
+        records = [
+            {"asof_ms": 0},
+            {"asof_ms": True},
+            {"asof_ms": 1000.0},
+            {"instrument": "missing"},
+            {"asof_ms": 2000},
+        ]
+        out = EventGrid(
+            "grid", {"period_ms": 1000, "offset_ms": 0}
+        ).run(ctx, {"records": records})
+        assert out["records"] == [records[0], records[4]]
+
+    @pytest.mark.parametrize("params", [
+        {},
+        {"period_ms": 0, "offset_ms": 0},
+        {"period_ms": True, "offset_ms": 0},
+        {"period_ms": 1000, "offset_ms": -1},
+        {"period_ms": 1000, "offset_ms": 1000},
+        {"period_ms": 1000, "offset_ms": True},
+        {"period_ms": 1000, "offset_ms": 0, "extra": 1},
+    ])
+    def test_invalid_params_are_refused(self, params):
+        assert EventGrid.validate_params(params)
+        with pytest.raises(ConfigError):
+            EventGrid("grid", params)
+
+    def test_node_references_defer_until_materialized(self):
+        assert EventGrid.validate_params({
+            "period_ms": "$clock.period",
+            "offset_ms": "$clock.offset",
+        }) == []
+
+    def test_inputs_require_only_a_record_list(self):
+        node = EventGrid("grid", {"period_ms": 1000, "offset_ms": 0})
+        assert node.validate_inputs({"records": []}) == []
+        assert node.validate_inputs({}) != []
+        assert node.validate_inputs({"records": {}, "extra": []}) != []
+
+
 class TestRegister:
-    def test_registers_all_four_unowned(self):
+    def test_registers_all_five_unowned(self):
         reg = register(NodeKindRegistry())
-        assert {"filter", "concat", "join", "derive"} <= set(reg.kinds())
+        assert {"filter", "concat", "join", "derive", "event-grid"} <= set(
+            reg.kinds()
+        )
         assert reg.get("filter") == (Filter, False)
         assert reg.get("concat") == (Concat, False)
         assert reg.get("join") == (Join, False)
         assert reg.get("derive") == (Derive, False)
+        assert reg.get("event-grid") == (EventGrid, False)
 
     def test_idempotent_and_never_shadows(self):
         reg = NodeKindRegistry()
