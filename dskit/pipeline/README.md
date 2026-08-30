@@ -194,6 +194,7 @@ Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 | Kind | Role | Does |
 |---|---|---|
 | `filter` | transform | keep records passing `where` clauses / instrument list |
+| `event-grid` | transform | keep records on a declared `asof_ms` period/offset grid |
 | `derive` | transform | add one declared field per record via `when`/`value` cases (no expression language — deliberately) |
 | `concat` | transform | merge record streams into one |
 | `join` | transform | attach keyed lookup rows to records |
@@ -211,6 +212,10 @@ Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 
 † **owned**: documents may not substitute these kinds with their own class —
 the toolkit's statistics are not swappable by config.
+
+`event-grid` requires integer `period_ms > 0` and
+`0 <= offset_ms < period_ms`; it preserves order and keeps rows satisfying
+`(asof_ms - offset_ms) % period_ms == 0`. Missing/non-integer instants drop.
 
 **Fitted transforms are a family, not a kind** (`fitted.py`, ADR-0040). A
 transform that LEARNS — a scaler's means, a selector's surviving columns —
@@ -482,7 +487,7 @@ dskit/pipeline/
 │                      run_walk_forward (one derived run per fold + summary)
 ├── runs.py            reads run dirs back: scan_runs / format_runs (the `runs` verb)
 ├── split_policy.py    split-assignment policies (record / event-open / event-close) + EventBounds
-├── kinds_flow.py      filter, derive, concat, join — the record-flow verbs
+├── kinds_flow.py      filter, event-grid, derive, concat, join — record-flow verbs
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
 │                      accrual -> gate -> ledger spine
 ├── kinds_table.py     table-file, table-write (digest-verified keyed tables)

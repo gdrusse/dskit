@@ -1,4 +1,4 @@
-"""The record-flow kinds: ``filter``, ``concat``, ``join``, ``derive``.
+"""The record-flow kinds: filter, event-grid, concat, join, and derive.
 
 One verb reads a single stream; the RELATIONAL three combine streams
 instead of reading one.
@@ -63,6 +63,7 @@ from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
 __all__ = [
     "Concat",
     "Derive",
+    "EventGrid",
     "Filter",
     "Join",
     "register",
@@ -283,6 +284,140 @@ class Filter(Node):
             if all(_clause_holds(record, clause) for clause in where):
                 kept.append(record)
         self.log.info("filter kept %d/%d record(s)", len(kept), len(records))
+        return {"records": kept}
+
+
+# ---------------------------------------------------------------------------
+# event-grid — event-time cadence independent of label horizon
+# ---------------------------------------------------------------------------
+
+
+class EventGrid(Node):
+    """Keep records whose event instant lies on a declared clock grid.
+
+    Input order and record identity are preserved. A missing or non-integer
+    ``asof_ms`` cannot prove grid membership and is dropped, matching the
+    single-stream sparse-record convention. The period and offset are both
+    hash-material, so action cadence can vary independently of label horizon.
+
+    Parameters
+    ----------
+    params : dict
+        ``period_ms`` (required int > 0) and ``offset_ms`` (required int
+        satisfying ``0 <= offset_ms < period_ms``).
+
+    Examples
+    --------
+    Keep records on five-minute UTC boundaries::
+
+        node = EventGrid(
+            "five-minute",
+            {"period_ms": 300_000, "offset_ms": 0},
+        )
+        out = node.run(ctx, {"records": records})
+    """
+
+    role = "transform"
+    outputs = ("records",)
+    _PARAMS = ("period_ms", "offset_ms")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Validate the declared period and offset.
+
+        Parameters
+        ----------
+        params : dict
+            Node params, possibly carrying unresolved node references.
+
+        Returns
+        -------
+        list of str
+            Every parameter problem; empty when valid.
+        """
+        problems = []
+        _reject_unknown(problems, params, cls._PARAMS)
+        period = params.get("period_ms")
+        offset = params.get("offset_ms")
+        period_ref = is_node_ref(period)
+        offset_ref = is_node_ref(offset)
+        period_ok = (
+            not period_ref
+            and isinstance(period, int)
+            and not isinstance(period, bool)
+            and period > 0
+        )
+        offset_ok = (
+            not offset_ref
+            and isinstance(offset, int)
+            and not isinstance(offset, bool)
+            and offset >= 0
+        )
+        if not period_ref and not period_ok:
+            problems.append(
+                f"period_ms is required as an int > 0, got {period!r}"
+            )
+        if not offset_ref and not offset_ok:
+            problems.append(
+                f"offset_ms is required as an int >= 0, got {offset!r}"
+            )
+        if period_ok and offset_ok and offset >= period:
+            problems.append(
+                "offset_ms must be less than period_ms, "
+                f"got offset_ms={offset!r}, period_ms={period!r}"
+            )
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require one materialized record list.
+
+        Parameters
+        ----------
+        inputs : dict
+            ``records`` must be a list.
+
+        Returns
+        -------
+        list of str
+            Input problems; empty when valid.
+        """
+        if not isinstance(inputs.get("records"), list):
+            return [
+                "records must be a list of records, "
+                f"got {inputs.get('records')!r}"
+            ]
+        return []
+
+    def run(self, ctx, inputs):
+        """Filter records by ``(asof_ms - offset_ms) % period_ms == 0``.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Run frame, used only through node logging.
+        inputs : dict
+            Validated input record list.
+
+        Returns
+        -------
+        dict
+            ``records`` in their original order.
+        """
+        period = self.params["period_ms"]
+        offset = self.params["offset_ms"]
+        records = inputs["records"]
+        kept = []
+        for record in records:
+            instant = _field(record, "asof_ms")
+            if (
+                isinstance(instant, int)
+                and not isinstance(instant, bool)
+                and (instant - offset) % period == 0
+            ):
+                kept.append(record)
+        self.log.info(
+            "event-grid kept %d/%d record(s)", len(kept), len(records)
+        )
         return {"records": kept}
 
 
@@ -1469,10 +1604,11 @@ class Derive(Node):
 # ---------------------------------------------------------------------------
 
 #: The kinds this module ships, in registration order — the
-#: single-stream verb, then the three relational ones. The banking chain
+#: single-stream verbs, then the three relational ones. The banking chain
 #: registers separately, from :mod:`dskit.pipeline.kinds_banking`.
 _KINDS = (
     ("filter", Filter),
+    ("event-grid", EventGrid),
     ("concat", Concat),
     ("join", Join),
     ("derive", Derive),
@@ -1480,7 +1616,7 @@ _KINDS = (
 
 
 def register(registry=None):
-    """Register the four record-flow kinds, ``owned=False``.
+    """Register the five record-flow kinds, ``owned=False``.
 
     Idempotent by SKIPPING any name already present — never shadowing an
     existing registration (deliberate re-binding goes through the

@@ -133,7 +133,7 @@ from dskit.pipeline.fitted import register as _register_fitted_kinds
 from dskit.pipeline.io import load_config, save_config
 from dskit.pipeline.kinds_banking import BankingReport, Eligibility, EventBank
 from dskit.pipeline.kinds_banking import register as _register_banking_kinds
-from dskit.pipeline.kinds_flow import Concat, Derive, Filter, Join
+from dskit.pipeline.kinds_flow import Concat, Derive, EventGrid, Filter, Join
 from dskit.pipeline.kinds_flow import register as _register_flow_kinds
 from dskit.pipeline.kinds_report import RunReport
 from dskit.pipeline.kinds_report import register as _register_report_kinds
@@ -187,7 +187,7 @@ from dskit.pipeline.runs import (
 #: The toolkit-owned kinds claim their names the moment the package
 #: imports (idempotent — a re-import never re-registers): stat_test,
 #: validate and run-report as OWNED doctrine kinds, plus filter /
-#: derive / concat / join / event-bank / eligibility / banking-report /
+#: derive / event-grid / concat / join / event-bank / eligibility / banking-report /
 #: hpo-grid / table-file / table-write.
 #:
 #: EVERY kinds module's register() must be called here: the flow verbs
@@ -212,6 +212,7 @@ __all__ = [
     "Derive",
     "Eligibility",
     "EventBank",
+    "EventGrid",
     "Filter",
     "FittedTransform",
     "ForeachSpec",
