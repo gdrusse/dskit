@@ -369,9 +369,11 @@ def window_knobs(document):
 
 
 def _is_zoo_trainer(spec):
-    """Say whether ``spec`` names the zoo trainer (arch or uses)."""
-    if "arch" in spec.params:
-        return True
+    """Say whether ``spec`` names the zoo trainer (kind or class ref).
+
+    ``arch`` is a zoo param, not the classifier — Predict may pin it
+    and is not a trainer.
+    """
     return spec.uses in _ZOO_USES or _declares(spec.uses, _ZOO_KIND,
                                               TimeSeriesTrain)
 

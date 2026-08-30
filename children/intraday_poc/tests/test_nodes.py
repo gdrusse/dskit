@@ -1203,6 +1203,26 @@ def test_live_reads_the_declared_module_from_the_run_document():
     assert declared_module(_document(zoo)) == TimeSeriesTrain._class_ref()
 
 
+def test_a_predict_node_that_pins_arch_is_not_a_trainer():
+    """``arch`` is a zoo param, not a trainer mark.
+
+    TimeSeriesPredict may pin ``arch`` (optional, not forbidden). A
+    classifier that keys on the param treats ``serve_aapl`` as a second
+    trainer for AAPL and the loop refuses a legal document.
+    """
+    from intraday_poc.live import artifact_dirs
+
+    doc = _document({
+        "window": {"uses": "intraday_poc-window", "params": {"lookback": 3}},
+        "qhat_aapl": {"uses": "torch-ts-train",
+                      "params": {"arch": "lstm", "seq_len": 3}},
+        "serve_aapl": {"uses": "torch-ts-predict",
+                       "params": {"arch": "lstm", "artifact": "x.pt"}},
+    })
+    dirs = artifact_dirs(doc, "/runs/r1", ["AAPL"], {})
+    assert dirs["AAPL"] == os.path.join("/runs/r1", "artifacts", "qhat_aapl")
+
+
 def test_the_loop_reads_the_nodes_the_run_RAN_not_the_ones_it_declared():
     """A fanned-out document keeps its nodes in ``foreach.pipeline``.
 
@@ -2169,7 +2189,11 @@ def test_restore_model_rebuilds_a_zoo_net(tmp_path):
         "params": params,
         "seed": 0,
     }
-    sidecar["state_hash"] = TimeSeriesTrain._state_hash(str(state), sidecar)
+    digest = hashlib.sha256(state.read_bytes())
+    digest.update(b"\x00")
+    digest.update(json.dumps(sidecar, sort_keys=True,
+                             separators=(",", ":")).encode("utf-8"))
+    sidecar["state_hash"] = digest.hexdigest()
     (artifact / "model.json").write_text(json.dumps(sidecar),
                                          encoding="utf-8")
 

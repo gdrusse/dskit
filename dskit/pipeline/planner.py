@@ -64,7 +64,7 @@ from dskit.pipeline.fitted import FittedTransform
 from dskit.pipeline.node import resolve_uses
 from dskit.pipeline.stats import CORRECTIONS
 
-__all__ = ["Plan", "plan"]
+__all__ = ["Plan", "plan", "unsearchable_space_why"]
 
 #: Roles that may carry ``mode``/``artifact`` (spec §5: trainable). The
 #: grammar's own tuple, imported — a second copy here is how a new
