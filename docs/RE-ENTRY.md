@@ -40,4 +40,6 @@ python -m ruff check .
 python -m pytest -q
 ```
 
+Wrap gate: ruff clean; 3,140 passed, 119 skipped.
+
 Planning commit before this refresh: `14d8022`.
