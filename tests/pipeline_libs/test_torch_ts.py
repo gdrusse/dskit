@@ -16,7 +16,8 @@ import pytest
 from dskit.pipeline.document import PipelineDocument
 from dskit.pipeline.driver import run_document
 from dskit.pipeline.libs.torch import TorchPredict, TorchTrain
-from dskit.pipeline.node import Node
+from dskit.pipeline.conformance import NodeProbe, conformance_suite
+from dskit.pipeline.node import Node, NodeContext
 from dskit.pipeline.planner import plan
 
 torch = pytest.importorskip("torch")
@@ -117,6 +118,14 @@ def test_an_unknown_arch_or_head_is_refused_naming_the_vocabulary():
     assert any("regression" in p for p in TimeSeriesTrain.validate_params(
         {**TRAIN_PARAMS, "head": "multiclass"}
     ))
+
+
+def test_an_unhashable_arch_or_head_returns_a_problem():
+    """JSON can put a mapping where a name belongs; validate must not explode."""
+    for knob, junk in (("arch", {}), ("head", []), ("order", {})):
+        problems = TimeSeriesTrain.validate_params({**TRAIN_PARAMS, knob: junk})
+        assert problems and all(isinstance(p, str) for p in problems), knob
+        assert any(knob in p for p in problems), (knob, problems)
 
 
 def test_every_shipped_arch_constructs_and_maps_B_seq_ch_to_B_1():
@@ -264,3 +273,76 @@ def test_register_is_explicit():
     register(registry)
     assert "torch-ts-train" in registry
     register(registry)  # idempotent
+
+
+# ---------------------------------------------------------------------------
+# Conformance (pipeline CLAUDE.md — probes are not optional)
+# ---------------------------------------------------------------------------
+
+PROBE_ROW = ts_rows()[0]
+
+
+def _inverted_rows():
+    rows = ts_rows()
+    for row in rows:
+        row["y"] = 1.0 - row["y"]
+    return rows
+
+
+def probes(tmp_path):
+    """Fixture fit on ``ts_rows``; probe inputs invert ``y`` so a silent
+    refit cannot impersonate a restore.
+    """
+    fixture = TimeSeriesTrain("fixture", dict(TRAIN_PARAMS)).run(
+        NodeContext(
+            name="fixture", asof="2026-01-01",
+            run_dir=str(tmp_path / "fixture-run"),
+        ),
+        {"rows": ts_rows()},
+    )
+    artifact = fixture["artifact_path"]
+    expected = fixture["signal"].predict(PROBE_ROW)
+
+    def restored(out):
+        signal = out["signal"]
+        prediction = signal.predict(PROBE_ROW)
+        return (
+            bool(getattr(signal, "loaded", False))
+            and signal.artifact_path == artifact
+            and prediction is not None
+            and abs(prediction - expected) < 1e-9
+        )
+
+    return {
+        "torch-ts-train": NodeProbe(
+            params=dict(TRAIN_PARAMS),
+            required=("arch", "head", "seq_len", "channels", "features"),
+            inputs={"rows": _inverted_rows()},
+            stream_ports=("rows",),
+            runnable=True,
+            load_artifact=artifact,
+            verify_loaded=lambda out: (
+                restored(out) and out.get("artifact_path") == artifact
+            ),
+        ),
+        "torch-ts-predict": NodeProbe(
+            params={},
+            inputs={"artifact_path": artifact},
+            stream_ports=(),
+            runnable=True,
+            load_artifact=artifact,
+            verify_loaded=restored,
+        ),
+    }
+
+
+TestTorchTsConformance = conformance_suite(
+    registry=NODE_KINDS,
+    module="dskit.pipeline.libs.torch_ts",
+    probes=probes,
+    expected_roles={
+        "torch-ts-train": "train",
+        "torch-ts-predict": "signal",
+    },
+    name="TestTorchTsConformance",
+)

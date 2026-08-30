@@ -1246,6 +1246,22 @@ class TestSelectionDemo:
             "select.selector_params.threshold"
         ]
         assert result.outputs["select"]["features"] == kept[winner_t]
+        # The 4-trial winner is one threshold. Pin BOTH so a no-op
+        # override cannot hide behind whichever value the grid lists first.
+        for threshold, expect in kept.items():
+            one = json.loads(pathlib.Path(SELECTION_DEMO).read_text())
+            one["pipeline"]["select"]["params"]["features"] = [
+                "mid", "noise", "asof_ms",
+            ]
+            one["pipeline"]["sweep"]["params"]["space"][
+                "select.selector_params.threshold"
+            ] = [threshold]
+            one["outputs"] = {"run_root": str(tmp_path / f"t{threshold}")}
+            pinned = run_document(
+                PipelineDocument.from_obj(one), asof=ASOF,
+            )
+            assert pinned.state == "ran", (threshold, pinned.error)
+            assert pinned.outputs["select"]["features"] == expect
 
 
 # ---------------------------------------------------------------------------

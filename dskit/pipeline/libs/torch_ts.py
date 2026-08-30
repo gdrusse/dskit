@@ -367,7 +367,7 @@ class _TsModel:
     """Shared ``build_module`` for the train/predict pair (ADR-0041)."""
 
     _EXTRA_PARAMS = (
-        "arch", "arch_params", "channels", "head", "order", "seq_len",
+        "arch", "arch_params", "channels", "order", "seq_len",
     )
 
     def build_module(self, params):
@@ -419,18 +419,17 @@ def _ts_problems(params, *, require_shape):
                     "may omit it because the sidecar carries the module"
                 )
     arch = params.get("arch")
-    if arch is not None:
-        if arch not in _ARCHS:
-            problems.append(
-                f"arch must be one of {sorted(_ARCHS)}, got {arch!r}"
-            )
+    if arch is not None and (not isinstance(arch, str) or arch not in _ARCHS):
+        problems.append(
+            f"arch must be one of {sorted(_ARCHS)}, got {arch!r}"
+        )
     head = params.get("head")
-    if head is not None and head not in _HEADS:
+    if head is not None and (not isinstance(head, str) or head not in _HEADS):
         problems.append(
             f"head must be one of {sorted(_HEADS)}, got {head!r}"
         )
     order = params.get("order")
-    if order is not None and order not in _ORDERS:
+    if order is not None and (not isinstance(order, str) or order not in _ORDERS):
         problems.append(
             f"order must be one of {_ORDERS}, got {order!r}"
         )
@@ -461,7 +460,7 @@ def _ts_problems(params, *, require_shape):
             continue
         problems.extend(_arch_block_problems(name, block))
         checked.add(name)
-    if arch in _ARCHS and arch not in checked:
+    if isinstance(arch, str) and arch in _ARCHS and arch not in checked:
         problems.extend(_arch_block_problems(arch, {}))
     features = params.get("features")
     if (
@@ -481,6 +480,9 @@ def _ts_problems(params, *, require_shape):
 
 class TimeSeriesTrain(_TsModel, TorchTrain):
     """Fit one zoo architecture on a flat channel-major window.
+
+    ``head`` is the trainer's: it selects the default loss. Predict
+    does not allow it — the sidecar already carries the choice.
 
     Parameters
     ----------
@@ -503,6 +505,8 @@ class TimeSeriesTrain(_TsModel, TorchTrain):
         out = node.run(ctx, {"rows": rows})
     """
 
+    _EXTRA_PARAMS = _TsModel._EXTRA_PARAMS + ("head",)
+
     @classmethod
     def validate_params(cls, params):
         """Problems with ``params``, empty when none."""
@@ -521,9 +525,10 @@ class TimeSeriesTrain(_TsModel, TorchTrain):
 class TimeSeriesPredict(_TsModel, TorchPredict):
     """Serve a :class:`TimeSeriesTrain` artifact.
 
-    ``arch`` / ``head`` / ``seq_len`` are optional — a predict node that
-    pinned them would kill an ``arch`` sweep, because a rerun rebuilds
-    descendants from their own params.
+    ``arch`` / ``seq_len`` / ``channels`` are optional — a predict node
+    that pinned them would kill an ``arch`` sweep, because a rerun
+    rebuilds descendants from their own params. ``head`` is the
+    trainer's.
 
     Parameters
     ----------
