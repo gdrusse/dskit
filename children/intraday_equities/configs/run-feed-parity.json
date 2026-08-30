@@ -1,0 +1,51 @@
+{
+  "name": "intraday-equities-feed-parity",
+  "notes": "Compare overlapping canonical bars by symbol/minute. Tolerances live here, not in code.",
+  "pipeline": {
+    "alpaca": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip"
+      },
+      "notes": "Historical tape."
+    },
+    "schwab": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "schwab"
+      },
+      "notes": "Live tape. Kept on its own source so vendor evidence stays immutable."
+    },
+    "parity": {
+      "uses": "intraday_equities-feed-parity",
+      "inputs": {
+        "left": "$alpaca.records",
+        "right": "$schwab.records"
+      },
+      "params": {
+        "split": "val",
+        "fields": [
+          "open",
+          "high",
+          "low",
+          "close",
+          "volume"
+        ]
+      },
+      "notes": "OHLCV graduates only when this document's discrepancy distribution is stable and explained."
+    }
+  },
+  "splits": {
+    "kind": "time",
+    "train_end_ms": 1764547199000,
+    "val_start_ms": 1764633600000,
+    "val_end_ms": 1772323199000,
+    "test_end_ms": 1788134399000,
+    "notes": "Chronological cuts with a one-day embargo. The latest six months are the lockbox (test); action-window selection and HPO stop at val_end."
+  },
+  "outputs": {
+    "run_root": ""
+  }
+}

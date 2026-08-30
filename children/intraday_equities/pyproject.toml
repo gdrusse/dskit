@@ -1,0 +1,22 @@
+# Standalone child packaging — dskit is the structural coupling (ADR-0021).
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "intraday_equities"
+version = "0.0.1"
+description = "dskit child: US-equity intraday bars, cadence study, paper limits."
+requires-python = ">=3.11"
+dependencies = [
+    "dskit",
+    "alpaca-py>=0.44",
+    "scikit-learn",
+    "torch",
+    "pyomo",
+    "highspy",
+    "optuna",
+]
+
+[tool.setuptools.packages.find]
+include = ["intraday_equities*"]

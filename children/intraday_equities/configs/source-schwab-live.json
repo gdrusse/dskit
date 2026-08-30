@@ -1,0 +1,22 @@
+{
+  "notes": "Live closed one-minute bars for the same cohort. Overlap minutes are re-requested every pull; onboarding's bitemporal dedup is the exact-once rule, not the API. OAuth values stay in named environment variables.",
+  "symbols": [
+    "AAPL",
+    "JPM",
+    "XOM",
+    "WMT",
+    "LLY",
+    "SPY"
+  ],
+  "start": "2016-01-01",
+  "timeframe": [
+    1,
+    "Minute"
+  ],
+  "live_lookback_minutes": 120,
+  "overlap_minutes": 5,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "name": "schwab-bars",
+  "notes": "Structural gates over Schwab live snapshots before certification.",
+  "rules": [
+    {
+      "id": "bars-arrived",
+      "target": "bars",
+      "rule": "row_count",
+      "kwargs": {
+        "min": 1
+      },
+      "severity": "error",
+      "notes": "An empty pull is a broken connector, not a quiet session."
+    },
+    {
+      "id": "close-present",
+      "target": "bars",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "close"
+      },
+      "severity": "error",
+      "notes": "OHLCV features cannot be built from a null close."
+    },
+    {
+      "id": "close-positive",
+      "target": "bars",
+      "rule": "in_range",
+      "kwargs": {
+        "field": "close",
+        "min": 0.01,
+        "max": 100000
+      },
+      "severity": "error",
+      "notes": "A non-positive close would poison log returns."
+    },
+    {
+      "id": "ohlc-present",
+      "target": "bars",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "open"
+      },
+      "severity": "error",
+      "notes": "Parity and ranges need a complete OHLC tuple."
+    },
+    {
+      "id": "symbol-vocabulary",
+      "target": "bars",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "symbol",
+        "values": [
+          "AAPL",
+          "JPM",
+          "XOM",
+          "WMT",
+          "LLY",
+          "SPY"
+        ]
+      },
+      "severity": "error",
+      "notes": "A seventh symbol would silently change the cohort."
+    },
+    {
+      "id": "dates-parse-bitemporally",
+      "target": "bars",
+      "rule": "bitemporal",
+      "severity": "error",
+      "notes": "effective_date must not outrun acquired_at."
+    }
+  ]
+}

@@ -1,0 +1,191 @@
+{
+  "name": "intraday-equities-action-01m",
+  "notes": "Controlled 1-minute action/label document. Identical to its siblings except name, these notes, window.label_lead, and event-grid.period_ms.",
+  "pipeline": {
+    "alpaca": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip"
+      },
+      "notes": "Historical SIP tape. root is the invoking cwd; run from the child root."
+    },
+    "session": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$alpaca.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "session",
+            "op": "==",
+            "value": "rth"
+          }
+        ]
+      },
+      "notes": "Research uses regular-session rows; the store still keeps every vendor minute."
+    },
+    "window": {
+      "uses": "intraday_equities-window",
+      "inputs": {
+        "records": "$session.records"
+      },
+      "params": {
+        "lookback": 30,
+        "label_lead": 1,
+        "max_gap_minutes": 5
+      },
+      "notes": "Elapsed-minute log-return windows. Horizon is this document's only modelling difference besides the grid."
+    },
+    "grid": {
+      "uses": "event-grid",
+      "inputs": {
+        "records": "$window.records"
+      },
+      "params": {
+        "period_ms": 60000,
+        "offset_ms": 0
+      },
+      "notes": "Action cadence. First pass equals the label horizon; decoupling needs a new document."
+    },
+    "tradable": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$grid.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "in",
+            "value": [
+              "AAPL",
+              "JPM",
+              "XOM",
+              "WMT",
+              "LLY"
+            ]
+          }
+        ]
+      },
+      "notes": "SPY stays a feature-only reference and never receives a pick."
+    },
+    "train_rows": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$tradable.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "asof_ms",
+            "op": "<=",
+            "value": "$splits.train_end_ms"
+          }
+        ]
+      },
+      "notes": "Fit stops at the chronological cut; the lockbox is never here."
+    },
+    "val_rows": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$tradable.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "asof_ms",
+            "op": ">=",
+            "value": "$splits.val_start_ms"
+          },
+          {
+            "field": "asof_ms",
+            "op": "<=",
+            "value": "$splits.val_end_ms"
+          }
+        ]
+      },
+      "notes": "Selection window after the embargo, before the lockbox."
+    },
+    "qhat": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnFit",
+      "mode": "train",
+      "inputs": {
+        "rows": "$train_rows.records"
+      },
+      "params": {
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {
+          "alpha": 1.0
+        },
+        "features": [
+          "ret_lag_0",
+          "ret_lag_1",
+          "ret_lag_2",
+          "ret_lag_3",
+          "ret_lag_4",
+          "ret_lag_5",
+          "ret_lag_6",
+          "ret_lag_7",
+          "ret_lag_8",
+          "ret_lag_9",
+          "ret_lag_10",
+          "ret_lag_11",
+          "ret_lag_12",
+          "ret_lag_13",
+          "ret_lag_14",
+          "ret_lag_15",
+          "ret_lag_16",
+          "ret_lag_17",
+          "ret_lag_18",
+          "ret_lag_19",
+          "ret_lag_20",
+          "ret_lag_21",
+          "ret_lag_22",
+          "ret_lag_23",
+          "ret_lag_24",
+          "ret_lag_25",
+          "ret_lag_26",
+          "ret_lag_27",
+          "ret_lag_28",
+          "ret_lag_29"
+        ],
+        "label": "y_next",
+        "seed": 7
+      },
+      "notes": "Fixed ridge baseline so cadence is chosen before model search."
+    },
+    "select": {
+      "uses": "intraday_equities-portfolio",
+      "inputs": {
+        "signal": "$qhat.signal",
+        "records": "$val_rows.records",
+        "labeled": "$val_rows.records"
+      },
+      "params": {
+        "split": "val",
+        "tradable": [
+          "AAPL",
+          "JPM",
+          "XOM",
+          "WMT",
+          "LLY"
+        ]
+      },
+      "notes": "One name among the five tradable names; paper fills come later."
+    }
+  },
+  "splits": {
+    "kind": "time",
+    "train_end_ms": 1764547199000,
+    "val_start_ms": 1764633600000,
+    "val_end_ms": 1772323199000,
+    "test_end_ms": 1788134399000,
+    "notes": "Chronological cuts with a one-day embargo. The latest six months are the lockbox (test); action-window selection and HPO stop at val_end."
+  },
+  "outputs": {
+    "run_root": "",
+    "notes": "Empty = ./pipeline_runs under the invoking cwd."
+  }
+}

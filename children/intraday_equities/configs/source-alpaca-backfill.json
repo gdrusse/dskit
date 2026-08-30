@@ -1,0 +1,23 @@
+{
+  "notes": "SIP one-minute history from 2016 on the raw price scale so overlap comparison matches live Schwab prints. Symbols and interval are config, not code. Secrets are environment-variable names.",
+  "symbols": [
+    "AAPL",
+    "JPM",
+    "XOM",
+    "WMT",
+    "LLY",
+    "SPY"
+  ],
+  "start": "2016-01-01",
+  "feed": "sip",
+  "adjustment": "raw",
+  "timeframe": [
+    1,
+    "Minute"
+  ],
+  "live_lookback_minutes": 1440,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}
