@@ -119,6 +119,7 @@ def test_live_read_re_requests_overlap_but_excludes_open_minute():
         "2026-01-02T14:31:00+00:00",
     ]
     _symbol, params, _timeout = StubSchwabBarsConnector.calls[0]
+    assert params["symbol"] == "AAPL"
     assert params["startDate"] == 1767364140000
     assert params["endDate"] == 1767364320000
     assert params["frequencyType"] == "minute"
