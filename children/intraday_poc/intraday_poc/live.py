@@ -101,7 +101,7 @@ from dskit.pipeline.base import (
 from dskit.pipeline.document import foreach_slug, load_document
 from dskit.pipeline.env import load_env
 from dskit.pipeline.libs.pyomo import DEFAULT_SOLVER
-from dskit.pipeline.libs.torch_ts import TimeSeriesTrain
+from dskit.pipeline.libs.torch_ts import ARCHS, TimeSeriesTrain
 from dskit.pipeline.node import NodeContext
 
 from .connectors import (
@@ -749,20 +749,24 @@ def _zoo_regime(params):
     """Architecture-pinning knobs compared across symbols.
 
     Flatten the selected arch's ``arch_params`` block so ``hidden_size``
-    is a first-class key the pair check names.
+    is a first-class key the pair check names. Pack defaults fill
+    omitted keys — ADR-0041 compares a defaulted knob against the
+    default, not by presence.
     """
     arch = params["arch"]
-    block = ((params.get("arch_params") or {}).get(arch) or {})
-    regime = {
+    defaults = dict((ARCHS.get(arch) or {}).get("defaults") or {})
+    block = {
+        **defaults,
+        **((params.get("arch_params") or {}).get(arch) or {}),
+    }
+    return {
         "arch": arch,
         "seq_len": params["seq_len"],
         "channels": params["channels"],
         "head": params["head"],
-        **dict(block),
+        "order": params.get("order") or "recent_first",
+        **block,
     }
-    if "order" in params:
-        regime["order"] = params["order"]
-    return regime
 
 
 def restore_model(artifact_dir, module_ref):

@@ -1537,6 +1537,22 @@ def test_the_loop_refuses_a_pair_of_artifacts_trained_at_different_widths(
     assert lookback == 3 and sorted(signals) == ["AAPL", "MSFT"]
 
 
+def test_omitted_zoo_defaults_compare_equal_to_the_declared_defaults():
+    """ADR-0041: a defaulted knob compares against the default, not presence."""
+    from dskit.pipeline.libs.torch_ts import ARCHS
+    from intraday_poc.live import _zoo_regime
+
+    base = {"arch": "lstm", "seq_len": 30, "channels": 1, "head": "regression"}
+    omitted = _zoo_regime(base)
+    spelled = _zoo_regime({
+        **base,
+        "order": "recent_first",
+        "arch_params": {"lstm": dict(ARCHS["lstm"]["defaults"])},
+    })
+    assert omitted == spelled
+    assert omitted["hidden_size"] == ARCHS["lstm"]["defaults"]["hidden_size"]
+
+
 def test_the_loop_solves_with_the_solver_the_run_declared():
     """The selector's solver is the run's, not a third copy in the loop.
 

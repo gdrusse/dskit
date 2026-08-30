@@ -14,7 +14,9 @@ import pathlib
 import pytest
 
 from dskit.pipeline.document import PipelineDocument
+from dskit.pipeline.driver import run_document
 from dskit.pipeline.libs.torch import TorchPredict, TorchTrain
+from dskit.pipeline.node import Node
 from dskit.pipeline.planner import plan
 
 torch = pytest.importorskip("torch")
@@ -129,13 +131,67 @@ def test_register_arch_requires_problems_and_defaults():
         register_arch("toy", lambda p, s, c: None)
 
 
-def test_a_space_over_arch_plans_because_arch_is_a_declared_knob(tmp_path):
-    """ADR-0041: architecture is a swept param, not a document edit."""
+class _TsMarket(Node):
+    """Toy lag-rows + outcomes so an ``arch`` sweep can actually run."""
+
+    role = "data"
+    outputs = ("records", "outcomes")
+    _PARAMS = ()
+
+    def run(self, ctx, inputs):
+        rows, outcomes = [], {}
+        for i, row in enumerate(ts_rows(24)):
+            cid = f"c{i}"
+            rows.append({
+                **row,
+                "asof_ms": 86_400_000 * (i + 1),
+                "contract": cid,
+                "cluster": 1,
+                "instrument": "X",
+            })
+            outcomes[cid] = True
+        return {"records": rows, "outcomes": outcomes}
+
+
+def test_a_typo_inside_arch_params_is_refused_at_plan():
+    """Default-deny inside the block (I-227) — a mistyped width is not 32."""
+    problems = TimeSeriesTrain.validate_params({
+        **TRAIN_PARAMS, "arch": "lstm",
+        "arch_params": {"lstm": {"hidde_size": 64}},
+    })
+    assert any("hidde_size" in p and "unknown" in p for p in problems)
+    problems = TimeSeriesTrain.validate_params({
+        **TRAIN_PARAMS, "arch": "lstm",
+        "arch_params": {"ltsm": {"hidden_size": 64}},
+    })
+    assert any("ltsm" in p and "registered" in p for p in problems)
+
+
+def test_builders_read_defaults_from_the_registry_only():
+    """Rebind ``defaults`` and both plan-check and build follow (one name)."""
+    entry = ARCHS["lstm"]
+    original = entry["defaults"]
+    entry["defaults"] = {**original, "hidden_size": 7}
+    try:
+        problems = TimeSeriesTrain.validate_params({
+            **TRAIN_PARAMS, "arch": "lstm",
+        })
+        assert problems == []
+        module = TimeSeriesTrain("m", {**TRAIN_PARAMS, "arch": "lstm"}).build_module(
+            {**TRAIN_PARAMS, "arch": "lstm"}
+        )
+        assert module.inner.rnn.hidden_size == 7
+    finally:
+        entry["defaults"] = original
+
+
+def test_a_space_over_arch_plans_and_picks_a_winner(tmp_path):
+    """ADR-0041 / C5: ``arch`` is a swept param and the sweep RUNS."""
     from dskit.pipeline.node import NodeContext
 
     node = TimeSeriesTrain("model", dict(TRAIN_PARAMS))
     out = node.run(
-        NodeContext(name="t", asof="2026-01-01", run_dir=str(tmp_path)),
+        NodeContext(name="t", asof="2026-01-01", run_dir=str(tmp_path / "one")),
         {"rows": ts_rows()},
     )
     assert "signal" in out and out["metrics"]["epochs"] == 2
@@ -143,16 +199,20 @@ def test_a_space_over_arch_plans_because_arch_is_a_declared_knob(tmp_path):
     doc = PipelineDocument.from_obj({
         "name": "ts-arch-sweep",
         "pipeline": {
+            "data": {
+                "uses": "tests.pipeline_libs.test_torch_ts:_TsMarket",
+            },
             "model": {
                 "uses": "dskit.pipeline.libs.torch_ts:TimeSeriesTrain",
+                "inputs": {"rows": "$data.records"},
                 "params": dict(TRAIN_PARAMS),
             },
             "validate": {
                 "uses": "validate",
                 "inputs": {
-                    "records": "$model.signal",
+                    "records": "$data.records",
                     "signal": "$model.signal",
-                    "outcomes": "$model.signal",
+                    "outcomes": "$data.outcomes",
                 },
                 "params": {"split": "val", "metric": "squared_error",
                            "min_events": 1},
@@ -167,12 +227,21 @@ def test_a_space_over_arch_plans_because_arch_is_a_declared_knob(tmp_path):
             },
         },
         "splits": {
-            "kind": "random", "train_frac": 0.7, "val_frac": 0.3, "seed": 1,
+            "kind": "time",
+            "train_end_ms": 86_400_000 * 16,
+            "val_end_ms": 86_400_000 * 24,
+            "test_end_ms": 86_400_000 * 30,
         },
+        "outputs": {"run_root": str(tmp_path / "runs")},
     })
     the_plan = plan(doc)
     assert the_plan.role_of("model") == "train"
     assert the_plan.role_of("sweep") == "search"
+    result = run_document(doc, asof="2026-01-01")
+    assert result.state == "ran", (result.state, result.error)
+    sweep = result.outputs["sweep"]
+    assert len(sweep["trials"]) == 2
+    assert sweep["best_params"]["model.arch"] in ("dlinear", "mlp")
 
 
 def test_register_is_explicit():

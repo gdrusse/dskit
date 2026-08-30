@@ -14,7 +14,10 @@ is channel-major; the ONE reshape lives in ``build_module``.
 from __future__ import annotations
 
 from dskit.pipeline.libs.torch import DEFAULT_LOSS, TorchPredict, TorchTrain
-from dskit.pipeline.node import DEFAULT_NODE_KINDS
+from dskit.pipeline.node import (
+    DEFAULT_NODE_KINDS,
+    check_int_param,
+)
 
 __all__ = [
     "ARCHS",
@@ -78,21 +81,46 @@ def register_arch(name, build, *, problems, defaults, doc=""):
 
 def _int_ge(name, value, lo):
     """Problems when ``value`` is not an int >= ``lo``. Never arithmetic."""
-    if isinstance(value, bool) or not isinstance(value, int) or value < lo:
-        return [f"{name} must be an int >= {lo}, got {value!r}"]
-    return []
+    problems = []
+    check_int_param(problems, name, value, ge=lo)
+    return problems
+
+
+def _arch_merged(name, block):
+    """``defaults`` under the declared block — the ONE merge."""
+    return {**_ARCHS[name]["defaults"], **(block or {})}
+
+
+def _arch_block_problems(name, block):
+    """Default-deny one ``arch_params`` sub-dict, then the arch's problems."""
+    if not isinstance(block, dict):
+        return [
+            f"arch_params.{name} must be a mapping of that arch's "
+            f"knobs, got {block!r}"
+        ]
+    allowed = _ARCHS[name]["defaults"]
+    unknown = sorted(set(block) - set(allowed))
+    if unknown:
+        return [
+            f"arch_params.{name}: unknown key(s) {unknown} — allowed: "
+            f"{sorted(allowed)} (default-deny inside the block, I-227)"
+        ]
+    return [
+        f"arch_params.{name}.{p}" if "." not in p else p
+        for p in _ARCHS[name]["problems"](_arch_merged(name, block))
+    ]
 
 
 def _hidden_problems(params):
-    return _int_ge("hidden_size", params.get("hidden_size", 32), 1) + _int_ge(
-        "num_layers", params.get("num_layers", 1), 1
+    return _int_ge("hidden_size", params["hidden_size"], 1) + _int_ge(
+        "num_layers", params["num_layers"], 1
     )
 
 
 def _build_dlinear(params, seq_len, channels):
     import torch
 
-    kernel = int(params.get("kernel_size", 3))
+    kernel = int(params["kernel_size"])
 
     class DLinear(torch.nn.Module):
         def __init__(self):
@@ -135,7 +163,7 @@ def _build_nlinear(params, seq_len, channels):
 def _build_mlp(params, seq_len, channels):
     import torch
 
-    hidden = int(params.get("hidden_size", 32))
+    hidden = int(params["hidden_size"])
 
     class MLP(torch.nn.Module):
         def __init__(self):
@@ -155,8 +183,8 @@ def _build_mlp(params, seq_len, channels):
 def _build_rnn(kind, params, seq_len, channels):
     import torch
 
-    hidden = int(params.get("hidden_size", 32))
-    layers = int(params.get("num_layers", 1))
+    hidden = int(params["hidden_size"])
+    layers = int(params["num_layers"])
     cell = torch.nn.LSTM if kind == "lstm" else torch.nn.GRU
 
     class RNN(torch.nn.Module):
@@ -177,8 +205,8 @@ def _build_rnn(kind, params, seq_len, channels):
 def _build_attn(kind, params, seq_len, channels):
     import torch
 
-    hidden = int(params.get("hidden_size", 32))
-    layers = int(params.get("num_layers", 1))
+    hidden = int(params["hidden_size"])
+    layers = int(params["num_layers"])
     cell = torch.nn.LSTM if kind == "lstm" else torch.nn.GRU
 
     class RNNAttn(torch.nn.Module):
@@ -200,7 +228,7 @@ def _build_attn(kind, params, seq_len, channels):
 def _build_tcn(params, seq_len, channels):
     import torch
 
-    hidden = int(params.get("hidden_size", 16))
+    hidden = int(params["hidden_size"])
 
     class TCN(torch.nn.Module):
         def __init__(self):
@@ -218,7 +246,7 @@ def _build_tcn(params, seq_len, channels):
 def _build_cnn1d(params, seq_len, channels):
     import torch
 
-    hidden = int(params.get("hidden_size", 16))
+    hidden = int(params["hidden_size"])
 
     class CNN1d(torch.nn.Module):
         def __init__(self):
@@ -236,8 +264,8 @@ def _build_cnn1d(params, seq_len, channels):
 def _build_patchtst(params, seq_len, channels):
     import torch
 
-    hidden = int(params.get("hidden_size", 16))
-    patch = int(params.get("patch_len", min(2, seq_len)))
+    hidden = int(params["hidden_size"])
+    patch = int(params["patch_len"])
 
     class PatchTST(torch.nn.Module):
         def __init__(self):
@@ -260,12 +288,12 @@ def _build_patchtst(params, seq_len, channels):
 
 
 def _dlinear_problems(params):
-    return _int_ge("kernel_size", params.get("kernel_size", 3), 1)
+    return _int_ge("kernel_size", params["kernel_size"], 1)
 
 
 def _patch_problems(params):
-    return _int_ge("hidden_size", params.get("hidden_size", 16), 1) + _int_ge(
-        "patch_len", params.get("patch_len", 2), 1
+    return _int_ge("hidden_size", params["hidden_size"], 1) + _int_ge(
+        "patch_len", params["patch_len"], 1
     )
 
 
@@ -279,7 +307,7 @@ register_arch(
 )
 register_arch(
     "mlp", _build_mlp, problems=lambda p: _int_ge(
-        "hidden_size", p.get("hidden_size", 32), 1
+        "hidden_size", p["hidden_size"], 1
     ),
     defaults={"hidden_size": 32}, doc="flat MLP over the reshaped window",
 )
@@ -305,13 +333,13 @@ register_arch(
 )
 register_arch(
     "tcn", _build_tcn, problems=lambda p: _int_ge(
-        "hidden_size", p.get("hidden_size", 16), 1
+        "hidden_size", p["hidden_size"], 1
     ),
     defaults={"hidden_size": 16}, doc="dilated causal convolution",
 )
 register_arch(
     "cnn1d", _build_cnn1d, problems=lambda p: _int_ge(
-        "hidden_size", p.get("hidden_size", 16), 1
+        "hidden_size", p["hidden_size"], 1
     ),
     defaults={"hidden_size": 16}, doc="1D convolution over time",
 )
@@ -345,7 +373,9 @@ class _TsModel:
         order = params.get("order") or "recent_first"
         name = params["arch"]
         entry = _ARCHS[name]
-        knobs = {**entry["defaults"], **((params.get("arch_params") or {}).get(name) or {})}
+        knobs = _arch_merged(
+            name, (params.get("arch_params") or {}).get(name) or {},
+        )
         inner = entry["build"](knobs, seq_len, channels)
 
         class _Window(torch.nn.Module):
@@ -411,22 +441,18 @@ def _ts_problems(params, *, require_shape):
         arch_params = {}
     elif not isinstance(arch_params, dict):
         arch_params = {}
-    else:
-        for name, block in arch_params.items():
-            if not isinstance(block, dict):
-                problems.append(
-                    f"arch_params.{name} must be a mapping of that arch's "
-                    f"knobs, got {block!r}"
-                )
-                continue
-            if name in _ARCHS:
-                problems.extend(
-                    f"arch_params.{name}.{p}" if "." not in p else p
-                    for p in _ARCHS[name]["problems"](block)
-                )
-    if arch in _ARCHS:
-        merged = {**_ARCHS[arch]["defaults"], **(arch_params.get(arch) or {})}
-        problems.extend(_ARCHS[arch]["problems"](merged))
+    checked = set()
+    for name, block in arch_params.items():
+        if name not in _ARCHS:
+            problems.append(
+                f"arch_params.{name} is not a registered arch "
+                f"(known: {sorted(_ARCHS)})"
+            )
+            continue
+        problems.extend(_arch_block_problems(name, block))
+        checked.add(name)
+    if arch in _ARCHS and arch not in checked:
+        problems.extend(_arch_block_problems(arch, {}))
     features = params.get("features")
     if (
         seq_ok and ch_ok and isinstance(features, list) and features
@@ -488,6 +514,19 @@ class TimeSeriesPredict(_TsModel, TorchPredict):
     ``arch`` / ``head`` / ``seq_len`` are optional — a predict node that
     pinned them would kill an ``arch`` sweep, because a rerun rebuilds
     descendants from their own params.
+
+    Parameters
+    ----------
+    params : dict
+        ``artifact`` required on load. Shape knobs may be omitted; the
+        sidecar carries the module. Plus :class:`TorchPredict`'s knobs.
+
+    Examples
+    --------
+    Load a zoo artifact without pinning ``arch``::
+
+        node = TimeSeriesPredict("serve", {"artifact": "model.pt"})
+        out = node.run(ctx, {})
     """
 
     @classmethod
