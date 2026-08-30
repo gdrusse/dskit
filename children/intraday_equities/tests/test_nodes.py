@@ -12,7 +12,6 @@ from intraday_equities.nodes import (
     NODE_KINDS,
     BarsFromStore,
     FeedParity,
-    PortfolioSelect,
     WindowRows,
 )
 
