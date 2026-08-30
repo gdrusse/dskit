@@ -83,9 +83,11 @@ def test_the_pair_shares_one_build_module_and_sits_on_the_torch_bases():
 
 
 def test_arch_head_seq_len_are_required_on_the_trainer_only():
-    for missing in ("arch", "head", "seq_len"):
+    for missing in ("arch", "head", "seq_len", "channels"):
         params = {k: v for k, v in TRAIN_PARAMS.items() if k != missing}
         assert any(missing in p for p in TimeSeriesTrain.validate_params(params)), missing
+        nulled = {**TRAIN_PARAMS, missing: None}
+        assert any(missing in p for p in TimeSeriesTrain.validate_params(nulled)), missing
     # Predictor may omit them — the module comes from the sidecar.
     assert TimeSeriesPredict.validate_params({"artifact": "x.pt"}) == []
 
@@ -124,6 +126,18 @@ def test_every_shipped_arch_constructs_and_maps_B_seq_ch_to_B_1():
         module = node.build_module(node.params)
         out = module(batch)
         assert tuple(out.shape) == (3, 1), name
+
+
+def test_tcn_is_dilated_so_the_oldest_lag_can_fire():
+    """ADR-0041 ships dilated causal conv, not a 3-tap last-step filter."""
+    torch.manual_seed(0)
+    module = TimeSeriesTrain("m", {**TRAIN_PARAMS, "arch": "tcn"}).build_module(
+        {**TRAIN_PARAMS, "arch": "tcn"}
+    )
+    base = torch.zeros(1, SEQ * CH)
+    shifted = base.clone()
+    shifted[0, SEQ - 1] = 1.0  # oldest lag under recent_first
+    assert not torch.equal(module(base), module(shifted))
 
 
 def test_register_arch_requires_problems_and_defaults():

@@ -1220,17 +1220,32 @@ class TestSelectionDemo:
         """ADR-0044: a space over BOTH keys is owner flow 2."""
         pytest.importorskip("sklearn")
         obj = json.loads(pathlib.Path(SELECTION_DEMO).read_text())
+        obj["pipeline"]["select"]["params"]["features"] = [
+            "mid", "noise", "asof_ms",
+        ]
         obj["pipeline"]["sweep"]["params"]["space"][
             "select.selector_params.threshold"
-        ] = [0.0, 1e-12]
+        ] = [0.0, 1.0]
         obj["outputs"] = {"run_root": str(tmp_path)}
         doc = PipelineDocument.from_obj(obj)
         plan(doc)
         monkeypatch.chdir(tmp_path)
         result = run_document(doc, asof=ASOF)
-        assert result.state == "ran"
-        assert len(result.outputs["sweep"]["trials"]) == 4
-        assert result.outputs["select"]["features"] == ["mid"]
+        assert result.state == "ran", (result.state, result.error)
+        trials = result.outputs["sweep"]["trials"]
+        assert len(trials) == 4
+        thresholds = {
+            t["overrides"]["select.selector_params.threshold"] for t in trials
+        }
+        assert thresholds == {0.0, 1.0}
+        kept = {
+            0.0: ["mid", "asof_ms"],
+            1.0: ["asof_ms"],
+        }
+        winner_t = result.outputs["sweep"]["best_params"][
+            "select.selector_params.threshold"
+        ]
+        assert result.outputs["select"]["features"] == kept[winner_t]
 
 
 # ---------------------------------------------------------------------------

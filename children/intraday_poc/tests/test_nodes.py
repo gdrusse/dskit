@@ -1539,12 +1539,11 @@ def test_the_loop_refuses_a_pair_of_artifacts_trained_at_different_widths(
 
 def test_omitted_zoo_defaults_compare_equal_to_the_declared_defaults():
     """ADR-0041: a defaulted knob compares against the default, not presence."""
-    from dskit.pipeline.libs.torch_ts import ARCHS
-    from intraday_poc.live import _zoo_regime
+    from dskit.pipeline.libs.torch_ts import ARCHS, zoo_regime
 
     base = {"arch": "lstm", "seq_len": 30, "channels": 1, "head": "regression"}
-    omitted = _zoo_regime(base)
-    spelled = _zoo_regime({
+    omitted = zoo_regime(base)
+    spelled = zoo_regime({
         **base,
         "order": "recent_first",
         "arch_params": {"lstm": dict(ARCHS["lstm"]["defaults"])},
@@ -2163,15 +2162,14 @@ def test_restore_model_rebuilds_a_zoo_net(tmp_path):
     artifact.mkdir()
     state = artifact / "model.pt"
     torch.save(module.state_dict(), state)
+    from dskit.pipeline.libs.torch import ARTIFACT_FORMAT
     sidecar = {
+        "format": ARTIFACT_FORMAT,
         "module_class": TimeSeriesTrain._class_ref(),
         "params": params,
+        "seed": 0,
     }
-    digest = hashlib.sha256(state.read_bytes())
-    digest.update(b"\x00")
-    digest.update(json.dumps(sidecar, sort_keys=True,
-                             separators=(",", ":")).encode("utf-8"))
-    sidecar["state_hash"] = digest.hexdigest()
+    sidecar["state_hash"] = TimeSeriesTrain._state_hash(str(state), sidecar)
     (artifact / "model.json").write_text(json.dumps(sidecar),
                                          encoding="utf-8")
 
@@ -2236,5 +2234,5 @@ def test_restore_model_refuses_a_tampered_artifact(tmp_path):
         fh.write(bytes([last[0] ^ 0xFF]))
     from dskit.pipeline.libs.torch_ts import TimeSeriesTrain
 
-    with pytest.raises(SystemExit, match="state_hash"):
+    with pytest.raises(SystemExit, match="hash"):
         restore_model(artifact_dir, TimeSeriesTrain._class_ref())

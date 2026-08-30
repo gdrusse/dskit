@@ -101,7 +101,12 @@ from dskit.pipeline.base import (
 from dskit.pipeline.document import foreach_slug, load_document
 from dskit.pipeline.env import load_env
 from dskit.pipeline.libs.pyomo import DEFAULT_SOLVER
-from dskit.pipeline.libs.torch_ts import ARCHS, TimeSeriesTrain
+from dskit.pipeline.libs.torch_ts import (
+    NODE_KINDS as TS_NODE_KINDS,
+    TimeSeriesPredict,
+    TimeSeriesTrain,
+    zoo_regime,
+)
 from dskit.pipeline.node import NodeContext
 
 from .connectors import (
@@ -113,7 +118,7 @@ from .nodes import NODE_KINDS, SelectOne, WindowRows
 
 #: Kind name the documents use; the class-ref spelling is the sidecar
 #: identity :meth:`TimeSeriesTrain._class_ref` writes.
-_ZOO_KIND = "torch-ts-train"
+_ZOO_KIND = next(name for name, cls in TS_NODE_KINDS if cls is TimeSeriesTrain)
 _ZOO_REF = TimeSeriesTrain._class_ref()
 _ZOO_USES = frozenset({_ZOO_KIND, _ZOO_REF})
 
@@ -745,30 +750,6 @@ def artifact_dirs(document, run_dir, symbols, overrides):
     return dirs
 
 
-def _zoo_regime(params):
-    """Architecture-pinning knobs compared across symbols.
-
-    Flatten the selected arch's ``arch_params`` block so ``hidden_size``
-    is a first-class key the pair check names. Pack defaults fill
-    omitted keys — ADR-0041 compares a defaulted knob against the
-    default, not by presence.
-    """
-    arch = params["arch"]
-    defaults = dict((ARCHS.get(arch) or {}).get("defaults") or {})
-    block = {
-        **defaults,
-        **((params.get("arch_params") or {}).get(arch) or {}),
-    }
-    return {
-        "arch": arch,
-        "seq_len": params["seq_len"],
-        "channels": params["channels"],
-        "head": params["head"],
-        "order": params.get("order") or "recent_first",
-        **block,
-    }
-
-
 def restore_model(artifact_dir, module_ref):
     """Restore one trained module from its verified artifact.
 
@@ -814,17 +795,6 @@ def restore_model(artifact_dir, module_ref):
     with open(sidecar_path, encoding="utf-8") as fh:
         sidecar = json.load(fh)
 
-    material = {k: v for k, v in sidecar.items() if k != "state_hash"}
-    with open(state_path, "rb") as fh:
-        digest = hashlib.sha256(fh.read())
-    digest.update(b"\x00")
-    digest.update(json.dumps(material, sort_keys=True,
-                             separators=(",", ":")).encode("utf-8"))
-    if digest.hexdigest() != sidecar.get("state_hash"):
-        raise SystemExit(
-            f"artifact {artifact_dir}: state_hash mismatch — the artifact "
-            "was edited or corrupted; refusing to trade on it"
-        )
     params = sidecar.get("params", {})
     recorded = sidecar.get("module_class", "")
     is_zoo = "arch" in params or recorded == _ZOO_REF
@@ -836,25 +806,35 @@ def restore_model(artifact_dir, module_ref):
                 "this run"
             )
         try:
-            module = TimeSeriesTrain("restore", params).build_module(params)
-        except (ConfigError, ValueError, TypeError, KeyError) as exc:
-            raise SystemExit(
-                f"artifact {artifact_dir}: cannot rebuild zoo net: {exc}"
-            ) from exc
+            module, sidecar = TimeSeriesPredict(
+                "restore", {"artifact": state_path},
+            )._load_artifact(state_path)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        params = sidecar.get("params") or {}
         if getattr(module, "seq_len", None) != params.get("seq_len"):
             raise SystemExit(
                 f"artifact {artifact_dir}: module.seq_len "
                 f"{getattr(module, 'seq_len', None)!r} disagrees with "
                 f"params.seq_len {params.get('seq_len')!r}"
             )
-        module.load_state_dict(torch.load(state_path, weights_only=True))
-        module.eval()
         features = list(params.get("features", []))
         if not features:
             raise SystemExit(f"artifact {artifact_dir}: sidecar carries "
                              "no feature list")
-        return module, features, _zoo_regime(params)
+        return module, features, zoo_regime(params)
 
+    material = {k: v for k, v in sidecar.items() if k != "state_hash"}
+    with open(state_path, "rb") as fh:
+        digest = hashlib.sha256(fh.read())
+    digest.update(b"\x00")
+    digest.update(json.dumps(material, sort_keys=True,
+                             separators=(",", ":")).encode("utf-8"))
+    if digest.hexdigest() != sidecar.get("state_hash"):
+        raise SystemExit(
+            f"artifact {artifact_dir}: state_hash mismatch — the artifact "
+            "was edited or corrupted; refusing to trade on it"
+        )
     declared = params.get("module", "")
     if declared != module_ref:
         raise SystemExit(

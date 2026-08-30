@@ -21,11 +21,13 @@ from dskit.pipeline.node import (
 
 __all__ = [
     "ARCHS",
+    "DEFAULT_ORDER",
     "NODE_KINDS",
     "TimeSeriesPredict",
     "TimeSeriesTrain",
     "register",
     "register_arch",
+    "zoo_regime",
 ]
 
 #: name -> {build, problems, defaults, doc}
@@ -39,6 +41,7 @@ _HEADS = {
 }
 
 _ORDERS = ("recent_first", "chrono")
+DEFAULT_ORDER = "recent_first"
 _MIN_SEQ = 2
 
 
@@ -233,11 +236,18 @@ def _build_tcn(params, seq_len, channels):
     class TCN(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.conv = torch.nn.Conv1d(channels, hidden, 3, padding=2)
+            # Two causal dilated layers (k=2, d=1 then d=2). Receptive
+            # field is 4, so every step of a seq_len-4 window can fire.
+            self.c1 = torch.nn.Conv1d(channels, hidden, 2, dilation=1)
+            self.c2 = torch.nn.Conv1d(hidden, hidden, 2, dilation=2)
             self.head = torch.nn.Linear(hidden, 1)
 
         def forward(self, x):
-            y = torch.relu(self.conv(x.transpose(1, 2)))[..., :seq_len]
+            y = x.transpose(1, 2)
+            y = torch.nn.functional.pad(y, (1, 0))
+            y = torch.relu(self.c1(y))
+            y = torch.nn.functional.pad(y, (2, 0))
+            y = torch.relu(self.c2(y))
             return self.head(y[:, :, -1])
 
     return TCN()
@@ -370,7 +380,7 @@ class _TsModel:
 
         seq_len = params["seq_len"]
         channels = params["channels"]
-        order = params.get("order") or "recent_first"
+        order = params.get("order") or DEFAULT_ORDER
         name = params["arch"]
         entry = _ARCHS[name]
         knobs = _arch_merged(
@@ -403,7 +413,7 @@ def _ts_problems(params, *, require_shape):
     problems = []
     if require_shape:
         for knob in ("arch", "head", "seq_len", "channels"):
-            if knob not in params:
+            if knob not in params or params[knob] is None:
                 problems.append(
                     f"{knob} is required on the trainer — the predictor "
                     "may omit it because the sidecar carries the module"
@@ -535,6 +545,36 @@ class TimeSeriesPredict(_TsModel, TorchPredict):
         problems = list(super().validate_params(params))
         problems.extend(_ts_problems(params, require_shape=False))
         return problems
+
+
+def zoo_regime(params):
+    """Architecture-pinning knobs from a trainer's ``params``.
+
+    Serving compares this map across symbols. Defaults come from the
+    registry and :data:`DEFAULT_ORDER` — the same merge
+    :meth:`_TsModel.build_module` uses.
+
+    Parameters
+    ----------
+    params : dict
+        A zoo trainer's params (or a sidecar's ``params``).
+
+    Returns
+    -------
+    dict
+        ``arch``, ``seq_len``, ``channels``, ``head``, ``order``, plus
+        the selected arch's merged knobs.
+    """
+    arch = params["arch"]
+    block = _arch_merged(arch, (params.get("arch_params") or {}).get(arch) or {})
+    return {
+        "arch": arch,
+        "seq_len": params["seq_len"],
+        "channels": params["channels"],
+        "head": params["head"],
+        "order": params.get("order") or DEFAULT_ORDER,
+        **block,
+    }
 
 
 NODE_KINDS = (
