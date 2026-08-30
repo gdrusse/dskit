@@ -31,7 +31,7 @@ _skeleton/
 ├── pyproject.toml            # the child is its own installable project, depending on dskit
 ├── yourproject/
 │   ├── __init__.py           # import = registration of the kinds below
-│   ├── connectors.py         # thin domain adapter; generic transport is dskit
+│   ├── connectors.py         # onboarding seam: your vendor pulls (four verbs)
 │   └── nodes.py              # pipeline seam: your node kinds, default-deny params
 ├── configs/
 │   ├── asset-model.json      # storage seam: your catalog's kinds, as config
@@ -73,9 +73,6 @@ _skeleton/
   interval, feed, adjustment, universe — it is config, not a constant in
   `_fetch`. The test: would a second project want it different? Then it
   cannot be a literal.
-- **Mode is not a source.** One source alias and active config serve both
-  `backfill` and `live`; their checkpoints are already separate. Change
-  knobs by versioning that alias, not by inventing a live-only source.
 - **A serving loop READS the configs; it never restates them.** The driver
   writes the whole training document to `<run-dir>/config.json`, so lookback,
   gap discipline, and the trainer node keys are already on disk — read them.

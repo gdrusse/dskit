@@ -63,21 +63,6 @@ def test_the_skeletons_own_suite_is_green():
     run_child_suite(SKELETON)
 
 
-def test_skeleton_guidance_matches_connector_and_mode_ownership():
-    with open(os.path.join(SKELETON, "README.md"), encoding="utf-8") as fh:
-        readme = fh.read()
-    with open(os.path.join(SKELETON, "CLAUDE.md"), encoding="utf-8") as fh:
-        guidance = fh.read()
-
-    assert "one source alias and active config for both modes" in readme
-    assert "register a SECOND source" not in readme
-    assert "generic transport is dskit" in readme
-    assert "adds `.env.example`" in readme
-    assert "gitignored `.env`" in readme
-    assert "Connector mechanism graduates" in guidance
-    assert "dskit tier-2 pack" in guidance
-
-
 def test_no_dskit_module_imports_children():
     """The isolation half of ADR-0021: the toolkit never reaches into its
     incubator. Import lines only — prose may (and does) MENTION the

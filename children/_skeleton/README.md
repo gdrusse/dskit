@@ -57,15 +57,10 @@ catalog. A run never waits on a certification.
 registers its node kinds, which is what makes `yourproject-*` in the
 document resolve.
 
-**Credentials:** a credentialed child adds `.env.example` containing
-names with blank values; the operator copies it to gitignored `.env`.
-Configs carry environment-variable names only. Mutable OAuth tokens and
-data roots stay outside the repository.
-
-**Going live:** use one source alias and active config for both modes,
-then run `watch --mode live`. Checkpoints are keyed per (source, stream,
-mode), so the cursors never fight. To change knobs, register a new
-version under that alias and retire the old one — mode is not a source.
+**Going live:** register a SECOND source over the SAME connector class
+with different knobs, then `acquire --mode live` on a cadence.
+Checkpoints are keyed per (source, stream, mode), so the backfill and
+live cursors never fight — two configs, never two classes.
 
 **Walk-forward:** a document carrying a `walkforward` section runs with
 `walkforward` in place of `run`.
@@ -96,7 +91,7 @@ _skeleton/
 ├── README.md / CLAUDE.md  # this file; agent orientation
 ├── yourproject/           # tier-3 code; import = registration
 │   ├── __init__.py        # curated re-exports
-│   ├── connectors.py      # thin domain adapter; generic transport is dskit
+│   ├── connectors.py      # onboarding seam: the vendor pull (four verbs)
 │   └── nodes.py           # pipeline seam: node kinds, default-deny params
 ├── configs/               # the domain, as self-documenting JSON
 │   ├── asset-model.json   # the child's catalog kinds
