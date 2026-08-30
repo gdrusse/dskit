@@ -25,7 +25,7 @@ intraday_poc/
 ├── .env.example               # Alpaca paper key pair — copy to .env, fill in
 ├── intraday_poc/
 │   ├── __init__.py            # import = registration of the node kinds
-│   ├── connectors.py          # AlpacaBarsConnector (four verbs; sip/iex knobs)
+│   ├── connectors.py          # thin policy wrapper over dskit's Alpaca pack
 │   ├── nodes.py               # bars / window / forecast / select-one kinds
 │   ├── models.py              # empty bespoke seam (zoo ships standard nets)
 │   ├── live.py                # the forward loop: predict → pick → paper order

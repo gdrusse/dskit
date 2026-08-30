@@ -225,6 +225,61 @@ def test_gz_verify_clean_then_tampered_both_ways(gz_loop):
     assert proc.returncode == 1
     assert any("drift" in p for p in json.loads(proc.stdout)["problems"])
 
+
+def test_authorize_cli_delegates_to_connector_oauth_service(
+        monkeypatch, capsys):
+    from dskit.onboarding import __main__ as cli
+    from dskit.onboarding.libs.schwab import SchwabBarsConnector
+
+    events = []
+
+    class _Service:
+        def authorization_url(self):
+            events.append("url")
+            return "https://auth.example.test/start"
+
+        def exchange(self, returned):
+            events.append(("exchange", returned))
+
+    monkeypatch.setattr(
+        SchwabBarsConnector, "oauth_service",
+        lambda self, config: events.append(("config", config)) or _Service(),
+    )
+    config = json.dumps({"symbols": ["AAPL"], "start": "2026-01-01"})
+
+    assert cli.main([
+        "authorize", "--connector", "schwab", "--config", config,
+    ]) == 0
+    assert capsys.readouterr().out.strip() == "https://auth.example.test/start"
+    assert cli.main([
+        "authorize", "--connector", "schwab", "--config", config,
+        "--code", "https://127.0.0.1?code=abc",
+    ]) == 0
+    assert capsys.readouterr().out.strip() == "authorized"
+    assert ("exchange", "https://127.0.0.1?code=abc") in events
+
+
+def test_watch_cli_wires_interval_to_recurring_acquisition(
+        tmp_path, monkeypatch):
+    from dskit.onboarding import OnboardingRoot
+    from dskit.onboarding import __main__ as cli
+
+    root = OnboardingRoot.create(str(tmp_path / "watch-root"))
+    calls = []
+    monkeypatch.setattr(
+        cli, "run_watch",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    assert cli.main([
+        "watch", "--root", root.root, "--source", "schwab",
+        "--stream", "bars", "--mode", "live", "--every-seconds", "60",
+    ]) == 0
+    args, kwargs = calls[0]
+    assert args[2:6] == ("schwab", "bars", "live", 60.0)
+    assert kwargs["origin"] == "cli"
+    assert callable(kwargs["on_result"])
+
     # Twin (b): a blind byte flip — same emergency, no decode needed.
     blob = bytearray(original)
     blob[len(blob) // 2] ^= 0xFF

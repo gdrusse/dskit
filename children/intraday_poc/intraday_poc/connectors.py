@@ -1,91 +1,15 @@
-"""``connectors`` — the child's onboarding seam (four verbs, ADR-0013).
+"""The child's thin policy wrapper over dskit's Alpaca bars pack.
 
-One connector, one vendor: Alpaca Market Data v2 stock bars for the two
-symbols this PoC trades. ONE registered source (``alpaca``) and ONE
-config serve both pulls: the platform keys checkpoints per (source,
-stream, mode), so ``backfill`` (all the history there is) and ``live``
-(polled forward on a cadence) hold independent cursors without this
-connector branching and without a second source (ADR-0014). A second
-SOURCE NAME would be the bug this child once shipped — observations live
-at ``observations/<source>/`` and a run document reads one source, so
-bars acquired under another name reach no model.
-
-Both modes therefore pull the same feed: SIP consolidated history, free
-back to 2016, with ``end`` clamped 16 minutes into the past per the
-free-tier gate — which a live-mode pull simply trails by that much. The
-IEX feed is real-time-eligible and stays available as a knob, but the
-STORE is deliberately homogeneous; the forward loop's own real-time
-fetch (``live.py``) is where IEX is used.
-
-Cursor semantics, identical to the reference ``localfiles`` connector:
-state maps stream -> ``{"cursor": <max effective RFC-3339 ts emitted>}``;
-a pull fetches from the cursor when there is one (else from where the
-MODE says, below) and emits only bars strictly after it, then
-checkpoints once. The cursor is shared
-across the configured symbols (one fetch returns both); a minute in
-which only ONE symbol printed is still safe — the other symbol's bar for
-that minute arrives in a later pull and is client-side filtered only
-against the cursor, which cannot pass it, so the next pull's fetch window
-re-covers it.
-
-**The two modes differ in exactly one place: where a pull with NO cursor
-starts.** Backfill starts at ``start`` — all the history there is. Live
-is a forward top-up, so it starts at most ``live_lookback_minutes`` ago:
-its cursor is empty on the first pull (they are keyed per mode), and
-windowing that from ``start`` would ask the vendor for the whole history
-a second time and write it as a full duplicate acquisition — every
-later scan then carries two copies of every bar the dedup has to
-collapse. Once the live cursor exists it wins outright, however old it
-is, so an outage is re-covered rather than skipped.
-
-Config knobs (default-deny, per ``spec()``):
-
-- ``symbols`` (required) — list of ticker strings, e.g. ["AAPL", "MSFT"].
-- ``start`` (required) — ISO date/datetime; the earliest bar wanted.
-- ``feed`` — which tape to pull, one of :data:`_FEEDS`; default
-  :data:`DEFAULT_FEED`. SIP is the full consolidated tape, historical
-  only on the free tier; IEX is real-time-eligible (~2.5% of volume).
-- ``adjustment`` — corporate-action adjustment, one of
-  :data:`_ADJUSTMENTS`; default :data:`DEFAULT_ADJUSTMENT` (splits +
-  dividends: the LSTM wants price series stationary across corporate
-  actions).
-- ``live_lookback_minutes`` — how far back a live pull with no cursor
-  reaches (default :data:`DEFAULT_LIVE_LOOKBACK_MINUTES`). Widen it if
-  the backfill's tail is further behind than that; the bars between the
-  backfill cursor and this floor belong to no pull. On ``sip`` it must
-  also exceed the 16-minute clamp below — a live window that ends
-  before it starts emits nothing and checkpoints nothing, so the gate
-  refuses that combination rather than shipping a silent no-op.
-- ``key_env`` / ``secret_env`` — NAMES of the env vars holding the
-  Alpaca key pair (defaults :data:`DEFAULT_KEY_ENV` /
-  :data:`DEFAULT_SECRET_ENV`). The material itself never enters a
-  config, a snapshot, or any hash — the restapi pack's ``secret``
-  doctrine. What COUNTS as a credential is one rule,
-  :func:`resolve_credentials`: the puller reads it out of the process
-  environment, the forward loop out of ``.env`` merged under the
-  process environment, and BOTH refuse an empty value by name.
-
-Every default above has exactly ONE name — the constants below — and
-``spec()`` builds the note a config author reads from it, so prose here
-states which constant applies rather than a second copy of its value.
-
-The BAR INTERVAL is a ``timeframe`` knob on :meth:`AlpacaBarsConnector.spec`
-(:data:`BAR_INTERVAL` is its default). Both fetch paths build their vendor
-``TimeFrame`` from the resolved interval — the store and the served series
-must stay one series.
-
-Import cost: stdlib + dskit. The vendor SDK (``alpaca-py``) is imported
-strictly inside ``check``/``read``/:func:`bar_timeframe` — the same rule
-as pipeline nodes' ``run()``.
+ADR-0046 graduated transport, credentials, windows, normalization, and
+checkpointing to :mod:`dskit.onboarding.libs.alpaca`. This child keeps only
+its model-facing policies: adjusted prices by default and minute-only bars,
+because its serving cadence is minute-derived.
 """
 
 from __future__ import annotations
 
-import math
-import os
-from datetime import datetime, timedelta, timezone
-
-from dskit.onboarding import MODES, PROTOCOL, AssetError, Connector, parse_utc
+from dskit.onboarding import MODES, AssetError
+from dskit.onboarding.libs import alpaca as _alpaca
 
 __all__ = [
     "BACKFILL_MODE",
@@ -104,545 +28,195 @@ __all__ = [
     "resolve_credentials",
 ]
 
-#: The platform's acquisition modes, unpacked rather than restated: a
-#: third mode (ADR-0014 declares two) breaks this import LOUDLY instead
-#: of being silently windowed as a backfill.
 BACKFILL_MODE, LIVE_MODE = MODES
-
-#: The stream this source offers and the tuple that IDENTIFIES a bar.
-#: Both are public because ``nodes.py`` imports them (same package): the
-#: node scans the stream this connector writes and dedupes on the key
-#: this connector publishes as ``primary_key``. Two copies of either
-#: value would let the reader look for a spelling the writer abandoned,
-#: or the store dedupe on a different tuple than the platform advertised
-#: — silently, in both directions.
-BAR_STREAM = "bars"
-BAR_KEY_FIELDS = ("symbol", "ts")
-
-#: The bar-interval units the vendor's ``TimeFrameUnit`` accepts — the
-#: gate refuses anything else by name so a typo never reaches the SDK.
-TIMEFRAME_UNITS = ("Minute", "Hour", "Day", "Week", "Month")
-
-#: The bar interval BOTH fetch paths pull by default —
-#: ``(amount, TimeFrameUnit member name)``. Public because ``live.py``
-#: imports it as the fallback when a caller passes no interval, and
-#: because it IS the ``timeframe`` knob's default. See
-#: :func:`bar_timeframe`.
-BAR_INTERVAL = (1, "Minute")
-
-#: How far back a LIVE pull with no cursor reaches. One name, read by
-#: the knob gate and by ``spec()``'s note — a restated literal in either
-#: would advertise a default the pull does not use.
-DEFAULT_LIVE_LOOKBACK_MINUTES = 1440
-
-_FIELDS = ["symbol", "ts", "open", "high", "low", "close", "volume",
-           "trade_count", "vwap"]
+BAR_STREAM = _alpaca.BAR_STREAM
+BAR_KEY_FIELDS = _alpaca.BAR_KEY_FIELDS
+TIMEFRAME_UNITS = _alpaca.TIMEFRAME_UNITS
+BAR_INTERVAL = _alpaca.BAR_INTERVAL
+DEFAULT_LIVE_LOOKBACK_MINUTES = _alpaca.DEFAULT_LIVE_LOOKBACK_MINUTES
+DEFAULT_FEED = _alpaca.DEFAULT_FEED
+DEFAULT_ADJUSTMENT = "all"
+DEFAULT_KEY_ENV = _alpaca.DEFAULT_KEY_ENV
+DEFAULT_SECRET_ENV = _alpaca.DEFAULT_SECRET_ENV
 
 _FEEDS = ("sip", "iex")
 _ADJUSTMENTS = ("raw", "split", "dividend", "all")
-
-#: The two feeds, unpacked from the vocabulary rather than restated: the
-#: clamp below applies to ONE of them and ``check``'s free latest-bar
-#: round-trip to the OTHER, and neither may drift from what the gate
-#: accepts.
 _SIP_FEED, _IEX_FEED = _FEEDS
-
-#: Every remaining knob default, each named ONCE. The knob gate reads
-#: them and ``spec()`` BUILDS its notes from them (as the lookback note
-#: already did), so a config author can never be told a default the pull
-#: does not use. Pinned by ``test_every_spec_default_is_named_once``.
-DEFAULT_FEED = _SIP_FEED
-DEFAULT_ADJUSTMENT = "all"
-DEFAULT_KEY_ENV = "APCA_API_KEY_ID"
-DEFAULT_SECRET_ENV = "APCA_API_SECRET_KEY"
-
-#: The free tier refuses SIP queries whose ``end`` is inside the last 15
-#: minutes; clamp with a minute of slack rather than erroring mid-pull.
-#: The knob gate reads the same clamp (in minutes) to refuse a live
-#: lookback the clamp would swallow whole.
-_SIP_LAG = timedelta(minutes=16)
+_SIP_LAG = _alpaca._SIP_LAG
 _SIP_LAG_MINUTES = _SIP_LAG.total_seconds() / 60
 
 
 def bar_timeframe(interval=None):
-    """Build the vendor ``TimeFrame`` for ``interval`` (or :data:`BAR_INTERVAL`).
+    """Build Alpaca's timeframe using the child's shared interval default.
 
     Parameters
     ----------
-    interval : sequence of (int, str) or None
-        ``(amount, unit)`` where ``unit`` is a
-        :data:`TIMEFRAME_UNITS` member. ``None`` (the default) uses
-        :data:`BAR_INTERVAL` — the same fallback both fetch paths share
-        when a caller has not resolved knobs yet.
+    interval : sequence or None
+        ``(amount, unit)``; ``None`` uses :data:`BAR_INTERVAL`.
 
     Returns
     -------
     alpaca.data.timeframe.TimeFrame
-        The interval every fetch on this vendor asks for — the
-        connector's ``_fetch`` and the forward loop's own REST pull
-        alike, so the served bars are the series the store holds.
+        Vendor request interval.
 
     Raises
     ------
     ImportError
-        When ``alpaca-py`` is not installed; the import is inside the
-        function, so planning never needs the vendor SDK.
+        If the optional ``alpaca-py`` package is unavailable.
     """
-    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
-
-    amount, unit = BAR_INTERVAL if interval is None else interval
-    return TimeFrame(amount, TimeFrameUnit[unit])
+    return _alpaca.bar_timeframe(BAR_INTERVAL if interval is None else interval)
 
 
-def _timeframe_problems(value):
-    """Problems with a ``timeframe`` knob value, empty when none.
-
-    The PoC's forward loop is minute-aligned (wake cadence derives from
-    the amount), so only ``Minute`` is accepted — Hour/Day/Week/Month
-    would leave ``live.py`` sleeping on a schedule the bars do not use.
-    Changing the amount without re-backfilling the store leaves training
-    on the old series and serving on the new one; the knob note and
-    README say so.
-    """
-    if (
-        not isinstance(value, (list, tuple))
-        or len(value) != 2
-    ):
-        return [
-            f"config.timeframe must be a [amount, unit] pair, got {value!r}"
-        ]
-    amount, unit = value
-    problems = []
-    if (
-        isinstance(amount, bool)
-        or not isinstance(amount, int)
-        or amount < 1
-    ):
-        problems.append(
-            f"config.timeframe amount must be an int >= 1, got {amount!r}"
-        )
-    if unit != "Minute":
-        problems.append(
-            f"config.timeframe unit must be 'Minute' for this PoC "
-            f"(the forward loop's wake cadence is minute-derived), "
-            f"got {unit!r}"
-        )
-    return problems
-
-
-def resolve_credentials(knobs, lookup=os.environ.get):
-    """Resolve the NAMED key pair — the child's ONE credential rule.
-
-    Public, and shared: the puller reaches it through the connector's
-    ``_credentials`` (reading the process environment) and the forward
-    loop calls it with ``.env``-merged values, so the two sides of the
-    child cannot disagree about what counts as a credential. PRESENT is
-    not AUTHENTICATED — an env var set to ``""`` satisfies every
-    presence check there is and then buys nothing but a 401, so it is
-    refused here, by name, before any client is built.
+def resolve_credentials(knobs, lookup=None):
+    """Resolve the named key pair through dskit's single credential rule.
 
     Parameters
     ----------
     knobs : dict
-        Resolved knobs carrying ``key_env`` and ``secret_env`` — the
-        env-var NAMES, as :meth:`AlpacaBarsConnector.resolve_knobs`
-        returns them.
-    lookup : callable
-        ``lookup(name, default)`` returning one value; defaults to the
-        process environment. The forward loop passes ``.get`` of the
-        toolkit's ``Secrets`` façade instead, which is the only
-        difference between the two paths.
+        Resolved connector knobs.
+    lookup : callable or None
+        Environment lookup used by the serving path when provided.
 
     Returns
     -------
-    tuple of (str, str)
-        The Alpaca key id and secret, in that order.
+    tuple
+        Alpaca key id and secret.
 
     Raises
     ------
     AssetError
-        Naming EVERY var that is missing or empty — never echoing the
-        material itself.
+        If either named value is absent or empty.
     """
-    pairs = ((knobs["key_env"], lookup(knobs["key_env"], "")),
-             (knobs["secret_env"], lookup(knobs["secret_env"], "")))
-    missing = [name for name, value in pairs if not value]
-    if missing:
-        raise AssetError(
-            [f"env var(s) {missing} are empty — export the Alpaca key pair, "
-             "or put it in the .env the forward loop reads (see "
-             ".env.example)"]
+    return _alpaca.resolve_credentials(knobs, lookup)
+
+
+def _timeframe_problems(value):
+    """Return child-policy problems with a minute-only interval."""
+    problems = _alpaca._timeframe_problems(value)
+    if not problems and value[1] != "Minute":
+        problems.append(
+            "config.timeframe unit must be 'Minute' for this PoC "
+            f"(the serving cadence is minute-derived), got {value[1]!r}"
         )
-    return pairs[0][1], pairs[1][1]
+    return problems
 
 
-class AlpacaBarsConnector(Connector):
-    """Alpaca v2 stock bars at the declared ``timeframe``, one stream.
+class AlpacaBarsConnector(_alpaca.AlpacaBarsConnector):
+    """Alpaca bars with the PoC's adjusted, minute-only defaults.
 
     Parameters
     ----------
     None
-        The connector is stateless; everything it pulls comes from the
-        config each verb is handed (see the module docs for the knobs).
+        The connector is stateless; config supplies every setting.
 
     Examples
     --------
-    Resolve a config's knobs through the connector's own gate::
+    Resolve the child policy without touching Alpaca::
 
-        conn = AlpacaBarsConnector()
-        knobs = conn.resolve_knobs({"symbols": ["AAPL"],
-                                    "start": "2021-01-01"})
-        knobs["feed"]  # 'sip'
+        connector = AlpacaBarsConnector()
+        knobs = connector.resolve_knobs({
+            "symbols": ["AAPL"],
+            "start": "2026-01-01",
+        })
+        knobs["adjustment"]  # 'all'
     """
 
-    def spec(self) -> dict:
-        """Declare the knob catalogue this connector accepts.
+    def spec(self):
+        """Declare upstream knobs with child-specific default notes.
 
         Returns
         -------
         dict
-            ``{"params": {<knob>: {"required": bool, "notes": str}}}`` —
-            the platform refuses any config key not named here, and the
-            notes are what a config author reads.
+            The upstream catalogue, narrowed to minute bars and adjusted
+            prices by default.
         """
-        return {
-            "params": {
-                "symbols": {
-                    "required": True,
-                    "notes": "Ticker list, e.g. [\"AAPL\", \"MSFT\"].",
-                },
-                "start": {
-                    "required": True,
-                    "notes": "ISO date/datetime of the earliest bar wanted.",
-                },
-                # Every note below is BUILT from the knob's constant,
-                # never restated: a note advertising a stale default is
-                # a config lie.
-                "feed": {
-                    "notes": f"Which tape to pull: {_SIP_FEED} is the full "
-                             f"consolidated tape (historical-only on the "
-                             f"free tier), {_IEX_FEED} is real-time-"
-                             f"eligible. Default {DEFAULT_FEED}.",
-                },
-                "adjustment": {
-                    "notes": "Corporate-action adjustment: "
-                             f"{'|'.join(_ADJUSTMENTS)}. "
-                             f"Default {DEFAULT_ADJUSTMENT}.",
-                },
-                "timeframe": {
-                    "notes": "Bar interval as [amount, 'Minute'] — this "
-                             "PoC's forward loop is minute-aligned, so "
-                             "only Minute is accepted. Default "
-                             f"{BAR_INTERVAL}. Changing the amount "
-                             "without wipe+re-backfill leaves the store "
-                             "on the old series and live on the new one; "
-                             "retune window max_gap_minutes with it.",
-                },
-                "live_lookback_minutes": {
-                    "notes": "How far back a live-mode pull with no "
-                             "cursor reaches; the history is backfill's "
-                             f"job. Default {DEFAULT_LIVE_LOOKBACK_MINUTES}. "
-                             f"On feed {_SIP_FEED} it must exceed the "
-                             f"{_SIP_LAG_MINUTES:g}-minute clamp a live "
-                             "pull ends at, or the window is empty.",
-                },
-                "key_env": {
-                    "notes": "Env var NAME holding the Alpaca key id. "
-                             f"Default {DEFAULT_KEY_ENV}.",
-                },
-                "secret_env": {
-                    "notes": "Env var NAME holding the Alpaca secret. "
-                             f"Default {DEFAULT_SECRET_ENV}.",
-                },
-            },
-        }
+        spec = super().spec()
+        params = spec["params"]
+        params["feed"]["notes"] = (
+            f"Which tape to pull: {_SIP_FEED} is consolidated and "
+            f"{_IEX_FEED} is real-time eligible. Default {DEFAULT_FEED}."
+        )
+        params["adjustment"]["notes"] = (
+            f"Corporate-action adjustment: {'|'.join(_ADJUSTMENTS)}. "
+            f"Default {DEFAULT_ADJUSTMENT}."
+        )
+        params["timeframe"]["notes"] = (
+            "Bar interval as [amount, 'Minute']; serving is minute-aligned. "
+            f"Default {BAR_INTERVAL}."
+        )
+        params["live_lookback_minutes"]["notes"] = (
+            "First live pull's bounded history window. "
+            f"Default {DEFAULT_LIVE_LOOKBACK_MINUTES}. On feed {_SIP_FEED} "
+            f"it must exceed the {_SIP_LAG_MINUTES:g}-minute lag."
+        )
+        params["key_env"]["notes"] = (
+            "Environment-variable name holding the Alpaca key id. "
+            f"Default {DEFAULT_KEY_ENV}."
+        )
+        params["secret_env"]["notes"] = (
+            "Environment-variable name holding the Alpaca secret. "
+            f"Default {DEFAULT_SECRET_ENV}."
+        )
+        return spec
 
-    # -- the knob gate (public: the forward loop resolves through it) ------
-
-    def resolve_knobs(self, config) -> dict:
-        """Validate one source config and return its resolved knobs.
-
-        The gate every verb runs first, and the one ``live.py`` calls to
-        take its vendor knobs from the config the PULLER uses: resolving
-        there rather than restating the defaults means a config this
-        connector accepts is one the serving loop accepts too, with the
-        same fallbacks.
+    def resolve_knobs(self, config):
+        """Apply child defaults and refuse non-minute intervals.
 
         Parameters
         ----------
         config : dict
-            The registered source config.
+            Source configuration.
 
         Returns
         -------
         dict
-            ``symbols`` (list of str), ``start`` (str), ``feed`` (str),
-            ``adjustment`` (str), ``timeframe`` (``(amount, unit)``),
-            ``live_lookback_minutes`` (int or float) and the credential
-            env-var NAMES ``key_env`` / ``secret_env`` — every knob
-            resolved, defaults applied.
+            Fully resolved upstream knobs with child policy applied.
 
         Raises
         ------
         AssetError
-            Listing EVERY invalid knob at once — including a
-            ``live_lookback_minutes`` the declared feed's clamp would
-            swallow, which no pull could ever emit from — then the stamp
-            problems ``parse_utc`` finds in ``start``.
+            If upstream validation or minute-only policy fails.
         """
-        problems = []
-        symbols = config.get("symbols")
-        if (not isinstance(symbols, list) or not symbols
-                or not all(isinstance(s, str) and s for s in symbols)):
-            problems.append(
-                f"config.symbols must be a non-empty list of tickers, "
-                f"got {symbols!r}"
-            )
-        start = config.get("start")
-        if not isinstance(start, str) or not start:
-            problems.append(f"config.start must be an ISO string, got {start!r}")
-        feed = config.get("feed", DEFAULT_FEED)
-        if feed not in _FEEDS:
-            problems.append(f"config.feed must be one of {_FEEDS}, got {feed!r}")
-        adjustment = config.get("adjustment", DEFAULT_ADJUSTMENT)
-        if adjustment not in _ADJUSTMENTS:
-            problems.append(
-                f"config.adjustment must be one of {_ADJUSTMENTS}, "
-                f"got {adjustment!r}"
-            )
-        raw_tf = config.get("timeframe", BAR_INTERVAL)
-        problems.extend(_timeframe_problems(raw_tf))
-        lookback = config.get("live_lookback_minutes",
-                              DEFAULT_LIVE_LOOKBACK_MINUTES)
-        if (isinstance(lookback, bool) or not isinstance(lookback, (int, float))
-                or not math.isfinite(lookback) or lookback <= 0):
-            problems.append(
-                f"config.live_lookback_minutes must be a positive number, "
-                f"got {lookback!r}"
-            )
-        elif feed == _SIP_FEED and lookback <= _SIP_LAG_MINUTES:
-            # A window from now-lookback to now-clamp is EMPTY, so the
-            # pull would emit nothing, checkpoint nothing and repeat
-            # forever — silently. Refuse the combination by name.
-            problems.append(
-                f"config.live_lookback_minutes must exceed the "
-                f"{_SIP_LAG_MINUTES:g}-minute free-tier SIP clamp on "
-                f"feed {_SIP_FEED!r} (a live pull ends there), got "
-                f"{lookback!r} — widen it, or declare feed {_IEX_FEED!r}, "
-                f"which is not clamped"
-            )
+        if not isinstance(config, dict):
+            return super().resolve_knobs(config)
+        timeframe = config.get("timeframe", BAR_INTERVAL)
+        problems = _timeframe_problems(timeframe)
         if problems:
             raise AssetError(problems)
-        parse_utc(start)  # raises AssetError itself on a bad stamp
-        amount, unit = raw_tf
-        return {
-            "symbols": list(symbols),
-            "start": start,
-            "feed": feed,
-            "adjustment": adjustment,
-            "timeframe": (int(amount), unit),
-            "live_lookback_minutes": lookback,
-            "key_env": config.get("key_env", DEFAULT_KEY_ENV),
-            "secret_env": config.get("secret_env", DEFAULT_SECRET_ENV),
-        }
-
-    # -- internals ---------------------------------------------------------
+        declared = dict(config)
+        declared.setdefault("feed", DEFAULT_FEED)
+        declared.setdefault("adjustment", DEFAULT_ADJUSTMENT)
+        declared.setdefault("timeframe", BAR_INTERVAL)
+        declared.setdefault(
+            "live_lookback_minutes", DEFAULT_LIVE_LOOKBACK_MINUTES
+        )
+        declared.setdefault("key_env", DEFAULT_KEY_ENV)
+        declared.setdefault("secret_env", DEFAULT_SECRET_ENV)
+        return super().resolve_knobs(declared)
 
     def _credentials(self, knobs):
-        """Read the named pair from the process environment (shared rule)."""
+        """Resolve credentials through the function the live path imports."""
         return resolve_credentials(knobs)
 
-    def _window(self, knobs, cursor, mode) -> tuple:
-        """Compute the fetch window, ``(start, end)`` or ``(None, None)``.
-
-        From the checkpoint, else from config.start — in live mode no
-        further back than its lookback — to now, clamped for SIP's
-        free-tier 15-minute gate.
-        """
-        start_dt = parse_utc(knobs["start"])
-        if cursor:
-            cursor_dt = parse_utc(cursor)
-            if cursor_dt > start_dt:
-                start_dt = cursor_dt
-        elif mode == LIVE_MODE:
-            floor = datetime.now(timezone.utc) - timedelta(
-                minutes=knobs["live_lookback_minutes"])
-            if floor > start_dt:
-                start_dt = floor
-        end_dt = datetime.now(timezone.utc)
-        if knobs["feed"] == _SIP_FEED:
-            end_dt = end_dt - _SIP_LAG
-        if end_dt <= start_dt:
-            return None, None  # nothing new can exist yet
-        return start_dt, end_dt
-
-    def _fetch(self, knobs, start_dt, end_dt):
-        """Yield ``(symbol, bar_dict)`` ascending in time per symbol.
-
-        The one method that talks to the vendor (tests override it);
-        alpaca-py auto-paginates via page_token under the hood.
-        """
-        from alpaca.data.enums import Adjustment, DataFeed
-        from alpaca.data.historical import StockHistoricalDataClient
-        from alpaca.data.requests import StockBarsRequest
-
-        key, secret = self._credentials(knobs)
-        client = StockHistoricalDataClient(key, secret)
-        request = StockBarsRequest(
-            symbol_or_symbols=knobs["symbols"],
-            timeframe=bar_timeframe(knobs["timeframe"]),
-            start=start_dt,
-            end=end_dt,
-            feed=DataFeed(knobs["feed"]),
-            adjustment=Adjustment(knobs["adjustment"]),
-            limit=None,
-        )
-        bars = client.get_stock_bars(request)
-        for symbol, series in sorted(bars.data.items()):
-            for bar in series:
-                yield symbol, {
-                    "symbol": symbol,
-                    "ts": bar.timestamp.astimezone(timezone.utc).isoformat(),
-                    "open": float(bar.open),
-                    "high": float(bar.high),
-                    "low": float(bar.low),
-                    "close": float(bar.close),
-                    "volume": float(bar.volume),
-                    "trade_count": (None if bar.trade_count is None
-                                    else int(bar.trade_count)),
-                    "vwap": None if bar.vwap is None else float(bar.vwap),
-                }
-
-    # -- the four verbs ----------------------------------------------------
-
-    def check(self, config) -> None:
-        """Fail fast, moving no data.
-
-        Knobs, credentials present, and one authenticated round-trip
-        (the latest bar for the first symbol).
+    def discover(self, config):
+        """Describe the stream using child-exported shared constants.
 
         Parameters
         ----------
         config : dict
-            The source config to check.
+            Source configuration.
 
         Returns
         -------
-        None
-            Silence means the vendor answered.
+        list
+            One bar-stream declaration.
 
         Raises
         ------
         AssetError
-            On a bad knob, an empty credential env var, or a failed
-            round-trip (bad keys, or no network).
+            If config or child interval policy is invalid.
         """
-        knobs = self.resolve_knobs(config)
-        key, secret = self._credentials(knobs)
-        from alpaca.data.enums import DataFeed
-        from alpaca.data.historical import StockHistoricalDataClient
-        from alpaca.data.requests import StockLatestBarRequest
-
-        client = StockHistoricalDataClient(key, secret)
-        try:
-            client.get_stock_latest_bar(StockLatestBarRequest(
-                symbol_or_symbols=knobs["symbols"][:1],
-                feed=DataFeed(_IEX_FEED),  # latest-bar is free only on iex
-            ))
-        except Exception as exc:  # vendor errors are not AssetErrors yet
-            raise AssetError(
-                [f"Alpaca round-trip failed: {exc} — bad keys, or no network?"]
-            ) from exc
-
-    def discover(self, config) -> list:
-        """Advertise the one stream this source offers.
-
-        Parameters
-        ----------
-        config : dict
-            The source config, gated first so discovery never advertises
-            a stream a bad config could not pull.
-
-        Returns
-        -------
-        list of dict
-            One entry: the :data:`BAR_STREAM` stream, its field list,
-            and :data:`BAR_KEY_FIELDS` as ``primary_key``.
-
-        Raises
-        ------
-        AssetError
-            On any invalid knob.
-        """
-        knobs = self.resolve_knobs(config)
-        return [{
-            "stream": BAR_STREAM,
-            "schema": {"fields": list(_FIELDS)},
-            "primary_key": list(BAR_KEY_FIELDS),
-            "timeframe": list(knobs["timeframe"]),
-        }]
-
-    def read(self, config, streams, state, mode):
-        """Emit SCHEMA, then cursor-filtered RECORDs, then one STATE.
-
-        Parameters
-        ----------
-        config : dict
-            The source config.
-        streams : list of str
-            The streams to pull; only :data:`BAR_STREAM` exists.
-        state : dict
-            The checkpoint for this (source, stream, mode), as the
-            platform loaded it; ``{}`` on a first pull.
-        mode : str
-            :data:`BACKFILL_MODE` or :data:`LIVE_MODE` — it decides only
-            where a pull with NO cursor starts (see the module docs).
-
-        Yields
-        ------
-        dict
-            One SCHEMA message, then one RECORD per bar strictly newer
-            than the cursor, then one STATE carrying the new cursor.
-
-        Raises
-        ------
-        AssetError
-            On a non-dict state, an empty stream list, an unknown
-            stream, or any invalid knob.
-        """
-        if not isinstance(state, dict):
-            raise AssetError([f"state must be a dict, got {state!r}"])
-        if not isinstance(streams, list) or not streams:
-            raise AssetError([f"streams must be a non-empty list, got {streams!r}"])
-        knobs = self.resolve_knobs(config)
-        new_state = {k: dict(v) for k, v in state.items()}
-
-        for stream in streams:
-            if stream != BAR_STREAM:
-                raise AssetError(
-                    [f"unknown stream {stream!r} — discovered: "
-                     f"[{BAR_STREAM!r}]"]
-                )
-            cursor = state.get(stream, {}).get("cursor", "")
-            cursor_dt = parse_utc(cursor) if cursor else None
-
-            yield {"protocol": PROTOCOL, "type": "SCHEMA", "stream": stream,
-                   "schema": {"fields": list(_FIELDS)}}
-
-            emitted_max = cursor
-            emitted_max_dt = cursor_dt
-            start_dt, end_dt = self._window(knobs, cursor, mode)
-            if start_dt is not None:
-                for _symbol, data in self._fetch(knobs, start_dt, end_dt):
-                    eff = data["ts"]
-                    eff_dt = parse_utc(eff)
-                    if cursor_dt is not None and eff_dt <= cursor_dt:
-                        continue  # already durable per the checkpoint
-                    yield {"protocol": PROTOCOL, "type": "RECORD",
-                           "stream": stream, "effective_date": eff,
-                           "kind": "observation", "data": data}
-                    if emitted_max_dt is None or eff_dt > emitted_max_dt:
-                        emitted_max, emitted_max_dt = eff, eff_dt
-            new_state.setdefault(stream, {})["cursor"] = emitted_max
-
-        yield {"protocol": PROTOCOL, "type": "STATE", "state": new_state}
+        stream = super().discover(config)[0]
+        stream["stream"] = BAR_STREAM
+        stream["primary_key"] = list(BAR_KEY_FIELDS)
+        return [stream]

@@ -31,6 +31,8 @@ python -m dskit.onboarding register-source vendor --root ./onboarding_root \
     --config '{"path": "./data", "effective_field": "date"}' --activate
 python -m dskit.onboarding acquire --root ./onboarding_root \
     --source vendor --stream prices --mode backfill      # WORM snapshot + evidence
+python -m dskit.onboarding watch --root ./onboarding_root \
+    --source vendor --stream prices --mode live --every-seconds 60
 python -m dskit.onboarding validate --root ./onboarding_root \
     --suite examples/onboarding/suite-basic.json --snapshot <vid>
 python -m dskit.onboarding certify --root ./onboarding_root \
@@ -136,6 +138,29 @@ credential, optional server-side `since` filtering. See
 [`examples/onboarding/source-restapi.json`](../../examples/onboarding/source-restapi.json)
 for a worked config and `libs/restapi.py` for the knob reference.
 
+Market-bar packs are registered as `alpaca` and `schwab`. Both emit
+`bars` keyed by `(symbol, ts)` with provider-neutral OHLCV fields.
+Alpaca adds trade count/VWAP; Schwab emits those fields as null and
+re-requests a declared live overlap so bitemporal dedup retains the
+latest evidence. Install `dskit[alpaca]` for Alpaca; Schwab REST is
+stdlib-only.
+
+## OAuth authorization
+
+OAuth config stores environment-variable names only. For Schwab, export
+`SCHWAB_APP_KEY`, `SCHWAB_APP_SECRET`, `SCHWAB_CALLBACK_URL`, and
+`SCHWAB_TOKEN_PATH`, then run:
+
+```bash
+python -m dskit.onboarding authorize --connector schwab --config @source.json
+python -m dskit.onboarding authorize --connector schwab --config @source.json \
+    --code '<complete callback URL>'
+```
+
+The first command prints the browser URL. The second atomically saves a
+mode-0600 token; acquisitions refresh it automatically and fail loudly
+when manual authorization is required again.
+
 ## The root layout
 
 ```
@@ -205,14 +230,18 @@ dskit/onboarding/
 ├── coverage.py        CoverageLedger: the (source, stream, unit, period) done-set
 ├── codec.py           extension-declared codecs: deterministic gzip, loud decode (ADR-0036)
 ├── observations.py    the read seam: deduplicated snapshots + content digest (ADR-0037)
+├── oauth.py           OAuth2 manual exchange + atomic owner-only refresh tokens
 ├── snapshot.py        Merkle manifests, WORM commits, verify, find-by-hash
 ├── acquire.py         run_acquisition: pull -> snapshot -> evidence -> checkpoint
 ├── validate.py        ValidationSuite / Rule, the rule engine, run_suite
 ├── certify.py         certify: the decision over one result (block gate enforced)
 ├── publish.py         publish_version: pointer manifest into the outbox
 ├── libs/
+│   ├── alpaca.py      Alpaca Market Data stock bars (optional alpaca-py)
 │   ├── localfiles.py  reference connector: CSV/JSONL directories (stdlib)
-│   └── restapi.py     declarative REST/JSON connector (stdlib urllib, ADR-0017)
+│   ├── restapi.py     declarative REST/JSON connector (stdlib urllib, ADR-0017)
+│   └── schwab.py      Schwab closed-minute REST bars + OAuth refresh
+├── watch.py           repeated finite acquisitions; first error stops
 ├── __main__.py        the CLI: python -m dskit.onboarding
 ├── README.md          this file
 └── CLAUDE.md          agent orientation

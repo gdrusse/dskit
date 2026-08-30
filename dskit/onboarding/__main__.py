@@ -7,9 +7,13 @@ The full loop, in command order:
 * ``register-source <name> --catalog-source <alias> --connector <ref>
   [--config <json|@file>] [--activate]`` — register the operational
   ``source_config`` (and optionally move it draft -> active).
+* ``authorize --connector <ref> --config <json|@file> [--code <result>]`` —
+  print an OAuth URL or exchange the browser's callback result.
 * ``acquire --source <name> --stream <s> --mode backfill|live`` — one
   connector pull: WORM snapshot + normalized rows + evidence records +
   a mode-keyed checkpoint.
+* ``watch --source <name> --stream <s> --mode backfill|live
+  --every-seconds <n>`` — repeat that same finite pull; stop on one error.
 * ``validate --suite <file> --snapshot <vid>`` — run a declarative
   suite; register the content-addressed result.
 * ``certify --result <vid> --decision certified|refused [--by <who>]``
@@ -39,10 +43,12 @@ from dskit.assets.model import load_model
 from .acquire import run_acquisition
 from .base import AssetError, MODES
 from .certify import DECISIONS, certify
+from .connector import check_config, resolve_connector
 from .layout import OnboardingRoot
 from .publish import publish_version
 from .snapshot import verify_snapshot
 from .validate import load_suite, run_suite
+from .watch import run_watch
 
 
 def _root(args) -> OnboardingRoot:
@@ -109,12 +115,75 @@ def cmd_register_source(args) -> int:
     return 0
 
 
+def cmd_authorize(args):
+    """Print an OAuth URL or persist a manually returned authorization.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Connector reference, source config, and optional callback result.
+
+    Returns
+    -------
+    int
+        Zero after printing the URL or securely saving a token.
+
+    Raises
+    ------
+    AssetError
+        If the connector is not OAuth-capable or authorization fails.
+    """
+    connector = resolve_connector(args.connector)()
+    config = _parse_config(args.config)
+    check_config(connector, config)
+    factory = getattr(connector, "oauth_service", None)
+    if not callable(factory):
+        raise AssetError(
+            [f"connector {args.connector!r} does not expose OAuth authorization"]
+        )
+    service = factory(config)
+    if args.code:
+        service.exchange(args.code)
+        print("authorized")
+    else:
+        print(service.authorization_url())
+    return 0
+
+
 def cmd_acquire(args) -> int:
     summary = run_acquisition(
         _root(args), _registry(args), args.source, args.stream, args.mode,
         origin=args.origin,
     )
     print(json.dumps(summary, indent=2))
+    return 0
+
+
+def cmd_watch(args):
+    """Run recurring finite acquisitions and print each result immediately.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Root, source, stream, mode, interval, model, and origin values.
+
+    Returns
+    -------
+    int
+        Zero only if the unbounded watch is externally interrupted cleanly.
+
+    Raises
+    ------
+    AssetError
+        Propagated from the first failed finite acquisition.
+    """
+    def emit(summary):
+        print(json.dumps(summary, sort_keys=True), flush=True)
+
+    run_watch(
+        _root(args), _registry(args), args.source, args.stream, args.mode,
+        args.every_seconds, origin=args.origin, on_result=emit,
+    )
     return 0
 
 
@@ -203,6 +272,17 @@ def main(argv=None) -> int:
     _add_common(p)
     p.set_defaults(fn=cmd_register_source)
 
+    p = sub.add_parser(
+        "authorize", help="print OAuth URL or exchange a manual callback result"
+    )
+    p.add_argument("--connector", required=True,
+                   help="OAuth-capable connector kind or pkg.module:Class")
+    p.add_argument("--config", required=True,
+                   help="connector config as inline JSON object, or @file")
+    p.add_argument("--code", default="",
+                   help="raw authorization code or complete callback URL")
+    p.set_defaults(fn=cmd_authorize)
+
     p = sub.add_parser("acquire", help="one connector pull (snapshot + evidence)")
     p.add_argument("--source", required=True)
     p.add_argument("--stream", required=True)
@@ -211,6 +291,16 @@ def main(argv=None) -> int:
                         "independent checkpoints (ADR-0014)")
     _add_common(p)
     p.set_defaults(fn=cmd_acquire)
+
+    p = sub.add_parser(
+        "watch", help="repeat finite acquisitions; stop on the first error"
+    )
+    p.add_argument("--source", required=True)
+    p.add_argument("--stream", required=True)
+    p.add_argument("--mode", required=True, choices=MODES)
+    p.add_argument("--every-seconds", required=True, type=float)
+    _add_common(p)
+    p.set_defaults(fn=cmd_watch)
 
     p = sub.add_parser("validate", help="run a suite against a snapshot")
     p.add_argument("--suite", required=True, help="suite JSON file")

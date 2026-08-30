@@ -25,6 +25,10 @@ on it without breaking its rulings (ADR-0012…0016).
   (import = registration) or add a tier-2 pack in `libs/` +
   `DEFAULT_CONNECTORS`. Conformance template:
   `tests/onboarding/test_localfiles.py`.
+- **OAuth connectors** — expose `oauth_service(config)` returning
+  `OAuth2TokenService`; the CLI stays provider-polymorphic.
+- **Recurring pulls** — call `run_watch`; it repeats `run_acquisition`
+  and deliberately adds no retry, daemon, or market-session policy.
 - **Reading observations back** — consumers (children, packs) go
   through `observations.scan_stream` / `stream_digest` (ADR-0037),
   never a hand-rolled glob: the seam owns codec resolution, bitemporal
@@ -85,15 +89,18 @@ dskit/onboarding/
 ├── coverage.py        CoverageLedger — sparse-backfill done-set (ADR-0030)
 ├── codec.py           extension-declared codecs — deterministic gzip (ADR-0036)
 ├── observations.py    the read seam: scan_stream dedup + stream_digest (ADR-0037)
+├── oauth.py           OAuth2 exchange/refresh + atomic owner-only token files
 ├── snapshot.py        build_manifest / write_snapshot / verify / find_snapshot_dir
 ├── acquire.py         run_acquisition — the orchestrated pull + durability order
 ├── validate.py        Rule / ValidationSuite / _RULES / run_suite
 ├── certify.py         certify — decisions; block-cannot-certify gate
 ├── publish.py         publish_version — outbox manifests, certification-keyed
 ├── libs/
+│   ├── alpaca.py      Alpaca Market Data stock bars (optional alpaca-py)
 │   ├── localfiles.py  reference connector (stdlib CSV/JSONL)
-│   └── restapi.py     declarative REST connector (stdlib urllib; scripted
-│                      `_fetch` seam — tests never touch the network)
+│   ├── restapi.py     declarative REST connector (stdlib urllib)
+│   └── schwab.py      Schwab closed-minute REST bars + OAuth refresh
+├── watch.py           repeated finite acquisitions; first error stops
 ├── __main__.py        CLI
 ├── README.md          user-facing docs
 └── CLAUDE.md          this file

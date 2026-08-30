@@ -30,8 +30,8 @@ shape for future children: keep the module set stable
 
 ```
 intraday_poc/
-├── connectors.py   # AlpacaBarsConnector — four verbs; _fetch is the ONLY
-│                   #   vendor-touching method (testing.py doubles it)
+├── connectors.py   # thin adjusted/minute-only policy wrapper over dskit's
+│                   #   Alpaca bars pack (testing.py doubles its _fetch)
 ├── nodes.py        # bars (data) / window (transform) / forecast (score)
 │                   #   / select-one (score, on the PyomoSolve doorway)
 ├── models.py       # empty bespoke seam — zoo ships standard nets

@@ -41,9 +41,11 @@ def scripted_schwab():
     """Reset import-path state around every test."""
     StubSchwabBarsConnector.responses = {"AAPL": CANDLES}
     StubSchwabBarsConnector.calls = []
+    StubSchwabBarsConnector.now = None
     yield
     StubSchwabBarsConnector.responses = {}
     StubSchwabBarsConnector.calls = []
+    StubSchwabBarsConnector.now = None
 
 
 def _read(connector, config=CONFIG, state=None, mode="live"):
@@ -166,6 +168,9 @@ def test_acquisition_commits_repeated_overlap_as_new_evidence(
         "2026-01-02T15:01:00+00:00",
     ])
     monkeypatch.setattr(acquire_module, "utc_now", lambda: next(stamps))
+    StubSchwabBarsConnector.now = datetime(
+        2026, 1, 2, 14, 33, tzinfo=timezone.utc
+    )
 
     first = run_acquisition(root, registry, "schwab", "bars", "live")
     second = run_acquisition(root, registry, "schwab", "bars", "live")

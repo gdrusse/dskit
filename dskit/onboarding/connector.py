@@ -79,8 +79,10 @@ RECORD_KINDS = ("observation", "forecast")
 #: packs add entries here; a project's own connectors use
 #: ``pkg.module:Class`` directly and register nothing.
 DEFAULT_CONNECTORS = {
+    "alpaca": "dskit.onboarding.libs.alpaca:AlpacaBarsConnector",
     "localfiles": "dskit.onboarding.libs.localfiles:LocalFilesConnector",
     "restapi": "dskit.onboarding.libs.restapi:RestApiConnector",
+    "schwab": "dskit.onboarding.libs.schwab:SchwabBarsConnector",
 }
 
 #: ``pkg.module:ClassName`` — the pipeline's class-reference shape.

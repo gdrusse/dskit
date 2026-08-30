@@ -58,6 +58,11 @@ class StubSchwabBarsConnector(SchwabBarsConnector):
 
     responses = {}
     calls = []
+    now = None
+
+    def _now(self):
+        """Return a scripted instant when one is configured."""
+        return super()._now() if type(self).now is None else type(self).now
 
     def _access_token(self, knobs):
         """Return an inert bearer token."""

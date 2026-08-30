@@ -49,6 +49,7 @@ from .coverage import STATUSES, CoverageLedger
 from .default_model import onboarding_model
 from .layout import OnboardingRoot
 from .observations import scan_stream, stream_digest
+from .oauth import OAuth2TokenService, load_token, save_token
 from .publish import publish_version
 from .snapshot import (
     build_manifest,
@@ -60,6 +61,7 @@ from .snapshot import (
 )
 from .state import load_state, save_state
 from .validate import Rule, ValidationSuite, load_suite, run_suite, suite_hash
+from .watch import run_watch
 
 __all__ = [
     "AssetError",
@@ -70,6 +72,7 @@ __all__ = [
     "MESSAGE_TYPES",
     "MODES",
     "OnboardingRoot",
+    "OAuth2TokenService",
     "PROTOCOL",
     "RECORD_KINDS",
     "Rule",
@@ -85,6 +88,7 @@ __all__ = [
     "find_snapshot_dir",
     "load_state",
     "load_suite",
+    "load_token",
     "onboarding_model",
     "parse_utc",
     "publish_version",
@@ -92,7 +96,9 @@ __all__ = [
     "resolve_connector",
     "run_acquisition",
     "run_suite",
+    "run_watch",
     "save_state",
+    "save_token",
     "scan_stream",
     "snapshot_hash",
     "stream_digest",
