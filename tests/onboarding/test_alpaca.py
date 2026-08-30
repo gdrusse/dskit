@@ -126,6 +126,41 @@ def test_live_window_is_bounded_and_sip_end_is_clamped():
         })
 
 
+def test_fetch_chunks_large_windows_before_the_sdk_buffers_them(monkeypatch):
+    historical = pytest.importorskip("alpaca.data.historical")
+    seen = []
+
+    class _Bars:
+        data = {}
+
+    class _Client:
+        def __init__(self, key, secret):
+            pass
+
+        def get_stock_bars(self, request):
+            seen.append((request.start, request.end))
+            return _Bars()
+
+    monkeypatch.setattr(historical, "StockHistoricalDataClient", _Client)
+    connector = AlpacaBarsConnector()
+    monkeypatch.setattr(
+        connector, "_credentials", lambda knobs: ("key", "secret")
+    )
+    config = {**CONFIG, "chunk_days": 2}
+    check_config(connector, config)
+    knobs = connector.resolve_knobs(config)
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    end = start + timedelta(days=5)
+
+    list(connector._fetch(knobs, start, end))
+
+    assert seen == [
+        (start, start + timedelta(days=2)),
+        (start + timedelta(days=2), start + timedelta(days=4)),
+        (start + timedelta(days=4), end),
+    ]
+
+
 def test_acquisition_commits_one_alpaca_snapshot(root, registry):
     version = registry.register("source_config", {
         "name": "alpaca",
