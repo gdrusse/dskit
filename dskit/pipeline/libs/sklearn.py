@@ -1,6 +1,6 @@
 """The scikit-learn library pack — the generic estimator doorway (D-146 tier 2).
 
-Two Nodes and one signal object, docs/25 §2 row 2:
+Three Nodes and one signal object, docs/25 §2 row 2:
 
 * :class:`SklearnFit` (role ``train``) — imports ANY estimator class by
   dotted path (``"sklearn.linear_model.Ridge"``), fits it on feature
@@ -13,6 +13,9 @@ Two Nodes and one signal object, docs/25 §2 row 2:
 * :class:`SklearnPredict` (role ``signal``) — inference only, from a
   pinned ``params.artifact``. No mode gymnastics: it always loads, and a
   missing or unprovenanced artifact is refused by name.
+* :class:`SklearnSelect` (role ``fitted_transform``) — ADR-0042 doorway:
+  a :class:`~dskit.pipeline.fitted.FeatureSelector` whose rule is a
+  dotted selector path (and optional inner ``estimator``).
 
 This is a DOORWAY, not a model registry: the estimator is named by the
 document, constructed from the document's own ``estimator_params``, and
@@ -1055,8 +1058,14 @@ class SklearnSelect(FeatureSelector):
                 "selector", params["selector"], example=_SELECTOR_EXAMPLE
             )
         problems += cls._path_knob_problems(params)
-        problems += _kwargs_problems("estimator_params",
-                                     params.get("estimator_params", {}))
+        est_params = params.get("estimator_params", {})
+        problems += _kwargs_problems("estimator_params", est_params)
+        if est_params and "estimator" not in params:
+            problems.append(
+                "estimator_params is set but estimator is not — those "
+                "kwargs construct the inner estimator and nothing would "
+                "read them"
+            )
         label = params.get("label")
         if label is not None and (not isinstance(label, str) or not label):
             problems.append(

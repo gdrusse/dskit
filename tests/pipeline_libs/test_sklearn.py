@@ -879,6 +879,14 @@ def test_select_params_refuse_a_second_spelling_of_the_declared_knobs():
         assert any(shadowed in p for p in problems), shadowed
 
 
+def test_select_params_estimator_params_without_estimator_is_refused():
+    """Those kwargs construct the inner estimator; nothing else reads them."""
+    problems = SklearnSelect.validate_params(
+        {**SELECT_PARAMS, "estimator_params": {"alpha": 1.0}}
+    )
+    assert any("estimator_params" in p and "estimator" in p for p in problems)
+
+
 def test_select_params_the_optional_paths_are_shape_checked():
     for knob, example in (("estimator", RIDGE), ("score_func", F_REGRESSION)):
         assert SklearnSelect.validate_params({**SELECT_PARAMS, knob: example}) == []
