@@ -1932,7 +1932,7 @@ class TorchTrain(_TorchModel):
         tuple
             ``(mean_loss, preds, labels)``. ``preds``/``labels`` are
             ``None`` when ``beliefs`` is False or the adapter answers
-            no beliefs on the first chunk.
+            no beliefs (any chunk returning ``None`` drops the rest).
         """
         import torch
 

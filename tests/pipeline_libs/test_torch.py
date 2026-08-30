@@ -1466,6 +1466,42 @@ def test_batched_final_loss_matches_full_pass(tmp_path):
     )
 
 
+def test_val_scoring_is_one_batched_pass(tmp_path, monkeypatch):
+    """``_score_epoch`` must not walk the val set twice (skeptic MAJOR).
+
+    Train 6 / batch 6 → ``[6]``; val 6 / eval 3 → ``[3, 3]`` once; then
+    final_loss over train with the same eval size → ``[3, 3]``. Full
+    trace ``[6, 3, 3, 3, 3]``. A loss-then-beliefs double walk on val
+    would insert two extra ``3`` cuts before final_loss.
+    """
+    rows = make_rows(n=6)
+    val = make_rows(n=6)
+    seen = []
+    real = RowVectorAdapter.select
+
+    def tracking(self, batches, index):
+        seen.append(None if index is None else int(len(index)))
+        return real(self, batches, index)
+
+    monkeypatch.setattr(RowVectorAdapter, "select", tracking)
+    node = LinearRegressor(
+        "qhat",
+        {
+            **PARAMS,
+            "epochs": 1,
+            "loader": {
+                "batch_size": 6,
+                "shuffle": False,
+                "seed": 0,
+                "eval_batch_size": 3,
+            },
+        },
+    )
+    node.run(ctx(tmp_path, "val-once"), {"rows": rows, "val_rows": val})
+    assert None not in seen, seen
+    assert seen == [6, 3, 3, 3, 3], seen
+
+
 TestTorchConformance = conformance_suite(
     registry=NODE_KINDS,
     module="dskit.pipeline.libs.torch",

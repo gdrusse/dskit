@@ -446,13 +446,20 @@ def test_bars_scan_shape_knobs_are_declared_and_defaulted(tmp_path):
     assert declared == defaulted
 
 
-def test_bars_scan_shape_override_reaches_the_seam(tmp_path):
-    """A declared ``key_fields`` is what ``scan_stream`` receives — pin
-    by making the default key unusable and recovering via the knob.
+def test_bars_scan_shape_override_reaches_the_seam(tmp_path, monkeypatch):
+    """A declared ``key_fields`` is what ``scan_stream`` receives.
+
+    Rebind the DEFAULT to an unusable key — without the knob the scan
+    refuses (same as ``test_the_bar_primary_key_has_one_source_of_truth``);
+    with the knob naming the real fields, the scan recovers. A test that
+    only restates the default would pass even if ``_scan`` ignored the
+    knob.
     """
     root = str(tmp_path / "ob")
     _write_store(root, n_minutes=2, symbols=("AAPL",))
-    # Wrong default key would refuse; the knob names the real fields.
+    monkeypatch.setattr(nodes, "BAR_KEY_FIELDS", ("symbol", "nosuchfield"))
+    with pytest.raises(AssetError, match="nosuchfield"):
+        BarsFromStore("bars", {"root": root, "source": "alpaca"}).run(None, {})
     node = BarsFromStore(
         "bars",
         {
