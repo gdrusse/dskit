@@ -225,6 +225,14 @@ def test_gz_verify_clean_then_tampered_both_ways(gz_loop):
     assert proc.returncode == 1
     assert any("drift" in p for p in json.loads(proc.stdout)["problems"])
 
+    # Twin (b): a blind byte flip — same emergency, no decode needed.
+    blob = bytearray(original)
+    blob[len(blob) // 2] ^= 0xFF
+    payload.write_bytes(bytes(blob))
+    proc = run_cli("dskit.onboarding", "verify", "--root", "ob", cwd=cwd)
+    assert proc.returncode == 1
+    assert any("drift" in p for p in json.loads(proc.stdout)["problems"])
+
 
 def test_authorize_cli_delegates_to_connector_oauth_service(
         monkeypatch, capsys):
@@ -279,11 +287,3 @@ def test_watch_cli_wires_interval_to_recurring_acquisition(
     assert args[2:6] == ("schwab", "bars", "live", 60.0)
     assert kwargs["origin"] == "cli"
     assert callable(kwargs["on_result"])
-
-    # Twin (b): a blind byte flip — same emergency, no decode needed.
-    blob = bytearray(original)
-    blob[len(blob) // 2] ^= 0xFF
-    payload.write_bytes(bytes(blob))
-    proc = run_cli("dskit.onboarding", "verify", "--root", "ob", cwd=cwd)
-    assert proc.returncode == 1
-    assert any("drift" in p for p in json.loads(proc.stdout)["problems"])

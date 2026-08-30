@@ -268,7 +268,7 @@ class SchwabBarsConnector(Connector):
         return self._oauth_service(knobs).ensure_access_token()
 
     def _now(self):
-        """Current UTC instant; a seam for closed-minute tests."""
+        """Return the current UTC instant through a test seam."""
         return datetime.now(timezone.utc)
 
     def _window(self, knobs, cursor, mode):

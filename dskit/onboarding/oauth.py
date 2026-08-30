@@ -179,7 +179,7 @@ class OAuth2TokenService:
         self._lookup = os.environ.get if lookup is None else lookup
 
     def _now(self):
-        """Current epoch seconds; a seam for deterministic expiry tests."""
+        """Return epoch seconds through a deterministic test seam."""
         return time.time()
 
     def _settings(self):
