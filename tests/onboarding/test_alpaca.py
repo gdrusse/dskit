@@ -163,10 +163,11 @@ def test_fetch_chunks_large_windows_before_the_sdk_buffers_them(monkeypatch):
 
     list(connector._fetch(knobs, start, end))
 
+    naive = start.replace(tzinfo=None)
     assert seen == [
-        (start, start + timedelta(days=2)),
-        (start + timedelta(days=2), start + timedelta(days=4)),
-        (start + timedelta(days=4), end),
+        (naive, naive + timedelta(days=2)),
+        (naive + timedelta(days=2), naive + timedelta(days=4)),
+        (naive + timedelta(days=4), end.replace(tzinfo=None)),
     ]
 
 
