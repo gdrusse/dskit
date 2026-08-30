@@ -329,6 +329,7 @@ class SchwabBarsConnector(Connector):
     def _get_json(self, token, symbol, params, knobs):
         """Retry transient failures through the single transport seam."""
         last = None
+        params = {"symbol": symbol, **params}
         for attempt in range(knobs["max_retries"] + 1):
             if attempt:
                 time.sleep(_BACKOFF_SECONDS * (2 ** (attempt - 1)))
