@@ -224,6 +224,7 @@ def test_a_first_live_pull_does_not_re_fetch_the_backfill(conn):
     ("feed", "DEFAULT_FEED", "iex"),
     ("adjustment", "DEFAULT_ADJUSTMENT", "split"),
     ("live_lookback_minutes", "DEFAULT_LIVE_LOOKBACK_MINUTES", 77),
+    ("chunk_days", "DEFAULT_CHUNK_DAYS", 17),
     ("key_env", "DEFAULT_KEY_ENV", "SOME_OTHER_KEY_ID"),
     ("secret_env", "DEFAULT_SECRET_ENV", "SOME_OTHER_SECRET_KEY"),
     ("timeframe", "BAR_INTERVAL", (5, "Minute")),

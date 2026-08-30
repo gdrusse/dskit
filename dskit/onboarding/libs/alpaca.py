@@ -22,6 +22,7 @@ __all__ = [
     "BAR_KEY_FIELDS",
     "BAR_STREAM",
     "DEFAULT_ADJUSTMENT",
+    "DEFAULT_CHUNK_DAYS",
     "DEFAULT_FEED",
     "DEFAULT_KEY_ENV",
     "DEFAULT_LIVE_LOOKBACK_MINUTES",
@@ -43,6 +44,7 @@ BAR_FIELDS = (
 TIMEFRAME_UNITS = ("Minute", "Hour", "Day", "Week", "Month")
 BAR_INTERVAL = (1, "Minute")
 DEFAULT_LIVE_LOOKBACK_MINUTES = 1440
+DEFAULT_CHUNK_DAYS = 31
 DEFAULT_FEED = "sip"
 DEFAULT_ADJUSTMENT = "raw"
 DEFAULT_KEY_ENV = "APCA_API_KEY_ID"
@@ -187,6 +189,10 @@ class AlpacaBarsConnector(Connector):
                          f"{DEFAULT_LIVE_LOOKBACK_MINUTES}. On SIP it must exceed "
                          f"the {_SIP_LAG_MINUTES:g}-minute lag.",
             },
+            "chunk_days": {
+                "notes": "Maximum date span per SDK request, bounding its "
+                         f"in-memory BarSet; default {DEFAULT_CHUNK_DAYS}.",
+            },
             "key_env": {
                 "secret": True,
                 "notes": "Environment-variable name holding the Alpaca key id; "
@@ -248,6 +254,7 @@ class AlpacaBarsConnector(Connector):
         lookback = config.get(
             "live_lookback_minutes", DEFAULT_LIVE_LOOKBACK_MINUTES
         )
+        chunk_days = config.get("chunk_days", DEFAULT_CHUNK_DAYS)
         if (
             isinstance(lookback, bool)
             or not isinstance(lookback, (int, float))
@@ -262,6 +269,14 @@ class AlpacaBarsConnector(Connector):
             problems.append(
                 "config.live_lookback_minutes must exceed the "
                 f"{_SIP_LAG_MINUTES:g}-minute SIP lag, got {lookback!r}"
+            )
+        if (
+            isinstance(chunk_days, bool)
+            or not isinstance(chunk_days, int)
+            or chunk_days < 1
+        ):
+            problems.append(
+                f"config.chunk_days must be an int >= 1, got {chunk_days!r}"
             )
         key_env = config.get("key_env", DEFAULT_KEY_ENV)
         secret_env = config.get("secret_env", DEFAULT_SECRET_ENV)
@@ -281,6 +296,7 @@ class AlpacaBarsConnector(Connector):
             "adjustment": adjustment,
             "timeframe": (amount, unit),
             "live_lookback_minutes": lookback,
+            "chunk_days": chunk_days,
             "key_env": key_env,
             "secret_env": secret_env,
         }
@@ -310,38 +326,48 @@ class AlpacaBarsConnector(Connector):
         return start, end
 
     def _fetch(self, knobs, start, end):
-        """Yield normalized rows from one SDK request."""
+        """Yield normalized rows from bounded SDK request windows."""
         from alpaca.data.enums import Adjustment, DataFeed
         from alpaca.data.historical import StockHistoricalDataClient
         from alpaca.data.requests import StockBarsRequest
 
         key, secret = self._credentials(knobs)
         client = StockHistoricalDataClient(key, secret)
-        request = StockBarsRequest(
-            symbol_or_symbols=knobs["symbols"],
-            timeframe=bar_timeframe(knobs["timeframe"]),
-            start=start,
-            end=end,
-            feed=DataFeed(knobs["feed"]),
-            adjustment=Adjustment(knobs["adjustment"]),
-            limit=None,
-        )
-        bars = client.get_stock_bars(request)
-        for symbol, series in sorted(bars.data.items()):
-            for bar in series:
-                yield symbol, {
-                    "symbol": symbol,
-                    "ts": bar.timestamp.astimezone(timezone.utc).isoformat(),
-                    "open": float(bar.open),
-                    "high": float(bar.high),
-                    "low": float(bar.low),
-                    "close": float(bar.close),
-                    "volume": float(bar.volume),
-                    "trade_count": (
-                        None if bar.trade_count is None else int(bar.trade_count)
-                    ),
-                    "vwap": None if bar.vwap is None else float(bar.vwap),
-                }
+        current = start
+        while current < end:
+            chunk_end = min(
+                end, current + timedelta(days=knobs["chunk_days"])
+            )
+            request = StockBarsRequest(
+                symbol_or_symbols=knobs["symbols"],
+                timeframe=bar_timeframe(knobs["timeframe"]),
+                start=current,
+                end=chunk_end,
+                feed=DataFeed(knobs["feed"]),
+                adjustment=Adjustment(knobs["adjustment"]),
+                limit=None,
+            )
+            bars = client.get_stock_bars(request)
+            for symbol, series in sorted(bars.data.items()):
+                for bar in series:
+                    stamp = bar.timestamp.astimezone(timezone.utc)
+                    if not current <= stamp < chunk_end:
+                        continue
+                    yield symbol, {
+                        "symbol": symbol,
+                        "ts": stamp.isoformat(),
+                        "open": float(bar.open),
+                        "high": float(bar.high),
+                        "low": float(bar.low),
+                        "close": float(bar.close),
+                        "volume": float(bar.volume),
+                        "trade_count": (
+                            None if bar.trade_count is None
+                            else int(bar.trade_count)
+                        ),
+                        "vwap": None if bar.vwap is None else float(bar.vwap),
+                    }
+            current = chunk_end
 
     def check(self, config):
         """Validate config, credentials, and one authenticated probe.

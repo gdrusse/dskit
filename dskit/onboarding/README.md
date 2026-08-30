@@ -142,8 +142,9 @@ Market-bar packs are registered as `alpaca` and `schwab`. Both emit
 `bars` keyed by `(symbol, ts)` with provider-neutral OHLCV fields.
 Alpaca adds trade count/VWAP; Schwab emits those fields as null and
 re-requests a declared live overlap so bitemporal dedup retains the
-latest evidence. Install `dskit[alpaca]` for Alpaca; Schwab REST is
-stdlib-only.
+latest evidence. Alpaca bounds the SDK's in-memory response with
+`chunk_days` (default 31). Install `dskit[alpaca]` for Alpaca; Schwab
+REST is stdlib-only.
 
 ## OAuth authorization
 

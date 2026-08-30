@@ -17,6 +17,7 @@ __all__ = [
     "BAR_KEY_FIELDS",
     "BAR_STREAM",
     "DEFAULT_ADJUSTMENT",
+    "DEFAULT_CHUNK_DAYS",
     "DEFAULT_FEED",
     "DEFAULT_KEY_ENV",
     "DEFAULT_LIVE_LOOKBACK_MINUTES",
@@ -34,6 +35,7 @@ BAR_KEY_FIELDS = _alpaca.BAR_KEY_FIELDS
 TIMEFRAME_UNITS = _alpaca.TIMEFRAME_UNITS
 BAR_INTERVAL = _alpaca.BAR_INTERVAL
 DEFAULT_LIVE_LOOKBACK_MINUTES = _alpaca.DEFAULT_LIVE_LOOKBACK_MINUTES
+DEFAULT_CHUNK_DAYS = _alpaca.DEFAULT_CHUNK_DAYS
 DEFAULT_FEED = _alpaca.DEFAULT_FEED
 DEFAULT_ADJUSTMENT = "all"
 DEFAULT_KEY_ENV = _alpaca.DEFAULT_KEY_ENV
@@ -149,6 +151,10 @@ class AlpacaBarsConnector(_alpaca.AlpacaBarsConnector):
             f"Default {DEFAULT_LIVE_LOOKBACK_MINUTES}. On feed {_SIP_FEED} "
             f"it must exceed the {_SIP_LAG_MINUTES:g}-minute lag."
         )
+        params["chunk_days"]["notes"] = (
+            "Maximum date span per bounded SDK request. "
+            f"Default {DEFAULT_CHUNK_DAYS}."
+        )
         params["key_env"]["notes"] = (
             "Environment-variable name holding the Alpaca key id. "
             f"Default {DEFAULT_KEY_ENV}."
@@ -190,6 +196,7 @@ class AlpacaBarsConnector(_alpaca.AlpacaBarsConnector):
         declared.setdefault(
             "live_lookback_minutes", DEFAULT_LIVE_LOOKBACK_MINUTES
         )
+        declared.setdefault("chunk_days", DEFAULT_CHUNK_DAYS)
         declared.setdefault("key_env", DEFAULT_KEY_ENV)
         declared.setdefault("secret_env", DEFAULT_SECRET_ENV)
         return super().resolve_knobs(declared)

@@ -78,6 +78,15 @@ def test_generic_pack_accepts_vendor_timeframe_units():
         connector.resolve_knobs({**CONFIG, "timeframe": [0, "Minute"]})
 
 
+def test_chunk_default_has_one_name(monkeypatch):
+    connector = AlpacaBarsConnector()
+    assert connector.resolve_knobs(CONFIG)["chunk_days"] == \
+        alpaca.DEFAULT_CHUNK_DAYS
+    monkeypatch.setattr(alpaca, "DEFAULT_CHUNK_DAYS", 7)
+    assert connector.resolve_knobs(CONFIG)["chunk_days"] == 7
+    assert "default 7." in connector.spec()["params"]["chunk_days"]["notes"]
+
+
 def test_discover_and_read_share_the_provider_neutral_schema():
     connector = StubAlpacaBarsConnector()
     (stream,) = connector.discover(CONFIG)
