@@ -171,8 +171,9 @@ exception on top of an open position.
 
 The fit **spans `[2026-01-01, splits.train_end_ms]`** rather than every
 published bar, for two different reasons that both belong in the open:
-the **start** is a memory ceiling (the engine's final-loss pass is one
-unbatched forward, so 940k windows at width 64 asks for 24 GB), and the
+the **start** is a deliberate fit-window bound (final-loss used to be
+one unbatched forward — ADR-0045 batches it via `loader.eval_batch_size`,
+so the bound can be widened when wanted), and the
 **end** holds out what grades the search — a search whose objective
 scores rows its trials trained on grades memorization. Three disjoint
 bands follow from that: the fit, then the band that selects each trial's
@@ -258,10 +259,11 @@ duplicate both.
   from the source config. Paper fills simulate against this — treat
   forward PnL as signal validation, not execution realism.
 - **The bar interval is a `timeframe` knob** on the connector spec
-  (default `BAR_INTERVAL` = `[1, "Minute"]`). The connector's pull and
-  the loop's fetch both build their vendor `TimeFrame` from the
-  resolved pair, so they cannot drift. Retuning it also means retuning
-  the loop's history window and the window node's gap bound.
+  (default `BAR_INTERVAL`, Minute-only for this PoC). The connector's
+  pull and the loop's fetch both build their vendor `TimeFrame` from
+  the resolved pair, and the loop's wake cadence follows the amount.
+  Changing the amount without wipe+re-backfill leaves training on the
+  old series and live on the new one; retune `max_gap_minutes` with it.
 - Windows never bridge gaps (`max_gap_minutes`); rows the model cannot
   cover are skipped, never imputed. Training and serving build them with
   the SAME node — the loop calls `latest_rows` on the window node it

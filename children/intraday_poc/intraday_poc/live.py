@@ -1342,10 +1342,13 @@ def main(argv=None) -> int:
             fh.write(json.dumps(record, sort_keys=True) + "\n")
         if args.once:
             return 0
-        # Wake shortly after the next minute boundary — IEX bars publish
-        # ~2–3 s after the minute closes.
+        # Wake shortly after the next bar boundary — IEX bars publish
+        # ~2–3 s after the minute closes. Cadence follows the source
+        # config's timeframe amount (Minute-only; the gate refuses
+        # other units).
+        bar_secs = int(timeframe[0]) * 60
         now_s = time.time()
-        time.sleep(60 - (now_s % 60) + 5)
+        time.sleep(bar_secs - (now_s % bar_secs) + 5)
 
 
 if __name__ == "__main__":

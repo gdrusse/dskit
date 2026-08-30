@@ -85,11 +85,13 @@ class BarsFromStore(Node):
     Params: ``root`` (REQUIRED) — the onboarding root; ``source``
     (REQUIRED) — the registered source name; ``stream`` — default
     ``BAR_STREAM`` (``"bars"``), the connector's own stream name;
-    ``key_fields`` — default ``BAR_KEY_FIELDS``; ``ts_field`` — default
-    ``DEFAULT_TS_FIELD`` (``"ts"``); ``shared_fields`` — default
-    ``DEFAULT_SHARED_FIELDS`` (``("symbol",)``). All literal, per the
-    data-role rule. The three scan-shape knobs are what a second
-    project with a different vocabulary changes — never the class body.
+    ``ts_field`` — default ``DEFAULT_TS_FIELD`` (``"ts"``);
+    ``shared_fields`` — default ``DEFAULT_SHARED_FIELDS``
+    (``("symbol",)``). The dedup key is NOT a knob: it IS
+    ``BAR_KEY_FIELDS`` (the connector's ``discover`` primary_key), so
+    a second vocabulary retargets that one constant. ``ts_field`` /
+    ``shared_fields`` are what a different stamp / intern shape
+    changes — never the class body.
 
     Records are the normalized rows' ``data`` payloads flattened, plus
     ``asof_ms`` (the bar timestamp as epoch ms — what split filters cut
@@ -105,7 +107,6 @@ class BarsFromStore(Node):
         "root",
         "source",
         "stream",
-        "key_fields",
         "ts_field",
         "shared_fields",
     )
@@ -142,16 +143,6 @@ class BarsFromStore(Node):
         stream = params.get("stream", BAR_STREAM)
         if not isinstance(stream, str) or not stream:
             problems.append(f"stream must be a non-empty string, got {stream!r}")
-        key_fields = params.get("key_fields", BAR_KEY_FIELDS)
-        if (
-            not isinstance(key_fields, (list, tuple))
-            or not key_fields
-            or any(not isinstance(f, str) or not f for f in key_fields)
-        ):
-            problems.append(
-                f"key_fields must be a non-empty list of field-name "
-                f"strings, got {key_fields!r}"
-            )
         ts_field = params.get("ts_field", DEFAULT_TS_FIELD)
         if not isinstance(ts_field, str) or not ts_field:
             problems.append(
@@ -173,13 +164,14 @@ class BarsFromStore(Node):
             return self._snap
         # The generic seam (ADR-0037) owns the codec resolution, the
         # bitemporal dedup, and the single-copy memory discipline; this
-        # wrapper only declares the domain shape — and that shape is
-        # now knobs, so a second vocabulary is a document edit.
+        # wrapper declares the domain shape. The dedup key is the
+        # connector's BAR_KEY_FIELDS (discover primary_key) — never a
+        # free knob, or metadata and scan silently split.
         self._snap = scan_stream(
             self.params["root"],
             self.params["source"],
             self.params.get("stream", BAR_STREAM),
-            key_fields=tuple(self.params.get("key_fields", BAR_KEY_FIELDS)),
+            key_fields=BAR_KEY_FIELDS,
             ts_field=self.params.get("ts_field", DEFAULT_TS_FIELD),
             shared_fields=tuple(
                 self.params.get("shared_fields", DEFAULT_SHARED_FIELDS)

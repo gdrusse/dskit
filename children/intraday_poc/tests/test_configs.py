@@ -220,8 +220,8 @@ def test_the_search_scores_on_rows_it_never_trained_on():
     start = fitted[1]
     assert start["field"] == "asof_ms" and start["op"] == ">=", (
         "the fit declares where its history STARTS — see the node's notes: "
-        "it is a memory ceiling (the engine's final-loss pass is one "
-        "unbatched forward), and an undeclared one would be invisible"
+        "it is a deliberate fit-window bound (final-loss is now batched "
+        "per ADR-0045), and an undeclared one would be invisible"
     )
     assert start["value"] < splits["train_end_ms"], (
         "a start bound at or past the train cut fits on nothing"

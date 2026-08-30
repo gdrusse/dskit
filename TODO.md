@@ -210,10 +210,11 @@ found by diffing the documents against `DeclaredTrain._BASE_PARAMS` +
       `key_fields`/`ts_field`/`shared_fields` (`nodes.py:117-119`); only
       `stream` is a knob, though `scan_stream` takes all four as
       parameters.
-      **Landed this run (2026-08-30):** all three are knobs on
-      `BarsFromStore`, defaulting to `BAR_KEY_FIELDS` /
-      `DEFAULT_TS_FIELD` / `DEFAULT_SHARED_FIELDS`. A second vocabulary
-      is a document edit.
+      **Landed this run (2026-08-30):** `ts_field` / `shared_fields` are
+      knobs on `BarsFromStore` (defaults `DEFAULT_TS_FIELD` /
+      `DEFAULT_SHARED_FIELDS`). The dedup key stays `BAR_KEY_FIELDS`
+      (discover primary_key) — a free `key_fields` knob would split
+      metadata from scan (skeptic MAJOR).
 - [x] **Nothing normalizes or scales features anywhere** — raw log returns
       go straight into the LSTM, and the toolkit ships no standardizer
       node either. Fold into the window-transform ADR: a scaler must be
@@ -450,8 +451,11 @@ child hardcodes what should be config, and the pipeline cannot express
       the agreement is single-sourced and the remaining work is to promote
       it to config.
       **Landed this run (2026-08-30):** `timeframe` is a `spec()` knob
-      (default `BAR_INTERVAL`); both `_fetch` and `live.fetch_bars` build
-      from the resolved pair. Declared on `source-backfill.json`.
+      (default `BAR_INTERVAL`, Minute-only); both `_fetch` and
+      `live.fetch_bars` build from the resolved pair; live wake cadence
+      follows the amount; `discover` publishes it. Declared on
+      `source-backfill.json`. Changing amount without re-backfill is a
+      documented footgun (same class as retuning `adjustment`).
 - [x] **A `foreach` section in the document grammar — needs an ADR.**
       "One model per symbol" is written longhand: adding a third symbol
       means four new nodes in `run-train.json` and six in

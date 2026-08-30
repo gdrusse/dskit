@@ -385,6 +385,7 @@ def test_the_default_prose_states_the_constants_values():
             f'(``"{nodes.DEFAULT_TS_FIELD}"``);') in bars, bars
     assert (f'``shared_fields`` — default ``DEFAULT_SHARED_FIELDS`` '
             f'(``("{nodes.DEFAULT_SHARED_FIELDS[0]}",)``)') in bars, bars
+    assert "key_fields" not in bars or "NOT a knob" in bars, bars
 
 
 def test_the_bar_primary_key_has_one_source_of_truth(tmp_path, monkeypatch):
@@ -406,30 +407,29 @@ def test_the_bar_primary_key_has_one_source_of_truth(tmp_path, monkeypatch):
 
 
 def test_bars_scan_shape_knobs_are_declared_and_defaulted(tmp_path):
-    """``key_fields`` / ``ts_field`` / ``shared_fields`` are knobs, not
-    literals — a second project with a different vocabulary must not
-    edit the class.
+    """``ts_field`` / ``shared_fields`` are knobs; the dedup key is not.
+
+    ``key_fields`` stays ``BAR_KEY_FIELDS`` (discover primary_key) so a
+    second vocabulary retargets ONE constant. A free ``key_fields`` knob
+    would let the scan and the platform metadata silently disagree.
     """
     root = str(tmp_path / "ob")
     _write_store(root, n_minutes=3, symbols=("AAPL",))
-    assert set(("key_fields", "ts_field", "shared_fields")) <= set(
-        BarsFromStore._PARAMS
-    )
+    assert "key_fields" not in BarsFromStore._PARAMS
+    assert set(("ts_field", "shared_fields")) <= set(BarsFromStore._PARAMS)
     bare = BarsFromStore.validate_params({"root": root, "source": "alpaca"})
     assert bare == []
     for bad in (
-        {"key_fields": []},
-        {"key_fields": ["symbol", ""]},
         {"ts_field": ""},
         {"shared_fields": ["symbol", 1]},
         {"shared_fields": "symbol"},
+        {"key_fields": ["symbol", "ts"]},
     ):
         problems = BarsFromStore.validate_params(
             {"root": root, "source": "alpaca", **bad}
         )
         assert problems, bad
 
-    # Declared shape equals the domain defaults on this store.
     defaulted = BarsFromStore(
         "bars", {"root": root, "source": "alpaca"}
     ).run(None, {})["records"]
@@ -438,7 +438,6 @@ def test_bars_scan_shape_knobs_are_declared_and_defaulted(tmp_path):
         {
             "root": root,
             "source": "alpaca",
-            "key_fields": list(nodes.BAR_KEY_FIELDS),
             "ts_field": nodes.DEFAULT_TS_FIELD,
             "shared_fields": list(nodes.DEFAULT_SHARED_FIELDS),
         },
@@ -446,31 +445,37 @@ def test_bars_scan_shape_knobs_are_declared_and_defaulted(tmp_path):
     assert declared == defaulted
 
 
-def test_bars_scan_shape_override_reaches_the_seam(tmp_path, monkeypatch):
-    """A declared ``key_fields`` is what ``scan_stream`` receives.
+def test_bars_shared_fields_override_reaches_the_seam(tmp_path, monkeypatch):
+    """A declared ``shared_fields`` is what ``scan_stream`` receives.
 
-    Rebind the DEFAULT to an unusable key — without the knob the scan
-    refuses (same as ``test_the_bar_primary_key_has_one_source_of_truth``);
-    with the knob naming the real fields, the scan recovers. A test that
-    only restates the default would pass even if ``_scan`` ignored the
-    knob.
+    Rebind the DEFAULT to an unusable name — without the knob the scan
+    still runs (shared_fields only interns; a missing shared name is
+    fine), so the pin is that the override is passed through: spy the
+    call.
     """
     root = str(tmp_path / "ob")
     _write_store(root, n_minutes=2, symbols=("AAPL",))
-    monkeypatch.setattr(nodes, "BAR_KEY_FIELDS", ("symbol", "nosuchfield"))
-    with pytest.raises(AssetError, match="nosuchfield"):
-        BarsFromStore("bars", {"root": root, "source": "alpaca"}).run(None, {})
-    node = BarsFromStore(
+    seen = {}
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real_scan(*args, **kwargs)
+
+    import dskit.onboarding.observations as obs
+    real_scan = obs.scan_stream
+    monkeypatch.setattr(nodes, "scan_stream", spy)
+    BarsFromStore(
         "bars",
         {
             "root": root,
             "source": "alpaca",
-            "key_fields": ["symbol", "ts"],
+            "shared_fields": ["symbol", "close"],
             "ts_field": "ts",
-            "shared_fields": ["symbol"],
         },
-    )
-    assert len(node.run(None, {})["records"]) == 2
+    ).run(None, {})
+    assert seen["shared_fields"] == ("symbol", "close"), seen
+    assert seen["key_fields"] == nodes.BAR_KEY_FIELDS, seen
+    assert seen["ts_field"] == "ts", seen
 
 
 # -- domain math -----------------------------------------------------------

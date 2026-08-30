@@ -195,7 +195,15 @@ def bar_timeframe(interval=None):
 
 
 def _timeframe_problems(value):
-    """Problems with a ``timeframe`` knob value, empty when none."""
+    """Problems with a ``timeframe`` knob value, empty when none.
+
+    The PoC's forward loop is minute-aligned (wake cadence derives from
+    the amount), so only ``Minute`` is accepted — Hour/Day/Week/Month
+    would leave ``live.py`` sleeping on a schedule the bars do not use.
+    Changing the amount without re-backfilling the store leaves training
+    on the old series and serving on the new one; the knob note and
+    README say so.
+    """
     if (
         not isinstance(value, (list, tuple))
         or len(value) != 2
@@ -213,9 +221,10 @@ def _timeframe_problems(value):
         problems.append(
             f"config.timeframe amount must be an int >= 1, got {amount!r}"
         )
-    if unit not in TIMEFRAME_UNITS:
+    if unit != "Minute":
         problems.append(
-            f"config.timeframe unit must be one of {TIMEFRAME_UNITS}, "
+            f"config.timeframe unit must be 'Minute' for this PoC "
+            f"(the forward loop's wake cadence is minute-derived), "
             f"got {unit!r}"
         )
     return problems
@@ -321,9 +330,13 @@ class AlpacaBarsConnector(Connector):
                              f"Default {DEFAULT_ADJUSTMENT}.",
                 },
                 "timeframe": {
-                    "notes": "Bar interval as [amount, unit] where unit "
-                             f"is one of {list(TIMEFRAME_UNITS)}. "
-                             f"Default {BAR_INTERVAL}.",
+                    "notes": "Bar interval as [amount, 'Minute'] — this "
+                             "PoC's forward loop is minute-aligned, so "
+                             "only Minute is accepted. Default "
+                             f"{BAR_INTERVAL}. Changing the amount "
+                             "without wipe+re-backfill leaves the store "
+                             "on the old series and live on the new one; "
+                             "retune window max_gap_minutes with it.",
                 },
                 "live_lookback_minutes": {
                     "notes": "How far back a live-mode pull with no "
@@ -561,11 +574,12 @@ class AlpacaBarsConnector(Connector):
         AssetError
             On any invalid knob.
         """
-        self.resolve_knobs(config)
+        knobs = self.resolve_knobs(config)
         return [{
             "stream": BAR_STREAM,
             "schema": {"fields": list(_FIELDS)},
             "primary_key": list(BAR_KEY_FIELDS),
+            "timeframe": list(knobs["timeframe"]),
         }]
 
     def read(self, config, streams, state, mode):

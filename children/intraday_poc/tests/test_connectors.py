@@ -250,13 +250,23 @@ def test_every_spec_default_is_named_once(conn, monkeypatch, knob, constant,
 
 
 def test_timeframe_knob_refuses_bad_shapes(conn):
-    """A mistyped interval is a gate refusal, never an SDK error mid-pull."""
+    """A mistyped interval is a gate refusal, never an SDK error mid-pull.
+
+    Non-Minute units are refused too: the forward loop's wake cadence is
+    minute-derived (skeptic BLOCKER on silent train/serve drift if the
+    store stays 1-minute while live fetches another unit).
+    """
     for bad in ([1], "1Min", [1, "minute"], [0, "Minute"], [1.5, "Minute"],
-                [True, "Minute"], [1, "Min"]):
+                [True, "Minute"], [1, "Hour"], [1, "Day"]):
         with pytest.raises(AssetError, match="timeframe"):
             conn.resolve_knobs({**STUB_CONFIG, "timeframe": bad})
     knobs = conn.resolve_knobs({**STUB_CONFIG, "timeframe": [5, "Minute"]})
     assert knobs["timeframe"] == (5, "Minute")
+    discovered = AlpacaBarsConnector().discover(
+        {**STUB_CONFIG, "timeframe": [5, "Minute"]}
+    )
+    assert discovered[0]["timeframe"] == [5, "Minute"]
+    assert discovered[0]["primary_key"] == list(connectors.BAR_KEY_FIELDS)
 
 
 def test_a_live_lookback_the_sip_clamp_swallows_is_refused(conn):
