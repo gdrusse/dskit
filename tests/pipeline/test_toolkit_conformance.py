@@ -41,19 +41,20 @@ from dskit.pipeline.base import TimeSplitConfig
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.fitted import SIDECAR_NAME, ApplyTransform, Standardize
 from dskit.pipeline.kinds_banking import BankingReport, Eligibility, EventBank
-from dskit.pipeline.kinds_flow import Concat, Derive, Filter, Join
+from dskit.pipeline.kinds_flow import Concat, Derive, EventGrid, Filter, Join
 from dskit.pipeline.kinds_report import RunReport
 from dskit.pipeline.kinds_search import HpoGrid
 from dskit.pipeline.kinds_stats import StatTest, Validate
 from dskit.pipeline.kinds_table import TableFile, TableWrite
 from dskit.pipeline.node import NodeContext
 
-#: The fifteen toolkit kinds, paired explicitly (see module docstring
+#: The sixteen toolkit kinds, paired explicitly (see module docstring
 #: for why this is not DEFAULT_NODE_KINDS).
 TOOLKIT_NODE_KINDS = (
     ("stat_test", StatTest),
     ("validate", Validate),
     ("filter", Filter),
+    ("event-grid", EventGrid),
     ("event-bank", EventBank),
     ("eligibility", Eligibility),
     ("banking-report", BankingReport),
@@ -75,6 +76,7 @@ TOOLKIT_ROLES = {
     "stat_test": "stat_test",
     "validate": "score",
     "filter": "transform",
+    "event-grid": "transform",
     "event-bank": "accrual",
     "eligibility": "gate",
     "banking-report": "report",
@@ -218,6 +220,13 @@ def probes(tmp_path):
                 "where": [{"field": "mid", "op": ">", "value": 0.1}],
             },
             inputs={"records": records, "instruments": ["AAA", "BBB"]},
+            stream_ports=("records",),
+            runnable=True,
+        ),
+        "event-grid": NodeProbe(
+            params={"period_ms": 2, "offset_ms": 0},
+            required=("period_ms", "offset_ms"),
+            inputs={"records": records},
             stream_ports=("records",),
             runnable=True,
         ),
