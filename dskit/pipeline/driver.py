@@ -48,7 +48,8 @@ JSON-small node output — and the next run in the series binds its
 ``$prev`` references against the newest prior run dir, falling back to
 the declared ``default`` (first run, or the referenced output missing);
 every binding is recorded in ``resolved.json`` so a silent reset cannot
-hide.
+hide. Spent record streams are released after their last consumer
+(ADR-0048) so EXECUTE does not hold a raw tape through RECORD.
 
 Import cost: stdlib only.
 """
@@ -107,6 +108,13 @@ _ASOF_OK = r"^\d{4}-\d{2}-\d{2}$"
 #: carry.json holds run-over-run STATE (bankrolls, artifact paths), not
 #: datasets.
 _CARRY_LIMIT = 20_000
+
+#: A list this long is storage. Unit-test streams stay under it; a
+#: market tape does not (ADR-0048).
+_RELEASE_MIN_LEN = 256
+
+_SUMMARY_TYPES = frozenset({"list", "tuple", "dict"})
+_KEEP_PORTS = frozenset({"flags"})
 
 _log = logging.getLogger("dskit.pipeline.driver")
 
@@ -694,7 +702,72 @@ def _find_prev_run(run_root, name, own_dir):
     return max(candidates, key=lambda c: (c[0], c[1]))[2]
 
 
+def _is_summary(value):
+    """Return whether ``value`` is ``_summarize``'s collapsed form."""
+    return (
+        isinstance(value, dict)
+        and set(value) == {"type", "len"}
+        and value.get("type") in _SUMMARY_TYPES
+        and isinstance(value.get("len"), int)
+    )
+
+
+def _too_big_to_carry(value):
+    """Refuse values a dumps cannot fit under ``_CARRY_LIMIT``."""
+    if isinstance(value, str) and len(value) > _CARRY_LIMIT:
+        return True
+    if isinstance(value, (list, tuple)) and len(value) * 2 > _CARRY_LIMIT:
+        return True
+    return False
+
+
+def _should_release(value):
+    """Judge whether a spent port is a record stream, not in-process state."""
+    if _is_summary(value):
+        return False
+    return isinstance(value, (list, tuple)) and len(value) >= _RELEASE_MIN_LEN
+
+
+def _search_held(the_plan, completed):
+    """Name ancestors a not-yet-run search still reads from the base pass."""
+    held = set()
+    for key in the_plan.order:
+        if key in completed or the_plan.role_of(key) != "search":
+            continue
+        objective = the_plan.document.expanded[key].params.get("objective")
+        if not is_node_ref(objective):
+            continue
+        target, _path = parse_node_ref(objective)
+        held |= the_plan.ancestors(target) | {target}
+    return held
+
+
+def _release_spent(the_plan, run, resolved):
+    """Replace spent record streams with summaries (ADR-0048)."""
+    completed = {key for key, state in run.node_states.items() if state == "ok"}
+    held = _search_held(the_plan, completed)
+    readers = {}
+    for src, dst in the_plan.edges:
+        readers.setdefault(src, set()).add(dst)
+    for src in the_plan.order:
+        if src not in run.node_outputs or src in held:
+            continue
+        if readers.get(src, set()) - completed:
+            continue
+        outs = run.node_outputs[src]
+        released = False
+        for name, value in list(outs.items()):
+            if name in _KEEP_PORTS or not _should_release(value):
+                continue
+            outs[name] = _summarize(value)
+            released = True
+        if released:
+            resolved.instances.pop(src, None)
+
+
 def _summarize(value):
+    if _is_summary(value):
+        return value
     if isinstance(value, bool) or value is None:
         return value
     if isinstance(value, float) and not math.isfinite(value):
@@ -728,8 +801,12 @@ def _carryable(value):
     """Judge one output for ``carry.json``, which is state, not storage.
 
     Returns the value with a True flag when it is JSON-legal and small
-    enough to carry, and ``(None, False)`` when it is not.
+    enough to carry, and ``(None, False)`` when it is not. Record
+    streams and already-released summaries are refused without dumps
+    (ADR-0048).
     """
+    if _is_summary(value) or _too_big_to_carry(value):
+        return None, False
     text = _json_text(value)
     if text is None or len(text) > _CARRY_LIMIT:
         return None, False
@@ -1427,6 +1504,7 @@ def _execute_plan(document, the_plan, ctx, resolved, trackers):
             _record_error(run, key, t0)
             break
         _record_success(run, key, attempt, trackers, t0)
+        _release_spent(the_plan, run, resolved)
         _apply_verdict(run, key, the_plan, attempt.outputs)
     for key in the_plan.order:
         run.node_states.setdefault(key, "not_run")

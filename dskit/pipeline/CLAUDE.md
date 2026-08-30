@@ -353,6 +353,12 @@ on it without breaking its rulings.
   deferral is ref-driven, not kind-driven: with no ref anywhere in
   params, the kind's validator DOES run at plan. A guaranteed plan-time
   gate would be a new planner↔kind protocol — ADR first.
+- **Spent record streams are released** (ADR-0048). After a node's last
+  `$` reader runs, a list of length `>= 256` (or too big to carry) is
+  replaced with `_summarize` and the pinned instance is dropped. A
+  not-yet-run search still holds its objective's ancestors. `_carryable`
+  never `json.dumps` those streams. `flags` is kept. Do not re-derive
+  the length floor — `_RELEASE_MIN_LEN` is the one name.
 - **An occupied run dir refuses** — reruns need a new asof or name.
 - **`runs.py` reads RECORDS, never `report.md`** — a `metrics` dict is
   summarized out of `nodes/NN-*.json` and recovered from `carry.json`;

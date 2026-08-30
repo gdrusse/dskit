@@ -2020,3 +2020,26 @@ later research may deliberately decouple them in a new document.
 **Consequences.** Horizon and action cadence become separately measurable and
 missing minutes cannot move the clock grid. The kind is useful outside finance,
 adds no scheduler, and introduces no mode branch.
+
+---
+
+## ADR-0048 — Release spent node outputs after their last consumer
+
+**Status:** accepted (2026-08-30; owner directed)
+
+**Context.** EXECUTE kept every node's ports until RECORD. A cadence document
+then held the raw 1-minute tape, the windowed tape, and the grid at once.
+RECORD's `_carryable` also `json.dumps` every port to see if it fit in 20k
+characters, so an 8.9M-row list died after the model had already fitted.
+
+**Decision.** After each successful node, replace a port with `_summarize`
+when every `$` reader has run, no not-yet-run search still needs it as a
+clean ancestor, and the value is a record stream (`len >= 256` or too big
+to carry). `_carryable` refuses those streams without dumping. Summaries
+stay out of `carry.json`. The pinned instance is dropped so a memoized
+scan can be collected. `flags` is never released.
+
+**Consequences.** Small synthetic outputs and JSON-small state stay on
+`DocumentRunResult`. Search trials still see reserved ancestors. A terminal
+port that is itself a huge list is still held until RECORD, but carry no
+longer dumps it.

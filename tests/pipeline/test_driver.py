@@ -25,12 +25,15 @@ from dskit.pipeline.document import (
 )
 from dskit.pipeline.driver import (
     DocumentRunResult,
+    _RELEASE_MIN_LEN,
     _carryable,
+    _is_summary,
     _node_metrics,
     _summarize,
+    _too_big_to_carry,
     run_document,
 )
-from dskit.pipeline.node import Node
+from dskit.pipeline.node import Node, NodeKindRegistry
 from dskit.pipeline.testing import MemoryTracker
 from tests.pipeline.dochelpers import banking_document, banking_pipeline, make_registry
 
@@ -987,6 +990,102 @@ class TestHelpers:
         assert _carryable(1000.0) == (1000.0, True)
         assert _carryable(object()) == (None, False)
         assert _carryable("x" * 30_000) == (None, False)
+        stream = [{"i": 0}] * 10_001
+        assert _too_big_to_carry(stream) is True
+        assert _carryable(stream) == (None, False)
+        summary = _summarize(stream)
+        assert _is_summary(summary)
+        assert _summarize(summary) == summary
+        assert _carryable(summary) == (None, False)
+
+
+class FatSource(Node):
+    """Emit ``n`` tiny records so release can fire without a real tape."""
+
+    role = "data"
+    outputs = ("records", "n")
+
+    def fingerprint(self):
+        return {"kind": "fat", "n": int(self.params["n"])}
+
+    def run(self, ctx, inputs):
+        n = int(self.params["n"])
+        return {"records": [{"i": i} for i in range(n)], "n": n}
+
+
+class HeadRows(Node):
+    """Keep the first upstream row so the source is spent."""
+
+    role = "transform"
+    outputs = ("records",)
+
+    def run(self, ctx, inputs):
+        rows = inputs["records"]
+        return {"records": list(rows[:1])}
+
+
+def _fat_registry():
+    registry = NodeKindRegistry()
+    registry.register("fat-src", FatSource)
+    registry.register("head-rows", HeadRows)
+    return registry
+
+
+def _fat_doc(tmp_path, n, consumers=("kept",)):
+    pipeline = {
+        "src": NodeSpec(uses="fat-src", params={"n": n}),
+    }
+    for key in consumers:
+        pipeline[key] = NodeSpec(
+            uses="head-rows",
+            inputs={"records": "$src.records"},
+        )
+    return PipelineDocument(
+        name="release-spent",
+        pipeline=pipeline,
+        outputs=OutputsConfig(run_root=str(tmp_path)),
+    )
+
+
+class TestSpentRelease:
+    def test_release_min_len_is_the_one_name(self):
+        assert _RELEASE_MIN_LEN == 256
+
+    def test_spent_stream_is_summarized_after_its_last_reader(self, tmp_path):
+        n = _RELEASE_MIN_LEN
+        result = run_document(
+            _fat_doc(tmp_path, n, consumers=("kept",)),
+            asof=ASOF,
+            registry=_fat_registry(),
+        )
+        assert result.state == "ran"
+        assert result.outputs["src"]["records"] == {"type": "list", "len": n}
+        assert result.outputs["src"]["n"] == n
+        assert result.outputs["kept"]["records"] == [{"i": 0}]
+        record = read_json(os.path.join(result.run_dir, "nodes"), "01-src.json")
+        assert record["outputs"]["records"] == {"type": "list", "len": n}
+        carry = read_json(result.run_dir, "carry.json")
+        assert "records" not in carry.get("src", {})
+        assert carry["src"]["n"] == n
+
+    def test_two_readers_keep_the_stream_until_both_finish(self, tmp_path):
+        n = _RELEASE_MIN_LEN
+        result = run_document(
+            _fat_doc(tmp_path, n, consumers=("left", "right")),
+            asof=ASOF,
+            registry=_fat_registry(),
+        )
+        assert result.outputs["src"]["records"] == {"type": "list", "len": n}
+        assert result.outputs["left"]["records"] == [{"i": 0}]
+        assert result.outputs["right"]["records"] == [{"i": 0}]
+
+    def test_a_short_stream_stays_for_the_caller(self, tmp_path):
+        result = run_document(
+            _fat_doc(tmp_path, 12, consumers=("kept",)),
+            asof=ASOF,
+            registry=_fat_registry(),
+        )
+        assert result.outputs["src"]["records"] == [{"i": i} for i in range(12)]
 
     def test_node_metrics_extraction(self):
         out = _node_metrics(
