@@ -795,8 +795,13 @@ def restore_model(artifact_dir, module_ref):
             raise SystemExit(f"artifact incomplete: {path} is missing")
     with open(sidecar_path, encoding="utf-8") as fh:
         sidecar = json.load(fh)
+    if not isinstance(sidecar, dict):
+        raise SystemExit(
+            f"artifact {artifact_dir}: sidecar is not a JSON object"
+        )
 
-    params = sidecar.get("params", {})
+    raw_params = sidecar.get("params")
+    params = raw_params if isinstance(raw_params, dict) else {}
     recorded = sidecar.get("module_class", "")
     is_zoo = "arch" in params or recorded == _ZOO_REF
     if is_zoo:

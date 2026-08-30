@@ -2160,6 +2160,48 @@ def test_restore_model_refuses_a_zoo_sidecar_naming_the_wrong_class(tmp_path):
 
 
 @pytest.mark.skipif(not HAVE_TORCH, reason="torch not installed")
+def test_restore_model_refuses_a_sidecar_that_is_not_an_object(tmp_path):
+    """A JSON array must SystemExit, not AttributeError on ``.get``."""
+    from dskit.pipeline.libs.torch_ts import TimeSeriesTrain
+    from intraday_poc.live import restore_model
+
+    artifact = tmp_path / "art"
+    artifact.mkdir()
+    (artifact / "model.pt").write_bytes(b"x")
+    (artifact / "model.json").write_text("[]", encoding="utf-8")
+    with pytest.raises(SystemExit, match="sidecar"):
+        restore_model(str(artifact), TimeSeriesTrain._class_ref())
+
+
+@pytest.mark.skipif(not HAVE_TORCH, reason="torch not installed")
+def test_restore_model_refuses_null_params_without_exploding(tmp_path):
+    """``params: null`` must not TypeError on ``'arch' in params``."""
+    from dskit.pipeline.libs.torch_ts import TimeSeriesTrain
+    from dskit.pipeline.libs.torch import ARTIFACT_FORMAT
+    from intraday_poc.live import restore_model
+
+    artifact = tmp_path / "art"
+    artifact.mkdir()
+    state = artifact / "model.pt"
+    state.write_bytes(b"x")
+    sidecar = {
+        "format": ARTIFACT_FORMAT,
+        "module_class": TimeSeriesTrain._class_ref(),
+        "params": None,
+        "seed": 0,
+    }
+    digest = hashlib.sha256(state.read_bytes())
+    digest.update(b"\x00")
+    digest.update(json.dumps(sidecar, sort_keys=True,
+                             separators=(",", ":")).encode("utf-8"))
+    sidecar["state_hash"] = digest.hexdigest()
+    (artifact / "model.json").write_text(json.dumps(sidecar),
+                                         encoding="utf-8")
+    with pytest.raises(SystemExit):
+        restore_model(str(artifact), TimeSeriesTrain._class_ref())
+
+
+@pytest.mark.skipif(not HAVE_TORCH, reason="torch not installed")
 def test_restore_model_rebuilds_a_zoo_net(tmp_path):
     """Zoo nets live inside build_module — restore rebuilds, never imports."""
     import torch

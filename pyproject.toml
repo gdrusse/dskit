@@ -95,7 +95,6 @@ convention = "numpy"
 "children/_skeleton/yourproject/connectors.py" = ["D"]
 "children/_skeleton/yourproject/nodes.py" = ["D"]
 "children/intraday_poc/intraday_poc/__init__.py" = ["D"]
-"children/intraday_poc/intraday_poc/models.py" = ["D"]
 "dskit/__init__.py" = ["D"]
 "dskit/assets/__main__.py" = ["D"]
 "dskit/assets/base.py" = ["D"]
