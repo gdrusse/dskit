@@ -28,10 +28,10 @@ UNLESS the change is a declared identity move (see the intentional-move log in
 `model-sweep.json` (E5), `foreach-fanout.json` (C3) and
 `selection-demo.json` (D1). Engine examples did NOT
 move: `examples/pipeline/torch-declared.json` is still `4039ddf167fa65db…`.
-The child documents moved intentionally, twice: `run-train.json`
-`187658f8b58b91a1…` → `85fff271bfdd05ec…` (A1: monitor/device/optimizer_params
-declared), and `run-backtest.json` `4db5b7904d19b73c…` → `5e1c24b0fad3ae1b…`
-(A1). To regenerate the whole ledger, run the loop above.
+The child documents moved again (C5): `run-train.json` → `6b1df6177dd8eae0…`,
+`run-backtest.json` → `2ba4c25bbfaa7401…` (named the zoo LSTM). Prior
+intentional moves are in `docs/plans/2026-08-closeout.md` §9. To
+regenerate the whole ledger, run the loop above.
 
 LANDED in the PREVIOUS session (2026-08-27; ruff clean; 2440 passed / 108
 skipped; all 14 document identity hashes byte-identical to that baseline):
@@ -285,7 +285,7 @@ found by diffing the documents against `DeclaredTrain._BASE_PARAMS` +
 Hardcoding audit (2026-08-27) — every finding is the SAME failure: one value
 in two places, nothing pinning them, so changing one and not the other is
 silent. "Pinned?" is the column that matters; `lookback` is the benchmark
-(`test_lookback_agrees_everywhere` + a runtime refusal in `NextBarLSTM.forward`).
+(`test_lookback_agrees_everywhere` + the pack's `seq_len` floor).
 
 HIGH — silent wrong behavior:
 
@@ -858,25 +858,12 @@ no project rewrites a 1D CNN or an LSTM regressor ever again.
 **The owner is right that the work is straightforward — but ONE constraint
 decides the shape, so settle it before writing code.**
 
-- [ ] **You cannot subclass `nn.Module` at module level anywhere in
-      `dskit/pipeline/`.** The purity gate (`tests/pipeline/test_purity.py`)
-      holds tier-2 packs to the SAME module-level rule as the core: a pack
-      may name its library "only inside `run()`". It is enforced statically
-      — including imports inside `try`/`if`/`with` **or a class body** — and
-      again behaviourally with the library blocked from `sys.modules`. So
-      `class LSTMRegressor(torch.nn.Module)` at module level is structurally
-      impossible here. (This is exactly why `intraday_poc/models.py` carries
-      torch at its top: children are not scanned.)
-
-      **The sanctioned pattern already exists** — `_LinearModule`
-      (`libs/torch.py:1274`): a mixin whose `build_module` imports torch
-      INSIDE and returns the net, paired into
-      `LinearRegressor(_LinearModule, TorchTrain)` /
-      `LinearPredictor(_LinearModule, TorchPredict)`. For anything needing a
-      custom `forward`, define the `nn.Module` subclass INSIDE
-      `build_module`. That is safe for artifact loading because the sidecar
-      check compares `build_module` FUNCTION identity, not the class.
-- [ ] **Decide how the zoo stays SWEEPABLE — the real design call.**
+- [x] **You cannot subclass `nn.Module` at module level anywhere in
+      `dskit/pipeline/`.** **Landed via ADR-0041 / C5 (2026-08-29).** Every
+      net is defined inside a builder / `build_module`. `torch.py` stayed
+      byte-identical; the catalog is `libs/torch_ts.py`. The child's
+      `models.py` no longer imports torch.
+- [x] **Decide how the zoo stays SWEEPABLE — the real design call.**
       A search space key must address an existing PARAM; `uses` is the
       node's kind, not a param, so **one node-pair per architecture cannot
       be swept** by the search seam. Two ways out:
@@ -891,10 +878,10 @@ decides the shape, so settle it before writing code.**
         above wants. A registry table is the repo's sanctioned middle ground
         (`_OPS`, `METRICS`, `SPLIT_POLICIES`), NOT the string switch the
         pillars rule forbids.
-      **Recommend the second** — it composes with the model sweep instead of
-      sitting beside it, and `register_arch` is how a child adds its own
-      architecture to the same seam.
-- [ ] **The architectures.** Owner-named: MLP, LSTM, GRU, simple
+      **Landed via ADR-0041 / C5 (2026-08-29).** One pair
+      (`torch-ts-train` / `torch-ts-predict`) over `register_arch`; `arch`
+      is a swept param.
+- [x] **The architectures.** Owner-named: MLP, LSTM, GRU, simple
       Transformer. Researched additions worth their place:
       - **DLinear / NLinear** — one-layer linear models from Zeng et al.
         2023 ("Are Transformers Effective for Time Series Forecasting?").
@@ -909,7 +896,10 @@ decides the shape, so settle it before writing code.**
         variant that actually works on TS.
       - **GRU/LSTM + attention** — a rung between the simple and heavy ends.
       - *N-BEATS* only if someone needs it — heaviest, least general.
-- [ ] **Parameterize the HEAD, do not fork the zoo.** Quant work regresses a
+      **Landed via ADR-0041 / C5 (2026-08-29).** Ships `dlinear`, `nlinear`,
+      `mlp`, `lstm`, `gru`, `lstm_attn`, `gru_attn`, `tcn`, `cnn1d`,
+      `patchtst`. N-BEATS still excluded.
+- [x] **Parameterize the HEAD, do not fork the zoo.** Quant work regresses a
       return; betting/binary markets classify an outcome — and binary
       markets are already first class here (`records.py:176`
       `BinaryAccounting` vs `MarkToMarketAccounting`). One `head` param
@@ -917,7 +907,9 @@ decides the shape, so settle it before writing code.**
       keeps the zoo at N architectures instead of 2N classes. Note this
       needs the missing `loss` knob from the Configurability section above —
       today `RowVectorAdapter.loss` is hardcoded MSE.
-- [ ] **The zoo and a child's `models.py` do NOT compete — they are default
+      **Landed via ADR-0041 / C5 (2026-08-29).** `head` selects the default
+      `loss` (B2's import-path knob). No `register_head`.
+- [x] **The zoo and a child's `models.py` do NOT compete — they are default
       vs bespoke.** `models.py` stays, permanently, as the seam for an
       architecture a project genuinely invents. What the zoo removes is
       RE-WRITING a standard net per child. Concretely for `intraday_poc`:
@@ -926,6 +918,10 @@ decides the shape, so settle it before writing code.**
       version and drop its hand-rolled copy, while keeping `models.py` for
       anything bespoke later. That switch is also the proof the zoo is
       actually generic. Do NOT read this as "children stop having models".
+      **Landed via ADR-0041 / C5 (2026-08-29).** Documents name
+      `torch-ts-train` / `arch: lstm`. `NextBarLSTM` deleted. `models.py`
+      is the empty bespoke seam. `live.restore_model` rebuilds via
+      `TimeSeriesTrain.build_module`. Child hashes moved as declared.
 
 ## Long-term goal — a generic SERVING LOOP in dskit
 

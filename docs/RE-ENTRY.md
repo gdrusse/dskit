@@ -6,19 +6,22 @@ Refreshed by `/wrap`. Where things stand — read this first.
 
 # ▶ PICK UP HERE
 
-**State: C6 is on `main` (3ede479, not pushed). ADR-0044 + D1 are on
-`ws/adr-0044`.** Closeout is **23 of 24** once that branch merges. One card
-remains: **C5**.
+**State: the 2026-08 closeout is complete on `main` (not pushed).** C6
+(FeatureSelector), ADR-0044 (per-knob search), D1 (selection-demo, ledger
+18), and C5 (zoo pack + child names `arch: lstm`) are all merged.
 
-## The one remaining card
+## What just landed
 
-| Card | What it delivers | Spec (already ACCEPTED) | Start now? |
-|---|---|---|---|
-| **C5** | Time-series architecture zoo — 10 archs behind a registry, `arch` becomes a swept param | **ADR-0041** | ✅ yes |
+| Card | SHA | What it delivered |
+|---|---|---|
+| **C6** | `2be1918` | FeatureSelector + sklearn-select + torch-importance; `torch.py` drained |
+| **ADR-0044** | `c009953` | `fitted_transform` searchability is per-knob; flow 2 plans |
+| **D1** | `e49dfcb` | `examples/pipeline/selection-demo.json` |
+| **C5** | `75e38cf` | `libs/torch_ts.py`; child dropped `NextBarLSTM` |
 
-C5 must not touch `libs/torch.py` (C6 drained it; ADR-0041 says the zoo is a
-NEW sibling `libs/torch_ts.py`). D1 adds `examples/pipeline/selection-demo.json`
-and moves the ledger to 18 documents. ADR-0044 is accepted: flow 2 plans.
+Nothing in-flight. Follow-ups stay in TODO (BarsFromStore scan, `timeframe`
+knob, ignore-list drain, pmquant §13 leftovers, the unbatched final-loss
+memory twin). Do not push unless asked.
 
 ## How to run one, exactly
 
@@ -105,7 +108,7 @@ the child collapse (C2); the `foreach` fan-out grammar (C3); the long-method
 decomposition, with the ceiling now pinned (C4); HPO × walk-forward semantics, so
 per-fold winner instability is a printed diagnostic (C7); the feature-selection
 seam — `FeatureSelector` + `sklearn-select` + `torch-importance`, `torch.py`
-drained (C6). C5 (the architecture zoo) is the last Wave-2 card.
+drained (C6). C5 (the architecture zoo + child LSTM switch) closed Wave 2.
 
 **Waves 4–5.** The store brought current (D2), the capstone run (D3), TODO marked
 (D4), this wrap (D5).
@@ -163,8 +166,7 @@ documents, the child CLAUDE.md and the pin's docstring now say so plainly.
 - `docs/plans/2026-08-closeout.md` — the orchestrator brief. §3 merge law, §7 model
   map (amended), §8 the task cards, §9 the hash ledger and intentional-move log,
   §10 the STATE table with a row per card and what it actually did.
-- `docs/architecture/decision-log.md` — ADR-0038…0043 accepted; ADR-0044 proposed.
+- `docs/architecture/decision-log.md` — ADR-0038…0044 accepted.
 - `TODO.md` — every item carries its own reasoning; landed items carry what landed
-  and any correction the work forced. 54 checked, 22 open after C6 (feature
-  selection + governing class landed; the three-flows item stays open until
-  ADR-0044, because flow 2 cannot run).
+  and any correction the work forced. Zoo + all three selector flows are
+  checked. Open items are the leftovers named under Known gaps.
