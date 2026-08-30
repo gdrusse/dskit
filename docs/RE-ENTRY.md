@@ -1,65 +1,43 @@
 # Re-entry
 
-Refreshed after the batch-loss / BarsFromStore / timeframe card
-(`cursor/batch-loss-bars-timeframe-881f` → PR). Read this first.
+Refreshed after the intraday-equities planning session (2026-08-30).
 
 ---
 
 # ▶ PICK UP HERE
 
-**State: readiness card is on the PR branch, awaiting merge to `main`.**
-ADR-0045 (batched torch eval), BarsFromStore scan-shape knobs, and the
-`timeframe` connector knob are implemented, TDD'd, and through skeptic
-loops (Composer rounds to a clean BLOCKER/MAJOR floor). Tip: `282009a`.
+**State: the plan is ratified; implementation has not started.**
 
-**intraday_poc** is a complete *PoC*: real-store capstone, train → live
-path, foreach + HPO, zoo LSTM. It is not a finished production book —
-see leftovers below.
+Plan of record:
+`docs/children_design_proposals/intraday_equities.md`.
+Accepted: ADR-0046 (OAuth + recurring one-minute pulls) and ADR-0047
+(`event-grid`).
 
-## What this card delivered
+## Next session
 
-| Item | What landed |
-|---|---|
-| **ADR-0045** | `loader.eval_batch_size` (defaults to `batch_size`); `_final_loss` + val score via one `_eval_split` walk |
-| **BarsFromStore** | `ts_field` / `shared_fields` knobs; dedup key stays `BAR_KEY_FIELDS` (= discover `primary_key`) |
-| **`timeframe`** | Minute-only `spec()` knob; live cadence from amount; `discover` publishes it; re-backfill footgun documented |
+1. Implement ADR-0046 red-first: OAuth service, Alpaca/Schwab packs, `watch`.
+2. Stop at manual authorization. The owner is on standby; all expected Alpaca
+   and Schwab environment variables were absent at wrap.
+3. Prove one Alpaca SIP backfill and one finite Schwab live pull.
+4. Implement ADR-0047, then build exactly the ratified child tree.
 
-GPU scaling (RTX 5060 Ti, LSTM seq=30 hidden=64): VRAM ~flat in `n` at
-fixed `eval_bs`; full-split eval OOMs ~200k rows; batched stays ~40–70 MB.
+Do not substitute Yahoo: its one-minute history is shallow and unofficial.
+Keep both vendors as separate onboarding sources.
 
-## Before a new planning session
+## Locked experiment
 
-1. **Merge the PR** into `main` (or plan against the PR branch explicitly).
-2. Start a **new agent/session** with a planning-only brief — ADR-first,
-   no code until decisions are accepted. Point it at:
-   - `docs/RE-ENTRY.md` (this file)
-   - `docs/architecture/decision-log.md`
-   - `TODO.md` / `children/intraday_poc/README.md`
-   - the child gap docs under `docs/` if the new project is a second child
-3. Prefer a **high-reasoning model** and ask for options + ADRs, not
-   implementation. Keep this session's PR merge separate from that plan.
-
-## Realistic book size (this hardware + PoC grammar)
-
-- **Live:** ~10–30 symbols (ops/API), GPU not binding.
-- **HPO crossed grid (`W^S`):** 2–3 symbols.
-- **Shared/independent search:** ~10–20 overnight.
-
-## Still open (not blocking a new plan)
-
-- Ignore-list drain; pmquant §13 (deferred by owner)
-- HF pretrained-weights decision; long-term serving loop
-- Promote capstone winner into documents (owner call)
-- Search grammar: crossed `foreach` spaces explode with S
+- One-minute raw bars; derive every coarser view.
+- Trade AAPL/JPM/XOM/WMT/LLY; SPY is feature-only.
+- Compare 1/5/15/30/60-minute label/action documents.
+- Select cadence before model HPO; latest six months stay locked.
+- Initial features are common OHLCV-derived truth only.
+- Paper limit orders precede any separate real-money decision.
 
 ## Verification recipe
 
 ```bash
-.venv/bin/python -m ruff check .
-.venv/bin/python -m pytest tests/pipeline_libs/test_torch.py \
-  tests/pipeline_libs/test_torch_ts.py children/intraday_poc/tests -q
-# CUDA torch: pip install torch --index-url https://download.pytorch.org/whl/cu128
+python -m ruff check .
+python -m pytest -q
 ```
 
-Identity ledger: **18 documents**, unmoved by this card (notes-only
-config edit on `run-train.json`).
+Planning commit before this refresh: `14d8022`.

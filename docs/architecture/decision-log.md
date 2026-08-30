@@ -1962,7 +1962,7 @@ batched pass (loss + beliefs), not two.
 
 ## ADR-0046 — OAuth refresh and recurring market pulls belong to onboarding
 
-**Status:** proposed (2026-08-30; awaiting owner approval)
+**Status:** accepted (2026-08-30; owner ratified for next-session implementation)
 
 **Context.** The intraday-equities child needs free Alpaca SIP history and
 live Schwab bars. `RestApiConnector` accepts one static credential; it cannot
@@ -1992,13 +1992,13 @@ another child would schedule drift and violate ADR-0021.
    streaming are a later, separately designed and validated extension.
 
 **Consequences.** The new child contains vendor policy and configuration, not
-auth, retry, token or stream plumbing. Initial authorization still needs the
+auth, retry, token or polling plumbing. Initial authorization still needs the
 operator. Package READMEs/CLAUDE trees and connector conformance tests must
-land with implementation. No implementation begins until this ADR is accepted.
+land with implementation.
 
 ## ADR-0047 — Action cadence is an event-time grid, independent of label horizon
 
-**Status:** proposed (2026-08-30; awaiting owner approval)
+**Status:** accepted (2026-08-30; owner ratified for next-session implementation)
 
 **Context.** `ReturnWindows.label_lead` can label 1/5/15/30/60-minute returns,
 but it does not make a strategy act at those intervals. Scoring every minute
@@ -2019,5 +2019,4 @@ later research may deliberately decouple them in a new document.
 
 **Consequences.** Horizon and action cadence become separately measurable and
 missing minutes cannot move the clock grid. The kind is useful outside finance,
-adds no scheduler, and introduces no mode branch. No implementation begins
-until this ADR is accepted.
+adds no scheduler, and introduces no mode branch.

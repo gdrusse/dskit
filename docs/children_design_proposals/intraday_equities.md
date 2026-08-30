@@ -1,7 +1,7 @@
 # Design proposal — intraday_equities as a dskit child
 
-**Status: PROPOSED** — awaiting owner ratification. No child or framework code
-may start until ADR-0046/0047 and this file are accepted.
+**Status: RATIFIED** — owner-approved 2026-08-30 for next-session
+implementation under ADR-0046/0047.
 
 Date: 2026-08-30. Goal: a practical US-equity intraday system that predicts
 returns, then chooses cost-aware limit orders. Data acquisition comes first.
