@@ -27,7 +27,7 @@ intraday_poc/
 │   ├── __init__.py            # import = registration of the node kinds
 │   ├── connectors.py          # AlpacaBarsConnector (four verbs; sip/iex knobs)
 │   ├── nodes.py               # bars / window / forecast / select-one kinds
-│   ├── models.py              # NextBarLSTM (run-path only — torch at top)
+│   ├── models.py              # empty bespoke seam (zoo ships standard nets)
 │   ├── live.py                # the forward loop: predict → pick → paper order
 │   └── testing.py             # StubBarsConnector — the connector minus the network
 ├── configs/
@@ -122,7 +122,7 @@ strings `root` + `source` in the run document.
               ▼                                        ▼
    BarsFromStore          nodes.py:110        sync_published  assets/sync.py
               ▼                                   (the catalog)
-   window → DeclaredTrain → select-one
+   window → torch-ts-train (arch:lstm) → select-one
      run-train.json / run-backtest.json
 ```
 
@@ -198,7 +198,7 @@ so a winner may pair 16 with 64. The live loop refuses such a pair rather
 than trading on it, and recovering is a config edit, not a re-run: the
 grid is enumerated and `loader.seed` pins every fit, so re-running
 reproduces the same winner. Take a symmetric trial from `carry.json`, put
-its width on the `foreach` template's `module_params` (one edit, both
+its width on the `foreach` template's `arch_params.lstm` (one edit, both
 symbols) and on `run-backtest.json`'s twin pair, narrow the space, re-run.
 Per-symbol widths cannot be declared beside the template they fan from at
 all — that needs hand-expanding the fan-out.
@@ -209,7 +209,7 @@ solves the SAME pyomo program the backtest scored, and flips the paper
 position to the winner. Decisions land in `decisions.jsonl`.
 
 **The loop declares nothing twice.** The price field, the gap bound and
-the model class come from `<run-dir>/config.json` — the whole training
+the trainer identity come from `<run-dir>/config.json` — the whole training
 document, which the driver writes; the adjustment, the symbol
 **universe** and the credential env-var **names**
 (`key_env`/`secret_env`) come from the source config the puller

@@ -16,10 +16,10 @@ shape for future children: keep the module set stable
 - **Tier-3 may import anything** — but keep heavy imports inside
   `run()`/`read()`: documents naming these kinds must PLAN on machines
   without torch/pyomo/alpaca-py (the conformance suite enforces it).
-  The ONE exception is `models.py` (torch at module top — subclassing
-  `nn.Module` needs it): it is run-path only, resolved by the declared
-  seam inside `run()`, and must never be imported by `__init__`,
-  `nodes`, or `connectors`.
+  `models.py` is the empty bespoke seam (no torch): add a class there
+  only when the architecture is genuinely invented, and then keep
+  torch inside that file — never imported by `__init__`, `nodes`, or
+  `connectors`. The documents name `torch-ts-train` / `arch: lstm`.
 - **Position-independent**: no `..` imports, no dskit-repo paths; the
   only coupling is `import dskit`. Graduation is a directory move.
 - **Import = registration**: `intraday_poc/__init__.py` imports `nodes`,
@@ -34,7 +34,7 @@ intraday_poc/
 │                   #   vendor-touching method (testing.py doubles it)
 ├── nodes.py        # bars (data) / window (transform) / forecast (score)
 │                   #   / select-one (score, on the PyomoSolve doorway)
-├── models.py       # NextBarLSTM — run-path only, torch at top (see above)
+├── models.py       # empty bespoke seam — zoo ships standard nets
 ├── live.py         # forward loop: clock gate → IEX bars → verified
 │                   #   artifact restore → the SAME pyomo pick → paper order;
 │                   #   every knob READ from the run dir + source config
@@ -74,7 +74,7 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy/mlflow (run-path)
   no linked-key form, and duplicate hand-written keys cross exactly the
   same way), and the driver APPLIES the winner to the run's artifacts —
   so an asymmetric pairing ships unless something refuses it. `live.py`
-  does: it compares the restored artifacts' `module_params` and refuses
+  does: it compares the restored artifacts' `arch_params` and refuses
   the pair. Recovering from that refusal is a CONFIG edit, never a
   re-run — the grid is enumerated and `loader.seed` pins every fit, so
   a re-run reproduces the same winner. Take a symmetric trial from the
@@ -106,9 +106,9 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy/mlflow (run-path)
   in `carry.json` — not in the report, and not in the sink.
 
 - **Lookback is pinned in three places** — the window node's `lookback`,
-  the LSTM's `module_params.lookback`, and the `ret_lag_*` feature list.
+  the trainer's `seq_len`, and the `ret_lag_*` feature list.
   `test_configs.py::test_lookback_agrees_everywhere` pins the agreement;
-  the module also refuses a width mismatch at run, and `live.main`
+  the pack refuses a width mismatch at plan, and `live.main`
   refuses a run whose artifacts and window node disagree.
 - **`WindowRows` owns no chain arithmetic** (ADR-0040). It subclasses
   `dskit.pipeline.libs.numpy:ReturnWindows` and supplies only the
@@ -165,7 +165,8 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy/mlflow (run-path)
   end clamped 16 min back). Only the forward loop's own fetch uses IEX
   (`live.py:LIVE_FEED`), because real-time SIP is not on the free tier —
   sparse minutes possible, gap discipline handles it, never bridge.
-- **`live.py` restates nothing**: price field, gap bound, module class,
+- **`live.py` restates nothing**: price field, gap bound, trainer
+  identity (zoo class or declared module),
   which trainer belongs to which symbol, and the selector's solver all
   come from `<run-dir>/config.json`, read through the ENGINE's own
   `load_document` (typed `NodeSpec`s — never a parse of the child's, which

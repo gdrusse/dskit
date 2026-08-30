@@ -116,18 +116,23 @@
       "notes": "The MSFT twin of aapl_val."
     },
     "qhat_aapl": {
-      "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+      "uses": "torch-ts-train",
       "mode": "train",
       "inputs": {
         "rows": "$aapl_train.records",
         "val_rows": "$aapl_val.records"
       },
       "params": {
-        "module": "intraday_poc.models:NextBarLSTM",
-        "module_params": {
-          "lookback": 30,
-          "hidden_size": 32,
-          "num_layers": 1
+        "arch": "lstm",
+        "head": "regression",
+        "seq_len": 30,
+        "channels": 1,
+        "order": "recent_first",
+        "arch_params": {
+          "lstm": {
+            "hidden_size": 32,
+            "num_layers": 1
+          }
         },
         "features": [
           "ret_lag_0",
@@ -179,18 +184,23 @@
       "notes": "Fresh weights every fold (expanding train window); per-epoch train/val loss lands in training_curve.json beside the fold's artifact. monitor: val_loss makes the best-scoring epoch's weights the ones that persist, not the last (ADR-0035) — it changes which weights ship, not which objective is measured. CAVEAT: aapl_val is both the monitor's selection set AND the rows total_realized scores, an optimism the objective does not correct — hold out a selection split before building hyperparameter search on it. TRADE-OFF: with a monitor, an empty val window is fatal (the engine refuses the fit as 'no val_rows are wired'), so shorten val_days if the store's tail is short rather than hunting a wiring bug. device/optimizer_params: same values and rationale as run-train.json, pinned identical by test_configs.py."
     },
     "qhat_msft": {
-      "uses": "dskit.pipeline.libs.torch:DeclaredTrain",
+      "uses": "torch-ts-train",
       "mode": "train",
       "inputs": {
         "rows": "$msft_train.records",
         "val_rows": "$msft_val.records"
       },
       "params": {
-        "module": "intraday_poc.models:NextBarLSTM",
-        "module_params": {
-          "lookback": 30,
-          "hidden_size": 32,
-          "num_layers": 1
+        "arch": "lstm",
+        "head": "regression",
+        "seq_len": 30,
+        "channels": 1,
+        "order": "recent_first",
+        "arch_params": {
+          "lstm": {
+            "hidden_size": 32,
+            "num_layers": 1
+          }
         },
         "features": [
           "ret_lag_0",

@@ -55,7 +55,7 @@ DOCUMENTS = ("run-train.json", "run-backtest.json")
 #: expansion re-aims it at every instance, which is what pins the two
 #: symbols to one architecture (:func:`test_one_space_key_tunes_both_symbols`).
 SEARCH_NODE = "search"
-SEARCH_SPACE_KEY = "qhat.module_params.hidden_size"
+SEARCH_SPACE_KEY = "qhat.arch_params.lstm.hidden_size"
 SEARCH_GRID = [16, 32, 64]
 
 #: ONE registered source, ONE connector config: both acquisition modes
@@ -74,7 +74,8 @@ SOURCE_CONFIGS = ("source-backfill.json",)
 #: pinning test that omits a knob CLAUDE.md calls worse than none. Add
 #: a knob here when you add a knob to the documents.
 DECLARED_TRAINER_KNOBS = frozenset({
-    "module", "module_params", "features", "label", "optimizer",
+    "arch", "head", "seq_len", "channels", "order", "arch_params",
+    "features", "label", "optimizer",
     "optimizer_params", "epochs", "lr", "loader", "device", "monitor",
 })
 
@@ -152,7 +153,7 @@ def test_one_space_key_tunes_both_symbols():
     )
     space = _expanded("run-train.json")[SEARCH_NODE].params["space"]
     assert space == {
-        f"{key}.module_params.hidden_size": SEARCH_GRID
+        f"{key}.arch_params.lstm.hidden_size": SEARCH_GRID
         for key in TRAINERS["run-train.json"]
     }, "the one key must expand to one key per symbol, on the same grid"
 
@@ -711,14 +712,14 @@ def test_the_forward_top_up_is_declared_and_documented():
 
 
 def test_lookback_agrees_everywhere():
-    """The window width, the module's lookback, and the feature list
-    must be the SAME number — the live loop and the LSTM both refuse a
+    """The window width, the trainer's seq_len, and the feature list
+    must be the SAME number — the live loop and the zoo both refuse a
     mismatch, so pin it at config level too."""
     for doc_name in DOCUMENTS:
         lookback = _raw(doc_name)["pipeline"]["window"]["params"]["lookback"]
         for key, spec in zip(TRAINERS[doc_name], _trainers(doc_name)):
             params = spec.params
-            assert params["module_params"]["lookback"] == lookback, doc_name
+            assert params["seq_len"] == lookback == 30, doc_name
             features = params["features"]
             assert features == [f"ret_lag_{i}" for i in range(lookback)], (
                 doc_name, key,

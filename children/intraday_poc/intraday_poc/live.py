@@ -14,9 +14,10 @@ Run-path only (torch, pyomo, alpaca-py) — never imported by
    (ADR-0040);
 3. restore each symbol's model from the run's artifact — found through
    the run's OWN trainer node keys, sidecar verified (state_hash, S2-A),
-   the module class refused by name against the one the RUN declared
-   (the pack's own load discipline), and the pair refused outright when
-   the two artifacts were built from different ``module_params``;
+   the trainer identity refused by name against the one the RUN declared
+   (zoo class or declared module — the pack's own load discipline), and
+   the pair refused outright when the two artifacts were built from
+   different architecture knobs (``arch_params`` / ``module_params``);
 4. decide by RUNNING the run's own selector node
    (:class:`intraday_poc.nodes.SelectOne`, rebuilt from the document,
    one timestamp wide) — not a second solve written here, so the
@@ -27,8 +28,9 @@ Run-path only (torch, pyomo, alpaca-py) — never imported by
    market-buy the winner (TIF ``day``), through the paper endpoint.
 
 **This loop re-declares nothing the run already declared.** The
-modelling knobs — the price field, the gap discipline, the module class,
-which trainer belongs to which symbol, the selector's solver — are READ
+modelling knobs — the price field, the gap discipline, the run's
+trainer identity (zoo class or declared module), which trainer belongs
+to which symbol, the selector's solver — are READ
 from ``<run-dir>/config.json``, the whole training document
 the driver writes, through the ENGINE's own
 :func:`~dskit.pipeline.document.load_document` rather than a parse of
@@ -99,6 +101,7 @@ from dskit.pipeline.base import (
 from dskit.pipeline.document import foreach_slug, load_document
 from dskit.pipeline.env import load_env
 from dskit.pipeline.libs.pyomo import DEFAULT_SOLVER
+from dskit.pipeline.libs.torch_ts import TimeSeriesTrain
 from dskit.pipeline.node import NodeContext
 
 from .connectors import (
@@ -107,6 +110,12 @@ from .connectors import (
     resolve_credentials,
 )
 from .nodes import NODE_KINDS, SelectOne, WindowRows
+
+#: Kind name the documents use; the class-ref spelling is the sidecar
+#: identity :meth:`TimeSeriesTrain._class_ref` writes.
+_ZOO_KIND = "torch-ts-train"
+_ZOO_REF = TimeSeriesTrain._class_ref()
+_ZOO_USES = frozenset({_ZOO_KIND, _ZOO_REF})
 
 __all__ = [
     "LIVE_FEED",
@@ -203,7 +212,7 @@ def load_run_document(run_dir):
     """Read the training document the driver wrote into a run directory.
 
     The driver writes the document VERBATIM to ``<run-dir>/config.json``
-    (lookback, gap discipline, the declared module class, every node's
+    (lookback, gap discipline, the run's trainer identity, every node's
     params), which is why this loop reads it instead of restating any of
     it — and reads it through the ENGINE's own loader, which already
     refuses non-JSON, refuses a document that is not an object, and
@@ -355,13 +364,27 @@ def window_knobs(document):
     return node.price_field(), node.max_gap_minutes()
 
 
-def declared_module(document):
-    """Read the module class path the run declared (ADR-0025's seam).
+def _is_zoo_trainer(spec):
+    """Say whether ``spec`` names the zoo trainer (arch or uses)."""
+    if "arch" in spec.params:
+        return True
+    return spec.uses in _ZOO_USES or _declares(spec.uses, _ZOO_KIND,
+                                              TimeSeriesTrain)
 
-    The document names the class its trainers built, so the loop that
-    restores those artifacts reads the name from there. A literal here
-    would break serving the moment the declared class changed — which
-    is the whole point of the seam.
+
+def _is_trainer(spec):
+    """Return whether ``spec`` is a trainer (module or zoo)."""
+    return "module" in spec.params or _is_zoo_trainer(spec)
+
+
+def declared_module(document):
+    """Read the trainer identity the run declared.
+
+    Two seams, one return: a node that names ``params.module`` is
+    ADR-0025's declared class (bespoke nets still live there); otherwise
+    trainers that name the zoo share :meth:`TimeSeriesTrain._class_ref`.
+    A literal here would break serving the moment that identity
+    changed — which is the whole point of the seam.
 
     Read off the map the run RAN (``expanded``), not the one its author
     wrote: under a ``foreach`` fan-out (ADR-0039) the trainers are
@@ -377,27 +400,32 @@ def declared_module(document):
     Returns
     -------
     str
-        The declared class path, e.g. ``"pkg.models:Net"``.
+        The trainer identity, e.g. ``"pkg.models:Net"`` or
+        ``TimeSeriesTrain``'s class ref.
 
     Raises
     ------
     SystemExit
-        When no node declares ``module``, or the trainers disagree.
+        When no node declares a trainer identity, or the trainers
+        disagree.
     """
     declared = {spec.params["module"]
                 for spec in document.expanded.values()
                 if "module" in spec.params}
-    if not declared:
-        raise SystemExit(
-            "the run declares no module class — --run-dir must name the "
-            "run of a document that trained models"
-        )
-    if len(declared) > 1:
-        raise SystemExit(
-            f"the run declares several module classes ({sorted(declared)}) "
-            "— this loop restores one class per run"
-        )
-    return declared.pop()
+    if declared:
+        if len(declared) > 1:
+            raise SystemExit(
+                f"the run declares several module classes "
+                f"({sorted(declared)}) — this loop restores one class "
+                "per run"
+            )
+        return declared.pop()
+    if any(_is_zoo_trainer(spec) for spec in document.expanded.values()):
+        return _ZOO_REF
+    raise SystemExit(
+        "the run declares no module class — --run-dir must name the "
+        "run of a document that trained models"
+    )
 
 
 def selector_node(document):
@@ -569,12 +597,12 @@ def parse_artifact_overrides(values):
 def _trainer_keys(document):
     """Return the node keys whose trainers the run wrote artifacts for.
 
-    A trainer is a node declaring ``module`` — the same rule
-    :func:`declared_module` reads the class off, so the two never
-    disagree about which nodes are trainers.
+    A trainer is a node declaring ``module`` or naming the zoo — the
+    same rule :func:`declared_module` reads the identity off, so the
+    two never disagree about which nodes are trainers.
     """
     return tuple(key for key, spec in document.expanded.items()
-                 if "module" in spec.params)
+                 if _is_trainer(spec))
 
 
 def _fanned_owner(document):
@@ -717,30 +745,53 @@ def artifact_dirs(document, run_dir, symbols, overrides):
     return dirs
 
 
+def _zoo_regime(params):
+    """Architecture-pinning knobs compared across symbols.
+
+    Flatten the selected arch's ``arch_params`` block so ``hidden_size``
+    is a first-class key the pair check names.
+    """
+    arch = params["arch"]
+    block = ((params.get("arch_params") or {}).get(arch) or {})
+    regime = {
+        "arch": arch,
+        "seq_len": params["seq_len"],
+        "channels": params["channels"],
+        "head": params["head"],
+        **dict(block),
+    }
+    if "order" in params:
+        regime["order"] = params["order"]
+    return regime
+
+
 def restore_model(artifact_dir, module_ref):
     """Restore one trained module from its verified artifact.
 
     The pack's load discipline, applied outside a pipeline run: the
     sidecar's ``state_hash`` (sha256 over the state bytes, a NUL, then
     the canonical JSON of every other sidecar field) must match, and the
-    sidecar's declared class must be the one the RUN declared — which
-    the caller read from the run dir, so the declared-model seam still
-    swings.
+    sidecar's trainer identity must be the one the RUN declared — which
+    the caller read from the run dir, so the seam still swings.
+
+    Zoo nets are rebuilt through :meth:`TimeSeriesTrain.build_module`
+    (they are not importable). A sidecar that names
+    ``params.module`` still takes ADR-0025's declared-class path.
 
     Parameters
     ----------
     artifact_dir : str
         Directory holding ``model.pt`` and ``model.json``.
     module_ref : str
-        The class path the run declared, e.g. ``"pkg.models:Net"``.
+        The trainer identity the run declared.
 
     Returns
     -------
     tuple of (object, list of str, dict)
         The restored module in eval mode, its feature list, and the
-        ``module_params`` the artifact was BUILT from — the regime the
-        caller cross-checks between symbols, read here because this is
-        where the sidecar is opened.
+        regime the artifact was BUILT from — the knobs the caller
+        cross-checks between symbols, read here because this is where
+        the sidecar is opened.
 
     Raises
     ------
@@ -771,6 +822,35 @@ def restore_model(artifact_dir, module_ref):
             "was edited or corrupted; refusing to trade on it"
         )
     params = sidecar.get("params", {})
+    recorded = sidecar.get("module_class", "")
+    is_zoo = "arch" in params or recorded == _ZOO_REF
+    if is_zoo:
+        if recorded != module_ref or recorded != _ZOO_REF:
+            raise SystemExit(
+                f"artifact {artifact_dir}: declares module {recorded!r}, "
+                f"not the run's {module_ref!r} — wrong artifact for "
+                "this run"
+            )
+        try:
+            module = TimeSeriesTrain("restore", params).build_module(params)
+        except (ConfigError, ValueError, TypeError, KeyError) as exc:
+            raise SystemExit(
+                f"artifact {artifact_dir}: cannot rebuild zoo net: {exc}"
+            ) from exc
+        if getattr(module, "seq_len", None) != params.get("seq_len"):
+            raise SystemExit(
+                f"artifact {artifact_dir}: module.seq_len "
+                f"{getattr(module, 'seq_len', None)!r} disagrees with "
+                f"params.seq_len {params.get('seq_len')!r}"
+            )
+        module.load_state_dict(torch.load(state_path, weights_only=True))
+        module.eval()
+        features = list(params.get("features", []))
+        if not features:
+            raise SystemExit(f"artifact {artifact_dir}: sidecar carries "
+                             "no feature list")
+        return module, features, _zoo_regime(params)
+
     declared = params.get("module", "")
     if declared != module_ref:
         raise SystemExit(
@@ -804,10 +884,10 @@ def _restore_signals(document, run_dir, symbols, overrides, module_ref):
     template in the tuned document, a pinned twin pair in the backtest —
     but a search's winner is chosen per instance, so a grid that crosses
     two symbols' widths can ship a run whose artifacts were built from
-    different ``module_params``. The selector then compares beliefs from
-    two architectures and calls the difference a signal. Every knob is
-    compared, not lookback alone: a pin that omits a knob claims
-    coverage it lacks.
+    different ``arch_params`` (or ``module_params``). The selector then
+    compares beliefs from two architectures and calls the difference a
+    signal. Every knob is compared, not lookback alone: a pin that
+    omits a knob claims coverage it lacks.
 
     Parameters
     ----------
@@ -830,7 +910,7 @@ def _restore_signals(document, run_dir, symbols, overrides, module_ref):
     Raises
     ------
     SystemExit
-        When two artifacts were built from different ``module_params``
+        When two artifacts were built from different ``arch_params``
         — different windowings, or different architectures — so the
         beliefs the selector ranks are not comparable.
     """
@@ -840,8 +920,9 @@ def _restore_signals(document, run_dir, symbols, overrides, module_ref):
         module, features, module_params = restore_model(dirs[symbol],
                                                         module_ref)
         signals[symbol] = (module, features)
+        width = getattr(module, "seq_len", getattr(module, "lookback", None))
         if regime is None:
-            regime, regime_of, lookback = module_params, symbol, module.lookback
+            regime, regime_of, lookback = module_params, symbol, width
             continue
         divergent = sorted(
             knob for knob in set(regime) | set(module_params)
@@ -859,10 +940,10 @@ def _restore_signals(document, run_dir, symbols, overrides, module_ref):
                 "written reproduces it — the grid is enumerated and the "
                 "loaders are seeded — so pick a SYMMETRIC trial out of the "
                 "run's carry.json, set its width on the foreach template's "
-                "module_params (one edit, both symbols; the backtest's twin "
+                "arch_params (one edit, both symbols; the backtest's twin "
                 "pair moves with it), narrow or drop the search, and re-run. "
                 "If the symbols really should differ, hand-expand the "
-                "fan-out so each is a declared node with module_params of "
+                "fan-out so each is a declared node with arch_params of "
                 "its own — an instance key cannot be overridden beside the "
                 "template it comes from"
             )

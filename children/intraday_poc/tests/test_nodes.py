@@ -1191,6 +1191,17 @@ def test_live_reads_the_declared_module_from_the_run_document():
     with pytest.raises(SystemExit, match="several module classes"):
         declared_module(_document(nodemap))
 
+    from dskit.pipeline.libs.torch_ts import TimeSeriesTrain
+
+    zoo = {
+        "window": {"uses": "intraday_poc-window", "params": {"lookback": 3}},
+        "qhat_aapl": {"uses": "torch-ts-train",
+                      "params": {"arch": "lstm", "seq_len": 3}},
+        "qhat_msft": {"uses": "dskit.pipeline.libs.torch_ts:TimeSeriesTrain",
+                      "params": {"arch": "lstm", "seq_len": 3}},
+    }
+    assert declared_module(_document(zoo)) == TimeSeriesTrain._class_ref()
+
 
 def test_the_loop_reads_the_nodes_the_run_RAN_not_the_ones_it_declared():
     """A fanned-out document keeps its nodes in ``foreach.pipeline``.
@@ -1253,7 +1264,7 @@ def _serving_obj(trainers, **window_params):
             "window": {"uses": "intraday_poc-window",
                        "params": {"lookback": 3, **window_params}},
             **{key: {"uses": "dskit.pipeline.libs.torch:DeclaredTrain",
-                     "params": {"module": "intraday_poc.models:NextBarLSTM"}}
+                     "params": {"module": "somepkg.models:OtherNet"}}
                for key in trainers},
             "select": {"uses": "intraday_poc-select-one",
                        "params": {"solver": "appsi_highs",
@@ -1280,7 +1291,7 @@ def _fanned_document(keys=("AAPL", "MSFT")):
             "pipeline": {
                 "qhat": {"uses": "dskit.pipeline.libs.torch:DeclaredTrain",
                          "params": {
-                             "module": "intraday_poc.models:NextBarLSTM"}},
+                             "module": "somepkg.models:OtherNet"}},
             },
         },
         "pipeline": {
@@ -1478,7 +1489,7 @@ def test_the_loop_refuses_a_pair_of_artifacts_trained_at_different_widths(
     reads the DECLARED params, which the search never touches.
     CLAUDE.md's rule for a value that must appear twice is a test or a
     runtime refusal; the value lands at serve time, so the refusal does
-    too — over the WHOLE ``module_params`` map, because a pin that omits
+    too — over the WHOLE regime map, because a pin that omits
     a knob claims coverage it lacks.
 
     The refusal's REMEDY is pinned with it, because the first spelling
@@ -1486,7 +1497,7 @@ def test_the_loop_refuses_a_pair_of_artifacts_trained_at_different_widths(
     same winner (the grid is enumerated, the loaders are seeded, and two
     runs of this document produced bit-identical trial lists), and
     "promote the pairing into both documents" cannot be written down at
-    all: an asymmetric pair needs a per-instance ``module_params``, and
+    all: an asymmetric pair needs a per-instance ``arch_params``, and
     declaring ``qhat__aapl`` beside the template it fans from is refused
     by the engine as a collision. What IS reachable is named instead —
     the symmetric trials in the run's ``carry.json``, promoted onto the
@@ -1506,7 +1517,7 @@ def test_the_loop_refuses_a_pair_of_artifacts_trained_at_different_widths(
     document = _fanned_document()
     with pytest.raises(SystemExit, match="hidden_size") as refusal:
         live._restore_signals(document, "/runs/r1", ["AAPL", "MSFT"], {},
-                              "intraday_poc.models:NextBarLSTM")
+                              "somepkg.models:OtherNet")
     message = str(refusal.value)
     assert "carry.json" in message and "template" in message, (
         "the refusal must name where the symmetric trials are listed and "
@@ -1522,7 +1533,7 @@ def test_the_loop_refuses_a_pair_of_artifacts_trained_at_different_widths(
     widths["qhat__msft"] = 16
     signals, lookback = live._restore_signals(
         document, "/runs/r1", ["AAPL", "MSFT"], {},
-        "intraday_poc.models:NextBarLSTM")
+        "somepkg.models:OtherNet")
     assert lookback == 3 and sorted(signals) == ["AAPL", "MSFT"]
 
 
@@ -2007,11 +2018,13 @@ def test_train_document_to_live_chain_end_to_end(tmp_path):
     bars = [{"symbol": symbol, "asof_ms": _ms(i), "close": _close(symbol, i)}
             for symbol in ("AAPL", "MSFT") for i in range(120)]
 
-    # The loop reads the class the DOCUMENT declared off the run dir the
-    # driver just wrote — the ADR-0025 seam, end to end.
+    # The loop reads the trainer identity the DOCUMENT declared off the
+    # run dir the driver just wrote — zoo class, end to end.
+    from dskit.pipeline.libs.torch_ts import TimeSeriesTrain
+
     written = load_run_document(result.run_dir)
     module_ref = declared_module(written)
-    assert module_ref == doc["foreach"]["pipeline"]["qhat"]["params"]["module"]
+    assert module_ref == TimeSeriesTrain._class_ref()
 
     # The serving features come off the DOCUMENT'S OWN window node —
     # the same object the run trained through, not a second reading of
@@ -2029,10 +2042,10 @@ def test_train_document_to_live_chain_end_to_end(tmp_path):
         artifact_dir = dirs[symbol]
         with pytest.raises(SystemExit, match="wrong artifact"):
             restore_model(artifact_dir, "somepkg.models:OtherNet")
-        module, features, module_params = restore_model(artifact_dir,
-                                                        module_ref)
-        assert module.lookback == 30
-        assert module_params["lookback"] == 30
+        module, features, regime = restore_model(artifact_dir, module_ref)
+        assert module.seq_len == 30
+        assert regime["seq_len"] == 30
+        assert regime["hidden_size"] in (16, 32, 64)
         assert features[0] == "ret_lag_0" and len(features) == 30
         row = served[symbol]
         assert "y_next" not in row
@@ -2056,8 +2069,10 @@ def test_restore_model_resolves_the_class_the_run_declared(tmp_path):
 
     A run whose declared class is not a torch module refuses BY THAT
     PATH, through the same resolver the torch pack builds with — a loop
-    that constructed NextBarLSTM regardless would sail past this and
-    fail much later, on weights that do not fit.
+    that constructed a net regardless of the named class would sail
+    past this and fail much later, on weights that do not fit.
+    NextBarLSTM was deleted; this pin stays on the declared-class
+    branch (params.module set, no arch).
     """
     from intraday_poc.live import restore_model
 
@@ -2077,6 +2092,85 @@ def test_restore_model_resolves_the_class_the_run_declared(tmp_path):
 
     with pytest.raises(SystemExit, match="forward"):
         restore_model(str(artifact), "intraday_poc.nodes:WindowRows")
+
+
+@pytest.mark.skipif(not HAVE_TORCH, reason="torch not installed")
+def test_restore_model_refuses_a_zoo_sidecar_naming_the_wrong_class(tmp_path):
+    """A zoo sidecar whose module_class is not TimeSeriesTrain refuses."""
+    from dskit.pipeline.libs.torch_ts import TimeSeriesTrain
+    from intraday_poc.live import restore_model
+
+    artifact = tmp_path / "artifacts" / "qhat_aapl"
+    artifact.mkdir(parents=True)
+    state = artifact / "model.pt"
+    state.write_bytes(b"never loaded: the class check refuses first")
+    sidecar = {
+        "module_class": "dskit.pipeline.libs.torch:DeclaredTrain",
+        "params": {
+            "arch": "lstm", "head": "regression", "seq_len": 4,
+            "channels": 1, "features": ["ret_lag_0", "ret_lag_1",
+                                        "ret_lag_2", "ret_lag_3"],
+        },
+    }
+    digest = hashlib.sha256(state.read_bytes())
+    digest.update(b"\x00")
+    digest.update(json.dumps(sidecar, sort_keys=True,
+                             separators=(",", ":")).encode("utf-8"))
+    sidecar["state_hash"] = digest.hexdigest()
+    (artifact / "model.json").write_text(json.dumps(sidecar),
+                                         encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="wrong artifact"):
+        restore_model(str(artifact), TimeSeriesTrain._class_ref())
+
+
+@pytest.mark.skipif(not HAVE_TORCH, reason="torch not installed")
+def test_restore_model_rebuilds_a_zoo_net(tmp_path):
+    """Zoo nets live inside build_module — restore rebuilds, never imports."""
+    import torch
+    from dskit.pipeline.libs.torch_ts import TimeSeriesTrain
+    from intraday_poc.live import restore_model
+
+    params = {
+        "arch": "lstm",
+        "head": "regression",
+        "seq_len": 4,
+        "channels": 1,
+        "order": "recent_first",
+        "arch_params": {"lstm": {"hidden_size": 8, "num_layers": 1}},
+        "features": ["ret_lag_0", "ret_lag_1", "ret_lag_2", "ret_lag_3"],
+        "label": "y",
+        "epochs": 1,
+    }
+    module = TimeSeriesTrain("restore", params).build_module(params)
+    artifact = tmp_path / "art"
+    artifact.mkdir()
+    state = artifact / "model.pt"
+    torch.save(module.state_dict(), state)
+    sidecar = {
+        "module_class": TimeSeriesTrain._class_ref(),
+        "params": params,
+    }
+    digest = hashlib.sha256(state.read_bytes())
+    digest.update(b"\x00")
+    digest.update(json.dumps(sidecar, sort_keys=True,
+                             separators=(",", ":")).encode("utf-8"))
+    sidecar["state_hash"] = digest.hexdigest()
+    (artifact / "model.json").write_text(json.dumps(sidecar),
+                                         encoding="utf-8")
+
+    restored, features, regime = restore_model(
+        str(artifact), TimeSeriesTrain._class_ref())
+    assert restored.seq_len == 4
+    assert features == params["features"]
+    assert regime["hidden_size"] == 8
+    assert regime["arch"] == "lstm"
+    with torch.no_grad():
+        out = restored(torch.zeros(1, 4))
+    assert tuple(out.shape)[-1] == 1
+
+    with pytest.raises(SystemExit, match="wrong artifact"):
+        restore_model(str(artifact), "somepkg.models:OtherNet")
 
 
 @pytest.mark.skipif(not HAVE_TORCH, reason="torch not installed")
@@ -2124,6 +2218,7 @@ def test_restore_model_refuses_a_tampered_artifact(tmp_path):
         last = fh.read(1)
         fh.seek(-1, os.SEEK_END)
         fh.write(bytes([last[0] ^ 0xFF]))
+    from dskit.pipeline.libs.torch_ts import TimeSeriesTrain
+
     with pytest.raises(SystemExit, match="state_hash"):
-        restore_model(artifact_dir,
-                      doc["foreach"]["pipeline"]["qhat"]["params"]["module"])
+        restore_model(artifact_dir, TimeSeriesTrain._class_ref())

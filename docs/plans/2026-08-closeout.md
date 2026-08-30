@@ -800,6 +800,8 @@ Intentional-move log (append `document → old-prefix → new-prefix → card`):
 - examples/pipeline/foreach-fanout.json → NEW → `242120e437f7adc6…` → C3 (ledger now 17 documents)
 - examples/pipeline/selection-demo.json → NEW → `befb162c1572267f…` → D1 (ledger now 18 documents)
 - children/…/configs/run-train.json → `85fff271bfdd05ec…` → `f320458fc3350907…` → D3 (a search node, a foreach fan-out, a splits section and a bounded fit window — all identity-bearing). **NOTE:** D3's own report declared `be05218e…`, which was stale by three commits; the value here is the one the MERGED tree validates to, taken from the tree rather than the report. Two skeptics caught the discrepancy.
+- children/…/configs/run-train.json → `f320458fc3350907…` → `6b1df6177dd8eae0…` → C5
+- children/…/configs/run-backtest.json → `5e1c24b0fad3ae1b…` → `2ba4c25bbfaa7401…` → C5
 
 ## 10. STATE — orchestrator updates as it goes
 
