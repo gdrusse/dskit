@@ -1959,3 +1959,65 @@ set `eval_batch_size` to the split length if a single forward is wanted.
 Assumes a **mean-reduced** objective (the pack default); a
 `reduction="sum"` loss would need its own weighting. Val scoring is ONE
 batched pass (loss + beliefs), not two.
+
+## ADR-0046 — OAuth refresh and recurring market pulls belong to onboarding
+
+**Status:** proposed (2026-08-30; awaiting owner approval)
+
+**Context.** The intraday-equities child needs free Alpaca SIP history and
+live Schwab bars. `RestApiConnector` accepts one static credential; it cannot
+refresh OAuth tokens or run recurring acquisitions. `intraday_poc` already
+carries a reusable Alpaca-bars implementation. Copying either mechanism into
+another child would schedule drift and violate ADR-0021.
+
+**Decision proposed.**
+
+1. Add a generic OAuth2 refresh-token service to onboarding. Config names the
+   client-id, client-secret, callback-URL and token-path environment variables;
+   secret values and token material never enter configs, snapshots, logs or
+   hashes. Initial browser authorization remains an explicit manual command.
+   Refresh writes are atomic and the token file must be owner-readable only.
+2. Add tier-2 Alpaca and Schwab connector packs. Alpaca owns historical
+   one-minute SIP bars. Schwab polls its price-history REST endpoint for closed
+   one-minute bars and emits the same provider-neutral schema. Vendor SDK
+   imports remain inside connector verbs. Existing `intraday_poc` imports stay
+   compatible through a thin subclass/re-export over the Alpaca pack.
+3. Add an onboarding `watch` command that invokes ordinary finite acquisitions
+   on a declared interval for one source and stream, committing one WORM
+   snapshot at a time. It stops on the first error and never hides gaps.
+4. Alpaca and Schwab stay distinct sources. Their normalized rows meet only
+   through pipeline nodes; raw evidence is never rewritten into a false
+   single-vendor history.
+5. Phase 1 ships REST bars only. Historical quotes and Schwab Level One
+   streaming are a later, separately designed and validated extension.
+
+**Consequences.** The new child contains vendor policy and configuration, not
+auth, retry, token or stream plumbing. Initial authorization still needs the
+operator. Package READMEs/CLAUDE trees and connector conformance tests must
+land with implementation. No implementation begins until this ADR is accepted.
+
+## ADR-0047 — Action cadence is an event-time grid, independent of label horizon
+
+**Status:** proposed (2026-08-30; awaiting owner approval)
+
+**Context.** `ReturnWindows.label_lead` can label 1/5/15/30/60-minute returns,
+but it does not make a strategy act at those intervals. Scoring every minute
+with a 60-minute label is not a 60-minute strategy. Sequence stride is also
+wrong: a missing bar shifts every later decision.
+
+**Decision proposed.** Add one domain-neutral transform kind, `event-grid`, in
+the pipeline flow family. It preserves stream order and retains records whose
+standard `asof_ms` satisfies
+`(asof_ms - offset_ms) % period_ms == 0`. Both params are declared, validated
+integers (`period_ms > 0`, `0 <= offset_ms < period_ms`). Session filtering and
+the choice of offset remain child configuration. Training, backtesting and
+serving instantiate the same node from the run document.
+
+Each intraday-equities action document sets `label_lead` and `period_ms` to the
+same 1/5/15/30/60-minute candidate initially. A child test pins that agreement;
+later research may deliberately decouple them in a new document.
+
+**Consequences.** Horizon and action cadence become separately measurable and
+missing minutes cannot move the clock grid. The kind is useful outside finance,
+adds no scheduler, and introduces no mode branch. No implementation begins
+until this ADR is accepted.
