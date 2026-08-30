@@ -1,172 +1,65 @@
 # Re-entry
 
-Refreshed by `/wrap`. Where things stand — read this first.
+Refreshed after the batch-loss / BarsFromStore / timeframe card
+(`cursor/batch-loss-bars-timeframe-881f` → PR). Read this first.
 
 ---
 
 # ▶ PICK UP HERE
 
-**State: the 2026-08 closeout is complete on `main` (not pushed).** C6
-(FeatureSelector), ADR-0044 (per-knob search), D1 (selection-demo, ledger
-18), and C5 (zoo pack + child names `arch: lstm`) are all merged.
+**State: readiness card is on the PR branch, awaiting merge to `main`.**
+ADR-0045 (batched torch eval), BarsFromStore scan-shape knobs, and the
+`timeframe` connector knob are implemented, TDD'd, and through skeptic
+loops (Composer rounds to a clean BLOCKER/MAJOR floor). Tip: `282009a`.
 
-## What just landed
+**intraday_poc** is a complete *PoC*: real-store capstone, train → live
+path, foreach + HPO, zoo LSTM. It is not a finished production book —
+see leftovers below.
 
-| Card | SHA | What it delivered |
-|---|---|---|
-| **C6** | `2be1918` | FeatureSelector + sklearn-select + torch-importance; `torch.py` drained |
-| **ADR-0044** | `c009953` | `fitted_transform` searchability is per-knob; flow 2 plans |
-| **D1** | `e49dfcb` | `examples/pipeline/selection-demo.json` |
-| **C5** | `75e38cf` | `libs/torch_ts.py`; child dropped `NextBarLSTM` |
+## What this card delivered
 
-Nothing in-flight. Follow-ups stay in TODO (BarsFromStore scan, `timeframe`
-knob, ignore-list drain, pmquant §13 leftovers, the unbatched final-loss
-memory twin). Do not push unless asked.
+| Item | What landed |
+|---|---|
+| **ADR-0045** | `loader.eval_batch_size` (defaults to `batch_size`); `_final_loss` + val score via one `_eval_split` walk |
+| **BarsFromStore** | `ts_field` / `shared_fields` knobs; dedup key stays `BAR_KEY_FIELDS` (= discover `primary_key`) |
+| **`timeframe`** | Minute-only `spec()` knob; live cadence from amount; `discover` publishes it; re-backfill footgun documented |
 
-## How to run one, exactly
+GPU scaling (RTX 5060 Ti, LSTM seq=30 hidden=64): VRAM ~flat in `n` at
+fixed `eval_bs`; full-split eval OOMs ~200k rows; batched stays ~40–70 MB.
 
-1. **Read the spec first.** The ADR is the decision — implement it, do not
-   re-decide it. Each ADR names its hooks, params, registration points, error
-   behaviour and test obligations. Then read the card in
-   `docs/plans/2026-08-closeout.md` §8, and the TODO section the card cites.
-2. **Make a worktree with its own venv** (an editable install from the MAIN
-   checkout would import main's code, not the branch's — always verify):
-   ```bash
-   git -C ~/dskit worktree add ~/wt/c6 -b ws/c6 main
-   cd ~/wt/c6 && python3 -m venv .venv
-   .venv/bin/pip install -e ".[all,dev]" && .venv/bin/pip install stable-baselines3
-   .venv/bin/python -c "import dskit; print(dskit.__file__)"   # MUST print a path inside ~/wt/c6
-   ```
-3. **Work TDD.** Failing test first, watched failing for the right reason, then
-   green. A pin must be PROVEN able to fail (mutate the thing it guards, watch
-   it fail, revert) — a pin that cannot fail is test theatre.
-4. **Gate before merging** (see "Verification recipe" below).
-5. **Merge law — the orchestrator is the only merger.** Rebase the branch onto
-   `main`, re-run the card's targeted tests, `git merge --ff-only`, run the gates
-   on main, then remove the worktree and delete the branch.
-6. **Then mark `TODO.md`, update the STATE table in the plan, commit AND push.**
+## Before a new planning session
 
-## Rulings that are NOT in the cards (carry them forward)
+1. **Merge the PR** into `main` (or plan against the PR branch explicitly).
+2. Start a **new agent/session** with a planning-only brief — ADR-first,
+   no code until decisions are accepted. Point it at:
+   - `docs/RE-ENTRY.md` (this file)
+   - `docs/architecture/decision-log.md`
+   - `TODO.md` / `children/intraday_poc/README.md`
+   - the child gap docs under `docs/` if the new project is a second child
+3. Prefer a **high-reasoning model** and ask for options + ADRs, not
+   implementation. Keep this session's PR merge separate from that plan.
 
-- **Do not dispatch a `fable` subagent** — that tier ran out of credits mid-run.
-  Plan §7's model map is amended in the plan itself: every `fable` row is served
-  by **opus at the same effort**, keeping `xhigh` where it says `xhigh`.
-- **`libs/torch.py` is drained (C6).** C5 must leave it byte-identical; the zoo
-  goes in a NEW sibling `libs/torch_ts.py`. The purity gate forbids an `nn.Module`
-  subclass at module level anywhere in `dskit/pipeline/`, including inside a class
-  body, so every net is defined INSIDE `build_module`.
-- **ADR-0044 is accepted.** A space may address a `fitted_transform` member's
-  own knobs; `FittedTransform._PARAMS` (`fit_split` / `order_field` /
-  `purity_check`) stay refused, including `fit_split.x`. Flow 2 now plans.
-- **Targeted tests, not the whole suite** (owner ruling). Run the suites covering
-  what the card touched. Ruff over the whole tree and the hash gate run every time
-  regardless — they are seconds and catch what a scoped run cannot.
-- **At most two cards in flight, each internally serial.** Never pair cards that
-  share files.
-- **Review converges on a severity floor:** once a round produces no
-  BLOCKER/MAJOR, stop and let the orchestrator rule on the MINORs. Measured over
-  this run, 65% of findings targeted prose and 56% were MINOR, so the tail rounds
-  were mostly churn.
+## Realistic book size (this hardware + PoC grammar)
+
+- **Live:** ~10–30 symbols (ops/API), GPU not binding.
+- **HPO crossed grid (`W^S`):** 2–3 symbols.
+- **Shared/independent search:** ~10–20 overnight.
+
+## Still open (not blocking a new plan)
+
+- Ignore-list drain; pmquant §13 (deferred by owner)
+- HF pretrained-weights decision; long-term serving loop
+- Promote capstone winner into documents (owner call)
+- Search grammar: crossed `foreach` spaces explode with S
 
 ## Verification recipe
 
 ```bash
-cd ~/dskit
-.venv/bin/python -m ruff check .                       # whole tree, must be clean
-.venv/bin/python -m pytest tests/pipeline -q           # + the suites your card touched
-for f in examples/pipeline/*.json children/intraday_poc/configs/run-*.json; do
-    echo -n "$f "; .venv/bin/python -m dskit.pipeline validate "$f" \
-      | grep -oE "[0-9a-f]{64}" | head -1
-done
+.venv/bin/python -m ruff check .
+.venv/bin/python -m pytest tests/pipeline_libs/test_torch.py \
+  tests/pipeline_libs/test_torch_ts.py children/intraday_poc/tests -q
+# CUDA torch: pip install torch --index-url https://download.pytorch.org/whl/cu128
 ```
-The ledger is **18 documents**. Every identity hash must be unmoved unless the card
-DECLARES the move, in which case record it in the intentional-move log
-(`docs/plans/2026-08-closeout.md` §9). **An engine card that moves any hash is an
-automatic fail.** Current expected values live in the §9 log; regenerate with the
-loop above.
 
----
-
-## What landed in this run (2026-08-27 → 28)
-
-**Wave 1 — 12 cards.** The docstring/doctest conversion (A5); the child hardcoding
-audit, all 12 points (A2); engine constants (A4); config knobs and the epochs pin
-(A1); `TorchAdapter` as a real ABC (B1); the `loss` knob (B2); the
-`kinds_flow`/`kinds_banking` split (B3); hyperparameters in `log_params` (E1); the
-`runs` CLI verb (E2); the MLflow sink pack (E3); continuous optuna ranges proven
-end to end (E4); the model-sweep cookbook and the lightgbm extra (E5).
-
-**G1 — six ADRs accepted: 0038–0043.** Drafted in parallel, each through five
-adversarial review rounds, then condensed at the gate from 2,164 lines to 583
-because review had driven them far past house style into specifying mechanism the
-decision log should not carry — and that over-specification was manufacturing its
-own contradictions.
-
-**Wave 2 — 6 of 7.** `TrainableNode` ported across five packs, all nine
-`if mode ==` branches gone (C1); gap-aware windows, the fitted-transform family and
-the child collapse (C2); the `foreach` fan-out grammar (C3); the long-method
-decomposition, with the ceiling now pinned (C4); HPO × walk-forward semantics, so
-per-fold winner instability is a printed diagnostic (C7); the feature-selection
-seam — `FeatureSelector` + `sklearn-select` + `torch-importance`, `torch.py`
-drained (C6). C5 (the architecture zoo + child LSTM switch) closed Wave 2.
-
-**Waves 4–5.** The store brought current (D2), the capstone run (D3), TODO marked
-(D4), this wrap (D5).
-
-## The capstone (D3) — real numbers
-
-Run on the live store, **2,016,587 bars**:
-
-- **9/9 trials in 4m28s**, peak RSS 8.07 GB. Objective
-  `$select.metrics.total_realized` over 12,818 realized picks on the embargoed tail.
-- **Winner `hidden_size` 16/16 at 0.2274**; runner-up 32/16 at 0.2265. The declared
-  32/32 base pass — the value that had simply been typed in — scored **0.0302**.
-- **Reproducible:** an identical re-run produced the same `run_hash` and all nine
-  trial scores bit-for-bit equal, checked elementwise rather than on the winner.
-- Trials are distinguishable by params in the MLflow sink and via the `runs` verb.
-- `run-train.json`'s identity moved intentionally: `85fff271…` → `f320458f…`.
-
-**A premise the run corrected.** `foreach` pins the DECLARATION, not the tuned
-VALUE: one space key naming the template expands to one key PER INSTANCE and
-`hpo-grid` CROSSES them — 3 widths × 2 symbols = 9 trials, and a winner may pair 16
-with 64. It removes the forgotten-copy failure (a third symbol is one line) but does
-NOT force the two symbols to share a width. The TODO assumed otherwise; the
-documents, the child CLAUDE.md and the pin's docstring now say so plainly.
-
-## Known gaps and follow-ups
-
-1. **A memory twin of the ADR-0037 defect, found by running.** The walk-forward
-   backtest re-run is GREEN (3/3 folds, exit 0) but peaked at **17.59 GB** — 6.8×
-   the 2.6 GB precedent — and swapped (110,850 major page faults). Attribution was
-   measured, not guessed: the observations READ is fine (1.54 GB, 764 B/row, in line
-   with the ADR's 650 B/row), and the cost is the torch pack's **unbatched
-   final-loss pass** (~11.9 GB for the last fold's 906,394 rows). ADR-0037 fixed
-   this shape in the read; it has a twin in the pack. **This deserves its own card.**
-2. **D3's fit window is bounded** to 2026-01-01 as a deliberate ceiling so the grid
-   fits in 8.1 GB — labelled as such in the node's notes. Remove the bound once the
-   final-loss pass is batched.
-3. **The winner (16/16) was NOT promoted** into the documents. Promoting it edits
-   both documents together (the cross-document pin) and an asymmetric winner would
-   have to defeat the symbol-twin regime pin. That is an owner call; both pins were
-   left standing.
-4. **D3 merged on a proof-of-concept bar** with 2 MAJOR + 2 MINOR review findings
-   outstanding — the MAJORs were a stale hash figure in its own report (corrected
-   here from the merged tree) and its twin. Worth a read of the D3 STATE row.
-5. **`synthetic_nodes`' 11 demo classes accept any unknown param** — they predate
-   default-deny and are private/demo-registry only. Surfaced while pinning a
-   `foreach` rule; not a defect of that card. Would be its own card across 11 classes.
-6. **Still open in `TODO.md` and untouched by this run:** the `BarsFromStore` scan
-   shape, the `timeframe` spec knob (half done — the serving half landed, the knob
-   did not), the ignore-list drain (ongoing by rule — 6 modules drained this run),
-   the pmquant §13 gaps 5/6/7/9/10/11/12, and the two long-term sections (serving
-   loop, Hugging Face), which were explicitly out of scope.
-
-## Where the state lives
-
-- `docs/plans/2026-08-closeout.md` — the orchestrator brief. §3 merge law, §7 model
-  map (amended), §8 the task cards, §9 the hash ledger and intentional-move log,
-  §10 the STATE table with a row per card and what it actually did.
-- `docs/architecture/decision-log.md` — ADR-0038…0044 accepted.
-- `TODO.md` — every item carries its own reasoning; landed items carry what landed
-  and any correction the work forced. Zoo + all three selector flows are
-  checked. Open items are the leftovers named under Known gaps.
+Identity ledger: **18 documents**, unmoved by this card (notes-only
+config edit on `run-train.json`).
