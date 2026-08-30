@@ -84,7 +84,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import hashlib
 import json
 import os
 import sys
@@ -824,13 +823,13 @@ def restore_model(artifact_dir, module_ref):
                              "no feature list")
         return module, features, zoo_regime(params)
 
-    material = {k: v for k, v in sidecar.items() if k != "state_hash"}
-    with open(state_path, "rb") as fh:
-        digest = hashlib.sha256(fh.read())
-    digest.update(b"\x00")
-    digest.update(json.dumps(material, sort_keys=True,
-                             separators=(",", ":")).encode("utf-8"))
-    if digest.hexdigest() != sidecar.get("state_hash"):
+    try:
+        got = TimeSeriesTrain._state_hash(state_path, sidecar)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            f"artifact {artifact_dir}: sidecar is not hashable: {exc}"
+        ) from exc
+    if got != sidecar.get("state_hash"):
         raise SystemExit(
             f"artifact {artifact_dir}: state_hash mismatch — the artifact "
             "was edited or corrupted; refusing to trade on it"
@@ -851,7 +850,9 @@ def restore_model(artifact_dir, module_ref):
         raise SystemExit(str(exc)) from exc
     module_params = dict(params.get("module_params", {}))
     module = cls(**module_params)
-    module.load_state_dict(torch.load(state_path, weights_only=True))
+    module.load_state_dict(
+        torch.load(state_path, map_location="cpu", weights_only=True),
+    )
     module.eval()
     features = list(params.get("features", []))
     if not features:
