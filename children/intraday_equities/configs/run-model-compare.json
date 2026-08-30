@@ -338,5 +338,18 @@
   },
   "outputs": {
     "run_root": ""
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        },
+        "notes": "Local sqlite beside the invoking cwd. One experiment so cadence and HPO runs compare in one UI. Params are the declared document; metrics are the final pass. Trials do not reach this sink."
+      }
+    ],
+    "notes": "Excluded from identity \u2014 where metrics land is not what the run computes."
   }
 }

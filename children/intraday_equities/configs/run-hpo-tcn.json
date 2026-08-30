@@ -202,12 +202,12 @@
             64
           ]
         },
-        "objective": "$select.metrics.n_picks",
+        "objective": "$select.metrics.rank_ic",
         "n_trials": 24,
         "seed": 0,
         "direction": "maximize"
       },
-      "notes": "24 sequential trials rather than a pruning strategy the pack does not have."
+      "notes": "Reduced-data family search. Objective is Spearman IC of predicted vs y_next on val rows \u2014 n_picks is a cadence count, not model quality."
     }
   },
   "splits": {
@@ -220,5 +220,18 @@
   },
   "outputs": {
     "run_root": ""
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        },
+        "notes": "Local sqlite beside the invoking cwd. One experiment so cadence and HPO runs compare in one UI. Params are the declared document; metrics are the final pass. Trials do not reach this sink."
+      }
+    ],
+    "notes": "Excluded from identity \u2014 where metrics land is not what the run computes."
   }
 }

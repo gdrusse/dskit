@@ -16,6 +16,7 @@ dependencies = [
     "pyomo",
     "highspy",
     "optuna",
+    "mlflow>=2.9",
 ]
 
 [tool.setuptools.packages.find]

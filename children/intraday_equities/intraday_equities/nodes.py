@@ -506,6 +506,120 @@ class FeedParity(Node):
         return {"records": diffs, "metrics": metrics}
 
 
+def _finite(value):
+    """Return whether ``value`` is a usable number."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def _pearson(xs, ys):
+    """Pearson correlation of two equal-length sequences, else 0."""
+    n = len(xs)
+    if n < 2 or n != len(ys):
+        return 0.0
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    den_x = math.sqrt(sum((x - mean_x) ** 2 for x in xs))
+    den_y = math.sqrt(sum((y - mean_y) ** 2 for y in ys))
+    if den_x == 0.0 or den_y == 0.0:
+        return 0.0
+    return num / (den_x * den_y)
+
+
+def _ranks(values):
+    """Average ranks (1-based) so ties do not invent order."""
+    order = sorted(range(len(values)), key=lambda i: values[i])
+    ranks = [0.0] * len(values)
+    i = 0
+    while i < len(values):
+        j = i
+        while j + 1 < len(values) and values[order[j + 1]] == values[order[i]]:
+            j += 1
+        avg = (i + j) / 2.0 + 1.0
+        for k in range(i, j + 1):
+            ranks[order[k]] = avg
+        i = j + 1
+    return ranks
+
+
+def _decision_metrics(picks, inputs):
+    """Score one-pick policy vs labels for cadence and HPO."""
+    records = inputs.get("records") or []
+    labeled = inputs.get("labeled")
+    if labeled is None:
+        labeled = records
+    signal = inputs.get("signal")
+    stamps = {
+        row.get("asof_ms")
+        for row in records
+        if isinstance(row, dict) and row.get("asof_ms") is not None
+    }
+    by_key = {}
+    for row in labeled:
+        if not isinstance(row, dict):
+            continue
+        key = (row.get("asof_ms"), row.get("symbol"))
+        if key[0] is None or not isinstance(key[1], str):
+            continue
+        by_key[key] = row
+    preds, realized = [], []
+    if hasattr(signal, "predict"):
+        for row in labeled:
+            if not isinstance(row, dict) or not _finite(row.get("y_next")):
+                continue
+            pred = signal.predict(row)
+            if not _finite(pred):
+                continue
+            preds.append(float(pred))
+            realized.append(float(row["y_next"]))
+    pick_ys = []
+    for pick in picks:
+        row = by_key.get((pick.get("asof_ms"), pick.get("symbol")))
+        if row is not None and _finite(row.get("y_next")):
+            pick_ys.append(float(row["y_next"]))
+    hits = sum(1 for y in pick_ys if y > 0.0)
+    cum = peak = max_dd = 0.0
+    for y in pick_ys:
+        cum += y
+        if cum > peak:
+            peak = cum
+        drawdown = peak - cum
+        if drawdown > max_dd:
+            max_dd = drawdown
+    changes = 0
+    prev = None
+    ordered = sorted(picks, key=lambda pick: pick.get("asof_ms"))
+    for pick in ordered:
+        symbol = pick.get("symbol")
+        if prev is not None and symbol != prev:
+            changes += 1
+        prev = symbol
+    n_turn = max(len(ordered) - 1, 0)
+    return {
+        "n_picks": float(len(picks)),
+        "n_stamps": float(len(stamps)),
+        "n_labeled": float(
+            sum(
+                1 for row in labeled
+                if isinstance(row, dict) and _finite(row.get("y_next"))
+            )
+        ),
+        "n_scored": float(len(preds)),
+        "rank_ic": (
+            _pearson(_ranks(preds), _ranks(realized)) if len(preds) >= 2 else 0.0
+        ),
+        "pick_hit_rate": (hits / len(pick_ys)) if pick_ys else 0.0,
+        "pick_mean_y": (sum(pick_ys) / len(pick_ys)) if pick_ys else 0.0,
+        "pick_sum_y": float(sum(pick_ys)),
+        "pick_max_drawdown": max_dd,
+        "turnover": (changes / n_turn) if n_turn else 0.0,
+    }
+
+
 def build_portfolio_model(per_t, tradable):
     """Build the child's one-pick program.
 
@@ -701,6 +815,27 @@ class PortfolioSelect(PyomoSolve):
             "picks": picks,
             "metrics": {"n_picks": len(picks)},
         }
+
+    def run(self, ctx, inputs):
+        """Solve, then score the picks against labeled rows.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext
+            Run frame.
+        inputs : dict
+            ``signal``, ``records``, and optional ``labeled``.
+
+        Returns
+        -------
+        dict
+            ``picks`` plus decision metrics (IC, hit rate, no-cost
+            return, drawdown, turnover). Fill rate and delay decay wait
+            on a fill model.
+        """
+        out = super().run(ctx, inputs)
+        out["metrics"] = _decision_metrics(out.get("picks") or [], inputs)
+        return out
 
 
 NODE_KINDS = {

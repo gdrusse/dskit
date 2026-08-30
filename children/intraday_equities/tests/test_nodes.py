@@ -12,6 +12,7 @@ from intraday_equities.nodes import (
     NODE_KINDS,
     BarsFromStore,
     FeedParity,
+    PortfolioSelect,
     WindowRows,
 )
 
@@ -140,8 +141,18 @@ def probes(tmp_path):
             inputs={
                 "signal": _FakeSignal(),
                 "records": [
-                    {"symbol": "AAPL", "asof_ms": _ms(1), "ret_lag_0": 0.002},
-                    {"symbol": "JPM", "asof_ms": _ms(1), "ret_lag_0": 0.001},
+                    {
+                        "symbol": "AAPL",
+                        "asof_ms": _ms(1),
+                        "ret_lag_0": 0.002,
+                        "y_next": 0.01,
+                    },
+                    {
+                        "symbol": "JPM",
+                        "asof_ms": _ms(1),
+                        "ret_lag_0": 0.001,
+                        "y_next": -0.01,
+                    },
                 ],
             },
             stream_ports=("records",),
@@ -188,3 +199,57 @@ def test_feed_parity_counts_overlap():
     )
     assert out["metrics"]["n_overlap"] == 1
     assert out["metrics"]["mae_close"] == 1.0
+
+
+def test_portfolio_emits_decision_metrics(tmp_path):
+    """Labeled picks produce IC, hit rate, and a no-cost return path."""
+    if not HAVE_SOLVER:
+        return
+    rows = [
+        {
+            "symbol": "AAPL",
+            "asof_ms": _ms(1),
+            "ret_lag_0": 0.02,
+            "y_next": 0.03,
+        },
+        {
+            "symbol": "JPM",
+            "asof_ms": _ms(1),
+            "ret_lag_0": 0.01,
+            "y_next": -0.02,
+        },
+        {
+            "symbol": "AAPL",
+            "asof_ms": _ms(2),
+            "ret_lag_0": -0.01,
+            "y_next": -0.04,
+        },
+        {
+            "symbol": "JPM",
+            "asof_ms": _ms(2),
+            "ret_lag_0": 0.03,
+            "y_next": 0.05,
+        },
+    ]
+    out = PortfolioSelect(
+        "select", {"split": "val", "tradable": ["AAPL", "JPM"]}
+    ).run(
+        _ctx(tmp_path),
+        {"signal": _FakeSignal(), "records": rows, "labeled": rows},
+    )
+    metrics = out["metrics"]
+    assert metrics["n_picks"] == 2
+    assert metrics["n_stamps"] == 2
+    assert metrics["n_labeled"] == 4
+    assert metrics["n_scored"] == 4
+    assert metrics["rank_ic"] > 0
+    assert 0.0 <= metrics["pick_hit_rate"] <= 1.0
+    assert metrics["turnover"] == 1.0
+    assert set(metrics) >= {
+        "rank_ic",
+        "pick_hit_rate",
+        "pick_mean_y",
+        "pick_sum_y",
+        "pick_max_drawdown",
+        "turnover",
+    }

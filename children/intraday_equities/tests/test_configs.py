@@ -97,7 +97,7 @@ def test_hpo_documents_declare_their_trial_counts():
     for name, n_trials in counts.items():
         search = _raw(name)["pipeline"]["search"]
         assert search["params"]["n_trials"] == n_trials
-        assert search["params"]["objective"] == "$select.metrics.n_picks"
+        assert search["params"]["objective"] == "$select.metrics.rank_ic"
 
 
 def test_lookback_agrees_with_ridge_features():
@@ -138,3 +138,43 @@ def test_suites_and_asset_model_validate():
         ]
         vocab = next(rule for rule in suite.rules if rule.id == "symbol-vocabulary")
         assert vocab.kwargs["values"] == SYMBOLS
+
+
+def _run_docs():
+    return sorted(
+        name for name in os.listdir(CONFIGS)
+        if name.startswith("run-") and name.endswith(".json")
+    )
+
+
+def test_every_run_uses_one_local_mlflow_experiment():
+    """Cadence and HPO compare in one local store, not per-run dirs."""
+    for name in _run_docs():
+        sinks = _raw(name)["tracking"]["sinks"]
+        assert len(sinks) == 1, name
+        sink = sinks[0]
+        assert sink["kind"] == "dskit.pipeline.libs.mlflow:MlflowTracker", name
+        assert sink["params"]["tracking_uri"] == "sqlite:///mlruns.db", name
+        assert sink["params"]["experiment"] == "intraday_equities", name
+
+
+def test_the_child_installs_what_its_tracking_sinks_need():
+    import tomllib
+
+    with open(os.path.join(CHILD_ROOT, "pyproject.toml"), "rb") as fh:
+        declared = tomllib.load(fh)["project"]["dependencies"]
+    for name in _run_docs():
+        for sink in _raw(name)["tracking"]["sinks"]:
+            module = sink["kind"].split(":")[0]
+            pack = module.rsplit(".", 1)[1]
+            assert any(pack in req for req in declared), (name, pack, declared)
+
+
+def test_tracking_is_not_identity(tmp_path):
+    name = _run_docs()[0]
+    with_track = load_document(_path(name))
+    raw = _raw(name)
+    raw.pop("tracking")
+    bare = tmp_path / name
+    bare.write_text(json.dumps(raw), encoding="utf-8")
+    assert with_track.hash == load_document(str(bare)).hash

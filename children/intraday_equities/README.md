@@ -65,6 +65,10 @@ python -m intraday_equities.live --run-doc configs/run-train.json \
     --source-config configs/source-schwab-live.json --qty 1
 ```
 
+Every `run-*.json` writes the local MLflow sink `sqlite:///mlruns.db`
+(experiment `intraday_equities`). `tracking` is not identity. After a
+run: `mlflow ui --backend-store-uri sqlite:///mlruns.db`.
+
 `--root` is on every onboarding command. `--adapter intraday_equities`
 is just an import.
 
