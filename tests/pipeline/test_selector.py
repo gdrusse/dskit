@@ -192,6 +192,23 @@ class TestLeakageIsRefused:
         assert out["features"] == ["a", "b"]
         assert out["metrics"]["n_fit_rows"] == len(TRAIN_ROWS)
 
+    def test_wired_rows_is_the_fit_split_not_the_uncut_port(self, split_ctx):
+        """``wired("rows")`` must not bypass the cut (C6 leakage)."""
+
+        class ReadsWiredRows(FeatureSelector):
+            _PARAMS = FeatureSelector._PARAMS
+            seen = None
+
+            def surviving_features(self, rows, params):
+                wired = self.wired("rows")
+                self.seen = [dict(row) for row in wired]
+                return ["a", "b"]
+
+        node = _node(cls=ReadsWiredRows, n=None)
+        node.run(split_ctx, {"rows": TRAIN_ROWS + VAL_ROWS})
+        assert node.seen == TRAIN_ROWS
+        assert all(row["contract"] != "C-100" for row in node.seen)
+
     def test_a_val_fit_split_selects_the_val_answer(self, split_ctx):
         """The knob is read, not assumed: declaring ``val`` fits on val.
 

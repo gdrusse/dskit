@@ -36,7 +36,7 @@ TORCH_PY = (
 )
 #: C6 drained this file. C5 must not touch it (ADR-0041).
 TORCH_PY_SHA256 = (
-    "0c908fa8549db2fcd83e2c23f0ae660e9f05a3ed487262b6b64c02ff540addc8"
+    "8b9b33bd41187dd5f9b9c1464a23919ac0434b9d7f4ce7f13bb31dfebe9b8539"
 )
 
 SHIPPED = (

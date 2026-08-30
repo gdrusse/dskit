@@ -94,6 +94,27 @@ from dskit.pipeline.records import (
 )
 from dskit.pipeline.split_policy import SplitFrame
 
+
+def _features_list_problems(params, *, noun, unit):
+    """Problems when ``features`` is not a distinct non-empty name list."""
+    features = params.get("features")
+    if is_node_ref(features):
+        return []
+    if (
+        not isinstance(features, (list, tuple))
+        or not features
+        or any(not isinstance(name, str) or not name for name in features)
+    ):
+        return [
+            "features is required and must be a non-empty list of "
+            f"{noun} — there is no default, got {features!r}"
+        ]
+    dupes = sorted({f for f in features if list(features).count(f) > 1})
+    if dupes:
+        return [f"features repeats {dupes} — declare each {unit} once"]
+    return []
+
+
 __all__ = [
     "ApplyTransform",
     "DEFAULT_ORDER_FIELD",
@@ -1100,22 +1121,11 @@ class Standardize(FittedTransform):
         this is where it is answered.
         """
         problems = super().validate_params(params)
-        features = params.get("features")
-        if is_node_ref(features):
-            return problems
-        if (
-            not isinstance(features, (list, tuple))
-            or not features
-            or any(not isinstance(name, str) or not name for name in features)
-        ):
-            problems.append(
-                "features is required and must be a non-empty list of row "
-                f"field names — there is no default, got {features!r}"
+        problems.extend(
+            _features_list_problems(
+                params, noun="row field names", unit="field",
             )
-            return problems
-        dupes = sorted({f for f in features if list(features).count(f) > 1})
-        if dupes:
-            problems.append(f"features repeats {dupes} — declare each field once")
+        )
         return problems
 
     def row_problems(self, rows):
@@ -1397,23 +1407,13 @@ class FeatureSelector(FittedTransform):
         load-mode rerun.
         """
         problems = super().validate_params(params)
-        candidates = params.get("features")
-        if is_node_ref(candidates):
-            return problems
-        if (
-            not isinstance(candidates, (list, tuple))
-            or not candidates
-            or any(not isinstance(name, str) or not name for name in candidates)
-        ):
-            problems.append(
-                "features is required and must be a non-empty list of the "
-                "CANDIDATE column names selection chooses among — there is "
-                f"no default, got {candidates!r}"
+        problems.extend(
+            _features_list_problems(
+                params,
+                noun="the CANDIDATE column names selection chooses among",
+                unit="candidate",
             )
-            return problems
-        dupes = sorted({f for f in candidates if list(candidates).count(f) > 1})
-        if dupes:
-            problems.append(f"features repeats {dupes} — declare each candidate once")
+        )
         return problems
 
     def row_problems(self, rows):
@@ -1564,6 +1564,8 @@ class FeatureSelector(FittedTransform):
             candidate set would otherwise project a different column set
             while every document claimed the trained one.
         """
+        if self._wired is not None:
+            self._wired["rows"] = rows
         return {
             "candidates": list(self.features()),
             "features": self._checked_survivors(

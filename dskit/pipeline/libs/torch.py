@@ -2486,13 +2486,11 @@ class TorchImportance(FeatureSelector):
             declared candidates.
         """
         problems = super().validate_params(params)
-        top_k = params.get("top_k")
-        if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
-            problems.append(
-                "top_k is required and must be an int >= 1 — how many of the "
-                f"declared candidates survive, got {top_k!r}"
-            )
+        before = len(problems)
+        _check_int(problems, "top_k", params.get("top_k"), ge=1)
+        if len(problems) > before:
             return problems
+        top_k = params.get("top_k")
         candidates = params.get("features")
         if isinstance(candidates, (list, tuple)) and top_k > len(candidates):
             problems.append(
