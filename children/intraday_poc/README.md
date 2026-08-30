@@ -257,12 +257,11 @@ duplicate both.
   (`LIVE_FEED` in `live.py`); every other vendor knob the loop uses comes
   from the source config. Paper fills simulate against this — treat
   forward PnL as signal validation, not execution realism.
-- **The bar interval is a constant, not yet a knob** (`BAR_INTERVAL` in
-  `connectors.py`): one minute, on both sides. The connector's pull and
-  the loop's fetch both build their vendor `TimeFrame` from it, so they
-  cannot drift; making it configurable (`timeframe` on `spec()`) is an
-  open TODO, and would also have to move the loop's minute cadence and
-  the window node's gap bound.
+- **The bar interval is a `timeframe` knob** on the connector spec
+  (default `BAR_INTERVAL` = `[1, "Minute"]`). The connector's pull and
+  the loop's fetch both build their vendor `TimeFrame` from the
+  resolved pair, so they cannot drift. Retuning it also means retuning
+  the loop's history window and the window node's gap bound.
 - Windows never bridge gaps (`max_gap_minutes`); rows the model cannot
   cover are skipped, never imputed. Training and serving build them with
   the SAME node — the loop calls `latest_rows` on the window node it

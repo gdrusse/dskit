@@ -50,11 +50,11 @@ Two vendor knobs come from neither file, for different reasons:
   (:data:`LIVE_FEED`). That is the child's one declared train/serve
   vendor DIVERGENCE, carried in README's "What to know before trusting
   the numbers".
-* the BAR INTERVAL — not a config knob on either side yet (a
-  ``timeframe`` knob on the connector spec is an open TODO). It is ONE
-  constant, ``connectors.BAR_INTERVAL``, and this loop asks for it
-  through the connector's own ``bar_timeframe()``, so the served bars
-  cannot drift from the ones the store was built from.
+* the BAR INTERVAL — the source config's ``timeframe`` knob (default
+  ``connectors.BAR_INTERVAL``). This loop reads the resolved pair from
+  the same gate the puller uses and builds the vendor ``TimeFrame``
+  through ``connectors.bar_timeframe``, so the served bars cannot drift
+  from the ones the store was built from.
 
 Every iteration appends one JSON line to ``decisions.jsonl`` in
 ``--log-dir`` — predictions, pick, action taken — so the forward run
@@ -1093,12 +1093,13 @@ def bar_series(bars, price_field):
     return sorted(series)
 
 
-def fetch_bars(symbols, minutes, price_field, adjustment, key, secret):
+def fetch_bars(symbols, minutes, price_field, adjustment, key, secret,
+               timeframe=None):
     """Fetch the last ``minutes`` of bars per symbol.
 
-    The interval comes from the connector's ``bar_timeframe()`` — the
-    store and the served series must be the same series, so it is one
-    constant there, never a literal here.
+    The interval comes from ``timeframe`` (the source config's resolved
+    knob) or :data:`BAR_INTERVAL` when omitted — the store and the
+    served series must be the same series.
 
     Parameters
     ----------
@@ -1116,6 +1117,9 @@ def fetch_bars(symbols, minutes, price_field, adjustment, key, secret):
         (see :func:`credentials`).
     secret : str
         The matching secret.
+    timeframe : sequence of (int, str) or None
+        The resolved ``[amount, unit]`` from the source config. ``None``
+        falls back to :data:`BAR_INTERVAL`.
 
     Returns
     -------
@@ -1130,7 +1134,7 @@ def fetch_bars(symbols, minutes, price_field, adjustment, key, secret):
     start = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=minutes)
     bars = client.get_stock_bars(StockBarsRequest(
         symbol_or_symbols=list(symbols),
-        timeframe=bar_timeframe(),
+        timeframe=bar_timeframe(timeframe),
         start=start,
         feed=DataFeed(LIVE_FEED),
         adjustment=Adjustment(adjustment),
@@ -1265,6 +1269,7 @@ def main(argv=None) -> int:
     )
     knobs = source_knobs(args.source_config)
     symbols, adjustment = knobs["symbols"], knobs["adjustment"]
+    timeframe = knobs["timeframe"]
     # As early as the universe is known: prove the run's own selector can
     # actually solve here. Its solver only resolves against the installed
     # pyomo, so an absent backend is either a refusal before the trading
@@ -1304,7 +1309,8 @@ def main(argv=None) -> int:
             print(record["action"], f"(next open {clock.next_open})")
         else:
             bars = fetch_bars(symbols, args.history_minutes,
-                              price_field, adjustment, key, secret)
+                              price_field, adjustment, key, secret,
+                              timeframe=timeframe)
             # ONE call, through the run's own window node: the serving
             # rows and the training rows come out of the same code.
             rows = window.latest_rows([

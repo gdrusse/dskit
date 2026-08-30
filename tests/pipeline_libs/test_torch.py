@@ -23,11 +23,14 @@ from dskit.pipeline.fitted import SIDECAR_NAME, FeatureSelector
 from dskit.pipeline.driver import run_document
 from dskit.pipeline.libs.torch import (
     ARTIFACT_FORMAT,
+    LOADER_DEFAULTS,
+    LOADER_PARAMS,
     NODE_KINDS,
     DeclaredPredict,
     DeclaredTrain,
     LinearPredictor,
     LinearRegressor,
+    RowVectorAdapter,
     TorchImportance,
     TorchPredict,
     TorchSignal,
@@ -1341,6 +1344,125 @@ def test_the_probes_reject_a_counterfeit_that_echoes_the_pinned_provenance(tmp_p
     counterfeit.loaded = True  # ...and the flag; the weights are a refit
     assert not probe.verify_loaded(
         {"signal": counterfeit, "artifact_path": artifact, "metrics": {"loaded": 1}}
+    )
+
+
+# -- ADR-0045: batched eval (final_loss / val score) -------------------------
+
+
+def test_loader_admits_eval_batch_size_and_denies_typos():
+    """``eval_batch_size`` is a first-class loader knob (ADR-0045)."""
+    assert "eval_batch_size" in LOADER_PARAMS
+    ok = LinearRegressor.validate_params(
+        {**PARAMS, "loader": {**PARAMS["loader"], "eval_batch_size": 4}}
+    )
+    assert ok == []
+    bad = LinearRegressor.validate_params(
+        {**PARAMS, "loader": {**PARAMS["loader"], "eval_batch_size": 0}}
+    )
+    assert any("eval_batch_size" in p for p in bad)
+
+
+def test_final_loss_never_selects_the_whole_split(tmp_path, monkeypatch):
+    """The ADR-0037 twin: eval must not materialise the whole train set.
+
+    Training already batches; ``_final_loss`` used to call ``select`` with
+    ``index=None``. Pin the cut sizes against ``eval_batch_size``.
+    """
+    rows = make_rows(n=10)
+    seen = []
+    real = RowVectorAdapter.select
+
+    def tracking(self, batches, index):
+        if index is None:
+            seen.append(None)
+        else:
+            seen.append(int(len(index)))
+        return real(self, batches, index)
+
+    monkeypatch.setattr(RowVectorAdapter, "select", tracking)
+    train(
+        tmp_path,
+        rows=rows,
+        params={
+            **PARAMS,
+            "epochs": 1,
+            "loader": {
+                "batch_size": 8,
+                "shuffle": False,
+                "seed": 11,
+                "eval_batch_size": 4,
+            },
+        },
+    )
+    # Final-loss cuts only — after the one training epoch's batches.
+    # Training uses batch_size=8 on 10 rows → [8, 2]; eval → [4, 4, 2].
+    assert None not in seen, seen
+    assert seen.count(4) >= 2, seen
+    assert 2 in seen, seen
+
+
+def test_omitted_eval_batch_size_follows_batch_size(tmp_path, monkeypatch):
+    """Default: eval chunk IS the training batch (one knob when enough)."""
+    assert "eval_batch_size" not in LOADER_DEFAULTS
+    rows = make_rows(n=10)
+    seen = []
+    real = RowVectorAdapter.select
+
+    def tracking(self, batches, index):
+        seen.append(None if index is None else int(len(index)))
+        return real(self, batches, index)
+
+    monkeypatch.setattr(RowVectorAdapter, "select", tracking)
+    train(
+        tmp_path,
+        rows=rows,
+        params={
+            **PARAMS,
+            "epochs": 1,
+            "loader": {"batch_size": 3, "shuffle": False, "seed": 0},
+        },
+    )
+    assert None not in seen, seen
+    # 10 rows / 3 → four train cuts, then four eval cuts of the same size.
+    assert seen == [3, 3, 3, 1, 3, 3, 3, 1], seen
+
+
+def test_batched_final_loss_matches_full_pass(tmp_path):
+    """Example-weighted mean of batch means equals one full-split mean."""
+    rows = make_rows(n=9)
+    full = train(
+        tmp_path,
+        sub="full",
+        rows=rows,
+        params={
+            **PARAMS,
+            "epochs": 2,
+            "loader": {
+                "batch_size": 32,
+                "shuffle": False,
+                "seed": 7,
+                "eval_batch_size": 32,
+            },
+        },
+    )
+    chunked = train(
+        tmp_path,
+        sub="chunked",
+        rows=rows,
+        params={
+            **PARAMS,
+            "epochs": 2,
+            "loader": {
+                "batch_size": 32,
+                "shuffle": False,
+                "seed": 7,
+                "eval_batch_size": 4,
+            },
+        },
+    )
+    assert full["metrics"]["final_loss"] == pytest.approx(
+        chunked["metrics"]["final_loss"], rel=0, abs=1e-6
     )
 
 

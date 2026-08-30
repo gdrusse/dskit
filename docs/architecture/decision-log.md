@@ -1933,3 +1933,26 @@ base that gains a fourth leakage knob must not need a planner edit to
 protect it. Pins: `tests/pipeline/test_selector.py` (flow 2 plans;
 `fit_split` / `fit_split.x` still refuse) and
 `tests/pipeline/test_planner.py` (the three base knobs still refuse).
+
+## ADR-0045 — Batched eval for the torch pack (`loader.eval_batch_size`)
+
+**Status:** accepted (2026-08-30 — owner: config-driven, tunable)
+
+**Context.** Training already batches via `loader.batch_size`, but
+`_final_loss` (and `_score_epoch`) still select the WHOLE split in one
+forward. On the live store that peak cost ~11.9 GB for ~900k rows — the
+ADR-0037 twin, measured on the walk-forward backtest. Capstone only
+stayed in ~8 GB by bounding the fit window.
+
+**Decision.** Add `eval_batch_size` to the `loader` block (default-deny
+inside, same as `batch_size`/`shuffle`/`seed`). When omitted it equals
+`batch_size`. Both `_final_loss` and `_score_epoch` walk the split in
+chunks of that size; the reported loss is the example-weighted mean of
+batch means, so an MSE (mean-reduced) objective stays a true mean over
+the split. Identity is untouched: the knob is optional and documents
+that omit it keep their hash.
+
+**Consequences.** Large fits stay memory-bound by the declared eval
+chunk, not by `n_train`. Tunable independent of the gradient batch when
+a document wants a larger eval chunk. No whole-split escape hatch —
+set `eval_batch_size` to the split length if a single forward is wanted.

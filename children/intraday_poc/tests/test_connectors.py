@@ -226,6 +226,7 @@ def test_a_first_live_pull_does_not_re_fetch_the_backfill(conn):
     ("live_lookback_minutes", "DEFAULT_LIVE_LOOKBACK_MINUTES", 77),
     ("key_env", "DEFAULT_KEY_ENV", "SOME_OTHER_KEY_ID"),
     ("secret_env", "DEFAULT_SECRET_ENV", "SOME_OTHER_SECRET_KEY"),
+    ("timeframe", "BAR_INTERVAL", (5, "Minute")),
 ])
 def test_every_spec_default_is_named_once(conn, monkeypatch, knob, constant,
                                           rebound):
@@ -246,6 +247,16 @@ def test_every_spec_default_is_named_once(conn, monkeypatch, knob, constant,
     monkeypatch.setattr(connectors, constant, rebound)
     notes = conn.spec()["params"][knob]["notes"]
     assert f"Default {rebound}." in notes, notes
+
+
+def test_timeframe_knob_refuses_bad_shapes(conn):
+    """A mistyped interval is a gate refusal, never an SDK error mid-pull."""
+    for bad in ([1], "1Min", [1, "minute"], [0, "Minute"], [1.5, "Minute"],
+                [True, "Minute"], [1, "Min"]):
+        with pytest.raises(AssetError, match="timeframe"):
+            conn.resolve_knobs({**STUB_CONFIG, "timeframe": bad})
+    knobs = conn.resolve_knobs({**STUB_CONFIG, "timeframe": [5, "Minute"]})
+    assert knobs["timeframe"] == (5, "Minute")
 
 
 def test_a_live_lookback_the_sip_clamp_swallows_is_refused(conn):
@@ -331,13 +342,13 @@ def test_the_mode_vocabulary_comes_from_the_platform():
 
 
 def test_both_fetch_paths_pull_one_bar_interval(monkeypatch):
-    """The store's bars and the served bars share ONE interval constant.
+    """The store's bars and the served bars share ONE resolved interval.
 
     ``connectors._fetch`` and ``live.fetch_bars`` each build a vendor
-    ``TimeFrame``; two literals there would let the loop serve 5-minute
-    bars into weights fit on 1-minute bars, with nothing raising. A
-    ``timeframe`` knob on ``spec()`` is still open in TODO.md — until
-    then the agreement is pinned here.
+    ``TimeFrame`` from the source config's ``timeframe`` (defaulting to
+    ``BAR_INTERVAL``). Two literals there would let the loop serve
+    5-minute bars into weights fit on 1-minute bars, with nothing
+    raising.
     """
     pytest.importorskip("alpaca.data.historical")
     import alpaca.data.historical as historical
@@ -362,9 +373,17 @@ def test_both_fetch_paths_pull_one_bar_interval(monkeypatch):
     knobs = AlpacaBarsConnector().resolve_knobs(STUB_CONFIG)
     start, end = AlpacaBarsConnector()._window(knobs, "", "backfill")
     list(AlpacaBarsConnector()._fetch(knobs, start, end))
-    live.fetch_bars(["AAPL"], 30, "close", "all", "stub-key", "stub-secret")
+    live.fetch_bars(["AAPL"], 30, "close", "all", "stub-key", "stub-secret",
+                    timeframe=knobs["timeframe"])
 
     assert seen == ["5Min", "5Min"], seen
+    # An explicit knob on the config wins over the rebound default.
+    knobs5 = AlpacaBarsConnector().resolve_knobs(
+        {**STUB_CONFIG, "timeframe": [15, "Minute"]}
+    )
+    start, end = AlpacaBarsConnector()._window(knobs5, "", "backfill")
+    list(AlpacaBarsConnector()._fetch(knobs5, start, end))
+    assert seen[-1] == "15Min", seen
 
 
 def test_unknown_stream_named(conn):

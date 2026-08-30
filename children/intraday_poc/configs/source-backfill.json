@@ -4,5 +4,6 @@
   "start": "2021-01-01",
   "feed": "sip",
   "adjustment": "all",
+  "timeframe": [1, "Minute"],
   "live_lookback_minutes": 1440
 }

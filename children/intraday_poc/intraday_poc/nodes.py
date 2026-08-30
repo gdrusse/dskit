@@ -51,6 +51,11 @@ from dskit.pipeline.node import Node, register_node_kind, reject_unknown_params
 
 from .connectors import BAR_KEY_FIELDS, BAR_STREAM
 
+#: Defaults the scan-shape knobs fall back to — named once so the
+#: docstring, ``validate_params`` and ``_scan`` cannot disagree.
+DEFAULT_TS_FIELD = "ts"
+DEFAULT_SHARED_FIELDS = ("symbol",)
+
 __all__ = [
     "DEFAULT_MAX_GAP_MINUTES",
     "DEFAULT_PRICE_FIELD",
@@ -79,8 +84,12 @@ class BarsFromStore(Node):
 
     Params: ``root`` (REQUIRED) — the onboarding root; ``source``
     (REQUIRED) — the registered source name; ``stream`` — default
-    ``BAR_STREAM`` (``"bars"``), the connector's own stream name. All
-    literal, per the data-role rule.
+    ``BAR_STREAM`` (``"bars"``), the connector's own stream name;
+    ``key_fields`` — default ``BAR_KEY_FIELDS``; ``ts_field`` — default
+    ``DEFAULT_TS_FIELD`` (``"ts"``); ``shared_fields`` — default
+    ``DEFAULT_SHARED_FIELDS`` (``("symbol",)``). All literal, per the
+    data-role rule. The three scan-shape knobs are what a second
+    project with a different vocabulary changes — never the class body.
 
     Records are the normalized rows' ``data`` payloads flattened, plus
     ``asof_ms`` (the bar timestamp as epoch ms — what split filters cut
@@ -92,7 +101,14 @@ class BarsFromStore(Node):
     role = "data"
     outputs = ("records",)
 
-    _PARAMS = ("root", "source", "stream")
+    _PARAMS = (
+        "root",
+        "source",
+        "stream",
+        "key_fields",
+        "ts_field",
+        "shared_fields",
+    )
 
     #: Instance scan cache — set per instance on first read, so resolve
     #: (fingerprint) and execute (run) see one snapshot even while the
@@ -112,7 +128,7 @@ class BarsFromStore(Node):
         -------
         list of str
             One problem per unknown knob, missing ``root``/``source``,
-            or unusable ``stream``.
+            or unusable ``stream`` / scan-shape field.
         """
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
@@ -126,6 +142,30 @@ class BarsFromStore(Node):
         stream = params.get("stream", BAR_STREAM)
         if not isinstance(stream, str) or not stream:
             problems.append(f"stream must be a non-empty string, got {stream!r}")
+        key_fields = params.get("key_fields", BAR_KEY_FIELDS)
+        if (
+            not isinstance(key_fields, (list, tuple))
+            or not key_fields
+            or any(not isinstance(f, str) or not f for f in key_fields)
+        ):
+            problems.append(
+                f"key_fields must be a non-empty list of field-name "
+                f"strings, got {key_fields!r}"
+            )
+        ts_field = params.get("ts_field", DEFAULT_TS_FIELD)
+        if not isinstance(ts_field, str) or not ts_field:
+            problems.append(
+                f"ts_field must be a non-empty string, got {ts_field!r}"
+            )
+        shared = params.get("shared_fields", DEFAULT_SHARED_FIELDS)
+        if (
+            not isinstance(shared, (list, tuple))
+            or any(not isinstance(f, str) or not f for f in shared)
+        ):
+            problems.append(
+                f"shared_fields must be a list of field-name strings, "
+                f"got {shared!r}"
+            )
         return problems
 
     def _scan(self):
@@ -133,14 +173,17 @@ class BarsFromStore(Node):
             return self._snap
         # The generic seam (ADR-0037) owns the codec resolution, the
         # bitemporal dedup, and the single-copy memory discipline; this
-        # wrapper only declares the domain shape.
+        # wrapper only declares the domain shape — and that shape is
+        # now knobs, so a second vocabulary is a document edit.
         self._snap = scan_stream(
             self.params["root"],
             self.params["source"],
             self.params.get("stream", BAR_STREAM),
-            key_fields=BAR_KEY_FIELDS,
-            ts_field="ts",
-            shared_fields=("symbol",),
+            key_fields=tuple(self.params.get("key_fields", BAR_KEY_FIELDS)),
+            ts_field=self.params.get("ts_field", DEFAULT_TS_FIELD),
+            shared_fields=tuple(
+                self.params.get("shared_fields", DEFAULT_SHARED_FIELDS)
+            ),
         )
         return self._snap
 

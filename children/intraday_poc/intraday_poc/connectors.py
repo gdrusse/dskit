@@ -69,11 +69,10 @@ Every default above has exactly ONE name — the constants below — and
 ``spec()`` builds the note a config author reads from it, so prose here
 states which constant applies rather than a second copy of its value.
 
-The BAR INTERVAL is deliberately not a knob yet (:data:`BAR_INTERVAL`):
-one constant, imported by the forward loop, because the loop's own
-minute cadence and the window node's gap discipline are built on it. A
-``timeframe`` knob is an open TODO; what is NOT open is the agreement —
-both fetch paths build their vendor ``TimeFrame`` here.
+The BAR INTERVAL is a ``timeframe`` knob on :meth:`AlpacaBarsConnector.spec`
+(:data:`BAR_INTERVAL` is its default). Both fetch paths build their vendor
+``TimeFrame`` from the resolved interval — the store and the served series
+must stay one series.
 
 Import cost: stdlib + dskit. The vendor SDK (``alpaca-py``) is imported
 strictly inside ``check``/``read``/:func:`bar_timeframe` — the same rule
@@ -99,6 +98,7 @@ __all__ = [
     "DEFAULT_LIVE_LOOKBACK_MINUTES",
     "DEFAULT_SECRET_ENV",
     "LIVE_MODE",
+    "TIMEFRAME_UNITS",
     "AlpacaBarsConnector",
     "bar_timeframe",
     "resolve_credentials",
@@ -119,10 +119,15 @@ BACKFILL_MODE, LIVE_MODE = MODES
 BAR_STREAM = "bars"
 BAR_KEY_FIELDS = ("symbol", "ts")
 
-#: The bar interval BOTH fetch paths pull — ``(amount, TimeFrameUnit
-#: member name)``. Public because ``live.py`` imports it: the store and
-#: the served series must be the same series, and two literals would let
-#: one move alone. See :func:`bar_timeframe`.
+#: The bar-interval units the vendor's ``TimeFrameUnit`` accepts — the
+#: gate refuses anything else by name so a typo never reaches the SDK.
+TIMEFRAME_UNITS = ("Minute", "Hour", "Day", "Week", "Month")
+
+#: The bar interval BOTH fetch paths pull by default —
+#: ``(amount, TimeFrameUnit member name)``. Public because ``live.py``
+#: imports it as the fallback when a caller passes no interval, and
+#: because it IS the ``timeframe`` knob's default. See
+#: :func:`bar_timeframe`.
 BAR_INTERVAL = (1, "Minute")
 
 #: How far back a LIVE pull with no cursor reaches. One name, read by
@@ -159,8 +164,16 @@ _SIP_LAG = timedelta(minutes=16)
 _SIP_LAG_MINUTES = _SIP_LAG.total_seconds() / 60
 
 
-def bar_timeframe():
-    """Build the vendor ``TimeFrame`` for :data:`BAR_INTERVAL`.
+def bar_timeframe(interval=None):
+    """Build the vendor ``TimeFrame`` for ``interval`` (or :data:`BAR_INTERVAL`).
+
+    Parameters
+    ----------
+    interval : sequence of (int, str) or None
+        ``(amount, unit)`` where ``unit`` is a
+        :data:`TIMEFRAME_UNITS` member. ``None`` (the default) uses
+        :data:`BAR_INTERVAL` — the same fallback both fetch paths share
+        when a caller has not resolved knobs yet.
 
     Returns
     -------
@@ -177,8 +190,35 @@ def bar_timeframe():
     """
     from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
-    amount, unit = BAR_INTERVAL
+    amount, unit = BAR_INTERVAL if interval is None else interval
     return TimeFrame(amount, TimeFrameUnit[unit])
+
+
+def _timeframe_problems(value):
+    """Problems with a ``timeframe`` knob value, empty when none."""
+    if (
+        not isinstance(value, (list, tuple))
+        or len(value) != 2
+    ):
+        return [
+            f"config.timeframe must be a [amount, unit] pair, got {value!r}"
+        ]
+    amount, unit = value
+    problems = []
+    if (
+        isinstance(amount, bool)
+        or not isinstance(amount, int)
+        or amount < 1
+    ):
+        problems.append(
+            f"config.timeframe amount must be an int >= 1, got {amount!r}"
+        )
+    if unit not in TIMEFRAME_UNITS:
+        problems.append(
+            f"config.timeframe unit must be one of {TIMEFRAME_UNITS}, "
+            f"got {unit!r}"
+        )
+    return problems
 
 
 def resolve_credentials(knobs, lookup=os.environ.get):
@@ -228,7 +268,7 @@ def resolve_credentials(knobs, lookup=os.environ.get):
 
 
 class AlpacaBarsConnector(Connector):
-    """Alpaca v2 stock bars at :data:`BAR_INTERVAL`, one stream.
+    """Alpaca v2 stock bars at the declared ``timeframe``, one stream.
 
     Parameters
     ----------
@@ -280,6 +320,11 @@ class AlpacaBarsConnector(Connector):
                              f"{'|'.join(_ADJUSTMENTS)}. "
                              f"Default {DEFAULT_ADJUSTMENT}.",
                 },
+                "timeframe": {
+                    "notes": "Bar interval as [amount, unit] where unit "
+                             f"is one of {list(TIMEFRAME_UNITS)}. "
+                             f"Default {BAR_INTERVAL}.",
+                },
                 "live_lookback_minutes": {
                     "notes": "How far back a live-mode pull with no "
                              "cursor reaches; the history is backfill's "
@@ -319,9 +364,10 @@ class AlpacaBarsConnector(Connector):
         -------
         dict
             ``symbols`` (list of str), ``start`` (str), ``feed`` (str),
-            ``adjustment`` (str), ``live_lookback_minutes`` (int or
-            float) and the credential env-var NAMES ``key_env`` /
-            ``secret_env`` — every knob resolved, defaults applied.
+            ``adjustment`` (str), ``timeframe`` (``(amount, unit)``),
+            ``live_lookback_minutes`` (int or float) and the credential
+            env-var NAMES ``key_env`` / ``secret_env`` — every knob
+            resolved, defaults applied.
 
         Raises
         ------
@@ -351,6 +397,8 @@ class AlpacaBarsConnector(Connector):
                 f"config.adjustment must be one of {_ADJUSTMENTS}, "
                 f"got {adjustment!r}"
             )
+        raw_tf = config.get("timeframe", BAR_INTERVAL)
+        problems.extend(_timeframe_problems(raw_tf))
         lookback = config.get("live_lookback_minutes",
                               DEFAULT_LIVE_LOOKBACK_MINUTES)
         if (isinstance(lookback, bool) or not isinstance(lookback, (int, float))
@@ -373,11 +421,13 @@ class AlpacaBarsConnector(Connector):
         if problems:
             raise AssetError(problems)
         parse_utc(start)  # raises AssetError itself on a bad stamp
+        amount, unit = raw_tf
         return {
             "symbols": list(symbols),
             "start": start,
             "feed": feed,
             "adjustment": adjustment,
+            "timeframe": (int(amount), unit),
             "live_lookback_minutes": lookback,
             "key_env": config.get("key_env", DEFAULT_KEY_ENV),
             "secret_env": config.get("secret_env", DEFAULT_SECRET_ENV),
@@ -427,7 +477,7 @@ class AlpacaBarsConnector(Connector):
         client = StockHistoricalDataClient(key, secret)
         request = StockBarsRequest(
             symbol_or_symbols=knobs["symbols"],
-            timeframe=bar_timeframe(),
+            timeframe=bar_timeframe(knobs["timeframe"]),
             start=start_dt,
             end=end_dt,
             feed=DataFeed(knobs["feed"]),

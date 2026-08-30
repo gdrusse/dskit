@@ -1,9 +1,10 @@
 """The time-series architecture zoo (ADR-0041).
 
-``torch.py`` stays byte-identical: this file is the CATALOG, and the
-identity pin below is how a later edit of the engine pack is refused.
-Every net is built INSIDE ``build_module`` — the purity gate scans class
-bodies too.
+``torch.py`` is pinned by content hash: this file is the CATALOG, and the
+identity pin below refuses an accidental edit of the engine pack. ADR-0045
+(batched eval) intentionally moved the hash; recompute on a deliberate
+engine-pack change. Every net is built INSIDE ``build_module`` — the
+purity gate scans class bodies too.
 """
 
 from __future__ import annotations
@@ -34,9 +35,10 @@ from dskit.pipeline.libs.torch_ts import (  # noqa: E402
 TORCH_PY = (
     pathlib.Path(__file__).parents[2] / "dskit" / "pipeline" / "libs" / "torch.py"
 )
-#: C6 drained this file. C5 must not touch it (ADR-0041).
+#: Content pin of ``libs/torch.py``. Recompute on a deliberate engine-pack
+#: change (ADR-0045 moved it for batched eval); accidental edits fail here.
 TORCH_PY_SHA256 = (
-    "8b9b33bd41187dd5f9b9c1464a23919ac0434b9d7f4ce7f13bb31dfebe9b8539"
+    "d04e31eb31421a42953c794867d89a836dbe499f2a06c8b0a20ad47217e6eedd"
 )
 
 SHIPPED = (

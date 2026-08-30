@@ -20,12 +20,13 @@ not here.
 What the base owns, so no subclass re-invents it:
 
 * **The training loop** — ``epochs``, ``lr``, and the docs/24 §3 ``loader``
-  block ``{"batch_size", "shuffle", "seed"}``. The block is DEFAULT-DENY
-  inside (the I-227 nested-knob territory): an unknown key in ``loader``
-  is refused BY NAME at plan time. ``num_workers``/``pin_memory``/
-  ``drop_last`` from the wider docs/24 convention are deliberately
-  unsupported — batching here is single-process and deterministic, and a
-  worker pool would silently cost that.
+  block ``{"batch_size", "shuffle", "seed", "eval_batch_size"}``
+  (ADR-0045: eval defaults to ``batch_size`` when omitted). The block is
+  DEFAULT-DENY inside (the I-227 nested-knob territory): an unknown key
+  in ``loader`` is refused BY NAME at plan time. ``num_workers``/
+  ``pin_memory``/``drop_last`` from the wider docs/24 convention are
+  deliberately unsupported — batching here is single-process and
+  deterministic, and a worker pool would silently cost that.
 * **Determinism** — ``torch.manual_seed(loader.seed)`` before the module
   is built (weight init) and a dedicated ``torch.Generator`` for the
   in-split shuffle, so two trains with one seed produce IDENTICAL state
@@ -149,7 +150,7 @@ _IMPORTANCE_PORT = "signal"
 #: inside the block (I-227): any other key — including the wider docs/24
 #: convention's ``num_workers``/``pin_memory``/``drop_last`` — is refused
 #: by name, because batching here is single-process and deterministic.
-LOADER_PARAMS = ("batch_size", "shuffle", "seed")
+LOADER_PARAMS = ("batch_size", "shuffle", "seed", "eval_batch_size")
 
 LOADER_DEFAULTS = {"batch_size": 32, "shuffle": True, "seed": 0}
 #: The objective when a document names none — the same callable this pack
@@ -256,18 +257,19 @@ def _loader_problems(loader):
             "drop_last are deliberately unsupported — batching is "
             "single-process so the recorded seed fully determines the fit)"
         )
-    _check_int(
-        problems,
-        "loader.batch_size",
-        loader.get("batch_size", LOADER_DEFAULTS["batch_size"]),
-        ge=1,
-    )
+    batch_size = loader.get("batch_size", LOADER_DEFAULTS["batch_size"])
+    _check_int(problems, "loader.batch_size", batch_size, ge=1)
     shuffle = loader.get("shuffle", LOADER_DEFAULTS["shuffle"])
     if not isinstance(shuffle, bool):
         problems.append(f"loader.shuffle must be a bool, got {shuffle!r}")
     _check_int(
         problems, "loader.seed", loader.get("seed", LOADER_DEFAULTS["seed"]), ge=0
     )
+    # Omitted → equals batch_size (ADR-0045). Declared → its own int >= 1.
+    if "eval_batch_size" in loader:
+        _check_int(
+            problems, "loader.eval_batch_size", loader["eval_batch_size"], ge=1
+        )
     return problems
 
 
@@ -1502,6 +1504,7 @@ class _Fit:
     val_set: object
     device: object
     batch_size: int
+    eval_batch_size: int
     shuffle: bool
     order_gen: object
     curve: object
@@ -1524,9 +1527,11 @@ class TorchTrain(_TorchModel):
     :data:`DEFAULT_LOSS`, and an adapter that computes its own objective
     refuses both knobs rather than ignoring them, by name at plan),
     and the docs/24 §3 ``loader`` block
-    (``batch_size``/``shuffle``/``seed`` — default-deny inside, I-227).
-    Input port ``rows`` is a LIST of dict/record rows; rows missing a
-    finite feature or label are skipped and counted, never fabricated.
+    (``batch_size``/``shuffle``/``seed``/``eval_batch_size`` — default-deny
+    inside, I-227; ``eval_batch_size`` defaults to ``batch_size``,
+    ADR-0045). Input port ``rows`` is a LIST of dict/record rows; rows
+    missing a finite feature or label are skipped and counted, never
+    fabricated.
 
     ``mode="train"`` (or omitted) fits fresh, deterministically:
     ``torch.manual_seed(loader.seed)`` pins the init and a dedicated
@@ -1818,6 +1823,7 @@ class TorchTrain(_TorchModel):
         # objective or a device the batches never reach. Memoized: every
         # later loss() call gets this object.
         self._thread_loss(adapter, device)
+        batch_size = loader["batch_size"]
         return _Fit(
             module=module,
             optimizer=self.build_optimizer(module, self.params),
@@ -1825,7 +1831,8 @@ class TorchTrain(_TorchModel):
             train_set=train_set,
             val_set=val_set,
             device=device,
-            batch_size=loader["batch_size"],
+            batch_size=batch_size,
+            eval_batch_size=loader.get("eval_batch_size", batch_size),
             shuffle=loader["shuffle"],
             order_gen=torch.Generator().manual_seed(seed),  # pins the shuffle
             curve=TrainingCurve(
@@ -1871,6 +1878,9 @@ class TorchTrain(_TorchModel):
         the monitored key must still be PRESENT — as a None the curve
         records but never selects — or the strict curve would abort the
         whole fit instead of restoring the pre-divergence best (ADR-0035).
+
+        Loss and beliefs walk the val split in ``eval_batch_size`` chunks
+        (ADR-0045) so a large val set never materialises in one forward.
         """
         import torch
 
@@ -1878,9 +1888,8 @@ class TorchTrain(_TorchModel):
             return None, {}
         fit.module.eval()
         with torch.no_grad():
-            val_batch = _on_device(fit.adapter, fit.val_set, None, fit.device)
-            val_loss = float(self.loss(fit.module, val_batch))
-            preds, val_labels = fit.adapter.beliefs(fit.module, val_batch)
+            val_loss = self._mean_loss(fit, fit.val_set)
+            preds, val_labels = self._beliefs_over(fit, fit.val_set)
         scored = {}
         if preds is not None:
             scored = probability_metrics(preds, val_labels)
@@ -1893,6 +1902,54 @@ class TorchTrain(_TorchModel):
             scored = dict(scored)
             scored[monitor] = None
         return val_loss, scored
+
+    def _mean_loss(self, fit, dataset):
+        """Example-weighted mean of batch means over ``dataset``.
+
+        Mean-reduced objectives (the pack default) stay a true mean over
+        the split when the last chunk is short — ``sum(mean_i * n_i) / N``,
+        never the mean of the chunk means.
+        """
+        import torch
+
+        n = len(dataset)
+        if n == 0:
+            return float("nan")
+        total = 0.0
+        for start in range(0, n, fit.eval_batch_size):
+            idx = torch.arange(start, min(start + fit.eval_batch_size, n))
+            batch_loss = float(
+                self.loss(
+                    fit.module,
+                    _on_device(fit.adapter, dataset, idx, fit.device),
+                )
+            )
+            total += batch_loss * int(len(idx))
+        return total / n
+
+    def _beliefs_over(self, fit, dataset):
+        """Concatenate ``adapter.beliefs`` over eval chunks.
+
+        Adapters answer sequences (``RowVectorAdapter`` returns plain
+        lists); the metric layer wants one sequence per side, not a
+        nested list of chunks. ``(None, None)`` when the first chunk
+        answers no beliefs.
+        """
+        import torch
+
+        n = len(dataset)
+        preds_out, labels_out = [], []
+        for start in range(0, n, fit.eval_batch_size):
+            idx = torch.arange(start, min(start + fit.eval_batch_size, n))
+            batch = _on_device(fit.adapter, dataset, idx, fit.device)
+            preds, labels = fit.adapter.beliefs(fit.module, batch)
+            if preds is None:
+                return None, None
+            preds_out.extend(preds)
+            labels_out.extend(labels)
+        if not preds_out:
+            return None, None
+        return preds_out, labels_out
 
     @staticmethod
     def _snapshot(module):
@@ -1979,17 +2036,18 @@ class TorchTrain(_TorchModel):
         return metrics
 
     def _final_loss(self, fit):
-        """Score the selected weights over the whole training set."""
+        """Score the selected weights over the whole training set.
+
+        Walks in ``eval_batch_size`` chunks (ADR-0045) — the measured
+        twin of the ADR-0037 observations peak. Returns the
+        example-weighted mean so a mean-reduced objective stays a true
+        mean over the split.
+        """
         import torch
 
         fit.module.eval()
         with torch.no_grad():
-            return float(
-                self.loss(
-                    fit.module,
-                    _on_device(fit.adapter, fit.train_set, None, fit.device),
-                )
-            )
+            return self._mean_loss(fit, fit.train_set)
 
     def _persist_fit(self, ctx, fit, seed):
         """Write the curve and the model artifact; returns the artifact path.

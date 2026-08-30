@@ -381,6 +381,10 @@ def test_the_default_prose_states_the_constants_values():
     bars = " ".join(BarsFromStore.__doc__.split())
     assert (f'``stream`` — default ``BAR_STREAM`` '
             f'(``"{nodes.BAR_STREAM}"``),') in bars, bars
+    assert (f'``ts_field`` — default ``DEFAULT_TS_FIELD`` '
+            f'(``"{nodes.DEFAULT_TS_FIELD}"``);') in bars, bars
+    assert (f'``shared_fields`` — default ``DEFAULT_SHARED_FIELDS`` '
+            f'(``("{nodes.DEFAULT_SHARED_FIELDS[0]}",)``)') in bars, bars
 
 
 def test_the_bar_primary_key_has_one_source_of_truth(tmp_path, monkeypatch):
@@ -399,6 +403,67 @@ def test_the_bar_primary_key_has_one_source_of_truth(tmp_path, monkeypatch):
     node = BarsFromStore("bars", {"root": root, "source": "alpaca"})
     with pytest.raises(AssetError, match="nosuchfield"):
         node.run(None, {})
+
+
+def test_bars_scan_shape_knobs_are_declared_and_defaulted(tmp_path):
+    """``key_fields`` / ``ts_field`` / ``shared_fields`` are knobs, not
+    literals — a second project with a different vocabulary must not
+    edit the class.
+    """
+    root = str(tmp_path / "ob")
+    _write_store(root, n_minutes=3, symbols=("AAPL",))
+    assert set(("key_fields", "ts_field", "shared_fields")) <= set(
+        BarsFromStore._PARAMS
+    )
+    bare = BarsFromStore.validate_params({"root": root, "source": "alpaca"})
+    assert bare == []
+    for bad in (
+        {"key_fields": []},
+        {"key_fields": ["symbol", ""]},
+        {"ts_field": ""},
+        {"shared_fields": ["symbol", 1]},
+        {"shared_fields": "symbol"},
+    ):
+        problems = BarsFromStore.validate_params(
+            {"root": root, "source": "alpaca", **bad}
+        )
+        assert problems, bad
+
+    # Declared shape equals the domain defaults on this store.
+    defaulted = BarsFromStore(
+        "bars", {"root": root, "source": "alpaca"}
+    ).run(None, {})["records"]
+    declared = BarsFromStore(
+        "bars",
+        {
+            "root": root,
+            "source": "alpaca",
+            "key_fields": list(nodes.BAR_KEY_FIELDS),
+            "ts_field": nodes.DEFAULT_TS_FIELD,
+            "shared_fields": list(nodes.DEFAULT_SHARED_FIELDS),
+        },
+    ).run(None, {})["records"]
+    assert declared == defaulted
+
+
+def test_bars_scan_shape_override_reaches_the_seam(tmp_path):
+    """A declared ``key_fields`` is what ``scan_stream`` receives — pin
+    by making the default key unusable and recovering via the knob.
+    """
+    root = str(tmp_path / "ob")
+    _write_store(root, n_minutes=2, symbols=("AAPL",))
+    # Wrong default key would refuse; the knob names the real fields.
+    node = BarsFromStore(
+        "bars",
+        {
+            "root": root,
+            "source": "alpaca",
+            "key_fields": ["symbol", "ts"],
+            "ts_field": "ts",
+            "shared_fields": ["symbol"],
+        },
+    )
+    assert len(node.run(None, {})["records"]) == 2
 
 
 # -- domain math -----------------------------------------------------------
@@ -1972,9 +2037,11 @@ def test_live_main_fetches_with_the_knobs_it_read(tmp_path, monkeypatch):
 
     seen = {}
 
-    def fake_fetch(symbols, minutes, price_field, adjustment, key, secret):
+    def fake_fetch(symbols, minutes, price_field, adjustment, key, secret,
+                   timeframe=None):
         seen.update(symbols=list(symbols), minutes=minutes,
-                    price_field=price_field, adjustment=adjustment)
+                    price_field=price_field, adjustment=adjustment,
+                    timeframe=timeframe)
         return {}  # no coverage: the iteration decides nothing, loudly
 
     monkeypatch.setattr(live, "fetch_bars", fake_fetch)
@@ -1998,6 +2065,7 @@ def test_live_main_fetches_with_the_knobs_it_read(tmp_path, monkeypatch):
     assert seen["price_field"] == "vwap", seen
     assert seen["adjustment"] == "all", seen
     assert seen["symbols"] == ["AAPL", "MSFT"], seen  # the config's universe
+    assert seen["timeframe"] == (1, "Minute"), seen
 
 
 # -- end-to-end: store -> train -> artifact -> live restore/select ---------

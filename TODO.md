@@ -206,10 +206,14 @@ found by diffing the documents against `DeclaredTrain._BASE_PARAMS` +
       overriding them. An overridden accessor NARROWS the knob set — a
       refusal, not a convention — so validation can never approve a value
       the run discards.
-- [ ] **`BarsFromStore` hardcodes the whole scan shape** —
+- [x] **`BarsFromStore` hardcodes the whole scan shape** —
       `key_fields`/`ts_field`/`shared_fields` (`nodes.py:117-119`); only
       `stream` is a knob, though `scan_stream` takes all four as
       parameters.
+      **Landed this run (2026-08-30):** all three are knobs on
+      `BarsFromStore`, defaulting to `BAR_KEY_FIELDS` /
+      `DEFAULT_TS_FIELD` / `DEFAULT_SHARED_FIELDS`. A second vocabulary
+      is a document edit.
 - [x] **Nothing normalizes or scales features anywhere** — raw log returns
       go straight into the LSTM, and the toolkit ships no standardizer
       node either. Fold into the window-transform ADR: a scaler must be
@@ -422,7 +426,7 @@ Found reading `children/intraday_poc` for flexibility (2026-08-27) — the
 child hardcodes what should be config, and the pipeline cannot express
 "one model per key" without longhand:
 
-- [ ] **A `timeframe` knob on the connector spec, and a serving path that
+- [x] **A `timeframe` knob on the connector spec, and a serving path that
       READS the configs it already has.** `TimeFrame(1, Minute)` is
       hardcoded at `connectors.py:169` and again at `live.py:180`, though
       it is the same category of knob as `feed`/`adjustment`, which ARE
@@ -445,6 +449,9 @@ child hardcodes what should be config, and the pipeline cannot express
       sites were consolidated into one `connectors.bar_timeframe()`, so
       the agreement is single-sourced and the remaining work is to promote
       it to config.
+      **Landed this run (2026-08-30):** `timeframe` is a `spec()` knob
+      (default `BAR_INTERVAL`); both `_fetch` and `live.fetch_bars` build
+      from the resolved pair. Declared on `source-backfill.json`.
 - [x] **A `foreach` section in the document grammar — needs an ADR.**
       "One model per symbol" is written longhand: adding a third symbol
       means four new nodes in `run-train.json` and six in

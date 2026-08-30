@@ -173,8 +173,10 @@ pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy/mlflow (run-path)
   would accept runs the engine refuses); vendor knobs AND the symbol
   universe from the source config (`--source-config`), resolved through
   the connector's public `resolve_knobs` — the credential env-var NAMES
-  (`key_env`/`secret_env`) among them. The bar interval is one constant
-  (`connectors.BAR_INTERVAL`) both fetch paths build from.
+  (`key_env`/`secret_env`) among them. The bar interval is the source
+  config's ``timeframe`` knob (default ``connectors.BAR_INTERVAL``);
+  both fetch paths build the vendor ``TimeFrame`` from the resolved
+  pair.
   Each symbol's artifact is `artifacts/<the run's own trainer key>` — a
   fanned trainer answers for the ONE `foreach` key it was built from
   (READ off the document's public `foreach_groups`, never recomposed
