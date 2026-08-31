@@ -83,6 +83,12 @@ def test_action_documents_share_cuts_and_ridge():
         assert other["pipeline"]["select"]["inputs"]["tradable"] == "$universe.tradable"
 
 
+def test_horizon_scan_never_reads_the_lockbox():
+    scan = _raw("run-horizon-scan.json")["pipeline"]["scan"]["params"]
+    assert set(scan) == {"train_end_ms", "val_start_ms", "val_end_ms"}
+    assert "test_end_ms" not in json.dumps(scan)
+
+
 def test_train_has_no_search_node():
     raw = _raw("run-train.json")
     assert "search" not in raw["pipeline"]

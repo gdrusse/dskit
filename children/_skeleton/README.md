@@ -98,6 +98,8 @@ _skeleton/
 │   ├── source-sample.json # a connector config object
 │   ├── suite-sample.json  # a validation suite
 │   └── run-sample.json    # a pipeline document
+├── docs/decisioning/      # evidence grid + one short file per decision
+│   └── README.md
 └── tests/                 # green in-repo AND after graduation, uninstalled
     ├── conftest.py        # sys.path bootstrap (position-independent)
     ├── test_configs.py    # every config validates against its engine

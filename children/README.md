@@ -38,6 +38,8 @@ _skeleton/
 │   ├── source-sample.json    # a connector config
 │   ├── suite-sample.json     # a validation suite
 │   └── run-sample.json       # a pipeline document
+├── docs/decisioning/         # evidence grid; one short file per decision
+│   └── README.md
 └── tests/
     ├── conftest.py           # sys.path bootstrap — works in-repo and after graduation
     ├── test_connectors.py    # the connector contract + an acquire→validate e2e
@@ -69,6 +71,10 @@ _skeleton/
   MODULE inside it (`nodes_<venue>.py`), never a package taxonomy.
 - **The domain lives in configs.** Node params, source knobs, suites, the asset
   model: JSON with `notes`, default-deny everywhere. Code holds mechanisms.
+- **Decisioning is evidence.** Each child keeps `docs/decisioning/`: a
+  README grid plus one short file per decision (command, configs, output,
+  result). Nothing is decided without that row. See
+  [`docs/decisioning/README.md`](../docs/decisioning/README.md).
 - **A vendor knob is a `spec()` knob.** If it selects WHAT you pull — bar
   interval, feed, adjustment, universe — it is config, not a constant in
   `_fetch`. The test: would a second project want it different? Then it

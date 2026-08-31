@@ -1703,7 +1703,10 @@ class HorizonScan(Node):
                     if stamp <= train_end and future_ms <= train_end:
                         train_x.append(cells)
                         train_y.append(y)
-                    elif val_start <= stamp <= val_end:
+                    elif (
+                        val_start <= stamp <= val_end
+                        and future_ms <= val_end
+                    ):
                         val_x.append(cells)
                         val_y.append(y)
             n_train, n_val = len(train_y), len(val_y)

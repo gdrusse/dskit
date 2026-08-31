@@ -38,6 +38,7 @@ Agent orientation — see README.md for operator commands.
 ```
 intraday_equities/   # auth, connectors, nodes, models, live, testing
 configs/             # universe + sources, suites, scan/action/HPO/train
+docs/decisioning/    # evidence grid; horizon criteria is open
 tests/               # conftest + connectors/nodes/configs/live
 ```
 

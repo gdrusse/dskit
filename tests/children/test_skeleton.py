@@ -21,6 +21,7 @@ SKELETON = os.path.join(REPO_ROOT, "children", "_skeleton")
 EXPECTED_FILES = {
     "CLAUDE.md",
     "README.md",
+    "docs/decisioning/README.md",
     "configs/asset-model.json",
     "configs/run-sample.json",
     "configs/source-sample.json",

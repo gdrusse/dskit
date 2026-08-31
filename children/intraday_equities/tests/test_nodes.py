@@ -13,6 +13,7 @@ from intraday_equities.nodes import (
     NODE_KINDS,
     BarsFromStore,
     FeedParity,
+    HorizonScan,
     KeepSymbols,
     PortfolioSelect,
     SessionFeatureRows,
@@ -488,3 +489,30 @@ def test_session_feature_names_follow_the_spec():
 
 def test_horizon_leads_are_the_declared_range():
     assert horizon_leads(5, 5, 15) == (5, 10, 15)
+
+
+def test_horizon_scan_drops_labels_that_land_after_val_end():
+    spec = _mini_spec()
+    spec["features"] = ["ret_lag_0"]
+    spec["horizon"] = {
+        "lead_start": 2,
+        "lead_step": 1,
+        "lead_stop": 2,
+        "anchors": [2],
+        "top_k": 1,
+        "se_mult": 2.0,
+        "band_leads": 1,
+    }
+    bars = [
+        {"symbol": "AAPL", "asof_ms": _ms(i), "close": 100.0 + i}
+        for i in range(8)
+    ]
+    rows = [
+        {"symbol": "AAPL", "asof_ms": _ms(i), "ret_lag_0": 0.01 * i, "close": 100.0 + i}
+        for i in range(8)
+    ]
+    out = HorizonScan(
+        "scan",
+        {"train_end_ms": _ms(2), "val_start_ms": _ms(3), "val_end_ms": _ms(4)},
+    ).run(None, {"records": rows, "bars": bars, "spec": spec})
+    assert out["records"][0]["n_val"] == 0.0

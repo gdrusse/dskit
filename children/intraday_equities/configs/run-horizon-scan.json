@@ -66,7 +66,7 @@
         "val_start_ms": "$splits.val_start_ms",
         "val_end_ms": "$splits.val_end_ms"
       },
-      "notes": "Train selects features; val scores the curve. Anchors and SE bar are universe.horizon."
+      "notes": "Train selects features; val scores the curve. A label may not land after val_end — the lockbox is unread. Anchors and SE bar are universe.horizon."
     }
   },
   "splits": {

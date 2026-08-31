@@ -93,6 +93,7 @@ intraday_equities/
 │   ├── live.py          # paper intents from shipped configs
 │   └── testing.py       # network-free connector doubles
 ├── configs/             # universe, sources, suites, scan/action/HPO/train
+├── docs/decisioning/    # evidence grid + one file per decision
 └── tests/
 ```
 

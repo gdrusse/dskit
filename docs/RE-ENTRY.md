@@ -1,38 +1,48 @@
 # Re-entry
 
-Refreshed after ADR-0046/0047 and the ratified child tree (2026-08-30).
+Refreshed 2026-08-30 after wrapping the horizon-scan / decisioning setup.
 
 ---
 
 # ▶ PICK UP HERE
 
-**State: ADR-0046 and ADR-0047 are implemented; `intraday_equities` matches the ratified tree.**
+**State: scan is wired; the real-data run is not. Horizon is undecided.**
 
-Plan of record:
-`docs/children_design_proposals/intraday_equities.md`.
+Branch: `cursor/horizon-scan-signal-b625` (PR #6, stacked on the MLflow
+branch). Do not merge until the evidence file is filled.
 
-## Next session
+## Next session — decision horizon criteria
 
-1. Run the §6 finite Alpaca backfill and Schwab live pull from the child root.
-2. Start `watch` only after both snapshots verify.
-3. Collect 30-session overlap, then the action-window study.
+From `children/intraday_equities` (data already at `./ob` → the onboarding
+root):
 
-Do not substitute Yahoo. Keep both vendors as separate sources.
+```bash
+python -m dskit.pipeline run configs/run-horizon-scan.json \
+  --asof 2026-08-30 --adapter intraday_equities
+```
 
-## Locked experiment
+Then write the run dir, `go` / `farthest_confident_lead` / ICs into
+`docs/decisioning/decision-horizon-criteria.md` and flip the grid row.
 
-- One-minute raw bars; derive every coarser view (`event-grid`).
-- Trade AAPL/JPM/XOM/WMT/LLY; SPY is feature-only.
-- Compare 1/5/15/30/60-minute action documents; they differ only in
-  `label_lead` and `period_ms`.
-- Select cadence before model HPO; latest six months stay locked.
-- Paper limit orders precede any real-money decision.
+Rules:
 
-## Verification recipe
+- Lockbox unread. Labels stop at `val_end_ms`. Do not open test rows.
+- Markets and the grid change only in `configs/universe.json` (+ sources
+  and suites). Not in nodes.
+- No go without that evidence file.
+
+Success: a farthest confident lead we would use in production, or an
+explicit no-go.
+
+## Locked
+
+- One-minute raw bars; coarser views via `event-grid`.
+- Cohort / holidays / scales / go-no-go knobs: `configs/universe.json`.
+- Paper only. Latest six months stay locked.
+
+## Verification
 
 ```bash
 python -m ruff check .
-python -m pytest -q
+python -m pytest children/intraday_equities/tests tests/children/test_skeleton.py -q
 ```
-
-Gate: ruff clean; 3,197 passed, 119 skipped.
