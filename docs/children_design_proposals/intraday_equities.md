@@ -85,7 +85,9 @@ children/intraday_equities/
 │   ├── source-schwab-live.json
 │   ├── suite-alpaca-bars.json
 │   ├── suite-schwab-bars.json
+│   ├── universe.json
 │   ├── run-feed-parity.json
+│   ├── run-horizon-scan.json
 │   ├── run-action-01m.json
 │   ├── run-action-05m.json
 │   ├── run-action-15m.json
@@ -121,6 +123,9 @@ File responsibilities:
 - `testing.py`: deterministic connector and bar fixtures.
 - Source/suite configs: one-minute vendor pulls and structural data gates.
 - `run-feed-parity.json`: compare overlapping canonical bars by symbol/minute.
+- `universe.json`: the only market/science knob file (cohort, holidays,
+  scales, horizon go/no-go).
+- `run-horizon-scan.json`: wide-feature rank-IC curve over that grid.
 - `run-action-*.json`: one controlled horizon/cadence experiment each.
 - `run-hpo-*.json`: one reduced-data search per model family.
 - `run-model-compare.json`: full-fold comparison of the three pinned winners.
@@ -223,23 +228,24 @@ timestamp coverage and per-field differences. OHLCV features graduate only when
 the discrepancy distribution is stable and explained; tolerances are declared
 in that document, never hidden in code.
 
-The five action documents share the same:
+Widen the candidate set by editing `configs/universe.json` plus both source
+configs and both suites. Run documents wire `$universe.tradable` and do not
+restate names.
 
-- six-symbol input and five-symbol tradable cohort;
-- one-minute source rows and elapsed-time feature lookbacks;
-- chronological cuts, costs, capital and baseline ridge model;
-- entry delay, limit-fill rule and regular-session filter.
+First science step is `run-horizon-scan.json`: wide session features, then
+rank IC vs `y` on the universe lead grid (3 RTH days × 5-minute increments).
+Train selects features; val scores. Lockbox unused.
 
-They differ only in document identity/notes, `label_lead`, and
-`event-grid.period_ms`. Tests compare their canonical objects and refuse any
-other drift. First-pass cadence equals horizon; later decoupling requires new
-documents.
+Go if a pre-registered anchor (1/2/3 sessions) has val |IC| > `se_mult` null
+SEs (`1/sqrt(n-1)`), or a contiguous `band_leads` run of the grid does. Peak
+is the strongest passing lead; farthest confident is the longest lead still
+within 1 SE of that peak. No-go: neither test clears. Do not use pick counts
+or placeholder PnL for this gate.
 
-Measure rank IC, net return, drawdown, turnover, fill rate and signal decay
-under 1/3/5-second delays. Competition is not directly observable; fast decay,
-poor delayed P&L and adverse passive fills are its declared proxies. Select the
-longest cadence within one standard error of the best net validation score that
-stays profitable under doubled spread/slippage assumptions.
+The five action documents stay cadence twins (`label_lead` + `period_ms` only)
+and run after a go. First-pass cadence equals horizon; decoupling needs a new
+document. HPO still maximizes `$select.metrics.rank_ic` after cadence is
+frozen.
 
 ## 8. HPO with one RTX GPU
 

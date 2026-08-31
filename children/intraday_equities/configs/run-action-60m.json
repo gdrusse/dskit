@@ -2,11 +2,19 @@
   "name": "intraday-equities-action-60m",
   "notes": "Controlled 60-minute action/label document. Identical to its siblings except name, these notes, window.label_lead, and event-grid.period_ms.",
   "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe.json"
+      },
+      "notes": "The only market and science knob file. Add a candidate by editing this file plus the source configs; run documents do not restate names."
+    },
     "alpaca": {
       "uses": "intraday_equities-bars",
       "params": {
         "root": "./ob",
-        "source": "alpaca-sip"
+        "source": "alpaca-sip",
+        "universe": "configs/universe.json"
       },
       "notes": "Historical SIP tape. root is the invoking cwd; run from the child root."
     },
@@ -32,9 +40,9 @@
         "records": "$session.records"
       },
       "params": {
-        "lookback": 30,
+        "lookback": "$universe.lookback",
         "label_lead": 60,
-        "max_gap_minutes": 5
+        "max_gap_minutes": "$universe.max_gap_minutes"
       },
       "notes": "Elapsed-minute log-return windows. Horizon is this document's only modelling difference besides the grid."
     },
@@ -50,26 +58,15 @@
       "notes": "Action cadence. First pass equals the label horizon; decoupling needs a new document."
     },
     "tradable": {
-      "uses": "filter",
+      "uses": "intraday_equities-keep-symbols",
       "inputs": {
-        "records": "$grid.records"
+        "records": "$grid.records",
+        "symbols": "$universe.tradable"
       },
       "params": {
-        "where": [
-          {
-            "field": "symbol",
-            "op": "in",
-            "value": [
-              "AAPL",
-              "JPM",
-              "XOM",
-              "WMT",
-              "LLY"
-            ]
-          }
-        ]
+        "field": "symbol"
       },
-      "notes": "SPY stays a feature-only reference and never receives a pick."
+      "notes": "Allow-list is $universe.tradable. Reference names stay on the tape for features and never land here."
     },
     "train_rows": {
       "uses": "filter",
@@ -161,17 +158,11 @@
       "inputs": {
         "signal": "$qhat.signal",
         "records": "$val_rows.records",
-        "labeled": "$val_rows.records"
+        "labeled": "$val_rows.records",
+        "tradable": "$universe.tradable"
       },
       "params": {
-        "split": "val",
-        "tradable": [
-          "AAPL",
-          "JPM",
-          "XOM",
-          "WMT",
-          "LLY"
-        ]
+        "split": "val"
       },
       "notes": "One name among the five tradable names; paper fills come later."
     }

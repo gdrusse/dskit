@@ -2,11 +2,19 @@
   "name": "intraday-equities-feed-parity",
   "notes": "Compare overlapping canonical bars by symbol/minute. Tolerances live here, not in code.",
   "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe.json"
+      },
+      "notes": "The only market and science knob file. Add a candidate by editing this file plus the source configs; run documents do not restate names."
+    },
     "alpaca": {
       "uses": "intraday_equities-bars",
       "params": {
         "root": "./ob",
-        "source": "alpaca-sip"
+        "source": "alpaca-sip",
+        "universe": "configs/universe.json"
       },
       "notes": "Historical tape."
     },
@@ -14,7 +22,8 @@
       "uses": "intraday_equities-bars",
       "params": {
         "root": "./ob",
-        "source": "schwab"
+        "source": "schwab",
+        "universe": "configs/universe.json"
       },
       "notes": "Live tape. Kept on its own source so vendor evidence stays immutable."
     },

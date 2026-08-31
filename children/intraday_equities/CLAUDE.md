@@ -21,7 +21,9 @@ Agent orientation — see README.md for operator commands.
 ## Invariants
 
 - One-minute raw bars; coarser views are derived (`event-grid`).
-- Trade AAPL/JPM/XOM/WMT/LLY; SPY is feature-only.
+- Cohort, holidays, scales, and the horizon go/no-go live in
+  `configs/universe.json`. Widening the market set is a config edit
+  (universe + both sources + both suites), never a code edit.
 - Alpaca SIP backfill from 2016, `adjustment: raw`; Schwab live with
   overlap. Separate immutable sources.
 - Action documents differ only in `name`/`notes`, `label_lead`, and
@@ -35,7 +37,7 @@ Agent orientation — see README.md for operator commands.
 
 ```
 intraday_equities/   # auth, connectors, nodes, models, live, testing
-configs/             # sources, suites, action/HPO/compare/train
+configs/             # universe + sources, suites, scan/action/HPO/train
 tests/               # conftest + connectors/nodes/configs/live
 ```
 

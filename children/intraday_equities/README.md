@@ -55,6 +55,8 @@ python -m dskit.onboarding watch --root "$INTRADAY_DATA_ROOT" \
 # 4. experiments
 python -m dskit.pipeline run configs/run-feed-parity.json \
     --asof 2026-08-30 --adapter intraday_equities
+python -m dskit.pipeline run configs/run-horizon-scan.json \
+    --asof 2026-08-30 --adapter intraday_equities
 python -m dskit.pipeline run configs/run-action-01m.json \
     --asof 2026-08-30 --adapter intraday_equities
 python -m dskit.pipeline run configs/run-train.json \
@@ -86,11 +88,11 @@ intraday_equities/
 │   ├── __init__.py      # import = registration
 │   ├── auth.py          # manual Schwab authorize over ADR-0046
 │   ├── connectors.py    # thin Alpaca/Schwab subclasses
-│   ├── nodes.py         # bars, windows, feed-parity, portfolio
+│   ├── nodes.py         # bars, universe, features, scan, portfolio
 │   ├── models.py        # empty bespoke-architecture seam
 │   ├── live.py          # paper intents from shipped configs
 │   └── testing.py       # network-free connector doubles
-├── configs/             # sources, suites, action/HPO/train documents
+├── configs/             # universe, sources, suites, scan/action/HPO/train
 └── tests/
 ```
 

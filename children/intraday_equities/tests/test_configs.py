@@ -13,8 +13,6 @@ from intraday_equities.connectors import AlpacaBars, SchwabBars
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIGS = os.path.join(CHILD_ROOT, "configs")
 
-SYMBOLS = ["AAPL", "JPM", "XOM", "WMT", "LLY", "SPY"]
-TRADABLE = ["AAPL", "JPM", "XOM", "WMT", "LLY"]
 ACTION_DOCS = (
     "run-action-01m.json",
     "run-action-05m.json",
@@ -30,7 +28,7 @@ HORIZONS = {
     "run-action-60m.json": (3_600_000, 60),
 }
 ACTION_NODES = {
-    "alpaca", "session", "window", "grid", "tradable",
+    "universe", "alpaca", "session", "window", "grid", "tradable",
     "train_rows", "val_rows", "qhat", "select",
 }
 
@@ -42,6 +40,9 @@ def _path(name):
 def _raw(name):
     with open(_path(name), encoding="utf-8") as fh:
         return json.load(fh)
+
+
+UNIVERSE = _raw("universe.json")
 
 
 def test_every_run_document_loads():
@@ -79,7 +80,7 @@ def test_action_documents_share_cuts_and_ridge():
         assert other["splits"] == first["splits"]
         assert other["pipeline"]["qhat"]["params"] == first["pipeline"]["qhat"]["params"]
         assert other["pipeline"]["select"]["params"] == first["pipeline"]["select"]["params"]
-        assert other["pipeline"]["select"]["params"]["tradable"] == TRADABLE
+        assert other["pipeline"]["select"]["inputs"]["tradable"] == "$universe.tradable"
 
 
 def test_train_has_no_search_node():
@@ -101,16 +102,50 @@ def test_hpo_documents_declare_their_trial_counts():
 
 
 def test_lookback_agrees_with_ridge_features():
-    lookback = _raw("run-train.json")["pipeline"]["window"]["params"]["lookback"]
+    lookback = UNIVERSE["lookback"]
     features = _raw("run-train.json")["pipeline"]["qhat"]["params"]["features"]
+    assert _raw("run-train.json")["pipeline"]["window"]["params"]["lookback"] == (
+        "$universe.lookback"
+    )
     assert features == [f"ret_lag_{i}" for i in range(lookback)]
-    assert lookback == 30
+
+
+def test_sources_and_suites_follow_the_universe():
+    symbols = UNIVERSE["symbols"]
+    assert set(UNIVERSE["tradable"]) | set(UNIVERSE["reference"]) == set(symbols)
+    assert not set(UNIVERSE["tradable"]) & set(UNIVERSE["reference"])
+    alpaca = _raw("source-alpaca-backfill.json")
+    schwab = _raw("source-schwab-live.json")
+    assert alpaca["symbols"] == schwab["symbols"] == symbols
+    session = UNIVERSE["session"]
+    width = session["rth_end_minutes"] - session["rth_start_minutes"]
+    horizon = UNIVERSE["horizon"]
+    assert horizon["lead_stop"] == 3 * width
+    assert horizon["anchors"] == [width, 2 * width, 3 * width]
+    assert "2022-06-20" in UNIVERSE["holidays"]
+    assert "2021-06-18" not in UNIVERSE["holidays"]
+
+
+def test_run_docs_do_not_restate_the_cohort():
+    for name in _run_docs():
+        raw = _raw(name)
+        assert raw["pipeline"]["universe"]["params"]["path"] == (
+            "configs/universe.json"
+        ), name
+        for node in raw["pipeline"].values():
+            if node.get("uses") == "intraday_equities-bars":
+                assert node["params"]["universe"] == "configs/universe.json", name
+            if node.get("uses") == "intraday_equities-keep-symbols":
+                assert node["inputs"]["symbols"] == "$universe.tradable", name
+            if node.get("uses") == "intraday_equities-portfolio":
+                assert node["inputs"]["tradable"] == "$universe.tradable", name
+                assert "tradable" not in node["params"], name
 
 
 def test_sources_pin_the_same_one_minute_cohort():
     alpaca = _raw("source-alpaca-backfill.json")
     schwab = _raw("source-schwab-live.json")
-    assert alpaca["symbols"] == schwab["symbols"] == SYMBOLS
+    assert alpaca["symbols"] == schwab["symbols"] == UNIVERSE["symbols"]
     assert alpaca["timeframe"] == schwab["timeframe"] == [1, "Minute"]
     assert alpaca["start"] == "2016-01-01"
     assert alpaca["feed"] == "sip"
@@ -137,7 +172,7 @@ def test_suites_and_asset_model_validate():
             "dates-parse-bitemporally",
         ]
         vocab = next(rule for rule in suite.rules if rule.id == "symbol-vocabulary")
-        assert vocab.kwargs["values"] == SYMBOLS
+        assert vocab.kwargs["values"] == UNIVERSE["symbols"]
 
 
 def _run_docs():

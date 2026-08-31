@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
@@ -12,8 +13,14 @@ from intraday_equities.nodes import (
     NODE_KINDS,
     BarsFromStore,
     FeedParity,
+    KeepSymbols,
     PortfolioSelect,
+    SessionFeatureRows,
+    Universe,
     WindowRows,
+    _horizon_verdict,
+    horizon_leads,
+    session_feature_names,
 )
 
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -25,9 +32,56 @@ HAVE_SOLVER = (
 EXPECTED_ROLES = {
     "intraday_equities-bars": "data",
     "intraday_equities-window": "transform",
+    "intraday_equities-session-features": "transform",
+    "intraday_equities-universe": "data",
+    "intraday_equities-keep-symbols": "transform",
     "intraday_equities-feed-parity": "score",
+    "intraday_equities-horizon-scan": "score",
     "intraday_equities-portfolio": "score",
 }
+
+UNIVERSE_PATH = os.path.join(CHILD_ROOT, "configs", "universe.json")
+
+
+def _mini_spec(**overrides):
+    spec = {
+        "symbols": ["AAPL", "SPY"],
+        "tradable": ["AAPL"],
+        "reference": ["SPY"],
+        "holidays": ["2026-01-01"],
+        "lookback": 2,
+        "max_gap_minutes": 5,
+        "period_ms": 60_000,
+        "offset_ms": 0,
+        "price_field": "close",
+        "session": {
+            "tz": "America/New_York",
+            "rth_start_minutes": 9 * 60 + 30,
+            "rth_end_minutes": 16 * 60,
+        },
+        "scales": [
+            {"width": 2, "tag": "2m", "cross_session": False},
+            {"width": 4, "tag": "1s", "cross_session": True},
+        ],
+        "horizon": {
+            "lead_start": 1,
+            "lead_step": 1,
+            "lead_stop": 2,
+            "anchors": [2],
+            "top_k": 1,
+            "se_mult": 2.0,
+            "band_leads": 2,
+        },
+    }
+    spec.update(overrides)
+    return spec
+
+
+def _write_universe(path, spec=None):
+    payload = spec if spec is not None else _mini_spec()
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+    return path
 
 _BASE = datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc)
 
@@ -88,7 +142,26 @@ def _ctx(tmp_path):
 def probes(tmp_path):
     root = str(tmp_path / "ob")
     store_path = _write_store(root, "alpaca-sip")
-    bars_params = {"root": root, "source": "alpaca-sip"}
+    universe_path = _write_universe(str(tmp_path / "universe.json"))
+    bars_params = {
+        "root": root,
+        "source": "alpaca-sip",
+        "universe": universe_path,
+    }
+    mini = _mini_spec()
+    feature_rows = [
+        {
+            "symbol": "AAPL",
+            "asof_ms": _ms(index),
+            "close": 100.0 + index,
+            "ret_lag_0": 0.01 * index,
+        }
+        for index in range(8)
+    ]
+    bars = [
+        {"symbol": "AAPL", "asof_ms": _ms(index), "close": 100.0 + index}
+        for index in range(8)
+    ]
 
     def move():
         stat = os.stat(store_path)
@@ -111,7 +184,7 @@ def probes(tmp_path):
     return {
         "intraday_equities-bars": NodeProbe(
             params=dict(bars_params),
-            required=("root", "source"),
+            required=("root", "source", "universe"),
             make=lambda: BarsFromStore("bars", dict(bars_params)),
             move=move,
             grow=grow,
@@ -123,6 +196,69 @@ def probes(tmp_path):
             required=("lookback",),
             inputs={"records": [dict(row) for row in window_input]},
             stream_ports=("records",),
+            runnable=True,
+        ),
+        "intraday_equities-session-features": NodeProbe(
+            params={},
+            required=(),
+            inputs={
+                "records": [
+                    {
+                        "symbol": "AAPL",
+                        "asof_ms": _ms(index),
+                        "open": 100.0 + index,
+                        "high": 101.0 + index,
+                        "low": 99.0 + index,
+                        "close": 100.0 + index,
+                    }
+                    for index in range(8)
+                ],
+                "spec": dict(mini),
+            },
+            stream_ports=("records",),
+            runnable=True,
+        ),
+        "intraday_equities-universe": NodeProbe(
+            params={"path": universe_path},
+            required=("path",),
+            make=lambda: Universe("universe", {"path": universe_path}),
+            move=lambda: _write_universe(
+                universe_path, _mini_spec(notes="moved")
+            ),
+            grow=lambda: _write_universe(
+                universe_path,
+                _mini_spec(
+                    symbols=["AAPL", "JPM", "SPY"],
+                    tradable=["AAPL", "JPM"],
+                    reference=["SPY"],
+                ),
+            ),
+            size=lambda out: len(out["symbols"]),
+            runnable=True,
+        ),
+        "intraday_equities-keep-symbols": NodeProbe(
+            params={"field": "symbol"},
+            required=("field",),
+            inputs={
+                "records": [dict(row) for row in window_input],
+                "symbols": ["AAPL"],
+            },
+            stream_ports=("records",),
+            runnable=True,
+        ),
+        "intraday_equities-horizon-scan": NodeProbe(
+            params={
+                "train_end_ms": _ms(3),
+                "val_start_ms": _ms(4),
+                "val_end_ms": _ms(7),
+            },
+            required=("train_end_ms", "val_start_ms", "val_end_ms"),
+            inputs={
+                "records": feature_rows,
+                "bars": bars,
+                "spec": {**mini, "features": ["ret_lag_0"]},
+            },
+            stream_ports=("records", "bars"),
             runnable=True,
         ),
         "intraday_equities-feed-parity": NodeProbe(
@@ -137,7 +273,7 @@ def probes(tmp_path):
         ),
         "intraday_equities-portfolio": NodeProbe(
             params={"split": "val", "tradable": ["AAPL", "JPM"]},
-            required=("split", "tradable"),
+            required=("split",),
             inputs={
                 "signal": _FakeSignal(),
                 "records": [
@@ -174,9 +310,10 @@ def test_store_window_and_grid_end_to_end(tmp_path):
     root = str(tmp_path / "ob")
     _write_store(root, "alpaca-sip", n_minutes=20)
     ctx = _ctx(tmp_path)
-    bars = BarsFromStore("bars", {"root": root, "source": "alpaca-sip"}).run(
-        ctx, {}
-    )["records"]
+    bars = BarsFromStore(
+        "bars",
+        {"root": root, "source": "alpaca-sip", "universe": UNIVERSE_PATH},
+    ).run(ctx, {})["records"]
     assert bars
     assert {row["session"] for row in bars} <= {"rth", "eth", "closed"}
     windows = WindowRows("window", {"lookback": 2, "label_lead": 1}).run(
@@ -253,3 +390,101 @@ def test_portfolio_emits_decision_metrics(tmp_path):
         "pick_max_drawdown",
         "turnover",
     }
+
+
+def _ny_ms(year, month, day, hour, minute):
+    from zoneinfo import ZoneInfo
+
+    stamp = datetime(year, month, day, hour, minute, tzinfo=ZoneInfo("America/New_York"))
+    return int(stamp.timestamp() * 1000)
+
+
+def _ohlc(symbol, asof_ms, close, open_=None):
+    price = close if open_ is None else open_
+    return {
+        "symbol": symbol,
+        "asof_ms": asof_ms,
+        "open": price,
+        "high": close,
+        "low": close,
+        "close": close,
+    }
+
+
+def test_overnight_is_not_a_one_minute_lag():
+    friday = [
+        _ohlc("AAPL", _ny_ms(2026, 1, 2, 15, 58), 100.0),
+        _ohlc("AAPL", _ny_ms(2026, 1, 2, 15, 59), 101.0),
+        _ohlc("AAPL", _ny_ms(2026, 1, 5, 9, 30), 110.0, open_=110.0),
+        _ohlc("AAPL", _ny_ms(2026, 1, 5, 9, 31), 111.0),
+    ]
+    spy = [
+        dict(row, symbol="SPY", close=row["close"] + 1, open=row["open"] + 1)
+        for row in friday
+    ]
+    spec = _mini_spec(period_ms=60_000, holidays=[])
+    out = SessionFeatureRows("features", {}).run(
+        None, {"records": friday + spy, "spec": spec}
+    )["records"]
+    monday = next(
+        row for row in out
+        if row["symbol"] == "AAPL" and row["asof_ms"] == _ny_ms(2026, 1, 5, 9, 30)
+    )
+    assert monday["ret_lag_0"] is None
+    assert monday["overnight_gap"] == math.log(110.0 / 101.0)
+    assert monday["session_gap_days"] == 3.0
+    assert monday["after_holiday"] == 0.0
+
+
+def test_horizon_verdict_prefers_the_farthest_confident_lead():
+    curve = [
+        {"lead": 5, "ic_val": 0.20, "n_val": 400.0},
+        {"lead": 390, "ic_val": 0.18, "n_val": 400.0},
+        {"lead": 780, "ic_val": 0.02, "n_val": 400.0},
+        {"lead": 1170, "ic_val": 0.01, "n_val": 400.0},
+    ]
+    verdict = _horizon_verdict(
+        curve, anchors=(390, 780, 1170), se_mult=2.0, band_leads=6
+    )
+    assert verdict["go"] is True
+    assert verdict["go_anchor"] is True
+    assert verdict["farthest"]["lead"] == 390
+
+
+def test_horizon_verdict_is_no_go_when_the_curve_is_noise():
+    curve = [
+        {"lead": lead, "ic_val": 0.01, "n_val": 400.0}
+        for lead in (5, 390, 780, 1170)
+    ]
+    verdict = _horizon_verdict(
+        curve, anchors=(390, 780, 1170), se_mult=2.0, band_leads=6
+    )
+    assert verdict["go"] is False
+    assert verdict["farthest"] is None
+
+
+def test_keep_symbols_uses_the_wired_list():
+    rows = [
+        {"symbol": "AAPL", "asof_ms": 1},
+        {"symbol": "SPY", "asof_ms": 1},
+    ]
+    kept = KeepSymbols("tradable", {"field": "symbol"}).run(
+        None, {"records": rows, "symbols": ["AAPL"]}
+    )["records"]
+    assert [row["symbol"] for row in kept] == ["AAPL"]
+
+
+def test_session_feature_names_follow_the_spec():
+    names = session_feature_names(
+        2,
+        [{"tag": "5m"}, {"tag": "1s"}],
+        ["SPY"],
+    )
+    assert names[:2] == ("ret_lag_0", "ret_lag_1")
+    assert "ret_5m" in names
+    assert "residual_SPY" in names
+    assert "spy_ret_1m" not in names
+
+
+def test_horizon_leads_are_the_declared_range():
+    assert horizon_leads(5, 5, 15) == (5, 10, 15)

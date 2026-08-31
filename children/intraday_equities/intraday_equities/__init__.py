@@ -11,7 +11,11 @@ from .nodes import (
     NODE_KINDS,
     BarsFromStore,
     FeedParity,
+    HorizonScan,
+    KeepSymbols,
     PortfolioSelect,
+    SessionFeatureRows,
+    Universe,
     WindowRows,
 )
 
@@ -19,8 +23,12 @@ __all__ = [
     "AlpacaBars",
     "BarsFromStore",
     "FeedParity",
+    "HorizonScan",
+    "KeepSymbols",
     "NODE_KINDS",
     "PortfolioSelect",
     "SchwabBars",
+    "SessionFeatureRows",
+    "Universe",
     "WindowRows",
 ]

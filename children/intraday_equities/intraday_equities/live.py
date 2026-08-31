@@ -14,7 +14,7 @@ import sys
 from dskit.onboarding import AssetError
 from dskit.pipeline.document import load_document
 
-from .nodes import NODE_KINDS, PortfolioSelect, WindowRows
+from .nodes import NODE_KINDS, PortfolioSelect, Universe, WindowRows
 
 __all__ = ["intents", "main", "paper_intent"]
 
@@ -107,11 +107,16 @@ def intents(run_doc, records, source_config=None, quantity=1, paper=True):
     document = load_document(run_doc)
     window_spec = document.pipeline.get("window")
     select_spec = document.pipeline.get("select")
-    if window_spec is None or select_spec is None:
+    universe_spec = document.pipeline.get("universe")
+    if window_spec is None or select_spec is None or universe_spec is None:
         raise AssetError(
-            ["run document must declare window and select nodes"]
+            ["run document must declare universe, window, and select nodes"]
         )
-    window = WindowRows("window", dict(window_spec.params))
+    universe = Universe("universe", dict(universe_spec.params)).run(None, {})
+    window_params = dict(window_spec.params)
+    window_params["lookback"] = universe["lookback"]
+    window_params["max_gap_minutes"] = universe["max_gap_minutes"]
+    window = WindowRows("window", window_params)
     if NODE_KINDS.get(select_spec.uses) is not PortfolioSelect:
         raise AssetError(
             [f"select node must use the child portfolio kind, got {select_spec.uses!r}"]
@@ -121,10 +126,11 @@ def intents(run_doc, records, source_config=None, quantity=1, paper=True):
         return []
     latest = max(row["asof_ms"] for row in windowed)
     latest_rows = [row for row in windowed if row["asof_ms"] == latest]
+    tradable = set(universe["tradable"])
     picks = [
         {"symbol": row["symbol"], "asof_ms": row["asof_ms"]}
         for row in latest_rows
-        if row["symbol"] in select_spec.params.get("tradable", [])
+        if row["symbol"] in tradable
     ]
     if not picks:
         return []
