@@ -46,6 +46,7 @@ Each spec lists ten deliverables. They agree on #1–#4, then diverge:
 **Cross-cutting, maintained continuously** (mandated by both specs):
 
 - **[decision-log.md](decision-log.md)** — formal architecture decision records.
+- **[../decisioning/README.md](../decisioning/README.md)** — child evidence grids; no science call without a linked run.
   *No significant design decision may remain undocumented.*
 - **[open-questions.md](open-questions.md)** — unresolved questions. *High-risk
   items block implementation of the components they touch.*
