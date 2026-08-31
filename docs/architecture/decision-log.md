@@ -2043,3 +2043,32 @@ scan can be collected. `flags` is never released.
 `DocumentRunResult`. Search trials still see reserved ancestors. A terminal
 port that is itself a huge list is still held until RECORD, but carry no
 longer dumps it.
+
+---
+
+## ADR-0049 — Direct multi-horizon output (`n_ahead`) on the zoo and sklearn
+
+**Status:** accepted (2026-08-30; owner directed)
+
+**Context.** ADR-0041 deferred any output width other than `(B, 1)`. The
+intraday child now needs a path of 1-minute forecasts out to a scan-chosen
+H. That is generic: any predictor that can emit one step can emit H.
+
+**Decision.**
+
+1. **`n_ahead` (int >= 1, default 1)** on `torch-ts-train` and on
+   `ReturnWindows`. Omit it and every existing document is unchanged.
+2. **Torch zoo:** each arch's last linear maps to `n_ahead`. `label` may
+   be one key or a list of `n_ahead` keys. `torch.py` `_feature_problems` /
+   `_usable_rows` accept that list; MSE still flattens `(B, H)`. Binary
+   head + `n_ahead > 1` refuses. A tiny `transformer` arch ships (one
+   encoder layer).
+3. **Sklearn:** `label` may be a list; the doorway wraps
+   `sklearn.multioutput.MultiOutputRegressor` around the named estimator.
+4. **Windows:** `n_ahead > 1` emits `y_ahead_1` … `y_ahead_H` at
+   `k * label_lead` tape steps. `n_ahead == 1` still emits `label_name`.
+
+**Consequences.** Existing hashes stay put (the knob is omitted). The
+`(B, 1)` contract is the default, not the ceiling. Path scoring is path
+MSE / per-lead IC; the one-pick program still wants a scalar — last-step
+or a later document. `torch.py` identity pin moves on purpose (label list).

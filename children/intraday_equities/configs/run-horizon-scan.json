@@ -62,6 +62,7 @@
         "spec": "$universe.spec"
       },
       "params": {
+        "split": "val",
         "train_end_ms": "$splits.train_end_ms",
         "val_start_ms": "$splits.val_start_ms",
         "val_end_ms": "$splits.val_end_ms"

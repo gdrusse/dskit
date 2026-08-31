@@ -1,48 +1,28 @@
 # Re-entry
 
-Refreshed 2026-08-30 after wrapping the horizon-scan / decisioning setup.
+Refreshed 2026-08-31 after wrapping the horizon go and the H=1165 bakeoff.
 
 ---
 
 # ▶ PICK UP HERE
 
-**State: scan is wired; the real-data run is not. Horizon is undecided.**
+**State: horizon is 1165. Tree won a 2-epoch scalar bakeoff. Path output is next.**
 
-Branch: `cursor/horizon-scan-signal-b625` (PR #6, stacked on the MLflow
-branch). Do not merge until the evidence file is filled.
+Branch after wrap: `main` (this work landed from `cursor/horizon-scan-signal-b625`).
 
-## Next session — decision horizon criteria
+## Next session
 
-From `children/intraday_equities` (data already at `./ob` → the onboarding
-root):
-
-```bash
-python -m dskit.pipeline run configs/run-horizon-scan.json \
-  --asof 2026-08-30 --adapter intraday_equities
-```
-
-Then write the run dir, `go` / `farthest_confident_lead` / ICs into
-`docs/decisioning/decision-horizon-criteria.md` and flip the grid row.
-
-Rules:
-
-- Lockbox unread. Labels stop at `val_end_ms`. Do not open test rows.
-- Markets and the grid change only in `configs/universe.json` (+ sources
-  and suites). Not in nodes.
-- No go without that evidence file.
-
-Success: a farthest confident lead we would use in production, or an
-explicit no-go.
+A 1165-step `n_ahead` path (ADR-0049; one-pick still wants a scalar), or HPO the tree at H=1165. Do not reopen the lockbox. Markets/grid change only in `configs/universe.json`.
 
 ## Locked
 
+- Farthest confident lead: **1165** RTH minutes. Evidence: `children/intraday_equities/docs/decisioning/`.
 - One-minute raw bars; coarser views via `event-grid`.
-- Cohort / holidays / scales / go-no-go knobs: `configs/universe.json`.
 - Paper only. Latest six months stay locked.
 
 ## Verification
 
 ```bash
 python -m ruff check .
-python -m pytest children/intraday_equities/tests tests/children/test_skeleton.py -q
+python -m pytest children/intraday_equities/tests tests/children/test_skeleton.py tests/pipeline_libs/test_torch_ts.py tests/pipeline_libs/test_numpy.py tests/pipeline_libs/test_sklearn.py -q
 ```

@@ -1303,6 +1303,17 @@ class TestLookaheadIsDeclaredNotExempt:
         assert node.params.get("causality_check", True) is True
         assert len(rows) == 8
 
+    def test_n_ahead_emits_declared_forward_columns(self, tmp_path):
+        node = ReturnWindows(
+            "w", {**FOREIGN, "lookback": 2, "label_lead": 1, "n_ahead": 3}
+        )
+        rows = node.run(ctx(tmp_path), {"records": bars("A", range(8))})["rows"]
+        assert node.lookahead_columns() == {
+            "y_ahead_1": 1, "y_ahead_2": 2, "y_ahead_3": 3,
+        }
+        filled = next(row for row in rows if row.get("y_ahead_3") is not None)
+        assert "y_ahead_1" in filled and "label" not in filled
+
     def test_an_undeclared_forward_column_is_still_refused(self, tmp_path):
         class _Sneaky(_Passthrough):
             def apply(self, arrays, params):

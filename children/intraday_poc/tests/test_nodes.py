@@ -824,9 +824,12 @@ def test_window_rows_narrowed_every_accessor_it_answers():
     ]
     assert len(overridden) == 11, overridden
     assert set(overridden) & set(WindowRows._PARAMS) == set()
-    # And the knobs that DID survive are the ones the documents write.
-    assert set(WindowRows._PARAMS) == {"causality_check", "cuts", "lookback",
-                                       "max_gap_minutes", "price_field"}
+    # And the knobs that DID survive are the ones the documents write,
+    # plus n_ahead (ADR-0049; omitted in documents, default 1).
+    assert set(WindowRows._PARAMS) == {
+        "causality_check", "cuts", "lookback", "n_ahead",
+        "max_gap_minutes", "price_field",
+    }
 
 
 def test_window_rows_inherits_the_causality_screen():

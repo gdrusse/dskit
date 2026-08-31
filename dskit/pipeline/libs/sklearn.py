@@ -385,15 +385,24 @@ def _refuse_zero_rows(rows, where):
         )
 
 
+def _label_keys(label):
+    """One label key or a tuple of keys (ADR-0049)."""
+    if isinstance(label, str):
+        return (label,)
+    return tuple(label)
+
+
 def _fit_matrix(rows, features, label, where):
     """``(X, y)`` from the wired rows — every feature and the label, on
     every row, or a refusal naming the row and the key."""
     _refuse_zero_rows(rows, where)
+    keys = _label_keys(label)
     matrix, targets = [], []
     for i, row in enumerate(rows):
-        vector = _row_vector(row, i, (*features, label), where)
-        matrix.append(vector[:-1])
-        targets.append(vector[-1])
+        vector = _row_vector(row, i, (*features, *keys), where)
+        matrix.append(vector[:-len(keys)])
+        chunk = vector[-len(keys):]
+        targets.append(chunk if len(keys) > 1 else chunk[0])
     return matrix, targets
 
 
@@ -680,7 +689,10 @@ class SklearnSignal:
                     "multi-class or regression estimators"
                 )
             return float(row[1])
-        return float(self.estimator.predict([vector])[0])
+        out = self.estimator.predict([vector])[0]
+        if hasattr(out, "__len__") and not isinstance(out, (str, bytes)):
+            return [float(item) for item in out]
+        return float(out)
 
 
 # ---------------------------------------------------------------------------
@@ -748,8 +760,18 @@ class SklearnFit(TrainableNode):
         label = params.get("label")
         if "label" not in params:
             problems.append("label is required — the row key holding the target")
-        elif not isinstance(label, str) or not label:
-            problems.append(f"label must be a non-empty row key, got {label!r}")
+        elif isinstance(label, str):
+            if not label:
+                problems.append(f"label must be a non-empty row key, got {label!r}")
+        elif (
+            not isinstance(label, (list, tuple))
+            or not label
+            or any(not isinstance(key, str) or not key for key in label)
+        ):
+            problems.append(
+                "label must be a non-empty row key or a non-empty list of "
+                f"row keys, got {label!r}"
+            )
         estimator_params = params.get("estimator_params", {})
         problems += _kwargs_problems("estimator_params", estimator_params)
         if "seed" in params:
@@ -830,6 +852,10 @@ class SklearnFit(TrainableNode):
         kwargs = dict(params.get("estimator_params") or {})
         estimator = _construct(est_cls, kwargs, path, self.key, "estimator_params")
         self._apply_seed(estimator, path)
+        labels = _label_keys(label)
+        if len(labels) > 1:
+            from sklearn.multioutput import MultiOutputRegressor
+            estimator = MultiOutputRegressor(estimator)
         matrix, targets = _fit_matrix(inputs["rows"], features, label, self.key)
         estimator.fit(matrix, targets)
 

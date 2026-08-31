@@ -85,8 +85,28 @@ def test_action_documents_share_cuts_and_ridge():
 
 def test_horizon_scan_never_reads_the_lockbox():
     scan = _raw("run-horizon-scan.json")["pipeline"]["scan"]["params"]
-    assert set(scan) == {"train_end_ms", "val_start_ms", "val_end_ms"}
+    assert set(scan) == {"split", "train_end_ms", "val_start_ms", "val_end_ms"}
+    assert scan["split"] == "val"
     assert "test_end_ms" not in json.dumps(scan)
+
+
+#: 1165 RTH minutes is the scan's farthest confident lead.
+_HORIZON_LEAD = 1165
+
+
+def test_horizon_models_labels_stop_at_the_cuts():
+    raw = _raw("run-horizon-models.json")
+    assert raw["pipeline"]["label_train"]["params"]["lead"] == _HORIZON_LEAD
+    assert raw["pipeline"]["label_val"]["params"]["lead"] == _HORIZON_LEAD
+    for key in ("label_train", "label_val"):
+        params = raw["pipeline"][key]["params"]
+        assert params["train_end_ms"] == "$splits.train_end_ms"
+        assert params["val_end_ms"] == "$splits.val_end_ms"
+        assert "test_end_ms" not in params
+    lags = [f"ret_lag_{i}" for i in range(UNIVERSE["lookback"])]
+    for key in ("ridge", "tree", "lstm", "gru", "transformer"):
+        assert raw["pipeline"][key]["params"]["features"] == lags
+        assert raw["pipeline"][key]["params"]["label"] == "y_next"
 
 
 def test_train_has_no_search_node():

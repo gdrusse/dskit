@@ -447,8 +447,21 @@ def _feature_problems(params, *, required):
             f"features must be a non-empty list of row-key strings, got {features!r}"
         )
     label = params.get("label")
-    if label is not None and (not isinstance(label, str) or not label):
-        problems.append(f"label must be a non-empty string row key, got {label!r}")
+    if label is not None:
+        if isinstance(label, str):
+            if not label:
+                problems.append(
+                    f"label must be a non-empty row key, got {label!r}"
+                )
+        elif (
+            not isinstance(label, (list, tuple))
+            or not label
+            or any(not isinstance(key, str) or not key for key in label)
+        ):
+            problems.append(
+                "label must be a non-empty row key or a non-empty list of "
+                f"row keys, got {label!r}"
+            )
     return problems
 
 
@@ -468,16 +481,18 @@ def _usable_rows(rows, features, label):
 
     A row missing any feature or the label (or carrying a non-finite
     value) is SKIPPED and counted, never fabricated into the fit.
+    ``label`` is one key or a sequence of keys (ADR-0049).
     """
+    keys = (label,) if isinstance(label, str) else tuple(label)
     xs, ys, skipped = [], [], 0
     for row in rows:
         values = [_value(row, name) for name in features]
-        target = _value(row, label)
-        if target is None or any(v is None for v in values):
+        target = [_value(row, name) for name in keys]
+        if any(item is None for item in target) or any(v is None for v in values):
             skipped += 1
             continue
         xs.append(values)
-        ys.append(target)
+        ys.append(target if len(keys) > 1 else target[0])
     return xs, ys, skipped
 
 
@@ -978,7 +993,10 @@ class RowVectorAdapter(TorchAdapter):
             return None
         with torch.no_grad():
             out = module(torch.tensor([values], dtype=torch.float32))
-        return float(out.reshape(-1)[0])
+        flat = out.reshape(-1)
+        if flat.numel() == 1:
+            return float(flat[0])
+        return [float(item) for item in flat]
 
 
 class TorchSignal:

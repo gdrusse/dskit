@@ -38,12 +38,12 @@ TORCH_PY = (
 #: Content pin of ``libs/torch.py``. Recompute on a deliberate engine-pack
 #: change (ADR-0045 moved it for batched eval); accidental edits fail here.
 TORCH_PY_SHA256 = (
-    "f28179aeb3c9126a587816c75a5e55ba8ebc80ce36eb5d583f8d7c508decbbea"
+    "205cedc8fa8f472d89da422d34d3031689bf049e91dd176ac4c80bf7b0bf4d6b"
 )
 
 SHIPPED = (
     "dlinear", "nlinear", "mlp", "lstm", "gru",
-    "lstm_attn", "gru_attn", "tcn", "cnn1d", "patchtst",
+    "lstm_attn", "gru_attn", "tcn", "cnn1d", "patchtst", "transformer",
 )
 
 SEQ, CH = 4, 1
@@ -137,6 +137,20 @@ def test_every_shipped_arch_constructs_and_maps_B_seq_ch_to_B_1():
         module = node.build_module(node.params)
         out = module(batch)
         assert tuple(out.shape) == (3, 1), name
+
+
+def test_n_ahead_maps_to_B_H():
+    batch = torch.zeros(3, SEQ * CH)
+    params = {**TRAIN_PARAMS, "arch": "lstm", "n_ahead": 4}
+    module = TimeSeriesTrain("m", params).build_module(params)
+    assert tuple(module(batch).shape) == (3, 4)
+
+
+def test_transformer_ships_as_a_one_layer_encoder():
+    assert "transformer" in ARCHS
+    assert TimeSeriesTrain.validate_params(
+        {**TRAIN_PARAMS, "arch": "transformer"}
+    ) == []
 
 
 def test_tcn_is_dilated_so_the_oldest_lag_can_fire():

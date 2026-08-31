@@ -33,6 +33,7 @@ __all__ = [
     "FeedParity",
     "HorizonScan",
     "KeepSymbols",
+    "LeadLabeledRows",
     "NODE_KINDS",
     "PortfolioSelect",
     "SessionFeatureRows",
@@ -1105,33 +1106,38 @@ def _finite(value):
 
 def _pearson(xs, ys):
     """Pearson correlation of two equal-length sequences, else 0."""
-    n = len(xs)
-    if n < 2 or n != len(ys):
+    import numpy as np
+
+    x = np.asarray(xs, dtype=np.float64)
+    y = np.asarray(ys, dtype=np.float64)
+    n = int(x.size)
+    if n < 2 or n != int(y.size):
         return 0.0
-    mean_x = sum(xs) / n
-    mean_y = sum(ys) / n
-    num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
-    den_x = math.sqrt(sum((x - mean_x) ** 2 for x in xs))
-    den_y = math.sqrt(sum((y - mean_y) ** 2 for y in ys))
-    if den_x == 0.0 or den_y == 0.0:
+    xm = x - x.mean()
+    ym = y - y.mean()
+    den = math.sqrt(float(np.dot(xm, xm)) * float(np.dot(ym, ym)))
+    if den == 0.0:
         return 0.0
-    return num / (den_x * den_y)
+    return float(np.dot(xm, ym) / den)
 
 
 def _ranks(values):
     """Average ranks (1-based) so ties do not invent order."""
-    order = sorted(range(len(values)), key=lambda i: values[i])
-    ranks = [0.0] * len(values)
-    i = 0
-    while i < len(values):
-        j = i
-        while j + 1 < len(values) and values[order[j + 1]] == values[order[i]]:
-            j += 1
-        avg = (i + j) / 2.0 + 1.0
-        for k in range(i, j + 1):
-            ranks[order[k]] = avg
-        i = j + 1
-    return ranks
+    import numpy as np
+
+    values = np.asarray(values, dtype=np.float64)
+    n = int(values.size)
+    if n == 0:
+        return []
+    order = np.argsort(values, kind="mergesort")
+    sorted_vals = values[order]
+    bounds = np.flatnonzero(
+        np.concatenate(([True], sorted_vals[1:] != sorted_vals[:-1], [True]))
+    )
+    ranks = np.empty(n, dtype=np.float64)
+    for start, end in zip(bounds[:-1], bounds[1:]):
+        ranks[order[start:end]] = (start + end - 1) / 2.0 + 1.0
+    return ranks.tolist()
 
 
 def _decision_metrics(picks, inputs):
@@ -1516,9 +1522,10 @@ def _combo_ic(train_x, train_y, val_x, val_y, names, top_k):
     """
     import numpy as np
 
-    ics = []
-    for col in range(train_x.shape[1]):
-        ics.append(abs(_spearman(list(train_x[:, col]), list(train_y))))
+    ics = [
+        abs(_spearman(train_x[:, col], train_y))
+        for col in range(train_x.shape[1])
+    ]
     order = sorted(range(len(names)), key=lambda i: ics[i], reverse=True)
     picked = order[: max(1, min(top_k, len(order)))]
     selected = [names[i] for i in picked]
@@ -1530,12 +1537,180 @@ def _combo_ic(train_x, train_y, val_x, val_y, names, top_k):
         z = (matrix[:, picked] - mu) / sd
         return z.mean(axis=1)
 
-    train_s = _score(train_x)
-    val_s = _score(val_x)
     return (
-        _spearman(list(train_s), list(train_y)),
-        _spearman(list(val_s), list(val_y)),
+        _spearman(_score(train_x), train_y),
+        _spearman(_score(val_x), val_y),
         selected,
+    )
+
+
+def _attach_lead_rows(
+    bars, records, lead, price_field, split, train_end, val_start, val_end,
+    label, features,
+):
+    """Copy feature rows that have a finite RTH-tape label at ``lead``.
+
+    Labels count 1-minute RTH bars, so they cross the close. A label
+    that would land after ``val_end`` is dropped (lockbox unread). Train
+    also requires the landing stamp to be at or before ``train_end``.
+    """
+    import numpy as np
+
+    tapes = {}
+    for row in bars:
+        if not isinstance(row, dict):
+            continue
+        symbol = row.get("symbol")
+        stamp = row.get("asof_ms")
+        price = row.get(price_field)
+        if not isinstance(symbol, str) or stamp is None or not _finite(price):
+            continue
+        stamp = int(stamp)
+        if stamp > val_end:
+            continue
+        tapes.setdefault(symbol, []).append((stamp, float(price)))
+    arrays = {}
+    for symbol, items in tapes.items():
+        items.sort()
+        arrays[symbol] = (
+            np.asarray([item[0] for item in items], dtype=np.int64),
+            np.asarray([item[1] for item in items], dtype=np.float64),
+        )
+    out = []
+    for row in records:
+        if not isinstance(row, dict):
+            continue
+        symbol = row.get("symbol")
+        stamp = row.get("asof_ms")
+        if not isinstance(symbol, str) or stamp is None:
+            continue
+        stamp = int(stamp)
+        if stamp > val_end:
+            continue
+        if any(_cell(row.get(name)) is None for name in features):
+            continue
+        pair = arrays.get(symbol)
+        if pair is None:
+            continue
+        t_ms, t_px = pair
+        loc = int(np.searchsorted(t_ms, stamp))
+        if loc >= t_ms.size or int(t_ms[loc]) != stamp:
+            continue
+        future = loc + lead
+        if future >= t_ms.size:
+            continue
+        px0 = float(t_px[loc])
+        px1 = float(t_px[future])
+        if px0 <= 0.0 or px1 <= 0.0:
+            continue
+        y = math.log(px1 / px0)
+        if not math.isfinite(y):
+            continue
+        future_ms = int(t_ms[future])
+        if split == "train":
+            keep = stamp <= train_end and future_ms <= train_end
+        else:
+            keep = val_start <= stamp <= val_end and future_ms <= val_end
+        if not keep:
+            continue
+        attached = dict(row)
+        attached[label] = y
+        out.append(attached)
+    return out
+
+
+def _scan_aligned(bars, records, features, price_field, val_end):
+    """Align finite feature rows to the 1-minute tape, dropping lockbox stamps."""
+    import numpy as np
+
+    tapes = {}
+    for row in bars:
+        if not isinstance(row, dict):
+            continue
+        symbol = row.get("symbol")
+        stamp = row.get("asof_ms")
+        price = row.get(price_field)
+        if not isinstance(symbol, str) or stamp is None or not _finite(price):
+            continue
+        stamp = int(stamp)
+        if stamp > val_end:
+            continue
+        tapes.setdefault(symbol, []).append((stamp, float(price)))
+    grouped = {}
+    for row in records:
+        if not isinstance(row, dict):
+            continue
+        symbol = row.get("symbol")
+        stamp = row.get("asof_ms")
+        if not isinstance(symbol, str) or stamp is None:
+            continue
+        stamp = int(stamp)
+        if stamp > val_end:
+            continue
+        cells = [_cell(row.get(name)) for name in features]
+        if any(value is None for value in cells):
+            continue
+        grouped.setdefault(symbol, []).append((stamp, cells))
+    prepared = []
+    for symbol, rows in grouped.items():
+        tape = tapes.get(symbol)
+        if not tape:
+            continue
+        tape.sort()
+        t_ms = np.asarray([item[0] for item in tape], dtype=np.int64)
+        t_px = np.asarray([item[1] for item in tape], dtype=np.float64)
+        stamps = np.asarray([item[0] for item in rows], dtype=np.int64)
+        x = np.asarray([item[1] for item in rows], dtype=np.float64)
+        loc = np.searchsorted(t_ms, stamps)
+        match = (loc < t_ms.size) & (t_ms[np.minimum(loc, t_ms.size - 1)] == stamps)
+        prepared.append((stamps, x, loc, match, t_ms, t_px))
+    return prepared
+
+
+def _scan_fold(prepared, lead, train_end, val_start, val_end):
+    """Collect train/val matrices for one lead; labels never land after val_end."""
+    import numpy as np
+
+    train_x, train_y, val_x, val_y = [], [], [], []
+    n_features = prepared[0][1].shape[1] if prepared else 0
+    for stamps, x, loc, match, t_ms, t_px in prepared:
+        future = loc + lead
+        ok = match & (future < t_ms.size)
+        if not np.any(ok):
+            continue
+        loc_ok = loc[ok]
+        fut_ok = future[ok]
+        px0 = t_px[loc_ok]
+        px1 = t_px[fut_ok]
+        pos = (px0 > 0.0) & (px1 > 0.0)
+        y = np.full(px0.shape, np.nan, dtype=np.float64)
+        y[pos] = np.log(px1[pos] / px0[pos])
+        finite = np.isfinite(y)
+        if not np.any(finite):
+            continue
+        stamp = stamps[ok][finite]
+        future_ms = t_ms[fut_ok][finite]
+        x_ok = x[ok][finite]
+        y = y[finite]
+        train = (stamp <= train_end) & (future_ms <= train_end)
+        val = (
+            (stamp >= val_start)
+            & (stamp <= val_end)
+            & (future_ms <= val_end)
+        )
+        if np.any(train):
+            train_x.append(x_ok[train])
+            train_y.append(y[train])
+        if np.any(val):
+            val_x.append(x_ok[val])
+            val_y.append(y[val])
+    empty_x = np.zeros((0, n_features), dtype=np.float64)
+    empty_y = np.zeros(0, dtype=np.float64)
+    return (
+        np.concatenate(train_x) if train_x else empty_x,
+        np.concatenate(train_y) if train_y else empty_y,
+        np.concatenate(val_x) if val_x else empty_x,
+        np.concatenate(val_y) if val_y else empty_y,
     )
 
 
@@ -1562,14 +1737,15 @@ class HorizonScan(Node):
     Cuts only — the grid lives on the universe port::
 
         node = HorizonScan("scan", {
+            "split": "val",
             "train_end_ms": 10, "val_start_ms": 11, "val_end_ms": 20,
         })
-        node.params["train_end_ms"]  # 10
+        node.params["split"]  # 'val'
     """
 
     role = "score"
     outputs = ("records", "metrics")
-    _PARAMS = ("train_end_ms", "val_start_ms", "val_end_ms")
+    _PARAMS = ("split", "train_end_ms", "val_start_ms", "val_end_ms")
 
     @classmethod
     def validate_params(cls, params):
@@ -1587,6 +1763,11 @@ class HorizonScan(Node):
         """
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
+        if params.get("split") != "val":
+            problems.append(
+                "split must be 'val' (the lockbox is unread), got "
+                f"{params.get('split')!r}"
+            )
         for knob in ("train_end_ms", "val_start_ms", "val_end_ms"):
             check_int_param(problems, knob, params.get(knob), ge=0)
         return problems
@@ -1632,8 +1813,6 @@ class HorizonScan(Node):
         dict
             ``records`` (one row per lead) and ``metrics``.
         """
-        import numpy as np
-
         spec = inputs["spec"]
         horizon = spec["horizon"]
         features = list(
@@ -1655,61 +1834,15 @@ class HorizonScan(Node):
         val_start = int(self.params["val_start_ms"])
         val_end = int(self.params["val_end_ms"])
         price_field = spec["price_field"]
-        bars = {}
-        for row in inputs["bars"]:
-            if not isinstance(row, dict):
-                continue
-            symbol = row.get("symbol")
-            stamp = row.get("asof_ms")
-            price = row.get(price_field)
-            if not isinstance(symbol, str) or stamp is None or not _finite(price):
-                continue
-            bars.setdefault(symbol, []).append((int(stamp), float(price)))
-        for symbol in bars:
-            bars[symbol].sort()
-        grouped = {}
-        for row in inputs["records"]:
-            if not isinstance(row, dict):
-                continue
-            symbol = row.get("symbol")
-            stamp = row.get("asof_ms")
-            if not isinstance(symbol, str) or stamp is None:
-                continue
-            grouped.setdefault(symbol, []).append(row)
+        prepared = _scan_aligned(
+            inputs["bars"], inputs["records"], features, price_field, val_end,
+        )
         curve = []
         for lead in leads:
-            train_x, train_y, val_x, val_y = [], [], [], []
-            for symbol, rows in grouped.items():
-                tape = bars.get(symbol)
-                if not tape:
-                    continue
-                t_ms = np.asarray([item[0] for item in tape], dtype=np.int64)
-                t_px = np.asarray([item[1] for item in tape], dtype=np.float64)
-                for row in rows:
-                    stamp = int(row["asof_ms"])
-                    loc = int(np.searchsorted(t_ms, stamp))
-                    if loc >= len(t_ms) or t_ms[loc] != stamp:
-                        continue
-                    future = loc + lead
-                    if future >= len(t_ms):
-                        continue
-                    y = math.log(t_px[future] / t_px[loc]) if t_px[loc] > 0 and t_px[future] > 0 else None
-                    if y is None or not math.isfinite(y):
-                        continue
-                    cells = [_cell(row.get(name)) for name in features]
-                    if any(value is None for value in cells):
-                        continue
-                    future_ms = int(t_ms[future])
-                    if stamp <= train_end and future_ms <= train_end:
-                        train_x.append(cells)
-                        train_y.append(y)
-                    elif (
-                        val_start <= stamp <= val_end
-                        and future_ms <= val_end
-                    ):
-                        val_x.append(cells)
-                        val_y.append(y)
-            n_train, n_val = len(train_y), len(val_y)
+            train_x, train_y, val_x, val_y = _scan_fold(
+                prepared, lead, train_end, val_start, val_end,
+            )
+            n_train, n_val = train_y.size, val_y.size
             if n_train < 2 or n_val < 2:
                 curve.append({
                     "lead": lead,
@@ -1723,12 +1856,7 @@ class HorizonScan(Node):
                 })
                 continue
             ic_train, ic_val, selected = _combo_ic(
-                np.asarray(train_x, dtype=np.float64),
-                np.asarray(train_y, dtype=np.float64),
-                np.asarray(val_x, dtype=np.float64),
-                np.asarray(val_y, dtype=np.float64),
-                features,
-                top_k,
+                train_x, train_y, val_x, val_y, features, top_k,
             )
             curve.append({
                 "lead": lead,
@@ -1769,6 +1897,138 @@ class HorizonScan(Node):
             metrics["rank_ic"],
         )
         return {"records": curve, "metrics": metrics}
+
+
+class LeadLabeledRows(Node):
+    """Attach one RTH-tape lead return onto session-feature rows.
+
+    Role ``transform`` — the ``intraday_equities-lead-labels`` kind.
+    ``WindowRows`` cannot form a 1165-minute label: ``max_gap`` splits
+    at the close, and a session is only 390 minutes. This node uses the
+    same tape arithmetic as :class:`HorizonScan`.
+
+    Parameters
+    ----------
+    params : dict
+        ``lead`` (int >= 1), ``split`` (``train`` or ``val``),
+        ``train_end_ms``, ``val_start_ms``, ``val_end_ms``. Optional
+        ``label`` (str, default ``y_next``).
+
+    Examples
+    --------
+    Val rows whose 2-minute label still lands by ``val_end``::
+
+        node = LeadLabeledRows("labels", {
+            "lead": 2, "split": "val",
+            "train_end_ms": 10, "val_start_ms": 11, "val_end_ms": 20,
+        })
+        node.params["lead"]  # 2
+    """
+
+    role = "transform"
+    outputs = ("records",)
+    _PARAMS = (
+        "lead", "split", "train_end_ms", "val_start_ms", "val_end_ms", "label",
+    )
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            Declared node params.
+
+        Returns
+        -------
+        list of str
+            One problem per broken knob.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        check_int_param(problems, "lead", params.get("lead"), ge=1)
+        if params.get("split") not in ("train", "val"):
+            problems.append(
+                "split must be 'train' or 'val' (the lockbox is unread), "
+                f"got {params.get('split')!r}"
+            )
+        for knob in ("train_end_ms", "val_start_ms", "val_end_ms"):
+            check_int_param(problems, knob, params.get(knob), ge=0)
+        label = params.get("label", "y_next")
+        if "label" in params and (not isinstance(label, str) or not label):
+            problems.append(
+                f"label must be a non-empty row key, got {label!r}"
+            )
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require feature rows, the 1-minute tape, and the universe spec.
+
+        Parameters
+        ----------
+        inputs : dict
+            ``records``, ``bars``, and ``spec``.
+
+        Returns
+        -------
+        list of str
+            Input problems.
+        """
+        problems = []
+        for port in ("records", "bars"):
+            if not isinstance(inputs.get(port), list):
+                problems.append(
+                    f"{port} must be a list of rows, got {inputs.get(port)!r}"
+                )
+        spec = inputs.get("spec")
+        if not isinstance(spec, dict):
+            problems.append(f"spec must be the universe object, got {spec!r}")
+        else:
+            problems.extend(_universe_problems(spec))
+        return problems
+
+    def run(self, ctx, inputs):
+        """Emit feature rows that carry a lockbox-safe lead label.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext
+            Unused run frame.
+        inputs : dict
+            ``records``, ``bars``, and ``spec``.
+
+        Returns
+        -------
+        dict
+            ``records`` with ``label`` attached.
+        """
+        spec = inputs["spec"]
+        features = list(
+            spec.get("features")
+            or session_feature_names(
+                spec["lookback"], spec["scales"], spec["reference"]
+            )
+        )
+        rows = _attach_lead_rows(
+            inputs["bars"],
+            inputs["records"],
+            int(self.params["lead"]),
+            spec.get("price_field") or "close",
+            self.params["split"],
+            int(self.params["train_end_ms"]),
+            int(self.params["val_start_ms"]),
+            int(self.params["val_end_ms"]),
+            self.params.get("label") or "y_next",
+            features,
+        )
+        self.log.info(
+            "lead-labels: %d row(s) at lead %s on split %s",
+            len(rows),
+            self.params["lead"],
+            self.params["split"],
+        )
+        return {"records": rows}
 
 
 class Universe(Node):
@@ -2001,6 +2261,7 @@ NODE_KINDS = {
     "intraday_equities-keep-symbols": KeepSymbols,
     "intraday_equities-feed-parity": FeedParity,
     "intraday_equities-horizon-scan": HorizonScan,
+    "intraday_equities-lead-labels": LeadLabeledRows,
     "intraday_equities-portfolio": PortfolioSelect,
 }
 

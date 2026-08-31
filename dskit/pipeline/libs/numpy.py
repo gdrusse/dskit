@@ -1809,6 +1809,7 @@ class ReturnWindows(ArrayFeatures):
         "label_name",
         "lag_prefix",
         "lookback",
+        "n_ahead",
         "return_kind",
     )
 
@@ -1823,6 +1824,10 @@ class ReturnWindows(ArrayFeatures):
     def label_lead(self):
         """How many steps forward the label reads (int >= 1)."""
         return self.params.get("label_lead", DEFAULT_LABEL_LEAD)
+
+    def n_ahead(self):
+        """How many forward steps to emit (int >= 1). Default 1."""
+        return self.params.get("n_ahead", 1)
 
     def lag_prefix(self):
         """Name the prefix the emitted lag columns share (str)."""
@@ -1895,6 +1900,14 @@ class ReturnWindows(ArrayFeatures):
                 isinstance(step, bool) or not isinstance(step, int) or step < 1
             ):
                 problems.append(f"label_lead must be an int >= 1, got {step!r}")
+        if "n_ahead" in cls._PARAMS and "n_ahead" in params:
+            ahead = params["n_ahead"]
+            if not is_node_ref(ahead) and (
+                isinstance(ahead, bool)
+                or not isinstance(ahead, int)
+                or ahead < 1
+            ):
+                problems.append(f"n_ahead must be an int >= 1, got {ahead!r}")
         for knob in ("lag_prefix", "label_name"):
             if knob not in cls._PARAMS or knob not in params:
                 continue
@@ -1932,8 +1945,12 @@ class ReturnWindows(ArrayFeatures):
         )
 
     def lookahead_columns(self):
-        """Declare the label column and how far forward it reads."""
-        return {self.label_name(): self.label_lead()}
+        """Declare the label column(s) and how far forward they read."""
+        step = self.label_lead()
+        ahead = self.n_ahead()
+        if ahead == 1:
+            return {self.label_name(): step}
+        return {f"y_ahead_{k}": k * step for k in range(1, ahead + 1)}
 
     def apply(self, arrays, params):
         """Build the lag columns and the forward label.
@@ -1957,7 +1974,13 @@ class ReturnWindows(ArrayFeatures):
             _lag_name(prefix, step): lag(returns, step)
             for step in range(self.lookback())
         }
-        columns[self.label_name()] = lead(returns, self.label_lead())
+        step = self.label_lead()
+        ahead = self.n_ahead()
+        if ahead == 1:
+            columns[self.label_name()] = lead(returns, step)
+        else:
+            for k in range(1, ahead + 1):
+                columns[f"y_ahead_{k}"] = lead(returns, k * step)
         return columns
 
 

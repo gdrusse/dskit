@@ -303,6 +303,26 @@ def test_signal_predict_proba_is_binary_only():
 # ---------------------------------------------------------------------------
 
 
+def test_fit_params_accept_a_list_of_label_keys():
+    params = {**FIT_PARAMS, "label": ["y", "z"]}
+    assert SklearnFit.validate_params(params) == []
+
+
+def test_list_label_wraps_multioutput_and_predicts_a_vector(tmp_path):
+    pytest.importorskip("sklearn")
+    rows = [{"x": float(i), "y1": 2.0 * i, "y2": -1.0 * i} for i in range(12)]
+    params = {
+        "estimator": RIDGE,
+        "estimator_params": {"alpha": 1e-6},
+        "features": ["x"],
+        "label": ["y1", "y2"],
+        "seed": 7,
+    }
+    out = SklearnFit("fit", params).run(_ctx(tmp_path, "mo"), {"rows": rows})
+    pred = out["signal"].predict({"x": 3.0})
+    assert pred == pytest.approx([6.0, -3.0], abs=1e-2)
+
+
 def test_fit_learns_and_persists_with_provenance(tmp_path):
     out = _fit(tmp_path)
     assert set(out) == set(SklearnFit.outputs)

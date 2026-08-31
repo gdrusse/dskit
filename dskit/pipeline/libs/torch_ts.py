@@ -7,8 +7,9 @@ net is defined INSIDE :meth:`_TsModel.build_module` (or a builder that
 function calls) — the purity gate forbids ``nn.Module`` at module level
 anywhere in ``dskit/pipeline/``, including inside a class body.
 
-Every arch maps ``(B, seq_len, channels)`` to ``(B, 1)``. The flat row
-is channel-major; the ONE reshape lives in ``build_module``.
+Every arch maps ``(B, seq_len, channels)`` to ``(B, n_ahead)`` with
+``n_ahead`` default 1 (ADR-0041's ``(B, 1)``). The flat row is
+channel-major; the ONE reshape lives in ``build_module``.
 """
 
 from __future__ import annotations
@@ -120,7 +121,7 @@ def _hidden_problems(params):
     )
 
 
-def _build_dlinear(params, seq_len, channels):
+def _build_dlinear(params, seq_len, channels, n_ahead):
     import torch
 
     kernel = int(params["kernel_size"])
@@ -130,8 +131,8 @@ def _build_dlinear(params, seq_len, channels):
             super().__init__()
             pad = kernel // 2
             self.avg = torch.nn.AvgPool1d(kernel, stride=1, padding=pad)
-            self.trend = torch.nn.Linear(seq_len, 1)
-            self.seas = torch.nn.Linear(seq_len, 1)
+            self.trend = torch.nn.Linear(seq_len, n_ahead)
+            self.seas = torch.nn.Linear(seq_len, n_ahead)
 
         def forward(self, x):
             # x: (B, seq, ch) -> per-channel mean, then average heads
@@ -147,23 +148,24 @@ def _build_dlinear(params, seq_len, channels):
     return DLinear()
 
 
-def _build_nlinear(params, seq_len, channels):
+def _build_nlinear(params, seq_len, channels, n_ahead):
     import torch
 
     class NLinear(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.proj = torch.nn.Linear(seq_len * channels, 1)
+            self.proj = torch.nn.Linear(seq_len * channels, n_ahead)
 
         def forward(self, x):
             last = x[:, -1:, :]
             flat = (x - last).reshape(x.size(0), -1)
-            return self.proj(flat) + last.mean(dim=-1)
+            bias = last.reshape(x.size(0), -1).mean(dim=-1, keepdim=True)
+            return self.proj(flat) + bias
 
     return NLinear()
 
 
-def _build_mlp(params, seq_len, channels):
+def _build_mlp(params, seq_len, channels, n_ahead):
     import torch
 
     hidden = int(params["hidden_size"])
@@ -174,7 +176,7 @@ def _build_mlp(params, seq_len, channels):
             self.net = torch.nn.Sequential(
                 torch.nn.Linear(seq_len * channels, hidden),
                 torch.nn.ReLU(),
-                torch.nn.Linear(hidden, 1),
+                torch.nn.Linear(hidden, n_ahead),
             )
 
         def forward(self, x):
@@ -183,7 +185,7 @@ def _build_mlp(params, seq_len, channels):
     return MLP()
 
 
-def _build_rnn(kind, params, seq_len, channels):
+def _build_rnn(kind, params, seq_len, channels, n_ahead):
     import torch
 
     hidden = int(params["hidden_size"])
@@ -196,7 +198,7 @@ def _build_rnn(kind, params, seq_len, channels):
             self.rnn = cell(
                 channels, hidden, layers, batch_first=True,
             )
-            self.head = torch.nn.Linear(hidden, 1)
+            self.head = torch.nn.Linear(hidden, n_ahead)
 
         def forward(self, x):
             out, _ = self.rnn(x)
@@ -205,7 +207,7 @@ def _build_rnn(kind, params, seq_len, channels):
     return RNN()
 
 
-def _build_attn(kind, params, seq_len, channels):
+def _build_attn(kind, params, seq_len, channels, n_ahead):
     import torch
 
     hidden = int(params["hidden_size"])
@@ -217,7 +219,7 @@ def _build_attn(kind, params, seq_len, channels):
             super().__init__()
             self.rnn = cell(channels, hidden, layers, batch_first=True)
             self.query = torch.nn.Linear(hidden, 1)
-            self.head = torch.nn.Linear(hidden, 1)
+            self.head = torch.nn.Linear(hidden, n_ahead)
 
         def forward(self, x):
             out, _ = self.rnn(x)
@@ -228,7 +230,7 @@ def _build_attn(kind, params, seq_len, channels):
     return RNNAttn()
 
 
-def _build_tcn(params, seq_len, channels):
+def _build_tcn(params, seq_len, channels, n_ahead):
     import torch
 
     hidden = int(params["hidden_size"])
@@ -240,7 +242,7 @@ def _build_tcn(params, seq_len, channels):
             # field is 4, so every step of a seq_len-4 window can fire.
             self.c1 = torch.nn.Conv1d(channels, hidden, 2, dilation=1)
             self.c2 = torch.nn.Conv1d(hidden, hidden, 2, dilation=2)
-            self.head = torch.nn.Linear(hidden, 1)
+            self.head = torch.nn.Linear(hidden, n_ahead)
 
         def forward(self, x):
             y = x.transpose(1, 2)
@@ -253,7 +255,7 @@ def _build_tcn(params, seq_len, channels):
     return TCN()
 
 
-def _build_cnn1d(params, seq_len, channels):
+def _build_cnn1d(params, seq_len, channels, n_ahead):
     import torch
 
     hidden = int(params["hidden_size"])
@@ -262,7 +264,7 @@ def _build_cnn1d(params, seq_len, channels):
         def __init__(self):
             super().__init__()
             self.conv = torch.nn.Conv1d(channels, hidden, 3, padding=1)
-            self.head = torch.nn.Linear(hidden, 1)
+            self.head = torch.nn.Linear(hidden, n_ahead)
 
         def forward(self, x):
             y = torch.relu(self.conv(x.transpose(1, 2)))
@@ -271,7 +273,7 @@ def _build_cnn1d(params, seq_len, channels):
     return CNN1d()
 
 
-def _build_patchtst(params, seq_len, channels):
+def _build_patchtst(params, seq_len, channels, n_ahead):
     import torch
 
     hidden = int(params["hidden_size"])
@@ -281,7 +283,7 @@ def _build_patchtst(params, seq_len, channels):
         def __init__(self):
             super().__init__()
             self.embed = torch.nn.Linear(patch * channels, hidden)
-            self.head = torch.nn.Linear(hidden, 1)
+            self.head = torch.nn.Linear(hidden, n_ahead)
 
         def forward(self, x):
             # x: (B, seq, ch) — take the last complete patch
@@ -297,6 +299,32 @@ def _build_patchtst(params, seq_len, channels):
     return PatchTST()
 
 
+def _build_transformer(params, seq_len, channels, n_ahead):
+    import torch
+
+    hidden = int(params["hidden_size"])
+    nhead = int(params["nhead"])
+
+    class TinyTransformer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.in_proj = torch.nn.Linear(channels, hidden)
+            layer = torch.nn.TransformerEncoderLayer(
+                d_model=hidden,
+                nhead=nhead,
+                dim_feedforward=max(hidden * 2, 8),
+                batch_first=True,
+                dropout=0.0,
+            )
+            self.enc = torch.nn.TransformerEncoder(layer, num_layers=1)
+            self.head = torch.nn.Linear(hidden, n_ahead)
+
+        def forward(self, x):
+            return self.head(self.enc(self.in_proj(x))[:, -1, :])
+
+    return TinyTransformer()
+
+
 def _dlinear_problems(params):
     return _int_ge("kernel_size", params["kernel_size"], 1)
 
@@ -305,6 +333,24 @@ def _patch_problems(params):
     return _int_ge("hidden_size", params["hidden_size"], 1) + _int_ge(
         "patch_len", params["patch_len"], 1
     )
+
+
+def _transformer_problems(params):
+    problems = _int_ge("hidden_size", params["hidden_size"], 1) + _int_ge(
+        "nhead", params["nhead"], 1
+    )
+    hidden = params.get("hidden_size")
+    nhead = params.get("nhead")
+    if (
+        isinstance(hidden, int)
+        and isinstance(nhead, int)
+        and nhead > 0
+        and hidden % nhead != 0
+    ):
+        problems.append(
+            f"hidden_size must be divisible by nhead, got {hidden} % {nhead}"
+        )
+    return problems
 
 
 register_arch(
@@ -322,22 +368,22 @@ register_arch(
     defaults={"hidden_size": 32}, doc="flat MLP over the reshaped window",
 )
 register_arch(
-    "lstm", lambda p, s, c: _build_rnn("lstm", p, s, c),
+    "lstm", lambda p, s, c, h: _build_rnn("lstm", p, s, c, h),
     problems=_hidden_problems, defaults={"hidden_size": 32, "num_layers": 1},
     doc="LSTM over (B, seq, ch), last step to a linear head",
 )
 register_arch(
-    "gru", lambda p, s, c: _build_rnn("gru", p, s, c),
+    "gru", lambda p, s, c, h: _build_rnn("gru", p, s, c, h),
     problems=_hidden_problems, defaults={"hidden_size": 32, "num_layers": 1},
     doc="GRU over (B, seq, ch), last step to a linear head",
 )
 register_arch(
-    "lstm_attn", lambda p, s, c: _build_attn("lstm", p, s, c),
+    "lstm_attn", lambda p, s, c, h: _build_attn("lstm", p, s, c, h),
     problems=_hidden_problems, defaults={"hidden_size": 32, "num_layers": 1},
     doc="LSTM plus attention over time",
 )
 register_arch(
-    "gru_attn", lambda p, s, c: _build_attn("gru", p, s, c),
+    "gru_attn", lambda p, s, c, h: _build_attn("gru", p, s, c, h),
     problems=_hidden_problems, defaults={"hidden_size": 32, "num_layers": 1},
     doc="GRU plus attention over time",
 )
@@ -358,6 +404,11 @@ register_arch(
     defaults={"hidden_size": 16, "patch_len": 2},
     doc="patched linear embed, last-patch head",
 )
+register_arch(
+    "transformer", _build_transformer, problems=_transformer_problems,
+    defaults={"hidden_size": 16, "nhead": 2},
+    doc="one-layer encoder, last-step head",
+)
 
 #: Public name set — the registry table, not a second copy of the keys.
 ARCHS = _ARCHS
@@ -367,7 +418,7 @@ class _TsModel:
     """Shared ``build_module`` for the train/predict pair (ADR-0041)."""
 
     _EXTRA_PARAMS = (
-        "arch", "arch_params", "channels", "order", "seq_len",
+        "arch", "arch_params", "channels", "n_ahead", "order", "seq_len",
     )
 
     def build_module(self, params):
@@ -386,7 +437,9 @@ class _TsModel:
         knobs = _arch_merged(
             name, (params.get("arch_params") or {}).get(name) or {},
         )
-        inner = entry["build"](knobs, seq_len, channels)
+        n_ahead = params.get("n_ahead", 1)
+        n_ahead = 1 if n_ahead is None else int(n_ahead)
+        inner = entry["build"](knobs, seq_len, channels, n_ahead)
 
         class _Window(torch.nn.Module):
             def __init__(self):
@@ -428,6 +481,25 @@ def _ts_problems(params, *, require_shape):
         problems.append(
             f"head must be one of {sorted(_HEADS)}, got {head!r}"
         )
+    if "n_ahead" in params:
+        problems.extend(_int_ge("n_ahead", params["n_ahead"], 1))
+        ahead = params.get("n_ahead")
+        if (
+            head == "binary"
+            and isinstance(ahead, int)
+            and ahead > 1
+        ):
+            problems.append("n_ahead > 1 is regression-only, got head='binary'")
+        label = params.get("label")
+        if (
+            isinstance(ahead, int)
+            and ahead > 1
+            and isinstance(label, (list, tuple))
+            and len(label) != ahead
+        ):
+            problems.append(
+                f"len(label) must equal n_ahead ({ahead}), got {len(label)}"
+            )
     order = params.get("order")
     if order is not None and (not isinstance(order, str) or order not in _ORDERS):
         problems.append(

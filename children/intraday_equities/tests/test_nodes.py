@@ -15,6 +15,7 @@ from intraday_equities.nodes import (
     FeedParity,
     HorizonScan,
     KeepSymbols,
+    LeadLabeledRows,
     PortfolioSelect,
     SessionFeatureRows,
     Universe,
@@ -38,6 +39,7 @@ EXPECTED_ROLES = {
     "intraday_equities-keep-symbols": "transform",
     "intraday_equities-feed-parity": "score",
     "intraday_equities-horizon-scan": "score",
+    "intraday_equities-lead-labels": "transform",
     "intraday_equities-portfolio": "score",
 }
 
@@ -249,11 +251,29 @@ def probes(tmp_path):
         ),
         "intraday_equities-horizon-scan": NodeProbe(
             params={
+                "split": "val",
                 "train_end_ms": _ms(3),
                 "val_start_ms": _ms(4),
                 "val_end_ms": _ms(7),
             },
-            required=("train_end_ms", "val_start_ms", "val_end_ms"),
+            required=("split", "train_end_ms", "val_start_ms", "val_end_ms"),
+            inputs={
+                "records": feature_rows,
+                "bars": bars,
+                "spec": {**mini, "features": ["ret_lag_0"]},
+            },
+            stream_ports=("records", "bars"),
+            runnable=True,
+        ),
+        "intraday_equities-lead-labels": NodeProbe(
+            params={
+                "lead": 2,
+                "split": "val",
+                "train_end_ms": _ms(3),
+                "val_start_ms": _ms(4),
+                "val_end_ms": _ms(7),
+            },
+            required=("lead", "split", "train_end_ms", "val_start_ms", "val_end_ms"),
             inputs={
                 "records": feature_rows,
                 "bars": bars,
@@ -305,6 +325,14 @@ TestConformance = conformance_suite(
     expected_roles=EXPECTED_ROLES,
     name="TestConformance",
 )
+
+
+def test_window_rows_keeps_n_ahead():
+    """ADR-0049: the child does not narrow the path-output knob away."""
+    assert "n_ahead" in WindowRows._PARAMS
+    assert WindowRows.validate_params(
+        {"lookback": 2, "label_lead": 1, "n_ahead": 4}
+    ) == []
 
 
 def test_store_window_and_grid_end_to_end(tmp_path):
@@ -513,6 +541,40 @@ def test_horizon_scan_drops_labels_that_land_after_val_end():
     ]
     out = HorizonScan(
         "scan",
-        {"train_end_ms": _ms(2), "val_start_ms": _ms(3), "val_end_ms": _ms(4)},
+        {
+            "split": "val",
+            "train_end_ms": _ms(2),
+            "val_start_ms": _ms(3),
+            "val_end_ms": _ms(4),
+        },
     ).run(None, {"records": rows, "bars": bars, "spec": spec})
     assert out["records"][0]["n_val"] == 0.0
+
+
+def test_lead_labels_drop_rows_whose_label_lands_after_the_cut():
+    spec = _mini_spec()
+    spec["features"] = ["ret_lag_0"]
+    bars = [
+        {"symbol": "AAPL", "asof_ms": _ms(i), "close": 100.0 + i}
+        for i in range(8)
+    ]
+    rows = [
+        {"symbol": "AAPL", "asof_ms": _ms(i), "ret_lag_0": 0.01 * i}
+        for i in range(8)
+    ]
+    params = {
+        "lead": 2,
+        "train_end_ms": _ms(2),
+        "val_start_ms": _ms(3),
+        "val_end_ms": _ms(4),
+    }
+    train = LeadLabeledRows("train", {**params, "split": "train"}).run(
+        None, {"records": rows, "bars": bars, "spec": spec}
+    )["records"]
+    val = LeadLabeledRows("val", {**params, "split": "val"}).run(
+        None, {"records": rows, "bars": bars, "spec": spec}
+    )["records"]
+    assert train
+    assert all(row["asof_ms"] + 2 * 60_000 <= _ms(2) for row in train)
+    assert val == []
+
