@@ -8,7 +8,7 @@ Refreshed 2026-08-31 after wrapping the horizon go and the H=1165 bakeoff.
 
 **State: horizon is 1165. Tree won a 2-epoch scalar bakeoff. Path output is next.**
 
-Branch after wrap: `main` (this work landed from `cursor/horizon-scan-signal-b625`).
+Branch: `cursor/horizon-scan-signal-b625` (PR #6).
 
 ## Next session
 
