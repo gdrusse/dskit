@@ -16,7 +16,11 @@ Agent orientation — see README.md for operator commands.
   horizon, or tradable names.
 - **Paper only.** Real-money enablement is a separate owner decision
   and this package refuses it.
-- Position-independent: no `..` imports, no dskit-repo paths.
+- **Decisioning is a journal (ADR-0056).** `journal.json` is the marker.
+  Actions append `docs/decisioning/actions.csv`; README is generated.
+  Path to production is owner `journal promote` only. Hooks record
+  pipeline runs and onboarding verbs. `live.main` is wrapped in
+  `production()`. Research writes `docs/research/`.
 
 ## Invariants
 
@@ -40,7 +44,9 @@ Agent orientation — see README.md for operator commands.
 ```
 intraday_equities/   # auth, connectors, nodes, models, live, testing
 configs/             # universe + sources, suites, scan/action/HPO/train
-docs/decisioning/    # evidence grid; framework.md is the training lock
+journal.json         # dskit.journal marker
+docs/decisioning/    # actions.csv + path.csv; README generated
+docs/research/       # research markdown
 tests/               # conftest + connectors/nodes/configs/live
 ```
 

@@ -89,6 +89,23 @@ def _parse_config(text) -> dict:
 # -- commands --------------------------------------------------------------
 
 
+def _journal_acquire(step, args, outputs="", notes=""):
+    """Label an onboarding verb. Function-level import (ADR-0056)."""
+    from dskit.journal.hooks import record_acquire
+
+    record_acquire(
+        step[:80],
+        inputs=(
+            f"--root {args.root} --source {getattr(args, 'source', '')} "
+            f"--stream {getattr(args, 'stream', '')} "
+            f"--mode {getattr(args, 'mode', '')}"
+        ).strip(),
+        outputs=outputs or "",
+        db_location=args.root,
+        notes=notes,
+    )
+
+
 def cmd_init(args) -> int:
     root = OnboardingRoot.create(args.root, _model(args), backend=args.backend)
     print(json.dumps(root.registry(_model(args)).store.model_pin(), indent=2))
@@ -112,6 +129,12 @@ def cmd_register_source(args) -> int:
         if registry.state(vid) == "draft":
             registry.transition(vid, "active", origin=args.origin)
     print(vid)
+    _journal_acquire(
+        f"register-source {args.name}",
+        args,
+        outputs=vid,
+        notes=f"connector={args.connector}",
+    )
     return 0
 
 
@@ -156,6 +179,11 @@ def cmd_acquire(args) -> int:
         origin=args.origin,
     )
     print(json.dumps(summary, indent=2))
+    _journal_acquire(
+        f"{args.mode} {args.source}/{args.stream}",
+        args,
+        outputs=str(summary.get("snapshot") or summary.get("acq_id") or ""),
+    )
     return 0
 
 
@@ -180,6 +208,11 @@ def cmd_watch(args):
     def emit(summary):
         print(json.dumps(summary, sort_keys=True), flush=True)
 
+    _journal_acquire(
+        f"watch {args.source}/{args.stream}",
+        args,
+        notes="one row per watch process, not per pull",
+    )
     run_watch(
         _root(args), _registry(args), args.source, args.stream, args.mode,
         args.every_seconds, origin=args.origin, on_result=emit,
@@ -193,6 +226,12 @@ def cmd_validate(args) -> int:
         origin=args.origin,
     )
     print(json.dumps(outcome, indent=2))
+    _journal_acquire(
+        "validate",
+        args,
+        outputs=str(outcome.get("result") or ""),
+        notes=f"gating={outcome.get('gating')} suite={args.suite}",
+    )
     return 3 if outcome["gating"] == "block" else 0
 
 
@@ -202,6 +241,12 @@ def cmd_certify(args) -> int:
         certified_by=args.by, origin=args.origin,
     )
     print(vid)
+    _journal_acquire(
+        f"certify {args.decision}",
+        args,
+        outputs=vid,
+        notes=f"result={args.result}",
+    )
     return 0
 
 
@@ -211,6 +256,12 @@ def cmd_publish(args) -> int:
         name=args.name, origin=args.origin,
     )
     print(json.dumps(summary, indent=2))
+    _journal_acquire(
+        f"publish {args.dataset}",
+        args,
+        outputs=str(summary.get("published_version") or ""),
+        notes=f"certification={args.certification}",
+    )
     return 0
 
 
@@ -335,6 +386,13 @@ def main(argv=None) -> int:
     except AssetError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except ValueError as exc:
+        from dskit.journal.base import JournalError
+
+        if isinstance(exc, JournalError):
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        raise
 
 
 if __name__ == "__main__":

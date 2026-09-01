@@ -25,6 +25,9 @@ shape for future children: keep the module set stable
 - **Import = registration**: `intraday_poc/__init__.py` imports `nodes`,
   which registers the kinds (`owned` never set — that is toolkit
   doctrine). `--adapter intraday_poc` is exactly this import.
+- **Decisioning is a journal (ADR-0056).** `live.main` is wrapped in
+  `dskit.journal.hooks.production`. Pipeline/onboarding commands record
+  themselves. Path to production is owner `journal promote` only.
 
 ## Layout
 
@@ -42,6 +45,9 @@ intraday_poc/
 configs/            # source-backfill (the ONE source config) / suite-bars /
                     #   run-backtest (walkforward) / run-train / asset-model
 tests/              # conftest bootstrap + connectors/nodes/configs suites
+journal.json        # dskit.journal marker (ADR-0056)
+docs/decisioning/   # actions.csv + path.csv; README generated
+docs/research/      # research markdown
 pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy/mlflow (run-path)
 .env.example        # Alpaca paper keys — .env is gitignored, never committed
 ```

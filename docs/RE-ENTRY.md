@@ -1,28 +1,26 @@
 # Re-entry
 
-Refreshed 2026-09-01 after HL-scan + framework HPO.
+Refreshed 2026-09-01 after merging to `main` (H/L lock, HPO, ADR-0056 journal).
 
 ---
 
 # ▶ PICK UP HERE
 
-**State: H=470, L=120, 28 keep (no lags). 50 TPE LightGBM val IC +0.076. T bakeoff is next.**
-
-Branch: `cursor/horizon-scan-signal-b625` (pushed; merge to `main` still pending).
+**State: on `main`. H=470, L=120, 28 keep. Journal package live. T bakeoff is next.**
 
 ## Next session
 
-T bakeoff `{1y, 2y, 3y, 5y, all-prior}` (`train_days`, ADR-0050). Then V walk-forward (H-length embargo, 36–48 folds). Do not reopen August 2026. Markets/grid change only in `configs/universe.json`.
+T bakeoff `{1y, 2y, 3y, 5y, all-prior}` (`train_days`, ADR-0050). Then V walk-forward. Do not reopen August 2026. Markets/grid change only in `configs/universe.json`. Owner `journal promote` for path-to-production rows.
 
 ## Locked
 
-- H = **470**, L = **120** (`scan.picked_lookback`), keep = 28 names. Action `lookback` stays 30. Evidence: `children/intraday_equities/docs/decisioning/`.
-- One-minute raw bars; coarser views via `event-grid`.
+- H = **470**, L = **120**, keep = 28 names. Action `lookback` stays 30.
+- `dskit.journal` (ADR-0056): CSV ledger + generated `docs/decisioning/README.md`. Uninitialized child refuses.
 - Paper only. Test B (August 2026) unassigned.
 
 ## Verification
 
 ```bash
 python -m ruff check .
-python -m pytest children/intraday_equities/tests tests/children/test_skeleton.py tests/pipeline_libs/test_torch_ts.py tests/pipeline_libs/test_numpy.py tests/pipeline_libs/test_sklearn.py tests/pipeline -q
+python -m pytest tests/journal tests/children/test_skeleton.py tests/pipeline tests/onboarding -q
 ```

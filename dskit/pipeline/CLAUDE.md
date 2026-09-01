@@ -136,13 +136,10 @@ on it without breaking its rulings.
 
 ## Gotchas
 
-- **`SINK_KINDS` is the TRACKING-sink registry**, not "this node writes
-  something": `factory(params)` must return a `Tracker` (consumed by
-  `driver.py`/`runner.py`). Two sinks ship, both application-side and
-  idempotent: the test `memory` sink (`testing.register_synthetic()`)
-  and `mlflow` (`libs.mlflow.register()`). A file-writer registered
-  there breaks the tracking path — file output is a `report`-role node
-  or `table-write`.
+- **Journal (ADR-0056).** ``run_document`` / ``run_walk_forward``
+  function-import ``dskit.journal`` after RECORD. Module-level is
+  still illegal. Folds pass ``journal=False``. Pytest is a no-op.
+  An uninitialized child refuses.
 - **`_Trackers` SWALLOWS every sink exception** (`driver.py:139-153`) so
   telemetry can never kill a run. Deliberate, and never to be "fixed" —
   the consequence is that a misconfigured sink logs nothing and SAYS
@@ -399,8 +396,8 @@ dskit/pipeline/
 │                      + foreach (ADR-0039: stores what was written, derives what runs) / refs
 ├── node.py            Node + TrainableNode ABCs, NodeContext, registry, register_node_kind
 ├── planner.py         document -> Plan; role rules live here
-├── driver.py          run_document: LOAD..RECORD, run dirs, $prev carry;
-│                      run_walk_forward (ADR-0027)
+├── driver.py          run_document: LOAD..RECORD, $prev, journal hook
+│                      (ADR-0056); run_walk_forward (ADR-0027)
 ├── runs.py            the READER: scan_runs/format_runs over a run root (`runs` verb)
 ├── split_policy.py    split policies (record/event-open/event-close) + EventBounds
 ├── kinds_flow.py      filter, event-grid, derive, concat, join — flow verbs

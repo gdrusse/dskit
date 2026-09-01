@@ -63,3 +63,16 @@ def test_every_child_ships_tests_and_runs_green():
             "must ship tests (ADR-0021)"
         )
         run_child_suite(child)
+
+
+def test_every_child_has_a_journal_marker():
+    """ADR-0056: an uninitialized child refuses acquire/run/live."""
+    children = children_dirs()
+    if not children:
+        pytest.skip("no incubating children under children/*/")
+    missing = [
+        os.path.basename(child)
+        for child in children
+        if not os.path.isfile(os.path.join(child, "journal.json"))
+    ]
+    assert not missing, f"child missing journal.json (run the refresh skill): {missing}"

@@ -1,0 +1,5 @@
+id,category,step,executed_at,inputs,outputs,db_location,notes
+A0001,acquire,alpaca backfill,2026-08-01T00:00:00+00:00,configs/source-backfill.json,ob/observations/alpaca,ob,retrospective; artifacts may be incomplete
+A0002,execute,run-train,2026-08-01T00:00:00+00:00,configs/run-train.json,pipeline_runs/,pipeline_runs/,retrospective; artifacts may be incomplete
+A0003,execute,run-backtest,2026-08-01T00:00:00+00:00,configs/run-backtest.json,pipeline_runs/,pipeline_runs/,retrospective; artifacts may be incomplete
+A0004,production,paper loop,2026-08-01T00:00:00+00:00,intraday_poc/live.py + Alpaca paper API,paper orders,run-dir artifacts,retrospective; artifacts may be incomplete

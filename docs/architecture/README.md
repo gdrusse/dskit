@@ -9,18 +9,19 @@ stabilizes** — the design deliverables below come first.
 > Challenge assumptions. Identify weaknesses. Propose alternatives. Seek
 > simplification. Only authorize implementation after architecture stabilization.*
 
-## The ecosystem — three packages
+## The ecosystem — four packages
 
 The two master specs describe two **new** platforms. Both explicitly name an
 **"Analytical Execution Framework"** as a separate collaborator that neither of
 them owns — and that framework **already exists**: it is the `dskit.pipeline`
-engine. So `dskit` is being built as a three-package ecosystem:
+engine. So `dskit` is four packages:
 
 | Package | Role | Home (proposed) | Status |
 |---|---|---|---|
 | **Analytical Execution Framework** | runs a declared pipeline (data → predict → optimize → report); emits run records | `dskit/pipeline/` | ✅ built |
 | **Package 1 — Data Asset Platform** | authoritative **system of record**: registries + lineage; immutable, versioned; **observes** execution, never manages it | `dskit/assets/` | ✅ built |
 | **Package 2 — Data Acquisition & Onboarding** | governed **entry point**: acquire → snapshot → validate → certify → publish | `dskit/onboarding/` | ✅ built |
+| **Child action journal** | per-child ledger of acquire / research / execute / production; CSV store; generated markdown; owner path-to-production | `dskit/journal/` | ✅ built (ADR-0056) |
 
 Package homes are proposals — see [ADR-0006](decision-log.md#adr-0006--package-homes-and-names).
 The full ownership map and end-to-end data flow are in

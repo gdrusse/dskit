@@ -38,8 +38,13 @@ _skeleton/
 │   ├── source-sample.json    # a connector config
 │   ├── suite-sample.json     # a validation suite
 │   └── run-sample.json       # a pipeline document
-├── docs/decisioning/         # evidence grid; one short file per decision
-│   └── README.md
+├── docs/decisioning/         # generated grid (CSV is the store; ADR-0056)
+│   ├── README.md             # GENERATED from actions.csv / path.csv
+│   ├── actions.csv
+│   └── path.csv
+├── docs/research/            # research agent markdown
+│   └── .gitkeep
+├── journal.json              # walk-up marker for dskit.journal
 └── tests/
     ├── conftest.py           # sys.path bootstrap — works in-repo and after graduation
     ├── test_connectors.py    # the connector contract + an acquire→validate e2e
@@ -71,10 +76,14 @@ _skeleton/
   MODULE inside it (`nodes_<venue>.py`), never a package taxonomy.
 - **The domain lives in configs.** Node params, source knobs, suites, the asset
   model: JSON with `notes`, default-deny everywhere. Code holds mechanisms.
-- **Decisioning is evidence.** Each child keeps `docs/decisioning/`: a
-  README grid plus one short file per decision (command, configs, output,
-  result). Nothing is decided without that row. See
-  [`docs/decisioning/README.md`](../docs/decisioning/README.md).
+- **Decisioning is a journal (ADR-0056).** `journal.json` is the
+  walk-up marker. Every action is acquire / research / execute /
+  production and lands in `docs/decisioning/actions.csv`; the README
+  is generated. Path to production is owner `journal promote` only.
+  Hooks record pipeline runs and onboarding verbs automatically.
+  Research writes `docs/research/<slug>.md`. An uninitialized child
+  refuses. The process is in each child's `docs/decisioning/README.md`
+  (generated) and in `dskit/journal/README.md`.
 - **A vendor knob is a `spec()` knob.** If it selects WHAT you pull — bar
   interval, feed, adjustment, universe — it is config, not a constant in
   `_fetch`. The test: would a second project want it different? Then it

@@ -160,13 +160,25 @@ def _module_level_offenders(path, package):
     return out
 
 
+def _is_journal(module):
+    """The one sanctioned sibling (ADR-0056): function-level only."""
+    return module == "dskit.journal" or module.startswith("dskit.journal.")
+
+
 def _outside_toolkit_offenders(path, package):
     """Imports of ``path`` (ANY depth) that reach the owning distribution
     outside the toolkit."""
     out = []
-    for module, _top in _imports(path, package):
+    for module, top in _imports(path, package):
         inside_root = module == ROOT_PACKAGE or module.startswith(ROOT_PACKAGE + ".")
         if inside_root and not _in_toolkit(module):
+            if _is_journal(module):
+                if top:
+                    out.append(
+                        f"{path.name}: {module} (dskit.journal must be "
+                        "function-level, ADR-0056)"
+                    )
+                continue
             out.append(f"{path.name}: {module}")
     return out
 
@@ -196,7 +208,12 @@ def test_core_never_reaches_outside_the_toolkit_at_any_depth():
     """Not even inside a function: a ``dskit.*`` import outside
     ``dskit.pipeline`` is the toolkit depending on its own application,
     which makes extraction more than a file move. Relative imports are
-    resolved first, so ``from ..core.fees import x`` cannot hide."""
+    resolved first, so ``from ..core.fees import x`` cannot hide.
+
+    Exception (ADR-0056): ``dskit.journal`` may be imported at
+    function depth so RECORD can label a child run. Module-level is
+    still refused.
+    """
     offenders = []
     for path in _tier1_files():
         offenders.extend(_outside_toolkit_offenders(path, CORE_PACKAGE))

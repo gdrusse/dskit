@@ -116,9 +116,10 @@ dskit/
 │   │   └── libs/              #   config-driven registry engine; own README +
 │   │                          #   CLAUDE.md; libs/ = tier-2 store packs
 │   │                          #   (sqlite, parquet)
-│   └── onboarding/            # Acquisition & Onboarding (spec Package 2):
-│       └── libs/              #   connectors/snapshots/validation/publication;
-│                              #   own README + CLAUDE.md; libs/ = connector packs
+│   ├── onboarding/            # Acquisition & Onboarding (spec Package 2):
+│   │   └── libs/              #   connectors/snapshots/validation/publication;
+│   │                          #   own README + CLAUDE.md; libs/ = connector packs
+│   └── journal/               # child action ledger (ADR-0056); CSV + generated md
 ├── children/                  # child projects (ADR-0021): incubated at repo root,
 │   ├── README.md              #   never imported by dskit; the guide
 │   └── _skeleton/             #   the pinned, runnable template a child copies
@@ -132,6 +133,7 @@ dskit/
     ├── assets/                # assets engine: purity, hash-parity, e2e ingest + sync
     ├── assets_libs/           # tier-2 store packs (sqlite, parquet)
     ├── onboarding/            # onboarding: purity, model pin, conformance, CLI e2e
+    ├── journal/               # action ledger: purity, CSV, locate, CLI e2e
     └── children/              # skeleton pin + per-child subprocess runs
 ```
 
@@ -291,6 +293,7 @@ python -m dskit.pipeline validate <doc.json>     # shape + identity hash
 
 python -m dskit.assets     init|validate-model|register|get|list|state|transition|lineage|ingest-run|sync-published
 python -m dskit.onboarding init|register-source|acquire|validate|certify|publish|verify
+python -m dskit.journal    init|record|research|promote|render|exec
 ```
 
 Exit codes: **0** ran · **3** halted at a NO-GO gate / `validate` gated `block`

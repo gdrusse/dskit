@@ -52,9 +52,14 @@ Agent orientation template — see README.md for what the child does.
   (Deliberate restatement in a validation suite or a test is the
   exception, and is correct: an assertion that reads its expectation from
   its subject asserts nothing.)
-- **Decisioning is evidence.** `docs/decisioning/README.md` is a grid;
-  each decision is a short linked file (command, configs, output,
-  result). Nothing is decided without that row.
+- **Decisioning is a journal (ADR-0056).** `journal.json` is the
+  walk-up marker. Actions (acquire / research / execute / production)
+  append `docs/decisioning/actions.csv`; README is generated. Path to
+  production is owner `python -m dskit.journal promote` only. Pipeline
+  runs and onboarding verbs record themselves. Research always goes
+  through `python -m dskit.journal research` (never Write
+  `docs/research/` by hand). Wrap `live.main` in
+  `dskit.journal.hooks.production`. An uninitialized child refuses.
 - The skeleton's file list is pinned in dskit's
   `tests/children/test_skeleton.py` — reshaping the SKELETON means
   updating that pin in the same commit (copies are unpinned).
@@ -64,7 +69,9 @@ Agent orientation template — see README.md for what the child does.
 ```
 yourproject/           # tier-3 code (connectors.py, nodes.py)
 configs/               # asset-model / source-sample / suite-sample / run-sample
-docs/decisioning/      # evidence grid + one file per decision
+journal.json           # dskit.journal marker
+docs/decisioning/      # actions.csv + path.csv; README generated
+docs/research/         # research markdown
 tests/                 # conftest bootstrap + configs/connectors/nodes tests
 pyproject.toml         # dependencies = ["dskit"]
 ```

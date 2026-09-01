@@ -10,8 +10,9 @@ A child consumes dskit, never modifies it. The domain lives in `configs/`.
 ## Decisions
 
 Training lock is [`docs/decisioning/framework.md`](docs/decisioning/framework.md)
-(H/L/T/V, holdouts, ensemble, TFT). Action cadence twins stay in
-`run-action-*.json`; they are not that lock.
+(H/L/T/V, holdouts, ensemble, TFT). The process and the action ledger are
+[`docs/decisioning/README.md`](docs/decisioning/README.md) (generated;
+ADR-0056). Path to production is owner `journal promote` only.
 
 ## Running, end to end
 

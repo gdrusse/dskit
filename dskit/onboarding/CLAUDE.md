@@ -70,6 +70,10 @@ on it without breaking its rulings (ADR-0012…0016).
 - **`storage` and `notes` are reserved config keys** — `check_config`
   refuses a connector spec that declares either; acquire strips
   `storage` before the connector sees config.
+- **Journal (ADR-0056).** ``__main__`` function-imports
+  ``dskit.journal`` after acquire/validate/certify/publish/register-source
+  and once at watch start. Module-level is still illegal. Pytest is a
+  no-op. An uninitialized child refuses.
 - **The coverage ledger never guesses a calendar** (ADR-0030): `missing`
   takes the caller's DECLARED period list; do not "improve" it with
   range inference — that blind spot is the bug class it exists to

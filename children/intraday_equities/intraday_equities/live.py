@@ -164,24 +164,31 @@ def main(argv=None):
     parser.add_argument("--real-money", action="store_true")
     parser.add_argument("--records", help="JSON list of bar rows")
     args = parser.parse_args(argv)
-    try:
-        if args.records:
-            records = json.loads(args.records)
-        else:
-            records = []
-        rows = intents(
-            args.run_doc,
-            records,
-            source_config=args.source_config,
-            quantity=args.qty,
-            paper=not args.real_money,
-        )
-        print(json.dumps(rows, indent=2))
-    except AssetError as exc:
-        for problem in exc.problems:
-            print(problem, file=sys.stderr)
-        return 1
-    return 0
+    from dskit.journal.hooks import production
+
+    with production(
+        "paper loop",
+        inputs=f"--run-doc {args.run_doc} --source-config {args.source_config}",
+        notes="paper only; one row per process",
+    ):
+        try:
+            if args.records:
+                records = json.loads(args.records)
+            else:
+                records = []
+            rows = intents(
+                args.run_doc,
+                records,
+                source_config=args.source_config,
+                quantity=args.qty,
+                paper=not args.real_money,
+            )
+            print(json.dumps(rows, indent=2))
+        except AssetError as exc:
+            for problem in exc.problems:
+                print(problem, file=sys.stderr)
+            return 1
+        return 0
 
 
 if __name__ == "__main__":

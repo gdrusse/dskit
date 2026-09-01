@@ -7,18 +7,20 @@ dataset is, which model trains, what gates a deployment — lives in a JSON
 document with a stable identity hash. The packages never learn your domain;
 you never edit the packages.
 
-## The three pillars
+## The four pillars
 
 | Pillar | Package | One line |
 |---|---|---|
 | **Pull** | `dskit.onboarding` | connectors acquire data into immutable WORM snapshots; declarative suites validate; certification + publication make evidence |
 | **Store** | `dskit.assets` | a config-driven registry/catalog: content-addressed records, lifecycles, lineage — your asset model is a JSON document, kinds included |
 | **Run** | `dskit.pipeline` | one JSON document declares a whole process as a node DAG; one command plans, runs, and records it |
+| **Journal** | `dskit.journal` | per-child ledger of acquire / research / execute / production; CSV store; generated markdown; owner path-to-production |
 
 They compose by files, never imports: onboarding **publishes** pointer manifests
 that assets **syncs** into the catalog; pipeline runs leave run dirs that assets
-**ingests** as observations. Each pillar stands alone; together they are pull →
-store → run with provenance end to end.
+**ingests** as observations. Journal hooks label those commands in the child.
+Each pillar stands alone; together they are pull →
+store → run → journal with provenance end to end.
 
 ## Install
 
@@ -79,6 +81,19 @@ python -m dskit.assets sync-published ./ob/published --store ./asset_store   # i
 Every record carries `(effective_date, acquired_at)` — what the data describes
 vs when you got it — and a declared `backfill`/`live` mode with its own cursor.
 
+**Journal** — every child action labeled; CSV store; generated markdown:
+
+```bash
+python -m dskit.journal init --root .                                 # once; skeleton ships it
+python -m dskit.journal research "why LightGBM" --body-file finding.md
+python -m dskit.journal promote A0001 --criteria empirical            # owner path
+```
+
+Acquire and execute record themselves. Research must go through the CLI
+(skills: `record-research`). Path to production is owner-only. The process
+is in every child's `docs/decisioning/README.md` and in
+[journal](dskit/journal/README.md).
+
 ## Your project is a child
 
 One test decides where code goes: *could a project that has never heard of your
@@ -100,7 +115,7 @@ and `children/<project>/` the incubator until a child graduates to its own repo.
 
 Each package's own `README.md` covers its config grammar and extension seams:
 [pipeline](dskit/pipeline/README.md) · [assets](dskit/assets/README.md) ·
-[onboarding](dskit/onboarding/README.md). Design history lives in
+[onboarding](dskit/onboarding/README.md) · [journal](dskit/journal/README.md). Design history lives in
 `docs/architecture/decision-log.md` (ADRs — no decision undocumented).
 
 ## Tests
@@ -111,6 +126,7 @@ python -m pytest -q                       # full suite (children run by subproce
 python -m pytest tests/pipeline -q        # engine core + purity gate
 python -m pytest tests/assets tests/assets_libs -q
 python -m pytest tests/onboarding -q
+python -m pytest tests/journal -q
 ```
 
 Purity gates enforce the tier rules mechanically: the cores import nothing

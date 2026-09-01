@@ -37,6 +37,10 @@ python -m dskit.onboarding publish --root ./ob \
 
 python -m dskit.pipeline run configs/run-sample.json \   # 5. fit / score
     --asof 2026-01-01 --adapter yourproject
+# execute rows land in docs/decisioning/actions.csv automatically
+
+python -m dskit.journal research "a question"            # 5b. research note
+python -m dskit.journal promote A0001 --criteria empirical  # owner path
 
 python -m dskit.assets init --store ./yourproject_store \  # 6. OPTIONAL — a
     --model configs/asset-model.json                       #    governed catalog
@@ -68,6 +72,12 @@ live cursors never fight — two configs, never two classes.
 Exit codes: `0` ran · `3` halted at a gate (a halt is a result) · `1`
 error.
 
+**Journal.** Every acquire / research / execute / production lands in
+`docs/decisioning/`. Open that README for the process (it is generated
+from CSV). Acquire and execute record themselves; research is
+`python -m dskit.journal research`; production wraps `live.main`.
+Path to production is owner `journal promote`.
+
 > The skeleton's sample data node is self-contained, so step 5 works
 > before step 2. A real child's data node reads the store, so there the
 > order is real.
@@ -98,8 +108,13 @@ _skeleton/
 │   ├── source-sample.json # a connector config object
 │   ├── suite-sample.json  # a validation suite
 │   └── run-sample.json    # a pipeline document
-├── docs/decisioning/      # evidence grid + one short file per decision
-│   └── README.md
+├── docs/decisioning/      # generated grid (CSV store; ADR-0056)
+│   ├── README.md          # GENERATED — do not edit
+│   ├── actions.csv
+│   └── path.csv
+├── docs/research/         # research agent markdown
+│   └── .gitkeep
+├── journal.json           # walk-up marker for dskit.journal
 └── tests/                 # green in-repo AND after graduation, uninstalled
     ├── conftest.py        # sys.path bootstrap (position-independent)
     ├── test_configs.py    # every config validates against its engine

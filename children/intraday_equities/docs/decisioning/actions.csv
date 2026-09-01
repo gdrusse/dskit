@@ -1,0 +1,6 @@
+id,category,step,executed_at,inputs,outputs,db_location,notes
+A0001,acquire,alpaca SIP backfill,2026-08-31T00:00:00+00:00,configs/source-alpaca-backfill.json,ob/observations/alpaca-sip,ob,retrospective; artifacts may be incomplete
+A0002,acquire,schwab live source,2026-08-31T00:00:00+00:00,configs/source-schwab-live.json,ob/observations/schwab,ob,retrospective; artifacts may be incomplete
+A0003,execute,hl-scan,2026-08-31T00:00:00+00:00,configs/run-hl-scan.json,docs/decisioning/logs/hl-scan.out,docs/decisioning/logs/,retrospective; artifacts may be incomplete
+A0004,execute,framework HPO,2026-09-01T00:00:00+00:00,configs/run-framework.json,docs/decisioning/logs/framework.out,docs/decisioning/logs/,retrospective; artifacts may be incomplete
+A0005,execute,horizon models,2026-08-31T00:00:00+00:00,configs/run-horizon-models.json,docs/decisioning/decision-horizon-models.md,docs/decisioning/,retrospective; artifacts may be incomplete; TFT / T bakeoff still open

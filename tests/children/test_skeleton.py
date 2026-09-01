@@ -21,7 +21,11 @@ SKELETON = os.path.join(REPO_ROOT, "children", "_skeleton")
 EXPECTED_FILES = {
     "CLAUDE.md",
     "README.md",
+    "journal.json",
     "docs/decisioning/README.md",
+    "docs/decisioning/actions.csv",
+    "docs/decisioning/path.csv",
+    "docs/research/.gitkeep",
     "configs/asset-model.json",
     "configs/run-sample.json",
     "configs/source-sample.json",
@@ -56,6 +60,20 @@ def test_the_skeletons_file_list_is_pinned():
         f"removed {sorted(EXPECTED_FILES - found)}. If the change is "
         "deliberate, update EXPECTED_FILES in this same commit."
     )
+
+
+def test_the_skeletons_journal_readme_matches_the_renderer():
+    """The committed README is the projection of the empty CSVs."""
+    from dskit.journal.locate import load_root
+    from dskit.journal.render import render_text
+    from dskit.journal.store import read_actions, read_path
+
+    root = load_root(SKELETON)
+    expected = render_text(read_actions(root), read_path(root))
+    if not expected.endswith("\n"):
+        expected += "\n"
+    with open(root.readme, encoding="utf-8") as fh:
+        assert fh.read() == expected
 
 
 def test_the_skeletons_own_suite_is_green():

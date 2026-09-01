@@ -1637,7 +1637,20 @@ def _record_run(document, asof, the_plan, resolved, run):
     return result
 
 
-def run_document(document, asof=None, registry=None) -> DocumentRunResult:
+def _journal_execute(step, inputs, outputs, notes):
+    """Append an execute row. Function-level import (ADR-0056)."""
+    from dskit.journal.hooks import record_execute
+
+    record_execute(
+        step[:80],
+        inputs=inputs,
+        outputs=outputs,
+        db_location=outputs,
+        notes=notes,
+    )
+
+
+def run_document(document, asof=None, registry=None, journal=True) -> DocumentRunResult:
     """Execute one node-map document end to end (docs/24 §9).
 
     LOAD → IMPORT + PLAN → RESOLVE → EXECUTE → RECORD, one call per
@@ -1653,6 +1666,11 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
         anywhere determinism matters.
     registry : NodeKindRegistry, optional
         Where registered kinds resolve; default the toolkit registry.
+    journal : bool, optional
+        Record an execute row when a child journal is in scope
+        (ADR-0056). Walk-forward folds pass ``False`` so one evaluation
+        is one row, not one per fold. Pytest is a no-op inside the
+        journal package.
 
     Returns
     -------
@@ -1666,7 +1684,9 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
         missing env, occupied run dir) — nothing has been written except,
         in the occupied-dir case, nothing at all. Once execution starts,
         failures are recorded in the run dir instead of raised.
+        A journal refusal after RECORD also raises (the run dir exists).
     """
+    source = document if isinstance(document, str) else ""
     if not isinstance(document, PipelineDocument):
         document = load_document(document)
     the_plan = plan_document(document, registry)
@@ -1710,7 +1730,15 @@ def run_document(document, asof=None, registry=None) -> DocumentRunResult:
     )
     try:
         run = _execute_plan(document, the_plan, ctx, resolved, trackers)
-        return _record_run(document, asof, the_plan, resolved, run)
+        result = _record_run(document, asof, the_plan, resolved, run)
+        if journal:
+            _journal_execute(
+                document.name,
+                source or document.name,
+                result.run_dir,
+                f"state={result.state} hash={result.run_hash[:8]} asof={asof}",
+            )
+        return result
     finally:
         trackers.close()
         _close_run_log(*log_state)
@@ -1951,7 +1979,9 @@ def _run_folds(document, spec, asof, registry, policy):
             fold_obj["splits"] = _fold_splits(spec, cutoff, policy).to_obj()
             fold_doc = PipelineDocument.from_obj(fold_obj)
             _log.info("walkforward: fold %s -> %s", cutoff, fold_doc.name)
-            result = run_document(fold_doc, asof=asof, registry=registry)
+            result = run_document(
+                fold_doc, asof=asof, registry=registry, journal=False
+            )
         except ConfigError:
             raise
         except Exception as exc:  # noqa: BLE001 — recorded, then stop
@@ -2352,10 +2382,17 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
     _write_walkforward_summary(
         summary_dir, document, asof, spec, state, folds, aggregate
     )
-    return WalkForwardRunResult(
+    result = WalkForwardRunResult(
         summary_dir=summary_dir,
         state=state,
         folds=tuple(folds),
         aggregate=aggregate,
         document_hash=document.hash,
     )
+    _journal_execute(
+        f"{document.name} walk-forward",
+        document.name,
+        summary_dir,
+        f"state={state} folds={len(folds)} hash={document.hash[:8]} asof={asof}",
+    )
+    return result

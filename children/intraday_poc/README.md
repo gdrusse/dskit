@@ -16,6 +16,8 @@ as an **upper bound** (see "What to know before trusting the numbers").
 A child consumes dskit, never modifies it: tier-3 code plus JSON configs
 over the three seams — a connector (onboarding), registered node kinds
 (pipeline), its own asset model (assets). The domain lives in `configs/`.
+The action ledger and the process are
+[`docs/decisioning/README.md`](docs/decisioning/README.md).
 
 ```
 intraday_poc/
@@ -36,6 +38,9 @@ intraday_poc/
 │   ├── run-backtest.json      # the walk-forward backtest document
 │   ├── run-train.json         # the TUNED production fit the live loop restores
 │   └── asset-model.json       # the child's catalog kinds
+├── journal.json              # dskit.journal marker (ADR-0056)
+├── docs/decisioning/         # generated process + action ledger
+├── docs/research/            # research markdown (CLI-only writer)
 └── tests/
     ├── conftest.py            # sys.path bootstrap — in-repo and after graduation
     ├── test_connectors.py     # four-verb contract + acquire→validate e2e (stubbed)

@@ -2192,3 +2192,68 @@ top-quantile ensemble are ADR-0050…0054. Test B (August 2026) is unassigned.
 **Consequences.** Pipeline #1 is `run-hl-scan.json`. Pipeline #2 pins H/L/keep
 then T + 50 TPE + `top-trials`. Action documents stay; they are not the lock.
 
+---
+
+## ADR-0056 — Child action journal (`dskit.journal`)
+
+**Status:** accepted (2026-09-01; owner directed)
+
+**Context.** A child today keeps a hand-edited `docs/decisioning/` grid plus
+one markdown file per lock. That records *decisions*, not *actions*. Acquire,
+research, pipeline runs, and live loops leave no single chain. The owner
+wants every action labeled automatically (argv + timestamp), two tables
+(full ledger; owner-selected path to production), and markdown that is
+readable on GitHub without being the write format.
+
+**Decision.**
+
+1. Fourth toolkit package `dskit.journal`. Stdlib-only. Never imports
+   pipeline, onboarding, or assets. Categories (closed): `acquire` |
+   `research` | `execute` | `production`. Validate/certify/publish fold
+   into `acquire`; bakeoffs/HPO/walk-forward fold into `execute`.
+2. Per child, `journal.json` is the marker. Store is CSV (git-friendly
+   edits); `docs/decisioning/README.md` is **generated** from it (two
+   tables). Operators read the markdown; writers append CSV.
+   - `actions.csv`: `id, category, step, executed_at, inputs, outputs,
+     db_location, notes`. `inputs` holds argv. IDs are `A0001`… monotonic.
+   - `path.csv`: `id, criteria` only (`empirical` | `judgemental` |
+     `n/a`). Render JOINs category/step/db from actions so they cannot
+     drift. Hooks never write `path.csv` — only `journal promote`.
+3. Hooks (automatic; pytest is a no-op via `PYTEST_CURRENT_TEST`):
+   pipeline RECORD and onboarding verbs function-import `dskit.journal`
+   (purity allowlists this one sibling, same shape as onboarding→assets).
+   Research: `journal research` writes `docs/research/<slug>.md` + a row.
+   Production: `journal.production()` context manager around `live.main`
+   (one row per process, not per tick).
+4. Locate: walk up from cwd. `journal.json` found → record there.
+   `pyproject.toml` + `configs/` without `journal.json` → **refuse**.
+   Neither → no-op (toolkit tests). `DSKIT_JOURNAL_ROOT` overrides.
+5. Cross-document pipeline chaining is **out of scope** (`$prev` stays
+   same-document). Evidence markdown under `docs/decisioning/` stays;
+   the grid is replaced by the generated tables.
+6. Skeleton ships the layout. Existing children are initialized in the
+   same change (retrospective rows, notes say artifacts may be incomplete).
+   Project skill `refresh-child-journal` brings drifted copies forward.
+
+**Contents (package).**
+
+```
+dskit/journal/
+  __init__.py     public surface
+  __main__.py     init | record | research | promote | render | exec
+  base.py         errors, UTC, csv headers
+  model.py        Action / PathRow; closed vocabs; default-deny
+  locate.py       walk-up + uninitialized-child refusal
+  store.py        atomic CSV append / path mutate
+  render.py       CSV → docs/decisioning/README.md
+  record.py       append_action; pytest skip
+  hooks.py        record_execute / record_acquire / production()
+  research.py     docs/research/<slug>.md template + row
+  README.md / CLAUDE.md
+tests/journal/    purity + model/store/render/locate/record/hooks/cli
+```
+
+**Consequences.** A child without `journal init` cannot acquire, run, or
+go live. Path-to-production is an owner act. Journal failure on a hooked
+path refuses the parent command (unlike tracking sinks, which swallow).
+

@@ -1248,6 +1248,18 @@ def main(argv=None) -> int:
         On missing credentials, or any refusal from the run dir,
         source config, or artifacts.
     """
+    from dskit.journal.hooks import production
+
+    with production(
+        "paper loop",
+        inputs="--run-dir + --source-config (Alpaca paper)",
+        notes="one row per process, not per tick",
+    ):
+        return _run_live(argv)
+
+
+def _run_live(argv=None) -> int:
+    """Forward-loop body; ``main`` records the process (ADR-0056)."""
     args = _parser().parse_args(argv)
 
     # Everything the run and the pull already declared, read back —
