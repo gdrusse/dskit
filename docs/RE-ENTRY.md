@@ -8,7 +8,7 @@ Refreshed 2026-09-01 after HL-scan + framework HPO.
 
 **State: H=470, L=120, 28 keep (no lags). 50 TPE LightGBM val IC +0.076. T bakeoff is next.**
 
-Branch: `cursor/horizon-scan-signal-b625` (merged to `main` this wrap).
+Branch: `cursor/horizon-scan-signal-b625` (pushed; merge to `main` still pending).
 
 ## Next session
 
