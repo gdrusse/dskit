@@ -7,6 +7,12 @@ cohort, session policy, feed-parity score, and paper wrapper.
 
 A child consumes dskit, never modifies it. The domain lives in `configs/`.
 
+## Decisions
+
+Training lock is [`docs/decisioning/framework.md`](docs/decisioning/framework.md)
+(H/L/T/V, holdouts, ensemble, TFT). Action cadence twins stay in
+`run-action-*.json`; they are not that lock.
+
 ## Running, end to end
 
 Every command runs from the child's own root.
@@ -57,6 +63,10 @@ python -m dskit.pipeline run configs/run-feed-parity.json \
     --asof 2026-08-30 --adapter intraday_equities
 python -m dskit.pipeline run configs/run-horizon-scan.json \
     --asof 2026-08-30 --adapter intraday_equities
+python -m dskit.pipeline run configs/run-hl-scan.json \
+  --asof 2026-08-30 --adapter intraday_equities
+python -m dskit.pipeline run configs/run-framework.json \
+  --asof 2026-08-30 --adapter intraday_equities
 python -m dskit.pipeline run configs/run-action-01m.json \
     --asof 2026-08-30 --adapter intraday_equities
 python -m dskit.pipeline run configs/run-train.json \
@@ -88,12 +98,12 @@ intraday_equities/
 │   ├── __init__.py      # import = registration
 │   ├── auth.py          # manual Schwab authorize over ADR-0046
 │   ├── connectors.py    # thin Alpaca/Schwab subclasses
-│   ├── nodes.py         # bars, universe, features, scan, portfolio
+│   ├── nodes.py         # bars, universe, features, H/L scan, portfolio
 │   ├── models.py        # empty bespoke-architecture seam
 │   ├── live.py          # paper intents from shipped configs
 │   └── testing.py       # network-free connector doubles
 ├── configs/             # universe, sources, suites, scan/action/HPO/train
-├── docs/decisioning/    # evidence grid + one file per decision
+├── docs/decisioning/    # framework.md + one file per decision
 └── tests/
 ```
 

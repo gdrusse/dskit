@@ -44,6 +44,10 @@ from dskit.pipeline.libs.numpy import (
     log_return,
     narrow_params,
     pct_return,
+    rolling_max,
+    rolling_min,
+    rolling_std,
+    rolling_sum,
 )
 from dskit.pipeline.node import NodeContext, node_class_errors, resolve_uses
 from dskit.pipeline.planner import plan
@@ -1275,6 +1279,60 @@ class TestOps:
             lag(np.array([1.0]), -1)
         with pytest.raises(ValueError, match="lag"):
             lead(np.array([1.0]), -1)
+
+    def test_rolling_ops_match_window_reductions(self):
+        from numpy.lib.stride_tricks import sliding_window_view
+
+        rng = np.random.default_rng(0)
+        x = rng.normal(size=180)
+        x[::7] = np.nan
+        width = 11
+        want_std = np.full(x.size, np.nan)
+        want_std[width - 1:] = np.nanstd(
+            sliding_window_view(x, width), axis=1, ddof=0
+        )
+        np.testing.assert_allclose(
+            rolling_std(x, width), want_std, equal_nan=True, rtol=1e-10, atol=1e-10,
+        )
+        finite = rng.normal(size=180)
+        want_sum = np.full(finite.size, np.nan)
+        want_sum[width - 1:] = np.sum(sliding_window_view(finite, width), axis=1)
+        want_max = np.full(finite.size, np.nan)
+        want_max[width - 1:] = np.max(sliding_window_view(finite, width), axis=1)
+        want_min = np.full(finite.size, np.nan)
+        want_min[width - 1:] = np.min(sliding_window_view(finite, width), axis=1)
+        np.testing.assert_allclose(rolling_sum(finite, width), want_sum)
+        np.testing.assert_allclose(rolling_max(finite, width), want_max)
+        np.testing.assert_allclose(rolling_min(finite, width), want_min)
+        with_nan = finite.copy()
+        with_nan[20] = np.nan
+        got_max = rolling_max(with_nan, width)
+        want_nan_max = np.full(with_nan.size, np.nan)
+        want_nan_max[width - 1:] = np.max(
+            sliding_window_view(with_nan, width), axis=1
+        )
+        np.testing.assert_allclose(
+            got_max, want_nan_max, equal_nan=True,
+        )
+
+    def test_rolling_std_does_not_materialize_the_window(self):
+        n, width = 80_000, 1170
+        x = np.linspace(1.0, 2.0, n)
+        x[::17] = np.nan
+        tracemalloc.start()
+        try:
+            out = rolling_std(x, width)
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert out.shape == (n,)
+        assert np.isfinite(out[width - 1:]).any()
+        # A dense (n, width) copy is ~750 MB; O(n) helpers stay well under.
+        assert peak < 80 * 1024 * 1024, f"peak {peak / 1024 / 1024:.1f} MB"
+
+    def test_a_non_positive_rolling_width_is_refused_by_name(self):
+        with pytest.raises(ValueError, match="width"):
+            rolling_sum(np.array([1.0]), 0)
 
     def test_the_return_ops_warm_up_with_nan(self):
         values = np.array([100.0, 110.0, 121.0])

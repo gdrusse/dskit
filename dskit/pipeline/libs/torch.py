@@ -135,6 +135,7 @@ __all__ = [
     "TorchPredict",
     "TorchSignal",
     "TorchTrain",
+    "pinball_loss",
     "register",
 ]
 
@@ -180,6 +181,32 @@ _LOSS_FLOW = ("loss", _LOSS_DOORWAY)
 DEFAULT_EPOCHS = 5
 DEFAULT_LR = 0.01
 DEFAULT_LABEL = "label"
+
+
+def pinball_loss(pred, target, tau=None, reduction="mean"):
+    """Quantile (pinball) loss. ``tau`` defaults to :data:`DEFAULT_PINBALL_TAU`.
+
+    Parameters
+    ----------
+    pred, target : tensor
+        Beliefs and realized values, same shape.
+    tau : float or None
+        Quantile in ``(0, 1)``.
+    reduction : str
+        ``"mean"`` or ``"sum"`` or ``"none"``.
+    """
+    import torch
+
+    from dskit.pipeline.metrics import DEFAULT_PINBALL_TAU
+
+    t = DEFAULT_PINBALL_TAU if tau is None else float(tau)
+    err = target - pred
+    loss = torch.maximum(t * err, (t - 1.0) * err)
+    if reduction == "none":
+        return loss
+    if reduction == "sum":
+        return loss.sum()
+    return loss.mean()
 
 #: Base knobs that pin a trained module's SHAPE — a load whose sidecar
 #: disagrees on one of these is refused by name. MODULE-level, not merely
@@ -1612,6 +1639,7 @@ class TorchTrain(_TorchModel):
         "monitor",
         "optimizer",
         "optimizer_params",
+        "patience",
     )
 
     #: The monitorable row keys — every one a LOSS the curve records.
@@ -1656,6 +1684,14 @@ class TorchTrain(_TorchModel):
                 f"monitor must be one of {sorted(cls._MONITORS)} (each a "
                 f"loss — lower is better), got {monitor!r}"
             )
+        patience = params.get("patience")
+        if patience is not None:
+            _check_int(problems, "patience", patience, ge=1)
+            if monitor is None:
+                problems.append(
+                    "patience requires monitor (ADR-0054) — there is nothing "
+                    "to wait on without a tracked objective"
+                )
         problems.extend(_loader_problems(params.get("loader", {})))
         problems.extend(_optimizer_problems(params))
         problems.extend(_loss_problems(params))
@@ -1999,7 +2035,8 @@ class TorchTrain(_TorchModel):
         }
 
     def _train_epochs(self, fit):
-        """Run every epoch, recording the curve and the monitor's best."""
+        """Run epochs, recording the curve and the monitor's best."""
+        patience = self.params.get("patience")
         for epoch in range(1, fit.epochs + 1):
             started = time.monotonic()
             train_loss = self._train_epoch(fit)
@@ -2013,6 +2050,16 @@ class TorchTrain(_TorchModel):
             )
             if fit.monitor and row["best"]:
                 fit.best_state = self._snapshot(fit.module)
+            if (
+                patience
+                and fit.curve.best_epoch is not None
+                and epoch - fit.curve.best_epoch >= patience
+            ):
+                self.log.info(
+                    "%s: early stop at epoch %d (patience %d)",
+                    self.key, epoch, patience,
+                )
+                break
         fit.curve.log_final()
 
     def _restore_best(self, fit):

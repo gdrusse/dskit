@@ -248,11 +248,14 @@ on it without breaking its rulings.
   cannot substitute their class — the statistics are not config-swappable.
 - **`$prev` refs are legal inside `params` only**; any other `$`-string
   is refused. `$splits.<field>` reads the materialized split
-  (`val_start_ms` appears there ONLY when an embargo is set, and
-  `cal_start_ms` only when a cal band is declared — ADR-0034).
-- **Trailing splits DO materialize** — from `Node.data_edge()`; only
-  `train_days != "all-prior"` refuses. (Older docstrings claiming
-  resolve-time refusal are the stale ones.)
+  (`val_start_ms` appears there ONLY when an embargo is set,
+  `cal_start_ms` only when a cal band is declared — ADR-0034,
+  `train_start_ms` only when train is bounded — ADR-0050).
+- **Trailing splits DO materialize** — from `Node.data_edge()`. Integer
+  `train_days` stamps `train_start_ms` (ADR-0050); `"all-prior"` leaves
+  train unbounded on the left.
+- **`$splits.train_start_ms` appears only when bounded**, same omission
+  discipline as `val_start_ms` / `cal_start_ms`.
 - **A `clock` section parses but refuses to run** — declared design.
 - **Document identity excludes `env`, `outputs`, AND `schedule`**;
   the stage-list grammar excludes only `env`/`outputs`. The
@@ -405,13 +408,13 @@ dskit/pipeline/
 │                      accrual -> gate -> ledger spine
 ├── kinds_table.py     table-file, table-write
 ├── kinds_stats.py     owned validate + stat_test
-├── kinds_search.py    hpo-grid (ctx.rerun seam)
+├── kinds_search.py    hpo-grid + top-trials (ctx.rerun seam)
 ├── kinds_report.py    owned run-report
 ├── fitted.py          FittedTransform family: standardize, apply-transform,
 │                      FeatureSelector
 ├── conformance.py     conformance_suite + NodeProbe
 ├── synthetic_nodes.py demo/test nodes, private registries only
-├── metrics.py         logloss / brier / squared_error / absolute_error + register_metric
+├── metrics.py         logloss / brier / squared_error / absolute_error / pinball + register_metric
 ├── trainlog.py        TrainingCurve + probability metrics (declared-model telemetry)
 ├── stats.py           cluster bootstraps (plain, studentized-t) + correction registry
 ├── records.py         MarketRecord + accounting seams

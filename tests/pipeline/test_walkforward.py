@@ -17,7 +17,7 @@ from dskit.pipeline.document import (
     TrailingSplitSpec,
     WalkForwardSpec,
 )
-from dskit.pipeline.driver import run_walk_forward
+from dskit.pipeline.driver import _aggregate_folds, _fold_splits, run_walk_forward
 from dskit.pipeline.node import Node
 from dskit.pipeline.split_policy import EventBounds
 
@@ -172,6 +172,8 @@ def test_fold_cutoffs_explicit_and_generated():
 def test_spec_round_trip_emits_only_the_active_declaration():
     explicit = wf_spec().to_obj()
     assert "folds" in explicit and "first" not in explicit
+    assert "train_days" not in explicit
+    assert "weight_halflife_folds" not in explicit
     assert WalkForwardSpec.from_obj(explicit).fold_cutoffs() == (
         "2025-01-01",
         "2025-02-01",
@@ -1175,3 +1177,23 @@ def test_an_hpo_free_summary_is_byte_identical(tmp_path):
     ]
     with open(os.path.join(result.summary_dir, "report.md"), encoding="utf-8") as fh:
         assert fh.read() == "\n".join(expected) + "\n"
+
+
+def test_fold_splits_stamp_train_start_when_train_days_is_set():
+    cuts = _fold_splits(wf_spec(train_days=30, embargo_days=3), "2025-06-01")
+    assert cuts.train_start_ms == cuts.train_end_ms - 30 * DAY + 1
+    assert _fold_splits(wf_spec(), "2025-06-01").train_start_ms is None
+
+
+def test_weighted_mean_uses_recency_and_is_omitted_when_unset():
+    folds = [
+        {"cutoff": "2025-01-01", "score": 4.0, "state": "ran", "run_dir": ""},
+        {"cutoff": "2025-04-01", "score": 2.0, "state": "ran", "run_dir": ""},
+    ]
+    plain = _aggregate_folds(folds, "min")
+    assert "weighted_mean" not in plain
+    weighted = _aggregate_folds(folds, "min", weight_halflife_folds=1)
+    assert weighted["weighted_mean"] < plain["mean"]
+    assert weighted["weighted_mean"] == pytest.approx(
+        (0.5 * 4.0 + 1.0 * 2.0) / 1.5
+    )

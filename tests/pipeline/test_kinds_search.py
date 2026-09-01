@@ -33,7 +33,9 @@ from dskit.pipeline.document import (
     flatten_param_paths,
 )
 from dskit.pipeline.driver import _apply_param_override, run_document
-from dskit.pipeline.kinds_search import HpoGrid, _grid, _subsample, register
+from dskit.pipeline.kinds_search import (
+    HpoGrid, TopTrials, _grid, _subsample, register,
+)
 from dskit.pipeline.kinds_search import _is_json_scalar as _grid_is_json_scalar
 from dskit.pipeline.node import Node, NodeContext, NodeKindRegistry
 from dskit.pipeline.planner import _is_json_scalar as _planner_is_json_scalar
@@ -504,14 +506,33 @@ class TestRegister:
         reg = NodeKindRegistry()
         register(reg)
         assert reg.get("hpo-grid") == (HpoGrid, False)
+        assert reg.get("top-trials") == (TopTrials, False)
         register(reg)  # idempotent — no duplicate-name raise
         assert reg.get("hpo-grid") == (HpoGrid, False)
+        assert reg.get("top-trials") == (TopTrials, False)
 
     def test_never_shadows_an_existing_claim(self):
         reg = NodeKindRegistry()
         reg.register("hpo-grid", SynthSearch)
         register(reg)
         assert reg.get("hpo-grid") == (SynthSearch, False)
+        assert reg.get("top-trials") == (TopTrials, False)
+
+
+class TestTopTrials:
+    def test_keeps_the_top_fraction_and_assigns_fresh_seeds(self):
+        out = TopTrials(
+            "ensemble", {"frac": 0.5, "size": 3, "seed": 7, "select": "min"},
+        ).run(None, {"trials": [
+            {"overrides": {"m.lr": 0.1}, "score": 1.0},
+            {"overrides": {"m.lr": 0.2}, "score": 0.5},
+            {"overrides": {"m.lr": 0.3}, "score": 2.0},
+            {"overrides": {"m.lr": 0.4}, "score": 0.25},
+        ]})
+        assert out["metrics"]["n_pool"] == 2.0
+        assert out["metrics"]["n_members"] == 3.0
+        assert {row["seed"] for row in out["members"]} == {7, 8, 9}
+        assert all(row["score"] in (0.25, 0.5) for row in out["members"])
 
 
 class TestApplyOverride:

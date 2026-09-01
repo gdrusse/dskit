@@ -9,6 +9,7 @@ from dskit.onboarding import check_config, load_suite
 from dskit.pipeline.document import load_document
 
 from intraday_equities.connectors import AlpacaBars, SchwabBars
+from intraday_equities.nodes import session_feature_names
 
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIGS = os.path.join(CHILD_ROOT, "configs")
@@ -90,6 +91,22 @@ def test_horizon_scan_never_reads_the_lockbox():
     assert "test_end_ms" not in json.dumps(scan)
 
 
+def test_hl_scan_stops_before_august():
+    raw = _raw("run-hl-scan.json")
+    assert raw["splits"]["test_end_ms"] == UNIVERSE["holdouts"]["test_a_end_ms"]
+    assert raw["splits"]["test_end_ms"] < UNIVERSE["holdouts"]["test_b_start_ms"]
+    lscan = raw["pipeline"]["lscan"]["params"]
+    assert lscan["lead"] == "$scan.metrics.farthest_confident_lead"
+    assert lscan["split"] == "val"
+    assert "test_end_ms" not in json.dumps(lscan)
+    assert raw["pipeline"]["features"]["params"]["lookback"] == (
+        "$universe.spec.scan.lookback_stop"
+    )
+    assert raw["pipeline"]["features"]["params"]["layout"] == "columns"
+    assert raw["pipeline"]["scan"]["inputs"]["bars"] == "$features.tape"
+    assert raw["pipeline"]["lscan"]["inputs"]["bars"] == "$features.tape"
+
+
 #: 1165 RTH minutes is the scan's farthest confident lead.
 _HORIZON_LEAD = 1165
 
@@ -103,10 +120,36 @@ def test_horizon_models_labels_stop_at_the_cuts():
         assert params["train_end_ms"] == "$splits.train_end_ms"
         assert params["val_end_ms"] == "$splits.val_end_ms"
         assert "test_end_ms" not in params
-    lags = [f"ret_lag_{i}" for i in range(UNIVERSE["lookback"])]
-    for key in ("ridge", "tree", "lstm", "gru", "transformer"):
-        assert raw["pipeline"][key]["params"]["features"] == lags
+    session_cols = list(session_feature_names(
+        UNIVERSE["lookback"], UNIVERSE["scales"], UNIVERSE["reference"],
+        tuple(sorted(set((UNIVERSE.get("industry") or {}).values()))),
+    ))
+    for key in ("ridge", "tree"):
+        assert raw["pipeline"][key]["params"]["features"] == session_cols
         assert raw["pipeline"][key]["params"]["label"] == "y_next"
+    tags = [scale["tag"] for scale in UNIVERSE["scales"]]
+    har = []
+    for prefix in ("ret", "rv", "range", "vol"):
+        har.extend(f"{prefix}_{tag}" for tag in tags)
+    har.extend(["overnight_gap"] * len(tags))
+    har.extend(["residual_SPY"] * len(tags))
+    expect = len(tags) * 6
+    for key in ("dlinear", "mlp", "patchtst", "transformer"):
+        feats = raw["pipeline"][key]["params"]["features"]
+        assert feats == har
+        assert len(feats) == expect
+        assert raw["pipeline"][key]["params"]["seq_len"] == len(tags)
+        assert raw["pipeline"][key]["params"]["channels"] == 6
+    assert raw["pipeline"]["dlinear"]["params"]["loss"] == (
+        "torch.nn.functional:smooth_l1_loss"
+    )
+    assert raw["pipeline"]["mlp"]["params"]["loss"] == (
+        "torch.nn.functional:smooth_l1_loss"
+    )
+    assert raw["pipeline"]["patchtst"]["params"]["head"] == "binary"
+    assert raw["pipeline"]["transformer"]["params"]["head"] == "binary"
+    assert raw["pipeline"]["patchtst"]["params"]["label"] == "y_up"
+    assert raw["pipeline"]["transformer"]["params"]["label"] == "y_up"
 
 
 def test_train_has_no_search_node():
@@ -125,6 +168,39 @@ def test_hpo_documents_declare_their_trial_counts():
         search = _raw(name)["pipeline"]["search"]
         assert search["params"]["n_trials"] == n_trials
         assert search["params"]["objective"] == "$select.metrics.rank_ic"
+
+
+def test_framework_pins_hl_keep_and_holdouts():
+    raw = _raw("run-framework.json")
+    keep = UNIVERSE["keep_features"]
+    derived = set(session_feature_names(
+        UNIVERSE["lookback"], UNIVERSE["scales"], UNIVERSE["reference"],
+        tuple(sorted(set((UNIVERSE.get("industry") or {}).values()))),
+    ))
+    assert keep
+    assert all(name in derived for name in keep)
+    assert all(not name.startswith("ret_lag_") for name in keep)
+    assert UNIVERSE["horizon"]["label_lead"] == 470
+    assert UNIVERSE["scan"]["picked_lookback"] == 120
+    assert UNIVERSE["lookback"] == 30
+    pipe = raw["pipeline"]
+    assert pipe["label_train"]["params"]["lead"] == (
+        "$universe.spec.horizon.label_lead"
+    )
+    assert pipe["label_val"]["params"]["lead"] == (
+        "$universe.spec.horizon.label_lead"
+    )
+    assert pipe["qhat"]["params"]["features"] == keep
+    assert pipe["search"]["params"]["n_trials"] == 50
+    assert pipe["search"]["params"]["objective"] == "$select.metrics.rank_ic"
+    assert pipe["ensemble"]["uses"] == "top-trials"
+    assert pipe["ensemble"]["params"]["frac"] == 0.1
+    assert pipe["ensemble"]["params"]["size"] == 5
+    assert pipe["ensemble"]["params"]["select"] == "max"
+    assert raw["splits"]["test_end_ms"] == UNIVERSE["holdouts"]["test_a_end_ms"]
+    assert pipe["features"]["params"]["layout"] == "columns"
+    assert pipe["label_train"]["inputs"]["bars"] == "$features.tape"
+    assert pipe["label_val"]["inputs"]["bars"] == "$features.tape"
 
 
 def test_lookback_agrees_with_ridge_features():
@@ -148,6 +224,10 @@ def test_sources_and_suites_follow_the_universe():
     horizon = UNIVERSE["horizon"]
     assert horizon["lead_stop"] == 3 * width
     assert horizon["anchors"] == [width, 2 * width, 3 * width]
+    assert any(
+        scale["width"] == horizon["lead_stop"] and scale["cross_session"]
+        for scale in UNIVERSE["scales"]
+    )
     assert "2022-06-20" in UNIVERSE["holidays"]
     assert "2021-06-18" not in UNIVERSE["holidays"]
 

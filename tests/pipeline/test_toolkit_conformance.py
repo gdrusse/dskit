@@ -43,12 +43,12 @@ from dskit.pipeline.fitted import SIDECAR_NAME, ApplyTransform, Standardize
 from dskit.pipeline.kinds_banking import BankingReport, Eligibility, EventBank
 from dskit.pipeline.kinds_flow import Concat, Derive, EventGrid, Filter, Join
 from dskit.pipeline.kinds_report import RunReport
-from dskit.pipeline.kinds_search import HpoGrid
+from dskit.pipeline.kinds_search import HpoGrid, TopTrials
 from dskit.pipeline.kinds_stats import StatTest, Validate
 from dskit.pipeline.kinds_table import TableFile, TableWrite
 from dskit.pipeline.node import NodeContext
 
-#: The sixteen toolkit kinds, paired explicitly (see module docstring
+#: The toolkit kinds, paired explicitly (see module docstring
 #: for why this is not DEFAULT_NODE_KINDS).
 TOOLKIT_NODE_KINDS = (
     ("stat_test", StatTest),
@@ -59,6 +59,7 @@ TOOLKIT_NODE_KINDS = (
     ("eligibility", Eligibility),
     ("banking-report", BankingReport),
     ("hpo-grid", HpoGrid),
+    ("top-trials", TopTrials),
     ("run-report", RunReport),
     ("concat", Concat),
     ("join", Join),
@@ -81,6 +82,7 @@ TOOLKIT_ROLES = {
     "eligibility": "gate",
     "banking-report": "report",
     "hpo-grid": "search",
+    "top-trials": "transform",
     "run-report": "report",
     # The relational three are transforms: they combine rows, they never
     # decide, score or spend.
@@ -369,6 +371,19 @@ def probes(tmp_path):
             # NOT runnable: run() refuses without the driver-injected
             # ctx.rerun seam — exactly as designed, and exactly why the
             # run-contract check cannot exercise it here.
+        ),
+        "top-trials": NodeProbe(
+            params={"frac": 0.1, "size": 2, "seed": 1, "select": "min"},
+            required=("frac", "size", "seed"),
+            inputs={
+                "trials": [
+                    {"overrides": {"m.lr": 0.1}, "score": 1.0},
+                    {"overrides": {"m.lr": 0.2}, "score": 0.5},
+                    {"overrides": {"m.lr": 0.3}, "score": 2.0},
+                ]
+            },
+            stream_ports=(),
+            runnable=True,
         ),
     }
 

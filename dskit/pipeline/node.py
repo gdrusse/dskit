@@ -128,7 +128,9 @@ def check_int_param(problems, name, value, *, ge) -> None:
     """Append a problem unless ``value`` is an int at or above ``ge``.
 
     ``bool`` is refused explicitly: it is an ``int`` in Python, so
-    without the check ``True`` would pass as 1.
+    without the check ``True`` would pass as 1. An integral float
+    (``470.0``) is accepted: score metrics are stored as floats, and a
+    ``$scan.metrics.lead`` wire is still a count.
 
     Parameters
     ----------
@@ -137,7 +139,7 @@ def check_int_param(problems, name, value, *, ge) -> None:
     name : str
         The knob's name, used in the message.
     value : object
-        The declared value; anything non-int accumulates a problem.
+        The declared value; a non-integer accumulates a problem.
     ge : int
         Inclusive lower bound. Required — a bound the caller did not
         state is a bound nobody can review.
@@ -156,7 +158,12 @@ def check_int_param(problems, name, value, *, ge) -> None:
         check_int_param(problems, "lookback", 1, ge=2)
         len(problems)   # 2
     """
-    if isinstance(value, bool) or not isinstance(value, int) or value < ge:
+    if isinstance(value, bool):
+        problems.append(f"{name} must be an int >= {ge}, got {value!r}")
+        return
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if not isinstance(value, int) or value < ge:
         problems.append(f"{name} must be an int >= {ge}, got {value!r}")
 
 

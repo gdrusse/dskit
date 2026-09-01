@@ -16,6 +16,7 @@ from intraday_equities.nodes import (
     HorizonScan,
     KeepSymbols,
     LeadLabeledRows,
+    LookbackScan,
     PortfolioSelect,
     SessionFeatureRows,
     Universe,
@@ -39,6 +40,7 @@ EXPECTED_ROLES = {
     "intraday_equities-keep-symbols": "transform",
     "intraday_equities-feed-parity": "score",
     "intraday_equities-horizon-scan": "score",
+    "intraday_equities-lookback-scan": "score",
     "intraday_equities-lead-labels": "transform",
     "intraday_equities-portfolio": "score",
 }
@@ -257,6 +259,23 @@ def probes(tmp_path):
                 "val_end_ms": _ms(7),
             },
             required=("split", "train_end_ms", "val_start_ms", "val_end_ms"),
+            inputs={
+                "records": feature_rows,
+                "bars": bars,
+                "spec": {**mini, "features": ["ret_lag_0"]},
+            },
+            stream_ports=("records", "bars"),
+            runnable=True,
+        ),
+        "intraday_equities-lookback-scan": NodeProbe(
+            params={
+                "split": "val",
+                "lead": 2,
+                "train_end_ms": _ms(3),
+                "val_start_ms": _ms(4),
+                "val_end_ms": _ms(7),
+            },
+            required=("split", "lead", "train_end_ms", "val_start_ms", "val_end_ms"),
             inputs={
                 "records": feature_rows,
                 "bars": bars,
@@ -508,10 +527,18 @@ def test_session_feature_names_follow_the_spec():
         2,
         [{"tag": "5m"}, {"tag": "1s"}],
         ["SPY"],
+        ("tech",),
     )
     assert names[:2] == ("ret_lag_0", "ret_lag_1")
     assert "ret_5m" in names
+    assert "vol_5m" in names
+    assert "amihud_5m" in names
+    assert "clv" in names
+    assert "tod_sin" in names
+    assert "dow_cos" in names
+    assert "month_sin" in names
     assert "residual_SPY" in names
+    assert "industry_tech" in names
     assert "spy_ret_1m" not in names
 
 
@@ -575,6 +602,133 @@ def test_lead_labels_drop_rows_whose_label_lands_after_the_cut():
         None, {"records": rows, "bars": bars, "spec": spec}
     )["records"]
     assert train
+    assert all(row["y_up"] in (0.0, 1.0) for row in train)
     assert all(row["asof_ms"] + 2 * 60_000 <= _ms(2) for row in train)
     assert val == []
+
+
+def test_lookback_scan_picks_a_finite_L_and_keeps_calendar():
+    spec = _mini_spec()
+    spec["lookback"] = 4
+    spec["features"] = [
+        "ret_lag_0", "ret_lag_1", "ret_lag_2", "ret_lag_3", "tod_sin",
+    ]
+    spec["scan"] = {
+        "l_start": 2,
+        "l_step": 1,
+        "lookback_stop": 4,
+        "keep_frac": 0.95,
+        "keep_tau": 0.05,
+    }
+    bars = [
+        {"symbol": "AAPL", "asof_ms": _ms(i), "close": 100.0 + i}
+        for i in range(16)
+    ]
+    rows = [
+        {
+            "symbol": "AAPL",
+            "asof_ms": _ms(i),
+            "ret_lag_0": 0.01 * i,
+            "ret_lag_1": 0.02 * i,
+            "ret_lag_2": 0.03 * i,
+            "ret_lag_3": 0.04 * i,
+            "tod_sin": 0.5,
+            "close": 100.0 + i,
+        }
+        for i in range(16)
+    ]
+    out = LookbackScan(
+        "lscan",
+        {
+            "split": "val",
+            "lead": 2,
+            "train_end_ms": _ms(8),
+            "val_start_ms": _ms(9),
+            "val_end_ms": _ms(14),
+        },
+    ).run(None, {"records": rows, "bars": bars, "spec": spec})
+    assert out["lookback"] in (2, 3, 4)
+    assert "tod_sin" in out["features"]
+    assert out["metrics"]["n_features"] >= 1.0
+
+
+def test_column_layout_keeps_frames_and_still_scans():
+    spec = _mini_spec()
+    spec["industry"] = {"AAPL": "tech"}
+    rows = [
+        {
+            "symbol": symbol,
+            "asof_ms": _ms(i),
+            "open": 100.0 + i,
+            "high": 101.0 + i,
+            "low": 99.0 + i,
+            "close": 100.0 + i,
+            "volume": 100.0,
+        }
+        for symbol in ("AAPL", "SPY")
+        for i in range(16)
+    ]
+    frames = SessionFeatureRows("features", {"layout": "columns"}).run(
+        None, {"records": rows, "spec": spec}
+    )
+    assert "tape" in frames
+    assert "X" in frames["records"][0]
+    kept = KeepSymbols("tradable", {"field": "symbol"}).run(
+        None, {"records": frames["records"], "symbols": ["AAPL"]}
+    )["records"]
+    assert [row["symbol"] for row in kept] == ["AAPL"]
+    spec["features"] = ["ret_lag_0"]
+    out = HorizonScan(
+        "scan",
+        {
+            "split": "val",
+            "train_end_ms": _ms(8),
+            "val_start_ms": _ms(9),
+            "val_end_ms": _ms(14),
+        },
+    ).run(None, {
+        "records": kept, "bars": frames["tape"], "spec": spec,
+    })
+    assert "farthest_confident_lead" in out["metrics"]
+
+
+def test_lead_labels_accept_column_frames():
+    spec = _mini_spec()
+    spec["industry"] = {"AAPL": "tech"}
+    rows = [
+        {
+            "symbol": symbol,
+            "asof_ms": _ms(i),
+            "open": 100.0 + i,
+            "high": 101.0 + i,
+            "low": 99.0 + i,
+            "close": 100.0 + i,
+            "volume": 100.0,
+        }
+        for symbol in ("AAPL", "SPY")
+        for i in range(16)
+    ]
+    frames = SessionFeatureRows("features", {"layout": "columns"}).run(
+        None, {"records": rows, "spec": spec}
+    )
+    kept = KeepSymbols("tradable", {"field": "symbol"}).run(
+        None, {"records": frames["records"], "symbols": ["AAPL"]}
+    )["records"]
+    spec["features"] = ["ret_lag_0"]
+    train = LeadLabeledRows(
+        "train",
+        {
+            "lead": 2,
+            "split": "train",
+            "train_end_ms": _ms(8),
+            "val_start_ms": _ms(9),
+            "val_end_ms": _ms(14),
+        },
+    ).run(None, {
+        "records": kept, "bars": frames["tape"], "spec": spec,
+    })["records"]
+    assert train
+    assert "X" not in train[0]
+    assert "y_next" in train[0]
+    assert train[0]["symbol"] == "AAPL"
 

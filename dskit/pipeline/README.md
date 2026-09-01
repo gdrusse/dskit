@@ -105,7 +105,8 @@ kinds resolve. Two more verbs — `demo`
   for `[cal_start_ms, val_end_ms]`, ADR-0034), `random` (cluster-hashed;
   `train+val == 1.0` is legal — no test split; never yields `"cal"`),
   `trailing` (windows counted backward from the data's edge
-  via `Node.data_edge()`; `train_days` must be `"all-prior"`; optional
+  via `Node.data_edge()`; integer `train_days` stamps `train_start_ms`,
+  `"all-prior"` is unbounded; optional
   `embargo_days` carves the band out of train's tail; optional `cal_days`
   carves the cal band between test and val). Time-based splits
   take an optional **`policy`** — `record` (default) | `event-open` |
@@ -116,7 +117,8 @@ kinds resolve. Two more verbs — `demo`
   pre-embargo, pre-cal documents keep their identity.
 - **Walk-forward** (ADR-0027): an optional `walkforward` section — fold
   cutoffs (explicit list or `first`/`step_days`/`count`), `val_days`,
-  `embargo_days`, an `objective` ref, `select` — and the `walkforward` verb
+  `embargo_days`, optional `train_days` / `weight_halflife_folds`, an
+  `objective` ref, `select` — and the `walkforward` verb
   runs one derived document per fold, each with its own full run dir:
   splits replaced by that fold's pinned cuts, the declared split `policy`
   riding along (ADR-0031), plus an aggregate summary dir. The section IS
@@ -204,6 +206,7 @@ Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 | `eligibility` | gate | admission bar `min_events`; empty family ⇒ NO-GO |
 | `banking-report` | report | the banked/in-family/gap ledger |
 | `hpo-grid` | search | grid search over `"node.param.path"` via the rerun seam |
+| `top-trials` | transform | top `frac` of a search ledger, resampled to `size` members with fresh seeds (ADR-0052) |
 | `standardize` | fitted_transform | centre/scale declared features on `fit_split`'s statistics |
 | `apply-transform` | transform | project a second stream through a wired fitted carrier |
 | `validate` † | score | model-vs-baseline per-record loss on a declared split |
@@ -492,7 +495,7 @@ dskit/pipeline/
 │                      accrual -> gate -> ledger spine
 ├── kinds_table.py     table-file, table-write (digest-verified keyed tables)
 ├── kinds_stats.py     owned validate + stat_test (plain + studentized bootstrap-t, corrections)
-├── kinds_search.py    hpo-grid (the ctx.rerun seam)
+├── kinds_search.py    hpo-grid + top-trials (the ctx.rerun seam)
 ├── kinds_report.py    owned run-report (evidence.json / evidence.md)
 ├── fitted.py          the fitted-transform family: FittedTransform (role
 │                      fitted_transform, fit/apply_state hooks, fit_split +
@@ -500,7 +503,7 @@ dskit/pipeline/
 │                      FeatureSelector (the surviving-columns member)
 ├── conformance.py     conformance_suite + NodeProbe — the reusable pack bar
 ├── synthetic_nodes.py every role, deterministic, for demos/tests
-├── metrics.py         logloss / brier / squared_error / absolute_error + register_metric
+├── metrics.py         logloss / brier / squared_error / absolute_error / pinball + register_metric
 ├── trainlog.py        per-epoch TrainingCurve + probability metrics (logloss/brier/ECE)
 ├── stats.py           cluster bootstraps (plain, studentized-t); correction
 │                      registry (bh / bonferroni / none / weighted-bh) +

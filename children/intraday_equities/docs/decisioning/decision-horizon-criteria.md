@@ -1,8 +1,6 @@
 # Decision horizon criteria
 
-**Status:** go. Farthest confident lead is **1165** RTH minutes (~3 sessions).
-
-Lockbox unread. Labels stopped at `val_end_ms`. All three anchors (390 / 780 / 1170) passed. Peak is 1110; 1165 is the longest lead still within 1 SE of that peak. Treat 1165 as the candidate, not a frozen production horizon, until cadence/HPO/lockbox.
+**Status:** incomplete. **1165 is not a lock.** The curve used top-k equal-weight IC, not LightGBM on the full session set. Do not size H, V, L, or embargo from this row. Rescan with the wide feature set.
 
 ## Run (from `children/intraday_equities`)
 

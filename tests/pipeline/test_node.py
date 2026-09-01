@@ -9,6 +9,7 @@ from dskit.pipeline.node import (
     NodeContext,
     NodeKindRegistry,
     TrainableNode,
+    check_int_param,
     node_class_errors,
     resolve_uses,
 )
@@ -404,3 +405,12 @@ class TestRegistryAndResolveUses:
             resolve_uses("tests.pipeline.test_node:AbstractNode", reg)
         with pytest.raises(ValueError, match="cannot import"):
             resolve_uses("no.such.module:Thing", reg)
+
+
+def test_check_int_param_accepts_integral_floats():
+    problems = []
+    check_int_param(problems, "lead", 470.0, ge=1)
+    assert problems == []
+    check_int_param(problems, "lead", 470.5, ge=1)
+    check_int_param(problems, "lead", True, ge=1)
+    assert len(problems) == 2

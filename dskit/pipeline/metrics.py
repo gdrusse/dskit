@@ -6,10 +6,10 @@ validate time. Each metric is a per-observation loss ``metric(q, y) ->
 float`` — LOWER is better — where ``q`` is the signal's belief and ``y``
 the realized payout per unit mapped through the venue's ``Accounting``
 seam. For binary venues ``y`` is exactly 0.0 or 1.0, which is what
-``logloss``/``brier`` assume; mark-to-market venues score with the
-unbounded pair ``squared_error``/``absolute_error`` (ADR-0025), and
-anything beyond these four registers via :func:`register_metric` rather
-than bending a probability score.
+``logloss``/``brier`` assume; mark-to-market venues score with
+``squared_error``/``absolute_error`` (ADR-0025) and ``pinball``
+(ADR-0054). Anything beyond these registers via :func:`register_metric`
+rather than bending a probability score.
 
 Beliefs are clipped to ``[CLIP, 1 - CLIP]`` before the log — a hard 0/1
 belief that turns out wrong is a model defect to SEE in a large-but-finite
@@ -24,10 +24,12 @@ import math
 
 __all__ = [
     "CLIP",
+    "DEFAULT_PINBALL_TAU",
     "METRICS",
     "absolute_error",
     "brier",
     "logloss",
+    "pinball",
     "register_metric",
     "squared_error",
 ]
@@ -91,12 +93,40 @@ def absolute_error(q, y) -> float:
     return abs(float(q) - float(y))
 
 
+#: Default pinball quantile. One name — ``pinball`` and the torch pack
+#: ``pinball_loss`` both read it (ADR-0054).
+DEFAULT_PINBALL_TAU = 0.5
+
+
+def pinball(q, y, tau=DEFAULT_PINBALL_TAU) -> float:
+    """Per-observation pinball (quantile) loss at ``tau``.
+
+    Parameters
+    ----------
+    q, y : float
+        Point belief and realized value.
+    tau : float
+        Quantile in ``(0, 1)``. Default :data:`DEFAULT_PINBALL_TAU`.
+    """
+    _check_regression("pinball", q, y)
+    if (
+        isinstance(tau, bool)
+        or not isinstance(tau, (int, float))
+        or not (0.0 < float(tau) < 1.0)
+    ):
+        raise ValueError(f"pinball: tau must lie in (0, 1), got {tau!r}")
+    err = float(y) - float(q)
+    t = float(tau)
+    return t * err if err >= 0.0 else (t - 1.0) * err
+
+
 #: The metric registry ``ValidationConfig.metric`` resolves against.
 METRICS = {
     "logloss": logloss,
     "brier": brier,
     "squared_error": squared_error,
     "absolute_error": absolute_error,
+    "pinball": pinball,
 }
 
 

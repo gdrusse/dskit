@@ -29,6 +29,8 @@ Agent orientation — see README.md for operator commands.
 - Action documents differ only in `name`/`notes`, `label_lead`, and
   `event-grid.period_ms`.
 - Latest six months are the lockbox (`splits.test_end_ms`).
+  Holdouts: Test A through `holdouts.test_a_end_ms`; Test B (August 2026)
+  is unassigned. Training framework: `docs/decisioning/framework.md`.
 - Every run document tracks to one local MLflow experiment
   (`intraday_equities`). HPO maximizes `$select.metrics.rank_ic`.
   Fill rate / delay decay wait on a fill model.
@@ -38,7 +40,7 @@ Agent orientation — see README.md for operator commands.
 ```
 intraday_equities/   # auth, connectors, nodes, models, live, testing
 configs/             # universe + sources, suites, scan/action/HPO/train
-docs/decisioning/    # evidence grid; horizon go, farthest 1165
+docs/decisioning/    # evidence grid; framework.md is the training lock
 tests/               # conftest + connectors/nodes/configs/live
 ```
 

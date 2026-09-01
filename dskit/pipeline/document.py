@@ -72,6 +72,7 @@ from dskit.pipeline.split_policy import SPLIT_NAMES as _SPLIT_NAMES
 __all__ = [
     "CADENCES",
     "ClockConfig",
+    "ALL_PRIOR",
     "DOC_NON_IDENTITY_SECTIONS",
     "DOC_SPLIT_KINDS",
     "EACH_TOKEN",
@@ -733,17 +734,9 @@ class TrailingSplitSpec:
         """Why this spec can NEVER materialize, or ``""`` when it can.
 
         Separate from :meth:`materialize` so a caller can refuse before
-        paying for the data edge — reading every ledger to compute an
-        anchor, only to reject the spec on its own declared fields, is an
-        expensive way to say no. :meth:`materialize` re-checks, so this
-        stays an optimization and never the only guard.
+        paying for the data edge. Bounded ``train_days`` materializes
+        (ADR-0050); this stays empty unless a future knob cannot.
         """
-        if self.train_days != ALL_PRIOR:
-            return (
-                f"train_days={self.train_days!r} cannot materialize yet: a "
-                "bounded train window needs a train-start cut (lands with the "
-                "adapter kinds, I-223) — use 'all-prior' for now"
-            )
         return ""
 
     def materialize(self, newest_ms) -> TimeSplitConfig:
@@ -752,10 +745,9 @@ class TrailingSplitSpec:
         returned :class:`TimeSplitConfig` carries ``test_end_ms ==
         newest_ms`` and re-validates strict ordering by construction.
 
-        Only ``train_days == "all-prior"`` materializes today: a bounded
-        train window needs a train-START cut that
-        :class:`~dskit.pipeline.base.TimeSplitConfig` cannot express —
-        refusing beats silently behaving as all-prior (I-223)."""
+        Only ``train_days == "all-prior"`` leaves train unbounded on the
+        left. An integer ``train_days`` stamps ``train_start_ms`` so train
+        holds exactly that many daily stamps (ADR-0050)."""
         blocked = self.unmaterializable_reason()
         if blocked:
             raise ValueError(blocked)
@@ -777,6 +769,15 @@ class TrailingSplitSpec:
         # of the val window: train ends embargo_days before val starts,
         # and the band between belongs to no split.
         train_end = val_start - self.embargo_days * _DAY_MS
+        train_start = None
+        if self.train_days != ALL_PRIOR:
+            train_start = train_end - self.train_days * _DAY_MS + 1
+            if train_start < 1:
+                raise ValueError(
+                    f"trailing splits need newest_ms deep enough for the "
+                    f"windows: newest_ms={newest_ms} leaves "
+                    f"train_start_ms={train_start}"
+                )
         if train_end < 1:
             raise ValueError(
                 f"trailing splits need newest_ms deep enough for the windows: "
@@ -789,6 +790,7 @@ class TrailingSplitSpec:
             policy=self.policy,
             val_start_ms=val_start if self.embargo_days else None,
             cal_start_ms=cal_start if self.cal_days else None,
+            train_start_ms=train_start,
         )
 
     def to_obj(self) -> dict:
@@ -876,9 +878,10 @@ class WalkForwardSpec:
     refused: two sources of the same truth is how they drift.
 
     ``objective`` is a ``$node.path`` reference into a score node's
-    outputs — what each fold reports upward. Train windows are expanding
-    ("all-prior") in v1; a bounded train window joins the existing I-223
-    restriction when the cut grammar can express it.
+    outputs — what each fold reports upward. Train windows default to
+    expanding (``"all-prior"``); an integer ``train_days`` slides a
+    bounded window (ADR-0050). Optional ``weight_halflife_folds`` applies
+    recency weights to the aggregate (ADR-0053), omitted when unset.
 
     This section IS identity (unlike ``schedule``): the fold plan defines
     the experiment.
@@ -893,6 +896,8 @@ class WalkForwardSpec:
     embargo_days: int = 0
     select: str = "min"
     notes: str = ""
+    train_days: object = ALL_PRIOR
+    weight_halflife_folds: int = 0
 
     def __post_init__(self):
         errors = []
@@ -954,6 +959,12 @@ class WalkForwardSpec:
                 "or a first/step_days/count schedule"
             )
         _check_str(errors, "walkforward.notes", self.notes, non_empty=False)
+        if self.train_days != ALL_PRIOR:
+            _check_int(errors, "walkforward.train_days", self.train_days, ge=1)
+        _check_int(
+            errors, "walkforward.weight_halflife_folds",
+            self.weight_halflife_folds, ge=0,
+        )
         _raise_if(errors)
         if self.folds is not None:
             # Pin the validated list as a tuple: the frozen spec must not
@@ -982,6 +993,10 @@ class WalkForwardSpec:
                 del obj[name]
         else:
             del obj["folds"]
+        if self.train_days == ALL_PRIOR:
+            del obj["train_days"]
+        if not self.weight_halflife_folds:
+            del obj["weight_halflife_folds"]
         return obj
 
     @classmethod
@@ -998,6 +1013,8 @@ class WalkForwardSpec:
                 "embargo_days",
                 "select",
                 "notes",
+                "train_days",
+                "weight_halflife_folds",
             ),
             "walkforward",
         )
@@ -1011,6 +1028,8 @@ class WalkForwardSpec:
             embargo_days=obj.get("embargo_days", 0),
             select=obj.get("select", "min"),
             notes=obj.get("notes", ""),
+            train_days=obj.get("train_days", ALL_PRIOR),
+            weight_halflife_folds=obj.get("weight_halflife_folds", 0),
         )
 
 

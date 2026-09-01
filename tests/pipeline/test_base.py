@@ -110,6 +110,17 @@ class TestSplitFamily:
         assert s.split_of(_Rec(asof_ms=30)) == "test"
         assert s.split_of(_Rec(asof_ms=31)) is None
 
+    def test_train_start_bounds_train_from_the_left(self):
+        s = TimeSplitConfig(
+            train_start_ms=5, train_end_ms=10, val_end_ms=20, test_end_ms=30
+        )
+        assert s.split_of(_Rec(asof_ms=4)) is None
+        assert s.split_of(_Rec(asof_ms=5)) == "train"
+        assert s.split_of(_Rec(asof_ms=10)) == "train"
+        assert "train_start_ms" not in TimeSplitConfig(
+            train_end_ms=10, val_end_ms=20, test_end_ms=30
+        ).to_obj()
+
     def test_time_split_cal_band_assignment(self):
         # ADR-0034: the fourth name exists only when the band is declared.
         s = TimeSplitConfig(

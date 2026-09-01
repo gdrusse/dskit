@@ -1,6 +1,6 @@
 {
   "name": "intraday-equities-horizon-models",
-  "notes": "Scalar bakeoff at the scan's farthest confident lead (1165 RTH minutes). Session features plus the scan's tape labels \u2014 WindowRows cannot form a 1165-minute label inside a 390-minute session. n_ahead stays 1: the one-pick program wants a scalar. A 1165-step path is a later document.",
+  "notes": "Rich-feature bakeoff at H=1165: full session set on ridge/tree; HAR+broadcast DLinear/MLP with Huber; binary PatchTST and transformer. n_ahead stays 1. Lockbox unread.",
   "pipeline": {
     "universe": {
       "uses": "intraday_equities-universe",
@@ -41,7 +41,7 @@
         "spec": "$universe.spec"
       },
       "params": {},
-      "notes": "Same feature rows the scan scored. Widths, holidays, emit grid, and residuals come from the universe file."
+      "notes": "Session rows including HAR scales, volume/Amihud, CLV, calendar, and SPY residual."
     },
     "tradable": {
       "uses": "intraday_equities-keep-symbols",
@@ -68,7 +68,7 @@
         "val_start_ms": "$splits.val_start_ms",
         "val_end_ms": "$splits.val_end_ms"
       },
-      "notes": "Same RTH-tape lead as the scan. Labels that land after the split's end are dropped; the lockbox is unread."
+      "notes": "Same RTH-tape lead as the scan. Also emits y_up for the binary head. Lockbox unread."
     },
     "label_val": {
       "uses": "intraday_equities-lead-labels",
@@ -84,7 +84,7 @@
         "val_start_ms": "$splits.val_start_ms",
         "val_end_ms": "$splits.val_end_ms"
       },
-      "notes": "Same RTH-tape lead as the scan. Labels that land after the split's end are dropped; the lockbox is unread."
+      "notes": "Same RTH-tape lead as the scan. Also emits y_up for the binary head. Lockbox unread."
     },
     "ridge": {
       "uses": "dskit.pipeline.libs.sklearn:SklearnFit",
@@ -127,12 +127,58 @@
           "ret_lag_26",
           "ret_lag_27",
           "ret_lag_28",
-          "ret_lag_29"
+          "ret_lag_29",
+          "ret_5m",
+          "rv_5m",
+          "range_5m",
+          "vol_5m",
+          "amihud_5m",
+          "ret_15m",
+          "rv_15m",
+          "range_15m",
+          "vol_15m",
+          "amihud_15m",
+          "ret_60m",
+          "rv_60m",
+          "range_60m",
+          "vol_60m",
+          "amihud_60m",
+          "ret_1s",
+          "rv_1s",
+          "range_1s",
+          "vol_1s",
+          "amihud_1s",
+          "ret_3s",
+          "rv_3s",
+          "range_3s",
+          "vol_3s",
+          "amihud_3s",
+          "clv",
+          "minutes_from_open",
+          "minutes_to_close",
+          "tod_sin",
+          "tod_cos",
+          "dow_sin",
+          "dow_cos",
+          "month_sin",
+          "month_cos",
+          "is_first_rth",
+          "is_last_rth",
+          "overnight_gap",
+          "session_gap_days",
+          "after_holiday",
+          "ref_ret_SPY",
+          "residual_SPY",
+          "industry_consumer",
+          "industry_energy",
+          "industry_financials",
+          "industry_healthcare",
+          "industry_tech"
         ],
         "label": "y_next",
         "seed": 7
       },
-      "notes": "Linear family at H=1165. Ridge is the cheap baseline."
+      "notes": "Linear control on the full session column set."
     },
     "tree": {
       "uses": "dskit.pipeline.libs.sklearn:SklearnFit",
@@ -176,14 +222,60 @@
           "ret_lag_26",
           "ret_lag_27",
           "ret_lag_28",
-          "ret_lag_29"
+          "ret_lag_29",
+          "ret_5m",
+          "rv_5m",
+          "range_5m",
+          "vol_5m",
+          "amihud_5m",
+          "ret_15m",
+          "rv_15m",
+          "range_15m",
+          "vol_15m",
+          "amihud_15m",
+          "ret_60m",
+          "rv_60m",
+          "range_60m",
+          "vol_60m",
+          "amihud_60m",
+          "ret_1s",
+          "rv_1s",
+          "range_1s",
+          "vol_1s",
+          "amihud_1s",
+          "ret_3s",
+          "rv_3s",
+          "range_3s",
+          "vol_3s",
+          "amihud_3s",
+          "clv",
+          "minutes_from_open",
+          "minutes_to_close",
+          "tod_sin",
+          "tod_cos",
+          "dow_sin",
+          "dow_cos",
+          "month_sin",
+          "month_cos",
+          "is_first_rth",
+          "is_last_rth",
+          "overnight_gap",
+          "session_gap_days",
+          "after_holiday",
+          "ref_ret_SPY",
+          "residual_SPY",
+          "industry_consumer",
+          "industry_energy",
+          "industry_financials",
+          "industry_healthcare",
+          "industry_tech"
         ],
         "label": "y_next",
         "seed": 7
       },
-      "notes": "Tree family at H=1165. Same knobs as the 1-minute compare document."
+      "notes": "Tabular control. Same 51+ session columns the scan had, plus vol/Amihud/CLV/3s."
     },
-    "lstm": {
+    "dlinear": {
       "uses": "dskit.pipeline.libs.torch_ts:TimeSeriesTrain",
       "mode": "train",
       "inputs": {
@@ -191,54 +283,53 @@
         "val_rows": "$label_val.records"
       },
       "params": {
-        "arch": "lstm",
-        "arch_params": {
-          "lstm": {
-            "hidden_size": 32
-          }
-        },
+        "arch": "dlinear",
         "head": "regression",
-        "seq_len": 30,
-        "channels": 1,
+        "loss": "torch.nn.functional:smooth_l1_loss",
+        "arch_params": {
+          "dlinear": {}
+        },
+        "label": "y_next",
+        "seq_len": 5,
+        "channels": 6,
         "order": "recent_first",
         "features": [
-          "ret_lag_0",
-          "ret_lag_1",
-          "ret_lag_2",
-          "ret_lag_3",
-          "ret_lag_4",
-          "ret_lag_5",
-          "ret_lag_6",
-          "ret_lag_7",
-          "ret_lag_8",
-          "ret_lag_9",
-          "ret_lag_10",
-          "ret_lag_11",
-          "ret_lag_12",
-          "ret_lag_13",
-          "ret_lag_14",
-          "ret_lag_15",
-          "ret_lag_16",
-          "ret_lag_17",
-          "ret_lag_18",
-          "ret_lag_19",
-          "ret_lag_20",
-          "ret_lag_21",
-          "ret_lag_22",
-          "ret_lag_23",
-          "ret_lag_24",
-          "ret_lag_25",
-          "ret_lag_26",
-          "ret_lag_27",
-          "ret_lag_28",
-          "ret_lag_29"
+          "ret_5m",
+          "ret_15m",
+          "ret_60m",
+          "ret_1s",
+          "ret_3s",
+          "rv_5m",
+          "rv_15m",
+          "rv_60m",
+          "rv_1s",
+          "rv_3s",
+          "range_5m",
+          "range_15m",
+          "range_60m",
+          "range_1s",
+          "range_3s",
+          "vol_5m",
+          "vol_15m",
+          "vol_60m",
+          "vol_1s",
+          "vol_3s",
+          "overnight_gap",
+          "overnight_gap",
+          "overnight_gap",
+          "overnight_gap",
+          "overnight_gap",
+          "residual_SPY",
+          "residual_SPY",
+          "residual_SPY",
+          "residual_SPY",
+          "residual_SPY"
         ],
-        "label": "y_next",
         "optimizer": "torch.optim:Adam",
         "optimizer_params": {
-          "weight_decay": 0.0
+          "weight_decay": 0.0001
         },
-        "epochs": 2,
+        "epochs": 20,
         "lr": 0.001,
         "loader": {
           "batch_size": 512,
@@ -248,9 +339,9 @@
         "device": "cuda",
         "monitor": "val_loss"
       },
-      "notes": "LSTM at H=1165. val_loss selects the epoch. Two epochs, cuda."
+      "notes": "HAR sequence (5m to 3s) plus broadcast overnight_gap and residual_SPY. Huber, 20 epochs."
     },
-    "gru": {
+    "mlp": {
       "uses": "dskit.pipeline.libs.torch_ts:TimeSeriesTrain",
       "mode": "train",
       "inputs": {
@@ -258,54 +349,55 @@
         "val_rows": "$label_val.records"
       },
       "params": {
-        "arch": "gru",
+        "arch": "mlp",
+        "head": "regression",
+        "loss": "torch.nn.functional:smooth_l1_loss",
         "arch_params": {
-          "gru": {
+          "mlp": {
             "hidden_size": 32
           }
         },
-        "head": "regression",
-        "seq_len": 30,
-        "channels": 1,
+        "label": "y_next",
+        "seq_len": 5,
+        "channels": 6,
         "order": "recent_first",
         "features": [
-          "ret_lag_0",
-          "ret_lag_1",
-          "ret_lag_2",
-          "ret_lag_3",
-          "ret_lag_4",
-          "ret_lag_5",
-          "ret_lag_6",
-          "ret_lag_7",
-          "ret_lag_8",
-          "ret_lag_9",
-          "ret_lag_10",
-          "ret_lag_11",
-          "ret_lag_12",
-          "ret_lag_13",
-          "ret_lag_14",
-          "ret_lag_15",
-          "ret_lag_16",
-          "ret_lag_17",
-          "ret_lag_18",
-          "ret_lag_19",
-          "ret_lag_20",
-          "ret_lag_21",
-          "ret_lag_22",
-          "ret_lag_23",
-          "ret_lag_24",
-          "ret_lag_25",
-          "ret_lag_26",
-          "ret_lag_27",
-          "ret_lag_28",
-          "ret_lag_29"
+          "ret_5m",
+          "ret_15m",
+          "ret_60m",
+          "ret_1s",
+          "ret_3s",
+          "rv_5m",
+          "rv_15m",
+          "rv_60m",
+          "rv_1s",
+          "rv_3s",
+          "range_5m",
+          "range_15m",
+          "range_60m",
+          "range_1s",
+          "range_3s",
+          "vol_5m",
+          "vol_15m",
+          "vol_60m",
+          "vol_1s",
+          "vol_3s",
+          "overnight_gap",
+          "overnight_gap",
+          "overnight_gap",
+          "overnight_gap",
+          "overnight_gap",
+          "residual_SPY",
+          "residual_SPY",
+          "residual_SPY",
+          "residual_SPY",
+          "residual_SPY"
         ],
-        "label": "y_next",
         "optimizer": "torch.optim:Adam",
         "optimizer_params": {
-          "weight_decay": 0.0
+          "weight_decay": 0.0001
         },
-        "epochs": 2,
+        "epochs": 20,
         "lr": 0.001,
         "loader": {
           "batch_size": 512,
@@ -315,7 +407,75 @@
         "device": "cuda",
         "monitor": "val_loss"
       },
-      "notes": "GRU at H=1165. Same budget as LSTM."
+      "notes": "Same HAR+broadcast vector as DLinear, no sequence structure."
+    },
+    "patchtst": {
+      "uses": "dskit.pipeline.libs.torch_ts:TimeSeriesTrain",
+      "mode": "train",
+      "inputs": {
+        "rows": "$label_train.records",
+        "val_rows": "$label_val.records"
+      },
+      "params": {
+        "arch": "patchtst",
+        "head": "binary",
+        "arch_params": {
+          "patchtst": {
+            "hidden_size": 16,
+            "patch_len": 1
+          }
+        },
+        "label": "y_up",
+        "seq_len": 5,
+        "channels": 6,
+        "order": "recent_first",
+        "features": [
+          "ret_5m",
+          "ret_15m",
+          "ret_60m",
+          "ret_1s",
+          "ret_3s",
+          "rv_5m",
+          "rv_15m",
+          "rv_60m",
+          "rv_1s",
+          "rv_3s",
+          "range_5m",
+          "range_15m",
+          "range_60m",
+          "range_1s",
+          "range_3s",
+          "vol_5m",
+          "vol_15m",
+          "vol_60m",
+          "vol_1s",
+          "vol_3s",
+          "overnight_gap",
+          "overnight_gap",
+          "overnight_gap",
+          "overnight_gap",
+          "overnight_gap",
+          "residual_SPY",
+          "residual_SPY",
+          "residual_SPY",
+          "residual_SPY",
+          "residual_SPY"
+        ],
+        "optimizer": "torch.optim:Adam",
+        "optimizer_params": {
+          "weight_decay": 0.0001
+        },
+        "epochs": 20,
+        "lr": 0.001,
+        "loader": {
+          "batch_size": 512,
+          "shuffle": true,
+          "seed": 7
+        },
+        "device": "cuda",
+        "monitor": "val_loss"
+      },
+      "notes": "Binary direction head on y_up. patch_len 1 so seq_len 5 is a complete patch."
     },
     "transformer": {
       "uses": "dskit.pipeline.libs.torch_ts:TimeSeriesTrain",
@@ -326,54 +486,54 @@
       },
       "params": {
         "arch": "transformer",
+        "head": "binary",
         "arch_params": {
           "transformer": {
             "hidden_size": 16,
             "nhead": 2
           }
         },
-        "head": "regression",
-        "seq_len": 30,
-        "channels": 1,
+        "label": "y_up",
+        "seq_len": 5,
+        "channels": 6,
         "order": "recent_first",
         "features": [
-          "ret_lag_0",
-          "ret_lag_1",
-          "ret_lag_2",
-          "ret_lag_3",
-          "ret_lag_4",
-          "ret_lag_5",
-          "ret_lag_6",
-          "ret_lag_7",
-          "ret_lag_8",
-          "ret_lag_9",
-          "ret_lag_10",
-          "ret_lag_11",
-          "ret_lag_12",
-          "ret_lag_13",
-          "ret_lag_14",
-          "ret_lag_15",
-          "ret_lag_16",
-          "ret_lag_17",
-          "ret_lag_18",
-          "ret_lag_19",
-          "ret_lag_20",
-          "ret_lag_21",
-          "ret_lag_22",
-          "ret_lag_23",
-          "ret_lag_24",
-          "ret_lag_25",
-          "ret_lag_26",
-          "ret_lag_27",
-          "ret_lag_28",
-          "ret_lag_29"
+          "ret_5m",
+          "ret_15m",
+          "ret_60m",
+          "ret_1s",
+          "ret_3s",
+          "rv_5m",
+          "rv_15m",
+          "rv_60m",
+          "rv_1s",
+          "rv_3s",
+          "range_5m",
+          "range_15m",
+          "range_60m",
+          "range_1s",
+          "range_3s",
+          "vol_5m",
+          "vol_15m",
+          "vol_60m",
+          "vol_1s",
+          "vol_3s",
+          "overnight_gap",
+          "overnight_gap",
+          "overnight_gap",
+          "overnight_gap",
+          "overnight_gap",
+          "residual_SPY",
+          "residual_SPY",
+          "residual_SPY",
+          "residual_SPY",
+          "residual_SPY"
         ],
-        "label": "y_next",
         "optimizer": "torch.optim:Adam",
         "optimizer_params": {
-          "weight_decay": 0.0
+          "weight_decay": 0.0001
         },
-        "epochs": 2,
+        "epochs": 20,
         "lr": 0.001,
         "loader": {
           "batch_size": 512,
@@ -383,7 +543,7 @@
         "device": "cuda",
         "monitor": "val_loss"
       },
-      "notes": "ADR-0049 one-layer transformer at H=1165. Same budget as the RNNs."
+      "notes": "One-layer transformer, binary head, same HAR+broadcast channels."
     },
     "select_ridge": {
       "uses": "intraday_equities-portfolio",
@@ -396,7 +556,7 @@
       "params": {
         "split": "val"
       },
-      "notes": "Scalar one-pick on val. Path models (n_ahead>1) do not wire this."
+      "notes": "Scalar one-pick on val. Binary heads score with logits; rank_ic still uses y_next."
     },
     "select_tree": {
       "uses": "intraday_equities-portfolio",
@@ -409,12 +569,12 @@
       "params": {
         "split": "val"
       },
-      "notes": "Scalar one-pick on val. Path models (n_ahead>1) do not wire this."
+      "notes": "Scalar one-pick on val. Binary heads score with logits; rank_ic still uses y_next."
     },
-    "select_lstm": {
+    "select_dlinear": {
       "uses": "intraday_equities-portfolio",
       "inputs": {
-        "signal": "$lstm.signal",
+        "signal": "$dlinear.signal",
         "records": "$label_val.records",
         "labeled": "$label_val.records",
         "tradable": "$universe.tradable"
@@ -422,12 +582,12 @@
       "params": {
         "split": "val"
       },
-      "notes": "Scalar one-pick on val. Path models (n_ahead>1) do not wire this."
+      "notes": "Scalar one-pick on val. Binary heads score with logits; rank_ic still uses y_next."
     },
-    "select_gru": {
+    "select_mlp": {
       "uses": "intraday_equities-portfolio",
       "inputs": {
-        "signal": "$gru.signal",
+        "signal": "$mlp.signal",
         "records": "$label_val.records",
         "labeled": "$label_val.records",
         "tradable": "$universe.tradable"
@@ -435,7 +595,20 @@
       "params": {
         "split": "val"
       },
-      "notes": "Scalar one-pick on val. Path models (n_ahead>1) do not wire this."
+      "notes": "Scalar one-pick on val. Binary heads score with logits; rank_ic still uses y_next."
+    },
+    "select_patchtst": {
+      "uses": "intraday_equities-portfolio",
+      "inputs": {
+        "signal": "$patchtst.signal",
+        "records": "$label_val.records",
+        "labeled": "$label_val.records",
+        "tradable": "$universe.tradable"
+      },
+      "params": {
+        "split": "val"
+      },
+      "notes": "Scalar one-pick on val. Binary heads score with logits; rank_ic still uses y_next."
     },
     "select_transformer": {
       "uses": "intraday_equities-portfolio",
@@ -448,7 +621,7 @@
       "params": {
         "split": "val"
       },
-      "notes": "Scalar one-pick on val. Path models (n_ahead>1) do not wire this."
+      "notes": "Scalar one-pick on val. Binary heads score with logits; rank_ic still uses y_next."
     }
   },
   "splits": {

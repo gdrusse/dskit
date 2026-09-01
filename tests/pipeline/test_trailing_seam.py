@@ -303,27 +303,33 @@ class TestRefusals:
         ]
         assert os.listdir(tmp_path) == []
 
-    # -- 3: a bounded train window is not expressible yet ---------------
+    # -- 3: a bounded train window stamps train_start_ms (ADR-0050) -----
 
-    def test_bounded_train_days_refuses_and_names_the_anchor(self):
+    def test_bounded_train_days_stamps_train_start(self):
         bounded = TrailingSplitSpec(test_days=14, val_days=28, train_days=30)
-        with pytest.raises(ConfigError, match="I-223") as exc:
-            _materialize_splits(bounded, {"ladder": NEWEST_MS}, ["ladder"])
-        message = str(exc.value)
-        assert "anchored on 'ladder'" in message
-        assert "train_days=30" in message and "all-prior" in message
+        cuts = _materialize_splits(bounded, {"ladder": NEWEST_MS}, ["ladder"])
+        train_end = NEWEST_MS - (14 + 28) * DAY
+        train_start = train_end - 30 * DAY + 1
+        assert cuts.train_end_ms == train_end
+        assert cuts.train_start_ms == train_start
+        rec = SimpleNamespace(asof_ms=train_start, cluster="c")
+        assert cuts.split_of(rec) == "train"
+        rec.asof_ms = train_start - 1
+        assert cuts.split_of(rec) is None
 
-    def test_driver_surfaces_the_bounded_train_refusal(self, tmp_path):
+    def test_driver_materializes_bounded_train(self, tmp_path):
         doc = trailing_doc(
             tmp_path, splits=TrailingSplitSpec(test_days=2, val_days=3, train_days=30)
         )
-        with pytest.raises(ConfigError, match="I-223") as exc:
-            run_document(doc, asof=ASOF)
-        # The bounded-train refusal now fires BEFORE any source is built
-        # or scanned — it depends only on the spec's own fields, so paying
-        # for a full ledger read to reject it was wasted IO. There is
-        # therefore no anchor to name yet.
-        assert "train_days=30" in str(exc.value)
+        result = run_document(doc, asof=ASOF)
+        assert result.state == "ran"
+        resolved = os.path.join(result.run_dir, "resolved.json")
+        with open(resolved, encoding="utf-8") as fh:
+            payload = json.load(fh)
+        assert "train_start_ms" in payload["splits"]
+        assert payload["splits"]["train_start_ms"] == (
+            payload["splits"]["train_end_ms"] - 30 * DAY + 1
+        )
 
     # -- 4: the edge cannot carry the windows ---------------------------
 

@@ -1,8 +1,6 @@
 # Decision horizon models
 
-**Status:** tree leads a 2-epoch scalar bakeoff at H=1165. Not a production pick.
-
-Lockbox unread. Same val rows as the scan (`n_val` 18635). Features are the 30 one-minute lags; the scan's +0.087 used top-k of the full session set. `n_ahead` stays 1 (one-pick wants a scalar).
+**Status:** incomplete. The recorded run used 30 one-minute lags, not the full session set. Tree-vs-DL at H=1165 is not a pick. Re-bake only after pipeline #1 locks H/L/features.
 
 ## Run (from `children/intraday_equities`)
 

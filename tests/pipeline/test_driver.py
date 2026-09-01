@@ -842,10 +842,10 @@ class TestReviewRegressions:
         with pytest.raises(ConfigError, match="un-gated capital"):
             plan_document(banking_document(pipeline=pipeline), registry)
 
-    def test_trailing_train_days_bound_refuses_to_materialize(self):
+    def test_trailing_train_days_bound_materializes(self):
         bounded = TrailingSplitSpec(test_days=14, val_days=28, train_days=30)
-        with pytest.raises(ValueError, match="I-223"):
-            bounded.materialize(100 * 24 * 60 * 60 * 1000)
+        cuts = bounded.materialize(100 * 24 * 60 * 60 * 1000)
+        assert cuts.train_start_ms == cuts.train_end_ms - 30 * 24 * 60 * 60 * 1000 + 1
 
 
 def _live_streams(logger):

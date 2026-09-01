@@ -1,0 +1,117 @@
+{
+  "name": "intraday-equities-hl-scan",
+  "notes": "Rescan H with LightGBM on the full session set, then L from the JSON floor. Do not overwrite universe.lookback until a decisioning row. August 2026 is unassigned.",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe.json"
+      },
+      "notes": "The only market and science knob file. scan.estimator and lookback_stop live here so this document does not restate them."
+    },
+    "alpaca": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip",
+        "universe": "configs/universe.json"
+      },
+      "notes": "Historical SIP tape. root is the invoking cwd; run from the child root."
+    },
+    "session": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$alpaca.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "session",
+            "op": "==",
+            "value": "rth"
+          }
+        ]
+      },
+      "notes": "Research uses regular-session rows; the store still keeps every vendor minute."
+    },
+    "features": {
+      "uses": "intraday_equities-session-features",
+      "inputs": {
+        "records": "$session.records",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "lookback": "$universe.spec.scan.lookback_stop",
+        "layout": "columns"
+      },
+      "notes": "Emit depth is scan.lookback_stop. layout=columns is one numpy frame per symbol. tape is the 1-minute close arrays so scan can drop $session.records."
+    },
+    "tradable": {
+      "uses": "intraday_equities-keep-symbols",
+      "inputs": {
+        "records": "$features.records",
+        "symbols": "$universe.tradable"
+      },
+      "params": {
+        "field": "symbol"
+      },
+      "notes": "IC is scored on tradable names only. Reference bars already contributed residuals."
+    },
+    "scan": {
+      "uses": "intraday_equities-horizon-scan",
+      "inputs": {
+        "records": "$tradable.records",
+        "bars": "$features.tape",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "val_start_ms": "$splits.val_start_ms",
+        "val_end_ms": "$splits.val_end_ms"
+      },
+      "notes": "LightGBM IC on the full session set. Train fits; val scores. A label may not land after val_end — Test A and August are unread."
+    },
+    "lscan": {
+      "uses": "intraday_equities-lookback-scan",
+      "inputs": {
+        "records": "$tradable.records",
+        "bars": "$features.tape",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "split": "val",
+        "lead": "$scan.metrics.farthest_confident_lead",
+        "train_end_ms": "$splits.train_end_ms",
+        "val_start_ms": "$splits.val_start_ms",
+        "val_end_ms": "$splits.val_end_ms"
+      },
+      "notes": "L from scan.l_start by l_step through min(2H, lookback_stop). 1-SE shortest L; importance keep with calendar/industry always in."
+    }
+  },
+  "splits": {
+    "kind": "time",
+    "train_end_ms": 1764547199000,
+    "val_start_ms": 1764633600000,
+    "val_end_ms": 1772323199000,
+    "test_end_ms": 1785542399000,
+    "notes": "Same val as the other research docs (Dec 2025–Feb 2026). test_end_ms is holdouts.test_a_end_ms so August 2026 is in no split."
+  },
+  "outputs": {
+    "run_root": "",
+    "notes": "Empty = ./pipeline_runs under the invoking cwd."
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        },
+        "notes": "Local sqlite beside the invoking cwd. One experiment so cadence and HPO runs compare in one UI."
+      }
+    ],
+    "notes": "Excluded from identity — where metrics land is not what the run computes."
+  }
+}

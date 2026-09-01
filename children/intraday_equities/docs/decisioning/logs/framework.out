@@ -1,0 +1,164 @@
+node universe: start (intraday_equities-universe)
+universe 6 symbol(s) (5 tradable, 1 reference)
+node universe: ok in 0.000s
+node alpaca: start (intraday_equities-bars)
+emitting 8885389 bar record(s)
+node alpaca: ok in 0.000s
+node session: start (filter)
+filter kept 6240600/8885389 record(s)
+node session: ok in 3.023s
+node features: start (intraday_equities-session-features)
+session features: SPY
+session features: AAPL
+session features: JPM
+session features: LLY
+session features: WMT
+session features: XOM
+session features: 1248034 row(s) from 6 symbol(s) layout=columns
+node features: ok in 104.557s
+node tradable: start (intraday_equities-keep-symbols)
+keep-symbols kept 1039292/1248034 row(s)
+node tradable: ok in 0.000s
+node label_train: start (intraday_equities-lead-labels)
+lead-labels: 815057 row(s) at lead 470 on split train
+node label_train: ok in 2.853s
+node label_val: start (intraday_equities-lead-labels)
+lead-labels: 19215 row(s) at lead 470 on split val
+node label_val: ok in 0.387s
+node qhat: start (dskit.pipeline.libs.sklearn:SklearnFit)
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+node qhat: ok in 13.127s
+node select: start (intraday_equities-portfolio)
+solving with 'appsi_highs'
+node select: ok in 9.655s
+node search: start (dskit.pipeline.libs.optuna:OptunaSearch)
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+optuna-search: 50 TPE trial(s), seed 0 — best score 0.07608555721087588 at {'qhat.estimator_params.learning_rate': 0.010355639798265258, 'qhat.estimator_params.min_child_samples': 83, 'qhat.estimator_params.n_estimators': 111, 'qhat.estimator_params.num_leaves': 18}
+fitted lightgbm.LGBMRegressor on 815057 row(s) x 28 feature(s) -> /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e/artifacts/qhat/model.joblib
+solving with 'appsi_highs'
+node search: ok in 1187.308s
+node qhat: re-executed with search's winning overrides in 12.582s
+node select: re-executed with search's winning overrides in 9.545s
+node ensemble: start (top-trials)
+top-trials: 5 of 50 trials -> 5 members
+node ensemble: ok in 0.000s
+**RAN — all 11 node(s) completed**
+
+- run: `intraday-equities-framework-2026-08-30-3ca0081e`
+- document hash: `cf590fc74125de7c…`
+- previous run: — (first of the series)
+
+| node | role | status | seconds |
+|---|---|---|---|
+| universe | data | ok | 9.5e-05 |
+| alpaca | data | ok | 0.000182 |
+| session | transform | ok | 3.022593 |
+| features | transform | ok | 104.557216 |
+| tradable | transform | ok | 0.00013 |
+| label_train | transform | ok | 2.853476 |
+| label_val | transform | ok | 0.387385 |
+| qhat | train | ok | 12.5825 |
+| select | score | ok | 9.544822 |
+| search | search | ok | 1187.308115 |
+| ensemble | transform | ok | 0.000301 |
+
+(run dir: /home/russell/dskit/children/intraday_equities/pipeline_runs/intraday-equities-framework-2026-08-30-3ca0081e)

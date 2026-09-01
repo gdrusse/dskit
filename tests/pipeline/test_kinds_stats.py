@@ -109,6 +109,7 @@ class TestStatTestParams:
     def test_explicit_good_params(self):
         params = {"alpha": 0.01, "n_boot": 1000, "seed": 3, "correction": "none"}
         assert StatTest.validate_params(params) == []
+        assert StatTest.validate_params({"n_boot": 2000.0}) == []
 
     def test_alpha_one_refused_matching_stats_bound(self):
         # stats._check_pvalues enforces (0, 1) — the kind matches it, so a
@@ -122,7 +123,7 @@ class TestStatTestParams:
         problems = StatTest.validate_params({"alpha": alpha})
         assert len(problems) == 1 and "alpha" in problems[0]
 
-    @pytest.mark.parametrize("n_boot", [999, 0, -5, 2000.0, True, "many"])
+    @pytest.mark.parametrize("n_boot", [999, 0, -5, 2000.5, True, "many"])
     def test_bad_n_boot(self, n_boot):
         problems = StatTest.validate_params({"n_boot": n_boot})
         assert len(problems) == 1 and "n_boot must be an int >= 1000" in problems[0]

@@ -38,12 +38,12 @@ TORCH_PY = (
 #: Content pin of ``libs/torch.py``. Recompute on a deliberate engine-pack
 #: change (ADR-0045 moved it for batched eval); accidental edits fail here.
 TORCH_PY_SHA256 = (
-    "205cedc8fa8f472d89da422d34d3031689bf049e91dd176ac4c80bf7b0bf4d6b"
+    "83cb4a211bf4702a16031a781dcd88470eff568ec732c49ae413c1cad3f10c14"
 )
 
 SHIPPED = (
     "dlinear", "nlinear", "mlp", "lstm", "gru",
-    "lstm_attn", "gru_attn", "tcn", "cnn1d", "patchtst", "transformer",
+    "lstm_attn", "gru_attn", "tcn", "cnn1d", "patchtst", "transformer", "tft",
 )
 
 SEQ, CH = 4, 1
@@ -107,10 +107,18 @@ def test_a_none_seq_len_returns_a_problem_and_does_not_explode():
     assert problems and all(isinstance(p, str) for p in problems)
 
 
-def test_arch_names_use_underscores_and_the_ten_ship():
+def test_arch_names_use_underscores_and_the_shipped_set():
     assert set(ARCHS) >= set(SHIPPED)
     assert all("_" not in name or name.replace("_", "").isalpha() for name in SHIPPED)
     assert "-" not in "".join(SHIPPED)
+
+
+def test_patience_requires_monitor():
+    problems = TimeSeriesTrain.validate_params({**TRAIN_PARAMS, "patience": 2})
+    assert any("patience requires monitor" in p for p in problems)
+    assert TimeSeriesTrain.validate_params(
+        {**TRAIN_PARAMS, "patience": 2, "monitor": "val_loss"}
+    ) == []
 
 
 def test_an_unknown_arch_or_head_is_refused_naming_the_vocabulary():

@@ -389,6 +389,11 @@ class TimeSplitConfig:
     the selection (val) set, and strictly before everything it is
     applied to. Same omission discipline as ``val_start_ms``, same
     policy interaction (the band cuts the policy-selected instant).
+
+    ``train_start_ms`` (optional, ADR-0050) bounds train from the left:
+    records with ``t < train_start_ms`` belong to no split. Absent,
+    train is all-prior (everything ``<= train_end_ms``). Same omission
+    discipline — existing identities do not move.
     """
 
     train_end_ms: int
@@ -411,6 +416,9 @@ class TimeSplitConfig:
     event_bounds: object = None
     val_start_ms: object = None
     cal_start_ms: object = None
+    #: ADR-0050: inclusive start of train. Absent = all-prior (everything
+    #: ``<= train_end_ms``). Omitted from ``to_obj`` when unset.
+    train_start_ms: object = None
 
     def __post_init__(self):
         errors = []
@@ -444,6 +452,13 @@ class TimeSplitConfig:
                     "val window: train_end_ms < val_start_ms <= val_end_ms, "
                     f"got ({self.train_end_ms}, {self.val_start_ms}, "
                     f"{self.val_end_ms})"
+                )
+        if self.train_start_ms is not None:
+            _check_int(errors, "splits.train_start_ms", self.train_start_ms, ge=1)
+            if not errors and not (self.train_start_ms <= self.train_end_ms):
+                errors.append(
+                    "splits.train_start_ms must be <= train_end_ms, got "
+                    f"({self.train_start_ms}, {self.train_end_ms})"
                 )
         if self.cal_start_ms is not None:
             _check_int(errors, "splits.cal_start_ms", self.cal_start_ms, ge=1)
@@ -497,6 +512,8 @@ class TimeSplitConfig:
         if t is None:
             return None
         if t <= self.train_end_ms:
+            if self.train_start_ms is not None and t < self.train_start_ms:
+                return None
             return "train"
         if self.val_start_ms is not None and t < self.val_start_ms:
             return None
@@ -524,6 +541,8 @@ class TimeSplitConfig:
             del obj["val_start_ms"]
         if self.cal_start_ms is None:
             del obj["cal_start_ms"]
+        if self.train_start_ms is None:
+            del obj["train_start_ms"]
         return obj
 
     @classmethod
@@ -533,6 +552,7 @@ class TimeSplitConfig:
             (
                 "kind",
                 "train_end_ms",
+                "train_start_ms",
                 "val_start_ms",
                 "cal_start_ms",
                 "val_end_ms",
@@ -551,6 +571,7 @@ class TimeSplitConfig:
             notes=obj.get("notes", ""),
             val_start_ms=obj.get("val_start_ms"),
             cal_start_ms=obj.get("cal_start_ms"),
+            train_start_ms=obj.get("train_start_ms"),
         )
 
 

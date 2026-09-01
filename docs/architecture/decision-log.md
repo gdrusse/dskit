@@ -2072,3 +2072,123 @@ H. That is generic: any predictor that can emit one step can emit H.
 `(B, 1)` contract is the default, not the ceiling. Path scoring is path
 MSE / per-lead IC; the one-pick program still wants a scalar — last-step
 or a later document. `torch.py` identity pin moves on purpose (label list).
+
+---
+
+## ADR-0050 — Bounded / sliding train windows (`train_start_ms`)
+
+**Status:** accepted (2026-08-31; owner directed)
+
+**Context.** I-223 refused any `train_days != "all-prior"`: `TimeSplitConfig`
+had no train-start cut, so a bounded window could not be expressed. Walk-forward
+v1 was expanding-only (ADR-0027). The holistic train run needs a sliding
+window of length T and a T bakeoff `{1y, 2y, 3y, 5y, all-prior}`.
+
+**Decision.**
+
+1. Optional `train_start_ms` on `TimeSplitConfig`. Omitted when unset — existing
+   hashes unmoved. `split_of`: `t < train_start_ms` → no split; else unchanged.
+2. `TrailingSplitSpec.materialize` with integer `train_days` stamps
+   `train_start_ms = train_end_ms - train_days·DAY + 1` (exactly `train_days`
+   daily stamps, cal-band boundary rule). I-223 refusal dies.
+3. `WalkForwardSpec.train_days` (int or `"all-prior"`, default `"all-prior"`,
+   omitted when default). Each fold's train is `[cutoff - T, cutoff - embargo)`.
+
+**Consequences.** Sliding and expanding are both declared. `$splits.train_start_ms`
+appears exactly when bounded. A T bakeoff is a document edit of `train_days`.
+
+---
+
+## ADR-0051 — `tft` architecture in the torch_ts zoo
+
+**Status:** accepted (2026-08-31; owner directed)
+
+**Context.** TFT matches mixed static / known-future / observed-past panels.
+The zoo contract is `(B, seq, ch) → (B, n_ahead)`. pytorch-forecasting is not
+a dependency. Foundation models (TimesFM / Chronos / Moirai) are deferred.
+
+**Decision.** Register `tft` in `torch_ts.py`. Compact TFT-lite over the existing
+contract: variable-selection over channels, LSTM encoder, gated attention,
+linear head to `n_ahead`. Nets stay inside `build_module`. Defaults:
+`hidden_size` 16, `nhead` 2, `dropout` 0.1. No new collate, no extra extra.
+
+**Consequences.** `space: {"model.arch": [..., "tft"]}` sweeps it. A richer
+static/future collate would be a later ADR.
+
+---
+
+## ADR-0052 — Top-quantile reseed ensemble from a search ledger
+
+**Status:** accepted (2026-08-31; owner directed)
+
+**Context.** One HPO pass (≈50 TPE trials) should not ship a single winner.
+The ensemble is E retrains drawn from the top `frac` of trials with fresh
+seeds, trained to completion. In-trial `seeds` (mean score) is a different
+contract and stays.
+
+**Decision.** New transform kind `top-trials`: `trials` port + `frac` + `size`
++ `seed`. Rank by score (`select` min/max), keep `ceil(frac · n)` (at least 1),
+sample `size` members with replacement, assign distinct seeds. Output `members`
+(`overrides`, `seed`). Shipping is a second document (foreach over members,
+full epochs). The search node's single winner pass is unchanged (ADR-0043).
+
+**Consequences.** HPO stays one search. Ensemble diversity is config, not a
+driver mode. `frac`/`size`/`seed` live in JSON.
+
+---
+
+## ADR-0053 — Declared recency weights on walk-forward aggregates
+
+**Status:** accepted (2026-08-31; owner directed)
+
+**Context.** Model pick is `argmin_m Σ_k w_k VL_{m,k}`. Searching `w_k` with
+the models overfits the fold mix. Equal mean is what ships today.
+
+**Decision.** Optional `weight_halflife_folds` (int ≥ 1) on `WalkForwardSpec`.
+Omitted → equal mean, summaries byte-identical. Set → `w_k = 0.5^((K-1-k)/h)`
+on scored folds, renormalized; aggregate gains `weighted_mean` (emitted only
+then). Not searchable.
+
+**Consequences.** Recency is a declared experiment knob. Equal-weight docs do
+not move.
+
+---
+
+## ADR-0054 — Pinball metric and torch `patience`
+
+**Status:** accepted (2026-08-31; owner directed)
+
+**Context.** OL/VL include pinball; DL HPO includes patience. Torch runs every
+epoch and keeps the monitor's best (ADR-0035) but never stops. `metrics.py`
+has MSE/MAE, not pinball.
+
+**Decision.**
+
+1. `pinball(q, y)` in `metrics.py` (τ = 0.5). Torch pack adds `pinball_loss`
+   (imported only inside the callable); `loss_params.tau` in (0, 1).
+2. Optional `patience` (int ≥ 1) on `TorchTrain`. Requires `monitor`. Omitted
+   → run all epochs. Set → stop after `patience` epochs without a new best;
+   restore still happens.
+
+**Consequences.** Hashes unmoved (both knobs omitted when absent). `torch.py`
+content pin moves on purpose.
+
+---
+
+## ADR-0055 — Intraday H/L/T/V training framework
+
+**Status:** accepted (2026-08-31; owner directed)
+
+**Context.** Cadence twins (1/5/15/30/60) and a 1165 top-k IC row are not a
+training lock. H, L, T, V, keep-set, holdouts, and ensemble need one table.
+
+**Decision.** Child lock is
+`children/intraday_equities/docs/decisioning/framework.md`. H = LightGBM on the
+session set. L from JSON floor 30. T bakeoff after H/L. V uses H-length embargo
+and 36–48 folds. Recency, bounded train, TFT-lite, pinball/patience, and
+top-quantile ensemble are ADR-0050…0054. Test B (August 2026) is unassigned.
+`universe.lookback` does not move until a decisioning row.
+
+**Consequences.** Pipeline #1 is `run-hl-scan.json`. Pipeline #2 pins H/L/keep
+then T + 50 TPE + `top-trials`. Action documents stay; they are not the lock.
+

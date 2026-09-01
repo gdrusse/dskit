@@ -1,8 +1,9 @@
 """Time-series architecture zoo — the pack's catalog beside its engine.
 
-``torch.py`` owns the artifact/loop protocol and stays byte-identical
-(ADR-0041). This module is one node pair over a registry: ``arch`` is a
-param, so ``space: {"model.arch": [...]}`` sweeps architectures. Every
+``torch.py`` owns the artifact/loop protocol. Its content pin moves only
+on a deliberate engine change (ADR-0045 batched eval; ADR-0054 pinball
+and patience). This module is one node pair over a registry: ``arch`` is
+a param, so ``space: {"model.arch": [...]}`` sweeps architectures. Every
 net is defined INSIDE :meth:`_TsModel.build_module` (or a builder that
 function calls) — the purity gate forbids ``nn.Module`` at module level
 anywhere in ``dskit/pipeline/``, including inside a class body.
@@ -325,6 +326,41 @@ def _build_transformer(params, seq_len, channels, n_ahead):
     return TinyTransformer()
 
 
+def _build_tft(params, seq_len, channels, n_ahead):
+    import torch
+
+    hidden = int(params["hidden_size"])
+    nhead = int(params["nhead"])
+    dropout = float(params.get("dropout", 0.1))
+
+    class TFTLite(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.vsn = torch.nn.Linear(channels, channels)
+            self.in_proj = torch.nn.Linear(channels, hidden)
+            self.lstm = torch.nn.LSTM(hidden, hidden, batch_first=True)
+            self.attn = torch.nn.MultiheadAttention(
+                hidden, nhead, dropout=dropout, batch_first=True,
+            )
+            self.gate = torch.nn.Linear(hidden * 2, hidden)
+            self.head = torch.nn.Linear(hidden, n_ahead)
+            self.drop = torch.nn.Dropout(dropout)
+
+        def forward(self, x):
+            weights = torch.softmax(self.vsn(x.mean(dim=1)), dim=-1)
+            selected = x * weights.unsqueeze(1)
+            hidden_seq = self.drop(torch.relu(self.in_proj(selected)))
+            encoded, _ = self.lstm(hidden_seq)
+            attended, _ = self.attn(encoded, encoded, encoded)
+            last = encoded[:, -1]
+            fused = torch.sigmoid(
+                self.gate(torch.cat([last, attended[:, -1]], dim=-1))
+            )
+            return self.head(fused * last)
+
+    return TFTLite()
+
+
 def _dlinear_problems(params):
     return _int_ge("kernel_size", params["kernel_size"], 1)
 
@@ -350,6 +386,18 @@ def _transformer_problems(params):
         problems.append(
             f"hidden_size must be divisible by nhead, got {hidden} % {nhead}"
         )
+    return problems
+
+
+def _tft_problems(params):
+    problems = _transformer_problems(params)
+    drop = params.get("dropout", 0.1)
+    if (
+        isinstance(drop, bool)
+        or not isinstance(drop, (int, float))
+        or not (0.0 <= float(drop) < 1.0)
+    ):
+        problems.append(f"dropout must be in [0, 1), got {drop!r}")
     return problems
 
 
@@ -408,6 +456,11 @@ register_arch(
     "transformer", _build_transformer, problems=_transformer_problems,
     defaults={"hidden_size": 16, "nhead": 2},
     doc="one-layer encoder, last-step head",
+)
+register_arch(
+    "tft", _build_tft, problems=_tft_problems,
+    defaults={"hidden_size": 16, "nhead": 2, "dropout": 0.1},
+    doc="TFT-lite: channel VSN, LSTM encoder, gated attention (ADR-0051)",
 )
 
 #: Public name set — the registry table, not a second copy of the keys.

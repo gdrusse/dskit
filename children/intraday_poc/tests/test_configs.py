@@ -248,8 +248,9 @@ def test_the_fits_history_bound_is_quoted_wherever_it_is_documented():
     """The one date the prose names must be the one the config cuts on.
 
     The fitted band's start is a RAW epoch-ms literal, and it is the
-    only source of it: the splits grammar has no ``train_start_ms``, so
-    nothing derives the date, and two documents restate it in words —
+    only source of it: this document does not use ``splits.train_start_ms``
+    (ADR-0050), so nothing derives the date, and two documents restate it
+    in words —
     the node's own notes ("over the window [2026-01-01, train_end_ms]")
     and README's "What ships" ("spans ``[2026-01-01,
     splits.train_end_ms]``"). Its sibling test asserts only that a start

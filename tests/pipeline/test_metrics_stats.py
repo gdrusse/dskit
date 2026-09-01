@@ -10,6 +10,7 @@ from dskit.pipeline.metrics import (
     absolute_error,
     brier,
     logloss,
+    pinball,
     register_metric,
     squared_error,
 )
@@ -64,12 +65,24 @@ class TestMetrics:
         with pytest.raises(ValueError, match="number"):
             squared_error(True, 1.0)
 
+    def test_pinball_at_median_is_half_mae(self):
+        assert pinball(0.0, 2.0) == pytest.approx(1.0)
+        assert pinball(2.0, 0.0) == pytest.approx(1.0)
+        assert pinball(3.0, 3.0) == 0.0
+
+    def test_pinball_refuses_bad_tau(self):
+        with pytest.raises(ValueError, match="tau"):
+            pinball(0.0, 1.0, tau=0.0)
+        with pytest.raises(ValueError, match="tau"):
+            pinball(0.0, 1.0, tau=1.0)
+
     def test_registry_and_registration(self):
         assert set(METRICS) >= {
             "logloss",
             "brier",
             "squared_error",
             "absolute_error",
+            "pinball",
         }
         with pytest.raises(ValueError, match="already registered"):
             register_metric("logloss", lambda q, y: 0.0)

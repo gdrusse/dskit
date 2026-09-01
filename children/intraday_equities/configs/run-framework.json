@@ -1,0 +1,226 @@
+{
+  "name": "intraday-equities-framework",
+  "notes": "Pinned H/L/keep from the HL-scan row. All-prior 50 TPE + top-trials on val. T bakeoff and V walk-forward are later documents. August 2026 is unassigned.",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe.json"
+      },
+      "notes": "keep_features, horizon.label_lead, and scan.picked_lookback live here. This document does not restate H or L."
+    },
+    "alpaca": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip",
+        "universe": "configs/universe.json"
+      },
+      "notes": "Historical SIP tape. root is the invoking cwd; run from the child root."
+    },
+    "session": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$alpaca.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "session",
+            "op": "==",
+            "value": "rth"
+          }
+        ]
+      },
+      "notes": "Research uses regular-session rows; the store still keeps every vendor minute."
+    },
+    "features": {
+      "uses": "intraday_equities-session-features",
+      "inputs": {
+        "records": "$session.records",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "layout": "columns"
+      },
+      "notes": "layout=columns so the tape stays frames. keep has no lags; emit uses universe.lookback (action length 30). tape is the 1-minute close arrays."
+    },
+    "tradable": {
+      "uses": "intraday_equities-keep-symbols",
+      "inputs": {
+        "records": "$features.records",
+        "symbols": "$universe.tradable"
+      },
+      "params": {
+        "field": "symbol"
+      },
+      "notes": "Allow-list is $universe.tradable. Reference names stay on the tape for features and never land here."
+    },
+    "label_train": {
+      "uses": "intraday_equities-lead-labels",
+      "inputs": {
+        "records": "$tradable.records",
+        "bars": "$features.tape",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "lead": "$universe.spec.horizon.label_lead",
+        "split": "train",
+        "train_end_ms": "$splits.train_end_ms",
+        "val_start_ms": "$splits.val_start_ms",
+        "val_end_ms": "$splits.val_end_ms"
+      },
+      "notes": "H from universe.horizon.label_lead. Compact rows of keep_features plus y_next. A label may not land after train_end."
+    },
+    "label_val": {
+      "uses": "intraday_equities-lead-labels",
+      "inputs": {
+        "records": "$tradable.records",
+        "bars": "$features.tape",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "lead": "$universe.spec.horizon.label_lead",
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "val_start_ms": "$splits.val_start_ms",
+        "val_end_ms": "$splits.val_end_ms"
+      },
+      "notes": "Same H. Lockbox unread — future_ms must land by val_end."
+    },
+    "qhat": {
+      "uses": "dskit.pipeline.libs.sklearn:SklearnFit",
+      "mode": "train",
+      "inputs": {
+        "rows": "$label_train.records"
+      },
+      "params": {
+        "estimator": "lightgbm.LGBMRegressor",
+        "estimator_params": {
+          "n_estimators": 200,
+          "learning_rate": 0.05,
+          "num_leaves": 31,
+          "min_child_samples": 80,
+          "n_jobs": 1,
+          "verbosity": -1
+        },
+        "features": [
+          "ret_60m",
+          "rv_60m",
+          "vol_60m",
+          "ret_1s",
+          "rv_1s",
+          "range_1s",
+          "vol_1s",
+          "amihud_1s",
+          "ret_3s",
+          "rv_3s",
+          "range_3s",
+          "vol_3s",
+          "amihud_3s",
+          "minutes_from_open",
+          "minutes_to_close",
+          "tod_sin",
+          "tod_cos",
+          "dow_sin",
+          "dow_cos",
+          "month_sin",
+          "month_cos",
+          "overnight_gap",
+          "session_gap_days",
+          "industry_consumer",
+          "industry_energy",
+          "industry_financials",
+          "industry_healthcare",
+          "industry_tech"
+        ],
+        "label": "y_next",
+        "seed": 7
+      },
+      "notes": "Columns must match universe.keep_features. seed is the only RNG; estimator_params has no random_state. Search overwrites the four TPE knobs."
+    },
+    "select": {
+      "uses": "intraday_equities-portfolio",
+      "inputs": {
+        "signal": "$qhat.signal",
+        "records": "$label_val.records",
+        "labeled": "$label_val.records",
+        "tradable": "$universe.tradable"
+      },
+      "params": {
+        "split": "val"
+      },
+      "notes": "One name among the five tradable names. Objective is Spearman IC of predicted vs y_next."
+    },
+    "search": {
+      "uses": "dskit.pipeline.libs.optuna:OptunaSearch",
+      "params": {
+        "space": {
+          "qhat.estimator_params.num_leaves": {
+            "low": 15,
+            "high": 63,
+            "int": true
+          },
+          "qhat.estimator_params.learning_rate": {
+            "low": 0.01,
+            "high": 0.2,
+            "log": true
+          },
+          "qhat.estimator_params.min_child_samples": {
+            "low": 20,
+            "high": 200,
+            "int": true
+          },
+          "qhat.estimator_params.n_estimators": {
+            "low": 50,
+            "high": 400,
+            "int": true
+          }
+        },
+        "objective": "$select.metrics.rank_ic",
+        "n_trials": 50,
+        "seed": 0,
+        "direction": "maximize"
+      },
+      "notes": "50 seeded TPE trials. Rank IC can be negative; maximize still picks the least-bad val IC."
+    },
+    "ensemble": {
+      "uses": "top-trials",
+      "inputs": {
+        "trials": "$search.trials"
+      },
+      "params": {
+        "frac": 0.1,
+        "size": 5,
+        "seed": 1,
+        "select": "max"
+      },
+      "notes": "Top 10% of the 50, sample 5 members with new seeds (ADR-0052). Train-to-completion of members is a later document."
+    }
+  },
+  "splits": {
+    "kind": "time",
+    "train_end_ms": 1764547199000,
+    "val_start_ms": 1764633600000,
+    "val_end_ms": 1772323199000,
+    "test_end_ms": 1785542399000,
+    "notes": "Same val as HL-scan (Dec 2025–Feb 2026). test_end_ms is holdouts.test_a_end_ms so August 2026 is in no split."
+  },
+  "outputs": {
+    "run_root": "",
+    "notes": "Empty = ./pipeline_runs under the invoking cwd."
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        },
+        "notes": "Local sqlite beside the invoking cwd. One experiment so cadence and HPO runs compare in one UI."
+      }
+    ],
+    "notes": "Excluded from identity — where metrics land is not what the run computes."
+  }
+}

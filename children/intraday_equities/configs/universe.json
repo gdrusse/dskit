@@ -18,6 +18,13 @@
   "reference": [
     "SPY"
   ],
+  "industry": {
+    "AAPL": "tech",
+    "JPM": "financials",
+    "XOM": "energy",
+    "WMT": "consumer",
+    "LLY": "healthcare"
+  },
   "holidays": [
     "2016-01-01",
     "2016-01-18",
@@ -156,10 +163,16 @@
       "tag": "1s",
       "cross_session": true,
       "notes": "One RTH session of minutes; reads back across the close."
+    },
+    {
+      "width": 1170,
+      "tag": "3s",
+      "cross_session": true,
+      "notes": "Three RTH sessions; past window only."
     }
   ],
   "horizon": {
-    "notes": "3 RTH days in 5-minute leads. Go if an anchor or a 30-minute contiguous band has val |IC| above se_mult null SEs. Lockbox unused.",
+    "notes": "3 RTH days in 5-minute leads. Go if an anchor or a 30-minute contiguous band has val |IC| above se_mult null SEs. label_lead is the HL-scan lock. Lockbox unused.",
     "lead_start": 5,
     "lead_step": 5,
     "lead_stop": 1170,
@@ -170,6 +183,64 @@
     ],
     "top_k": 5,
     "se_mult": 2.0,
-    "band_leads": 6
+    "band_leads": 6,
+    "label_lead": 470
+  },
+  "scan": {
+    "notes": "H/L locked in docs/decisioning/decision-hl-scan.md. picked_lookback is session L; lookback stays the action-window length. keep_features is the training column set.",
+    "estimator": "lightgbm.LGBMRegressor",
+    "estimator_params": {
+      "n_estimators": 200,
+      "learning_rate": 0.05,
+      "num_leaves": 31,
+      "min_child_samples": 80,
+      "subsample": 0.8,
+      "colsample_bytree": 0.8,
+      "n_jobs": 1,
+      "random_state": 0,
+      "verbosity": -1
+    },
+    "l_start": 30,
+    "l_step": 5,
+    "lookback_stop": 120,
+    "picked_lookback": 120,
+    "keep_frac": 0.95,
+    "keep_tau": 0.05
+  },
+  "keep_features": [
+    "ret_60m",
+    "rv_60m",
+    "vol_60m",
+    "ret_1s",
+    "rv_1s",
+    "range_1s",
+    "vol_1s",
+    "amihud_1s",
+    "ret_3s",
+    "rv_3s",
+    "range_3s",
+    "vol_3s",
+    "amihud_3s",
+    "minutes_from_open",
+    "minutes_to_close",
+    "tod_sin",
+    "tod_cos",
+    "dow_sin",
+    "dow_cos",
+    "month_sin",
+    "month_cos",
+    "overnight_gap",
+    "session_gap_days",
+    "industry_consumer",
+    "industry_energy",
+    "industry_financials",
+    "industry_healthcare",
+    "industry_tech"
+  ],
+  "holdouts": {
+    "notes": "Val stays Dec 2025–Feb 2026 on each run document. Test A (usable later) ends 2026-07-31. Test B (never-touch) is August 2026 — unassigned. Set test_end_ms to test_a_end_ms so August belongs to no split.",
+    "test_a_end_ms": 1785542399000,
+    "test_b_start_ms": 1785542400000,
+    "test_b_end_ms": 1788220799000
   }
 }

@@ -139,7 +139,7 @@ from __future__ import annotations
 
 import math
 from abc import abstractmethod
-from collections import namedtuple
+from collections import deque, namedtuple
 from dataclasses import is_dataclass, replace
 
 from dskit.pipeline.document import is_node_ref
@@ -181,6 +181,10 @@ __all__ = [
     "log_return",
     "narrow_params",
     "pct_return",
+    "rolling_max",
+    "rolling_min",
+    "rolling_std",
+    "rolling_sum",
 ]
 
 #: Sentinel for "the record carries no such field" — distinct from every
@@ -370,6 +374,229 @@ def pct_return(values, n=1):
     with np.errstate(divide="ignore", invalid="ignore"):
         out = values / lag(values, n) - 1.0
     return np.where(np.isfinite(out), out, np.nan)
+
+
+def _rolling_width(width):
+    """Refuse a non-positive window the same way ``lag`` refuses n < 0."""
+    if isinstance(width, bool) or not isinstance(width, int) or width < 1:
+        raise ValueError(f"rolling width must be an int >= 1, got {width!r}")
+    return width
+
+
+def rolling_sum(values, width):
+    """Causal window sum; NaN wherever the window contains a NaN.
+
+    Matches ``numpy.sum`` on a sliding window, not ``nansum``. The first
+    ``width - 1`` positions are NaN (the window is not full). Extra RAM
+    is O(n), not O(n * width).
+
+    Parameters
+    ----------
+    values : array-like of float
+        One segment's values, ordered ascending.
+    width : int
+        Window length, ``>= 1``. Position ``t`` sums
+        ``values[t - width + 1 : t + 1]``.
+
+    Returns
+    -------
+    numpy.ndarray
+        A float64 array the same length as ``values``.
+
+    Raises
+    ------
+    ValueError
+        When ``width`` is not an int ``>= 1``.
+
+    Examples
+    --------
+    A 3-wide sum of ``[1, 2, 3, 4]``::
+
+        rolling_sum([1.0, 2.0, 3.0, 4.0], 3)
+        # -> array([nan, nan, 6.0, 9.0])
+    """
+    import numpy as np
+
+    width = _rolling_width(width)
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    n = values.size
+    out = np.full(n, np.nan)
+    if n < width:
+        return out
+    nans = np.isnan(values)
+    filled = np.where(nans, 0.0, values)
+    count = np.concatenate(([0], np.cumsum(nans, dtype=np.int64)))
+    total = np.concatenate(([0.0], np.cumsum(filled)))
+    end = np.arange(width, n + 1)
+    start = end - width
+    tail = total[end] - total[start]
+    tail[count[end] - count[start] > 0] = np.nan
+    out[width - 1:] = tail
+    return out
+
+
+def rolling_std(values, width, ddof=0):
+    """Causal window standard deviation, NaNs skipped (``nanstd``).
+
+    Two-pass via cumsums of count, sum, and sum-of-squares so a 1170-wide
+    window on a million-bar tape stays O(n) RAM. Matches
+    ``numpy.nanstd(..., ddof=ddof)`` on each full window.
+
+    Parameters
+    ----------
+    values : array-like of float
+        One segment's values, ordered ascending.
+    width : int
+        Window length, ``>= 1``.
+    ddof : int, optional
+        Delta degrees of freedom, default 0 (population). A window
+        with ``count <= ddof`` is NaN.
+
+    Returns
+    -------
+    numpy.ndarray
+        A float64 array the same length as ``values``. The first
+        ``width - 1`` positions are NaN.
+
+    Raises
+    ------
+    ValueError
+        When ``width`` is not an int ``>= 1``, or ``ddof`` is negative.
+
+    Examples
+    --------
+    Population std of three 1s is 0::
+
+        rolling_std([1.0, 1.0, 1.0], 3)
+        # -> array([nan, nan, 0.0])
+    """
+    import numpy as np
+
+    width = _rolling_width(width)
+    if isinstance(ddof, bool) or not isinstance(ddof, int) or ddof < 0:
+        raise ValueError(f"ddof must be an int >= 0, got {ddof!r}")
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    n = values.size
+    out = np.full(n, np.nan)
+    if n < width:
+        return out
+    valid = ~np.isnan(values)
+    filled = np.where(valid, values, 0.0)
+    count = np.concatenate(([0], np.cumsum(valid, dtype=np.int64)))
+    total = np.concatenate(([0.0], np.cumsum(filled)))
+    total_sq = np.concatenate(([0.0], np.cumsum(filled * filled)))
+    end = np.arange(width, n + 1)
+    start = end - width
+    cnt = count[end] - count[start]
+    s = total[end] - total[start]
+    s2 = total_sq[end] - total_sq[start]
+    ok = cnt > ddof
+    var = np.full(cnt.shape, np.nan)
+    var[ok] = (s2[ok] - s[ok] * s[ok] / cnt[ok]) / (cnt[ok] - ddof)
+    var[ok] = np.maximum(var[ok], 0.0)
+    tail = np.full(cnt.shape, np.nan)
+    tail[ok] = np.sqrt(var[ok])
+    out[width - 1:] = tail
+    return out
+
+
+def rolling_max(values, width):
+    """Causal window maximum; NaN wherever the window contains a NaN.
+
+    Matches ``numpy.max`` on a sliding window. Extra RAM is O(width).
+
+    Parameters
+    ----------
+    values : array-like of float
+        One segment's values, ordered ascending.
+    width : int
+        Window length, ``>= 1``.
+
+    Returns
+    -------
+    numpy.ndarray
+        A float64 array the same length as ``values``. The first
+        ``width - 1`` positions are NaN.
+
+    Raises
+    ------
+    ValueError
+        When ``width`` is not an int ``>= 1``.
+
+    Examples
+    --------
+    A 2-wide max::
+
+        rolling_max([1.0, 3.0, 2.0], 2)
+        # -> array([nan, 3.0, 3.0])
+    """
+    return _rolling_extrema(values, width, direction=1)
+
+
+def rolling_min(values, width):
+    """Causal window minimum; NaN wherever the window contains a NaN.
+
+    Matches ``numpy.min`` on a sliding window. Extra RAM is O(width).
+
+    Parameters
+    ----------
+    values : array-like of float
+        One segment's values, ordered ascending.
+    width : int
+        Window length, ``>= 1``.
+
+    Returns
+    -------
+    numpy.ndarray
+        A float64 array the same length as ``values``. The first
+        ``width - 1`` positions are NaN.
+
+    Raises
+    ------
+    ValueError
+        When ``width`` is not an int ``>= 1``.
+
+    Examples
+    --------
+    A 2-wide min::
+
+        rolling_min([1.0, 3.0, 2.0], 2)
+        # -> array([nan, 1.0, 2.0])
+    """
+    return _rolling_extrema(values, width, direction=-1)
+
+
+def _rolling_extrema(values, width, direction):
+    """Monotonic-deque max (``direction=1``) or min (``direction=-1``)."""
+    import numpy as np
+
+    width = _rolling_width(width)
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    n = values.size
+    out = np.full(n, np.nan)
+    if n < width:
+        return out
+    q = deque()
+    nan_count = 0
+    for i in range(n):
+        v = values[i]
+        if np.isnan(v):
+            nan_count += 1
+        else:
+            while q and direction * values[q[-1]] <= direction * v:
+                q.pop()
+            q.append(i)
+        if i >= width:
+            if np.isnan(values[i - width]):
+                nan_count -= 1
+        while q and q[0] <= i - width:
+            q.popleft()
+        if i >= width - 1:
+            if nan_count:
+                out[i] = np.nan
+            elif q:
+                out[i] = values[q[0]]
+    return out
 
 
 #: The return vocabulary, a REGISTRY rather than an ``if kind ==`` chain:

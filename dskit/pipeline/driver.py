@@ -13,7 +13,8 @@ Execution is the single-pass DAG (spec §7: no clock = plan, run each
 node once, done). A document with a ``clock`` refuses to run — clocked
 execution is pending the I-222 A/B ruling; ``plan``/``validate`` still
 work on it. ``trailing`` splits materialize here, from the data's edge
-(:meth:`Node.data_edge`); only ``train_days != "all-prior"`` refuses.
+(:meth:`Node.data_edge`); integer ``train_days`` stamps a bounded
+train window (ADR-0050).
 
 Per node, the uniform lifecycle (D-145 ruling 4)::
 
@@ -80,6 +81,7 @@ from dskit.pipeline.base import (
     merge_event_bounds,
 )
 from dskit.pipeline.document import (
+    ALL_PRIOR,
     DOC_NON_IDENTITY_SECTIONS,
     SEARCH_SPACE_PARAM,
     SPLITS_SOURCE,
@@ -1810,20 +1812,25 @@ def _fold_splits(spec, cutoff, policy=DEFAULT_SPLIT_POLICY) -> TimeSplitConfig:
     cut = _cutoff_ms(cutoff)
     val_end = cut + spec.val_days * _DAY_MS - 1
     train_end = cut - spec.embargo_days * _DAY_MS - 1
-    if spec.embargo_days:
-        return TimeSplitConfig(
-            train_end_ms=train_end,
-            val_start_ms=cut,
-            val_end_ms=val_end,
-            test_end_ms=val_end + 1,
-            policy=policy,
-        )
-    return TimeSplitConfig(
+    train_start = None
+    if spec.train_days != ALL_PRIOR:
+        train_start = train_end - spec.train_days * _DAY_MS + 1
+        if train_start < 1:
+            raise ConfigError(
+                f"walkforward: fold {cutoff} train_days={spec.train_days} "
+                f"leaves train_start_ms={train_start}"
+            )
+    kwargs = dict(
         train_end_ms=train_end,
         val_end_ms=val_end,
         test_end_ms=val_end + 1,
         policy=policy,
+        train_start_ms=train_start,
     )
+    if spec.embargo_days:
+        kwargs["val_start_ms"] = cut
+        return TimeSplitConfig(**kwargs)
+    return TimeSplitConfig(**kwargs)
 
 
 def _walkforward_refusals(document):
@@ -2067,7 +2074,7 @@ def _aggregate_search(folds):
     return out
 
 
-def _aggregate_folds(folds, select):
+def _aggregate_folds(folds, select, weight_halflife_folds=0):
     """Aggregate the scored folds, and name the best one by ``select``."""
     import statistics
 
@@ -2086,6 +2093,18 @@ def _aggregate_folds(folds, select):
     best = pick((f for f in folds if f["score"] is not None), key=lambda f: f["score"])
     aggregate["best_cutoff"] = best["cutoff"]
     aggregate["best_score"] = best["score"]
+    if weight_halflife_folds:
+        n = len(folds)
+        indexed = [
+            (i, f["score"]) for i, f in enumerate(folds) if f["score"] is not None
+        ]
+        raw = [
+            0.5 ** ((n - 1 - i) / weight_halflife_folds) for i, _ in indexed
+        ]
+        total = sum(raw)
+        aggregate["weighted_mean"] = sum(
+            w / total * score for w, (_, score) in zip(raw, indexed)
+        )
     return aggregate
 
 
@@ -2225,10 +2244,13 @@ def _walkforward_report_lines(document, spec, state, folds, aggregate):
         f"- document hash: `{document.hash[:16]}…`",
     ]
     if "mean" in aggregate:
+        extra = ""
+        if "weighted_mean" in aggregate:
+            extra = f" · weighted_mean {aggregate['weighted_mean']:.6g}"
         lines.append(
             f"- mean {aggregate['mean']:.6g} · std {aggregate['std']:.6g} · "
             f"best ({spec.select}) {aggregate['best_score']:.6g} at "
-            f"{aggregate['best_cutoff']}"
+            f"{aggregate['best_cutoff']}{extra}"
         )
     lines += ["", "| fold cutoff | state | score | run |", "|---|---|---|---|"]
     for fold in folds:
@@ -2324,7 +2346,9 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
     folds, state = _run_folds(
         document, spec, asof, registry, _declared_policy(document)
     )
-    aggregate = _aggregate_folds(folds, spec.select)
+    aggregate = _aggregate_folds(
+        folds, spec.select, spec.weight_halflife_folds,
+    )
     _write_walkforward_summary(
         summary_dir, document, asof, spec, state, folds, aggregate
     )

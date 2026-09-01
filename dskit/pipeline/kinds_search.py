@@ -50,7 +50,7 @@ from dskit.pipeline.document import parse_node_ref
 from dskit.pipeline.kinds_stats import _reject_unknown
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
 
-__all__ = ["HpoGrid", "register"]
+__all__ = ["HpoGrid", "TopTrials", "register"]
 
 #: A space key: a node key, a dot, then one or more param path segments.
 _SPACE_KEY_OK = r"^[a-z_][a-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$"
@@ -272,10 +272,116 @@ class HpoGrid(Node):
         }
 
 
+class TopTrials(Node):
+    """Pick an ensemble pool from a search ledger (kind ``top-trials``).
+
+    Rank ``trials`` by score, keep the top ``frac``, sample ``size``
+    members with replacement, assign distinct seeds (ADR-0052).
+
+    Parameters
+    ----------
+    params : dict
+        ``frac`` (float in (0, 1]), ``size`` (int >= 1), ``seed``
+        (int >= 0), optional ``select`` (``min``/``max``, default
+        ``min``).
+
+    Examples
+    --------
+    Draw 5 members from the top tenth::
+
+        node = TopTrials("ensemble", {"frac": 0.1, "size": 5, "seed": 1})
+        node.params["size"]  # 5
+    """
+
+    role = "transform"
+    outputs = ("members", "metrics")
+    _PARAMS = ("frac", "seed", "select", "size")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none."""
+        problems = []
+        _reject_unknown(problems, params, cls._PARAMS)
+        frac = params.get("frac")
+        if (
+            isinstance(frac, bool)
+            or not isinstance(frac, (int, float))
+            or not (0.0 < float(frac) <= 1.0)
+        ):
+            problems.append(f"frac must be in (0, 1], got {frac!r}")
+        size = params.get("size")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+            problems.append(f"size must be an int >= 1, got {size!r}")
+        seed = params.get("seed")
+        if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+            problems.append(f"seed must be an int >= 0, got {seed!r}")
+        if params.get("select", "min") not in ("min", "max"):
+            problems.append(
+                f"select must be 'min' or 'max', got {params.get('select')!r}"
+            )
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require a list of ``{overrides, score}`` trial rows."""
+        trials = inputs.get("trials")
+        if not isinstance(trials, list) or not trials:
+            return [f"trials must be a non-empty list, got {trials!r}"]
+        problems = []
+        for i, row in enumerate(trials):
+            if not isinstance(row, dict) or "score" not in row:
+                problems.append(f"trials[{i}] must be an object with score")
+        return problems
+
+    def run(self, ctx, inputs):
+        """Rank, keep the top fraction, sample members.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext
+            Unused.
+        inputs : dict
+            ``trials`` from a search node.
+
+        Returns
+        -------
+        dict
+            ``members`` and ``metrics``.
+        """
+        trials = list(inputs["trials"])
+        select = self.params.get("select", "min")
+        reverse = select == "max"
+        ranked = sorted(trials, key=lambda row: row["score"], reverse=reverse)
+        keep = max(1, math.ceil(float(self.params["frac"]) * len(ranked)))
+        pool = ranked[:keep]
+        size = int(self.params["size"])
+        seed = int(self.params["seed"])
+        members = []
+        for i in range(size):
+            digest = hashlib.sha256(f"{seed}:{i}".encode()).hexdigest()
+            picked = pool[int(digest, 16) % len(pool)]
+            members.append({
+                "overrides": dict(picked.get("overrides") or {}),
+                "score": picked["score"],
+                "seed": seed + i,
+            })
+        self.log.info(
+            "top-trials: %d of %d trials -> %d members",
+            keep, len(ranked), size,
+        )
+        return {
+            "members": members,
+            "metrics": {
+                "n_trials": float(len(ranked)),
+                "n_pool": float(keep),
+                "n_members": float(size),
+            },
+        }
+
+
 def register(registry=None) -> None:
-    """Register ``hpo-grid`` into ``registry`` (default the toolkit
-    registry), SKIPPING if the name is already taken — callable any
-    number of times, no import-time side effects."""
+    """Register ``hpo-grid`` and ``top-trials`` into ``registry``."""
     target = DEFAULT_NODE_KINDS if registry is None else registry
     if "hpo-grid" not in target:
         target.register("hpo-grid", HpoGrid, owned=False)
+    if "top-trials" not in target:
+        target.register("top-trials", TopTrials, owned=False)
