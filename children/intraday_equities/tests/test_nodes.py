@@ -5,6 +5,8 @@ import json
 import math
 import os
 from datetime import datetime, timedelta, timezone
+
+import pytest
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.kinds_flow import EventGrid
 from dskit.pipeline.node import NodeContext
@@ -735,6 +737,174 @@ def test_no_information_scan_fits_once_and_walks_h():
     assert -1.0 <= out["metrics"]["train_ic"] <= 1.0
     assert -1.0 <= out["metrics"]["val_ic"] <= 1.0
     assert "train_mspe_AAPL" not in out["metrics"]
+    assert out["metrics"]["train_yhat_sd"] > 0.0
+
+
+def test_session_features_reuse_one_build_across_folds():
+    """A walk-forward calls this node once per fold with identical input.
+
+    Nothing upstream reads the fold cuts, so the second call must return
+    the first build rather than rebuild 1.25M rows forty times.
+    """
+    import numpy as np
+
+    spec = _mini_spec()
+    spec["period_ms"] = 60_000
+    bars = []
+    for symbol in ("AAPL", "SPY"):
+        px = 100.0
+        for i in range(30):
+            px *= math.exp(0.001 * ((i % 5) - 2))
+            bars.append({
+                "symbol": symbol,
+                "asof_ms": _ms(i),
+                "session": "rth",
+                "open": px, "high": px, "low": px, "close": px,
+                "volume": 1000.0,
+            })
+    node = SessionFeatureRows("features", {"lookback": 2, "layout": "columns"})
+
+    first = node.run(None, {"records": bars, "spec": spec})
+    second = node.run(None, {"records": list(bars), "spec": spec})
+
+    # same content
+    assert len(first["records"]) == len(second["records"])
+    for a, b in zip(first["records"], second["records"]):
+        assert a["symbol"] == b["symbol"]
+        assert np.array_equal(a["asof_ms"], b["asof_ms"])
+        assert np.array_equal(a["X"], b["X"], equal_nan=True)
+    # the arrays are shared, so the second call did not rebuild
+    assert second["records"][0]["X"] is first["records"][0]["X"]
+    assert second["tape"] is first["tape"]
+    # the outer list is a copy, so filtering downstream cannot corrupt it
+    assert second["records"] is not first["records"]
+    second["records"].clear()
+    assert first["records"]
+
+    # a different input must NOT hit the cache
+    third = node.run(None, {"records": bars[:20], "spec": spec})
+    assert third["records"][0]["X"] is not first["records"][0]["X"]
+
+
+def test_no_information_scan_honours_the_left_training_bound():
+    """``train_days`` only bites if the node reads ``train_start_ms``.
+
+    Regression: the walk-forward driver computed the bound and wrote it
+    into every fold's config, but this node neither accepted nor read
+    it, so a declared two-year slide silently trained all-prior and
+    grew by one validation period every fold.
+    """
+    spec = _mini_spec()
+    spec["features"] = ["ret_lag_0"]
+    spec["period_ms"] = 60_000
+    spec["horizon"] = {
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 2,
+        "anchors": [1],
+        "top_k": 1,
+        "se_mult": 2.0,
+        "band_leads": 1,
+    }
+    n = 60
+    bars, rows = [], []
+    for symbol in ("AAPL", "JPM"):
+        px = 100.0
+        for i in range(n):
+            px *= math.exp(0.001 * ((i % 7) - 3))
+            bars.append({"symbol": symbol, "asof_ms": _ms(i), "close": px})
+            rows.append({
+                "symbol": symbol,
+                "asof_ms": _ms(i),
+                "ret_lag_0": 0.001 * ((i % 7) - 3),
+                "close": px,
+            })
+    base = {
+        "split": "val",
+        "train_end_ms": _ms(40),
+        "val_start_ms": _ms(45),
+        "val_end_ms": _ms(n - 1),
+    }
+    inputs = {"records": rows, "bars": bars, "spec": spec}
+
+    unbounded = NoInformationScan("scan", base).run(None, inputs)
+    bounded = NoInformationScan(
+        "scan", {**base, "train_start_ms": _ms(20)}
+    ).run(None, inputs)
+
+    assert unbounded["metrics"]["n_train"] > bounded["metrics"]["n_train"]
+    assert bounded["metrics"]["n_train"] > 0.0
+    # val is untouched by the left training bound
+    assert unbounded["metrics"]["n_val"] == bounded["metrics"]["n_val"]
+
+
+def test_no_information_scan_refuses_a_backwards_training_bound():
+    """A left bound at or past the cut is a config error, not a silent 0."""
+    problems = NoInformationScan.validate_params({
+        "split": "val",
+        "train_end_ms": 1_000,
+        "train_start_ms": 2_000,
+        "val_start_ms": 3_000,
+        "val_end_ms": 4_000,
+    })
+    assert any("train_start_ms must be < train_end_ms" in p for p in problems)
+
+
+def test_no_information_scan_refuses_a_constant_forecast():
+    """A stump-only tree predicts the mean, so the fold must fail loudly.
+
+    Regression for A0013: min_split_gain above any achievable split
+    gain made every tree one leaf. The walk still "ran" and reported
+    IC exactly 0 for forty folds, which reads as a finding about the
+    market rather than a broken model.
+    """
+    pytest.importorskip("lightgbm")
+    spec = _mini_spec()
+    spec["features"] = ["ret_lag_0"]
+    spec["period_ms"] = 60_000
+    spec["horizon"] = {
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 3,
+        "anchors": [1],
+        "top_k": 1,
+        "se_mult": 2.0,
+        "band_leads": 1,
+    }
+    spec["scan"] = {
+        "estimator": "lightgbm.LGBMRegressor",
+        "estimator_params": {
+            "n_estimators": 5,
+            "min_split_gain": 1e9,
+            "n_jobs": 1,
+            "random_state": 0,
+            "verbosity": -1,
+        },
+    }
+    n = 40
+    bars, rows = [], []
+    for symbol in ("AAPL", "JPM"):
+        px = 100.0
+        for i in range(n):
+            ret = 0.001 * ((i % 7) - 3)
+            px *= math.exp(ret)
+            bars.append({"symbol": symbol, "asof_ms": _ms(i), "close": px})
+            rows.append({
+                "symbol": symbol,
+                "asof_ms": _ms(i),
+                "ret_lag_0": ret,
+                "close": px,
+            })
+    with pytest.raises(ValueError, match="degenerate forecast"):
+        NoInformationScan(
+            "scan",
+            {
+                "split": "val",
+                "train_end_ms": _ms(24),
+                "val_start_ms": _ms(26),
+                "val_end_ms": _ms(n - 1),
+            },
+        ).run(None, {"records": rows, "bars": bars, "spec": spec})
 
 
 def test_lead_labels_drop_rows_whose_label_lands_after_the_cut():

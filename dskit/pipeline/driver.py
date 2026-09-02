@@ -1718,6 +1718,14 @@ def run_document(document, asof=None, registry=None, journal=True) -> DocumentRu
         raise
 
     log_state = _open_run_log(resolved.run_dir)
+    # The document, verbatim, as the first thing in run.log. config.json
+    # sits beside it, but a log read on its own must say what ran.
+    log_state[0].info(
+        "config %s asof=%s\n%s",
+        document.name,
+        asof,
+        json.dumps(document.to_obj(), indent=2, sort_keys=True),
+    )
     ctx = NodeContext(
         name=document.name,
         asof=asof,
