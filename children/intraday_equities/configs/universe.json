@@ -238,7 +238,7 @@
     "industry_tech"
   ],
   "holdouts": {
-    "notes": "Val stays Dec 2025–Feb 2026 on each run document. Test A (usable later) ends 2026-07-31. Test B (never-touch) is August 2026 — unassigned. Set test_end_ms to test_a_end_ms so August belongs to no split.",
+    "notes": "H/L walk-forward last val 2025-11-30. HPO val Dec 2025–Feb 2026. Untouched from 2026-03-01. CV/HPO documents set test_end_ms=1772323199000 (28 Feb 2026). Backtest after confirm may open through test_b_end_ms. See docs/decisioning/hstar-go.md.",
     "test_a_end_ms": 1785542399000,
     "test_b_start_ms": 1785542400000,
     "test_b_end_ms": 1788220799000

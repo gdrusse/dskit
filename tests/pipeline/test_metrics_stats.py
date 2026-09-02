@@ -19,10 +19,14 @@ from dskit.pipeline.stats import (
     METHODS,
     benjamini_hochberg,
     bonferroni,
+    clark_west_series,
     cluster_bootstrap_pvalue,
     cluster_bootstrap_t,
     correction,
+    max_informative_horizon,
+    newey_west_mean,
     no_correction,
+    no_information_test,
     register_correction,
     weighted_benjamini_hochberg,
 )
@@ -372,3 +376,211 @@ class TestRegisterCorrection:
 #: The pinned studentized golden value (see test_golden_fraction):
 #: 65 of 999 replicates met or beat the observed pivot — (1 + 65) / (999 + 1).
 GOLDEN_T_P = 66 / 1000
+
+
+class TestClarkWestSeries:
+    def test_identity_matches_the_two_algebra_forms(self):
+        y, yhat, mu = [1.0, 0.0, -1.0], [0.5, 0.0, 0.25], 0.1
+        adj = clark_west_series(y, yhat, mu=mu)
+        for yi, fi, got in zip(y, yhat, adj):
+            raw = (yi - mu) ** 2 - (yi - fi) ** 2 + (fi - mu) ** 2
+            twice = 2.0 * (yi - mu) * (fi - mu)
+            assert got == pytest.approx(raw)
+            assert got == pytest.approx(twice)
+
+    def test_constant_forecast_at_mu_is_all_zeros(self):
+        assert clark_west_series([1.0, 3.0], [2.0, 2.0], mu=2.0) == [0.0, 0.0]
+
+    def test_omitted_mu_is_the_sample_mean(self):
+        y, yhat = [1.0, 3.0], [2.0, 2.0]
+        assert clark_west_series(y, yhat) == clark_west_series(y, yhat, mu=2.0)
+
+    def test_refusals(self):
+        with pytest.raises(ValueError, match="equal length"):
+            clark_west_series([1.0], [1.0, 2.0])
+        with pytest.raises(ValueError, match="empty"):
+            clark_west_series([], [])
+        with pytest.raises(ValueError, match="finite"):
+            clark_west_series([1.0, float("nan")], [1.0, 1.0])
+        with pytest.raises(ValueError, match="mu"):
+            clark_west_series([1.0, 2.0], [1.0, 2.0], mu=True)
+
+
+class TestNeweyWestMean:
+    def test_hand_lags_one_is_t_four(self):
+        # mean 2.5, γ0=1.25, γ1=0.3125, Bartlett w1=1/2 → LRV=1.5625,
+        # se = √(LRV/n) = 0.625, t = 4.
+        out = newey_west_mean([1.0, 2.0, 3.0, 4.0], lags=1)
+        assert out["n"] == 4
+        assert out["lags"] == 1
+        assert out["mean"] == pytest.approx(2.5)
+        assert out["se"] == pytest.approx(0.625)
+        assert out["t"] == pytest.approx(4.0)
+        assert out["p_value"] == pytest.approx(0.5 * math.erfc(4.0 / math.sqrt(2.0)))
+
+    def test_lags_zero_is_the_iid_se(self):
+        values = [1.0, 2.0, 3.0, 4.0]
+        out = newey_west_mean(values, lags=0)
+        mean = 2.5
+        gamma0 = sum((v - mean) ** 2 for v in values) / 4
+        assert out["se"] == pytest.approx(math.sqrt(gamma0 / 4))
+
+    def test_constant_positive_is_p_zero(self):
+        out = newey_west_mean([0.4, 0.4, 0.4], lags=0)
+        assert out["se"] == 0.0
+        assert out["t"] is None
+        assert out["p_value"] == 0.0
+
+    def test_constant_nonpositive_is_p_one(self):
+        for v in (0.0, -0.2):
+            out = newey_west_mean([v, v, v], lags=1)
+            assert out["p_value"] == 1.0
+            assert out["t"] is None
+
+    def test_refusals(self):
+        with pytest.raises(ValueError, match="at least 2"):
+            newey_west_mean([1.0])
+        with pytest.raises(ValueError, match="lags"):
+            newey_west_mean([1.0, 2.0], lags=2)
+        with pytest.raises(ValueError, match="lags"):
+            newey_west_mean([1.0, 2.0], lags=True)
+        with pytest.raises(ValueError, match="finite"):
+            newey_west_mean([1.0, float("inf")])
+
+
+class TestNoInformationTest:
+    def test_toy_h5_left_and_right_mspe(self):
+        # The 12-pair h=5 walk-through: left ≈ 1e-6, right ≈ 5.58e-6.
+        yhat = [
+            0.004, 0.000, 0.001,
+            -0.001, 0.003, 0.000,
+            0.002, -0.001, 0.001,
+            0.000, 0.001, 0.003,
+        ]
+        y = [
+            0.005, -0.002, 0.000,
+            -0.001, 0.004, 0.000,
+            0.003, -0.002, 0.001,
+            -0.001, 0.000, 0.004,
+        ]
+        out = no_information_test(y, yhat, lags=0)
+        n = 12
+        mu = sum(y) / n
+        left = sum((yi - fi) ** 2 for yi, fi in zip(y, yhat)) / n
+        right = sum((yi - mu) ** 2 for yi in y) / n
+        assert out["mu"] == pytest.approx(mu)
+        assert out["mspe_model"] == pytest.approx(left)
+        assert out["mspe_mean"] == pytest.approx(right)
+        assert out["mspe_model"] == pytest.approx(1e-6)
+        assert out["mspe_mean"] == pytest.approx(5.58e-6, rel=0.02)
+        assert out["beats_mean"] is True
+        assert out["p_value"] < 0.05
+
+    def test_train_mu_is_not_the_scored_sample_mean(self):
+        y, yhat = [1.0, 3.0, 5.0, 7.0], [1.1, 2.9, 5.2, 6.8]
+        sample = no_information_test(y, yhat)
+        train = no_information_test(y, yhat, mu=0.0)
+        assert sample["mu"] != train["mu"]
+        assert train["mu"] == 0.0
+        assert sample["mspe_mean"] != train["mspe_mean"]
+
+    def test_constant_forecast_at_mu_does_not_beat_the_mean(self):
+        y = [1.0, 2.0, 3.0, 4.0]
+        out = no_information_test(y, [2.5] * 4, mu=2.5)
+        assert out["beats_mean"] is False
+        assert out["mspe_model"] == pytest.approx(out["mspe_mean"])
+        assert out["p_value"] == 1.0
+        assert out["t"] is None
+
+    def test_clark_west_golden_pairs_with_newey_west(self):
+        # μ=0, ŷ=1 → f_t = 2y = [1,2,3,4]; lags=1 → t=4.
+        y = [0.5, 1.0, 1.5, 2.0]
+        out = no_information_test(y, [1.0, 1.0, 1.0, 1.0], mu=0.0, lags=1, horizon=5)
+        assert out["horizon"] == 5
+        assert out["mean_adj"] == pytest.approx(2.5)
+        assert out["t"] == pytest.approx(4.0)
+        assert set(out) >= {
+            "n",
+            "mu",
+            "mspe_model",
+            "mspe_mean",
+            "beats_mean",
+            "mean_adj",
+            "se",
+            "t",
+            "p_value",
+            "lags",
+            "horizon",
+        }
+
+    def test_horizon_omitted_from_the_result(self):
+        out = no_information_test([1.0, 2.0], [1.0, 2.0])
+        assert "horizon" not in out
+
+    def test_scores_drive_the_existing_bootstrap(self):
+        y = [0.1 * i for i in range(20)]
+        yhat = [v + 0.05 for v in y]
+        f = clark_west_series(y, yhat, mu=sum(y) / len(y))
+        scores = {str(i): [fi] for i, fi in enumerate(f)}
+        assert cluster_bootstrap_t(scores, 200, 0)["p_value"] < 0.05
+
+
+class TestMaxInformativeHorizon:
+    def test_stop_at_first_fail(self):
+        out = max_informative_horizon(
+            [
+                {"horizon": 5, "p_value": 0.01},
+                {"horizon": 10, "p_value": 0.04},
+                {"horizon": 15, "p_value": 0.40},
+            ]
+        )
+        assert out == {
+            "h_star": 10,
+            "rejected": [5, 10],
+            "first_fail": 15,
+            "alpha": 0.05,
+            "n_horizons": 3,
+        }
+
+    def test_later_reject_after_a_fail_is_ignored(self):
+        out = max_informative_horizon(
+            [
+                {"horizon": 5, "p_value": 0.20},
+                {"horizon": 10, "p_value": 0.001},
+            ]
+        )
+        assert out["h_star"] is None
+        assert out["rejected"] == []
+        assert out["first_fail"] == 5
+        assert out["n_horizons"] == 2
+
+    def test_all_reject_leaves_first_fail_none(self):
+        out = max_informative_horizon(
+            [
+                {"horizon": 5, "p_value": 0.01},
+                {"horizon": 10, "p_value": 0.02},
+            ]
+        )
+        assert out["h_star"] == 10
+        assert out["first_fail"] is None
+
+    def test_p_equal_to_alpha_rejects(self):
+        out = max_informative_horizon([{"horizon": 5, "p_value": 0.05}])
+        assert out["h_star"] == 5
+
+    def test_refusals(self):
+        with pytest.raises(ValueError, match="empty"):
+            max_informative_horizon([])
+        with pytest.raises(ValueError, match="strictly increasing"):
+            max_informative_horizon(
+                [
+                    {"horizon": 10, "p_value": 0.01},
+                    {"horizon": 5, "p_value": 0.01},
+                ]
+            )
+        with pytest.raises(ValueError, match="p_value"):
+            max_informative_horizon([{"horizon": 5, "p_value": 1.2}])
+        with pytest.raises(ValueError, match="alpha"):
+            max_informative_horizon([{"horizon": 5, "p_value": 0.1}], alpha=0.0)
+        with pytest.raises(ValueError, match="horizon"):
+            max_informative_horizon([{"p_value": 0.1}])

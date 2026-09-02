@@ -2257,3 +2257,78 @@ tests/journal/    purity + model/store/render/locate/record/hooks/cli
 go live. Path-to-production is an owner act. Journal failure on a hooked
 path refuses the parent command (unlike tracking sinks, which swallow).
 
+---
+
+## ADR-0057 — No-information test vs the mean (Clark–West + sequential h*)
+
+**Status:** accepted (2026-09-01; owner directed)
+
+**Context.** Maximum informative horizon is not “farthest |IC| within 1 SE.”
+Breitung–Knüppel (2021) define h* by a **no-information** null under quadratic
+loss: the forecast’s MSPE is no better than the unconditional mean. Nested
+mean comparisons need Clark–West (2007), not naive DM; overlapping horizons
+need Newey–West lag in **observation steps**. ADR-0033 closed `stat_test`
+`METHODS` on purpose — this is a different estimand (one series of paired
+forecast errors, not a per-instrument cluster bootstrap of trading
+improvements).
+
+**Decision.** Primitives in `dskit/pipeline/stats.py` (stdlib, no new kind,
+`METHODS` unchanged):
+
+1. `clark_west_series(y, yhat, mu)` — MSPE-adjusted loss gap
+   `(y-μ)² - (y-ŷ)² + (ŷ-μ)²`. Feed `cluster_bootstrap_t` when the
+   independence unit is a cluster (a day), not a row.
+2. `newey_west_mean(values, lags)` — HAC mean, Bartlett weights, lag < n.
+   One-sided H1: mean > 0. `lags` is overlap in **steps** (the caller maps
+   a clock horizon to `max(steps-1, 0)`).
+3. `no_information_test(y, yhat, mu=None, lags=0)` — left/right MSPE plus
+   Clark–West t. Omitted `mu` is the mean of **this** `y` (descriptive);
+   pass a train mean for a true benchmark. One time-ordered series; a
+   panel is the caller’s to collapse or test per unit.
+4. `max_informative_horizon(ordered, alpha=0.05)` — BK walk: first
+   non-rejection stops; h* is the last rejected horizon (`None` if the
+   first fails). Fixed α (a test sequence, not a consistent selector).
+   Monotonicity is the caller’s assumption; the walk does not check it.
+
+**Consequences.** Children import the functions; HorizonScan is unchanged
+until a child document wires them. No config-hash movement.
+
+---
+
+## ADR-0058 — H and L from sliding CV through Nov 2025; HPO through Feb; nothing after
+
+**Status:** accepted (2026-09-01; owner directed; revised same day; per-series H then pooled ŷ + category 2026-09-01)
+
+**Context.** ADR-0055 locked H from LightGBM |IC| on Dec 2025–Feb 2026 val,
+then L and TPE reused that window. Owner: H and L from **one sliding
+walk-forward through 2025-11-30**; HPO may use through Feb 2026; nothing
+after 2026-02-28 is peeked.
+
+**Decision.** Child lock:
+`children/intraday_equities/docs/decisioning/hstar-go.md`.
+
+- Walk-forward (ADR-0027/0050): `first=2019-01-07`, `step_days=63`,
+  `count=40`, `val_days=63`, `embargo_days=5` (`lead_stop`, not H-length),
+  `train_days=730` (2y). Last val ends 2025-11-30. Same folds for H and L.
+  CV LightGBM: one pooled tree; symbol is a category. Short inner-train
+  HPO (`hpo_trials=8`) hashed on the document; fold val is unread.
+  Features: 46 non-lag session fields + 20 momentum/vol (no `ret_lag_*`).
+- H: per-fold pooled LightGBM then no-information `h*` **per tradable
+  name** (ADR-0057). Inner HPO on train only. A name GO’s iff the
+  contiguous reject run starts at `h=5`; H is that run’s far end.
+  Clock-mean pooling is out. How five H’s become a book lock (map / min
+  / median) is deferred (`docs/adhoc/deferred_decisions.md`).
+- L: pass 2 on those folds at locked H*; 1-SE shortest of mean fold MSPE.
+- HPO: val 2025-12-02 → 2026-02-28, H/L/keep frozen. T bakeoff lives here.
+  Refit winner through 2026-02-28.
+- Untouched: 2026-03-01 →. Confirm Mar–May; backtest Jun–Aug (incl. Test B).
+- ADR-0055 |IC| H=470 is not the estimand. CV documents set
+  `test_end_ms` to 2026-02-28.
+
+**Consequences.** Next execute is
+`configs/run-hstar-cv-series.json` (2y slide, one tree, per-series H).
+Not the aborted clock-mean `run-hstar-cv.json`. Not a Mar–May single split
+and not T bakeoff first. Do not write `label_lead` until the book-H
+decision closes.
+
+

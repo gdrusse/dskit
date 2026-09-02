@@ -32,4 +32,4 @@ Train IC ~0.39 vs val IC −0.08: the scan overfits; keep dropped every lag.
 
 ## Next
 
-T bakeoff `{1y,2y,3y,5y,all-prior}` (ADR-0050 `train_days`). V walk-forward after that. HPO evidence: [decision-framework-hpo.md](decision-framework-hpo.md).
+Superseded as an H estimand by [hstar-go.md](hstar-go.md) (ADR-0058). T bakeoff waits on GO+confirm.

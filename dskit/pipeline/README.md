@@ -216,6 +216,11 @@ Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 † **owned**: documents may not substitute these kinds with their own class —
 the toolkit's statistics are not swappable by config.
 
+Forecast-vs-mean **no-information** (ADR-0057) is a function in `stats.py`,
+not a third `stat_test` method: `no_information_test(y, yhat, mu=, lags=)`
+then `max_informative_horizon` over increasing `h`. One series; `lags` is
+overlap in observation steps.
+
 `event-grid` requires integer `period_ms > 0` and
 `0 <= offset_ms < period_ms`; it preserves order and keeps rows satisfying
 `(asof_ms - offset_ms) % period_ms == 0`. Missing/non-integer instants drop.
@@ -507,7 +512,8 @@ dskit/pipeline/
 ├── trainlog.py        per-epoch TrainingCurve + probability metrics (logloss/brier/ECE)
 ├── stats.py           cluster bootstraps (plain, studentized-t); correction
 │                      registry (bh / bonferroni / none / weighted-bh) +
-│                      register_correction
+│                      register_correction; no-information vs mean
+│                      (Clark–West HAC + sequential h*, ADR-0057)
 ├── records.py         MarketRecord envelope + binary / mark-to-market accounting
 ├── protocols.py       structural Protocols (DataSource, Tracker, ...)
 ├── env.py             env file + redacting Secrets façade

@@ -9,7 +9,7 @@ from dskit.onboarding import check_config, load_suite
 from dskit.pipeline.document import load_document
 
 from intraday_equities.connectors import AlpacaBars, SchwabBars
-from intraday_equities.nodes import session_feature_names
+from intraday_equities.nodes import _emit_feature_names, session_feature_names
 
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIGS = os.path.join(CHILD_ROOT, "configs")
@@ -105,6 +105,61 @@ def test_hl_scan_stops_before_august():
     assert raw["pipeline"]["features"]["params"]["layout"] == "columns"
     assert raw["pipeline"]["scan"]["inputs"]["bars"] == "$features.tape"
     assert raw["pipeline"]["lscan"]["inputs"]["bars"] == "$features.tape"
+
+
+def test_hstar_cv_clock_mean_doc_is_superseded():
+    raw = _raw("run-hstar-cv.json")
+    assert raw["name"] == "intraday-equities-hstar-cv"
+    assert "SUPERSEDED" in raw["notes"]
+    assert raw["walkforward"]["objective"] == "$scan.metrics.go"
+
+
+def test_hstar_cv_series_walkforward_pins():
+    raw = _raw("run-hstar-cv-series.json")
+    wf = raw["walkforward"]
+    assert wf["first"] == "2019-01-07"
+    assert wf["step_days"] == 63
+    assert wf["count"] == 40
+    assert wf["val_days"] == 63
+    assert wf["embargo_days"] == 5
+    assert wf["train_days"] == 730
+    assert wf["objective"] == "$scan.metrics.go_frac"
+    assert wf["select"] == "max"
+    trees = raw["pipeline"]["scan"]["params"]["estimator_params"]
+    assert trees["max_depth"] == 4
+    assert trees["num_leaves"] == 15
+    assert trees["min_child_samples"] == 400
+    assert trees["reg_lambda"] == 5.0
+    scan_params = raw["pipeline"]["scan"]["params"]
+    assert scan_params["hpo_trials"] == 8
+    assert scan_params["hpo_val_days"] == 63
+    assert set(scan_params["hpo_space"]) == {
+        "num_leaves", "max_depth", "min_child_samples",
+        "learning_rate", "reg_lambda",
+    }
+    feat = raw["pipeline"]["features"]["params"]
+    assert feat["lookback"] == 0
+    extra = feat["momentum_horizons"]
+    assert [row["tag"] for row in extra] == ["3m", "2h", "3h", "2s", "1w"]
+    industry = tuple(sorted(set((UNIVERSE.get("industry") or {}).values())))
+    base = session_feature_names(
+        0, UNIVERSE["scales"], UNIVERSE["reference"], industry,
+    )
+    assert len(base) == 46
+    assert all(not name.startswith("ret_lag_") for name in base)
+    names = _emit_feature_names(
+        0, UNIVERSE["scales"], UNIVERSE["reference"], industry, extra,
+    )
+    assert len(names) == 66
+    assert raw["pipeline"]["scan"]["uses"] == (
+        "intraday_equities-no-information-scan"
+    )
+    assert "test_end_ms" not in json.dumps(raw["pipeline"]["scan"])
+    document = load_document(_path("run-hstar-cv-series.json"))
+    assert document.walkforward.fold_cutoffs()[-1] == "2025-09-29"
+    assert document.walkforward.fold_cutoffs()[0] == "2019-01-07"
+    assert len(document.walkforward.fold_cutoffs()) == 40
+    assert document.name == "intraday-equities-hstar-cv-series"
 
 
 #: 1165 RTH minutes is the scan's farthest confident lead.

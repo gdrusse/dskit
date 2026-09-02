@@ -1,22 +1,24 @@
 # Re-entry
 
-Refreshed 2026-09-01 after merging to `main` (H/L lock, HPO, ADR-0056 journal).
+Refreshed 2026-09-02 after 40-fold H* CV on `main`.
 
 ---
 
 # ▶ PICK UP HERE
 
-**State: on `main`. H=470, L=120, 28 keep. Journal package live. T bakeoff is next.**
+**State: on `main`.** ADR-0057/0058 shipped. 40-fold H* series **ran** (hash `b5967dff`, A0013). ŷ collapsed (IC=0 every fold). Mean go_frac=0.07. **Do not lock H.**
 
 ## Next session
 
-T bakeoff `{1y, 2y, 3y, 5y, all-prior}` (`train_days`, ADR-0050). Then V walk-forward. Do not reopen August 2026. Markets/grid change only in `configs/universe.json`. Owner `journal promote` for path-to-production rows.
+Diagnose why LightGBM ŷ does not rank (IC=0 despite inner HPO). Do not lock H, do not run L or Dec–Feb TPE, do not peek after 2026-02-28. Book H lock still deferred.
 
 ## Locked
 
-- H = **470**, L = **120**, keep = 28 names. Action `lookback` stays 30.
-- `dskit.journal` (ADR-0056): CSV ledger + generated `docs/decisioning/README.md`. Uninitialized child refuses.
-- Paper only. Test B (August 2026) unassigned.
+- H/L from sliding CV through Nov 2025 (per-name `h*`, MSPE L). Book collapse deferred. Not |IC| H=470.
+- HPO may use Dec 2025–Feb 2026. **No peek after 2026-02-28.**
+- Action `lookback` stays 30.
+- `dskit.journal` (ADR-0056). Uninitialized child refuses.
+- Paper only. Test B sits inside Jun–Aug backtest, sealed until confirm.
 
 ## Verification
 

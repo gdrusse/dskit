@@ -33,8 +33,11 @@ Agent orientation — see README.md for operator commands.
 - Action documents differ only in `name`/`notes`, `label_lead`, and
   `event-grid.period_ms`.
 - Latest six months are the lockbox (`splits.test_end_ms`).
-  Holdouts: Test A through `holdouts.test_a_end_ms`; Test B (August 2026)
-  is unassigned. Training framework: `docs/decisioning/framework.md`.
+  Holdouts: H/L walk-forward through 2025-11-30; HPO Dec 2025–Feb 2026;
+  untouched from 2026-03-01 (`docs/decisioning/hstar-go.md`, ADR-0058).
+  Per-name H (one pooled tree); book collapse deferred (`docs/adhoc/deferred_decisions.md`
+  at the repo root).
+  Training framework: `docs/decisioning/framework.md`.
 - Every run document tracks to one local MLflow experiment
   (`intraday_equities`). HPO maximizes `$select.metrics.rank_ic`.
   Fill rate / delay decay wait on a fill model.

@@ -33,7 +33,8 @@ Layout:
   (train -> validate -> stat_test -> optimize -> backtest) with deploy
   gates.
 * :mod:`~dskit.pipeline.metrics` / :mod:`~dskit.pipeline.stats` —
-  scoring rules and the cluster-bootstrap/multiplicity machinery.
+  scoring rules, cluster-bootstrap/multiplicity, and the no-information
+  (forecast vs mean) walk.
 * :mod:`~dskit.pipeline.testing` — the deterministic synthetic venue
   (reference adapter, demo, and test double in one).
 

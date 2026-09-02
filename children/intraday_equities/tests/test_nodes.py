@@ -17,10 +17,12 @@ from intraday_equities.nodes import (
     KeepSymbols,
     LeadLabeledRows,
     LookbackScan,
+    NoInformationScan,
     PortfolioSelect,
     SessionFeatureRows,
     Universe,
     WindowRows,
+    _emit_feature_names,
     _horizon_verdict,
     horizon_leads,
     session_feature_names,
@@ -40,6 +42,7 @@ EXPECTED_ROLES = {
     "intraday_equities-keep-symbols": "transform",
     "intraday_equities-feed-parity": "score",
     "intraday_equities-horizon-scan": "score",
+    "intraday_equities-no-information-scan": "score",
     "intraday_equities-lookback-scan": "score",
     "intraday_equities-lead-labels": "transform",
     "intraday_equities-portfolio": "score",
@@ -252,6 +255,22 @@ def probes(tmp_path):
             runnable=True,
         ),
         "intraday_equities-horizon-scan": NodeProbe(
+            params={
+                "split": "val",
+                "train_end_ms": _ms(3),
+                "val_start_ms": _ms(4),
+                "val_end_ms": _ms(7),
+            },
+            required=("split", "train_end_ms", "val_start_ms", "val_end_ms"),
+            inputs={
+                "records": feature_rows,
+                "bars": bars,
+                "spec": {**mini, "features": ["ret_lag_0"]},
+            },
+            stream_ports=("records", "bars"),
+            runnable=True,
+        ),
+        "intraday_equities-no-information-scan": NodeProbe(
             params={
                 "split": "val",
                 "train_end_ms": _ms(3),
@@ -542,6 +561,56 @@ def test_session_feature_names_follow_the_spec():
     assert "spy_ret_1m" not in names
 
 
+def test_emit_feature_names_adds_scale_moms_and_extra_horizons():
+    names = _emit_feature_names(
+        0,
+        [{"tag": "5m"}, {"tag": "1s"}],
+        ["SPY"],
+        ("tech",),
+        [{"tag": "2h"}],
+    )
+    assert "ret_lag_0" not in names
+    assert "mom_5m" in names
+    assert names.count("ret_2h") == 1
+    assert "rv_2h" in names
+    assert "mom_2h" in names
+
+
+def test_session_features_lookback_zero_is_valid():
+    assert SessionFeatureRows.validate_params({"lookback": 0}) == []
+
+
+def test_session_features_momentum_horizons_skip_lags():
+    spec = _mini_spec()
+    spec["industry"] = {"AAPL": "tech"}
+    rows = [
+        {
+            "symbol": symbol,
+            "asof_ms": _ms(i),
+            "open": 100.0 + i,
+            "high": 101.0 + i,
+            "low": 99.0 + i,
+            "close": 100.0 + i,
+            "volume": 100.0,
+        }
+        for symbol in ("AAPL", "SPY")
+        for i in range(16)
+    ]
+    extra = [{"width": 3, "tag": "3m", "cross_session": False}]
+    out = SessionFeatureRows(
+        "features",
+        {"lookback": 0, "layout": "columns", "momentum_horizons": extra},
+    ).run(None, {"records": rows, "spec": spec})
+    names = out["records"][0]["names"]
+    assert "ret_lag_0" not in names
+    assert "mom_2m" in names
+    assert "ret_3m" in names
+    assert "rv_3m" in names
+    assert "mom_3m" in names
+    assert "clv" in names
+    assert "residual_SPY" in names
+
+
 def test_horizon_leads_are_the_declared_range():
     assert horizon_leads(5, 5, 15) == (5, 10, 15)
 
@@ -576,6 +645,96 @@ def test_horizon_scan_drops_labels_that_land_after_val_end():
         },
     ).run(None, {"records": rows, "bars": bars, "spec": spec})
     assert out["records"][0]["n_val"] == 0.0
+
+
+def test_no_information_scan_drops_labels_that_land_after_val_end():
+    spec = _mini_spec()
+    spec["features"] = ["ret_lag_0"]
+    spec["horizon"] = {
+        "lead_start": 2,
+        "lead_step": 1,
+        "lead_stop": 2,
+        "anchors": [2],
+        "top_k": 1,
+        "se_mult": 2.0,
+        "band_leads": 1,
+    }
+    bars = [
+        {"symbol": "AAPL", "asof_ms": _ms(i), "close": 100.0 + i}
+        for i in range(8)
+    ]
+    rows = [
+        {"symbol": "AAPL", "asof_ms": _ms(i), "ret_lag_0": 0.01 * i, "close": 100.0 + i}
+        for i in range(8)
+    ]
+    out = NoInformationScan(
+        "scan",
+        {
+            "split": "val",
+            "train_end_ms": _ms(2),
+            "val_start_ms": _ms(3),
+            "val_end_ms": _ms(4),
+        },
+    ).run(None, {"records": rows, "bars": bars, "spec": spec})
+    assert out["metrics"]["n_series"] == 1.0
+    assert out["metrics"]["go_AAPL"] in (0.0, 1.0)
+    assert out["records"][0]["symbol"] == "AAPL"
+    assert out["records"][0]["n"] == 0.0
+
+
+def test_no_information_scan_fits_once_and_walks_h():
+    spec = _mini_spec()
+    spec["features"] = ["ret_lag_0"]
+    spec["period_ms"] = 60_000
+    spec["horizon"] = {
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 3,
+        "anchors": [1],
+        "top_k": 1,
+        "se_mult": 2.0,
+        "band_leads": 1,
+    }
+    n = 40
+    bars, rows = [], []
+    for symbol, bump in (("AAPL", 0.0), ("JPM", 0.1), ("XOM", 0.2)):
+        px = 100.0
+        for i in range(n):
+            ret = 0.001 * ((i % 7) - 3)
+            px *= math.exp(ret)
+            bars.append({"symbol": symbol, "asof_ms": _ms(i), "close": px})
+            rows.append({
+                "symbol": symbol,
+                "asof_ms": _ms(i),
+                "ret_lag_0": ret,
+                "close": px,
+            })
+    out = NoInformationScan(
+        "scan",
+        {
+            "split": "val",
+            "train_end_ms": _ms(24),
+            "val_start_ms": _ms(26),
+            "val_end_ms": _ms(n - 1),
+        },
+    ).run(None, {"records": rows, "bars": bars, "spec": spec})
+    assert out["metrics"]["n_leads"] == 3.0
+    assert out["metrics"]["n_series"] == 3.0
+    assert len(out["records"]) == 9
+    assert {row["symbol"] for row in out["records"]} == {"AAPL", "JPM", "XOM"}
+    assert {row["lead"] for row in out["records"]} == {1, 2, 3}
+    for symbol in ("AAPL", "JPM", "XOM"):
+        assert out["metrics"][f"go_{symbol}"] in (0.0, 1.0)
+        assert out["metrics"][f"h_star_{symbol}"] >= 0.0
+        assert 0.0 <= out["metrics"][f"p_value_{symbol}"] <= 1.0
+    assert 0.0 <= out["metrics"]["go_frac"] <= 1.0
+    assert "go" not in out["metrics"]
+    assert out["metrics"]["n_val"] > 0.0
+    assert out["metrics"]["train_mspe"] >= 0.0
+    assert out["metrics"]["val_mspe"] >= 0.0
+    assert -1.0 <= out["metrics"]["train_ic"] <= 1.0
+    assert -1.0 <= out["metrics"]["val_ic"] <= 1.0
+    assert "train_mspe_AAPL" not in out["metrics"]
 
 
 def test_lead_labels_drop_rows_whose_label_lands_after_the_cut():

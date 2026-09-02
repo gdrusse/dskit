@@ -8,11 +8,11 @@ returns, then chooses cost-aware limit orders. Data acquisition comes first.
 
 ## 1. Decisions
 
-Locked 2026-08-31. Full table: [`children/intraday_equities/docs/decisioning/framework.md`](../../children/intraday_equities/docs/decisioning/framework.md). ADR-0050…0055.
+Locked 2026-08-31; H* GO 2026-09-01. Full table: [`children/intraday_equities/docs/decisioning/framework.md`](../../children/intraday_equities/docs/decisioning/framework.md). H* splits: [`hstar-go.md`](../../children/intraday_equities/docs/decisioning/hstar-go.md). ADR-0050…0058.
 
 **Still true:** five tradable names + SPY; 1-minute raw bars; Alpaca SIP history + Schwab live; immutable separate vendors; RTH for research; paper only.
 
-**Training lock (replaces cadence-first HPO):** H = LightGBM IC on the session set (1165 top-k is not a lock). L from JSON floor 30, step 5, through `min(2H, lookback_stop)`; do not overwrite `lookback` until a decisioning row. T bakeoff `{1y,2y,3y,5y,all-prior}`. V = H-length embargo, 36–48 folds. Recency `w_k` declared, not searched. Keep-set from train importance (95% / τ). TFT in the zoo; no foundation models this round. Val Dec 2025–Feb 2026; Test A to 2026-07-31; Test B August 2026 never-touch. Ensemble = ~50 TPE, top 10% reseeded. Action 1/5/15/30/60 documents stay; they are not the training lock.
+**Training lock:** H and L from a 40-fold 3y slide through 2025-11-30; HPO through Feb 2026; nothing after 2026-02-28 is peeked (ADR-0058). T bakeoff is the HPO window. V for this pass is that walk-forward (`embargo_days=5`). 28 keep is not frozen — re-picked on train through Nov after L. Action 1/5/15/30/60 documents stay; they are not the training lock.
 
 ## 2. Source and feature inventory
 

@@ -58,6 +58,12 @@ on it without breaking its rulings.
   `planner.py`; the stage-list grammar refuses weighted corrections).
   The STATISTIC itself (`METHODS`: plain | studentized) is a closed
   tuple by owned-kind doctrine — never registrable.
+- **No-information / h*** — `no_information_test` /
+  `max_informative_horizon` (`stats.py`, ADR-0057). One time-ordered
+  `(y, ŷ)` series vs a mean; Newey–West `lags` is overlap in **steps**.
+  Not a `stat_test` `method`. A panel is the caller's to collapse or
+  test per unit. `clark_west_series` can feed `cluster_bootstrap_t`
+  when the independence unit is a cluster.
 - **Split policies** — `register_split_policy` (`split_policy.py`);
   `record` / `event-open` / `event-close` ship. An event policy needs a
   data node implementing `event_bounds()`, and the driver refuses when
@@ -413,7 +419,8 @@ dskit/pipeline/
 ├── synthetic_nodes.py demo/test nodes, private registries only
 ├── metrics.py         logloss / brier / squared_error / absolute_error / pinball + register_metric
 ├── trainlog.py        TrainingCurve + probability metrics (declared-model telemetry)
-├── stats.py           cluster bootstraps (plain, studentized-t) + correction registry
+├── stats.py           cluster bootstraps (plain, studentized-t) + correction
+│                      registry; no-information vs mean (Clark–West, h*)
 ├── records.py         MarketRecord + accounting seams
 ├── protocols.py       structural Protocols
 ├── env.py             env + redacting Secrets

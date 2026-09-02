@@ -64,6 +64,8 @@ python -m dskit.pipeline run configs/run-feed-parity.json \
     --asof 2026-08-30 --adapter intraday_equities
 python -m dskit.pipeline run configs/run-horizon-scan.json \
     --asof 2026-08-30 --adapter intraday_equities
+python -m dskit.pipeline walkforward configs/run-hstar-cv-series.json \
+  --asof 2025-11-30 --adapter intraday_equities
 python -m dskit.pipeline run configs/run-hl-scan.json \
   --asof 2026-08-30 --adapter intraday_equities
 python -m dskit.pipeline run configs/run-framework.json \
@@ -99,7 +101,7 @@ intraday_equities/
 │   ├── __init__.py      # import = registration
 │   ├── auth.py          # manual Schwab authorize over ADR-0046
 │   ├── connectors.py    # thin Alpaca/Schwab subclasses
-│   ├── nodes.py         # bars, universe, features, H/L scan, portfolio
+│   ├── nodes.py         # bars, universe, features, H/L + no-info scan, portfolio
 │   ├── models.py        # empty bespoke-architecture seam
 │   ├── live.py          # paper intents from shipped configs
 │   └── testing.py       # network-free connector doubles

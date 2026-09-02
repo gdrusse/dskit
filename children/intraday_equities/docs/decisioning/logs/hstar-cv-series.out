@@ -1,0 +1,50 @@
+node universe: start (intraday_equities-universe)
+universe 6 symbol(s) (5 tradable, 1 reference)
+node universe: ok in 0.000s
+node alpaca: start (intraday_equities-bars)
+emitting 8885389 bar record(s)
+node alpaca: ok in 0.000s
+node session: start (filter)
+filter kept 6240600/8885389 record(s)
+node session: ok in 2.880s
+node features: start (intraday_equities-session-features)
+session features: SPY
+session features: AAPL
+session features: JPM
+session features: LLY
+session features: WMT
+session features: XOM
+session features: 1248034 row(s) from 6 symbol(s) layout=columns
+node features: ok in 107.421s
+node tradable: start (intraday_equities-keep-symbols)
+keep-symbols kept 1039292/1248034 row(s)
+node tradable: ok in 0.000s
+node scan: start (intraday_equities-no-information-scan)
+no-information scan: train_mspe=2.29013e-06 val_mspe=2.10636e-06 train_ic=0.0000 val_ic=0.0000 n_train=201273 n_val=11588
+no-information scan: n_go=1/5 go_frac=0.2000
+node scan: ok in 44.945s
+node universe: start (intraday_equities-universe)
+universe 6 symbol(s) (5 tradable, 1 reference)
+node universe: ok in 0.000s
+node alpaca: start (intraday_equities-bars)
+emitting 8885389 bar record(s)
+node alpaca: ok in 0.000s
+node session: start (filter)
+filter kept 6240600/8885389 record(s)
+node session: ok in 2.871s
+node features: start (intraday_equities-session-features)
+session features: SPY
+session features: AAPL
+session features: JPM
+session features: LLY
+session features: WMT
+session features: XOM
+session features: 1248034 row(s) from 6 symbol(s) layout=columns
+node features: ok in 106.238s
+node tradable: start (intraday_equities-keep-symbols)
+keep-symbols kept 1039292/1248034 row(s)
+node tradable: ok in 0.000s
+node scan: start (intraday_equities-no-information-scan)
+no-information scan: train_mspe=2.32442e-06 val_mspe=1.85678e-06 train_ic=0.0000 val_ic=0.0000 n_train=212864 n_val=11855
+no-information scan: n_go=0/5 go_frac=0.0000
+node scan: ok in 46.736s

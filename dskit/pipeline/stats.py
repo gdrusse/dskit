@@ -1,4 +1,5 @@
-"""The toolkit's stat-test machinery: cluster bootstraps + multiplicity.
+"""The toolkit's stat-test machinery: cluster bootstraps + multiplicity
++ a no-information (forecast vs mean) walk.
 
 Doctrine, venue-neutralized: **per-instrument hypotheses stay
 per-instrument** — the toolkit offers NO way to pool instruments into one
@@ -15,6 +16,12 @@ Two statistics ship, selected by the ``stat_test`` kind's ``method`` param:
 approximately ancillary, making it gate-grade for verdicts that authorize
 action). The family is a CLOSED tuple, not a registry — the statistic is
 the ruler, and a ruler a config can swap is optimizing the ruler.
+
+A second estimand lives beside that owned kind, not inside it (ADR-0057):
+whether a **forecast series** still beats the unconditional mean under
+quadratic loss (Breitung–Knüppel no-information; Clark–West nested MSPE
+adjustment; Newey–West overlap). That is one time-ordered pair series,
+not a per-instrument bootstrap, so it is not a third ``METHODS`` entry.
 
 Corrections ARE a registry (:func:`register_correction`): a correction is
 multiplicity *policy*, not the statistic, and a project may legitimately
@@ -36,15 +43,21 @@ import hashlib
 import math
 import random
 
+from dskit.pipeline.records import number_ok
+
 __all__ = [
     "CORRECTIONS",
     "METHODS",
     "benjamini_hochberg",
     "bonferroni",
+    "clark_west_series",
     "cluster_bootstrap_pvalue",
     "cluster_bootstrap_t",
     "correction",
+    "max_informative_horizon",
+    "newey_west_mean",
     "no_correction",
+    "no_information_test",
     "register_correction",
     "weighted_benjamini_hochberg",
 ]
@@ -286,6 +299,355 @@ def cluster_bootstrap_t(cluster_scores, n_boot, seed, label="", alpha=0.05) -> d
         "ci_low": ci_low,
         "ci_high": ci_high,
         "n_clusters": n,
+    }
+
+
+def _as_pair_series(y, yhat):
+    """Equal-length finite numeric sequences; refuse bools and empties."""
+    if not isinstance(y, (list, tuple)) or not isinstance(yhat, (list, tuple)):
+        raise ValueError(
+            "y and yhat must be lists or tuples of numbers, "
+            f"got {type(y).__name__} and {type(yhat).__name__}"
+        )
+    if len(y) != len(yhat):
+        raise ValueError(f"y and yhat must have equal length, got {len(y)} and {len(yhat)}")
+    if not y:
+        raise ValueError("y is empty — nothing to test")
+    ys, fs = [], []
+    for i, (yi, fi) in enumerate(zip(y, yhat)):
+        if not number_ok(yi):
+            raise ValueError(f"y[{i}] must be a finite number, got {yi!r}")
+        if not number_ok(fi):
+            raise ValueError(f"yhat[{i}] must be a finite number, got {fi!r}")
+        ys.append(float(yi))
+        fs.append(float(fi))
+    return ys, fs
+
+
+def _resolve_mu(y, mu):
+    """Train-supplied mean, or the mean of this ``y`` when ``mu`` is omitted."""
+    if mu is None:
+        return sum(y) / len(y)
+    if not number_ok(mu):
+        raise ValueError(f"mu must be a finite number, got {mu!r}")
+    return float(mu)
+
+
+def _check_lags(lags, n):
+    """``lags`` is an int in ``[0, n)`` — overlap in observation steps."""
+    if isinstance(lags, bool) or not isinstance(lags, int) or lags < 0:
+        raise ValueError(f"lags must be an int >= 0, got {lags!r}")
+    if lags >= n:
+        raise ValueError(f"lags must be < n (got lags={lags}, n={n})")
+    return lags
+
+
+def clark_west_series(y, yhat, mu=None):
+    """Clark–West MSPE-adjusted loss gap of a forecast vs the mean.
+
+    For each pair, ``(y-μ)² - (y-ŷ)² + (ŷ-μ)²`` — equivalently
+    ``2(y-μ)(ŷ-μ)``. A positive mean is extra predictive content relative
+    to always guessing ``μ``. Pass the returned series to
+    :func:`newey_west_mean` (time-ordered overlap) or group it and pass
+    the groups to :func:`cluster_bootstrap_t` (cluster as the
+    independence unit).
+
+    Parameters
+    ----------
+    y : list or tuple of float
+        Realized values, one per observation.
+    yhat : list or tuple of float
+        Forecasts, same length as ``y``.
+    mu : float or None
+        Unconditional-mean benchmark. ``None`` uses the mean of ``y``.
+
+    Returns
+    -------
+    list of float
+        One adjusted gap per observation, in input order.
+
+    Raises
+    ------
+    ValueError
+        On empty or unequal inputs, or a non-finite cell / ``mu``.
+
+    Examples
+    --------
+    A constant forecast equal to ``mu`` has no content::
+
+        clark_west_series([1.0, 3.0], [2.0, 2.0], mu=2.0)
+        # -> [0.0, 0.0]
+    """
+    ys, fs = _as_pair_series(y, yhat)
+    m = _resolve_mu(ys, mu)
+    return [2.0 * (yi - m) * (fi - m) for yi, fi in zip(ys, fs)]
+
+
+def _norm_sf(z):
+    """Upper tail ``P(Z > z)`` for a standard normal, via ``erfc``."""
+    return 0.5 * math.erfc(z / math.sqrt(2.0))
+
+
+def newey_west_mean(values, lags=0):
+    """One-sided HAC t-test that ``E[values] <= 0``.
+
+    Newey–West (1987) Bartlett kernel, autocovariances divided by ``n``
+    (not ``n-j``). ``lags`` is the MA order in **observation steps** —
+    overlapping h-step errors on a series sampled every step take
+    ``lags=h-1``; consecutive non-overlapping observations take ``0``.
+
+    Parameters
+    ----------
+    values : list or tuple of float
+        Time-ordered observations of the score whose mean is tested.
+    lags : int
+        Bartlett truncation, ``0 <= lags < n``.
+
+    Returns
+    -------
+    dict
+        ``{"n", "mean", "se", "t", "p_value", "lags"}``. ``t`` is
+        ``None`` when the series has no variance (sign of the mean
+        decides ``p_value``: ``0.0`` if positive, else ``1.0``).
+
+    Raises
+    ------
+    ValueError
+        On fewer than two observations, a non-finite cell, or ``lags``
+        outside ``[0, n)``.
+
+    Examples
+    --------
+    Four observations, one lag, mean 2.5 and SE 0.625::
+
+        out = newey_west_mean([1.0, 2.0, 3.0, 4.0], lags=1)
+        # -> out["t"] == 4.0
+    """
+    if not isinstance(values, (list, tuple)):
+        raise ValueError(
+            f"values must be a list or tuple of numbers, got {type(values).__name__}"
+        )
+    series = []
+    for i, v in enumerate(values):
+        if not number_ok(v):
+            raise ValueError(f"values[{i}] must be a finite number, got {v!r}")
+        series.append(float(v))
+    n = len(series)
+    if n < 2:
+        raise ValueError(f"newey_west_mean needs at least 2 observations, got {n}")
+    lags = _check_lags(lags, n)
+    mean = sum(series) / n
+    if len(set(series)) == 1:
+        return {
+            "n": n,
+            "mean": mean,
+            "se": 0.0,
+            "t": None,
+            "p_value": 0.0 if mean > 0.0 else 1.0,
+            "lags": lags,
+        }
+    centered = [v - mean for v in series]
+    gamma0 = sum(c * c for c in centered) / n
+    lrv = gamma0
+    for lag in range(1, lags + 1):
+        weight = 1.0 - lag / (lags + 1)
+        gamma = sum(centered[t] * centered[t - lag] for t in range(lag, n)) / n
+        lrv += 2.0 * weight * gamma
+    if lrv <= 0.0:
+        return {
+            "n": n,
+            "mean": mean,
+            "se": 0.0,
+            "t": None,
+            "p_value": 0.0 if mean > 0.0 else 1.0,
+            "lags": lags,
+        }
+    se = math.sqrt(lrv / n)
+    t = mean / se
+    return {
+        "n": n,
+        "mean": mean,
+        "se": se,
+        "t": t,
+        "p_value": _norm_sf(t),
+        "lags": lags,
+    }
+
+
+def no_information_test(y, yhat, mu=None, lags=0, horizon=None):
+    """Forecast vs unconditional mean: MSPE both sides, Clark–West p.
+
+    Left side is the model's mean squared error; right side is the mean
+    squared error of always guessing ``μ``. The null of **no information**
+    is left ≥ right. Inference is the nested Clark–West t-statistic of
+    that comparison (not naive Diebold–Mariano), with Newey–West overlap
+    correction. A panel of names must be collapsed or tested per unit
+    **before** this function — it treats the pair series as one
+    time-ordered sample.
+
+    Parameters
+    ----------
+    y : list or tuple of float
+        Realized target (the same object the forecast is scored on).
+    yhat : list or tuple of float
+        Forecasts, same length as ``y``.
+    mu : float or None
+        Benchmark mean. ``None`` uses the mean of this ``y``. Pass a
+        train-set mean when the benchmark must not peek at the scored
+        sample.
+    lags : int
+        Newey–West lag in observation steps (``h_steps - 1`` when
+        consecutive rows overlap by ``h_steps - 1`` periods).
+    horizon : number or None
+        Optional label copied onto the result for
+        :func:`max_informative_horizon`. Omitted when not supplied.
+
+    Returns
+    -------
+    dict
+        ``n``, ``mu``, ``mspe_model`` (left), ``mspe_mean`` (right),
+        ``beats_mean`` (strict left < right, descriptive), ``mean_adj``,
+        ``se``, ``t``, ``p_value`` (one-sided Clark–West), ``lags``.
+        ``horizon`` only when passed.
+
+    Raises
+    ------
+    ValueError
+        On a bad pair series, ``mu``, ``lags``, or ``horizon``.
+
+    Examples
+    --------
+    A perfect forecast of a varying series beats the mean::
+
+        out = no_information_test([1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 4.0], mu=2.5)
+        # -> out["beats_mean"] is True
+    """
+    ys, fs = _as_pair_series(y, yhat)
+    m = _resolve_mu(ys, mu)
+    n = len(ys)
+    mspe_model = sum((yi - fi) ** 2 for yi, fi in zip(ys, fs)) / n
+    mspe_mean = sum((yi - m) ** 2 for yi in ys) / n
+    hac = newey_west_mean(clark_west_series(ys, fs, mu=m), lags=lags)
+    out = {
+        "n": n,
+        "mu": m,
+        "mspe_model": mspe_model,
+        "mspe_mean": mspe_mean,
+        "beats_mean": mspe_model < mspe_mean,
+        "mean_adj": hac["mean"],
+        "se": hac["se"],
+        "t": hac["t"],
+        "p_value": hac["p_value"],
+        "lags": hac["lags"],
+    }
+    if horizon is not None:
+        if not number_ok(horizon):
+            raise ValueError(f"horizon must be a finite number, got {horizon!r}")
+        out["horizon"] = horizon if isinstance(horizon, int) else float(horizon)
+    return out
+
+
+def max_informative_horizon(ordered, alpha=0.05):
+    """Breitung–Knüppel sequential h*: stop at the first non-rejection.
+
+    Walk ``ordered`` from short horizon to long. Reject no-information
+    while ``p_value <= alpha``; the first fail stops the walk. ``h_star``
+    is the last rejected horizon, or ``None`` if the first already fails.
+    Later rows after a fail are ignored even if they would have rejected.
+
+    This is a **test sequence** at fixed ``alpha``, not a consistent
+    selector (that would need α → 0). The walk does **not** check
+    Patton–Timmermann monotonicity; that assumption is the caller's.
+
+    Parameters
+    ----------
+    ordered : sequence of mappings
+        Each mapping needs ``horizon`` and ``p_value``. Horizons must be
+        strictly increasing.
+    alpha : float
+        One-sided level in (0, 1).
+
+    Returns
+    -------
+    dict
+        ``h_star``, ``rejected`` (horizons that rejected, in order),
+        ``first_fail`` (``None`` when every horizon rejected), ``alpha``,
+        ``n_horizons``.
+
+    Raises
+    ------
+    ValueError
+        On an empty walk, a missing key, a non-increasing horizon, a
+        p-value outside [0, 1], or a bad alpha.
+
+    Examples
+    --------
+    Reject at 5 and 10, fail at 15 → ``h_star`` is 10::
+
+        out = max_informative_horizon(
+            [
+                {"horizon": 5, "p_value": 0.01},
+                {"horizon": 10, "p_value": 0.04},
+                {"horizon": 15, "p_value": 0.40},
+            ]
+        )
+        # -> out["h_star"] == 10
+    """
+    if not ordered:
+        raise ValueError("ordered is empty — nothing to walk")
+    if (
+        isinstance(alpha, bool)
+        or not isinstance(alpha, (int, float))
+        or not 0 < alpha < 1
+    ):
+        raise ValueError(f"alpha must be a number in (0, 1), got {alpha!r}")
+    rejected = []
+    first_fail = None
+    prev = None
+    stopped = False
+    n_horizons = 0
+    for i, row in enumerate(ordered):
+        if not isinstance(row, dict):
+            raise ValueError(
+                f"ordered[{i}] must be a dict with horizon and p_value, "
+                f"got {type(row).__name__}"
+            )
+        if "horizon" not in row or "p_value" not in row:
+            raise ValueError(
+                f"ordered[{i}] needs 'horizon' and 'p_value', got {sorted(row)}"
+            )
+        h = row["horizon"]
+        p = row["p_value"]
+        if not number_ok(h):
+            raise ValueError(f"ordered[{i}].horizon must be a finite number, got {h!r}")
+        if (
+            isinstance(p, bool)
+            or not isinstance(p, (int, float))
+            or not math.isfinite(p)
+            or not 0 <= p <= 1
+        ):
+            raise ValueError(
+                f"ordered[{i}].p_value must lie in [0, 1], got {p!r}"
+            )
+        if prev is not None and h <= prev:
+            raise ValueError(
+                f"horizons must be strictly increasing, got {prev} then {h}"
+            )
+        prev = h
+        n_horizons += 1
+        if stopped:
+            continue
+        if p <= alpha:
+            rejected.append(h)
+        else:
+            first_fail = h
+            stopped = True
+    return {
+        "h_star": rejected[-1] if rejected else None,
+        "rejected": list(rejected),
+        "first_fail": first_fail,
+        "alpha": float(alpha),
+        "n_horizons": n_horizons,
     }
 
 

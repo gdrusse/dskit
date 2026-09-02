@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import random
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -44,6 +45,7 @@ __all__ = [
     "LeadLabeledRows",
     "LookbackScan",
     "NODE_KINDS",
+    "NoInformationScan",
     "PortfolioSelect",
     "SessionFeatureRows",
     "Universe",
@@ -57,6 +59,9 @@ DEFAULT_SHARED_FIELDS = ("symbol",)
 DEFAULT_PRICE_FIELD = "close"
 DEFAULT_MAX_GAP_MINUTES = 5
 DEFAULT_OHLCV_FIELDS = ("open", "high", "low", "close", "volume")
+#: One-sided level for :class:`NoInformationScan` (ADR-0058).
+_NO_INFO_ALPHA = 0.05
+_DAY_MS = 24 * 60 * 60 * 1000
 
 
 def session_name(stamp, zone, rth_start_minutes, rth_end_minutes):
@@ -800,6 +805,16 @@ def session_feature_names(lookback, scales, reference, industries=()):
     return tuple(names)
 
 
+def _emit_feature_names(lookback, scales, reference, industries, extra=()):
+    """Session names plus vol-scaled momentum and extra-horizon ret/rv/mom."""
+    names = list(session_feature_names(lookback, scales, reference, industries))
+    names.extend(f"mom_{scale['tag']}" for scale in scales)
+    for horizon in extra:
+        tag = horizon["tag"]
+        names.extend((f"ret_{tag}", f"rv_{tag}", f"mom_{tag}"))
+    return tuple(names)
+
+
 def horizon_leads(start, step, stop):
     """Return the inclusive lead grid declared by the universe.
 
@@ -839,7 +854,7 @@ def _cell(value):
 
 def _session_feature_arrays(
     ms, opn, high, low, close, volume, lookback, max_gap_ms, holidays, scales,
-    session,
+    session, extra_horizons=(), scale_moms=False,
 ):
     """Build per-bar feature columns for one symbol's RTH tape."""
     import numpy as np
@@ -908,6 +923,35 @@ def _session_feature_arrays(
         columns[f"range_{tag}"] = rng_s
         columns[f"vol_{tag}"] = vol_s
         columns[f"amihud_{tag}"] = amihud_s
+    if scale_moms:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            for scale in scales:
+                tag = scale["tag"]
+                columns[f"mom_{tag}"] = columns[f"ret_{tag}"] / columns[f"rv_{tag}"]
+    for horizon in extra_horizons:
+        width = int(horizon["width"])
+        tag = horizon["tag"]
+        same_session = not horizon["cross_session"]
+        ret_s = np.full(n, np.nan)
+        rv_s = np.full(n, np.nan)
+        if n > width:
+            ok = idx >= width
+            if same_session:
+                ok &= (idx - width) >= sess_start
+            ret_s[ok] = logp[ok] - logp[idx[ok] - width]
+        if n >= width:
+            rv_s = rolling_std(ret1, width)
+            if same_session:
+                start_at = idx[width - 1:] - (width - 1)
+                bad = start_at < sess_start[width - 1:]
+                ret_s[width - 1:][bad] = np.nan
+                rv_s[width - 1:][bad] = np.nan
+        columns[f"ret_{tag}"] = ret_s
+        columns[f"rv_{tag}"] = rv_s
+        with np.errstate(divide="ignore", invalid="ignore"):
+            columns[f"mom_{tag}"] = ret_s / rv_s
+    if lookback == 0:
+        columns["ret_lag_0"] = ret1
     spread = high - low
     with np.errstate(divide="ignore", invalid="ignore"):
         clv = np.where(spread > 0.0, (2.0 * close - high - low) / spread, 0.0)
@@ -1000,12 +1044,12 @@ def _symbol_ohlcv(rows):
 
 def _grid_columns(
     ms, opn, high, low, close, volume, lookback, max_gap_ms, holidays,
-    scales, session, offset_ms, period_ms, skip,
+    scales, session, offset_ms, period_ms, skip, extra_horizons, scale_moms,
 ):
     """Grid-aligned feature columns for one symbol; full-tape arrays drop."""
     columns = _session_feature_arrays(
         ms, opn, high, low, close, volume, lookback, max_gap_ms,
-        holidays, scales, session,
+        holidays, scales, session, extra_horizons, scale_moms,
     )
     keep = ((ms - offset_ms) % period_ms) == 0
     names = [name for name in columns if name not in skip]
@@ -1024,16 +1068,18 @@ class SessionFeatureRows(Node):
     :class:`Universe`. One-minute lags never bridge a tape gap. The
     overnight move is its own field. A scale with ``cross_session``
     false stays inside a tape-continuous session; true reads back across
-    the close.
+    the close. ``lookback`` 0 still keeps ``ret_lag_0`` internally for
+    the SPY residual and does not emit lag columns.
 
     Parameters
     ----------
     params : dict
-        Optional ``lookback`` (int >= 2) overrides ``spec.lookback`` so
-        an H/L scan can emit a longer lag set than the action windows.
+        Optional ``lookback`` (int >= 0) overrides ``spec.lookback``.
         Optional ``layout`` (``rows`` default, or ``columns``) keeps
-        grid rows as numpy frames instead of one dict each — required
-        once lookback is long enough that the dict tax OOMs.
+        grid rows as numpy frames instead of one dict each. Optional
+        ``momentum_horizons`` (non-empty list of scale objects) adds
+        ``mom_{scale}`` on the universe scales plus ``ret``/``rv``/
+        ``mom`` at each extra width.
 
     Examples
     --------
@@ -1045,7 +1091,7 @@ class SessionFeatureRows(Node):
 
     role = "transform"
     outputs = ("records", "tape")
-    _PARAMS = ("lookback", "layout")
+    _PARAMS = ("lookback", "layout", "momentum_horizons")
 
     @classmethod
     def validate_params(cls, params):
@@ -1065,7 +1111,7 @@ class SessionFeatureRows(Node):
         reject_unknown_params(problems, params, cls._PARAMS)
         lookback = params.get("lookback")
         if "lookback" in params and not is_node_ref(lookback):
-            check_int_param(problems, "lookback", lookback, ge=2)
+            check_int_param(problems, "lookback", lookback, ge=0)
         layout = params.get("layout")
         if (
             "layout" in params
@@ -1074,6 +1120,12 @@ class SessionFeatureRows(Node):
         ):
             problems.append(
                 f"layout must be 'rows' or 'columns', got {layout!r}"
+            )
+        extra = params.get("momentum_horizons")
+        if extra is not None and not is_node_ref(extra):
+            problems.extend(
+                p.replace("scales", "momentum_horizons", 1)
+                for p in _scale_problems(extra)
             )
         return problems
 
@@ -1100,6 +1152,22 @@ class SessionFeatureRows(Node):
             problems.append(f"spec must be the universe object, got {spec!r}")
         else:
             problems.extend(_universe_problems(spec))
+            extra = self.params.get("momentum_horizons")
+            if extra:
+                scale_tags = {
+                    item.get("tag")
+                    for item in spec.get("scales") or []
+                    if isinstance(item, dict)
+                }
+                for i, horizon in enumerate(extra):
+                    if not isinstance(horizon, dict):
+                        continue
+                    tag = horizon.get("tag")
+                    if tag in scale_tags:
+                        problems.append(
+                            f"momentum_horizons[{i}].tag {tag!r} collides "
+                            "with scales"
+                        )
         return problems
 
     def run(self, ctx, inputs):
@@ -1147,16 +1215,23 @@ class SessionFeatureRows(Node):
         layout = self.params.get("layout", "rows")
         industry = spec.get("industry") or {}
         tags = tuple(sorted(set(industry.values())))
-        feat_names = list(session_feature_names(
-            lookback, scales, reference, tags,
-        ))
+        extra = list(self.params.get("momentum_horizons") or ())
+        scale_moms = bool(extra)
+        if extra:
+            feat_names = list(_emit_feature_names(
+                lookback, scales, reference, tags, extra,
+            ))
+        else:
+            feat_names = list(session_feature_names(
+                lookback, scales, reference, tags,
+            ))
         skip = set()
         for symbol in reference:
             skip.add(f"ref_ret_{symbol}")
             skip.add(f"residual_{symbol}")
         knobs = (
             lookback, max_gap_ms, holidays, scales, session,
-            offset_ms, period_ms, skip,
+            offset_ms, period_ms, skip, extra, scale_moms,
         )
         ref_ret = {symbol: {} for symbol in reference}
         order = [symbol for symbol in reference if symbol in grouped]
@@ -1836,22 +1911,131 @@ def _combo_ic(train_x, train_y, val_x, val_y, names, top_k):
     )
 
 
-def _model_ic(train_x, train_y, val_x, val_y, names, scan):
-    """Fit the declared estimator and score Spearman IC on both folds."""
+def _fit_estimator(train_x, train_y, scan, categorical=None):
+    """Fit ``scan.estimator``, or a least-squares fallback (tests)."""
     import importlib
 
     import numpy as np
 
-    path = scan["estimator"]
-    module_name, _, attr = path.rpartition(".")
-    try:
-        cls = getattr(importlib.import_module(module_name), attr)
-    except (ImportError, AttributeError) as exc:
-        raise ValueError(
-            f"scan.estimator {path!r} could not be imported ({exc})"
-        ) from exc
-    model = cls(**dict(scan.get("estimator_params") or {}))
-    model.fit(train_x, train_y)
+    path = scan.get("estimator")
+    if path:
+        module_name, _, attr = path.rpartition(".")
+        try:
+            cls = getattr(importlib.import_module(module_name), attr)
+        except (ImportError, AttributeError) as exc:
+            raise ValueError(
+                f"scan.estimator {path!r} could not be imported ({exc})"
+            ) from exc
+        params = dict(scan.get("estimator_params") or {})
+        params.pop("categorical_feature", None)
+        model = cls(**params)
+        if categorical is not None:
+            model.fit(train_x, train_y, categorical_feature=categorical)
+        else:
+            model.fit(train_x, train_y)
+        return model
+
+    class _Lstsq:
+        """Intercept + linear map; stdlib stand-in when no estimator is set."""
+
+        def fit(self, x, y):
+            n = x.shape[0]
+            design = np.column_stack([np.ones(n), x])
+            self.coef_, *_ = np.linalg.lstsq(design, y, rcond=None)
+            return self
+
+        def predict(self, x):
+            n = x.shape[0]
+            design = np.column_stack([np.ones(n), x])
+            return design @ self.coef_
+
+    return _Lstsq().fit(train_x, train_y)
+
+
+def _mspe(y, yhat):
+    """Mean squared error of two equal-length sequences."""
+    import numpy as np
+
+    y = np.asarray(y, dtype=np.float64)
+    yhat = np.asarray(yhat, dtype=np.float64)
+    if y.size == 0:
+        return 0.0
+    return float(np.mean((y - yhat) ** 2))
+
+
+def _fit_split_metrics(model, train_x, train_y, val_x, val_y):
+    """Train vs val MSPE and Spearman IC at the training lead."""
+    import numpy as np
+
+    out = {}
+    for prefix, x, y in (("train", train_x, train_y), ("val", val_x, val_y)):
+        if y.size < 2:
+            out[f"{prefix}_mspe"] = 0.0
+            out[f"{prefix}_ic"] = 0.0
+            continue
+        hat = np.asarray(model.predict(x), dtype=np.float64)
+        out[f"{prefix}_mspe"] = _mspe(y, hat)
+        out[f"{prefix}_ic"] = float(_spearman(y, hat))
+    return out
+
+
+def _hpo_cuts(train_end, val_days, embargo_days):
+    """Inner tune window carved from fold train; fold val is unread."""
+    inner_val_end = int(train_end)
+    inner_val_start = inner_val_end - int(val_days) * _DAY_MS + 1
+    inner_train_end = inner_val_start - int(embargo_days) * _DAY_MS - 1
+    return inner_train_end, inner_val_start, inner_val_end
+
+
+def _hpo_combos(base, space, trials, seed):
+    """Draw unique random combos from a discrete space onto ``base``."""
+    keys = sorted(space)
+    rng = random.Random(seed)
+    n_unique = 1
+    for key in keys:
+        n_unique *= len(space[key])
+    target = min(int(trials), n_unique)
+    seen = set()
+    combos = []
+    attempts = 0
+    while len(combos) < target and attempts < target * 40:
+        attempts += 1
+        pick = tuple(rng.choice(space[key]) for key in keys)
+        if pick in seen:
+            continue
+        seen.add(pick)
+        row = dict(base)
+        for key, value in zip(keys, pick):
+            row[key] = value
+        combos.append(row)
+    return tuple(combos)
+
+
+def _tune_estimator(
+    scan, combos, train_x, train_y, val_x, val_y, categorical=None,
+):
+    """Pick the combo with the lowest inner-val MSPE."""
+    base = dict(scan.get("estimator_params") or {})
+    best_params = base
+    best_mspe = None
+    for trial in combos:
+        trial_scan = dict(scan)
+        trial_scan["estimator_params"] = trial
+        model = _fit_estimator(
+            train_x, train_y, trial_scan, categorical=categorical,
+        )
+        mspe = _mspe(val_y, model.predict(val_x))
+        if best_mspe is None or mspe < best_mspe:
+            best_mspe = mspe
+            best_params = trial
+    return best_params, float(best_mspe if best_mspe is not None else 0.0)
+
+
+def _model_ic(train_x, train_y, val_x, val_y, names, scan):
+    """Fit the declared estimator and score Spearman IC on both folds."""
+    import numpy as np
+
+    model = _fit_estimator(train_x, train_y, scan)
     pred_tr = np.asarray(model.predict(train_x), dtype=np.float64)
     pred_va = np.asarray(model.predict(val_x), dtype=np.float64)
     importance = getattr(model, "feature_importances_", None)
@@ -2196,6 +2380,32 @@ def _frame_matrix(frame, features):
     return stamps[finite], x[finite]
 
 
+def _symbol_codes(spec, prepared):
+    """Stable integer codes: tradable order, then any extra names."""
+    names = list(spec.get("tradable") or [])
+    seen = set(names)
+    for item in prepared:
+        if item[0] not in seen:
+            names.append(item[0])
+            seen.add(item[0])
+    return {name: i for i, name in enumerate(names)}
+
+
+def _attach_symbol_codes(prepared, codes):
+    """Append a last column of integer symbol codes for LightGBM."""
+    import numpy as np
+
+    out = []
+    for item in prepared:
+        symbol, stamps, x, loc, match, t_ms, t_px = item
+        code = float(codes[symbol])
+        stacked = np.column_stack([
+            x, np.full(x.shape[0], code, dtype=np.float64),
+        ])
+        out.append((symbol, stamps, stacked, loc, match, t_ms, t_px))
+    return out
+
+
 def _scan_aligned(bars, records, features, price_field, val_end):
     """Align finite feature rows to the 1-minute tape, dropping lockbox stamps."""
     import numpy as np
@@ -2219,7 +2429,8 @@ def _scan_aligned(bars, records, features, price_field, val_end):
                 (loc < t_ms.size)
                 & (t_ms[np.minimum(loc, t_ms.size - 1)] == stamps)
             )
-            prepared.append((stamps, x, loc, match, t_ms, t_px))
+            prepared.append((symbol, stamps, x, loc, match, t_ms, t_px))
+        prepared.sort(key=lambda item: item[0])
         return prepared
     grouped = {}
     for row in records:
@@ -2245,7 +2456,8 @@ def _scan_aligned(bars, records, features, price_field, val_end):
         x = np.asarray([item[1] for item in rows], dtype=np.float64)
         loc = np.searchsorted(t_ms, stamps)
         match = (loc < t_ms.size) & (t_ms[np.minimum(loc, t_ms.size - 1)] == stamps)
-        prepared.append((stamps, x, loc, match, t_ms, t_px))
+        prepared.append((symbol, stamps, x, loc, match, t_ms, t_px))
+    prepared.sort(key=lambda item: item[0])
     return prepared
 
 
@@ -2254,8 +2466,9 @@ def _scan_fold(prepared, lead, train_end, val_start, val_end):
     import numpy as np
 
     train_x, train_y, val_x, val_y = [], [], [], []
-    n_features = prepared[0][1].shape[1] if prepared else 0
-    for stamps, x, loc, match, t_ms, t_px in prepared:
+    n_features = prepared[0][2].shape[1] if prepared else 0
+    for item in prepared:
+        stamps, x, loc, match, t_ms, t_px = item[-6:]
         future = loc + lead
         ok = match & (future < t_ms.size)
         if not np.any(ok):
@@ -2294,6 +2507,136 @@ def _scan_fold(prepared, lead, train_end, val_start, val_end):
         np.concatenate(val_x) if val_x else empty_x,
         np.concatenate(val_y) if val_y else empty_y,
     )
+
+
+def _scan_fold_stamped(prepared, lead, train_end, val_start, val_end):
+    """Like :func:`_scan_fold`, plus val stamps aligned with val rows."""
+    import numpy as np
+
+    train_x, train_y, val_x, val_y, val_stamps = [], [], [], [], []
+    n_features = prepared[0][2].shape[1] if prepared else 0
+    for item in prepared:
+        stamps, x, loc, match, t_ms, t_px = item[-6:]
+        future = loc + lead
+        ok = match & (future < t_ms.size)
+        if not np.any(ok):
+            continue
+        loc_ok = loc[ok]
+        fut_ok = future[ok]
+        px0 = t_px[loc_ok]
+        px1 = t_px[fut_ok]
+        pos = (px0 > 0.0) & (px1 > 0.0)
+        y = np.full(px0.shape, np.nan, dtype=np.float64)
+        y[pos] = np.log(px1[pos] / px0[pos])
+        finite = np.isfinite(y)
+        if not np.any(finite):
+            continue
+        stamp = stamps[ok][finite]
+        future_ms = t_ms[fut_ok][finite]
+        x_ok = x[ok][finite]
+        y = y[finite]
+        train = (stamp <= train_end) & (future_ms <= train_end)
+        val = (
+            (stamp >= val_start)
+            & (stamp <= val_end)
+            & (future_ms <= val_end)
+        )
+        if np.any(train):
+            train_x.append(x_ok[train])
+            train_y.append(y[train])
+        if np.any(val):
+            val_x.append(x_ok[val])
+            val_y.append(y[val])
+            val_stamps.append(stamp[val])
+    empty_x = np.zeros((0, n_features), dtype=np.float64)
+    empty_y = np.zeros(0, dtype=np.float64)
+    empty_t = np.zeros(0, dtype=np.int64)
+    return (
+        np.concatenate(train_x) if train_x else empty_x,
+        np.concatenate(train_y) if train_y else empty_y,
+        np.concatenate(val_x) if val_x else empty_x,
+        np.concatenate(val_y) if val_y else empty_y,
+        np.concatenate(val_stamps) if val_stamps else empty_t,
+    )
+
+
+def _blank_lead_row(symbol, lead, lags):
+    """One no-information grid row with no usable pairs."""
+    return {
+        "symbol": symbol,
+        "lead": lead,
+        "p_value": 1.0,
+        "beats_mean": 0.0,
+        "mspe_model": 0.0,
+        "mspe_mean": 0.0,
+        "n": 0.0,
+        "lags": float(lags),
+    }
+
+
+def _walk_no_information_series(
+    prepared_one, model, leads, train_end, val_start, val_end, period_minutes,
+):
+    """Sequential h* for one name; GO is that H or none.
+
+    ``μ(h)`` is this series' train mean of ``y(h)``. The estimator is
+    fitted outside (pooled train) and only scored here.
+    """
+    import numpy as np
+
+    from dskit.pipeline.stats import max_informative_horizon, no_information_test
+
+    symbol = prepared_one[0]
+    curve = []
+    ordered = []
+    for lead in leads:
+        lags = max(lead // period_minutes - 1, 0)
+        if model is None:
+            row = _blank_lead_row(symbol, lead, lags)
+            curve.append(row)
+            ordered.append({"horizon": lead, "p_value": 1.0})
+            continue
+        _, tr_y, val_x, val_y, _ = _scan_fold_stamped(
+            [prepared_one], lead, train_end, val_start, val_end,
+        )
+        mu = float(tr_y.mean()) if tr_y.size else 0.0
+        if val_x.shape[0] < 2:
+            row = _blank_lead_row(symbol, lead, lags)
+            row["lags"] = float(lags)
+            curve.append(row)
+            ordered.append({"horizon": lead, "p_value": 1.0})
+            continue
+        yhat = np.asarray(model.predict(val_x), dtype=np.float64)
+        if val_y.size < 2 or lags >= val_y.size:
+            row = _blank_lead_row(symbol, lead, lags)
+            row["n"] = float(val_y.size)
+            curve.append(row)
+            ordered.append({"horizon": lead, "p_value": 1.0})
+            continue
+        out = no_information_test(
+            val_y.tolist(), yhat.tolist(), mu=mu, lags=lags, horizon=lead,
+        )
+        row = {
+            "symbol": symbol,
+            "lead": lead,
+            "p_value": float(out["p_value"]),
+            "beats_mean": float(out["beats_mean"]),
+            "mspe_model": float(out["mspe_model"]),
+            "mspe_mean": float(out["mspe_mean"]),
+            "n": float(out["n"]),
+            "lags": float(out["lags"]),
+        }
+        curve.append(row)
+        ordered.append({"horizon": lead, "p_value": out["p_value"]})
+    walked = max_informative_horizon(ordered, alpha=_NO_INFO_ALPHA)
+    h_star = walked["h_star"]
+    first = curve[0] if curve else {}
+    go = 1.0 if h_star is not None else 0.0
+    return curve, {
+        "go": go,
+        "h_star": float(h_star if h_star is not None else 0.0),
+        "p_value": float(first.get("p_value", 1.0)),
+    }
 
 
 class HorizonScan(Node):
@@ -2473,6 +2816,262 @@ class HorizonScan(Node):
             bool(verdict["go_band"]),
             metrics["farthest_confident_lead"],
             metrics["rank_ic"],
+        )
+        return {"records": curve, "metrics": metrics}
+
+
+class NoInformationScan(Node):
+    """One pooled ``ŷ`` at ``lead_start``; no-information walk per series.
+
+    Role ``score`` — the ``intraday_equities-no-information-scan`` kind.
+    One LightGBM on the pooled training label (``horizon.lead_start``)
+    with the last column a symbol category. Optional short HPO is an
+    inner split of **fold train** (not fold val). Each name then walks
+    ``h`` against ``y(h)`` with
+    :func:`~dskit.pipeline.stats.no_information_test`. ``μ(h)`` is that
+    name's train mean of ``y(h)``. Sequential ``h*`` at α=0.05: GO iff
+    the reject run starts at the first lead; H is the far end. Book
+    collapse is deferred (``docs/adhoc/deferred_decisions.md``).
+
+    Parameters
+    ----------
+    params : dict
+        ``split`` (must be ``val``), ``train_end_ms``, ``val_start_ms``,
+        ``val_end_ms``. Optional ``estimator_params`` is the base tree.
+        Optional ``hpo_trials``, ``hpo_seed``, ``hpo_val_days``,
+        ``hpo_embargo_days``, ``hpo_space`` run a discrete random search
+        on an inner train holdout.
+
+    Examples
+    --------
+    Cuts only — the grid lives on the universe port::
+
+        node = NoInformationScan("scan", {
+            "split": "val",
+            "train_end_ms": 10, "val_start_ms": 11, "val_end_ms": 20,
+        })
+        node.params["split"]  # 'val'
+    """
+
+    role = "score"
+    outputs = ("records", "metrics")
+    _PARAMS = (
+        "split", "train_end_ms", "val_start_ms", "val_end_ms",
+        "estimator_params",
+        "hpo_trials", "hpo_seed", "hpo_val_days", "hpo_embargo_days",
+        "hpo_space",
+    )
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            Declared node params.
+
+        Returns
+        -------
+        list of str
+            One problem per broken knob.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        if params.get("split") != "val":
+            problems.append(
+                "split must be 'val' (the lockbox is unread), got "
+                f"{params.get('split')!r}"
+            )
+        for knob in ("train_end_ms", "val_start_ms", "val_end_ms"):
+            check_int_param(problems, knob, params.get(knob), ge=0)
+        extra = params.get("estimator_params")
+        if extra is not None and not isinstance(extra, dict):
+            problems.append(
+                f"estimator_params must be an object, got {extra!r}"
+            )
+        trials = params.get("hpo_trials")
+        if trials is not None:
+            check_int_param(problems, "hpo_trials", trials, ge=0)
+        if trials:
+            for knob in ("hpo_seed", "hpo_val_days", "hpo_embargo_days"):
+                ge = 1 if knob == "hpo_val_days" else 0
+                if knob not in params:
+                    problems.append(f"{knob} is required when hpo_trials > 0")
+                else:
+                    check_int_param(problems, knob, params.get(knob), ge=ge)
+            space = params.get("hpo_space")
+            if not isinstance(space, dict) or not space:
+                problems.append(
+                    "hpo_space must be a non-empty object of lists when "
+                    f"hpo_trials > 0, got {space!r}"
+                )
+            else:
+                for key, values in space.items():
+                    if not isinstance(key, str) or not key:
+                        problems.append(
+                            f"hpo_space keys must be non-empty strings, got {key!r}"
+                        )
+                    if (
+                        not isinstance(values, list) or not values
+                        or any(
+                            isinstance(v, bool) or not isinstance(v, (int, float))
+                            for v in values
+                        )
+                    ):
+                        problems.append(
+                            f"hpo_space[{key!r}] must be a non-empty list of "
+                            f"numbers, got {values!r}"
+                        )
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require feature rows, the 1-minute tape, and the universe spec.
+
+        Parameters
+        ----------
+        inputs : dict
+            ``records``, ``bars``, and ``spec``.
+
+        Returns
+        -------
+        list of str
+            Input problems.
+        """
+        problems = []
+        for port in ("records", "bars"):
+            if not isinstance(inputs.get(port), list):
+                problems.append(
+                    f"{port} must be a list of rows, got {inputs.get(port)!r}"
+                )
+        spec = inputs.get("spec")
+        if not isinstance(spec, dict):
+            problems.append(f"spec must be the universe object, got {spec!r}")
+        else:
+            problems.extend(_universe_problems(spec))
+        return problems
+
+    def run(self, ctx, inputs):
+        """Fit one pooled tree, then walk no-information per series.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext
+            Unused run frame.
+        inputs : dict
+            ``records`` (feature rows) and ``bars`` (RTH 1-minute closes).
+
+        Returns
+        -------
+        dict
+            ``records`` (one row per ``(symbol, lead)``) and ``metrics``
+            (``n_series``, ``n_go``, ``go_frac``, pooled train/val MSPE
+            and IC, plus ``go_<sym>``, ``h_star_<sym>``,
+            ``p_value_<sym>``).
+        """
+        spec = inputs["spec"]
+        horizon = spec["horizon"]
+        features = _feature_names_for_rows(spec, inputs["records"])
+        leads = horizon_leads(
+            int(horizon["lead_start"]),
+            int(horizon["lead_step"]),
+            int(horizon["lead_stop"]),
+        )
+        train_lead = int(horizon["lead_start"])
+        train_end = int(self.params["train_end_ms"])
+        val_start = int(self.params["val_start_ms"])
+        val_end = int(self.params["val_end_ms"])
+        period_ms = int(spec["period_ms"])
+        period_minutes = max(period_ms // 60_000, 1)
+        prepared = _scan_aligned(
+            inputs["bars"], inputs["records"], features,
+            spec["price_field"], val_end,
+        )
+        codes = _symbol_codes(spec, prepared)
+        prepared = _attach_symbol_codes(prepared, codes)
+        categorical = (
+            [prepared[0][2].shape[1] - 1] if prepared else None
+        )
+        base_scan = dict(spec.get("scan") or {})
+        if self.params.get("estimator_params") is not None:
+            base_scan["estimator_params"] = dict(self.params["estimator_params"])
+        hpo_trials = int(self.params.get("hpo_trials") or 0)
+        combos = ()
+        if hpo_trials and base_scan.get("estimator"):
+            combos = _hpo_combos(
+                dict(base_scan.get("estimator_params") or {}),
+                self.params["hpo_space"],
+                hpo_trials,
+                int(self.params["hpo_seed"]),
+            )
+            inner_train_end, inner_val_start, inner_val_end = _hpo_cuts(
+                train_end,
+                int(self.params["hpo_val_days"]),
+                int(self.params["hpo_embargo_days"]),
+            )
+        curve = []
+        n_go = 0
+        metrics = {
+            "n_leads": float(len(leads)),
+            "n_series": float(len(prepared)),
+        }
+        tr_x, tr_y, va_x, va_y, _ = _scan_fold_stamped(
+            prepared, train_lead, train_end, val_start, val_end,
+        )
+        metrics["n_train"] = float(tr_x.shape[0])
+        metrics["n_val"] = float(va_x.shape[0])
+        scan = dict(base_scan)
+        model = None
+        if tr_x.shape[0] >= 2:
+            if combos:
+                in_x, in_y, ho_x, ho_y, _ = _scan_fold_stamped(
+                    prepared, train_lead, inner_train_end,
+                    inner_val_start, inner_val_end,
+                )
+                if in_x.shape[0] >= 2 and ho_x.shape[0] >= 2:
+                    chosen, inner_mspe = _tune_estimator(
+                        scan, combos, in_x, in_y, ho_x, ho_y,
+                        categorical=categorical,
+                    )
+                    scan["estimator_params"] = chosen
+                    metrics["hpo_mspe"] = inner_mspe
+            model = _fit_estimator(
+                tr_x, tr_y, scan, categorical=categorical,
+            )
+            fit = _fit_split_metrics(model, tr_x, tr_y, va_x, va_y)
+            metrics["train_mspe"] = fit["train_mspe"]
+            metrics["val_mspe"] = fit["val_mspe"]
+            metrics["train_ic"] = fit["train_ic"]
+            metrics["val_ic"] = fit["val_ic"]
+            self.log.info(
+                "no-information scan: train_mspe=%.6g val_mspe=%.6g "
+                "train_ic=%.4f val_ic=%.4f n_train=%s n_val=%s",
+                fit["train_mspe"],
+                fit["val_mspe"],
+                fit["train_ic"],
+                fit["val_ic"],
+                int(tr_x.shape[0]),
+                int(va_x.shape[0]),
+            )
+        for item in prepared:
+            symbol = item[0]
+            rows, series = _walk_no_information_series(
+                item, model, leads, train_end, val_start, val_end,
+                period_minutes,
+            )
+            curve.extend(rows)
+            n_go += int(series["go"])
+            metrics[f"go_{symbol}"] = series["go"]
+            metrics[f"h_star_{symbol}"] = series["h_star"]
+            metrics[f"p_value_{symbol}"] = series["p_value"]
+        n_series = len(prepared)
+        metrics["n_go"] = float(n_go)
+        metrics["go_frac"] = float(n_go / n_series) if n_series else 0.0
+        self.log.info(
+            "no-information scan: n_go=%s/%s go_frac=%.4f",
+            n_go,
+            n_series,
+            metrics["go_frac"],
         )
         return {"records": curve, "metrics": metrics}
 
@@ -3047,6 +3646,7 @@ NODE_KINDS = {
     "intraday_equities-keep-symbols": KeepSymbols,
     "intraday_equities-feed-parity": FeedParity,
     "intraday_equities-horizon-scan": HorizonScan,
+    "intraday_equities-no-information-scan": NoInformationScan,
     "intraday_equities-lookback-scan": LookbackScan,
     "intraday_equities-lead-labels": LeadLabeledRows,
     "intraday_equities-portfolio": PortfolioSelect,

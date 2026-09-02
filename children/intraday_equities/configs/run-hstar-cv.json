@@ -1,0 +1,104 @@
+{
+  "name": "intraday-equities-hstar-cv",
+  "notes": "SUPERSEDED by run-hstar-cv-series.json. Clock-mean pooling; aborted after two folds. Do not run. Occupied dirs are the 2019-01-07 and 2019-03-11 clock-mean folds.",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe.json"
+      },
+      "notes": "lead_start is the training label (5 RTH minutes). scan.estimator is the frozen LightGBM. This document does not restate them."
+    },
+    "alpaca": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip",
+        "universe": "configs/universe.json"
+      },
+      "notes": "Historical SIP tape. root is the invoking cwd; run from the child root."
+    },
+    "session": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$alpaca.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "session",
+            "op": "==",
+            "value": "rth"
+          }
+        ]
+      },
+      "notes": "Research uses regular-session rows; the store still keeps every vendor minute."
+    },
+    "features": {
+      "uses": "intraday_equities-session-features",
+      "inputs": {
+        "records": "$session.records",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "lookback": "$universe.spec.scan.lookback_stop",
+        "layout": "columns"
+      },
+      "notes": "Full session depth for the H pass. L and keep are pass 2."
+    },
+    "tradable": {
+      "uses": "intraday_equities-keep-symbols",
+      "inputs": {
+        "records": "$features.records",
+        "symbols": "$universe.tradable"
+      },
+      "params": {
+        "field": "symbol"
+      },
+      "notes": "Score tradable names only. SPY already entered residuals."
+    },
+    "scan": {
+      "uses": "intraday_equities-no-information-scan",
+      "inputs": {
+        "records": "$tradable.records",
+        "bars": "$features.tape",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "val_start_ms": "$splits.val_start_ms",
+        "val_end_ms": "$splits.val_end_ms"
+      },
+      "notes": "One LightGBM ŷ at lead_start. Walk y(h) with Clark–West vs the train mean. A label may not land after this fold's val_end."
+    }
+  },
+  "walkforward": {
+    "objective": "$scan.metrics.go",
+    "select": "max",
+    "first": "2019-01-07",
+    "step_days": 63,
+    "count": 40,
+    "val_days": 63,
+    "embargo_days": 5,
+    "train_days": 1095,
+    "notes": "3y slide. Fold 40 val is 2025-09-29 → 2025-11-30. embargo_days is lead_stop (3 sessions), not H-length. GO iff mean(go) ≥ 0.5; h* is the median of folds with go=1, read from fold metrics after the summary."
+  },
+  "outputs": {
+    "run_root": "",
+    "notes": "Empty = ./pipeline_runs under the invoking cwd. Summary is {name}-walkforward-{asof}-{hash8}."
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        },
+        "notes": "Local sqlite beside the invoking cwd."
+      }
+    ],
+    "notes": "Excluded from identity — where metrics land is not what the run computes."
+  }
+}
