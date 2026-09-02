@@ -17,4 +17,4 @@ Owner-locked. Seams: ADR-0050…0054, ADR-0055. H/L identification: [hstar-go.md
 | Ensemble | ~50 TPE on the HPO window; top 10% reseeded (ADR-0052). |
 | Action docs | 1/5/15/30/60 twins remain. They are not the training lock. |
 
-Next: ŷ collapsed on the 40-fold pass (IC=0; mean go_frac=0.07). Do not lock H. Diagnose ranking before L or Dec–Feb TPE. Nothing after Feb 2026 until confirm.
+Next: ~~ŷ collapsed on the 40-fold pass (IC=0; mean go_frac=0.07).~~ **That pass is VOID — `min_split_gain: 0.02` made every tree a stump, so ŷ was constant and IC was 0 by construction.** Do not lock H until a run that passes the constant-ŷ guard says so. Nothing after Feb 2026 until confirm.

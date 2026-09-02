@@ -1,6 +1,6 @@
 {
-  "name": "intraday-equities-hstar-cv-series",
-  "notes": "ADR-0058 pass 1: one LightGBM, symbol as category, per-name H. 46 session fields + 20 engineered momentum (no L=120 lags). Sliding 40-fold, 2y train, inner HPO (8 draws). Last val 2025-11-30. Use walkforward, not run. Book collapse deferred. Nothing after 2026-02-28 is in any fold.",
+  "name": "intraday-equities-hstar-cv-pair",
+  "notes": "Two-series diagnostic of ADR-0058 pass 1, after the min_split_gain 0.02 stump bug (A0013) was removed. Identical to run-hstar-cv-series.json except a pair filter keeps AAPL/JPM at scoring time. Features still build on the full six-symbol cohort, so SPY residuals and industry columns are bit-identical to the five-name run. Not a lock document: this exists to confirm yhat ranks before the full walk reruns.",
   "pipeline": {
     "universe": {
       "uses": "intraday_equities-universe",
@@ -72,11 +72,11 @@
             "width": 1950,
             "tag": "1w",
             "cross_session": true,
-            "notes": "Five RTH sessions ≈ last week."
+            "notes": "Five RTH sessions \u2248 last week."
           }
         ]
       },
-      "notes": "No raw lags. Keep the 46 (5 scales × 5 moments, calendar, SPY residual, industry) plus mom on those scales and ret/rv/mom at 3m/2h/3h/2s/1w (20 extra → 66). ret_lag_0 stays internal for the SPY residual. Action lookback stays 30."
+      "notes": "No raw lags. Keep the 46 (5 scales \u00d7 5 moments, calendar, SPY residual, industry) plus mom on those scales and ret/rv/mom at 3m/2h/3h/2s/1w (20 extra \u2192 66). ret_lag_0 stays internal for the SPY residual. Action lookback stays 30."
     },
     "tradable": {
       "uses": "intraday_equities-keep-symbols",
@@ -89,10 +89,29 @@
       },
       "notes": "Score tradable names only. SPY already entered residuals. One tree; each name still walks its own H."
     },
+    "pair": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$tradable.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "in",
+            "value": [
+              "AAPL",
+              "JPM"
+            ]
+          }
+        ]
+      },
+      "notes": "Two names only. Rows are per-symbol frames, so this drops whole frames the way keep-symbols does. Sits after tradable so the cohort that built the features is untouched."
+    },
     "scan": {
       "uses": "intraday_equities-no-information-scan",
       "inputs": {
-        "records": "$tradable.records",
+        "records": "$pair.records",
         "bars": "$features.tape",
         "spec": "$universe.spec"
       },
@@ -120,14 +139,29 @@
         "hpo_val_days": 63,
         "hpo_embargo_days": 5,
         "hpo_space": {
-          "num_leaves": [15, 31],
-          "max_depth": [4, 6],
-          "min_child_samples": [80, 200],
-          "learning_rate": [0.02, 0.05],
-          "reg_lambda": [1.0, 5.0]
+          "num_leaves": [
+            15,
+            31
+          ],
+          "max_depth": [
+            4,
+            6
+          ],
+          "min_child_samples": [
+            80,
+            200
+          ],
+          "learning_rate": [
+            0.02,
+            0.05
+          ],
+          "reg_lambda": [
+            1.0,
+            5.0
+          ]
         }
       },
-      "notes": "One LightGBM; last column is the symbol category. Short HPO (8 draws) on an inner train holdout — fold val is unread. Then refit pooled train and walk H per name. Base estimator_params are the search prior. GO is a contiguous reject run from h=5; H is the far end."
+      "notes": "One LightGBM over the two kept names; last column is the symbol category. Short HPO (8 draws) on an inner train holdout, fold val unread. No min_split_gain: at a 5-minute label variance near 2.6e-06 any positive threshold makes every tree a stump. The node now refuses a fold whose yhat is constant."
     }
   },
   "walkforward": {
@@ -139,7 +173,7 @@
     "val_days": 63,
     "embargo_days": 5,
     "train_days": 730,
-    "notes": "2y slide. Fold 40 val is 2025-09-29 → 2025-11-30. embargo_days is lead_stop (3 sessions), not H-length. go_frac is the fraction of names with an H this fold — reporting only; the book lock (map vs min vs median) is deferred. Read h_star_<symbol> from fold metrics."
+    "notes": "Same 40 sliding folds as the five-name walk so the two runs are comparable fold for fold. go_frac is now out of two names, so it takes the values 0, 0.5 and 1. Read h_star_AAPL and h_star_JPM from fold metrics; the book lock stays deferred."
   },
   "outputs": {
     "run_root": "",
@@ -156,6 +190,6 @@
         "notes": "Local sqlite beside the invoking cwd."
       }
     ],
-    "notes": "Excluded from identity — where metrics land is not what the run computes."
+    "notes": "Excluded from identity \u2014 where metrics land is not what the run computes."
   }
 }

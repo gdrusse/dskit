@@ -61,6 +61,10 @@ DEFAULT_MAX_GAP_MINUTES = 5
 DEFAULT_OHLCV_FIELDS = ("open", "high", "low", "close", "volume")
 #: One-sided level for :class:`NoInformationScan` (ADR-0058).
 _NO_INFO_ALPHA = 0.05
+#: ŷ must vary by at least this fraction of the label's own sd. Below it
+#: the tree is a stump, ŷ is the mean, and every horizon scores IC=0 —
+#: a mean-only model cannot answer a no-information test (A0013).
+_DEGENERATE_YHAT_REL = 1e-8
 _DAY_MS = 24 * 60 * 60 * 1000
 
 
@@ -1170,8 +1174,41 @@ class SessionFeatureRows(Node):
                         )
         return problems
 
+    #: Last input signature and its build. A walk-forward runs this node
+    #: once per fold, but nothing upstream of it reads ``$splits`` — the
+    #: bars node memoizes its snapshot and the session filter is a pure
+    #: function of that — so every fold rebuilds an identical frame. One
+    #: build is reused for the rest of the walk.
+    _cached_key = None
+    _cached_out = None
+    _cached_rows = 0
+
+    def _input_signature(self, records, spec):
+        """Cheap identity for the inputs, to key the fold cache.
+
+        Hashing six million dicts would cost more than it saves, so this
+        pins the input with its length, three sampled rows, and the spec
+        and params verbatim. Two different record streams agreeing on
+        all of those, from a deterministic upstream inside one process,
+        is not a case that arises.
+        """
+        n = len(records)
+        sample = (
+            tuple(repr(records[i]) for i in (0, n // 2, n - 1)) if n else ()
+        )
+        return (
+            n,
+            sample,
+            repr(sorted(spec.items(), key=lambda kv: kv[0])),
+            repr(sorted(self.params.items(), key=lambda kv: kv[0])),
+        )
+
     def run(self, ctx, inputs):
         """Emit grid-aligned feature rows with a named overnight field.
+
+        Repeat calls with the same inputs return the first build. The
+        outer list is copied so a caller may filter it, while the arrays
+        are shared — copying those would defeat the point.
 
         Parameters
         ----------
@@ -1189,6 +1226,19 @@ class SessionFeatureRows(Node):
         import numpy as np
 
         spec = inputs["spec"]
+        _sig = self._input_signature(inputs["records"], spec)
+        if self._cached_key == _sig:
+            cached = self._cached_out
+            self.log.info(
+                "session features: reusing cached build, %d row(s) "
+                "from %d symbol(s)",
+                self._cached_rows,
+                len(cached["tape"]),
+            )
+            return {
+                "records": list(cached["records"]),
+                "tape": cached["tape"],
+            }
         lookback = int(self.params["lookback"]) if "lookback" in self.params else int(spec["lookback"])
         max_gap_ms = float(spec["max_gap_minutes"]) * 60_000
         period_ms = int(spec["period_ms"])
@@ -1316,7 +1366,16 @@ class SessionFeatureRows(Node):
             len(tape),
             layout,
         )
-        return {"records": records, "tape": tape}
+        out = {"records": records, "tape": tape}
+        # On the CLASS, not the instance: a walk-forward builds a fresh
+        # node per fold, so an instance attribute would never be read
+        # again. The signature keeps a second document from reading this
+        # one's build.
+        cls = type(self)
+        cls._cached_key = _sig
+        cls._cached_out = out
+        cls._cached_rows = n_rows
+        return {"records": list(records), "tape": tape}
 
 
 class FeedParity(Node):
@@ -1964,7 +2023,12 @@ def _mspe(y, yhat):
 
 
 def _fit_split_metrics(model, train_x, train_y, val_x, val_y):
-    """Train vs val MSPE and Spearman IC at the training lead."""
+    """Train vs val MSPE, Spearman IC, and ŷ spread at the training lead.
+
+    <split>_yhat_sd is the forecast's own standard deviation. Zero
+    means the estimator collapsed to a constant and no rank metric on it
+    carries information.
+    """
     import numpy as np
 
     out = {}
@@ -1972,10 +2036,12 @@ def _fit_split_metrics(model, train_x, train_y, val_x, val_y):
         if y.size < 2:
             out[f"{prefix}_mspe"] = 0.0
             out[f"{prefix}_ic"] = 0.0
+            out[f"{prefix}_yhat_sd"] = 0.0
             continue
         hat = np.asarray(model.predict(x), dtype=np.float64)
         out[f"{prefix}_mspe"] = _mspe(y, hat)
         out[f"{prefix}_ic"] = float(_spearman(y, hat))
+        out[f"{prefix}_yhat_sd"] = float(np.std(hat)) if hat.size else 0.0
     return out
 
 
@@ -2013,22 +2079,46 @@ def _hpo_combos(base, space, trials, seed):
 
 def _tune_estimator(
     scan, combos, train_x, train_y, val_x, val_y, categorical=None,
+    objective="mspe",
 ):
-    """Pick the combo with the lowest inner-val MSPE."""
+    """Pick a combo on the inner holdout under ``objective``.
+
+    ``"mspe"`` takes the lowest squared error. At this signal-to-noise
+    that systematically selects toward **underfitting**: the flattest
+    model has the smallest error, and a constant forecast is the MSPE
+    optimum outright. ``"ic"`` takes the highest Spearman rank
+    correlation instead, which rewards ordering rather than magnitude
+    and which a collapsed forecast cannot win — no rank variance
+    scores exactly zero. Overfitting stays bounded either way, because
+    the holdout is carved from train and the fold's own validation
+    set is never read.
+
+    Returns
+    -------
+    tuple
+        ``(params, score)`` where score is the winning objective
+        value — MSPE (lower better) or IC (higher better).
+    """
     base = dict(scan.get("estimator_params") or {})
     best_params = base
-    best_mspe = None
+    best = None
     for trial in combos:
         trial_scan = dict(scan)
         trial_scan["estimator_params"] = trial
         model = _fit_estimator(
             train_x, train_y, trial_scan, categorical=categorical,
         )
-        mspe = _mspe(val_y, model.predict(val_x))
-        if best_mspe is None or mspe < best_mspe:
-            best_mspe = mspe
+        hat = model.predict(val_x)
+        if objective == "ic":
+            score = -_spearman(val_y, hat)  # minimize the negative
+        else:
+            score = _mspe(val_y, hat)
+        if best is None or score < best:
+            best = score
             best_params = trial
-    return best_params, float(best_mspe if best_mspe is not None else 0.0)
+    if best is None:
+        return best_params, 0.0
+    return best_params, float(-best if objective == "ic" else best)
 
 
 def _model_ic(train_x, train_y, val_x, val_y, names, scan):
@@ -2509,8 +2599,16 @@ def _scan_fold(prepared, lead, train_end, val_start, val_end):
     )
 
 
-def _scan_fold_stamped(prepared, lead, train_end, val_start, val_end):
-    """Like :func:`_scan_fold`, plus val stamps aligned with val rows."""
+def _scan_fold_stamped(
+    prepared, lead, train_end, val_start, val_end, train_start=None,
+):
+    """Like :func:`_scan_fold`, plus val stamps aligned with val rows.
+
+    ``train_start`` is the walk-forward's left training bound
+    (``splits.train_start_ms``, ADR-0050). ``None`` means all-prior,
+    which is what this builder did unconditionally before, and why a
+    declared ``train_days`` had no effect on the fitted window.
+    """
     import numpy as np
 
     train_x, train_y, val_x, val_y, val_stamps = [], [], [], [], []
@@ -2536,6 +2634,8 @@ def _scan_fold_stamped(prepared, lead, train_end, val_start, val_end):
         x_ok = x[ok][finite]
         y = y[finite]
         train = (stamp <= train_end) & (future_ms <= train_end)
+        if train_start is not None:
+            train &= stamp >= train_start
         val = (
             (stamp >= val_start)
             & (stamp <= val_end)
@@ -2576,6 +2676,7 @@ def _blank_lead_row(symbol, lead, lags):
 
 def _walk_no_information_series(
     prepared_one, model, leads, train_end, val_start, val_end, period_minutes,
+    train_start=None,
 ):
     """Sequential h* for one name; GO is that H or none.
 
@@ -2598,6 +2699,7 @@ def _walk_no_information_series(
             continue
         _, tr_y, val_x, val_y, _ = _scan_fold_stamped(
             [prepared_one], lead, train_end, val_start, val_end,
+            train_start=train_start,
         )
         mu = float(tr_y.mean()) if tr_y.size else 0.0
         if val_x.shape[0] < 2:
@@ -2856,10 +2958,11 @@ class NoInformationScan(Node):
     role = "score"
     outputs = ("records", "metrics")
     _PARAMS = (
-        "split", "train_end_ms", "val_start_ms", "val_end_ms",
+        "split", "train_end_ms", "train_start_ms", "val_start_ms",
+        "val_end_ms",
         "estimator_params",
         "hpo_trials", "hpo_seed", "hpo_val_days", "hpo_embargo_days",
-        "hpo_space",
+        "hpo_space", "hpo_objective",
     )
 
     @classmethod
@@ -2885,10 +2988,32 @@ class NoInformationScan(Node):
             )
         for knob in ("train_end_ms", "val_start_ms", "val_end_ms"):
             check_int_param(problems, knob, params.get(knob), ge=0)
+        train_start = params.get("train_start_ms")
+        if train_start is not None:
+            check_int_param(
+                problems, "train_start_ms", train_start, ge=0
+            )
+            train_end = params.get("train_end_ms")
+            if (
+                isinstance(train_start, int)
+                and not isinstance(train_start, bool)
+                and isinstance(train_end, int)
+                and train_start >= train_end
+            ):
+                problems.append(
+                    "train_start_ms must be < train_end_ms, got "
+                    f"{train_start} >= {train_end}"
+                )
         extra = params.get("estimator_params")
         if extra is not None and not isinstance(extra, dict):
             problems.append(
                 f"estimator_params must be an object, got {extra!r}"
+            )
+        objective = params.get("hpo_objective")
+        if objective is not None and objective not in ("mspe", "ic"):
+            problems.append(
+                "hpo_objective must be 'mspe' or 'ic', got "
+                f"{objective!r}"
             )
         trials = params.get("hpo_trials")
         if trials is not None:
@@ -2979,6 +3104,8 @@ class NoInformationScan(Node):
         )
         train_lead = int(horizon["lead_start"])
         train_end = int(self.params["train_end_ms"])
+        train_start = self.params.get("train_start_ms")
+        train_start = None if train_start is None else int(train_start)
         val_start = int(self.params["val_start_ms"])
         val_end = int(self.params["val_end_ms"])
         period_ms = int(spec["period_ms"])
@@ -3017,9 +3144,16 @@ class NoInformationScan(Node):
         }
         tr_x, tr_y, va_x, va_y, _ = _scan_fold_stamped(
             prepared, train_lead, train_end, val_start, val_end,
+            train_start=train_start,
         )
         metrics["n_train"] = float(tr_x.shape[0])
         metrics["n_val"] = float(va_x.shape[0])
+        self.log.info(
+            "no-information scan: train window %s n_train=%d",
+            "ALL-PRIOR" if train_start is None
+            else f"[{train_start}, {train_end}]",
+            int(tr_x.shape[0]),
+        )
         scan = dict(base_scan)
         model = None
         if tr_x.shape[0] >= 2:
@@ -3027,14 +3161,20 @@ class NoInformationScan(Node):
                 in_x, in_y, ho_x, ho_y, _ = _scan_fold_stamped(
                     prepared, train_lead, inner_train_end,
                     inner_val_start, inner_val_end,
+                    train_start=train_start,
                 )
                 if in_x.shape[0] >= 2 and ho_x.shape[0] >= 2:
-                    chosen, inner_mspe = _tune_estimator(
+                    objective = self.params.get("hpo_objective", "mspe")
+                    chosen, inner_score = _tune_estimator(
                         scan, combos, in_x, in_y, ho_x, ho_y,
-                        categorical=categorical,
+                        categorical=categorical, objective=objective,
                     )
                     scan["estimator_params"] = chosen
-                    metrics["hpo_mspe"] = inner_mspe
+                    metrics[f"hpo_{objective}"] = inner_score
+                    self.log.info(
+                        "hpo: %d combo(s) on %s, winner %s=%.6g",
+                        len(combos), objective, objective, inner_score,
+                    )
             model = _fit_estimator(
                 tr_x, tr_y, scan, categorical=categorical,
             )
@@ -3043,21 +3183,34 @@ class NoInformationScan(Node):
             metrics["val_mspe"] = fit["val_mspe"]
             metrics["train_ic"] = fit["train_ic"]
             metrics["val_ic"] = fit["val_ic"]
+            metrics["train_yhat_sd"] = fit["train_yhat_sd"]
+            metrics["val_yhat_sd"] = fit["val_yhat_sd"]
             self.log.info(
                 "no-information scan: train_mspe=%.6g val_mspe=%.6g "
-                "train_ic=%.4f val_ic=%.4f n_train=%s n_val=%s",
+                "train_ic=%.4f val_ic=%.4f yhat_sd=%.3g n_train=%s n_val=%s",
                 fit["train_mspe"],
                 fit["val_mspe"],
                 fit["train_ic"],
                 fit["val_ic"],
+                fit["train_yhat_sd"],
                 int(tr_x.shape[0]),
                 int(va_x.shape[0]),
             )
+            label_sd = float(tr_y.std()) if tr_y.size else 0.0
+            if fit["train_yhat_sd"] <= _DEGENERATE_YHAT_REL * label_sd:
+                raise ValueError(
+                    "degenerate forecast: yhat is constant on train "
+                    f"(sd={fit['train_yhat_sd']:.3g}, label sd={label_sd:.3g}, "
+                    f"n_train={int(tr_x.shape[0])}). Every tree is a stump, so "
+                    "the model predicts the mean and every horizon scores "
+                    "IC=0. Check min_split_gain and reg_lambda against the "
+                    "label variance before reading this fold."
+                )
         for item in prepared:
             symbol = item[0]
             rows, series = _walk_no_information_series(
                 item, model, leads, train_end, val_start, val_end,
-                period_minutes,
+                period_minutes, train_start=train_start,
             )
             curve.extend(rows)
             n_go += int(series["go"])

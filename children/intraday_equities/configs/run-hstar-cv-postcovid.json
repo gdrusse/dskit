@@ -1,6 +1,6 @@
 {
-  "name": "intraday-equities-hstar-cv-series",
-  "notes": "ADR-0058 pass 1: one LightGBM, symbol as category, per-name H. 46 session fields + 20 engineered momentum (no L=120 lags). Sliding 40-fold, 2y train, inner HPO (8 draws). Last val 2025-11-30. Use walkforward, not run. Book collapse deferred. Nothing after 2026-02-28 is in any fold.",
+  "name": "intraday-equities-hstar-cv-postcovid",
+  "notes": "H* pass 1 on a post-COVID sample with a training window that is actually bounded. Two changes from run-hstar-cv-pair.json. The scan node now wires splits.train_start_ms, so the declared train_days=730 finally bounds the fit; before this the node accepted only an upper cut and trained all-prior, growing by one validation period per fold and reaching back to the 2016 tape start. And first moves to 2022-05-06 so no fold, in training or validation, touches the February-March 2020 crash. Twenty folds is what the data supports under that constraint, against forty when COVID is allowed in.",
   "pipeline": {
     "universe": {
       "uses": "intraday_equities-universe",
@@ -72,11 +72,11 @@
             "width": 1950,
             "tag": "1w",
             "cross_session": true,
-            "notes": "Five RTH sessions ≈ last week."
+            "notes": "Five RTH sessions \u2248 last week."
           }
         ]
       },
-      "notes": "No raw lags. Keep the 46 (5 scales × 5 moments, calendar, SPY residual, industry) plus mom on those scales and ret/rv/mom at 3m/2h/3h/2s/1w (20 extra → 66). ret_lag_0 stays internal for the SPY residual. Action lookback stays 30."
+      "notes": "No raw lags. Keep the 46 (5 scales \u00d7 5 moments, calendar, SPY residual, industry) plus mom on those scales and ret/rv/mom at 3m/2h/3h/2s/1w (20 extra \u2192 66). ret_lag_0 stays internal for the SPY residual. Action lookback stays 30."
     },
     "tradable": {
       "uses": "intraday_equities-keep-symbols",
@@ -89,16 +89,36 @@
       },
       "notes": "Score tradable names only. SPY already entered residuals. One tree; each name still walks its own H."
     },
+    "pair": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$tradable.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "in",
+            "value": [
+              "AAPL",
+              "JPM"
+            ]
+          }
+        ]
+      },
+      "notes": "Two names only. Rows are per-symbol frames, so this drops whole frames the way keep-symbols does. Sits after tradable so the cohort that built the features is untouched."
+    },
     "scan": {
       "uses": "intraday_equities-no-information-scan",
       "inputs": {
-        "records": "$tradable.records",
+        "records": "$pair.records",
         "bars": "$features.tape",
         "spec": "$universe.spec"
       },
       "params": {
         "split": "val",
         "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
         "val_start_ms": "$splits.val_start_ms",
         "val_end_ms": "$splits.val_end_ms",
         "estimator_params": {
@@ -120,26 +140,41 @@
         "hpo_val_days": 63,
         "hpo_embargo_days": 5,
         "hpo_space": {
-          "num_leaves": [15, 31],
-          "max_depth": [4, 6],
-          "min_child_samples": [80, 200],
-          "learning_rate": [0.02, 0.05],
-          "reg_lambda": [1.0, 5.0]
+          "num_leaves": [
+            15,
+            31
+          ],
+          "max_depth": [
+            4,
+            6
+          ],
+          "min_child_samples": [
+            80,
+            200
+          ],
+          "learning_rate": [
+            0.02,
+            0.05
+          ],
+          "reg_lambda": [
+            1.0,
+            5.0
+          ]
         }
       },
-      "notes": "One LightGBM; last column is the symbol category. Short HPO (8 draws) on an inner train holdout — fold val is unread. Then refit pooled train and walk H per name. Base estimator_params are the search prior. GO is a contiguous reject run from h=5; H is the far end."
+      "notes": "One LightGBM over the two kept names; last column is the symbol category. train_start_ms is the walk-forward left bound (ADR-0050): without it train_days is inert. No min_split_gain, which at a 5-minute label variance near 2.6e-06 made every tree a stump. The node refuses a fold whose forecast is constant, and logs the fitted window so an inert bound cannot be silent again."
     }
   },
   "walkforward": {
     "objective": "$scan.metrics.go_frac",
     "select": "max",
-    "first": "2019-01-07",
+    "first": "2022-05-06",
     "step_days": 63,
-    "count": 40,
+    "count": 20,
     "val_days": 63,
     "embargo_days": 5,
     "train_days": 730,
-    "notes": "2y slide. Fold 40 val is 2025-09-29 → 2025-11-30. embargo_days is lead_stop (3 sessions), not H-length. go_frac is the fraction of names with an H this fold — reporting only; the book lock (map vs min vs median) is deferred. Read h_star_<symbol> from fold metrics."
+    "notes": "Post-COVID only. First fold trains from 2020-05-01, after the crash. Twenty 63-day folds step to a last validation of 2025-08-16 to 2025-10-17, inside the 2025-11-30 cut. The AAPL 2020-08-31 split is still unadjusted in the raw tape and lands in the training window of folds 1-2 only; folds 3-20 are clean of it. go_frac is out of two names, so it takes 0, 0.5 and 1. Book lock stays deferred."
   },
   "outputs": {
     "run_root": "",
@@ -156,6 +191,6 @@
         "notes": "Local sqlite beside the invoking cwd."
       }
     ],
-    "notes": "Excluded from identity — where metrics land is not what the run computes."
+    "notes": "Excluded from identity \u2014 where metrics land is not what the run computes."
   }
 }

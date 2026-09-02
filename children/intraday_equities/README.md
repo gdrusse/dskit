@@ -66,6 +66,9 @@ python -m dskit.pipeline run configs/run-horizon-scan.json \
     --asof 2026-08-30 --adapter intraday_equities
 python -m dskit.pipeline walkforward configs/run-hstar-cv-series.json \
   --asof 2025-11-30 --adapter intraday_equities
+# two-name diagnostic of the same forty folds (AAPL/JPM)
+python -m dskit.pipeline walkforward configs/run-hstar-cv-pair.json \
+  --asof 2025-11-30 --adapter intraday_equities
 python -m dskit.pipeline run configs/run-hl-scan.json \
   --asof 2026-08-30 --adapter intraday_equities
 python -m dskit.pipeline run configs/run-framework.json \

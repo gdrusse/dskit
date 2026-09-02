@@ -1,6 +1,6 @@
 {
-  "name": "intraday-equities-hstar-cv-series",
-  "notes": "ADR-0058 pass 1: one LightGBM, symbol as category, per-name H. 46 session fields + 20 engineered momentum (no L=120 lags). Sliding 40-fold, 2y train, inner HPO (8 draws). Last val 2025-11-30. Use walkforward, not run. Book collapse deferred. Nothing after 2026-02-28 is in any fold.",
+  "name": "intraday-equities-hstar-cv-clean2022",
+  "notes": "Contamination-free H* pass 1. Three changes from the post-COVID run. (1) JPM/XOM instead of AAPL/JPM: a full-tape sweep of 8.9M bars found exactly two corrupt values in ten years, the AAPL 2020-08-31 and WMT 2024-02-26 splits, and neither JPM nor XOM has ever split in range, so no fold carries an unadjusted corporate action. (2) Training is floored at 2022-01-01: first validation is 2024-01-06, which places fold 1 train_start exactly on 2022-01-01, and every later fold slides forward from there. (3) The inner HPO is widened and now selects on rank IC rather than MSPE. At this signal-to-noise, MSPE selection is biased toward underfitting because a constant forecast is its optimum; IC cannot be won by a collapsed forecast. Cost of the 2022 floor is fold count: 11 folds against 20.",
   "pipeline": {
     "universe": {
       "uses": "intraday_equities-universe",
@@ -72,11 +72,11 @@
             "width": 1950,
             "tag": "1w",
             "cross_session": true,
-            "notes": "Five RTH sessions ≈ last week."
+            "notes": "Five RTH sessions \u2248 last week."
           }
         ]
       },
-      "notes": "No raw lags. Keep the 46 (5 scales × 5 moments, calendar, SPY residual, industry) plus mom on those scales and ret/rv/mom at 3m/2h/3h/2s/1w (20 extra → 66). ret_lag_0 stays internal for the SPY residual. Action lookback stays 30."
+      "notes": "No raw lags. Keep the 46 (5 scales \u00d7 5 moments, calendar, SPY residual, industry) plus mom on those scales and ret/rv/mom at 3m/2h/3h/2s/1w (20 extra \u2192 66). ret_lag_0 stays internal for the SPY residual. Action lookback stays 30."
     },
     "tradable": {
       "uses": "intraday_equities-keep-symbols",
@@ -89,57 +89,102 @@
       },
       "notes": "Score tradable names only. SPY already entered residuals. One tree; each name still walks its own H."
     },
+    "pair": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$tradable.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "in",
+            "value": [
+              "JPM",
+              "XOM"
+            ]
+          }
+        ]
+      },
+      "notes": "JPM and XOM only. Both are split-free across the whole 2016-2026 tape, so the unadjusted-split contamination cannot reach any fold. Sits after tradable so the six-symbol cohort that built the features is untouched."
+    },
     "scan": {
       "uses": "intraday_equities-no-information-scan",
       "inputs": {
-        "records": "$tradable.records",
+        "records": "$pair.records",
         "bars": "$features.tape",
         "spec": "$universe.spec"
       },
       "params": {
         "split": "val",
         "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
         "val_start_ms": "$splits.val_start_ms",
         "val_end_ms": "$splits.val_end_ms",
         "estimator_params": {
-          "n_estimators": 100,
+          "n_estimators": 300,
           "learning_rate": 0.02,
-          "num_leaves": 15,
-          "max_depth": 4,
-          "min_child_samples": 400,
-          "reg_lambda": 5.0,
+          "num_leaves": 31,
+          "max_depth": -1,
+          "min_child_samples": 80,
+          "reg_lambda": 1.0,
           "reg_alpha": 0.1,
-          "subsample": 0.6,
-          "colsample_bytree": 0.6,
+          "subsample": 0.8,
+          "subsample_freq": 1,
+          "colsample_bytree": 0.8,
           "n_jobs": 1,
           "random_state": 0,
           "verbosity": -1
         },
-        "hpo_trials": 8,
+        "hpo_trials": 32,
         "hpo_seed": 0,
         "hpo_val_days": 63,
         "hpo_embargo_days": 5,
         "hpo_space": {
-          "num_leaves": [15, 31],
-          "max_depth": [4, 6],
-          "min_child_samples": [80, 200],
-          "learning_rate": [0.02, 0.05],
-          "reg_lambda": [1.0, 5.0]
-        }
+          "num_leaves": [
+            7,
+            15,
+            31,
+            63
+          ],
+          "min_child_samples": [
+            20,
+            80,
+            200
+          ],
+          "learning_rate": [
+            0.01,
+            0.03
+          ],
+          "n_estimators": [
+            200,
+            600
+          ],
+          "reg_lambda": [
+            0.1,
+            1.0,
+            10.0
+          ],
+          "colsample_bytree": [
+            0.5,
+            0.8
+          ]
+        },
+        "hpo_objective": "ic"
       },
-      "notes": "One LightGBM; last column is the symbol category. Short HPO (8 draws) on an inner train holdout — fold val is unread. Then refit pooled train and walk H per name. Base estimator_params are the search prior. GO is a contiguous reject run from h=5; H is the far end."
+      "notes": "One LightGBM over JPM and XOM. HPO is 32 draws from a 288-point grid on an inner train holdout, fold val unread, selected on Spearman rank IC. Capacity (num_leaves, n_estimators) and shrinkage (min_child_samples, reg_lambda, learning_rate, colsample) are both swept, so the search can move in either direction rather than only flattening. subsample_freq=1 is set because LightGBM ignores subsample without it, which meant row bagging had never been active. max_depth=-1 lets num_leaves govern capacity alone."
     }
   },
   "walkforward": {
     "objective": "$scan.metrics.go_frac",
     "select": "max",
-    "first": "2019-01-07",
+    "first": "2024-01-06",
     "step_days": 63,
-    "count": 40,
+    "count": 11,
     "val_days": 63,
     "embargo_days": 5,
     "train_days": 730,
-    "notes": "2y slide. Fold 40 val is 2025-09-29 → 2025-11-30. embargo_days is lead_stop (3 sessions), not H-length. go_frac is the fraction of names with an H this fold — reporting only; the book lock (map vs min vs median) is deferred. Read h_star_<symbol> from fold metrics."
+    "notes": "Every fold trains on a full 730-day window lying entirely inside 2022-01-01 onward. Fold 1 trains 2022-01-01 to 2023-12-31. 11 folds is what 2022+ supports at 63-day steps before the 2025-11-30 cut. go_frac is out of two names, so 0, 0.5 or 1."
   },
   "outputs": {
     "run_root": "",
@@ -156,6 +201,6 @@
         "notes": "Local sqlite beside the invoking cwd."
       }
     ],
-    "notes": "Excluded from identity — where metrics land is not what the run computes."
+    "notes": "Excluded from identity \u2014 where metrics land is not what the run computes."
   }
 }
