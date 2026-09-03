@@ -423,6 +423,72 @@ def test_zoo_estimator_learns_a_path_signal_and_refuses_bad_knobs():
         ZooEstimator(arch="gru").predict(x[:1])
 
 
+def test_zoo_estimator_averages_a_declared_seed_set():
+    """ADR-0072: ``seeds`` fits one member each and averages them.
+
+    The default stays a single fit, and that fit must be bit-identical
+    to member ``seed`` of an averaged run — otherwise the knob would
+    silently move every number recorded before it existed.
+    """
+    pytest.importorskip("torch")
+    import numpy as np
+
+    from dskit.pipeline.libs.torch_ts import ZooEstimator
+
+    rng = np.random.default_rng(3)
+    x = rng.normal(0.0, 1.0, (200, 5))
+    y = rng.normal(0.0, 1.0, 200)
+    names = [f"ret_lag_{i}" for i in range(4)] + ["vol"]
+    knobs = dict(arch="gru", epochs=2, batch_size=64, device="cpu")
+
+    single = ZooEstimator(seed=0, **knobs).fit(x, y, feature_names=names)
+    averaged = ZooEstimator(seeds=[0, 1, 2], **knobs).fit(
+        x, y, feature_names=names,
+    )
+    assert len(single._modules) == 1 and len(averaged._modules) == 3
+    hat_single = single.predict(x)
+    hat_avg = averaged.predict(x)
+    assert hat_single.shape == hat_avg.shape == (200,)
+    assert np.isfinite(hat_avg).all()
+
+    # Member 0 of the averaged fit IS the old single-seed fit.
+    seq, static = averaged._parts(np.asarray(x, dtype=np.float64))
+    member0 = averaged._predict_one(
+        averaged._modules[0], seq, static, averaged._resolved_device(),
+    )
+    assert np.allclose(hat_single, member0)
+    # And the average is the mean of its members, not member 0 again.
+    members = [
+        averaged._predict_one(
+            module, seq, static, averaged._resolved_device(),
+        )
+        for module in averaged._modules
+    ]
+    assert np.allclose(hat_avg, np.mean(members, axis=0))
+    assert not np.allclose(hat_avg, member0)
+    # A seed set narrows the spread it averages over.
+    spread = np.std(members, axis=0).mean()
+    assert spread > 0.0
+
+
+def test_zoo_estimator_refuses_a_seed_set_that_is_not_whole_numbers():
+    """An empty or mistyped ``seeds`` is a typo, not an ensemble."""
+    pytest.importorskip("torch")
+
+    from dskit.pipeline.libs.torch_ts import ZooEstimator
+
+    with pytest.raises(ValueError, match="non-empty list of whole"):
+        ZooEstimator(arch="gru", seeds=[])
+    with pytest.raises(ValueError, match="non-empty list of whole"):
+        ZooEstimator(arch="gru", seeds=5)
+    with pytest.raises(ValueError, match="whole numbers"):
+        ZooEstimator(arch="gru", seeds=[0, "1"])
+    with pytest.raises(ValueError, match="whole numbers"):
+        ZooEstimator(arch="gru", seeds=[0, 1.5])
+    with pytest.raises(ValueError, match="whole numbers"):
+        ZooEstimator(arch="gru", seeds=[True, 1])
+
+
 def test_zoo_estimator_serves_every_named_arch():
     """Each arch the owner asked for fits and predicts through the façade."""
     pytest.importorskip("torch")

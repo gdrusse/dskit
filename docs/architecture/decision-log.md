@@ -3275,6 +3275,102 @@ building a frame; no column reads it.
 
 ---
 
+## ADR-0072 — Equal tuning effort is part of a model's identity, and the zoo averages a declared seed set
+
+**Status:** proposed (2026-09-03; P7's shortlist cannot be read as a
+statement about model SIZE while the nets are the only arm that was
+never searched)
+
+**Context.** Five model classes have been run on this cohort and skill
+fell as size grew: the three nets forecast 5% to 54% worse than a flat
+average guess, with high in-sample ordering and negative out-of-sample
+ordering. The P7 research doc
+(`children/intraday_equities/docs/research/p7-model-size-for-this-noise-level-*.md`)
+found that comparison is not a clean size comparison. Ridge carries a
+6-draw search on a purged inner holdout — 63 days carved out of train
+behind a 5-day embargo, chosen on IC, the fold's own validation never
+read. LightGBM carries one in the multi3 wave. The `gru`, `lstm` and
+`tft` documents carry **no tuning block at all**, `weight_decay: 0.0`,
+a fixed 30 epochs with no stopping rule, and one seed. So part of
+"bigger is worse" is a measurement of how much tuning each arm was
+given, and it has been quoted as if it were a measurement of capacity.
+
+Three of those four defects are config. `hpo_space` is a generic
+discrete grid over `estimator_params`, so putting `epochs` in it **is**
+an early-stopping rule chosen on data the fold's validation never sees,
+and `weight_decay` **is** the L2 penalty — no new code for either. The
+fourth is not expressible: `ZooEstimator` fits exactly one member from
+`seed`, so every net number this study holds is a single draw from a
+distribution whose spread was never measured, and the published habit
+in this literature is to average ten seeds (five buys most of the gain).
+
+**Decision.** Two parts.
+
+*1. Tuning effort is declared, equal, and part of the cell's identity.*
+Every cell on the P7 shortlist declares the SAME search as ridge: the
+same purged inner holdout (63 days, 5-day embargo), the same `ic`
+objective, the same `hpo_seed`, and six draws — five for PLS, whose grid
+has exactly five points, and four for the seed-averaged cell, whose
+every draw costs five fits. A model that cannot afford the search is
+**not run** rather than run unsearched. A skill comparison across model
+sizes in which only the small models were searched measures tuning
+effort and must not be quoted as a size result.
+
+*2. `ZooEstimator` gains one knob, `seeds`.* A non-empty list of whole
+numbers fits one member per seed — the same architecture, the same
+schedule, the same standardisation, differing only in initialisation and
+batch shuffle — and `predict` returns the plain equal-weight mean of the
+members. That is variance reduction with no added capacity: the
+combination literature's case for the equal-weight average is that it
+estimates no weights, which is the whole point when the signal is a
+fraction of a percent. Omitted (the default, `None`) the estimator fits
+the single member `seed` on exactly the old code path, bit-identical, so
+no number recorded before this ADR moves. An empty list, a bare int, a
+float or a bool is refused by name at construction: a mistyped seed set
+is a typo, not an ensemble.
+
+**Consequences.** The P7 shortlist ships as nineteen run documents,
+`configs/run-p7-*.json`, each of which is its `run-p1-s05-h0N-ridge.json`
+twin with the scan's estimator block swapped and **nothing else touched**
+— same universe file and 5-minute row spacing, same split-adjusted store
+from the 2018 study start, same RTH filter, same 20-lag/86-column
+feature block, same five scored names, same 20 folds from 2022-05-06,
+same vol-scaled SPY-residual label, same 30-minute scoring lattice, same
+walk-forward objective, same tracking sink. A child test pins that, cell
+by cell, against the twin.
+
+Cost, measured at fold scale (196k training rows, 87 columns) on this
+box, as model seconds per fold and the walk that implies on top of the
+~3.5 minute pipeline overhead: PLS 2 s (~4 min), LightGBM held back
+11 s (~7 min), `nlinear` 9 s (~6 min), the 4-unit GRU 11 s (~7 min, on
+the GPU), the same GRU averaged over five seeds 28 s (~13 min), extra
+trees 90 s (~33 min), and a random forest **543 s (~3 hours)** — the
+bootstrap-and-best-split forest is about six times the extremely
+randomized one at the same depth, so it is the one arm that should run
+at H=1 only, and only if extra trees show something. Peak resident
+memory added by the model itself is under 0.5 GB in every case, so none
+of these changes the walk's existing ~11.5 GB profile; the two zoo cells
+put their tensors in VRAM rather than in the 17 GB.
+
+Nineteen more cells are nineteen more attempts under ADR-0069, which
+raises the bar for everything already run. That is the declared price of
+buying a fair reading of model size, and the shortlist should be run as
+a family — H=1 first for all six model classes, then H=2 and H=3 only
+for the classes that beat their P1 twin at H=1.
+
+The `seeds` knob lives in `dskit`, not in the child, so a run of
+`run-p7-gru4-seedavg-h01.json` from a worktree must put that worktree's
+`dskit` ahead of the installed one:
+`PYTHONPATH=~/wt/models python -m dskit.pipeline walkforward ... --adapter intraday_equities`
+from the child root. Every other cell runs unchanged on either copy.
+
+What this ADR does NOT do: it does not re-run the big nets. P7's hold
+stands — a per-channel lag block (P3), the small net at least matching
+ridge, seed averaging in place, and more names (P9) are the four things
+that would have to be true first. This ADR supplies the third of them.
+
+---
+
 ## ADR-0073 — A run reads only the bars it declared, and reads them once
 
 *(Numbered 0073 because 0071 and 0072 were taken the same night on other

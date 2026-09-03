@@ -300,7 +300,7 @@ _COHORT_KEYS = (
 def _scored_symbols(spec):
     """The cohort a variant may not move: symbols less the cross list.
 
-    ADR-0071 adds ``cross``, a list of feature-only symbols that build no
+    ADR-0072 adds ``cross``, a list of feature-only symbols that build no
     feature frame, get no column of their own and are never scored — the
     sector funds and the market proxies the cross block reads. Adding one
     cannot change what is scored, so it is not a cohort drift; ``symbols``
@@ -589,6 +589,103 @@ def test_a_run_may_move_spacing_and_price_without_a_second_universe():
         "train_end_ms": 1, "val_start_ms": 2, "val_end_ms": 3,
         "score_period_ms": 1_800_000,
     }) == []
+
+
+# The scan knobs a P7 cell is ALLOWED to move. Everything else in the
+# document, in every node, must equal the P1 s05 cell at the same
+# look-ahead — that is what makes the shortlist a model comparison
+# rather than a second grid (ADR-0072).
+_MODEL_BLOCK = {
+    "estimator", "estimator_params", "hpo_trials", "hpo_seed",
+    "hpo_val_days", "hpo_embargo_days", "hpo_space", "hpo_objective",
+}
+
+
+def _p7_cells():
+    return tuple(sorted(
+        name for name in os.listdir(CONFIGS)
+        if name.startswith("run-p7-") and name.endswith(".json")
+    ))
+
+
+def test_the_p7_shortlist_moves_the_model_and_nothing_else():
+    """Each P7 cell is its P1 s05 twin with a different estimator."""
+    cells = _p7_cells()
+    assert len(cells) == 19, cells
+    for name in cells:
+        lead = name.rsplit("-h", 1)[1][:2]
+        base = _raw(f"run-p1-s05-h{lead}-ridge.json")
+        cell = _raw(name)
+        assert cell["walkforward"] == base["walkforward"], name
+        assert cell["outputs"] == base["outputs"], name
+        assert cell["tracking"] == base["tracking"], name
+        assert set(cell["pipeline"]) == set(base["pipeline"]), name
+        for node, spec in base["pipeline"].items():
+            if node == "scan":
+                continue
+            assert cell["pipeline"][node] == spec, (name, node)
+        want = base["pipeline"]["scan"]["params"]
+        got = cell["pipeline"]["scan"]["params"]
+        assert set(want) - _MODEL_BLOCK == set(got) - _MODEL_BLOCK, name
+        for knob in set(want) - _MODEL_BLOCK:
+            assert got[knob] == want[knob], (name, knob)
+        # The label and the lattice are the load-bearing ones; say so.
+        assert got["score_period_ms"] == 1_800_000, name
+        assert got["lead_start"] == got["lead_stop"] == int(lead), name
+
+
+def test_every_p7_cell_gets_the_same_purged_search():
+    """ADR-0072: tuning effort is declared and equal across the family."""
+    for name in _p7_cells():
+        params = _raw(name)["pipeline"]["scan"]["params"]
+        assert params["hpo_trials"] >= 4, name
+        assert params["hpo_seed"] == 0, name
+        assert params["hpo_val_days"] == 63, name
+        assert params["hpo_embargo_days"] == 5, name
+        assert params["hpo_objective"] == "ic", name
+        space = params["hpo_space"]
+        assert isinstance(space, dict) and space, name
+        for values in space.values():
+            assert isinstance(values, list) and values, name
+
+
+def test_the_p7_nets_are_searched_where_the_old_nets_were_not():
+    """The unfairness the P7 research doc found, fixed in config.
+
+    The multi3 nets ran no search, no weight decay and a fixed epoch
+    count. Putting ``epochs`` in the purged grid IS a stopping rule
+    chosen on data the fold's validation never reads.
+    """
+    old = _raw("run-multi3-h01-gru.json")["pipeline"]["scan"]["params"]
+    assert "hpo_space" not in old and "hpo_trials" not in old
+    assert old["estimator_params"]["weight_decay"] == 0.0
+    assert old["estimator_params"]["epochs"] == 30
+
+    nets = [
+        name for name in _p7_cells()
+        if "gru4" in name or "nlinear" in name
+    ]
+    assert len(nets) == 7, nets
+    for name in nets:
+        params = _raw(name)["pipeline"]["scan"]["params"]
+        assert params["estimator"].endswith("ZooEstimator"), name
+        assert params["estimator_params"]["weight_decay"] > 0.0, name
+        assert "epochs" in params["hpo_space"], name
+
+
+def test_the_seed_averaged_cell_is_its_single_seed_twin():
+    """ADR-0072: five seeds averaged, the same net otherwise."""
+    single = _raw("run-p7-gru4-h01.json")["pipeline"]["scan"]["params"]
+    averaged = _raw("run-p7-gru4-seedavg-h01.json")["pipeline"]["scan"]["params"]
+    assert averaged["estimator"] == single["estimator"]
+    one = dict(single["estimator_params"])
+    many = dict(averaged["estimator_params"])
+    assert one.pop("seed") == 0
+    assert many.pop("seeds") == [0, 1, 2, 3, 4]
+    assert one == many
+    # A seed set costs five fits a draw, so it buys fewer draws.
+    assert averaged["hpo_trials"] < single["hpo_trials"]
+    assert averaged["hpo_space"] == single["hpo_space"]
 
 
 def test_the_p1_cell_differs_from_its_baseline_in_two_knobs_only():
