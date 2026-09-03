@@ -2793,6 +2793,13 @@ about XLF, because this decision is the only thing keeping that row out.
 **Status:** proposed (2026-09-03; plan `docs/plans/2026-09-horizon-search.md`
 P5 — "what we count as success may pick the wrong look-ahead")
 
+**Renumbered 2026-09-03 at integration.** This was written as ADR-0063 on
+its own branch, at the same time as the price-scale decision that reached
+`main` first under that number. The number here is the next free one, and
+every reference in code, tests and result documents moved with it. The
+branch also carried two copies of the heading, the first truncated
+mid-sentence; they are collapsed to this one.
+
 **Context.** Every horizon verdict so far has been a COUNT of Clark–West
 rejections (`go_<sym>`, `h_star_<sym>`, `n_go`, `go_frac`). Clark–West is
 a nested-model test: it adds back the variance the larger model pays for
