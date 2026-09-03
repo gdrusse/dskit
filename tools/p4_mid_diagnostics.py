@@ -26,7 +26,7 @@ import json
 import sys
 from datetime import datetime
 
-BAR_SOURCE = "alpaca-sip"
+BAR_SOURCE = "alpaca-sip-split"
 QUOTE_SOURCE = "alpaca-sip-quotes"
 QUOTE_STREAM = "quote_minutes"
 RTH_START_MINUTES = 570
@@ -47,13 +47,45 @@ def _session_minute(text, zone):
     return when.date().isoformat(), when.hour * 60 + when.minute
 
 
-def _load(root, source, stream, key_fields):
-    from dskit.onboarding.observations import scan_stream
+def _iter_stream(root, source, stream, keep=None):
+    """Stream one source's observation payloads, newest acquisition last.
 
-    return scan_stream(
-        root, source, stream,
-        key_fields=key_fields, ts_field="ts", shared_fields=("symbol",),
+    ``scan_stream`` is the sanctioned reader, but it materializes the
+    whole deduplicated tree — sixteen million split-adjusted bars is
+    several gigabytes for a diagnostic that wants six hundred thousand
+    of them. Acquisition directories are visited in name order, which is
+    acquisition order, so a later pull of the same minute simply
+    overwrites the earlier one in the caller's index.
+    """
+    import glob
+    import gzip
+    import os
+
+    base = os.path.join(root, "observations", source)
+    paths = sorted(
+        glob.glob(os.path.join(base, "*", f"{stream}.jsonl"))
+        + glob.glob(os.path.join(base, "*", f"{stream}.jsonl.gz"))
     )
+    if not paths:
+        raise SystemExit(f"no {stream!r} observations under {base}")
+    # The bar tree holds twelve names over ten years; parsing every line
+    # to discard eleven twelfths of them is the whole cost of this job.
+    # The writer dumps with sorted keys, so the symbol is a literal.
+    marks = None if keep is None else tuple(
+        f'"symbol": "{symbol}"' for symbol in sorted(keep)
+    )
+    for path in paths:
+        opener = gzip.open if path.endswith(".gz") else open
+        with opener(path, "rt", encoding="utf-8") as fh:
+            for line in fh:
+                if marks is not None and not any(mark in line for mark in marks):
+                    continue
+                line = line.strip()
+                if not line:
+                    continue
+                data = json.loads(line).get("data") or {}
+                if keep is None or data.get("symbol") in keep:
+                    yield data
 
 
 def _lag_one(values, groups):
@@ -86,6 +118,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True)
     parser.add_argument("--json", default="")
+    parser.add_argument(
+        "--bar-source", default=BAR_SOURCE,
+        help="bar tree to join against. The default is the SPLIT-ADJUSTED "
+             "tree runs are fit on; quotes are unadjusted, so the two agree "
+             "only over a window containing no split for these names, which "
+             "this one is - and the mid-outside-range check would show it "
+             "loudly if it were not.",
+    )
     args = parser.parse_args(argv)
 
     import numpy as np
@@ -94,8 +134,11 @@ def main(argv=None):
     zone = ZoneInfo(SESSION_TZ)
     quotes = {}
     covered = {}
-    for row in _load(args.root, QUOTE_SOURCE, QUOTE_STREAM, ("symbol", "ts")):
-        quotes[(row["symbol"], row["ts"])] = row
+    # Keyed on the INSTANT, never the stamp's spelling: the bar pack ends
+    # its minutes in "+00:00" and the quote pack in "Z", so a string join
+    # matches nothing at all and does it silently.
+    for row in _iter_stream(args.root, QUOTE_SOURCE, QUOTE_STREAM):
+        quotes[(row["symbol"], _stamp_ms(row["ts"]))] = row
         day, _ = _session_minute(row["ts"], zone)
         covered.setdefault(row["symbol"], set()).add(day)
     if not quotes:
@@ -103,7 +146,7 @@ def main(argv=None):
         return 1
 
     bars = {}
-    for row in _load(args.root, BAR_SOURCE, "bars", ("symbol", "ts")):
+    for row in _iter_stream(args.root, args.bar_source, "bars", set(covered)):
         symbol = row["symbol"]
         if symbol not in covered:
             continue
@@ -112,20 +155,32 @@ def main(argv=None):
             continue
         if not RTH_START_MINUTES <= minute < RTH_END_MINUTES:
             continue
-        bars.setdefault(symbol, []).append((row["ts"], day, row))
+        # Keyed, not appended: a re-pulled minute must replace its
+        # earlier self rather than enter the sample twice.
+        instant = _stamp_ms(row["ts"])
+        bars.setdefault(symbol, {})[instant] = (instant, day, row)
 
     report = {}
     for symbol in sorted(bars):
-        rows = sorted(bars[symbol], key=lambda item: _stamp_ms(item[0]))
+        rows = sorted(bars[symbol].values())
         days = sorted({item[1] for item in rows})
         n_bars = len(rows)
         matched = [
-            (day, bar, quotes.get((symbol, stamp)))
-            for stamp, day, bar in rows
+            (day, bar, quotes.get((symbol, instant)))
+            for instant, day, bar in rows
         ]
         hit = [item for item in matched if item[2] is not None]
         n_hit = len(hit)
+        if not n_hit:
+            report[symbol] = {
+                "sessions": len(days), "rth_bar_minutes": n_bars,
+                "minutes_with_quote": 0, "missing_quote_frac": 1.0,
+            }
+            print(symbol, "matched no bar minute at all", file=sys.stderr)
+            continue
         spreads = np.array([q["spread_bps"] for _, _, q in hit], dtype=np.float64)
+        dollars = np.array([q["spread"] for _, _, q in hit], dtype=np.float64)
+        mids = np.array([q["mid"] for _, _, q in hit], dtype=np.float64)
         crossed = sum(1 for _, _, q in hit if q.get("n_crossed", 0))
         locked = sum(1 for _, _, q in hit if q.get("n_locked", 0))
         outside = sum(
@@ -149,6 +204,8 @@ def main(argv=None):
             "minutes_with_quote": n_hit,
             "missing_quote_frac": (n_bars - n_hit) / n_bars if n_bars else None,
             "median_spread_bps": float(np.median(spreads)) if n_hit else None,
+            "median_spread_dollars": float(np.median(dollars)) if n_hit else None,
+            "median_mid": float(np.median(mids)) if n_hit else None,
             "p99_spread_bps": float(np.percentile(spreads, 99)) if n_hit else None,
             "wide_gt_100bps_frac": float((spreads > WIDE_BPS).mean()) if n_hit else None,
             "wide_gt_300bps_frac": (
@@ -171,6 +228,10 @@ def main(argv=None):
     print(header)
     print("-" * len(header))
     for symbol, r in report.items():
+        if not r.get("minutes_with_quote"):
+            print("%-6s %5d %9d    (no minute matched)"
+                  % (symbol, r["sessions"], r["rth_bar_minutes"]))
+            continue
         print(
             "%-6s %5d %9d %8.3f %7.2f %5.3f %9.4f %8.4f %9.4f %12.4f %11.4f %6.4f"
             % (

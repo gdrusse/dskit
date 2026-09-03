@@ -513,10 +513,13 @@ def _quote_attach_problems(params):
 
 
 def _quote_index(root, source, stream, fields):
-    """Map ``(symbol, ts)`` to the declared quote fields, from the store.
+    """Map ``(symbol, epoch-ms)`` to the declared quote fields.
 
     The quote tree is keyed exactly like the bar tree, so the same
-    deduplicating scanner reads it; only the projection differs.
+    deduplicating scanner reads it; only the projection differs. The key
+    is the INSTANT, never the stamp's spelling: the two trees are written
+    by different packs and one ends its minutes in ``+00:00`` where the
+    other ends them in ``Z``, so a string join silently matches nothing.
     """
     index = {}
     for record in scan_stream(
@@ -525,10 +528,10 @@ def _quote_index(root, source, stream, fields):
         ts_field=DEFAULT_TS_FIELD,
         shared_fields=DEFAULT_SHARED_FIELDS,
     ):
-        symbol, stamp = record.get("symbol"), record.get(DEFAULT_TS_FIELD)
-        if not isinstance(symbol, str) or not isinstance(stamp, str):
+        symbol, stamp = record.get("symbol"), record.get("asof_ms")
+        if not isinstance(symbol, str) or stamp is None:
             continue
-        index[(symbol, stamp)] = {
+        index[(symbol, int(stamp))] = {
             field: record.get(field) for field in fields
         }
     return index
@@ -718,7 +721,11 @@ class BarsFromStore(Node):
                 # A bar with no quote carries the field as None rather
                 # than dropping out: the minute still happened, and a
                 # downstream that needs a price refuses a None itself.
-                row.update(quotes.get((row.get("symbol"), stamp), blank))
+                instant = row.get("asof_ms")
+                row.update(
+                    blank if instant is None
+                    else quotes.get((row.get("symbol"), int(instant)), blank)
+                )
             tagged.append(row)
         self._snap = tagged
         cls._cached_key = key

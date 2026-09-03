@@ -1281,6 +1281,15 @@ def test_bars_source_scans_once_per_store_content(tmp_path, monkeypatch):
     assert grown != first
 
 
+def _zulu(index):
+    """The same instant a bar spells ``+00:00``, spelled ``Z``.
+
+    The two packs really do differ this way on disk, and a join on the
+    spelling matches nothing while looking perfectly healthy.
+    """
+    return _ts(index).replace("+00:00", "Z")
+
+
 def _write_quote_store(root, source, minutes, symbols=("AAPL",)):
     """Write a minute-quote observation tree beside the bar tree."""
     directory = os.path.join(root, "observations", source, "acq-0001")
@@ -1294,11 +1303,11 @@ def _write_quote_store(root, source, minutes, symbols=("AAPL",)):
                     "stream": "quote_minutes",
                     "mode": "backfill",
                     "kind": "observation",
-                    "effective_date": _ts(index),
+                    "effective_date": _zulu(index),
                     "acquired_at": "2026-01-06T00:00:00+00:00",
                     "data": {
                         "symbol": symbol,
-                        "ts": _ts(index),
+                        "ts": _zulu(index),
                         "bid": mid - 0.01,
                         "ask": mid + 0.01,
                         "mid": mid,
@@ -1308,7 +1317,7 @@ def _write_quote_store(root, source, minutes, symbols=("AAPL",)):
                         "ask_size": 200,
                         "bid_exchange": "Z",
                         "ask_exchange": "N",
-                        "quote_ts": _ts(index),
+                        "quote_ts": _zulu(index),
                         "quote_age_ms": 5,
                         "n_quotes": 42,
                         "n_crossed": 0,
@@ -1338,7 +1347,10 @@ def test_a_declared_quote_source_puts_mid_and_spread_on_the_bar(tmp_path):
     rows = nodes.BarsFromStore("bars", params).run(_ctx(tmp_path), {})["records"]
 
     assert len(rows) == 4
+    # The quote tree spells its minutes "...Z" and the bar tree
+    # "...+00:00"; the join is on the instant, so both land.
     priced = {row["ts"]: row for row in rows}
+    assert set(priced) == {_ts(index) for index in range(4)}
     first = priced[_ts(0)]
     assert first["mid"] == 100.0
     assert first["bid"] == 99.99 and first["ask"] == 100.01
