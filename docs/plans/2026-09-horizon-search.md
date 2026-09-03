@@ -85,8 +85,13 @@ gives the clearest, most stable answer.
 
 **Result.** The flip inflates the win but does not create it. On the
 midpoint, over an identical window, Lilly's edge survives at under half
-the size; Exxon fails on both prices. Buy and sell prices exist only for
-Lilly and Exxon, so this test carries half the evidence.
+the size; Exxon fails on both prices. Carried to the survivor's own
+setting — one-minute rows, three minutes ahead — the two price
+definitions give near-identical answers, so the flip is not what carries
+that cell; but the pair's own traded-price control fails on the
+sixteen-month quoted window, so it can neither confirm nor kill the
+headline. Buy and sell prices exist only for Lilly and Exxon, so this
+test carries half the evidence.
 
 ## P5 — What we count as success may pick the wrong look-ahead
 
@@ -137,7 +142,10 @@ identical.
 
 **Result.** 19 model setups are ready, and the earlier comparison was
 confirmed unfair to the bigger models — they got no tuning, no restraint
-and a single seed. None have been run.
+and a single seed. **None have been run**, in this session either: the
+budget went to the luck check and the price-definition pair. So no model
+has been shown to reach past three minutes, and "big models do not work
+here" is still unproven.
 
 ## P8 — Many attempts need a fair bar
 
@@ -150,8 +158,13 @@ many models and horizons are tried on one dataset? Then one agent
 implements it plus a scramble test — shuffle the answers, re-run, see
 what luck alone produces. Every candidate look-ahead must clear that bar.
 
-**Result.** The bar is built (ADR-0069) and applied. Surviving it: Lilly
-at three minutes, and the group at two.
+**Result.** The bar is built (ADR-0069) and applied over 438 cells from
+79 walks. Surviving it: Lilly at three minutes, and the group at two.
+The expensive scramble was then built (ADR-0074) and run nineteen times
+on Lilly's cell: the real result beat every shuffle, the best of which
+reached a fifth of its size, and the shuffled statistics scattered by
+the amount a correct error estimate predicts. Nineteen shuffles buy
+one-in-twenty and no more. The group's cell is untested.
 
 ## P9 — Three stocks, and two were dropped
 
