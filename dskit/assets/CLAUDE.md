@@ -1,3 +1,5 @@
+Default answer: outcome first, max 5 lines. Expand only if I ask.
+
 # CLAUDE.md — dskit.assets
 
 Orientation for an agent working inside this package. Read the package

@@ -1,3 +1,5 @@
+Default answer: outcome first, max 5 lines. Expand only if I ask.
+
 # CLAUDE.md
 
 Guidance for Claude Code working in this repository.

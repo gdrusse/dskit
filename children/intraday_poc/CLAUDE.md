@@ -1,3 +1,5 @@
+Default answer: outcome first, max 5 lines. Expand only if I ask.
+
 # CLAUDE.md — intraday_poc (a dskit child)
 
 Agent orientation — see README.md for what the child does and the

@@ -1,3 +1,5 @@
+Default answer: outcome first, max 5 lines. Expand only if I ask.
+
 # CLAUDE.md — yourproject (a dskit child)
 
 Agent orientation template — see README.md for what the child does.
