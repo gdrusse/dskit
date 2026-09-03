@@ -156,3 +156,4 @@ why the control is re-run rather than read off the earlier table.
 | blocks | s | h | model | price | window | AAPL | JPM | LLY | WMT | XOM | GROUP | xs_ic | wall |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | none | 5 | 3 | ridge | close | 2022-05-06→2025-10-17 (20f) | fail -0.0608 +0.05 | fail +0.0353 +1.29 | fail +0.0418 +1.55 | fail +0.0256 +0.65 | fail -0.0544 -0.70 | fail -0.0020 | +0.0134 (t 2.65) | 306s |
+| tod | 5 | 3 | ridge | close | 2022-05-06→2025-10-17 (20f) | fail -0.0886 -0.12 | fail +0.0232 +1.26 | fail +0.0795 +1.81 | fail +0.0353 +1.03 | fail -0.1076 -1.07 | fail -0.0117 | +0.0134 (t 2.62) | 316s |
