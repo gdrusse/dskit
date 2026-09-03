@@ -468,12 +468,16 @@ class TestScan:
         with pytest.raises(AssetError, match=r":2"):
             _scan(root)
 
-    def test_unparseable_ts_refuses_naming_the_key(self, tmp_path):
+    def test_unparseable_ts_refuses_by_path_and_line(self, tmp_path):
+        # The stamp is parsed AT INTAKE now — ``since_ms`` has to bound
+        # the instant before a record is kept — so this refusal names
+        # the line carrying the bad stamp rather than the dedup key it
+        # would have won. Strictly more locating: one line, not one key.
         root = str(tmp_path)
         _write(root, "acq-0001", [_row("AAPL", "not-a-stamp", 100.0)])
         with pytest.raises(AssetError, match="not-a-stamp"):
             _scan(root)
-        with pytest.raises(AssetError, match="AAPL"):
+        with pytest.raises(AssetError, match=r"bars\.jsonl:1"):
             _scan(root)
 
     def test_ts_out_collision_refuses(self, tmp_path):
@@ -679,6 +683,98 @@ class TestPeak:
         assert len(records) == n_rows
         assert peak / n_rows < 800, f"peak {peak / n_rows:.0f} B/row"
         assert current / n_rows < 700, f"resident {current / n_rows:.0f} B/row"
+
+
+
+class TestIntakeBounds:
+    """ADR-0073: a declared bound is paid at the READ, not on the list."""
+
+    def _store(self, tmp_path, symbols=("AAPL", "MSFT", "QQQ", "XLE", "XLF")):
+        root = str(tmp_path)
+        rows = []
+        for symbol in symbols:
+            for i in range(2000):
+                ts = (f"2026-01-05T{14 + i // 3600:02d}:"
+                      f"{(i // 60) % 60:02d}:{i % 60:02d}+00:00")
+                row = _row(symbol, ts, 100.0 + (i % 97) / 100.0)
+                row["data"].update(open=100.0, high=100.0, low=100.0,
+                                   volume=100.0, trade_count=5, vwap=100.0)
+                rows.append(row)
+        _write(root, "acq-0001", rows)
+        return root, len(rows)
+
+    def test_since_ms_keeps_the_same_records_the_caller_would_have(
+        self, tmp_path
+    ):
+        root, _ = self._store(tmp_path, symbols=("AAPL",))
+        whole = _scan(root)
+        cut = whole[len(whole) // 2]["asof_ms"]
+        bounded = _scan(root, since_ms=cut)
+        by_hand = [r for r in whole if r["asof_ms"] >= cut]
+        assert [r["asof_ms"] for r in bounded] == [
+            r["asof_ms"] for r in by_hand
+        ]
+        # Same records means the same snapshot identity, so a bounded
+        # read is a read of the same study, not a different one.
+        assert stream_digest(bounded) == stream_digest(by_hand)
+        assert bounded[0]["asof_ms"] == cut, "the bound is INCLUSIVE"
+
+    def test_keep_values_reads_one_cohort_out_of_a_wider_store(
+        self, tmp_path
+    ):
+        root, _ = self._store(tmp_path)
+        whole = _scan(root)
+        bounded = _scan(root, keep_values={"symbol": ("AAPL", "XLF")})
+        assert {r["symbol"] for r in bounded} == {"AAPL", "XLF"}
+        assert stream_digest(bounded) == stream_digest(
+            [r for r in whole if r["symbol"] in ("AAPL", "XLF")]
+        )
+
+    def test_admit_bounds_on_a_derived_field_and_may_keep_it(self, tmp_path):
+        root, _ = self._store(tmp_path, symbols=("AAPL",))
+
+        def _tag(data, stamp):
+            data["minute"] = minute = int(data["ts"][14:16])
+            return minute < 5
+
+        bounded = _scan(root, admit=_tag)
+        assert bounded, "the bound kept nothing at all"
+        assert all(row["minute"] < 5 for row in bounded)
+        # The stamp the reader derived is handed to the predicate, so a
+        # caller bounding on the instant need not parse it twice.
+        seen = []
+        _scan(root, admit=lambda data, stamp: seen.append(stamp) or True)
+        assert seen and all(isinstance(value, int) for value in seen)
+
+    def test_a_bound_record_is_never_allocated(self, tmp_path):
+        """The pin. A cohort of one out of five must cost about a fifth,
+        not a fifth PLUS the four it threw away. Filtering the returned
+        list cannot pass this: the peak is the whole store either way,
+        and on the equities tape that peak was 12.3 GB."""
+        root, n_rows = self._store(tmp_path)
+        kept = n_rows // 5
+
+        def _peak_of(**bounds):
+            tracemalloc.start()
+            try:
+                _scan(root, **bounds)  # warm every shared cache first
+                tracemalloc.reset_peak()
+                records = _scan(root, **bounds)
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+            return len(records), peak
+
+        n_whole, peak_whole = _peak_of()
+        n_bounded, peak_bounded = _peak_of(keep_values={"symbol": ("AAPL",)})
+
+        assert n_whole == n_rows and n_bounded == kept
+        # Reading one name in five costs about a fifth. Filter the
+        # RETURNED list instead and this ratio is 1.0 however much the
+        # filter drops, which is exactly the defect being pinned.
+        assert peak_bounded < peak_whole / 3, (
+            f"bounded peak {peak_bounded} vs whole-store {peak_whole}"
+        )
 
 
 def test_stream_dir_is_where_scan_stream_reads(tmp_path):

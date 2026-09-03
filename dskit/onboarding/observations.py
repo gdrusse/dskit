@@ -104,9 +104,39 @@ def _key_display(key) -> list:
 
 
 def _scan_problems(root, source, stream, key_fields, ts_field, ts_out,
-                   shared_fields) -> list:
+                   shared_fields, since_ms=None, keep_values=None,
+                   admit=None) -> list:
     """Every problem with a scan request, accumulated (never raises)."""
     problems = []
+    if admit is not None and not callable(admit):
+        problems.append(f"admit must be None or callable, got {admit!r}")
+    if since_ms is not None:
+        if isinstance(since_ms, bool) or not isinstance(since_ms, int):
+            problems.append(
+                f"since_ms must be None or an int, got {since_ms!r}"
+            )
+        elif ts_field is None:
+            problems.append(
+                "since_ms bounds the derived epoch-ms field, so ts_field "
+                "must be declared too"
+            )
+    if keep_values is not None:
+        if not isinstance(keep_values, dict) or not keep_values:
+            problems.append(
+                "keep_values must be a non-empty mapping of field name to "
+                f"allowed values, got {keep_values!r}"
+            )
+        else:
+            for field, allowed in keep_values.items():
+                if not isinstance(field, str) or not field:
+                    problems.append(
+                        f"keep_values keys must be field names, got {field!r}"
+                    )
+                if not isinstance(allowed, (list, tuple, set, frozenset)):
+                    problems.append(
+                        f"keep_values[{field!r}] must be a collection of "
+                        f"allowed values, got {allowed!r}"
+                    )
     if not isinstance(root, str) or not root:
         problems.append(f"root must be a non-empty string, got {root!r}")
     # The writer only ever mints segment-safe source/stream names
@@ -167,7 +197,8 @@ def stream_dir(root, source) -> str:
 
 
 def scan_stream(root, source, stream, key_fields, ts_field=None,
-                ts_out="asof_ms", shared_fields=()):
+                ts_out="asof_ms", shared_fields=(), since_ms=None,
+                keep_values=None, admit=None):
     """One deduplicated snapshot of a source's observation stream.
 
     Parameters
@@ -215,6 +246,38 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
         Fields whose string VALUES repeat heavily across rows (e.g. a
         symbol); each collapses to one canonical copy. Never declare a
         unique-per-row field — the memo would outweigh the savings.
+    since_ms : int, optional
+        An INCLUSIVE lower bound on ``ts_out``, applied AT INTAKE:
+        a record below it is never deduped, never kept, never sorted.
+        The bound a caller applies to the returned list costs the full
+        snapshot first — measured on the equities bar store, the whole
+        16.0M-record tape allocates 12.3 GB before a start-date filter
+        drops 17.6% of it. Requires ``ts_field``; ``ts_out`` is
+        therefore derived at intake rather than at drain, and the
+        refusals that names it now name the offending ``path:line``.
+    keep_values : dict, optional
+        Field name -> the values of that field to READ. A record whose
+        value is absent from its collection is skipped at intake, on
+        the same grounds and with the same saving: a cohort of six
+        symbols must not pay for the twelve the store happens to hold.
+        Identity is canonical, as everywhere else here (``1``, ``1.0``
+        and ``true`` are three values), so an allow-list is matched
+        through :func:`_key_part`.
+    admit : callable, optional
+        ``admit(data, stamp)`` for each record that cleared the two
+        bounds above, where ``stamp`` is its ``ts_out`` (``None``
+        without ``ts_field``). Returning a false value drops the record
+        AT INTAKE. It is the bound for a rule this function cannot
+        spell — a derived one, such as "regular trading hours only",
+        which no field carries. It may add its derived field to
+        ``data``, which is that record's own dict and becomes the
+        emitted record; adding one is how a caller pays for the
+        derivation once instead of once here and once downstream.
+        It must be pure in the sense that matters to a store: the same
+        record must always get the same verdict, or the snapshot stops
+        being a function of the bytes on disk. Dropping a record here
+        does NOT relax the refusals above it — every line is still
+        parsed and its key fields still checked.
 
     Returns
     -------
@@ -231,9 +294,19 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
         store-side refusals.
     """
     _raise_if(_scan_problems(root, source, stream, key_fields, ts_field,
-                             ts_out, shared_fields))
+                             ts_out, shared_fields, since_ms, keep_values,
+                             admit))
     key_fields = tuple(key_fields)
     shared_fields = tuple(shared_fields)
+    # Canonical membership, matching the dedup key's own identity rule.
+    allow = (
+        ()
+        if not keep_values
+        else tuple(
+            (field, frozenset(_key_part(value) for value in allowed))
+            for field, allowed in keep_values.items()
+        )
+    )
     base = stream_dir(root, source)
     if not os.path.isdir(base):
         raise AssetError(
@@ -309,11 +382,6 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                 raise AssetError(
                     [f"{path}:{n}: row carries no 'data' object"]
                 )
-            # json.loads mints fresh key strings for every line; on a
-            # 2M-row stream those duplicates are gigabytes. Rebuild each
-            # record on the canonical copies (the fresh ones free
-            # immediately).
-            data = {_share(k, k): v for k, v in data.items()}
             missing = [f for f in key_fields if f not in data]
             if missing:
                 raise AssetError(
@@ -329,6 +397,45 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                     [f"{path}:{n}: NaN in key field(s) {nans} — NaN "
                      "breaks total order silently; refusing"]
                 )
+            # The declared bounds, applied to the RAW line before a
+            # single canonical dict exists: an excluded record must
+            # cost its line and nothing else. The line is still parsed
+            # and its key fields still checked, so a corrupt row inside
+            # the bound cannot hide behind one outside it.
+            if allow and any(
+                _key_part(data.get(field)) not in allowed
+                for field, allowed in allow
+            ):
+                continue
+            stamp = None
+            if ts_field is not None:
+                if ts_field not in data:
+                    raise AssetError(
+                        [f"{path}:{n}: data is missing ts_field "
+                         f"{ts_field!r}"]
+                    )
+                if ts_out in data:
+                    raise AssetError(
+                        [f"{path}:{n}: data already carries {ts_out!r} — "
+                         "refusing to overwrite it"]
+                    )
+                try:
+                    stamp = _epoch_ms(parse_utc(data[ts_field]))
+                except AssetError as exc:
+                    raise AssetError(
+                        [f"{path}:{n}: invalid {ts_field}: {exc}"]
+                    ) from exc
+                if since_ms is not None and stamp < since_ms:
+                    continue
+            if admit is not None and not admit(data, stamp):
+                continue
+            # json.loads mints fresh key strings for every line; on a
+            # 2M-row stream those duplicates are gigabytes. Rebuild each
+            # record on the canonical copies (the fresh ones free
+            # immediately).
+            data = {_share(k, k): v for k, v in data.items()}
+            if stamp is not None:
+                data[ts_out] = stamp
             for field in shared_fields:
                 value = data.get(field)
                 if isinstance(value, str):
@@ -415,27 +522,12 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
 
     # Drain best rather than copying it: each winning data dict BECOMES
     # its record — the stream is held once.
+    # ``ts_out`` is already on every record: since_ms has to bound the
+    # instant BEFORE a record is kept, so the derivation and its three
+    # refusals moved to intake, where they can name the line.
     records = []
     while best:
-        _key, (_acq, data) = best.popitem()
-        if ts_field is not None:
-            if ts_field not in data:
-                raise AssetError(
-                    [f"a record is missing ts_field {ts_field!r} — "
-                     f"key {_key_display(_key)!r}"]
-                )
-            if ts_out in data:
-                raise AssetError(
-                    [f"a record already carries {ts_out!r} — refusing to "
-                     f"overwrite it (key {_key_display(_key)!r})"]
-                )
-            try:
-                data[ts_out] = _epoch_ms(parse_utc(data[ts_field]))
-            except AssetError as exc:
-                raise AssetError(
-                    [f"key {_key_display(_key)!r}: invalid {ts_field}: {exc}"]
-                ) from exc
-        records.append(data)
+        records.append(best.popitem()[1][1])
     try:
         if ts_field is not None:
             records.sort(

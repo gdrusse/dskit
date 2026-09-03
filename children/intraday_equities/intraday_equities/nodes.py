@@ -63,7 +63,14 @@ __all__ = [
 ]
 
 DEFAULT_TS_FIELD = "ts"
-DEFAULT_SHARED_FIELDS = ("symbol",)
+#: Fields whose string values repeat across rows and are collapsed to
+#: one canonical copy at intake. ``ts`` belongs here for the same reason
+#: ``symbol`` does and for a larger saving: every minute of the tape is
+#: spelled once per symbol, so a twelve-name store mints twelve copies
+#: of one 89-byte stamp. Measured on the split-adjusted bar store, that
+#: duplication alone was 1.2 GB. It is not a unique-per-row field —
+#: the case the memo would lose on.
+DEFAULT_SHARED_FIELDS = ("symbol", "ts")
 DEFAULT_PRICE_FIELD = "close"
 DEFAULT_MAX_GAP_MINUTES = 5
 DEFAULT_OHLCV_FIELDS = ("open", "high", "low", "close", "volume")
@@ -121,6 +128,12 @@ KNOWN_PRICE_FIELDS = ("close", "vwap", "mid")
 #: Universe keys a run document may override (ADR-0065). Everything
 #: else in that file states the COHORT and may not move per run.
 UNIVERSE_OVERRIDE_KEYS = ("period_ms", "offset_ms", "price_field")
+
+
+#: Every bucket :func:`session_name` can name. The one list, so a
+#: node bounding its read by session cannot accept a spelling the
+#: tagger never emits.
+SESSION_NAMES = ("rth", "eth", "closed")
 
 
 def session_name(stamp, zone, rth_start_minutes, rth_end_minutes):
@@ -538,7 +551,7 @@ def _quote_attach_problems(params):
     return problems
 
 
-def _quote_index(root, source, stream, fields):
+def _quote_index(root, source, stream, fields, since_ms=None, symbols=None):
     """Map ``(symbol, epoch-ms)`` to the declared quote fields.
 
     The quote tree is keyed exactly like the bar tree, so the same
@@ -546,6 +559,9 @@ def _quote_index(root, source, stream, fields):
     is the INSTANT, never the stamp's spelling: the two trees are written
     by different packs and one ends its minutes in ``+00:00`` where the
     other ends them in ``Z``, so a string join silently matches nothing.
+
+    It also carries the same bounds as the bar read (ADR-0073): a quote
+    minute the bars can never join to is one this index must not build.
     """
     index = {}
     for record in scan_stream(
@@ -553,6 +569,8 @@ def _quote_index(root, source, stream, fields):
         key_fields=QUOTE_KEY_FIELDS,
         ts_field=DEFAULT_TS_FIELD,
         shared_fields=DEFAULT_SHARED_FIELDS,
+        since_ms=since_ms,
+        keep_values=None if symbols is None else {"symbol": tuple(symbols)},
     ):
         symbol, stamp = record.get("symbol"), record.get("asof_ms")
         if not isinstance(symbol, str) or stamp is None:
@@ -576,6 +594,13 @@ class BarsFromStore(Node):
         optional ``stream``, ``ts_field``, ``shared_fields``,
         ``start_ms``, ``quote_source``, ``quote_stream`` and
         ``quote_fields``. Session hours come from the universe file.
+        The universe's ``symbols`` list is the read's COHORT BOUND
+        (ADR-0073): a store holding names this run never scores emits
+        none of them, and the twelve-name equities store read for a
+        six-name universe stops paying for the other six. Optional
+        ``sessions`` bounds the read the same way by session bucket
+        (any of :data:`SESSION_NAMES`); undeclared, every vendor minute
+        is emitted and a downstream filter node decides, as before.
         ``start_ms`` is an INCLUSIVE epoch-millisecond lower bound on
         the bars emitted (ADR-0066): the study's start date, stated
         where the data is read, mirroring the ``end`` bound ADR-0063 put
@@ -614,7 +639,7 @@ class BarsFromStore(Node):
     outputs = ("records",)
     _PARAMS = (
         "root", "source", "universe", "stream", "ts_field", "shared_fields",
-        "start_ms",
+        "start_ms", "sessions",
         "quote_source", "quote_stream", "quote_fields",
         "quote_uncovered_price",
     )
@@ -678,6 +703,17 @@ class BarsFromStore(Node):
         start_ms = params.get("start_ms")
         if start_ms is not None:
             check_int_param(problems, "start_ms", start_ms, ge=0)
+        sessions = params.get("sessions")
+        if sessions is not None:
+            if (
+                not isinstance(sessions, (list, tuple))
+                or not sessions
+                or any(name not in SESSION_NAMES for name in sessions)
+            ):
+                problems.append(
+                    "sessions must be a non-empty list drawn from "
+                    f"{list(SESSION_NAMES)}, got {sessions!r}"
+                )
         shared = params.get("shared_fields", DEFAULT_SHARED_FIELDS)
         if (
             not isinstance(shared, (list, tuple))
@@ -731,6 +767,46 @@ class BarsFromStore(Node):
         if cls._cached_key == key and cls._cached_snap is not None:
             self._snap = cls._cached_snap
             return self._snap
+        spec = _load_json(self.params["universe"])
+        policy = spec["session"]
+        # ADR-0073: the bounds this run already declares — its start
+        # date (ADR-0066), its cohort, and optionally its sessions — are
+        # pushed into the READ, so a record outside any of them never
+        # becomes a Python dict. Applied to the returned list instead
+        # they cost the whole store first: measured, 16.0M records for a
+        # cohort of six that needs 6.9M of them, and a 12.3 GB peak
+        # inside the scan. Applied to the list AFTER the scan they cost
+        # it twice over, because a dict freed out of the middle of an
+        # arena does not give its page back — the session bound was
+        # measured saving exactly 0 MB of RSS that way.
+        start_ms = self.params.get("start_ms")
+        start_ms = None if start_ms is None else int(start_ms)
+        symbols = tuple(spec["symbols"])
+        ts_field = self.params.get("ts_field", DEFAULT_TS_FIELD)
+        wanted = self.params.get("sessions")
+        wanted = None if wanted is None else frozenset(wanted)
+        tz, rth_open, rth_close = (
+            policy["tz"],
+            policy["rth_start_minutes"],
+            policy["rth_end_minutes"],
+        )
+
+        def _tag(data, _stamp):
+            """Write the session bucket, and answer the session bound.
+
+            The tag is derived HERE because the bound needs it here, and
+            a record derives it once either way: it rides into the
+            emitted record exactly as it did when a second pass wrote
+            it.
+            """
+            stamp = data.get(ts_field)
+            if not isinstance(stamp, str) or not stamp:
+                return wanted is None
+            data["session"] = name = session_name(
+                stamp, tz, rth_open, rth_close,
+            )
+            return wanted is None or name in wanted
+
         records = scan_stream(
             self.params["root"],
             self.params["source"],
@@ -740,24 +816,17 @@ class BarsFromStore(Node):
             shared_fields=tuple(
                 self.params.get("shared_fields", DEFAULT_SHARED_FIELDS)
             ),
+            since_ms=start_ms,
+            keep_values={"symbol": symbols},
+            admit=_tag,
         )
-        policy = _load_json(self.params["universe"])["session"]
-        # ADR-0066: the study's start date, applied before anything sees
-        # the records, so no node downstream can forget it and no
-        # feature window can reach behind it.
-        start_ms = self.params.get("start_ms")
-        if start_ms is not None:
-            start_ms = int(start_ms)
-            before = len(records)
-            records = [
-                row for row in records
-                if isinstance(row.get("asof_ms"), int)
-                and row["asof_ms"] >= start_ms
-            ]
-            self.log.info(
-                "start_ms %d: kept %d of %d record(s)",
-                start_ms, len(records), before,
-            )
+        self.log.info(
+            "bounded read: %d record(s) for %d universe symbol(s)%s%s",
+            len(records),
+            len(symbols),
+            "" if start_ms is None else f" from {start_ms}",
+            "" if wanted is None else f", sessions {sorted(wanted)}",
+        )
         quote_fields = tuple(
             self.params.get("quote_fields", DEFAULT_QUOTE_FIELDS)
         )
@@ -769,6 +838,8 @@ class BarsFromStore(Node):
                 self.params["quote_source"],
                 self.params.get("quote_stream", QUOTE_STREAM),
                 quote_fields,
+                since_ms=start_ms,
+                symbols=symbols,
             )
         )
         blank = {field: None for field in quote_fields}
@@ -784,18 +855,15 @@ class BarsFromStore(Node):
         # tape by construction, identical in both arms of a comparison.
         covered = {symbol for symbol, _ in quotes}
         fallback = self.params.get("quote_uncovered_price")
-        tagged = []
-        for record in records:
-            row = dict(record)
-            stamp = row.get(self.params.get("ts_field", DEFAULT_TS_FIELD))
-            if isinstance(stamp, str) and stamp:
-                row["session"] = session_name(
-                    stamp,
-                    policy["tz"],
-                    policy["rth_start_minutes"],
-                    policy["rth_end_minutes"],
-                )
-            if self.params.get("quote_source") is not None:
+        # The session tag is already ON each record: the read applied it
+        # (``_tag``), because the session bound needs it at intake. What
+        # is left here is the quote attachment, written INTO the scanned
+        # record rather than into a copy of it — scan_stream mints these
+        # dicts for this call and this node is their only holder, so a
+        # second dict per record buys nothing and cost a measured 409
+        # bytes each, 5.4 GB on the study window (ADR-0073).
+        if self.params.get("quote_source") is not None:
+            for row in records:
                 # A bar with no quote carries the field as None rather
                 # than dropping out: the minute still happened, and a
                 # downstream that needs a price refuses a None itself.
@@ -811,10 +879,9 @@ class BarsFromStore(Node):
                     and "mid" in quote_fields
                 ):
                     row["mid"] = row.get(fallback)
-            tagged.append(row)
-        self._snap = tagged
+        self._snap = records
         cls._cached_key = key
-        cls._cached_snap = tagged
+        cls._cached_snap = records
         cls._cached_fingerprint = None  # a new snapshot, not yet hashed
         return self._snap
 
@@ -2797,27 +2864,41 @@ def _tapes_from_bars(bars, price_field, val_end):
     return arrays
 
 
-def _frame_matrix(frame, features):
-    """Slice one columnar frame to ``features``, dropping non-finite rows."""
+def _frame_matrix(frame, features, val_end=None):
+    """Slice one columnar frame to ``features``, dropping unusable rows.
+
+    A row is unusable when any wanted column is non-finite, and — when
+    ``val_end`` is given — when its stamp is past the lockbox cut. Both
+    tests build ONE mask and the frame is indexed ONCE. Selecting on
+    them in turn made two full-size design matrices where one was
+    wanted, and the frame this reads is the walk's cached feature build:
+    at one-minute rows on the study window that second copy was a
+    measured 0.6 GB, live beside the first (ADR-0073). The finite test
+    accumulates column by column for the same reason — the boolean
+    matrix ``isfinite(x)`` would itself be a full-size allocation.
+    """
     import numpy as np
 
     stamps = np.asarray(frame["asof_ms"], dtype=np.int64)
     matrix = np.asarray(frame["X"], dtype=np.float64)
     names = list(frame["names"])
-    if names == list(features):
-        x = matrix
-    else:
-        index = {name: i for i, name in enumerate(names)}
-        missing = [name for name in features if name not in index]
-        if missing:
-            return stamps[:0], matrix[:0]
-        x = matrix[:, [index[name] for name in features]]
-    finite = (
+    index = {name: i for i, name in enumerate(names)}
+    missing = [name for name in features if name not in index]
+    if missing:
+        return stamps[:0], matrix[:0]
+    columns = [index[name] for name in features]
+    keep = (
         np.ones(stamps.size, dtype=bool)
-        if x.ndim < 2 or x.shape[1] == 0
-        else np.isfinite(x).all(axis=1)
+        if val_end is None
+        else stamps <= val_end
     )
-    return stamps[finite], x[finite]
+    if matrix.ndim < 2 or not columns:
+        return stamps[keep], matrix[keep]
+    for column in columns:
+        keep &= np.isfinite(matrix[:, column])
+    # One fancy index over rows AND columns at once: an intermediate
+    # column slice would be full-size again.
+    return stamps[keep], matrix[np.ix_(keep, columns)]
 
 
 def _symbol_codes(spec, prepared):
@@ -2832,18 +2913,30 @@ def _symbol_codes(spec, prepared):
 
 
 def _attach_symbol_codes(prepared, codes):
-    """Append a last column of integer symbol codes for LightGBM."""
+    """Append a last column of integer symbol codes for LightGBM.
+
+    Rewrites ``prepared`` IN PLACE and returns it. Building a second
+    list held every name's pre-code matrix alive until the last name was
+    stacked, so the whole design matrix existed twice at once — measured
+    on the study window at one-minute rows, 3.4 GB of the second copy.
+    Replacing each entry as it is stacked leaves only ONE name doubled.
+    """
     import numpy as np
 
-    out = []
-    for item in prepared:
+    for i, item in enumerate(prepared):
         symbol, stamps, x, loc, match, t_ms, t_px = item
         code = float(codes[symbol])
-        stacked = np.column_stack([
-            x, np.full(x.shape[0], code, dtype=np.float64),
-        ])
-        out.append((symbol, stamps, stacked, loc, match, t_ms, t_px))
-    return out
+        prepared[i] = (
+            symbol,
+            stamps,
+            np.column_stack([x, np.full(x.shape[0], code, dtype=np.float64)]),
+            loc, match, t_ms, t_px,
+        )
+        # The pre-code matrix has exactly two references left, this
+        # frame's and the tuple just replaced; drop both so the next
+        # name's stack does not have to fit beside it.
+        del item, x
+    return prepared
 
 
 def _scan_aligned(bars, records, features, price_field, val_end, arrays=None):
@@ -2863,9 +2956,7 @@ def _scan_aligned(bars, records, features, price_field, val_end, arrays=None):
             tape = arrays.get(symbol)
             if not isinstance(symbol, str) or tape is None:
                 continue
-            stamps, x = _frame_matrix(frame, features)
-            keep = stamps <= val_end
-            stamps, x = stamps[keep], x[keep]
+            stamps, x = _frame_matrix(frame, features, val_end=val_end)
             if stamps.size == 0:
                 continue
             t_ms, t_px = tape
