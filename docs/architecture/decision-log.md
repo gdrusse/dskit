@@ -3135,3 +3135,112 @@ and a half hours for five names, and extending it backwards is more
 hours, not more code.
 
 ---
+
+## ADR-0073 — A run reads only the bars it declared, and reads them once
+
+*(Numbered 0073 because 0071 and 0072 were taken the same night on other
+branches. Code and comments in this change say ADR-0073.)*
+
+**Status:** proposed (2026-09-03; the P1 grid ran every look-ahead at
+five-minute rows and could not run one-minute rows at all — two attempts
+took the whole virtual machine down, so half of a search whose entire
+point is that spacing and look-ahead must move together is blocked by a
+memory defect rather than by a finding)
+
+**Context.** A walk-forward holds the bar tape as Python dicts, and it
+holds all of it. Measured on the split-adjusted store, one process, one
+fold, the study window:
+
+| what | records | cost |
+|---|---|---|
+| `scan_stream` returns the whole store | 15,991,833 | 11.9 GB resident, peaking at 12.3 GB |
+| `start_ms` (ADR-0066) then drops 2016-2017 | 13,172,450 kept | the peak is already paid |
+| six of the twelve names are never scored | 6,910,463 wanted | the other 6.3M are read, deduped, sorted and cached anyway |
+| `BarsFromStore._scan` copies every record to add one field | — | +409 bytes each, 5.4 GB, live beside the originals |
+
+Every one of those bounds is DECLARED before the read: the study's start
+date is in the node's params, the cohort is in the universe file, and
+regular hours are in the filter node wired to the bars node's output.
+Each was applied to the returned list instead of to the read, which
+costs the whole read plus a second list.
+
+The result is a floor of about 11.5 GB before a single feature exists.
+At five-minute rows the features add ~1 GB and a 20-fold walk fits, just,
+on a 17 GB box. At one-minute rows they add five times that and the box
+dies. The defect is not in the spacing; the spacing only exposes it.
+
+Two smaller repetitions of the same shape sit downstream: the design
+matrix is built three times inside the scan node (a finite-row select, a
+lockbox-cut select, then a column-stack for the symbol code), and every
+minute's ISO stamp is minted once per symbol where one canonical copy
+would serve all twelve.
+
+**Decision.** A run reads only the bars it declared, and reads them once.
+
+1. `dskit.onboarding.scan_stream` gains three intake bounds — `since_ms`
+   (inclusive lower bound on the derived epoch-ms field), `keep_values`
+   (field to the values worth reading), and `admit` (a predicate for a
+   bound no field carries, which may write the derived field it judged
+   on). A record failing any of them is never allocated, never deduped,
+   never sorted. Every line is still parsed and its key fields still
+   checked, so a corrupt row inside a bound cannot hide behind one
+   outside it. `ts_out` is therefore derived at INTAKE, and its three
+   refusals now name the offending `path:line` instead of the dedup key.
+2. `BarsFromStore` passes all three: `start_ms` as `since_ms`, the
+   universe's `symbols` as the cohort bound, and a new optional
+   `sessions` param as the session bound, whose predicate writes the
+   `session` tag the node already owed. The tag is written INTO the
+   scanned record; the node no longer copies the tape to add a field.
+3. The scan node builds each name's design matrix in ONE allocation:
+   `_frame_matrix` takes the lockbox cut and folds it into the
+   finite-row mask, indexes rows and columns together, and accumulates
+   the finite test column by column so the boolean matrix is never
+   full-size. `_attach_symbol_codes` rewrites its list in place, so one
+   name's pre-code matrix is doubled rather than all of them.
+
+The cohort bound is unconditional, and it changes what the bars node
+emits: `fingerprint()` counts fewer rows and hashes a different
+snapshot, so a re-run of any existing document lands in a new run
+directory. No NUMBER moves — the six dropped names are not tradable, not
+the reference, carry no industry, and are cut by the `tradable` and
+`names` filters before anything is fitted — but the identity does, and
+the twenty-four walks already recorded cannot be reproduced
+byte-identically under it. That is the price of the fix, stated here
+rather than discovered later.
+
+**Consequences.** Measured, same process, one fold at the last cutoff,
+five names plus SPY, 87 feature columns, peak resident:
+
+| case | before | after |
+|---|---|---|
+| one bounded year, one-minute rows | 12.25 GB | 2.48 GB |
+| study window from 2018-01-01, five-minute rows | ~11.5 GB (the recorded walk figure) | 6.04 GB |
+| study window from 2018-01-01, one-minute rows | did not fit; took the box down twice | 12.19 GB |
+| from 2020-01-01, one-minute rows | — | 9.49 GB |
+
+One-minute rows now fit. The 12.19 GB figure clears a 17 GB box with
+headroom but not the 10 GB the fix was asked for, and the last row says
+where the remainder is: `start_ms` is 2018-01-01, while the earliest bar
+any of the twenty folds reads is 2020-05-07 (first validation 2022-05-06
+less 730 training days), so two years and four months of tape is carried
+by every fold and read by none. At five-minute rows that margin was
+affordable; at one-minute rows it is about 2.7 GB. **A one-minute walk
+should declare `start_ms` = 2020-01-01** — four months clear of the
+earliest fold and of the longest feature warmup — and `sessions:
+["rth"]`, which the session filter node then re-applies as a no-op. That
+is a run-document choice, not a change to ADR-0066's study window: the
+study still begins in 2018 for any document whose folds reach back that
+far.
+
+What remains after that is structural and is NOT proposed here. Of the
+9.49 GB, about 3.2 GB is the bar tape as dicts — 900 bytes per record
+for ten numbers — and it is dead weight from the moment the features
+node has built its arrays, kept alive only because that node's output
+contract is a list of dicts and the walk's caches are what stop a
+105-second re-scan per fold. A columnar bar frame, the shape the
+features node already emits as `tape`, would cost about 50 bytes per
+record instead of 900. That is a change to the record contract of every
+node between the store and the features, and it should be measured and
+decided on its own.
+
+---

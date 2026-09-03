@@ -1672,3 +1672,130 @@ def test_bars_from_store_start_ms_is_part_of_the_identity():
         "root": "./ob", "source": "alpaca-sip-split",
         "universe": UNIVERSE_PATH, "start_ms": -1,
     })
+
+
+def test_the_bars_node_reads_only_its_universe_and_never_copies_the_tape(
+    tmp_path,
+):
+    """ADR-0073. The store here holds four names and eight sessions'
+    worth of minutes; the universe declares two names. The node must
+    read the two, drop the rest AT THE READ, and hand its caller the
+    very list the reader built — a second dict per record was a measured
+    409 bytes each, 5.4 GB on the study window."""
+    import intraday_equities.nodes as nodes
+
+    root = str(tmp_path / "ob")
+    _write_store(
+        root, "alpaca-sip", n_minutes=6,
+        symbols=("AAPL", "SPY", "QQQ", "XLE"),
+    )
+    universe_path = _write_universe(str(tmp_path / "universe.json"))
+    params = {"root": root, "source": "alpaca-sip", "universe": universe_path}
+
+    seen = {}
+    real_scan = nodes.scan_stream
+
+    def _spy(*args, **kwargs):
+        records = real_scan(*args, **kwargs)
+        seen["bounds"] = kwargs
+        seen["list"] = records
+        return records
+
+    nodes.BarsFromStore._cached_key = None
+    nodes.BarsFromStore._cached_snap = None
+    nodes.BarsFromStore._cached_fingerprint = None
+    nodes.scan_stream = _spy
+    try:
+        rows = nodes.BarsFromStore("bars", params).run(
+            _ctx(tmp_path), {},
+        )["records"]
+    finally:
+        nodes.scan_stream = real_scan
+
+    # The cohort went INTO the read, so the two names nobody scores were
+    # never records at all.
+    assert seen["bounds"]["keep_values"] == {"symbol": ("AAPL", "SPY")}
+    assert {row["symbol"] for row in rows} == {"AAPL", "SPY"}
+    assert len(rows) == 12
+    # The emitted list IS the scanned list: no full-tape copy.
+    assert rows is seen["list"]
+    # And the session tag the node owes still rides on every record.
+    assert all(row["session"] == "rth" for row in rows)
+
+
+def test_the_bars_node_bounds_its_read_by_start_ms_and_by_session(tmp_path):
+    """ADR-0073: both bounds reach the reader, and the sessions bound
+    drops its minutes before they are ever allocated."""
+    import intraday_equities.nodes as nodes
+
+    root = str(tmp_path / "ob")
+    _write_store(root, "alpaca-sip", n_minutes=6, symbols=("AAPL", "SPY"))
+    universe_path = _write_universe(str(tmp_path / "universe.json"))
+    base = {"root": root, "source": "alpaca-sip", "universe": universe_path}
+
+    def _run(**extra):
+        nodes.BarsFromStore._cached_key = None
+        nodes.BarsFromStore._cached_snap = None
+        nodes.BarsFromStore._cached_fingerprint = None
+        return nodes.BarsFromStore("bars", {**base, **extra}).run(
+            _ctx(tmp_path), {},
+        )["records"]
+
+    whole = _run()
+    cut = _ms(3)
+    bounded = _run(start_ms=cut)
+    assert [r["asof_ms"] for r in bounded] == [
+        r["asof_ms"] for r in whole if r["asof_ms"] >= cut
+    ]
+
+    # Every minute the fixture writes is inside regular hours, so an
+    # rth bound keeps them all and a closed bound keeps none — the
+    # bound is real either way, and it is applied at the read.
+    assert len(_run(sessions=["rth"])) == len(whole)
+    assert _run(sessions=["closed"]) == []
+
+
+def test_sessions_is_refused_unless_it_names_real_buckets():
+    from intraday_equities.nodes import BarsFromStore as Bars
+
+    base = {"root": "ob", "source": "alpaca-sip", "universe": UNIVERSE_PATH}
+    assert Bars.validate_params({**base, "sessions": ["rth", "eth"]}) == []
+    problems = Bars.validate_params({**base, "sessions": ["regular"]})
+    assert any("sessions must be a non-empty list" in p for p in problems)
+    problems = Bars.validate_params({**base, "sessions": []})
+    assert any("sessions must be a non-empty list" in p for p in problems)
+
+
+def test_one_design_matrix_is_built_once_per_name(tmp_path):
+    """ADR-0073: the scan node's slice takes the lockbox cut and the
+    finite-row test in ONE index, and the symbol code is stacked in
+    place. The values must be exactly what three passes produced."""
+    import numpy as np
+
+    from intraday_equities.nodes import (
+        _attach_symbol_codes,
+        _frame_matrix,
+    )
+
+    names = ["a", "b", "c"]
+    stamps = np.arange(6, dtype=np.int64) * 60_000
+    x = np.arange(18, dtype=np.float64).reshape(6, 3)
+    x[2, 0] = np.nan  # unusable: column 'a' IS wanted below
+    x[3, 1] = np.nan  # harmless: column 'b' is not
+    frame = {"symbol": "AAPL", "asof_ms": stamps, "names": names, "X": x}
+    val_end = int(stamps[4])
+
+    kept, matrix = _frame_matrix(frame, ["c", "a"], val_end=val_end)
+    # Rows 0,1,3,4: row 2 is non-finite in a wanted column and row 5 is
+    # past the cut. Row 3's NaN sits in a column nobody asked for and
+    # costs nothing, exactly as when the two selections ran in turn.
+    assert kept.tolist() == [0, 60_000, 180_000, 240_000]
+    assert matrix.tolist() == [[2.0, 0.0], [5.0, 3.0],
+                              [11.0, 9.0], [14.0, 12.0]]
+
+    prepared = [("AAPL", kept, matrix, None, None, None, None)]
+    same = _attach_symbol_codes(prepared, {"AAPL": 7})
+    assert same is prepared, "the list is rewritten, not rebuilt"
+    coded = prepared[0][2]
+    assert coded[:, :-1].tolist() == matrix.tolist()
+    assert coded[:, -1].tolist() == [7.0] * 4
