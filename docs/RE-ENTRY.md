@@ -1,5 +1,7 @@
 # Re-entry
 
+Recovery wrap, 2026-09-03: second-cohort Alpaca SIP bars (TSLA, TQQQ, NVDA, AMD) were researched, registered, and backfilled as `alpaca-sip-split-b`. Focused configuration tests: 28 passed; one known pre-existing start-date assertion still fails in `run-pb-s01-h01-lgbm-cross.json`.
+
 Refreshed 2026-09-03, end of the horizon-search session. On `main`,
 pushed to `origin`.
 

@@ -1,0 +1,21 @@
+{
+  "notes": "SPLIT-ADJUSTED one-minute SIP history for a SECOND cohort of tradables, pulled to test whether the first cohort (AAPL, JPM, LLY, WMT, XOM) is simply a hard batch to model. Same window, feed, adjustment, interval and codecs as source-alpaca-split-backfill.json, so every bar sits on the same price scale and the same 2026-02-28 data cut. A SEPARATE source name because the backfill cursor is per source: alpaca-sip-split has already run to its cut, so a re-pull under that name would fetch nothing. Symbols come from the 2026-09-03 research note on which names are easier to detect edge on at one to five minutes ahead: TSLA (retail market-order flow, a typical three-minute move of about 30bp against a half-spread near 0.3bp), TQQQ (a clocked 15:30-16:00 rebalancing flow, the one candidate with a timed mechanism, and 15:30 is a scored instant), NVDA (semis leader, the largest retail inflows of 2024-25) and AMD (the NVDA follower, so the cross-stock lead-lag can be tested). All four trade under the same ticker since before 2016-01-04, verified against Alpaca on 2026-09-03. Splits inside the window, all removed by the vendor adjustment: TSLA 5-for-1 2020-08-31 and 3-for-1 2022-08-25; NVDA 4-for-1 2021-07-20 and 10-for-1 2024-06-10; TQQQ several forward splits (2018, 2021, 2022, and a later one per the research note); AMD none. Backfill only: there is no live mode on a source with a data cut behind us. Secrets are environment-variable names; the material never enters this file or any hash.",
+  "symbols": [
+    "TSLA",
+    "TQQQ",
+    "NVDA",
+    "AMD"
+  ],
+  "start": "2016-01-01",
+  "end": "2026-02-28T23:59:59+00:00",
+  "feed": "sip",
+  "adjustment": "split",
+  "timeframe": [
+    1,
+    "Minute"
+  ],
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}
