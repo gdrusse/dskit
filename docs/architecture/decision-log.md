@@ -2616,3 +2616,90 @@ predictions**, so they can be re-scored on `R2oos` and `t_fold` only;
 their pooled and group verdicts are unavailable and are reported as such
 rather than guessed. The rule does NOT include a many-attempts
 correction — that is P8, and it applies on top.
+
+---
+
+## ADR-0064 — A walk persists every scored row, not just the fold's mean
+
+**Status:** proposed (2026-09-03; plan `docs/plans/2026-09-horizon-search.md`
+— the P5 skill rule could only be half-applied, and P6 and P8 cannot be
+applied at all, for one shared reason)
+
+**Context.** A walk-forward fold writes summaries: an MSPE pair, a
+Clark–West t, a row count. **A mean cannot be unpacked back into rows.**
+So the three questions now queued all stall on the same missing artifact:
+
+- ADR-0067's pooled Diebold–Mariano t needs `d_t`; `RESULT-P5.md` had to
+  report 113 definite fails and 7 `unresolved` cells because the pooled
+  half was unrecoverable from the 30 walks on disk.
+- P6's calibration slope needs the `(y, ŷ)` PAIRS, and its per-timestamp
+  cross-sectional IC needs the timestamp beside every pair.
+- P8's scramble test needs to re-score shuffled outcomes on the same rows.
+
+ADR-0067 began this by writing its gaps to `skill.json`. That artifact
+answers exactly one question: it keeps `d_t`, from which `y`, `ŷ` and the
+benchmark can never be recovered. It also builds the whole payload in
+memory before serialising it, which is the wrong shape for a walk that
+already holds ~11.5 GB of a 17 GB box.
+
+**Decision.** Every scan that scores validation rows PERSISTS THEM, and
+the row — not the gap — is the stored unit.
+
+1. **Columns**, seven, one row per scored validation row:
+   `ts` (int64, ms), `series` (dictionary-encoded string), `fold`
+   (int16), `horizon` (int16), `yhat`, `y`, `mu` (float32). `mu` is the
+   fold's CONSTANT training-mean benchmark — a property of the training
+   window, not recoverable from validation rows, so it is stored per row
+   rather than re-derived.
+2. **Format and place:** parquet, ONE FILE PER FOLD, at
+   `<fold>/artifacts/<node>/predictions.parquet`
+   (`predictions.PREDICTIONS_FILE`). Per fold, not per run: a fold is the
+   unit that is written, so a per-fold file needs no cross-fold buffer, no
+   append-to-an-open-file across runs, and no repair when a walk stops
+   half way — and `walkforward.json` already orders the folds for the
+   reader. Row spacing is stamped in the file metadata so no reader
+   guesses the overlap an HAC band needs.
+3. **Streamed, never accumulated.** One `(series, horizon)` block is
+   converted, written as its own row group, and dropped. Nothing per-row
+   survives the call that scored it.
+4. **The fold's ordinal** rides on `NodeContext.fold_index`, supplied by
+   `run_document`; a standalone run stamps `-1`. The fold document itself
+   carries only its cutoff, so without this the rows could not say which
+   fold produced them.
+5. `runs.score_walk` reads these rows and rebuilds `d_t` and `q_f` from
+   them, so ADR-0067's verdict is computed from the evidence rather than
+   trusted from a summary. A pre-0064 `skill.json` still reads.
+6. The store is domain-neutral (`dskit/pipeline/predictions.py`): a
+   series is any string key, a horizon any integer lead, the benchmark
+   any constant forecast. Nothing in it knows what is being predicted.
+   pyarrow is named only inside functions, so importing a node still does
+   not import parquet.
+
+**Size, measured before building** (zstd, random floats — the pessimistic
+case; real forecasts repeat and compress harder): **14.7 bytes per row.**
+One fold of 3 names × 4 leads × ~3,100 validation rows = 37,200 rows =
+0.55 MB. A 20-fold walk over 3 names: **11 MB**. Over 5 names (P9
+restores AAPL and WMT): **18 MB**. Over 5 names at 1-minute row spacing
+(the densest grid P1 proposes): **91 MB**. Against a 500 MB ceiling that
+is 5x of headroom at the worst configuration we can run today, so EVERY
+scored validation row is stored and none is dropped. If a future grid
+crosses the ceiling, the cut is leads — the walked lead grid, not the
+training lead — and it must be stated in the run document, never taken
+silently.
+
+**Memory, measured:** the first fold of a walk pays a one-time ~112 MB as
+pyarrow's parquet and compression libraries load into the process (~1% of
+the walk's 11.5 GB). Every fold after that adds **≤ 0.03 MB peak**,
+because the writer holds one block (~3,100 rows ≈ 90 kB) at a time and
+the arrays it converts are ones the scan already materialised for the
+Clark–West test. This REPLACES ADR-0067's in-memory JSON payload, so the
+net change to a walk's peak is a reduction after the first fold.
+
+**Consequences.** The scan node now requires pyarrow (`dskit[parquet]`)
+when it runs inside a run directory; a scan scored outside one still
+scores and simply leaves no evidence. **The 30 walks already on disk are
+unaffected** — they saved no rows and stay half-scored under ADR-0067
+until they are re-run, which is now the only thing standing between the 7
+`unresolved` cells and a verdict. P6 and P8 need no further persistence
+work: the calibration slope, the per-timestamp cross-sectional IC and the
+scramble null are all functions of the columns above.

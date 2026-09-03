@@ -653,6 +653,20 @@ def read_curve_records(run_dir):
     return found
 
 
+def _fold_gaps(run_dir):
+    """One fold's per-``(series, lead)`` loss gaps, from the rows it kept.
+
+    ADR-0064's ``predictions.parquet`` is the source: the rows are
+    rebuilt into gaps here rather than trusted from a summary, so the
+    same file also answers the calibration, cross-sectional and scramble
+    questions. A pre-0064 fold's ``skill.json`` still reads, so a walk
+    scored under the older artifact keeps its verdict.
+    """
+    from dskit.pipeline.predictions import read_prediction_series
+
+    return read_prediction_series(run_dir) or read_skill_series(run_dir)
+
+
 def _by_series(fold_payloads):
     """Group per-fold entries into ``{(series, lead): [entry, ...]}``."""
     grouped = {}
@@ -749,7 +763,9 @@ def score_walk(summary_dir, alpha=0.05, group="GROUP"):
     across-fold t of the per-fold out-of-sample R². Clark–West rides
     beside it as a side column, never as the verdict.
 
-    A walk whose folds saved per-row loss gaps is scored EXACTLY. A walk
+    A walk whose folds saved their per-row predictions (ADR-0064's
+    ``predictions.parquet``, or a legacy ``skill.json``) is scored
+    EXACTLY — both halves. A walk
     that saved only fold summaries is scored on the across-fold half and
     the R², with ``t_pool`` and ``passes`` left ``None`` and a note
     saying so — the pooled statistic cannot be recovered from an MSPE
@@ -785,7 +801,7 @@ def score_walk(summary_dir, alpha=0.05, group="GROUP"):
         len(score_walk(summary)["rows"])  # 4 — three names and the group
     """
     fold_dirs = walk_fold_dirs(summary_dir)
-    gaps = [read_skill_series(d) for d in fold_dirs]
+    gaps = [_fold_gaps(d) for d in fold_dirs]
     records = [read_curve_records(d) for d in fold_dirs]
     exact = bool(fold_dirs) and all(gaps)
     by_record = _by_series(records)
@@ -793,7 +809,7 @@ def score_walk(summary_dir, alpha=0.05, group="GROUP"):
     if not exact:
         notes.append(
             f"{sum(1 for g in gaps if not g)}/{len(fold_dirs)} fold(s) saved no "
-            "per-row loss gaps (ADR-0067 artifact absent) — the pooled DM "
+            "per-row predictions (ADR-0064 artifact absent) — the pooled DM "
             "statistic and the per-timestamp group series are NOT recoverable "
             "from fold summaries; t_pool and passes are reported as unknown."
         )

@@ -213,6 +213,10 @@ class NodeContext:
     for ``search``-role nodes: a callable ``rerun(overrides) -> float``
     that re-executes the objective's dirty subgraph under the given
     ``"node.param.path" -> value`` overrides; ``None`` everywhere else.
+    ``fold_index`` is this run's 0-based ordinal within a walk-forward,
+    ``None`` for a standalone run — a node that persists per-row evidence
+    must be able to STAMP which fold produced a row, and the fold
+    document carries only its cutoff (ADR-0064).
     """
 
     name: str
@@ -224,6 +228,7 @@ class NodeContext:
     tracker: object = None
     prev: dict = field(default_factory=dict)
     rerun: object = None
+    fold_index: object = None
 
 
 class Node(ABC):

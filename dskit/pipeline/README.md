@@ -191,6 +191,15 @@ recoverable only as text (a diverged `inf`, a truncated record). A `--metric`
 or `--param` **no** scanned run reported (or declares) is refused, never
 rendered as a confident column of blanks.
 
+**`predictions.py`** is the row-level companion (ADR-0064): a score node
+streams every scored validation row — timestamp, series, fold, horizon,
+forecast, outcome, benchmark — to one compact parquet file per run
+(`PredictionWriter`), and `read_prediction_series` reads it back. A mean
+cannot be unpacked into rows, so any test that needs the rows (a pooled
+forecast-comparison t, a calibration slope, a per-timestamp correlation,
+a scramble null) needs this file to have been written while the run
+happened.
+
 Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 
 | Kind | Role | Does |
