@@ -6,40 +6,59 @@ Refreshed 2026-09-03, end of the horizon-sweep session. On `main`.
 
 # ▶ PICK UP HERE
 
-## ⇒ Is the H=1 gain a forecast, or the shared `px[t]` in both sides?
+## ⇒ The two-bar wall: rank survives where accuracy dies
 
-**Two cells out of eighteen beat the training-mean benchmark, and both are
-H=1:** `h01-ridge` +0.090% MSPE gain (val IC +0.0340, 19/20 folds
-positive) and `h01-lgbm` +0.234% (+0.0538, **20/20**). Every other
-model × horizon forecasts WORSE than the mean. Not overfitting — train
-and val MSPE nearly equal (0.77 / 0.80) — and no leak found: features
-read bars ≤ t, `sigma_t` and `beta_t` are strictly causal. It is a
-martingale rejection at one minute, and it replicates across model
-classes.
+**30 walks complete** (5 models × H=1/2/3/20/30/60, 20 folds each,
+JPM/LLY/XOM). Clark–West gain (model MSPE vs the training mean's):
 
-**The open question is WHAT is predicted, not whether.** The label is
-`[log(px[t+h]/px[t]) - beta_t*log(qx[t+h]/qx[t])] / (sigma_t*sqrt(h))`,
-and **`px` is the last TRADE print** (the bars carry `trade_count` /
-`volume` / `vwap`; `price_field` is `close`), so it carries a ±half-spread
-coin flip. `px[t]` sits in the label with a minus sign and in
-`ret_lag_0 = log(px[t]/px[t-1])` with a plus — negative feature/label
-correlation that exists under a perfect random walk. **ADR-0059's
-transforms do not close this**: the SPY residual removes market variance
-(raising bounce's share) and `sigma_t` is a scalar measurable at t.
+| H | ridge | lgbm | gru | lstm | tft |
+|---|---|---|---|---|---|
+| 1 | **+0.0898** | **+0.2337** | −7.40 | −10.61 | −4.90 |
+| 2 | **+0.0096** | **+0.0796** | −7.72 | −11.17 | −5.04 |
+| 3 | −0.0206 | −0.0049 | −8.42 | −11.72 | −5.25 |
+| 20 | −0.0285 | −0.6512 | −11.86 | −12.88 | −17.01 |
+| 30 | −0.0948 | −1.1620 | −39.57 | −37.43 | −28.04 |
+| 60 | −0.1144 | −1.0530 | −53.71 | −47.93 | −38.83 |
 
-Two discriminators, both cheap, neither finished:
+**Four positive cells out of thirty. All at H ≤ 2, all low-capacity.**
+Both curves cross zero between H=2 and H=3 — a two-bar wall. The nets
+never enter positive territory at any horizon, and their gain worsens
+monotonically with capacity and with h.
 
-1. **The H=2 / H=3 decay** (10 walks queued, running now). Bounce
-   predicts the gain falls as 1/h: **~+0.045% at H=2, ~+0.030% at H=3.**
-   Decay SLOWER than that ⇒ not bounce ⇒ genuine short-horizon reversion.
-2. **A VWAP variant of `h01-ridge` / `h01-lgbm`** (not built, one config
+**The pre-registered 1/h bounce prediction is FALSIFIED — and the test
+did not cleanly replace it.** Predicted +0.045% at H=2 from +0.090% at
+H=1. Ridge delivered +0.0096% (a **9.4x** fall, far too fast for a
+fixed-size bounce term against variance growing like h). LightGBM
+delivered +0.0796% (a **2.9x** fall, close to the predicted 2x). So the
+two models disagree about the decay: ridge's rules bounce out, LightGBM's
+is consistent with it. **Mechanism still unnamed.**
+
+**The unexplained thing worth chasing: val IC decays far more slowly than
+the gain and stays positive nearly everywhere** (LightGBM +0.054 → +0.030
+at H=3, still +0.020 at H=60; 19–20/20 folds positive) while its MSPE
+gain has gone to −1.05%. Rank information persists ~30x further out in
+horizon than forecast accuracy. For a PREDICTION-ONLY model feeding a
+selecting optimizer, that gap is the whole question, and nothing here
+measures it.
+
+**Next, in order:**
+1. **Calibration** — regress y on ŷ per fold. Slope ≈1 ⇒ magnitude is
+   sizeable; slope ≪1 ⇒ only the ranking is usable, which is what the
+   IC/gain divergence hints. Small addition to the scan node.
+2. **Per-timestamp cross-sectional IC** — an optimizer chooses AMONG
+   names at one instant; every number above is pooled per name over time.
+3. **VWAP variant of `h01-ridge` / `h01-lgbm`** (not built, one config
    each). `vwap` averages every print in the minute, so its bounce term
-   is ~b²/n instead of b². If the H=1 gain collapses under VWAP, bounce
-   was the source. Caveat: VWAP is an interval average, so it smears the
-   decision instant — a diagnostic, not automatically a production target.
+   is ~b²/n. If the H=1 gain collapses under VWAP, bounce was the source
+   after all. Caveat: VWAP is an interval average, so it smears the
+   decision instant — diagnostic, not a production target.
 
-A midquote tape, or a label that skips a bar (features to `t-1`, label
-`t -> t+h`), would settle it outright. Neither exists.
+**Why bounce was suspected:** `px` is the last TRADE print (bars carry
+`trade_count`/`volume`/`vwap`; `price_field` is `close`), so it carries a
+±half-spread coin flip. `px[t]` sits in the label with a minus sign and in
+`ret_lag_0 = log(px[t]/px[t-1])` with a plus. ADR-0059's transforms do
+NOT close this: the SPY residual removes market variance (raising
+bounce's share) and `sigma_t` is a scalar measurable at t.
 
 **Framing the owner set:** the model is PREDICTION ONLY — an optimizer
 selects downstream — so cost arithmetic is out of scope. The surviving
