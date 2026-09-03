@@ -2498,3 +2498,52 @@ per-document.
 hash covers the lead it asked about, so two horizons can never collide in
 one run series. `universe.json`'s `horizon` block stays the default for
 documents that declare nothing.
+
+---
+
+## ADR-0063 — Two price scales, two sources; and the data cut is a fetch bound
+
+**Status:** proposed (2026-09-03; P9 found both splits inside the history,
+and the re-pull needed somewhere to put the study's hard cut)
+
+**Context.** `alpaca-sip` was registered with `adjustment: "raw"` — the
+connector's default — for one stated reason: the Schwab live overlap
+compares like with like only on the as-traded scale. That reason still
+holds, and it is unrelated to what a model is fit on. Raw is unadjusted
+for corporate actions, so AAPL's 2020-08-31 4-for-1 and WMT's 2024-02-26
+3-for-1 sit in the tape as one-minute returns of log(1/4) and log(1/3):
+changes of unit read as price moves, roughly eight times larger than the
+largest genuine day in ten years. Every run so far handled this by
+EXCLUDING both names with a `names` filter, which is why the horizon
+sweep decided on three stocks. Separately, the study's rule is that no
+data after 2026-02-28 is read, and the connector had no way to say so: a
+backfill window always ended at "now", so the cut could only be enforced
+by trimming after the bytes were already on disk.
+
+**Decision.** Two sources, not one adjustment knob flipped in place.
+`alpaca-sip-split` (`configs/source-alpaca-split-backfill.json`) declares
+`adjustment: "split"` and carries the twelve symbols the feature work
+needs; `alpaca-sip` keeps `adjustment: "raw"` and its overlap job.
+Observations are keyed by source name, so the two trees never mix and a
+raw-versus-adjusted comparison stays available. `adjustment` is DECLARED
+in both, never defaulted, and the connector's spec now says in words that
+its default is unadjusted. Split only, not dividend: a split is a change
+of unit and must be removed, while an ex-dividend fall is a price move
+the short-horizon label is supposed to see — and dividend adjustment
+rescales the whole prior series at every ex-date, so no two pulls of one
+history would agree. The Alpaca pack gains one optional knob, `end`: an
+exclusive ISO upper bound on the fetch window, clamped against the "now
+minus SIP lag" bound rather than replacing it. Absent, nothing changes.
+
+**Consequences.** A study with a data cut declares the cut where the
+fetch happens, so bars past it are never requested — the constraint is
+enforced by the connector, not by a downstream filter someone can forget.
+Back-adjustment expresses history on the pull date's share basis, so a
+FUTURE split silently restates every earlier bar in this tree: the
+manifest's `acquired_at` is the basis date, and the series must be
+re-pulled whole rather than topped up. Documents pointing at
+`alpaca-sip-split` are on a different price scale from every number
+recorded before 2026-09-03, so every AAPL and WMT result to date is void
+and the horizon grid has to re-run on five names. Two stores cost disk
+and one more thing to keep straight; the note in each config says which
+is which.

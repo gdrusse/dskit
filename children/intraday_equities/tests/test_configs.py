@@ -343,6 +343,30 @@ def test_sources_pin_the_same_one_minute_cohort():
     check_config(SchwabBars(), schwab)
 
 
+def test_split_source_declares_its_scale_and_the_data_cut():
+    """The store a model is fit on says its price scale out loud (ADR-0063).
+
+    The raw source keeps the as-traded scale for the Schwab overlap; the
+    split source is the one documents read, and its ``end`` is the study's
+    hard cut expressed where the fetch happens rather than trimmed after.
+    """
+    split = _raw("source-alpaca-split-backfill.json")
+    raw = _raw("source-alpaca-backfill.json")
+    assert split["adjustment"] == "split"
+    assert raw["adjustment"] == "raw"
+    assert split["end"] == "2026-02-28T23:59:59+00:00"
+    assert split["start"] == raw["start"] == "2016-01-01"
+    assert split["feed"] == raw["feed"] == "sip"
+    assert split["timeframe"] == raw["timeframe"] == [1, "Minute"]
+    assert split["storage"] == raw["storage"]
+    assert len(set(split["symbols"])) == len(split["symbols"])
+    # The cohort, plus the market and sector funds the cross-stock work
+    # needs. XLE and XLK split in December 2025, inside this window.
+    assert set(UNIVERSE["symbols"]) < set(split["symbols"])
+    assert {"QQQ", "XLF", "XLV", "XLE", "XLK", "XLP"} <= set(split["symbols"])
+    check_config(AlpacaBars(), split)
+
+
 def test_suites_and_asset_model_validate():
     model = load_model(_path("asset-model.json"))
     assert set(model.kinds) == {"artifact", "dataset"}

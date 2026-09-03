@@ -135,6 +135,27 @@ def test_live_window_is_bounded_and_sip_end_is_clamped():
         })
 
 
+def test_declared_end_clamps_the_window_and_is_exclusive():
+    """A hard data cut is declared, not trimmed after the fact."""
+    connector = StubAlpacaBarsConnector()
+    assert connector.resolve_knobs(CONFIG)["end"] == ""
+
+    cut = "2026-01-02T14:31:00+00:00"
+    knobs = connector.resolve_knobs({**CONFIG, "end": cut})
+    _start, end = connector._window(knobs, "", "backfill")
+    assert end == datetime(2026, 1, 2, 14, 31, tzinfo=timezone.utc)
+
+    records, _messages = _records(connector, {**CONFIG, "end": cut})
+    assert [record["data"]["ts"] for record in records] == [
+        "2026-01-02T14:30:00+00:00", "2026-01-02T14:30:00+00:00",
+    ]
+
+    with pytest.raises(AssetError, match="must be after config.start"):
+        connector.resolve_knobs({**CONFIG, "end": CONFIG["start"]})
+    with pytest.raises(AssetError, match="config.end"):
+        connector.resolve_knobs({**CONFIG, "end": 20260102})
+
+
 def test_fetch_chunks_large_windows_before_the_sdk_buffers_them(monkeypatch):
     historical = pytest.importorskip("alpaca.data.historical")
     seen = []

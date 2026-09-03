@@ -1,5 +1,5 @@
 {
-  "notes": "SIP one-minute history from 2016 on the raw price scale so overlap comparison matches live Schwab prints. Symbols and interval are config, not code. Secrets are environment-variable names.",
+  "notes": "SIP one-minute history from 2016 on the RAW, as-traded price scale so overlap comparison matches live Schwab prints. That is the only job it has: raw is UNADJUSTED for corporate actions, so AAPL's 2020-08-31 4-for-1 and WMT's 2024-02-26 3-for-1 sit in this tree as changes of unit read as price moves. Model and feature work reads configs/source-alpaca-split-backfill.json (source alpaca-sip-split) instead; the two trees are separate observation stores and are kept side by side deliberately, so a raw-versus-adjusted comparison stays possible. Symbols and interval are config, not code. Secrets are environment-variable names.",
   "symbols": [
     "AAPL",
     "JPM",

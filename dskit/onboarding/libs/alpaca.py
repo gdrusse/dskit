@@ -23,6 +23,7 @@ __all__ = [
     "BAR_STREAM",
     "DEFAULT_ADJUSTMENT",
     "DEFAULT_CHUNK_DAYS",
+    "DEFAULT_END",
     "DEFAULT_FEED",
     "DEFAULT_KEY_ENV",
     "DEFAULT_LIVE_LOOKBACK_MINUTES",
@@ -47,6 +48,7 @@ DEFAULT_LIVE_LOOKBACK_MINUTES = 1440
 DEFAULT_CHUNK_DAYS = 31
 DEFAULT_FEED = "sip"
 DEFAULT_ADJUSTMENT = "raw"
+DEFAULT_END = ""
 DEFAULT_KEY_ENV = "APCA_API_KEY_ID"
 DEFAULT_SECRET_ENV = "APCA_API_SECRET_KEY"
 
@@ -173,12 +175,23 @@ class AlpacaBarsConnector(Connector):
                 "required": True,
                 "notes": "Earliest ISO date or datetime to fetch.",
             },
+            "end": {
+                "notes": "Optional EXCLUSIVE ISO upper bound on the fetch "
+                         "window; absent means 'up to now'. A pull never "
+                         "reads a bar stamped at or after it, so a study "
+                         "with a hard data cut declares the cut here rather "
+                         "than trimming afterwards.",
+            },
             "feed": {
                 "notes": f"Market-data tape in {_FEEDS}; default {DEFAULT_FEED}.",
             },
             "adjustment": {
                 "notes": "Corporate-action adjustment in "
-                         f"{_ADJUSTMENTS}; default {DEFAULT_ADJUSTMENT}.",
+                         f"{_ADJUSTMENTS}; default {DEFAULT_ADJUSTMENT}. "
+                         "The default is UNADJUSTED: a split inside the "
+                         "window then reads as a price move. Declare it "
+                         "explicitly so the stored series says which scale "
+                         "it is on.",
             },
             "timeframe": {
                 "notes": "Bar interval [amount, unit], where unit is "
@@ -240,6 +253,11 @@ class AlpacaBarsConnector(Connector):
         start = config.get("start")
         if not isinstance(start, str) or not start:
             problems.append(f"config.start must be an ISO string, got {start!r}")
+        end = config.get("end", DEFAULT_END)
+        if not isinstance(end, str):
+            problems.append(
+                f"config.end must be an ISO string or absent, got {end!r}"
+            )
         feed = config.get("feed", DEFAULT_FEED)
         if feed not in _FEEDS:
             problems.append(f"config.feed must be one of {_FEEDS}, got {feed!r}")
@@ -287,11 +305,16 @@ class AlpacaBarsConnector(Connector):
                 )
         if problems:
             raise AssetError(problems)
-        parse_utc(start)
+        start_dt = parse_utc(start)
+        if end and parse_utc(end) <= start_dt:
+            raise AssetError(
+                [f"config.end {end!r} must be after config.start {start!r}"]
+            )
         amount, unit = timeframe
         return {
             "symbols": list(symbols),
             "start": start,
+            "end": end,
             "feed": feed,
             "adjustment": adjustment,
             "timeframe": (amount, unit),
@@ -321,6 +344,11 @@ class AlpacaBarsConnector(Connector):
         end = datetime.now(timezone.utc)
         if knobs["feed"] == _SIP_FEED:
             end -= _SIP_LAG
+        declared_end = knobs.get("end") or ""
+        if declared_end:
+            bound = parse_utc(declared_end)
+            if bound < end:
+                end = bound
         if end <= start:
             return None, None
         return start, end

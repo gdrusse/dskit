@@ -1,0 +1,29 @@
+{
+  "notes": "SPLIT-ADJUSTED one-minute SIP history, the scale the model is fit on. A SECOND source beside alpaca-sip, which stays on the raw as-traded scale so the Schwab live overlap still compares like with like; the two observation trees never mix, because observations are keyed by source name. adjustment=split is declared, never defaulted: the connector default is raw, and raw put AAPL's 2020-08-31 4-for-1 and WMT's 2024-02-26 3-for-1 inside the history as -139% and -110% one-minute returns, which is why both names were excluded from every run so far. Split only, NOT dividend: a split is a change of unit and must be removed, while an ex-dividend fall is a price move the short-horizon label is supposed to see; dividend adjustment would also rescale the whole prior series every quarter, so no two pulls would agree. Back-adjustment expresses history on the pull date's share basis, so a FUTURE split silently restates every earlier bar: re-pull the whole series rather than topping it up, and read acquired_at in the manifest as the basis date. end is the study's hard data cut (no data after 2026-02-28) declared where the fetch happens, so bars past it are never requested rather than trimmed afterwards; it is EXCLUSIVE. Symbols are the five tradables plus the SPY reference, plus QQQ and the five sector funds the cross-stock feature work needs (XLF/JPM, XLV/LLY, XLE/XOM, XLK/AAPL, XLP/WMT). XLE and XLK split 2-for-1 on 2025-12-05 and XLF 1231-for-1000 on 2016-09-19, all inside this window, so the funds need the adjustment as much as the stocks do. Backfill only: there is no live mode on a source with a data cut behind us. Secrets are environment-variable names; the material never enters this file or any hash.",
+  "symbols": [
+    "AAPL",
+    "JPM",
+    "XOM",
+    "WMT",
+    "LLY",
+    "SPY",
+    "QQQ",
+    "XLF",
+    "XLV",
+    "XLE",
+    "XLK",
+    "XLP"
+  ],
+  "start": "2016-01-01",
+  "end": "2026-02-28T23:59:59+00:00",
+  "feed": "sip",
+  "adjustment": "split",
+  "timeframe": [
+    1,
+    "Minute"
+  ],
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}
