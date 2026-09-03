@@ -206,3 +206,62 @@ why the control is re-run rather than read off the earlier table.
 | cross | 1 | 5 | lgbm | close | 2022-05-06→2025-10-17 (20f) | fail +0.0015 +1.00 | fail +0.0281 +0.55 | fail +0.1259 +1.03 | fail -0.0211 +0.13 | fail -0.0164 -0.02 | fail +0.0251 | +0.0249 (t 4.79) | 442s |
 | cross | 1 | 10 | ridge | close | 2022-05-06→2025-10-17 (20f) | fail -0.2178 -0.28 | fail +0.0609 +0.79 | fail -0.1992 -0.15 | fail -0.1528 -0.01 | fail -0.1010 -0.33 | fail -0.1207 | -0.0010 (t -0.21) | 465s |
 | cross | 1 | 10 | lgbm | close | 2022-05-06→2025-10-17 (20f) | fail -0.2557 +0.04 | fail -0.0337 +0.90 | fail +0.0523 +0.76 | fail -0.1236 -0.43 | fail +0.0604 +1.01 | fail -0.0619 | +0.0103 (t 2.00) | 437s |
+
+---
+## The many-attempts bar over tonight's fifty-one walks
+
+Fifty-one walks, 306 cells, every one entered in the attempt ledger, which now holds 426. Each outcome unit is resampled with one coin per trading session shared across every cell, so two neighbouring look-aheads cost barely more than one attempt. The mark is the 95th percentile of the best cell under pure luck, floored at a t of 3 (ADR-0069). This sits ON TOP of ADR-0067's verdict in the tables above: a cell must pass that first.
+
+A `**PASS**` in the tables above that is absent here did not clear the bar and is not an answer.
+
+### AAPL — 0 of 51 cells clear (luck reaches 2.880, mark 3.00)
+
+Nothing clears. AAPL has no defensible look-ahead tonight at any spacing, any look-ahead, any model or any feature block.
+
+### JPM — 0 of 51 cells clear (luck reaches 2.877, mark 3.00)
+
+Nothing clears. JPM has no defensible look-ahead tonight at any spacing, any look-ahead, any model or any feature block.
+
+### LLY — 14 of 51 cells clear (luck reaches 2.849, mark 3.00)
+
+| cell | t | adjusted p | skill | lower band |
+|---|---|---|---|---|
+| 1-min rows, 3 min ahead, tree model, blocks=cross | +3.22 | 0.0150 | +0.3039% | +0.1489% |
+| 1-min rows, 2 min ahead, tree model, blocks=cross | +5.30 | 0.0001 | +0.5430% | +0.3746% |
+| 1-min rows, 1 min ahead, tree model, blocks=cross | +8.12 | 0.0001 | +1.2046% | +0.9605% |
+| 1-min rows, 1 min ahead, simple model, blocks=cross | +5.93 | 0.0001 | +0.5751% | +0.4156% |
+| 5-min rows, 1 min ahead, tree model, blocks=cross | +5.67 | 0.0001 | +0.8860% | +0.6290% |
+| 5-min rows, 1 min ahead, tree model, blocks=tod | +5.38 | 0.0001 | +0.7602% | +0.5278% |
+| 5-min rows, 1 min ahead, tree model, blocks=all | +5.31 | 0.0001 | +0.8449% | +0.5832% |
+| 5-min rows, 1 min ahead, tree model, blocks=none | +5.03 | 0.0001 | +0.7267% | +0.4888% |
+| 5-min rows, 1 min ahead, tree model, blocks=bar | +4.82 | 0.0001 | +0.7424% | +0.4891% |
+| 5-min rows, 1 min ahead, simple model, blocks=cross | +4.55 | 0.0002 | +0.3302% | +0.2107% |
+| 5-min rows, 1 min ahead, simple model, blocks=tod | +4.32 | 0.0002 | +0.2894% | +0.1792% |
+| 5-min rows, 1 min ahead, simple model, blocks=none | +4.25 | 0.0002 | +0.2838% | +0.1741% |
+| 5-min rows, 1 min ahead, simple model, blocks=bar | +3.65 | 0.0039 | +0.2618% | +0.1438% |
+| 5-min rows, 1 min ahead, simple model, blocks=all | +3.24 | 0.0144 | +0.2675% | +0.1317% |
+
+Furthest look-ahead that clears: **3 minute(s)** (1-min rows, 3 min ahead, tree model, blocks=cross).
+
+### WMT — 0 of 51 cells clear (luck reaches 2.850, mark 3.00)
+
+Nothing clears. WMT has no defensible look-ahead tonight at any spacing, any look-ahead, any model or any feature block.
+
+### XOM — 0 of 51 cells clear (luck reaches 2.893, mark 3.00)
+
+Nothing clears. XOM has no defensible look-ahead tonight at any spacing, any look-ahead, any model or any feature block.
+
+### GROUP — 8 of 51 cells clear (luck reaches 2.872, mark 3.00)
+
+| cell | t | adjusted p | skill | lower band |
+|---|---|---|---|---|
+| 1-min rows, 2 min ahead, tree model, blocks=cross | +3.67 | 0.0040 | +0.1302% | +0.0718% |
+| 1-min rows, 1 min ahead, tree model, blocks=cross | +7.33 | 0.0001 | +0.3253% | +0.2523% |
+| 1-min rows, 1 min ahead, simple model, blocks=cross | +4.57 | 0.0001 | +0.1733% | +0.1109% |
+| 5-min rows, 1 min ahead, tree model, blocks=cross | +4.23 | 0.0008 | +0.2078% | +0.1269% |
+| 5-min rows, 1 min ahead, tree model, blocks=none | +4.07 | 0.0011 | +0.1861% | +0.1108% |
+| 5-min rows, 1 min ahead, tree model, blocks=tod | +3.87 | 0.0021 | +0.1714% | +0.0985% |
+| 5-min rows, 1 min ahead, tree model, blocks=all | +3.78 | 0.0025 | +0.1910% | +0.1079% |
+| 5-min rows, 1 min ahead, tree model, blocks=bar | +3.20 | 0.0190 | +0.1625% | +0.0789% |
+
+Furthest look-ahead that clears: **2 minute(s)** (1-min rows, 2 min ahead, tree model, blocks=cross).
