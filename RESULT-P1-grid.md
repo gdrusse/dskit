@@ -56,3 +56,83 @@ number.
 | 5 | 30 | lgbm | close | 2022-05-06→2025-10-17 (20f) | fail -0.2214 -0.16 | fail -0.1207 +0.30 | fail -0.3748 +0.20 | fail +0.0167 +0.28 | fail -0.4301 -0.32 | fail -0.1638 | +0.0017 (t 0.33) | 393s |
 | 5 | 60 | ridge | close | 2022-05-06→2025-10-17 (20f) | fail -0.2325 -0.49 | fail +0.1710 +1.05 | fail -0.0522 +0.49 | fail -0.0508 +0.86 | fail -0.0836 +0.47 | fail -0.0098 | +0.0065 (t 1.06) | 404s |
 | 5 | 60 | lgbm | close | 2022-05-06→2025-10-17 (20f) | fail -0.4530 -0.22 | fail +0.2095 +0.78 | fail -0.3410 +0.29 | fail -0.3427 +0.06 | fail -0.4493 +0.16 | fail -0.2462 | +0.0087 (t 1.48) | 388s |
+
+
+---
+
+## The midpoint test (P4 arm C), read against its own control
+
+Eight cells above, `p4mid`. Lilly and Exxon are the only two names with
+a full minute-by-minute record of the buy and sell prices, so only they
+are scored. Each of the four settings — one and two minutes ahead, the
+simple model and the tree model — was run twice: once on the last traded
+price of the minute, once on the midpoint of the buy and sell prices,
+over the same shortened dates, the same twelve test periods and the same
+rows. A minute with no usable two-sided quote is dropped from both sides
+before anything is built, so the two prices are judged on exactly the
+same instants.
+
+| ahead | model | last traded price | midpoint |
+|---|---|---|---|
+| 1 | simple | **pass**, +0.758% | **pass**, +0.309% |
+| 1 | tree | **pass**, +0.834% | fail, +0.447% |
+| 2 | simple | fail, +0.250% | **pass**, +0.261% |
+| 2 | tree | fail, -0.480% | fail, -0.284% |
+
+**The answer is no: the win is not simply the price flip.** Lilly's edge
+survives on the midpoint in two of the four settings — including one, two
+minutes ahead with the simple model, where the traded price itself fails.
+It is smaller on the midpoint (about two fifths of the traded-price
+number one minute ahead), which is what the flip diagnostic predicted:
+the flip inflates the measured win, it does not create all of it.
+
+Exxon fails on both prices at both look-aheads, as it did on the long
+window. The group of two fails everywhere.
+
+One caveat that cuts both ways: the quoted window is sixteen months, so
+every one of these eight cells has about half the evidence the long-window
+grid rows have. Read the four pairs against each other, never against a
+row from the twenty-fold table.
+
+## The many-attempts bar, applied to everything run tonight
+
+Twenty-four walks, 120 cells (one per name and for the group), all of
+them entered in the attempt ledger. Every family is resampled together by
+flipping whole trading days, so two neighbouring look-aheads cost barely
+more than one attempt. The mark is the 95th percentile of the best cell
+under pure luck, floored at a t of 3.
+
+Three cells clear it, all of them one minute ahead, on five-minute rows,
+on the traded price, over the twenty-fold window:
+
+| unit | cell | t | adjusted p | skill [lower band] |
+|---|---|---|---|---|
+| LLY | s05 h1 tree | +5.14 | 0.0001 | +0.750% [+0.510%] |
+| LLY | s05 h1 simple | +4.38 | 0.0001 | +0.293% [+0.183%] |
+| GROUP | s05 h1 tree | +4.02 | 0.0008 | +0.184% [+0.109%] |
+
+Nothing else does — not two minutes ahead, not any longer look-ahead, and
+**not one midpoint cell**. The best midpoint cell reaches a t of about 2,
+below the mark of 3; so does its own traded-price control on the same
+short window. That is a statement about the sixteen-month window, not
+about the midpoint: the shortened runs simply do not carry enough
+evidence to clear a bar built for 120 attempts. The midpoint question is
+settled by the paired table above; the "is there an edge at all"
+question is not settled by these eight runs.
+
+Per family: LLY c* 2.800 (24 cells, worth about 20 independent tries),
+GROUP c* 2.795, XOM c* 2.773, JPM c* 2.661, WMT c* 2.658, AAPL c* 2.627.
+The ledger is `children/intraday_equities/docs/decisioning/attempts.jsonl`,
+one line per distinct cell.
+
+## One-minute rows do not fit this machine
+
+The next block of the grid — a feature row every minute — is unrun. It
+is not slow, it is fatal: the run holds every minute of the tape rather
+than every fifth, and it takes the whole virtual machine down before it
+finishes a single test period. It did so twice, once earlier tonight
+(which is the run that vanished without a directory) and once on a
+measured retry, which ended in a WSL service failure needing a full
+restart. Nothing in the one-minute block is reportable and nothing should
+be attempted again on this box until the run reads the tape in pieces
+instead of all at once.
