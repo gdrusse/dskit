@@ -136,3 +136,23 @@ measured retry, which ended in a WSL service failure needing a full
 restart. Nothing in the one-minute block is reportable and nothing should
 be attempted again on this box until the run reads the tape in pieces
 instead of all at once.
+
+---
+
+## The feature blocks, run against their own control
+
+Every row here is a five-stock walk over the twenty post-COVID folds,
+scored on the same half-hour instants as the grid above. `blocks` names
+the switchable input blocks that were on: `none` is the control, `tod`
+the clock and calendar block, `bar` the bar-derived block, `cross` the
+market and sector block, `all` the three together (ADR-0071). Only
+`blocks` and the look-ahead move within a model.
+
+These rows are NOT comparable with the grid above on the two clock
+columns: ADR-0071 also fixed `tod_sin`/`tod_cos`, which used to wrap a
+whole circle so the open and the close sat at the same point. That is
+why the control is re-run rather than read off the earlier table.
+
+| blocks | s | h | model | price | window | AAPL | JPM | LLY | WMT | XOM | GROUP | xs_ic | wall |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| none | 5 | 3 | ridge | close | 2022-05-06→2025-10-17 (20f) | fail -0.0608 +0.05 | fail +0.0353 +1.29 | fail +0.0418 +1.55 | fail +0.0256 +0.65 | fail -0.0544 -0.70 | fail -0.0020 | +0.0134 (t 2.65) | 306s |
