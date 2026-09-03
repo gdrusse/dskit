@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "git pull --ff-only 2>&1 | tail -3",
+        "timeout": 20
+      }
+    ]
+  }
+}
