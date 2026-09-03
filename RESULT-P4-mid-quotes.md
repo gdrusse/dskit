@@ -66,34 +66,32 @@ of the diagnostic was **638 MB**. Nowhere near the 10 GB bound.
 `alpaca-sip-quotes`, joined to the split-adjusted bar tree on
 `(symbol, instant)`. Regular hours only.
 
-| | LLY | XOM (partial) |
-|---|---|---|
-| sessions | 330 | 155 |
-| first → last | 2024-11-01 → **2026-02-27** | 2024-11-01 → 2025-06-17 |
-| RTH bar minutes | 126,950 | 60,150 |
-| minutes with a quote | 126,921 | 60,126 |
-| **missing-quote share** | **0.023%** | **0.040%** |
-| median mid | $810.71 | $109.15 |
-| median spread | **$0.76 (9.00 bps)** | **$0.02 (1.79 bps)** |
-| 99th-pct spread | 31.1 bps | 6.5 bps |
-| spread > 1% of price | 0.001% | 0.002% |
-| spread > 3% of price | 0 | 0 |
-| minutes containing a crossed quote | 0.73% | 2.60% |
-| minutes containing a locked quote | 1.35% | 83.2% |
-| mid outside the minute's traded high-low | 12.7% | 7.2% |
+| | LLY | XOM | JPM (partial) |
+|---|---|---|---|
+| sessions | 330 | 330 | 99 |
+| first → last | 2024-11-01 → **2026-02-27** | 2024-11-01 → **2026-02-27** | 2024-11-01 → 2025-03-27 |
+| RTH bar minutes | 126,950 | 127,941 | 38,275 |
+| **missing-quote share** | **0.023%** | **0.045%** | **0.018%** |
+| median mid | $810.71 | ~$109 | ~$260 |
+| median spread | **9.00 bps** | **1.54 bps** | 3.07 bps |
+| spread > 1% of price | 0.001% | 0.001% | 0.000% |
+| spread > 3% of price | 0 | 0 | 0 |
+| minutes containing a crossed quote | 0.73% | 2.92% | 1.07% |
+| minutes containing a locked quote | 1.35% | 89.3% | 5.69% |
+| mid outside the minute's traded high-low | 12.7% | 8.1% | 6.3% |
 
 Reading:
 
-- **Coverage is essentially complete.** Two hundredths of one percent of
-  regular-hours minutes have no usable two-sided quote inside their own
-  sixty seconds. Nothing needs interpolating.
+- **Coverage is essentially complete.** Two to four hundredths of one
+  percent of regular-hours minutes have no usable two-sided quote inside
+  their own sixty seconds. Nothing needs interpolating.
 - **Implausible spreads are absent.** One minute in 100,000 quotes wider
   than 1% of price; none wider than 3%. The wide tail is the open, which
   is where it belongs.
 - **Crossed and locked are counted, never used.** The stored bid/ask is
   the last quote in the minute with `ask > bid`; a minute is flagged if
-  it merely *contained* a crossed or locked quote. XOM's 83% locked is
-  not a defect — it is a two-cent stock at $109 where the book locks
+  it merely *contained* a crossed or locked quote. XOM's 89% locked is
+  not a defect — it is a one-to-two-cent book at $109 that locks
   constantly — and it is exactly why the selection rule exists.
 - **The observed spread is far wider than Roll implied.** P4's Roll
   estimate for LLY was 3.63 bps ($0.133 at a $367 median). The real
@@ -104,33 +102,43 @@ Reading:
   not a fault.** The mid is read at the boundary; the high and low bound
   trades *inside* the minute. With a 76-cent spread on a name that
   prints 127 times a minute, a boundary mid sitting a few cents outside
-  the minute's own trade range is the normal case, and it is more common
-  for LLY (wide spread) than XOM (7.2%, two-cent spread) exactly as it
-  should be. No split falls inside this window for these names, so this
-  is not a scale mismatch — a scale mismatch would read ~100%.
+  the minute's own trade range is the normal case, and it ranks by
+  spread exactly as it should: LLY 12.7% at 9.0 bps, XOM 8.1% at 1.5
+  bps, JPM 6.3% at 3.1 bps. No split falls inside this window for these
+  names, so this is not a scale mismatch — one would read ~100%.
 
 ## 3. The decisive test — the bounce diagnostic redone on the midpoint
 
 Lag-one autocorrelation of one-minute returns, within session, over the
 *same minutes* for both price definitions.
 
-| stock | last trade | **midpoint** | standard error | pairs |
-|---|---|---|---|---|
-| **LLY** | **−0.0456** | **+0.0134** | 0.0028 | 126,261 |
-| XOM (partial) | −0.0095 | −0.0052 | 0.0041 | 59,816 |
+| stock | H=1 gain (P4) | last trade | **midpoint** | standard error | pairs |
+|---|---|---|---|---|---|
+| **LLY** | **+0.35% / +0.69%, 20 of 20 folds** | **−0.0456** | **+0.0134** | 0.0028 | 126,261 |
+| XOM | −0.12% / −0.05%, 3 of 20 | −0.0122 | −0.0082 | 0.0028 | 127,241 |
+| JPM (partial) | +0.05% / +0.07%, 12 of 20 | −0.0398 | −0.0260 | 0.0051 | 38,055 |
 
 **LLY's −0.0456 reproduces P4's −0.0455 to four decimals** on a
 different window, which says the two measurements agree about what the
 trade price does.
 
 **On the midpoint it is gone.** −0.0456 → +0.0134: not merely smaller,
-but the other side of zero, a move of sixteen standard errors. The
+but the other side of zero, a move of twenty-one standard errors. The
 one-minute mean reversion that made LLY look predictable is a property
 of *which side of the spread the last print landed on*, and it does not
 exist in the value the market was quoting.
 
-XOM has no flip to remove in either price, which is what P4 found and
-what its zero gain reflected.
+XOM's flip is small in both prices (−0.012 → −0.008) and it is the name
+with no gain to explain, exactly as P4 found.
+
+JPM is only 30% pulled and its number should be read again when it
+finishes, but on 99 sessions it does NOT collapse: −0.040 → −0.026, five
+standard errors from zero on the midpoint. That is a different shape
+from LLY's — a real short-horizon reversal in the value, not a print
+artefact — and JPM is also the name whose H=1 gain was a coin flip
+(12 folds of 20). If it holds it says the two names fail for different
+reasons, and it is a reason to want JPM's mid run rather than to expect
+it to look like LLY's.
 
 ## 4. What this means
 
@@ -145,8 +153,9 @@ That is **not yet proof the H=1 gain vanishes** — that needs the run,
 under `price_field: "mid"` against the `close` control, everything else
 byte-identical. Two things stand between here and that run:
 
-1. **XOM, JPM, WMT and AAPL are still pulling.** XOM is half done and
-   completes tonight; the other three are ~4 hours behind it.
+1. **JPM, WMT and AAPL are still pulling** — the decisive pair is done
+   (LLY 7 min, XOM 88 min); the other three are ~4 hours behind, AAPL
+   alone being ~3 of them.
 2. **The price field does not reach the scan yet.** `BarsFromStore` now
    attaches `mid`/`bid`/`ask`/`spread` to every bar (ADR-0065), but
    `SessionFeatureRows` lifts only OHLCV into its frames and

@@ -11,27 +11,32 @@ and we had no buy and sell prices at all.
 
 ## Finding
 
-We now have one buy price and one sell price for every trading minute, for
-LLY over sixteen months and XOM over half of it. Coverage is 99.98% of
-minutes. Typical gap between buying and selling: 76 cents for LLY on an
-$811 price, 2 cents for XOM. Almost nothing looks broken — one minute in
-100,000 has a gap wider than 1% of the price.
+We now have one buy price and one sell price for every trading minute of
+sixteen months, for both LLY and XOM. Coverage is 99.96% of minutes.
+Typical gap between buying and selling: 76 cents for LLY on an $811 price,
+2 cents for XOM. Almost nothing looks broken — one minute in 100,000 has a
+gap wider than 1% of the price.
 
 Now the test. Measure how much a minute's move reverses the next minute:
 
 - **LLY, last traded price: −0.046. Middle of buy and sell: +0.013.**
   Noise level 0.003.
-- XOM, last traded price: −0.009. Middle: −0.005. Noise level 0.004.
+- XOM, last traded price: −0.012. Middle: −0.008. Noise level 0.003.
 
 LLY's reversal does not shrink. It crosses zero. The pattern that made LLY
 look predictable one minute ahead is about which side of the gap the last
 trade happened to land on, and it is not in the price the market was
-actually quoting. XOM never had one to lose.
+actually quoting. XOM barely had one either way, which fits its lack of a
+win.
+
+One to watch: JPM is a third downloaded, and its reversal does NOT vanish
+on the middle price (−0.040 to −0.026). If that holds, JPM is reversing
+for a real reason rather than a bookkeeping one.
 
 That is not yet proof the win disappears — that needs the same run redone
-on the middle price, which two things still block: the other stocks are
-still downloading, and the middle price does not yet reach the scoring
-code. But the burden of proof has moved again, the same way.
+on the middle price, which two things still block: three stocks are still
+downloading, and the middle price does not yet reach the scoring code. But
+the burden of proof has moved again, the same way.
 
 ## Sources
 
