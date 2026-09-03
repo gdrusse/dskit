@@ -13,10 +13,11 @@
       "uses": "intraday_equities-bars",
       "params": {
         "root": "./ob",
-        "source": "alpaca-sip",
-        "universe": "configs/universe-jpm-h20.json"
+        "source": "alpaca-sip-split",
+        "universe": "configs/universe-jpm-h20.json",
+        "start_ms": 1514764800000
       },
-      "notes": "Historical SIP tape, adjustment raw. Run from the child root."
+      "notes": "Split-adjusted historical SIP tape (source alpaca-sip-split, ADR-0063): AAPL's 2020 4-for-1, WMT's 2024 3-for-1 and the XLE/XLK 2-for-1s of December 2025 are all removed by the vendor, so no change of unit reads as a price move. start_ms is the study's start date, 2018-01-01 (ADR-0066) - it precedes the earliest bar any fold reads by 2y4m, and it puts XLF's 2016-09-19 XLRE spin-off, the one corporate action the vendor does NOT adjust, outside the readable window. Prices here are NOT the as-traded scale and are not comparable with any number recorded before 2026-09-03. Run from the child root."
     },
     "session": {
       "uses": "filter",

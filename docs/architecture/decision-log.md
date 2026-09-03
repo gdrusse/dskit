@@ -2547,3 +2547,154 @@ recorded before 2026-09-03, so every AAPL and WMT result to date is void
 and the horizon grid has to re-run on five names. Two stores cost disk
 and one more thing to keep straight; the note in each config says which
 is which.
+
+---
+
+## ADR-0065 — Row spacing, the price field and the scoring lattice are run knobs
+
+**Status:** proposed (2026-09-03; P1 needs spacings {1,5,10} crossed with
+horizons and every cell scored on the same instants, P4 needs one run
+repeated on three price definitions)
+
+**Context.** Three knobs that decide what a run MEASURES live in the
+universe document, which states the cohort: `period_ms`/`offset_ms` (one
+feature row every five minutes) and `price_field` (`"close"`). A universe
+file also names the symbols, the session policy, the holiday calendar,
+the feature scales and the holdout dates, and
+`test_run_docs_do_not_restate_the_cohort` asserts that every universe
+variant agrees with `universe.json` on exactly those cohort keys —
+`period_ms`, `offset_ms` and `price_field` among them. So P1's grid of
+five spacings and P4's three price definitions cannot be written down at
+all: each cell would need its own universe file, and the test that stops
+two copies of a cohort from drifting would fail on every one of them.
+This is the defect ADR-0060 removed for `estimator` and ADR-0062 for the
+lead grid, in the two remaining places.
+
+P1 asks for one thing more than a knob. Rows formed every minute and rows
+formed every ten minutes do not land on the same instants, so a gain at
+s=1 and a gain at s=10 are not two measurements of the same quantity —
+they are scored on different clocks, with different overlap, and the
+per-cell HAC lag `lead // period_minutes - 1` differs by cell as well.
+P1's design fixes this by scoring every cell on the 30-minute lattice,
+the lowest common multiple of the spacings: the label at a lattice
+instant is the same number whatever the spacing, so a difference between
+cells is model-only. Density then acts where it is supposed to act — on
+the TRAINING rows — and nowhere else.
+
+**Decision.** Three parts.
+
+1. `Universe` gains an optional `overrides` param: a dict restricted to
+   `period_ms`, `offset_ms` and `price_field`, applied to the loaded spec
+   before it is emitted. One declaration, read by every consumer, so the
+   feature node and the scan node can never disagree about the spacing or
+   the price. It is default-deny and emitted only when present, so no
+   recorded document's hash moves; when present it enters the universe
+   node's fingerprint, so two spacings can never collide in one run
+   series. The cohort keys stay cohort keys — a universe VARIANT still
+   may not move them, and the test still says so.
+
+2. `price_field` is honoured where the price is actually lifted.
+   `_symbol_ohlcv` takes the field name, so the return features, the
+   emitted tape and the label all read one series and cannot drift apart.
+   The accepted names are `close` (the last trade of the minute),
+   `vwap` (the volume-weighted average of the minute's prints, already in
+   every Alpaca bar) and `mid`, declared here and NOT present in the
+   store today: the quote pull that will populate it is separate work, so
+   a run that names `mid` fails loudly on an empty price series rather
+   than falling back to `close` and reporting a comparison it did not
+   make. Nothing here depends on that work landing.
+
+3. `NoInformationScan` gains `score_period_ms` and `score_offset_ms`: the
+   SCORING lattice, separate from the row spacing. Validation rows are
+   restricted to stamps on the lattice; training rows are not. The HAC
+   lag becomes `lead // lattice_minutes - 1` when a lattice is declared,
+   because the overlap that matters is the overlap between SCORED rows —
+   at a 30-minute lattice, labels out to h=30 do not overlap at all and
+   the plain SE is right, which is the point of choosing it. The lattice
+   must be a whole multiple of the run's row spacing and share its phase,
+   or no row lands on it; the scan refuses with both numbers rather than
+   scoring an empty fold. Inner-holdout HPO is unchanged: it selects, it
+   does not score.
+
+**Consequences.** P1's grid becomes 24 run documents against one universe
+file, and P4's three arms become three documents differing in one word.
+A run's identity hash covers its spacing, its price definition and its
+lattice, so cells cannot collide. Two numbers now describe cadence and a
+reader must keep them apart: rows are FORMED at `period_ms` and JUDGED at
+`score_period_ms`; a run that declares no lattice is judged on the rows
+it formed, exactly as before. Runs that share a lattice are comparable
+across spacings; runs that do not declare one are comparable only with
+each other. MSPE on a `vwap` run is not comparable with MSPE on a `close`
+run — the underlying series differs — which is P4's whole question, and
+the same caveat ADR-0059 attached to the label transforms. One feature
+is left mixed on purpose: `overnight_gap` is the log of a session's
+first OPEN over the previous session's last priced bar, so on a `vwap`
+run it reads an open against a minute average. Open, high, low and
+volume describe a bar's SHAPE and are not the priced series; moving
+them would change the range, `clv` and Amihud features as well, which
+is not the question P4 asks.
+
+**Rejected.** A universe file per cell: it restates the cohort, which is
+the defect. A `price_field` on each consuming node: the features node and
+the scan node would each carry a copy, and a run that changed one would
+silently label with one price and predict with another. ADR-0064 is
+taken by the prediction-saving work in flight, so this is 0065.
+
+---
+
+## ADR-0066 — The study reads from 2018-01-01, and that is where XLF becomes usable
+
+**Status:** proposed (2026-09-03; the split-adjusted re-pull left one
+uncorrected corporate action, and no document said where history starts)
+
+**Context.** The store holds 2016-01-01 to 2026-02-28. No document said
+which part of it a run may read, so "from 2016" was true by default
+rather than by decision. Two facts bear on it. First, the fold structure:
+the walk's first validation is 2022-05-06 with a 730-day training window,
+so the earliest bar any current fold reads is about 2020-05-06 — six and
+a half years of the store have never entered a run and were being scanned
+and held in memory regardless. Second, XLF. P9's re-pull removed every
+split-sized jump on all twelve symbols, but XLF falls 18.2% on 2016-09-19
+on BOTH the raw and the split-adjusted scale: that is the XLRE spin-off,
+carried out partly as a 1231-for-1000 share split, and the vendor does
+not adjust for it. 1000/1231 = 0.812 against the 0.818 observed, so most
+of that fall is a change of unit read as a price move. It is the same
+defect as the splits, one twenty-fifth the size, and at 18.2% it is the
+same size as JPM's largest genuine day — no threshold separates them.
+
+**Decision.** Runs read bars stamped 2018-01-01 or later.
+`BarsFromStore` gains an optional `start_ms` — an inclusive epoch-
+millisecond lower bound on the bars it emits, declared in every run
+document beside the source it names. It is the mirror of the `end` bound
+ADR-0063 put on the fetch: the cut is stated where the data is read, not
+left to a filter someone can forget to wire.
+
+2018-01-01 is chosen for the training window, not for XLF. It precedes
+the earliest bar any current fold reads by two years and four months,
+which is enough headroom to double `train_days` from 730 to 1460 without
+truncating the first fold — so no fold structure changes, and none has
+to change when P1 or P7 asks for a longer window. What it drops is 2016
+and 2017: two years that no fold has ever read, that carry a different
+microstructure, and that would only ever enter a run as the oldest and
+least relevant training data.
+
+XLF's spin-off, 2016-09-19, falls before that boundary and is therefore
+excluded by the same rule that excludes everything else from those two
+years. That is the cheapest of the three honest options. Correcting it
+by hand means writing a per-symbol adjustment factor into the store
+outside the connector, so the manifest hash stops describing what is on
+disk — ADR-0063 rejected that arithmetic for the splits and it is no
+better here. Dropping XLF loses the financials sector fund, the pair for
+JPM, which is the one name with a positive result to explain. Starting
+XLF's history at 2016-09-20 alone is a per-symbol carve-out that every
+later reader would have to remember; a single study-wide start date needs
+remembering once.
+
+**Consequences.** Every run reads the same window, and it is written in
+every run document. No symbol carries an uncorrected corporate action in
+the readable range: the two stock splits are vendor-adjusted, XLE's and
+XLK's 2025-12-05 2-for-1s are vendor-adjusted, and XLF's 2016 spin-off is
+outside it. A run holds about 20% fewer bars. Existing fold dates and
+counts are untouched. Should a later question genuinely need 2016-2017,
+it is one number in one document — and it must then say what it does
+about XLF, because this decision is the only thing keeping that row out.

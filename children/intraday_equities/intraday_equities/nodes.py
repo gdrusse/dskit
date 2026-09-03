@@ -96,6 +96,22 @@ LABEL_PARAMS = (
 #: override the universe's ``horizon`` block: the horizon is what a run
 #: ASKS, not a fact about the cohort it asks over.
 LEAD_PARAMS = ("lead_start", "lead_step", "lead_stop")
+#: The scoring-lattice knobs (ADR-0065). ``score_period_ms``
+#: restricts the VALIDATION rows to one instant every so many
+#: milliseconds, so two runs formed at different row spacings are
+#: judged on the same clock and their gains are comparable.
+SCORE_GRID_PARAMS = ("score_period_ms", "score_offset_ms")
+#: Bar fields a run may name as its price (ADR-0065). ``close`` is
+#: the minute's last trade and ``vwap`` the volume-weighted average
+#: of its prints; both are in every Alpaca bar. ``mid`` is DECLARED
+#: and not yet acquired -- the quote pull that fills it is separate
+#: work, and a run naming it today fails on an empty price series
+#: rather than quietly reading ``close`` and reporting a comparison
+#: it never made.
+KNOWN_PRICE_FIELDS = ("close", "vwap", "mid")
+#: Universe keys a run document may override (ADR-0065). Everything
+#: else in that file states the COHORT and may not move per run.
+UNIVERSE_OVERRIDE_KEYS = ("period_ms", "offset_ms", "price_field")
 
 
 def session_name(stamp, zone, rth_start_minutes, rth_end_minutes):
@@ -323,9 +339,10 @@ def _universe_problems(spec):
             f"offset_ms must be < period_ms, got {offset} >= {period}"
         )
     price_field = spec.get("price_field")
-    if not isinstance(price_field, str) or not price_field:
+    if price_field not in KNOWN_PRICE_FIELDS:
         problems.append(
-            f"price_field must be a non-empty string, got {price_field!r}"
+            f"price_field must be one of {list(KNOWN_PRICE_FIELDS)}, "
+            f"got {price_field!r}"
         )
     problems.extend(_session_problems(spec.get("session")))
     problems.extend(_scale_problems(spec.get("scales")))
@@ -476,8 +493,13 @@ class BarsFromStore(Node):
     ----------
     params : dict
         ``root``, ``source``, and ``universe`` (required strings),
-        optional ``stream``, ``ts_field``, and ``shared_fields``.
-        Session hours come from the universe file.
+        optional ``stream``, ``ts_field``, ``shared_fields``, and
+        ``start_ms``. Session hours come from the universe file.
+        ``start_ms`` is an INCLUSIVE epoch-millisecond lower bound on
+        the bars emitted (ADR-0066): the study's start date, stated
+        where the data is read, mirroring the ``end`` bound ADR-0063 put
+        where the data is fetched. It is part of the cache key and the
+        fingerprint, so two windows can never share one identity.
 
     Examples
     --------
@@ -489,12 +511,23 @@ class BarsFromStore(Node):
             "universe": "configs/universe.json",
         })
         node.params["source"]  # 'alpaca-sip'
+
+    Read only from 2018 on::
+
+        node = BarsFromStore("bars", {
+            "root": "./ob",
+            "source": "alpaca-sip-split",
+            "universe": "configs/universe.json",
+            "start_ms": 1514764800000,
+        })
+        node.params["start_ms"]  # 1514764800000
     """
 
     role = "data"
     outputs = ("records",)
     _PARAMS = (
         "root", "source", "universe", "stream", "ts_field", "shared_fields",
+        "start_ms",
     )
     _snap = None
     #: On the CLASS: a walk-forward builds a fresh source per fold, so an
@@ -553,6 +586,9 @@ class BarsFromStore(Node):
             problems.append(
                 f"ts_field must be a non-empty string, got {ts_field!r}"
             )
+        start_ms = params.get("start_ms")
+        if start_ms is not None:
+            check_int_param(problems, "start_ms", start_ms, ge=0)
         shared = params.get("shared_fields", DEFAULT_SHARED_FIELDS)
         if (
             not isinstance(shared, (list, tuple))
@@ -579,6 +615,7 @@ class BarsFromStore(Node):
             tuple(self.params.get("shared_fields", DEFAULT_SHARED_FIELDS)),
             self.params["universe"],
             _file_digest(self.params["universe"]),
+            self.params.get("start_ms"),
             dir_digest(
                 stream_dir(self.params["root"], self.params["source"])
             ),
@@ -604,6 +641,22 @@ class BarsFromStore(Node):
             ),
         )
         policy = _load_json(self.params["universe"])["session"]
+        # ADR-0066: the study's start date, applied before anything sees
+        # the records, so no node downstream can forget it and no
+        # feature window can reach behind it.
+        start_ms = self.params.get("start_ms")
+        if start_ms is not None:
+            start_ms = int(start_ms)
+            before = len(records)
+            records = [
+                row for row in records
+                if isinstance(row.get("asof_ms"), int)
+                and row["asof_ms"] >= start_ms
+            ]
+            self.log.info(
+                "start_ms %d: kept %d of %d record(s)",
+                start_ms, len(records), before,
+            )
         tagged = []
         for record in records:
             row = dict(record)
@@ -646,6 +699,7 @@ class BarsFromStore(Node):
             "rows": len(records),
             "sha256": stream_digest(records),
             "universe": _file_digest(self.params["universe"]),
+            "start_ms": self.params.get("start_ms"),
         }
         if cls._cached_key == self._key:
             cls._cached_fingerprint = dict(self._fp)
@@ -1104,8 +1158,16 @@ def _session_feature_arrays(
     return columns
 
 
-def _symbol_ohlcv(rows):
-    """Sort one symbol's bars and lift OHLCV arrays."""
+def _symbol_ohlcv(rows, price_field=DEFAULT_PRICE_FIELD):
+    """Sort one symbol's bars and lift OHLCV arrays.
+
+    ``price_field`` names the bar field the returned price array carries
+    (ADR-0065). Open, high, low and volume stay the bar's own, because
+    they describe its SHAPE; only the priced series moves, and it moves
+    everywhere at once — the lag returns, the emitted tape and the label
+    all read this one array, so a run cannot label with one price and
+    predict from another.
+    """
     import numpy as np
 
     rows.sort(key=lambda row: row["asof_ms"])
@@ -1123,7 +1185,7 @@ def _symbol_ohlcv(rows):
         dtype=np.float64,
     )
     close = np.asarray(
-        [float(row.get("close", 0.0) or 0.0) for row in rows],
+        [float(row.get(price_field, 0.0) or 0.0) for row in rows],
         dtype=np.float64,
     )
     volume = np.asarray(
@@ -1330,6 +1392,7 @@ class SessionFeatureRows(Node):
         max_gap_ms = float(spec["max_gap_minutes"]) * 60_000
         period_ms = int(spec["period_ms"])
         offset_ms = int(spec["offset_ms"])
+        price_field = spec["price_field"]
         holidays = tuple(spec["holidays"])
         scales = list(spec["scales"])
         session = spec["session"]
@@ -1381,13 +1444,30 @@ class SessionFeatureRows(Node):
         n_rows = 0
         for symbol in order:
             rows = grouped.pop(symbol)
-            ms, opn, high, low, close, volume = _symbol_ohlcv(rows)
+            ms, opn, high, low, close, volume = _symbol_ohlcv(
+                rows, price_field,
+            )
             del rows
             self.log.info("session features: %s", symbol)
+            # A field the store does not carry reads as zero everywhere,
+            # and a zero price is not a price: say so here, naming the
+            # field, rather than emitting a tape of NaN labels and a
+            # comparison that never happened (ADR-0065).
+            if ms.size and not bool((close > 0.0).any()):
+                raise ValueError(
+                    f"price field {price_field!r} is missing or non-positive "
+                    f"on every one of {symbol}'s {int(ms.size)} bars. The "
+                    "store this run reads does not carry it; acquire it "
+                    "before declaring it."
+                )
             tape.append({
                 "symbol": symbol,
                 "asof_ms": ms,
+                # The price slot, whatever field filled it. Named
+                # 'close' because that is the slot every consumer wires;
+                # 'price_field' beside it says what is actually in it.
                 "close": close,
+                "price_field": price_field,
             })
             kept_ms, kept_close, col_kept = _grid_columns(
                 ms, opn, high, low, close, volume, *knobs,
@@ -3027,9 +3107,38 @@ def _scan_fold(prepared, lead, train_end, val_start, val_end, label=None):
     )
 
 
+def _score_grid(params, period_ms, offset_ms):
+    """Give the declared scoring lattice, checked against the spacing.
+
+    Returns ``(score_period_ms, score_offset_ms)``, ``(None, 0)`` when
+    the run declared none. A lattice that is not a whole multiple of the
+    row spacing, or that is out of phase with it, catches no row at all
+    and would score an empty fold as a blank curve -- so it refuses
+    here, with both numbers, rather than reporting a null (ADR-0065).
+    """
+    score_period = params.get("score_period_ms")
+    if score_period is None:
+        return None, 0
+    score_period = int(score_period)
+    score_offset = int(params.get("score_offset_ms") or 0)
+    if score_period % period_ms:
+        raise ValueError(
+            f"score_period_ms {score_period} is not a whole multiple of the "
+            f"row spacing period_ms {period_ms}: no row would land on the "
+            "lattice. Declare a lattice the spacing divides (ADR-0065)."
+        )
+    if (score_offset - offset_ms) % period_ms:
+        raise ValueError(
+            f"score_offset_ms {score_offset} is out of phase with the row "
+            f"grid (offset_ms {offset_ms}, period_ms {period_ms}): no row "
+            "would land on the lattice (ADR-0065)."
+        )
+    return score_period, score_offset
+
+
 def _scan_fold_stamped(
     prepared, lead, train_end, val_start, val_end, train_start=None,
-    label=None,
+    label=None, score_period_ms=None, score_offset_ms=0,
 ):
     """Like :func:`_scan_fold`, plus val stamps aligned with val rows.
 
@@ -3039,6 +3148,12 @@ def _scan_fold_stamped(
     declared ``train_days`` had no effect on the fitted window.
     ``label`` is the :class:`_LeadLabel` this run declared (ADR-0059);
     ``None`` means the raw log return.
+
+    ``score_period_ms`` is the SCORING lattice (ADR-0065): when set, a
+    validation row is kept only if its stamp lands on it. Training rows
+    are untouched, which is the point — row density is a training
+    treatment, and two runs that formed rows at different spacings must
+    still be judged on the same instants.
     """
     import numpy as np
 
@@ -3071,6 +3186,8 @@ def _scan_fold_stamped(
             & (stamp <= val_end)
             & (future_ms <= val_end)
         )
+        if score_period_ms:
+            val &= ((stamp - score_offset_ms) % score_period_ms) == 0
         if np.any(train):
             train_x.append(x_ok[train])
             train_y.append(y[train])
@@ -3108,12 +3225,18 @@ def _blank_lead_row(symbol, lead, lags):
 
 def _walk_no_information_series(
     prepared_one, model, leads, train_end, val_start, val_end, period_minutes,
-    train_start=None, label=None,
+    train_start=None, label=None, score_period_ms=None, score_offset_ms=0,
 ):
     """Sequential h* for one name; GO is that H or none.
 
     ``μ(h)`` is this series' train mean of ``y(h)``. The estimator is
     fitted outside (pooled train) and only scored here.
+
+    ``period_minutes`` is the spacing of the SCORED rows, so it is the
+    scoring lattice when one is declared and the row spacing otherwise:
+    the Newey-West lag ``lead // period_minutes - 1`` corrects the
+    overlap between the rows actually entering the test, not between
+    rows the model merely trained on (ADR-0065).
     """
     import numpy as np
 
@@ -3132,6 +3255,7 @@ def _walk_no_information_series(
         _, tr_y, val_x, val_y, _ = _scan_fold_stamped(
             [prepared_one], lead, train_end, val_start, val_end,
             train_start=train_start, label=label,
+            score_period_ms=score_period_ms, score_offset_ms=score_offset_ms,
         )
         mu = float(tr_y.mean()) if tr_y.size else 0.0
         if val_x.shape[0] < 2:
@@ -3388,7 +3512,14 @@ class NoInformationScan(Node):
         reference symbol), ``vol_window_minutes``,
         ``beta_window_minutes`` and ``vol_floor`` reshape the LABEL
         (ADR-0059) — MSPE is then in label units and comparable only
-        with runs that declared the same ones.
+        with runs that declared the same ones. Optional
+        ``score_period_ms`` and ``score_offset_ms`` declare the SCORING
+        lattice (ADR-0065): validation rows are restricted to stamps on
+        it, training rows are not, and the Newey-West lag becomes
+        ``lead // lattice_minutes - 1``. It must be a whole multiple of
+        the run's row spacing and share its phase, or no row lands on
+        it. Two runs formed at different spacings are comparable exactly
+        when they declare the same lattice.
 
     Examples
     --------
@@ -3409,7 +3540,7 @@ class NoInformationScan(Node):
         "estimator", "estimator_params",
         "hpo_trials", "hpo_seed", "hpo_val_days", "hpo_embargo_days",
         "hpo_space", "hpo_objective",
-    ) + LABEL_PARAMS + LEAD_PARAMS
+    ) + LABEL_PARAMS + LEAD_PARAMS + SCORE_GRID_PARAMS
 
     @classmethod
     def validate_params(cls, params):
@@ -3449,6 +3580,28 @@ class NoInformationScan(Node):
                 problems.append(
                     "train_start_ms must be < train_end_ms, got "
                     f"{train_start} >= {train_end}"
+                )
+        score_period = params.get("score_period_ms")
+        if score_period is not None:
+            check_int_param(problems, "score_period_ms", score_period, ge=1)
+        score_offset = params.get("score_offset_ms")
+        if score_offset is not None:
+            check_int_param(problems, "score_offset_ms", score_offset, ge=0)
+            if score_period is None:
+                problems.append(
+                    "score_offset_ms phases a lattice that was not "
+                    "declared; set score_period_ms too"
+                )
+            elif (
+                isinstance(score_period, int)
+                and not isinstance(score_period, bool)
+                and isinstance(score_offset, int)
+                and not isinstance(score_offset, bool)
+                and score_offset >= score_period
+            ):
+                problems.append(
+                    "score_offset_ms must be < score_period_ms, got "
+                    f"{score_offset} >= {score_period}"
                 )
         estimator = params.get("estimator")
         if estimator is not None and (
@@ -3568,6 +3721,21 @@ class NoInformationScan(Node):
         val_end = int(self.params["val_end_ms"])
         period_ms = int(spec["period_ms"])
         period_minutes = max(period_ms // 60_000, 1)
+        offset_ms = int(spec["offset_ms"])
+        score_period_ms, score_offset_ms = _score_grid(
+            self.params, period_ms, offset_ms,
+        )
+        if score_period_ms:
+            # The rows that enter the test are the lattice rows, so the
+            # overlap the Newey-West band corrects is the lattice's, not
+            # the spacing's (ADR-0065).
+            score_minutes = max(score_period_ms // 60_000, 1)
+            self.log.info(
+                "no-information scan: rows every %d min, scored on a "
+                "%d-min lattice (offset %d ms); HAC lag uses the lattice",
+                period_minutes, score_minutes, score_offset_ms,
+            )
+            period_minutes = score_minutes
         arrays = _tapes_from_bars(inputs["bars"], spec["price_field"], val_end)
         label = _label_from_params(self.params, arrays, period_ms)
         if label.transformed:
@@ -3616,6 +3784,7 @@ class NoInformationScan(Node):
         tr_x, tr_y, va_x, va_y, _ = _scan_fold_stamped(
             prepared, train_lead, train_end, val_start, val_end,
             train_start=train_start, label=label,
+            score_period_ms=score_period_ms, score_offset_ms=score_offset_ms,
         )
         metrics["n_train"] = float(tr_x.shape[0])
         metrics["n_val"] = float(va_x.shape[0])
@@ -3685,6 +3854,8 @@ class NoInformationScan(Node):
             rows, series = _walk_no_information_series(
                 item, model, leads, train_end, val_start, val_end,
                 period_minutes, train_start=train_start, label=label,
+                score_period_ms=score_period_ms,
+                score_offset_ms=score_offset_ms,
             )
             curve.extend(rows)
             n_go += int(series["go"])
@@ -4049,7 +4220,16 @@ class Universe(Node):
     Parameters
     ----------
     params : dict
-        ``path`` (required string).
+        ``path`` (required string) and optional ``overrides``, a dict
+        restricted to :data:`UNIVERSE_OVERRIDE_KEYS` — ``period_ms``,
+        ``offset_ms`` and ``price_field`` (ADR-0065). Those three decide
+        what a run MEASURES, not which names it measures, so a run
+        document may move them without copying the cohort into a second
+        universe file. They are patched into the spec before it is
+        emitted, so every consumer reads one value and the feature node
+        and the scan node cannot disagree. Declared overrides enter the
+        fingerprint; an absent ``overrides`` leaves every recorded hash
+        where it was.
 
     Examples
     --------
@@ -4057,6 +4237,14 @@ class Universe(Node):
 
         node = Universe("universe", {"path": "configs/universe.json"})
         node.params["path"]  # 'configs/universe.json'
+
+    Form a row every minute and price it on the minute's average::
+
+        node = Universe("universe", {
+            "path": "configs/universe.json",
+            "overrides": {"period_ms": 60000, "price_field": "vwap"},
+        })
+        node.params["overrides"]["period_ms"]  # 60000
     """
 
     role = "data"
@@ -4070,7 +4258,7 @@ class Universe(Node):
         "lookback",
         "max_gap_minutes",
     )
-    _PARAMS = ("path",)
+    _PARAMS = ("path", "overrides")
     _spec = None
 
     @classmethod
@@ -4093,11 +4281,32 @@ class Universe(Node):
         if not isinstance(path, str) or not path:
             problems.append(f"path is required and must be a non-empty string, got {path!r}")
             return problems
+        overrides = params.get("overrides")
+        bad_overrides = False
+        if overrides is not None:
+            if not isinstance(overrides, dict) or not overrides:
+                problems.append(
+                    "overrides must be a non-empty dict of "
+                    f"{list(UNIVERSE_OVERRIDE_KEYS)}, got {overrides!r}"
+                )
+                bad_overrides = True
+            else:
+                extra = sorted(set(overrides) - set(UNIVERSE_OVERRIDE_KEYS))
+                if extra:
+                    problems.append(
+                        f"overrides may only set {list(UNIVERSE_OVERRIDE_KEYS)}"
+                        f", got {extra!r} — everything else in a universe "
+                        "file states the cohort (ADR-0065)"
+                    )
+                    bad_overrides = True
         try:
             spec = _load_json(path)
         except (OSError, json.JSONDecodeError) as exc:
             problems.append(f"universe {path!r} could not be read: {exc}")
             return problems
+        if not bad_overrides and overrides:
+            spec = dict(spec)
+            spec.update(overrides)
         problems.extend(_universe_problems(spec))
         return problems
 
@@ -4106,6 +4315,13 @@ class Universe(Node):
         if self._spec is not None:
             return self._spec
         spec = dict(_load_json(self.params["path"]))
+        # ADR-0065: the run's word wins over the cohort file's, on those
+        # three keys and no others. Applied BEFORE the derived feature
+        # names, so nothing downstream can read a pre-override value.
+        overrides = self.params.get("overrides") or {}
+        for key in UNIVERSE_OVERRIDE_KEYS:
+            if key in overrides:
+                spec[key] = overrides[key]
         industries = tuple(sorted(set((spec.get("industry") or {}).values())))
         derived = list(session_feature_names(
             spec["lookback"], spec["scales"], spec["reference"], industries,
@@ -4152,6 +4368,21 @@ class Universe(Node):
             len(spec["symbols"]),
             len(spec["tradable"]),
             len(spec["reference"]),
+        )
+        overrides = self.params.get("overrides") or {}
+        if overrides:
+            self.log.info(
+                "universe overrides: %s",
+                ", ".join(
+                    f"{key}={overrides[key]!r}"
+                    for key in UNIVERSE_OVERRIDE_KEYS
+                    if key in overrides
+                ),
+            )
+        self.log.info(
+            "universe cadence: one row every %d ms, price field %r",
+            int(spec["period_ms"]),
+            spec["price_field"],
         )
         return {
             "spec": spec,

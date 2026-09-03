@@ -422,3 +422,141 @@ def test_tracking_is_not_identity(tmp_path):
     bare = tmp_path / name
     bare.write_text(json.dumps(raw), encoding="utf-8")
     assert with_track.hash == load_document(str(bare)).hash
+
+
+# The store every model is fit on, and the window it may read (ADR-0063,
+# ADR-0066). run-feed-parity is the one exception and says why.
+SPLIT_SOURCE = "alpaca-sip-split"
+RAW_ONLY = {"run-feed-parity.json"}
+STUDY_START_MS = 1514764800000  # 2018-01-01T00:00:00Z
+
+
+def test_every_run_reads_the_split_adjusted_store_from_the_study_start():
+    """No run may read a tape with a change of unit in it (ADR-0063).
+
+    ``run-feed-parity`` compares the Schwab live prints against the
+    vendor's as-traded ones, which only works on the RAW scale — that is
+    the whole reason ``alpaca-sip`` still exists — so it is the single
+    documented exception.
+    """
+    seen = 0
+    for name in _run_docs():
+        for node in _raw(name)["pipeline"].values():
+            if not isinstance(node, dict):
+                continue
+            if node.get("uses") != "intraday_equities-bars":
+                continue
+            seen += 1
+            params = node["params"]
+            if name in RAW_ONLY:
+                # Two tapes, both as-traded: the Alpaca history and the
+                # Schwab live prints it is compared against.
+                assert params["source"] in ("alpaca-sip", "schwab"), name
+                assert "start_ms" not in params, name
+                continue
+            assert params["source"] == SPLIT_SOURCE, name
+            assert params["start_ms"] == STUDY_START_MS, name
+    assert seen >= len(_run_docs())
+
+
+def test_the_study_start_puts_the_xlf_spin_off_out_of_reach():
+    """2018-01-01 is after XLF's 2016-09-19 XLRE spin-off (ADR-0066).
+
+    That spin-off was carried out partly as a 1231-for-1000 share split
+    and the vendor adjusts neither scale for it, so it is the one change
+    of unit the split-adjusted store still contains. The study start is
+    what keeps it out of every feature input.
+    """
+    from datetime import datetime, timezone
+
+    start = datetime.fromtimestamp(STUDY_START_MS / 1000, tz=timezone.utc)
+    assert start == datetime(2018, 1, 1, tzinfo=timezone.utc)
+    spin_off = datetime(2016, 9, 19, tzinfo=timezone.utc)
+    assert spin_off < start
+    # And it must not eat into any fold: the earliest bar the walk reads
+    # is its first validation date less the training window.
+    from datetime import timedelta
+
+    doc = _raw("run-multi3-h01-ridge.json")["walkforward"]
+    first_val = datetime.fromisoformat(doc["first"]).replace(tzinfo=timezone.utc)
+    earliest_train = first_val - timedelta(days=doc["train_days"])
+    assert start < earliest_train
+
+
+def test_the_five_tradables_are_scored_again():
+    """The split fix removed the reason AAPL and WMT were excluded."""
+    tradable = sorted(UNIVERSE["tradable"])
+    checked = 0
+    for name in _run_docs():
+        node = _raw(name)["pipeline"].get("names")
+        if not isinstance(node, dict) or node.get("uses") != "filter":
+            continue
+        for clause in node["params"]["where"]:
+            if clause["field"] == "symbol" and clause["op"] == "in":
+                assert sorted(clause["value"]) == tradable, name
+                checked += 1
+    assert checked >= 30
+
+
+def test_a_run_may_move_spacing_and_price_without_a_second_universe():
+    """ADR-0065: the three run knobs validate, and nothing else does."""
+    from intraday_equities.nodes import (
+        UNIVERSE_OVERRIDE_KEYS,
+        NoInformationScan,
+        Universe,
+    )
+
+    assert set(UNIVERSE_OVERRIDE_KEYS) == {
+        "period_ms", "offset_ms", "price_field",
+    }
+    path = _path("universe.json")
+    assert Universe.validate_params({
+        "path": path,
+        "overrides": {"period_ms": 60_000, "price_field": "vwap"},
+    }) == []
+    # The cohort keys stay in the cohort file.
+    problems = Universe.validate_params({
+        "path": path, "overrides": {"symbols": ["AAPL"]},
+    })
+    assert problems and "cohort" in problems[0]
+    # A price field the store cannot carry is a typo, not a knob.
+    assert Universe.validate_params({
+        "path": path, "overrides": {"price_field": "closing"},
+    })
+    # P1's grid: rows every minute, every cell judged every 30.
+    assert NoInformationScan.validate_params({
+        "split": "val",
+        "train_end_ms": 1, "val_start_ms": 2, "val_end_ms": 3,
+        "score_period_ms": 1_800_000,
+    }) == []
+
+
+def test_the_p1_cell_differs_from_its_baseline_in_two_knobs_only():
+    """Rows every minute, judged every thirty; everything else held.
+
+    P1's grid is only meaningful if a cell moves the row spacing and
+    nothing else. This is the worked example and the template for the
+    other twenty-three cells (ADR-0065).
+    """
+    base = _raw("run-multi3-h01-ridge.json")
+    cell = _raw("run-p1-s01-h01-ridge.json")
+    assert cell["pipeline"]["universe"]["params"]["overrides"] == {
+        "period_ms": 60000,
+    }
+    assert cell["pipeline"]["scan"]["params"]["score_period_ms"] == 1800000
+    # The lattice is a whole multiple of the spacing, or no row lands.
+    assert 1800000 % 60000 == 0
+    # Same cohort file, same folds, same label, same estimator.
+    assert (
+        cell["pipeline"]["universe"]["params"]["path"]
+        == base["pipeline"]["universe"]["params"]["path"]
+    )
+    assert cell["walkforward"] == base["walkforward"]
+    for knob in (
+        "estimator", "estimator_params", "label_scale", "label_residual",
+        "lead_start", "lead_step", "lead_stop",
+    ):
+        assert (
+            cell["pipeline"]["scan"]["params"][knob]
+            == base["pipeline"]["scan"]["params"][knob]
+        ), knob

@@ -1343,3 +1343,143 @@ def test_scan_trains_and_walks_the_declared_lead():
     ).run(None, {"records": rows, "bars": bars, "spec": spec})
     leads = {int(row["lead"]) for row in out["records"]}
     assert leads == {3}, "the declared grid is the grid that was walked"
+
+
+def test_universe_overrides_only_the_three_run_knobs():
+    """ADR-0065: spacing and price move per run; the cohort does not."""
+    node = Universe("universe", {
+        "path": UNIVERSE_PATH,
+        "overrides": {
+            "period_ms": 60_000, "offset_ms": 0, "price_field": "vwap",
+        },
+    })
+    out = node.run(None, {})
+    assert out["spec"]["period_ms"] == 60_000
+    assert out["spec"]["price_field"] == "vwap"
+    # The cohort file's own values are untouched by the override.
+    plain = Universe("universe", {"path": UNIVERSE_PATH})
+    assert plain.run(None, {})["spec"]["period_ms"] == 300_000
+    assert out["symbols"] == plain.run(None, {})["symbols"]
+    # Two spacings are two identities.
+    assert node.fingerprint()["sha256"] != plain.fingerprint()["sha256"]
+    assert Universe.validate_params(
+        {"path": UNIVERSE_PATH, "overrides": {"holidays": []}}
+    )
+    assert Universe.validate_params(
+        {"path": UNIVERSE_PATH, "overrides": {"price_field": "bid"}}
+    )
+
+
+def test_session_features_price_the_declared_field():
+    """The lag returns, the tape and the label read ONE series."""
+    spec = _mini_spec(price_field="vwap", period_ms=60_000, lookback=2)
+    bars = []
+    for i in range(6):
+        bars.append({
+            "symbol": "AAPL",
+            "asof_ms": _ms(i),
+            "open": 100.0, "high": 101.0, "low": 99.0,
+            "close": 100.0 + i,
+            "vwap": 200.0 + i,
+            "volume": 10.0,
+        })
+    out = SessionFeatureRows("features", {}).run(
+        None, {"records": bars, "spec": spec},
+    )
+    tape = out["tape"][0]
+    assert tape["price_field"] == "vwap"
+    assert float(tape["close"][0]) == 200.0
+
+
+def test_session_features_refuse_a_price_field_the_store_lacks():
+    """``mid`` is declared for the quote work and not yet acquired."""
+    spec = _mini_spec(price_field="mid", period_ms=60_000, lookback=2)
+    bars = [
+        {
+            "symbol": "AAPL", "asof_ms": _ms(i),
+            "open": 100.0, "high": 101.0, "low": 99.0,
+            "close": 100.0 + i, "volume": 10.0,
+        }
+        for i in range(6)
+    ]
+    with pytest.raises(ValueError, match="mid"):
+        SessionFeatureRows("features", {}).run(
+            None, {"records": bars, "spec": spec},
+        )
+
+
+def _lattice_inputs(n=40):
+    """One-minute rows and bars for three names."""
+    bars, rows = [], []
+    for symbol in ("AAPL", "JPM", "XOM"):
+        px = 100.0
+        for i in range(n):
+            ret = 0.001 * ((i % 7) - 3)
+            px *= math.exp(ret)
+            bars.append({"symbol": symbol, "asof_ms": _ms(i), "close": px})
+            rows.append({
+                "symbol": symbol, "asof_ms": _ms(i),
+                "ret_lag_0": ret, "close": px,
+            })
+    return bars, rows
+
+
+def _lattice_spec():
+    spec = _mini_spec()
+    spec["features"] = ["ret_lag_0"]
+    spec["period_ms"] = 60_000
+    spec["horizon"] = {
+        "lead_start": 1, "lead_step": 1, "lead_stop": 2,
+        "anchors": [1], "top_k": 1, "se_mult": 2.0, "band_leads": 1,
+    }
+    return spec
+
+
+def test_the_scoring_lattice_thins_validation_and_not_training():
+    """ADR-0065: rows are FORMED at the spacing and JUDGED on the lattice."""
+    bars, rows = _lattice_inputs()
+    cuts = {
+        "split": "val",
+        "train_end_ms": _ms(24),
+        "val_start_ms": _ms(26),
+        "val_end_ms": _ms(39),
+    }
+    plain = NoInformationScan("scan", dict(cuts)).run(
+        None, {"records": rows, "bars": bars, "spec": _lattice_spec()},
+    )
+    latticed = NoInformationScan(
+        "scan", dict(cuts, score_period_ms=300_000),
+    ).run(None, {"records": rows, "bars": bars, "spec": _lattice_spec()})
+    # Same fit, a fifth of the scored rows.
+    assert latticed["metrics"]["n_train"] == plain["metrics"]["n_train"]
+    assert 0 < latticed["metrics"]["n_val"] < plain["metrics"]["n_val"]
+    # And the overlap correction follows the lattice, not the spacing.
+    lags = {row["lead"]: row["lags"] for row in latticed["records"]}
+    assert lags[1] == 0.0 and lags[2] == 0.0
+
+
+def test_a_lattice_the_row_spacing_cannot_reach_refuses():
+    """A lattice off the row grid catches nothing; say so, do not score 0."""
+    bars, rows = _lattice_inputs()
+    spec = _lattice_spec()
+    spec["period_ms"] = 300_000
+    with pytest.raises(ValueError, match="whole multiple"):
+        NoInformationScan("scan", {
+            "split": "val",
+            "train_end_ms": _ms(24),
+            "val_start_ms": _ms(26),
+            "val_end_ms": _ms(39),
+            "score_period_ms": 60_000,
+        }).run(None, {"records": rows, "bars": bars, "spec": spec})
+
+
+def test_bars_from_store_start_ms_is_part_of_the_identity():
+    """ADR-0066: the study start is declared where the data is read."""
+    assert BarsFromStore.validate_params({
+        "root": "./ob", "source": "alpaca-sip-split",
+        "universe": UNIVERSE_PATH, "start_ms": 1514764800000,
+    }) == []
+    assert BarsFromStore.validate_params({
+        "root": "./ob", "source": "alpaca-sip-split",
+        "universe": UNIVERSE_PATH, "start_ms": -1,
+    })
