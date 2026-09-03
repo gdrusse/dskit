@@ -1,6 +1,6 @@
 {
-  "name": "intraday-equities-p1-s01-h01-ridge",
-  "notes": "P1 grid cell: a feature row every 1 minute(s), a look-ahead of 1 minute(s), ridge. One of 48 cells (spacing 1/5/10 crossed with look-ahead 1/2/3/5/10/20/30/60 crossed with two models) that differ from each other in exactly three knobs: the universe override period_ms (the row spacing), the scan's lead_start/lead_stop (the look-ahead, ADR-0062) and the scan's estimator (ADR-0060). Features, folds, label, cohort, store, start date and the 30-minute scoring lattice are held identical across all 48, so every cell is judged on the SAME instants and only the model differs (ADR-0065). Scored under ADR-0067 and raised to ADR-0069's many-attempts bar. Reads nothing at or after 2026-03-01.",
+  "name": "intraday-equities-p1-s01-h05-ridge",
+  "notes": "P1 grid cell: a feature row every 1 minute(s), a look-ahead of 5 minute(s), ridge. One of 48 cells (spacing 1/5/10 crossed with look-ahead 1/2/3/5/10/20/30/60 crossed with two models) that differ from each other in exactly three knobs: the universe override period_ms (the row spacing), the scan's lead_start/lead_stop (the look-ahead, ADR-0062) and the scan's estimator (ADR-0060). Features, folds, label, cohort, store, start date and the 30-minute scoring lattice are held identical across all 48, so every cell is judged on the SAME instants and only the model differs (ADR-0065). Scored under ADR-0067 and raised to ADR-0069's many-attempts bar. Reads nothing at or after 2026-03-01.",
   "pipeline": {
     "universe": {
       "uses": "intraday_equities-universe",
@@ -108,9 +108,9 @@
         "val_end_ms": "$splits.val_end_ms",
         "label_scale": "vol",
         "label_residual": "SPY",
-        "lead_start": 1,
+        "lead_start": 5,
         "lead_step": 1,
-        "lead_stop": 1,
+        "lead_stop": 5,
         "score_period_ms": 1800000,
         "estimator_params": {
           "alpha": 10.0,
@@ -134,7 +134,7 @@
         },
         "estimator": "sklearn.linear_model.Ridge"
       },
-      "notes": "The single lead 1: lead_start is also the training label (ADR-0062), so this cell trains and scores at 1 minute(s) and nowhere else. score_period_ms 1800000 judges only validation rows on the half-hour, so the label at a scored instant is the same number in every cell whatever the row spacing, and the Newey-West lag comes from the lattice rather than the spacing (ADR-0065). The estimator is declared here so the two model twins share one cohort (ADR-0060); hyperparameters are held identical across the whole grid."
+      "notes": "The single lead 5: lead_start is also the training label (ADR-0062), so this cell trains and scores at 5 minute(s) and nowhere else. score_period_ms 1800000 judges only validation rows on the half-hour, so the label at a scored instant is the same number in every cell whatever the row spacing, and the Newey-West lag comes from the lattice rather than the spacing (ADR-0065). The estimator is declared here so the two model twins share one cohort (ADR-0060); hyperparameters are held identical across the whole grid."
     },
     "names": {
       "uses": "filter",
