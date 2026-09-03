@@ -1061,3 +1061,285 @@ def test_lead_labels_accept_column_frames():
     assert "y_next" in train[0]
     assert train[0]["symbol"] == "AAPL"
 
+
+
+def _label_tape(n=600, seed=7):
+    """A two-symbol 1-minute tape: SPY random-walks, JPM is 2x SPY plus noise."""
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    ref = rng.normal(0.0, 1e-3, n)
+    own = 2.0 * ref + rng.normal(0.0, 1e-6, n)
+    stamps = np.array([_ms(i) for i in range(n)], dtype=np.int64)
+    return {
+        "SPY": (stamps, 100.0 * np.exp(np.cumsum(ref))),
+        "JPM": (stamps, 50.0 * np.exp(np.cumsum(own))),
+    }
+
+
+def test_raw_label_is_the_log_ratio_and_the_default():
+    import numpy as np
+
+    from intraday_equities.nodes import _LeadLabel
+
+    arrays = _label_tape()
+    label = _LeadLabel(arrays, 60_000)
+    loc = np.array([10, 20, 30])
+    future = loc + 5
+    _stamps, prices = arrays["JPM"]
+    expected = np.log(prices[future] / prices[loc])
+    assert not label.transformed
+    assert np.allclose(label.values("JPM", loc, future), expected)
+
+
+def test_vol_normalised_label_divides_by_sigma_root_h():
+    import numpy as np
+
+    from dskit.pipeline.libs.numpy import log_return, rolling_std
+    from intraday_equities.nodes import _LeadLabel
+
+    arrays = _label_tape()
+    label = _LeadLabel(arrays, 60_000, scale="vol", vol_window=100)
+    loc = np.array([300, 400])
+    future = loc + 9
+    stamps, prices = arrays["JPM"]
+    sigma = rolling_std(log_return(prices, 1), 100)
+    expected = np.log(prices[future] / prices[loc]) / (sigma[loc] * math.sqrt(9))
+    assert np.allclose(label.values("JPM", loc, future), expected)
+
+
+def test_vol_normalised_label_reads_no_bar_after_t():
+    """sigma is causal: rewriting the future cannot move a past label."""
+    import numpy as np
+
+    from intraday_equities.nodes import _LeadLabel
+
+    arrays = _label_tape()
+    loc, future = np.array([300]), np.array([305])
+    before = _LeadLabel(arrays, 60_000, scale="vol", vol_window=100).values(
+        "JPM", loc, future,
+    )
+    stamps, prices = arrays["JPM"]
+    moved = prices.copy()
+    moved[306:] *= 3.0  # every bar strictly after the label's own window
+    shifted = dict(arrays, JPM=(stamps, moved))
+    after = _LeadLabel(shifted, 60_000, scale="vol", vol_window=100).values(
+        "JPM", loc, future,
+    )
+    assert np.allclose(before, after)
+
+
+def test_market_residual_label_removes_the_reference_move():
+    import numpy as np
+
+    from intraday_equities.nodes import _LeadLabel
+
+    arrays = _label_tape()
+    loc = np.array([500, 520])
+    future = loc + 10
+    raw = _LeadLabel(arrays, 60_000).values("JPM", loc, future)
+    residual = _LeadLabel(arrays, 60_000, residual="SPY", beta_window=200).values(
+        "JPM", loc, future,
+    )
+    # JPM is 2x SPY by construction, so beta -> 2 and the residual is
+    # the noise term: two orders of magnitude under the raw return.
+    assert np.all(np.abs(residual) < 0.05 * np.abs(raw))
+
+
+def test_session_boundary_is_not_a_one_minute_return_for_sigma():
+    import numpy as np
+
+    from intraday_equities.nodes import _bar_returns
+
+    stamps = np.array([_ms(0), _ms(1), _ms(2000), _ms(2001)], dtype=np.int64)
+    prices = np.array([100.0, 101.0, 130.0, 131.0])
+    returns = _bar_returns(stamps, prices, 60_000)
+    assert math.isnan(returns[0])  # no bar before the first
+    assert math.isnan(returns[2])  # the overnight jump, blanked
+    assert not math.isnan(returns[1]) and not math.isnan(returns[3])
+
+
+def test_label_refuses_an_unknown_scale_and_a_missing_reference():
+    from intraday_equities.nodes import _LeadLabel
+
+    arrays = _label_tape(n=10)
+    with pytest.raises(ValueError, match="label_scale"):
+        _LeadLabel(arrays, 60_000, scale="sharpe")
+    with pytest.raises(ValueError, match="no tape"):
+        _LeadLabel(arrays, 60_000, residual="QQQ")
+
+
+def test_scan_validates_the_label_knobs():
+    base = {"split": "val", "train_end_ms": 1, "val_start_ms": 2, "val_end_ms": 3}
+    assert NoInformationScan.validate_params(base) == []
+    assert NoInformationScan.validate_params(
+        dict(base, label_scale="vol", label_residual="SPY",
+             vol_window_minutes=390, beta_window_minutes=3900, vol_floor=1e-8)
+    ) == []
+    assert any(
+        "label_scale" in problem
+        for problem in NoInformationScan.validate_params(
+            dict(base, label_scale="sharpe")
+        )
+    )
+    assert any(
+        "vol_window_minutes" in problem
+        for problem in NoInformationScan.validate_params(
+            dict(base, vol_window_minutes=1)
+        )
+    )
+    assert any(
+        "vol_floor" in problem
+        for problem in NoInformationScan.validate_params(dict(base, vol_floor=0))
+    )
+    assert any(
+        "null" in problem
+        for problem in NoInformationScan.validate_params(
+            dict(base, label_residual=None)
+        )
+    )
+
+
+def test_every_label_knob_is_allowed_and_validated():
+    """The knob list, the allowed set, and the validator agree.
+
+    LABEL_PARAMS is what ADR-0059 declares; a knob that reaches only one
+    of the three is the silently-ignored knob default-deny exists to stop.
+    """
+    from intraday_equities.nodes import LABEL_PARAMS
+
+    assert set(LABEL_PARAMS) <= set(NoInformationScan._PARAMS)
+    base = {"split": "val", "train_end_ms": 1, "val_start_ms": 2, "val_end_ms": 3}
+    for knob in LABEL_PARAMS:
+        problems = NoInformationScan.validate_params(dict(base, **{knob: None}))
+        assert any(knob in problem for problem in problems), (
+            f"{knob} is allowed but no validator ever names it"
+        )
+
+
+def test_vol_normalised_scan_scores_the_reshaped_label():
+    spec = _mini_spec()
+    spec["features"] = ["ret_lag_0"]
+    spec["period_ms"] = 60_000
+    spec["horizon"] = {
+        "lead_start": 1, "lead_step": 1, "lead_stop": 2,
+        "anchors": [1], "top_k": 1, "se_mult": 2.0, "band_leads": 1,
+    }
+    n = 120
+    bars, rows = [], []
+    for i in range(n):
+        close = 100.0 + math.sin(i / 3.0)
+        bars.append({"symbol": "AAPL", "asof_ms": _ms(i), "close": close})
+        rows.append({
+            "symbol": "AAPL", "asof_ms": _ms(i),
+            "ret_lag_0": math.cos(i / 3.0), "close": close,
+        })
+    cuts = {
+        "split": "val",
+        "train_end_ms": _ms(80),
+        "val_start_ms": _ms(85),
+        "val_end_ms": _ms(n - 1),
+    }
+    raw = NoInformationScan("scan", cuts).run(
+        None, {"records": rows, "bars": bars, "spec": spec},
+    )
+    scaled = NoInformationScan(
+        "scan", dict(cuts, label_scale="vol", vol_window_minutes=20),
+    ).run(None, {"records": rows, "bars": bars, "spec": spec})
+    # Same rows, a different label: the label's own sd moves, and MSPE
+    # rides with it. The vol run is a different estimand, not a rescale.
+    assert scaled["metrics"]["label_sd"] != raw["metrics"]["label_sd"]
+    assert scaled["metrics"]["n_train"] < raw["metrics"]["n_train"]  # warmup
+
+
+def test_bars_source_scans_once_per_store_content(tmp_path, monkeypatch):
+    """A walk-forward's per-fold source rebuild must not re-read the store."""
+    import intraday_equities.nodes as nodes
+
+    root = str(tmp_path / "ob")
+    _write_store(root, "alpaca-sip", n_minutes=4)
+    params = {"root": root, "source": "alpaca-sip", "universe": UNIVERSE_PATH}
+
+    calls = []
+    real = nodes.scan_stream
+    monkeypatch.setattr(
+        nodes, "scan_stream",
+        lambda *a, **k: (calls.append(1), real(*a, **k))[1],
+    )
+    nodes.BarsFromStore._cached_key = None
+    nodes.BarsFromStore._cached_snap = None
+    nodes.BarsFromStore._cached_fingerprint = None
+
+    first = nodes.BarsFromStore("bars", params).fingerprint()
+    second = nodes.BarsFromStore("bars", params).fingerprint()
+    assert calls == [1], "the second fold's source re-read the store"
+    assert first == second
+
+    _write_store(root, "alpaca-sip", n_minutes=6)
+    grown = nodes.BarsFromStore("bars", params).fingerprint()
+    assert len(calls) == 2, "a grown store must invalidate the cache"
+    assert grown != first
+
+
+def test_declared_lead_grid_overrides_the_universe():
+    """A run asks its own horizon; the cohort file is not restated."""
+    from intraday_equities.nodes import LEAD_PARAMS, _lead_grid
+
+    horizon = {"lead_start": 5, "lead_step": 5, "lead_stop": 20}
+    assert _lead_grid({}, horizon) == ((5, 10, 15, 20), 5)
+    assert _lead_grid({"lead_start": 30, "lead_stop": 30}, horizon) == (
+        (30,), 30,
+    )
+    assert _lead_grid({"lead_stop": 10}, horizon) == ((5, 10), 5)
+    base = {"split": "val", "train_end_ms": 1, "val_start_ms": 2, "val_end_ms": 3}
+    assert NoInformationScan.validate_params(
+        dict(base, lead_start=60, lead_step=1, lead_stop=60)
+    ) == []
+    assert any(
+        "lead_stop" in problem
+        for problem in NoInformationScan.validate_params(
+            dict(base, lead_start=30, lead_stop=10)
+        )
+    )
+    assert any(
+        "lead_start" in problem
+        for problem in NoInformationScan.validate_params(dict(base, lead_start=0))
+    )
+    for knob in LEAD_PARAMS:
+        assert knob in NoInformationScan._PARAMS
+        assert any(
+            knob in problem
+            for problem in NoInformationScan.validate_params(
+                dict(base, **{knob: None})
+            )
+        ), f"{knob} is allowed but no validator names it"
+
+
+def test_scan_trains_and_walks_the_declared_lead():
+    spec = _mini_spec()
+    spec["features"] = ["ret_lag_0"]
+    spec["period_ms"] = 60_000
+    spec["horizon"] = {
+        "lead_start": 1, "lead_step": 1, "lead_stop": 2,
+        "anchors": [1], "top_k": 1, "se_mult": 2.0, "band_leads": 1,
+    }
+    n = 60
+    bars, rows = [], []
+    for i in range(n):
+        close = 100.0 + math.sin(i / 4.0)
+        bars.append({"symbol": "AAPL", "asof_ms": _ms(i), "close": close})
+        rows.append({
+            "symbol": "AAPL", "asof_ms": _ms(i),
+            "ret_lag_0": math.cos(i / 4.0), "close": close,
+        })
+    cuts = {
+        "split": "val",
+        "train_end_ms": _ms(40),
+        "val_start_ms": _ms(42),
+        "val_end_ms": _ms(n - 1),
+    }
+    out = NoInformationScan(
+        "scan", dict(cuts, lead_start=3, lead_step=1, lead_stop=3),
+    ).run(None, {"records": rows, "bars": bars, "spec": spec})
+    leads = {int(row["lead"]) for row in out["records"]}
+    assert leads == {3}, "the declared grid is the grid that was walked"

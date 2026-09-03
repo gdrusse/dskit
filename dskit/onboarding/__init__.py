@@ -33,7 +33,14 @@ Import cost: stdlib + :mod:`dskit.assets` (ADR-0013) — nothing else.
 """
 
 from .acquire import find_active_source, run_acquisition
-from .base import MODES, AssetError, canonical_hash, file_digest, parse_utc
+from .base import (
+    MODES,
+    AssetError,
+    canonical_hash,
+    dir_digest,
+    file_digest,
+    parse_utc,
+)
 from .certify import DECISIONS, certify
 from .connector import (
     DEFAULT_CONNECTORS,
@@ -48,7 +55,7 @@ from .connector import (
 from .coverage import STATUSES, CoverageLedger
 from .default_model import onboarding_model
 from .layout import OnboardingRoot
-from .observations import scan_stream, stream_digest
+from .observations import scan_stream, stream_dir, stream_digest
 from .oauth import OAuth2TokenService, load_token, save_token
 from .publish import publish_version
 from .snapshot import (
@@ -83,6 +90,7 @@ __all__ = [
     "certify",
     "check_config",
     "check_message",
+    "dir_digest",
     "file_digest",
     "find_active_source",
     "find_snapshot_dir",
@@ -101,6 +109,7 @@ __all__ = [
     "save_token",
     "scan_stream",
     "snapshot_hash",
+    "stream_dir",
     "stream_digest",
     "suite_hash",
     "verify_snapshot",

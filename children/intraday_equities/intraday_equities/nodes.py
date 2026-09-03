@@ -15,12 +15,17 @@ import random
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
-from dskit.onboarding import parse_utc
+from dskit.onboarding import dir_digest, parse_utc
 from dskit.onboarding.libs.alpaca import BAR_KEY_FIELDS, BAR_STREAM
-from dskit.onboarding.observations import scan_stream, stream_digest
+from dskit.onboarding.observations import (
+    scan_stream,
+    stream_digest,
+    stream_dir,
+)
 from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.libs.numpy import (
     ReturnWindows,
+    log_return,
     narrow_params,
     rolling_max,
     rolling_min,
@@ -66,6 +71,31 @@ _NO_INFO_ALPHA = 0.05
 #: a mean-only model cannot answer a no-information test (A0013).
 _DEGENERATE_YHAT_REL = 1e-8
 _DAY_MS = 24 * 60 * 60 * 1000
+#: Rolling windows the label transform reads, in 1-minute RTH bars
+#: (ADR-0059). One session of vol; ten sessions of beta — long enough to
+#: be a beta rather than the last hour's noise.
+DEFAULT_VOL_WINDOW_MINUTES = 390
+DEFAULT_BETA_WINDOW_MINUTES = 3900
+#: A per-bar sd at or below this is a stale tape, not a quiet market;
+#: dividing by it would manufacture an enormous label.
+DEFAULT_VOL_FLOOR = 1e-8
+#: What ``label_scale`` may say.
+LABEL_SCALES = ("raw", "vol")
+#: The label knobs, named ONCE (ADR-0059): :class:`NoInformationScan`
+#: allows exactly these, :func:`_label_problems` validates them, and
+#: :func:`_label_from_params` reads them. A knob added here and nowhere
+#: else is a knob a document may set and nothing will honour.
+LABEL_PARAMS = (
+    "label_scale",
+    "label_residual",
+    "vol_window_minutes",
+    "beta_window_minutes",
+    "vol_floor",
+)
+#: The lead-grid knobs (ADR-0062), named ONCE. Declared on a run, they
+#: override the universe's ``horizon`` block: the horizon is what a run
+#: ASKS, not a fact about the cohort it asks over.
+LEAD_PARAMS = ("lead_start", "lead_step", "lead_stop")
 
 
 def session_name(stamp, zone, rth_start_minutes, rth_end_minutes):
@@ -467,6 +497,22 @@ class BarsFromStore(Node):
         "root", "source", "universe", "stream", "ts_field", "shared_fields",
     )
     _snap = None
+    #: On the CLASS: a walk-forward builds a fresh source per fold, so an
+    #: instance cache is never read twice. Measured on a 20-fold walk:
+    #: 105 s per fold of re-scan (~60 s) plus re-hash (~45 s), invisible
+    #: to every node timing because RESOLVE spends it before the fold's
+    #: run dir exists. The key carries the store's CONTENT, so a stream
+    #: that grew or was rewritten still re-scans — the cache answers
+    #: "same bytes", never "same params".
+    _cached_key = None
+    _cached_snap = None
+    _cached_fingerprint = None
+    #: This instance's pin. Once a node has scanned, it answers from its
+    #: own snapshot forever: the driver fingerprints at RESOLVE and runs
+    #: at EXECUTE, and a store that grew in between must not move what
+    #: this run's identity already covers.
+    _key = None
+    _fp = None
 
     @classmethod
     def validate_params(cls, params):
@@ -518,9 +564,34 @@ class BarsFromStore(Node):
             )
         return problems
 
+    def _cache_key(self):
+        """Identity of the snapshot these params name, CONTENT included.
+
+        The store's bytes are in the key, not its mtimes: an acquisition
+        rewritten in place must invalidate the cache, and hashing 221 MB
+        of gzip costs ~0.1 s against the ~140 s the scan it saves costs.
+        """
+        return (
+            self.params["root"],
+            self.params["source"],
+            self.params.get("stream", BAR_STREAM),
+            self.params.get("ts_field", DEFAULT_TS_FIELD),
+            tuple(self.params.get("shared_fields", DEFAULT_SHARED_FIELDS)),
+            self.params["universe"],
+            _file_digest(self.params["universe"]),
+            dir_digest(
+                stream_dir(self.params["root"], self.params["source"])
+            ),
+        )
+
     def _scan(self):
         """Memoize the flattened, session-tagged snapshot."""
         if self._snap is not None:
+            return self._snap
+        cls = type(self)
+        key = self._key = self._cache_key()
+        if cls._cached_key == key and cls._cached_snap is not None:
+            self._snap = cls._cached_snap
             return self._snap
         records = scan_stream(
             self.params["root"],
@@ -546,10 +617,17 @@ class BarsFromStore(Node):
                 )
             tagged.append(row)
         self._snap = tagged
+        cls._cached_key = key
+        cls._cached_snap = tagged
+        cls._cached_fingerprint = None  # a new snapshot, not yet hashed
         return self._snap
 
     def fingerprint(self):
         """Return a content-derived data identity.
+
+        Hashing 8.9M records costs ~45 s, and RESOLVE asks for it once
+        per fold, so the answer is cached beside the snapshot it
+        describes — same key, same records, same digest.
 
         Returns
         -------
@@ -557,12 +635,21 @@ class BarsFromStore(Node):
             ``kind``, ``rows``, and ``sha256``.
         """
         records = self._scan()
-        return {
+        if self._fp is not None:
+            return dict(self._fp)
+        cls = type(self)
+        if cls._cached_key == self._key and cls._cached_fingerprint is not None:
+            self._fp = dict(cls._cached_fingerprint)
+            return dict(self._fp)
+        self._fp = {
             "kind": "intraday_equities-bars",
             "rows": len(records),
             "sha256": stream_digest(records),
             "universe": _file_digest(self.params["universe"]),
         }
+        if cls._cached_key == self._key:
+            cls._cached_fingerprint = dict(self._fp)
+        return dict(self._fp)
 
     def run(self, ctx, inputs):
         """Emit the memoized bar records.
@@ -1970,8 +2057,15 @@ def _combo_ic(train_x, train_y, val_x, val_y, names, top_k):
     )
 
 
-def _fit_estimator(train_x, train_y, scan, categorical=None):
-    """Fit ``scan.estimator``, or a least-squares fallback (tests)."""
+def _fit_estimator(train_x, train_y, scan, categorical=None, feature_names=None):
+    """Fit ``scan.estimator``, or a least-squares fallback (tests).
+
+    ``feature_names`` names the columns of ``train_x`` in order. Like
+    ``categorical_feature`` it is offered only to an estimator whose
+    ``fit`` declares it (ADR-0061: a sequence model splits the row by
+    NAME, and guessing that split by position is how a lag window
+    silently becomes a feature vector).
+    """
     import importlib
 
     import numpy as np
@@ -1990,10 +2084,12 @@ def _fit_estimator(train_x, train_y, scan, categorical=None):
         model = cls(**params)
         # categorical_feature is a LightGBM-family kwarg; a linear
         # estimator refuses it, so only pass it where fit declares it.
+        kwargs = {}
         if categorical is not None and _accepts_categorical(model):
-            model.fit(train_x, train_y, categorical_feature=categorical)
-        else:
-            model.fit(train_x, train_y)
+            kwargs["categorical_feature"] = categorical
+        if feature_names is not None and _accepts_kwarg(model, "feature_names"):
+            kwargs["feature_names"] = list(feature_names)
+        model.fit(train_x, train_y, **kwargs)
         return model
 
 
@@ -2014,8 +2110,8 @@ def _fit_estimator(train_x, train_y, scan, categorical=None):
     return _Lstsq().fit(train_x, train_y)
 
 
-def _accepts_categorical(model):
-    """Report whether the estimator's fit accepts ``categorical_feature``."""
+def _accepts_kwarg(model, name):
+    """Report whether the estimator's fit accepts the keyword ``name``."""
     import inspect
 
     try:
@@ -2023,9 +2119,14 @@ def _accepts_categorical(model):
     except (TypeError, ValueError):
         return False
     params = sig.parameters
-    return "categorical_feature" in params or any(
+    return name in params or any(
         p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
     )
+
+
+def _accepts_categorical(model):
+    """Report whether the estimator's fit accepts ``categorical_feature``."""
+    return _accepts_kwarg(model, "categorical_feature")
 
 
 def _mspe(y, yhat):
@@ -2096,7 +2197,7 @@ def _hpo_combos(base, space, trials, seed):
 
 def _tune_estimator(
     scan, combos, train_x, train_y, val_x, val_y, categorical=None,
-    objective="mspe",
+    objective="mspe", feature_names=None,
 ):
     """Pick a combo on the inner holdout under ``objective``.
 
@@ -2124,6 +2225,7 @@ def _tune_estimator(
         trial_scan["estimator_params"] = trial
         model = _fit_estimator(
             train_x, train_y, trial_scan, categorical=categorical,
+            feature_names=feature_names,
         )
         hat = model.predict(val_x)
         if objective == "ic":
@@ -2513,11 +2615,16 @@ def _attach_symbol_codes(prepared, codes):
     return out
 
 
-def _scan_aligned(bars, records, features, price_field, val_end):
-    """Align finite feature rows to the 1-minute tape, dropping lockbox stamps."""
+def _scan_aligned(bars, records, features, price_field, val_end, arrays=None):
+    """Align finite feature rows to the 1-minute tape, dropping lockbox stamps.
+
+    ``arrays`` is :func:`_tapes_from_bars`'s return when the caller
+    already built it (the label reads the same tapes); ``None`` builds it.
+    """
     import numpy as np
 
-    arrays = _tapes_from_bars(bars, price_field, val_end)
+    if arrays is None:
+        arrays = _tapes_from_bars(bars, price_field, val_end)
     prepared = []
     if records and _is_frame(records[0]):
         for frame in records:
@@ -2568,8 +2675,313 @@ def _scan_aligned(bars, records, features, price_field, val_end):
     return prepared
 
 
-def _scan_fold(prepared, lead, train_end, val_start, val_end):
-    """Collect train/val matrices for one lead; labels never land after val_end."""
+def _raw_lead_return(prices, loc, future):
+    """Log return from each ``loc`` bar to its ``future`` bar.
+
+    The ONE definition of the scan's untransformed label — both fold
+    builders and :class:`_LeadLabel` read it, so a change to what "the
+    return" means cannot land in one place and miss the other.
+
+    Parameters
+    ----------
+    prices : numpy.ndarray
+        One symbol's 1-minute closes.
+    loc, future : numpy.ndarray of int
+        Index pairs into ``prices``.
+
+    Returns
+    -------
+    numpy.ndarray
+        One float64 per pair, NaN wherever either end is not positive.
+    """
+    import numpy as np
+
+    px0 = prices[loc]
+    px1 = prices[future]
+    out = np.full(px0.shape, np.nan, dtype=np.float64)
+    pos = (px0 > 0.0) & (px1 > 0.0)
+    out[pos] = np.log(px1[pos] / px0[pos])
+    return np.where(np.isfinite(out), out, np.nan)
+
+
+def _bar_returns(stamps, prices, period_ms):
+    """One-bar log returns with session boundaries blanked."""
+    import numpy as np
+
+    returns = log_return(prices, 1)
+    if stamps.size > 1:
+        # A gap over two bars is an overnight or a halt: the move across
+        # it is not a 1-minute return and must not enter sigma or beta.
+        returns[1:][np.diff(stamps) > 2 * period_ms] = np.nan
+    return returns
+
+
+def _align_returns(stamps, ref_stamps, ref_returns):
+    """Put a reference's per-bar returns on ``stamps``' index, NaN off-grid."""
+    import numpy as np
+
+    out = np.full(stamps.size, np.nan)
+    if ref_stamps.size == 0 or stamps.size == 0:
+        return out
+    loc = np.searchsorted(ref_stamps, stamps)
+    safe = np.minimum(loc, ref_stamps.size - 1)
+    good = (loc < ref_stamps.size) & (ref_stamps[safe] == stamps)
+    good[0] = False  # a per-bar return needs the bar before it too
+    later = np.flatnonzero(good)
+    if later.size:
+        prev = np.maximum(loc[later] - 1, 0)
+        keep = (loc[later] > 0) & (ref_stamps[prev] == stamps[later - 1])
+        good[later[~keep]] = False
+    out[good] = ref_returns[loc[good]]
+    return out
+
+
+def _label_problems(params):
+    """Problems with the declared label knobs, empty when none (ADR-0059)."""
+    problems = []
+    scale = params.get("label_scale")
+    if scale is not None and scale not in LABEL_SCALES:
+        problems.append(
+            f"label_scale must be one of {list(LABEL_SCALES)}, got {scale!r}"
+        )
+    reference = params.get("label_residual")
+    if reference is not None and (
+        not isinstance(reference, str) or not reference
+    ):
+        problems.append(
+            "label_residual must be a reference symbol on the tape, got "
+            f"{reference!r}"
+        )
+    for knob in ("vol_window_minutes", "beta_window_minutes"):
+        if params.get(knob) is not None:
+            check_int_param(problems, knob, params.get(knob), ge=2)
+    floor = params.get("vol_floor")
+    if floor is not None and (
+        isinstance(floor, bool)
+        or not isinstance(floor, (int, float))
+        or floor <= 0.0
+    ):
+        problems.append(f"vol_floor must be a number > 0, got {floor!r}")
+    return problems
+
+
+def _lead_problems(params):
+    """Problems with the declared lead grid, empty when none (ADR-0062)."""
+    problems = []
+    for knob in LEAD_PARAMS:
+        if params.get(knob) is not None:
+            check_int_param(problems, knob, params.get(knob), ge=1)
+    start, stop = params.get("lead_start"), params.get("lead_stop")
+    if (
+        isinstance(start, int) and not isinstance(start, bool)
+        and isinstance(stop, int) and not isinstance(stop, bool)
+        and stop < start
+    ):
+        problems.append(
+            f"lead_stop must be >= lead_start, got {stop} < {start}"
+        )
+    return problems
+
+
+def _lead_grid(params, horizon):
+    """Resolve the grid this run asks about, as ``(leads, train_lead)``.
+
+    A declared knob wins over the universe's ``horizon`` block; an
+    absent one falls back to it, so a document that declares nothing
+    computes exactly what it did before ADR-0062.
+    """
+    def pick(knob):
+        declared = params.get(knob)
+        return int(horizon[knob] if declared is None else declared)
+
+    start, step, stop = pick("lead_start"), pick("lead_step"), pick("lead_stop")
+    return horizon_leads(start, step, stop), start
+
+
+def _label_from_params(params, arrays, period_ms):
+    """Build the run's :class:`_LeadLabel` from declared knobs (ADR-0059)."""
+    return _LeadLabel(
+        arrays,
+        period_ms,
+        scale=params.get("label_scale") or "raw",
+        residual=params.get("label_residual"),
+        vol_window=int(
+            params.get("vol_window_minutes") or DEFAULT_VOL_WINDOW_MINUTES
+        ),
+        beta_window=int(
+            params.get("beta_window_minutes") or DEFAULT_BETA_WINDOW_MINUTES
+        ),
+        vol_floor=float(params.get("vol_floor") or DEFAULT_VOL_FLOOR),
+    )
+
+
+class _LeadLabel:
+    """The scan's label ``y(t, h)``: raw, market-residual, vol-normalised.
+
+    ADR-0059. Both transforms are causal: ``beta`` and ``sigma`` read
+    only bars at or before ``t``, while the label itself reads
+    ``t -> t+h``. Composed, the residual is taken first and the vol of
+    the RESIDUAL return scales it.
+
+    Parameters
+    ----------
+    arrays : dict
+        ``{symbol: (stamps, prices)}`` — :func:`_tapes_from_bars`'s return.
+    period_ms : int
+        One bar's width; a gap over twice this ends a session.
+    scale : str, optional
+        ``"raw"`` (default) or ``"vol"`` — divide by
+        ``sigma_t * sqrt(h)``.
+    residual : str, optional
+        Reference symbol to subtract at ``beta_t``; ``None`` (default)
+        keeps the name's own return.
+    vol_window, beta_window : int, optional
+        Rolling widths in bars, default 390 and 3900.
+    vol_floor : float, optional
+        Divisors at or below this refuse the row, default 1e-8.
+
+    Raises
+    ------
+    ValueError
+        On an unknown ``scale``, or a ``residual`` symbol with no tape —
+        a missing reference is a refusal, never a silent NaN column.
+
+    Examples
+    --------
+    Vol-normalised, market-residual labels off a two-bar tape::
+
+        import numpy as np
+        arrays = {
+            "JPM": (np.array([0, 60_000]), np.array([10.0, 10.1])),
+            "SPY": (np.array([0, 60_000]), np.array([20.0, 20.1])),
+        }
+        label = _LeadLabel(arrays, 60_000, scale="vol", residual="SPY")
+        label.values("JPM", np.array([0]), np.array([1]))
+        # -> array([nan])  # two bars cannot fill a 390-wide vol window
+    """
+
+    def __init__(
+        self, arrays, period_ms, scale="raw", residual=None,
+        vol_window=DEFAULT_VOL_WINDOW_MINUTES,
+        beta_window=DEFAULT_BETA_WINDOW_MINUTES,
+        vol_floor=DEFAULT_VOL_FLOOR,
+    ):
+        if scale not in LABEL_SCALES:
+            raise ValueError(
+                f"label_scale must be one of {LABEL_SCALES}, got {scale!r}"
+            )
+        if residual is not None and residual not in arrays:
+            raise ValueError(
+                f"label_residual {residual!r} has no tape — the reference "
+                f"must be one of {sorted(arrays)}"
+            )
+        self.arrays = arrays
+        self.period_ms = int(period_ms)
+        self.scale = scale
+        self.residual = residual
+        self.vol_window = int(vol_window)
+        self.beta_window = int(beta_window)
+        self.vol_floor = float(vol_floor)
+        self._prepared_by_symbol = {}
+
+    @property
+    def transformed(self):
+        """Whether this label is anything but the raw log return."""
+        return self.scale != "raw" or self.residual is not None
+
+    def describe(self):
+        """Name this label for a run record, as a short string."""
+        parts = [self.scale]
+        if self.residual is not None:
+            parts.append(f"residual:{self.residual}")
+        return "+".join(parts)
+
+    def _prepare(self, symbol):
+        """Per-bar ``(beta, sigma)`` for one symbol, computed once."""
+        import numpy as np
+
+        if symbol in self._prepared_by_symbol:
+            return self._prepared_by_symbol[symbol]
+        stamps, prices = self.arrays[symbol]
+        own = _bar_returns(stamps, prices, self.period_ms)
+        beta = None
+        effective = own
+        if self.residual is not None:
+            ref_stamps, ref_prices = self.arrays[self.residual]
+            ref = _align_returns(
+                stamps, ref_stamps,
+                _bar_returns(ref_stamps, ref_prices, self.period_ms),
+            )
+            # Zero-mean cross products: a 1-minute mean return is noise,
+            # and blanking NaNs to 0 drops a bar from BOTH sums at once,
+            # which rolling_sum (NaN-propagating by contract) will not do.
+            own_0 = np.where(np.isfinite(own), own, 0.0)
+            ref_0 = np.where(np.isfinite(ref), ref, 0.0)
+            cov = rolling_sum(own_0 * ref_0, self.beta_window)
+            var = rolling_sum(ref_0 * ref_0, self.beta_window)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                beta = np.where(var > 0.0, cov / var, np.nan)
+            effective = own - beta * ref
+        sigma = (
+            rolling_std(effective, self.vol_window)
+            if self.scale == "vol" else None
+        )
+        self._prepared_by_symbol[symbol] = (beta, sigma)
+        return self._prepared_by_symbol[symbol]
+
+    def values(self, symbol, loc, future):
+        """Label each ``(loc, future)`` bar pair of one symbol.
+
+        Parameters
+        ----------
+        symbol : str
+            Whose tape to read.
+        loc, future : numpy.ndarray of int
+            Index pairs into that symbol's tape.
+
+        Returns
+        -------
+        numpy.ndarray
+            One float64 per pair, NaN wherever the label is undefined —
+            a non-positive price, a reference bar missing at either end,
+            or a rolling window that has not filled.
+        """
+        import numpy as np
+
+        stamps, prices = self.arrays[symbol]
+        y = _raw_lead_return(prices, loc, future)
+        if not self.transformed:
+            return y
+        beta, sigma = self._prepare(symbol)
+        if beta is not None:
+            ref_stamps, ref_prices = self.arrays[self.residual]
+            size = ref_stamps.size
+            j0 = np.searchsorted(ref_stamps, stamps[loc])
+            j1 = np.searchsorted(ref_stamps, stamps[future])
+            ok = (
+                (j0 < size)
+                & (j1 < size)
+                & (ref_stamps[np.minimum(j0, size - 1)] == stamps[loc])
+                & (ref_stamps[np.minimum(j1, size - 1)] == stamps[future])
+            )
+            y_ref = np.full(y.shape, np.nan)
+            if np.any(ok):
+                y_ref[ok] = _raw_lead_return(ref_prices, j0[ok], j1[ok])
+            y = y - beta[loc] * y_ref
+        if sigma is not None:
+            own_sd = sigma[loc]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                scaled = y / (own_sd * np.sqrt(np.maximum(future - loc, 1)))
+            y = np.where(own_sd > self.vol_floor, scaled, np.nan)
+        return np.where(np.isfinite(y), y, np.nan)
+
+
+def _scan_fold(prepared, lead, train_end, val_start, val_end, label=None):
+    """Collect train/val matrices for one lead; labels never land after val_end.
+
+    ``label`` is the :class:`_LeadLabel` this run declared (ADR-0059);
+    ``None`` means the raw log return.
+    """
     import numpy as np
 
     train_x, train_y, val_x, val_y = [], [], [], []
@@ -2582,11 +2994,10 @@ def _scan_fold(prepared, lead, train_end, val_start, val_end):
             continue
         loc_ok = loc[ok]
         fut_ok = future[ok]
-        px0 = t_px[loc_ok]
-        px1 = t_px[fut_ok]
-        pos = (px0 > 0.0) & (px1 > 0.0)
-        y = np.full(px0.shape, np.nan, dtype=np.float64)
-        y[pos] = np.log(px1[pos] / px0[pos])
+        y = (
+            label.values(item[0], loc_ok, fut_ok) if label is not None
+            else _raw_lead_return(t_px, loc_ok, fut_ok)
+        )
         finite = np.isfinite(y)
         if not np.any(finite):
             continue
@@ -2618,6 +3029,7 @@ def _scan_fold(prepared, lead, train_end, val_start, val_end):
 
 def _scan_fold_stamped(
     prepared, lead, train_end, val_start, val_end, train_start=None,
+    label=None,
 ):
     """Like :func:`_scan_fold`, plus val stamps aligned with val rows.
 
@@ -2625,6 +3037,8 @@ def _scan_fold_stamped(
     (``splits.train_start_ms``, ADR-0050). ``None`` means all-prior,
     which is what this builder did unconditionally before, and why a
     declared ``train_days`` had no effect on the fitted window.
+    ``label`` is the :class:`_LeadLabel` this run declared (ADR-0059);
+    ``None`` means the raw log return.
     """
     import numpy as np
 
@@ -2638,11 +3052,10 @@ def _scan_fold_stamped(
             continue
         loc_ok = loc[ok]
         fut_ok = future[ok]
-        px0 = t_px[loc_ok]
-        px1 = t_px[fut_ok]
-        pos = (px0 > 0.0) & (px1 > 0.0)
-        y = np.full(px0.shape, np.nan, dtype=np.float64)
-        y[pos] = np.log(px1[pos] / px0[pos])
+        y = (
+            label.values(item[0], loc_ok, fut_ok) if label is not None
+            else _raw_lead_return(t_px, loc_ok, fut_ok)
+        )
         finite = np.isfinite(y)
         if not np.any(finite):
             continue
@@ -2683,6 +3096,8 @@ def _blank_lead_row(symbol, lead, lags):
         "symbol": symbol,
         "lead": lead,
         "p_value": 1.0,
+        "t_stat": 0.0,
+        "se": 0.0,
         "beats_mean": 0.0,
         "mspe_model": 0.0,
         "mspe_mean": 0.0,
@@ -2693,7 +3108,7 @@ def _blank_lead_row(symbol, lead, lags):
 
 def _walk_no_information_series(
     prepared_one, model, leads, train_end, val_start, val_end, period_minutes,
-    train_start=None,
+    train_start=None, label=None,
 ):
     """Sequential h* for one name; GO is that H or none.
 
@@ -2716,7 +3131,7 @@ def _walk_no_information_series(
             continue
         _, tr_y, val_x, val_y, _ = _scan_fold_stamped(
             [prepared_one], lead, train_end, val_start, val_end,
-            train_start=train_start,
+            train_start=train_start, label=label,
         )
         mu = float(tr_y.mean()) if tr_y.size else 0.0
         if val_x.shape[0] < 2:
@@ -2739,6 +3154,11 @@ def _walk_no_information_series(
             "symbol": symbol,
             "lead": lead,
             "p_value": float(out["p_value"]),
+            # The Clark-West statistic BEHIND the p-value: a verdict a
+            # reader cannot see the t of is a verdict they must take on
+            # faith, and the walk's whole output is a p per lead.
+            "t_stat": float(out["t"]),
+            "se": float(out["se"]),
             "beats_mean": float(out["beats_mean"]),
             "mspe_model": float(out["mspe_model"]),
             "mspe_mean": float(out["mspe_mean"]),
@@ -2755,6 +3175,7 @@ def _walk_no_information_series(
         "go": go,
         "h_star": float(h_star if h_star is not None else 0.0),
         "p_value": float(first.get("p_value", 1.0)),
+        "t_stat": float(first.get("t_stat", 0.0)),
     }
 
 
@@ -2956,10 +3377,18 @@ class NoInformationScan(Node):
     ----------
     params : dict
         ``split`` (must be ``val``), ``train_end_ms``, ``val_start_ms``,
-        ``val_end_ms``. Optional ``estimator_params`` is the base tree.
+        ``val_end_ms``. Optional ``estimator`` (an import path) and
+        ``estimator_params`` override the universe's ``scan`` block.
         Optional ``hpo_trials``, ``hpo_seed``, ``hpo_val_days``,
         ``hpo_embargo_days``, ``hpo_space`` run a discrete random search
-        on an inner train holdout.
+        on an inner train holdout. Optional ``lead_start``, ``lead_step``
+        and ``lead_stop`` override the universe's grid (ADR-0062);
+        ``lead_start`` is the training label. Optional ``label_scale``
+        (``"raw"`` default, or ``"vol"``), ``label_residual`` (a
+        reference symbol), ``vol_window_minutes``,
+        ``beta_window_minutes`` and ``vol_floor`` reshape the LABEL
+        (ADR-0059) — MSPE is then in label units and comparable only
+        with runs that declared the same ones.
 
     Examples
     --------
@@ -2977,10 +3406,10 @@ class NoInformationScan(Node):
     _PARAMS = (
         "split", "train_end_ms", "train_start_ms", "val_start_ms",
         "val_end_ms",
-        "estimator_params",
+        "estimator", "estimator_params",
         "hpo_trials", "hpo_seed", "hpo_val_days", "hpo_embargo_days",
         "hpo_space", "hpo_objective",
-    )
+    ) + LABEL_PARAMS + LEAD_PARAMS
 
     @classmethod
     def validate_params(cls, params):
@@ -3021,6 +3450,14 @@ class NoInformationScan(Node):
                     "train_start_ms must be < train_end_ms, got "
                     f"{train_start} >= {train_end}"
                 )
+        estimator = params.get("estimator")
+        if estimator is not None and (
+            not isinstance(estimator, str) or "." not in estimator
+        ):
+            problems.append(
+                "estimator must be an import path like "
+                f"'sklearn.linear_model.Ridge', got {estimator!r}"
+            )
         extra = params.get("estimator_params")
         if extra is not None and not isinstance(extra, dict):
             problems.append(
@@ -3065,6 +3502,15 @@ class NoInformationScan(Node):
                             f"hpo_space[{key!r}] must be a non-empty list of "
                             f"numbers, got {values!r}"
                         )
+        problems.extend(_label_problems(params))
+        problems.extend(_lead_problems(params))
+        for knob in LABEL_PARAMS + LEAD_PARAMS:
+            if knob in params and params[knob] is None:
+                problems.append(
+                    f"{knob} is present and null — a label or lead knob is "
+                    "read only when declared, so drop the key rather than "
+                    "nulling it"
+                )
         return problems
 
     def validate_inputs(self, inputs):
@@ -3114,12 +3560,7 @@ class NoInformationScan(Node):
         spec = inputs["spec"]
         horizon = spec["horizon"]
         features = _feature_names_for_rows(spec, inputs["records"])
-        leads = horizon_leads(
-            int(horizon["lead_start"]),
-            int(horizon["lead_step"]),
-            int(horizon["lead_stop"]),
-        )
-        train_lead = int(horizon["lead_start"])
+        leads, train_lead = _lead_grid(self.params, horizon)
         train_end = int(self.params["train_end_ms"])
         train_start = self.params.get("train_start_ms")
         train_start = None if train_start is None else int(train_start)
@@ -3127,16 +3568,29 @@ class NoInformationScan(Node):
         val_end = int(self.params["val_end_ms"])
         period_ms = int(spec["period_ms"])
         period_minutes = max(period_ms // 60_000, 1)
+        arrays = _tapes_from_bars(inputs["bars"], spec["price_field"], val_end)
+        label = _label_from_params(self.params, arrays, period_ms)
+        if label.transformed:
+            self.log.info("no-information scan: label %s", label.describe())
         prepared = _scan_aligned(
             inputs["bars"], inputs["records"], features,
-            spec["price_field"], val_end,
+            spec["price_field"], val_end, arrays=arrays,
         )
         codes = _symbol_codes(spec, prepared)
         prepared = _attach_symbol_codes(prepared, codes)
         categorical = (
             [prepared[0][2].shape[1] - 1] if prepared else None
         )
+        # The design matrix IS the features plus the code column that
+        # _attach_symbol_codes just appended; an estimator that splits
+        # the row by name reads this, so it is built where the append is.
+        column_names = list(features) + ["symbol_code"]
         base_scan = dict(spec.get("scan") or {})
+        if self.params.get("estimator") is not None:
+            # The MODEL is a property of the run, not of the cohort: two
+            # documents comparing estimators must not need two universe
+            # files, which would restate the cohort to say one thing.
+            base_scan["estimator"] = self.params["estimator"]
         if self.params.get("estimator_params") is not None:
             base_scan["estimator_params"] = dict(self.params["estimator_params"])
         hpo_trials = int(self.params.get("hpo_trials") or 0)
@@ -3161,7 +3615,7 @@ class NoInformationScan(Node):
         }
         tr_x, tr_y, va_x, va_y, _ = _scan_fold_stamped(
             prepared, train_lead, train_end, val_start, val_end,
-            train_start=train_start,
+            train_start=train_start, label=label,
         )
         metrics["n_train"] = float(tr_x.shape[0])
         metrics["n_val"] = float(va_x.shape[0])
@@ -3178,13 +3632,14 @@ class NoInformationScan(Node):
                 in_x, in_y, ho_x, ho_y, _ = _scan_fold_stamped(
                     prepared, train_lead, inner_train_end,
                     inner_val_start, inner_val_end,
-                    train_start=train_start,
+                    train_start=train_start, label=label,
                 )
                 if in_x.shape[0] >= 2 and ho_x.shape[0] >= 2:
                     objective = self.params.get("hpo_objective", "mspe")
                     chosen, inner_score = _tune_estimator(
                         scan, combos, in_x, in_y, ho_x, ho_y,
                         categorical=categorical, objective=objective,
+                        feature_names=column_names,
                     )
                     scan["estimator_params"] = chosen
                     metrics[f"hpo_{objective}"] = inner_score
@@ -3194,6 +3649,7 @@ class NoInformationScan(Node):
                     )
             model = _fit_estimator(
                 tr_x, tr_y, scan, categorical=categorical,
+                feature_names=column_names,
             )
             fit = _fit_split_metrics(model, tr_x, tr_y, va_x, va_y)
             metrics["train_mspe"] = fit["train_mspe"]
@@ -3214,6 +3670,7 @@ class NoInformationScan(Node):
                 int(va_x.shape[0]),
             )
             label_sd = float(tr_y.std()) if tr_y.size else 0.0
+            metrics["label_sd"] = label_sd
             if fit["train_yhat_sd"] <= _DEGENERATE_YHAT_REL * label_sd:
                 raise ValueError(
                     "degenerate forecast: yhat is constant on train "
@@ -3227,13 +3684,22 @@ class NoInformationScan(Node):
             symbol = item[0]
             rows, series = _walk_no_information_series(
                 item, model, leads, train_end, val_start, val_end,
-                period_minutes, train_start=train_start,
+                period_minutes, train_start=train_start, label=label,
             )
             curve.extend(rows)
             n_go += int(series["go"])
             metrics[f"go_{symbol}"] = series["go"]
             metrics[f"h_star_{symbol}"] = series["h_star"]
             metrics[f"p_value_{symbol}"] = series["p_value"]
+            metrics[f"t_stat_{symbol}"] = series["t_stat"]
+            self.log.info(
+                "no-information %s: h*=%s p=%.4f t=%.3f (lead %s)",
+                symbol,
+                int(series["h_star"]),
+                series["p_value"],
+                series["t_stat"],
+                int(leads[0]) if leads else 0,
+            )
         n_series = len(prepared)
         metrics["n_go"] = float(n_go)
         metrics["go_frac"] = float(n_go / n_series) if n_series else 0.0

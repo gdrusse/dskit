@@ -48,7 +48,7 @@ from datetime import datetime, timezone
 from .base import AssetError, _check_segment, _raise_if, parse_utc
 from .codec import iter_text_lines, resolve_stream_file
 
-__all__ = ["scan_stream", "stream_digest"]
+__all__ = ["scan_stream", "stream_dir", "stream_digest"]
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
@@ -143,6 +143,29 @@ def _scan_problems(root, source, stream, key_fields, ts_field, ts_out,
     return problems
 
 
+def stream_dir(root, source) -> str:
+    """Where one source's observation acquisitions live.
+
+    The ONE spelling of ``observations/<source>`` on the read side:
+    :func:`scan_stream` reads it, and a caller memoizing a scan digests
+    it (``dskit.onboarding.dir_digest``) to know whether the snapshot it
+    holds is still the snapshot on disk.
+
+    Parameters
+    ----------
+    root : str
+        The onboarding root.
+    source : str
+        The registered source name.
+
+    Returns
+    -------
+    str
+        The directory path; existence is the caller's to check.
+    """
+    return os.path.join(root, "observations", source)
+
+
 def scan_stream(root, source, stream, key_fields, ts_field=None,
                 ts_out="asof_ms", shared_fields=()):
     """One deduplicated snapshot of a source's observation stream.
@@ -211,7 +234,7 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                              ts_out, shared_fields))
     key_fields = tuple(key_fields)
     shared_fields = tuple(shared_fields)
-    base = os.path.join(root, "observations", source)
+    base = stream_dir(root, source)
     if not os.path.isdir(base):
         raise AssetError(
             [f"no observations directory for source {source!r}: {base} — "

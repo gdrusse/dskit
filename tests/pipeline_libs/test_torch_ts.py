@@ -370,3 +370,72 @@ TestTorchTsConformance = conformance_suite(
     },
     name="TestTorchTsConformance",
 )
+
+
+def test_zoo_estimator_splits_the_row_by_name(tmp_path):
+    """The lag columns are the time axis; everything else is context."""
+    pytest.importorskip("torch")
+    import numpy as np
+
+    from dskit.pipeline.libs.torch_ts import ZooEstimator
+
+    model = ZooEstimator(arch="gru", epochs=1, batch_size=64, seed=0)
+    names = ["ret_lag_0", "vol", "ret_lag_1", "ret_lag_2", "tod"]
+    sequence, static = model._split(len(names), names)
+    assert [names[i] for i in sequence] == ["ret_lag_0", "ret_lag_1", "ret_lag_2"]
+    assert [names[i] for i in static] == ["vol", "tod"]
+    # No names: the whole row is one channel, honestly declared.
+    assert model._split(5, None) == ([0, 1, 2, 3, 4], [])
+    with pytest.raises(ValueError, match="no column starts with"):
+        model._split(2, ["vol", "tod"])
+    with pytest.raises(ValueError, match="not contiguous"):
+        model._split(2, ["ret_lag_0", "ret_lag_2"])
+    del np, tmp_path
+
+
+def test_zoo_estimator_learns_a_path_signal_and_refuses_bad_knobs():
+    pytest.importorskip("torch")
+    import numpy as np
+
+    from dskit.pipeline.libs.torch_ts import ZooEstimator
+
+    rng = np.random.default_rng(0)
+    n, lags = 2000, 6
+    seq = rng.normal(0.0, 1.0, (n, lags))
+    static = rng.normal(0.0, 1.0, (n, 1))
+    y = 0.8 * seq[:, 0] - 0.5 * seq[:, 2] + 0.3 * static[:, 0]
+    x = np.column_stack([seq, static])
+    names = [f"ret_lag_{i}" for i in range(lags)] + ["vol"]
+    model = ZooEstimator(
+        arch="gru", epochs=25, lr=3e-3, batch_size=256, seed=0,
+    ).fit(x[:1500], y[:1500], feature_names=names)
+    hat = model.predict(x[1500:])
+    assert hat.shape == (500,)
+    assert np.corrcoef(hat, y[1500:])[0, 1] > 0.5, (
+        "a GRU that cannot find a linear function of the path it was given "
+        "is not wired to the path"
+    )
+    with pytest.raises(ValueError, match="arch must be one of"):
+        ZooEstimator(arch="not-an-arch")
+    with pytest.raises(ValueError, match="unknown knob"):
+        ZooEstimator(arch="gru", nonsense=1)
+    with pytest.raises(RuntimeError, match="predict before fit"):
+        ZooEstimator(arch="gru").predict(x[:1])
+
+
+def test_zoo_estimator_serves_every_named_arch():
+    """Each arch the owner asked for fits and predicts through the façade."""
+    pytest.importorskip("torch")
+    import numpy as np
+
+    from dskit.pipeline.libs.torch_ts import ZooEstimator
+
+    rng = np.random.default_rng(1)
+    x = rng.normal(0.0, 1.0, (300, 5))
+    y = rng.normal(0.0, 1.0, 300)
+    names = [f"ret_lag_{i}" for i in range(4)] + ["vol"]
+    for arch in ("gru", "lstm", "tft"):
+        hat = ZooEstimator(
+            arch=arch, epochs=1, batch_size=128, seed=0,
+        ).fit(x, y, feature_names=names).predict(x)
+        assert hat.shape == (300,) and np.isfinite(hat).all(), arch

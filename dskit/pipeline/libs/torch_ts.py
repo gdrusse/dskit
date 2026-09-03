@@ -23,6 +23,8 @@ from dskit.pipeline.node import (
 
 __all__ = [
     "ARCHS",
+    "DEFAULT_SEQUENCE_PREFIX",
+    "ZooEstimator",
     "DEFAULT_ORDER",
     "NODE_KINDS",
     "TimeSeriesPredict",
@@ -40,6 +42,25 @@ _ARCHS = {}
 _HEADS = {
     "regression": DEFAULT_LOSS,
     "binary": "torch.nn.functional:binary_cross_entropy_with_logits",
+}
+
+#: Columns whose name starts with this form the time axis of
+#: :class:`ZooEstimator`; everything else is a static covariate.
+DEFAULT_SEQUENCE_PREFIX = "ret_lag_"
+#: The estimator façade's training defaults, named ONCE so the
+#: constructor, the default-deny check and the docstring cannot drift.
+ESTIMATOR_DEFAULTS = {
+    "arch_params": None,
+    "order": None,
+    "sequence_prefix": DEFAULT_SEQUENCE_PREFIX,
+    "seq_len": None,
+    "epochs": 15,
+    "lr": 1e-3,
+    "weight_decay": 0.0,
+    "batch_size": 1024,
+    "seed": 0,
+    "device": None,
+    "standardize": True,
 }
 
 _ORDERS = ("recent_first", "chrono")
@@ -465,6 +486,269 @@ register_arch(
 
 #: Public name set — the registry table, not a second copy of the keys.
 ARCHS = _ARCHS
+
+
+class ZooEstimator:
+    """sklearn-shaped estimator over one zoo architecture (ADR-0061).
+
+    The evaluation seams in this repo — walk-forward folds, Clark-West
+    per fold, the ``h*`` walk — fit ``scan.estimator`` through
+    ``cls(**params)`` / ``fit(X, y)`` / ``predict(X)``. This is the same
+    ``_ARCHS`` registry the node pair uses, reached through that
+    contract, so a sequence model can be compared with a ridge on
+    identical folds without either side being rebuilt.
+
+    The flat row splits BY NAME: columns starting with
+    ``sequence_prefix`` become the time axis (ordered by their integer
+    suffix, most recent first), and every other column is a static
+    covariate broadcast as a constant channel over that axis — so the
+    net sees ``(B, seq_len, 1 + n_static)``. The broadcast is a view,
+    never a copy. Without ``feature_names`` the whole row is one
+    channel, which is what a caller with no names can honestly claim.
+
+    Parameters
+    ----------
+    arch : str
+        A registered architecture (``ARCHS``).
+    arch_params : dict, optional
+        ``{arch: {knob: value}}`` — the node pair's shape, merged under
+        that arch's registered defaults.
+    sequence_prefix : str, optional
+        Column-name prefix marking the time axis, default ``ret_lag_``.
+    seq_len : int, optional
+        Sequence length when no names are supplied; ``None`` uses the
+        whole row as one channel.
+    order : str, optional
+        ``recent_first`` (default) or ``chrono`` — how the time axis is
+        already ordered.
+    epochs, lr, weight_decay, batch_size, seed : optional
+        The training loop, defaults 15 / 1e-3 / 0.0 / 1024 / 0.
+    device : str, optional
+        ``cuda`` when available by default.
+    standardize : bool, optional
+        Fit column mean/sd on train and apply them at predict, default
+        True. A torch model on unstandardized columns underfits exactly
+        the way an unstandardized ridge does.
+
+    Raises
+    ------
+    ValueError
+        On an unknown arch, an unknown knob, or a row width that is not
+        a whole number of channels.
+
+    Examples
+    --------
+    A GRU over a 3-step lag path plus one static covariate::
+
+        model = ZooEstimator(arch="gru", epochs=2, batch_size=8)
+        model.fit(
+            [[0.1, 0.2, 0.3, 5.0], [0.2, 0.1, 0.0, 6.0]],
+            [0.5, -0.5],
+            feature_names=["ret_lag_0", "ret_lag_1", "ret_lag_2", "vol"],
+        )
+        model.predict([[0.1, 0.2, 0.3, 5.0]])
+        # -> array([...])  # one float per row
+    """
+
+    def __init__(self, arch, **knobs):
+        unknown = sorted(set(knobs) - set(ESTIMATOR_DEFAULTS))
+        if unknown:
+            raise ValueError(
+                f"ZooEstimator: unknown knob(s) {unknown} — allowed: "
+                f"{sorted(ESTIMATOR_DEFAULTS)} (default-deny, I-227)"
+            )
+        if arch not in _ARCHS:
+            raise ValueError(
+                f"arch must be one of {sorted(_ARCHS)}, got {arch!r}"
+            )
+        self.arch = arch
+        for name, fallback in ESTIMATOR_DEFAULTS.items():
+            setattr(self, name, knobs.get(name, fallback))
+        block = (self.arch_params or {}).get(arch) or {}
+        problems = _arch_block_problems(arch, block)
+        if problems:
+            raise ValueError(f"ZooEstimator {arch!r}: {problems}")
+        self._knobs = _arch_merged(arch, block)
+        self._module = None
+        self._layout = None
+        self._center = None
+        self._scale = None
+
+    def _resolved_device(self):
+        """Resolve the device: the declared one, else cuda when present."""
+        import torch
+
+        if self.device:
+            return torch.device(self.device)
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def _split(self, width, feature_names):
+        """Column layout as ``(sequence indices, static indices)``."""
+        if not feature_names:
+            seq_len = self.seq_len or width
+            if width % seq_len:
+                raise ValueError(
+                    f"ZooEstimator: {width} column(s) is not a whole number "
+                    f"of {seq_len}-step channels — pass feature_names, or a "
+                    "seq_len that divides the row"
+                )
+            return list(range(width)), []
+        lagged = {}
+        static = []
+        for i, name in enumerate(feature_names):
+            suffix = (
+                name[len(self.sequence_prefix):]
+                if name.startswith(self.sequence_prefix) else None
+            )
+            if suffix is not None and suffix.isdigit():
+                lagged[int(suffix)] = i
+            else:
+                static.append(i)
+        if not lagged:
+            raise ValueError(
+                f"ZooEstimator: no column starts with "
+                f"{self.sequence_prefix!r} — there is no time axis to read"
+            )
+        steps = sorted(lagged)
+        if steps != list(range(len(steps))):
+            raise ValueError(
+                f"ZooEstimator: {self.sequence_prefix}* steps are not "
+                f"contiguous from 0, got {steps}"
+            )
+        return [lagged[s] for s in steps], static
+
+    def _build(self, seq_len, channels):
+        """Wrap the arch so a (sequence, static) pair becomes its window."""
+        import torch
+
+        inner = _ARCHS[self.arch]["build"](self._knobs, seq_len, channels, 1)
+        flip = (self.order or DEFAULT_ORDER) == "recent_first"
+
+        class _WindowFromParts(torch.nn.Module):
+            """Assemble ``(B, seq, 1 + n_static)`` without materializing it."""
+
+            def __init__(self):
+                super().__init__()
+                self.inner = inner
+
+            def forward(self, seq, static):
+                path = torch.flip(seq, dims=(-1,)) if flip else seq
+                path = path.unsqueeze(-1)
+                if static.shape[1]:
+                    held = static.unsqueeze(1).expand(-1, path.size(1), -1)
+                    path = torch.cat([path, held], dim=-1)
+                return self.inner(path)
+
+        return _WindowFromParts()
+
+    def _parts(self, matrix):
+        """Standardize, then split into ``(sequence, static)`` tensors."""
+        import torch
+
+        x = torch.as_tensor(matrix, dtype=torch.float32)
+        if self._center is not None:
+            x = (x - self._center) / self._scale
+        seq_idx, static_idx = self._layout
+        seq = x[:, seq_idx]
+        static = x[:, static_idx] if static_idx else x[:, :0]
+        return seq, static
+
+    def fit(self, X, y, feature_names=None):
+        """Train the architecture on one flat design matrix.
+
+        Parameters
+        ----------
+        X : array-like
+            Rows x columns, finite.
+        y : array-like
+            One target per row.
+        feature_names : sequence of str, optional
+            Column names, in order. Supplied by a caller whose fit
+            signature check finds this parameter.
+
+        Returns
+        -------
+        ZooEstimator
+            ``self``, so the sklearn call chain works.
+        """
+        import numpy as np
+        import torch
+
+        x = np.asarray(X, dtype=np.float64)
+        target = np.asarray(y, dtype=np.float64).reshape(-1)
+        self._layout = self._split(x.shape[1], feature_names)
+        if self.standardize:
+            center = x.mean(axis=0)
+            scale = x.std(axis=0)
+            scale[~np.isfinite(scale) | (scale <= 0.0)] = 1.0
+            self._center = torch.as_tensor(center, dtype=torch.float32)
+            self._scale = torch.as_tensor(scale, dtype=torch.float32)
+        torch.manual_seed(int(self.seed))
+        device = self._resolved_device()
+        seq, static = self._parts(x)
+        self._module = self._build(seq.shape[1], 1 + static.shape[1]).to(device)
+        labels = torch.as_tensor(target, dtype=torch.float32).reshape(-1, 1)
+        optimizer = torch.optim.Adam(
+            self._module.parameters(),
+            lr=float(self.lr),
+            weight_decay=float(self.weight_decay),
+        )
+        loss_fn = torch.nn.MSELoss()
+        rows = seq.shape[0]
+        batch = max(int(self.batch_size), 1)
+        generator = torch.Generator().manual_seed(int(self.seed))
+        self._module.train()
+        for _ in range(max(int(self.epochs), 1)):
+            order = torch.randperm(rows, generator=generator)
+            for start in range(0, rows, batch):
+                take = order[start:start + batch]
+                optimizer.zero_grad(set_to_none=True)
+                out = self._module(
+                    seq[take].to(device), static[take].to(device),
+                )
+                loss = loss_fn(out, labels[take].to(device))
+                loss.backward()
+                optimizer.step()
+        return self
+
+    def predict(self, X):
+        """Forecast one value per row.
+
+        Parameters
+        ----------
+        X : array-like
+            Rows x columns, the fitted column layout.
+
+        Returns
+        -------
+        numpy.ndarray
+            One float64 per row.
+
+        Raises
+        ------
+        RuntimeError
+            When called before ``fit``.
+        """
+        import numpy as np
+        import torch
+
+        if self._module is None:
+            raise RuntimeError("ZooEstimator: predict before fit")
+        seq, static = self._parts(np.asarray(X, dtype=np.float64))
+        device = self._resolved_device()
+        batch = max(int(self.batch_size), 1)
+        out = []
+        self._module.eval()
+        with torch.no_grad():
+            for start in range(0, seq.shape[0], batch):
+                stop = start + batch
+                chunk = self._module(
+                    seq[start:stop].to(device), static[start:stop].to(device),
+                )
+                out.append(chunk.reshape(-1).cpu().numpy())
+        return (
+            np.concatenate(out) if out else np.zeros(0, dtype=np.float64)
+        ).astype(np.float64)
 
 
 class _TsModel:

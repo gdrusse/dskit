@@ -13,6 +13,7 @@ from dskit.onboarding.base import (
     _check_mode,
     _check_segment,
     canonical_hash,
+    dir_digest,
     durable_write_bytes,
     durable_write_json,
     file_digest,
@@ -61,6 +62,42 @@ def test_file_digest_matches_hashlib(tmp_path):
 def test_file_digest_missing_file():
     with pytest.raises(AssetError):
         file_digest("/nonexistent/nope")
+
+
+def test_dir_digest_covers_names_and_bytes(tmp_path):
+    tree = tmp_path / "obs"
+    (tree / "acq-1").mkdir(parents=True)
+    (tree / "acq-1" / "bars.jsonl").write_bytes(b"one\n")
+    before = dir_digest(str(tree))
+
+    assert dir_digest(str(tree)) == before  # same bytes, same answer
+    (tree / "acq-1" / "bars.jsonl").write_bytes(b"two\n")
+    rewritten = dir_digest(str(tree))
+    assert rewritten != before, "a rewrite IN PLACE must move the digest"
+    (tree / "acq-2").mkdir()
+    (tree / "acq-2" / "bars.jsonl").write_bytes(b"two\n")
+    assert dir_digest(str(tree)) != rewritten, "an appended dir must move it"
+
+
+def test_dir_digest_sees_a_rename_that_keeps_the_bytes(tmp_path):
+    tree = tmp_path / "obs"
+    tree.mkdir()
+    (tree / "a").write_bytes(b"same")
+    before = dir_digest(str(tree))
+    (tree / "a").rename(tree / "b")
+    assert dir_digest(str(tree)) != before
+
+
+def test_dir_digest_of_an_absent_tree_is_the_empty_digest(tmp_path):
+    import hashlib
+
+    empty = hashlib.sha256().hexdigest()
+    assert dir_digest(str(tmp_path / "never-acquired")) == empty
+
+
+def test_dir_digest_refuses_a_non_string():
+    with pytest.raises(AssetError):
+        dir_digest(None)
 
 
 def test_parse_utc_date_and_datetime_comparable():

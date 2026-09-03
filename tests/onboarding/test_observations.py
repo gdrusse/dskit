@@ -12,7 +12,11 @@ import pytest
 
 from dskit.assets.base import AssetError
 from dskit.onboarding.codec import open_text_writer
-from dskit.onboarding.observations import scan_stream, stream_digest
+from dskit.onboarding.observations import (
+    scan_stream,
+    stream_digest,
+    stream_dir,
+)
 
 ACQUIRED = "2026-01-06T00:00:00+00:00"
 
@@ -675,3 +679,18 @@ class TestPeak:
         assert len(records) == n_rows
         assert peak / n_rows < 800, f"peak {peak / n_rows:.0f} B/row"
         assert current / n_rows < 700, f"resident {current / n_rows:.0f} B/row"
+
+
+def test_stream_dir_is_where_scan_stream_reads(tmp_path):
+    """The read side spells ``observations/<source>`` ONCE.
+
+    A caller memoizing a scan digests this directory to know whether its
+    snapshot is stale; if the helper and the reader ever disagreed, the
+    cache would be keyed on a tree nobody reads.
+    """
+    root = str(tmp_path)
+    _write(root, "acq-1", [_row("AAPL", "2026-01-05T14:31:00+00:00", 10.0)])
+    assert stream_dir(root, "alpaca") == os.path.join(root, "observations", "alpaca")
+    assert os.path.isdir(stream_dir(root, "alpaca"))
+    with pytest.raises(AssetError, match="no observations directory"):
+        scan_stream(root, "nobody", "bars", key_fields=("symbol", "ts"))

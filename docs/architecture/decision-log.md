@@ -2332,3 +2332,169 @@ and not T bakeoff first. Do not write `label_lead` until the book-H
 decision closes.
 
 
+
+---
+
+## ADR-0059 — The scan's label: one definition, optionally vol-normalised and market-residual
+
+**Status:** proposed (2026-09-03; owner directed the two transforms in
+session; the DEFAULT is unchanged, so nothing already recorded moves)
+
+**Context.** Every label in `NoInformationScan` is `log(px[t+h]/px[t])` on
+the 1-minute RTH tape, written out THREE times (`_scan_fold`,
+`_scan_fold_stamped`, and through them the h\* walk) — the exact
+"value in two places with nothing pinning them" shape. Two defects follow
+from the label itself, not from the estimator:
+
+1. **Heteroskedastic weighting.** Squared loss weights a row by the
+   variance of its label, so the open hour (≈5–10x midday variance)
+   dominates the fit; A0040's ridge underfits the whole day to survive
+   the open. Pooled IC over one name ranks ACROSS time, so the ranks
+   partly encode minute-of-day rather than signal.
+2. **Unforecastable market component.** At 5–20 minutes most of a single
+   name's variance is the market move. It enters the label as noise the
+   features (which already carry `residual_SPY`) are not asked to
+   explain.
+
+**Decision.** One label object, `_LeadLabel`, built once per run from the
+tape arrays and passed into both fold builders; `_raw_lead_return` is the
+single definition of the raw log return. Two declared, default-off knobs
+on `NoInformationScan` (default-deny params, emitted only when present,
+so every recorded document's identity hash is unmoved):
+
+- `label_scale`: `"raw"` (default) or `"vol"` — divide by
+  `sigma_t * sqrt(h)`, `sigma_t` = causal `rolling_std` of the 1-minute
+  log return over `vol_window_minutes` (default 390, one RTH session).
+  Equivalent to WLS on the raw return; the estimand becomes a
+  risk-adjusted return, which is what inverse-vol sizing trades.
+- `label_residual`: `null` (default) or a reference symbol on the tape
+  (e.g. `"SPY"`) — subtract `beta_t * y_ref(t, t+h)`, `beta_t` =
+  `rolling_sum(r*r_ref) / rolling_sum(r_ref^2)` over
+  `beta_window_minutes` (default 3900, ten sessions).
+- `vol_floor` guards a stale-tape divisor. Composable: residual first,
+  then the vol of the RESIDUAL return scales it.
+
+Causality: `sigma_t` and `beta_t` read only bars at or before `t`; the
+label reads `t -> t+h`. Session boundaries are blanked (a gap over twice
+`period_ms` is not a 1-minute return), so an overnight jump never enters
+`sigma` or `beta`. A reference symbol absent from the tape is a loud
+refusal, never a silent NaN column.
+
+**Consequences.** `train_mspe`/`val_mspe` are in LABEL units — a
+vol-normalised run's MSPE is NOT comparable with a raw run's, and the
+Clark–West / no-information verdict is a different estimand (it tests a
+risk-adjusted forecast). `val_ic` stays rank-based and comparable.
+Existing configs declare neither knob and are byte-identical. Reading
+these labels as evidence requires a fresh fold sequence; A0040's numbers
+do not carry over.
+
+---
+
+## ADR-0060 — The scan's estimator is a document knob; its t and SE are printed
+
+**Status:** proposed (2026-09-03; owner asked for a ridge-vs-LightGBM
+comparison on one cohort, with per-fold t and p)
+
+**Context.** `NoInformationScan` read `scan.estimator` from the UNIVERSE
+document only, so comparing two models meant two universe files — and a
+universe file states the cohort, the session, the grid and the horizon.
+Two of them differing in one string is the cohort restated to say one
+thing, which `test_run_docs_do_not_restate_the_cohort` exists to stop.
+Separately, each lead's row carried the Clark–West `p_value` but not the
+`t` or `se` behind it, so a reader could not tell a p of 0.30 driven by a
+small gap from one driven by a wide HAC band.
+
+**Decision.** `estimator` joins `estimator_params` as a node knob that
+overrides the universe's `scan` block (default-deny; emitted only when
+declared, so no recorded document's hash moves). The per-lead record
+gains `t_stat` and `se`, the walk's per-series metrics gain
+`t_stat_<symbol>`, and each series logs `h*`, `p` and `t` at INFO so a
+running walk is readable live.
+
+**Consequences.** One universe serves a model bakeoff; the model that ran
+is in the run document, where the identity hash already covers it. Curve
+rows are two keys wider — a records shape, not an identity.
+
+---
+
+## ADR-0061 — The zoo reaches sklearn-shaped callers: `ZooEstimator`
+
+**Status:** proposed (2026-09-03; owner directed a TFT/GRU/LSTM look after
+ridge and LightGBM both landed at the null)
+
+**Context.** ADR-0041's architecture zoo is reachable only as the
+`TimeSeriesTrain`/`TimeSeriesPredict` node pair, which own an artifact
+protocol and a document shape. Every evaluation that matters here —
+per-fold Clark–West `t` and `p`, the `h*` walk, walk-forward folds — lives
+inside a scorer that fits `scan.estimator` through the sklearn contract
+(`cls(**params)`, `fit(X, y)`, `predict(X)`). So a sequence model could
+not be compared with ridge and LightGBM on identical folds without either
+re-implementing the evaluation beside the zoo, or re-implementing the zoo
+beside the evaluation. Both are the same defect.
+
+**Decision.** `ZooEstimator` joins `libs/torch_ts.py` — an sklearn-shaped
+façade over the SAME `_ARCHS` registry, so an arch is defined once and
+reachable two ways:
+
+- Constructor knobs are the zoo's (`arch`, `arch_params`, `order`) plus a
+  training block (`epochs`, `lr`, `batch_size`, `weight_decay`, `seed`,
+  `device`, `standardize`) — default-deny, defaults from the registry.
+- The flat feature row splits by NAME, not by position: columns matching
+  `sequence_prefix` (default `ret_lag_`) become the time axis, ordered by
+  their integer suffix; every other column is a static covariate,
+  broadcast as a constant channel over that axis. The estimator therefore
+  sees `(B, seq_len, 1 + n_static)` — a real path plus context, not a
+  feature vector pretending to be a sequence. The broadcast is a view
+  (`expand`), never a materialized copy.
+- `fit(X, y, feature_names=None)`. A caller that has names passes them;
+  one that does not gets a single-channel window over the whole row.
+  `_fit_estimator` passes them exactly the way it already passes
+  `categorical_feature`: only when the callee's signature declares it.
+- Standardization is the estimator's own (train mean/sd, applied to
+  predict). A torch model on unstandardized columns fails the way
+  A0040's ridge did.
+
+**Consequences.** One registry, two doorways: an arch added for the node
+pair is immediately comparable against ridge and LightGBM on the same
+folds, and any sklearn-shaped caller in any project can reach it. The
+façade does NOT write artifacts — it is an in-process estimator, so
+serving still belongs to the node pair. Torch stays inside methods (the
+purity gate), the wrapper `nn.Module` is defined inside `fit`.
+
+**Pre-registered bar for the run this unlocks** (owner asked for the
+comparison; the criterion is declared BEFORE it runs, so the result is
+readable either way): an architecture is worth pursuing only if it clears
+BOTH (a) more than 10% of the 60 name-folds at `p < .05` — ridge managed
+6.7%, LightGBM 5.0%, and the null delivers 5% — and (b) a mean validation
+MSPE below ridge's 1.345. Anything less is the null with more parameters.
+
+---
+
+## ADR-0062 — The lead grid is a document knob, not a cohort fact
+
+**Status:** proposed (2026-09-03; owner asked for the same five-model
+comparison at H = 1, 30 and 60 minutes)
+
+**Context.** `horizon.lead_start/lead_step/lead_stop` live in the UNIVERSE
+document, so changing the horizon meant a new universe file — and a
+universe file states the cohort, the session policy, the feature grid and
+the holdout calendar. Three of them differing only in a lead is the
+cohort restated three times, the defect ADR-0060 removed for `estimator`
+and `test_run_docs_do_not_restate_the_cohort` exists to catch. The
+horizon is a property of the QUESTION a run asks, not of the names it
+asks it about.
+
+**Decision.** `lead_start`, `lead_step` and `lead_stop` join
+`NoInformationScan`'s knobs, overriding the universe's `horizon` block
+when declared (default-deny, emitted only when present, so no recorded
+document's hash moves). `lead_start` remains the TRAINING label as well
+as the grid's first point — a run that declares `lead_start == lead_stop`
+asks about exactly one horizon, which is what "run this at H = 30" means.
+The HAC lag stays `lead // period_minutes - 1`, so a longer lead widens
+the Newey–West band by itself; nothing about the overlap correction is
+per-document.
+
+**Consequences.** One universe serves every horizon. A run's identity
+hash covers the lead it asked about, so two horizons can never collide in
+one run series. `universe.json`'s `horizon` block stays the default for
+documents that declare nothing.

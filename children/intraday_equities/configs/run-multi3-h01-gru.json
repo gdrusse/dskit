@@ -1,0 +1,171 @@
+{
+  "name": "intraday-equities-multi3-h01-gru",
+  "notes": "GRU over the 20-step lag path, last step to a linear head. Same three split-free tradables, same twenty folds, same ADR-0059 label (SPY-residual, divided by a causal 390-minute sigma times sqrt(h)) as run-multi3-h20-ridge.json and its LightGBM twin: the scan node's estimator block is the ONLY difference, so a gap is the architecture. Reached through ADR-0061's ZooEstimator, which splits the row by NAME - the twenty ret_lag_* columns are the time axis, the other 67 columns ride as constant channels over it. PRE-REGISTERED BAR, declared before the run: worth pursuing only if it clears BOTH >10% of the 60 name-folds at p<.05 (ridge 6.7%, LightGBM 5.0%, null 5%) AND a mean val MSPE under ridge's 1.345. hpo_trials is 0 on purpose: A0036 showed the inner holdout cannot rank models at this SNR, so the hyperparameters are fixed and declared rather than searched. HORIZON: this document asks about H=1 minute(s) ONLY - lead_start=lead_stop=1 (ADR-0062), so the training label and the single walked lead are both 1. The H=20 family trained at 5 and walked 5/10/15/20; these are a different question on the same cohort, folds and label, not a re-run.",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe-jpm-h20.json"
+      },
+      "notes": "The H<=20 grid variant. lead_start=5 is also the training label."
+    },
+    "alpaca": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip",
+        "universe": "configs/universe-jpm-h20.json"
+      },
+      "notes": "Historical SIP tape, adjustment raw. Run from the child root."
+    },
+    "session": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$alpaca.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "session",
+            "op": "==",
+            "value": "rth"
+          }
+        ]
+      },
+      "notes": "Regular session only; the store keeps every vendor minute."
+    },
+    "features": {
+      "uses": "intraday_equities-session-features",
+      "inputs": {
+        "records": "$session.records",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "lookback": 20,
+        "layout": "columns",
+        "momentum_horizons": [
+          {
+            "width": 3,
+            "tag": "3m",
+            "cross_session": false,
+            "notes": "Few minutes; sharper than the 5m scale in the 46."
+          },
+          {
+            "width": 120,
+            "tag": "2h",
+            "cross_session": true,
+            "notes": "Condenses the old L=120 window into ret/rv/mom. cross_session so its warmup is once, not daily."
+          },
+          {
+            "width": 180,
+            "tag": "3h",
+            "cross_session": true,
+            "notes": "Few hours, still inside one RTH session. cross_session so its warmup is once, not daily."
+          },
+          {
+            "width": 780,
+            "tag": "2s",
+            "cross_session": true,
+            "notes": "Two RTH sessions."
+          },
+          {
+            "width": 1950,
+            "tag": "1w",
+            "cross_session": true,
+            "notes": "Five RTH sessions, about a week."
+          }
+        ]
+      },
+      "notes": "lookback=20 emits one-minute ret_lag columns for the last 20 minutes. Every horizon here is cross_session so none costs rows beyond a one-time warmup; see docs/research/row-loss-is-intra-session-scale-warmup-not-cross-session.md."
+    },
+    "tradable": {
+      "uses": "intraday_equities-keep-symbols",
+      "inputs": {
+        "records": "$features.records",
+        "symbols": "$universe.tradable"
+      },
+      "params": {
+        "field": "symbol"
+      },
+      "notes": "SPY has already entered the residual features; score tradables."
+    },
+    "scan": {
+      "uses": "intraday_equities-no-information-scan",
+      "inputs": {
+        "records": "$names.records",
+        "bars": "$features.tape",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
+        "val_start_ms": "$splits.val_start_ms",
+        "val_end_ms": "$splits.val_end_ms",
+        "estimator_params": {
+          "arch": "gru",
+          "epochs": 30,
+          "lr": 0.003,
+          "batch_size": 1024,
+          "weight_decay": 0.0,
+          "seed": 0
+        },
+        "label_scale": "vol",
+        "label_residual": "SPY",
+        "estimator": "dskit.pipeline.libs.torch_ts.ZooEstimator",
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 1
+      },
+      "notes": "GRU over the 20-step lag path, last step to a linear head. Fixed hyperparameters, no search. Adam, MSE, 30 epochs at lr 3e-3 on standardised columns - the same training block for all three archs, so the comparison is the architecture and not its schedule. The grid is the single lead 1: h* is 1 or nothing, and the Clark-West p IS the test at that horizon."
+    },
+    "names": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$tradable.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "in",
+            "value": [
+              "JPM",
+              "LLY",
+              "XOM"
+            ]
+          }
+        ]
+      },
+      "notes": "The three split-free tradables. Sits after tradable so the cohort that built the cross-sectional features (all five plus SPY) is untouched; only what gets SCORED narrows."
+    }
+  },
+  "walkforward": {
+    "objective": "$scan.metrics.val_ic",
+    "select": "max",
+    "first": "2022-05-06",
+    "step_days": 63,
+    "count": 20,
+    "val_days": 63,
+    "embargo_days": 5,
+    "train_days": 730,
+    "notes": "Same post-COVID folds as run-hstar-cv-postcovid.json so the two are comparable: first validation 2022-05-06, twenty 63-day steps, a real 730-day bounded training window, last validation inside the 2025-11-30 cut. objective is val_ic, NOT go_frac: counting fold-level rejections and taking the max is vote counting, which Hedges-Olkin showed is inconsistent when per-fold power is below one half (A0035). The winner here only labels a fold in the summary; the science is the per-fold sequence, which is what the block-by-block reading needs. embargo_days=5 is now larger than any label window on this grid (20 minutes), so no training row's label can reach into validation."
+  },
+  "outputs": {
+    "run_root": "",
+    "notes": "Empty = ./pipeline_runs under the invoking cwd."
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        },
+        "notes": "Local sqlite beside the invoking cwd."
+      }
+    ],
+    "notes": "Excluded from identity - where metrics land is not what it computes."
+  }
+}

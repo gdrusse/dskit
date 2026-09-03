@@ -55,6 +55,7 @@ __all__ = [
     "canonical_hash",
     "durable_write_bytes",
     "durable_write_json",
+    "dir_digest",
     "file_digest",
     "parse_utc",
     "utc_now",
@@ -206,6 +207,53 @@ def durable_write_json(path, obj) -> None:
     except (TypeError, ValueError) as exc:
         raise AssetError([f"object is not JSON-serializable: {exc}"]) from exc
     durable_write_bytes(path, (text + "\n").encode("utf-8"))
+
+
+def dir_digest(path) -> str:
+    """sha256 over every file under ``path`` — names and bytes, sorted.
+
+    Two trees digest equal iff they are byte-identical. This is the cheap
+    half of "has this stream changed?": hashing an acquisition dir's
+    compressed bytes costs about a second where PARSING the same bytes
+    into records costs minutes, so a caller that memoizes a scan can key
+    the memo on CONTENT rather than on an mtime a rewrite-in-place would
+    not move.
+
+    Parameters
+    ----------
+    path : str
+        The directory to digest. A path that does not exist digests as
+        the empty tree — an absent stream is a state, not an error.
+
+    Returns
+    -------
+    str
+        Hex sha256 over each file's tree-relative name (NUL-terminated,
+        ``/``-separated) followed by its bytes, in sorted order.
+
+    Raises
+    ------
+    AssetError
+        When ``path`` is not a string, or a file under it cannot be read.
+    """
+    errors = []
+    _check_str(errors, "path", path)
+    _raise_if(errors)
+    h = hashlib.sha256()
+    for root, dirs, files in os.walk(path):
+        dirs.sort()
+        for name in sorted(files):
+            full = os.path.join(root, name)
+            rel = os.path.relpath(full, path).replace(os.sep, "/")
+            h.update(rel.encode("utf-8"))
+            h.update(b"\0")
+            try:
+                with open(full, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 20), b""):
+                        h.update(chunk)
+            except OSError as exc:
+                raise AssetError([f"cannot read {full!r}: {exc}"]) from exc
+    return h.hexdigest()
 
 
 def file_digest(path) -> str:
