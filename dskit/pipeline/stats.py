@@ -48,17 +48,23 @@ from dskit.pipeline.records import number_ok
 __all__ = [
     "CORRECTIONS",
     "METHODS",
+    "across_fold_t",
     "benjamini_hochberg",
     "bonferroni",
     "clark_west_series",
     "cluster_bootstrap_pvalue",
     "cluster_bootstrap_t",
     "correction",
+    "cross_sectional_fold",
+    "diebold_mariano_test",
+    "dm_lags",
+    "dm_loss_series",
     "max_informative_horizon",
     "newey_west_mean",
     "no_correction",
     "no_information_test",
     "register_correction",
+    "skill_vs_mean",
     "weighted_benjamini_hochberg",
 ]
 
@@ -648,6 +654,461 @@ def max_informative_horizon(ordered, alpha=0.05):
         "first_fail": first_fail,
         "alpha": float(alpha),
         "n_horizons": n_horizons,
+    }
+
+
+def dm_loss_series(y, yhat, mu=None):
+    """Squared-error loss gap of a forecast against a constant guess.
+
+    For each pair, ``(y-μ)² - (y-ŷ)²`` — POSITIVE where the forecast sat
+    closer than always guessing ``μ``. This is the Diebold–Mariano
+    differential: unlike :func:`clark_west_series` it adds nothing back
+    for the parameters the forecast spent, so the sign of its mean IS the
+    sign of the realized MSPE gap. That is the difference that decides
+    whether a forecast is worth having; Clark–West answers a different
+    question (is there population-level content) and belongs beside this,
+    never instead of it (ADR-0063).
+
+    Parameters
+    ----------
+    y : list or tuple of float
+        Realized values, one per observation, in time order.
+    yhat : list or tuple of float
+        Forecasts, same length as ``y``.
+    mu : float or None
+        The constant benchmark. ``None`` uses the mean of ``y``; pass the
+        TRAIN mean so the benchmark cannot peek at the scored sample.
+
+    Returns
+    -------
+    list of float
+        One loss gap per observation, in input order.
+
+    Raises
+    ------
+    ValueError
+        On empty or unequal inputs, or a non-finite cell / ``mu``.
+
+    Examples
+    --------
+    A forecast that nails a series the mean cannot::
+
+        dm_loss_series([1.0, 3.0], [1.0, 3.0], mu=2.0)
+        # -> [1.0, 1.0]
+    """
+    ys, fs = _as_pair_series(y, yhat)
+    m = _resolve_mu(ys, mu)
+    return [(yi - m) ** 2 - (yi - fi) ** 2 for yi, fi in zip(ys, fs)]
+
+
+def dm_lags(n, h_steps=1):
+    """The Bartlett truncation a DM test on ``n`` overlapping rows takes.
+
+    ``max(h_steps - 1, floor(4 (n/100)^(2/9)))`` — the overlap the label
+    itself creates, or Newey–West's automatic rule, whichever is longer.
+    Clamped below ``n`` because a Bartlett band cannot span the sample.
+
+    Parameters
+    ----------
+    n : int
+        Observations in the series, ``n >= 2``.
+    h_steps : int
+        Forecast horizon in OBSERVATION steps (the lead divided by the
+        row spacing), ``h_steps >= 1``.
+
+    Returns
+    -------
+    int
+        The lag, in observation steps, in ``[0, n)``.
+
+    Raises
+    ------
+    ValueError
+        On a bad ``n`` or ``h_steps``.
+
+    Examples
+    --------
+    Ten thousand rows of a 12-step label take the automatic rule::
+
+        dm_lags(10000, h_steps=12)
+        # -> 11
+    """
+    if isinstance(n, bool) or not isinstance(n, int) or n < 2:
+        raise ValueError(f"n must be an int >= 2, got {n!r}")
+    if isinstance(h_steps, bool) or not isinstance(h_steps, int) or h_steps < 1:
+        raise ValueError(f"h_steps must be an int >= 1, got {h_steps!r}")
+    automatic = int(4.0 * (n / 100.0) ** (2.0 / 9.0))
+    return min(max(h_steps - 1, automatic), n - 1)
+
+
+def _hln_factor(n, h_steps):
+    """Harvey–Leybourne–Newbold small-sample factor for an h-step DM t."""
+    numerator = n + 1 - 2 * h_steps + h_steps * (h_steps - 1) / n
+    if numerator <= 0.0:
+        return 1.0
+    return math.sqrt(numerator / n)
+
+
+def _betacf(a, b, x):
+    """Lentz continued fraction for the incomplete beta function."""
+    tiny = 1e-30
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    if abs(d) < tiny:
+        d = tiny
+    d = 1.0 / d
+    h = d
+    for m in range(1, 301):
+        m2 = 2 * m
+        for num in (
+            m * (b - m) * x / ((qam + m2) * (a + m2)),
+            -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2)),
+        ):
+            d = 1.0 + num * d
+            if abs(d) < tiny:
+                d = tiny
+            d = 1.0 / d
+            c = 1.0 + num / c
+            if abs(c) < tiny:
+                c = tiny
+            step = d * c
+            h *= step
+        if abs(step - 1.0) < 1e-14:
+            break
+    return h
+
+
+def _betai(a, b, x):
+    """Regularized incomplete beta ``I_x(a, b)``, stdlib only."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    front = math.exp(
+        math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
+        + a * math.log(x) + b * math.log1p(-x)
+    )
+    if x < (a + 1.0) / (a + b + 2.0):
+        return front * _betacf(a, b, x) / a
+    return 1.0 - front * _betacf(b, a, 1.0 - x) / b
+
+
+def _student_sf(t, df):
+    """Upper tail ``P(T > t)`` for Student's t on ``df`` degrees."""
+    tail = 0.5 * _betai(df / 2.0, 0.5, df / (df + t * t))
+    return tail if t > 0.0 else 1.0 - tail
+
+
+def diebold_mariano_test(d, lags=0, h_steps=1):
+    """One-sided HAC t that a loss gap's mean is at most zero.
+
+    The Diebold–Mariano statistic on a series :func:`dm_loss_series`
+    built: Newey–West long-run variance at ``lags``, then the
+    Harvey–Leybourne–Newbold small-sample factor for an ``h_steps``-step
+    forecast, then normal critical values. Forecasts are taken AS GIVEN
+    (Giacomini–White): a bounded rolling training window owes no
+    estimation-error correction, which is why nothing is added back here.
+
+    Parameters
+    ----------
+    d : list or tuple of float
+        Loss gaps in TIME order, ``len(d) >= 2``.
+    lags : int
+        Bartlett truncation in observation steps, ``0 <= lags < len(d)``.
+    h_steps : int
+        Forecast horizon in observation steps, ``h_steps >= 1``.
+
+    Returns
+    -------
+    dict
+        ``n``, ``mean``, ``se``, ``t`` (HLN-adjusted; ``None`` when the
+        series has no variance), ``p_value``, ``lags``, ``h_steps``,
+        ``hln``.
+
+    Raises
+    ------
+    ValueError
+        On a bad series, ``lags`` or ``h_steps``.
+
+    Examples
+    --------
+    A constant positive gap has no variance, so the sign decides::
+
+        diebold_mariano_test([1.0, 1.0, 1.0])["p_value"]
+        # -> 0.0
+    """
+    if isinstance(h_steps, bool) or not isinstance(h_steps, int) or h_steps < 1:
+        raise ValueError(f"h_steps must be an int >= 1, got {h_steps!r}")
+    hac = newey_west_mean(list(d), lags=lags)
+    factor = _hln_factor(hac["n"], h_steps)
+    t = None if hac["t"] is None else hac["t"] * factor
+    return {
+        "n": hac["n"],
+        "mean": hac["mean"],
+        "se": hac["se"],
+        "t": t,
+        "p_value": hac["p_value"] if t is None else _norm_sf(t),
+        "lags": hac["lags"],
+        "h_steps": h_steps,
+        "hln": factor,
+    }
+
+
+def across_fold_t(values):
+    """One-sided Student t that a per-fold score's mean is at most zero.
+
+    The fold-cluster check a pooled HAC cannot make: each fold
+    contributes ONE number (its out-of-sample R², say), and the folds are
+    the independence units. ``df`` is ``len(values) - 1``.
+
+    Parameters
+    ----------
+    values : list or tuple of float
+        One score per fold, ``len(values) >= 2``.
+
+    Returns
+    -------
+    dict
+        ``n``, ``mean``, ``se``, ``t`` (``None`` when every fold agrees
+        exactly), ``p_value``, ``df``.
+
+    Raises
+    ------
+    ValueError
+        On fewer than two folds or a non-finite cell.
+
+    Examples
+    --------
+    Four folds averaging 2.5 with SE 0.6455::
+
+        round(across_fold_t([1.0, 2.0, 3.0, 4.0])["t"], 3)
+        # -> 3.873
+    """
+    if not isinstance(values, (list, tuple)):
+        raise ValueError(
+            "values must be a list or tuple of numbers, "
+            f"got {type(values).__name__}"
+        )
+    series = []
+    for i, v in enumerate(values):
+        if not number_ok(v):
+            raise ValueError(f"values[{i}] must be a finite number, got {v!r}")
+        series.append(float(v))
+    n = len(series)
+    if n < 2:
+        raise ValueError(f"across_fold_t needs at least 2 folds, got {n}")
+    mean = sum(series) / n
+    var = sum((v - mean) ** 2 for v in series) / (n - 1)
+    if var <= 0.0:
+        return {
+            "n": n,
+            "mean": mean,
+            "se": 0.0,
+            "t": None,
+            "p_value": 0.0 if mean > 0.0 else 1.0,
+            "df": n - 1,
+        }
+    se = math.sqrt(var / n)
+    t = mean / se
+    return {
+        "n": n,
+        "mean": mean,
+        "se": se,
+        "t": t,
+        "p_value": _student_sf(t, n - 1),
+        "df": n - 1,
+    }
+
+
+def _check_skill_folds(folds):
+    """Validate the fold list :func:`skill_vs_mean` pools; return it."""
+    if not isinstance(folds, (list, tuple)) or not folds:
+        raise ValueError("folds must be a non-empty list of fold mappings")
+    checked = []
+    for i, fold in enumerate(folds):
+        if not isinstance(fold, dict):
+            raise ValueError(f"folds[{i}] must be a mapping, got {fold!r}")
+        d = fold.get("d")
+        if not isinstance(d, (list, tuple)) or len(d) < 2:
+            raise ValueError(f"folds[{i}]['d'] must hold at least 2 gaps")
+        for j, v in enumerate(d):
+            if not number_ok(v):
+                raise ValueError(
+                    f"folds[{i}]['d'][{j}] must be a finite number, got {v!r}"
+                )
+        q = fold.get("q")
+        if not number_ok(q) or q <= 0.0:
+            raise ValueError(
+                f"folds[{i}]['q'] must be a positive finite number, got {q!r}"
+            )
+        checked.append(([float(v) for v in d], float(q)))
+    return checked
+
+
+def skill_vs_mean(folds, h_steps=1, alpha=0.05, lags=None):
+    """The ADR-0063 verdict: does a forecast beat the constant mean?
+
+    Two tests over the same evidence, and BOTH must pass. The pooled one
+    concatenates every fold's scale-free gaps ``d_t / q_f`` in time order
+    and runs :func:`diebold_mariano_test` on them — dividing by the
+    fold's benchmark MSPE is what lets disjoint folds share one series
+    without a volatile fold outvoting a quiet one. The across-fold one
+    treats each fold's out-of-sample R² as one observation
+    (:func:`across_fold_t`), which is the cluster check the HAC cannot
+    make. One statistic alone passes on a single lucky fold, or on serial
+    dependence the lag rule missed.
+
+    ``R2oos_pool`` is reported beside the verdict because the pass is
+    only the SIGN of the win; the R² is its size.
+
+    Parameters
+    ----------
+    folds : list or tuple of dict
+        One mapping per fold, in TIME order, each with ``d`` (the
+        per-row loss gaps of :func:`dm_loss_series`, in time order, at
+        least two) and ``q`` (that fold's benchmark MSPE, positive).
+    h_steps : int
+        Forecast horizon in observation steps, ``h_steps >= 1``.
+    alpha : float
+        One-sided level for both tests, in ``(0, 1)``.
+    lags : int or None
+        Bartlett truncation for the pooled test. ``None`` takes
+        :func:`dm_lags`.
+
+    Returns
+    -------
+    dict
+        ``n_folds``, ``n_rows``, ``h_steps``, ``lags``, ``alpha``,
+        ``t_pool``, ``p_pool``, ``t_fold``, ``p_fold``, ``r2oos_pool``,
+        ``r2oos_folds`` (one per fold), ``r2oos_fold_mean``,
+        ``r2oos_se`` (HAC standard error of the pooled scale-free mean),
+        and ``passes``.
+
+    Raises
+    ------
+    ValueError
+        On a malformed fold list, a bad ``h_steps``, ``alpha`` or
+        ``lags``.
+
+    Examples
+    --------
+    Two folds whose gaps average half their benchmark MSPE::
+
+        out = skill_vs_mean([
+            {"d": [1.0, 0.9, 1.1, 1.0], "q": 2.0},
+            {"d": [1.0, 1.1, 0.9, 1.0], "q": 2.0},
+        ])
+        out["r2oos_pool"]  # 0.5
+    """
+    checked = _check_skill_folds(folds)
+    if isinstance(h_steps, bool) or not isinstance(h_steps, int) or h_steps < 1:
+        raise ValueError(f"h_steps must be an int >= 1, got {h_steps!r}")
+    if isinstance(alpha, bool) or not isinstance(alpha, (int, float)):
+        raise ValueError(f"alpha must be a number in (0, 1), got {alpha!r}")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError(f"alpha must lie in (0, 1), got {alpha!r}")
+    pooled, r2_folds, sse_model, sse_mean = [], [], 0.0, 0.0
+    for d, q in checked:
+        pooled.extend(v / q for v in d)
+        r2_folds.append(sum(d) / len(d) / q)
+        sse_mean += q * len(d)
+        sse_model += q * len(d) - sum(d)
+    n_rows = len(pooled)
+    band = dm_lags(n_rows, h_steps) if lags is None else lags
+    dm = diebold_mariano_test(pooled, lags=band, h_steps=h_steps)
+    fold = across_fold_t(r2_folds) if len(r2_folds) >= 2 else None
+    p_fold = None if fold is None else fold["p_value"]
+    return {
+        "n_folds": len(checked),
+        "n_rows": n_rows,
+        "h_steps": h_steps,
+        "lags": dm["lags"],
+        "alpha": float(alpha),
+        "t_pool": dm["t"],
+        "p_pool": dm["p_value"],
+        "t_fold": None if fold is None else fold["t"],
+        "p_fold": p_fold,
+        "r2oos_pool": 1.0 - sse_model / sse_mean if sse_mean else 0.0,
+        "r2oos_folds": r2_folds,
+        "r2oos_fold_mean": sum(r2_folds) / len(r2_folds),
+        "r2oos_se": dm["se"],
+        "passes": bool(
+            dm["mean"] > 0.0
+            and dm["p_value"] <= alpha
+            and p_fold is not None
+            and fold["mean"] > 0.0
+            and p_fold <= alpha
+        ),
+    }
+
+
+def cross_sectional_fold(units):
+    """Collapse one fold's units into the panel series a group DM tests.
+
+    At each timestamp, average the scale-free gaps ``d_t / q`` over the
+    units PRESENT at that timestamp (Qu–Timmermann–Zhu): the HAC on the
+    cross-sectional average absorbs the dependence between units, so a
+    handful of them is not too few. The result is a fold mapping
+    :func:`skill_vs_mean` pools like any other, with ``q`` of 1 because
+    the scaling already happened.
+
+    Parameters
+    ----------
+    units : list or tuple of dict
+        One mapping per unit, each with ``stamps`` (comparable, one per
+        row), ``d`` (loss gaps, same length) and ``q`` (positive).
+
+    Returns
+    -------
+    dict
+        ``stamps`` (sorted, deduplicated), ``d`` (the average at each),
+        ``q`` (``1.0``) and ``n_units``.
+
+    Raises
+    ------
+    ValueError
+        On an empty list, a malformed unit, or lengths that disagree.
+
+    Examples
+    --------
+    Two units sharing one timestamp average there::
+
+        out = cross_sectional_fold([
+            {"stamps": [1, 2], "d": [2.0, 2.0], "q": 1.0},
+            {"stamps": [2, 3], "d": [4.0, 4.0], "q": 1.0},
+        ])
+        out["d"]  # [2.0, 3.0, 4.0]
+    """
+    if not isinstance(units, (list, tuple)) or not units:
+        raise ValueError("units must be a non-empty list of unit mappings")
+    totals, counts = {}, {}
+    for i, unit in enumerate(units):
+        if not isinstance(unit, dict):
+            raise ValueError(f"units[{i}] must be a mapping, got {unit!r}")
+        stamps, d = unit.get("stamps"), unit.get("d")
+        if not isinstance(stamps, (list, tuple)) or not isinstance(d, (list, tuple)):
+            raise ValueError(f"units[{i}] needs list 'stamps' and 'd'")
+        if len(stamps) != len(d):
+            raise ValueError(
+                f"units[{i}] has {len(stamps)} stamps and {len(d)} gaps"
+            )
+        q = unit.get("q")
+        if not number_ok(q) or q <= 0.0:
+            raise ValueError(
+                f"units[{i}]['q'] must be a positive finite number, got {q!r}"
+            )
+        for s, v in zip(stamps, d):
+            if not number_ok(v):
+                raise ValueError(f"units[{i}] carries a non-finite gap {v!r}")
+            totals[s] = totals.get(s, 0.0) + float(v) / float(q)
+            counts[s] = counts.get(s, 0) + 1
+    order = sorted(totals)
+    return {
+        "stamps": order,
+        "d": [totals[s] / counts[s] for s in order],
+        "q": 1.0,
+        "n_units": len(units),
     }
 
 

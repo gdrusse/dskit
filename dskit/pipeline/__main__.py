@@ -19,6 +19,12 @@ One command line for every project and venue (docs/24 §9, D-145 ruling
   cross-run view, with no dependency on a tracking server.
   ``--metric``/``--param`` select columns; ``--limit`` shows the newest
   N and counts the rest.
+* ``skill <walkforward-summary-dir>`` — judge a walk-forward under
+  ADR-0063: the Diebold–Mariano gap against the fold's constant training
+  mean, pooled over folds and checked across them, per series and for the
+  group, with Clark–West as a side column. Exit 0 when every row could be
+  scored exactly, 3 when the walk saved no per-row loss gaps and only the
+  across-fold half could be answered.
 * ``validate <config.json>`` — shape + hash only. Dispatches on the
   document's own shape: a ``pipeline`` node map — or a ``foreach``
   section, since ``pipeline`` may be empty when one is declared
@@ -379,6 +385,65 @@ def cmd_walkforward(path, asof, adapters=()) -> int:
     return result.exit_code
 
 
+def _a_level(text):
+    """Parse a one-sided test level: a number strictly inside (0, 1)."""
+    import argparse
+
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(
+            f"--alpha must be a number in (0, 1), got {text!r}"
+        ) from None
+    if not 0.0 < value < 1.0:
+        raise argparse.ArgumentTypeError(
+            f"--alpha must lie strictly in (0, 1), got {value!r}"
+        )
+    return value
+
+
+def cmd_skill(summary_dir, alpha=0.05):
+    """Judge one walk-forward under ADR-0063 and print the verdict table.
+
+    The rule the project's horizon answers are decided by: the forecast
+    is scored against the fold's own constant training mean on the SAME
+    rows, the per-row loss gaps are pooled over the folds in time order,
+    and the pass needs BOTH the pooled Diebold-Mariano t and the
+    across-fold t. Clark-West prints beside it, never as the verdict.
+
+    Parameters
+    ----------
+    summary_dir : str
+        A walk-forward summary directory (the one holding
+        ``walkforward.json``).
+    alpha : float
+        One-sided level for both tests, in ``(0, 1)``.
+
+    Returns
+    -------
+    int
+        ``0`` when every row was scored exactly, ``3`` when the walk
+        saved no per-row loss gaps (only the across-fold half is
+        answerable), ``1`` when the directory is not a walk-forward.
+
+    Examples
+    --------
+    Judging one horizon's walk::
+
+        cmd_skill(run_root + "/my-walkforward-2025-11-30-1a2b3c4d")
+    """
+    from dskit.pipeline.runs import format_skill, score_walk
+
+    try:
+        scored = score_walk(summary_dir, alpha=alpha)
+    except ValueError as exc:
+        print(f"error: {exc}")
+        return 1
+    print(f"{scored['summary_dir']} — {scored['n_folds']} fold(s)\n")
+    print(format_skill(scored))
+    return 0 if scored["exact"] else 3
+
+
 def cmd_runs(root=None, metrics=(), params=(), limit=None):
     """Tabulate the runs under a run root, newest first.
 
@@ -621,6 +686,21 @@ def main(argv=None) -> int:
         help="show only the newest N runs, N >= 1 (the rest are counted, "
         "not hidden)",
     )
+    skill_p = sub.add_parser(
+        "skill",
+        help="judge a walk-forward under ADR-0063 — the Diebold-Mariano "
+        "gap against the constant training mean, per series and grouped",
+    )
+    skill_p.add_argument(
+        "summary_dir", help="path to the walk-forward summary directory"
+    )
+    skill_p.add_argument(
+        "--alpha",
+        type=_a_level,
+        default=0.05,
+        metavar="LEVEL",
+        help="one-sided level for both tests, in (0, 1) (default 0.05)",
+    )
     sub.add_parser(
         "nodemap",
         help="the full node-map banking run against the synthetic Node set",
@@ -639,6 +719,8 @@ def main(argv=None) -> int:
         return cmd_plan(args.path, args.adapter)
     if args.command == "runs":
         return cmd_runs(args.root, args.metric, args.param, args.limit)
+    if args.command == "skill":
+        return cmd_skill(args.summary_dir, args.alpha)
     if args.command == "nodemap":
         return cmd_nodemap()
     if args.command == "synthetic":
