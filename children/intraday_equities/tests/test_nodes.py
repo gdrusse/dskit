@@ -684,12 +684,17 @@ def test_no_information_scan_drops_labels_that_land_after_val_end():
     assert out["records"][0]["n"] == 0.0
 
 
-def test_no_information_scan_writes_the_skill_evidence(tmp_path):
-    """ADR-0063: the per-row loss gaps a walk needs are on disk."""
-    import json
+def test_no_information_scan_writes_every_scored_row(tmp_path):
+    """ADR-0064: every scored validation row is on disk, and the summary
+    numbers the fold reported are recomputable from those rows."""
+    pytest.importorskip("pyarrow")
 
     from dskit.pipeline.node import NodeContext
-    from dskit.pipeline.runs import SKILL_FILE, read_skill_series
+    from dskit.pipeline.predictions import (
+        PREDICTIONS_FILE,
+        read_prediction_series,
+        read_predictions,
+    )
 
     spec = _mini_spec()
     spec["features"] = ["ret_lag_0"]
@@ -717,7 +722,9 @@ def test_no_information_scan_writes_the_skill_evidence(tmp_path):
                 "ret_lag_0": ret,
                 "close": px,
             })
-    ctx = NodeContext(name="scan", asof="2025-11-30", run_dir=str(tmp_path))
+    ctx = NodeContext(
+        name="scan", asof="2025-11-30", run_dir=str(tmp_path), fold_index=7,
+    )
     out = NoInformationScan(
         "scan",
         {
@@ -727,17 +734,34 @@ def test_no_information_scan_writes_the_skill_evidence(tmp_path):
             "val_end_ms": _ms(n - 1),
         },
     ).run(ctx, {"records": rows, "bars": bars, "spec": spec})
-    path = tmp_path / "artifacts" / "scan" / SKILL_FILE
+    path = tmp_path / "artifacts" / "scan" / PREDICTIONS_FILE
     assert path.is_file()
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["period_minutes"] == 1
-    assert {e["symbol"] for e in payload["series"]} == {"AAPL", "JPM"}
-    for entry in payload["series"]:
-        assert len(entry["d"]) == len(entry["stamps"])
-        assert entry["q"] > 0.0
-        assert entry["h_steps"] == 1
-    # The reader finds exactly what the writer left.
-    assert len(read_skill_series(str(tmp_path))) == 2
+    saved = read_predictions(str(tmp_path))
+    assert saved["period_minutes"] == 1
+    assert set(saved["series"]) == {"AAPL", "JPM"}
+    assert set(saved["fold"]) == {7}
+    assert set(saved["horizon"]) == {1}
+    assert len(saved["ts"]) == len(saved["y"]) == len(saved["yhat"])
+    # The rows REPRODUCE the fold's reported summary: the benchmark and
+    # the model MSPE the curve row carries are means over exactly these
+    # pairs, which is what makes the saved rows evidence and not a
+    # parallel account of the same fold.
+    units = {e["symbol"]: e for e in read_prediction_series(str(tmp_path))}
+    assert set(units) == {"AAPL", "JPM"}
+    for record in out["records"]:
+        unit = units[record["symbol"]]
+        assert unit["lead"] == record["lead"]
+        assert unit["h_steps"] == 1
+        assert len(unit["y"]) == int(record["n"])
+        mspe_model = sum(
+            (y - f) ** 2 for y, f in zip(unit["y"], unit["yhat"])
+        ) / len(unit["y"])
+        assert mspe_model == pytest.approx(record["mspe_model"], rel=1e-5)
+        assert unit["q"] == pytest.approx(record["mspe_mean"], rel=1e-5)
+        assert unit["q"] > 0.0
+        assert sum(unit["d"]) / len(unit["d"]) == pytest.approx(
+            record["mspe_mean"] - record["mspe_model"], rel=1e-5, abs=1e-12
+        )
     # And the fold's own verdict columns ride on the metrics and rows.
     for symbol in ("AAPL", "JPM"):
         assert f"r2oos_{symbol}" in out["metrics"]

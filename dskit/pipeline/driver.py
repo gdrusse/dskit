@@ -1650,7 +1650,24 @@ def _journal_execute(step, inputs, outputs, notes):
     )
 
 
-def run_document(document, asof=None, registry=None, journal=True) -> DocumentRunResult:
+def _node_context(document, asof, resolved, secrets, trackers, fold_index):
+    """Build the frame every node's ``run`` receives, from the resolve."""
+    return NodeContext(
+        name=document.name,
+        asof=asof,
+        run_dir=resolved.run_dir,
+        splits=resolved.splits,
+        splits_info=resolved.splits_info,
+        secrets=secrets,
+        tracker=trackers,
+        prev=resolved.prev,
+        fold_index=fold_index,
+    )
+
+
+def run_document(
+    document, asof=None, registry=None, journal=True, fold_index=None,
+) -> DocumentRunResult:
     """Execute one node-map document end to end (docs/24 §9).
 
     LOAD → IMPORT + PLAN → RESOLVE → EXECUTE → RECORD, one call per
@@ -1671,6 +1688,12 @@ def run_document(document, asof=None, registry=None, journal=True) -> DocumentRu
         (ADR-0056). Walk-forward folds pass ``False`` so one evaluation
         is one row, not one per fold. Pytest is a no-op inside the
         journal package.
+    fold_index : int, optional
+        This run's 0-based ordinal within a walk-forward, passed to every
+        node on :class:`~dskit.pipeline.node.NodeContext`. ``None`` — the
+        default — says "not a fold": a standalone run has no ordinal.
+        Walk-forward supplies it so a node persisting per-row evidence
+        can stamp WHICH fold produced a row (ADR-0064).
 
     Returns
     -------
@@ -1726,16 +1749,7 @@ def run_document(document, asof=None, registry=None, journal=True) -> DocumentRu
         asof,
         json.dumps(document.to_obj(), indent=2, sort_keys=True),
     )
-    ctx = NodeContext(
-        name=document.name,
-        asof=asof,
-        run_dir=resolved.run_dir,
-        splits=resolved.splits,
-        splits_info=resolved.splits_info,
-        secrets=secrets,
-        tracker=trackers,
-        prev=resolved.prev,
-    )
+    ctx = _node_context(document, asof, resolved, secrets, trackers, fold_index)
     try:
         run = _execute_plan(document, the_plan, ctx, resolved, trackers)
         result = _record_run(document, asof, the_plan, resolved, run)
@@ -1980,7 +1994,7 @@ def _run_folds(document, spec, asof, registry, policy):
     target, obj_path = parse_node_ref(spec.objective)
     folds = []
     state = "ran"
-    for cutoff in spec.fold_cutoffs():
+    for index, cutoff in enumerate(spec.fold_cutoffs()):
         try:
             fold_obj = copy.deepcopy(base_obj)
             fold_obj["name"] = f"{document.name}-wf-{cutoff}"
@@ -1988,7 +2002,8 @@ def _run_folds(document, spec, asof, registry, policy):
             fold_doc = PipelineDocument.from_obj(fold_obj)
             _log.info("walkforward: fold %s -> %s", cutoff, fold_doc.name)
             result = run_document(
-                fold_doc, asof=asof, registry=registry, journal=False
+                fold_doc, asof=asof, registry=registry, journal=False,
+                fold_index=index,
             )
         except ConfigError:
             raise

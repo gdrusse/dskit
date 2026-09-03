@@ -39,7 +39,7 @@ from dskit.pipeline.node import (
     register_node_kind,
     reject_unknown_params,
 )
-from dskit.pipeline.runs import SKILL_FILE
+from dskit.pipeline.predictions import PredictionWriter
 
 __all__ = [
     "DEFAULT_MAX_GAP_MINUTES",
@@ -3110,13 +3110,18 @@ def _blank_lead_row(symbol, lead, lags):
     }
 
 
-def _lead_skill(symbol, lead, h_steps, y, yhat, mu, mspe_mean, stamps):
-    """One lead's ADR-0063 loss gaps, plus the fold's own DM verdict.
+def _lead_skill(symbol, lead, h_steps, y, yhat, mu, mspe_mean, stamps, writer=None):
+    """One lead's ADR-0063 verdict, with its rows streamed to disk.
 
     ``d_t = (y-mu)^2 - (y-yhat)^2`` against the fold's TRAIN mean: the
     unadjusted difference whose sign is the sign of the realized MSPE
     gap, which is what decides whether a forecast is worth having.
     Clark-West answers a different question and stays beside it.
+
+    The gaps are computed here and RETURNED AS SCALARS; the rows behind
+    them go straight to ``writer`` as one block (ADR-0064) and are
+    dropped. Nothing per-row survives this call, so a fold's persistence
+    cost is one block, not one walk.
 
     Parameters
     ----------
@@ -3131,17 +3136,21 @@ def _lead_skill(symbol, lead, h_steps, y, yhat, mu, mspe_mean, stamps):
     yhat : list of float
         Forecasts, same length and order.
     mu : float
-        The fold's training mean of this series' label.
+        The fold's training mean of this series' label — the constant
+        benchmark forecast, persisted per row because it is a property
+        of the TRAINING window and cannot be recovered from val rows.
     mspe_mean : float
         The benchmark's mean squared error on these rows.
     stamps : list of int
         Row timestamps in ms, aligned with ``y``.
+    writer : PredictionWriter or None
+        Where the rows land. ``None`` scores without persisting — a scan
+        run outside a run directory has nowhere to put them.
 
     Returns
     -------
     dict
-        ``symbol``, ``lead``, ``h_steps``, ``q`` (the benchmark MSPE),
-        ``stamps``, ``d``, plus this fold's ``r2oos``, ``dm_t``, ``dm_p``.
+        This fold's ``r2oos``, ``dm_t`` and ``dm_p`` for this lead.
     """
     from dskit.pipeline.stats import diebold_mariano_test, dm_lags, dm_loss_series
 
@@ -3151,13 +3160,9 @@ def _lead_skill(symbol, lead, h_steps, y, yhat, mu, mspe_mean, stamps):
     dm = diebold_mariano_test(
         gaps, lags=dm_lags(len(gaps), h_steps), h_steps=h_steps,
     )
+    if writer is not None:
+        writer.append(symbol, lead, stamps, y, yhat, mu)
     return {
-        "symbol": symbol,
-        "lead": lead,
-        "h_steps": h_steps,
-        "q": q,
-        "stamps": [int(s) for s in stamps],
-        "d": [float(v) for v in gaps],
         "r2oos": mean_gap / q if q > 0.0 else 0.0,
         "dm_t": 0.0 if dm["t"] is None else float(dm["t"]),
         "dm_p": float(dm["p_value"]),
@@ -3166,12 +3171,14 @@ def _lead_skill(symbol, lead, h_steps, y, yhat, mu, mspe_mean, stamps):
 
 def _walk_no_information_series(
     prepared_one, model, leads, train_end, val_start, val_end, period_minutes,
-    train_start=None, label=None,
+    train_start=None, label=None, writer=None,
 ):
     """Sequential h* for one name; GO is that H or none.
 
     ``μ(h)`` is this series' train mean of ``y(h)``. The estimator is
-    fitted outside (pooled train) and only scored here.
+    fitted outside (pooled train) and only scored here. ``writer``, when
+    given, receives every scored validation row as it is produced
+    (ADR-0064).
     """
     import numpy as np
 
@@ -3180,7 +3187,6 @@ def _walk_no_information_series(
     symbol = prepared_one[0]
     curve = []
     ordered = []
-    skill = []
     for lead in leads:
         lags = max(lead // period_minutes - 1, 0)
         if model is None:
@@ -3224,14 +3230,11 @@ def _walk_no_information_series(
             "n": float(out["n"]),
             "lags": float(out["lags"]),
         }
-        record = _lead_skill(
+        row.update(_lead_skill(
             symbol, lead, max(lead // period_minutes, 1),
             val_y.tolist(), yhat.tolist(), mu, out["mspe_mean"],
-            val_stamps.tolist(),
-        )
-        skill.append(record)
-        for key in ("r2oos", "dm_t", "dm_p"):
-            row[key] = record[key]
+            val_stamps.tolist(), writer=writer,
+        ))
         curve.append(row)
         ordered.append({"horizon": lead, "p_value": out["p_value"]})
     walked = max_informative_horizon(ordered, alpha=_NO_INFO_ALPHA)
@@ -3245,7 +3248,7 @@ def _walk_no_information_series(
         "t_stat": float(first.get("t_stat", 0.0)),
         "r2oos": float(first.get("r2oos", 0.0)),
         "dm_t": float(first.get("dm_t", 0.0)),
-    }, skill
+    }
 
 
 class HorizonScan(Node):
@@ -3608,6 +3611,44 @@ class NoInformationScan(Node):
             problems.extend(_universe_problems(spec))
         return problems
 
+    def _open_predictions(self, ctx, prepared, period_minutes, val_start):
+        """Open this fold's per-row prediction file (ADR-0064), or None.
+
+        Every validation row this scan scores is streamed here as it is
+        produced, because the pooled skill test, the calibration slope,
+        the per-timestamp cross-sectional correlation and the scramble
+        null all need the rows a fold summary reduces away.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext or None
+            The run frame. ``None``, or a context with no run dir, means
+            a scan scored outside a run directory: it still scores, it
+            simply has nowhere to leave evidence.
+        prepared : list of tuple
+            The prepared series; their names fix the file's dictionary.
+        period_minutes : int
+            Row spacing, stamped so a reader never guesses the overlap.
+        val_start : int
+            The fold's validation start in ms — its cutoff, and what
+            orders folds in time when a walk is pooled.
+
+        Returns
+        -------
+        PredictionWriter or None
+            An open writer the caller must close.
+        """
+        if ctx is None or not getattr(ctx, "run_dir", "") or not prepared:
+            return None
+        fold = getattr(ctx, "fold_index", None)
+        return PredictionWriter(
+            self.artifact_dir(ctx),
+            [item[0] for item in prepared],
+            fold=-1 if fold is None else int(fold),
+            period_minutes=period_minutes,
+            meta={"run": ctx.name, "val_start_ms": int(val_start)},
+        )
+
     def run(self, ctx, inputs):
         """Fit one pooled tree, then walk no-information per series.
 
@@ -3749,47 +3790,43 @@ class NoInformationScan(Node):
                     "IC=0. Check min_split_gain and reg_lambda against the "
                     "label variance before reading this fold."
                 )
-        skill_series = []
-        for item in prepared:
-            symbol = item[0]
-            rows, series, skill = _walk_no_information_series(
-                item, model, leads, train_end, val_start, val_end,
-                period_minutes, train_start=train_start, label=label,
-            )
-            skill_series.extend(skill)
-            curve.extend(rows)
-            n_go += int(series["go"])
-            metrics[f"go_{symbol}"] = series["go"]
-            metrics[f"h_star_{symbol}"] = series["h_star"]
-            metrics[f"p_value_{symbol}"] = series["p_value"]
-            metrics[f"t_stat_{symbol}"] = series["t_stat"]
-            # ADR-0063: the MSPE gap is the verdict, the Clark-West t is
-            # the side column. Both are logged so the fold log carries
-            # the number the walk will be judged on.
-            metrics[f"r2oos_{symbol}"] = series["r2oos"]
-            metrics[f"dm_t_{symbol}"] = series["dm_t"]
-            self.log.info(
-                "no-information %s: h*=%s p=%.4f cw_t=%.3f "
-                "r2oos=%+.6f dm_t=%.3f (lead %s)",
-                symbol,
-                int(series["h_star"]),
-                series["p_value"],
-                series["t_stat"],
-                series["r2oos"],
-                series["dm_t"],
-                int(leads[0]) if leads else 0,
-            )
-        if skill_series and ctx is not None:
-            # ADR-0063 pools these gaps across the walk's folds;
-            # carry.json is 20 kB of run-over-run STATE, so the evidence
-            # goes through the artifact seam the reader knows to look in.
-            # No ctx means no run dir — a scan scored in isolation has
-            # nowhere to put the evidence, and the metrics still carry
-            # the fold's own r2oos and DM t.
-            self.write_artifact(
-                ctx, SKILL_FILE,
-                {"period_minutes": period_minutes, "series": skill_series},
-            )
+        writer = self._open_predictions(ctx, prepared, period_minutes, val_start)
+        try:
+            for item in prepared:
+                symbol = item[0]
+                rows, series = _walk_no_information_series(
+                    item, model, leads, train_end, val_start, val_end,
+                    period_minutes, train_start=train_start, label=label,
+                    writer=writer,
+                )
+                curve.extend(rows)
+                n_go += int(series["go"])
+                metrics[f"go_{symbol}"] = series["go"]
+                metrics[f"h_star_{symbol}"] = series["h_star"]
+                metrics[f"p_value_{symbol}"] = series["p_value"]
+                metrics[f"t_stat_{symbol}"] = series["t_stat"]
+                # ADR-0063: the MSPE gap is the verdict, the Clark-West t
+                # is the side column. Both are logged so the fold log
+                # carries the number the walk will be judged on.
+                metrics[f"r2oos_{symbol}"] = series["r2oos"]
+                metrics[f"dm_t_{symbol}"] = series["dm_t"]
+                self.log.info(
+                    "no-information %s: h*=%s p=%.4f cw_t=%.3f "
+                    "r2oos=%+.6f dm_t=%.3f (lead %s)",
+                    symbol,
+                    int(series["h_star"]),
+                    series["p_value"],
+                    series["t_stat"],
+                    series["r2oos"],
+                    series["dm_t"],
+                    int(leads[0]) if leads else 0,
+                )
+        finally:
+            if writer is not None:
+                self.log.info(
+                    "predictions: %d row(s) -> %s",
+                    writer.n_rows, writer.close(),
+                )
         n_series = len(prepared)
         metrics["n_go"] = float(n_go)
         metrics["go_frac"] = float(n_go / n_series) if n_series else 0.0
