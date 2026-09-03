@@ -290,6 +290,9 @@ python -m dskit.pipeline run  <doc.json> --asof <YYYY-MM-DD> [--adapter yourpkg]
 python -m dskit.pipeline walkforward <doc.json> --asof <YYYY-MM-DD>  # one run per fold + summary
 python -m dskit.pipeline plan <doc.json>         # resolved DAG, no execution
 python -m dskit.pipeline runs [--root DIR]       # cross-run table: name/asof/hashes/metrics
+python -m dskit.pipeline skill <walk dir>        # forecast vs the training mean (ADR-0067)
+python -m dskit.pipeline ordering <walk dir>     # size (calibration slope) vs order (ADR-0068)
+python -m dskit.pipeline bar <walk dir>...       # the many-attempts bar (ADR-0069)
 python -m dskit.pipeline validate <doc.json>     # shape + identity hash
 # also: demo / synthetic (legacy stage-list grammar)
 

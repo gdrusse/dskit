@@ -200,6 +200,34 @@ forecast-comparison t, a calibration slope, a per-timestamp correlation,
 a scramble null) needs this file to have been written while the run
 happened.
 
+**`ordering.py`** and **`attempts.py`** are what read those rows back
+(ADR-0068, ADR-0069), behind the `ordering` and `bar` verbs:
+
+```bash
+python -m dskit.pipeline ordering <walk summary dir>
+python -m dskit.pipeline bar <walk summary dir>... [--registry PATH] [--boot B]
+```
+
+`ordering` measures a forecast's SIZE and its ORDER apart: a
+Mincer-Zarnowitz calibration slope per fold (near 1 means the predicted
+magnitude is usable; near 0 means at best the rank is), and a rank
+correlation computed WITHIN each instant across series — which is a
+different number from the pooled `(name, time)` correlation, and both
+print under names that cannot be confused. A cross-section thinner than
+`USABLE_NAMES` comes back marked unusable with its name counts attached,
+and can never pass.
+
+`bar` raises the mark for the many attempts behind a result: an
+`AttemptRegistry` counts every cell ever scored, and `max_bar`
+resamples every cell in one outcome unit's family together under one
+sign-flip coin per trading SESSION (never per row — a session moves
+every overlapping label with it), taking the 95th percentile of the
+best-of-all-cells statistic as the pass mark, floored at a t of 3.0. It
+composes with the skill rule and never replaces it. The expensive
+scramble — refitting ~100 walks with the label days reshuffled — is a
+documented seam (`TIER2_SEAM`, `tier2_plan`, `tier2_verdict`), not a
+thing this runs.
+
 Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 
 | Kind | Role | Does |
@@ -503,6 +531,12 @@ dskit/pipeline/
 ├── driver.py          LOAD -> IMPORT -> PLAN -> RESOLVE -> EXECUTE -> RECORD; run dirs;
 │                      run_walk_forward (one derived run per fold + summary)
 ├── runs.py            reads run dirs back: scan_runs / format_runs (the `runs` verb)
+├── predictions.py     PredictionWriter / read_prediction_series: every scored
+│                      validation row, one parquet per run (ADR-0064)
+├── ordering.py        rank vs magnitude: Mincer-Zarnowitz calibration slope,
+│                      per-timestamp cross-sectional IC + its usability guard (ADR-0068)
+├── attempts.py        the many-attempts bar: AttemptRegistry, session-block
+│                      sign-flip max_bar, the tier-2 scramble seam (ADR-0069)
 ├── split_policy.py    split-assignment policies (record / event-open / event-close) + EventBounds
 ├── kinds_flow.py      filter, event-grid, derive, concat, join — record-flow verbs
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING

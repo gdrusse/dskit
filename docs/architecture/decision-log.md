@@ -2862,3 +2862,189 @@ their pooled and group verdicts are unavailable and are reported as such
 rather than guessed. The rule does NOT include a many-attempts
 correction — that is P8, and it applies on top.
 
+---
+
+## ADR-0068 — Ordering and size are two measurements, and three names are not a cross-section
+
+**Status:** proposed (2026-09-03; plan `docs/plans/2026-09-horizon-search.md`
+P6 — "ordering and size may have different answers")
+
+**Context.** The horizon sweep produced one finding nothing in the tree
+measures: **rank information persists about thirty times further out
+than forecast accuracy.** LightGBM's validation IC runs +0.054 at h=1
+and is still +0.020 at h=60, positive in 19–20 folds of 20, while its
+Clark–West gain over the same grid has fallen to −1.05%. If a
+prediction-only model feeds an optimizer that SELECTS among names, that
+gap is the whole question, and ADR-0067 scores only the size half of it.
+
+Two defects sit under that.
+
+**The number we call IC is not the number a selector needs.** `val_ic`
+is a Spearman correlation over CONCATENATED `(name, time)` rows. It
+pools the time-series dimension into the cross-sectional one: a model
+that says only "all three names rise now" scores well pooled and gives
+a selector choosing among names at ONE INSTANT nothing at all. That is
+a plain Simpson's-paradox risk, and the practitioner rule is explicit —
+correlate WITHIN each timestamp, then average over timestamps, never
+pool asset-dates. So +0.054 is not evidence for the optimizer in either
+direction.
+
+**Nothing says whether the magnitude is recoverable.** For any forecast
+with Pearson correlation r against the outcome, rescaling by
+b* = cov(y, ŷ)/var(ŷ) gives R² = r² ≥ 0. A negative gain beside a
+positive correlation is therefore a pure SCALING failure that one
+number per horizon repairs. Whether the two-bar wall is an amplitude
+artefact or an information wall is one regression away, and that
+regression is not in the tree.
+
+And a third thing, which is why this ADR carries a refusal rather than
+only two functions: **with three names the per-instant rank correlation
+is barely a statistic.** Enumerated, not estimated: it takes exactly
+four values (−1, −0.5, +0.5, +1), it can never be zero, the six
+orderings give a null standard deviation of 1/√2 = 0.707, and the best
+one-sided p any single instant can reach is 1/6 = 0.167. Cross-sectional
+demeaning leaves two degrees of freedom. It is a rescaled three-way hit
+rate. At five names — which P9 restores — there are 120 orderings on a
+0.1 grid, the null sd falls to 0.5, one instant can reach p = 0.008, and
+the stamps needed to detect a true IC of 0.02 halve.
+
+**Decision.** `dskit/pipeline/ordering.py` measures the two halves
+apart, and refuses to present the second one when the panel is too thin
+to carry it.
+
+- **Size — `calibration_slope`.** Mincer–Zarnowitz: fit y = a + bŷ per
+  fold, with a Newey–West standard error built from the OLS score
+  series (`se(b) = n·se(u)/Sxx`, `u_t = (ŷ_t − ŷ̄)e_t`) at the same lag
+  rule ADR-0067 uses, so both bands are built the same way. Report the
+  slope against BOTH nulls: b = 0 (no linear information) and b = 1
+  (the size is already right). `calibration_across_folds` pools the
+  per-fold slopes with a Student t, because the folds are the
+  independence units. A constant forecast is REFUSED, not scored as a
+  slope of zero.
+- **Order — `per_timestamp_ic`.** Rank the names within each instant by
+  forecast and by outcome, correlate, and test the resulting time series
+  with the existing HAC mean test. Its guard twin runs the same thing on
+  series-demeaned pairs, which is what separates timing from a standing
+  per-name tilt (a model tracking σ_t or an industry orders the names
+  correctly every instant while timing nothing).
+- **Both, named apart.** `pooled_name_time_ic` keeps the old pooled
+  number under a name that says what it is, and `format_ordering`
+  prints the two tables with the sentence "they are not the same
+  number" between them. Neither can be read as the other by accident.
+- **The refusal.** `USABLE_NAMES = 5`. Every result carries the names
+  present at each instant (min, median, max) and the instants too thin
+  to rank at all. Below the floor, `usable` is false with a reason
+  attached, and `ordering_verdict` cannot pass, whatever the numbers
+  say — a three-name ordering number must never look like evidence.
+- **Reading a walk.** `runs.score_ordering` reads the ADR-0064 rows
+  fold by fold and REDUCES each before the next, so a walk's rows are
+  never all in memory. `python -m dskit.pipeline ordering <walk>`.
+
+The pre-registered order rule: pooled per-timestamp t ≥ 1.645, more
+than half the folds positive in mean rho, and the demeaned score
+retaining at least half the raw one. PASS(magnitude) stays ADR-0067,
+untouched.
+
+**Consequences.** "How far ahead" is now allowed to be two numbers, and
+which one applies depends on what the optimizer downstream does with a
+forecast — selection at fixed size can live on order alone; anything
+that SIZES a position cannot, because ranks have the same dispersion
+every instant and destroy conviction. If the train-fitted slope lifts
+the h = 3…60 gain above zero, the two-bar wall was amplitude, not
+information. **On today's three names the cross-sectional verdict is
+provisional by construction and the code says so on every row** — it
+must be re-read after P9 restores AAPL and WMT. No node changed and no
+walk was re-run: both measures are functions of rows already being
+saved.
+
+---
+
+## ADR-0069 — The bar rises with the attempts behind it, and the shuffle unit is a whole day
+
+**Status:** proposed (2026-09-03; plan `docs/plans/2026-09-horizon-search.md`
+P8 — "many attempts need a fair bar")
+
+**Context.** Thirty walks are already on disk, and the row-spacing,
+price-definition, feature-block and model-setting searches multiply into
+hundreds of scored cells on ONE dataset. With enough attempts the best
+cell looks good whether or not anything is there, and a real horizon and
+a lucky one score the same. ADR-0067 says how one cell is scored; it
+says nothing about how high a cell must score once it was picked out of
+hundreds.
+
+Three things make the naive fixes wrong here. **Bonferroni and Holm
+treat h = 2 and h = 3 as two attempts when they are nearly one** —
+correct, and far too harsh. **White's Reality Check is the right shape**
+— many forecasts, one benchmark, block-resampled — **but it is wrecked
+by hopeless cells**, and we have many (the nets at −54%). And **plain
+row shuffling is wrong twice over**: it destroys the minute-to-minute
+autocorrelation AND it breaks the label overlap, since an h = 30 label
+shares 29 minutes with the next one.
+
+What finance says about the height: Harvey–Liu–Zhu put the honest hurdle
+for a new claim at **t > 3.0**, not 2.0. The deflated-Sharpe expected
+maximum of N pure-luck attempts is 2.73 at N = 180 — the CENTRE of the
+luck distribution, so a floor and not a pass mark. Both transfer from a
+Sharpe ratio to a squared-error test unchanged, because both are
+statements about the maximum of many statistics that are N(0, 1) under
+their own null, which ADR-0067's studentised statistic is.
+
+**Decision.** `dskit/pipeline/attempts.py`, in three pieces, sitting ON
+TOP of ADR-0067 and never replacing it.
+
+- **A registry.** `AttemptRegistry` is an append-only ledger of every
+  cell ever scored — model × horizon × row spacing × price field ×
+  feature set × outcome unit — with the id derived from the knobs, so
+  re-running a cell is not a new attempt and last week's attempt still
+  costs its alpha. The count comes from the LEDGER, never from memory:
+  a searcher asked to recall how many things they tried under-counts in
+  the flattering direction every time.
+- **The bar.** `max_bar` resamples every cell in one outcome unit's
+  family JOINTLY: each cell's per-session sums are recentred (which
+  imposes the null exactly), one ±1 coin is drawn per trading SESSION
+  and SHARED by every cell and every name, and each cell's studentised
+  statistic is recomputed. Sharing the coins is the whole mechanism —
+  near-identical cells move together under the resample, so the
+  procedure LEARNS from the data that they are almost one attempt. The
+  pass mark is `max(c*, 3.0)` where c* is the 95th percentile of the
+  best-of-all-cells statistic; Romano–Wolf stepdown gives the adjusted
+  p-values; `implied_trials` reports what the grid was actually worth in
+  independent tries, and Bonferroni and the deflated-Sharpe expectation
+  ride beside it as reference. When the registry knows more cells than
+  kept their rows, c* is declared a LOWER bound rather than quietly
+  used as if it were the whole family.
+- **The scramble.** The exchangeable unit is a **whole trading session,
+  never a row**: a session is self-contained for every horizon tested
+  here, so moving one moves every overlapping label with it, and nothing
+  is reordered inside it. The cheap pass is the sign flip above (Shao's
+  dependent wild bootstrap with session blocks), B = 10,000, arithmetic
+  on stored numbers. The expensive pass — reshuffling which session
+  donates the label and RE-RUNNING the walk about 100 times — is NOT
+  built: `TIER2_SEAM` documents exactly where it plugs in, `tier2_plan`
+  emits the permutations and `tier2_verdict` reads the finished runs,
+  and the middle is deliberately absent because it is ~100 walks of
+  compute and is for a WINNER only. Its second check is worth the six
+  hours on its own: if the scrambled statistics do not sit near mean 0
+  and sd 1, the variance estimator is wrong and every p-value in the
+  project is wrong with it.
+
+A cell passes only when ALL of: ADR-0067 passed **unchanged**; the
+statistic clears the pass mark; the stepdown adjusted p clears 0.05;
+and the WIN ITSELF is positive with its one-sided lower band above zero.
+`python -m dskit.pipeline bar <walk>... --registry <ledger>`.
+
+**Consequences.** The bar is stricter than anything applied so far and
+it is meant to be: a grid this size has to clear about a t of 3 before
+"we found the horizon" is a sentence anyone may write. Two things it
+cannot do, stated so nobody assumes otherwise. **It cannot repair a cell
+chosen after looking**, which is why the family count must come from the
+ledger. And **the cheap scramble cannot test the fitting** — a label
+that leaked into a feature is already baked into every stored forecast,
+and only the tier-2 refit sees it. Memory is bounded by construction:
+each walk is reduced to per-session sums and its rows dropped before the
+next is read, so the bootstrap holds a few hundred numbers per cell
+rather than a few hundred thousand, and the kept replicate matrix is
+16 MB at 10,000 × 400. Pure noise was run through it — forty cells over
+250 sessions, 10,000 replicates, every cell handed a PASSING skill
+result so only this rule could refuse them — and nothing passed. **If
+every cell fails the bar, that is the answer, not a reason to lower it.**

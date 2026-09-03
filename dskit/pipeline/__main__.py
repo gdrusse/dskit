@@ -444,6 +444,112 @@ def cmd_skill(summary_dir, alpha=0.05):
     return 0 if scored["exact"] else 3
 
 
+
+def cmd_ordering(summary_dir, alpha=0.05):
+    """Measure one walk's ordering and its size apart, and print both.
+
+    ADR-0068's two answers, which are allowed to differ: the calibration
+    slope says whether the predicted SIZE is usable, the per-timestamp
+    cross-sectional correlation says whether the ORDER is. The pooled
+    ``(name, time)`` correlation the scan already reports prints beside
+    the second one under its own name, because it is a different number
+    and has been read as if it were the same one.
+
+    Parameters
+    ----------
+    summary_dir : str
+        A walk-forward summary directory.
+    alpha : float
+        One-sided level, in ``(0, 1)``.
+
+    Returns
+    -------
+    int
+        ``0`` when every fold's rows were read, ``2`` when the ordering
+        measure was unusable at every lead (too few names), ``3`` when
+        some fold saved no rows, ``1`` when the directory is not a
+        walk-forward.
+
+    Examples
+    --------
+    Both halves of one horizon's answer::
+
+        cmd_ordering(run_root + "/my-walkforward-2025-11-30-1a2b3c4d")
+    """
+    from dskit.pipeline.runs import format_ordering, score_ordering
+
+    try:
+        scored = score_ordering(summary_dir, alpha=alpha)
+    except ValueError as exc:
+        print(f"error: {exc}")
+        return 1
+    print(f"{scored['summary_dir']} — {scored['n_folds']} fold(s)\n")
+    print(format_ordering(scored))
+    if not scored["exact"]:
+        return 3
+    rows = scored["ordering"]
+    return 2 if rows and not any(r["usable"] for r in rows) else 0
+
+
+def cmd_bar(summary_dirs, registry=None, n_boot=10000, seed=0, alpha=0.05):
+    """Judge walks against the bar every earlier attempt raised (ADR-0069).
+
+    P5 decides; this only raises the mark. Every cell in an outcome
+    unit's family is resampled together under one coin per trading
+    session, and the pass mark is the 95th percentile of the
+    best-of-all-cells statistic, floored at a t of 3.0.
+
+    Parameters
+    ----------
+    summary_dirs : list of str
+        Walk-forward summary directories, reduced one at a time.
+    registry : str or None
+        Path to the attempt ledger. When given, tonight's cells are
+        recorded into it and the family count comes from it.
+    n_boot : int
+        Bootstrap replicates, ``>= 100``.
+    seed : int
+        Seeds the session coins.
+    alpha : float
+        Family-wise level, in ``(0, 1)``.
+
+    Returns
+    -------
+    int
+        ``0`` when at least one cell cleared the bar, ``2`` when none
+        did, ``1`` when nothing could be scored.
+
+    Examples
+    --------
+    Tonight's walks against every attempt ever made::
+
+        cmd_bar([walk], registry="docs/decisioning/attempts.jsonl")
+    """
+    from dskit.pipeline.attempts import AttemptRegistry
+    from dskit.pipeline.runs import format_bar, score_bar
+
+    ledger = AttemptRegistry(registry) if registry else None
+    try:
+        scored = score_bar(
+            list(summary_dirs), registry=ledger, n_boot=n_boot, seed=seed,
+            alpha=alpha,
+        )
+    except (ValueError, ImportError) as exc:
+        print(f"error: {exc}")
+        return 1
+    print(
+        f"{scored['n_cells']} cell(s) from {len(summary_dirs)} walk(s); "
+        f"registry knows {scored['k_registry']}\n"
+    )
+    print(format_bar(scored))
+    won = any(
+        v["passes"]
+        for family in scored["families"].values()
+        for v in family["verdicts"]
+    )
+    return 0 if won else 2
+
+
 def cmd_runs(root=None, metrics=(), params=(), limit=None):
     """Tabulate the runs under a run root, newest first.
 
@@ -701,6 +807,54 @@ def main(argv=None) -> int:
         metavar="LEVEL",
         help="one-sided level for both tests, in (0, 1) (default 0.05)",
     )
+    order_p = sub.add_parser(
+        "ordering",
+        help="measure a walk's ordering and its size apart (ADR-0068) — a "
+        "calibration slope and a per-timestamp cross-sectional correlation",
+    )
+    order_p.add_argument(
+        "summary_dir", help="path to the walk-forward summary directory"
+    )
+    order_p.add_argument(
+        "--alpha",
+        type=_a_level,
+        default=0.05,
+        metavar="LEVEL",
+        help="one-sided level, in (0, 1) (default 0.05)",
+    )
+    bar_p = sub.add_parser(
+        "bar",
+        help="raise the mark for the many attempts behind it (ADR-0069) — a "
+        "session-block resample over every cell in the family",
+    )
+    bar_p.add_argument(
+        "summary_dir", nargs="+", help="walk-forward summary directories"
+    )
+    bar_p.add_argument(
+        "--registry",
+        default=None,
+        metavar="PATH",
+        help="the attempt ledger; cells are recorded into it and the family "
+        "count is read from it (default: tonight's walks only)",
+    )
+    bar_p.add_argument(
+        "--boot",
+        type=int,
+        default=10000,
+        metavar="B",
+        help="bootstrap replicates, >= 100 (default 10000)",
+    )
+    bar_p.add_argument(
+        "--seed", type=int, default=0, metavar="N",
+        help="seeds the per-session coins (default 0)",
+    )
+    bar_p.add_argument(
+        "--alpha",
+        type=_a_level,
+        default=0.05,
+        metavar="LEVEL",
+        help="family-wise level, in (0, 1) (default 0.05)",
+    )
     sub.add_parser(
         "nodemap",
         help="the full node-map banking run against the synthetic Node set",
@@ -721,6 +875,12 @@ def main(argv=None) -> int:
         return cmd_runs(args.root, args.metric, args.param, args.limit)
     if args.command == "skill":
         return cmd_skill(args.summary_dir, args.alpha)
+    if args.command == "ordering":
+        return cmd_ordering(args.summary_dir, args.alpha)
+    if args.command == "bar":
+        return cmd_bar(
+            args.summary_dir, args.registry, args.boot, args.seed, args.alpha
+        )
     if args.command == "nodemap":
         return cmd_nodemap()
     if args.command == "synthetic":
