@@ -59,6 +59,7 @@ ESTIMATOR_DEFAULTS = {
     "weight_decay": 0.0,
     "batch_size": 1024,
     "seed": 0,
+    "seeds": None,
     "device": None,
     "standardize": True,
 }
@@ -488,6 +489,44 @@ register_arch(
 ARCHS = _ARCHS
 
 
+def _seed_tuple(seeds, seed):
+    """Resolve the seeds to fit: the declared set, else ``seed``.
+
+    Parameters
+    ----------
+    seeds : sequence of int or None
+        The declared seed set; ``None`` means one member.
+    seed : int
+        The single-member seed, read only when ``seeds`` is ``None``.
+
+    Returns
+    -------
+    tuple of int
+        One seed per member, in declaration order.
+
+    Raises
+    ------
+    ValueError
+        When ``seeds`` is empty or holds anything but whole numbers.
+    """
+    if seeds is None:
+        return (int(seed),)
+    if not isinstance(seeds, (list, tuple)) or not seeds:
+        raise ValueError(
+            "ZooEstimator: seeds must be a non-empty list of whole "
+            f"numbers, got {seeds!r}"
+        )
+    bad = [
+        s for s in seeds
+        if isinstance(s, bool) or not isinstance(s, int)
+    ]
+    if bad:
+        raise ValueError(
+            f"ZooEstimator: seeds must be whole numbers, got {bad!r}"
+        )
+    return tuple(int(s) for s in seeds)
+
+
 class ZooEstimator:
     """sklearn-shaped estimator over one zoo architecture (ADR-0061).
 
@@ -523,6 +562,13 @@ class ZooEstimator:
         already ordered.
     epochs, lr, weight_decay, batch_size, seed : optional
         The training loop, defaults 15 / 1e-3 / 0.0 / 1024 / 0.
+    seeds : sequence of int, optional
+        Fit one member per seed and average their forecasts
+        (ADR-0071). ``None`` (the default) fits the single member
+        ``seed``. Every member shares the architecture, the
+        schedule and the standardisation; only the initialisation
+        and the batch shuffle differ, so the average removes seed
+        luck without adding capacity.
     device : str, optional
         ``cuda`` when available by default.
     standardize : bool, optional
@@ -569,7 +615,8 @@ class ZooEstimator:
         if problems:
             raise ValueError(f"ZooEstimator {arch!r}: {problems}")
         self._knobs = _arch_merged(arch, block)
-        self._module = None
+        self._seeds = _seed_tuple(self.seeds, self.seed)
+        self._modules = ()
         self._layout = None
         self._center = None
         self._scale = None
@@ -683,33 +730,58 @@ class ZooEstimator:
             scale[~np.isfinite(scale) | (scale <= 0.0)] = 1.0
             self._center = torch.as_tensor(center, dtype=torch.float32)
             self._scale = torch.as_tensor(scale, dtype=torch.float32)
-        torch.manual_seed(int(self.seed))
         device = self._resolved_device()
         seq, static = self._parts(x)
-        self._module = self._build(seq.shape[1], 1 + static.shape[1]).to(device)
         labels = torch.as_tensor(target, dtype=torch.float32).reshape(-1, 1)
+        self._modules = tuple(
+            self._fit_one(seq, static, labels, device, seed)
+            for seed in self._seeds
+        )
+        return self
+
+    def _fit_one(self, seq, static, labels, device, seed):
+        """Train one member from ``seed``.
+
+        Parameters
+        ----------
+        seq, static : torch.Tensor
+            The standardized lag path and the static covariates.
+        labels : torch.Tensor
+            One target per row, shaped ``(rows, 1)``.
+        device : torch.device
+            Where the member trains.
+        seed : int
+            Seeds both the initialisation and the batch shuffle.
+
+        Returns
+        -------
+        torch.nn.Module
+            The trained member.
+        """
+        import torch
+
+        torch.manual_seed(int(seed))
+        module = self._build(seq.shape[1], 1 + static.shape[1]).to(device)
         optimizer = torch.optim.Adam(
-            self._module.parameters(),
+            module.parameters(),
             lr=float(self.lr),
             weight_decay=float(self.weight_decay),
         )
         loss_fn = torch.nn.MSELoss()
         rows = seq.shape[0]
         batch = max(int(self.batch_size), 1)
-        generator = torch.Generator().manual_seed(int(self.seed))
-        self._module.train()
+        generator = torch.Generator().manual_seed(int(seed))
+        module.train()
         for _ in range(max(int(self.epochs), 1)):
             order = torch.randperm(rows, generator=generator)
             for start in range(0, rows, batch):
                 take = order[start:start + batch]
                 optimizer.zero_grad(set_to_none=True)
-                out = self._module(
-                    seq[take].to(device), static[take].to(device),
-                )
+                out = module(seq[take].to(device), static[take].to(device))
                 loss = loss_fn(out, labels[take].to(device))
                 loss.backward()
                 optimizer.step()
-        return self
+        return module
 
     def predict(self, X):
         """Forecast one value per row.
@@ -722,7 +794,7 @@ class ZooEstimator:
         Returns
         -------
         numpy.ndarray
-            One float64 per row.
+            One float64 per row — the mean over the fitted members.
 
         Raises
         ------
@@ -730,19 +802,44 @@ class ZooEstimator:
             When called before ``fit``.
         """
         import numpy as np
-        import torch
 
-        if self._module is None:
+        if not self._modules:
             raise RuntimeError("ZooEstimator: predict before fit")
         seq, static = self._parts(np.asarray(X, dtype=np.float64))
         device = self._resolved_device()
+        total = None
+        for module in self._modules:
+            member = self._predict_one(module, seq, static, device)
+            total = member if total is None else total + member
+        return total / float(len(self._modules))
+
+    def _predict_one(self, module, seq, static, device):
+        """One member's forecast over the fitted column layout.
+
+        Parameters
+        ----------
+        module : torch.nn.Module
+            A trained member.
+        seq, static : torch.Tensor
+            The standardized lag path and the static covariates.
+        device : torch.device
+            Where the member runs.
+
+        Returns
+        -------
+        numpy.ndarray
+            One float64 per row.
+        """
+        import numpy as np
+        import torch
+
         batch = max(int(self.batch_size), 1)
         out = []
-        self._module.eval()
+        module.eval()
         with torch.no_grad():
             for start in range(0, seq.shape[0], batch):
                 stop = start + batch
-                chunk = self._module(
+                chunk = module(
                     seq[start:stop].to(device), static[start:stop].to(device),
                 )
                 out.append(chunk.reshape(-1).cpu().numpy())
