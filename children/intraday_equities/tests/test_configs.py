@@ -297,6 +297,18 @@ _COHORT_KEYS = (
 )
 
 
+def _scored_symbols(spec):
+    """The cohort a variant may not move: symbols less the cross list.
+
+    ADR-0071 adds ``cross``, a list of feature-only symbols that build no
+    feature frame, get no column of their own and are never scored — the
+    sector funds and the market proxies the cross block reads. Adding one
+    cannot change what is scored, so it is not a cohort drift; ``symbols``
+    is still compared, with that additive list removed from both sides.
+    """
+    return sorted(set(spec["symbols"]) - set(spec.get("cross") or ()))
+
+
 def _universe_path(raw, name):
     """The universe file a run doc pins, asserted consistent across nodes."""
     path = raw["pipeline"]["universe"]["params"]["path"]
@@ -315,7 +327,12 @@ def test_run_docs_do_not_restate_the_cohort():
             variant = json.loads(
                 open(os.path.join(CONFIGS, os.path.basename(path))).read()
             )
+            assert _scored_symbols(variant) == _scored_symbols(UNIVERSE), (
+                f"{name}: {path} diverges from universe.json at 'symbols'"
+            )
             for key in _COHORT_KEYS:
+                if key == "symbols":
+                    continue
                 assert variant.get(key) == UNIVERSE.get(key), (
                     f"{name}: {path} diverges from universe.json at {key!r}"
                 )

@@ -3136,6 +3136,145 @@ hours, not more code.
 
 ---
 
+## ADR-0071 — Three switchable feature blocks, and the fold statistic that cannot peek
+
+**Status:** proposed (2026-09-03; P2 and P3 of
+`docs/plans/2026-09-horizon-search.md`. The P1 grid beats a flat average
+guess at one and two minutes only, mostly on one name, and at nothing
+beyond. The inputs are the leading suspect: only recent returns carry
+history, the clock is crudely encoded, and there is no cross-stock or
+market input at all.)
+
+**Context.** `SessionFeatureRows` emits 86 columns. Twenty of them are
+one-minute lags, forty are multi-scale return and volatility statistics
+of the same series, thirteen are clock and calendar, two are SPY, five
+are industry one-hots. Three research docs say what is missing:
+`p2-time-of-day-feature-block-and-a-per-bucket-horizon-test.md`,
+`p3a-bar-derived-inputs-that-may-extend-the-horizon.md` and
+`p3b-cross-stock-market-and-sector-inputs-for-1-60-min-returns.md`.
+
+Three problems had to be solved together. **Attribution:** adding
+fifty-odd columns at once and re-running would say nothing about which
+of them mattered. **Look-ahead:** three of the recommended inputs are
+statistics of the sample — a per-minute volatility curve, a per-bucket
+mean return, a volume norm by time of day — and a statistic fitted on
+the whole sample is a leak whatever the rest of the pipeline does.
+**Memory:** a twenty-fold walk already peaks near sixteen gigabytes of
+seventeen usable, and a second job alongside one wedges the machine.
+
+**Decision.**
+
+- **Three named blocks, each switchable on its own.** `tod` (P2), `bar`
+  (P3a) and `cross` (P3b), declared as
+  `pipeline.features.params.feature_blocks`, a list. The default is the
+  empty list: a document that names none gets byte-identical columns to
+  what it got before, apart from the clock fix below. Block columns are
+  appended AFTER every existing column and in a fixed order, so turning
+  one on shifts nothing that was already there. `tod` and `bar` both
+  want the two session-open returns; they are emitted once, so `bar`
+  adds nine columns alone and seven beside `tod`.
+
+  | block | columns | of which fitted per fold |
+  |---|---|---|
+  | `tod` | 31 | 2 |
+  | `bar` | 10 | 1 |
+  | `cross` | 17 | 0 |
+  | all three | 56 | 3 |
+
+- **The clock encoding was wrong and is fixed.** `tod_sin`/`tod_cos`
+  used a whole circle over the session, so 09:30 and 16:00 landed on the
+  same point — the one time of day where that is most wrong, given the
+  open and the closing auction are the two least alike minutes of the
+  day. The period is now half a circle: the open sits at angle zero, the
+  close at pi, and every minute between has its own pair. This is a bug
+  fix, not a knob, and it applies whether a block is on or not. **Runs
+  recorded before 2026-09-03 carry the wrapped encoding in those two
+  columns and are not comparable with later runs on them.**
+
+- **Anything fitted is fitted per fold, in its own node.**
+  `SessionFeatureRows` cannot see `$splits` — nothing upstream of it
+  does, which is exactly why its build is shared by all twenty folds —
+  so it emits every fitted column as a **zero placeholder**. A new kind,
+  `intraday_equities-fold-stats`, is wired to
+  `$splits.train_start_ms`/`$splits.train_end_ms`, runs once per fold,
+  fits on rows inside that fold's training window alone and reads the
+  result onto every row. It writes into the placeholder columns **in
+  place**: they are the last columns of the frame, this node overwrites
+  all of them every fold before anything reads them, and appending
+  instead would copy the whole feature matrix once per fold to add three
+  columns. It refuses to run unless the columns it is about to write are
+  exactly the placeholders its declared blocks call for, so a mismatch
+  between the two nodes is an error, not a silent column of zeros.
+
+- **`cross` gets a feature-only symbol list.** The universe gains three
+  optional fields: `cross` (symbols read for their returns and nothing
+  else), `market` (the index proxy) and `sector_etf` (a map from each
+  tradable to its fund). The mapping is **XLK/AAPL, XLF/JPM, XLV/LLY,
+  XLP/WMT, XLE/XOM**, with SPY as the market — the same pairing the
+  split-adjusted source was pulled for. `symbols` is now
+  `tradable ∪ reference ∪ cross`. A `cross` symbol builds no feature
+  frame and no tape.
+
+- **A NaN inside every session is not acceptable.** `_frame_matrix`
+  drops a scored row on any non-finite column, so a window that is NaN
+  for the first k minutes of every session costs k/390 of every session
+  forever. The volatility windows, the vol-scaled past returns and the
+  accumulated residuals are therefore cross-session — a warmup once, not
+  daily — exactly as the universe's own 60-minute scale already is. The
+  lag columns are session-local, matching `ret_lag_*`, so they cost no
+  row the baseline does not already lose. `ret_first30` reads zero
+  before 10:00 rather than NaN, and `is_open30` is the flag that says
+  the value is not yet formed.
+
+**Consequences.**
+
+*Attribution.* Each block can be measured alone against the same
+baseline and the same folds, then in combination.
+`configs/run-blocks-h01-ridge.json` is the template: it differs from
+`run-multi3-h01-ridge.json` only in the universe file, the
+`feature_blocks` list and the fold-stats node. The single question for
+every column is ADR-0067's: does it extend the look-ahead at which we
+beat a flat average guess. ADR-0069's bar applies to the family, and a
+block that adds fifty columns has to clear it while paying for them.
+
+*No look-ahead.* Two properties are asserted by test, and they are the
+most important part of the change. For every bar-computable column,
+**prefix invariance**: two tapes that agree up to bar t and differ
+wildly after it must produce bit-identical columns at every bar up to t.
+For every fitted column, **fold invariance**: scrambling the validation
+rows must not move the fit, and a quiet training fold must not inherit a
+loud validation fold's scale. One nuance is stated rather than hidden:
+the per-minute volatility curve is smoothed across neighbouring clock
+minutes, so a training row's own value can involve training rows at a
+later clock minute of the same day. That is the standard
+Andersen–Bollerslev seasonal shape and every row that enters it is
+inside the training window; no validation row ever does.
+
+*Memory.* One frame row costs 8 bytes per column, so a block costs
+`columns × rows × 8` per scored symbol per fold, with the frame built
+once and shared by every fold. On the shipped grid — five-minute rows
+from 2018 to the cut, about 160 thousand rows per symbol, six frames —
+that is roughly 240 MB for `tod`, 77 MB for `bar`, 131 MB for `cross`
+and 430 MB for all three. Transient cost is one block's working arrays
+at full one-minute resolution, about 60 MB, because every column is
+reduced to the grid as soon as it exists rather than after all of them
+are built. The reference return series held for the whole run are two
+arrays per cross symbol, about 77 MB together. Against that, naming the
+six funds in `cross` STOPS them building feature frames nobody scores —
+they are in the split-adjusted store and no node filtered them out
+before — which is worth roughly 660 MB. With
+`configs/universe-blocks.json` the three blocks together are a net
+reduction, not an increase.
+
+*What is not here.* Trade count, the VWAP gap, the rolling
+autocorrelation, average trade size, the Parkinson range, QQQ rotation
+and peer residuals are all named in the research docs and all left out:
+they rank below the ones built, and the first question is whether any of
+this moves the horizon at all. QQQ is listed in `cross` only so it stops
+building a frame; no column reads it.
+
+---
+
 ## ADR-0073 — A run reads only the bars it declared, and reads them once
 
 *(Numbered 0073 because 0071 and 0072 were taken the same night on other
