@@ -17,6 +17,32 @@ beat simply guessing the average?** That distance is the "look-ahead".
 together. Nothing for Apple, JPMorgan, Walmart or Exxon at any setting
 we have tried.**
 
+The rest of the session in five lines:
+
+- **Which cells clear the many-attempts bar.** 25 of the 438 cells ever
+  tried: sixteen for Lilly, nine for the five stocks together, none at
+  all for Apple, JPMorgan, Walmart or Exxon. Twenty-two of the 25 sit at
+  one minute ahead. The two that reach furthest are the headline —
+  Lilly at three minutes and the group at two, both on one-minute row
+  spacing, the tree model and the market-and-sector input block.
+- **What moved the wall.** Forming a row of data every minute instead of
+  every fifth. Dense rows, not feature blocks: every new input block we
+  built failed against its own control.
+- **The luck check.** Lilly's three-minute cell was re-run nineteen
+  times with whole trading days shuffled, and the real result beat every
+  one of them. Nineteen shuffles is a one-in-twenty statement and no
+  more.
+- **The midpoint check is inconclusive, not supporting.** On the short
+  window where buy and sell prices exist, the cell's own traded-price
+  control fails too, so that pair can neither confirm nor kill the
+  headline.
+- **What is unrun.** The group's two-minute cell has had no luck check;
+  the 19-cell model shortlist is entirely unrun; buy and sell prices
+  exist for only two of the five names; 9 of the 50 five-minute-row
+  cells were never run; and 20 decision records are still unratified.
+  The full list, with what each one blocks, is under "The honest gaps"
+  below.
+
 So the honest summary is **one answer per stock, not one shared
 answer**. Anyone who reports a single look-ahead for the whole study is
 overstating it.
@@ -66,7 +92,7 @@ destroyed.
 
 **Nineteen shuffled re-runs of Lilly's three-minute cell. The real
 result beat every one of them, and the best shuffle reached about a
-fifth of its size** (+0.0875% against the real +0.2947%). Nineteen
+third of its size** (+0.0875% against the real +0.2947%). Nineteen
 shuffles buy a one-in-twenty statement (p = 0.050) and no more; the plan
 called for a hundred, and ninety-nine would be needed to say
 one-in-a-hundred. A larger family could only strengthen this, since
@@ -189,12 +215,16 @@ inventing more inputs.
 If a future session sees runs that are suddenly slow or memory-hungry,
 suspect a regression in the first two.
 
-## ADR status — nothing is ratified
+## Decision records — nothing is ratified
 
-**ADRs 0059 through 0074 are all PROPOSED. None is ratified.** Their
-code is already in the tree, ahead of approval. That is the largest
-outstanding decision for the owner: read them and accept or reject.
-They are in `docs/architecture/decision-log.md`.
+**20 decision records are PROPOSED and none is ratified: ADR-0002,
+ADR-0004, ADR-0005, ADR-0006, and ADR-0059 through ADR-0074.** Counted
+from the `**Status:**` line of every record in
+`docs/architecture/decision-log.md`, which holds 74 records numbered
+ADR-0001 to ADR-0074 with no gaps; the other 54 are accepted. The code
+for the proposed ones is already in the tree, ahead of approval. That is
+the largest outstanding decision for the owner: read them and accept or
+reject.
 
 ## The environment trap — read before running anything
 
@@ -260,9 +290,11 @@ listed under gap 6 above.
    repeat the price-definition check across all five names.
 4. **Push row spacing below one minute**, since spacing is the one lever
    that has actually worked.
-5. **Extend Lilly's luck check from sixteen shuffles toward ninety-nine**
+5. **Extend Lilly's luck check from nineteen shuffles toward ninety-nine**
    if a stronger statement is wanted. It will not change the direction.
 6. **Fill the 9 unrun five-minute cells** — low value, but it closes the
    grid honestly.
 7. **Fix the config-hygiene failure** in gap 6.
-8. **Get ADRs 0059–0074 ratified or rejected.**
+8. **Get the 20 proposed decision records ratified or rejected** —
+   ADR-0002, ADR-0004, ADR-0005, ADR-0006 and ADR-0059 through
+   ADR-0074.

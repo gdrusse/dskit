@@ -74,7 +74,7 @@ count exact by leaking real signal into the null.
 | spread of the shuffles | — | 0.98 |
 
 The real result beat all nineteen; the best shuffle reached about a
-fifth of its size. Nineteen shuffles buy a one-in-twenty statement
+third of its size (+0.0875% against +0.2947%). Nineteen shuffles buy a one-in-twenty statement
 (p = 0.050) and nothing stronger — a hundred were planned, and
 ninety-nine would be needed for one-in-a-hundred. The cap is a budget
 decision, stated rather than hidden. A larger family could only

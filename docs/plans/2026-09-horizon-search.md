@@ -162,7 +162,7 @@ what luck alone produces. Every candidate look-ahead must clear that bar.
 79 walks. Surviving it: Lilly at three minutes, and the group at two.
 The expensive scramble was then built (ADR-0074) and run nineteen times
 on Lilly's cell: the real result beat every shuffle, the best of which
-reached a fifth of its size, and the shuffled statistics scattered by
+reached about a third of its size, and the shuffled statistics scattered by
 the amount a correct error estimate predicts. Nineteen shuffles buy
 one-in-twenty and no more. The group's cell is untested.
 
