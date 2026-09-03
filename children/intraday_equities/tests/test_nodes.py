@@ -43,6 +43,7 @@ EXPECTED_ROLES = {
     "intraday_equities-universe": "data",
     "intraday_equities-keep-symbols": "transform",
     "intraday_equities-feed-parity": "score",
+    "intraday_equities-fold-stats": "transform",
     "intraday_equities-horizon-scan": "score",
     "intraday_equities-no-information-scan": "score",
     "intraday_equities-lookback-scan": "score",
@@ -205,6 +206,23 @@ def probes(tmp_path):
             params={"lookback": 2},
             required=("lookback",),
             inputs={"records": [dict(row) for row in window_input]},
+            stream_ports=("records",),
+            runnable=True,
+        ),
+        "intraday_equities-fold-stats": NodeProbe(
+            params={"train_end_ms": _ms(3)},
+            required=("train_end_ms",),
+            inputs={
+                "records": [
+                    {
+                        "symbol": symbol,
+                        "asof_ms": [_ms(index) for index in range(4)],
+                        "names": [],
+                        "X": [],
+                    }
+                    for symbol in ("AAPL", "JPM")
+                ],
+            },
             stream_ports=("records",),
             runnable=True,
         ),

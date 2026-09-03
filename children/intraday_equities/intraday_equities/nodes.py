@@ -42,12 +42,25 @@ from dskit.pipeline.node import (
 )
 from dskit.pipeline.predictions import PredictionWriter
 
+from .features import (
+    BLOCK_BAR,
+    BLOCK_CROSS,
+    apply_fold_stats,
+    block_columns,
+    block_feature_names,
+    block_fold_names,
+    block_problems,
+    fit_fold_stats,
+    normalise_blocks,
+)
+
 __all__ = [
     "DEFAULT_MAX_GAP_MINUTES",
     "DEFAULT_PRICE_FIELD",
     "DEFAULT_QUOTE_FIELDS",
     "BarsFromStore",
     "FeedParity",
+    "FoldFeatureStats",
     "HorizonScan",
     "KeepSymbols",
     "LeadLabeledRows",
@@ -304,18 +317,32 @@ def _universe_problems(spec):
     symbols = set(spec["symbols"]) if _string_list_ok(spec.get("symbols")) else None
     tradable = set(spec["tradable"]) if _string_list_ok(spec.get("tradable")) else None
     reference = set(spec["reference"]) if _string_list_ok(spec.get("reference")) else None
+    cross = spec.get("cross")
+    if cross is not None and not _string_list_ok(cross):
+        problems.append(
+            f"cross must be a non-empty list of strings, got {cross!r}"
+        )
+        cross = None
+    cross = set(cross) if cross else set()
     if symbols is not None and tradable is not None and reference is not None:
         if tradable & reference:
             problems.append(
                 "tradable and reference must be disjoint, "
                 f"overlap {sorted(tradable & reference)}"
             )
-        if symbols != tradable | reference:
+        if cross & (tradable | reference):
             problems.append(
-                "symbols must be exactly tradable ∪ reference, "
-                f"got extra {sorted(symbols - (tradable | reference))} "
-                f"missing {sorted((tradable | reference) - symbols)}"
+                "cross must be disjoint from tradable and reference, "
+                f"overlap {sorted(cross & (tradable | reference))}"
             )
+        whole = tradable | reference | cross
+        if symbols != whole:
+            problems.append(
+                "symbols must be exactly tradable ∪ reference ∪ cross, "
+                f"got extra {sorted(symbols - whole)} "
+                f"missing {sorted(whole - symbols)}"
+            )
+    problems.extend(_cross_problems(spec, tradable, symbols))
     holidays = spec.get("holidays")
     if (
         not isinstance(holidays, (list, tuple))
@@ -363,6 +390,84 @@ def _universe_problems(spec):
     if keep is not None and not _string_list_ok(keep):
         problems.append(
             f"keep_features must be a non-empty list of strings, got {keep!r}"
+        )
+    return problems
+
+
+def _cross_problems(spec, tradable, symbols):
+    """Problems with the optional ``market``/``sector_etf`` wiring.
+
+    Both are optional: a universe that never turns on the ``cross``
+    block does not need them, and every universe written before
+    ADR-0071 still validates. When they ARE declared they must name
+    symbols the store is asked for, or the block would read a series
+    nobody pulled.
+    """
+    problems = []
+    market = spec.get("market")
+    if market is not None:
+        if not isinstance(market, str) or not market:
+            problems.append(f"market must be a symbol, got {market!r}")
+        elif symbols is not None and market not in symbols:
+            problems.append(f"market {market!r} is not one of symbols")
+        elif tradable is not None and market in tradable:
+            problems.append(
+                f"market {market!r} is tradable; a scored name cannot be "
+                "its own market"
+            )
+    sector = spec.get("sector_etf")
+    if sector is None:
+        return problems
+    if not isinstance(sector, dict) or not sector:
+        return problems + [
+            f"sector_etf must be a non-empty object, got {sector!r}"
+        ]
+    for name, fund in sector.items():
+        if not isinstance(name, str) or not name:
+            problems.append(f"sector_etf keys must be symbols, got {name!r}")
+            continue
+        if not isinstance(fund, str) or not fund:
+            problems.append(
+                f"sector_etf[{name!r}] must be a symbol, got {fund!r}"
+            )
+            continue
+        if symbols is not None and fund not in symbols:
+            problems.append(
+                f"sector_etf[{name!r}] names {fund!r}, which is not one of "
+                "symbols"
+            )
+        if tradable is not None and fund in tradable:
+            problems.append(
+                f"sector_etf[{name!r}] names the tradable {fund!r}; a sector "
+                "fund is a feature-only symbol"
+            )
+    if symbols is not None:
+        unknown = sorted(set(sector) - symbols)
+        if unknown:
+            problems.append(f"sector_etf names unknown symbols {unknown}")
+    return problems
+
+
+def _cross_wiring_problems(spec):
+    """Problems that only matter once the ``cross`` block is on."""
+    problems = []
+    if not spec.get("market"):
+        problems.append(
+            "feature block 'cross' needs the universe to declare 'market' "
+            "(ADR-0071)"
+        )
+    sector = spec.get("sector_etf")
+    if not isinstance(sector, dict) or not sector:
+        problems.append(
+            "feature block 'cross' needs the universe to declare "
+            "'sector_etf' (ADR-0071)"
+        )
+        return problems
+    missing = sorted(set(spec.get("tradable") or ()) - set(sector))
+    if missing:
+        problems.append(
+            f"feature block 'cross' needs a sector_etf for every tradable, "
+            f"missing {missing}"
         )
     return problems
 
@@ -1093,13 +1198,21 @@ def session_feature_names(lookback, scales, reference, industries=()):
     return tuple(names)
 
 
-def _emit_feature_names(lookback, scales, reference, industries, extra=()):
-    """Session names plus vol-scaled momentum and extra-horizon ret/rv/mom."""
+def _emit_feature_names(
+    lookback, scales, reference, industries, extra=(), blocks=(),
+):
+    """Session names, momentum names, then any selected feature block.
+
+    The block columns come last and in :data:`features.BLOCKS` order, so
+    a run that turns one on shifts nothing that was already there
+    (ADR-0071).
+    """
     names = list(session_feature_names(lookback, scales, reference, industries))
     names.extend(f"mom_{scale['tag']}" for scale in scales)
     for horizon in extra:
         tag = horizon["tag"]
         names.extend((f"ret_{tag}", f"rv_{tag}", f"mom_{tag}"))
+    names.extend(block_feature_names(blocks))
     return tuple(names)
 
 
@@ -1142,9 +1255,16 @@ def _cell(value):
 
 def _session_feature_arrays(
     ms, opn, high, low, close, volume, lookback, max_gap_ms, holidays, scales,
-    session, extra_horizons=(), scale_moms=False,
+    session, extra_horizons=(), scale_moms=False, internals=None,
 ):
-    """Build per-bar feature columns for one symbol's RTH tape."""
+    """Build per-bar feature columns for one symbol's RTH tape.
+
+    ``internals`` is an optional out-dict: when given, the tape-local
+    arrays this function builds anyway — log price, one-minute returns,
+    session starts, clock minutes and calendar dates — are handed back
+    in it, so the feature blocks (ADR-0071) can be built beside these
+    columns instead of recomputing a second session scan.
+    """
     import numpy as np
 
     n = len(close)
@@ -1254,7 +1374,15 @@ def _session_feature_arrays(
     columns["minutes_from_open"] = mins - session["rth_start_minutes"]
     columns["minutes_to_close"] = session["rth_end_minutes"] - mins
     span = max(float(session["rth_end_minutes"] - session["rth_start_minutes"]), 1.0)
-    tod = 2.0 * math.pi * (mins - session["rth_start_minutes"]) / span
+    # HALF a circle over the session, not a whole one (ADR-0071). With a
+    # full circle the open and the close both land on angle 0, so the
+    # two columns told the model that 09:30 and 16:00 are the same
+    # moment -- the one time of day where that is most wrong. Over half
+    # a circle the open sits at 0 and the close at pi, and every minute
+    # between them has its own pair. Runs recorded before 2026-09-03
+    # carry the wrapped encoding in these two columns and are not
+    # comparable on them.
+    tod = math.pi * (mins - session["rth_start_minutes"]) / span
     columns["tod_sin"] = np.sin(tod)
     columns["tod_cos"] = np.cos(tod)
     parsed = [date.fromisoformat(day) for day in dates]
@@ -1298,6 +1426,14 @@ def _session_feature_arrays(
     columns["overnight_gap"] = overnight
     columns["session_gap_days"] = gap_days
     columns["after_holiday"] = after_h
+    if internals is not None:
+        internals.update({
+            "logp": logp,
+            "ret1": ret1,
+            "sess_start": sess_start,
+            "mins": mins,
+            "parsed": parsed,
+        })
     return columns
 
 
@@ -1338,21 +1474,86 @@ def _symbol_ohlcv(rows, price_field=DEFAULT_PRICE_FIELD):
     return ms, opn, high, low, close, volume
 
 
+def _one_minute_returns(ms, close, max_gap_ms):
+    """One-minute log returns for a reference tape, NaN across a gap.
+
+    The same rule the scored names get in
+    :func:`_session_feature_arrays`, kept here because a cross-block
+    reference symbol never builds a feature frame — only this series.
+    """
+    import numpy as np
+
+    n = int(ms.size)
+    logp = np.full(n, np.nan)
+    priced = close > 0
+    logp[priced] = np.log(close[priced])
+    ret = np.full(n, np.nan)
+    if n > 1:
+        ret[1:] = logp[1:] - logp[:-1]
+        ret[np.concatenate(([False], np.diff(ms) > max_gap_ms))] = np.nan
+    return ret
+
+
+def _aligned_series(ms, pair):
+    """Read a reference return series onto this symbol's bar stamps.
+
+    Exact minute matches only: a minute the reference did not trade
+    reads NaN, never the nearest neighbour, because a stale print is the
+    documented way a fake lead-lag appears (P3b).
+    """
+    import numpy as np
+
+    out = np.full(int(ms.size), np.nan)
+    if pair is None:
+        return out
+    ref_ms, ref_ret = pair
+    if not ref_ms.size or not ms.size:
+        return out
+    at = np.searchsorted(ref_ms, ms)
+    safe = np.minimum(at, ref_ms.size - 1)
+    hit = ref_ms[safe] == ms
+    out[hit] = ref_ret[safe[hit]]
+    return out
+
+
 def _grid_columns(
     ms, opn, high, low, close, volume, lookback, max_gap_ms, holidays,
     scales, session, offset_ms, period_ms, skip, extra_horizons, scale_moms,
+    blocks=(), market_ret=None, sector_ret=None,
 ):
     """Grid-aligned feature columns for one symbol; full-tape arrays drop."""
+    internals = {} if normalise_blocks(blocks) else None
     columns = _session_feature_arrays(
         ms, opn, high, low, close, volume, lookback, max_gap_ms,
         holidays, scales, session, extra_horizons, scale_moms,
+        internals=internals,
     )
     keep = ((ms - offset_ms) % period_ms) == 0
     names = [name for name in columns if name not in skip]
     kept_ms = ms[keep]
     kept_close = close[keep]
     col_kept = {name: columns[name][keep] for name in names}
+    overnight = columns.get("overnight_gap")
     del columns
+    if internals:
+        # Built here, beside the base columns, and reduced to the grid
+        # inside block_columns -- one block's working arrays at a time,
+        # never a second full-tape copy of the whole frame (ADR-0071).
+        col_kept.update(block_columns(
+            blocks,
+            keep=keep,
+            logp=internals["logp"],
+            ret1=internals["ret1"],
+            opn=opn,
+            sess_start=internals["sess_start"],
+            mins=internals["mins"],
+            parsed=internals["parsed"],
+            overnight=overnight,
+            session=session,
+            market_ret=market_ret,
+            sector_ret=sector_ret,
+        ))
+        internals.clear()
     return kept_ms, kept_close, col_kept
 
 
@@ -1375,7 +1576,10 @@ class SessionFeatureRows(Node):
         grid rows as numpy frames instead of one dict each. Optional
         ``momentum_horizons`` (non-empty list of scale objects) adds
         ``mom_{scale}`` on the universe scales plus ``ret``/``rv``/
-        ``mom`` at each extra width.
+        ``mom`` at each extra width. Optional ``feature_blocks`` (any
+        subset of ``tod``, ``bar``, ``cross``) switches on the ADR-0071
+        blocks; the default is none of them, so a document that does not
+        name one gets exactly the columns it got before.
 
     Examples
     --------
@@ -1387,7 +1591,7 @@ class SessionFeatureRows(Node):
 
     role = "transform"
     outputs = ("records", "tape")
-    _PARAMS = ("lookback", "layout", "momentum_horizons")
+    _PARAMS = ("lookback", "layout", "momentum_horizons", "feature_blocks")
 
     @classmethod
     def validate_params(cls, params):
@@ -1423,6 +1627,9 @@ class SessionFeatureRows(Node):
                 p.replace("scales", "momentum_horizons", 1)
                 for p in _scale_problems(extra)
             )
+        blocks = params.get("feature_blocks")
+        if blocks is not None and not is_node_ref(blocks):
+            problems.extend(block_problems(blocks))
         return problems
 
     def validate_inputs(self, inputs):
@@ -1464,6 +1671,10 @@ class SessionFeatureRows(Node):
                             f"momentum_horizons[{i}].tag {tag!r} collides "
                             "with scales"
                         )
+            if BLOCK_CROSS in normalise_blocks(
+                self.params.get("feature_blocks")
+            ):
+                problems.extend(_cross_wiring_problems(spec))
         return problems
 
     #: Last input signature and its build. A walk-forward runs this node
@@ -1560,14 +1771,25 @@ class SessionFeatureRows(Node):
         tags = tuple(sorted(set(industry.values())))
         extra = list(self.params.get("momentum_horizons") or ())
         scale_moms = bool(extra)
-        if extra:
-            feat_names = list(_emit_feature_names(
-                lookback, scales, reference, tags, extra,
-            ))
-        else:
-            feat_names = list(session_feature_names(
-                lookback, scales, reference, tags,
-            ))
+        blocks = normalise_blocks(self.params.get("feature_blocks"))
+        feat_names = list(_emit_feature_names(
+            lookback, scales, reference, tags, extra, blocks,
+        ))
+        if blocks:
+            self.log.info(
+                "session features: block(s) %s add %d column(s), %d of them "
+                "fitted per fold",
+                ",".join(blocks),
+                len(block_feature_names(blocks)),
+                len(block_fold_names(blocks)),
+            )
+            if block_fold_names(blocks):
+                self.log.info(
+                    "session features: %s leave this node as zeros; wire an "
+                    "intraday_equities-fold-stats node after it or they stay "
+                    "constant (ADR-0071)",
+                    ",".join(block_fold_names(blocks)),
+                )
         skip = set()
         for symbol in reference:
             skip.add(f"ref_ret_{symbol}")
@@ -1576,9 +1798,23 @@ class SessionFeatureRows(Node):
             lookback, max_gap_ms, holidays, scales, session,
             offset_ms, period_ms, skip, extra, scale_moms,
         )
+        # Feature-only symbols that supply the cross block and nothing
+        # else: they are read for their one-minute returns and then
+        # dropped, with no frame and no tape, so seven extra funds cost
+        # two arrays each instead of seven whole feature frames.
+        market = spec.get("market")
+        sector_of = dict(spec.get("sector_etf") or {})
+        cross_only = set(spec.get("cross") or ())
+        series_needed = set()
+        if BLOCK_CROSS in blocks:
+            series_needed.add(market)
+            series_needed.update(sector_of.values())
+        series = {}
         ref_ret = {symbol: {} for symbol in reference}
         order = [symbol for symbol in reference if symbol in grouped]
         seen = set(order)
+        order.extend(symbol for symbol in cross_only if symbol in grouped)
+        seen.update(order)
         order.extend(
             symbol for symbol in grouped if symbol not in seen
         )
@@ -1592,6 +1828,13 @@ class SessionFeatureRows(Node):
             )
             del rows
             self.log.info("session features: %s", symbol)
+            if symbol in series_needed:
+                series[symbol] = (ms, _one_minute_returns(ms, close, max_gap_ms))
+            if symbol in cross_only:
+                # Not scored, not a reference for the label: this symbol
+                # exists only as the series just stashed.
+                del opn, high, low, close, volume, ms
+                continue
             # A field the store does not carry reads as zero everywhere,
             # and a zero price is not a price: say so here, naming the
             # field, rather than emitting a tape of NaN labels and a
@@ -1612,10 +1855,18 @@ class SessionFeatureRows(Node):
                 "close": close,
                 "price_field": price_field,
             })
+            market_ret = sector_ret = None
+            if BLOCK_CROSS in blocks:
+                market_ret = _aligned_series(ms, series.get(market))
+                sector_ret = _aligned_series(
+                    ms, series.get(sector_of.get(symbol)),
+                )
             kept_ms, kept_close, col_kept = _grid_columns(
                 ms, opn, high, low, close, volume, *knobs,
+                blocks=blocks, market_ret=market_ret,
+                sector_ret=sector_ret,
             )
-            del opn, high, low, volume
+            del opn, high, low, volume, market_ret, sector_ret
             n = int(kept_ms.size)
             own = col_kept.get("ret_lag_0")
             if symbol in ref_ret and own is not None:
@@ -1686,6 +1937,214 @@ class SessionFeatureRows(Node):
         cls._cached_out = out
         cls._cached_rows = n_rows
         return {"records": list(records), "tape": tape}
+
+
+class FoldFeatureStats(Node):
+    """Fill the fold-fitted feature columns from the TRAINING rows only.
+
+    Role ``transform`` — the ``intraday_equities-fold-stats`` kind
+    (ADR-0071). :class:`SessionFeatureRows` emits every
+    training-fold-fitted column as a zero placeholder, because it cannot
+    see ``$splits`` and its build is shared by every fold. This node
+    does see them: it is wired to ``$splits.train_start_ms`` and
+    ``$splits.train_end_ms``, so it runs once per fold, fits the
+    statistic on rows inside that fold's training window and reads it
+    onto every row.
+
+    **Why it writes in place.** The placeholder columns are the last
+    columns of the frame and this node overwrites all of them, every
+    fold, before anything reads them. Appending instead would copy the
+    whole feature matrix once per fold — hundreds of megabytes beside a
+    walk that already peaks near sixteen gigabytes — to add three
+    columns. The node refuses to run unless the columns it is about to
+    write are exactly the placeholders it expects.
+
+    Parameters
+    ----------
+    params : dict
+        ``train_end_ms`` (required), optional ``train_start_ms``
+        (``None`` = all prior), ``blocks`` (must match the feature
+        node's ``feature_blocks``), ``volume_column`` (default
+        ``vol_5m``) and ``smooth_minutes`` (default 5).
+
+    Examples
+    --------
+    Wire it between the features and the scan::
+
+        node = FoldFeatureStats("foldstats", {"train_end_ms": 1})
+        node.outputs  # ('records',)
+    """
+
+    role = "transform"
+    outputs = ("records",)
+    _PARAMS = (
+        "blocks", "train_start_ms", "train_end_ms", "volume_column",
+        "smooth_minutes",
+    )
+    #: The column every fold statistic is keyed on.
+    _SLOT_COLUMN = "minutes_from_open"
+    _BUCKET_COLUMN = "hh_bucket"
+    _RETURN_COLUMN = "ret_lag_0"
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            Declared node params.
+
+        Returns
+        -------
+        list of str
+            One problem per broken knob.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        end = params.get("train_end_ms")
+        if not is_node_ref(end):
+            check_int_param(problems, "train_end_ms", end, ge=0)
+        start = params.get("train_start_ms")
+        if start is not None and not is_node_ref(start):
+            check_int_param(problems, "train_start_ms", start, ge=0)
+        blocks = params.get("blocks")
+        if blocks is not None and not is_node_ref(blocks):
+            problems.extend(block_problems(blocks))
+        column = params.get("volume_column")
+        if column is not None and (not isinstance(column, str) or not column):
+            problems.append(
+                f"volume_column must be a non-empty string, got {column!r}"
+            )
+        smooth = params.get("smooth_minutes")
+        if smooth is not None and not is_node_ref(smooth):
+            check_int_param(problems, "smooth_minutes", smooth, ge=1)
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require columnar feature frames.
+
+        Parameters
+        ----------
+        inputs : dict
+            ``records``.
+
+        Returns
+        -------
+        list of str
+            Input problems.
+        """
+        records = inputs.get("records")
+        if not isinstance(records, list):
+            return [f"records must be a list of frames, got {records!r}"]
+        problems = []
+        for i, frame in enumerate(records):
+            if not isinstance(frame, dict) or "X" not in frame:
+                problems.append(
+                    f"records[{i}] must be a columnar frame with an 'X' "
+                    f"matrix; this node needs layout 'columns', got {frame!r}"
+                )
+                break
+        return problems
+
+    def run(self, ctx, inputs):
+        """Fit on this fold's training rows and fill the placeholders.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext
+            Unused run frame.
+        inputs : dict
+            ``records``: columnar feature frames.
+
+        Returns
+        -------
+        dict
+            ``records``: the same frames, fold columns filled.
+
+        Raises
+        ------
+        ValueError
+            When the frame does not carry the placeholder columns this
+            node is declared to fill, or lacks a key column.
+        """
+        import numpy as np
+
+        records = inputs["records"]
+        blocks = normalise_blocks(self.params.get("blocks"))
+        fold_names = block_fold_names(blocks)
+        if not fold_names:
+            self.log.info("fold stats: no block asks for one; frames pass")
+            return {"records": list(records)}
+        train_end = int(self.params["train_end_ms"])
+        train_start = self.params.get("train_start_ms")
+        train_start = None if train_start is None else int(train_start)
+        volume_column = self.params.get("volume_column", "vol_5m")
+        smooth = int(self.params.get("smooth_minutes", 5))
+        n_rows = 0
+        n_train = 0
+        for frame in records:
+            names = list(frame["names"])
+            matrix = frame["X"]
+            tail = names[-len(fold_names):]
+            if tuple(tail) != tuple(fold_names):
+                raise ValueError(
+                    f"fold stats declare blocks {list(blocks)}, whose fitted "
+                    f"columns are {list(fold_names)}, but the frame for "
+                    f"{frame.get('symbol')!r} ends with {tail}. The feature "
+                    "node's feature_blocks and this node's blocks must "
+                    "match (ADR-0071)."
+                )
+            index = {name: i for i, name in enumerate(names)}
+            for needed in (self._SLOT_COLUMN, self._RETURN_COLUMN):
+                if needed not in index:
+                    raise ValueError(
+                        f"fold stats need the {needed!r} column and the "
+                        f"frame for {frame.get('symbol')!r} has none."
+                    )
+            stamps = np.asarray(frame["asof_ms"], dtype=np.int64)
+            train = stamps <= train_end
+            if train_start is not None:
+                train &= stamps >= train_start
+            minutes = matrix[:, index[self._SLOT_COLUMN]]
+            bucket = (
+                matrix[:, index[self._BUCKET_COLUMN]]
+                if self._BUCKET_COLUMN in index
+                else np.zeros(stamps.size, dtype=np.float64)
+            )
+            volume = (
+                matrix[:, index[volume_column]]
+                if volume_column in index else None
+            )
+            if BLOCK_BAR in blocks and volume is None:
+                raise ValueError(
+                    f"fold stats need the {volume_column!r} column for the "
+                    f"'bar' block and the frame for {frame.get('symbol')!r} "
+                    "has none; declare volume_column to name the scale this "
+                    "universe does emit (ADR-0071)."
+                )
+            fitted = fit_fold_stats(
+                blocks, minutes=minutes, bucket=bucket,
+                ret=matrix[:, index[self._RETURN_COLUMN]], volume=volume,
+                train=train, smooth=smooth,
+            )
+            filled = apply_fold_stats(
+                fitted, blocks, minutes=minutes, bucket=bucket,
+                volume=volume,
+            )
+            for offset, name in enumerate(fold_names):
+                matrix[:, len(names) - len(fold_names) + offset] = filled[name]
+            n_rows += int(stamps.size)
+            n_train += int(np.count_nonzero(train))
+        self.log.info(
+            "fold stats: %s fitted on %d of %d row(s), train window %s",
+            ",".join(fold_names),
+            n_train,
+            n_rows,
+            "ALL-PRIOR" if train_start is None
+            else f"[{train_start}, {train_end}]",
+        )
+        return {"records": list(records)}
 
 
 class FeedParity(Node):
@@ -4790,6 +5249,7 @@ NODE_KINDS = {
     "intraday_equities-universe": Universe,
     "intraday_equities-keep-symbols": KeepSymbols,
     "intraday_equities-feed-parity": FeedParity,
+    "intraday_equities-fold-stats": FoldFeatureStats,
     "intraday_equities-horizon-scan": HorizonScan,
     "intraday_equities-no-information-scan": NoInformationScan,
     "intraday_equities-lookback-scan": LookbackScan,
