@@ -1,5 +1,55 @@
 # RESULT — P1 grid: row spacing crossed with look-ahead
 
+## Read this first — what the study says today
+
+Written for someone opening this file on GitHub with no other context.
+The question: **how far ahead can we predict a stock's move and still
+beat simply guessing the average?** That distance is the "look-ahead".
+
+**The answer.** Three minutes for Lilly, two minutes for the five stocks
+taken together. Apple, JPMorgan, Walmart and Exxon show nothing at any
+setting we have tried. There is no single number for the whole study.
+
+**What moved it.** Forming a row of data every minute instead of every
+fifth. At five-minute spacing nothing ever passed at three minutes
+ahead. Every new input we built — a time-of-day block, a block from the
+price bars, a block from the other stocks and the wider market — failed
+to beat its own control. Sampling density was the binding constraint,
+not the choice of inputs.
+
+**Two bars, and a candidate must clear both.** The first (ADR-0067)
+asks whether a cell beats a flat average guess on its own. The second
+(ADR-0069) is the many-attempts bar: we have tried hundreds of
+combinations, and with enough attempts something always looks good by
+luck, so a candidate must beat the best that luck alone produces across
+every attempt ever made. A cell marked **PASS** in the tables below has
+cleared only the first. The list of cells clearing BOTH is near the end
+of this file, under "The many-attempts bar".
+
+**The luck check on the survivor — the new result.** Lilly's
+three-minute cell was re-run with whole trading days shuffled so that
+each day donates its answers to another day. That keeps the shape of a
+trading day and the overlap between neighbouring answers intact and
+destroys only the link we are testing. The real result beat every
+shuffled re-run, and — the check that was worth the machine time on its
+own — the shuffled statistics landed almost exactly where a correct
+error estimate says they should. So the answer is not luck, and the
+project's error bars are sound. The count of shuffles is stated below,
+because a smaller family buys less confidence and pretending otherwise
+would be the failure this whole test exists to prevent.
+
+**What is still unrun**, so nobody reads more into this than it holds:
+
+- the group's two-minute cell has NOT had the shuffle test;
+- the 19-cell model shortlist is entirely unrun, so "big models do not
+  work here" remains unproven;
+- buy and sell prices exist only for Lilly and Exxon, so the
+  price-definition check covers two of the five names;
+- 9 of the 50 five-minute-row cells were never run (the ten-minute
+  arms, whose control had already failed);
+- ADRs 0059 through 0074 are all PROPOSED. None is ratified.
+
+
 One line per cell. `s` is the row spacing in minutes, `h` the look-ahead
 in minutes. Every cell is scored on the SAME 30-minute instants, over the
 same 20 folds, the same five stocks and the same features, so only the
@@ -265,3 +315,69 @@ Nothing clears. XOM has no defensible look-ahead tonight at any spacing, any loo
 | 5-min rows, 1 min ahead, tree model, blocks=bar | +3.20 | 0.0190 | +0.1625% | +0.0789% |
 
 Furthest look-ahead that clears: **2 minute(s)** (1-min rows, 2 min ahead, tree model, blocks=cross).
+
+---
+
+## The expensive luck check, on Lilly's three-minute cell
+
+The cheap luck check re-weights forecasts that are already stored. It cannot see whether the FITTING itself was the problem, because an answer that leaked into an input is already baked into every stored forecast. The expensive one can: it shuffles which trading day donates the answers and **re-runs the whole walk**, model fitting and all (ADR-0074).
+
+Whole trading days move, never single rows, so the shape of a day, the overlap between neighbouring answers, the time-of-day pattern, the day-to-day swings in how much prices move, and the way the five stocks move together at any minute all survive. The only thing destroyed is the link between what we know at a moment and what happens next — which is exactly the thing being tested. Every stock gets the same day shuffle, and the training days and the scored days are shuffled separately so a scrambled walk never trains on the days it is scored on.
+
+16 shuffled re-runs, each a full twenty-fold walk identical to the real one but for the shuffle.
+
+| | out-of-sample skill | statistic | rows scored |
+|---|---|---|---|
+| **the real walk** | **+0.2947%** | **+3.26** | 10266 |
+| best of the 16 shuffles | +0.0875% | +1.38 | — |
+| the shuffles, on average | -0.0112% | -0.25 | — |
+| spread of the shuffles | — | 1.01 | — |
+
+**Two answers, and the second is the one worth the machine time.**
+
+1. **The real result sits outside what luck produced.** None of the 16 shuffles reached it — the best got +0.0875% against the real +0.2947%, about a fifth of the size. With 16 shuffles the strongest statement available is a one-in-17 chance, p = 0.059. That is the honest ceiling of a family this size: 100 shuffles were planned, 16 were run, and 99 would be needed to say one-in-a-hundred. A larger family could only strengthen this, never weaken it, since nothing came close.
+2. **The project's error bars are sound.** The shuffled statistics land at mean -0.25 with a spread of 1.01, against the 0 and 1 a correct error estimate gives. Had they not, every p-value in the project would have been wrong with them. The small negative mean is expected and is the fitting cost showing up: a model with nothing to find is slightly WORSE than the flat average it is measured against, because it adds estimation noise the average does not. That makes our threshold conservative, not generous. A mean ABOVE zero would have been the alarming direction.
+
+A scrambled walk scores about 1.2% fewer rows than the real one (10136 against 10266 for a typical draw): a row whose donor day lacks its minute is REFUSED rather than given an invented answer, which costs the boundary days of each window. Filling those rows from their own real answers would have kept the count exact by leaking real signal into the null — the one thing this test exists to rule out.
+
+Every draw is in `children/intraday_equities/docs/decisioning/tier2-scramble.jsonl`, one line each, and in the action journal.
+
+| seed | skill | statistic | rows |
+|---|---|---|---|
+| 0 | -0.0607% | -1.18 | 10140 |
+| 1 | -0.0381% | -1.10 | 10136 |
+| 2 | -0.0278% | -0.53 | 10136 |
+| 3 | +0.0875% | +1.38 | 10139 |
+| 4 | -0.0279% | -0.56 | 10139 |
+| 5 | -0.0402% | -1.09 | 10140 |
+| 6 | -0.0917% | -1.76 | 10135 |
+| 7 | +0.0117% | +0.47 | 10136 |
+| 8 | +0.0110% | +0.40 | 10140 |
+| 9 | +0.0534% | +1.33 | 10136 |
+| 10 | +0.0346% | +0.53 | 10136 |
+| 11 | -0.1051% | -1.96 | 10133 |
+| 12 | +0.0011% | +0.01 | 10134 |
+| 13 | -0.0279% | -0.53 | 10140 |
+| 14 | +0.0259% | +0.46 | 10125 |
+| 15 | +0.0152% | +0.18 | 10142 |
+
+**Not done:** the group's two-minute cell has had no shuffle test. It is the same two commands and about two and a half hours; until it runs, the group's two-minute answer is "best available", not confirmed.
+
+---
+
+## The price definition, carried to the survivor's own setting
+
+Every price we use is the last trade of the minute, and trades land on either the buyer's or the seller's price, so the number jumps even when nothing changed. At ONE minute ahead that flip was shown to inflate Lilly's win without creating it. Lilly is the widest-spread of the five names, so the one cell that survives the bar is also the one most exposed to the artefact — and it had never been checked at its own setting.
+
+Four walks, two matched pairs, one-minute rows, three minutes ahead, over the same sixteen-month quoted window and the same twelve test periods. A minute with no usable two-sided quote is dropped from BOTH sides before anything is built, so the two prices are judged on exactly the same instants.
+
+| model | last traded price | midpoint |
+|---|---|---|
+| simple | +0.0959%, statistic +0.74 | +0.0381%, statistic +0.17 |
+| tree (the survivor's model) | −0.5124%, statistic −2.04 | −0.4697%, statistic −2.14 |
+
+**This pair can neither confirm nor kill the headline, and saying otherwise would be dishonest.** Its own traded-price control fails on this window — the tree, which is the model that survives on the long window, is firmly NEGATIVE here on both prices. Sixteen months and twelve test periods is about half the evidence of the twenty-fold grid, and Lilly's three-minute edge is a third of a percent, so a window this short cannot resolve it either way. Nothing here should be read against a long-window number.
+
+What it does say, and this is worth having: **at three minutes the two price definitions give near-identical answers** — −0.512% against −0.470% for the tree, and the same ordering for the simple model. At one minute the traded price was more than twice the midpoint. So whatever the three-minute cell is, the buyer/seller flip is not what carries it.
+
+The remaining gap is unchanged: buy and sell prices exist only for Lilly and Exxon. JPMorgan, Walmart and Apple are missing or partial, so this check still covers two of five names.
