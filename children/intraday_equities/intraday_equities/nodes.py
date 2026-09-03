@@ -121,6 +121,21 @@ LABEL_PARAMS = (
     "beta_window_minutes",
     "vol_floor",
 )
+#: The tier-2 scramble knob (ADR-0074), named ONCE. Declared, it
+#: breaks the link between the features at t and the return over
+#: [t, t+h] by making whole trading sessions donate each other's
+#: labels, so the run measures what LUCK produces and nothing else.
+SCRAMBLE_PARAMS = ("label_scramble_seed",)
+#: A session's rows are keyed by (day, ms since that session's first
+#: row); one day holds 86_400_000 ms, so this stride packs the pair
+#: into one int64 without collision.
+_KEY_STRIDE = 100_000_000
+#: A session with fewer than this share of the median session's rows is
+#: a half-day and leaves the donor pool: permuting a half-day against a
+#: full one changes the ROW COUNT, not just the labels.
+_SHORT_SESSION_SHARE = 0.8
+
+
 #: The lead-grid knobs (ADR-0062), named ONCE. Declared on a run, they
 #: override the universe's ``horizon`` block: the horizon is what a run
 #: ASKS, not a fact about the cohort it asks over.
@@ -3837,9 +3852,200 @@ def _score_grid(params, period_ms, offset_ms):
     return score_period, score_offset
 
 
+class _DayScramble:
+    """The expensive scramble: whole sessions donate the label (ADR-0074).
+
+    ADR-0069 built both ends of its seam — ``tier2_plan`` emits the
+    reshuffles and ``tier2_verdict`` reads the finished runs — and left
+    the middle deliberately absent, because it is about a hundred walks
+    of compute and is for a WINNER only. This is that middle.
+
+    For one scrambled walk the label at ``(session i, minute m)`` is the
+    label computed from session ``pi(i)`` at minute ``m``. Whole
+    sessions, never rows: a session is self-contained for every horizon
+    tested here, so moving one moves every overlapping label with it and
+    nothing is reordered inside it. PRESERVED: the within-session
+    autocorrelation, the h-minute label overlap, the time-of-day shape,
+    the day-level volatility clustering and the cross-stock correlation
+    at each minute. DESTROYED: only the link between the features at
+    ``t`` and the return over ``[t, t + h]`` — which is exactly the null.
+
+    Three things make it faithful rather than approximate. The donor pool
+    comes from a calendar read ONCE off the whole fold, so **every symbol
+    gets the same permutation** — the cross-stock correlation at a minute
+    survives only if the names move together. The training window and the
+    validation window are permuted INDEPENDENTLY, so a scrambled walk
+    still trains on one set of sessions and is scored on another. And the
+    within-session key is milliseconds from that session's FIRST row, not
+    the wall clock, so a summer session and a winter one align despite
+    the hour that daylight saving moves the New York open in UTC.
+
+    A row whose donor session lacks its minute is refused (NaN), which
+    the caller's finite filter then drops. That is the honest handling:
+    inventing a label for it would be the one thing this test exists to
+    rule out.
+
+    Parameters
+    ----------
+    seed : int
+        This scrambled walk's seed. Run ``b`` of a plan uses ``b``, so
+        the whole family is reproducible from the plan alone.
+    counts : dict
+        ``{utc_day: rows}`` for the fold — :meth:`from_prepared` reads it.
+    short : set, optional
+        Days already judged half-sessions and excluded from the pool.
+
+    Examples
+    --------
+    Two full sessions, each donating to the other::
+
+        s = _DayScramble(0, {0: 2, 1: 2})
+        len(s.calendar)  # 2
+    """
+
+    def __init__(self, seed, counts, short=()):
+        self.seed = int(seed)
+        self.counts = dict(counts)
+        self.calendar = tuple(sorted(self.counts))
+        self.short = frozenset(short)
+        self._donors = {}
+
+    @classmethod
+    def from_prepared(cls, seed, prepared):
+        """Read one fold's session calendar off its rows, once.
+
+        The calendar is the union over symbols and the row count per day
+        is the largest any symbol has, so a name missing a session cannot
+        shrink the pool or make one symbol's permutation differ from
+        another's.
+        """
+        import numpy as np
+
+        counts = {}
+        for item in prepared:
+            stamps = item[-6]
+            if stamps.size == 0:
+                continue
+            days, seen = np.unique(stamps // _DAY_MS, return_counts=True)
+            for day, rows in zip(days.tolist(), seen.tolist()):
+                counts[int(day)] = max(counts.get(int(day), 0), int(rows))
+        if not counts:
+            return cls(seed, {})
+        ordered = sorted(counts.values())
+        middle = len(ordered) // 2
+        median = (
+            float(ordered[middle]) if len(ordered) % 2
+            else (ordered[middle - 1] + ordered[middle]) / 2.0
+        )
+        short = {
+            day for day, rows in counts.items()
+            if rows < _SHORT_SESSION_SHARE * median
+        }
+        return cls(seed, counts, short)
+
+    def describe(self):
+        """Name this scramble for a run record, as a short string."""
+        return (
+            f"seed:{self.seed} sessions:{len(self.calendar)} "
+            f"short-dropped:{len(self.short)}"
+        )
+
+    def _days_in(self, lo, hi):
+        """Full sessions this window contains, in time order.
+
+        Day granularity on purpose: a session only PARTLY inside the
+        window would donate a truncated day, so it is left out of the
+        pool and its rows are refused. That costs at most the two
+        boundary sessions of a window hundreds of sessions wide.
+        """
+        return [
+            day for day in self.calendar
+            if day not in self.short
+            and (lo is None or day * _DAY_MS >= lo)
+            and (day + 1) * _DAY_MS - 1 <= hi
+        ]
+
+    def _donor_map(self, key, days):
+        """``{session: donor session}`` for one window, drawn once.
+
+        The key carries the window's own bounds, so the training and the
+        validation permutations of a fold are independent, and two folds
+        do not share one shuffle.
+        """
+        cached = self._donors.get(key)
+        if cached is not None:
+            return cached
+        pool = list(days)
+        donors = list(pool)
+        random.Random(f"{self.seed}|{key}").shuffle(donors)
+        out = dict(zip(pool, donors))
+        self._donors[key] = out
+        return out
+
+    def apply(self, stamps, y, buckets):
+        """Re-label rows from their donor session; refuse the unmatched.
+
+        Parameters
+        ----------
+        stamps : ndarray
+            One row's stamp, in epoch ms, aligned with ``y``.
+        y : ndarray
+            The REAL labels — the values the donor sessions hand around.
+        buckets : sequence
+            ``(key, mask, lo, hi)`` per window: its name, which rows sit
+            in it, and its bounds. A row in no bucket is refused, since
+            it belongs to neither the training nor the scored set.
+
+        Returns
+        -------
+        ndarray
+            The scrambled labels, NaN wherever no donor row matched.
+        """
+        import numpy as np
+
+        day = stamps // _DAY_MS
+        offset = np.zeros(stamps.shape, dtype=np.int64)
+        for one in np.unique(day):
+            here = day == one
+            offset[here] = stamps[here] - stamps[here].min()
+        finite = np.isfinite(y)
+        src_key = day[finite] * _KEY_STRIDE + offset[finite]
+        src_y = np.asarray(y, dtype=np.float64)[finite]
+        order = np.argsort(src_key, kind="stable")
+        src_key, src_y = src_key[order], src_y[order]
+        out = np.full(y.shape, np.nan, dtype=np.float64)
+        if src_key.size == 0:
+            return out
+        for key, mask, lo, hi in buckets:
+            if not np.any(mask):
+                continue
+            donors = self._donor_map(key, self._days_in(lo, hi))
+            if not donors:
+                continue
+            pool = np.asarray(sorted(donors), dtype=np.int64)
+            gift = np.asarray(
+                [donors[int(one)] for one in pool.tolist()], dtype=np.int64,
+            )
+            rows = np.nonzero(mask)[0]
+            slot = np.searchsorted(pool, day[rows])
+            keep = slot < pool.size
+            slot = np.where(keep, slot, 0)
+            keep &= pool[slot] == day[rows]
+            if not np.any(keep):
+                continue
+            rows, slot = rows[keep], slot[keep]
+            want = gift[slot] * _KEY_STRIDE + offset[rows]
+            at = np.searchsorted(src_key, want)
+            hit = at < src_key.size
+            at = np.where(hit, at, 0)
+            hit &= src_key[at] == want
+            out[rows[hit]] = src_y[at[hit]]
+        return out
+
+
 def _scan_fold_stamped(
     prepared, lead, train_end, val_start, val_end, train_start=None,
-    label=None, score_period_ms=None, score_offset_ms=0,
+    label=None, score_period_ms=None, score_offset_ms=0, scramble=None,
 ):
     """Like :func:`_scan_fold`, plus val stamps aligned with val rows.
 
@@ -3855,6 +4061,11 @@ def _scan_fold_stamped(
     are untouched, which is the point — row density is a training
     treatment, and two runs that formed rows at different spacings must
     still be judged on the same instants.
+
+    ``scramble`` is a :class:`_DayScramble` (ADR-0074) or ``None``. When
+    given, the window masks are computed FIRST and the labels are then
+    swapped between whole sessions inside each window — so the run is a
+    draw from luck alone and its skill is a null value, never a result.
     """
     import numpy as np
 
@@ -3872,23 +4083,41 @@ def _scan_fold_stamped(
             label.values(item[0], loc_ok, fut_ok) if label is not None
             else _raw_lead_return(t_px, loc_ok, fut_ok)
         )
+        # The masks come from the stamps alone, so they are the same
+        # whether or not the labels are about to be scrambled — which is
+        # what lets a scrambled walk keep the real walk's fold geometry.
+        every_stamp = stamps[ok]
+        every_future = t_ms[fut_ok]
+        train_all = (every_stamp <= train_end) & (every_future <= train_end)
+        if train_start is not None:
+            train_all &= every_stamp >= train_start
+        val_all = (
+            (every_stamp >= val_start)
+            & (every_stamp <= val_end)
+            & (every_future <= val_end)
+        )
+        if score_period_ms:
+            val_all &= (
+                ((every_stamp - score_offset_ms) % score_period_ms) == 0
+            )
+        if scramble is not None:
+            y = scramble.apply(
+                every_stamp, y,
+                (
+                    (f"train|{train_start}|{train_end}",
+                     train_all, train_start, train_end),
+                    (f"val|{val_start}|{val_end}",
+                     val_all, val_start, val_end),
+                ),
+            )
         finite = np.isfinite(y)
         if not np.any(finite):
             continue
-        stamp = stamps[ok][finite]
-        future_ms = t_ms[fut_ok][finite]
+        stamp = every_stamp[finite]
         x_ok = x[ok][finite]
         y = y[finite]
-        train = (stamp <= train_end) & (future_ms <= train_end)
-        if train_start is not None:
-            train &= stamp >= train_start
-        val = (
-            (stamp >= val_start)
-            & (stamp <= val_end)
-            & (future_ms <= val_end)
-        )
-        if score_period_ms:
-            val &= ((stamp - score_offset_ms) % score_period_ms) == 0
+        train = train_all[finite]
+        val = val_all[finite]
         if np.any(train):
             train_x.append(x_ok[train])
             train_y.append(y[train])
@@ -3989,7 +4218,7 @@ def _lead_skill(symbol, lead, h_steps, y, yhat, mu, mspe_mean, stamps, writer=No
 def _walk_no_information_series(
     prepared_one, model, leads, train_end, val_start, val_end, period_minutes,
     train_start=None, label=None, writer=None,
-    score_period_ms=None, score_offset_ms=0,
+    score_period_ms=None, score_offset_ms=0, scramble=None,
 ):
     """Sequential h* for one name; GO is that H or none.
 
@@ -4022,6 +4251,7 @@ def _walk_no_information_series(
             [prepared_one], lead, train_end, val_start, val_end,
             train_start=train_start, label=label,
             score_period_ms=score_period_ms, score_offset_ms=score_offset_ms,
+            scramble=scramble,
         )
         mu = float(tr_y.mean()) if tr_y.size else 0.0
         if val_x.shape[0] < 2:
@@ -4292,7 +4522,11 @@ class NoInformationScan(Node):
         ``lead // lattice_minutes - 1``. It must be a whole multiple of
         the run's row spacing and share its phase, or no row lands on
         it. Two runs formed at different spacings are comparable exactly
-        when they declare the same lattice.
+        when they declare the same lattice. Optional
+        ``label_scramble_seed`` runs the EXPENSIVE scramble (ADR-0074):
+        whole trading sessions donate each other's labels, so the walk
+        measures what luck alone produces. A run that declares it is a
+        NULL DRAW and its skill is never a result.
 
     Examples
     --------
@@ -4313,7 +4547,7 @@ class NoInformationScan(Node):
         "estimator", "estimator_params",
         "hpo_trials", "hpo_seed", "hpo_val_days", "hpo_embargo_days",
         "hpo_space", "hpo_objective",
-    ) + LABEL_PARAMS + LEAD_PARAMS + SCORE_GRID_PARAMS
+    ) + LABEL_PARAMS + LEAD_PARAMS + SCORE_GRID_PARAMS + SCRAMBLE_PARAMS
 
     @classmethod
     def validate_params(cls, params):
@@ -4430,7 +4664,12 @@ class NoInformationScan(Node):
                         )
         problems.extend(_label_problems(params))
         problems.extend(_lead_problems(params))
-        for knob in LABEL_PARAMS + LEAD_PARAMS:
+        if params.get("label_scramble_seed") is not None:
+            check_int_param(
+                problems, "label_scramble_seed",
+                params.get("label_scramble_seed"), ge=0,
+            )
+        for knob in LABEL_PARAMS + LEAD_PARAMS + SCRAMBLE_PARAMS:
             if knob in params and params[knob] is None:
                 problems.append(
                     f"{knob} is present and null — a label or lead knob is "
@@ -4555,6 +4794,11 @@ class NoInformationScan(Node):
             inputs["bars"], inputs["records"], features,
             spec["price_field"], val_end, arrays=arrays,
         )
+        scramble_seed = self.params.get("label_scramble_seed")
+        scramble = (
+            None if scramble_seed is None
+            else _DayScramble.from_prepared(scramble_seed, prepared)
+        )
         codes = _symbol_codes(spec, prepared)
         prepared = _attach_symbol_codes(prepared, codes)
         categorical = (
@@ -4592,10 +4836,22 @@ class NoInformationScan(Node):
             "n_leads": float(len(leads)),
             "n_series": float(len(prepared)),
         }
+        if scramble is not None:
+            # Said loudly and recorded as a number: a reader who mistakes
+            # one of these for a result reads a lucky draw as an edge.
+            metrics["label_scramble_seed"] = float(scramble.seed)
+            metrics["n_scramble_sessions"] = float(len(scramble.calendar))
+            self.log.info(
+                "no-information scan: TIER-2 SCRAMBLE %s — whole sessions "
+                "donate each other's labels, so this fold's skill is a draw "
+                "from LUCK ALONE and is never a result (ADR-0074)",
+                scramble.describe(),
+            )
         tr_x, tr_y, va_x, va_y, _ = _scan_fold_stamped(
             prepared, train_lead, train_end, val_start, val_end,
             train_start=train_start, label=label,
             score_period_ms=score_period_ms, score_offset_ms=score_offset_ms,
+            scramble=scramble,
         )
         metrics["n_train"] = float(tr_x.shape[0])
         metrics["n_val"] = float(va_x.shape[0])
@@ -4613,6 +4869,7 @@ class NoInformationScan(Node):
                     prepared, train_lead, inner_train_end,
                     inner_val_start, inner_val_end,
                     train_start=train_start, label=label,
+                    scramble=scramble,
                 )
                 if in_x.shape[0] >= 2 and ho_x.shape[0] >= 2:
                     objective = self.params.get("hpo_objective", "mspe")
@@ -4670,6 +4927,7 @@ class NoInformationScan(Node):
                     writer=writer,
                     score_period_ms=score_period_ms,
                     score_offset_ms=score_offset_ms,
+                    scramble=scramble,
                 )
                 curve.extend(rows)
                 n_go += int(series["go"])

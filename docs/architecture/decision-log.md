@@ -3479,3 +3479,92 @@ node between the store and the features, and it should be measured and
 decided on its own.
 
 ---
+## ADR-0074 — The expensive scramble is a run knob, and a session donates its whole label column
+
+**Status:** proposed (2026-09-03; plan `docs/plans/2026-09-horizon-search.md`
+P8 — "many attempts need a fair bar")
+
+**Context.** ADR-0069 built both ends of a seam and left the middle out
+on purpose. `tier2_plan` emits the day reshuffles, `tier2_verdict` reads
+the finished runs, and `TIER2_SEAM` names the gap between them — the
+part that actually re-runs the walk with the days shuffled, about a
+hundred walks of compute, deliberately withheld "for a WINNER only".
+
+There is now a winner. ADR-0069's cheap pass — the session sign-flip on
+stored scores — left exactly two cells standing: LLY three minutes ahead
+and the group two minutes ahead, both on one-minute rows with the tree
+model. The cheap pass cannot finish the job, and ADR-0069 says why: **it
+cannot test the fitting.** A label that leaked into a feature is already
+baked into every stored forecast, so re-weighting those forecasts can
+never reveal it. Only a refit can. The second question is worth the
+compute on its own: if the scrambled statistics do not sit near mean 0
+and sd 1, the variance estimator is wrong and every p-value in the
+project is wrong with it — and nothing but a refit produces those
+statistics.
+
+**Decision.** The scramble is a **run knob**, not a script:
+`label_scramble_seed` on the `intraday_equities-no-information-scan`
+node, honoured by `_DayScramble` in the child's `nodes.py`. A scrambled
+walk is therefore an ordinary walk-forward document, run by the ordinary
+command, recorded in the ordinary run root and judged by the ordinary
+ADR-0067 rule. Nothing about how it is scored is special, which is the
+whole point: a null draw must travel the same path as the real result or
+it is not that result's null.
+
+Four things fix what the permutation is allowed to move.
+
+- **The exchangeable unit is a whole trading session.** The label at
+  (session i, minute m) becomes the label computed from session pi(i) at
+  minute m. Sessions, never rows: a session is self-contained for every
+  horizon tested here, so moving one moves every overlapping label with
+  it and nothing is reordered inside it. PRESERVED: the within-session
+  autocorrelation, the h-minute label overlap, the time-of-day shape,
+  the day-level volatility clustering, and the cross-stock correlation
+  at each minute. DESTROYED: only the link between the features at t and
+  the return over [t, t+h].
+- **One permutation for every symbol.** The donor map is drawn from a
+  calendar read ONCE off the whole fold — the union over names, the
+  largest row count any name has — so a name missing a session cannot
+  shrink the pool or hand two names different maps. If the names did not
+  move together the cross-stock correlation would be destroyed too, and
+  the null would no longer be the null we mean.
+- **Training and validation are drawn apart.** Each fold's training
+  window and validation window get independent permutations, keyed by
+  their own bounds. One shared shuffle would let a scrambled walk train
+  on the sessions it is scored on.
+- **The within-session key is milliseconds from that session's FIRST
+  row, not the wall clock.** A summer session and a winter one then
+  align despite the hour daylight saving moves the New York open in UTC.
+
+Two refusals, both deliberate. A session shorter than 80% of the median
+leaves the donor pool — permuting a half-day against a full one changes
+the ROW COUNT rather than the labels. And a row whose donor session
+lacks its minute is **refused (NaN) and dropped**, never given an
+invented label. The cost is measured, not assumed: on the LLY cell a
+scrambled walk scores 10,140 rows against the real walk's 10,266, which
+is 1.2% — the boundary sessions of each window plus the ragged end of
+the validation window. Filling those rows from their own real labels
+would have kept the count exact by leaking real signal into the null,
+which is the one thing this test exists to rule out.
+
+The verdict is `tier2_verdict`, unchanged: the real walk must beat EVERY
+scrambled one, and the scrambled statistics must sit near mean 0, sd 1.
+
+**Consequences.** A run that declares `label_scramble_seed` says so in
+its log and records the seed and the session count as metrics, because a
+reader who mistakes one of these walks for a result reads a lucky draw
+as an edge. B runs give a permutation p of at least 1/(B+1), so 19 runs
+buy p = 0.05 and 99 buy p = 0.01; a family smaller than the planned 100
+is honest only if the count is stated beside the answer. At about seven
+and a half minutes and 13.7 GB a walk, one at a time, the full hundred
+per cell is twelve and a half hours — which is why the count is reported
+and not assumed.
+
+One thing this ADR predicts and the runs must be read against. The
+scrambled DM statistic is expected to sit **slightly below zero**, not
+at zero: a fitted model with no signal is worse than the constant it is
+measured against, because it adds estimation noise the constant does
+not. That makes ADR-0067's threshold conservative rather than liberal.
+The sd is the check that matters for the variance estimator; a mean that
+drifts below zero is the fitting cost showing up, and a mean ABOVE zero
+would be the alarming direction.

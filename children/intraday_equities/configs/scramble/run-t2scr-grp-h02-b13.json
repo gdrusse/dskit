@@ -1,0 +1,191 @@
+{
+  "name": "intraday-equities-t2scr-grp-h02-b13",
+  "notes": "TIER-2 SCRAMBLE, run 13 of 19 (ADR-0074). The GROUP at 2 minutes ahead — the furthest look-ahead that cleared ADR-0069's many-attempts bar for the five names taken together (t +3.67, skill +0.1302%). This walk is a NULL DRAW and its skill is never a result: whole trading sessions donate each other's labels (label_scramble_seed=13), so the link between the features at t and the return over [t, t+h] is broken while the within-session autocorrelation, the h-minute label overlap, the time-of-day shape, the day-level volatility clustering and the cross-stock correlation at each minute all survive intact. Every other knob is byte-identical to run-pb-s01-h02-lgbm-cross.json — the same twenty folds, the same 730-day bounded training window, the same vol-scaled SPY-residual label, the same half-hour scoring lattice, the same fixed LightGBM hyperparameters and the same feature blocks. The question the family answers is the only one worth 100 walks: does the real cell sit outside what shuffled days produce?",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe-blocks.json",
+        "overrides": {
+          "period_ms": 60000
+        }
+      },
+      "notes": "The H<=20 grid variant, with the row spacing overridden to 1 minute(s) for this cell (ADR-0065). The cohort, calendar and holdout dates stay exactly the shared ones."
+    },
+    "alpaca": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split",
+        "universe": "configs/universe-blocks.json",
+        "start_ms": 1577836800000,
+        "sessions": [
+          "rth"
+        ]
+      },
+      "notes": "Split-adjusted historical SIP tape (source alpaca-sip-split, ADR-0063): AAPL's 2020 4-for-1, WMT's 2024 3-for-1 and the XLE/XLK 2-for-1s of December 2025 are all removed by the vendor, so no change of unit reads as a price move. start_ms is the study's start date, 2018-01-01 (ADR-0066) - it precedes the earliest bar any fold reads by 2y4m, and it puts XLF's 2016-09-19 XLRE spin-off, the one corporate action the vendor does NOT adjust, outside the readable window. Prices here are NOT the as-traded scale and are not comparable with any number recorded before 2026-09-03. Run from the child root."
+    },
+    "session": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$alpaca.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "session",
+            "op": "==",
+            "value": "rth"
+          }
+        ]
+      },
+      "notes": "Regular session only; the store keeps every vendor minute."
+    },
+    "features": {
+      "uses": "intraday_equities-session-features",
+      "inputs": {
+        "records": "$session.records",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "lookback": 20,
+        "layout": "columns",
+        "momentum_horizons": [
+          {
+            "width": 3,
+            "tag": "3m",
+            "cross_session": false,
+            "notes": "Few minutes; sharper than the 5m scale in the 46."
+          },
+          {
+            "width": 120,
+            "tag": "2h",
+            "cross_session": true,
+            "notes": "Condenses the old L=120 window into ret/rv/mom. cross_session so its warmup is once, not daily."
+          },
+          {
+            "width": 180,
+            "tag": "3h",
+            "cross_session": true,
+            "notes": "Few hours, still inside one RTH session. cross_session so its warmup is once, not daily."
+          },
+          {
+            "width": 780,
+            "tag": "2s",
+            "cross_session": true,
+            "notes": "Two RTH sessions."
+          },
+          {
+            "width": 1950,
+            "tag": "1w",
+            "cross_session": true,
+            "notes": "Five RTH sessions, about a week."
+          }
+        ],
+        "feature_blocks": [
+          "cross"
+        ]
+      },
+      "notes": "lookback=20 emits one-minute ret_lag columns for the last 20 minutes. Every horizon here is cross_session so none costs rows beyond a one-time warmup; see docs/research/row-loss-is-intra-session-scale-warmup-not-cross-session.md."
+    },
+    "tradable": {
+      "uses": "intraday_equities-keep-symbols",
+      "inputs": {
+        "records": "$features.records",
+        "symbols": "$universe.tradable"
+      },
+      "params": {
+        "field": "symbol"
+      },
+      "notes": "SPY has already entered the residual features; score tradables."
+    },
+    "scan": {
+      "uses": "intraday_equities-no-information-scan",
+      "inputs": {
+        "records": "$names.records",
+        "bars": "$features.tape",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
+        "val_start_ms": "$splits.val_start_ms",
+        "val_end_ms": "$splits.val_end_ms",
+        "label_scale": "vol",
+        "label_residual": "SPY",
+        "lead_start": 2,
+        "lead_step": 1,
+        "lead_stop": 2,
+        "score_period_ms": 1800000,
+        "estimator_params": {
+          "n_estimators": 200,
+          "learning_rate": 0.02,
+          "num_leaves": 15,
+          "max_depth": 4,
+          "min_child_samples": 200,
+          "reg_lambda": 1.0,
+          "reg_alpha": 0.1,
+          "subsample": 0.8,
+          "colsample_bytree": 0.6,
+          "n_jobs": 8,
+          "random_state": 0,
+          "verbosity": -1
+        },
+        "estimator": "lightgbm.LGBMRegressor",
+        "label_scramble_seed": 13
+      },
+      "notes": "The single lead 2: lead_start is also the training label (ADR-0062), so this cell trains and scores at 2 minute(s) and nowhere else. score_period_ms 1800000 judges only validation rows on the half-hour, so the label at a scored instant is the same number in every cell whatever the row spacing, and the Newey-West lag comes from the lattice rather than the spacing (ADR-0065). The estimator is declared here so the two model twins share one cohort (ADR-0060); hyperparameters are held identical across the whole grid. LightGBM's hyperparameters are FIXED at the run-multi3 values and are not searched per cell. P1's design holds hyperparameters fixed in this wave, and the search was also unaffordable: six inner-holdout tree fits per fold made one cell a 50-minute walk against ridge's 6.6, which is 20 hours over the 24 LightGBM cells. Ridge keeps its alpha sweep because it is one extra linear solve, and because the row count changes fivefold across the spacing axis, which is exactly what alpha answers to. n_jobs is 8 rather than 4: a thread count is not a model knob, and it is the same in every LightGBM cell."
+    },
+    "names": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$tradable.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "in",
+            "value": [
+              "AAPL",
+              "JPM",
+              "LLY",
+              "WMT",
+              "XOM"
+            ]
+          }
+        ]
+      },
+      "notes": "All five tradables. AAPL and WMT were excluded while the tape carried unadjusted splits; the split-adjusted store (ADR-0063) removed that reason, so the cohort that builds the features and the cohort that gets SCORED are the same five again. Sits after tradable so a later run can narrow what is scored without touching what is built."
+    }
+  },
+  "walkforward": {
+    "objective": "$scan.metrics.val_ic",
+    "select": "max",
+    "first": "2022-05-06",
+    "step_days": 63,
+    "count": 20,
+    "val_days": 63,
+    "embargo_days": 5,
+    "train_days": 730,
+    "notes": "Same post-COVID folds as run-hstar-cv-postcovid.json so the two are comparable: first validation 2022-05-06, twenty 63-day steps, a real 730-day bounded training window, last validation inside the 2025-11-30 cut. objective is val_ic, NOT go_frac: counting fold-level rejections and taking the max is vote counting, which Hedges-Olkin showed is inconsistent when per-fold power is below one half (A0035). The winner here only labels a fold in the summary; the science is the per-fold sequence, which is what the block-by-block reading needs. embargo_days=5 is now larger than any label window on this grid (20 minutes), so no training row's label can reach into validation."
+  },
+  "outputs": {
+    "run_root": "",
+    "notes": "Empty = ./pipeline_runs under the invoking cwd."
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        },
+        "notes": "Local sqlite beside the invoking cwd."
+      }
+    ],
+    "notes": "Excluded from identity - where metrics land is not what it computes."
+  }
+}
