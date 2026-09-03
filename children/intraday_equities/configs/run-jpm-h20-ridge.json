@@ -1,0 +1,175 @@
+{
+  "name": "intraday-equities-jpm-h20-ridge",
+  "notes": "JPM H in {5,10,15,20}, ridge baseline. Two changes from run-jpm-h20.json (A0037), both from findings it produced. (1) 2h and 3h flip to cross_session, and 60m does too in the universe variant: an intra-session scale of width W emits NaN for the first W of every 390 RTH minutes and _frame_matrix drops the row, so 3h alone cost 46% of every session permanently. Measured recovery 49.4% -> 77.6% of grid rows. The windows now bridge the overnight gap, which changes what they mean; at this horizon they are regime context, not a directional claim. (2) Ridge with one alpha replaces LightGBM with 32 draws. The tree run showed train IC 0.10-0.31 against val IC ~0 in every fold and an inner-holdout score uncorrelated with fold validation. Still DIAGNOSTIC, not a lock. The vol-normalised label is NOT here - it needs a node change and an ADR.",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe-jpm-h20.json"
+      },
+      "notes": "The H<=20 grid variant. lead_start=5 is also the training label."
+    },
+    "alpaca": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip",
+        "universe": "configs/universe-jpm-h20.json"
+      },
+      "notes": "Historical SIP tape, adjustment raw. Run from the child root."
+    },
+    "session": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$alpaca.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "session",
+            "op": "==",
+            "value": "rth"
+          }
+        ]
+      },
+      "notes": "Regular session only; the store keeps every vendor minute."
+    },
+    "features": {
+      "uses": "intraday_equities-session-features",
+      "inputs": {
+        "records": "$session.records",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "lookback": 20,
+        "layout": "columns",
+        "momentum_horizons": [
+          {
+            "width": 3,
+            "tag": "3m",
+            "cross_session": false,
+            "notes": "Few minutes; sharper than the 5m scale in the 46."
+          },
+          {
+            "width": 120,
+            "tag": "2h",
+            "cross_session": true,
+            "notes": "Condenses the old L=120 window into ret/rv/mom. cross_session so its warmup is once, not daily."
+          },
+          {
+            "width": 180,
+            "tag": "3h",
+            "cross_session": true,
+            "notes": "Few hours, still inside one RTH session. cross_session so its warmup is once, not daily."
+          },
+          {
+            "width": 780,
+            "tag": "2s",
+            "cross_session": true,
+            "notes": "Two RTH sessions."
+          },
+          {
+            "width": 1950,
+            "tag": "1w",
+            "cross_session": true,
+            "notes": "Five RTH sessions, about a week."
+          }
+        ]
+      },
+      "notes": "lookback=20 emits one-minute ret_lag columns for the last 20 minutes. Every horizon here is cross_session so none costs rows beyond a one-time warmup; see docs/research/row-loss-is-intra-session-scale-warmup-not-cross-session.md."
+    },
+    "tradable": {
+      "uses": "intraday_equities-keep-symbols",
+      "inputs": {
+        "records": "$features.records",
+        "symbols": "$universe.tradable"
+      },
+      "params": {
+        "field": "symbol"
+      },
+      "notes": "SPY has already entered the residual features; score tradables."
+    },
+    "jpm": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$tradable.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "in",
+            "value": [
+              "JPM"
+            ]
+          }
+        ]
+      },
+      "notes": "One name. Sits after tradable so the cohort that built the cross-sectional features is untouched. JPM is split-free across the sample, which is why it is the one kept."
+    },
+    "scan": {
+      "uses": "intraday_equities-no-information-scan",
+      "inputs": {
+        "records": "$jpm.records",
+        "bars": "$features.tape",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
+        "val_start_ms": "$splits.val_start_ms",
+        "val_end_ms": "$splits.val_end_ms",
+        "estimator_params": {
+          "alpha": 10.0,
+          "fit_intercept": true,
+          "random_state": 0
+        },
+        "hpo_trials": 6,
+        "hpo_seed": 0,
+        "hpo_val_days": 63,
+        "hpo_embargo_days": 5,
+        "hpo_objective": "ic",
+        "hpo_space": {
+          "alpha": [
+            1.0,
+            10.0,
+            100.0,
+            1000.0,
+            10000.0,
+            100000.0
+          ]
+        }
+      },
+      "notes": "Ridge; the only knob is alpha, swept over six decades on the inner train holdout. Fold validation stays unread. Ridge is scale-sensitive and these columns are not standardised, so alpha ranges high on purpose. hpo_objective stays ic: at this SNR an MSPE search picks the flattest model and a constant forecast is the MSPE optimum outright."
+    }
+  },
+  "walkforward": {
+    "objective": "$scan.metrics.val_ic",
+    "select": "max",
+    "first": "2022-05-06",
+    "step_days": 63,
+    "count": 20,
+    "val_days": 63,
+    "embargo_days": 5,
+    "train_days": 730,
+    "notes": "Same post-COVID folds as run-hstar-cv-postcovid.json so the two are comparable: first validation 2022-05-06, twenty 63-day steps, a real 730-day bounded training window, last validation inside the 2025-11-30 cut. objective is val_ic, NOT go_frac: counting fold-level rejections and taking the max is vote counting, which Hedges-Olkin showed is inconsistent when per-fold power is below one half (A0035). The winner here only labels a fold in the summary; the science is the per-fold sequence, which is what the block-by-block reading needs. embargo_days=5 is now larger than any label window on this grid (20 minutes), so no training row's label can reach into validation."
+  },
+  "outputs": {
+    "run_root": "",
+    "notes": "Empty = ./pipeline_runs under the invoking cwd."
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        },
+        "notes": "Local sqlite beside the invoking cwd."
+      }
+    ],
+    "notes": "Excluded from identity - where metrics land is not what it computes."
+  }
+}

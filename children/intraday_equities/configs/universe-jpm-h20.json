@@ -1,5 +1,5 @@
 {
-  "notes": "The only market and science knob file. Widen the candidate set by adding a name to symbols plus tradable or reference, then the same name on both source configs and both suites. Session hours, scales, holidays, and the horizon go/no-go live here so nodes never restate them.",
+  "notes": "JPM-only H probe variant of universe.json. Identical except the horizon grid, which stops at 20 minutes. Four leads (5/10/15/20) chosen because at period_ms=300000 the Newey-West overlap correction needs only lead//5-1 = 3 lags on a ~3.3k-row fold validation window, where the normal critical value is sound. The 234-lead grid in universe.json reached 233 lags and is VOID (A0035). Nothing here is a lock; this file drives a diagnostic.",
   "symbols": [
     "AAPL",
     "JPM",
@@ -156,7 +156,8 @@
     {
       "width": 60,
       "tag": "60m",
-      "cross_session": false
+      "cross_session": true,
+      "notes": "Flipped to cross_session: intra-session it emitted NaN for the first 60 of every 390 RTH minutes, and _frame_matrix drops a row on any non-finite column, so it cost 15.4% of every session forever. Cross-session it costs a one-time warmup. The window now reads back through the overnight gap; at a 5-20 minute horizon this scale is regime context, not a directional claim."
     },
     {
       "width": 390,
@@ -172,14 +173,14 @@
     }
   ],
   "horizon": {
-    "notes": "3 RTH days in 5-minute leads. Go if an anchor or a 30-minute contiguous band has val |IC| above se_mult null SEs. label_lead 470 is a PLACEHOLDER, not a lock: the HL-scan that produced it is VOID (A0035, docs/decisioning/decision-hl-scan.md) and hstar-go.md says do not lock H. Lockbox unused.",
+    "notes": "Four leads only: 5, 10, 15, 20 minutes. anchors/se_mult/band_leads are unused by no-information-scan (it walks p-values, not the IC band) and are kept so the object still validates. label_lead is inert here for the same reason.",
     "lead_start": 5,
     "lead_step": 5,
-    "lead_stop": 1170,
+    "lead_stop": 20,
     "anchors": [
-      390,
-      780,
-      1170
+      5,
+      10,
+      20
     ],
     "top_k": 5,
     "se_mult": 2.0,
@@ -187,18 +188,12 @@
     "label_lead": 470
   },
   "scan": {
-    "notes": "H/L are NOT locked: decision-hl-scan.md is VOID (A0035) — picked_lookback 120 was selected by a sign-blind |IC| rule at rank IC -0.0825. Treat it as a placeholder. lookback stays the action-window length. keep_features is the training column set.",
-    "estimator": "lightgbm.LGBMRegressor",
+    "notes": "Ridge, not LightGBM. run-jpm-h20 (A0037) showed train IC 0.10-0.31 against val IC ~0 in all seven folds and an inner-holdout score that carried no information about fold validation - 32 tree combos cannot be ranked on ~1800 rows. Ridge has one knob, tunable on that holdout, and at an achievable R2 near 0.001 there is no budget for the interactions a tree exists to find. Trees return only if ridge clears zero.",
+    "estimator": "sklearn.linear_model.Ridge",
     "estimator_params": {
-      "n_estimators": 200,
-      "learning_rate": 0.05,
-      "num_leaves": 31,
-      "min_child_samples": 80,
-      "subsample": 0.8,
-      "colsample_bytree": 0.8,
-      "n_jobs": 1,
-      "random_state": 0,
-      "verbosity": -1
+      "alpha": 10.0,
+      "fit_intercept": true,
+      "random_state": 0
     },
     "l_start": 30,
     "l_step": 5,
@@ -238,7 +233,7 @@
     "industry_tech"
   ],
   "holdouts": {
-    "notes": "H/L walk-forward last val 2025-11-30. HPO val Dec 2025–Feb 2026. Untouched from 2026-03-01. CV/HPO documents set test_end_ms=1772323199000 (28 Feb 2026). Backtest after confirm may open through test_b_end_ms. See docs/decisioning/hstar-go.md.",
+    "notes": "H/L walk-forward last val 2025-11-30. HPO val Dec 2025\u2013Feb 2026. Untouched from 2026-03-01. CV/HPO documents set test_end_ms=1772323199000 (28 Feb 2026). Backtest after confirm may open through test_b_end_ms. See docs/decisioning/hstar-go.md.",
     "test_a_end_ms": 1785542399000,
     "test_b_start_ms": 1785542400000,
     "test_b_end_ms": 1788220799000

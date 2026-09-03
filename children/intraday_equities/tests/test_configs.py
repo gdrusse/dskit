@@ -287,15 +287,39 @@ def test_sources_and_suites_follow_the_universe():
     assert "2021-06-18" not in UNIVERSE["holidays"]
 
 
+# The cohort, the calendar and the grid geometry. A universe variant may
+# move the horizon, the estimator or a scale's cross_session flag; it may
+# NOT move any of these, because two copies of a cohort that can drift are
+# the defect this file exists to prevent.
+_COHORT_KEYS = (
+    "symbols", "tradable", "reference", "industry", "holidays",
+    "session", "period_ms", "offset_ms", "price_field", "max_gap_minutes",
+)
+
+
+def _universe_path(raw, name):
+    """The universe file a run doc pins, asserted consistent across nodes."""
+    path = raw["pipeline"]["universe"]["params"]["path"]
+    for node in raw["pipeline"].values():
+        if node.get("uses") == "intraday_equities-bars":
+            assert node["params"]["universe"] == path, name
+    return path
+
+
 def test_run_docs_do_not_restate_the_cohort():
     for name in _run_docs():
         raw = _raw(name)
-        assert raw["pipeline"]["universe"]["params"]["path"] == (
-            "configs/universe.json"
-        ), name
+        path = _universe_path(raw, name)
+        if path != "configs/universe.json":
+            # A variant is allowed, but its cohort must be the SAME cohort.
+            variant = json.loads(
+                open(os.path.join(CONFIGS, os.path.basename(path))).read()
+            )
+            for key in _COHORT_KEYS:
+                assert variant.get(key) == UNIVERSE.get(key), (
+                    f"{name}: {path} diverges from universe.json at {key!r}"
+                )
         for node in raw["pipeline"].values():
-            if node.get("uses") == "intraday_equities-bars":
-                assert node["params"]["universe"] == "configs/universe.json", name
             if node.get("uses") == "intraday_equities-keep-symbols":
                 assert node["inputs"]["symbols"] == "$universe.tradable", name
             if node.get("uses") == "intraday_equities-portfolio":

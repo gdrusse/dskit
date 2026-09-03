@@ -1988,11 +1988,14 @@ def _fit_estimator(train_x, train_y, scan, categorical=None):
         params = dict(scan.get("estimator_params") or {})
         params.pop("categorical_feature", None)
         model = cls(**params)
-        if categorical is not None:
+        # categorical_feature is a LightGBM-family kwarg; a linear
+        # estimator refuses it, so only pass it where fit declares it.
+        if categorical is not None and _accepts_categorical(model):
             model.fit(train_x, train_y, categorical_feature=categorical)
         else:
             model.fit(train_x, train_y)
         return model
+
 
     class _Lstsq:
         """Intercept + linear map; stdlib stand-in when no estimator is set."""
@@ -2009,6 +2012,20 @@ def _fit_estimator(train_x, train_y, scan, categorical=None):
             return design @ self.coef_
 
     return _Lstsq().fit(train_x, train_y)
+
+
+def _accepts_categorical(model):
+    """Report whether the estimator's fit accepts ``categorical_feature``."""
+    import inspect
+
+    try:
+        sig = inspect.signature(model.fit)
+    except (TypeError, ValueError):
+        return False
+    params = sig.parameters
+    return "categorical_feature" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
 
 
 def _mspe(y, yhat):
