@@ -1,4 +1,4 @@
-"""Thin cohort wrappers over dskit's Alpaca and Schwab bar packs.
+"""Thin cohort wrappers over dskit's Alpaca and Schwab market-data packs.
 
 ADR-0046 owns transport, credentials, windows, normalization, and
 checkpointing. This module only names the child's classes and keeps
@@ -8,9 +8,10 @@ one-minute bars as the declared source interval.
 from __future__ import annotations
 
 from dskit.onboarding.libs import alpaca as _alpaca
+from dskit.onboarding.libs import alpaca_quotes as _alpaca_quotes
 from dskit.onboarding.libs import schwab as _schwab
 
-__all__ = ["AlpacaBars", "SchwabBars"]
+__all__ = ["AlpacaBars", "AlpacaQuoteMinutes", "SchwabBars"]
 
 
 class AlpacaBars(_alpaca.AlpacaBarsConnector):
@@ -33,6 +34,28 @@ class AlpacaBars(_alpaca.AlpacaBarsConnector):
             "adjustment": "raw",
         })
         knobs["timeframe"]  # (1, 'Minute')
+    """
+
+
+class AlpacaQuoteMinutes(_alpaca_quotes.AlpacaQuoteMinutesConnector):
+    """Alpaca NBBO quotes reduced to this child's one-minute grid.
+
+    Parameters
+    ----------
+    None
+        The connector is stateless; config supplies every setting.
+
+    Examples
+    --------
+    Discover the reduced stream offline::
+
+        connector = AlpacaQuoteMinutes()
+        streams = connector.discover({
+            "symbols": ["LLY"],
+            "start": "2026-02-25",
+            "end": "2026-02-26",
+        })
+        streams[0]["stream"]  # 'quote_minutes'
     """
 
 

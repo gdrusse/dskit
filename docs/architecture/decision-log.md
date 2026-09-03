@@ -2547,3 +2547,91 @@ recorded before 2026-09-03, so every AAPL and WMT result to date is void
 and the horizon grid has to re-run on five names. Two stores cost disk
 and one more thing to keep straight; the note in each config says which
 is which.
+
+---
+
+## ADR-0065 — Quotes arrive already reduced: one NBBO row per minute boundary
+
+**Status:** proposed (2026-09-03; P4's diagnostic left only the
+quote-midpoint arm able to settle whether the H=1 gain is a price or a
+print, and the tree holds no quote data at all)
+
+**Context.** Every price in this study is the last trade of the minute.
+A print sits at the bid or the ask, so that number flips by the spread
+even when nothing changed. P4's diagnostic found the H=1 gain is entirely
+LLY — 20 folds of 20, both models — while XOM loses; and LLY is the name
+with the widest spread, the fewest prints per minute, and the only
+negative one-minute autocorrelation in all eleven years, while XOM's
+measures to zero. The ranking of the edge across names is exactly the
+ranking of the flip. The same diagnostic killed the `vwap` arm: averaging
+inside the bar manufactures a positive lag-one autocorrelation up to
+Working's +0.25 ceiling, twenty times the effect under test. Only a
+midpoint — which cannot bounce, because it is not a print — separates the
+two hypotheses, and no field in the bar tree carries one.
+
+The obvious shape, a quotes twin of `AlpacaBarsConnector` that stores what
+the vendor returns, is not affordable and not wanted. Measured on this
+cohort: 5.8 M NBBO updates on a 2022 session, 1.4 M on a 2026 one, about
+3.1 M a day on average across five names. The free tier serves 200
+requests a minute of 10,000 quotes each — 2 M quotes a minute, and
+parallel workers only spend the same bucket faster (six of them earn a
+429 in ten seconds). The full walk-forward era for five names is 2.7 B
+quotes, roughly 23 hours of pulling and hundreds of gigabytes, to produce
+1.7 M minute rows. The ratio is the finding: the asset is three orders of
+magnitude smaller than the transport.
+
+**Decision.** A second Alpaca pack, `dskit/onboarding/libs/alpaca_quotes.py`,
+whose stream is `quote_minutes` and whose unit is the minute, not the
+quote. Raw quotes are never stored: pages stream through a fixed-size
+fold (`minute_rows`) and only the reduced row reaches disk.
+
+- **The row is a boundary observation.** For bar minute `t`, the row is
+  the LAST two-sided quote stamped in `[t, t+60s)` — the quote prevailing
+  at the instant the minute's last trade also sits at, so `mid` and
+  `close` are the same event seen two ways. Crossed (ask below bid),
+  locked (ask equal to bid), one-sided and non-positive quotes are
+  COUNTED but never selected, and `n_quotes`/`n_crossed`/`n_locked` ride
+  along so market quality is measurable from the asset without going back
+  to the vendor. `quote_age_ms` states how stale the chosen quote was at
+  the boundary; `max_age_seconds` refuses one older than its own minute.
+  A minute with no usable quote yields no row, so absence is absence, not
+  a fabricated price.
+- **`bid`, `ask` and `spread` are stored beside `mid`, not derived away.**
+  The spread is a feature and a diagnostic in its own right (P3), and a
+  mid without the half-width it came from cannot be audited.
+- **Symbols are declared in PULL ORDER and each carries its own cursor.**
+  The generic "skip anything at or before the cursor" rule assumes one
+  time-ordered stream; here the pull is symbol-major, so the cursor is a
+  map. It buys two things: the decisive names finish first and can be
+  reported on while the rest are still coming, and a symbol added to the
+  cohort later backfills from `start` while the others resume.
+- **`budget_seconds` bounds one job.** A cursor advances only on a
+  completed session, so a sixteen-month backfill is a sequence of
+  resumable jobs that never half-writes a day.
+- **Regular hours only, and `end` is the fetch bound** (ADR-0063's rule,
+  applied here): out-of-hours quotes are most of the raw volume and no
+  scored bar reads them, and a quote at or after the study's cut is never
+  requested.
+- **Transport is stdlib HTTP, not `alpaca-py`.** The SDK materializes a
+  whole `QuoteSet` per request, which is the one thing this connector
+  exists to avoid. Pacing is a client-side token bucket under the
+  published limit; 429 and 5xx retry with exponential backoff.
+
+**Consequences.** A midpoint price becomes selectable as `price_field`
+without a new price tree: the rows key on `(symbol, ts)` like bars, land
+in the same onboarding root under their own source name, and join on the
+minute. The reduction is lossy AND irreversible — the intra-minute quote
+path is gone, so anything wanting quote imbalance, effective spreads,
+Lee–Ready signing or a sub-minute microprice must re-pull, and this pack
+cannot serve it. That is the trade: a decade of raw NBBO for these names
+is not storable here, and the question on the table is a minute-scale
+one. Quotes are UNADJUSTED — the endpoint has no adjustment knob — so a
+row is on the as-traded scale of its own day, matching `alpaca-sip` and
+NOT `alpaca-sip-split`; joining mid to split-adjusted bars across a split
+requires rescaling, which is why the first window was chosen to contain
+none for this cohort. Cost is the binding constraint on coverage, not
+disk: the first pull takes the last sixteen months to the cut, about five
+and a half hours for five names, and extending it backwards is more
+hours, not more code.
+
+---

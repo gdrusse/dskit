@@ -130,6 +130,7 @@ Hooks never write it. Pytest does not record. A child without
 | A0089 | acquire | backfill alpaca-sip-split/bars | 2026-09-03T04:30:27+00:00 | --root ./ob --source alpaca-sip-split --stream bars --mode backfill | 35f6a02a86eff1a74a21d6cdfbd917532ac8d1e131e7bdd5c5eff58115117d21 | ./ob |  |
 | A0090 | research | p9-fixed-the-history-is-split-adjusted-and-the-splits-are-gone | 2026-09-03T04:36:26+00:00 | P9 fixed: the history is split-adjusted, and the splits are gone | docs/research/p9-fixed-the-history-is-split-adjusted-and-the-splits-are-gone.md | docs/research/p9-fixed-the-history-is-split-adjusted-and-the-splits-are-gone.md |  |
 | A0091 | acquire | Split-adjusted 1-minute re-pull, twelve symbols, alpaca-sip-split | 2026-09-03T04:36:31+00:00 | configs/source-alpaca-split-backfill.json | ob/observations/alpaca-sip-split/20260903T041646Z-backfill-6cb4e778 | ob/observations/alpaca-sip-split | adjustment=split feed=sip start=2016-01-01 end=2026-02-28T23:59:59Z bars=15991833 symbols=12 wall=13m41s peak_rss=623MB split_jumps=0 raw_source_alpaca-sip_untouched |
+| A0092 | acquire | register-source alpaca-sip-quotes | 2026-09-03T04:55:00+00:00 | --root /home/russell/dskit/children/intraday_equities/ob --source  --stream  --mode | 829c9d6efb545ac6f2aeefce62e751b6b7f1e37ce249a608b7ab029e52a5e6fd | /home/russell/dskit/children/intraday_equities/ob | connector=intraday_equities.connectors:AlpacaQuoteMinutes |
 
 ## Path to Production
 

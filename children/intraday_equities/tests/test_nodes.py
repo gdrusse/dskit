@@ -1281,6 +1281,97 @@ def test_bars_source_scans_once_per_store_content(tmp_path, monkeypatch):
     assert grown != first
 
 
+def _write_quote_store(root, source, minutes, symbols=("AAPL",)):
+    """Write a minute-quote observation tree beside the bar tree."""
+    directory = os.path.join(root, "observations", source, "acq-0001")
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, "quote_minutes.jsonl")
+    with open(path, "w", encoding="utf-8") as fh:
+        for symbol in symbols:
+            for index in minutes:
+                mid = 100.0 + index
+                row = {
+                    "stream": "quote_minutes",
+                    "mode": "backfill",
+                    "kind": "observation",
+                    "effective_date": _ts(index),
+                    "acquired_at": "2026-01-06T00:00:00+00:00",
+                    "data": {
+                        "symbol": symbol,
+                        "ts": _ts(index),
+                        "bid": mid - 0.01,
+                        "ask": mid + 0.01,
+                        "mid": mid,
+                        "spread": 0.02,
+                        "spread_bps": 10000.0 * 0.02 / mid,
+                        "bid_size": 100,
+                        "ask_size": 200,
+                        "bid_exchange": "Z",
+                        "ask_exchange": "N",
+                        "quote_ts": _ts(index),
+                        "quote_age_ms": 5,
+                        "n_quotes": 42,
+                        "n_crossed": 0,
+                        "n_locked": 0,
+                    },
+                }
+                fh.write(json.dumps(row, sort_keys=True) + "\n")
+    return path
+
+
+def test_a_declared_quote_source_puts_mid_and_spread_on_the_bar(tmp_path):
+    """ADR-0065: the midpoint is selectable as a price beside the trade."""
+    import intraday_equities.nodes as nodes
+
+    root = str(tmp_path / "ob")
+    _write_store(root, "alpaca-sip", n_minutes=4, symbols=("AAPL",))
+    _write_quote_store(root, "alpaca-sip-quotes", [0, 1, 3])
+    params = {
+        "root": root,
+        "source": "alpaca-sip",
+        "universe": UNIVERSE_PATH,
+        "quote_source": "alpaca-sip-quotes",
+    }
+    nodes.BarsFromStore._cached_key = None
+    nodes.BarsFromStore._cached_snap = None
+    nodes.BarsFromStore._cached_fingerprint = None
+    rows = nodes.BarsFromStore("bars", params).run(_ctx(tmp_path), {})["records"]
+
+    assert len(rows) == 4
+    priced = {row["ts"]: row for row in rows}
+    first = priced[_ts(0)]
+    assert first["mid"] == 100.0
+    assert first["bid"] == 99.99 and first["ask"] == 100.01
+    assert first["spread"] == 0.02
+    assert first["close"] == 100.0, "the trade price is untouched"
+    # A bar with no quote keeps its minute and says so with None.
+    assert priced[_ts(2)]["mid"] is None
+    assert priced[_ts(2)]["close"] == 102.0
+    # Undeclared, the bars come back exactly as before.
+    nodes.BarsFromStore._cached_key = None
+    nodes.BarsFromStore._cached_snap = None
+    bare = nodes.BarsFromStore(
+        "bars", {k: v for k, v in params.items() if k != "quote_source"}
+    ).run(_ctx(tmp_path), {})["records"]
+    assert all("mid" not in row for row in bare)
+
+
+def test_quote_attachment_knobs_are_refused_without_a_source_or_on_a_clash():
+    """A quote adds columns; it never overwrites the trade price."""
+    from intraday_equities.nodes import BarsFromStore as Bars
+
+    base = {"root": "ob", "source": "alpaca-sip", "universe": UNIVERSE_PATH}
+    assert Bars.validate_params(dict(base)) == []
+    problems = Bars.validate_params({**base, "quote_fields": ["mid"]})
+    assert any("meaningless without quote_source" in p for p in problems)
+    problems = Bars.validate_params({
+        **base, "quote_source": "alpaca-sip-quotes", "quote_fields": ["close"],
+    })
+    assert any("collide with the bar" in p for p in problems)
+    problems = Bars.validate_params({**base, "quote_source": ""})
+    assert any("quote_source must be a non-empty string" in p for p in problems)
+
+
 def test_declared_lead_grid_overrides_the_universe():
     """A run asks its own horizon; the cohort file is not restated."""
     from intraday_equities.nodes import LEAD_PARAMS, _lead_grid

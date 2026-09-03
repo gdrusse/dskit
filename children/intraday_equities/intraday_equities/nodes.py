@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from dskit.onboarding import dir_digest, parse_utc
 from dskit.onboarding.libs.alpaca import BAR_KEY_FIELDS, BAR_STREAM
+from dskit.onboarding.libs.alpaca_quotes import QUOTE_KEY_FIELDS, QUOTE_STREAM
 from dskit.onboarding.observations import (
     scan_stream,
     stream_digest,
@@ -43,6 +44,7 @@ from dskit.pipeline.node import (
 __all__ = [
     "DEFAULT_MAX_GAP_MINUTES",
     "DEFAULT_PRICE_FIELD",
+    "DEFAULT_QUOTE_FIELDS",
     "BarsFromStore",
     "FeedParity",
     "HorizonScan",
@@ -64,6 +66,12 @@ DEFAULT_SHARED_FIELDS = ("symbol",)
 DEFAULT_PRICE_FIELD = "close"
 DEFAULT_MAX_GAP_MINUTES = 5
 DEFAULT_OHLCV_FIELDS = ("open", "high", "low", "close", "volume")
+#: Quote-minute fields attached to a bar when a ``quote_source`` is
+#: declared (ADR-0065). ``mid`` is the price a run may select instead of
+#: ``close``; the half-width it came from travels with it, because a mid
+#: whose spread was thrown away cannot be audited and the spread is a
+#: feature in its own right.
+DEFAULT_QUOTE_FIELDS = ("mid", "bid", "ask", "spread", "spread_bps")
 #: One-sided level for :class:`NoInformationScan` (ADR-0058).
 _NO_INFO_ALPHA = 0.05
 #: ŷ must vary by at least this fraction of the label's own sd. Below it
@@ -466,6 +474,66 @@ def _holdout_problems(holdouts):
     return problems
 
 
+def _quote_attach_problems(params):
+    """Problems with the optional quote-minute attachment knobs."""
+    problems = []
+    source = params.get("quote_source")
+    stream = params.get("quote_stream", QUOTE_STREAM)
+    fields = params.get("quote_fields", DEFAULT_QUOTE_FIELDS)
+    if source is not None and (not isinstance(source, str) or not source):
+        problems.append(
+            f"quote_source must be a non-empty string when declared, "
+            f"got {source!r}"
+        )
+    if not isinstance(stream, str) or not stream:
+        problems.append(f"quote_stream must be a non-empty string, got {stream!r}")
+    if (
+        not isinstance(fields, (list, tuple))
+        or not fields
+        or any(not isinstance(field, str) or not field for field in fields)
+    ):
+        problems.append(
+            f"quote_fields must be a non-empty list of field names, got {fields!r}"
+        )
+    elif source is not None:
+        clashes = sorted(set(fields) & set(DEFAULT_OHLCV_FIELDS))
+        if clashes:
+            problems.append(
+                f"quote_fields {clashes} collide with the bar's own fields; a "
+                "quote adds columns beside the trade price, it does not "
+                "overwrite it"
+            )
+    for name in ("quote_stream", "quote_fields"):
+        if source is None and name in params:
+            problems.append(
+                f"{name} is meaningless without quote_source; declare the "
+                "source or drop the knob"
+            )
+    return problems
+
+
+def _quote_index(root, source, stream, fields):
+    """Map ``(symbol, ts)`` to the declared quote fields, from the store.
+
+    The quote tree is keyed exactly like the bar tree, so the same
+    deduplicating scanner reads it; only the projection differs.
+    """
+    index = {}
+    for record in scan_stream(
+        root, source, stream,
+        key_fields=QUOTE_KEY_FIELDS,
+        ts_field=DEFAULT_TS_FIELD,
+        shared_fields=DEFAULT_SHARED_FIELDS,
+    ):
+        symbol, stamp = record.get("symbol"), record.get(DEFAULT_TS_FIELD)
+        if not isinstance(symbol, str) or not isinstance(stamp, str):
+            continue
+        index[(symbol, stamp)] = {
+            field: record.get(field) for field in fields
+        }
+    return index
+
+
 class BarsFromStore(Node):
     """Emit the store's deduplicated bar records (role ``data``).
 
@@ -477,7 +545,12 @@ class BarsFromStore(Node):
     params : dict
         ``root``, ``source``, and ``universe`` (required strings),
         optional ``stream``, ``ts_field``, and ``shared_fields``.
-        Session hours come from the universe file.
+        Session hours come from the universe file. Declaring
+        ``quote_source`` attaches the minute-quote columns of ADR-0065
+        (``quote_fields``, default :data:`DEFAULT_QUOTE_FIELDS`, from
+        ``quote_stream``) onto each bar, so a run can select ``mid`` as
+        its ``price_field`` and read the spread as a feature; a bar with
+        no quote carries them as ``None``.
 
     Examples
     --------
@@ -495,6 +568,7 @@ class BarsFromStore(Node):
     outputs = ("records",)
     _PARAMS = (
         "root", "source", "universe", "stream", "ts_field", "shared_fields",
+        "quote_source", "quote_stream", "quote_fields",
     )
     _snap = None
     #: On the CLASS: a walk-forward builds a fresh source per fold, so an
@@ -562,6 +636,7 @@ class BarsFromStore(Node):
                 f"shared_fields must be a list of field-name strings, "
                 f"got {shared!r}"
             )
+        problems.extend(_quote_attach_problems(params))
         return problems
 
     def _cache_key(self):
@@ -581,6 +656,16 @@ class BarsFromStore(Node):
             _file_digest(self.params["universe"]),
             dir_digest(
                 stream_dir(self.params["root"], self.params["source"])
+            ),
+            self.params.get("quote_source"),
+            self.params.get("quote_stream", QUOTE_STREAM),
+            tuple(self.params.get("quote_fields", DEFAULT_QUOTE_FIELDS)),
+            (
+                ""
+                if self.params.get("quote_source") is None
+                else dir_digest(
+                    stream_dir(self.params["root"], self.params["quote_source"])
+                )
             ),
         )
 
@@ -604,6 +689,20 @@ class BarsFromStore(Node):
             ),
         )
         policy = _load_json(self.params["universe"])["session"]
+        quote_fields = tuple(
+            self.params.get("quote_fields", DEFAULT_QUOTE_FIELDS)
+        )
+        quotes = (
+            {}
+            if self.params.get("quote_source") is None
+            else _quote_index(
+                self.params["root"],
+                self.params["quote_source"],
+                self.params.get("quote_stream", QUOTE_STREAM),
+                quote_fields,
+            )
+        )
+        blank = {field: None for field in quote_fields}
         tagged = []
         for record in records:
             row = dict(record)
@@ -615,6 +714,11 @@ class BarsFromStore(Node):
                     policy["rth_start_minutes"],
                     policy["rth_end_minutes"],
                 )
+            if self.params.get("quote_source") is not None:
+                # A bar with no quote carries the field as None rather
+                # than dropping out: the minute still happened, and a
+                # downstream that needs a price refuses a None itself.
+                row.update(quotes.get((row.get("symbol"), stamp), blank))
             tagged.append(row)
         self._snap = tagged
         cls._cached_key = key
