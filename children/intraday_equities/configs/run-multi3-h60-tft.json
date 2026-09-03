@@ -1,6 +1,6 @@
 {
   "name": "intraday-equities-multi3-h60-tft",
-  "notes": "TFT-lite (ADR-0051): channel VSN, LSTM encoder, gated attention. Same three split-free tradables, same twenty folds, same ADR-0059 label (SPY-residual, divided by a causal 390-minute sigma times sqrt(h)) as run-multi3-h20-ridge.json and its LightGBM twin: the scan node's estimator block is the ONLY difference, so a gap is the architecture. Reached through ADR-0061's ZooEstimator, which splits the row by NAME - the twenty ret_lag_* columns are the time axis, the other 67 columns ride as constant channels over it. PRE-REGISTERED BAR, declared before the run: worth pursuing only if it clears BOTH >10% of the 60 name-folds at p<.05 (ridge 6.7%, LightGBM 5.0%, null 5%) AND a mean val MSPE under ridge's 1.345. hpo_trials is 0 on purpose: A0036 showed the inner holdout cannot rank models at this SNR, so the hyperparameters are fixed and declared rather than searched. HORIZON: this document asks about H=60 minute(s) ONLY - lead_start=lead_stop=60 (ADR-0062), so the training label and the single walked lead are both 60. The H=20 family trained at 5 and walked 5/10/15/20; these are a different question on the same cohort, folds and label, not a re-run.",
+  "notes": "TFT-lite (ADR-0051): channel VSN, LSTM encoder, gated attention. Same five tradables (AAPL, JPM, LLY, WMT, XOM, split-adjusted store from 2018-01-01 - ADR-0063, ADR-0066), same twenty folds, same ADR-0059 label (SPY-residual, divided by a causal 390-minute sigma times sqrt(h)) as run-multi3-h20-ridge.json and its LightGBM twin: the scan node's estimator block is the ONLY difference, so a gap is the architecture. Reached through ADR-0061's ZooEstimator, which splits the row by NAME - the twenty ret_lag_* columns are the time axis, the other 67 columns ride as constant channels over it. PRE-REGISTERED BAR, declared before the run: worth pursuing only if it clears BOTH >10% of the 60 name-folds at p<.05 (ridge 6.7%, LightGBM 5.0%, null 5%) AND a mean val MSPE under ridge's 1.345. hpo_trials is 0 on purpose: A0036 showed the inner holdout cannot rank models at this SNR, so the hyperparameters are fixed and declared rather than searched. HORIZON: this document asks about H=60 minute(s) ONLY - lead_start=lead_stop=60 (ADR-0062), so the training label and the single walked lead are both 60. The H=20 family trained at 5 and walked 5/10/15/20; these are a different question on the same cohort, folds and label, not a re-run.",
   "pipeline": {
     "universe": {
       "uses": "intraday_equities-universe",
@@ -13,10 +13,11 @@
       "uses": "intraday_equities-bars",
       "params": {
         "root": "./ob",
-        "source": "alpaca-sip",
-        "universe": "configs/universe-jpm-h20.json"
+        "source": "alpaca-sip-split",
+        "universe": "configs/universe-jpm-h20.json",
+        "start_ms": 1514764800000
       },
-      "notes": "Historical SIP tape, adjustment raw. Run from the child root."
+      "notes": "Split-adjusted historical SIP tape (source alpaca-sip-split, ADR-0063): AAPL's 2020 4-for-1, WMT's 2024 3-for-1 and the XLE/XLK 2-for-1s of December 2025 are all removed by the vendor, so no change of unit reads as a price move. start_ms is the study's start date, 2018-01-01 (ADR-0066) - it precedes the earliest bar any fold reads by 2y4m, and it puts XLF's 2016-09-19 XLRE spin-off, the one corporate action the vendor does NOT adjust, outside the readable window. Prices here are NOT the as-traded scale and are not comparable with any number recorded before 2026-09-03. Run from the child root."
     },
     "session": {
       "uses": "filter",
@@ -130,14 +131,16 @@
             "field": "symbol",
             "op": "in",
             "value": [
+              "AAPL",
               "JPM",
               "LLY",
+              "WMT",
               "XOM"
             ]
           }
         ]
       },
-      "notes": "The three split-free tradables. Sits after tradable so the cohort that built the cross-sectional features (all five plus SPY) is untouched; only what gets SCORED narrows."
+      "notes": "All five tradables. AAPL and WMT were excluded while the tape carried unadjusted splits; the split-adjusted store (ADR-0063) removed that reason, so the cohort that builds the features and the cohort that gets SCORED are the same five again. Sits after tradable so a later run can narrow what is scored without touching what is built."
     }
   },
   "walkforward": {

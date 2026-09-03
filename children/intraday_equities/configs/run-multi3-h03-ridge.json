@@ -1,6 +1,6 @@
 {
   "name": "intraday-equities-multi3-h03-ridge",
-  "notes": "Ridge on the three split-free tradables (JPM, LLY, XOM; AAPL and WMT are dropped - their raw Alpaca tape carries unadjusted splits, docs/research/unadjusted-stock-splits-in-the-raw-alpaca-tape.md), with the ADR-0059 label: residual to SPY, then divided by its own causal 390-minute sigma times sqrt(h). Both transforms answer A0040: squared loss on a raw return weights the open hour 5-10x the midday, and at 5-20 minutes most of a single name's variance is the market move the features cannot forecast. MSPE is now in LABEL units and is NOT comparable with any raw-label run; val_ic stays rank-based and is. Paired with run-multi3-h20-lgbm.json, which differs ONLY in the scan node's estimator block (ADR-0060). HORIZON: this document asks about H=3 minute(s) ONLY - lead_start=lead_stop=3 (ADR-0062), so the training label and the single walked lead are both 1. The H=20 family trained at 5 and walked 5/10/15/20; these are a different question on the same cohort, folds and label, not a re-run. Run to resolve WHY H=1 rejected 40% of name-folds with a +0.09% MSPE gain while H=20/30/60 sat at the null with a negative one. Bid-ask bounce predicts the gain decays like 1/h (the label always contains px[t], but its variance grows with h), so ~+0.045% at H=2 and ~+0.03% at H=3. A gain that decays SLOWER than that is not bounce.",
+  "notes": "Ridge on all five tradables (AAPL, JPM, LLY, WMT, XOM; AAPL and WMT are back - the split-adjusted store, read from 2018-01-01, removed the unadjusted splits that excluded them, ADR-0063 and ADR-0066, so every number this document produces supersedes the three-name results recorded before 2026-09-03), with the ADR-0059 label: residual to SPY, then divided by its own causal 390-minute sigma times sqrt(h). Both transforms answer A0040: squared loss on a raw return weights the open hour 5-10x the midday, and at 5-20 minutes most of a single name's variance is the market move the features cannot forecast. MSPE is now in LABEL units and is NOT comparable with any raw-label run; val_ic stays rank-based and is. Paired with run-multi3-h20-lgbm.json, which differs ONLY in the scan node's estimator block (ADR-0060). HORIZON: this document asks about H=3 minute(s) ONLY - lead_start=lead_stop=3 (ADR-0062), so the training label and the single walked lead are both 1. The H=20 family trained at 5 and walked 5/10/15/20; these are a different question on the same cohort, folds and label, not a re-run. Run to resolve WHY H=1 rejected 40% of name-folds with a +0.09% MSPE gain while H=20/30/60 sat at the null with a negative one. Bid-ask bounce predicts the gain decays like 1/h (the label always contains px[t], but its variance grows with h), so ~+0.045% at H=2 and ~+0.03% at H=3. A gain that decays SLOWER than that is not bounce.",
   "pipeline": {
     "universe": {
       "uses": "intraday_equities-universe",
@@ -13,10 +13,11 @@
       "uses": "intraday_equities-bars",
       "params": {
         "root": "./ob",
-        "source": "alpaca-sip",
-        "universe": "configs/universe-jpm-h20.json"
+        "source": "alpaca-sip-split",
+        "universe": "configs/universe-jpm-h20.json",
+        "start_ms": 1514764800000
       },
-      "notes": "Historical SIP tape, adjustment raw. Run from the child root."
+      "notes": "Split-adjusted historical SIP tape (source alpaca-sip-split, ADR-0063): AAPL's 2020 4-for-1, WMT's 2024 3-for-1 and the XLE/XLK 2-for-1s of December 2025 are all removed by the vendor, so no change of unit reads as a price move. start_ms is the study's start date, 2018-01-01 (ADR-0066) - it precedes the earliest bar any fold reads by 2y4m, and it puts XLF's 2016-09-19 XLRE spin-off, the one corporate action the vendor does NOT adjust, outside the readable window. Prices here are NOT the as-traded scale and are not comparable with any number recorded before 2026-09-03. Run from the child root."
     },
     "session": {
       "uses": "filter",
@@ -142,14 +143,16 @@
             "field": "symbol",
             "op": "in",
             "value": [
+              "AAPL",
               "JPM",
               "LLY",
+              "WMT",
               "XOM"
             ]
           }
         ]
       },
-      "notes": "The three split-free tradables. Sits after tradable so the cohort that built the cross-sectional features (all five plus SPY) is untouched; only what gets SCORED narrows."
+      "notes": "All five tradables. AAPL and WMT were excluded while the tape carried unadjusted splits; the split-adjusted store (ADR-0063) removed that reason, so the cohort that builds the features and the cohort that gets SCORED are the same five again. Sits after tradable so a later run can narrow what is scored without touching what is built."
     }
   },
   "walkforward": {

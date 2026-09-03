@@ -1,13 +1,16 @@
 {
-  "name": "intraday-equities-multi3-h60-lstm",
-  "notes": "LSTM over the 20-step lag path, last step to a linear head. Same five tradables (AAPL, JPM, LLY, WMT, XOM, split-adjusted store from 2018-01-01 - ADR-0063, ADR-0066), same twenty folds, same ADR-0059 label (SPY-residual, divided by a causal 390-minute sigma times sqrt(h)) as run-multi3-h20-ridge.json and its LightGBM twin: the scan node's estimator block is the ONLY difference, so a gap is the architecture. Reached through ADR-0061's ZooEstimator, which splits the row by NAME - the twenty ret_lag_* columns are the time axis, the other 67 columns ride as constant channels over it. PRE-REGISTERED BAR, declared before the run: worth pursuing only if it clears BOTH >10% of the 60 name-folds at p<.05 (ridge 6.7%, LightGBM 5.0%, null 5%) AND a mean val MSPE under ridge's 1.345. hpo_trials is 0 on purpose: A0036 showed the inner holdout cannot rank models at this SNR, so the hyperparameters are fixed and declared rather than searched. HORIZON: this document asks about H=60 minute(s) ONLY - lead_start=lead_stop=60 (ADR-0062), so the training label and the single walked lead are both 60. The H=20 family trained at 5 and walked 5/10/15/20; these are a different question on the same cohort, folds and label, not a re-run.",
+  "name": "intraday-equities-p1-s01-h01-ridge",
+  "notes": "P1 cell s=1, H=1: one worked example of the grid, and the template for the other twenty-three. It differs from run-multi3-h01-ridge.json in exactly two knobs (ADR-0065). SPACING: the universe node overrides period_ms to 60000, so a feature row is formed every minute instead of every five - five times the training rows, and at H=1 no label overlaps another. SCORING: the scan node declares score_period_ms 1800000, so only validation rows on the half-hour are judged. That is the point of the grid: s=1 and s=10 land on different instants, so without a shared lattice their gains are two measurements of different things. On the 30-minute lattice the label at an instant is the same number whatever the spacing, the difference between cells is the model, and labels out to H=30 do not overlap so the plain standard error is right. Everything else - cohort, folds, label, estimator, features, store and start date - is held identical to the H=1 ridge run, which is the s=5 baseline this is compared against. To write another cell, change period_ms (1, 5 or 10 minutes) and the scan's lead_start/lead_step/lead_stop (ADR-0062), and leave score_period_ms alone.",
   "pipeline": {
     "universe": {
       "uses": "intraday_equities-universe",
       "params": {
-        "path": "configs/universe-jpm-h20.json"
+        "path": "configs/universe-jpm-h20.json",
+        "overrides": {
+          "period_ms": 60000
+        }
       },
-      "notes": "The H<=20 grid variant. lead_start=5 is also the training label."
+      "notes": "The H<=20 grid variant, with the row spacing overridden to one minute for this cell (ADR-0065). The cohort, calendar and holdout dates stay exactly the shared ones."
     },
     "alpaca": {
       "uses": "intraday_equities-bars",
@@ -104,21 +107,34 @@
         "val_start_ms": "$splits.val_start_ms",
         "val_end_ms": "$splits.val_end_ms",
         "estimator_params": {
-          "arch": "lstm",
-          "epochs": 30,
-          "lr": 0.003,
-          "batch_size": 1024,
-          "weight_decay": 0.0,
-          "seed": 0
+          "alpha": 10.0,
+          "fit_intercept": true,
+          "random_state": 0
+        },
+        "hpo_trials": 6,
+        "hpo_seed": 0,
+        "hpo_val_days": 63,
+        "hpo_embargo_days": 5,
+        "hpo_objective": "ic",
+        "hpo_space": {
+          "alpha": [
+            1.0,
+            10.0,
+            100.0,
+            1000.0,
+            10000.0,
+            100000.0
+          ]
         },
         "label_scale": "vol",
         "label_residual": "SPY",
-        "estimator": "dskit.pipeline.libs.torch_ts.ZooEstimator",
-        "lead_start": 60,
+        "estimator": "sklearn.linear_model.Ridge",
+        "lead_start": 1,
         "lead_step": 1,
-        "lead_stop": 60
+        "lead_stop": 1,
+        "score_period_ms": 1800000
       },
-      "notes": "LSTM over the 20-step lag path, last step to a linear head. Fixed hyperparameters, no search. Adam, MSE, 30 epochs at lr 3e-3 on standardised columns - the same training block for all three archs, so the comparison is the architecture and not its schedule. The grid is the single lead 60: h* is 60 or nothing, and the Clark-West p IS the test at that horizon."
+      "notes": "Ridge, alpha swept over six decades on the inner train holdout; fold validation stays unread. The columns are unstandardised and ridge is scale-sensitive, so alpha ranges high on purpose. hpo_objective stays ic: at this SNR an MSPE search picks the flattest model and a constant forecast is the MSPE optimum outright. estimator is declared HERE, not in the universe, so the LightGBM twin can share one cohort (ADR-0060). The grid is the single lead 1: h* is 1 or nothing, and the Clark-West p IS the test at that horizon. score_period_ms 1800000 is P1's shared lattice: rows are FORMED every minute and JUDGED every thirty, so this cell is comparable with every other spacing that declares the same lattice, and the Newey-West lag is computed from the lattice rather than the spacing (ADR-0065)."
     },
     "names": {
       "uses": "filter",

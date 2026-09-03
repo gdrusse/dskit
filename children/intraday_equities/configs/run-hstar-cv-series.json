@@ -13,10 +13,11 @@
       "uses": "intraday_equities-bars",
       "params": {
         "root": "./ob",
-        "source": "alpaca-sip",
-        "universe": "configs/universe.json"
+        "source": "alpaca-sip-split",
+        "universe": "configs/universe.json",
+        "start_ms": 1514764800000
       },
-      "notes": "Historical SIP tape. root is the invoking cwd; run from the child root."
+      "notes": "Split-adjusted historical SIP tape (source alpaca-sip-split, ADR-0063): AAPL's 2020 4-for-1, WMT's 2024 3-for-1 and the XLE/XLK 2-for-1s of December 2025 are all removed by the vendor, so no change of unit reads as a price move. start_ms is the study's start date, 2018-01-01 (ADR-0066) - it precedes the earliest bar any fold reads by 2y4m, and it puts XLF's 2016-09-19 XLRE spin-off, the one corporate action the vendor does NOT adjust, outside the readable window. Prices here are NOT the as-traded scale and are not comparable with any number recorded before 2026-09-03. Run from the child root."
     },
     "session": {
       "uses": "filter",
@@ -120,11 +121,26 @@
         "hpo_val_days": 63,
         "hpo_embargo_days": 5,
         "hpo_space": {
-          "num_leaves": [15, 31],
-          "max_depth": [4, 6],
-          "min_child_samples": [80, 200],
-          "learning_rate": [0.02, 0.05],
-          "reg_lambda": [1.0, 5.0]
+          "num_leaves": [
+            15,
+            31
+          ],
+          "max_depth": [
+            4,
+            6
+          ],
+          "min_child_samples": [
+            80,
+            200
+          ],
+          "learning_rate": [
+            0.02,
+            0.05
+          ],
+          "reg_lambda": [
+            1.0,
+            5.0
+          ]
         }
       },
       "notes": "One LightGBM; last column is the symbol category. Short HPO (8 draws) on an inner train holdout — fold val is unread. Then refit pooled train and walk H per name. Base estimator_params are the search prior. GO is a contiguous reject run from h=5; H is the far end."
