@@ -521,7 +521,15 @@ def _quote_attach_problems(params):
                 "quote adds columns beside the trade price, it does not "
                 "overwrite it"
             )
-    for name in ("quote_stream", "quote_fields"):
+    fallback = params.get("quote_uncovered_price")
+    if fallback is not None and (
+        not isinstance(fallback, str) or fallback not in DEFAULT_OHLCV_FIELDS
+    ):
+        problems.append(
+            f"quote_uncovered_price must name a bar price field "
+            f"{list(DEFAULT_OHLCV_FIELDS)} when declared, got {fallback!r}"
+        )
+    for name in ("quote_stream", "quote_fields", "quote_uncovered_price"):
         if source is None and name in params:
             problems.append(
                 f"{name} is meaningless without quote_source; declare the "
@@ -608,6 +616,7 @@ class BarsFromStore(Node):
         "root", "source", "universe", "stream", "ts_field", "shared_fields",
         "start_ms",
         "quote_source", "quote_stream", "quote_fields",
+        "quote_uncovered_price",
     )
     _snap = None
     #: On the CLASS: a walk-forward builds a fresh source per fold, so an
@@ -703,6 +712,7 @@ class BarsFromStore(Node):
             self.params.get("quote_source"),
             self.params.get("quote_stream", QUOTE_STREAM),
             tuple(self.params.get("quote_fields", DEFAULT_QUOTE_FIELDS)),
+            self.params.get("quote_uncovered_price"),
             (
                 ""
                 if self.params.get("quote_source") is None
@@ -762,6 +772,18 @@ class BarsFromStore(Node):
             )
         )
         blank = {field: None for field in quote_fields}
+        # A symbol the quote tree does not cover AT ALL is a different
+        # case from a covered symbol missing one minute. The second is a
+        # hole and stays None; the first is a name nobody pulled quotes
+        # for -- a reference like SPY -- and dropping it would take the
+        # residual feature and the residual label with it. When
+        # quote_uncovered_price is declared, such a symbol carries its
+        # own trade price in the 'mid' slot, so the price definition
+        # changes ONLY for the names the quotes actually cover. Stated
+        # here, in the cache key, and in the run notes: it is a mixed
+        # tape by construction, identical in both arms of a comparison.
+        covered = {symbol for symbol, _ in quotes}
+        fallback = self.params.get("quote_uncovered_price")
         tagged = []
         for record in records:
             row = dict(record)
@@ -778,10 +800,17 @@ class BarsFromStore(Node):
                 # than dropping out: the minute still happened, and a
                 # downstream that needs a price refuses a None itself.
                 instant = row.get("asof_ms")
+                symbol = row.get("symbol")
                 row.update(
                     blank if instant is None
-                    else quotes.get((row.get("symbol"), int(instant)), blank)
+                    else quotes.get((symbol, int(instant)), blank)
                 )
+                if (
+                    fallback is not None
+                    and symbol not in covered
+                    and "mid" in quote_fields
+                ):
+                    row["mid"] = row.get(fallback)
             tagged.append(row)
         self._snap = tagged
         cls._cached_key = key
@@ -2732,6 +2761,14 @@ def _tapes_from_bars(bars, price_field, val_end):
             symbol = frame.get("symbol")
             if not isinstance(symbol, str):
                 continue
+            emitted = frame.get("price_field")
+            if emitted is not None and emitted != price_field:
+                raise ValueError(
+                    f"{symbol}'s tape was built on price field "
+                    f"{emitted!r} but the scan asked for {price_field!r}. "
+                    "The label and the features would come from two "
+                    "different prices; fix the universe, do not run."
+                )
             t_ms = np.asarray(frame["asof_ms"], dtype=np.int64)
             t_px = np.asarray(frame["close"], dtype=np.float64)
             keep = t_ms <= val_end

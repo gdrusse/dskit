@@ -429,6 +429,30 @@ def test_tracking_is_not_identity(tmp_path):
 SPLIT_SOURCE = "alpaca-sip-split"
 RAW_ONLY = {"run-feed-parity.json"}
 STUDY_START_MS = 1514764800000  # 2018-01-01T00:00:00Z
+# The quoted family (P4 arm C): the only runs whose price may be the
+# NBBO midpoint rather than the last trade. Minute quotes exist for
+# 2024-11-01 onward and for LLY and XOM alone, so these runs start where
+# the quotes start and score those two names. Both departures are bought
+# by the same fact and are checked here rather than waived: a run in this
+# family MUST declare a quote source, MUST start on the quote start, and
+# MUST score exactly the quoted pair.
+QUOTE_SOURCE = "alpaca-sip-quotes"
+QUOTE_START_MS = 1730419200000  # 2024-11-01T00:00:00Z
+QUOTED_NAMES = ["LLY", "XOM"]
+
+
+def _quoted_family():
+    """Run docs that read the minute-quote tree, by file name."""
+    names = set()
+    for name in _run_docs():
+        for node in _raw(name)["pipeline"].values():
+            if (
+                isinstance(node, dict)
+                and node.get("uses") == "intraday_equities-bars"
+                and node.get("params", {}).get("quote_source") is not None
+            ):
+                names.add(name)
+    return names
 
 
 def test_every_run_reads_the_split_adjusted_store_from_the_study_start():
@@ -455,6 +479,17 @@ def test_every_run_reads_the_split_adjusted_store_from_the_study_start():
                 assert "start_ms" not in params, name
                 continue
             assert params["source"] == SPLIT_SOURCE, name
+            if params.get("quote_source") is not None:
+                # The quoted family still reads the split-adjusted tape;
+                # it just starts later, because a minute with no quote
+                # cannot be scored on the midpoint. Later than the study
+                # start is safe by construction: ADR-0066's job is to put
+                # the XLF spin-off out of reach, and moving the start
+                # FORWARD cannot undo that.
+                assert params["quote_source"] == QUOTE_SOURCE, name
+                assert params["start_ms"] == QUOTE_START_MS, name
+                assert params["start_ms"] > STUDY_START_MS, name
+                continue
             assert params["start_ms"] == STUDY_START_MS, name
     assert seen >= len(_run_docs())
 
@@ -486,6 +521,7 @@ def test_the_study_start_puts_the_xlf_spin_off_out_of_reach():
 def test_the_five_tradables_are_scored_again():
     """The split fix removed the reason AAPL and WMT were excluded."""
     tradable = sorted(UNIVERSE["tradable"])
+    quoted = _quoted_family()
     checked = 0
     for name in _run_docs():
         node = _raw(name)["pipeline"].get("names")
@@ -493,6 +529,13 @@ def test_the_five_tradables_are_scored_again():
             continue
         for clause in node["params"]["where"]:
             if clause["field"] == "symbol" and clause["op"] == "in":
+                if name in quoted:
+                    # Not an exclusion on price-history grounds, which is
+                    # what this test exists to forbid: the other three
+                    # names have no minute quotes at all, so scoring them
+                    # here would put a midpoint against a trade price.
+                    assert sorted(clause["value"]) == QUOTED_NAMES, name
+                    continue
                 assert sorted(clause["value"]) == tradable, name
                 checked += 1
     assert checked >= 30

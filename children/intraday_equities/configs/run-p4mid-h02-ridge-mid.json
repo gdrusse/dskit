@@ -1,0 +1,206 @@
+{
+  "name": "intraday-equities-p4mid-h02-ridge-mid",
+  "notes": "P4 mid-vs-trade cell: look-ahead 2 minute(s), ridge, price field 'mid', a feature row every 5 minutes. P4 arm C, the decisive pair. LLY and XOM are the only two names with a complete minute NBBO history (2024-11-01 to 2026-02-27, 128,085 and 128,046 rows), so this run scores those two and nobody else. Eight cells: look-ahead 1 and 2, ridge and LightGBM, and the price the label and every lag return are built from - 'close', the last trade of the minute, against 'mid', the midpoint of the last two-sided NBBO quote inside it. Everything else is byte-identical across the eight, INCLUDING the window and the folds: the close arm is re-run here on the short quoted window rather than compared with the long window of the P1 grid, because a comparison across two different date ranges proves nothing. Rows are pinned by the 'quoted' filter: a minute with no usable two-sided quote is dropped from BOTH arms, so the two price definitions are scored on exactly the same instants. SPY, AAPL and WMT have no quotes at all and carry their own trade price in the mid slot (quote_uncovered_price) - identical in both arms, and SPY is a reference and a residual, never a scored name. JPM's quotes stop on 2025-03-27, so its later minutes drop out and it is not scored. Reads nothing at or after 2026-03-01.",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe-jpm-h20.json",
+        "overrides": {
+          "period_ms": 300000,
+          "price_field": "mid"
+        }
+      },
+      "notes": "The H<=20 grid variant at 5-minute row spacing, with the price field overridden to 'mid' (ADR-0065). That one word moves the label, the emitted tape and every lag return together, so a cell can never label with one price and predict from another."
+    },
+    "alpaca": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split",
+        "universe": "configs/universe-jpm-h20.json",
+        "start_ms": 1730419200000,
+        "quote_source": "alpaca-sip-quotes",
+        "quote_uncovered_price": "close"
+      },
+      "notes": "Split-adjusted SIP bars (ADR-0063) with the minute NBBO of ADR-0070 joined on the instant: every bar carries mid/bid/ask/spread, None where no two-sided quote fell inside its own sixty seconds. start_ms is 2024-11-01, the first day of the quote pull, because a bar with no quote cannot be scored in either arm and nothing before that day survives the 'quoted' filter anyway. quote_uncovered_price lets a symbol the pull never touched - SPY, AAPL, WMT - keep its trade price in the mid slot, so the market reference and the residual label survive; it changes nothing for the two names being scored, and it is the same in both arms."
+    },
+    "session": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$alpaca.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "session",
+            "op": "==",
+            "value": "rth"
+          }
+        ]
+      },
+      "notes": "Regular session only; the store keeps every vendor minute."
+    },
+    "features": {
+      "uses": "intraday_equities-session-features",
+      "inputs": {
+        "records": "$quoted.records",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "lookback": 20,
+        "layout": "columns",
+        "momentum_horizons": [
+          {
+            "width": 3,
+            "tag": "3m",
+            "cross_session": false,
+            "notes": "Few minutes; sharper than the 5m scale in the 46."
+          },
+          {
+            "width": 120,
+            "tag": "2h",
+            "cross_session": true,
+            "notes": "Condenses the old L=120 window into ret/rv/mom. cross_session so its warmup is once, not daily."
+          },
+          {
+            "width": 180,
+            "tag": "3h",
+            "cross_session": true,
+            "notes": "Few hours, still inside one RTH session. cross_session so its warmup is once, not daily."
+          },
+          {
+            "width": 780,
+            "tag": "2s",
+            "cross_session": true,
+            "notes": "Two RTH sessions."
+          },
+          {
+            "width": 1950,
+            "tag": "1w",
+            "cross_session": true,
+            "notes": "Five RTH sessions, about a week."
+          }
+        ]
+      },
+      "notes": "lookback=20 emits one-minute ret_lag columns for the last 20 minutes. Every horizon here is cross_session so none costs rows beyond a one-time warmup; see docs/research/row-loss-is-intra-session-scale-warmup-not-cross-session.md."
+    },
+    "tradable": {
+      "uses": "intraday_equities-keep-symbols",
+      "inputs": {
+        "records": "$features.records",
+        "symbols": "$universe.tradable"
+      },
+      "params": {
+        "field": "symbol"
+      },
+      "notes": "SPY has already entered the residual features; score tradables."
+    },
+    "scan": {
+      "uses": "intraday_equities-no-information-scan",
+      "inputs": {
+        "records": "$names.records",
+        "bars": "$features.tape",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
+        "val_start_ms": "$splits.val_start_ms",
+        "val_end_ms": "$splits.val_end_ms",
+        "label_scale": "vol",
+        "label_residual": "SPY",
+        "lead_start": 2,
+        "lead_step": 1,
+        "lead_stop": 2,
+        "score_period_ms": 1800000,
+        "estimator_params": {
+          "alpha": 10.0,
+          "fit_intercept": true,
+          "random_state": 0
+        },
+        "hpo_trials": 6,
+        "hpo_seed": 0,
+        "hpo_val_days": 63,
+        "hpo_embargo_days": 5,
+        "hpo_objective": "ic",
+        "hpo_space": {
+          "alpha": [
+            1.0,
+            10.0,
+            100.0,
+            1000.0,
+            10000.0,
+            100000.0
+          ]
+        },
+        "estimator": "sklearn.linear_model.Ridge"
+      },
+      "notes": "The single lead 2: lead_start is also the training label (ADR-0062), so this cell trains and scores at 2 minute(s) and nowhere else. score_period_ms 1800000 judges only validation rows on the half-hour, the same lattice the P1 grid uses, so the eight cells here are judged on one set of instants. The price the label is built from comes from the universe override, not from here, so the estimator block is untouched between the two arms."
+    },
+    "names": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$tradable.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "symbol",
+            "op": "in",
+            "value": [
+              "LLY",
+              "XOM"
+            ]
+          }
+        ]
+      },
+      "notes": "The two names with a complete minute NBBO history. AAPL, WMT and SPY have none and JPM's stops on 2025-03-27, so scoring them would compare a midpoint against a trade price. They still build features; only these two are scored."
+    },
+    "quoted": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$session.records"
+      },
+      "params": {
+        "where": [
+          {
+            "field": "mid",
+            "op": ">",
+            "value": 0.0
+          }
+        ]
+      },
+      "notes": "The row pin. A minute with no usable two-sided quote is dropped here, BEFORE the features, so the close arm and the mid arm are built and scored on exactly the same instants. About one RTH minute in three thousand for LLY and XOM; every minute before 2024-11-01, and every JPM minute after 2025-03-27, where the pull did not reach."
+    }
+  },
+  "walkforward": {
+    "objective": "$scan.metrics.val_ic",
+    "select": "max",
+    "first": "2025-05-05",
+    "step_days": 21,
+    "count": 12,
+    "val_days": 63,
+    "embargo_days": 5,
+    "train_days": 180,
+    "notes": "The quoted window is 2024-11-01 to 2026-02-27, so the 20 folds of the P1 grid (first 2022-05-06, 730 training days) do not fit inside it. These twelve are the longest walk the quotes allow: the first fold's training window starts on 2024-11-01, the day the quotes start, and the last fold's validation ends before the 2026-02-27 cut. 180 training days, a 5-day embargo (still longer than any label here), 63 validation days and a 21-day step. Fewer folds than the grid, so the across-fold leg of ADR-0067 has 11 degrees of freedom rather than 19 - the rule uses the p-value at alpha, not a fixed t, so the critical value moves with the count. All eight cells share these folds exactly; nothing here is comparable with a long-window number."
+  },
+  "outputs": {
+    "run_root": "",
+    "notes": "Empty = ./pipeline_runs under the invoking cwd."
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        },
+        "notes": "Local sqlite beside the invoking cwd."
+      }
+    ],
+    "notes": "Excluded from identity - where metrics land is not what it computes."
+  }
+}
