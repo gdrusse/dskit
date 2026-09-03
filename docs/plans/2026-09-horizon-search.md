@@ -92,7 +92,15 @@ counting wins? Then one agent writes the rule as numbers, and applies it
 to everything already run and everything new, so every look-ahead is
 judged the same way.
 
-**Result.**
+**Result.** The rule is written (ADR-0067) and is now code: every run
+scores its forecast against a flat average guess and must beat it on
+two counts. Re-scored, the 30 finished runs give 113 clear failures
+out of 120 cells and 7 still-open ones, all at 1-2 minutes ahead,
+mostly one stock. Three of the four previously positive results
+survive that far; none is a win yet, because the finished runs did
+not save the row-by-row numbers the other count needs. See
+`RESULT-P5.md` and the research doc
+`p5-the-honest-scoring-rule-re-scores-the-30-walks.md`.
 
 ## P6 — Ordering and size may have different answers
 

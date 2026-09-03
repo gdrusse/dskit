@@ -39,6 +39,7 @@ from dskit.pipeline.node import (
     register_node_kind,
     reject_unknown_params,
 )
+from dskit.pipeline.runs import SKILL_FILE
 
 __all__ = [
     "DEFAULT_MAX_GAP_MINUTES",
@@ -3103,6 +3104,63 @@ def _blank_lead_row(symbol, lead, lags):
         "mspe_mean": 0.0,
         "n": 0.0,
         "lags": float(lags),
+        "r2oos": 0.0,
+        "dm_t": 0.0,
+        "dm_p": 1.0,
+    }
+
+
+def _lead_skill(symbol, lead, h_steps, y, yhat, mu, mspe_mean, stamps):
+    """One lead's ADR-0067 loss gaps, plus the fold's own DM verdict.
+
+    ``d_t = (y-mu)^2 - (y-yhat)^2`` against the fold's TRAIN mean: the
+    unadjusted difference whose sign is the sign of the realized MSPE
+    gap, which is what decides whether a forecast is worth having.
+    Clark-West answers a different question and stays beside it.
+
+    Parameters
+    ----------
+    symbol : str
+        The series these rows belong to.
+    lead : int
+        The horizon in minutes.
+    h_steps : int
+        The horizon in row-spacing steps (the DM overlap).
+    y : list of float
+        Realized labels, in time order.
+    yhat : list of float
+        Forecasts, same length and order.
+    mu : float
+        The fold's training mean of this series' label.
+    mspe_mean : float
+        The benchmark's mean squared error on these rows.
+    stamps : list of int
+        Row timestamps in ms, aligned with ``y``.
+
+    Returns
+    -------
+    dict
+        ``symbol``, ``lead``, ``h_steps``, ``q`` (the benchmark MSPE),
+        ``stamps``, ``d``, plus this fold's ``r2oos``, ``dm_t``, ``dm_p``.
+    """
+    from dskit.pipeline.stats import diebold_mariano_test, dm_lags, dm_loss_series
+
+    gaps = dm_loss_series(y, yhat, mu=mu)
+    q = float(mspe_mean)
+    mean_gap = sum(gaps) / len(gaps)
+    dm = diebold_mariano_test(
+        gaps, lags=dm_lags(len(gaps), h_steps), h_steps=h_steps,
+    )
+    return {
+        "symbol": symbol,
+        "lead": lead,
+        "h_steps": h_steps,
+        "q": q,
+        "stamps": [int(s) for s in stamps],
+        "d": [float(v) for v in gaps],
+        "r2oos": mean_gap / q if q > 0.0 else 0.0,
+        "dm_t": 0.0 if dm["t"] is None else float(dm["t"]),
+        "dm_p": float(dm["p_value"]),
     }
 
 
@@ -3122,6 +3180,7 @@ def _walk_no_information_series(
     symbol = prepared_one[0]
     curve = []
     ordered = []
+    skill = []
     for lead in leads:
         lags = max(lead // period_minutes - 1, 0)
         if model is None:
@@ -3129,7 +3188,7 @@ def _walk_no_information_series(
             curve.append(row)
             ordered.append({"horizon": lead, "p_value": 1.0})
             continue
-        _, tr_y, val_x, val_y, _ = _scan_fold_stamped(
+        _, tr_y, val_x, val_y, val_stamps = _scan_fold_stamped(
             [prepared_one], lead, train_end, val_start, val_end,
             train_start=train_start, label=label,
         )
@@ -3165,6 +3224,14 @@ def _walk_no_information_series(
             "n": float(out["n"]),
             "lags": float(out["lags"]),
         }
+        record = _lead_skill(
+            symbol, lead, max(lead // period_minutes, 1),
+            val_y.tolist(), yhat.tolist(), mu, out["mspe_mean"],
+            val_stamps.tolist(),
+        )
+        skill.append(record)
+        for key in ("r2oos", "dm_t", "dm_p"):
+            row[key] = record[key]
         curve.append(row)
         ordered.append({"horizon": lead, "p_value": out["p_value"]})
     walked = max_informative_horizon(ordered, alpha=_NO_INFO_ALPHA)
@@ -3176,7 +3243,9 @@ def _walk_no_information_series(
         "h_star": float(h_star if h_star is not None else 0.0),
         "p_value": float(first.get("p_value", 1.0)),
         "t_stat": float(first.get("t_stat", 0.0)),
-    }
+        "r2oos": float(first.get("r2oos", 0.0)),
+        "dm_t": float(first.get("dm_t", 0.0)),
+    }, skill
 
 
 class HorizonScan(Node):
@@ -3680,25 +3749,46 @@ class NoInformationScan(Node):
                     "IC=0. Check min_split_gain and reg_lambda against the "
                     "label variance before reading this fold."
                 )
+        skill_series = []
         for item in prepared:
             symbol = item[0]
-            rows, series = _walk_no_information_series(
+            rows, series, skill = _walk_no_information_series(
                 item, model, leads, train_end, val_start, val_end,
                 period_minutes, train_start=train_start, label=label,
             )
+            skill_series.extend(skill)
             curve.extend(rows)
             n_go += int(series["go"])
             metrics[f"go_{symbol}"] = series["go"]
             metrics[f"h_star_{symbol}"] = series["h_star"]
             metrics[f"p_value_{symbol}"] = series["p_value"]
             metrics[f"t_stat_{symbol}"] = series["t_stat"]
+            # ADR-0067: the MSPE gap is the verdict, the Clark-West t is
+            # the side column. Both are logged so the fold log carries
+            # the number the walk will be judged on.
+            metrics[f"r2oos_{symbol}"] = series["r2oos"]
+            metrics[f"dm_t_{symbol}"] = series["dm_t"]
             self.log.info(
-                "no-information %s: h*=%s p=%.4f t=%.3f (lead %s)",
+                "no-information %s: h*=%s p=%.4f cw_t=%.3f "
+                "r2oos=%+.6f dm_t=%.3f (lead %s)",
                 symbol,
                 int(series["h_star"]),
                 series["p_value"],
                 series["t_stat"],
+                series["r2oos"],
+                series["dm_t"],
                 int(leads[0]) if leads else 0,
+            )
+        if skill_series and ctx is not None:
+            # ADR-0067 pools these gaps across the walk's folds;
+            # carry.json is 20 kB of run-over-run STATE, so the evidence
+            # goes through the artifact seam the reader knows to look in.
+            # No ctx means no run dir — a scan scored in isolation has
+            # nowhere to put the evidence, and the metrics still carry
+            # the fold's own r2oos and DM t.
+            self.write_artifact(
+                ctx, SKILL_FILE,
+                {"period_minutes": period_minutes, "series": skill_series},
             )
         n_series = len(prepared)
         metrics["n_go"] = float(n_go)

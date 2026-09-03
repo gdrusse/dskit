@@ -24,7 +24,10 @@ import json
 import os
 from dataclasses import dataclass, field
 
+from dskit.pipeline.records import number_ok
+
 __all__ = [
+    "ARTIFACTS_DIR",
     "CARRY_FILE",
     "CONFIG_FILE",
     "DEFAULT_RUN_ROOT",
@@ -32,14 +35,20 @@ __all__ = [
     "RESULT_FILE",
     "RunProblem",
     "RunSummary",
+    "SKILL_FILE",
     "WALKFORWARD_FILE",
     "format_runs",
+    "format_skill",
     "node_metrics",
     "param_at",
+    "read_curve_records",
+    "read_skill_series",
     "resolve_run_root",
     "scan_runs",
+    "score_walk",
     "unknown_metrics",
     "unknown_params",
+    "walk_fold_dirs",
 ]
 
 #: Where runs land when a document declares no ``outputs.run_root`` —
@@ -55,6 +64,14 @@ RESULT_FILE = "result.json"
 CONFIG_FILE = "config.json"
 CARRY_FILE = "carry.json"
 NODES_DIR = "nodes"
+ARTIFACTS_DIR = "artifacts"
+
+#: The per-row loss gaps ADR-0067 pools, written by a score node
+#: through ``Node.write_artifact`` and read back by
+#: :func:`score_walk`. It lives under ``artifacts/<node>/`` because
+#: ``carry.json`` is run-over-run STATE with a 20 kB ceiling, and one
+#: fold's gaps are two orders of magnitude past it.
+SKILL_FILE = "skill.json"
 
 #: The machine record `driver.run_walk_forward` writes into its summary
 #: dir (beside `report.md`; deliberately no `result.json`). The scan
@@ -516,6 +533,330 @@ def _render_table(columns, rows):
         for row in rows
     ]
     return lines
+
+
+def walk_fold_dirs(summary_dir):
+    """Name the fold run dirs a walk-forward summary lists, in order.
+
+    Only folds whose ``state`` is ``ran`` — a skipped or failed fold has
+    no run dir to read, and silently treating it as a gap would let a
+    short walk pass as a long one.
+
+    Parameters
+    ----------
+    summary_dir : str
+        A walk-forward summary directory (the one holding
+        :data:`WALKFORWARD_FILE`).
+
+    Returns
+    -------
+    list of str
+        Absolute fold run directories, in the order the walk ran them.
+
+    Raises
+    ------
+    ValueError
+        When the directory holds no readable walk-forward record.
+
+    Examples
+    --------
+    The count is the walk's fold count::
+
+        len(walk_fold_dirs(summary))  # 20
+    """
+    record, _why = _load_json(os.path.join(summary_dir, WALKFORWARD_FILE))
+    if not isinstance(record, dict) or not isinstance(record.get("folds"), list):
+        raise ValueError(
+            f"{summary_dir} holds no readable {WALKFORWARD_FILE} — "
+            "not a walk-forward summary directory"
+        )
+    return [
+        fold["run_dir"]
+        for fold in record["folds"]
+        if isinstance(fold, dict)
+        and fold.get("state") == "ran"
+        and isinstance(fold.get("run_dir"), str)
+    ]
+
+
+def read_skill_series(run_dir):
+    """Read the per-row loss gaps a fold's score node left behind.
+
+    ADR-0067's evidence: one entry per ``(series, lead)`` carrying ``d``
+    (the loss gaps against the fold's training mean), ``q`` (the
+    benchmark MSPE that makes folds comparable), ``stamps`` and
+    ``h_steps``. Empty when the fold predates the artifact — which is
+    NOT the same as a fold that scored nothing, so the caller must say
+    which it found rather than scoring a short walk as a full one.
+
+    Parameters
+    ----------
+    run_dir : str
+        One fold's run directory.
+
+    Returns
+    -------
+    list of dict
+        Every series entry found under ``artifacts/*/skill.json``.
+
+    Examples
+    --------
+    A fold that scored three names at one lead::
+
+        len(read_skill_series(fold))  # 3
+    """
+    root = os.path.join(run_dir, ARTIFACTS_DIR)
+    if not os.path.isdir(root):
+        return []
+    found = []
+    for node in sorted(os.listdir(root)):
+        payload, _why = _load_json(os.path.join(root, node, SKILL_FILE))
+        if isinstance(payload, dict) and isinstance(payload.get("series"), list):
+            found.extend(s for s in payload["series"] if isinstance(s, dict))
+    return found
+
+
+def read_curve_records(run_dir):
+    """Read a fold's per-``(series, lead)`` score rows from the carry.
+
+    The summary side of the same evidence — ``mspe_model``,
+    ``mspe_mean``, ``n`` and the Clark–West ``t_stat`` a score node
+    carried. Enough for the across-fold half of ADR-0067 and for the
+    side columns; never enough for the pooled half.
+
+    Parameters
+    ----------
+    run_dir : str
+        One fold's run directory.
+
+    Returns
+    -------
+    list of dict
+        Every carried record naming a ``symbol`` and a ``lead``.
+
+    Examples
+    --------
+    Three names at one lead again::
+
+        len(read_curve_records(fold))  # 3
+    """
+    carry, _why = _load_json(os.path.join(run_dir, CARRY_FILE))
+    if not isinstance(carry, dict):
+        return []
+    found = []
+    for outputs in carry.values():
+        if not isinstance(outputs, dict):
+            continue
+        for row in outputs.get("records") or ():
+            if isinstance(row, dict) and "symbol" in row and "lead" in row:
+                found.append(row)
+    return found
+
+
+def _by_series(fold_payloads):
+    """Group per-fold entries into ``{(series, lead): [entry, ...]}``."""
+    grouped = {}
+    for entries in fold_payloads:
+        for entry in entries:
+            key = (str(entry["symbol"]), entry["lead"])
+            grouped.setdefault(key, []).append(entry)
+    return grouped
+
+
+def _group_folds(fold_payloads, lead):
+    """One panel fold per walk fold: the cross-sectional average gap."""
+    from dskit.pipeline.stats import cross_sectional_fold
+
+    folds = []
+    for entries in fold_payloads:
+        units = [
+            e for e in entries
+            if e["lead"] == lead and len(e.get("d") or ()) >= 2
+        ]
+        if units:
+            fold = cross_sectional_fold(units)
+            fold["h_steps"] = units[0].get("h_steps")
+            folds.append(fold)
+    return folds
+
+
+def _side_columns(records):
+    """Build the Clark–West diagnostics that ride beside a verdict."""
+    ts = [float(r["t_stat"]) for r in records if number_ok(r.get("t_stat"))]
+    ps = [float(r["p_value"]) for r in records if number_ok(r.get("p_value"))]
+    return {
+        "cw_t_mean": sum(ts) / len(ts) if ts else None,
+        "cw_reject_frac": (
+            sum(1 for p in ps if p <= 0.05) / len(ps) if ps else None
+        ),
+    }
+
+
+def _pooled_row(series, lead, folds, records, alpha):
+    """One ADR-0067 verdict row from per-row loss gaps."""
+    from dskit.pipeline.stats import skill_vs_mean
+
+    h_steps = max(int(folds[0].get("h_steps") or 1), 1)
+    out = skill_vs_mean(folds, h_steps=h_steps, alpha=alpha)
+    row = {
+        "series": series,
+        "lead": lead,
+        "n_folds": out["n_folds"],
+        "n_rows": out["n_rows"],
+        "t_pool": out["t_pool"],
+        "t_fold": out["t_fold"],
+        "r2oos": out["r2oos_pool"],
+        "passes": out["passes"],
+        "exact": True,
+    }
+    row.update(_side_columns(records))
+    return row
+
+
+def _summary_row(series, lead, records, alpha):
+    """Answer the across-fold half only, as a gapless walk allows."""
+    from dskit.pipeline.stats import across_fold_t
+
+    kept = [
+        r for r in records
+        if number_ok(r.get("mspe_mean")) and float(r["mspe_mean"]) > 0.0
+        and number_ok(r.get("mspe_model")) and number_ok(r.get("n"))
+    ]
+    r2 = [1.0 - float(r["mspe_model"]) / float(r["mspe_mean"]) for r in kept]
+    weight = sum(float(r["n"]) * float(r["mspe_mean"]) for r in kept)
+    residual = sum(float(r["n"]) * float(r["mspe_model"]) for r in kept)
+    fold = across_fold_t(r2) if len(r2) >= 2 else None
+    row = {
+        "series": series,
+        "lead": lead,
+        "n_folds": len(r2),
+        "n_rows": int(sum(float(r["n"]) for r in kept)),
+        "t_pool": None,
+        "t_fold": None if fold is None else fold["t"],
+        "r2oos": 1.0 - residual / weight if weight else None,
+        "passes": None,
+        "exact": False,
+    }
+    row.update(_side_columns(kept))
+    return row
+
+
+def score_walk(summary_dir, alpha=0.05, group="GROUP"):
+    """Judge a walk-forward under ADR-0067 — per series and as a group.
+
+    The verdict is the Diebold–Mariano gap against the fold's constant
+    training mean, pooled over the walk's folds in time order, AND the
+    across-fold t of the per-fold out-of-sample R². Clark–West rides
+    beside it as a side column, never as the verdict.
+
+    A walk whose folds saved per-row loss gaps is scored EXACTLY. A walk
+    that saved only fold summaries is scored on the across-fold half and
+    the R², with ``t_pool`` and ``passes`` left ``None`` and a note
+    saying so — the pooled statistic cannot be recovered from an MSPE
+    pair, and inventing one would be the defect this rule replaces.
+
+    Parameters
+    ----------
+    summary_dir : str
+        A walk-forward summary directory.
+    alpha : float
+        One-sided level for both tests, in ``(0, 1)``.
+    group : str
+        The label the cross-sectional row is reported under.
+
+    Returns
+    -------
+    dict
+        ``summary_dir``, ``n_folds``, ``exact`` (whether every fold had
+        loss gaps), ``notes`` and ``rows`` — one per ``(series, lead)``
+        plus one per lead for the group, each carrying ``t_pool``,
+        ``t_fold``, ``r2oos``, ``cw_t_mean``, ``cw_reject_frac`` and
+        ``passes``.
+
+    Raises
+    ------
+    ValueError
+        When ``summary_dir`` is not a walk-forward summary.
+
+    Examples
+    --------
+    A walk of 20 folds over three names at one lead::
+
+        len(score_walk(summary)["rows"])  # 4 — three names and the group
+    """
+    fold_dirs = walk_fold_dirs(summary_dir)
+    gaps = [read_skill_series(d) for d in fold_dirs]
+    records = [read_curve_records(d) for d in fold_dirs]
+    exact = bool(fold_dirs) and all(gaps)
+    by_record = _by_series(records)
+    rows, notes = [], []
+    if not exact:
+        notes.append(
+            f"{sum(1 for g in gaps if not g)}/{len(fold_dirs)} fold(s) saved no "
+            "per-row loss gaps (ADR-0067 artifact absent) — the pooled DM "
+            "statistic and the per-timestamp group series are NOT recoverable "
+            "from fold summaries; t_pool and passes are reported as unknown."
+        )
+    by_gap = _by_series(gaps) if exact else {}
+    for series, lead in sorted(by_record, key=lambda k: (k[1], k[0])):
+        seen = by_record[(series, lead)]
+        rows.append(
+            _pooled_row(series, lead, by_gap[(series, lead)], seen, alpha)
+            if (series, lead) in by_gap
+            else _summary_row(series, lead, seen, alpha)
+        )
+    rows.extend(_group_rows(gaps, by_record, exact, alpha, group))
+    return {
+        "summary_dir": summary_dir,
+        "n_folds": len(fold_dirs),
+        "exact": exact,
+        "notes": notes,
+        "rows": rows,
+    }
+
+
+def _group_rows(gaps, by_record, exact, alpha, group):
+    """Build the cross-sectional verdict, one row per lead."""
+    rows = []
+    for lead in sorted({lead for _s, lead in by_record}):
+        seen = [r for (s, ell), rs in by_record.items() if ell == lead for r in rs]
+        if exact:
+            folds = _group_folds(gaps, lead)
+            if len(folds) >= 2:
+                rows.append(_pooled_row(group, lead, folds, seen, alpha))
+                continue
+        rows.append(_summary_row(group, lead, seen, alpha))
+    return rows
+
+
+def format_skill(scored):
+    """Render :func:`score_walk`'s rows as one markdown table.
+
+    Parameters
+    ----------
+    scored : mapping
+        A :func:`score_walk` result.
+
+    Returns
+    -------
+    str
+        The table, then every note, then a blank-safe trailing newline.
+
+    Examples
+    --------
+    Printed straight to a terminal::
+
+        print(format_skill(score_walk(summary)))
+    """
+    columns = [
+        "series", "lead", "n_folds", "n_rows", "t_pool", "t_fold",
+        "r2oos", "cw_t_mean", "cw_reject_frac", "passes",
+    ]
+    body = "\n".join(_render_table(
+        columns, [[row.get(c) for c in columns] for row in scored["rows"]]
+    ))
+    tail = "".join("\n\nnote: " + n for n in scored["notes"])
+    return body + tail
 
 
 def format_runs(runs, metrics=(), params=()):

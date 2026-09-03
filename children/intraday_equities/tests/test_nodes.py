@@ -684,6 +684,68 @@ def test_no_information_scan_drops_labels_that_land_after_val_end():
     assert out["records"][0]["n"] == 0.0
 
 
+def test_no_information_scan_writes_the_skill_evidence(tmp_path):
+    """ADR-0067: the per-row loss gaps a walk needs are on disk."""
+    import json
+
+    from dskit.pipeline.node import NodeContext
+    from dskit.pipeline.runs import SKILL_FILE, read_skill_series
+
+    spec = _mini_spec()
+    spec["features"] = ["ret_lag_0"]
+    spec["period_ms"] = 60_000
+    spec["horizon"] = {
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 1,
+        "anchors": [1],
+        "top_k": 1,
+        "se_mult": 2.0,
+        "band_leads": 1,
+    }
+    n = 40
+    bars, rows = [], []
+    for symbol in ("AAPL", "JPM"):
+        px = 100.0
+        for i in range(n):
+            ret = 0.001 * ((i % 7) - 3)
+            px *= math.exp(ret)
+            bars.append({"symbol": symbol, "asof_ms": _ms(i), "close": px})
+            rows.append({
+                "symbol": symbol,
+                "asof_ms": _ms(i),
+                "ret_lag_0": ret,
+                "close": px,
+            })
+    ctx = NodeContext(name="scan", asof="2025-11-30", run_dir=str(tmp_path))
+    out = NoInformationScan(
+        "scan",
+        {
+            "split": "val",
+            "train_end_ms": _ms(24),
+            "val_start_ms": _ms(26),
+            "val_end_ms": _ms(n - 1),
+        },
+    ).run(ctx, {"records": rows, "bars": bars, "spec": spec})
+    path = tmp_path / "artifacts" / "scan" / SKILL_FILE
+    assert path.is_file()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["period_minutes"] == 1
+    assert {e["symbol"] for e in payload["series"]} == {"AAPL", "JPM"}
+    for entry in payload["series"]:
+        assert len(entry["d"]) == len(entry["stamps"])
+        assert entry["q"] > 0.0
+        assert entry["h_steps"] == 1
+    # The reader finds exactly what the writer left.
+    assert len(read_skill_series(str(tmp_path))) == 2
+    # And the fold's own verdict columns ride on the metrics and rows.
+    for symbol in ("AAPL", "JPM"):
+        assert f"r2oos_{symbol}" in out["metrics"]
+        assert f"dm_t_{symbol}" in out["metrics"]
+    for row in out["records"]:
+        assert set(row) >= {"r2oos", "dm_t", "dm_p", "t_stat", "mspe_model"}
+
+
 def test_no_information_scan_fits_once_and_walks_h():
     spec = _mini_spec()
     spec["features"] = ["ret_lag_0"]

@@ -2547,3 +2547,72 @@ recorded before 2026-09-03, so every AAPL and WMT result to date is void
 and the horizon grid has to re-run on five names. Two stores cost disk
 and one more thing to keep straight; the note in each config says which
 is which.
+
+---
+
+## ADR-0067 — Skill is a pooled Diebold–Mariano gap, not a rejection count
+
+**Status:** proposed (2026-09-03; plan `docs/plans/2026-09-horizon-search.md`
+P5 — "what we count as success may pick the wrong look-ahead")
+
+**Context.** Every horizon verdict so far has been a COUNT of Clark–West
+rejections (`go_<sym>`, `h_star_<sym>`, `n_go`, `go_frac`). Clark–West is
+a nested-model test: it adds back the variance the larger model pays for
+estimating parameters, so it rejects on the POPULATION claim and can
+reject while the forecast's realized MSPE is worse than the constant
+mean's (Clark and West 2007's own simulations: 61% rejections at the 10%
+level where the big model had the lower MSPE only 47% of the time).
+`h01-gru` is the local instance — 12/60 rejections while forecasting 7.4%
+worse than the mean. Meanwhile the number that DOES separate a forecast
+from a correction, the MSPE gap, exists nowhere in the code: the "gain"
+column in `docs/RE-ENTRY.md` was arithmetic done by hand in a research
+doc, so the project's headline result is not reproducible by running
+anything.
+
+**Decision.** The verdict is the Diebold–Mariano test of the squared-error
+loss differential against the fold's constant training mean, and it
+REPLACES rejection-counting as the verdict.
+
+1. Per fold `f`, series `s`, over the SAME validation rows the model is
+   scored on: `d_t = (y_t - mu_f)^2 - (y_t - yhat_t)^2` with `mu_f` the
+   fold's TRAIN mean of that series' label; `q_f = mean_t (y_t - mu_f)^2`.
+   Positive `d` means the forecast beat the constant.
+2. Pooled: concatenate `d_t / q_f` over the folds in TIME order (the
+   `/q_f` makes disjoint folds scale-free, so a volatile fold cannot
+   outvote a quiet one) and take a one-sided Newey–West `t` with Bartlett
+   lag `max(h_steps - 1, floor(4 (n/100)^(2/9)))` and the
+   Harvey–Leybourne–Newbold small-sample factor. `h_steps = lead /
+   period_minutes`.
+3. Across folds: `t_fold = mean_f(R2oos_f) / (sd_f / sqrt(F))` on `F - 1`
+   degrees of freedom, where `R2oos_f = mean(d)/q_f`. This is the
+   fold-cluster check the pooled HAC cannot make.
+4. **PASS iff BOTH** `t_pool` clears the one-sided normal level AND
+   `t_fold` clears the one-sided Student level (at F = 20 folds and
+   alpha = 0.05 that is 1.645 and 1.729). One statistic alone passes on a
+   single lucky fold, or on serial dependence the lag rule missed.
+5. Group: average `d_t / q_f` ACROSS the series present at each timestamp
+   first, then apply 2-4 to that one series (Qu–Timmermann–Zhu panel DM —
+   the HAC on the cross-sectional average absorbs the dependence between
+   names, so three names is not too few).
+6. Report `R2oos_pool = 1 - sum(y - yhat)^2 / sum(y - mu_f)^2` over all
+   scored rows beside every verdict: the pass is the sign of the win, the
+   `R2oos` is its size.
+7. Clark–West stays as a SIDE COLUMN (`cw_t`, `cw_reject_frac`), never
+   the verdict. `go_frac` and `h_star` remain descriptive.
+
+Because `d_t` is a within-fold quantity and every reported number is a
+ratio inside one fold, the ADR-0059 label transforms do not disturb it.
+
+**Consequences.** `NoInformationScan` must PERSIST `d_t` with its
+timestamps — a fold's `mspe_model`/`mspe_mean` pair fixes `R2oos_f` and
+therefore `t_fold`, but the pooled statistic and the group series cannot
+be recovered from summaries, and neither can any later per-timestamp work
+(P6's cross-sectional IC). The series is far past `carry.json`'s 20 kB
+limit, so it goes through the node artifact seam
+(`<fold>/artifacts/<node>/skill.json`, `runs.SKILL_FILE`) and
+`runs.score_walk` reads the walk back.
+**The 30 horizon-sweep walks already on disk saved no per-row
+predictions**, so they can be re-scored on `R2oos` and `t_fold` only;
+their pooled and group verdicts are unavailable and are reported as such
+rather than guessed. The rule does NOT include a many-attempts
+correction — that is P8, and it applies on top.
