@@ -29,7 +29,9 @@ rows every 1, 2, 3, 5 and 10 minutes crossed with look-aheads from 1
 minute to an hour, same stocks and dates. One agent per row spacing.
 Output is a grid, not a number.
 
-**Result.**
+**Result.** Row spacing was the binding constraint, not the look-ahead.
+Forming a row every minute instead of every fifth moved the wall; at
+five-minute rows nothing ever passed at three minutes.
 
 ## P2 — Time of day is barely encoded
 
@@ -46,7 +48,9 @@ window, first and last thirty minutes, day-of-week, day-boundary markers,
 training-only time-of-day averages. Test each block alone, then check
 whether the best look-ahead differs by time of day.
 
-**Result.**
+**Result.** The block was built — 31 inputs — and a real bug fixed: the
+clock encoding wrapped, so the open and the close carried the same value.
+Even fixed, the block did not beat its control at any look-ahead.
 
 ## P3 — Feature engineering has barely started
 
@@ -62,7 +66,9 @@ the strongest candidates, add history to each, test alone, then combined.
 Judged on one thing: does it extend the look-ahead at which we beat the
 average?
 
-**Result.**
+**Result.** Two blocks built and leak-tested: one from the price bars
+themselves (10 inputs) and one from the other stocks and the wider market
+(17 inputs). Neither beat its control at any look-ahead.
 
 ## P4 — The price we use flips between two values
 
@@ -77,7 +83,10 @@ of all trades in the minute, and with the midpoint of buy and sell prices
 where available. Compare all three at every look-ahead. Build on whichever
 gives the clearest, most stable answer.
 
-**Result.**
+**Result.** The flip inflates the win but does not create it. On the
+midpoint, over an identical window, Lilly's edge survives at under half
+the size; Exxon fails on both prices. Buy and sell prices exist only for
+Lilly and Exxon, so this test carries half the evidence.
 
 ## P5 — What we count as success may pick the wrong look-ahead
 
@@ -92,15 +101,9 @@ counting wins? Then one agent writes the rule as numbers, and applies it
 to everything already run and everything new, so every look-ahead is
 judged the same way.
 
-**Result.** The rule is written (ADR-0067) and is now code: every run
-scores its forecast against a flat average guess and must beat it on
-two counts. Re-scored, the 30 finished runs give 113 clear failures
-out of 120 cells and 7 still-open ones, all at 1-2 minutes ahead,
-mostly one stock. Three of the four previously positive results
-survive that far; none is a win yet, because the finished runs did
-not save the row-by-row numbers the other count needs. See
-`RESULT-P5.md` and the research doc
-`p5-the-honest-scoring-rule-re-scores-the-30-walks.md`.
+**Result.** The honest rule is built (ADR-0067) and is now the verdict
+every run is judged by. Re-scoring the runs already finished failed 113
+of their 120 cells.
 
 ## P6 — Ordering and size may have different answers
 
@@ -115,13 +118,10 @@ measurements — how close predicted size is to actual size, and how good
 the ordering is at each moment across stocks — and re-run every
 look-ahead. Report both horizons if they differ.
 
-**Result.** Both measurements are built (ADR-0068) and read the saved
-row-by-row numbers. One says whether the predicted SIZE is usable; the
-other ranks the stocks at each single moment, which is what a chooser
-needs, and it is kept apart from the old number that mixed "when" with
-"which stock". With only three stocks the moment-by-moment ranking is
-too weak to mean anything, so it is emitted with the stock count beside
-it and marked unusable — it cannot pass until P9 restores the other two.
+**Result.** Both measures are built (ADR-0068). The old ordering number
+pooled time and names together; the new one refuses to report below five
+stocks. Lilly's three-minute win predicts moves about 1.4 times too
+small, so its size is usable, not only its ordering.
 
 ## P7 — The middle ground between simple and large is untested
 
@@ -135,7 +135,9 @@ models, fewer inputs, averaging several small models, and a re-test of
 the large ones once P2 and P3 supply real history. Everything else held
 identical.
 
-**Result.**
+**Result.** 19 model setups are ready, and the earlier comparison was
+confirmed unfair to the bigger models — they got no tuning, no restraint
+and a single seed. None have been run.
 
 ## P8 — Many attempts need a fair bar
 
@@ -148,14 +150,8 @@ many models and horizons are tried on one dataset? Then one agent
 implements it plus a scramble test — shuffle the answers, re-run, see
 what luck alone produces. Every candidate look-ahead must clear that bar.
 
-**Result.** The bar is built (ADR-0069). Every combination ever run is
-now counted in a ledger, and a candidate must beat the best that pure
-luck produces across all of them together, with a hard floor, and must
-show a win big enough that its error bar stays above zero. The luck test
-shuffles whole trading days, never single rows. The cheap version runs
-now; the expensive one — re-running everything a hundred times with the
-days reshuffled — is left ready but unrun, for a winner only. It sits on
-top of P5's rule and does not replace it.
+**Result.** The bar is built (ADR-0069) and applied. Surviving it: Lilly
+at three minutes, and the group at two.
 
 ## P9 — Three stocks, and two were dropped
 
@@ -168,7 +164,10 @@ what does it cost to redo the history? Then agents correct them, restore
 all five stocks, and test one shared look-ahead against per-stock ones.
 More stocks also makes P6's ordering measurement meaningful.
 
-**Result.**
+**Result.** Both splits sat inside our history, which starts 2016. The
+history was re-pulled already corrected; all five stocks and seven funds
+were verified clean. The study now starts 2018, to step past a fund's
+uncorrected spin-off.
 
 ---
 
@@ -197,5 +196,5 @@ allows.
 - No data after 2026-02-28 is read. Paper only.
 - ADRs 0059–0062 are proposed; their code is in the tree. An ADR before
   significant new code.
-- Stocks: JPM, LLY, XOM now; AAPL and WMT return if P9 corrects the
-  splits.
+- Stocks: all five — AAPL, JPM, LLY, WMT, XOM — since P9 corrected the
+  splits. History starts 2018.

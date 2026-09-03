@@ -1,130 +1,122 @@
 # Re-entry
 
-Refreshed 2026-09-03, end of the horizon-sweep session. On `main`.
+Refreshed 2026-09-03, end of the horizon-search session. On `main`,
+pushed to `origin`.
+
+This is written for someone arriving cold. No shorthand. The question we
+are answering: **how far ahead can we predict a stock's move and still
+beat simply guessing the average?** That distance is the "look-ahead".
 
 ---
 
 # ▶ PICK UP HERE
 
-## ⇒ The two-bar wall: rank survives where accuracy dies
+## The answer as it stands
 
-**30 walks complete** (5 models × H=1/2/3/20/30/60, 20 folds each,
-JPM/LLY/XOM). Clark–West gain (model MSPE vs the training mean's):
+**The best look-ahead that survives a fair bar is three minutes for Lilly
+and two minutes for the group taken together.**
 
-| H | ridge | lgbm | gru | lstm | tft |
-|---|---|---|---|---|---|
-| 1 | **+0.0898** | **+0.2337** | −7.40 | −10.61 | −4.90 |
-| 2 | **+0.0096** | **+0.0796** | −7.72 | −11.17 | −5.04 |
-| 3 | −0.0206 | −0.0049 | −8.42 | −11.72 | −5.25 |
-| 20 | −0.0285 | −0.6512 | −11.86 | −12.88 | −17.01 |
-| 30 | −0.0948 | −1.1620 | −39.57 | −37.43 | −28.04 |
-| 60 | −0.1144 | −1.0530 | −53.71 | −47.93 | −38.83 |
+Apple, JPMorgan, Walmart and Exxon show nothing at any setting we tried.
 
-**Four positive cells out of thirty. All at H ≤ 2, all low-capacity.**
-Both curves cross zero between H=2 and H=3 — a two-bar wall. The nets
-never enter positive territory at any horizon, and their gain worsens
-monotonically with capacity and with h.
+So the honest summary is **one answer per stock, not one shared answer**.
+Anyone who reports a single look-ahead for the whole study is overstating
+it. The plan that produced this is
+`docs/plans/2026-09-horizon-search.md`, which now carries a one-line
+result for each of its nine problems.
 
-**The pre-registered 1/h bounce prediction is FALSIFIED — and the test
-did not cleanly replace it.** Predicted +0.045% at H=2 from +0.090% at
-H=1. Ridge delivered +0.0096% (a **9.4x** fall, far too fast for a
-fixed-size bounce term against variance growing like h). LightGBM
-delivered +0.0796% (a **2.9x** fall, close to the predicted 2x). So the
-two models disagree about the decay: ridge's rules bounce out, LightGBM's
-is consistent with it. **Mechanism still unnamed.**
+"A fair bar" matters here. We have tried a great many combinations, and
+with enough attempts something always looks good by luck. The bar makes a
+candidate beat the best that luck alone produces across every attempt
+we have ever made. Lilly at three minutes and the group at two are what
+is left standing after that.
 
-**The unexplained thing worth chasing: val IC decays far more slowly than
-the gain and stays positive nearly everywhere** (LightGBM +0.054 → +0.030
-at H=3, still +0.020 at H=60; 19–20/20 folds positive) while its MSPE
-gain has gone to −1.05%. Rank information persists ~30x further out in
-horizon than forecast accuracy. For a PREDICTION-ONLY model feeding a
-selecting optimizer, that gap is the whole question, and nothing here
-measures it.
+## What actually moved the wall: dense rows, not features
 
-**Next, in order:**
-1. **Calibration** — regress y on ŷ per fold. Slope ≈1 ⇒ magnitude is
-   sizeable; slope ≪1 ⇒ only the ranking is usable, which is what the
-   IC/gain divergence hints. Small addition to the scan node.
-2. **Per-timestamp cross-sectional IC** — an optimizer chooses AMONG
-   names at one instant; every number above is pooled per name over time.
-3. **VWAP variant of `h01-ridge` / `h01-lgbm`** (not built, one config
-   each). `vwap` averages every print in the minute, so its bounce term
-   is ~b²/n. If the H=1 gain collapses under VWAP, bounce was the source
-   after all. Caveat: VWAP is an interval average, so it smears the
-   decision instant — diagnostic, not a production target.
+This is the single most useful thing to carry forward.
 
-**Why bounce was suspected:** `px` is the last TRADE print (bars carry
-`trade_count`/`volume`/`vwap`; `price_field` is `close`), so it carries a
-±half-spread coin flip. `px[t]` sits in the label with a minus sign and in
-`ret_lag_0 = log(px[t]/px[t-1])` with a plus. ADR-0059's transforms do
-NOT close this: the SPY residual removes market variance (raising
-bounce's share) and `sigma_t` is a scalar measurable at t.
+For most of the study we formed one row of data every five minutes. At
+that spacing **nothing ever passed at three minutes ahead** — there
+appeared to be a hard wall. Forming a row every minute instead moved the
+wall out. The spacing of the rows, not the choice of inputs, was the
+binding constraint all along.
 
-**Framing the owner set:** the model is PREDICTION ONLY — an optimizer
-selects downstream — so cost arithmetic is out of scope. The surviving
-objection is validity: a bounce signal forecasts the next PRINT, not the
-next value.
+Meanwhile, **every new input we built failed**:
 
-## What landed this session
+- a time-of-day block (31 inputs) — did not beat its control anywhere,
+  even after we fixed a real bug in it where the clock encoding wrapped
+  around so the market open and the market close carried the same value;
+- a block derived from the price bars themselves (10 inputs) — no;
+- a block from the other stocks and the wider market (17 inputs) — no.
 
-**Walk-forward is ~30x faster (measured, not guessed).** `_resolve_run`
-re-scanned and re-hashed all 8.9M store records PER FOLD (139 s + 44 s),
-invisible because it runs before the fold's run dir exists. Content-keyed
-class cache on `BarsFromStore`: **105 s/fold → 3.4 s/fold**, a 20-fold
-walk 35 min → ~3.5 min. New in dskit: `dir_digest` (onboarding/base) and
-`stream_dir` (observations).
+All three were leak-tested, so those are real negatives, not broken
+tests. The lesson: spend effort on how densely we sample, not on
+inventing more inputs.
 
-**Four ADRs, all PROPOSED — none ratified:**
-- **0059** — the label: `label_scale: "vol"` (÷ `sigma_t*sqrt(h)`, causal
-  390-bar `rolling_std`) and `label_residual: "SPY"` (beta from 3900-bar
-  rolling cross-products). One `_LeadLabel` replaces three copies of
-  `log(px1/px0)`. Fixed A0040's inversion; did not create signal.
-- **0060** — `estimator` is a document knob; `t_stat`/`se` on every curve
-  row, `t_stat_<sym>` in metrics, per-series INFO logging.
-- **0061** — `ZooEstimator` in `libs/torch_ts.py`: the ADR-0041 zoo
-  reached through the sklearn contract. Splits the row BY NAME —
-  `ret_lag_*` is the time axis, the other 67 columns ride as constant
-  channels.
-- **0062** — `lead_start`/`lead_step`/`lead_stop` are document knobs, so
-  one universe serves every horizon.
+## The honest gaps
 
-**Five model classes × four horizons, 20 folds each** (JPM/LLY/XOM; AAPL
-and WMT excluded for unadjusted splits). Two orderings run through the
-whole grid: **gain falls with horizon, and gain falls with capacity.**
-Ridge is the best forecaster at every H; the nets are worst everywhere
-(−54% at H=60, train IC +0.52 against a negative val IC). At H≥20 every
-model sits at the null (1.7–13.3% rejections around a 5% null).
+Do not present the answer above without these.
 
-**Rejection counts do not track skill.** `h01-gru` rejects 12/60 while
-forecasting 7.4% worse than the mean. Clark–West adds back the variance a
-nested model pays for estimating parameters, so it rejects on the
-POPULATION claim — only the gain column separates forecast from
-correction.
+1. **9 of the 50 five-minute-row cells were never run.** They are the
+   ten-minute-ahead arms, and the control for that block had already
+   failed, so they were deprioritised — but they are unrun, not
+   negative.
+2. **The 19-cell model shortlist is entirely unrun.** We confirmed the
+   earlier model comparison was unfair to the bigger models (they got no
+   tuning, no restraint and a single random seed), and we built a fair
+   replacement. None of it has been executed. So "big models do not
+   work here" is currently **unproven**.
+3. **The buy/sell-midpoint check is underpowered.** Every price we use
+   is the last trade of the minute, which lands on either the buyer's or
+   the seller's price, so it jitters even when nothing changed. Repeating
+   the work on the midpoint of the buy and sell prices showed the jitter
+   *inflates* Lilly's win but does not *create* it — the edge survives at
+   under half size. Exxon fails on both prices. But we only hold buy and
+   sell prices for Lilly and Exxon; **JPMorgan, Walmart and Apple are
+   missing or partial**, so this test covers half the evidence.
+4. **The expensive scramble test has not been run for the surviving
+   cells.** The cheap version of the luck check is done. The thorough one
+   — re-running everything a hundred times with the trading days
+   shuffled — is built and ready but never executed. Until it runs, the
+   two survivors are "best available", not confirmed.
 
-## Decisions awaiting the user
+## Infrastructure fixed tonight
 
-1. **Ratify or reject ADR-0059 / 0060 / 0061 / 0062** — the code is in the
-   tree ahead of approval.
-2. **Splits still unadjusted** (AAPL 2020-08-31, WMT 2024-02-26) — why
-   they are excluded rather than fixed.
-3. **The H protocol** from ADR-0058 is still unsettled.
-4. **The zoo has no static-covariate path** — the nets got the 67 non-lag
-   features as constant channels. Defensible, not what a TFT is designed
-   to consume; a fair test needs per-channel lag history.
-5. **An interrupted walk still journals nothing** (`_journal_execute`
-   fires only after the summary; per-fold `run_document` passes
-   `journal=False`). Needs an ADR.
-6. **Not built, discussed:** calibration (regress y on ŷ; slope ≈1 means
-   the magnitude is sizeable) and per-timestamp cross-sectional IC — what
-   a downstream optimizer actually needs, which per-name pooled tests do
-   not give.
+Two real bugs, both of which had been silently distorting the work.
 
-## Locked
+1. **The journal was losing rows.** When several agents ran at once,
+   their writes overwrote each other, so the record of what had been run
+   was incomplete. Fixed.
+2. **The walk was reading everything before filtering.** Each run built
+   all sixteen million records into memory and only then narrowed to the
+   handful it needed. This is what made dense rows unaffordable and so
+   **is the direct reason the five-minute wall looked permanent all
+   night**. Fixed — a run now reads only the bars it declared, once.
 
-- **H and L are UNSET.** H=470/L=120 is void (A0035).
-- HPO may use Dec 2025–Feb 2026. **No peek after 2026-02-28.**
-- `dskit.journal` (ADR-0056). Uninitialized child refuses.
-- Paper only. Test B sealed until confirm.
+If a future session sees runs that are suddenly slow or memory-hungry,
+suspect a regression in one of these two first.
+
+## ADR status — nothing is ratified
+
+**ADRs 0059 through 0073 are all PROPOSED. None is ratified.** Their code
+is already in the tree, ahead of approval. That is the largest
+outstanding decision for the owner: read them and accept or reject.
+They are in `docs/architecture/decision-log.md`.
+
+## The environment trap — read before running anything
+
+**Run exactly one command at a time.**
+
+A second command started beside a running walk **wedges the whole Linux
+virtual machine**. Stopping the container does not clear it; only a full
+restart (`wsl --shutdown`, then start again) does. One walk alone holds
+roughly 11.5 GB of the 17 GB available, which is why there is no room for
+a second.
+
+Research and writing work can overlap freely. Anything that runs a
+pipeline must be strictly one at a time.
+
+Also standing: **no data after 2026-02-28 is ever read**, and everything
+is paper only.
 
 ## Verification
 
@@ -133,3 +125,21 @@ python -m ruff check .
 python -m pytest tests -q
 (cd children/intraday_equities && python -m pytest tests -q)
 ```
+
+The suite is slow. Prefer running only the tests covering what you
+touched unless the owner asks for the full run.
+
+## Next steps, in priority order
+
+1. **Run the expensive scramble test on the two survivors** (Lilly at
+   three minutes, the group at two). This either confirms the answer or
+   removes it, and nothing else should be built on top of it until then.
+2. **Run the 19-cell model shortlist.** It is the largest unrun block and
+   the only fair test of bigger models we have.
+3. **Get buy and sell prices for JPMorgan, Walmart and Apple**, then
+   repeat the midpoint check so it covers all five stocks instead of two.
+4. **Push row spacing below one minute**, since spacing is the one lever
+   that has actually worked.
+5. **Fill the 9 unrun five-minute cells** — low value, but it closes the
+   grid honestly.
+6. **Get ADRs 0059–0073 ratified or rejected.**
