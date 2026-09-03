@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import re
 
-from .base import JournalError, atomic_write_text, utc_now
+from .base import JournalError, atomic_write_text, locked, utc_now
 from .hooks import record_research
 from .locate import find_journal
 
@@ -70,8 +70,6 @@ def write_research(title, body=None, start=None):
     os.makedirs(root.research_dir, exist_ok=True)
     slug = slugify(title)
     path = os.path.join(root.research_dir, f"{slug}.md")
-    if os.path.exists(path):
-        raise JournalError([f"research file already exists: {path}"])
     stamp = utc_now()
     text = body if body is not None else (
         f"# {title}\n\n"
@@ -82,7 +80,12 @@ def write_research(title, body=None, start=None):
     )
     if not text.endswith("\n"):
         text += "\n"
-    atomic_write_text(path, text)
     rel = os.path.relpath(path, root.child_root).replace(os.sep, "/")
-    record_research(slug[:80], inputs=title, outputs=rel, db_location=rel)
+    # File and row are one unit: two agents on the same title must not
+    # both pass the exists check and both write.
+    with locked(root.decisioning):
+        if os.path.exists(path):
+            raise JournalError([f"research file already exists: {path}"])
+        atomic_write_text(path, text)
+        record_research(slug[:80], inputs=title, outputs=rel, db_location=rel)
     return path

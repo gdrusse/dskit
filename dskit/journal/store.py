@@ -1,7 +1,10 @@
 """Atomic CSV read/write for the two ledgers.
 
 The CSV is the store. Markdown is a projection (see :mod:`.render`).
-One writer per child — the same doctrine as the coverage ledger.
+One writer per child at a time: every append re-reads and rewrites the
+whole file, so the duplicate check and the rewrite both run under
+:func:`~dskit.journal.base.locked`. A caller that also allocates the id
+holds the same lock across that too — it is re-entrant.
 """
 
 from __future__ import annotations
@@ -10,7 +13,13 @@ import csv
 import io
 import os
 
-from .base import ACTION_FIELDS, PATH_FIELDS, JournalError, atomic_write_text
+from .base import (
+    ACTION_FIELDS,
+    PATH_FIELDS,
+    JournalError,
+    atomic_write_text,
+    locked,
+)
 from .model import Action, PathRow
 
 __all__ = [
@@ -113,15 +122,16 @@ def append_action_row(root, action):
     -------
     Action
     """
-    rows = read_actions(root)
-    ids = {row.id for row in rows}
-    if action.id in ids:
-        raise JournalError([f"action id {action.id} already exists"])
-    _write_csv(
-        root.actions_csv,
-        ACTION_FIELDS,
-        [row.to_obj() for row in rows] + [action.to_obj()],
-    )
+    with locked(root.decisioning):
+        rows = read_actions(root)
+        ids = {row.id for row in rows}
+        if action.id in ids:
+            raise JournalError([f"action id {action.id} already exists"])
+        _write_csv(
+            root.actions_csv,
+            ACTION_FIELDS,
+            [row.to_obj() for row in rows] + [action.to_obj()],
+        )
     return action
 
 
@@ -142,17 +152,18 @@ def append_path_row(root, path_row):
     JournalError
         Duplicate path id, or id not in actions.
     """
-    actions = {row.id: row for row in read_actions(root)}
-    if path_row.id not in actions:
-        raise JournalError(
-            [f"promote {path_row.id}: no such action — record it first"]
+    with locked(root.decisioning):
+        actions = {row.id: row for row in read_actions(root)}
+        if path_row.id not in actions:
+            raise JournalError(
+                [f"promote {path_row.id}: no such action — record it first"]
+            )
+        existing = read_path(root)
+        if any(row.id == path_row.id for row in existing):
+            raise JournalError([f"promote {path_row.id}: already on the path"])
+        _write_csv(
+            root.path_csv,
+            PATH_FIELDS,
+            [row.to_obj() for row in existing] + [path_row.to_obj()],
         )
-    existing = read_path(root)
-    if any(row.id == path_row.id for row in existing):
-        raise JournalError([f"promote {path_row.id}: already on the path"])
-    _write_csv(
-        root.path_csv,
-        PATH_FIELDS,
-        [row.to_obj() for row in existing] + [path_row.to_obj()],
-    )
     return path_row

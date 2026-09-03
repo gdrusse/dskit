@@ -34,6 +34,12 @@ Orientation for an agent working inside this package. Read
 - Walk-forward records **one** execute row (the summary), not each
   fold — `run_document(..., journal=False)` from `_run_folds`.
 - Production is one row per process. Do not record per tick.
+- **Every write is serialized** by `base.locked(root.decisioning)` — an
+  exclusive `flock` on `.journal.lock`, held across read, id
+  allocation, rewrite, and render. Allocating an id outside it loses a
+  row when two agents overlap. Re-entrant within one thread, so
+  `record` nesting into `store` is fine. It waits, then refuses after
+  `DSKIT_JOURNAL_LOCK_TIMEOUT` (default 60s).
 - `step` <= 80 characters.
 - **Research is CLI-only.** Never Write `docs/research/` yourself.
   `python -m dskit.journal research "title" --body-file <draft>` writes

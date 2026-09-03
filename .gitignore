@@ -42,3 +42,7 @@ children/*/ob
 children/*/ob/
 children/*/asset_store/
 children/*/decisions.jsonl
+
+# The journal's writer lock (dskit/journal/base.py). Runtime state, one
+# per child; the ledger it guards is what belongs in git.
+.journal.lock

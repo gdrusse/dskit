@@ -3,13 +3,18 @@
 Pytest is a no-op (``PYTEST_CURRENT_TEST``) so child suites do not
 pollute the ledger. Set ``DSKIT_JOURNAL_TESTS=1`` to record anyway.
 A missing journal in a child-shaped tree refuses (ADR-0056).
+
+Read, id allocation, append, and re-render all sit inside one
+:func:`~dskit.journal.base.locked` block. Allocating the id outside it
+is the bug that lost a row: two agents read the same ledger, both chose
+the same next id, and the second whole-file rewrite dropped the first.
 """
 
 from __future__ import annotations
 
 import os
 
-from .base import JournalError, utc_now
+from .base import JournalError, locked, utc_now
 from .locate import find_journal
 from .model import Action, PathRow, next_id
 from .render import render
@@ -75,19 +80,20 @@ def append_action(
     root = find_journal(start=start)
     if root is None:
         return None
-    rows = read_actions(root)
-    action = Action(
-        id=next_id(row.id for row in rows),
-        category=category,
-        step=step,
-        executed_at=executed_at or utc_now(),
-        inputs=inputs or "",
-        outputs=outputs or "",
-        db_location=db_location or "",
-        notes=notes or "",
-    )
-    append_action_row(root, action)
-    render(root)
+    with locked(root.decisioning):
+        rows = read_actions(root)
+        action = Action(
+            id=next_id(row.id for row in rows),
+            category=category,
+            step=step,
+            executed_at=executed_at or utc_now(),
+            inputs=inputs or "",
+            outputs=outputs or "",
+            db_location=db_location or "",
+            notes=notes or "",
+        )
+        append_action_row(root, action)
+        render(root)
     return action
 
 
@@ -118,6 +124,7 @@ def promote(action_id, criteria, start=None):
             ["no journal here — run `python -m dskit.journal init` in the child"]
         )
     row = PathRow(id=action_id, criteria=criteria)
-    append_path_row(root, row)
-    render(root)
+    with locked(root.decisioning):
+        append_path_row(root, row)
+        render(root)
     return row
