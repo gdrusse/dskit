@@ -980,3 +980,573 @@ def unknown_params(runs, params):
 def _all_metrics(runs):
     """Every metric key any run reported, sorted."""
     return tuple(sorted({key for run in runs for key in run.metrics}))
+
+
+def _lead_arrays(units, lead):
+    """Flatten one lead's units into aligned stamp/series/y/yhat lists."""
+    stamps, series, y, yhat = [], [], [], []
+    for unit in units:
+        if unit["lead"] != lead:
+            continue
+        stamps.extend(unit["stamps"])
+        series.extend([unit["symbol"]] * len(unit["stamps"]))
+        y.extend(unit["y"])
+        yhat.extend(unit["yhat"])
+    return stamps, series, y, yhat
+
+
+def _fold_ordering(units, lead):
+    """Extract one fold's ordering evidence at one lead."""
+    from dskit.pipeline.ordering import (
+        cross_section_by_stamp,
+        demean_by_series,
+        pooled_name_time_ic,
+    )
+
+    stamps, series, y, yhat = _lead_arrays(units, lead)
+    raw = cross_section_by_stamp(stamps, series, y, yhat)
+    demeaned = cross_section_by_stamp(
+        stamps,
+        series,
+        demean_by_series(series, y),
+        demean_by_series(series, yhat),
+    )
+    pooled = pooled_name_time_ic(y, yhat)["ic"] if len(y) >= 2 else None
+    return raw, demeaned, pooled
+
+
+def _new_lead_accumulator(h_steps):
+    """Build the per-lead ordering accumulator a walk fills fold by fold."""
+    return {
+        "rho": [],
+        "rho_demeaned": [],
+        "n_names_all": [],
+        "n_skipped": 0,
+        "pooled": [],
+        "folds_positive": 0,
+        "n_folds": 0,
+        "h_steps": h_steps,
+    }
+
+
+def _accumulate_ordering(acc, units, lead):
+    """Fold one fold's ordering evidence into a lead's accumulator."""
+    raw, demeaned, pooled = _fold_ordering(units, lead)
+    acc["rho"].extend(raw["rho"])
+    acc["rho_demeaned"].extend(demeaned["rho"])
+    acc["n_names_all"].extend(raw["n_names_all"])
+    acc["n_skipped"] += raw["n_skipped"]
+    if pooled is not None:
+        acc["pooled"].append(pooled)
+    if raw["rho"] and sum(raw["rho"]) / len(raw["rho"]) > 0.0:
+        acc["folds_positive"] += 1
+    acc["n_folds"] += 1
+
+
+def _slope_reading(summary):
+    """Say in words what a mean calibration slope means for sizing."""
+    mean, t0, t1 = summary["slope_mean"], summary["t_vs_0"], summary["t_vs_1"]
+    if t0 is None or abs(t0) < 2.0:
+        return "no size: slope indistinguishable from zero — rank only, if anything"
+    if t1 is not None and abs(t1) < 2.0:
+        return "size usable: slope indistinguishable from one"
+    if 0.0 < mean < 1.0:
+        return f"over-reacts: real information at {mean:.2f}x scale, shrink it"
+    if mean >= 1.0:
+        return "under-reacts: the forecast moves less than the outcome does"
+    return "wrong sign: the forecast is anti-correlated with the outcome"
+
+
+def _calibration_rows(slopes, alpha):
+    """Turn per-fold slopes into one summary row per (series, lead)."""
+    from dskit.pipeline.ordering import calibration_across_folds
+
+    rows = []
+    for (series, lead) in sorted(slopes, key=lambda k: (k[1], k[0])):
+        values = slopes[(series, lead)]
+        if len(values) < 2:
+            continue
+        summary = calibration_across_folds(values)
+        rows.append({
+            "series": series,
+            "lead": lead,
+            "n_folds": summary["n_folds"],
+            "slope": summary["slope_mean"],
+            "slope_se": summary["slope_se"],
+            "t_vs_0": summary["t_vs_0"],
+            "t_vs_1": summary["t_vs_1"],
+            "frac_pos": summary["frac_positive"],
+            "reading": _slope_reading(summary),
+            "alpha": alpha,
+        })
+    return rows
+
+
+def _ordering_rows(lead_acc):
+    """Turn per-lead accumulators into the cross-sectional verdict rows."""
+    from dskit.pipeline.ordering import ic_from_rho, ordering_verdict
+    from dskit.pipeline.stats import across_fold_t
+
+    rows = []
+    for lead in sorted(lead_acc):
+        acc = lead_acc[lead]
+        pooled = ic_from_rho(
+            acc["rho"], acc["n_names_all"], h_steps=acc["h_steps"],
+            n_skipped=acc["n_skipped"],
+        )
+        demeaned = ic_from_rho(
+            acc["rho_demeaned"], acc["n_names_all"], h_steps=acc["h_steps"],
+        )
+        verdict = ordering_verdict(
+            pooled, demeaned,
+            fold_positive=acc["folds_positive"], n_folds=acc["n_folds"],
+        )
+        name_time = (
+            across_fold_t(acc["pooled"]) if len(acc["pooled"]) >= 2 else None
+        )
+        rows.append({
+            "lead": lead,
+            "n_stamps": pooled["n_stamps"],
+            "names_min": pooled["n_names"]["min"],
+            "names_median": pooled["n_names"]["median"],
+            "names_max": pooled["n_names"]["max"],
+            "xs_ic": pooled["ic"],
+            "xs_ic_t": pooled["ic_t"],
+            "xs_ic_p": pooled["ic_p"],
+            "frac_pos": pooled["frac_pos"],
+            "xs_ic_demeaned": demeaned["ic"],
+            "retained": verdict["retained"],
+            "pooled_name_time_ic": None if name_time is None else name_time["mean"],
+            "folds_positive": acc["folds_positive"],
+            "n_folds": acc["n_folds"],
+            "usable": pooled["usable"],
+            "passes": verdict["passes"],
+            "reasons": verdict["reasons"],
+            "unusable_reason": pooled["unusable_reason"],
+        })
+    return rows
+
+
+def score_ordering(summary_dir, alpha=0.05):
+    """Measure a walk's ORDERING and its SIZE apart (ADR-0068).
+
+    Two answers that are allowed to differ, read off the rows a walk
+    saved. The calibration slope regresses the outcome on the forecast
+    per fold and pools the slopes across folds — a slope near one means
+    the predicted magnitude is usable, near zero means at best the rank
+    is. The cross-sectional score ranks the names WITHIN each instant,
+    correlates the two orderings, and tests the resulting time series
+    with an HAC band; its demeaned twin says whether that ordering is
+    timing or a standing per-name tilt.
+
+    The pooled ``(name, time)`` correlation the scan already reports
+    rides along under its own name, never under the cross-sectional
+    one: they answer different questions and confusing them is the
+    defect this function exists to end.
+
+    Folds are read and REDUCED one at a time — a walk's rows are never
+    all in memory at once.
+
+    Parameters
+    ----------
+    summary_dir : str
+        A walk-forward summary directory.
+    alpha : float
+        One-sided level, in ``(0, 1)``.
+
+    Returns
+    -------
+    dict
+        ``summary_dir``, ``n_folds``, ``exact`` (whether every fold
+        saved rows), ``notes``, ``calibration`` (one row per series and
+        lead) and ``ordering`` (one row per lead, carrying ``usable``
+        and the reason when it is false).
+
+    Raises
+    ------
+    ValueError
+        When ``summary_dir`` is not a walk-forward summary.
+
+    Examples
+    --------
+    Both halves of one walk's answer::
+
+        print(format_ordering(score_ordering(summary)))
+    """
+    from dskit.pipeline.ordering import calibration_slope
+
+    fold_dirs = walk_fold_dirs(summary_dir)
+    slopes, lead_acc, seen = {}, {}, 0
+    for run_dir in fold_dirs:
+        units = _fold_gaps(run_dir)
+        if not units:
+            continue
+        seen += 1
+        for unit in units:
+            if len(unit.get("y") or ()) < 3:
+                continue
+            steps = max(int(unit.get("h_steps") or 1), 1)
+            try:
+                fit = calibration_slope(unit["y"], unit["yhat"], h_steps=steps)
+            except ValueError:
+                continue
+            slopes.setdefault((unit["symbol"], unit["lead"]), []).append(
+                fit["slope"]
+            )
+        for lead in sorted({u["lead"] for u in units}):
+            steps = max(int(units[0].get("h_steps") or 1), 1)
+            acc = lead_acc.setdefault(lead, _new_lead_accumulator(steps))
+            _accumulate_ordering(acc, units, lead)
+        units = None
+    notes = []
+    if seen < len(fold_dirs):
+        notes.append(
+            f"{len(fold_dirs) - seen}/{len(fold_dirs)} fold(s) saved no per-row "
+            "predictions (ADR-0064 artifact absent) — neither measure is "
+            "recoverable from a fold summary, so those folds are simply absent"
+        )
+    for row in _ordering_rows(lead_acc):
+        if not row["usable"]:
+            notes.append(f"lead {row['lead']}: {row['unusable_reason']}")
+    return {
+        "summary_dir": summary_dir,
+        "n_folds": seen,
+        "exact": bool(fold_dirs) and seen == len(fold_dirs),
+        "notes": notes,
+        "calibration": _calibration_rows(slopes, alpha),
+        "ordering": _ordering_rows(lead_acc),
+    }
+
+
+def format_ordering(scored):
+    """Render :func:`score_ordering` as two clearly separated tables.
+
+    Parameters
+    ----------
+    scored : mapping
+        A :func:`score_ordering` result.
+
+    Returns
+    -------
+    str
+        The size table, then the ordering table, then every note.
+
+    Examples
+    --------
+    Printed straight to a terminal::
+
+        print(format_ordering(score_ordering(summary)))
+    """
+    size_cols = [
+        "series", "lead", "n_folds", "slope", "slope_se", "t_vs_0", "t_vs_1",
+        "frac_pos", "reading",
+    ]
+    order_cols = [
+        "lead", "n_stamps", "names_min", "names_median", "names_max", "xs_ic",
+        "xs_ic_t", "xs_ic_p", "frac_pos", "xs_ic_demeaned", "retained",
+        "pooled_name_time_ic", "folds_positive", "usable", "passes",
+    ]
+    size = "\n".join(_render_table(
+        size_cols,
+        [[row.get(c) for c in size_cols] for row in scored["calibration"]],
+    ))
+    order = "\n".join(_render_table(
+        order_cols,
+        [[row.get(c) for c in order_cols] for row in scored["ordering"]],
+    ))
+    tail = "".join("\n\nnote: " + n for n in scored["notes"])
+    return (
+        "SIZE — calibration slope of outcome on forecast, pooled over folds\n\n"
+        + size
+        + "\n\nORDER — rank correlation WITHIN each instant (xs_ic), against the "
+        "pooled\n(name, time) correlation the scan reports "
+        "(pooled_name_time_ic). They are\nnot the same number: the pooled one "
+        "mixes 'when' with 'which name'.\n\n"
+        + order
+        + tail
+    )
+
+
+def _default_cell_key(summary_dir):
+    """Name the knobs a walk states about itself when none are supplied."""
+    return {"walk": os.path.basename(os.path.normpath(summary_dir))}
+
+
+def _accumulate_cell(store, key, unit, session_of):
+    """Fold one (series, lead) unit's rows into that cell's session totals."""
+    from dskit.pipeline.attempts import merge_session_totals, session_totals
+
+    cell = store.setdefault(
+        key,
+        {"totals": {}, "folds": [], "h_steps": max(int(unit.get("h_steps") or 1), 1)},
+    )
+    q = float(unit["q"])
+    if q <= 0.0:
+        return
+    scaled = [v / q for v in unit["d"]]
+    merge_session_totals(
+        cell["totals"], session_totals(unit["stamps"], scaled, session_of)
+    )
+    cell["folds"].append({"d": list(unit["d"]), "q": q})
+
+
+def _cell_skill(cell, alpha):
+    """Reduce one cell's ADR-0063 verdict to the scalars P8 reads."""
+    from dskit.pipeline.stats import skill_vs_mean
+
+    if len(cell["folds"]) < 2:
+        return None
+    out = skill_vs_mean(cell["folds"], h_steps=cell["h_steps"], alpha=alpha)
+    return {
+        k: out[k]
+        for k in ("passes", "t_pool", "p_pool", "t_fold", "r2oos_pool", "n_rows")
+    }
+
+
+def walk_cells(summary_dir, key=None, session_of=None, alpha=0.05, group="GROUP"):
+    """Reduce one walk to the per-cell evidence the many-attempts bar takes.
+
+    A cell is one ``(outcome unit, horizon)`` pair under whatever other
+    knobs ``key`` names — model, row spacing, price field, feature set.
+    Each is reduced to per-SESSION sums of the scale-free loss gaps plus
+    its ADR-0063 verdict, and the rows are dropped: a bar over dozens of
+    walks then holds a few hundred numbers per cell instead of a few
+    hundred thousand. One walk's rows are in memory at a time, never
+    two.
+
+    Parameters
+    ----------
+    summary_dir : str
+        A walk-forward summary directory.
+    key : mapping or None
+        The knobs shared by every cell in this walk. ``None`` uses the
+        walk's directory name, which identifies the run but NOT what it
+        varied — pass the real knobs when the count must be honest.
+    session_of : callable or None
+        Maps a timestamp to its session key. ``None`` takes
+        :func:`~dskit.pipeline.attempts.utc_day`.
+    alpha : float
+        One-sided level for the per-cell skill test, in ``(0, 1)``.
+    group : str
+        Label for the cross-sectional row, which is its own outcome unit.
+
+    Returns
+    -------
+    list of dict
+        One per cell: ``cell`` (the id), ``key``, ``totals``
+        (``{session: [sum, count]}``), ``skill`` (or ``None`` when the
+        walk gave it fewer than two folds) and ``n_folds``.
+
+    Raises
+    ------
+    ValueError
+        When ``summary_dir`` is not a walk-forward summary.
+
+    Examples
+    --------
+    Three names and the group at one lead::
+
+        len(walk_cells(summary))  # 4
+    """
+    from dskit.pipeline.attempts import cell_id
+
+    base = dict(key) if key else _default_cell_key(summary_dir)
+    store = {}
+    for run_dir in walk_fold_dirs(summary_dir):
+        units = [u for u in _fold_gaps(run_dir) if len(u.get("d") or ()) >= 2]
+        for unit in units:
+            _accumulate_cell(store, (unit["symbol"], unit["lead"]), unit, session_of)
+        for lead in sorted({u["lead"] for u in units}):
+            panel = _group_folds([units], lead)
+            if panel:
+                _accumulate_cell(store, (group, lead), panel[0], session_of)
+        units = None
+    out = []
+    for (series, lead), cell in sorted(store.items(), key=lambda kv: kv[0][::-1]):
+        knobs = {**base, "series": series, "horizon": lead}
+        out.append({
+            "cell": cell_id(knobs),
+            "key": knobs,
+            "totals": cell["totals"],
+            "skill": _cell_skill(cell, alpha),
+            "n_folds": len(cell["folds"]),
+        })
+        cell["folds"] = []
+    return out
+
+
+def _collect_cells(summary_dirs, keys, registry, session_of, alpha):
+    """Reduce every walk in turn, recording each cell as an attempt."""
+    collected = {}
+    for i, summary_dir in enumerate(summary_dirs):
+        key = keys[i] if keys and i < len(keys) else None
+        for cell in walk_cells(summary_dir, key=key, session_of=session_of,
+                               alpha=alpha):
+            collected[cell["cell"]] = cell
+            if registry is not None:
+                skill = cell["skill"] or {}
+                registry.record(
+                    cell["key"],
+                    walk=summary_dir,
+                    t_pool=skill.get("t_pool"),
+                    r2oos=skill.get("r2oos_pool"),
+                    n_folds=cell["n_folds"],
+                )
+    return collected
+
+
+def score_bar(summary_dirs, keys=None, registry=None, session_of=None,
+              n_boot=10000, seed=0, alpha=0.05):
+    """Raise ADR-0063's mark for the many attempts behind it (ADR-0069).
+
+    One family per OUTCOME UNIT — each name, and the group — because a
+    family is the set of tries that competed for the same answer. Within
+    a family every cell is resampled JOINTLY under one coin per trading
+    session, so near-identical horizons cost barely more than a single
+    attempt, and the 95th percentile of the best-of-all-cells statistic
+    becomes the pass mark, floored at a t of 3.0. P5 still decides; this
+    only raises the mark, and a cell that fails P5 fails here whatever
+    its statistic.
+
+    Parameters
+    ----------
+    summary_dirs : list or tuple of str
+        Walk-forward summary directories, reduced one at a time.
+    keys : list of mapping or None
+        The knobs of each walk, aligned with ``summary_dirs``.
+    registry : AttemptRegistry or None
+        The ledger of every cell ever run. When given, each cell is
+        recorded and its family count comes from the LEDGER, not from
+        tonight's directories — an attempt made last week cost the same
+        alpha as one made an hour ago.
+    session_of : callable or None
+        Session key for a timestamp.
+    n_boot : int
+        Bootstrap replicates, ``>= 100``.
+    seed : int
+        Seeds the session coins.
+    alpha : float
+        Family-wise level, in ``(0, 1)``.
+
+    Returns
+    -------
+    dict
+        ``families`` — one entry per outcome unit with ``bar`` (a
+        :func:`~dskit.pipeline.attempts.max_bar` result) and
+        ``verdicts`` (a
+        :func:`~dskit.pipeline.attempts.bar_verdict` per cell) — plus
+        ``k_registry``, ``n_cells`` and ``notes``.
+
+    Raises
+    ------
+    ValueError
+        On an empty ``summary_dirs``, or when no walk kept the rows.
+
+    Examples
+    --------
+    Tonight's walks judged against every attempt ever made::
+
+        out = score_bar(walks, registry=AttemptRegistry(ledger))
+        out["families"]["JPM"]["bar"]["pass_mark"]  # 3.0
+    """
+    from dskit.pipeline.attempts import bar_verdict, max_bar
+
+    if not summary_dirs:
+        raise ValueError("summary_dirs must name at least one walk")
+    collected = _collect_cells(summary_dirs, keys, registry, session_of, alpha)
+    if not collected:
+        raise ValueError(
+            "no walk kept per-row predictions — the bar resamples stored "
+            "scores, and there are none (ADR-0064 artifact absent)"
+        )
+    families, notes = {}, []
+    units = sorted({c["key"]["series"] for c in collected.values()})
+    for unit in units:
+        cells = {
+            c["cell"]: {s: tuple(v) for s, v in c["totals"].items()}
+            for c in collected.values()
+            if c["key"]["series"] == unit
+        }
+        declared = registry.count(series=unit) if registry is not None else None
+        try:
+            bar = max_bar(
+                cells, n_boot=n_boot, seed=seed, alpha=alpha,
+                k_declared=declared,
+            )
+        except ValueError as exc:
+            notes.append(f"{unit}: no bar — {exc}")
+            continue
+        notes.extend(f"{unit}: {n}" for n in bar["notes"])
+        families[unit] = {
+            "bar": bar,
+            "verdicts": [
+                bar_verdict(
+                    row["cell"], bar,
+                    skill=collected[row["cell"]]["skill"], alpha=alpha,
+                )
+                for row in bar["rows"]
+            ],
+            "keys": {
+                c["cell"]: c["key"]
+                for c in collected.values()
+                if c["key"]["series"] == unit
+            },
+        }
+    return {
+        "families": families,
+        "k_registry": registry.count() if registry is not None else None,
+        "n_cells": len(collected),
+        "notes": notes,
+    }
+
+
+def format_bar(scored):
+    """Render :func:`score_bar` as one table per outcome unit.
+
+    Parameters
+    ----------
+    scored : mapping
+        A :func:`score_bar` result.
+
+    Returns
+    -------
+    str
+        A header per family stating the mark and what it was worth,
+        then its cells, then every note.
+
+    Examples
+    --------
+    Printed straight to a terminal::
+
+        print(format_bar(score_bar(walks)))
+    """
+    columns = ["horizon", "t", "pass_mark", "adj_p", "r2oos", "r2oos_lower",
+               "p5_passes", "passes", "why"]
+    blocks = []
+    for unit in sorted(scored["families"]):
+        family = scored["families"][unit]
+        bar = family["bar"]
+        rows = []
+        for verdict in family["verdicts"]:
+            key = family["keys"][verdict["cell"]]
+            rows.append([
+                key.get("horizon"), verdict["t"], verdict["pass_mark"],
+                verdict["adj_p"], verdict["r2oos"], verdict["r2oos_lower"],
+                _p5_flag(verdict),
+                verdict["passes"],
+                verdict["reasons"][0].split(" — ")[0] if verdict["reasons"] else "",
+            ])
+        blocks.append(
+            f"{unit} — {bar['k']} cell(s) resampled of {bar['k_declared']} "
+            f"attempted; c* {bar['c_star']:.3f}, pass mark "
+            f"{bar['pass_mark']:.3f}, worth about {bar['k_implied']:.0f} "
+            f"independent tries (Bonferroni {bar['bonferroni']:.2f})\n\n"
+            + "\n".join(_render_table(columns, rows))
+        )
+    tail = "".join("\n\nnote: " + n for n in scored["notes"])
+    return "\n\n".join(blocks) + tail
+
+
+def _p5_flag(verdict):
+    """Say whether P5's own decision was the thing that failed."""
+    return not any(r.startswith("P5's skill test") for r in verdict["reasons"])

@@ -115,7 +115,13 @@ measurements — how close predicted size is to actual size, and how good
 the ordering is at each moment across stocks — and re-run every
 look-ahead. Report both horizons if they differ.
 
-**Result.**
+**Result.** Both measurements are built (ADR-0068) and read the saved
+row-by-row numbers. One says whether the predicted SIZE is usable; the
+other ranks the stocks at each single moment, which is what a chooser
+needs, and it is kept apart from the old number that mixed "when" with
+"which stock". With only three stocks the moment-by-moment ranking is
+too weak to mean anything, so it is emitted with the stock count beside
+it and marked unusable — it cannot pass until P9 restores the other two.
 
 ## P7 — The middle ground between simple and large is untested
 
@@ -142,7 +148,14 @@ many models and horizons are tried on one dataset? Then one agent
 implements it plus a scramble test — shuffle the answers, re-run, see
 what luck alone produces. Every candidate look-ahead must clear that bar.
 
-**Result.**
+**Result.** The bar is built (ADR-0069). Every combination ever run is
+now counted in a ledger, and a candidate must beat the best that pure
+luck produces across all of them together, with a hard floor, and must
+show a win big enough that its error bar stays above zero. The luck test
+shuffles whole trading days, never single rows. The cheap version runs
+now; the expensive one — re-running everything a hundred times with the
+days reshuffled — is left ready but unrun, for a winner only. It sits on
+top of P5's rule and does not replace it.
 
 ## P9 — Three stocks, and two were dropped
 

@@ -407,6 +407,11 @@ dskit/pipeline/
 ├── driver.py          run_document: LOAD..RECORD, $prev, journal hook
 │                      (ADR-0056); run_walk_forward (ADR-0027)
 ├── runs.py            the READER: scan_runs/format_runs over a run root (`runs` verb)
+├── predictions.py     every scored validation row -> one parquet per run (ADR-0064)
+├── ordering.py        calibration slope + per-timestamp cross-sectional IC,
+│                      with the <5-name usability refusal (ADR-0068, `ordering` verb)
+├── attempts.py        AttemptRegistry + session-block max_bar + tier-2 seam
+│                      (ADR-0069, `bar` verb)
 ├── split_policy.py    split policies (record/event-open/event-close) + EventBounds
 ├── kinds_flow.py      filter, event-grid, derive, concat, join — flow verbs
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
