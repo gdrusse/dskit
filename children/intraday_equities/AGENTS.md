@@ -23,6 +23,9 @@ Agent orientation — see README.md for operator commands.
   Path to production is owner `journal promote` only. Hooks record
   pipeline runs and onboarding verbs. `live.main` is wrapped in
   `production()`. Research writes `docs/research/`.
+- **Standalone explanations live in `docs/explanations/`.** They explain
+  child-specific methods or results without becoming decision records or
+  journaled research.
 
 ## Invariants
 
@@ -52,6 +55,7 @@ configs/             # universe + sources, suites, scan/action/HPO/train
 journal.json         # dskit.journal marker
 docs/decisioning/    # actions.csv + path.csv; README generated
 docs/research/       # research markdown
+docs/explanations/   # standalone worked explanations
 tests/               # conftest + connectors/nodes/configs/live
 ```
 

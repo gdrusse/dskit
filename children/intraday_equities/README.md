@@ -110,6 +110,7 @@ intraday_equities/
 │   └── testing.py       # network-free connector doubles
 ├── configs/             # universe, sources, suites, scan/action/HPO/train
 ├── docs/decisioning/    # framework.md + one file per decision
+├── docs/explanations/   # standalone worked explanations
 └── tests/
 ```
 
