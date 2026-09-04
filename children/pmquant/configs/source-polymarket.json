@@ -1,0 +1,20 @@
+{
+  "notes": "Polymarket, read-only, no credentials: the Gamma API for settled events + per-event fee schedules (`series_slugs` walked in `window_hours` sub-windows between `start` and `end`), the CLOB for live books of the listed `token_ids`, and the pmxt L2 archive on the Hugging Face hub for hourly historical books (`archive_hours`; anonymous unless the variable named by `token_env` is set — a NAME, never a value). Series slugs are the Gamma spellings of the daily weather ladders the inventory tracks as POLYWX*; extend the list when a series crosses the eligibility bar, never by editing code. Polymarket fees are per-event and read from the venue (`fee_rate_of`), and its books are two-sided natively (`yes_asks` are real asks — no NO-side mirror, unlike Kalshi). Register with: python -m dskit.onboarding register-source polymarket --connector polymarket --config @configs/source-polymarket.json --catalog-source <P1 source> --activate.",
+  "series_slugs": [
+    "highest-temperature-in-nyc",
+    "lowest-temperature-in-nyc",
+    "highest-temperature-in-london",
+    "lowest-temperature-in-hong-kong"
+  ],
+  "start": "2026-06-01",
+  "closed": true,
+  "window_hours": 6,
+  "token_ids": [],
+  "token_env": "HF_TOKEN",
+  "pace_s": 0.2,
+  "retries": 4,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

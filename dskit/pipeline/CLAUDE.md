@@ -53,6 +53,14 @@ on it without breaking its rulings.
   (`torch-train`/`torch-predict`, `transformers-fit`) go further: the
   document names the library class, `library_path_problems` /
   `import_library_class` (base.py) validate it at plan time.
+- **Reading an acquired stream** — the `observations` kind
+  (`libs/observations.py`, ADR-0077) fronts `dskit.onboarding`'s
+  `scan_stream`: children subclass `ObservationRows`, narrow `_PARAMS` to
+  the knobs their domain decides (`key_fields` is a fact about the stream,
+  not a document knob), and override `project()` to turn the deduplicated
+  rows into their record envelope. The scan is memoized per INSTANCE, so
+  `fingerprint()` at resolve and `run()` at execute see one snapshot;
+  `scan_stream` is imported inside the scan, never at module top.
 - **Metrics** — `register_metric` (`metrics.py`); `logloss`/`brier` ship.
 - **Corrections** — `register_correction` (`stats.py`);
   `bh`/`bonferroni`/`none`/`weighted-bh` ship. `needs_weights` metadata
@@ -439,7 +447,8 @@ dskit/pipeline/
 ├── registry.py        venue-backend registry (no venues ship)
 ├── libs/              numpy, sklearn, torch + torch_ts (ADR-0041 zoo),
 │                      transformers, optuna, pyomo, sb3, matplotlib,
-│                      mlflow (tracking SINK pack, no nodes)
+│                      mlflow (tracking SINK pack, no nodes),
+│                      observations (the `observations` data kind over the onboarding read seam, ADR-0077)
 ├── README.md          user-facing docs
 └── CLAUDE.md          this file
 ```

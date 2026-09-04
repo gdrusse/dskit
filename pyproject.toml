@@ -32,10 +32,15 @@ lightgbm = ["lightgbm>=4.0", "scikit-learn>=1.3", "joblib>=1.3"]
 # SINK_KINDS, not the node registry, and defaults to a local sqlite store, so
 # installing this extra needs no server anywhere.
 mlflow = ["mlflow>=2.9"]
-# Tier-2 store packs (dskit/assets/libs/*): same lazy-import rule.
+# Tier-2 store packs (dskit/assets/libs/*) AND the localtables connector
+# (dskit/onboarding/libs/localtables.py): one library, one extra; same
+# lazy-import rule.
 parquet = ["pyarrow>=15"]
-# Tier-2 onboarding connector pack; imported only inside connector verbs.
+# Tier-2 onboarding connector packs; imported only inside connector verbs.
 alpaca = ["alpaca-py>=0.44"]
+# The Polymarket pack's archive_hours stream reads the pmxt L2 dump off the
+# Hugging Face hub (hourly parquet); Gamma/CLOB streams stay stdlib.
+polymarket = ["huggingface_hub>=0.20", "pyarrow>=15"]
 # Everything the library packs can use, for running the full libs test suite.
 all = [
     "numpy>=1.26",

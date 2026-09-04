@@ -31,12 +31,16 @@ from dskit.pipeline.document import NodeSpec, PipelineDocument
 from dskit.pipeline.driver import run_document
 from dskit.pipeline.kinds_banking import BankingReport, Eligibility, EventBank
 from dskit.pipeline.kinds_banking import register as register_banking
+import dskit.pipeline.kinds_flow as kinds_flow
 from dskit.pipeline.kinds_flow import (
+    CLAUSE_OPS,
     Concat,
     Derive,
     EventGrid,
     Filter,
     Join,
+    clause_holds,
+    clause_problems,
     register,
 )
 from dskit.pipeline.node import NodeContext, NodeKindRegistry
@@ -235,6 +239,53 @@ class TestFilter:
 
     def test_empty_records(self, ctx):
         assert Filter("f").run(ctx, {"records": []}) == {"records": []}
+
+
+class TestClauseDsl:
+    """The clause grammar is PUBLIC (ADR-0078): a tier-3 table keyed on it
+    imports the rule instead of mirroring it, so the three names are part
+    of the module's contract and the private spellings must be gone."""
+
+    def test_the_three_names_are_public_and_the_private_spellings_are_gone(self):
+        assert {"CLAUSE_OPS", "clause_holds", "clause_problems"} <= set(kinds_flow.__all__)
+        for gone in ("_OPS", "_clause_holds", "_clause_problems"):
+            assert not hasattr(kinds_flow, gone), gone
+        # Deliberate restatement: documents spell these operators.
+        assert set(CLAUSE_OPS) == {"==", "!=", ">", "<", ">=", "<=", "in"}
+
+    def test_clause_holds_passes_only_on_a_present_comparable_field(self):
+        assert clause_holds({"x": 2}, {"field": "x", "op": ">", "value": 1})
+        assert clause_holds({"x": "b"}, {"field": "x", "op": "in", "value": ["a", "b"]})
+        # missing, even under !=; incomparable; 'in' against a non-container
+        assert not clause_holds({}, {"field": "x", "op": "!=", "value": 1})
+        assert not clause_holds({"x": "s"}, {"field": "x", "op": "<", "value": 1})
+        assert not clause_holds({"x": 1}, {"field": "x", "op": "in", "value": 5})
+        # objects read by attribute, like the record accessor everywhere
+        assert clause_holds(mrec("A", "A-0", 7), {"field": "asof_ms", "op": "==", "value": 7})
+
+    @pytest.mark.parametrize(
+        "clause",
+        [
+            "nope",
+            [],
+            {"field": "x", "op": ["=="], "value": 1},  # unhashable op
+            {"field": "x", "op": {}, "value": 1},
+            {"field": ["x"], "op": None, "value": 1},
+            {"field": "", "op": "~", "value": 1, "extra": 2},
+        ],
+    )
+    def test_clause_problems_returns_on_json_shaped_junk_never_raises(self, clause):
+        problems = clause_problems("where[0]", clause)
+        assert problems and all(isinstance(p, str) and "where[0]" in p for p in problems)
+
+    def test_an_unhashable_op_is_a_plan_time_problem_for_both_verbs(self):
+        bad = {"field": "venue", "op": ["=="], "value": "alpha"}
+        problems = Filter.validate_params({"where": [bad]})
+        assert len(problems) == 1 and "where[0].op must be one of" in problems[0]
+        problems = Derive.validate_params(
+            {"field": "fee", "cases": [{"when": [bad], "value": 1}]}
+        )
+        assert any("cases[0].when[0].op must be one of" in p for p in problems)
 
 
 class TestEventBank:

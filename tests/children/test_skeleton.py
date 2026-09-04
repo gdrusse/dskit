@@ -19,6 +19,7 @@ SKELETON = os.path.join(REPO_ROOT, "children", "_skeleton")
 #: pin is what makes a stray file, a lost test, or an unreviewed addition
 #: to the template a loud failure instead of something copies inherit.
 EXPECTED_FILES = {
+    "AGENTS.md",
     "CLAUDE.md",
     "README.md",
     "journal.json",

@@ -131,6 +131,17 @@ registration, no entry anywhere needed:
 `tests/onboarding/test_localfiles.py` drives it through the whole
 contract and is the conformance template for yours.
 
+A corpus that already sits on disk as tables needs no connector code
+either: the `localtables` kind (ADR-0076) reads a directory of
+`parquet` / `ndjson[.gz]` / `jsonl[.gz]` files. `layout: "directory"`
+makes each subdirectory a stream whose files are its shards (per-series
+files become ONE stream; `stamp_stem_as` writes the series onto each
+row), `layout: "file"` makes each file stem a stream; `effective_field`
++ `effective_unit` (`iso | ms | s`) name the row's instant, normalized
+to UTC on the envelope and left untouched in `data`. pyarrow (the
+`dskit[parquet]` extra) is imported only when a parquet shard is in
+scope; `libs/localtables.py` is the knob reference.
+
 Many APIs need no connector code at all: the `restapi` kind DECLARES a
 JSON API in config — streams as endpoint paths, a dot-path to the
 records, pagination (`none | cursor | page | offset`), one env-var
@@ -145,6 +156,30 @@ re-requests a declared live overlap so bitemporal dedup retains the
 latest evidence. Alpaca bounds the SDK's in-memory response with
 `chunk_days` (default 31). Install `dskit[alpaca]` for Alpaca; Schwab
 REST is stdlib-only.
+
+The `polymarket` pack (ADR-0075) is keyless: Gamma `events` (one row per
+market, settlement and fee fields; the cursor is recorded, never consulted —
+every pull re-walks the `start`/`end` window and dedup keeps the latest,
+so late resolutions land without a fresh `start`), derived
+`fee_schedules`, CLOB `books`, and the pmxt `archive_hours` (needs
+`huggingface_hub` + `pyarrow`); `libs/polymarket.py` is the knob reference.
+
+The `kalshi` kind (ADR-0075) pulls Kalshi's public trade API v2 for a
+declared `series` basket — `markets` (the 14-field strike/status/result
+row, keyed `ticker`, a deliberate full re-pull because settlement lands
+after close), `candles` (`(ticker, ts)`), `fee_schedules` and `orderbooks`
+(provider-shaped bids, never mirrored) — through one injectable getter with
+pacing and 429/5xx retry; `libs/kalshi.py` is the knob reference.
+
+The `predexon` kind (ADR-0075) pulls Predexon's Kalshi L2 order-book
+history as one `l2_snapshots` record per sequenced snapshot, keyed
+`(ticker, timestamp, sequence)`: ladders normalized to
+`[[price_dollars, size], ...]` (YES bids descending, YES asks ascending),
+the vendor's `best_*`/`*_depth` fields verbatim, a per-ticker
+`{timestamp, sequence}` cursor, pacing and retry through injectable
+seams, and the key named by `api_key_env` (default `PREDEXON_API_KEY`).
+`libs/predexon.py` is the knob reference; `native_book` there projects a
+record into Kalshi-native YES/NO bid ladders.
 
 ## OAuth authorization
 
@@ -229,6 +264,7 @@ dskit/onboarding/
 ├── connector.py       Connector ABC, message envelope, check_config, resolve_connector
 ├── state.py           checkpoint cursors keyed (source, stream, mode)
 ├── coverage.py        CoverageLedger: the (source, stream, unit, period) done-set
+├── leads.py           LeadGrid: capture instants at declared fractions of an expiring life (ADR-0075)
 ├── codec.py           extension-declared codecs: deterministic gzip, loud decode (ADR-0036)
 ├── observations.py    the read seam: deduplicated snapshots + content digest (ADR-0037)
 ├── oauth.py           OAuth2 manual exchange + atomic owner-only refresh tokens
@@ -239,7 +275,11 @@ dskit/onboarding/
 ├── publish.py         publish_version: pointer manifest into the outbox
 ├── libs/
 │   ├── alpaca.py      Alpaca Market Data stock bars (optional alpaca-py)
+│   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
 │   ├── localfiles.py  reference connector: CSV/JSONL directories (stdlib)
+│   ├── localtables.py parquet / newline-JSON table directories (pyarrow inside verbs, ADR-0076)
+│   ├── polymarket.py  Polymarket Gamma events/fee_schedules, CLOB books, pmxt hour archive (hub + pyarrow inside read, ADR-0075)
+│   ├── predexon.py    Predexon Kalshi L2 order-book snapshots: paced, retried, cursored per ticker (ADR-0075)
 │   ├── restapi.py     declarative REST/JSON connector (stdlib urllib, ADR-0017)
 │   └── schwab.py      Schwab closed-minute REST bars + OAuth refresh
 ├── watch.py           repeated finite acquisitions; first error stops

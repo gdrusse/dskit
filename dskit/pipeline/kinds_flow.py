@@ -61,11 +61,14 @@ from dskit.pipeline.kinds_stats import _reject_unknown
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
 
 __all__ = [
+    "CLAUSE_OPS",
     "Concat",
     "Derive",
     "EventGrid",
     "Filter",
     "Join",
+    "clause_holds",
+    "clause_problems",
     "register",
 ]
 
@@ -93,8 +96,13 @@ def _field(record, name):
 # ---------------------------------------------------------------------------
 
 #: The known where-clause operators. ``in`` tests membership of the
-#: record's value in the clause's value.
-_OPS = {
+#: record's value in the clause's value. PUBLIC, with :func:`clause_holds`
+#: and :func:`clause_problems`: this is the document's one clause DSL
+#: (``filter``, ``derive``), and a tier-3 module that keys a table on the
+#: same grammar — a dated fee book resolved at a market's close instant
+#: — imports the rule rather than mirroring it, so the two can never
+#: drift (the "tier-2 never restates tier-1 truth" rule, one tier down).
+CLAUSE_OPS = {
     "==": lambda value, target: value == target,
     "!=": lambda value, target: value != target,
     ">": lambda value, target: value > target,
@@ -105,8 +113,21 @@ _OPS = {
 }
 
 
-def _clause_problems(name, clause):
-    """Shape problems with one where clause, empty when none."""
+def clause_problems(name, clause):
+    """Shape problems with one where clause, empty when none.
+
+    Parameters
+    ----------
+    name : str
+        How the refusal names the clause (``"where[0]"``).
+    clause : object
+        The declared clause — a dict with exactly ``field``/``op``/``value``.
+
+    Returns
+    -------
+    list of str
+        One message per problem; empty when the clause is well-shaped.
+    """
     if not isinstance(clause, dict):
         return [
             (
@@ -123,26 +144,39 @@ def _clause_problems(name, clause):
     field = clause.get("field")
     if not isinstance(field, str) or not field:
         problems.append(f"{name}.field must be a non-empty string, got {field!r}")
-    if clause.get("op") not in _OPS:
-        problems.append(
-            f"{name}.op must be one of {sorted(_OPS)}, got {clause.get('op')!r}"
-        )
+    # Type-check before the table lookup: an unhashable op (a JSON list or
+    # object) would make ``in`` raise TypeError out of a validator.
+    op = clause.get("op")
+    if not isinstance(op, str) or op not in CLAUSE_OPS:
+        problems.append(f"{name}.op must be one of {sorted(CLAUSE_OPS)}, got {op!r}")
     return problems
 
 
-def _clause_holds(record, clause) -> bool:
+def clause_holds(record, clause) -> bool:
     """Whether ``record`` passes one where clause.
 
     A clause can only PASS on a present, comparable field: a missing
     field fails it (even under ``!=``), and so does an incomparable pair
     (``TypeError`` — e.g. a string against an int bound, or ``in``
     against a non-container).
+
+    Parameters
+    ----------
+    record : object
+        A mapping or an attribute-bearing record.
+    clause : dict
+        A well-shaped ``{"field", "op", "value"}`` clause.
+
+    Returns
+    -------
+    bool
+        True only when the field is present and the comparison holds.
     """
     value = _field(record, clause["field"])
     if value is _MISSING:
         return False
     try:
-        return bool(_OPS[clause["op"]](value, clause["value"]))
+        return bool(CLAUSE_OPS[clause["op"]](value, clause["value"]))
     except TypeError:
         return False
 
@@ -166,7 +200,7 @@ class Filter(Node):
     params : dict
         ``require_usable`` (bool, default ``False``) drops records whose
         ``usable`` field is falsy; ``where`` (list, default ``[]``) is a
-        list of ``{"field", "op", "value"}`` clauses over :data:`_OPS`,
+        list of ``{"field", "op", "value"}`` clauses over :data:`CLAUSE_OPS`,
         ALL of which must hold.
 
     Examples
@@ -219,7 +253,7 @@ class Filter(Node):
             )
             return problems
         for i, clause in enumerate(where):
-            problems.extend(_clause_problems(f"where[{i}]", clause))
+            problems.extend(clause_problems(f"where[{i}]", clause))
         return problems
 
     def validate_inputs(self, inputs):
@@ -281,7 +315,7 @@ class Filter(Node):
                 usable = _field(record, "usable")
                 if usable is _MISSING or not usable:
                     continue
-            if all(_clause_holds(record, clause) for clause in where):
+            if all(clause_holds(record, clause) for clause in where):
                 kept.append(record)
         self.log.info("filter kept %d/%d record(s)", len(kept), len(records))
         return {"records": kept}
@@ -1480,7 +1514,7 @@ class Derive(Node):
                 )
                 continue
             for j, clause in enumerate(when):
-                problems.extend(_clause_problems(f"cases[{i}].when[{j}]", clause))
+                problems.extend(clause_problems(f"cases[{i}].when[{j}]", clause))
             if not when and i != len(cases) - 1:
                 problems.append(
                     f"cases[{i}] has an empty 'when', so it matches EVERY row, "
@@ -1571,7 +1605,7 @@ class Derive(Node):
                     "overwrite if replacing it is the intent"
                 )
             for i, case in enumerate(cases):
-                if all(_clause_holds(row, clause) for clause in case["when"]):
+                if all(clause_holds(row, clause) for clause in case["when"]):
                     branches[i] += 1
                     value = case["value"]
                     out.append(

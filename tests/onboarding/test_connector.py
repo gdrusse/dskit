@@ -123,7 +123,19 @@ def test_a_spec_may_not_declare_the_reserved_keys():
 # -- resolve_connector ------------------------------------------------------
 
 
-@pytest.mark.parametrize("kind", ["alpaca", "localfiles", "restapi", "schwab"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "alpaca",
+        "kalshi",
+        "localfiles",
+        "localtables",
+        "polymarket",
+        "predexon",
+        "restapi",
+        "schwab",
+    ],
+)
 def test_resolve_registered_kind(kind):
     cls = resolve_connector(kind)
     assert issubclass(cls, Connector)

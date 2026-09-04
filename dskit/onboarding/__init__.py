@@ -55,6 +55,7 @@ from .connector import (
 from .coverage import STATUSES, CoverageLedger
 from .default_model import onboarding_model
 from .layout import OnboardingRoot
+from .leads import LeadGrid
 from .observations import scan_stream, stream_dir, stream_digest
 from .oauth import OAuth2TokenService, load_token, save_token
 from .publish import publish_version
@@ -76,6 +77,7 @@ __all__ = [
     "CoverageLedger",
     "DECISIONS",
     "DEFAULT_CONNECTORS",
+    "LeadGrid",
     "MESSAGE_TYPES",
     "MODES",
     "OnboardingRoot",

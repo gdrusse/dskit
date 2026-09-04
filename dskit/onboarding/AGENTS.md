@@ -93,6 +93,7 @@ dskit/onboarding/
 ├── connector.py       Connector ABC, envelope checks, config default-deny, resolve
 ├── state.py           load_state / save_state — (source, stream, mode) cursors
 ├── coverage.py        CoverageLedger — sparse-backfill done-set (ADR-0030)
+├── leads.py           LeadGrid — lead-fraction capture grid; due_periods speaks the ledger's period spelling (ADR-0075)
 ├── codec.py           extension-declared codecs — deterministic gzip (ADR-0036)
 ├── observations.py    the read seam: scan_stream dedup + stream_digest (ADR-0037)
 ├── oauth.py           OAuth2 exchange/refresh + atomic owner-only token files
@@ -103,7 +104,11 @@ dskit/onboarding/
 ├── publish.py         publish_version — outbox manifests, certification-keyed
 ├── libs/
 │   ├── alpaca.py      Alpaca Market Data stock bars (optional alpaca-py)
+│   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
 │   ├── localfiles.py  reference connector (stdlib CSV/JSONL)
+│   ├── localtables.py parquet / newline-JSON table directories (ADR-0076)
+│   ├── polymarket.py  Polymarket Gamma/CLOB series, markets, books (stdlib urllib, ADR-0075)
+│   ├── predexon.py    Predexon Kalshi L2 order-book history (stdlib urllib, ADR-0075)
 │   ├── restapi.py     declarative REST connector (stdlib urllib)
 │   └── schwab.py      Schwab closed-minute REST bars + OAuth refresh
 ├── watch.py           repeated finite acquisitions; first error stops

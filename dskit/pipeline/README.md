@@ -569,7 +569,8 @@ dskit/pipeline/
 ├── libs/              tier-2 packs: numpy, sklearn, torch + torch_ts
 │                      (ADR-0041 zoo), transformers, optuna, pyomo, sb3,
 │                      matplotlib, mlflow (the tracking SINK pack —
-│                      registers into SINK_KINDS, no node kinds)
+│                      registers into SINK_KINDS, no node kinds),
+│                      observations (the `observations` data kind over the onboarding read seam, ADR-0077)
 ├── README.md          this file
 └── CLAUDE.md          agent orientation
 ```

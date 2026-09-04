@@ -80,7 +80,11 @@ RECORD_KINDS = ("observation", "forecast")
 #: ``pkg.module:Class`` directly and register nothing.
 DEFAULT_CONNECTORS = {
     "alpaca": "dskit.onboarding.libs.alpaca:AlpacaBarsConnector",
+    "kalshi": "dskit.onboarding.libs.kalshi:KalshiConnector",
     "localfiles": "dskit.onboarding.libs.localfiles:LocalFilesConnector",
+    "localtables": "dskit.onboarding.libs.localtables:LocalTablesConnector",
+    "polymarket": "dskit.onboarding.libs.polymarket:PolymarketConnector",
+    "predexon": "dskit.onboarding.libs.predexon:PredexonConnector",
     "restapi": "dskit.onboarding.libs.restapi:RestApiConnector",
     "schwab": "dskit.onboarding.libs.schwab:SchwabBarsConnector",
 }

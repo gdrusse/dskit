@@ -3568,3 +3568,137 @@ not. That makes ADR-0067's threshold conservative rather than liberal.
 The sd is the check that matters for the variance estimator; a mean that
 drifts below zero is the fitting cost showing up, and a mean ABOVE zero
 would be the alarming direction.
+
+---
+
+## ADR-0075 — Prediction-market vendor packs: `kalshi`, `polymarket`, `predexon`, and a generic lead-fraction capture grid
+
+**Status:** proposed (2026-09-04; owner directed in the session brief:
+"the data pulls must go into the dskit framework" — build proceeds under
+that authorization, ratification pending)
+
+**Context.** The pmquant child (proposal `docs/children_design_proposals/
+pmquant.md`) needs Kalshi REST pulls (markets, candles, fee schedules,
+book snapshots, 21-lead captures), Polymarket pulls (Gamma settlements
+and fee regimes, CLOB books, the pmxt hour archive) and Predexon L2
+history. The parent implemented every one of these as a project script
+with its own transport, pacing, retry and cursor logic. ADR-0046 set
+the precedent for market-data vendors: transport, credentials, windows,
+normalization and checkpointing are a tier-2 onboarding pack; a child
+declares policy and configuration only.
+
+**Decision.** (1) Three connector packs in `dskit/onboarding/libs/` —
+`kalshi.py` (`KalshiConnector`: streams `markets`, `candles`,
+`fee_schedules`, `orderbooks`, `lead_books`), `polymarket.py`
+(`PolymarketConnector`: `events`, `fee_schedules`, `books`,
+`archive_hours`), `predexon.py` (`PredexonConnector`: `l2_snapshots`).
+Public endpoints need no key; a keyed endpoint reads an env-var NAME
+from config (`api_key_env`, `token_env`) and refuses by name when the
+variable is empty. Pacing (`pace_s`, `min_interval_s`), page caps,
+retry floors, and universe (series baskets, slugs, token ids) are
+`spec()` knobs. Every HTTP call goes through one injectable getter so
+the packs test against stub transports and import no vendor SDK.
+(2) The lead-fraction capture schedule — decision instants at declared
+fractions of an expiring instrument's observable life, with a duration
+cap ladder and an absolute-lead floor — is generic (options, futures,
+any event contract) and lands once as `dskit/onboarding/leads.py`
+(`LeadGrid`); the Kalshi pack's `lead_books` stream and the child's
+point-in-time build read the SAME class, so recorder due-periods and
+build epochs are byte-identical by construction. (3) Registered in
+`DEFAULT_CONNECTORS`; vendor rows stay provider-shaped (the venue's own
+field names), normalization to the child's ladder vocabulary is the
+child's.
+
+**Consequences.** No project carries HTTP plumbing for these venues; a
+second prediction-market child is configs. The packs' record shapes are
+the contract the child's readers pin by test.
+
+---
+
+## ADR-0076 — `localtables`: a connector for directories of parquet / newline-JSON table files
+
+**Status:** proposed (2026-09-04; owner directed the on-disk corpus be
+ported into the framework; build proceeds under that authorization)
+
+**Context.** The parent's corpus lives on disk as per-series parquet
+stores (`kalshi/markets/<series>.parquet`, `history/poly_l2/
+<series>.parquet`), per-series newline-JSON ledgers
+(`history/predexon_l2_pit/<series>.ndjson`) and gzip-member archives
+(`history/predexon_l2/<ticker>/snapshots.ndjson.gz`). `localfiles`
+reads CSV/JSONL only and stays stdlib by design (it is the conformance
+reference). Importing this corpus through onboarding is what gives it
+WORM snapshots, bitemporal dedup and a fingerprintable read seam, and
+it needs no API key.
+
+**Decision.** A tier-2 pack `dskit/onboarding/libs/localtables.py`
+(`LocalTablesConnector`): a `path` holding subdirectories or files;
+`layout: "directory"` makes each subdirectory a stream whose files are
+its shards (the per-series layout), `layout: "file"` makes each file
+stem a stream; formats `parquet`, `ndjson`, `ndjson.gz` (concatenated
+gzip members read whole), `jsonl`, `jsonl.gz`; `stamp_stem_as` writes
+the file stem onto each row (the series a per-series file implies);
+`effective_field` names the row's instant and `effective_unit`
+(`"iso"` | `"ms"` | `"s"`) says how to read it; cursor = the max
+effective instant emitted, rows strictly after it on a re-pull.
+pyarrow is imported inside `read()`; the newline formats are stdlib.
+Registered as `localtables`.
+
+**Consequences.** The corpus import is `register-source` + `acquire`
+per store, with no code; consumers read it back through `scan_stream`.
+Raw L2 archives stay expensive to import (ADR-0036 gzip observations
+bound the cost); the child decides per store.
+
+---
+
+## ADR-0077 — An `observations` data kind: the pipeline-facing half of the read seam
+
+**Status:** proposed (2026-09-04; ADR-0037 said the kind "stays open
+until a second child needs it" — pmquant is the second child)
+
+**Context.** ADR-0037 landed `scan_stream` / `stream_digest` as
+functions; `children/intraday_poc` wraps them in its own `data` node,
+and pmquant's ladder and settlement readers would be the second and
+third copies of the same wrapper: params `root`/`source`/`stream`,
+key fields, a timestamp field flattened to `asof_ms`, a memoized scan
+so resolve and execute see one snapshot, a content digest fingerprint.
+
+**Decision.** `dskit/pipeline/libs/observations.py` ships
+`ObservationRows` (kind `observations`, role `data`): knobs `root`,
+`source`, `stream`, `key_fields` (required — the dedup key is a
+declared fact), `ts_field`, `ts_unit` (`"iso"` | `"ms"`), `ts_out`
+(default `asof_ms`), `shared_fields`, `since_ms`. `scan_stream` runs
+inside the scan (never at module top — the pipeline purity gate).
+`fingerprint()` is `{"kind","rows","sha256"}` over `stream_digest`,
+`data_edge()` the max `ts_out`. Children SUBCLASS it to fix their
+vocabulary (a subclass narrows `_PARAMS` to what its domain decides) and
+to project rows into their record envelope.
+
+The pipeline purity gate gains its second sanctioned sibling, shaped
+exactly like ADR-0056's: a tier-2 PACK may import
+`dskit.onboarding.observations` (the read seam, nothing wider) at
+function depth only; tier-1 core still never names it
+(`tests/pipeline/test_purity.py::READ_SEAM_MODULE`).
+
+**Consequences.** Two reader copies become one; the intraday_poc
+wrapper can retire onto it in its own commit.
+
+---
+
+## ADR-0078 — The flow module's clause DSL is public
+
+**Status:** proposed (2026-09-04)
+
+**Context.** `filter` and `derive` share one `{field, op, value}`
+clause grammar held as private names in `kinds_flow.py`. A dated fee
+book resolved at a market's close instant keys its cases on the same
+grammar; the parent mirrored the table with a test pinning the two
+copies, because its fee module could not import its pipeline package.
+A child has no such constraint, and a tier-3 module importing a
+private name is the smell the boundary rule forbids.
+
+**Decision.** `CLAUSE_OPS`, `clause_holds(record, clause)` and
+`clause_problems(name, clause)` join `kinds_flow.__all__`; the private
+spellings are gone. Behavior is unchanged.
+
+**Consequences.** The fee book imports the rule and can never drift
+from `derive`.

@@ -1,0 +1,18 @@
+{
+  "notes": "Kalshi public trade-API v2, read-only, no credentials (D-016): four streams per pull — markets (settlements + strikes, the 14-column shape the on-disk store also carries), candles (hourly), fee_schedules (fee_type/fee_multiplier per series — rates are per-SERIES and read from the venue, never hard-coded, I-001) and orderbooks (a capture of every OPEN market's book, so a live recorder is `acquire --mode live` on a schedule). The universe is the temperature/gas/copper ladder family the inventory tracks; add a series here when its usable-event count crosses the eligibility bar, never by editing code. Pacing is serial by design — the public API throttles per IP. Register with: python -m dskit.onboarding register-source kalshi --connector kalshi --config @configs/source-kalshi.json --catalog-source <P1 source> --activate.",
+  "series": [
+    "KXAAAGASD", "KXCOPPERD",
+    "KXHIGHAUS", "KXHIGHCHI", "KXHIGHDEN", "KXHIGHLAX", "KXHIGHMIA", "KXHIGHNY",
+    "KXHIGHTATL", "KXHIGHTBOS", "KXHIGHTDAL", "KXHIGHTNOLA", "KXHIGHTOKC", "KXHIGHTPHX", "KXHIGHTSEA", "KXHIGHTSFO",
+    "KXLOWTATL", "KXLOWTAUS", "KXLOWTBOS", "KXLOWTDAL", "KXLOWTDC", "KXLOWTDEN", "KXLOWTHOU", "KXLOWTLAX",
+    "KXLOWTMIA", "KXLOWTMIN", "KXLOWTNOLA", "KXLOWTNYC", "KXLOWTSEA"
+  ],
+  "statuses": ["settled", "open"],
+  "period_interval": 60,
+  "pace_s": 0.2,
+  "retries": 4,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

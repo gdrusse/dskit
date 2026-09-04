@@ -1,0 +1,17 @@
+{
+  "notes": "Predexon historical L2 order books for Kalshi contracts — the ONLY source needing a key, and the key is named, never written: `api_key_env` is the environment VARIABLE the connector reads at check()/read() time (see .env.example). Kalshi's own API serves no historical depth, so this is where the point-in-time ladder history comes from; each contract ticker keeps its own cursor, so adding a ticker later backfills it from `coverage_start` while the others resume. `end` is left undeclared so a pull runs up to now; a study with a hard data cut declares it instead of trimming afterwards. The vendor allows one request per second — `min_interval_s` at 1.0 is the bucket, not a preference. Tickers are CONTRACTS (e.g. KXHIGHNY-26SEP04-B70), not series: fill them from the settled-markets stream for the events you are backfilling. Register with: python -m dskit.onboarding register-source predexon --connector predexon --config @configs/source-predexon.json --catalog-source <P1 source> --activate.",
+  "tickers": [
+    "KXHIGHNY-26SEP04-B70",
+    "KXHIGHNY-26SEP04-B72",
+    "KXHIGHNY-26SEP04-T74"
+  ],
+  "coverage_start": "2026-09-01",
+  "api_key_env": "PREDEXON_API_KEY",
+  "limit": 200,
+  "min_interval_s": 1.0,
+  "retries": 3,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

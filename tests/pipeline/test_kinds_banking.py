@@ -70,12 +70,18 @@ class TestModuleHome:
         }
 
     def test_kinds_flow_keeps_only_the_flow_verbs(self):
+        # The flow verbs plus the clause DSL they share (public since
+        # ADR-0078, so a child's own tables can speak the document's
+        # ``where`` grammar without restating it).
         assert set(kinds_flow.__all__) == {
+            "CLAUSE_OPS",
             "Concat",
             "Derive",
             "EventGrid",
             "Filter",
             "Join",
+            "clause_holds",
+            "clause_problems",
             "register",
         }
 

@@ -1,0 +1,14 @@
+{
+  "notes": "The on-disk settled-markets store — one parquet file per series under <data root>/kalshi/markets/ (the Polymarket backfill writes the same 14-column shape beside the Kalshi files, so one source imports both venues). Columns: ticker, event_ticker, series_ticker, strike_type, floor_strike, cap_strike, status, result, open_time, close_time, yes_sub_title, yes_bid, yes_ask, last_price. The row's instant is close_time (ISO-8601, naive = UTC), so a re-pull after the store grows emits only markets that closed after the cursor. `stamp_stem_as` writes the file stem onto `series`, which lets the pipeline's settlement reader scope by series without parsing tickers. Register with: python -m dskit.onboarding register-source settled_markets --connector localtables --config @configs/source-settled-markets.json --catalog-source <P1 source> --activate; then acquire --mode backfill. Needs pyarrow (pip install \"dskit[parquet]\"). Change `path` to your data root; nothing else is machine-specific.",
+  "path": "~/pmquant_data/kalshi",
+  "layout": "directory",
+  "streams": ["markets"],
+  "formats": ["parquet"],
+  "effective_field": "close_time",
+  "effective_unit": "iso",
+  "stamp_stem_as": "series",
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

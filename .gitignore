@@ -40,6 +40,9 @@ mlruns/
 # several checkouts — a trailing slash never matches the symlink.
 children/*/ob
 children/*/ob/
+children/*/onboarding_root
+children/*/onboarding_root/
+children/*/runs/
 children/*/asset_store/
 children/*/decisions.jsonl
 

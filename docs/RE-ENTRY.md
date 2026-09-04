@@ -1,5 +1,30 @@
 # Re-entry
 
+**pmquant child rebuild, 2026-09-04 (branch `claude/pmquant-dskit-rebuild-367zis`, both repos).**
+pmquant now lives as `children/pmquant/` — thin tier-3 kinds + JSON over
+dskit seams. The success document `children/pmquant/configs/run-e2e.json`
+runs the stat test, trains the transformer ensemble and builds the Kelly
+MIO in ONE pipeline (22 nodes; `tests/test_e2e.py` proves it on the
+synthetic world: GO on both series, 3,014 lots sized). Its real-data twin
+is `run-kalshi-ladders.json` (pinned to differ only in data location, fee
+book, eligibility bar, training budget). Generic capability graduated into
+dskit under ADR-0075…0078: onboarding packs `kalshi`, `polymarket`,
+`predexon` + `leads.py` (LeadGrid), the `localtables` connector (the
+parent's on-disk parquet/ndjson stores import with no code), the
+`observations` pipeline kind, the public clause DSL. Every data pull is a
+dskit connector; the on-disk Kalshi + Polymarket stores are ported via
+`configs/source-pit-ladders.json` / `source-settled-markets.json`.
+**Waiting on the owner:** a `PREDEXON_API_KEY` in the environment before
+`source-predexon.json` can pull (names only in configs); the real-data run
+of the twin on a machine holding `~/pmquant_data`. Two gotchas cost a run
+tonight and are written into the child's CLAUDE.md: declare
+`torch.optim.AdamW` (the pack's SGD default never learns this recipe) and
+list every sized series in `fee_rate_by_series` (fail-closed). Journal:
+`children/pmquant/docs/decisioning/actions.csv` holds every execution of
+the build. Follow-ups: `TODO.md` "Found by the pmquant child build".
+
+---
+
 Recovery wrap, 2026-09-03: second-cohort Alpaca SIP bars (TSLA, TQQQ, NVDA, AMD) were researched, registered, and backfilled as `alpaca-sip-split-b`. Focused configuration tests: 28 passed; one known pre-existing start-date assertion still fails in `run-pb-s01-h01-lgbm-cross.json`.
 Codex migration wrap: project-local AGENTS.md guides, session-start fast-forward pull hook, and portable skills were added under .cursor/.
 

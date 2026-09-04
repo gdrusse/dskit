@@ -161,13 +161,26 @@ def _module_level_offenders(path, package):
 
 
 def _is_journal(module):
-    """The one sanctioned sibling (ADR-0056): function-level only."""
+    """The one sibling the CORE may name (ADR-0056): function-level only."""
     return module == "dskit.journal" or module.startswith("dskit.journal.")
 
 
-def _outside_toolkit_offenders(path, package):
+#: The onboarding READ seam (ADR-0037) — the one sibling a tier-2 PACK may
+#: name, function-level only, so the ``observations`` kind (ADR-0077) can
+#: front ``scan_stream`` the way a node pack fronts its library. The core
+#: itself never reaches it: a tier-1 module naming this is still refused.
+READ_SEAM_MODULE = "dskit.onboarding.observations"
+
+
+def _is_read_seam(module):
+    """Say whether ``module`` is the sanctioned onboarding read seam."""
+    return module == READ_SEAM_MODULE
+
+
+def _outside_toolkit_offenders(path, package, *, pack=False):
     """Imports of ``path`` (ANY depth) that reach the owning distribution
-    outside the toolkit."""
+    outside the toolkit. ``pack`` marks a tier-2 file, the only tier the
+    read-seam exception applies to."""
     out = []
     for module, top in _imports(path, package):
         inside_root = module == ROOT_PACKAGE or module.startswith(ROOT_PACKAGE + ".")
@@ -177,6 +190,13 @@ def _outside_toolkit_offenders(path, package):
                     out.append(
                         f"{path.name}: {module} (dskit.journal must be "
                         "function-level, ADR-0056)"
+                    )
+                continue
+            if pack and _is_read_seam(module):
+                if top:
+                    out.append(
+                        f"{path.name}: {module} (the onboarding read seam must "
+                        "be function-level, ADR-0077)"
                     )
                 continue
             out.append(f"{path.name}: {module}")
@@ -213,12 +233,17 @@ def test_core_never_reaches_outside_the_toolkit_at_any_depth():
     Exception (ADR-0056): ``dskit.journal`` may be imported at
     function depth so RECORD can label a child run. Module-level is
     still refused.
+
+    Exception (ADR-0077), tier 2 ONLY: a pack may import the onboarding
+    READ seam (``dskit.onboarding.observations``) at function depth, so
+    the ``observations`` kind fronts ``scan_stream`` the way a node pack
+    fronts its library. The core never names it, at any depth.
     """
     offenders = []
     for path in _tier1_files():
         offenders.extend(_outside_toolkit_offenders(path, CORE_PACKAGE))
     for path in _tier2_files():
-        offenders.extend(_outside_toolkit_offenders(path, LIBS_PACKAGE))
+        offenders.extend(_outside_toolkit_offenders(path, LIBS_PACKAGE, pack=True))
     assert not offenders, (
         f"toolkit reached outside dskit.pipeline (adapters do that): {offenders}"
     )
