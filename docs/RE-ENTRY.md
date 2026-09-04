@@ -32,6 +32,17 @@ outage no longer reads as an absent hour; probed live against the small
 the `all` extra carries `huggingface_hub`. Still owner rulings: the torch
 pack's SGD default, Polymarket early resolution, the two child recipe
 items, and `utc_now`'s second truncation.
+**Round 3 (same day; Opus builders and reviewers):** the Polymarket pack
+proven on REAL data — a live Gamma events pull (`london-daily-weather`,
+33 markets) and one real ~360 MB pmxt hour off the Hugging Face mirror
+(139,733 rows) — which exposed that the archive key was not unique
+(several price levels change per millisecond): rows now carry `seq` and
+key on `(asset_id, ts, seq)`. The archive resolves token ids from the
+series slugs, consults the mirror's sync state (gap skipped, "not
+mirrored yet" stops), and a closed market is dated at the venue's
+`closedTime` (ADR-0080). The child's shipped Polymarket slugs were
+guessed spellings that pull nothing; they are now the venue's own
+(`<city>-daily-weather`, `<city>-daily-lowest-temperature`) and pinned.
 
 ---
 

@@ -164,7 +164,11 @@ market, settlement and fee fields; the cursor is recorded, never consulted —
 every pull re-walks the `start`/`end` window and dedup keeps the latest,
 so late resolutions land without a fresh `start`), derived
 `fee_schedules`, CLOB `books`, and the pmxt `archive_hours` (needs
-`huggingface_hub` + `pyarrow`); `libs/polymarket.py` is the knob reference.
+`huggingface_hub` + `pyarrow`; token ids declared or else resolved from the
+same Gamma walk, rows keyed `(asset_id, ts, seq)` because several price-level
+updates share a millisecond, and the mirror's own sync state telling a
+permanent gap — skipped — from an hour not mirrored yet — retried);
+`libs/polymarket.py` is the knob reference.
 
 The `kalshi` kind (ADR-0075) pulls Kalshi's public trade API v2 for a
 declared `series` basket — `markets` (the 14-field strike/status/result

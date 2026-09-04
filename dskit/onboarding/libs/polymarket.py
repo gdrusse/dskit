@@ -30,19 +30,25 @@ public: a token is optional, read from the environment at pull time
 (``token_env``), handed to the hub, and never written into a record, a
 log line or an error.
 
-Two checkpoint choices differ from a market's "natural" key and are
-deliberate. First, an ``events`` row is stamped ``effective_date =
-end_date`` and the cursor is the max end_date emitted, but it is
-RECORDED, NEVER CONSULTED — a market closes (and resolves) after its
-end_date on a lag that varies by series, so a late closer would sit below
-a cursor another market already advanced and be lost for good. Every
-pull re-walks the declared window whole (the Kalshi pack's ``markets``
-choice) and bitemporal dedup keeps the latest evidence per ``market_id``.
-Second, a market the payload flags ``closed: false`` has an end_date
-still ahead; as an observation the platform would refuse it as a
-statement about the future, so it is emitted ``kind: "forecast"``
-(declared by the venue's own flag, never by date arithmetic), never
-advances the cursor, and is re-emitted on every pull.
+Two ``events`` choices differ from a market's "natural" key and are
+deliberate. First, the venue's own ``closed`` flag decides both the kind
+and the date (never date arithmetic). A market flagged ``closed: true``
+is an observation stamped at the venue's ``closedTime`` — the instant it
+really resolved, spelled ``2026-09-04 12:11:51+00`` — falling back to
+``end_date`` only when the venue carries no ``closedTime`` (ADR-0080): a
+market that resolves EARLY closes while its scheduled end is still ahead,
+and dating it there would future-date the row and refuse the whole pull.
+A closed market whose observation instant — the ``closedTime`` when it
+has one, its end when it does not — still lies ahead of the pull is
+refused BY NAME, both instants named, instead of emitted. A market flagged ``closed: false`` keeps
+``end_date``, is emitted ``kind: "forecast"``, never advances the cursor,
+and is re-emitted on every pull. Second, the cursor is the max instant
+emitted, but it is RECORDED, NEVER CONSULTED — a market closes (and
+resolves) after its end_date on a lag that varies by series, so a late
+closer would sit below a cursor another market already advanced and be
+lost for good. Every pull re-walks the declared window whole (the Kalshi
+pack's ``markets`` choice) and bitemporal dedup keeps the latest evidence
+per ``market_id``.
 
 **The capture instant.** A row the venue does not date (a fee regime's
 ``retrieved``, a book the CLOB did not stamp) is dated at ``now`` FLOORED
@@ -52,6 +58,23 @@ minute too. The floor makes a pull one capture (two pulls inside a minute
 collide on their key; the later acquisition wins); it is no longer what
 keeps rows before ``acquired_at`` — the platform stamps that at COMMIT,
 after ``read`` has finished (ADR-0079).
+
+**The archive's coordinates.** ``archive_hours`` filters to a token set:
+the declared ``token_ids``, or — when none are declared — the ids the
+Gamma walk resolves for ``series_slugs``/``slugs`` over the same window
+(declared ids WIN outright; the two sets are never unioned). Before
+walking, the mirror's own sync state (:data:`SYNC_STATE_PATH`) says what
+a missing hour MEANS: an hour it lists in ``pending_gap_hours`` will
+never arrive, so the walk skips it and the cursor advances PAST it (a
+permanent gap can no longer block a backfill), while an hour past
+``latest_available_hour`` is simply not mirrored yet, so the walk stops
+with the cursor where it is and retries next pull. That document is
+advisory — absent, unreadable, or carrying a stamp that does not parse,
+it costs a LOG and nothing else. Each archive row also carries ``seq``,
+its ordinal among the rows one ``(asset_id, ts)`` holds in the file's own
+order: pmxt writes one ``price_change`` per price LEVEL and several land
+in the same millisecond, so ``(asset_id, ts)`` alone is not a key and a
+replay applies rows in ``(ts, seq)`` order.
 
 Import cost: stdlib.
 """
@@ -99,6 +122,7 @@ __all__ = [
     "STREAMS",
     "STREAM_FIELDS",
     "STREAM_KEYS",
+    "SYNC_STATE_PATH",
     "PolymarketConnector",
     "fee_rate_of",
 ]
@@ -109,8 +133,8 @@ EVENTS_STREAM, FEES_STREAM, BOOKS_STREAM, ARCHIVE_STREAM = STREAMS
 EVENT_FIELDS = (
     "event_slug", "event_id", "series_slug", "market_id", "slug", "question",
     "condition_id", "clob_token_ids", "outcomes", "outcome_prices", "start_date",
-    "end_date", "closed", "fees_enabled", "fee_type", "fee_rate", "fee_schedule",
-    "resolution",
+    "end_date", "closed", "closed_time", "fees_enabled", "fee_type", "fee_rate",
+    "fee_schedule", "resolution",
 )
 FEE_SCHEDULE_FIELDS = (
     "series_slug", "from_end_date", "example_slug", "fees_enabled", "fee_type",
@@ -121,7 +145,8 @@ BOOK_FIELDS = (
     "asset_id", "ts", "event_type", "bids", "asks", "price", "size", "side",
     "asof_ts_ms", "book_hash",
 )
-ARCHIVE_FIELDS = BOOK_FIELDS[:8]
+#: The same eight columns, plus the within-millisecond order (module docs).
+ARCHIVE_FIELDS = BOOK_FIELDS[:8] + ("seq",)
 STREAM_FIELDS = {
     EVENTS_STREAM: EVENT_FIELDS,
     FEES_STREAM: FEE_SCHEDULE_FIELDS,
@@ -132,7 +157,9 @@ STREAM_KEYS = {
     EVENTS_STREAM: ("market_id",),
     FEES_STREAM: ("series_slug", "from_end_date"),
     BOOKS_STREAM: ("asset_id", "ts"),
-    ARCHIVE_STREAM: ("asset_id", "ts", "event_type"),
+    # Not event_type: pmxt writes one price_change per LEVEL and several
+    # share a millisecond, so only the file's own order separates them.
+    ARCHIVE_STREAM: ("asset_id", "ts", "seq"),
 }
 #: Archive event types kept; everything else the dump carries is dropped.
 ARCHIVE_EVENT_TYPES = ("book", "price_change")
@@ -153,6 +180,10 @@ DEFAULT_HF_REPO = "phobia76/pmxt-l2-dump"
 DEFAULT_HF_PATH_PATTERN = "hours/%Y/%m/%d/polymarket_orderbook_%Y-%m-%dT%H.parquet"
 DEFAULT_TOKEN_ENV = "HF_TOKEN"
 DEFAULT_CLEANUP = True
+#: The mirror's own bookkeeping inside the archive repo: which hours it
+#: could not fetch (``pending_gap_hours``) and how far it has got
+#: (``latest_available_hour``). Advisory — see the module docs.
+SYNC_STATE_PATH = "meta/pmxt-polymarket-sync-state.json"
 
 _RETRY_STATUSES = (429, 500, 502, 503, 504)
 _BACKOFF_S = 0.5
@@ -371,6 +402,19 @@ def _fee_fields(event, market):
             for key, value in source.items() if "fee" in key.lower()}
 
 
+def _closed_time(value, label):
+    """Normalize the venue's ``closedTime`` spelling to ISO; absent or blank is ``None``."""
+    if value is None or not str(value).strip():
+        return None
+    try:
+        # Gamma spells the close space-separated with a two-digit offset —
+        # "2026-09-04 12:11:51+00" — beside the usual T/Z forms; fromisoformat
+        # reads all three, so parse_utc IS the parser (no second spelling here).
+        return parse_utc(str(value).strip()).isoformat()
+    except AssetError as exc:
+        raise AssetError([f"{label}: closedTime is not an instant: {value!r}"]) from exc
+
+
 def _market_row(event, market, series_slug):
     """One ``events`` row for a market inside its Gamma event."""
     label = f"market {market.get('id')!r} in event {event.get('slug')!r}"
@@ -378,6 +422,7 @@ def _market_row(event, market, series_slug):
     if not isinstance(end_date, str) or not end_date:
         raise AssetError([f"{label}: endDate missing — every market needs its end"])
     parse_utc(end_date)
+    closed_time = _closed_time(market.get("closedTime") or event.get("closedTime"), label)
     fee = _fee_fields(event, market)
     rate, _exponent = fee_rate_of(fee)
     prices = _json_list(market.get("outcomePrices"), f"{label}: outcomePrices")
@@ -400,6 +445,7 @@ def _market_row(event, market, series_slug):
         "start_date": market.get("startDate"),
         "end_date": end_date,
         "closed": bool(market.get("closed", event.get("closed", False))),
+        "closed_time": closed_time,
         "fees_enabled": bool(fee.get("feesEnabled", False)),
         "fee_type": fee.get("feeType"),
         "fee_rate": rate,
@@ -414,6 +460,22 @@ def _market_rows(event, series_slug):
     if not isinstance(markets, list):
         raise AssetError([f"event {event.get('slug')!r}: markets is not a list"])
     return [_market_row(event, m, series_slug) for m in markets if isinstance(m, dict)]
+
+
+def _observed_at(row):
+    """Return a closed market's observation instant: its closedTime, else its end (ADR-0080)."""
+    return row["closed_time"] or row["end_date"]
+
+
+def _future_closed(rows, now):
+    """Name every closed market whose observation instant still lies ahead of ``now``."""
+    return [
+        f"market {row['market_id']!r}: closed, but its observation instant "
+        f"{_observed_at(row)} is ahead of the pull {now.isoformat()} "
+        f"(end_date {row['end_date']}, closed_time {row['closed_time']}) — the venue "
+        "has not dated the close yet; re-pull once it has"
+        for row in rows if row["closed"] and parse_utc(_observed_at(row)) > now
+    ]
 
 
 def _page(body, label):
@@ -490,10 +552,12 @@ def _archive_decoder(names):
 
 
 def _archive_rows(path, tokens):
-    """Yield eight-column rows for ``tokens`` out of one archive parquet file.
+    """Yield the archive rows of ``tokens`` out of one parquet file, in file order.
 
     Batches bound memory; a string-typed ``asset_id`` column is filtered
-    in Arrow before any row is materialized.
+    in Arrow before any row is materialized. ``seq`` numbers the rows one
+    ``(asset_id, ts)`` carries, across batches — the within-millisecond
+    order the archive recorded (module docs).
     """
     try:
         import pyarrow as pa
@@ -508,6 +572,7 @@ def _archive_rows(path, tokens):
     names = reader.schema_arrow.names
     decode = _archive_decoder(names)
     wanted = pa.array(sorted(tokens))
+    seqs = {}
     for batch in reader.iter_batches(batch_size=_ARCHIVE_BATCH_ROWS):
         if "asset_id" in names:
             kind = batch.schema.field("asset_id").type
@@ -517,11 +582,30 @@ def _archive_rows(path, tokens):
             row = decode(raw)
             if row is None or row["asset_id"] not in tokens:
                 continue
+            # Numbered BEFORE the event-type filter, so seq is the FILE's own
+            # order: widening ARCHIVE_EVENT_TYPES then adds rows instead of
+            # renumbering — rewriting — the keys already stored. The token
+            # filter cannot shift it: a place belongs to one asset_id.
+            place = (row["asset_id"], row["ts"])
+            row["seq"] = seqs.get(place, 0)
+            seqs[place] = row["seq"] + 1
             if row["event_type"] not in ARCHIVE_EVENT_TYPES:
                 continue
             if row["ts"] is None:
                 raise AssetError([f"archive row for {row['asset_id']!r} has no timestamp"])
             yield row
+
+
+def _meta_hours(value):
+    """Hour boundaries out of one sync-state stamp or a list of them, plus the rejects."""
+    raw = value if isinstance(value, list) else [] if value is None else [value]
+    hours, ignored = set(), []
+    for item in raw:
+        try:
+            hours.add(_floor_hour(parse_utc(item)))
+        except AssetError:
+            ignored.append(item)
+    return hours, ignored
 
 
 def _remove(path):
@@ -625,10 +709,11 @@ class PolymarketConnector(Connector):
                          "hour for `archive_hours` when `hours` is absent.",
             },
             "end": {
-                "notes": "ISO upper bound; default the pull instant. Keep it at or "
-                         "before the pull: a closed market whose scheduled end lies "
-                         "ahead is refused by the platform as an observation about "
-                         "the future.",
+                "notes": "ISO upper bound; default the pull instant. A window "
+                         "reaching past the pull is fine: a closed market dates at "
+                         "the venue's `closedTime` and an open one is a forecast. "
+                         "Only a closed market the venue has not dated, whose "
+                         "scheduled end is still ahead, is refused (by name).",
             },
             "closed": {
                 "notes": f"Gamma `closed` filter for series walks; default "
@@ -650,7 +735,15 @@ class PolymarketConnector(Connector):
             },
             "token_ids": {
                 "notes": "CLOB token ids (strings) the `books` and `archive_hours` "
-                         "streams cover.",
+                         "streams cover. `archive_hours` may omit them: it then "
+                         "resolves them from `series_slugs`/`slugs` over the same "
+                         "window, through the very walk `events` uses, and refuses "
+                         "when that resolves no market. Declared ids WIN — resolution "
+                         "runs only when none are declared, never as a union. A "
+                         "series walk carries the `closed` filter, so under its "
+                         f"default ({DEFAULT_CLOSED}) a market that has not settled "
+                         "resolves no token: declare the ids to backfill an open "
+                         "market's hours.",
             },
             "books_chunk": {
                 "notes": f"Token ids per `POST /books` call; default {DEFAULT_BOOKS_CHUNK}.",
@@ -658,11 +751,16 @@ class PolymarketConnector(Connector):
             "hours": {
                 "notes": "Explicit ISO hour stamps for `archive_hours`; takes "
                          "precedence over `start`/`end`. Hours at or before the "
-                         "cursor are skipped.",
+                         "cursor are skipped, and so is an hour the mirror lists in "
+                         "`pending_gap_hours` — an explicit list steps over anything "
+                         "it leaves out, but never over a gap the mirror declares, "
+                         "and it still stops at the mirror's latest_available_hour.",
             },
             "hf_repo": {
                 "notes": f"Hugging Face dataset repo of the archive; default "
-                         f"{DEFAULT_HF_REPO}.",
+                         f"{DEFAULT_HF_REPO}. Its {SYNC_STATE_PATH} is read before "
+                         "each walk to tell a permanent gap from an hour not mirrored "
+                         "yet; absent or unreadable, the walk proceeds without it.",
             },
             "hf_path_pattern": {
                 "notes": "strftime pattern of one hour file inside the repo; default "
@@ -1040,7 +1138,7 @@ class PolymarketConnector(Connector):
     # -- the pullers: each yields RECORD/LOG messages, returns the cursor -
 
     def _pull_events(self, client, knobs, cursor):
-        """One RECORD per market, never cursor-filtered; closed rows move the cursor, open never."""
+        """One RECORD per market, never cursor-filtered; a closed row dates at its closedTime."""
         _require(EVENTS_STREAM, [
             (knobs["series_slugs"] or knobs["slugs"], "declare series_slugs and/or slugs"),
             (not knobs["series_slugs"] or knobs["start"],
@@ -1057,12 +1155,15 @@ class PolymarketConnector(Connector):
         cursor_dt = parse_utc(cursor) if cursor else None
         emitted, emitted_dt = cursor, cursor_dt
         ordered = sorted(rows.values(), key=lambda r: (parse_utc(r["end_date"]), r["market_id"]))
+        ahead = _future_closed(ordered, self.now())
+        if ahead:
+            raise AssetError(ahead)
         for row in ordered:
-            effective = row["end_date"]
-            effective_dt = parse_utc(effective)
             if not row["closed"]:
-                yield _record(EVENTS_STREAM, effective, "forecast", row)
+                yield _record(EVENTS_STREAM, row["end_date"], "forecast", row)
                 continue
+            effective = _observed_at(row)
+            effective_dt = parse_utc(effective)
             yield _record(EVENTS_STREAM, effective, "observation", row)
             if emitted_dt is None or effective_dt > emitted_dt:
                 emitted, emitted_dt = effective, effective_dt
@@ -1159,19 +1260,138 @@ class PolymarketConnector(Connector):
             hour += _HOUR
         return hours
 
+    def _archive_tokens(self, client, knobs):
+        """Return the token set to filter the archive to: declared ids, else Gamma's.
+
+        Declared ``token_ids`` WIN outright — the resolution runs only
+        when none are declared, and the two sets are never unioned.
+
+        Parameters
+        ----------
+        client : _Client
+            The paced HTTP client of this read.
+        knobs : dict
+            Resolved knobs.
+
+        Returns
+        -------
+        set
+            CLOB token id strings.
+
+        Raises
+        ------
+        AssetError
+            When nothing is declared and the walk resolves no market.
+        """
+        if knobs["token_ids"]:
+            return set(knobs["token_ids"])
+        tokens = set()
+        for series_slug in knobs["series_slugs"]:
+            for row in self._series_rows(client, knobs, series_slug):
+                tokens.update(row["clob_token_ids"])
+        for slug in knobs["slugs"]:
+            for event in self._lookup_events(client, knobs, slug):
+                for row in _market_rows(event, None):
+                    tokens.update(row["clob_token_ids"])
+        if not tokens:
+            raise AssetError(
+                [f"stream {ARCHIVE_STREAM!r}: no markets resolved for series_slugs "
+                 f"{knobs['series_slugs']} / slugs {knobs['slugs']} over "
+                 f"{knobs['start'] or 'the start'}..{knobs['end'] or 'the pull instant'} "
+                 "— widen the window or declare token_ids"]
+            )
+        return tokens
+
+    def _sync_state(self, knobs, token):
+        """Read the mirror's sync state; LOG whatever it does not tell us.
+
+        Parameters
+        ----------
+        knobs : dict
+            Resolved knobs; ``hf_repo`` names the dataset.
+        token : str or None
+            Hub token, exactly as an hour fetch gets it.
+
+        Yields
+        ------
+        dict
+            A LOG when the document is absent or unreadable, and one
+            naming stamps that do not parse. Never a refusal: the
+            mirror's own bookkeeping must not be able to stop a pull.
+
+        Returns
+        -------
+        tuple
+            ``(gap_hours, latest_hour)`` — the hours the mirror could not
+            fetch as a set of boundaries, and the newest hour it holds
+            (``None`` when it does not say).
+        """
+        label = f"stream {ARCHIVE_STREAM!r}"
+        local = self.download(knobs["hf_repo"], SYNC_STATE_PATH, token)
+        state = None
+        if local is not None:
+            try:
+                with open(local, encoding="utf-8") as handle:
+                    state = json.load(handle)
+            except (OSError, UnicodeDecodeError, ValueError):
+                state = None
+        if not isinstance(state, dict):
+            yield _log(
+                f"{label}: {SYNC_STATE_PATH} is absent or unreadable in "
+                f"{knobs['hf_repo']} — walking every hour and stopping at the first "
+                "one the mirror does not serve"
+            )
+            return set(), None
+        gaps, ignored = _meta_hours(state.get("pending_gap_hours"))
+        latest, unparsed = _meta_hours(state.get("latest_available_hour"))
+        ignored += unparsed
+        if ignored:
+            yield _log(
+                f"{label}: {SYNC_STATE_PATH} carries hour stamp(s) that do not parse: "
+                f"{ignored} — ignoring them, the rest of the document still counts"
+            )
+        return gaps, max(latest, default=None)
+
     def _pull_archive(self, client, knobs, cursor):
-        """One RECORD per archive row; the cursor is the last hour fully read."""
+        """One RECORD per archive row; the cursor is the last hour walked.
+
+        Tokens are the declared ones or Gamma's
+        (:meth:`_archive_tokens`); the mirror's sync state
+        (:meth:`_sync_state`) decides what a missing hour MEANS — a
+        listed gap is stepped over, an hour it has not reached stops the
+        walk (module docs).
+        """
         _require(ARCHIVE_STREAM, [
-            (knobs["token_ids"], "declare token_ids"),
+            (knobs["token_ids"] or knobs["series_slugs"] or knobs["slugs"],
+             "declare token_ids, or series_slugs/slugs to resolve them from Gamma"),
             (knobs["hours"] or knobs["start"], "declare hours, or start (and end)"),
+            (knobs["token_ids"] or not knobs["series_slugs"] or knobs["start"],
+             "start is required to window the series walk that resolves token_ids"),
         ])
         cursor_dt = parse_utc(cursor) if cursor else None
         token = os.environ.get(knobs["token_env"]) or None
-        tokens = set(knobs["token_ids"])
+        tokens = self._archive_tokens(client, knobs)
+        gaps, latest = yield from self._sync_state(knobs, token)
         emitted = cursor
         for hour in self._archive_hours(knobs):
             if cursor_dt is not None and hour <= cursor_dt:
                 continue
+            if hour in gaps:
+                yield _log(
+                    f"stream {ARCHIVE_STREAM!r}: {hour.isoformat()} is one of the "
+                    "mirror's pending_gap_hours — it will never arrive, so the walk "
+                    "skips it and the cursor advances past it"
+                )
+                emitted = hour.isoformat()
+                continue
+            if latest is not None and hour > latest:
+                yield _log(
+                    f"stream {ARCHIVE_STREAM!r}: {hour.isoformat()} is past the "
+                    f"mirror's latest_available_hour {latest.isoformat()} — not "
+                    f"mirrored yet; stopping so the cursor stays at "
+                    f"{emitted or 'the start'} and the hour is retried next pull"
+                )
+                break
             path = hour.strftime(knobs["hf_path_pattern"])
             local = self.download(knobs["hf_repo"], path, token)
             if local is None:

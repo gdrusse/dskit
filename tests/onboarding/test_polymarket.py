@@ -23,6 +23,7 @@ from dskit.onboarding import (
     check_message,
     resolve_connector,
     run_acquisition,
+    scan_stream,
 )
 from dskit.onboarding.libs import polymarket
 from dskit.onboarding.libs.polymarket import (
@@ -316,11 +317,13 @@ def test_discover_declares_four_streams_offline(conn):
     assert by_name["events"]["primary_key"] == ["market_id"]
     assert by_name["fee_schedules"]["primary_key"] == ["series_slug", "from_end_date"]
     assert by_name["books"]["primary_key"] == ["asset_id", "ts"]
-    assert by_name["archive_hours"]["primary_key"] == ["asset_id", "ts", "event_type"]
+    assert by_name["archive_hours"]["primary_key"] == ["asset_id", "ts", "seq"]
     assert by_name["events"]["schema"] == {"fields": list(EVENT_FIELDS)}
     assert by_name["fee_schedules"]["schema"] == {"fields": list(FEE_SCHEDULE_FIELDS)}
     assert by_name["books"]["schema"] == {"fields": list(BOOK_FIELDS)}
     assert by_name["archive_hours"]["schema"] == {"fields": list(ARCHIVE_FIELDS)}
+    for stream in STREAMS:  # every key field is one the schema declares
+        assert set(polymarket.STREAM_KEYS[stream]) <= set(polymarket.STREAM_FIELDS[stream])
     assert ScriptedPolymarket.calls == []
 
 
@@ -643,7 +646,10 @@ def test_archive_new_schema_filters_tokens_and_event_types(conn, write_parquet):
     })
     conn.script["download"] = _serve({("r/x", HOUR_PATH): path})
     records, msgs = _archive_records(conn, ARCHIVE_CONFIG)
-    assert ScriptedPolymarket.calls == [("DOWNLOAD", "r/x", HOUR_PATH, None)]
+    assert ScriptedPolymarket.calls == [
+        ("DOWNLOAD", "r/x", polymarket.SYNC_STATE_PATH, None),  # the mirror's sync state
+        ("DOWNLOAD", "r/x", HOUR_PATH, None),
+    ]
     assert [r["data"]["event_type"] for r in records] == ["book", "price_change"]
     book, change = (r["data"] for r in records)
     assert set(book) == set(ARCHIVE_FIELDS)
@@ -714,9 +720,10 @@ def test_archive_cursor_skips_done_hours_and_an_absent_hour_stops(conn, write_pa
     config = {**ARCHIVE_CONFIG, "hours": hours, "cleanup": False}
     records, msgs = _archive_records(conn, config, {"archive_hours": {"cursor": hours[0]}})
     assert records == []
-    assert [c[2] for c in _gets("DOWNLOAD")] == [paths[10], paths[11]]  # 9 skipped, stop at 11
+    assert [c[2] for c in _gets("DOWNLOAD")] == [
+        polymarket.SYNC_STATE_PATH, paths[10], paths[11]]  # 9 skipped, stop at 11
     logs = [m["message"] for m in msgs if m["type"] == "LOG"]
-    assert len(logs) == 1 and paths[11] in logs[0]
+    assert len(logs) == 2 and paths[11] in logs[1]  # logs[0]: no sync state is served here
     assert msgs[-1]["state"] == {"archive_hours": {"cursor": hours[1]}}
 
 
@@ -729,7 +736,7 @@ def test_archive_window_mode_walks_complete_hours_only(conn, write_parquet):
     # NOW is 12:00; the 12:00 hour is incomplete, so 09, 10 and 11 are pulled.
     config = {"token_ids": ["tokA"], "start": "2026-03-02T09:30:00+00:00", "cleanup": False}
     _records_, msgs = _archive_records(conn, config)
-    assert [c[2] for c in _gets("DOWNLOAD")] == [
+    assert [c[2] for c in _gets("DOWNLOAD")] == [polymarket.SYNC_STATE_PATH] + [
         f"hours/2026/03/02/polymarket_orderbook_2026-03-02T{h:02d}.parquet" for h in (9, 10, 11)
     ]
     assert msgs[-1]["state"] == {"archive_hours": {"cursor": "2026-03-02T11:00:00+00:00"}}
@@ -737,7 +744,7 @@ def test_archive_window_mode_walks_complete_hours_only(conn, write_parquet):
     ScriptedPolymarket.calls = []
     explicit = {**config, "hours": ["2026-03-02T10:00:00+00:00"], "end": "2026-03-02T12:00:00Z"}
     _archive_records(conn, explicit)
-    assert len(_gets("DOWNLOAD")) == 1  # an explicit list takes precedence
+    assert len(_gets("DOWNLOAD")) == 2  # the sync state, then the one explicit hour
 
 
 def test_archive_token_env_is_optional_and_named(conn, write_parquet, monkeypatch):
@@ -748,11 +755,11 @@ def test_archive_token_env_is_optional_and_named(conn, write_parquet, monkeypatc
     conn.script["download"] = lambda repo, path, token: empty
     monkeypatch.delenv("HF_TOKEN", raising=False)
     _archive_records(conn, {**ARCHIVE_CONFIG, "cleanup": False})
-    assert _gets("DOWNLOAD")[0][3] is None  # anonymous when the variable is unset
+    assert _gets("DOWNLOAD")[-1][3] is None  # anonymous when the variable is unset
 
     monkeypatch.setenv("MY_HF", "hf_secret")
     _archive_records(conn, {**ARCHIVE_CONFIG, "cleanup": False, "token_env": "MY_HF"})
-    assert _gets("DOWNLOAD")[1][3] == "hf_secret"
+    assert _gets("DOWNLOAD")[-1][3] == "hf_secret"
 
 
 def test_archive_unrecognized_schema_refused(conn, write_parquet):
@@ -806,6 +813,7 @@ def test_archive_streams_batches_and_never_reads_an_hour_whole(conn, monkeypatch
     conn.script["download"] = _serve({("r/x", HOUR_PATH): path})
     messages = conn.read({**ARCHIVE_CONFIG, "cleanup": False}, ["archive_hours"], {}, "backfill")
     assert next(messages)["type"] == "SCHEMA"
+    assert next(messages)["type"] == "LOG"  # no sync state is served here
     first = next(messages)
     assert first["data"]["ts"] == T1_MS and produced == [2]  # out before batch two is read
     rest = list(messages)
@@ -923,7 +931,7 @@ def test_token_is_read_at_pull_time_and_never_written_anywhere(monkeypatch, writ
 
     monkeypatch.setenv("MY_HF", "hf_ROTATED")  # read at each pull, never cached
     _read(PolymarketConnector(), config, ["archive_hours"])
-    assert calls[1]["token"] == "hf_ROTATED"
+    assert calls[-1]["token"] == "hf_ROTATED"
 
     _hub_double(monkeypatch, _hub_http_error(403, "403 Client Error: Forbidden"))
     with pytest.raises(AssetError) as exc:
@@ -1064,8 +1072,12 @@ def test_acquisition_walks_two_archive_hours_and_stops_at_a_missing_one(
 
     first = run_acquisition(root, registry, "poly", "archive_hours", "backfill")
     assert first["records"] == 4 and first["snapshot"] and first["state_saved"]
-    assert [c[2] for c in _gets("DOWNLOAD")] == [paths[10], paths[11], paths[12]]
-    assert len(first["logs"]) == 1 and paths[12] in first["logs"][0]
+    # No sync state is served: the walk behaves exactly as it did before one
+    # existed — every hour tried in turn, the first absent hour stopping it.
+    assert [c[2] for c in _gets("DOWNLOAD")] == [
+        polymarket.SYNC_STATE_PATH, paths[10], paths[11], paths[12]]
+    assert len(first["logs"]) == 2 and polymarket.SYNC_STATE_PATH in first["logs"][0]
+    assert paths[12] in first["logs"][1]
     assert not any(os.path.exists(p) for p in files.values())  # cleanup default: True
     landed = {"archive_hours": {"cursor": hours[1]}}  # the last hour fully read
     assert load_state(root, "poly", "archive_hours", "backfill") == landed
@@ -1073,6 +1085,323 @@ def test_acquisition_walks_two_archive_hours_and_stops_at_a_missing_one(
     ScriptedPolymarket.calls = []
     again = run_acquisition(root, registry, "poly", "archive_hours", "backfill")
     assert again["records"] == 0 and again["snapshot"] is None
-    assert [c[2] for c in _gets("DOWNLOAD")] == [paths[12]]  # 10 and 11 never re-read
-    assert len(again["logs"]) == 1 and paths[12] in again["logs"][0]
+    assert [c[2] for c in _gets("DOWNLOAD")] == [
+        polymarket.SYNC_STATE_PATH, paths[12]]  # 10 and 11 never re-read
+    assert len(again["logs"]) == 2 and paths[12] in again["logs"][1]
     assert load_state(root, "poly", "archive_hours", "backfill") == landed  # unchanged
+
+
+# -- events: the venue's closedTime dates a closed market ---
+
+#: The venue's own spelling of the instant a market actually resolved.
+CLOSED_TIME = "2026-03-02 11:59:01+00"
+CLOSED_TIME_ISO = "2026-03-02T11:59:01+00:00"
+#: A scheduled end still ahead of the pull clock (NOW).
+AHEAD = "2026-03-05T00:00:00Z"
+
+
+def _one_event(conn, market, slug="ev-1"):
+    conn.script["get"] = lambda url, params: [_event("e1", slug, [market])]
+    return _read(conn, {"slugs": [slug]}, ["events"])
+
+
+def test_a_market_that_resolved_early_is_dated_at_the_closed_time(conn):
+    # ADR-0080: closed: true with the scheduled end still ahead. Dated at
+    # end_date this is a statement about the future and the platform
+    # refuses the pull whole; dated at the venue's closedTime it is what
+    # it is — an observation of a market that resolved early.
+    msgs = _one_event(conn, _market("m1", "mk-1", AHEAD, closedTime=CLOSED_TIME))
+    (record,) = _records(msgs)
+    assert record["kind"] == "observation"
+    assert record["effective_date"] == CLOSED_TIME_ISO
+    assert record["data"]["closed_time"] == CLOSED_TIME_ISO
+    assert record["data"]["end_date"] == AHEAD  # nothing already read is lost
+    assert set(record["data"]) == set(EVENT_FIELDS)
+    assert msgs[-1]["state"] == {"events": {"cursor": CLOSED_TIME_ISO}}
+
+
+def test_a_closed_market_the_venue_never_dated_still_dates_at_its_end(conn):
+    msgs = _one_event(conn, _market("m1", "mk-1", "2026-03-01T01:00:00Z"))
+    (record,) = _records(msgs)
+    assert record["kind"] == "observation"
+    assert record["effective_date"] == "2026-03-01T01:00:00Z"  # today's behaviour
+    assert record["data"]["closed_time"] is None
+    assert msgs[-1]["state"] == {"events": {"cursor": "2026-03-01T01:00:00Z"}}
+
+
+def test_a_closed_market_with_neither_instant_behind_the_pull_refuses_by_name(conn):
+    undated = _market("m1", "mk-1", AHEAD)  # closed, and the venue dated no close
+    later = _market("m2", "mk-2", AHEAD, closedTime="2026-03-06 00:00:00+00")
+    conn.script["get"] = lambda url, params: [_event("e1", "ev-1", [undated, later])]
+    with pytest.raises(AssetError) as exc:
+        list(conn.read({"slugs": ["ev-1"]}, ["events"], {}, "backfill"))
+    text = str(exc.value)
+    assert "'m1'" in text and "'m2'" in text  # both named, errors accumulate
+    assert AHEAD in text and "2026-03-06" in text  # both instants named
+    assert "closed_time" in text and "end_date" in text
+
+
+def test_a_closed_market_dated_ahead_refuses_even_when_its_end_is_behind(conn):
+    # The venue's closedTime IS the instant (never date arithmetic), so a
+    # closed market the venue dates in the future is self-contradictory:
+    # the pack refuses by name rather than quietly falling back to the
+    # end_date it did not choose.
+    contradictory = _market("m1", "mk-1", "2026-03-01T01:00:00Z",
+                            closedTime="2026-03-06 00:00:00+00")
+    conn.script["get"] = lambda url, params: [_event("e1", "ev-1", [contradictory])]
+    with pytest.raises(AssetError) as exc:
+        list(conn.read({"slugs": ["ev-1"]}, ["events"], {}, "backfill"))
+    text = str(exc.value)
+    assert "'m1'" in text and "2026-03-06" in text and "2026-03-01T01:00:00Z" in text
+
+
+def test_an_open_market_is_untouched_by_the_closed_time_rule(conn):
+    closed = _market("m1", "mk-1", "2026-03-01T01:00:00Z")
+    # Open markets carry closed: false and a blank closedTime; a blank
+    # stamp is no stamp, and the kind stays the venue's own flag.
+    still_open = _market("m2", "mk-2", AHEAD, closed=False, closedTime="")
+    conn.script["get"] = lambda url, params: [_event("e1", "ev-1", [closed, still_open])]
+    msgs = _read(conn, {"slugs": ["ev-1"]}, ["events"])
+    records = {r["data"]["market_id"]: r for r in _records(msgs)}
+    assert records["m2"]["kind"] == "forecast"
+    assert records["m2"]["effective_date"] == AHEAD
+    assert records["m2"]["data"]["closed_time"] is None
+    # An open market still never moves the cursor.
+    assert msgs[-1]["state"] == {"events": {"cursor": "2026-03-01T01:00:00Z"}}
+
+
+def test_the_venues_closed_time_spelling_round_trips():
+    label = "market 'm1'"
+    for spelling in (CLOSED_TIME, "2026-03-02T11:59:01Z", CLOSED_TIME_ISO):
+        assert polymarket._closed_time(spelling, label) == CLOSED_TIME_ISO
+    assert polymarket._closed_time(None, label) is None
+    assert polymarket._closed_time("   ", label) is None  # blank is absent
+    with pytest.raises(AssetError, match="m1.*closedTime"):
+        polymarket._closed_time("resolved yesterday", label)
+
+
+def test_acquisition_commits_a_market_that_resolved_early(root, registry, monkeypatch):
+    # The commit instant (ADR-0079) sits before the scheduled end and
+    # after the close: dated at end_date the ADR-0014 assertion refuses
+    # the pull, dated at closedTime it commits.
+    monkeypatch.setattr(acquire_module, "utc_now", lambda: "2026-03-02T12:00:30+00:00")
+    early = _market("m1", "mk-1", AHEAD, closedTime=CLOSED_TIME)
+    ScriptedPolymarket.script = {"get": lambda url, params: [_event("e1", "ev-1", [early])]}
+    version = registry.register("source_config", {
+        "name": "poly-events",
+        "catalog_source": "poly-source",
+        "connector": "tests.onboarding.test_polymarket:ScriptedPolymarket",
+        "config": {"slugs": ["ev-1"]},
+    }, origin="test")
+    registry.transition(version, "active", origin="test")
+
+    result = run_acquisition(root, registry, "poly-events", "events", "backfill")
+    assert result["records"] == 1 and result["snapshot"] and result["state_saved"]
+    assert load_state(root, "poly-events", "events", "backfill") == {
+        "events": {"cursor": CLOSED_TIME_ISO}}
+
+
+# -- archive_hours: token resolution and the mirror's sync state ---
+
+
+#: The token ids the Gamma answer below carries; tokZ is a stranger.
+RESOLVED = ("tokA", "tokX")
+#: An archive walk that declares NO token_ids — they come from Gamma.
+RESOLVE_CONFIG = {
+    "series_slugs": ["poly-wx-nyc"], "hours": [HOUR], "hf_repo": "r/x",
+    "start": "2026-03-01T00:00:00+00:00", "end": "2026-03-01T06:00:00+00:00",
+    "cleanup": False,
+}
+
+
+def _resolve_pages(url, params):
+    """One event, one market, two clobTokenIds — the resolution walk's answer."""
+    assert url == GAMMA
+    return [_event("e9", "nyc-mar-1z",
+                   [_market("m9", "nyc-1z", "2026-03-01T05:00:00Z", tokens=RESOLVED)])]
+
+
+def _three_token_hour(write_parquet, name="resolve.parquet"):
+    """An hour file with one book row for each of tokA, tokX and tokZ."""
+    return write_parquet(name, {
+        "asset_id": ["tokA", "tokX", "tokZ"],
+        "timestamp": [T1_MS, T1_MS + 1, T1_MS + 2],
+        "event_type": ["book"] * 3, "bids": ["[]"] * 3, "asks": ["[]"] * 3,
+        "price": [None] * 3, "size": [None] * 3, "side": [None] * 3,
+    })
+
+
+def _one_token_hour(write_parquet, name="one.parquet", at=T1_MS):
+    """An hour file with a single tokA book row."""
+    return write_parquet(name, {
+        "asset_id": ["tokA"], "timestamp": [at], "event_type": ["book"],
+        "bids": ["[]"], "asks": ["[]"], "price": [None], "size": [None], "side": [None],
+    })
+
+
+def _write_meta(tmp_path, payload, name="sync-state.json"):
+    """Write a pmxt sync-state document and return its local path."""
+    path = tmp_path / name
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return str(path)
+
+
+def test_archive_resolves_token_ids_from_gamma_when_none_are_declared(conn, write_parquet):
+    conn.script["get"] = _resolve_pages
+    conn.script["download"] = _serve({("r/x", HOUR_PATH): _three_token_hour(write_parquet)})
+    records, _msgs = _archive_records(conn, RESOLVE_CONFIG)
+    assert [r["data"]["asset_id"] for r in records] == list(RESOLVED)  # tokZ is not ours
+    # Resolved by CALLING the events walk over the same window, not by a copy.
+    (call,) = _gets()
+    assert call[2]["series_slug"] == "poly-wx-nyc"
+    assert (call[2]["end_date_min"], call[2]["end_date_max"]) == (
+        "2026-03-01T00:00:00Z", "2026-03-01T06:00:00Z")
+    # And it carries the declared `closed` filter, exactly as `events` does:
+    # under the default an unsettled market resolves no token (knob note).
+    assert call[2]["closed"] == "true"
+
+
+def test_declared_token_ids_win_over_the_gamma_resolution(conn, write_parquet):
+    conn.script["download"] = _serve({("r/x", HOUR_PATH): _three_token_hour(write_parquet)})
+    records, _msgs = _archive_records(conn, {**RESOLVE_CONFIG, "token_ids": ["tokZ"]})
+    assert [r["data"]["asset_id"] for r in records] == ["tokZ"]  # declared, never unioned
+    assert _gets() == []  # and Gamma is not walked at all
+
+
+def test_the_resolution_preconditions_and_an_empty_answer_are_named(conn):
+    conn.script["get"] = lambda url, params: []
+    with pytest.raises(AssetError, match="no markets resolved for"):
+        list(conn.read(RESOLVE_CONFIG, ["archive_hours"], {}, "backfill"))
+    with pytest.raises(AssetError, match="token_ids, or series_slugs"):
+        list(conn.read({"hours": [HOUR]}, ["archive_hours"], {}, "backfill"))
+    with pytest.raises(AssetError, match="start is required"):
+        list(conn.read({"series_slugs": ["s"], "hours": [HOUR]}, ["archive_hours"],
+                       {}, "backfill"))
+
+
+def test_an_unreadable_sync_state_logs_and_walks_exactly_as_before(
+        conn, write_parquet, tmp_path):
+    junk = tmp_path / "junk.json"
+    junk.write_text("<html>404</html>", encoding="utf-8")
+    conn.script["download"] = _serve({
+        ("r/x", HOUR_PATH): _one_token_hour(write_parquet),
+        ("r/x", polymarket.SYNC_STATE_PATH): str(junk),
+    })
+    records, msgs = _archive_records(conn, {**ARCHIVE_CONFIG, "cleanup": False})
+    logs = [m["message"] for m in msgs if m["type"] == "LOG"]
+    assert len(records) == 1  # the hour is walked as if no sync state existed
+    assert len(logs) == 1 and polymarket.SYNC_STATE_PATH in logs[0]
+
+
+def test_unparseable_meta_stamps_are_named_and_ignored(conn, write_parquet, tmp_path):
+    conn.script["download"] = _serve({
+        ("r/x", HOUR_PATH): _one_token_hour(write_parquet),
+        ("r/x", polymarket.SYNC_STATE_PATH): _write_meta(tmp_path, {
+            "pending_gap_hours": ["not an hour"], "latest_available_hour": 17,
+            "selection_source": "manifest"}),
+    })
+    records, msgs = _archive_records(conn, {**ARCHIVE_CONFIG, "cleanup": False})
+    logs = [m["message"] for m in msgs if m["type"] == "LOG"]
+    assert len(records) == 1  # neither stamp skips or stops anything
+    assert len(logs) == 1 and "not an hour" in logs[0] and "17" in logs[0]
+
+
+def test_the_cursor_advances_past_a_pending_gap_hour(conn, write_parquet, tmp_path):
+    hours = [f"2026-03-01T{h:02d}:00:00+00:00" for h in (10, 11)]
+    conn.script["download"] = _serve({
+        ("r/x", HOUR_PATH): _one_token_hour(write_parquet),
+        # Stamped mid-hour: a gap names an HOUR, so it is floored to the
+        # boundary the walk steps on — otherwise it would match nothing.
+        ("r/x", polymarket.SYNC_STATE_PATH): _write_meta(
+            tmp_path, {"pending_gap_hours": ["2026-03-01T11:37:42+00:00"]}),
+    })
+    records, msgs = _archive_records(
+        conn, {**ARCHIVE_CONFIG, "hours": hours, "cleanup": False})
+    assert len(records) == 1
+    logs = [m["message"] for m in msgs if m["type"] == "LOG"]
+    assert len(logs) == 1 and hours[1] in logs[0]  # the LOG names the hour skipped
+    assert [c[2] for c in _gets("DOWNLOAD")] == [
+        polymarket.SYNC_STATE_PATH, HOUR_PATH]  # the gap hour is never fetched
+    assert msgs[-1]["state"] == {"archive_hours": {"cursor": hours[1]}}  # past the gap
+
+
+def _register_archive_source(registry, config):
+    """Register and activate the scripted pack for an archive_hours pull."""
+    version = registry.register("source_config", {
+        "name": "poly",
+        "catalog_source": "poly-source",
+        "connector": "tests.onboarding.test_polymarket:ScriptedPolymarket",
+        "config": config,
+    }, origin="test")
+    registry.transition(version, "active", origin="test")
+
+
+def test_acquisition_skips_a_mirror_gap_and_stops_before_an_unmirrored_hour(
+        root, registry, write_parquet, tmp_path):
+    hours = [f"2026-03-01T{h:02d}:00:00+00:00" for h in (10, 11, 12, 13)]
+    paths = {h: f"hours/2026/03/01/polymarket_orderbook_2026-03-01T{h:02d}.parquet"
+             for h in (10, 11, 12, 13)}
+    files = {("r/x", paths[h]): _one_token_hour(write_parquet, f"g{h}.parquet", T1_MS + h)
+             for h in (10, 12)}  # 11 is a permanent gap, 13 is not mirrored yet
+    files[("r/x", polymarket.SYNC_STATE_PATH)] = _write_meta(tmp_path, {
+        "archive_root": "hours", "pending_gap_hours": [hours[1]],
+        "latest_available_hour": "2026-03-01T12:00:00Z",
+        "scan_cursor_hour": hours[2], "selection_source": "manifest",
+    })
+    ScriptedPolymarket.script = {"get": lambda url, params: [{"id": "ping"}],
+                                 "download": _serve(files)}
+    _register_archive_source(registry, {"token_ids": ["tokA"], "hours": hours,
+                                        "hf_repo": "r/x"})
+
+    out = run_acquisition(root, registry, "poly", "archive_hours", "backfill")
+    assert out["records"] == 2  # hours 10 and 12
+    assert [c[2] for c in _gets("DOWNLOAD")] == [
+        polymarket.SYNC_STATE_PATH, paths[10], paths[12]]
+    assert len(out["logs"]) == 2
+    assert hours[1] in out["logs"][0] and "pending_gap_hours" in out["logs"][0]
+    assert hours[3] in out["logs"][1] and "not mirrored yet" in out["logs"][1]
+    landed = {"archive_hours": {"cursor": hours[2]}}  # 13 is retried next pull
+    assert load_state(root, "poly", "archive_hours", "backfill") == landed
+
+
+def test_seq_is_the_files_own_order_never_the_kept_rows_order(conn, write_parquet):
+    # seq keys stored evidence, so it must not shift when the pack's event
+    # vocabulary changes: numbered after the filter, widening
+    # ARCHIVE_EVENT_TYPES would renumber — rewrite — keys already written.
+    path = write_parquet("levels.parquet", {
+        "asset_id": ["tokA"] * 3, "timestamp": [T1_MS] * 3,
+        "event_type": ["price_change", "tick_size_change", "price_change"],
+        "bids": [None] * 3, "asks": [None] * 3,
+        "price": ["0.42", None, "0.43"], "size": ["10", None, "4"],
+        "side": ["BUY", None, "BUY"],
+    })
+    conn.script["download"] = _serve({("r/x", HOUR_PATH): path})
+    records, _msgs = _archive_records(conn, {**ARCHIVE_CONFIG, "cleanup": False})
+    assert [(r["data"]["seq"], r["data"]["price"]) for r in records] == [
+        (0, "0.42"), (2, "0.43")]  # 1 is the dropped row's place in the file
+
+
+def test_seq_orders_the_rows_one_millisecond_carries(root, registry, tmp_path):
+    # pmxt writes one price_change per LEVEL, several inside one millisecond and
+    # the same level up to three times, so (asset_id, ts, event_type) is NOT
+    # unique and the archive's own row order is the sequence.
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    path = str(tmp_path / "hour.parquet")
+    pq.write_table(pa.table({
+        "asset_id": ["tokA", "tokA"], "timestamp": [T1_MS, T1_MS],
+        "event_type": ["price_change", "price_change"],
+        "bids": [None, None], "asks": [None, None],
+        "price": ["0.42", "0.42"], "size": ["10", "4"], "side": ["BUY", "BUY"],
+    }), path, row_group_size=1)  # two row groups: seq must span batches
+    ScriptedPolymarket.script = {"get": lambda url, params: [{"id": "ping"}],
+                                 "download": _serve({("r/x", HOUR_PATH): path})}
+    _register_archive_source(registry, {"token_ids": ["tokA"], "hours": [HOUR],
+                                        "hf_repo": "r/x", "cleanup": False})
+
+    out = run_acquisition(root, registry, "poly", "archive_hours", "backfill")
+    assert out["records"] == 2
+    # A deliberate restatement of the documented key, never read from the pack.
+    rows = scan_stream(root.root, "poly", "archive_hours", ["asset_id", "ts", "seq"])
+    assert [(r["seq"], r["size"]) for r in rows] == [(0, "10"), (1, "4")]  # file order
+    assert list(polymarket.STREAM_KEYS["archive_hours"]) == ["asset_id", "ts", "seq"]

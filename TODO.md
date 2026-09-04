@@ -569,10 +569,17 @@ connector, the `observations` kind and the public clause DSL):
 - [x] `libs/kalshi.py` / `libs/predexon.py` honored a numeric `Retry-After`
       UNCAPPED. **One name now: `connector.MAX_BACKOFF_S` (60 s) caps every
       single wait in all three packs, pinned by identity (2026-09-04).**
-- [ ] `libs/polymarket.py` `slugs` lookup: a CLOSED market whose `end_date`
-      is still ahead (early resolution) is an observation dated in the
-      future, which the platform refuses. The record kind is declared by the
-      venue's flag, never by date — an ADR before any in-pack fix.
+- [x] `libs/polymarket.py` `slugs` lookup: a CLOSED market whose `end_date`
+      was still ahead (early resolution) was an observation dated in the
+      future, which the platform refused. **Fixed via ADR-0080 (2026-09-04):
+      a closed market is dated at the venue's own `closedTime` (live spelling
+      `2026-09-04 12:11:51+00`), `end_date` only as the fallback; a closed
+      market the venue has not dated yet refuses by name.** Same round: the
+      archive stream resolves its token ids from `series_slugs` (declared
+      `token_ids` win), consults the mirror's `meta/` sync state (a known gap
+      is skipped, "not mirrored yet" stops), and keys rows on
+      `(asset_id, ts, seq)` — a real hour showed 2,837 `(asset_id, ts,
+      event_type)` collisions (several price levels change per millisecond).
 - [ ] `children/pmquant` (owner rulings, recorded in its research note
       `docs/research/skeptic-review-of-the-2026-09-04-rebuild-*.md`): the
       MIO's in-program fee is the separable per-lot approximation, not the

@@ -84,6 +84,26 @@ def test_on_disk_source_configs_pass_the_connector_check_offline(name):
         assert os.path.expanduser(config["path"]) in str(err) or "path" in str(err)
 
 
+#: The venue's own series-slug shapes (Gamma /series, read 2026-09-04): a
+#: daily highest-temperature ladder and a daily lowest-temperature ladder.
+#: A deliberate restatement — a guessed slug pulls nothing and looks like an
+#: empty market rather than a typo.
+POLYMARKET_SLUG_SUFFIXES = ("-daily-weather", "-daily-lowest-temperature")
+
+
+def test_polymarket_series_slugs_are_the_venues_own_spellings():
+    config = _raw("source-polymarket.json")
+    slugs = config["series_slugs"]
+    assert slugs and len(set(slugs)) == len(slugs)
+    for slug in slugs:
+        assert slug == slug.lower() and " " not in slug, slug
+        assert slug.endswith(POLYMARKET_SLUG_SUFFIXES), (
+            f"{slug!r} is not a Gamma daily temperature series slug "
+            f"(expected one of the suffixes {POLYMARKET_SLUG_SUFFIXES})"
+        )
+    assert config["token_env"] == "HF_TOKEN" and "token" not in config
+
+
 def test_secret_knobs_name_variables_never_values():
     config = _raw("source-predexon.json")
     assert config["api_key_env"] == "PREDEXON_API_KEY"

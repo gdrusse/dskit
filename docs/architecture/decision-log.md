@@ -3726,3 +3726,26 @@ Nothing else changes: `effective_date <= acquired_at` stays exactly true.
 
 **Consequences.** A live capture stream needs no floored clock; a genuinely
 future-dated observation still refuses, naming the message.
+
+---
+
+## ADR-0080 — A closed Polymarket market is dated at the venue's `closedTime`
+
+**Status:** proposed (2026-09-04; amendment to ADR-0075)
+
+**Context.** The `polymarket` pack dated every `events` row at its scheduled
+`end_date`. A market that RESOLVES EARLY carries `closed: true` while that end
+is still ahead, so the row is future-dated and ADR-0014 refuses the whole pull
+— routinely on the `slugs` lookup path. Gamma carries the real instant on the
+event and on each market: `closedTime`, spelled `2026-09-04 12:11:51+00`.
+
+**Decision.** A `closed: true` market's observation instant is that
+`closedTime`, falling back to `end_date` only when the venue carries none. A
+closed market whose observation instant still lies ahead of the pull is
+refused BY NAME (market id and both instants), never emitted. `closed: false` stays a forecast
+at `end_date` — the kind is the venue's flag, never date arithmetic. The row
+keeps `end_date` and gains `closed_time` (ISO, or `None`), so nothing already
+read is lost.
+
+**Consequences.** A market that resolved early lands the day it resolved; the
+`fee_schedules` regime key stays `from_end_date`.

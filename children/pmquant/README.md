@@ -53,10 +53,16 @@ dir say what happened to the data and the capital.
 
 **Live vendors.** `configs/source-kalshi.json` (public REST: markets,
 candles, fee schedules, order books), `configs/source-polymarket.json`
-(Gamma/CLOB + the pmxt archive) and `configs/source-predexon.json`
-(historical L2; needs the key NAMED in `.env.example`) register the
-same way with `--connector kalshi|polymarket|predexon`; `acquire --mode
-live` on a cadence is the recorder.
+(Gamma/CLOB + the pmxt L2 archive mirrored on the Hugging Face hub —
+anonymous, or the token NAMED as `HF_TOKEN` in `.env.example`; the
+`archive_hours` stream resolves its token ids from the series slugs and
+streams ~360 MB hour files without keeping them) and
+`configs/source-predexon.json` (historical L2; needs the key NAMED in
+`.env.example`) register the same way with `--connector
+kalshi|polymarket|predexon`; `acquire --mode live` on a cadence is the
+recorder. The Polymarket slugs are the venue's own spellings
+(`<city>-daily-weather`, `<city>-daily-lowest-temperature`), pinned by
+test — a guessed slug pulls nothing and looks like an empty market.
 
 ## What the kinds are
 
