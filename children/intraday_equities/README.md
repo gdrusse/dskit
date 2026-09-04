@@ -107,6 +107,7 @@ intraday_equities/
 │   ├── nodes.py         # bars, universe, features, H/L + no-info scan, portfolio
 │   ├── feature_cache.py # verified read-only feature-array cache
 │   ├── modelability.py  # staged P10 gate orchestration
+│   ├── modelability_p11.py # asset-local stopping + untouched confirmation
 │   ├── models.py        # empty bespoke-architecture seam
 │   ├── live.py          # paper intents from shipped configs
 │   └── testing.py       # network-free connector doubles

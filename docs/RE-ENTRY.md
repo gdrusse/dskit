@@ -1,51 +1,39 @@
 # Re-entry
 
-Current wrap: 2026-09-04. `main` is synchronized with `origin/main` after
-the ADR-0082…0086 branch landed and its remote branch was purged. PR #7 (the
-pmquant child) is also merged; the staged-study ADR that had also taken the
-number 0075 is now ADR-0081. No pipeline is running.
+**Current policy:** Gate 2 is no longer used for stock selection. ADR-0088
+locks Gate 1 (A2822) and HFDR-in-MIO (A2850) on the owner path. P10/P11
+Gate-2 material below is historical evidence only.
 
-Verification for ADR-0082…0086: Bugbot approved all seven corrected code paths
-after 487 focused tests passed (9 skipped); Ruff and diff checks were clean.
-The final cursor-contract documentation correction passed all 47 Hugging Face
-tests. Prior full verification (all optional libraries installed): dskit core
-+ libs 3739 passed, 124 skipped; pmquant 361 passed, 30 skipped; intraday_poc
-158 passed. Every pre-existing document identity hash is unmoved (218), plus
-pmquant's two. Known failures, none from this wrap: two tests that need a
-non-root user (`test_runs` unlistable dir, `test_mlflow` unwritable parent);
-four `children/intraday_equities/tests/test_configs.py` cases, all about
-`run-p10-modelability.json` — `universe-p10.json` diverges from
-`universe.json`, the document has no `tracking` section, and it reads
-`alpaca-sip-split-b` where the pin expects `alpaca-sip-split`. They fail
-identically on the previous `main`; the P11 session should rule whether the
-pins or the P10 document move.
+Current wrap: 2026-09-04 on `main`, synchronized before merging
+`p11-asset-local-gates-1-2`. P11 is complete; no pipeline is running and
+Gate 3 was neither configured nor run.
 
-## PICK UP HERE: P11 asset-local Gates 1 and 2
+Post-merge verification: 113 targeted tests passed; Ruff and diff checks are
+clean. One known pre-existing config-pin test still rejects the 2020 start in
+`run-pb-s01-h01-lgbm-cross.json` against 2018. Prior main verification (487
+focused tests plus 47 Hugging Face tests) remains unchanged. The memo skill
+validated; the full suite was not rerun.
 
-Rerun the P10 cohort through Gates 1 and 2 only. Preserve the 2026-02-28
-cutoff, exact 25 assets, existing journal, one resumable pipeline JSON, and
-one-command-at-a-time execution. META and GROUP remain excluded. Do not run
-Gate 3.
+This merge also adds the reusable `memo` skill and the P11 execution memo.
 
-Before code, inventory the current seams and write an ADR. Show it to the owner
-and wait for approval. The ADR must specify:
+## PICK UP HERE: design HFDR-in-MIO implementation
 
-- Replace pooled fitting with a standalone model trained only on each asset.
-- Test `h=1,2,3,5,10,20,30,60` in order for each asset. Stop at its first
-  Gate-1 failure. The last consecutive pass is selected; later horizons are
-  neither run nor registered.
-- Replace P10's 200-cell correction. Prefer untouched confirmation data: Gate 2
-  tests only each asset's selected horizon, then enters that p-value into a
-  dependence-aware correction ledger that remains valid as assets arrive over
-  time.
-- If independent confirmation is infeasible, every null replicate must replay
-  the full ordered stopping and selection procedure. Correcting only observed
-  survivors on reused data is invalid.
+ADR-0087 is accepted. P11 trains one model per asset, stops the ordered
+`h=1,2,3,5,10,20,30,60` search at the first Gate-1 failure, and confirms only
+the selected horizon on untouched 2025-12-02 through 2026-02-28 observations.
+The generic fixed-family ledger reserves all 25 Bonferroni slots at alpha
+0.05 (0.002 each), valid under arbitrary dependence and arrival order.
 
-After approval, implement the revised resumable pipeline, run a memory
-preflight and focused tests, then run Gates 1 and 2 to completion. Journal every
-stage and stop before Gate 3. Report every Gate-1 stop, Gate-2 decision, ledger
-entry, and failure without fallback.
+Gate 1 selected 13 assets: LLY h3, QQQ h1, XLF h3, XLE h1, XLK h5, TQQQ h3,
+NVDA h2, UPRO h60, BAC h1, AVGO h10, NFLX h3, SMH h5, and IWM h5. All 13
+failed Gate 2; UPRO was closest (raw p=0.0132419, adjusted p=0.331047). The
+other 12 assets failed Gate 1 at h1 and never entered confirmation. Full rows
+and decision math are in `children/intraday_equities/docs/memos/` plus the P11
+staged artifacts and append-only decision ledgers.
+
+Next step: design the predictive `pi_i` model and HFDR MIO seam under a
+separately approved ADR. No HFDR implementation or validation run exists yet;
+do not restore Gate 2 as a stock-selection filter.
 
 ## Landed this wrap: ADR-0082…0086
 

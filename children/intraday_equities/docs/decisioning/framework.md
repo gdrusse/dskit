@@ -1,5 +1,13 @@
 # Training framework (2026-08-31)
 
+## Current modelability locks (2026-09-04)
+
+- **Gate 1:** action A2822 is the locked stock-modelability decision.
+- **HFDR in MIO:** action A2850 locks joint holding and capital selection under
+  `sum_i(x_i * pi_i) <= q * sum_i(x_i)`.
+- **Gate 2:** **No longer used.** Its P10/P11 artifacts remain historical
+  evidence only.
+
 Owner-locked. Seams: ADR-0050…0054, ADR-0055. H/L identification: [hstar-go.md](hstar-go.md) (ADR-0058). Old |IC| row: [decision-hl-scan.md](decision-hl-scan.md) — not the estimand.
 
 **Unchanged:** five tradable + SPY; 1-minute raw bars; Alpaca SIP + Schwab live; separate immutable vendors; RTH for research; paper only.
