@@ -72,15 +72,24 @@ the record fields a document carries; :class:`PretrainedClassify`
 (``transformers-forecast``, role ``signal``, always loads) restores a
 zero-shot forecaster and answers ``predict(row)`` with the ``horizon``-th
 step over the row's ordered ``features`` — the baseline a bespoke model
-must beat. ``build_model`` / ``build_tokenizer`` / ``vectors`` /
-``column_names`` / ``forecast`` are the subclass seam: a Chronos, TimesFM
-or Moirai wrapper supplies them, never a registry of per-model classes.
+must beat. That last one makes a NARROW claim: its default hooks fit the
+models whose forward takes ``past_values`` alone and returns
+``prediction_outputs`` — PatchTST, PatchTSMixer — and one probe forward at
+load refuses anything else BY NAME rather than scoring it wrong.
+``build_model`` / ``build_tokenizer`` / ``vectors`` / ``column_names`` /
+``context_length_of`` / ``forecast`` are the subclass seam: a Chronos,
+TimesFM or Moirai wrapper supplies them, never a registry of per-model
+classes. Nothing loads on trust: ``missing_keys`` is fatal (a randomly
+initialized part is not the pinned model), weights come from safetensors
+only, and a snapshot with no tokenizer artifacts refuses instead of
+embedding every text as ``[UNK]``.
 
 Import cost: stdlib + ``dskit.pipeline`` only.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import math
@@ -113,18 +122,22 @@ from dskit.pipeline.trainlog import (
 )
 
 __all__ = [
+    "CLASSIFY_ACTIVATIONS",
     "DEFAULT_BATCH_SIZE",
+    "DEFAULT_CARRY_FIELDS",
     "DEFAULT_CLASSIFY_PREFIX",
     "DEFAULT_ENCODE_PREFIX",
     "DEFAULT_HORIZON",
     "DEFAULT_MAX_LENGTH",
     "DEFAULT_POOLING",
+    "DEFAULT_REQUIRE_FIELDS",
     "DEFAULT_SNAPSHOT_STREAM",
     "NODE_KINDS",
     "PIN_PARAMS",
     "POOLERS",
     "POOLINGS",
     "SIDECAR_NAME",
+    "TOKENIZER_FILES",
     "DeclaredTransformerFit",
     "ForecastSignal",
     "PretrainedClassify",
@@ -910,9 +923,27 @@ DEFAULT_CLASSIFY_PREFIX = "p_"
 DEFAULT_MAX_LENGTH = 128
 DEFAULT_BATCH_SIZE = 32
 DEFAULT_HORIZON = 1
+DEFAULT_CARRY_FIELDS = ()
+DEFAULT_REQUIRE_FIELDS = ()
 
-_SNAPSHOT_HASH = re.compile(r"^[0-9a-f]{64}$")
-_STREAM_NAME = re.compile(r"^[a-z0-9_-]+$")
+#: The filenames a tokenizer can be spelled as, as ``fnmatch`` patterns. A
+#: snapshot carrying NONE of them is refused: ``AutoTokenizer`` answers a
+#: specials-only vocabulary for a config+weights directory rather than
+#: raising, and every text would then embed as ``[UNK]``.
+TOKENIZER_FILES = (
+    "tokenizer.json", "tokenizer_config.json", "vocab.*", "spiece.model",
+    "merges.txt",
+)
+
+#: How many missing weight names a refusal spells out before summarizing.
+_MAX_NAMED_KEYS = 8
+
+# \Z, not $ — $ forgives a trailing newline (ADR-0020).
+_SNAPSHOT_HASH = re.compile(r"^[0-9a-f]{64}\Z")
+#: The stream is a directory segment on the onboarding side: the SAME rule as
+#: ``dskit.onboarding.base._SEGMENT``, pinned equal by test (the pack may not
+#: import that module).
+_STREAM_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*\Z")
 
 
 def _mean_pool(hidden, mask):
@@ -937,6 +968,69 @@ POOLERS = {"mean": _mean_pool, "cls": _cls_pool, "max": _max_pool}
 
 #: The closed ``pooling`` vocabulary, derived from the table.
 POOLINGS = tuple(POOLERS)
+
+
+def _softmax(logits):
+    """One class wins: the logits of a single-label head as probabilities."""
+    import torch
+
+    return torch.softmax(logits, dim=-1)
+
+
+def _sigmoid(logits):
+    """Each class independently: the logits of a multi-label head as probabilities."""
+    import torch
+
+    return torch.sigmoid(logits)
+
+
+#: The activation table — a classification head's ``problem_type`` names the
+#: function that turns its logits into columns, never an ``if`` chain. A type
+#: absent from the table (``regression``, or anything a later library adds)
+#: refuses by name: reporting a regression output as a probability would be a
+#: silent lie in every downstream column.
+CLASSIFY_ACTIVATIONS = {
+    None: _softmax,
+    "single_label_classification": _softmax,
+    "multi_label_classification": _sigmoid,
+}
+
+
+def _parameter_dtype(model):
+    """The dtype the model's own parameters carry, or ``None`` when it has none."""
+    for parameter in model.parameters():
+        return parameter.dtype
+    return None
+
+
+def _tokenizer_file_problems(files_dir):
+    """One problem when the snapshot names no tokenizer file at all, else none."""
+    names = sorted(os.listdir(files_dir)) if os.path.isdir(files_dir) else []
+    if any(fnmatch.fnmatch(name, pattern)
+           for name in names for pattern in TOKENIZER_FILES):
+        return []
+    return [
+        f"it carries none of {list(TOKENIZER_FILES)} — the acquired files are "
+        f"{names}"
+    ]
+
+
+def _tokenizer_problems(tokenizer):
+    """Problems with a loaded tokenizer: a specials-only vocabulary, no padding."""
+    problems = []
+    specials = getattr(tokenizer, "all_special_ids", None) or ()
+    if len(tokenizer) <= len(specials):
+        problems.append(
+            f"the tokenizer knows {len(tokenizer)} token(s), all {len(specials)} "
+            "of them special — the library synthesized a vocabulary the snapshot "
+            "never carried, and every text would embed as [UNK]"
+        )
+    if getattr(tokenizer, "pad_token", None) is None:
+        problems.append(
+            "the tokenizer has no pad_token, so a batch cannot be padded — "
+            "subclass build_tokenizer to set one"
+        )
+    return problems
 
 
 def _pin_problems(params):
@@ -972,8 +1066,11 @@ class _SnapshotPin:
     and the three accessors plus the memoized resolve must be ONE text.
     """
 
-    #: The resolved FILE directory — per INSTANCE, on first use.
-    _files_dir = None
+    #: The resolved FILE directories — per INSTANCE, keyed by the PIN that
+    #: was resolved. One key, not one slot: a node may be asked for another
+    #: snapshot (a restated node-level artifact), and a memo that ignored its
+    #: argument would hand back the first snapshot's directory forever.
+    _files_dirs = None
 
     def root(self):
         """Name the onboarding root the snapshot was acquired into (str)."""
@@ -1005,14 +1102,17 @@ class _SnapshotPin:
         ValueError
             Naming the node and every problem the read seam reported.
         """
-        if self._files_dir is None:
+        key = self.snapshot() if pin is None else pin
+        if self._files_dirs is None:
+            self._files_dirs = {}
+        if key not in self._files_dirs:
             # Imported HERE: the read seam is the one sibling a pack may name,
             # and only at function depth (ADR-0077 / ADR-0083).
             from dskit.onboarding.observations import verified_payload_dir
 
             try:
-                self._files_dir = verified_payload_dir(
-                    self.root(), self.snapshot() if pin is None else pin, self.stream()
+                self._files_dirs[key] = verified_payload_dir(
+                    self.root(), key, self.stream()
                 )
             except Exception as exc:
                 errors = getattr(exc, "errors", None)
@@ -1021,7 +1121,93 @@ class _SnapshotPin:
                 raise ValueError(
                     f"{self.key}: the pinned snapshot cannot be read — " + "; ".join(errors)
                 ) from exc
-        return self._files_dir
+        return self._files_dirs[key]
+
+    def refuse_unreadable(self, what, exc):
+        """Build the refusal a library ``OSError`` over the snapshot deserves.
+
+        ONE text for every kind: a snapshot that does not carry what
+        ``from_pretrained`` needs is a pin problem, and a bare ``OSError``
+        naming a temporary directory tells nobody which node or which
+        acquisition to look at.
+
+        Parameters
+        ----------
+        what : str
+            What was being loaded — it opens the message ("the tokenizer",
+            ``"AutoModel"``).
+        exc : OSError
+            The library's own complaint, quoted verbatim.
+
+        Returns
+        -------
+        ValueError
+            The refusal to raise, naming the node key and the pin.
+        """
+        return ValueError(
+            f"{self.key}: {what} cannot be loaded from the pinned snapshot "
+            f"{self.snapshot()} — {exc}"
+        )
+
+    def load_pretrained(self, model_cls, files_dir, **kwargs):
+        """Load ``model_cls`` from the verified snapshot, whole or not at all.
+
+        ``output_loading_info=True`` is the point: ``from_pretrained``
+        RANDOMLY INITIALIZES every weight the checkpoint does not carry and
+        says so only in a log line, so an encoder snapshot loaded as a
+        classifier answers confident probabilities from an untrained head.
+        A non-empty ``missing_keys`` refuses by name. Unused weights
+        (``unexpected_keys``) are lawful — a head this kind does not use is
+        still the pinned model — and are logged, not refused.
+        ``use_safetensors=True`` is the other half: a ``.bin`` checkpoint is
+        a pickle, and a verified snapshot is still not a reason to run one.
+
+        Parameters
+        ----------
+        model_cls : type
+            The library class (or auto class) to restore.
+        files_dir : str
+            The snapshot's verified FILE payload directory.
+        **kwargs
+            Passed through to ``from_pretrained``.
+
+        Returns
+        -------
+        transformers.PreTrainedModel
+            The restored model, every weight of it from the snapshot.
+
+        Raises
+        ------
+        ValueError
+            When the snapshot carries no safetensors weights for the class
+            (naming the node and the pin), or carries only some of them.
+        """
+        try:
+            model, info = model_cls.from_pretrained(
+                files_dir, local_files_only=True, use_safetensors=True,
+                output_loading_info=True, **kwargs,
+            )
+        except OSError as exc:
+            raise self.refuse_unreadable(model_cls.__name__, exc) from exc
+        missing = sorted(info.get("missing_keys") or ())
+        if missing:
+            named = ", ".join(missing[:_MAX_NAMED_KEYS])
+            if len(missing) > _MAX_NAMED_KEYS:
+                named += f", and {len(missing) - _MAX_NAMED_KEYS} more"
+            raise ValueError(
+                f"{self.key}: the pinned snapshot {self.snapshot()} does not "
+                f"carry {len(missing)} weight(s) {model_cls.__name__} needs "
+                f"({named}) — a randomly initialized part is not the pinned "
+                "model; acquire the checkpoint this head was trained into, or "
+                "subclass build_model for the class the snapshot really holds"
+            )
+        unexpected = sorted(info.get("unexpected_keys") or ())
+        self.log.info(
+            "loaded %s from snapshot %s (%d weight(s) in the checkpoint unused "
+            "by this class)", model_cls.__name__, self.snapshot()[:12],
+            len(unexpected),
+        )
+        return model
 
 
 def _unique_names(value):
@@ -1041,9 +1227,11 @@ class PretrainedEncode(_SnapshotPin, Node):
     ``metrics`` — the :class:`~dskit.pipeline.libs.numpy.ArrayFeatures`
     shape, so the rows feed a fit or a feature selector unchanged. The
     model is the acquired snapshot the pin names (ADR-0083): located by
-    manifest hash, re-verified, loaded with ``local_files_only=True``. A
-    record whose text field is missing or not a non-empty string yields
-    no row and is counted in ``n_dropped``.
+    manifest hash, re-verified, loaded with ``local_files_only=True`` and
+    ``use_safetensors=True``, and refused when it carries no usable
+    tokenizer or leaves a weight to random initialization. A record whose
+    text field is missing or not a non-empty string, or which lacks one of
+    ``require_fields``, yields no row and is counted in ``n_dropped``.
 
     Parameters
     ----------
@@ -1053,10 +1241,13 @@ class PretrainedEncode(_SnapshotPin, Node):
         default ``"snapshot"``) — the FILE stream; ``text_field`` (str,
         REQUIRED) — the record field holding the text; ``carry_fields``
         (list of str, default ``[]``) — record fields copied onto every
+        row; ``require_fields`` (list of str, default ``[]``) — record
+        fields that must be present and non-null or the record yields no
         row; ``prefix`` (str, default ``"emb_"``) — the column prefix, one
         column per hidden dimension; ``pooling`` (``"mean"`` | ``"cls"`` |
         ``"max"``, default ``"mean"``); ``max_length`` (int >= 1, default
-        128) — tokens kept per text; ``batch_size`` (int >= 1, default 32).
+        128) — tokens kept per text, special tokens included: the library
+        never truncates below them; ``batch_size`` (int >= 1, default 32).
 
     Examples
     --------
@@ -1083,6 +1274,7 @@ class PretrainedEncode(_SnapshotPin, Node):
     _PARAMS = PIN_PARAMS + (
         "text_field",
         "carry_fields",
+        "require_fields",
         "prefix",
         "pooling",
         "max_length",
@@ -1113,13 +1305,15 @@ class PretrainedEncode(_SnapshotPin, Node):
                 "text_field is required — the record field holding the text "
                 f"to encode, got {text_field!r}"
             )
-        carry = params.get("carry_fields", ())
-        if not isinstance(carry, (list, tuple)) or any(
-            not isinstance(f, str) or not f for f in carry
-        ):
-            problems.append(f"carry_fields must be a list of field names, got {carry!r}")
-        elif len(set(carry)) != len(carry):
-            problems.append(f"carry_fields repeats a field: {list(carry)!r}")
+        for knob, default in (("carry_fields", DEFAULT_CARRY_FIELDS),
+                              ("require_fields", DEFAULT_REQUIRE_FIELDS)):
+            value = params.get(knob, default)
+            if not isinstance(value, (list, tuple)) or any(
+                not isinstance(f, str) or not f for f in value
+            ):
+                problems.append(f"{knob} must be a list of field names, got {value!r}")
+            elif len(set(value)) != len(value):
+                problems.append(f"{knob} repeats a field: {list(value)!r}")
         prefix = params.get("prefix", cls.default_prefix)
         if not isinstance(prefix, str):
             problems.append(f"prefix must be a string, got {prefix!r}")
@@ -1165,7 +1359,11 @@ class PretrainedEncode(_SnapshotPin, Node):
 
     def carry_fields(self):
         """Name the record fields copied onto every row (tuple of str)."""
-        return tuple(self.params.get("carry_fields", ()))
+        return tuple(self.params.get("carry_fields", DEFAULT_CARRY_FIELDS))
+
+    def require_fields(self):
+        """Name the record fields a row cannot be made without (tuple of str)."""
+        return tuple(self.params.get("require_fields", DEFAULT_REQUIRE_FIELDS))
 
     def prefix(self):
         """Give the column prefix (str)."""
@@ -1176,12 +1374,17 @@ class PretrainedEncode(_SnapshotPin, Node):
         return self.params.get("pooling", DEFAULT_POOLING)
 
     def max_length(self):
-        """Give the tokens kept per text (int)."""
-        return self.params.get("max_length", DEFAULT_MAX_LENGTH)
+        """Give the tokens kept per text, special tokens included (int).
+
+        ``int``, not the declared value: ``check_int_param`` accepts an
+        integral float by design (a metric wired into a knob is a float),
+        and the library wants a genuine int.
+        """
+        return int(self.params.get("max_length", DEFAULT_MAX_LENGTH))
 
     def batch_size(self):
-        """Give the texts encoded per forward pass (int)."""
-        return self.params.get("batch_size", DEFAULT_BATCH_SIZE)
+        """Give the texts encoded per forward pass (int, integral float coerced)."""
+        return int(self.params.get("batch_size", DEFAULT_BATCH_SIZE))
 
     # -- the subclass seam -----------------------------------------------------
 
@@ -1200,7 +1403,7 @@ class PretrainedEncode(_SnapshotPin, Node):
         """
         from transformers import AutoModel
 
-        return AutoModel.from_pretrained(files_dir, local_files_only=True)
+        return self.load_pretrained(AutoModel, files_dir)
 
     def build_tokenizer(self, files_dir):
         """Load the tokenizer from the verified snapshot directory.
@@ -1218,6 +1421,44 @@ class PretrainedEncode(_SnapshotPin, Node):
         from transformers import AutoTokenizer
 
         return AutoTokenizer.from_pretrained(files_dir, local_files_only=True)
+
+    def checked_tokenizer(self, files_dir):
+        """Build the tokenizer through the hook and refuse one that cannot tokenize.
+
+        ``AutoTokenizer.from_pretrained`` does not raise over a snapshot
+        that carries no vocabulary: it SYNTHESIZES one holding nothing but
+        special tokens, every text becomes ``[UNK]``, and the run produces
+        finite, plausible, meaningless columns. Three questions catch that
+        — does the snapshot name a tokenizer file at all, does the loaded
+        tokenizer know a token that is not special, and can it pad a batch.
+
+        Parameters
+        ----------
+        files_dir : str
+            The snapshot's verified FILE payload directory.
+
+        Returns
+        -------
+        transformers.PreTrainedTokenizerBase
+            The tokenizer :meth:`build_tokenizer` answered.
+
+        Raises
+        ------
+        ValueError
+            Naming the node, the pin, and every problem found.
+        """
+        problems = _tokenizer_file_problems(files_dir)
+        try:
+            tokenizer = self.build_tokenizer(files_dir)
+        except OSError as exc:
+            raise self.refuse_unreadable("the tokenizer", exc) from exc
+        problems.extend(_tokenizer_problems(tokenizer))
+        if problems:
+            raise ValueError(
+                f"{self.key}: the pinned snapshot {self.snapshot()} carries no "
+                "usable tokenizer — " + "; ".join(problems)
+            )
+        return tokenizer
 
     def vectors(self, outputs, encoded):
         """Reduce one batch's model outputs to one vector per text.
@@ -1284,24 +1525,34 @@ class PretrainedEncode(_SnapshotPin, Node):
         Raises
         ------
         ValueError
-            When the pinned snapshot cannot be read, or a feature column
-            would take a carried field's name.
+            When the pinned snapshot cannot be read, does not carry the
+            whole model or a usable tokenizer, names no width for an empty
+            record stream, or a feature column would take a carried
+            field's name.
         """
         import torch
 
         records = inputs["records"]
         files_dir = self.snapshot_dir()
         _quiet_transformers()
-        tokenizer = self.build_tokenizer(files_dir)
+        # The MODEL first: a snapshot that is nothing but a config fails
+        # here, with the library's own message, before the tokenizer guard
+        # reports the vocabulary such a snapshot also lacks.
         model = self.build_model(files_dir)
         model.eval()
+        tokenizer = self.checked_tokenizer(files_dir)
         text_field = self.text_field()
-        texts, indices = [], []
+        required = self.require_fields()
+        texts, indices, untexted = [], [], 0
         for idx, record in enumerate(records):
             text = _field_or_none(record, text_field)
-            if isinstance(text, str) and text:
-                texts.append(text)
-                indices.append(idx)
+            if not isinstance(text, str) or not text:
+                untexted += 1
+                continue
+            if any(_field_or_none(record, name) is None for name in required):
+                continue
+            texts.append(text)
+            indices.append(idx)
         vectors = []
         step = self.batch_size()
         with torch.no_grad():
@@ -1313,8 +1564,17 @@ class PretrainedEncode(_SnapshotPin, Node):
                     max_length=self.max_length(),
                     return_tensors="pt",
                 )
-                vectors.extend(self.vectors(model(**encoded), encoded).tolist())
+                # float32 before the rows are built: a bfloat16 model pools
+                # in bfloat16, and a row of ~3-digit floats is not a feature.
+                pooled = self.vectors(model(**encoded), encoded).to(torch.float32)
+                vectors.extend(pooled.tolist())
         width = len(vectors[0]) if vectors else self.width_of(model)
+        if not width:
+            raise ValueError(
+                f"{self.key}: no record produced a vector and the model's config "
+                "names no hidden_size/num_labels — the row width is unknowable; "
+                "override width_of for a family that declares its width elsewhere"
+            )
         columns = self.column_names(model, width)
         if not _unique_names(columns) or len(columns) != width:
             raise ValueError(
@@ -1340,9 +1600,10 @@ class PretrainedEncode(_SnapshotPin, Node):
             "n_columns": len(columns),
         }
         self.log.info(
-            "encoded %d row(s) x %d column(s) from %d record(s) (%d without text)",
+            "encoded %d row(s) x %d column(s) from %d record(s) "
+            "(%d without a text string, %d missing a required field)",
             metrics["n_rows"], metrics["n_columns"], metrics["n_records"],
-            metrics["n_dropped"],
+            untexted, metrics["n_dropped"] - untexted,
         )
         return {"rows": rows, "metrics": metrics}
 
@@ -1351,10 +1612,14 @@ class PretrainedClassify(PretrainedEncode):
     """Text records → one probability column per class, from a pinned classifier.
 
     Kind ``transformers-classify``; :class:`PretrainedEncode` with a
-    sequence-classification head: softmax over the logits, columns named
+    sequence-classification head: the head's own ``problem_type`` chooses
+    the activation through :data:`CLASSIFY_ACTIVATIONS` (softmax for a
+    single-label head, sigmoid for a multi-label one), columns named
     ``<prefix><label>`` from the model's own ``id2label`` — the sentiment
     score a bar stream joins onto. ``pooling`` is narrowed away (a
-    classification head pools for itself).
+    classification head pools for itself). A head with one label, or one
+    whose ``problem_type`` is not in the table (``regression``), refuses by
+    name at load: a column called a probability must be one.
 
     Parameters
     ----------
@@ -1380,6 +1645,11 @@ class PretrainedClassify(PretrainedEncode):
 
     _PARAMS = narrow_params(PretrainedEncode._PARAMS, "pooling")
 
+    #: The activation the loaded head's ``problem_type`` chose — a strategy
+    #: object, set by :meth:`build_model` before a batch is ever encoded, so
+    #: an unreportable head refuses at load and not at the first row.
+    _activation = None
+
     def build_model(self, files_dir):
         """Load the sequence-classification model from the snapshot.
 
@@ -1392,12 +1662,58 @@ class PretrainedClassify(PretrainedEncode):
         -------
         transformers.PreTrainedModel
             ``AutoModelForSequenceClassification`` over the snapshot.
+
+        Raises
+        ------
+        ValueError
+            When the head names fewer than two labels, or its
+            ``problem_type`` has no activation in the table.
         """
         from transformers import AutoModelForSequenceClassification
 
-        return AutoModelForSequenceClassification.from_pretrained(
-            files_dir, local_files_only=True
-        )
+        model = self.load_pretrained(AutoModelForSequenceClassification, files_dir)
+        labels = getattr(model.config, "num_labels", None)
+        if not isinstance(labels, int) or labels < 2:
+            raise ValueError(
+                f"{self.key}: the pinned snapshot {self.snapshot()} has "
+                f"num_labels {labels!r} — a probability column needs at least "
+                "two classes to be probable between; a one-output head is a "
+                "regressor, not a classifier"
+            )
+        # Chosen here and not per batch: an empty record stream would
+        # otherwise report columns from a head nothing can activate.
+        self._activation = self.activation(model.config)
+        return model
+
+    def activation(self, config):
+        """Name the activation the head's ``problem_type`` calls for.
+
+        Parameters
+        ----------
+        config : transformers.PretrainedConfig
+            The loaded head's config; ``problem_type`` is read.
+
+        Returns
+        -------
+        callable
+            The :data:`CLASSIFY_ACTIVATIONS` entry — ``logits`` in, a
+            ``[batch, n_labels]`` probability tensor out.
+
+        Raises
+        ------
+        ValueError
+            When ``problem_type`` has no entry, naming the node and the type.
+        """
+        problem = getattr(config, "problem_type", None)
+        try:
+            return CLASSIFY_ACTIVATIONS[problem]
+        except KeyError:
+            raise ValueError(
+                f"{self.key}: the pinned snapshot {self.snapshot()} declares "
+                f"problem_type {problem!r}, which names no probability — this "
+                f"kind reports {sorted(k for k in CLASSIFY_ACTIVATIONS if k)}; "
+                "a regression head belongs behind a subclass supplying vectors"
+            ) from None
 
     def vectors(self, outputs, encoded):
         """Turn one batch's logits into class probabilities.
@@ -1412,11 +1728,22 @@ class PretrainedClassify(PretrainedEncode):
         Returns
         -------
         torch.Tensor
-            Shape ``[batch, n_labels]``, each row summing to one.
-        """
-        import torch
+            Shape ``[batch, n_labels]`` — softmax over the classes for a
+            single-label head, sigmoid per class for a multi-label one.
 
-        return torch.softmax(outputs.logits, dim=-1)
+        Raises
+        ------
+        ValueError
+            When no activation was chosen, naming the node.
+        """
+        if self._activation is None:
+            raise ValueError(
+                f"{self.key}: no activation was chosen for this head — "
+                "build_model picks one from the config's problem_type, so a "
+                "subclass that overrides build_model must set _activation "
+                "(or override vectors)"
+            )
+        return self._activation(outputs.logits)
 
     def width_of(self, model):
         """Give the class count when no record produced a vector (int)."""
@@ -1462,7 +1789,11 @@ class ForecastSignal:
     context, asks the forecaster for its steps, and returns the
     ``horizon``-th as a float — or ``None`` when any feature is missing or
     not a finite number, which the owned ``validate`` kind reads as no
-    coverage. Provenance rides on the object as on
+    coverage. ONE FORWARD PER ROW: there is no batching here, so a signal
+    over a long row stream costs one model call per row — the price of a
+    per-row seam every scoring kind can call. The context is built in the
+    model's own parameter dtype (a bfloat16 checkpoint never sees a float32
+    tensor). Provenance rides on the object as on
     :class:`TransformerSignal`: ``artifact_path`` is the verified snapshot
     directory, ``digest`` its manifest hash, ``restored`` always True (a
     zero-shot model is only ever restored).
@@ -1492,8 +1823,8 @@ class ForecastSignal:
     """
 
     __slots__ = (
-        "_features", "_forecast", "_horizon", "_model", "artifact_path", "digest",
-        "restored",
+        "_dtype", "_features", "_forecast", "_horizon", "_model", "artifact_path",
+        "digest", "restored",
     )
 
     def __init__(self, model, features, horizon, forecast, *, artifact_path, digest):
@@ -1501,6 +1832,7 @@ class ForecastSignal:
         self._features = tuple(features)
         self._horizon = horizon
         self._forecast = forecast
+        self._dtype = _parameter_dtype(model)
         self.artifact_path = artifact_path
         self.digest = digest
         self.restored = True
@@ -1532,7 +1864,8 @@ class ForecastSignal:
             values.append(float(value))
         import torch
 
-        context = torch.tensor(values, dtype=torch.float32).reshape(1, len(values), 1)
+        dtype = torch.float32 if self._dtype is None else self._dtype
+        context = torch.tensor(values, dtype=dtype).reshape(1, len(values), 1)
         with torch.no_grad():
             steps = self._forecast(self._model, context)
         flat = steps.reshape(steps.shape[0], -1)
@@ -1553,17 +1886,27 @@ class PretrainedForecast(_SnapshotPin, TrainableNode):
     hash; a node-level ``artifact`` may RESTATE that hash under
     ``mode="load"`` and never replace it (a path is not a pin). The model
     class is the snapshot's own ``config.architectures[0]`` as
-    ``transformers`` exports it (PatchTST, Informer, Autoformer, the
-    TimeSeriesTransformer, …); a forecaster outside the library — Chronos,
-    TimesFM, Moirai — is a subclass supplying :meth:`build_model` and
-    :meth:`forecast`.
+    ``transformers`` exports it, and it must be a ``PreTrainedModel``
+    subclass.
+
+    **What the default hooks fit.** :meth:`forecast` calls
+    ``model(past_values=context).prediction_outputs[..., 0]`` — so the
+    shipped kind covers exactly the models whose forward takes
+    ``past_values`` ALONE and answers ``prediction_outputs``: PatchTST and
+    PatchTSMixer, single-channel, point-forecast heads. Everything else —
+    a forward wanting time features or an observed mask
+    (``TimeSeriesTransformer``, Informer, Autoformer), a distribution head
+    (``loss="nll"``), a multi-channel config, Chronos, TimesFM, Moirai — is
+    a subclass supplying :meth:`build_model` and :meth:`forecast`, and
+    refuses BY NAME at load rather than answering a wrong number: one zero
+    context is probed through the hook before any row is scored.
 
     Parameters
     ----------
     params : dict
         ``root`` / ``snapshot`` / ``stream`` as :class:`PretrainedEncode`;
         ``features`` (list of str, REQUIRED) — the context columns, oldest
-        first, as many as the model's ``context_length``; ``horizon``
+        first, as many as :meth:`context_length_of` reports; ``horizon``
         (int >= 1, default 1) — the forecast step ``predict`` answers, at
         most the model's ``prediction_length``.
 
@@ -1620,8 +1963,8 @@ class PretrainedForecast(_SnapshotPin, TrainableNode):
         return tuple(self.params["features"])
 
     def horizon(self):
-        """Give the forecast step ``predict`` answers (int)."""
-        return self.params.get("horizon", DEFAULT_HORIZON)
+        """Give the forecast step ``predict`` answers (int, integral float coerced)."""
+        return int(self.params.get("horizon", DEFAULT_HORIZON))
 
     # -- the subclass seam -----------------------------------------------------
 
@@ -1642,7 +1985,11 @@ class PretrainedForecast(_SnapshotPin, TrainableNode):
         Raises
         ------
         ValueError
-            When the config names no architecture the library exports.
+            When the config names no architecture the library exports, or
+            names one that is not a ``PreTrainedModel`` subclass — a config
+            class, a factory function, anything the attribute happens to
+            hit. ``getattr`` on a package answers a great many things that
+            are not models.
         """
         import transformers
         from transformers import AutoConfig
@@ -1650,14 +1997,90 @@ class PretrainedForecast(_SnapshotPin, TrainableNode):
         config = AutoConfig.from_pretrained(files_dir, local_files_only=True)
         architectures = getattr(config, "architectures", None) or []
         name = architectures[0] if architectures else None
-        if not isinstance(name, str) or not hasattr(transformers, name):
+        model_cls = getattr(transformers, name, None) if isinstance(name, str) else None
+        if not (isinstance(model_cls, type)
+                and issubclass(model_cls, transformers.PreTrainedModel)):
             raise ValueError(
                 f"{self.key}: the snapshot's config names architectures "
-                f"{architectures!r}, which transformers does not export — a model "
-                "outside the library is a subclass supplying build_model"
+                f"{architectures!r}, which is not a transformers model class — a "
+                "model outside the library is a subclass supplying build_model"
             )
-        return getattr(transformers, name).from_pretrained(
-            files_dir, local_files_only=True
+        return self.load_pretrained(model_cls, files_dir)
+
+    def context_length_of(self, model):
+        """Give the context the model reads, or ``None`` when it declares none.
+
+        The hook the feature count is graded against: the library spells a
+        context length ``config.context_length``, but a wrapped forecaster
+        may keep it anywhere, and a family that declares none is checked by
+        the load probe alone.
+
+        Parameters
+        ----------
+        model : object
+            The restored forecaster.
+
+        Returns
+        -------
+        int or None
+            The context length, or ``None`` when the config names none.
+        """
+        return getattr(getattr(model, "config", None), "context_length", None)
+
+    def check_forecast(self, model, context_length):
+        """Probe one forward through :meth:`forecast`; refuse a model it cannot drive.
+
+        The default hook makes a narrow claim — ``past_values`` alone in,
+        ``prediction_outputs`` out — and a model that does not honour it
+        fails per ROW, deep inside a scoring loop, or worse answers a tensor
+        of the wrong thing. One zero context settles it at load.
+
+        Parameters
+        ----------
+        model : object
+            The restored forecaster, in eval mode.
+        context_length : int
+            The context width to probe with.
+
+        Returns
+        -------
+        None
+            The probe is a gate, not a value.
+
+        Raises
+        ------
+        ValueError
+            Naming the node when the hook raises, answers something other
+            than a rank-2 tensor, or answers fewer steps than ``horizon``.
+        """
+        import torch
+
+        dtype = _parameter_dtype(model) or torch.float32
+        horizon = self.horizon()
+        try:
+            with torch.no_grad():
+                steps = self.forecast(model, torch.zeros(1, context_length, 1,
+                                                         dtype=dtype))
+        except Exception as exc:
+            raise ValueError(self._misfit(f"it raised {type(exc).__name__}: {exc}")
+                             ) from exc
+        if not isinstance(steps, torch.Tensor):
+            raise ValueError(self._misfit(
+                f"it answered {type(steps).__name__}, not a tensor"))
+        if steps.dim() != 2:
+            raise ValueError(self._misfit(
+                f"it answered a rank-{steps.dim()} tensor {tuple(steps.shape)}, "
+                "not [batch, steps]"))
+        if steps.shape[1] < horizon:
+            raise ValueError(self._misfit(
+                f"it answered {steps.shape[1]} step(s), fewer than horizon "
+                f"{horizon}"))
+
+    def _misfit(self, reason):
+        """The one text every probe refusal carries."""
+        return (
+            f"{self.key}: the default forecast hook does not fit this model — "
+            f"subclass build_model/forecast ({reason}); snapshot {self.snapshot()}"
         )
 
     def forecast(self, model, context):
@@ -1674,7 +2097,9 @@ class PretrainedForecast(_SnapshotPin, TrainableNode):
         -------
         torch.Tensor
             Shape ``[batch, prediction_length]`` — channel 0 of the
-            library's ``prediction_outputs``.
+            library's ``prediction_outputs``. Only a model whose forward
+            takes ``past_values`` alone and answers that field fits;
+            :meth:`check_forecast` proves it at load.
         """
         return model(past_values=context).prediction_outputs[..., 0]
 
@@ -1707,9 +2132,10 @@ class PretrainedForecast(_SnapshotPin, TrainableNode):
         ------
         ValueError
             When the pin cannot be read, a node-level artifact contradicts
-            it, the feature count differs from the model's
-            ``context_length``, or ``horizon`` exceeds its
-            ``prediction_length``.
+            it, the feature count differs from the model's context length,
+            the model reads more than one channel, ``horizon`` exceeds its
+            ``prediction_length``, or the default ``forecast`` hook cannot
+            drive it.
         """
         pin = self.pinned_artifact(
             self.snapshot(),
@@ -1722,12 +2148,19 @@ class PretrainedForecast(_SnapshotPin, TrainableNode):
         features = self.features()
         horizon = self.horizon()
         config = getattr(model, "config", None)
-        context_length = getattr(config, "context_length", None)
+        context_length = self.context_length_of(model)
         if isinstance(context_length, int) and context_length != len(features):
             raise ValueError(
                 f"{self.key}: the model's context_length is {context_length} but "
                 f"features names {len(features)} column(s) — a zero-shot "
                 "forecaster reads exactly its context"
+            )
+        channels = getattr(config, "num_input_channels", None)
+        if isinstance(channels, int) and channels != 1:
+            raise ValueError(
+                f"{self.key}: the model reads num_input_channels {channels} but "
+                "features names one series — a multivariate forecaster needs a "
+                "subclass that builds its own context tensor"
             )
         prediction_length = getattr(config, "prediction_length", None)
         if isinstance(prediction_length, int) and horizon > prediction_length:
@@ -1735,6 +2168,12 @@ class PretrainedForecast(_SnapshotPin, TrainableNode):
                 f"{self.key}: horizon {horizon} exceeds the model's "
                 f"prediction_length {prediction_length}"
             )
+        # Last, because the specific checks above give the better message:
+        # one forward proves the hook fits before any row is scored.
+        self.check_forecast(
+            model,
+            context_length if isinstance(context_length, int) else len(features),
+        )
         self.log.info(
             "restored %s from snapshot %s (context %d, horizon %d)",
             class_ref(type(model)), pin[:12], len(features), horizon,

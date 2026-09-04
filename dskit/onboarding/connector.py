@@ -28,7 +28,8 @@ FILE      ``stream`` (str), ``relpath`` (str), ``path`` (str) — a
           built, so it is digested and verified like every
           other payload byte. ``relpath`` is POSIX-relative: no
           leading ``/``, no empty, ``.`` or ``..`` segment, no
-          backslash. ``path`` is machine-local provenance and
+          backslash, no ``:`` (a drive or stream escape on some
+          platforms). ``path`` is machine-local provenance and
           is never echoed into bronze.
 ========  =====================================================
 
@@ -326,6 +327,9 @@ def _file_relpath_problems(value):
         return [f"FILE.relpath must be relative — no leading '/' — got {value!r}"]
     if any(part in ("", ".", "..") for part in value.split("/")):
         return [f"FILE.relpath may not hold an empty, '.' or '..' segment, got {value!r}"]
+    if ":" in value:
+        return [f"FILE.relpath may not hold ':' in a segment (a drive or alternate-stream "
+                f"escape on some platforms), got {value!r}"]
     return []
 
 

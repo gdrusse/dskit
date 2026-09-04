@@ -55,11 +55,16 @@ on it without breaking its rulings.
   `import_library_class` (base.py) validate it at plan time. The
   PRETRAINED kinds (`transformers-encode`/`-classify`/`-forecast`,
   ADR-0083) never name a hub: they pin an acquired snapshot by manifest
-  hash (`root`/`snapshot`/`stream`) and resolve it once per instance
-  through the read seam's `verified_payload_dir`, imported at function
-  depth like `scan_stream`; `build_model` / `build_tokenizer` /
-  `vectors` / `column_names` / `forecast` are their hooks, and a
-  Chronos- or TimesFM-shaped forecaster is a subclass supplying them.
+  hash (`root`/`snapshot`/`stream`) and resolve it once per PIN per
+  instance through the read seam's `verified_payload_dir`, imported at
+  function depth like `scan_stream`; `build_model` / `build_tokenizer` /
+  `vectors` / `column_names` / `context_length_of` / `forecast` are their
+  hooks. `transformers-forecast` claims only the models whose forward
+  takes `past_values` alone and returns `prediction_outputs` (PatchTST,
+  PatchTSMixer) — a load-time probe refuses everything else BY NAME, and a
+  Chronos- or TimesFM-shaped forecaster is a subclass supplying the hooks.
+  Loads are `output_loading_info=True` + `use_safetensors=True`: a
+  non-empty `missing_keys` refuses, unused weights are only logged.
 - **Reading an acquired stream** — the `observations` kind
   (`libs/observations.py`, ADR-0077) fronts `dskit.onboarding`'s
   `scan_stream`: children subclass `ObservationRows`, narrow `_PARAMS` to

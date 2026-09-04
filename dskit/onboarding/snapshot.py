@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 
 from .base import (
     AssetError,
@@ -239,8 +240,12 @@ def verify_snapshot(snapshot_dir) -> list:
     """Re-hash one snapshot against its manifest; return every problem.
 
     Detects: missing payload files, extra files the manifest never
-    listed, and content whose digest or size drifted — DVC-style tamper
-    evidence for WORM storage.
+    listed, symlinked directories planted under ``payload/`` (``os.walk``
+    never descends them, so they are inspected in ``dirs``), members that
+    are not regular files (a symlink, a FIFO — judged by ``lstat`` BEFORE
+    any open, because reading a FIFO would hang the trust gate), and
+    content whose digest or size drifted — DVC-style tamper evidence for
+    WORM storage.
 
     Returns
     -------
@@ -254,7 +259,12 @@ def verify_snapshot(snapshot_dir) -> list:
     listed = {f["relpath"]: f for f in manifest["files"]}
     on_disk = set()
     if os.path.isdir(payload_dir):
-        for parent, _dirs, names in sorted(os.walk(payload_dir)):
+        for parent, dirs, names in sorted(os.walk(payload_dir)):
+            for dname in sorted(dirs):
+                full = os.path.join(parent, dname)
+                if os.path.islink(full):
+                    rel = os.path.relpath(full, payload_dir).replace(os.sep, "/")
+                    problems.append(f"{snapshot_dir}: unlisted symlink present: {rel}")
             for fname in sorted(names):
                 rel = os.path.relpath(os.path.join(parent, fname), payload_dir)
                 on_disk.add(rel.replace(os.sep, "/"))
@@ -269,7 +279,9 @@ def verify_snapshot(snapshot_dir) -> list:
     for rel in sorted(set(listed) & on_disk):
         path = os.path.join(payload_dir, rel.replace("/", os.sep))
         entry = listed[rel]
-        if os.path.getsize(path) != entry.get("size"):
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            problems.append(f"{snapshot_dir}: not a regular file: {rel}")
+        elif os.path.getsize(path) != entry.get("size"):
             problems.append(f"{snapshot_dir}: size drift: {rel}")
         elif file_digest(path) != entry.get("sha256"):
             problems.append(f"{snapshot_dir}: content drift: {rel}")

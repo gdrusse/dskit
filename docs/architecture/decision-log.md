@@ -3917,22 +3917,37 @@ RECORD inventory still lands — the forward-compat valve stays honest.
 one hub repository at a declared `revision`: it resolves the revision to
 a commit sha (`HfApi.repo_info`), downloads THAT sha (`snapshot_download`
 into its own temporary directory, `allow_patterns` / `ignore_patterns`
-passed through, the hub's `.cache/` metadata skipped) and emits one FILE
-plus one RECORD per file — `{repo_id, repo_type, revision, commit_sha,
-relpath, size, sha256}`, `effective_date` the commit's `last_modified`
-— then STATE `{commit_sha, revision}`. An unchanged sha is an empty pull
-("nothing new"), never a duplicate snapshot. `token_env` names the hub
-token's environment variable (default `HF_TOKEN`; unset means anonymous)
-and the token never enters a record, a message or a refusal.
-`huggingface_hub` is imported inside the verbs (the `huggingface` extra;
-`all` already carries it).
+passed through, only the client's own `.cache/huggingface/` metadata
+skipped) and emits one FILE plus one RECORD per file — `{repo_id,
+repo_type, revision, commit_sha, relpath, size, sha256}`,
+`effective_date` the commit's `last_modified` — then STATE
+`{commit_sha, revision, repo_type, allow_patterns, ignore_patterns}`:
+the whole SELECTION, because what was acquired is the commit AS
+FILTERED. "Nothing new" (one LOG, the same STATE, no download) requires
+the sha, the repo type AND both pattern lists to agree; a widened
+`allow_patterns` at an unchanged sha is new content and lands a second
+snapshot. A download matching NO file REFUSES, naming the sha and the
+patterns, and emits no STATE — the cursor never moves onto nothing.
+`token_env` names the hub token's environment variable (default
+`HF_TOKEN`; unset means anonymous — the client is handed `token=False`,
+never `None`, which it reads as "use my cached login") and the token
+never enters a record, a message, a refusal or an exception chain (every
+seam raises `from None`). `huggingface_hub` is imported inside the verbs
+(the `huggingface` extra, floor `>=0.23` for the `token=False`
+spelling; `all` already carries it).
 
 **Consequences.** Weights enter content-addressed: a document pins the
 snapshot's manifest hash (ADR-0083), and a changed weight is a changed
 hash. No pipeline node ever opens a socket. `MESSAGE_TYPES` grows for the
 first time since ADR-0013; `check_message`, the README's envelope table
 and the acquire summary shape (`files`) move together, and the
-`test_connector` kind pin gains `huggingface`.
+`test_connector` kind pin gains `huggingface`. **Forward-compat caveat:**
+a platform predating `FILE` skips it as an unknown type, so it commits an
+INVENTORY-ONLY snapshot — and saves the cursor beside it. After upgrading,
+that cursor reads as "nothing new" over a snapshot carrying no weights;
+delete `state/<source>/snapshot-<mode>.json` to re-acquire. Cursors are
+also per mode (ADR-0014), so `backfill` then `live` over one repository is
+two downloads and two snapshots: pick one mode.
 
 ---
 
@@ -3959,20 +3974,39 @@ params `root`, `snapshot` (the 64-hex manifest hash) and `stream`
 `text_field`, pools the last hidden state (`pooling`: `mean` | `cls` |
 `max` — a table, not a branch) into `<prefix><i>` columns beside
 `carry_fields`; a record without text yields no row and is counted.
-`transformers-classify` (`PretrainedClassify`, its subclass) applies
-softmax over a sequence-classification head, one `<prefix><label>` column
-per `id2label` entry. `transformers-forecast` (`PretrainedForecast`, role
-`signal`, `default_mode="load"`) restores a zero-shot forecaster from the
-snapshot's own `architectures` and answers `predict(row)` with the
+`transformers-classify` (`PretrainedClassify`, its subclass) turns a
+sequence-classification head's logits into one `<prefix><label>` column
+per `id2label` entry, the activation chosen from the head's own
+`problem_type` through a table (softmax / sigmoid; `regression` and a
+one-label head refuse by name). `transformers-forecast`
+(`PretrainedForecast`, role `signal`, `default_mode="load"`) restores a
+zero-shot forecaster from the snapshot's own `architectures` (which must
+be a `PreTrainedModel` subclass) and answers `predict(row)` with the
 `horizon`-th step of `prediction_outputs` over the ordered `features`
-context; `mode="train"` refuses, and so does a node-level `artifact`
-path — the pin is a hash, never a path. `build_model`, `build_tokenizer`,
-`vectors` and `forecast` are the subclass seam: a Chronos, TimesFM or
-Moirai wrapper is a subclass supplying them, never a registry of
-per-model classes.
+context. The default hooks fit exactly the models whose forward takes
+`past_values` ALONE and returns `prediction_outputs` — PatchTST,
+PatchTSMixer; everything else (a forward wanting time features or an
+observed mask, a distribution head, a multi-channel config, Chronos,
+TimesFM, Moirai) is a subclass supplying `build_model` / `forecast`, and
+refuses BY NAME at load: one zero context is probed through the hook
+before a row is scored, beside a context-length and a
+`num_input_channels` check. `mode="train"` refuses, and so does a
+node-level `artifact` path — the pin is a hash, never a path.
+`build_model`, `build_tokenizer`, `vectors`, `context_length_of` and
+`forecast` are the subclass seam, never a registry of per-model classes.
+Every load is `output_loading_info=True` + `use_safetensors=True`: a
+non-empty `missing_keys` refuses (a randomly initialized part is not the
+pinned model), unused weights are logged, and a `.bin`-only snapshot
+refuses rather than unpickling. `PretrainedEncode` refuses a snapshot
+carrying no tokenizer artifacts — `AutoTokenizer` synthesizes a
+specials-only vocabulary there and every text would embed as `[UNK]`.
 
 **Consequences.** Identity is content: moving the weights moves the hash
-in the document, and a tampered snapshot refuses at load by name. No
+in the document, and a tampered snapshot refuses at load by name. The pin
+names an acquisition EVENT, not the bytes alone — the manifest grades
+`acquired_at`, source and mode beside the payload digests, so identical
+weights re-acquired yield a DIFFERENT pin over an identical payload tree.
+That is deliberate: a document says which acquisition it trusted. No
 existing document, kind or hash moves; `NODE_KINDS` grows by three. The
 pack's "never downloads" property is unchanged — acquisition is
 onboarding's job.

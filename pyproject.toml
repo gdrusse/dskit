@@ -43,8 +43,10 @@ alpaca = ["alpaca-py>=0.44"]
 polymarket = ["huggingface_hub>=0.20", "pyarrow>=15"]
 # The huggingface connector pack acquires one hub repository at a pinned
 # commit as a WORM snapshot (ADR-0082); the client is imported inside its
-# two network seams only.
-huggingface = ["huggingface_hub>=0.20"]
+# two network seams only. >=0.23 is the floor because the pack hands the
+# hub client token=False for "anonymous" — earlier releases read False as
+# a token value rather than as "send nothing".
+huggingface = ["huggingface_hub>=0.23"]
 # Everything the library packs can use, for running the full libs test suite.
 all = [
     "numpy>=1.26",
@@ -59,7 +61,7 @@ all = [
     "mlflow>=2.9",
     "pyarrow>=15",
     "alpaca-py>=0.44",
-    "huggingface_hub>=0.20",
+    "huggingface_hub>=0.23",
 ]
 dev = [
     "pytest>=7.4",

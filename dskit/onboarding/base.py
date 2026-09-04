@@ -205,7 +205,9 @@ def durable_copy_file(src, dst) -> None:
     ----------
     src : str
         An existing regular file. It is read, never moved: the
-        connector owns its own staging.
+        connector owns its own staging. A symlinked source is FOLLOWED
+        (``os.stat``, not ``lstat``): the bytes behind it are copied, so
+        the destination is always a regular file of its own.
     dst : str
         Destination path; its directory must exist. Replaced atomically.
 

@@ -78,7 +78,7 @@ def test_file_is_a_known_message_type():
 @pytest.mark.parametrize(
     "relpath",
     ["", "/abs/path", "../escape", "a/../b", "./here", "a//b", "a\\b",
-     "trailing/", "nul\x00byte", "."],
+     "trailing/", "nul\x00byte", ".", "C:/x", "a/b:c", "a:b"],
 )
 def test_file_relpath_must_be_a_safe_relative_posix_path(relpath):
     with pytest.raises(AssetError, match="relpath"):

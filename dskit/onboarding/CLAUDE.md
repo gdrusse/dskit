@@ -34,7 +34,10 @@ on it without breaking its rulings (ADR-0012…0016).
   weights) is a `FILE` message (ADR-0082): the connector names a file it
   holds, the platform copies it into `payload/<stream>/<relpath>`;
   `libs/huggingface.py` is that shape — `resolve` / `download` seams,
-  one FILE + one inventory RECORD per file, a commit-sha cursor. `libs/localtables.py` is the
+  one FILE + one inventory RECORD per file, and a SELECTION cursor (sha +
+  repo type + both pattern lists, so a widened `allow_patterns` at an
+  unchanged sha is new content); a download matching no file refuses and
+  moves no cursor. `libs/localtables.py` is the
   tier-2 shape: the library (pyarrow) imported inside the verbs, only
   when a shard needs it, refused loudly when absent. `libs/predexon.py`
   is the keyed-REST shape: getter, clock, and sleeper injected through

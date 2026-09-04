@@ -364,9 +364,13 @@ artifact); **transformers** `transformers-fit` (declared)
 (ADR-0083: weights are an onboarding ACQUISITION — the `huggingface`
 connector's WORM snapshot, ADR-0082 — pinned by manifest hash through
 `root`/`snapshot`/`stream`, re-verified before a byte loads; text → pooled
-embedding columns or one probability column per `id2label` entry, and a
-zero-shot forecast `signal` restored from the snapshot's own `architectures`
-— the baseline a bespoke model must beat; never a hub name); **optuna** `optuna-search`
+embedding columns or one probability column per `id2label` entry (softmax
+or sigmoid by the head's own `problem_type`), and a zero-shot forecast
+`signal` restored from the snapshot's own `architectures` — the baseline a
+bespoke model must beat. The forecast kind's default hooks fit models whose
+forward takes `past_values` alone and returns `prediction_outputs`
+(PatchTST, PatchTSMixer); anything else refuses at load, by name, and is a
+subclass supplying `build_model`/`forecast`. Never a hub name); **optuna** `optuna-search`
 (categorical lists AND `{"low", "high"[, "log"][, "int"]}` continuous ranges;
 `hpo-grid` keeps refusing ranges — enumerating an interval is meaningless);
 **pyomo** `pyomo-budgeted-select` + `PyomoSolve` base (`build_model`/`extract`

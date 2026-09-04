@@ -18,8 +18,12 @@ The flow, with its durability ordering (the whole point):
    is copied — stage, fsync, rename — to ``payload/<stream>/<relpath>``
    so the manifest below digests it, and is NOT echoed into the jsonl:
    its ``path`` is machine-local, and identical bytes pulled twice must
-   hash the same. A repeated relpath, another stream's file, or an
-   unusable source refuses by name.
+   hash the same. A repeated relpath, a destination that already exists
+   (two relpaths collapsing on a case-folding filesystem), another
+   stream's file, or an unusable source refuses by name. The connector's
+   iterator is closed explicitly when the loop ends, however it ends, so
+   a generator's ``finally`` (its own staging cleanup) runs then and not
+   at garbage collection.
    ``acquired_at`` is the COMMIT instant — ``utc_now()`` taken only once
    ``read()`` is exhausted, so nothing observed during the pull can
    post-date it (ADR-0079): the latest-dated observation is asserted
@@ -191,7 +195,13 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
                 open_text_writer(raw_path, storage["payload_codec"])
             )
             norm_fhs = {}
-            for i, msg in enumerate(connector.read(config, [stream], state, mode)):
+            iterator = connector.read(config, [stream], state, mode)
+            if hasattr(iterator, "close"):
+                # Closed on the same stack as the writers, so it runs when
+                # the loop ends by exhaustion OR by refusal — a generator's
+                # finally is the connector's cleanup, never left to the GC.
+                stack.callback(iterator.close)
+            for i, msg in enumerate(iterator):
                 try:
                     mtype = check_message(msg)
                 except AssetError as exc:
@@ -408,6 +418,15 @@ def _place_file(files_dir, stream, seen, msg, index):
         )
     seen.add(relpath)
     dest = os.path.join(files_dir, *relpath.split("/"))
+    if os.path.lexists(dest):
+        # ``seen`` judges spellings; the filesystem judges PATHS — on a
+        # case-folding or normalizing volume two distinct relpaths land on
+        # one, and the second must never overwrite the first silently.
+        raise AssetError(
+            [f"{where} relpath {relpath!r} already exists in the staged tree — "
+             "two relpaths of this pull collapse onto one path here (a "
+             "case-folding or normalizing filesystem?); refusing to overwrite"]
+        )
     try:
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         durable_copy_file(msg["path"], dest)

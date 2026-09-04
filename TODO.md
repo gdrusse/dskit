@@ -1116,9 +1116,12 @@ is the integration.
 - [x] **Time-series foundation models are the domain payoff.** Chronos
       **Landed via ADR-0083 (2026-09-04): `transformers-forecast` (role
       `signal`, always loads) restores the snapshot's own `architectures`
-      (PatchTST, Informer, …) and answers the `horizon`-th step; Chronos /
-      TimesFM / Moirai are subclasses supplying `build_model` +
-      `forecast`.**
+      and answers the `horizon`-th step. The default hooks fit exactly the
+      models whose forward takes `past_values` alone and returns
+      `prediction_outputs` — PatchTST, PatchTSMixer; a load-time probe
+      refuses anything else BY NAME. Chronos / TimesFM / Moirai — and the
+      time-feature families (TimeSeriesTransformer, Informer, Autoformer) —
+      are subclasses supplying `build_model` + `forecast`.**
       (Amazon), TimesFM (Google), Moirai (Salesforce), Lag-Llama are all
       HF-hosted zero-shot forecasters and directly relevant to quant/markets
       work — a zero-shot baseline you never trained is the strongest check

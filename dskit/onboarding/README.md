@@ -195,9 +195,15 @@ The `huggingface` kind (ADR-0082) acquires one Hugging Face hub repository
 `revision` (branch, tag or commit; resolved to the commit sha at pull
 time and downloaded AT that sha), optional `repo_type`, `allow_patterns`
 / `ignore_patterns`, and `token_env` (default `HF_TOKEN`; unset means
-anonymous). One stream, `snapshot`: per file a `FILE` message and an
+anonymous — the client is handed `token=False`, so its cached login is
+never used). One stream, `snapshot`: per file a `FILE` message and an
 inventory RECORD `{repo_id, repo_type, revision, commit_sha, relpath,
-size, sha256}` dated at the commit; an unchanged sha is an empty pull.
+size, sha256}` dated at the commit. The cursor carries the whole
+SELECTION — `{commit_sha, revision, repo_type, allow_patterns,
+ignore_patterns}` — so an unchanged sha is an empty pull only when the
+filters agree too, and a download matching NO file refuses rather than
+cursoring past nothing. Cursors are per mode: pick one mode per
+repository, or a `live` pull re-downloads what `backfill` already has.
 Pipeline documents then pin the snapshot by its manifest hash (the
 transformers pack's `transformers-encode` / `-classify` / `-forecast`,
 ADR-0083) — weights enter content-addressed, never by hub name. Install

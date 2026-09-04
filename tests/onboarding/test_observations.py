@@ -855,7 +855,7 @@ class TestVerifiedPayloadDir:
             verified_payload_dir(root.root, digest, "other")
         assert "payload/other" in str(exc.value)
 
-    @pytest.mark.parametrize("bad", ["", "abc", "F" * 64, 12, None])
+    @pytest.mark.parametrize("bad", ["", "abc", "F" * 64, "a" * 64 + "\n", 12, None])
     def test_a_malformed_hash_refuses_before_any_scan(self, root, bad):
         with pytest.raises(AssetError, match="manifest_hash"):
             verified_payload_dir(root.root, bad, "weights")

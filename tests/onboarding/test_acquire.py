@@ -508,3 +508,118 @@ def test_a_file_relpath_that_squats_a_directory_refuses_typed(
         run_acquisition(root, registry, "fake", "weights", "backfill")
     assert "a/b" in str(exc.value)
     assert os.listdir(root.raw_dir("fake")) == []
+
+
+# -- the review round over ADR-0082 ----------------------------------------------
+
+
+def test_a_destination_that_already_exists_refuses_before_copying(tmp_path):
+    # Two distinct relpaths can collapse onto one path on a case-folding or
+    # normalizing filesystem; the second must refuse, never overwrite the first.
+    from dskit.onboarding.acquire import _place_file
+
+    files_dir = tmp_path / "files"
+    files_dir.mkdir()
+    (files_dir / "model.bin").write_bytes(b"first")
+    blob = _blob(tmp_path, "model.bin", b"second")
+    with pytest.raises(AssetError, match="model.bin") as exc:
+        _place_file(str(files_dir), "weights", set(),
+                    file_message("weights", "model.bin", blob), 3)
+    assert "message 3" in str(exc.value) and "already" in str(exc.value)
+    assert (files_dir / "model.bin").read_bytes() == b"first"
+
+
+class _ClosingIterator:
+    """A NON-generator iterator: nothing but an explicit ``close()`` closes it."""
+
+    def __init__(self, messages, log):
+        self._messages = iter(messages)
+        self._log = log
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._messages)
+
+    def close(self):
+        self._log.append("closed")
+
+
+class ClosingConnector(FakeConnector):
+    """``read`` answers a closeable iterator; ``closed`` records the platform's close."""
+
+    closed = []
+
+    def read(self, config, streams, state, mode):
+        return _ClosingIterator(list(FakeConnector.script), type(self).closed)
+
+
+@pytest.fixture
+def closing_source(registry):
+    vid = registry.register("source_config", {
+        "name": "closing", "catalog_source": "fake-src",
+        "connector": "tests.onboarding.test_acquire:ClosingConnector", "config": {},
+    }, origin="test")
+    registry.transition(vid, "active", origin="test")
+    FakeConnector.script, ClosingConnector.closed = [], []
+    yield vid
+    FakeConnector.script, ClosingConnector.closed = [], []
+
+
+@pytest.mark.parametrize("ending", ["exhausted", "error"])
+def test_the_connectors_iterator_is_closed_however_the_pull_ends(
+    root, registry, closing_source, ending
+):
+    # A connector's ``finally`` (deleting its staging) must run when the pull
+    # ends — by exhaustion or by abort — not whenever the GC gets to it.
+    FakeConnector.script = [record("prices", "2026-01-02")]
+    if ending == "error":
+        FakeConnector.script.append(
+            {"protocol": 1, "type": "ERROR", "message": "auth expired"})
+        with pytest.raises(AssetError, match="auth expired"):
+            run_acquisition(root, registry, "closing", "prices", "live")
+    else:
+        run_acquisition(root, registry, "closing", "prices", "live")
+    assert ClosingConnector.closed == ["closed"]
+
+
+def test_identical_bytes_reacquired_yield_a_different_pin(
+    root, registry, fake_source, tmp_path, monkeypatch
+):
+    # The pin (manifest hash) identifies an acquisition EVENT: the manifest
+    # grades acquired_at / source / mode beside the payload digests, so the
+    # same bytes pulled twice are two pins over one payload tree —
+    # deliberate (ADR-0083): a pin names WHICH acquisition a run trusted.
+    from dskit.onboarding import dir_digest
+
+    clock = _clock(monkeypatch, T0)
+    blob = _blob(tmp_path, "model.bin", b"same bytes")
+    pins, digests = [], []
+    for stamp in (T1, T2):
+        clock[0] = stamp
+        FakeConnector.script = [file_message("weights", "model.bin", blob)]
+        s = run_acquisition(root, registry, "fake", "weights", "backfill")
+        pins.append(registry.get(s["snapshot"]).payload["manifest_hash"])
+        digests.append(dir_digest(
+            os.path.join(root.snapshot_dir("fake", s["acq_id"]), "payload")))
+    assert digests[0] == digests[1]
+    assert pins[0] != pins[1]
+
+
+def test_a_gzip_file_only_pull_commits_an_empty_bronze_member_that_verifies(
+    root, registry, gz_source, tmp_path
+):
+    from dskit.onboarding import read_manifest, verify_snapshot
+    from dskit.onboarding.codec import verify_member
+
+    blob = _blob(tmp_path, "model.bin", b"\x00\x01")
+    FakeConnector.script = [file_message("weights", "model.bin", blob)]
+    s = run_acquisition(root, registry, "gz", "weights", "backfill")
+    assert s["files"] == 1 and s["records"] == 0 and s["snapshot"] is not None
+    snap_dir = root.snapshot_dir("gz", s["acq_id"])
+    member = os.path.join(snap_dir, "payload", "weights.jsonl.gz")
+    assert os.path.isfile(member) and verify_member(member) == 0
+    listed = {f["relpath"] for f in read_manifest(snap_dir)["files"]}
+    assert listed == {"weights.jsonl.gz", "weights/model.bin"}
+    assert verify_snapshot(snap_dir) == []

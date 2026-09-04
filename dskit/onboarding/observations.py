@@ -61,7 +61,8 @@ __all__ = ["scan_stream", "stream_dir", "stream_digest", "verified_payload_dir"]
 
 #: The spelling of a snapshot's identity — the 64-hex sha256 of its
 #: canonical manifest (:func:`~dskit.onboarding.snapshot.snapshot_hash`).
-_MANIFEST_HASH = re.compile(r"^[0-9a-f]{64}$")
+# \Z, not $ — $ forgives a trailing newline (ADR-0020).
+_MANIFEST_HASH = re.compile(r"^[0-9a-f]{64}\Z")
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 

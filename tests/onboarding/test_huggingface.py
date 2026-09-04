@@ -9,8 +9,10 @@ injected into ``sys.modules`` — exact kwargs, error mapping, and the token
 never in text.
 """
 
+import fnmatch
 import os
 import sys
+import traceback
 import types
 from datetime import datetime, timezone
 
@@ -47,6 +49,22 @@ FILES = {
 }
 
 
+def _cursor(**over):
+    """The STATE a pull of ``CONFIG`` ends with: the whole SELECTION — sha,
+    revision, repo_type and both pattern lists — never the sha alone."""
+    cursor = {"commit_sha": SHA, "revision": "main", "repo_type": "model",
+              "allow_patterns": None, "ignore_patterns": None}
+    cursor.update(over)
+    return cursor
+
+
+def _selected(relpath, allow_patterns, ignore_patterns):
+    """The hub's glob semantics, enough for a script: allow (any) then ignore (none)."""
+    if allow_patterns and not any(fnmatch.fnmatch(relpath, p) for p in allow_patterns):
+        return False
+    return not any(fnmatch.fnmatch(relpath, p) for p in ignore_patterns or [])
+
+
 class ScriptedHub(HuggingFaceHubConnector):
     """The pack with both hub seams replaced by class-level scripts."""
 
@@ -66,6 +84,8 @@ class ScriptedHub(HuggingFaceHubConnector):
                                  allow_patterns, ignore_patterns, token, local_dir))
         type(self).local_dirs.append(local_dir)
         for relpath, data in type(self).files.items():
+            if not _selected(relpath, allow_patterns, ignore_patterns):
+                continue
             path = os.path.join(local_dir, *relpath.split("/"))
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "wb") as fh:
@@ -127,6 +147,7 @@ def test_spec_is_default_deny_and_names_its_secret():
     [
         ({"repo_id": "no-owner"}, "repo_id"),
         ({"repo_id": "acme/tiny bert"}, "repo_id"),
+        ({"repo_id": "acme/tiny-bert\n"}, "repo_id"),
         ({"revision": ""}, "revision"),
         ({"repo_type": "space"}, "repo_type"),
         ({"allow_patterns": "*.json"}, "allow_patterns"),
@@ -191,7 +212,16 @@ def test_read_emits_one_file_and_one_record_per_file_then_state():
         assert rec["data"]["commit_sha"] == SHA
         assert rec["data"]["size"] == len(FILES[rec["data"]["relpath"]])
         assert rec["data"]["sha256"] == staged[rec["data"]["relpath"]][1]
-    assert msgs[-1]["state"] == {"commit_sha": SHA, "revision": "main"}
+    assert msgs[-1]["state"] == _cursor()
+
+
+def test_the_hubs_own_cache_folder_is_skipped_and_nothing_else_under_dot_cache_is():
+    # Only ``.cache/huggingface`` is the client's bookkeeping; a repository
+    # may legitimately ship a ``.cache/`` path of its own.
+    ScriptedHub.files = {**FILES, ".cache/notes.txt": b"mine"}
+    relpaths = [m["relpath"] for m in _read(ScriptedHub()) if m["type"] == "FILE"]
+    assert ".cache/notes.txt" in relpaths
+    assert not any(r.startswith(".cache/huggingface") for r in relpaths)
 
 
 def test_the_staging_directory_is_gone_once_read_is_exhausted():
@@ -211,18 +241,67 @@ def test_download_is_pinned_to_the_resolved_sha_and_passes_the_knobs(monkeypatch
                              "sekret-token")
 
 
-def test_an_unset_token_env_means_anonymous(monkeypatch):
-    monkeypatch.delenv(DEFAULT_TOKEN_ENV, raising=False)
+@pytest.mark.parametrize("unset", ["absent", "empty"])
+def test_an_unset_token_env_means_anonymous(monkeypatch, unset):
+    # ``token=None`` is NOT anonymous in huggingface_hub — it falls back to
+    # the client's cached login. ``False`` is the spelling that sends nothing.
+    if unset == "absent":
+        monkeypatch.delenv(DEFAULT_TOKEN_ENV, raising=False)
+    else:
+        monkeypatch.setenv(DEFAULT_TOKEN_ENV, "")
     _read(ScriptedHub())
-    assert ScriptedHub.calls[0][4] is None and ScriptedHub.calls[1][6] is None
+    assert ScriptedHub.calls[0][4] is False and ScriptedHub.calls[1][6] is False
 
 
 def test_an_unchanged_commit_is_an_empty_pull_that_never_downloads():
-    msgs = _read(ScriptedHub(), state={"commit_sha": SHA, "revision": "main"})
+    msgs = _read(ScriptedHub(), state=_cursor())
     assert [m["type"] for m in msgs] == ["LOG", "STATE"]
     assert "nothing new" in msgs[0]["message"] and SHA[:12] in msgs[0]["message"]
-    assert msgs[1]["state"] == {"commit_sha": SHA, "revision": "main"}
+    assert msgs[1]["state"] == _cursor()
     assert [c[0] for c in ScriptedHub.calls] == ["resolve"]
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"allow_patterns": ["*.json", "*.safetensors"]},
+        {"ignore_patterns": ["*.txt"]},
+        {"repo_type": "dataset"},
+    ],
+)
+def test_a_changed_selection_at_the_same_commit_downloads_again(over):
+    # The cursor carries the SELECTION: a wider allow list (or another
+    # ignore list, or repo type) at an unchanged sha is new content.
+    narrow = {**CONFIG, "allow_patterns": ["*.json"]}
+    first = _read(ScriptedHub(), config=narrow)
+    assert [m["relpath"] for m in first if m["type"] == "FILE"] == ["config.json"]
+    cursor = first[-1]["state"]
+    assert cursor == _cursor(allow_patterns=["*.json"])
+    same = _read(ScriptedHub(), config=narrow, state=cursor)
+    assert [m["type"] for m in same] == ["LOG", "STATE"]
+    again = _read(ScriptedHub(), config={**narrow, **over}, state=cursor)
+    assert [m["type"] for m in again][0] == "FILE"
+    assert again[-1]["state"] == {**_cursor(allow_patterns=["*.json"]), **over}
+
+
+def test_a_legacy_sha_only_cursor_never_proves_the_selection():
+    # A cursor an older platform saved carries no selection, so it cannot
+    # claim "nothing new" — the pull re-downloads and re-cursors in full.
+    msgs = _read(ScriptedHub(), state={"commit_sha": SHA, "revision": "main"})
+    assert [m["type"] for m in msgs][0] == "FILE"
+    assert msgs[-1]["state"] == _cursor()
+
+
+def test_a_download_matching_no_file_refuses_naming_sha_and_patterns_and_emits_no_state():
+    ScriptedHub.files = {}
+    config = {**CONFIG, "allow_patterns": ["*.onnx"], "ignore_patterns": ["*.md"]}
+    msgs = []
+    with pytest.raises(AssetError, match="matched no file") as exc:
+        for msg in ScriptedHub().read(dict(config), [SNAPSHOT_STREAM], {}, "backfill"):
+            msgs.append(msg)
+    text = str(exc.value)
+    assert SHA[:12] in text and "*.onnx" in text and "*.md" in text
+    assert not any(m["type"] == "STATE" for m in msgs)
 
 
 def test_a_commit_the_hub_does_not_date_refuses():
@@ -231,8 +310,9 @@ def test_a_commit_the_hub_does_not_date_refuses():
         _read(ScriptedHub())
 
 
-def test_a_malformed_sha_from_the_hub_refuses():
-    ScriptedHub.sha = "not-a-sha"
+@pytest.mark.parametrize("sha", ["not-a-sha", SHA + "\n", SHA.upper(), None])
+def test_a_malformed_sha_from_the_hub_refuses(sha):
+    ScriptedHub.sha = sha
     with pytest.raises(AssetError, match="commit sha"):
         _read(ScriptedHub())
     assert [c[0] for c in ScriptedHub.calls] == ["resolve"]
@@ -266,9 +346,55 @@ def test_acquisition_lands_a_verifiable_snapshot_whose_inventory_matches(
     for row in rows:
         assert manifest[f"{SNAPSHOT_STREAM}/{row['relpath']}"]["sha256"] == row["sha256"]
         assert manifest[f"{SNAPSHOT_STREAM}/{row['relpath']}"]["size"] == row["size"]
-    assert load_state(root, "hub", SNAPSHOT_STREAM, "backfill") == {
-        "commit_sha": SHA, "revision": "main"}
+    assert load_state(root, "hub", SNAPSHOT_STREAM, "backfill") == _cursor()
     assert registry.get(s["snapshot"]).payload["effective_start"] == COMMITTED.isoformat()
+
+
+def test_an_empty_download_commits_nothing_and_moves_no_cursor(root, registry, hub_source):
+    ScriptedHub.files = {}
+    with pytest.raises(AssetError, match="matched no file"):
+        run_acquisition(root, registry, "hub", SNAPSHOT_STREAM, "backfill")
+    assert load_state(root, "hub", SNAPSHOT_STREAM, "backfill") == {}
+    assert os.listdir(root.raw_dir("hub")) == []
+
+
+def _reconfigure(registry, current_vid, config):
+    """Retire the ACTIVE hub source_config and activate one carrying ``config``."""
+    registry.transition(current_vid, "retired", origin="test")
+    vid = registry.register("source_config", {
+        "name": "hub",
+        "catalog_source": "huggingface.co",
+        "connector": "tests.onboarding.test_huggingface:ScriptedHub",
+        "config": config,
+    }, origin="test")
+    registry.transition(vid, "active", origin="test")
+    return vid
+
+
+def test_a_widened_selection_lands_a_second_snapshot_at_the_same_commit(
+    root, registry, hub_source
+):
+    vid = _reconfigure(registry, hub_source, {**CONFIG, "allow_patterns": ["*.json"]})
+    first = run_acquisition(root, registry, "hub", SNAPSHOT_STREAM, "backfill")
+    assert first["files"] == 1
+    _reconfigure(registry, vid, {**CONFIG, "allow_patterns": ["*.json", "*.safetensors"]})
+    second = run_acquisition(root, registry, "hub", SNAPSHOT_STREAM, "backfill")
+    assert second["files"] == 2 and second["snapshot"] is not None
+    assert len(os.listdir(root.raw_dir("hub"))) == 2
+    assert load_state(root, "hub", SNAPSHOT_STREAM, "backfill") == _cursor(
+        allow_patterns=["*.json", "*.safetensors"])
+
+
+def test_cursors_are_per_mode_so_a_second_mode_re_downloads_the_commit(
+    root, registry, hub_source
+):
+    # The platform keys checkpoints per mode (ADR-0014): backfill then live
+    # is two cursors, two downloads, two snapshots — pick one mode.
+    run_acquisition(root, registry, "hub", SNAPSHOT_STREAM, "backfill")
+    live = run_acquisition(root, registry, "hub", SNAPSHOT_STREAM, "live")
+    assert live["files"] == len(FILES) and live["snapshot"] is not None
+    assert len(os.listdir(root.raw_dir("hub"))) == 2
+    assert load_state(root, "hub", SNAPSHOT_STREAM, "live") == _cursor()
 
 
 def test_a_second_pull_of_the_same_commit_commits_nothing(root, registry, hub_source):
@@ -377,13 +503,18 @@ def test_real_hub_errors_cross_the_seam_typed_and_without_the_token(
 ):
     _, behaviour = fake_hub
     behaviour["info"] = error
+    token = "sekret"  # a variable, so the test's own call line never spells it
     with pytest.raises(AssetError, match=needle) as exc:
-        HuggingFaceHubConnector().resolve("acme/x", "main", "model", "sekret", 5)
+        HuggingFaceHubConnector().resolve("acme/x", "main", "model", token, 5)
     assert "sekret" not in str(exc.value)
+    # The chain is the record too: the raw client error (URLs, tokens) must
+    # not ride along as __cause__ into a traceback someone pastes.
+    assert "sekret" not in "".join(traceback.format_exception(exc.value))
     behaviour["info"], behaviour["download"] = None, error
     with pytest.raises(AssetError, match=needle) as exc:
-        HuggingFaceHubConnector().download("acme/x", SHA, "model", None, None, "sekret", "/tmp")
+        HuggingFaceHubConnector().download("acme/x", SHA, "model", None, None, token, "/tmp")
     assert "sekret" not in str(exc.value)
+    assert "sekret" not in "".join(traceback.format_exception(exc.value))
 
 
 def test_without_the_hub_client_both_seams_refuse_naming_the_extra(monkeypatch):
