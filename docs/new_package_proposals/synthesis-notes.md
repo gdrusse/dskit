@@ -124,7 +124,7 @@ section and `production.md` control where the inputs differ.)
 ## Merged decisions (final, feeding the proposal)
 - The required serve document rung and stable series UUID feed a release binding run, graph, artifacts, code/runtime, source contract, approval and fenced lease.
 - Closed policy uses disjoint submit risk effects and covers starting/stopping. LiveExecutor accepts only a canonical ActPermit; raw authority cannot execute.
-- Structural planning defers entry construction/fingerprint/data_edge and drops splits. ServingContract supplies explicit entity keys and manifest-bound universe evidence; frozen rows generate their own digests.
-- Sequential legs bind input, quote, accounting and risk versions through plan/Intent/permit. The local verify-and-call gate and gateway enforce deadline/fence/idempotency; external races reconcile.
+- Fail-closed Node.serving_effect metadata drives structural planning, which defers entry construction/fingerprint/data_edge and drops splits. ServingContract supplies explicit entity keys and manifest-bound universe evidence; frozen rows generate their own digests.
+- Sequential legs bind readiness, input, quote, accounting, risk and authenticated execution scope through plan/Intent/permit. The final gate rehashes frozen input without rereading it; gateway deadline/fence/idempotency holds and external races reconcile.
 - Serve alone writes the ledger. Caller UUIDs separate retry/repeat; stale caches rebuild. Stop barriers before final-head journaling; hard-kill journal gaps are explicitly reported.
 - The UUID root, runtime binding, no-replace rule, bounded cancel lane, deterministic refs, dead-after heartbeat and semantic replay remain foundation contracts.

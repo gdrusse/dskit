@@ -23,6 +23,8 @@
 Generic (belongs in dskit): restore a run's artifacts with the hash verification the packs already do; poll a registered source on a cadence; re-execute a declared subgraph of the SAME document the backtest scored; emit one decision record per tick; gate on a supplied calendar.
 NOT generic (tier-3): venue/broker API, order types, position semantics, calendar contents. "The loop takes an executor OBJECT; it never learns a venue."
 Constraints: (1) configs are read, not restated; the entry's manifest-bound ServingContract supplies source and coverage. Structural planning must defer its constructor/fingerprint/data_edge before fetch/gates. (2) Fetch THROUGH the connector; descendants are pure or capability-backed release reads. (3) Re-run the SAME graph once from the frozen entry. (4) Scope-keyed accounting and sequential reservations. (5) Document-declared rung, authenticated release/runtime-bound authority, fencing, deadlines and exact input/quote/evidence/risk verification; external venue races reconcile. (6) Cadence belongs to serve. (7) Serve is sole ledger writer; caller-UUID inbox, HALT out-of-band. Normally completed mutating CLIs journal once after result; SIGKILL gaps are reported, not hidden.
+Fail-closed `Node.serving_effect` metadata supplies the structural classification.
+Live additionally requires release-bound readiness GO and exact authenticated document/executor/lease/gateway scope equality.
 Prerequisites now landed: `foreach` (ADR-0039), gap-aware windows/`latest_rows` (ADR-0040), `TrainableNode` (ADR-0038).
 
 ## Design process the owner expects

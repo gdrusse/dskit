@@ -1032,16 +1032,16 @@ decides the shape, so settle it before writing code.**
 
 ## Long-term goal — a generic SERVING LOOP in dskit
 
-**Design plan complete; implementation not started.** The implementation-ready
-proposal is `docs/new_package_proposals/production.md` (ADR-0087 / ADR-0088).
-It preserves the constraints recorded here.
+**Design plan complete; implementation not started.** The original sketch is
+superseded by `docs/new_package_proposals/production.md` (ADR-0087 / ADR-0088),
+which preserves the constraints recorded here.
 
 - [x] Replace the original sketch with a reviewed, invariant-driven package plan.
 - [ ] Implement `dskit.production` in a separate code change.
 
 **The goal.** dskit runs documents in batch; it has no seam for running a
 fitted model FORWARD on a cadence. `children/intraday_poc/intraday_poc/live.py`
-is the only forward loop that exists, it is 309 hand-rolled lines, and it is
+is the only forward loop that exists, it is 1,367 hand-rolled lines, and it is
 where most of that child's HIGH-severity defects live. That is the signal:
 the loop is generic capability sitting in tier 3.
 
@@ -1084,14 +1084,14 @@ Design constraints, each learned the hard way — read before designing:
   constructs `TradingClient(..., paper=True)`. Whatever generic executor
   seam lands must make "actually move money" an explicit, loud, declared
   act — never a default and never a config typo away.
-- **Cadence is already declared but never executed.** A document's
-  `schedule` section parses, is hash-excluded, and the runner ignores it; a
-  `clock` section parses and refuses to run. Decide whether the serving loop
-  finally gives those meaning or leaves them documentation.
+- **Cadence ownership is resolved by ADR-0087.** Pipeline `schedule` remains
+  descriptive and unchanged; the graded serve document owns its runtime clock,
+  calendar, cadence and overrun policy. Training documents never become process
+  supervisors.
 
-Prerequisites already tracked above: the `foreach` grammar gap, the
-gap-aware window transform (kills `latest_feature_row`), and `TrainableNode`
-(a serving loop is the load path's biggest consumer).
+Prerequisites have landed: `foreach`, the gap-aware `latest_rows` transform,
+and `TrainableNode`. The production implementation remains the only unchecked
+work in this section.
 
 ## Long-term goal — Hugging Face integration in `libs/transformers.py`
 
