@@ -1033,7 +1033,7 @@ decides the shape, so settle it before writing code.**
 ## Long-term goal — a generic SERVING LOOP in dskit
 
 **Design plan complete; implementation not started.** The original sketch is
-superseded by `docs/new_package_proposals/production.md` (ADR-0087 / ADR-0088),
+superseded by `docs/new_package_proposals/production.md` (ADR-0090 / ADR-0091),
 which preserves the constraints recorded here.
 
 - [x] Replace the original sketch with a reviewed, invariant-driven package plan.
@@ -1084,7 +1084,7 @@ Design constraints, each learned the hard way — read before designing:
   constructs `TradingClient(..., paper=True)`. Whatever generic executor
   seam lands must make "actually move money" an explicit, loud, declared
   act — never a default and never a config typo away.
-- **Cadence ownership is resolved by ADR-0087.** Pipeline `schedule` remains
+- **Cadence ownership is resolved by ADR-0090.** Pipeline `schedule` remains
   descriptive and unchanged; the graded serve document owns its runtime clock,
   calendar, cadence and overrun policy. Training documents never become process
   supervisors.
