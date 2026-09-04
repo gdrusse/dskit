@@ -15,11 +15,11 @@ bytes into ``payload/snapshot/<relpath>``) and one RECORD carrying the
 inventory ``{repo_id, repo_type, revision, commit_sha, relpath, size,
 sha256}``, dated at the commit's ``last_modified`` (the instant the
 weights came to be; a hub commit is always in the past). The pull ends
-with STATE ``{commit_sha, revision, repo_type, allow_patterns,
+with STATE ``{repo_id, commit_sha, revision, repo_type, allow_patterns,
 ignore_patterns}`` — the whole SELECTION, because what was acquired is
-the commit AS FILTERED, never the sha alone. The next pull compares the
-freshly resolved sha, the repo type and both pattern lists to it and,
-only when all four agree, emits one LOG and a STATE carrying the CURRENT
+the repository at the commit AS FILTERED, never the sha alone. The next pull
+compares the repo id, freshly resolved sha, repo type and both pattern lists
+to it and, only when all five agree, emits one LOG and a STATE carrying the CURRENT
 selection — "nothing new", an empty pull, never a duplicate snapshot; a
 widened ``allow_patterns`` at an unchanged sha downloads again. Two pulls
 of the same selection therefore lay out byte-identical payload trees. A
@@ -97,12 +97,12 @@ DEFAULT_TIMEOUT_S = 30.0
 HUB_CACHE_DIR = ".cache/huggingface"
 
 #: The STATE (cursor) keys — the selection a pull acquired, not the sha alone.
-STATE_KEYS = ("commit_sha", "revision", "repo_type", "allow_patterns", "ignore_patterns")
+STATE_KEYS = ("repo_id", "commit_sha", "revision", "repo_type", "allow_patterns", "ignore_patterns")
 
 #: The cursor keys that must ALL agree before a pull is "nothing new"
 #: (``revision`` is a label: a branch re-pointed at the same sha is the
 #: same content, and the same sha under another label is too).
-_SELECTION_KEYS = ("commit_sha", "repo_type", "allow_patterns", "ignore_patterns")
+_SELECTION_KEYS = ("repo_id", "commit_sha", "repo_type", "allow_patterns", "ignore_patterns")
 
 #: The inventory RECORD's ``data`` fields, in the order ``discover`` lists them.
 RECORD_FIELDS = (

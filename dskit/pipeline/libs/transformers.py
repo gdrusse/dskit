@@ -1771,10 +1771,15 @@ class PretrainedClassify(PretrainedEncode):
         """
         id2label = getattr(model.config, "id2label", None) or {}
         try:
-            labels = [label for _, label in sorted(id2label.items(), key=lambda kv: int(kv[0]))]
+            indexed_labels = sorted(
+                ((int(index), label) for index, label in id2label.items()),
+                key=lambda item: item[0],
+            )
         except (TypeError, ValueError):
-            labels = []
-        if len(labels) != width or not _unique_names(labels):
+            indexed_labels = []
+        indices = [index for index, _ in indexed_labels]
+        labels = [label for _, label in indexed_labels]
+        if indices != list(range(width)) or not _unique_names(labels):
             raise ValueError(
                 f"{self.key}: the model's id2label {id2label!r} does not name "
                 f"{width} distinct class(es) — refusing to invent column names"

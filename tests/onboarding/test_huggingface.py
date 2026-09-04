@@ -50,9 +50,9 @@ FILES = {
 
 
 def _cursor(**over):
-    """The STATE a pull of ``CONFIG`` ends with: the whole SELECTION — sha,
-    revision, repo_type and both pattern lists — never the sha alone."""
-    cursor = {"commit_sha": SHA, "revision": "main", "repo_type": "model",
+    """The STATE a pull of ``CONFIG`` ends with: the whole SELECTION."""
+    cursor = {"repo_id": CONFIG["repo_id"], "commit_sha": SHA,
+              "revision": "main", "repo_type": "model",
               "allow_patterns": None, "ignore_patterns": None}
     cursor.update(over)
     return cursor
@@ -266,12 +266,13 @@ def test_an_unchanged_commit_is_an_empty_pull_that_never_downloads():
     [
         {"allow_patterns": ["*.json", "*.safetensors"]},
         {"ignore_patterns": ["*.txt"]},
+        {"repo_id": "other/tiny-bert"},
         {"repo_type": "dataset"},
     ],
 )
 def test_a_changed_selection_at_the_same_commit_downloads_again(over):
-    # The cursor carries the SELECTION: a wider allow list (or another
-    # ignore list, or repo type) at an unchanged sha is new content.
+    # The cursor carries the SELECTION: another repo or filtering choice
+    # at an unchanged sha is new content.
     narrow = {**CONFIG, "allow_patterns": ["*.json"]}
     first = _read(ScriptedHub(), config=narrow)
     assert [m["relpath"] for m in first if m["type"] == "FILE"] == ["config.json"]

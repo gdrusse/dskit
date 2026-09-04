@@ -1192,6 +1192,14 @@ class TestGroupBy:
         with pytest.raises(ValueError, match=r"row 0 has an unusable key value.*'instrument'"):
             groupby_node().run(ctx, {"records": [drec(["A"], "A-1", 1, mid=0.1)]})
 
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_a_non_finite_key_value_is_refused_by_name(self, ctx, value):
+        with pytest.raises(
+            ValueError,
+            match=r"row 0 has an unusable key value.*'instrument'.*must be finite",
+        ):
+            groupby_node().run(ctx, {"records": [drec(value, "A-1", 1, mid=0.1)]})
+
     def test_a_reducer_the_cells_defeat_is_refused_by_name(self, ctx):
         node = GroupBy(
             "g", {"keys": "instrument", "aggregates": {"t": {"op": "nunique", "field": "tags"}}}

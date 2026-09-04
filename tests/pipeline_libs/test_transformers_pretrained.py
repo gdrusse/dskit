@@ -449,6 +449,13 @@ class TestClassify:
         problems = PretrainedClassify.validate_params(
             _pin("cls", text_field="text", pooling="mean"))
         assert problems and "pooling" in problems[0]
+    def test_non_contiguous_label_ids_are_refused(self):
+        node = PretrainedClassify("sent", _pin("cls", text_field="text"))
+        model = SimpleNamespace(
+            config=SimpleNamespace(id2label={1: "negative", 2: "positive"})
+        )
+        with pytest.raises(ValueError, match="does not name 2 distinct"):
+            node.column_names(model, 2)
 
     def test_a_label_colliding_with_a_carried_field_refuses(self, tmp_path):
         node = PretrainedClassify("sent", _pin("cls", text_field="text",

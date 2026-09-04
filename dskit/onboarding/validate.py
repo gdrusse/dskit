@@ -126,9 +126,13 @@ def _eval_unique(rows, kw):
 
 
 def _eval_accepted_values(rows, kw):
-    allowed = kw["values"]
-    return sum(1 for r in rows
-               if (v := _value(r, kw["field"])) is not None and v not in allowed)
+    allowed = {_json_identity(value) for value in kw["values"]}
+    return sum(
+        1
+        for row in rows
+        if (value := _value(row, kw["field"])) is not None
+        and _json_identity(value) not in allowed
+    )
 
 
 def _eval_in_range(rows, kw):

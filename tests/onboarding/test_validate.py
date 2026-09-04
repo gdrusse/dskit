@@ -294,11 +294,17 @@ def test_cardinality_rules_accept_structured_values_and_keep_json_types_distinct
                 rule="distinct_count",
                 kwargs={"field": "value", "min": 5, "max": 5},
             ),
+            Rule(
+                id="accepted",
+                target="json-values",
+                rule="accepted_values",
+                kwargs={"field": "value", "values": [1]},
+            ),
         ),
         snapshot,
     )
     failing = {r["id"]: r["failing"] for r in out["statistics"]["results"]}
-    assert failing == {"unique": 4, "distinct": 0}
+    assert failing == {"unique": 4, "distinct": 0, "accepted": 6}
 
 
 def test_distinct_count_reads_from_a_json_suite():

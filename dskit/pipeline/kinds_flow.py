@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import copy
 import itertools
+import math
 import re
 import statistics
 from dataclasses import dataclass
@@ -1983,6 +1984,13 @@ class GroupBy(Node):
         raw = []
         for name in keys:
             value = self._cell(index, row, name)
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError(
+                    f"{self.key}: row {index} has an unusable key value "
+                    f"{value!r} for {name!r} — a group key must be finite, "
+                    "because NaN and Infinity have no stable JSON identity or "
+                    "deterministic order"
+                )
             try:
                 hash(value)
             except TypeError as exc:
