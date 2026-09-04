@@ -3880,3 +3880,81 @@ and public exports are updated with them. Focused tests cover identity,
 journal resume/refusal, the 200-cell registration barrier, a single correction
 family, absence of `GROUP`, no Gate-2 fallback, immutable 25-asset fits,
 seed coverage, cutoff/source pins and memory-gate ordering.
+
+---
+
+## ADR-0082 — Asset-local stopping is selected before untouched confirmation
+
+**Status:** accepted (2026-09-04; owner approved P11 asset-local fitting,
+ordered stopping, untouched confirmation and fixed-family correction)
+
+**Context.** P10 fit one 25-asset model at every horizon, ran all 200
+asset-horizon cells, then corrected that whole reused-data family. That does
+not answer whether one asset is forecastable from a model trained only on
+that asset. Correcting only the selected survivors on the same observations
+would also ignore the ordered stopping rule that selected them.
+
+The current seams are sufficient. Stages already resume from the append-only
+journal, child walks already run one at a time, the feature cache is immutable,
+and `filter` can reduce feature records to one symbol before
+`NoInformationScan`; SPY may remain in the tape only as the residual-label
+reference. Thus the fitted design and label rows are asset-local while SPY is
+not silently promoted to a training series. `score_walk` already exposes the
+ADR-0067 pooled and fold tests without creating `GROUP` when `group=None`.
+
+Independent confirmation is feasible under the frozen cut. Gate 1's twenty
+63-day validations begin 2022-05-06 and the last ends 2025-10-17. The block
+2025-12-02 through 2026-02-28 is therefore untouched by selection and supplies
+one prospective confirmation fold; its model trains only on that asset through
+the five-day embargo before 2025-12-02. No row dated 2026-03-01 or later is
+read.
+
+**Decision.** P11 is one new resumable staged JSON with only `memory`, `gate1`
+and `gate2`; it has no Gate-3 stage.
+
+1. Preserve P10's exact ordered 25 assets, 2026-02-28 source cut, feature
+   geometry, estimator, existing journal and attempts file. META and synthetic
+   GROUP are refused by count and set assertions. P10 artifacts and attempt
+   rows are never overwritten or reinterpreted; P11 has a new study identity
+   and asset-local architecture key.
+2. Before either gate, run one isolated memory preflight using the asset with
+   the most cached rows (ties use cohort order), `h=1`, and the longer Gate-2
+   confirmation geometry. Peak RSS must remain strictly below 17 GiB. The
+   staged runner and every child walk execute serially, one command at a time.
+3. Gate 1 visits each asset in frozen cohort order and tests
+   `h=[1,2,3,5,10,20,30,60]` in that order. Every fold filters feature records
+   to that asset and asserts exactly one fitted and scored series. A cell passes
+   only by ADR-0067's unchanged pooled-HAC and across-fold tests at alpha 0.05.
+   Its walk and attempt are journaled immediately. At the first failure, that
+   failure is retained, the last consecutive pass is selected, and later
+   horizons are neither run nor registered. Failure at `h=1` selects none.
+4. Gate 2 runs only the selected horizon of each Gate-1 survivor, again with a
+   standalone asset-only fit, on the untouched 2025-12-02–2026-02-28 block.
+   The raw confirmation p-value is ADR-0067's one-sided pooled HAC p-value;
+   the single confirmation fold is not misrepresented as an across-fold test.
+5. Before confirmation, an append-only fixed-family header is written to the
+   existing attempts JSONL: family id, alpha 0.05, the ordered 25 asset keys,
+   and allocation 0.05/25 = 0.002 per asset. Each survivor's result appends its
+   selected horizon, raw p, `min(25*p, 1)`, allocation and decision. An asset
+   passes Gate 2 iff `p <= 0.002`. Unused allocations are never recycled.
+   Bonferroni's union bound controls family-wise error under arbitrary
+   cross-asset dependence, and fixed allocations make every decision final
+   regardless of result arrival order. Duplicate keys, a changed family
+   header, or a changed prior result are refusals.
+6. Reused-data confirmation is not the P11 path. If the untouched block proves
+   infeasible, execution stops for a new owner decision. Any later null-based
+   alternative must refit and replay, inside every null replicate, the complete
+   per-asset ordered sequence, first-failure stopping, selected-horizon rule and
+   Gate-2 statistic. Correcting only observed survivors on reused data is
+   forbidden.
+
+**Consequences.** At most 200 Gate-1 walks run, usually fewer; Gate 2 runs at
+most 25. Results report every Gate-1 stop, unrun horizon, selected horizon,
+Gate-2 p-value/decision, correction-ledger entry and failure, then stop. The
+implementation scope proposed for approval is one new child stage module,
+one new P11 JSON and focused child tests; existing `attempts.py` and its tests
+gain the generic fixed-family ledger. The P10 config gains only the standard
+MLflow sink, which is identity-excluded. Config pins will treat P10/P11 as the
+explicit 25-asset three-source cohort and assert its exact universe and
+`alpaca-sip-split{,-b,-c}` sources instead of forcing the smaller production
+cohort or rewriting P10's identity-bearing fields.

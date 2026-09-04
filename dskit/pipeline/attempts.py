@@ -55,6 +55,7 @@ __all__ = [
     "T_FLOOR",
     "TIER2_SEAM",
     "AttemptRegistry",
+    "FixedFamilyLedger",
     "bar_verdict",
     "bonferroni_t",
     "cell_id",
@@ -292,6 +293,217 @@ class AttemptRegistry:
             The family size ``K`` the bar is built for.
         """
         return len(self.cells(**match))
+
+
+class FixedFamilyLedger:
+    """Append immutable p-values under a fixed Bonferroni family.
+
+    The complete key family and alpha are written before any result. Each
+    key keeps its allocation even when it is never tested, so decisions are
+    valid under arbitrary dependence and final in any arrival order.
+
+    Parameters
+    ----------
+    path : str
+        JSONL shared with the attempt registry; typed rows do not count as
+        searched cells.
+    family : str
+        Stable family identity.
+    keys : sequence of str
+        Complete, unique hypothesis keys in frozen order.
+    alpha : float
+        Family-wise error level in ``(0, 1)``.
+
+    Examples
+    --------
+    Freeze two hypotheses, then confirm one::
+
+        ledger = FixedFamilyLedger("/tmp/attempts.jsonl", "confirm", ["A", "B"])
+        ledger.prepare()
+        ledger.record("A", 0.01)["passes"]  # True
+    """
+
+    _HEADER = "fixed_family_header"
+    _RESULT = "fixed_family_result"
+
+    def __init__(self, path, family, keys, alpha=0.05):
+        if not isinstance(path, (str, os.PathLike)) or not str(path):
+            raise ValueError("path must be a non-empty path")
+        if not isinstance(family, str) or not family:
+            raise ValueError("family must be a non-empty string")
+        if (
+            not isinstance(keys, (list, tuple))
+            or not keys
+            or any(not isinstance(key, str) or not key for key in keys)
+            or len(set(keys)) != len(keys)
+        ):
+            raise ValueError("keys must be a non-empty sequence of unique strings")
+        if (
+            isinstance(alpha, bool)
+            or not isinstance(alpha, (int, float))
+            or not math.isfinite(float(alpha))
+            or not 0.0 < float(alpha) < 1.0
+        ):
+            raise ValueError("alpha must be a finite number in (0, 1)")
+        self.path = str(path)
+        self.family = family
+        self.keys = tuple(keys)
+        self.alpha = float(alpha)
+
+    @property
+    def allocation(self):
+        """Return the fixed alpha assigned to every family key."""
+        return self.alpha / len(self.keys)
+
+    def _rows(self):
+        """Read this family's typed rows, ignoring ordinary attempts."""
+        rows = []
+        if not os.path.isfile(self.path):
+            return rows
+        with open(self.path, encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if (
+                    isinstance(row, dict)
+                    and row.get("record_kind") in {self._HEADER, self._RESULT}
+                    and row.get("family") == self.family
+                ):
+                    rows.append(row)
+        return rows
+
+    def _header(self):
+        """Build the one canonical family declaration."""
+        return {
+            "record_kind": self._HEADER,
+            "family": self.family,
+            "alpha": self.alpha,
+            "keys": list(self.keys),
+            "allocation": self.allocation,
+            "correction": "bonferroni",
+            "dependence": "arbitrary",
+        }
+
+    def _append(self, row):
+        """Append one canonical JSON row while the caller holds the lock."""
+        parent = os.path.dirname(self.path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        try:
+            line = json.dumps(row, sort_keys=True, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"ledger row must be finite JSON: {exc}") from exc
+        with open(self.path, "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+
+    def _ensure_header(self, rows):
+        """Create the header once or refuse any changed declaration."""
+        expected = self._header()
+        headers = [row for row in rows if row.get("record_kind") == self._HEADER]
+        if not headers:
+            self._append(expected)
+            return expected
+        if len(headers) != 1 or headers[0] != expected:
+            raise ValueError(f"fixed family {self.family!r} header changed")
+        return headers[0]
+
+    def prepare(self):
+        """Persist the family before any p-value arrives.
+
+        Returns
+        -------
+        dict
+            The immutable family header.
+        """
+        from dskit.journal.base import locked
+
+        directory = os.path.dirname(self.path) or "."
+        with locked(directory):
+            return self._ensure_header(self._rows())
+
+    def record(self, key, p_value, **fields):
+        """Append one final hypothesis result.
+
+        Parameters
+        ----------
+        key : str
+            One declared family key.
+        p_value : float
+            Raw p-value in ``[0, 1]``.
+        **fields
+            Immutable JSON evidence stored beside the decision.
+
+        Returns
+        -------
+        dict
+            Raw and adjusted p-values, allocation and final decision.
+
+        Raises
+        ------
+        ValueError
+            On an undeclared key, bad p-value, changed family, duplicate or
+            changed result, or reserved evidence field.
+        """
+        reserved = {
+            "record_kind", "family", "key", "p_value", "adjusted_p",
+            "allocation", "passes",
+        }
+        if key not in self.keys:
+            raise ValueError(f"key {key!r} is not in fixed family {self.family!r}")
+        if (
+            isinstance(p_value, bool)
+            or not isinstance(p_value, (int, float))
+            or not math.isfinite(float(p_value))
+            or not 0.0 <= float(p_value) <= 1.0
+        ):
+            raise ValueError("p_value must be a finite number in [0, 1]")
+        overlap = sorted(reserved & set(fields))
+        if overlap:
+            raise ValueError(f"evidence uses reserved field(s): {overlap}")
+        p_value = float(p_value)
+        row = {
+            "record_kind": self._RESULT,
+            "family": self.family,
+            "key": key,
+            "p_value": p_value,
+            "adjusted_p": min(len(self.keys) * p_value, 1.0),
+            "allocation": self.allocation,
+            "passes": p_value <= self.allocation,
+            **fields,
+        }
+        from dskit.journal.base import locked
+
+        directory = os.path.dirname(self.path) or "."
+        with locked(directory):
+            rows = self._rows()
+            self._ensure_header(rows)
+            prior = [
+                item
+                for item in rows
+                if item.get("record_kind") == self._RESULT and item.get("key") == key
+            ]
+            if prior:
+                if len(prior) == 1 and prior[0] == row:
+                    return prior[0]
+                raise ValueError(f"fixed family result for {key!r} changed or duplicated")
+            self._append(row)
+        return row
+
+    def results(self):
+        """Return immutable results by key after locking the header."""
+        self.prepare()
+        rows = self._rows()
+        found = {}
+        for row in rows:
+            if row.get("record_kind") != self._RESULT:
+                continue
+            key = row.get("key")
+            if key in found:
+                raise ValueError(f"fixed family result for {key!r} is duplicated")
+            found[key] = row
+        return found
 
 
 def session_totals(stamps, d, session_of=None):

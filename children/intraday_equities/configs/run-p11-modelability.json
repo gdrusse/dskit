@@ -1,6 +1,6 @@
 {
-  "name": "p10-25-asset-modelability",
-  "notes": "P10's single resumable three-gate study. The source-level cut is 2026-02-28. Every fit sees the same 25 split-adjusted SIP assets; Gate 3's score_symbols changes outputs only. Synthetic GROUP rows are suppressed. Memory strategy v5 transfers raw-list ownership, uses float32 arrays, persists preflight RSS, and scores fold-isolated read-only feature-cache mappings.",
+  "name": "p11-25-asset-modelability",
+  "notes": "P11's one resumable asset-local study through Gates 1 and 2 only. The source-level cut is 2026-02-28. Each fit trains on one of the exact 25 P10 assets; SPY remains tape-only label-reference data for the other 24. Gate 1 stops an asset at its first failed ordered horizon. Gate 2 tests only its selected horizon on untouched 2025-12-02 through 2026-02-28 data under one fixed dependence-valid family. META and GROUP are excluded.",
   "pipeline": {
     "universe": {
       "uses": "intraday_equities-universe",
@@ -165,65 +165,41 @@
   "outputs": {"run_root": "./pipeline_runs"},
   "stages": {
     "memory": {
-      "uses": "intraday_equities.modelability:MemoryPreflightStage",
-      "params": {"memory_limit_bytes": 18253611008}
-    },
-    "gate1_walks": {
-      "uses": "intraday_equities.modelability:Gate1WalksStage",
-      "inputs": {"preflight": "$memory.passed"},
-      "params": {"horizons": [1, 2, 3, 5, 10, 20, 30, 60]}
+      "uses": "intraday_equities.modelability_p11:MemoryPreflightStage",
+      "params": {
+        "assets": [
+          "AAPL", "JPM", "XOM", "WMT", "LLY", "SPY", "QQQ", "XLF", "XLV",
+          "XLE", "XLK", "XLP", "TSLA", "TQQQ", "NVDA", "AMD", "UPRO", "BAC",
+          "AMZN", "AVGO", "NFLX", "MSFT", "GOOGL", "SMH", "IWM"
+        ],
+        "memory_limit_bytes": 18253611008
+      }
     },
     "gate1": {
-      "uses": "intraday_equities.modelability:Gate1SelectStage",
-      "inputs": {"walks": "$gate1_walks.walks"},
+      "uses": "intraday_equities.modelability_p11:Gate1Stage",
+      "inputs": {"preflight": "$memory.passed"},
       "params": {
+        "assets": [
+          "AAPL", "JPM", "XOM", "WMT", "LLY", "SPY", "QQQ", "XLF", "XLV",
+          "XLE", "XLK", "XLP", "TSLA", "TQQQ", "NVDA", "AMD", "UPRO", "BAC",
+          "AMZN", "AVGO", "NFLX", "MSFT", "GOOGL", "SMH", "IWM"
+        ],
         "horizons": [1, 2, 3, 5, 10, 20, 30, 60],
+        "attempt_registry": "docs/decisioning/attempts.jsonl",
+        "alpha": 0.05
+      }
+    },
+    "gate2": {
+      "uses": "intraday_equities.modelability_p11:Gate2Stage",
+      "inputs": {"gate1": "$gate1.rows"},
+      "params": {
         "assets": [
           "AAPL", "JPM", "XOM", "WMT", "LLY", "SPY", "QQQ", "XLF", "XLV",
           "XLE", "XLK", "XLP", "TSLA", "TQQQ", "NVDA", "AMD", "UPRO", "BAC",
           "AMZN", "AVGO", "NFLX", "MSFT", "GOOGL", "SMH", "IWM"
         ],
         "attempt_registry": "docs/decisioning/attempts.jsonl",
-        "alpha": 0.05
-      }
-    },
-    "gate2": {
-      "uses": "intraday_equities.modelability:Gate2Stage",
-      "inputs": {
-        "walks": "$gate1_walks.walks",
-        "gate1": "$gate1.rows"
-      },
-      "params": {
-        "horizons": [1, 2, 3, 5, 10, 20, 30, 60],
-        "assets": [
-          "AAPL", "JPM", "XOM", "WMT", "LLY", "SPY", "QQQ", "XLF", "XLV",
-          "XLE", "XLK", "XLP", "TSLA", "TQQQ", "NVDA", "AMD", "UPRO", "BAC",
-          "AMZN", "AVGO", "NFLX", "MSFT", "GOOGL", "SMH", "IWM"
-        ],
-        "n_boot": 10000,
-        "seed": 0,
-        "alpha": 0.05
-      }
-    },
-    "gate3_walks": {
-      "uses": "intraday_equities.modelability:Gate3WalksStage",
-      "inputs": {"gate2": "$gate2.rows"},
-      "params": {"seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]}
-    },
-    "gate3": {
-      "uses": "intraday_equities.modelability:Gate3ResultStage",
-      "inputs": {
-        "gate2": "$gate2.rows",
-        "gate2_cells": "$gate2.cells",
-        "walks": "$gate3_walks.walks"
-      },
-      "params": {
-        "assets": [
-          "AAPL", "JPM", "XOM", "WMT", "LLY", "SPY", "QQQ", "XLF", "XLV",
-          "XLE", "XLK", "XLP", "TSLA", "TQQQ", "NVDA", "AMD", "UPRO", "BAC",
-          "AMZN", "AVGO", "NFLX", "MSFT", "GOOGL", "SMH", "IWM"
-        ],
-        "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+        "family": "p11-asset-local-confirmation-2026-02-28",
         "alpha": 0.05
       }
     }
