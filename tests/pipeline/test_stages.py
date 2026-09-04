@@ -1,4 +1,4 @@
-"""ADR-0075 staged planning and journal-authoritative resume tests."""
+"""ADR-0081 staged planning and journal-authoritative resume tests."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""P10's child-owned 25-asset modelability stages (ADR-0075)."""
+"""P10's child-owned 25-asset modelability stages (ADR-0081)."""
 
 from __future__ import annotations
 

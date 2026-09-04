@@ -1,4 +1,4 @@
-"""P10 modelability orchestration tests (ADR-0075)."""
+"""P10 modelability orchestration tests (ADR-0081)."""
 
 from __future__ import annotations
 

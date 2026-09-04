@@ -3571,7 +3571,7 @@ would be the alarming direction.
 
 ---
 
-## ADR-0075 — A study resumes from journaled stages, and filtering never changes its fit
+## ADR-0081 — A study resumes from journaled stages, and filtering never changes its fit
 
 **Status:** accepted (2026-09-03; owner approved staged P10 execution,
 study-wide correction, GROUP suppression and the memory strategy)

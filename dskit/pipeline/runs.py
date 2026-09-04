@@ -775,7 +775,7 @@ def score_walk(summary_dir, alpha=0.05, group="GROUP"):
         One-sided level for both tests, in ``(0, 1)``.
     group : str
         The label the cross-sectional row is reported under. ``None``
-        suppresses synthetic aggregation (ADR-0075).
+        suppresses synthetic aggregation (ADR-0081).
 
     Returns
     -------
@@ -1362,7 +1362,7 @@ def walk_cells(summary_dir, key=None, session_of=None, alpha=0.05, group="GROUP"
         One-sided level for the per-cell skill test, in ``(0, 1)``.
     group : str
         Label for the cross-sectional row, which is its own outcome unit.
-        ``None`` suppresses that synthetic cell (ADR-0075).
+        ``None`` suppresses that synthetic cell (ADR-0081).
 
     Returns
     -------
@@ -1496,7 +1496,7 @@ def score_bar(
     family_of : callable or None
         Strategy mapping one collected cell to its family key. The default
         keeps one family per series; a constant strategy makes one study-wide
-        family without changing :func:`max_bar` (ADR-0075).
+        family without changing :func:`max_bar` (ADR-0081).
 
     Returns
     -------

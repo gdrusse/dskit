@@ -595,7 +595,7 @@ class NodeSpec:
 
 @dataclass(frozen=True, slots=True)
 class StageSpec:
-    """One resumable study stage (ADR-0075).
+    """One resumable study stage (ADR-0081).
 
     Parameters
     ----------

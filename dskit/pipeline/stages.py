@@ -1,4 +1,4 @@
-"""Journal-backed staged execution for long, resumable studies (ADR-0075)."""
+"""Journal-backed staged execution for long, resumable studies (ADR-0081)."""
 
 from __future__ import annotations
 

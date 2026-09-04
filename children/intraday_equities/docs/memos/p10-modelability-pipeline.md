@@ -22,7 +22,7 @@ config, code, attempt ledger, journal, ADR, and this memo are committed.
 
 ## Implementation
 
-ADR-0075 adds a generic staged document/runner. Each stage has a stable token,
+ADR-0081 adds a generic staged document/runner. Each stage has a stable token,
 digest-checked JSON artifact, and append-only journal row. Resume trusts only
 matching journal plus artifact evidence. Partial child walks remain refusals.
 
