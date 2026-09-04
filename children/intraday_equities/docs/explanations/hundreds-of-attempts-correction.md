@@ -1,5 +1,8 @@
 # Hundreds-of-attempts correction: a worked toy example
 
+**No longer used.** Gate 2 is retired as a stock-selection filter under
+ADR-0083. HFDR is instead controlled inside the MIO.
+
 ## TL;DR
 
 Trying hundreds of model variations makes an accidental winner likely, so this

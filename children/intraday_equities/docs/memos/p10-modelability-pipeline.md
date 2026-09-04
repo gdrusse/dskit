@@ -1,5 +1,8 @@
 # P10 modelability pipeline handoff
 
+> **No longer used.** Gate 2 and Gate 3 below are historical execution
+> evidence, not current stock-selection policy. ADR-0083 places HFDR in MIO.
+
 Completed 2026-09-04 under document
 `b7c8efe93664c65a71407f81cd903e47503976c6d6849b9e7bb67b6089e6d8dd`.
 The durable result is

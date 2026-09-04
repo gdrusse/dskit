@@ -1,5 +1,8 @@
 # P11 asset-local modelability pipeline
 
+> **No longer used.** Gate 2 below is historical execution evidence, not
+> current stock-selection policy. ADR-0083 places HFDR in MIO.
+
 ## TL;DR
 
 P11 tested whether a separate model for each asset could survive an ordered

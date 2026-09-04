@@ -1,17 +1,22 @@
 # Re-entry
 
+**Current policy:** Gate 2 is no longer used for stock selection. ADR-0083
+locks Gate 1 (A2822) and HFDR-in-MIO (A2850) on the owner path. P10/P11
+Gate-2 material below is historical evidence only.
+
 Current wrap: 2026-09-04 on `p11-asset-local-gates-1-2`, based on synchronized
 `main`. P11 is complete through Gates 1 and 2; no pipeline is running and Gate
 3 was neither configured nor run.
 
-Last verification: 60 focused tests passed; Ruff and `git diff --check` are
-clean; the new `memo` skill passes `quick_validate.py`. The full suite was
-not rerun. One unrelated pre-existing config pin still rejects the 2020 start
-in `run-pb-s01-h01-lgbm-cross.json` against 2018.
+Last verification: 35 targeted journal/skeleton tests and the prior 60 P11
+tests passed; `git diff --check` is clean. The `memo` skill passes
+`quick_validate.py`. The full suite was not rerun. One unrelated pre-existing
+config pin still rejects the 2020 start in
+`run-pb-s01-h01-lgbm-cross.json` against 2018.
 
 This branch also adds the reusable `memo` skill and the P11 execution memo.
 
-## PICK UP HERE: review P11 asset-local Gates 1 and 2
+## PICK UP HERE: design HFDR-in-MIO implementation
 
 ADR-0082 is accepted. P11 trains one model per asset, stops the ordered
 `h=1,2,3,5,10,20,30,60` search at the first Gate-1 failure, and confirms only
@@ -26,8 +31,9 @@ other 12 assets failed Gate 1 at h1 and never entered confirmation. Full rows
 and decision math are in `children/intraday_equities/docs/memos/` plus the P11
 staged artifacts and append-only decision ledgers.
 
-Next step: review this branch and merge it when approved. No design decision is
-awaiting the owner; there is no fallback continuation after the Gate-2 result.
+Next step: design the predictive `pi_i` model and HFDR MIO seam under a
+separately approved ADR. No HFDR implementation or validation run exists yet;
+do not restore Gate 2 as a stock-selection filter.
 
 ## Landed this wrap: pmquant child (PR #7)
 

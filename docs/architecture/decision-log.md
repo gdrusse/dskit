@@ -3757,6 +3757,9 @@ read is lost.
 **Status:** accepted (2026-09-03; owner approved staged P10 execution,
 study-wide correction, GROUP suppression and the memory strategy)
 
+**Current policy:** Gate 2 and Gate 3 below are no longer used for stock
+selection; ADR-0083 supersedes those selection-policy portions.
+
 **Context.** P10 needs one JSON to coordinate a memory preflight, eight
 horizon walks, two statistical gates, up to nineteen shuffled refits per
 surviving horizon, and one final per-asset result. The existing seams are
@@ -3888,6 +3891,9 @@ seed coverage, cutoff/source pins and memory-gate ordering.
 **Status:** accepted (2026-09-04; owner approved P11 asset-local fitting,
 ordered stopping, untouched confirmation and fixed-family correction)
 
+**Current policy:** Gate 2 below is no longer used for stock selection;
+ADR-0083 supersedes that selection-policy portion.
+
 **Context.** P10 fit one 25-asset model at every horizon, ran all 200
 asset-horizon cells, then corrected that whole reused-data family. That does
 not answer whether one asset is forecastable from a model trained only on
@@ -3958,3 +3964,36 @@ MLflow sink, which is identity-excluded. Config pins will treat P10/P11 as the
 explicit 25-asset three-source cohort and assert its exact universe and
 `alpaca-sip-split{,-b,-c}` sources instead of forcing the smaller production
 cohort or rewriting P10's identity-bearing fields.
+
+---
+
+## ADR-0083 - Gate 1 selects modelable stocks; HFDR is constrained in MIO
+
+**Status:** accepted (2026-09-04; owner approved option A)
+
+**Context.** Gate 2 applies a hard multiple-testing filter before portfolio
+construction. That controls discovery counts, not the capital actually exposed
+to false signals. A predictive model can instead estimate, for each Gate-1
+survivor, `pi_i = P(signal i is false | information available to the MIO)`.
+The MIO then observes both expected return and `pi_i` when choosing holdings.
+
+**Decision.** Gate 1 remains the locked stock-modelability gate. Gate 2 is no
+longer used for stock selection. Its completed P10/P11 runs remain immutable
+historical evidence and are not reinterpreted.
+
+HFDR is a locked MIO constraint. For selected gross capital `x_i >= 0`, the MIO
+must enforce
+
+`sum_i(x_i * pi_i) <= q * sum_i(x_i)`.
+
+Thus names and capital are chosen jointly while expected false-signal capital
+is at most fraction `q` of invested gross capital. This is not weighted
+Benjamini-Hochberg and no BH prefilter runs before the MIO. The `pi_i` model,
+calibration sample, conservative treatment of estimation error, gross-exposure
+definition and `q` must be prospectively pinned and validated before capital is
+eligible; the optimizer must not infer or backfit them from chosen holdings.
+
+**Consequences.** Decisioning will lock Gate 1 followed by HFDR-in-MIO. Active
+documentation will mark Gate 2 "No longer used"; historical Gate-2 documents
+will retain their evidence beneath that notice. Implementing the `pi_i` model
+or MIO constraint requires a separately approved design and validation run.
