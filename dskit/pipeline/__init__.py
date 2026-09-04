@@ -189,7 +189,7 @@ from dskit.pipeline.runs import (
 #: imports (idempotent — a re-import never re-registers): stat_test,
 #: validate and run-report as OWNED doctrine kinds, plus filter /
 #: derive / event-grid / concat / join / event-bank / eligibility / banking-report /
-#: hpo-grid / table-file / table-write.
+#: hpo-grid / table-file / table-write / records-write.
 #:
 #: EVERY kinds module's register() must be called here: the flow verbs
 #: and the banking chain ship from two modules, and a document naming a

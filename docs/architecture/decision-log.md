@@ -4008,3 +4008,47 @@ literal tuple that would have had to grow.
 the failing-count contract and the result shape are unchanged; existing
 suites hash identically. Semantics stay the declared seam: the rule counts
 values, it does not know what an event is.
+
+---
+
+## ADR-0085 — `records-write`: the record-stream sibling of `table-write`, over one shared write discipline
+
+**Status:** proposed (2026-09-04; owner directed in session: close the
+small TODO items)
+
+**Context.** `table-write` persists a MAPPING atomically, refuses to
+clobber, refuses to create a tree, and proves what it wrote. A run also
+produces STREAMS a later document must pin — the rows a fold scored, a
+resolved universe as records — and the only writer takes a mapping.
+pmquant carried five child-side write kinds for this (TODO §13 item 9).
+Copying `TableWrite` for a second payload shape would put the no-clobber
+rule, the atomic replace and the provenance block in two places with
+nothing pinning them — the defect class CLAUDE.md's "Duplication that
+diverges" names.
+
+**Decision.** `kinds_table.py` gains an abstract base, `FileWrite` (role
+`report`): the four knobs (`path`, `source`, `overwrite`, `expect`), the
+`expect` cross-check before any byte lands, the clobber and missing-parent
+refusals, the `~` expansion, the atomic temp-fsync-replace, and the
+provenance `{path, source, retrieved, sha256, <unit>, bytes}` live there
+ONCE. A member supplies `render(payload) -> (bytes, count)`,
+`payload_problems(payload)`, its port and its unit; `emit` shapes the
+outputs. `TableWrite` becomes the mapping member (behaviour unchanged;
+its refusals keep their words). `RecordsWrite` (kind `records-write`,
+outputs `path`/`provenance`/`metrics`) is the stream member: input port
+`records` (a list or tuple of mapping rows; a one-shot iterable refused by
+name), one JSON object per line in the canonical spelling — sorted keys,
+compact separators, ASCII, trailing newline — so identical rows write
+identical bytes; `metrics` carries `{rows, bytes, sha256}` so the digest
+reaches the run record and the sinks. A row that is not a mapping, a NaN
+or ±Infinity, or a value JSON has no form for is refused BY NAME (row
+index, dotted field path) and nothing reaches disk; both writers share
+that rule, so `table-write` now names the entry instead of surfacing the
+codec's message.
+
+**Consequences.** `DEFAULT_NODE_KINDS` grows by one; no existing kind,
+document or hash moves. Deferred, recorded here so they are not forgotten:
+an APPEND mode and a refuse-on-shrink guard for `overwrite: true` (both
+pmquant asks) — each is a second write semantics and wants its own
+ruling; a `records-file` reader mirroring `table-file` lands when a
+document needs to pin a stream by digest.

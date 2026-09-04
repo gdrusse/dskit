@@ -45,7 +45,7 @@ from dskit.pipeline.kinds_flow import Concat, Derive, EventGrid, Filter, Join
 from dskit.pipeline.kinds_report import RunReport
 from dskit.pipeline.kinds_search import HpoGrid, TopTrials
 from dskit.pipeline.kinds_stats import StatTest, Validate
-from dskit.pipeline.kinds_table import TableFile, TableWrite
+from dskit.pipeline.kinds_table import RecordsWrite, TableFile, TableWrite
 from dskit.pipeline.node import NodeContext
 
 #: The toolkit kinds, paired explicitly (see module docstring
@@ -66,6 +66,7 @@ TOOLKIT_NODE_KINDS = (
     ("derive", Derive),
     ("table-file", TableFile),
     ("table-write", TableWrite),
+    ("records-write", RecordsWrite),
     ("standardize", Standardize),
     ("apply-transform", ApplyTransform),
 )
@@ -90,9 +91,11 @@ TOOLKIT_ROLES = {
     "join": "transform",
     "derive": "transform",
     # The table pair: the reader supplies a value (transform), the
-    # writer materialises one and proves it (report).
+    # writer materialises one and proves it (report) — as does the
+    # stream writer beside it (ADR-0085).
     "table-file": "transform",
     "table-write": "report",
+    "records-write": "report",
     # The fitted-transform family: the scaler LEARNS (a trainable role,
     # so ADR-0038's structural bar covers it); the apply kind only
     # projects, so it is an ordinary transform.
@@ -354,6 +357,21 @@ def probes(tmp_path):
             required=("path", "source"),
             inputs={"table": {"AAA": 1, "BBB": 2, "CCC": 3}},
             stream_ports=(),  # the table is a materialized mapping
+            runnable=True,
+        ),
+        # The stream sibling: one canonical JSON object per line and the
+        # digest of the exact bytes in metrics; same parent-exists /
+        # target-absent fixture, and ``records`` IS a stream port, so
+        # the one-shot check applies to it.
+        "records-write": NodeProbe(
+            params={
+                "path": str(tmp_path / "produced" / "records.jsonl"),
+                "source": "the conformance run's scored rows",
+                "expect": 3,
+            },
+            required=("path", "source"),
+            inputs={"records": records},
+            stream_ports=("records",),
             runnable=True,
         ),
         "hpo-grid": NodeProbe(

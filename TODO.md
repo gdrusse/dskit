@@ -532,8 +532,13 @@ ADR yet, and none blocks the child from starting:
       archives, ~10× on parquet-class). **Landed via ADR-0036 (2026-08-26;
       the ratified Tier-B sunset path — pmquant's Tier-B bypass retires
       onto it when the child builds).**
-- [ ] 9. A generic `records-write` kind beside `table-write`
-      (`kinds_table.py`).
+- [x] 9. A generic `records-write` kind beside `table-write`
+      (`kinds_table.py`). **Landed via ADR-0085 (2026-09-04): `records-write`
+      writes canonical newline-JSON (sorted keys, compact, one row per
+      line) with the bytes' digest in `metrics`, refusing a frozen envelope
+      / NaN / Infinity by row and field; both writers now share the
+      `FileWrite` base (one no-clobber, one atomic replace). Deferred to
+      their own rulings: append mode and refuse-on-shrink.**
 - [x] 10. A generic onboarding-observations reader kind — the second child
       to need it. **Half landed via ADR-0037 (2026-08-26): the function
       seam (`observations.scan_stream`/`stream_digest`) exists.** **Landed
