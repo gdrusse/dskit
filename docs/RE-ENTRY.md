@@ -5,8 +5,11 @@ Current wrap: 2026-09-04 on `p11-asset-local-gates-1-2`, based on synchronized
 3 was neither configured nor run.
 
 Last verification: 60 focused tests passed; Ruff and `git diff --check` are
-clean. The full suite was not rerun. One unrelated pre-existing config pin
-still rejects the 2020 start in `run-pb-s01-h01-lgbm-cross.json` against 2018.
+clean; the new `memo` skill passes `quick_validate.py`. The full suite was
+not rerun. One unrelated pre-existing config pin still rejects the 2020 start
+in `run-pb-s01-h01-lgbm-cross.json` against 2018.
+
+This branch also adds the reusable `memo` skill and the P11 execution memo.
 
 ## PICK UP HERE: review P11 asset-local Gates 1 and 2
 
@@ -20,7 +23,8 @@ Gate 1 selected 13 assets: LLY h3, QQQ h1, XLF h3, XLE h1, XLK h5, TQQQ h3,
 NVDA h2, UPRO h60, BAC h1, AVGO h10, NFLX h3, SMH h5, and IWM h5. All 13
 failed Gate 2; UPRO was closest (raw p=0.0132419, adjusted p=0.331047). The
 other 12 assets failed Gate 1 at h1 and never entered confirmation. Full rows
-are in the P11 staged artifacts and append-only decision ledgers.
+and decision math are in `children/intraday_equities/docs/memos/` plus the P11
+staged artifacts and append-only decision ledgers.
 
 Next step: review this branch and merge it when approved. No design decision is
 awaiting the owner; there is no fallback continuation after the Gate-2 result.
