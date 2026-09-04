@@ -528,6 +528,9 @@ ADR yet, and none blocks the child from starting:
       distinct non-null values are out of bounds (ungrouped, the stream is
       the one group); the "at least one bound" check is now derived from
       the rule table.**
+      **Skeptic closeout:** `unique`, `accepted_values`, and
+      `distinct_count` now compare canonical JSON identities, preserving
+      bool/int/float distinctions and accepting structured JSON values.
 - [x] 8. Compressed snapshot payloads in onboarding (~96× on gz-class
       archives, ~10× on parquet-class). **Landed via ADR-0036 (2026-08-26;
       the ratified Tier-B sunset path — pmquant's Tier-B bypass retires
@@ -539,6 +542,9 @@ ADR yet, and none blocks the child from starting:
       / NaN / Infinity by row and field; both writers now share the
       `FileWrite` base (one no-clobber, one atomic replace). Deferred to
       their own rulings: append mode and refuse-on-shrink.**
+      **Skeptic closeout:** the writer refuses distinct input keys that
+      stringify to the same output name before any filesystem mutation, so
+      no field can be silently dropped.
 - [x] 10. A generic onboarding-observations reader kind — the second child
       to need it. **Half landed via ADR-0037 (2026-08-26): the function
       seam (`observations.scan_stream`/`stream_digest`) exists.** **Landed
@@ -556,6 +562,9 @@ ADR yet, and none blocks the child from starting:
       restates a key is refused BY NAME. `pivot` is ruled a separate,
       later kind — a shape change with no reduction, and a composite key
       has no JSON-object spelling.**
+      **Skeptic closeout:** group identities and `nunique` preserve JSON type
+      identity, and NaN / positive or negative Infinity keys are refused
+      before deterministic ordering.
 - [ ] 12. Search-seam expressiveness for seed-ensemble studies + per-fold
       node-param binding (`kinds_search.py`, `document.py`/`driver.py`).
 - [x] 13. Val-metric checkpoint selection in the torch pack (a `monitor` +
@@ -1106,6 +1115,9 @@ is the integration.
       **Landed via ADR-0082 (2026-09-04): the envelope gained a `FILE`
       message, the `huggingface` connector acquires one repo at one commit
       as a WORM snapshot, and documents pin it by manifest hash.**
+      **Skeptic closeout:** the cursor includes `repo_id` with the resolved
+      commit and filters, so two repositories at the same commit sha cannot
+      alias as "nothing new."
       Blocking; everything else waits on it. A bare hub name
       (`"bert-base-uncased"`) is not content-addressed — the weights behind
       it can change while the document hash does not, so two runs would claim
@@ -1126,6 +1138,8 @@ is the integration.
       `tensor`, `rows`/`metrics`) — `text_field` → pooled embedding columns
       beside `carry_fields`; `transformers-classify` for the sentiment
       score.**
+      **Skeptic closeout:** classifier labels must name contiguous ids
+      `0..width-1`, preventing shifted logits from being silently mislabeled.
       has train and signal but nothing turning text into FEATURE ROWS for a
       downstream model. For markets work that is the common case: news,
       filings or headlines → embeddings or a sentiment score → columns joined
