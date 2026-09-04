@@ -25,7 +25,9 @@ from intraday_equities.nodes import (
     _DAY_MS,
     NoInformationScan,
     _DayScramble,
+    _session_offsets,
     _scan_fold_stamped,
+    _walk_no_information_series,
 )
 
 MINUTE = 60_000
@@ -196,13 +198,75 @@ def test_a_scrambled_fold_keeps_the_real_folds_geometry():
         "a scrambled walk must train on the same number of rows as the "
         "real one, or its skill is not comparable with the real one's"
     )
+    assert np.array_equal(shuffled[0], plain[0]), (
+        "scrambling labels must not move or rebuild the training features"
+    )
     assert shuffled[2].shape == plain[2].shape
+    assert np.array_equal(shuffled[2], plain[2]), (
+        "scrambling labels must not move or rebuild the validation features"
+    )
     assert np.array_equal(shuffled[4], plain[4]), (
         "the scored instants are the real walk's instants"
     )
     assert not np.allclose(shuffled[3], plain[3]), (
         "the validation labels must actually have moved"
     )
+
+
+def test_session_offsets_handle_rows_that_are_not_day_sorted():
+    """The uncommon fallback remains correct without rescanning each day."""
+    stamps = np.asarray([
+        _DAY_MS + 2 * MINUTE,
+        3 * MINUTE,
+        _DAY_MS + 5 * MINUTE,
+        7 * MINUTE,
+    ], dtype=np.int64)
+    days = stamps // _DAY_MS
+    assert np.array_equal(
+        _session_offsets(stamps, days),
+        np.asarray([0, 0, 3 * MINUTE, 4 * MINUTE], dtype=np.int64),
+    )
+
+
+def test_pooled_fold_parts_avoid_a_second_symbol_scramble(monkeypatch):
+    """Scoring reuses the pooled fold arrays instead of rebuilding them."""
+    stamps = _tape([0, 1, 2, 3, 4, 5, 6, 7])
+    steps = np.random.default_rng(1).normal(0.0, 0.01, stamps.size)
+    item = _prepared("LLY", stamps, 100.0 * np.exp(np.cumsum(steps)))
+    cuts = dict(
+        train_end=4 * _DAY_MS - 1,
+        val_start=4 * _DAY_MS,
+        val_end=7 * _DAY_MS - 1,
+        train_start=0,
+    )
+    scramble = _DayScramble.from_prepared(6, [item])
+    original = _DayScramble.apply
+    calls = []
+
+    def counted(self, *args, **kwargs):
+        calls.append(1)
+        return original(self, *args, **kwargs)
+
+    class ZeroModel:
+        calls = 0
+
+        @staticmethod
+        def predict(x):
+            ZeroModel.calls += 1
+            return np.zeros(x.shape[0], dtype=np.float64)
+
+    monkeypatch.setattr(_DayScramble, "apply", counted)
+    parts = {}
+    _scan_fold_stamped([item], lead=1, scramble=scramble, parts=parts, **cuts)
+    assert len(calls) == 1
+    key = ("LLY", 1)
+    predictions = {key: np.zeros(parts[key][1].shape[0], dtype=np.float64)}
+    _walk_no_information_series(
+        item, ZeroModel(), [1], period_minutes=1,
+        scramble=scramble, parts=parts, predictions=predictions, **cuts,
+    )
+    assert len(calls) == 1, "the symbol scorer must reuse the pooled build"
+    assert ZeroModel.calls == 0, "the scorer must reuse the pooled prediction"
 
 
 def test_the_knob_is_declared_and_checked():

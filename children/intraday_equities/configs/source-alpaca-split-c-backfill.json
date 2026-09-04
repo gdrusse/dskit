@@ -1,0 +1,26 @@
+{
+  "notes": "Third immutable research cohort. It preserves the established split-adjusted SIP minute-bar window and hard cut; a separate source prevents completed cursors from suppressing this pull. BAC strengthens the JPM/XLF financial lead-lag block.",
+  "symbols": [
+    "UPRO",
+    "BAC",
+    "AMZN",
+    "AVGO",
+    "NFLX",
+    "MSFT",
+    "GOOGL",
+    "SMH",
+    "IWM"
+  ],
+  "start": "2016-01-01",
+  "end": "2026-02-28T23:59:59+00:00",
+  "feed": "sip",
+  "adjustment": "split",
+  "timeframe": [
+    1,
+    "Minute"
+  ],
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

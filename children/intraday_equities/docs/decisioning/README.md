@@ -304,6 +304,9 @@ Hooks never write it. Pytest does not record. A child without
 | A0263 | acquire | register-source alpaca-sip-split-b | 2026-09-03T22:09:48+00:00 | --root ./ob --source  --stream  --mode | be324d792ab0a28baaa749d5ae735c8342e25546a7fa718753acca02a22be2c1 | ./ob | connector=intraday_equities.connectors:AlpacaBars |
 | A0264 | acquire | register-source alpaca-sip-split-b | 2026-09-03T22:09:48+00:00 | /home/russell/dskit/.venv/bin/python -m dskit.onboarding register-source alpaca-sip-split-b --root ./ob --catalog-source alpaca-sip-source --connector intraday_equities.connectors:AlpacaBars --config @configs/source-alpaca-split-b-backfill.json --activate |  | ./ob | connector=intraday_equities.connectors:AlpacaBars; second cohort TSLA TQQQ NVDA AMD, same window and knobs as alpaca-sip-split (research: second-cohort note 2026-09-03); exit 0 |
 | A0265 | acquire | backfill alpaca-sip-split-b/bars | 2026-09-03T22:16:37+00:00 | --root ./ob --source alpaca-sip-split-b --stream bars --mode backfill | f30a756e7cf75ccc82ae8096199a6d1cb3b1d423da6a8e51080c26b7f034fa72 | ./ob |  |
+| A0266 | acquire | register-source alpaca-sip-split-c | 2026-09-04T02:20:49+00:00 | --root ./ob --source  --stream  --mode | f7a6cc31f75fc7a0ac885d0b920ceb7ccbdc4cba8d428e073c42813700f31812 | ./ob | connector=intraday_equities.connectors:AlpacaBars |
+| A0267 | acquire | backfill alpaca-sip-split-c/bars | 2026-09-04T02:31:26+00:00 | --root ./ob --source alpaca-sip-split-c --stream bars --mode backfill | aaa9e1d7f979e9cb282e99aedf26fc747f4729e6d2ae37da3d42958edba563f8 | ./ob |  |
+| A0268 | research | cohort-c-nine-candidates-frozen-before-modelability-gates | 2026-09-04T02:37:16+00:00 | Cohort C: nine candidates frozen before modelability gates | docs/research/cohort-c-nine-candidates-frozen-before-modelability-gates.md | docs/research/cohort-c-nine-candidates-frozen-before-modelability-gates.md |  |
 
 ## Path to Production
 

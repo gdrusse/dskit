@@ -1,6 +1,8 @@
 # Re-entry
 
-Recovery wrap, 2026-09-03: second-cohort Alpaca SIP bars (TSLA, TQQQ, NVDA, AMD) were researched, registered, and backfilled as `alpaca-sip-split-b`. Focused configuration tests: 28 passed; one known pre-existing start-date assertion still fails in `run-pb-s01-h01-lgbm-cross.json`.
+Current wrap, 2026-09-03: UPRO, BAC, AMZN, AVGO, NFLX, MSFT, GOOGL, SMH,
+and IWM were registered and backfilled as `alpaca-sip-split-c`: 12,213,670
+verified bars, zero skipped, zero cutoff violations. Disk inventory is 25 assets.
 Codex migration wrap: project-local AGENTS.md guides, session-start fast-forward pull hook, and portable skills were added under .cursor/.
 
 Refreshed 2026-09-03, end of the horizon-search session. On `main`,
@@ -13,6 +15,39 @@ beat simply guessing the average?** That distance is the "look-ahead".
 ---
 
 # ▶ PICK UP HERE
+
+## Approved direction, conditional on the skeptic's fixes
+
+The nine-candidate backfill is complete. Source `alpaca-sip-split-c` has config
+hash `f7a6cc31f75fc7a0ac885d0b920ceb7ccbdc4cba8d42813700f31812`; it contains
+exactly UPRO, BAC, AMZN, AVGO, NFLX, MSFT, GOOGL, SMH, and IWM, and no META.
+
+One **study pipeline document** coordinates all 25 individual stock/ETF targets.
+It keeps one identical 25-asset pooled training universe throughout and
+suppresses the old synthetic `GROUP` outcome.
+
+Gate 1 fits eight separate horizon models for
+`{1, 2, 3, 5, 10, 20, 30, 60}` and registers all 200 asset-horizon cells before
+filtering. An asset failing at one minute gets no horizon; otherwise it keeps
+its furthest consecutive Gate-1 pass.
+
+Gate 2 must change from one correction per asset to one study-wide correction
+over all 200 cells. A failure does not fall back to a shorter horizon. Gate 3
+uses seeds 0–18 and refits the identical 25-asset model at each unique surviving
+horizon; only the scored outputs are filtered.
+
+The skeptic's other blocking finding is memory: five targets used 13.7 GB on a
+17 GB machine, so a one-fold 25-asset preflight must pass before any full walk.
+If it fails, the implementation must stream/use float32 or reuse one pooled fit
+across bounded scoring batches; it must never shrink the training universe.
+
+The current engine cannot yet resume one JSON across completed walk, bar, and
+shuffle stages, so the ADR must add generic staged orchestration inside the
+pipeline structure. Every stage and child walk still uses the existing journal;
+there is no sidecar manifest. P10 in `docs/plans/2026-09-horizon-search.md` is
+the full working plan. Next:
+inventory the seams, write the required ADR, wait for approval, implement,
+preflight memory, then run. The design is a conditional GO, not yet executable.
 
 ## The answer as it stands
 
@@ -283,21 +318,24 @@ listed under gap 6 above.
 
 ## Next steps, in priority order
 
-1. **Shuffle-test the group's two-minute cell** — the one survivor with
+1. **Build the 25-asset funnel:** inventory the pipeline seams, write and approve
+   its ADR, implement the staged pipeline, pass the 25-asset memory preflight,
+   then execute Gates 1–3 exactly as P10 specifies.
+2. **Shuffle-test the group's two-minute cell** — the one survivor with
    no luck check. Nineteen walks, about two and a half hours.
-2. **Run the model shortlist at one-minute rows, three minutes ahead.**
+3. **Run the model shortlist at one-minute rows, three minutes ahead.**
    It is the largest unrun block and the only fair test of bigger models
    we have, and the only remaining candidate for pushing past three
    minutes.
-3. **Get buy and sell prices for JPMorgan, Walmart and Apple**, then
+4. **Get buy and sell prices for JPMorgan, Walmart and Apple**, then
    repeat the price-definition check across all five names.
-4. **Push row spacing below one minute**, since spacing is the one lever
+5. **Push row spacing below one minute**, since spacing is the one lever
    that has actually worked.
-5. **Extend Lilly's luck check from nineteen shuffles toward ninety-nine**
+6. **Extend Lilly's luck check from nineteen shuffles toward ninety-nine**
    if a stronger statement is wanted. It will not change the direction.
-6. **Fill the 9 unrun five-minute cells** — low value, but it closes the
+7. **Fill the 9 unrun five-minute cells** — low value, but it closes the
    grid honestly.
-7. **Fix the config-hygiene failure** in gap 6.
-8. **Get the 20 proposed decision records ratified or rejected** —
+8. **Fix the config-hygiene failure** in gap 6.
+9. **Get the 20 proposed decision records ratified or rejected** —
    ADR-0002, ADR-0004, ADR-0005, ADR-0006 and ADR-0059 through
    ADR-0074.

@@ -2904,12 +2904,16 @@ def _mspe(y, yhat):
     return float(np.mean((y - yhat) ** 2))
 
 
-def _fit_split_metrics(model, train_x, train_y, val_x, val_y):
+def _fit_split_metrics(
+    model, train_x, train_y, val_x, val_y, prediction_cache=None,
+):
     """Train vs val MSPE, Spearman IC, and ŷ spread at the training lead.
 
     <split>_yhat_sd is the forecast's own standard deviation. Zero
     means the estimator collapsed to a constant and no rank metric on it
     carries information.
+    ``prediction_cache``, when supplied, receives the two batch
+    predictions so downstream per-symbol scoring can reuse them.
     """
     import numpy as np
 
@@ -2919,8 +2923,12 @@ def _fit_split_metrics(model, train_x, train_y, val_x, val_y):
             out[f"{prefix}_mspe"] = 0.0
             out[f"{prefix}_ic"] = 0.0
             out[f"{prefix}_yhat_sd"] = 0.0
+            if prediction_cache is not None:
+                prediction_cache[prefix] = np.zeros(y.size, dtype=np.float64)
             continue
         hat = np.asarray(model.predict(x), dtype=np.float64)
+        if prediction_cache is not None:
+            prediction_cache[prefix] = hat
         out[f"{prefix}_mspe"] = _mspe(y, hat)
         out[f"{prefix}_ic"] = float(_spearman(y, hat))
         out[f"{prefix}_yhat_sd"] = float(np.std(hat)) if hat.size else 0.0
@@ -4004,15 +4012,13 @@ class _DayScramble:
         import numpy as np
 
         day = stamps // _DAY_MS
-        offset = np.zeros(stamps.shape, dtype=np.int64)
-        for one in np.unique(day):
-            here = day == one
-            offset[here] = stamps[here] - stamps[here].min()
+        offset = _session_offsets(stamps, day)
         finite = np.isfinite(y)
         src_key = day[finite] * _KEY_STRIDE + offset[finite]
         src_y = np.asarray(y, dtype=np.float64)[finite]
-        order = np.argsort(src_key, kind="stable")
-        src_key, src_y = src_key[order], src_y[order]
+        if src_key.size > 1 and np.any(src_key[1:] < src_key[:-1]):
+            order = np.argsort(src_key, kind="stable")
+            src_key, src_y = src_key[order], src_y[order]
         out = np.full(y.shape, np.nan, dtype=np.float64)
         if src_key.size == 0:
             return out
@@ -4043,9 +4049,33 @@ class _DayScramble:
         return out
 
 
+def _session_offsets(stamps, days):
+    """Milliseconds from each session's first row in linear time."""
+    import numpy as np
+
+    stamps = np.asarray(stamps, dtype=np.int64)
+    days = np.asarray(days, dtype=np.int64)
+    if stamps.size == 0:
+        return np.zeros(0, dtype=np.int64)
+    if np.all(days[1:] >= days[:-1]):
+        starts = np.empty(stamps.size, dtype=bool)
+        starts[0] = True
+        starts[1:] = days[1:] != days[:-1]
+        indices = np.arange(stamps.size, dtype=np.int64)
+        first = np.maximum.accumulate(np.where(starts, indices, 0))
+        return stamps - stamps[first]
+    _, inverse = np.unique(days, return_inverse=True)
+    first = np.full(
+        inverse.max() + 1, np.iinfo(np.int64).max, dtype=np.int64,
+    )
+    np.minimum.at(first, inverse, stamps)
+    return stamps - first[inverse]
+
+
 def _scan_fold_stamped(
     prepared, lead, train_end, val_start, val_end, train_start=None,
     label=None, score_period_ms=None, score_offset_ms=0, scramble=None,
+    parts=None,
 ):
     """Like :func:`_scan_fold`, plus val stamps aligned with val rows.
 
@@ -4066,6 +4096,9 @@ def _scan_fold_stamped(
     given, the window masks are computed FIRST and the labels are then
     swapped between whole sessions inside each window — so the run is a
     draw from luck alone and its skill is a null value, never a result.
+
+    ``parts`` optionally receives each symbol's already-built training
+    labels and validation arrays, avoiding a second per-symbol build.
     """
     import numpy as np
 
@@ -4077,8 +4110,9 @@ def _scan_fold_stamped(
         ok = match & (future < t_ms.size)
         if not np.any(ok):
             continue
-        loc_ok = loc[ok]
-        fut_ok = future[ok]
+        ok_rows = np.flatnonzero(ok)
+        loc_ok = loc[ok_rows]
+        fut_ok = future[ok_rows]
         y = (
             label.values(item[0], loc_ok, fut_ok) if label is not None
             else _raw_lead_return(t_px, loc_ok, fut_ok)
@@ -4086,7 +4120,7 @@ def _scan_fold_stamped(
         # The masks come from the stamps alone, so they are the same
         # whether or not the labels are about to be scrambled — which is
         # what lets a scrambled walk keep the real walk's fold geometry.
-        every_stamp = stamps[ok]
+        every_stamp = stamps[ok_rows]
         every_future = t_ms[fut_ok]
         train_all = (every_stamp <= train_end) & (every_future <= train_end)
         if train_start is not None:
@@ -4114,17 +4148,25 @@ def _scan_fold_stamped(
         if not np.any(finite):
             continue
         stamp = every_stamp[finite]
-        x_ok = x[ok][finite]
+        finite_rows = ok_rows[finite]
         y = y[finite]
         train = train_all[finite]
         val = val_all[finite]
+        one_train_y = y[train]
+        one_val_x = x[finite_rows[val]]
+        one_val_y = y[val]
+        one_val_stamps = stamp[val]
+        if parts is not None:
+            parts[(item[0], int(lead))] = (
+                one_train_y, one_val_x, one_val_y, one_val_stamps,
+            )
         if np.any(train):
-            train_x.append(x_ok[train])
-            train_y.append(y[train])
+            train_x.append(x[finite_rows[train]])
+            train_y.append(one_train_y)
         if np.any(val):
-            val_x.append(x_ok[val])
-            val_y.append(y[val])
-            val_stamps.append(stamp[val])
+            val_x.append(one_val_x)
+            val_y.append(one_val_y)
+            val_stamps.append(one_val_stamps)
     empty_x = np.zeros((0, n_features), dtype=np.float64)
     empty_y = np.zeros(0, dtype=np.float64)
     empty_t = np.zeros(0, dtype=np.int64)
@@ -4219,6 +4261,7 @@ def _walk_no_information_series(
     prepared_one, model, leads, train_end, val_start, val_end, period_minutes,
     train_start=None, label=None, writer=None,
     score_period_ms=None, score_offset_ms=0, scramble=None,
+    parts=None, predictions=None,
 ):
     """Sequential h* for one name; GO is that H or none.
 
@@ -4232,6 +4275,11 @@ def _walk_no_information_series(
     the Newey-West lag ``lead // period_minutes - 1`` corrects the
     overlap between the rows actually entering the test, not between
     rows the model merely trained on (ADR-0065).
+
+    ``parts`` carries arrays built for the pooled fit, so a scramble
+    need not permute and gather every symbol twice.
+    ``predictions`` similarly reuses the pooled validation prediction
+    rather than issuing one model call per symbol.
     """
     import numpy as np
 
@@ -4247,12 +4295,16 @@ def _walk_no_information_series(
             curve.append(row)
             ordered.append({"horizon": lead, "p_value": 1.0})
             continue
-        _, tr_y, val_x, val_y, val_stamps = _scan_fold_stamped(
-            [prepared_one], lead, train_end, val_start, val_end,
-            train_start=train_start, label=label,
-            score_period_ms=score_period_ms, score_offset_ms=score_offset_ms,
-            scramble=scramble,
-        )
+        built = None if parts is None else parts.get((symbol, int(lead)))
+        if built is None:
+            _, tr_y, val_x, val_y, val_stamps = _scan_fold_stamped(
+                [prepared_one], lead, train_end, val_start, val_end,
+                train_start=train_start, label=label,
+                score_period_ms=score_period_ms,
+                score_offset_ms=score_offset_ms, scramble=scramble,
+            )
+        else:
+            tr_y, val_x, val_y, val_stamps = built
         mu = float(tr_y.mean()) if tr_y.size else 0.0
         if val_x.shape[0] < 2:
             row = _blank_lead_row(symbol, lead, lags)
@@ -4260,7 +4312,11 @@ def _walk_no_information_series(
             curve.append(row)
             ordered.append({"horizon": lead, "p_value": 1.0})
             continue
-        yhat = np.asarray(model.predict(val_x), dtype=np.float64)
+        yhat = None if predictions is None else predictions.get(
+            (symbol, int(lead)),
+        )
+        if yhat is None:
+            yhat = np.asarray(model.predict(val_x), dtype=np.float64)
         if val_y.size < 2 or lags >= val_y.size:
             row = _blank_lead_row(symbol, lead, lags)
             row["n"] = float(val_y.size)
@@ -4847,11 +4903,12 @@ class NoInformationScan(Node):
                 "from LUCK ALONE and is never a result (ADR-0074)",
                 scramble.describe(),
             )
+        fold_parts = {} if scramble is not None else None
         tr_x, tr_y, va_x, va_y, _ = _scan_fold_stamped(
             prepared, train_lead, train_end, val_start, val_end,
             train_start=train_start, label=label,
             score_period_ms=score_period_ms, score_offset_ms=score_offset_ms,
-            scramble=scramble,
+            scramble=scramble, parts=fold_parts,
         )
         metrics["n_train"] = float(tr_x.shape[0])
         metrics["n_val"] = float(va_x.shape[0])
@@ -4863,6 +4920,7 @@ class NoInformationScan(Node):
         )
         scan = dict(base_scan)
         model = None
+        fold_predictions = {} if fold_parts is not None else None
         if tr_x.shape[0] >= 2:
             if combos:
                 in_x, in_y, ho_x, ho_y, _ = _scan_fold_stamped(
@@ -4888,7 +4946,22 @@ class NoInformationScan(Node):
                 tr_x, tr_y, scan, categorical=categorical,
                 feature_names=column_names,
             )
-            fit = _fit_split_metrics(model, tr_x, tr_y, va_x, va_y)
+            split_predictions = {} if fold_parts is not None else None
+            fit = _fit_split_metrics(
+                model, tr_x, tr_y, va_x, va_y,
+                prediction_cache=split_predictions,
+            )
+            if fold_parts is not None:
+                cursor = 0
+                val_hat = split_predictions["val"]
+                for item in prepared:
+                    key = (item[0], int(train_lead))
+                    built = fold_parts.get(key)
+                    if built is None:
+                        continue
+                    stop = cursor + built[1].shape[0]
+                    fold_predictions[key] = val_hat[cursor:stop]
+                    cursor = stop
             metrics["train_mspe"] = fit["train_mspe"]
             metrics["val_mspe"] = fit["val_mspe"]
             metrics["train_ic"] = fit["train_ic"]
@@ -4927,7 +5000,8 @@ class NoInformationScan(Node):
                     writer=writer,
                     score_period_ms=score_period_ms,
                     score_offset_ms=score_offset_ms,
-                    scramble=scramble,
+                    scramble=scramble, parts=fold_parts,
+                    predictions=fold_predictions,
                 )
                 curve.extend(rows)
                 n_go += int(series["go"])

@@ -184,6 +184,63 @@ uncorrected spin-off.
 
 ---
 
+## P10 — Twenty-five-asset modelability funnel
+
+**Goal.** Find the furthest horizon predictable by one frozen pooled
+architecture for each of 25 stocks and ETFs, or record none. This does not
+claim that an asset is intrinsically predictable by every possible model.
+
+**Selection.** Admit assets only by criteria fixed before reading model scores:
+coverage, liquidity, clean corporate history, and diversification. If historical
+predictive results influence admission, every screened candidate enters the
+attempt ledger, including rejected ones.
+
+**One pipeline document.** One declarative, resumable pipeline JSON declares
+the 25-asset training universe, eight horizon walks, the three gates, and their
+saved filters. The existing journal remains the authoritative run record, and
+the pipeline suppresses every synthetic `GROUP` verdict.
+
+**Gate 1.** Fit eight separate pooled models, one for each frozen horizon
+`{1, 2, 3, 5, 10, 20, 30, 60}`, and register all 25 × 8 individual cells before
+filtering. For each asset, failure at `h=1` means none; otherwise `h*` is its
+furthest consecutive pass of both pooled and across-fold statistics.
+
+**Gate 2.** Use one study-wide max-statistic family over all 200 asset-horizon
+cells, with the same session resample shared across every cell. A selected `h*`
+must clear the corrected statistic, adjusted probability, and positive lower
+bound. Failure means no survivor; it never falls back to a shorter horizon.
+
+**Gate 3.** Shuffle whole-session labels and refit the identical 25-asset pooled
+model at each unique surviving horizon. Survivors are only scored outputs: the
+training universe never shrinks. Use seeds 0–18, so no shuffled run beating the
+real result gives the smallest attainable probability, 1/20 = 0.05.
+
+**Output.** One result row per asset records `gate1_h`, each gate's status,
+evidence counts, first failed horizon, and an explicit `not_reached` reason.
+Filters are saved artifacts, never hand-edited symbol lists.
+
+**Feasibility gate.** Before the study, measure one 25-asset fold against the
+17 GB WSL limit. If it does not fit, stop: stream or use float32/LightGBM
+datasets, or score bounded target batches after one identical pooled fit; never
+reduce the training universe to make a batch fit.
+
+**Freeze.** Before the first run, pin the 2026-02-28 data cut, split adjustment,
+folds, embargo, features, model settings, thresholds, horizon order, 19 shuffle
+seeds, probability rule, and null-calibration tolerances.
+
+**Implementation.** The current pipeline engine cannot yet resume across the
+completed walk, bar, and shuffle stages. Inventory its seams, then write an ADR
+for generic staged pipeline orchestration, study-wide correction, GROUP
+suppression, and memory strategy; wait for approval before code. Every child
+walk and stage remains journaled normally—there is no sidecar manifest.
+
+**Result.** UPRO, BAC, AMZN, AVGO, NFLX, MSFT, GOOGL, SMH, and IWM landed as
+12,213,670 verified bars with no cutoff violations, bringing the disk inventory
+to 25 assets. The skeptic gave a conditional GO; memory preflight, ADR approval,
+implementation, and execution remain.
+
+---
+
 ## The orchestrator
 
 Holds the goal and the queue. Runs nothing itself — every research,
