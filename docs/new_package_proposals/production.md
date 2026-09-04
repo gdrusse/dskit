@@ -417,6 +417,9 @@ brackets.
   command without a CLI journal row because the stores have no shared transaction;
   `verify` reports that gap. The ledger/inbox is authoritative, and the plan
   makes no impossible exactly-once claim across independent stores.
+  This supersedes ADR-0056's item 3 (wrapping a child's `live.main` in the
+  `journal.production()` context manager) for serve processes only; children
+  that still own a loop keep using it until they port.
   Testability: `dskit/journal/record.py` returns `None` under pytest before
   touching any store, so a test can never observe a real appended row. Production
   therefore calls the journal through one injected `journal_hook` seam defaulting
@@ -609,7 +612,12 @@ than only as a line in §8.
 - `vocab.py`: every closed set in §8's list as a module-level tuple, plus
   `VERDICT_ORDER` (the `allow < warn < amend < refuse < hold < halt` index map),
   `TERMINAL_STATUSES ⊂ STATUSES`, `SEVERITY_LEVELS` (the pinned PagerDuty / OTel
-  / syslog / `logging` map) and `EXIT_CODES`. No logic, no imports beyond stdlib,
+  / syslog / `logging` map) and `EXIT_CODES`.
+  `RUNGS = ("shadow", "paper", "live_limited", "live")` — exactly four, and
+  the order is the ladder. Backtest is **not** a rung: it is a replay
+  configuration of `shadow` (recorded clock, feed and executor), which is why
+  D20 can call replay a swap of objects rather than a fifth cell in D10's
+  matrix. No logic, no imports beyond stdlib,
   `__all__` is the whole surface. Nothing anywhere else may define a closed set.
 - `base.py`: `ProductionError` (accumulate-every-problem, one raise);
   `reject_unknown_params` re-exported from `dskit.pipeline.node` and the
@@ -671,6 +679,9 @@ cannot restate locator or coverage. Missing/duplicate/extra keys, malformed even
 time, normalized-binding disagreement or source alias/hash/version drift refuses.
 Zero new rows is valid only while every key is fresh; stale/dead derives from the
 oldest watermark, while connector/link/identity failure is immediately dead.
+`FEED_STATUSES = ("live", "degraded", "stale", "dead", "closed")` and
+`LINK_STATES = ("connected", "recovering", "disconnected")`; the feed reports
+the first, the executor the second, and D10's matrix reads both.
 `ReplayFeed` uses the recorded contract and EntryBatch. Tests prove acquisition
 and entry use one normalized binding and that snapshot metadata hashes the exact
 entry output.
@@ -740,6 +751,17 @@ entry output.
 
 ### 5.3.1 `release.py`
 
+`ReleaseReader` is the only capability a `release_read` node receives, and
+the one API the pipeline planner and production must agree on:
+`get(name) -> value` returns the manifest-named artifact for `name`,
+verifying its recorded digest before returning and raising
+`ProductionError` when `name` is not in the manifest or the digest differs;
+`names() -> tuple` lists what this node is permitted to read. There is no
+path, no handle and no write verb, so a release read cannot reach the
+filesystem or a mutable store. It is constructed per node from the
+manifest, holds no open file, and is handed over by
+`ExecutionPolicy.reader(key)` (§9.1).
+
 `ReleaseManifest` is immutable canonical JSON containing `series_id`,
 `doc_hash`, `run_hash`, `serving_hash`, every artifact digest/timestamp, every
 resolved class/code and adapter fingerprint, derived `FeedSpec`, source-config,
@@ -796,6 +818,11 @@ non-finite number.
   data_asof_ms, inputs_digest, source_config_hash}` where `data_asof_ms` is the
   minimum watermark;
   `TickStart{tick_id, tick_at_ms, release_hash}`;
+  `TickResult{tick_id, status, data_asof_ms, observed_at_ms, feed_status,
+  coverage_digest, inputs_digest, decision_plan_ids, legs, findings,
+  latency_ms, leg_latency_ms, refusal_reason, error}` — exactly the payload
+  §6's terminal `tick` and `decision` records are written from, so a phase
+  never writes a record itself;
   `DecisionPlan{plan_id, inputs_asof_ms, inputs_digest, coverage_digest,
   quote_asof_ms, quote_digest, evidence_asof_ms, evidence_digest,
   provenance_digests, original, final, findings, gate_results, scope_verdict,
@@ -935,7 +962,8 @@ cancel and is always constructible; `SubmittingExecutor(Executor)` adds
 `submit(intent, permit)` with `permit` required of every subclass;
 `ShadowExecutor`, `PaperExecutor` and `RecordedExecutor` take a
 `SimulatedPermit`, `LiveExecutor` accepts only an `ActPermit` and refuses any
-other permit **by type**. No subclass strengthens a precondition of its base.
+other permit **by type** — refuses meaning it returns
+`Ack(not_sent, reason="permit_type")`, never raises. No subclass strengthens a precondition of its base.
 
 - `Executor(ABC)`: `spec()` (default-deny knobs; secret knobs name env vars),
   `capabilities()` (`tifs`, `market_orders`, `notional`, `positions ∈ {venue,
@@ -946,8 +974,10 @@ other permit **by type**. No subclass strengthens a precondition of its base.
   `execution_scope() -> ExecutionScope`,
   `cancel(ref) -> Ack`, `order(ref) -> OrderState`,
   `open_orders()`, `fills(since_ms, cursor=None)`, `balances()`; concrete
-  `positions()` — fill derivation lives in `PositionBook`, which `Executor`
-  *composes*, not in the base method body; a `positions: venue` child
+  `positions()` — fill derivation lives in `PositionBook`
+  (`apply(fill)`, `reverse(fill_id)`, `positions() -> tuple[Position]`,
+  `net_qty(instrument)`), which `Executor` *composes*, not in the base method
+  body; a `positions: venue` child
   overrides `positions()` without inheriting dead derivation code —
   `settlements(since_ms)` (empty), `events()` (none), `venue_time_ms()` (None),
   `cancel_all()` (iterates only refs this executor owns).
@@ -1118,7 +1148,9 @@ positions only when `capabilities().positions == "venue"`, since against a
 `derived` executor that comparison is vacuous. Breaks are `timing | missing_in_ledger |
 missing_at_venue | quantity | price | fee | state | settlement`, with severity
 `info | warn | block`. Automatic policy is only `halt | refuse`; unknown venue
-orders are `external`, never silently made ours. It runs before `READY`, on the
+orders are `external`, never silently made ours. `lookback_ms` bounds how far back fills and settlements are queried, since an
+open-orders endpoint cannot distinguish missing from recently closed. It runs
+before `READY`, on the
 configured interval, and always appends a `recon` record without synthesising a
 venue action. Adoption is a separate authenticated operator command naming the
 break ids and release hash; after inspection it records the delta, crosses
@@ -1130,7 +1162,8 @@ break ids and release hash; after inspection it records the delta, crosses
   `@abstractmethod verdict() -> Verdict`; `state()`/`restore(state)` (JSON-able,
   carried by the §6 `snapshot` record, which is the sole owner of monitor state;
   `Checkpoint` does not hold it).
-- Strategies: `Reference` (`leading(n)`, `rolling(window)`, `snapshot(path)` — a
+- Strategies: `Response` is a closed vocabulary (`RESPONSES`), not a strategy object;
+  `Reference` (`leading(n)`, `rolling(window)`, `snapshot(path)` — a
   saved `Profile`; phase 2 `run` over the run's predictions parquet via the
   parquet pack); `Chunker` (`count(n)`, `period(iso)`, `sliding(n, step)`);
   `Threshold` (`constant`, `reference_std(k)`, `alpha` — PSI benchmark
@@ -1271,20 +1304,24 @@ knob because D13 fixes the answer: query, never resend.
 ### 5.13 `loop.py`, `outcomes.py`, `report.py`, `readiness.py`
 
 - `ServeLoop(document, release, schedule, data, decision, safety, execution,
-  recording, observability)`: nine collaborator groups, each a frozen bundle
-  validated at construction, rather than twenty-seven positional arguments —
+  recording, observability)`: two values plus **seven** collaborator bundles,
+  each a frozen dataclass validated at construction, rather than twenty-seven
+  positional arguments —
   `Schedule{clock, calendar, cadence, overrun}`, `Data{feed, decider}`,
-  `Decision{guards, proposer_state, monitors}`,
+  `Decision{guards, monitors}`,
   `Safety{breaker, arming, readiness, action_policy, transition_policy,
   submission_verifier}`, `Execution{executor, accounting, lease, resilience}`,
   `Recording{ledger, inbox, reconciler, checkpoint, journal_hook, id_source}`,
-  `Observability{metrics, alerts, health, heartbeat}`. D2's "no branch on mode"
+  `Observability{metrics, alerts, health, heartbeat}`. The seven bundle
+  dataclasses live in `loop.py` beside `ServeLoop`. D2's "no branch on mode"
   only holds if the policy objects, the control inbox and the reconciler arrive
   the same way the executor does; the bundles are what make that legible and are
   what `mode` composition (D2) selects. Lifecycle `init → locked → leased → reconciling → ready →
   {waiting ⇄ ticking} → stopping → stopped`, plus persisted `halted` and
-  restartable `faulted`. `IdSource` allocates deterministic tick ids before a
-  `tick_start`; `ledger.barrier()` completes before any tick work. Phases are
+  restartable `faulted`. `IdSource(ABC).next_tick_id(tick_at_ms)` / `.leg_id(tick_id, index)` /
+  `.client_ref(...)` allocate deterministic ids before a `tick_start`; core
+  ships `ReleaseIdSource` (derives from release/tick/leg/attempt per D20) and
+  `RecordedIdSource` (replays the tape's ids); `ledger.barrier()` completes before any tick work. Phases are
   `gate`, `verify_release` (content/runtime hashes plus artifact age), `fetch`,
   `read_entry`, `coverage` (exact required keys, per-key source and oldest
   watermark), `evaluate`, `candidates`, `quotes`, `account`, and
@@ -1330,9 +1367,11 @@ knob because D13 fixes the answer: query, never resend.
   `observe`s and writes `checkpoint` last.
   `Tick(ABC)` holds one method per phase — `gate`, `verify_release`, `fetch`,
   `read_entry`, `coverage`, `evaluate`, `candidates`, `quotes`, `account`,
-  `propose` — plus abstract `run(tick_at_ms) -> TickResult`. It is constructed
-  per tick with the loop's collaborator bundles and owns no state between
-  ticks, so a phase can be overridden or instrumented without touching
+  `propose` — plus abstract `run(tick_at_ms) -> TickResult`.
+  `Tick(document, release, schedule, data, decision, safety, execution,
+  recording, observability, tick_id)` takes the same seven bundles the loop
+  holds plus the allocated tick id; it is constructed once per tick and owns
+  no state between ticks, so a phase can be overridden or instrumented without touching
   `ServeLoop`, and the §6 `latency_ms` keys are exactly those method names.
   Core ships `ServingTick`; `ReplayTick` overrides only `fetch` and
   `read_entry` to read the tape, which is what makes replay a swap rather
@@ -1347,9 +1386,13 @@ knob because D13 fixes the answer: query, never resend.
   skipped:stale | skipped:skew | skipped:halted | skipped:degraded |
   skipped:no_coverage | refused | failed` and all findings. Exit codes are
   0 stopped · 1 error · 3 halted · 4 already running · 5 refused (readiness
-  NO-GO, or a control verb refused because the series state forbids it). 3 keeps
-  the repo-wide "halted" meaning from every other package's `__main__`; 5 is the
-  one new code and never overlaps it. `--once` runs one tick;
+  NO-GO, or a control verb refused because the series state forbids it).
+  Root `CLAUDE.md` documents 3 as "halted at a NO-GO gate", which conflates two
+  states this package must keep apart: a breaker-halted series (operator action
+  required, submissions refused) and a readiness NO-GO (nothing is wrong, the
+  checklist is simply not satisfied). 3 keeps the halted meaning and 5 is added
+  for the refusal; **this is a deliberate extension of the root convention and
+  §9.3 updates that line rather than silently diverging from it.** `--once` runs one tick;
   `--max-ticks N` bounds completed ticks.
 - `outcomes.py` (phase 2): join settlements (`executor.settlements`) and derived
   labels (strict forward as-of over the store via `scan_stream`) into `outcome`
@@ -1405,14 +1448,18 @@ the parts a test can reach. The governing rule is **one concept, one class,
 parameterised — never a family of near-identical classes and never a `kind`
 branch**.
 
-**Abstraction.** Twenty registry-resolved seam ABCs carry the swappable parts: `Clock`, `Calendar`, `Cadence`,
+**Abstraction.** Eighteen registry-resolved seam ABCs carry the parts a
+document selects by name: `Clock`, `Calendar`, `Cadence`,
 `Feed`, `Proposer`, `Guard`, `Measure`, `Executor`, `Accounting`, `Lease`,
 `Ledger`, `Monitor`, `Reference`, `Chunker`, `Threshold`, `AlertSink`,
-`HealthProbe`, `Classifier`, `Transport`, `ApprovalVerifier`. Four further
-ABCs are structural rather than registry-resolved, named here so the count is
-not mistaken for the whole surface: `SubmittingExecutor` (§5.7), `Tick`
-(§5.13), `IdSource` (§5.13) and pipeline-side `ExecutionPolicy` (§9.1).
-`Permit` is a dataclass base, not an ABC. Each seam ABC declares its hooks
+`HealthProbe`, `Transport`, `ApprovalVerifier`, `Fee`, `HeartbeatEmitter`.
+Six further ABCs are structural rather than registry-resolved, named here so
+the count is not mistaken for the whole surface: `SubmittingExecutor` (§5.7),
+`Ledger` and `Classifier` (phase 1 ships one implementation each, so neither
+has a `uses` site until `libs/sqlite.py` lands and adds `LEDGER_KINDS`),
+`Tick` (§5.13), `IdSource` (§5.13) and pipeline-side `ExecutionPolicy`
+(§9.1). `Permit` is a frozen dataclass base, not an ABC. Each seam ABC
+declares its hooks
 `@abstractmethod` so an incomplete subclass fails at construction, not at the
 first live tick. The serve document names *what* ("`uses`: `weekly-sessions`"),
 never *how*; no caller may instantiate a concrete class by name.
@@ -1430,7 +1477,11 @@ can re-derive a permission by branching.
 are `Limit(Guard)` and `RangeGuard(Guard)`; `ShadowExecutor` / `PaperExecutor` /
 `RecordedExecutor` / `LiveExecutor` under `Executor`; the monitor families
 (`OperationalMonitor`, `StreamMonitor`, `DistributionMonitor`) under `Monitor`
-with concrete statistics beneath them; the sink and probe families. Where the
+with concrete statistics beneath them; the sink and probe families; and
+`Tick → ServingTick → ReplayTick`, where `ReplayTick` overrides exactly the
+two phases that touch the outside world and inherits the other eight because
+they must be *the same code* — that identity is what replay parity means, so
+it is is-a, not code sharing. Where the
 relationship is has-a, the plan composes instead: `ServeLoop` **contains** its
 clock, feed, executor and policies rather than subclassing anything, which is
 why D2 can forbid a mode branch — swapping a rung swaps an object, not a code
@@ -1454,10 +1505,13 @@ more than its base. The hierarchy is split instead:
   `cancel_all`. Read, query and cancel only; always constructible, never armed.
 - `SubmittingExecutor(Executor)` — adds `submit(intent, permit)`, where `permit`
   is **required** for every subclass.
-- `Permit(ABC)` with `SimulatedPermit` (shadow/paper: carries the decision-plan
+- `Permit` — a frozen dataclass base, not an ABC (§5.4) — with
+  `SimulatedPermit` (shadow/paper: carries the decision-plan
   digest, authorises nothing outward) and `ActPermit` (live: the full §5.4
   binding). `LiveExecutor.submit` refuses any permit that is not an `ActPermit`
-  by type, not by flag.
+  by type, not by flag, and refusing means returning
+  `Ack(not_sent, reason="permit_type")` — no subclass raises where its base
+  returns a value.
 
 Every subclass therefore honours the base contract exactly, and a caller holding
 an `Executor` can always recover and cancel without knowing the rung. The
@@ -1548,15 +1602,18 @@ dskit/production/
 │                      PLAN_RESULTS, FSYNC_MODES, ROTATE_BY, ON_BREACH, LIMIT_SCOPES, NAN_POLICY, FILL_RULES, RESTING_RULES,
 │                      SIZE_CAPS, FEE_KIND_NAMES, DEDUPE_MODES, POSITION_MODELS, FENCING_MODES,
 │                      RESILIENCE_OUTCOMES (ok|transient|throttled|fatal|ambiguous — distinct from OUTCOME_KINDS),
-│                      RETRY_DECISIONS, JITTER_MODES, RETRY_AFTER_MODES, RETRY_WRITE_MODES,
+│                      RETRY_DECISIONS, JITTER_MODES, RETRY_AFTER_MODES, RETRY_WRITE_MODES, OVERRUN_POLICIES,
+│                      AT_TIMES_RELATIVE, CALENDAR_WINDOWS, ON_MISMATCH, RECON_ACTIONS, TRIP_REASONS,
 │                      CIRCUIT_STATES (closed|open|half_open|forced_open|metrics_only — distinct from BREAKER_STATES)
 ├── document.py        ServeDocument with required series/rung, Accounting, Arming, Coordination; default-deny; identity paths
 ├── release.py         ReleaseManifest; ReleaseReader (the capability handed to release_read nodes); class/code/adapter/
 │                      source/artifact/runtime fingerprints; release verification
 ├── records.py         Quote, Candidate, Proposal, Finding, InputWatermark, EntryBatch, TickStart, DecisionPlan, ReductionPlan,
 │                      ReductionAuthorization, MeasureEvidence, RiskVersion, AccountState, LeasePermit,
-│                      Permit base + SimulatedPermit + ActPermit, Intent, execution/monitoring values
-├── clock.py           Clock ABC; WallClock, TestClock, ReplayClock; CLOCK_KINDS
+│                      Permit (frozen dataclass base) + SimulatedPermit + ActPermit, TickResult, Intent,
+│                      execution/monitoring values
+├── clock.py           Clock ABC; ManualTime (the settable instant TestClock and ReplayClock each compose);
+│                      WallClock, TestClock, ReplayClock; CLOCK_KINDS
 ├── sessions.py        Calendar ABC; AlwaysOpen, WeeklySessions, EventWindow, Composite; CALENDAR_KINDS
 ├── cadence.py         Cadence ABC; FixedInterval, AlignedBar, AtTimes, OnData; Overrun; CADENCE_KINDS
 ├── control.py         ControlInbox; CommandProcessor; atomic request/result spool; sole-writer dispatch
@@ -1585,8 +1642,9 @@ dskit/production/
 ├── alerts.py          AlertSink ABC; LogSink, MemorySink, EmailSink, WebhookSink; AlertRouter; ALERT_SINK_KINDS
 ├── health.py          Health state machine; HealthProbe ABC + PROBE_KINDS; Heartbeat emitters + HEARTBEAT_KINDS;
 │                      single-instance lock; signal handling
-├── metrics.py         Registry (counter/gauge/histogram); Prometheus naming + base units; closed label sets with a cardinality
-│                      cap that refuses new label values; JSONL flush per tick. Owns every `*_total` name §5.11 emits.
+├── metrics.py         Registry (counter/gauge/histogram); Prometheus naming + base units; closed label sets — an undeclared
+│                      label VALUE drops to the reserved `other` and is counted, never raised on the hot path, while an
+│                      undeclared label NAME refuses at declaration; JSONL flush per tick. Owns every `*_total` name §5.11 emits.
 │                      Phase 3 prometheus/otel packs subscribe to it; nothing here imports either.
 ├── redact.py          Secrets resolution via dskit.pipeline.env.load_env; redact(text) applied to every log line, alert body
 │                      and recorded `reason`; webhook URLs and proofs are credentials. No secret ever reaches a ledger record.
@@ -1652,7 +1710,8 @@ tests/production/
 ├── test_alerts.py         sink failure never kills the loop; hanging sink bounded (never-replying local socket); construction refusal; dedup /
 │                          group_wait / repeat / rate limit / critical bypass; resolved emitted
 ├── test_health.py         transitions/hysteresis; process/sequence heartbeat; dead_after stops it; second instance; SIGTERM
-├── test_metrics.py        naming/base units pinned; label cardinality cap refuses; every §5.11 counter name exists; JSONL flush
+├── test_metrics.py        naming/base units pinned; undeclared label name refuses at declaration, undeclared value drops to
+│                          `other` and increments the dropped counter; every §5.11 counter name exists; JSONL flush
 ├── test_redact.py         env-var values, webhook URLs and proof bytes never appear in a log line, alert body or ledger record
 ├── test_loop.py           per-key/quote/evidence deadlines; bound-state change at each barrier; cumulative risk; durable findings;
 │                          final verify/call refusal, acknowledged external race, crash cuts; one action/client ref
@@ -1676,23 +1735,46 @@ examples/production/
 ```
 # dskit/pipeline/driver.py
 class SubgraphRunner:
-    def __init__(self, the_plan, node_outputs, splits_info, prev, policy=None)
-    def rerun(self, overrides, ctx, bindings=None, *, guard_verdicts=False)
-        -> (node_outputs, reran_keys, seconds)
+    def __init__(self, the_plan, needed, node_outputs, splits_info, prev, policy=None)
+    def rerun(self, overrides, outputs, ctx, prev_bindings, *, guard_verdicts=False)
+        -> (outputs, reran_keys, seconds)
 
 # dskit/pipeline/policy.py  (new module)
 class ExecutionPolicy(ABC):
     @abstractmethod
-    def classify(self, key, cls, params, evidence) -> str   # one closed effect name
+    def classify(self, key, cls, params, evidence) -> str   # a SERVING_EFFECTS member
     def defer(self, key) -> bool                            # concrete, default False
     def reader(self, key)                                   # concrete, default None
 ```
 
 `SubgraphRunner` is the extraction of today's `_SearchSeam._execute(overrides,
-outputs, ctx, bindings, *, guard_verdicts=False)` (`driver.py:498`), keeping its
-`needed ∩ dirty` incremental rule (`driver.py:526`) unchanged. It returns the
-node-output mapping rather than an objective float; `_SearchSeam` is re-expressed
-as a thin caller that owns the float and its own override rule, so
+outputs, ctx, bindings, *, guard_verdicts=False)` (`driver.py:498`). Three
+details of that method are contract, not incidental, and the signature above
+carries all three:
+
+- **`needed` is a constructor argument, not derived.** `_SearchSeam` computes
+  `self.needed = the_plan.ancestors(target) | {target}` from the objective ref
+  it parses out of its own `key` (`driver.py:406–430`), and `_execute` filters
+  with `k in self.needed and k in dirty` (`driver.py:526`). The runner cannot
+  parse a search objective, so the caller supplies the set: search passes
+  exactly what it computes today, serving passes `ancestors(heads) | heads`.
+  Running all of `dirty` instead would execute dirty descendants outside the
+  objective's ancestry on every trial — a behaviour change, which is why this
+  is a parameter rather than a fallback.
+- **`outputs` is passed in and written in place.** Trials pass a scratch copy
+  (`scratch = dict(self._outputs)`, `driver.py:441`), the winner pass and
+  serving pass the live dict (`driver.py:490`) because the driver reads it
+  afterwards. The runner never decides which; it mutates what it is given and
+  returns the same object for convenience.
+- **`prev_bindings` is an OUT parameter, renamed to say so.** It is the dict
+  `_materialize` records `$prev` resolutions into (`driver.py:298–331`,
+  `472–473`) — it is not an input binding. Serving injects the frozen entry
+  outputs by pre-seeding `outputs` with them before calling `rerun`, which is
+  why §5.3 speaks of executing "from the frozen entry binding" rather than
+  passing bindings in.
+
+`_SearchSeam` is re-expressed as a thin caller that owns the objective float,
+its own override rule and its `needed` computation, so
 `__call__(overrides) -> float` and every search behaviour stay exactly as they
 are. **No new params, no grammar change, no identity change**; the regression
 guard is the existing `tests/pipeline/test_driver.py` and
@@ -1716,7 +1798,11 @@ graph topology without constructing/fingerprinting data nodes or materializing
 requires one source-root `entry_read` dominating all dynamic head paths, defers
 it and its descendants, and rejects all other mutable effects.
 `dskit/pipeline/node.py` defines the closed `Node.serving_effect` classmethod
-with a fail-closed default. `TrainableNode` returns `release_read` only for a
+with a fail-closed default, and declares
+`SERVING_EFFECTS = ("pure", "entry_read", "release_read", "forbidden")`
+beside it — the vocabulary lives pipeline-side because pipeline may not
+import production, and production reads it from there rather than restating
+it in its own `vocab.py`. `TrainableNode` returns `release_read` only for a
 manifest-pinned load; `libs/observations.py:ObservationRows` returns
 `entry_read`; every audited deterministic built-in used by the serving e2e
 explicitly returns `release_read` or `pure`. `RecordedOutputs` is production-owned
@@ -1735,7 +1821,8 @@ network APIs are rejected by static/conformance checks. This prevents accidental
 I/O, not malicious release-bound child code—the operator explicitly trusts the
 reviewed code fingerprint. After fetch, `read_entry` alone constructs/runs the
 entry. Only after `ServingContract.snapshot` validates the exact frozen output
-does `rerun(bindings=entry.outputs)` execute pure/capability-backed descendants.
+does the decider pre-seed `outputs` with the entry's outputs and call `rerun`,
+executing only pure or capability-backed descendants from that frozen binding.
 The existing `_SearchSeam` (`driver.py`) keeps its current override rule and is
 not given a policy object by this ADR; it and ordinary RESOLVE remain
 behavior-neutral, and existing search suites and all pinned identities must stay
@@ -1766,12 +1853,13 @@ and `tests/test_production.py` proves the sample validates/plans while every
 live-capable template remains fail-closed. `children/README.md` and the skeleton
 `README.md` / `AGENTS.md` / `CLAUDE.md` gain a production section using
 `python -m dskit.production serve configs/serve-sample.json --once`. Existing
-children are not rewritten by this ADR (§12.4).
+children are not rewritten by this ADR (§12, item 4).
 
 ### 9.3 Documentation and configuration
 
-Root `README.md` (a fifth pillar, "Serve"), root `CLAUDE.md` (layout tree,
-commands, the exit-code line), `docs/architecture/README.md` (package table),
+Root `README.md` (a fifth pillar, "Serve"), root `CLAUDE.md` and `AGENTS.md`
+(layout tree, commands, and the exit-code line — which gains 4 and 5 and
+separates breaker-halted from readiness NO-GO per §5.13), `docs/architecture/README.md` (package table),
 `TODO.md` (the "Long-term goal — a generic SERVING LOOP" section marked
 superseded by ADR-0090 with its constraints listed as satisfied), `pyproject.toml`
 (no new extras in phase 1; the new modules follow the docstring standard, so no
@@ -1946,6 +2034,7 @@ dskit/production/
   readiness.py      release-bound checklist → GO / NO-GO
   outcomes.py       [phase 2] bitemporal outcome join, supersede chain, as-of cut
   report.py         [phase 2] attribution, calibration, drawdown, replay parity diff
+  libs/__init__.py  pack namespace
   libs/sqlite.py    [phase 2] SqliteLedger
   libs/parquet.py   [phase 2] RunReference over the run's predictions parquet
   README.md / AGENTS.md / CLAUDE.md
