@@ -39,6 +39,13 @@ Built-in rules (stdlib, structure-level — the semantic seam holds):
                     rows out of bounds or non-numeric (nulls skipped).
 ``row_count``       kwargs ``{min?, max?}`` (at least one); fails 1 when
                     the stream's row count is out of bounds.
+``distinct_count``  kwargs ``{field, group_by?, min?, max?}`` (at least
+                    one bound; ``group_by`` a field name or a list of
+                    them); fails one per GROUP whose count of distinct
+                    non-null ``field`` values is out of bounds — the
+                    whole stream is the one group when ungrouped (so an
+                    empty stream fails a ``min``, as ``row_count`` does);
+                    rows with a null group value are skipped (ADR-0084).
 ``bitemporal``      no kwargs; fails rows where ``effective_date >
                     acquired_at`` (ADR-0014 re-asserted as evidence).
 ==================  =====================================================
@@ -143,14 +150,59 @@ def _eval_bitemporal(rows, _kw):
     return failing
 
 
+def _group_by_ok(value) -> bool:
+    """A ``group_by`` is a field name or a non-empty list of field names."""
+    names = [value] if isinstance(value, str) else value
+    return (
+        isinstance(names, list)
+        and bool(names)
+        and all(isinstance(n, str) and n for n in names)
+    )
+
+
+def _group_fields(value) -> tuple:
+    """``group_by`` as a tuple of field names; ``()`` when ungrouped."""
+    return (value,) if isinstance(value, str) else tuple(value or ())
+
+
+def _eval_distinct_count(rows, kw):
+    lo, hi = kw.get("min"), kw.get("max")
+    by = _group_fields(kw.get("group_by"))
+    # Ungrouped, the whole stream is the one group and it EXISTS while
+    # empty — so an empty stream fails a min, as row_count's does.
+    # Grouped, an empty stream has no groups to fail.
+    distinct = {} if by else {(): set()}
+    for r in rows:
+        v = _value(r, kw["field"])
+        key = tuple(_value(r, g) for g in by)
+        if v is None or any(k is None for k in key):
+            continue  # nulls skipped — in the value and in the group alike
+        distinct.setdefault(key, set()).add(v)
+    return sum(
+        1 for values in distinct.values()
+        if (lo is not None and len(values) < lo) or (hi is not None and len(values) > hi)
+    )
+
+
 _RULES = {
     "not_null": (("field",), ("field",), _eval_not_null),
     "unique": (("field",), ("field",), _eval_unique),
     "accepted_values": (("field", "values"), ("field", "values"), _eval_accepted_values),
     "in_range": (("field", "min", "max"), ("field",), _eval_in_range),
     "row_count": (("min", "max"), (), _eval_row_count),
+    "distinct_count": (
+        ("field", "group_by", "min", "max"), ("field",), _eval_distinct_count
+    ),
     "bitemporal": ((), (), _eval_bitemporal),
 }
+
+#: The rules that take bounds — DERIVED from the table, so a rule that
+#: carries ``min``/``max`` joins the "at least one of them" check by
+#: existing, never by being remembered in a second list.
+_BOUNDED_RULES = tuple(
+    name for name, (allowed, _required, _fn) in _RULES.items()
+    if {"min", "max"} <= set(allowed)
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,10 +258,15 @@ class Rule:
         missing = sorted(k for k in required if k not in self.kwargs)
         if missing:
             errors.append(f"rule {self.id!r} missing required kwarg(s) {missing}")
-        if self.rule in ("in_range", "row_count") and not (
+        if self.rule in _BOUNDED_RULES and not (
             "min" in self.kwargs or "max" in self.kwargs
         ):
             errors.append(f"rule {self.id!r} needs at least one of min/max")
+        if "group_by" in self.kwargs and not _group_by_ok(self.kwargs["group_by"]):
+            errors.append(
+                f"rule {self.id!r} group_by must be a field name or a non-empty "
+                f"list of field names, got {self.kwargs['group_by']!r}"
+            )
         _raise_if(errors)
 
     def to_obj(self) -> dict:

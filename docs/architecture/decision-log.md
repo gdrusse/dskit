@@ -3976,3 +3976,35 @@ in the document, and a tampered snapshot refuses at load by name. No
 existing document, kind or hash moves; `NODE_KINDS` grows by three. The
 pack's "never downloads" property is unchanged — acquisition is
 onboarding's job.
+
+---
+
+## ADR-0084 — A cardinality rule for validation suites: `distinct_count`, optionally per group
+
+**Status:** proposed (2026-09-04; owner directed in session: close the
+small TODO items)
+
+**Context.** The six built-in rules assert per-row facts (`not_null`,
+`unique`, `accepted_values`, `in_range`, `bitemporal`) or one stream-level
+count (`row_count`). "Every event carries exactly N strikes" and "every
+day has at least one row per venue" are structure-level assertions the
+vocabulary cannot spell, so pmquant flattened rows and inventoried them in
+the pipeline instead (TODO §13 item 7).
+
+**Decision.** One `_RULES` entry, `distinct_count`: kwargs `{field,
+group_by?, min?, max?}` (at least one bound; `group_by` a field name or a
+list of them). The evaluator groups rows by their `group_by` values,
+counts the DISTINCT non-null `field` values per group, and returns the
+number of GROUPS out of bounds. Ungrouped, the whole stream is the one
+group and it exists even when empty — so an empty stream fails a `min`
+exactly as `row_count` does; grouped, an empty stream has no groups and
+fails nothing (emptiness is `row_count`'s assertion). A row whose `field`
+or any `group_by` value is null is skipped — the null discipline of
+`unique` / `in_range`. The "at least one of min/max" check is now DERIVED
+from the table (every rule whose allowed kwargs carry both bounds), not a
+literal tuple that would have had to grow.
+
+**Consequences.** Rule shape `(allowed_kwargs, required_kwargs, evaluator)`,
+the failing-count contract and the result shape are unchanged; existing
+suites hash identically. Semantics stay the declared seam: the rule counts
+values, it does not know what an event is.

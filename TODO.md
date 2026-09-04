@@ -522,7 +522,12 @@ ADR yet, and none blocks the child from starting:
       Efron lfdr, Venn–Abers, proper scoring rules).
 - [ ] 6. Acquire-side coverage hook + guarded parallel acquisition
       (`onboarding/acquire.py`).
-- [ ] 7. A grouped/cardinality suite rule (`onboarding/validate.py` `_RULES`).
+- [x] 7. A grouped/cardinality suite rule (`onboarding/validate.py` `_RULES`).
+      **Landed via ADR-0084 (2026-09-04): `distinct_count` — kwargs
+      `{field, group_by?, min?, max?}`, one failure per GROUP whose
+      distinct non-null values are out of bounds (ungrouped, the stream is
+      the one group); the "at least one bound" check is now derived from
+      the rule table.**
 - [x] 8. Compressed snapshot payloads in onboarding (~96× on gz-class
       archives, ~10× on parquet-class). **Landed via ADR-0036 (2026-08-26;
       the ratified Tier-B sunset path — pmquant's Tier-B bypass retires
