@@ -24,6 +24,9 @@ repository-level `docs/` directory.
 
 Make the document understandable without the conversation that produced it:
 
+- Immediately after the title, add `## TL;DR` with one to three plain-language
+  sentences stating the answer, why it matters, and the largest unresolved
+  caveat. A reader should understand the result without reading further.
 - State the question and give one quick sentence explaining the concern the
   method addresses.
 - Define every input before using it.

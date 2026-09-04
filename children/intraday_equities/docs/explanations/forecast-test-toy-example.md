@@ -1,5 +1,13 @@
 # Forecast-skill test: a worked toy example
 
+## TL;DR
+
+This test asks whether a forecasting model repeatedly predicts future stock
+moves more accurately than simply guessing the training-period average. The
+current evidence supports predicting Lilly three minutes ahead, but only at a
+one-in-20 luck level from full retraining; the five-stock group's two-minute
+result still needs that full-retraining check.
+
 ## What concern does this method address?
 
 It checks whether a forecasting model repeatedly beats a simple average guess,
