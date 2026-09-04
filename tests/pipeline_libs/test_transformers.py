@@ -33,6 +33,9 @@ from dskit.pipeline.libs.transformers import (
     NODE_KINDS,
     SIDECAR_NAME,
     DeclaredTransformerFit,
+    PretrainedClassify,
+    PretrainedEncode,
+    PretrainedForecast,
     TinyTransformerFit,
     TransformerFit,
     TransformerPredict,
@@ -154,11 +157,14 @@ def fitted(tmp_path_factory):
 
 
 class TestRegistration:
-    def test_node_kinds_carries_only_the_concrete_pair(self):
+    def test_node_kinds_carries_every_concrete_kind(self):
         assert dict(NODE_KINDS) == {
             "transformers-fit": DeclaredTransformerFit,
             "transformers-tiny-fit": TinyTransformerFit,
             "transformers-predict": TransformerPredict,
+            "transformers-encode": PretrainedEncode,
+            "transformers-classify": PretrainedClassify,
+            "transformers-forecast": PretrainedForecast,
         }
 
     def test_register_is_explicit_and_idempotent(self):
@@ -166,7 +172,10 @@ class TestRegistration:
         register(registry)
         register(registry)  # a second call skips, never shadows
         assert registry.kinds() == (
+            "transformers-classify",
+            "transformers-encode",
             "transformers-fit",
+            "transformers-forecast",
             "transformers-predict",
             "transformers-tiny-fit",
         )
@@ -791,8 +800,14 @@ def test_the_probes_reject_a_counterfeit_that_echoes_the_pinned_provenance(tmp_p
     )
 
 
+#: This module's bar covers the fit/predict family; the pretrained trio
+#: (ADR-0083) runs its own suite in ``test_transformers_pretrained.py``
+#: over an acquired snapshot.
+FIT_PREDICT_KINDS = tuple(pair for pair in NODE_KINDS if pair[0] in EXPECTED_ROLES)
+
+
 TestTransformersConformance = conformance_suite(
-    registry=NODE_KINDS,
+    registry=FIT_PREDICT_KINDS,
     module="dskit.pipeline.libs.transformers",
     probes=probes,
     expected_roles=EXPECTED_ROLES,

@@ -26,7 +26,11 @@ on it without breaking its rulings (ADR-0012…0016).
 - **Connectors** — subclass `Connector`; reference by `pkg.module:Class`
   (import = registration) or add a tier-2 pack in `libs/` +
   `DEFAULT_CONNECTORS`. Conformance template:
-  `tests/onboarding/test_localfiles.py`.
+  `tests/onboarding/test_localfiles.py`. A binary artifact (a model's
+  weights) is a `FILE` message (ADR-0082): the connector names a file it
+  holds, the platform copies it into `payload/<stream>/<relpath>`;
+  `libs/huggingface.py` is that shape — `resolve` / `download` seams,
+  one FILE + one inventory RECORD per file, a commit-sha cursor.
 - **OAuth connectors** — expose `oauth_service(config)` returning
   `OAuth2TokenService`; the CLI stays provider-polymorphic.
 - **Recurring pulls** — call `run_watch`; it repeats `run_acquisition`
@@ -34,7 +38,9 @@ on it without breaking its rulings (ADR-0012…0016).
 - **Reading observations back** — consumers (children, packs) go
   through `observations.scan_stream` / `stream_digest` (ADR-0037),
   never a hand-rolled glob: the seam owns codec resolution, bitemporal
-  dedup, and the single-copy memory contract.
+  dedup, and the single-copy memory contract. A FILE tree is read back
+  through `observations.verified_payload_dir(root, manifest_hash,
+  stream)` (ADR-0083): located by hash, re-hashed, refused on drift.
 - **Validation rules** — add to `_RULES` in `validate.py`:
   `(allowed_kwargs, required_kwargs, evaluator)`; the evaluator returns
   a failing COUNT, nothing else. Structure-level only — semantics stay
@@ -50,6 +56,12 @@ on it without breaking its rulings (ADR-0012…0016).
   (because it is ratified design) the decision log — in the same commit.
 - **The purity gate forbids `dskit.pipeline`** entirely (its own static
   test) — the engine/sibling firewall crosses only via files on disk.
+- **A FILE's bytes are read AS the message arrives** (ADR-0082): the
+  platform copies `path` inside the read loop, so a connector may delete
+  its staging once `read()` ends — and a consumer of `read()` (a test)
+  must open the file before asking for the next message. A FILE is never
+  echoed into bronze (its `path` is machine-local): identical bytes
+  pulled twice lay out identical payload trees.
 - **`raw/` and `published/` are WORM.** `write_snapshot` refuses an
   existing acq_id; `publish` refuses to overwrite; `verify` re-hashes.
   Anything that "fixes" a snapshot in place defeats the evidence model.
@@ -95,7 +107,7 @@ dskit/onboarding/
 ├── coverage.py        CoverageLedger — sparse-backfill done-set (ADR-0030)
 ├── leads.py           LeadGrid — lead-fraction capture grid; due_periods speaks the ledger's period spelling (ADR-0075)
 ├── codec.py           extension-declared codecs — deterministic gzip (ADR-0036)
-├── observations.py    the read seam: scan_stream dedup + stream_digest (ADR-0037)
+├── observations.py    the read seam: scan_stream dedup + stream_digest (ADR-0037); verified_payload_dir (ADR-0083)
 ├── oauth.py           OAuth2 exchange/refresh + atomic owner-only token files
 ├── snapshot.py        build_manifest / write_snapshot / verify / find_snapshot_dir
 ├── acquire.py         run_acquisition — the orchestrated pull + durability order
@@ -105,6 +117,7 @@ dskit/onboarding/
 ├── libs/
 │   ├── alpaca.py      Alpaca Market Data stock bars (optional alpaca-py)
 │   ├── alpaca_quotes.py  Alpaca NBBO quotes folded to one bid/ask per minute (stdlib HTTP)
+│   ├── huggingface.py one hub repository at a pinned commit: FILE + inventory RECORD per file (ADR-0082)
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
 │   ├── localfiles.py  reference connector (stdlib CSV/JSONL)
 │   ├── localtables.py parquet / newline-JSON table directories (ADR-0076)

@@ -14,6 +14,7 @@ from dskit.onboarding.base import (
     _check_segment,
     canonical_hash,
     dir_digest,
+    durable_copy_file,
     durable_write_bytes,
     durable_write_json,
     file_digest,
@@ -49,6 +50,26 @@ def test_durable_write_bytes_exact_bytes_and_overwrite(tmp_path):
 def test_durable_write_bytes_refuses_non_bytes(tmp_path):
     with pytest.raises(AssetError):
         durable_write_bytes(str(tmp_path / "b.bin"), "text")
+
+
+def test_durable_copy_file_copies_bytes_and_leaves_no_debris(tmp_path):
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"\x00\x01\x02")
+    dst = tmp_path / "out" / "dst.bin"
+    dst.parent.mkdir()
+    durable_copy_file(str(src), str(dst))
+    assert dst.read_bytes() == b"\x00\x01\x02" and src.exists()
+    assert sorted(os.listdir(dst.parent)) == ["dst.bin"]
+
+
+def test_durable_copy_file_refuses_a_missing_or_non_regular_source(tmp_path):
+    dst = tmp_path / "dst.bin"
+    with pytest.raises(AssetError, match="ghost"):
+        durable_copy_file(str(tmp_path / "ghost"), str(dst))
+    with pytest.raises(AssetError, match="regular file"):
+        durable_copy_file(str(tmp_path), str(dst))
+    assert not dst.exists()
+    assert not [n for n in os.listdir(tmp_path) if n.startswith(".tmp-")]
 
 
 def test_file_digest_matches_hashlib(tmp_path):

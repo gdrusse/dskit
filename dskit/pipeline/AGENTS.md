@@ -52,7 +52,14 @@ on it without breaking its rulings.
   tier-3 code writes the domain, not the plumbing. The DECLARED kinds
   (`torch-train`/`torch-predict`, `transformers-fit`) go further: the
   document names the library class, `library_path_problems` /
-  `import_library_class` (base.py) validate it at plan time.
+  `import_library_class` (base.py) validate it at plan time. The
+  PRETRAINED kinds (`transformers-encode`/`-classify`/`-forecast`,
+  ADR-0083) never name a hub: they pin an acquired snapshot by manifest
+  hash (`root`/`snapshot`/`stream`) and resolve it once per instance
+  through the read seam's `verified_payload_dir`, imported at function
+  depth like `scan_stream`; `build_model` / `build_tokenizer` /
+  `vectors` / `column_names` / `forecast` are their hooks, and a
+  Chronos- or TimesFM-shaped forecaster is a subclass supplying them.
 - **Metrics** — `register_metric` (`metrics.py`); `logloss`/`brier` ship.
 - **Corrections** — `register_correction` (`stats.py`);
   `bh`/`bonferroni`/`none`/`weighted-bh` ship. `needs_weights` metadata
@@ -439,7 +446,9 @@ dskit/pipeline/
 ├── io.py, resolve.py  stage-list load/save + resolution
 ├── registry.py        venue-backend registry (no venues ship)
 ├── libs/              numpy, sklearn, torch + torch_ts (ADR-0041 zoo),
-│                      transformers, optuna, pyomo, sb3, matplotlib,
+│                      transformers (+ the pretrained encode/classify/forecast
+│                      trio over an acquired snapshot, ADR-0083), optuna,
+│                      pyomo, sb3, matplotlib,
 │                      mlflow (tracking SINK pack, no nodes)
 ├── README.md          user-facing docs
 └── AGENTS.md          this file

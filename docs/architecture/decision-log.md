@@ -3880,3 +3880,99 @@ and public exports are updated with them. Focused tests cover identity,
 journal resume/refusal, the 200-cell registration barrier, a single correction
 family, absence of `GROUP`, no Gate-2 fallback, immutable 25-asset fits,
 seed coverage, cutoff/source pins and memory-gate ordering.
+
+---
+
+## ADR-0082 — Binary artifacts are acquisitions: the `FILE` message and the `huggingface` connector pack
+
+**Status:** proposed (2026-09-04; owner directed in session: close the
+Hugging Face TODO items, TDD with a skeptic loop)
+
+**Context.** The transformers pack fine-tunes from a config and restores
+from a local `save_pretrained` directory; it never touches the hub, by
+construction — so no pretrained weight can enter a run today. A bare hub
+name (`bert-base-uncased`) is not content-addressed: the weights behind it
+can change while the document hash does not, and two runs would claim one
+identity while computing different things. The TODO's recommended shape
+is that a model download is an ACQUISITION. Onboarding already snapshots
+WORM, builds a Merkle manifest and re-hashes on `verify`; a model
+snapshot is the same object as a data snapshot — except that the envelope
+carries JSON rows only, and a safetensors file is neither a row nor small.
+
+**Decision.** (1) The envelope gains one known message type, `FILE`:
+`{stream, relpath, path}`. The connector names a file it already holds
+locally; the platform copies it — stage, fsync, rename, the raw/ write
+discipline — to `payload/<stream>/<relpath>` BEFORE the manifest is
+built, so `build_manifest` lists it and `verify_snapshot` covers it
+unchanged. `relpath` is a POSIX-relative path (no absolute, `.`, `..`,
+empty or backslash segments); a repeated relpath, a missing or
+non-regular source refuse by name and leave no debris. FILE messages are
+NOT echoed into the bronze `<stream>.jsonl`: `path` is machine-local
+provenance, and echoing it would move the manifest hash between two
+pulls of identical bytes. A FILE-only pull commits a snapshot (the
+empty-pull rule counts files); the acquire summary gains `files`. An
+older platform skips `FILE` as an unknown type, and the connector's
+RECORD inventory still lands — the forward-compat valve stays honest.
+(2) `dskit/onboarding/libs/huggingface.py` (kind `huggingface`) acquires
+one hub repository at a declared `revision`: it resolves the revision to
+a commit sha (`HfApi.repo_info`), downloads THAT sha (`snapshot_download`
+into its own temporary directory, `allow_patterns` / `ignore_patterns`
+passed through, the hub's `.cache/` metadata skipped) and emits one FILE
+plus one RECORD per file — `{repo_id, repo_type, revision, commit_sha,
+relpath, size, sha256}`, `effective_date` the commit's `last_modified`
+— then STATE `{commit_sha, revision}`. An unchanged sha is an empty pull
+("nothing new"), never a duplicate snapshot. `token_env` names the hub
+token's environment variable (default `HF_TOKEN`; unset means anonymous)
+and the token never enters a record, a message or a refusal.
+`huggingface_hub` is imported inside the verbs (the `huggingface` extra;
+`all` already carries it).
+
+**Consequences.** Weights enter content-addressed: a document pins the
+snapshot's manifest hash (ADR-0083), and a changed weight is a changed
+hash. No pipeline node ever opens a socket. `MESSAGE_TYPES` grows for the
+first time since ADR-0013; `check_message`, the README's envelope table
+and the acquire summary shape (`files`) move together, and the
+`test_connector` kind pin gains `huggingface`.
+
+---
+
+## ADR-0083 — Pretrained weights enter the transformers pack pinned by manifest hash: encode, classify, forecast
+
+**Status:** proposed (2026-09-04; owner directed in session)
+
+**Context.** With ADR-0082 a model is a verified WORM snapshot under an
+onboarding root. The pack still needs a way to point a node at it, and
+the three uses the TODO names: text → feature rows (embeddings, a
+sentiment score) for a downstream model, and a zero-shot time-series
+forecast as the baseline a bespoke model must beat.
+
+**Decision.** The read seam (`dskit.onboarding.observations`, the one
+sibling a pack may name, ADR-0077) gains `verified_payload_dir(root,
+manifest_hash, stream)`: it locates the snapshot by hash
+(`find_snapshot_dir`), re-hashes it (`verify_snapshot`) and returns the
+FILE payload directory — or refuses naming the hash, the drift, or the
+missing stream. Three kinds in `libs/transformers.py` take the pin as
+params `root`, `snapshot` (the 64-hex manifest hash) and `stream`
+(default `snapshot`), resolve it once per instance, and load with
+`local_files_only=True`. `transformers-encode` (`PretrainedEncode`, role
+`tensor`, outputs `rows`/`metrics`, the `ArrayFeatures` shape) tokenizes
+`text_field`, pools the last hidden state (`pooling`: `mean` | `cls` |
+`max` — a table, not a branch) into `<prefix><i>` columns beside
+`carry_fields`; a record without text yields no row and is counted.
+`transformers-classify` (`PretrainedClassify`, its subclass) applies
+softmax over a sequence-classification head, one `<prefix><label>` column
+per `id2label` entry. `transformers-forecast` (`PretrainedForecast`, role
+`signal`, `default_mode="load"`) restores a zero-shot forecaster from the
+snapshot's own `architectures` and answers `predict(row)` with the
+`horizon`-th step of `prediction_outputs` over the ordered `features`
+context; `mode="train"` refuses, and so does a node-level `artifact`
+path — the pin is a hash, never a path. `build_model`, `build_tokenizer`,
+`vectors` and `forecast` are the subclass seam: a Chronos, TimesFM or
+Moirai wrapper is a subclass supplying them, never a registry of
+per-model classes.
+
+**Consequences.** Identity is content: moving the weights moves the hash
+in the document, and a tampered snapshot refuses at load by name. No
+existing document, kind or hash moves; `NODE_KINDS` grows by three. The
+pack's "never downloads" property is unchanged — acquisition is
+onboarding's job.

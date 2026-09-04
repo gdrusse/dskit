@@ -41,6 +41,10 @@ alpaca = ["alpaca-py>=0.44"]
 # The Polymarket pack's archive_hours stream reads the pmxt L2 dump off the
 # Hugging Face hub (hourly parquet); Gamma/CLOB streams stay stdlib.
 polymarket = ["huggingface_hub>=0.20", "pyarrow>=15"]
+# The huggingface connector pack acquires one hub repository at a pinned
+# commit as a WORM snapshot (ADR-0082); the client is imported inside its
+# two network seams only.
+huggingface = ["huggingface_hub>=0.20"]
 # Everything the library packs can use, for running the full libs test suite.
 all = [
     "numpy>=1.26",

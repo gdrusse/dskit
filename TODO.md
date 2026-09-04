@@ -601,10 +601,12 @@ connector, the `observations` kind and the public clause DSL):
       "revisit declared gaps" knob or an upstream-object fallback
       (`https://r2v2.pmxt.dev/`, the mirror lags the venue by weeks — the
       child's I-242) would be an ADR.
-- [ ] `tests/onboarding/test_connector.py::test_resolve_registered_kind`
+- [x] `tests/onboarding/test_connector.py::test_resolve_registered_kind`
       is a hand-kept list of the nine kinds (a deliberate restatement);
       deriving it from `DEFAULT_CONNECTORS` would remove the pin, keeping
-      it means adding every new pack there too.
+      it means adding every new pack there too. **Ruling (2026-09-04):
+      keep the pin — CLAUDE.md's "deliberate independent restatement is
+      correct"; `huggingface` joined it as the tenth kind.**
 
 Found by the first real-data run of `children/intraday_poc` (2026-08-26) —
 reclassified generic by the owner (generic-first: children are wrappers):
@@ -1061,8 +1063,9 @@ gap-aware window transform (kills `latest_feature_row`), and `TrainableNode`
 
 ## Long-term goal — Hugging Face integration in `libs/transformers.py`
 
-**Not now.** Recorded because the blocking decision is architectural, not a
-wrapper-writing task, and is worth deciding once rather than rediscovering.
+**Landed 2026-09-04 (ADR-0082 / ADR-0083; TDD, skeptic-looped).** The
+blocking decision was taken exactly as recommended below: a model download
+is an ACQUISITION. The record of why stays.
 
 **What already exists — a complete fine-tune/predict doorway.**
 `TransformerFit` (role `train`) with a `build_model` hook,
@@ -1080,7 +1083,10 @@ by convention."* So today you can fine-tune a fresh architecture and cannot
 touch a single pretrained weight. For most HF use that IS the point, so this
 is the integration.
 
-- [ ] **Decide how a PRETRAINED model enters without breaking identity.**
+- [x] **Decide how a PRETRAINED model enters without breaking identity.**
+      **Landed via ADR-0082 (2026-09-04): the envelope gained a `FILE`
+      message, the `huggingface` connector acquires one repo at one commit
+      as a WORM snapshot, and documents pin it by manifest hash.**
       Blocking; everything else waits on it. A bare hub name
       (`"bert-base-uncased"`) is not content-addressed — the weights behind
       it can change while the document hash does not, so two runs would claim
@@ -1096,21 +1102,33 @@ is the integration.
       no-network-at-run, keeps the content digest meaningful, adds no new
       trust surface. If a direct hub path is ever wanted instead, it must
       carry a pinned `revision` commit sha, never a bare name.
-- [ ] **Add a feature-extraction / embedding node — the real gap.** The pack
+- [x] **Add a feature-extraction / embedding node — the real gap.** The pack
+      **Landed via ADR-0083 (2026-09-04): `transformers-encode` (role
+      `tensor`, `rows`/`metrics`) — `text_field` → pooled embedding columns
+      beside `carry_fields`; `transformers-classify` for the sentiment
+      score.**
       has train and signal but nothing turning text into FEATURE ROWS for a
       downstream model. For markets work that is the common case: news,
       filings or headlines → embeddings or a sentiment score → columns joined
       onto a bar stream. Shape it like `ArrayFeatures` (role `tensor`,
       outputs `rows`) so it composes with the model- and feature-selection
       work above.
-- [ ] **Time-series foundation models are the domain payoff.** Chronos
+- [x] **Time-series foundation models are the domain payoff.** Chronos
+      **Landed via ADR-0083 (2026-09-04): `transformers-forecast` (role
+      `signal`, always loads) restores the snapshot's own `architectures`
+      (PatchTST, Informer, …) and answers the `horizon`-th step; Chronos /
+      TimesFM / Moirai are subclasses supplying `build_model` +
+      `forecast`.**
       (Amazon), TimesFM (Google), Moirai (Salesforce), Lag-Llama are all
       HF-hosted zero-shot forecasters and directly relevant to quant/markets
       work — a zero-shot baseline you never trained is the strongest check
       that a bespoke LSTM is earning its keep. Needs the pretrained-weights
       decision first. Pairs with the DLinear "honest baseline" argument in
       the architecture-zoo item.
-- [ ] **Then, and only then, the wrappers.** Once weights can enter safely
+- [x] **Then, and only then, the wrappers.** Once weights can enter safely
+      **Landed via ADR-0083 (2026-09-04): embeddings, classification and
+      zero-shot forecast are the three shipped subclasses of the doorway;
+      no per-model registry.**
       the wrappers are the cheap part, following the pack's existing subclass
       contract: sentiment/classification, embeddings, zero-shot forecast.
       Keep them subclasses supplying `build_model` / `encode` — never a

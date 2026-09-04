@@ -31,6 +31,12 @@ unparseable timestamp, and a missing source directory all refuse as
 truthfully empty; a source directory that does not exist is a refusal
 (a typo'd root must never read as an empty store).
 
+The seam's second verb, :func:`verified_payload_dir` (ADR-0083), reads
+an acquired FILE tree back the same way: a snapshot is named by its
+manifest hash — content, never a path — re-hashed before a byte of it
+is trusted, and handed over as the directory a pretrained model loads
+from with ``local_files_only=True``.
+
 Import cost: stdlib + this package. No ``dskit.pipeline`` import — the
 engine/sibling firewall crosses only via files on disk; a pipeline
 node kind that fronts this seam belongs to its adapter (child) or a
@@ -42,13 +48,20 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 from datetime import datetime, timezone
 
 from .base import AssetError, _check_segment, _raise_if, parse_utc
 from .codec import iter_text_lines, resolve_stream_file
+from .layout import OnboardingRoot
+from .snapshot import find_snapshot_dir, verify_snapshot
 
-__all__ = ["scan_stream", "stream_dir", "stream_digest"]
+__all__ = ["scan_stream", "stream_dir", "stream_digest", "verified_payload_dir"]
+
+#: The spelling of a snapshot's identity — the 64-hex sha256 of its
+#: canonical manifest (:func:`~dskit.onboarding.snapshot.snapshot_hash`).
+_MANIFEST_HASH = re.compile(r"^[0-9a-f]{64}$")
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
@@ -586,3 +599,67 @@ def stream_digest(records) -> str:
             ) from exc
     hasher.update(b"]")
     return hasher.hexdigest()
+
+
+def verified_payload_dir(root, manifest_hash, stream) -> str:
+    """Locate one snapshot by manifest hash, re-verify it, return its FILE payload directory.
+
+    The read half of ADR-0082's FILE messages, for a consumer that pins
+    CONTENT: a pipeline node names the snapshot by the hash of its
+    manifest, never by a path, so what it loads is exactly what the
+    document's identity hashed. The snapshot is re-hashed here, every
+    time — a drifted byte refuses before anything is loaded from it.
+
+    Parameters
+    ----------
+    root : str or OnboardingRoot
+        An initialized onboarding root, or its path.
+    manifest_hash : str
+        The snapshot's identity — 64 lowercase hex characters, as the
+        registry's ``snapshot`` record and the acquire summary carry it.
+    stream : str
+        The stream whose FILE messages were acquired; the returned
+        directory is ``payload/<stream>/`` inside the snapshot.
+
+    Returns
+    -------
+    str
+        The verified directory holding the stream's files, exactly as the
+        connector's ``relpath`` values laid them out.
+
+    Raises
+    ------
+    AssetError
+        When the root is not initialized, the hash is malformed, no
+        snapshot under the root carries it, the snapshot fails
+        verification (every drift named), or it holds no files for
+        ``stream``.
+    """
+    ob = root if isinstance(root, OnboardingRoot) else OnboardingRoot(root)
+    errors = []
+    if not isinstance(manifest_hash, str) or not _MANIFEST_HASH.match(manifest_hash):
+        errors.append(
+            "manifest_hash must be the 64-hex sha256 of a snapshot manifest, "
+            f"got {manifest_hash!r}"
+        )
+    _check_segment(errors, "stream", stream)
+    _raise_if(errors)
+    snap_dir = find_snapshot_dir(ob, manifest_hash)
+    if snap_dir is None:
+        raise AssetError(
+            [f"no snapshot under {ob.root!r} has manifest hash {manifest_hash} — "
+             "acquire it first, or check the pin"]
+        )
+    problems = verify_snapshot(snap_dir)
+    if problems:
+        raise AssetError(
+            [f"snapshot {manifest_hash} failed verification — refusing to read "
+             "a tree that is not the one that was pinned"] + problems
+        )
+    files_dir = os.path.join(snap_dir, "payload", stream)
+    if not os.path.isdir(files_dir):
+        raise AssetError(
+            [f"snapshot {manifest_hash} holds no FILE payload for stream "
+             f"{stream!r} (payload/{stream}/ is absent)"]
+        )
+    return files_dir

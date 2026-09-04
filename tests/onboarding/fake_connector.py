@@ -22,6 +22,13 @@ def state(obj):
     return {"protocol": PROTOCOL, "type": "STATE", "state": obj}
 
 
+def file_message(stream, relpath, path):
+    """A FILE message (ADR-0082): a local file the platform copies into
+    ``payload/<stream>/<relpath>``."""
+    return {"protocol": PROTOCOL, "type": "FILE", "stream": stream,
+            "relpath": relpath, "path": path}
+
+
 class FakeConnector(Connector):
     """Yields ``script`` verbatim; records every call for assertions."""
 

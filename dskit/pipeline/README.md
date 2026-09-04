@@ -359,7 +359,14 @@ CNN1d/PatchTST — `torch.py` stays byte-identical);
 artifacts are hash-pinned); **matplotlib** `mpl-figure` + `FigureNode` base
 (ADR-0029: declared line/scatter/bar/hist marks over a row stream → a PNG
 artifact); **transformers** `transformers-fit` (declared)
-+ `transformers-tiny-fit`/`transformers-predict`; **optuna** `optuna-search`
++ `transformers-tiny-fit`/`transformers-predict` + the pretrained doorway
+`transformers-encode`/`transformers-classify`/`transformers-forecast`
+(ADR-0083: weights are an onboarding ACQUISITION — the `huggingface`
+connector's WORM snapshot, ADR-0082 — pinned by manifest hash through
+`root`/`snapshot`/`stream`, re-verified before a byte loads; text → pooled
+embedding columns or one probability column per `id2label` entry, and a
+zero-shot forecast `signal` restored from the snapshot's own `architectures`
+— the baseline a bespoke model must beat; never a hub name); **optuna** `optuna-search`
 (categorical lists AND `{"low", "high"[, "log"][, "int"]}` continuous ranges;
 `hpo-grid` keeps refusing ranges — enumerating an interval is meaningless);
 **pyomo** `pyomo-budgeted-select` + `PyomoSolve` base (`build_model`/`extract`
@@ -568,7 +575,9 @@ dskit/pipeline/
 ├── io.py, resolve.py  stage-list load/save + resolution
 ├── registry.py        venue-backend registry mechanism (no venues ship)
 ├── libs/              tier-2 packs: numpy, sklearn, torch + torch_ts
-│                      (ADR-0041 zoo), transformers, optuna, pyomo, sb3,
+│                      (ADR-0041 zoo), transformers (fit/predict + the
+│                      pretrained encode/classify/forecast trio over an
+│                      acquired snapshot, ADR-0083), optuna, pyomo, sb3,
 │                      matplotlib, mlflow (the tracking SINK pack —
 │                      registers into SINK_KINDS, no node kinds),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077)

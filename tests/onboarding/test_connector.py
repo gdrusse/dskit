@@ -5,6 +5,7 @@ import pytest
 from dskit.assets.base import AssetError
 from dskit.onboarding import (
     MAX_BACKOFF_S,
+    MESSAGE_TYPES,
     PROTOCOL,
     Connector,
     check_config,
@@ -14,7 +15,7 @@ from dskit.onboarding import (
 )
 from dskit.onboarding.libs import kalshi, polymarket, predexon, restapi, schwab
 
-from .fake_connector import FakeConnector, record
+from .fake_connector import FakeConnector, file_message, record
 
 
 # -- check_message ----------------------------------------------------------
@@ -64,6 +65,39 @@ def test_all_problems_reported_at_once():
         check_message({"protocol": 9, "type": "RECORD", "stream": "",
                        "effective_date": "bad", "data": []})
     assert len(exc.value.errors) >= 3
+
+
+# -- FILE messages (ADR-0082) --------------------------------------------------
+
+
+def test_file_is_a_known_message_type():
+    assert "FILE" in MESSAGE_TYPES
+    assert check_message(file_message("weights", "sub/model.bin", "/tmp/x")) == "FILE"
+
+
+@pytest.mark.parametrize(
+    "relpath",
+    ["", "/abs/path", "../escape", "a/../b", "./here", "a//b", "a\\b",
+     "trailing/", "nul\x00byte", "."],
+)
+def test_file_relpath_must_be_a_safe_relative_posix_path(relpath):
+    with pytest.raises(AssetError, match="relpath"):
+        check_message(file_message("weights", relpath, "/tmp/x"))
+
+
+@pytest.mark.parametrize("path", ["", 3, None])
+def test_file_path_must_be_a_non_empty_string(path):
+    with pytest.raises(AssetError, match="path"):
+        check_message(file_message("weights", "model.bin", path))
+
+
+def test_file_message_refuses_unknown_keys_and_a_missing_stream():
+    msg = file_message("weights", "model.bin", "/tmp/x")
+    msg["size"] = 3
+    with pytest.raises(AssetError, match="size"):
+        check_message(msg)
+    with pytest.raises(AssetError, match="stream"):
+        check_message(file_message("", "model.bin", "/tmp/x"))
 
 
 # -- check_config -----------------------------------------------------------
@@ -131,6 +165,7 @@ def test_a_spec_may_not_declare_the_reserved_keys():
     [
         "alpaca",
         "alpaca_quotes",
+        "huggingface",
         "kalshi",
         "localfiles",
         "localtables",

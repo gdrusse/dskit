@@ -14,6 +14,12 @@ The flow, with its durability ordering (the whole point):
    ``{stream, mode, kind, effective_date, acquired_at, data}``, declared
    forecasts segregated into their own root (ADR-0014/OQ-6). STATE is
    remembered, LOG collected, ERROR aborts, unknown types skipped.
+   A FILE message (ADR-0082) names a local file the connector holds; it
+   is copied — stage, fsync, rename — to ``payload/<stream>/<relpath>``
+   so the manifest below digests it, and is NOT echoed into the jsonl:
+   its ``path`` is machine-local, and identical bytes pulled twice must
+   hash the same. A repeated relpath, another stream's file, or an
+   unusable source refuses by name.
    ``acquired_at`` is the COMMIT instant — ``utc_now()`` taken only once
    ``read()`` is exhausted, so nothing observed during the pull can
    post-date it (ADR-0079): the latest-dated observation is asserted
@@ -29,7 +35,7 @@ The flow, with its durability ordering (the whole point):
    from the old cursor: at-least-once + content-addressed dedupe
    downstream = effectively-once (the ADR-0012 reasoning).
 
-An empty pull (no records) writes no snapshot and registers nothing,
+An empty pull (no records, no files) writes no snapshot and registers nothing,
 but a STATE message received is still honored — "nothing new" is a
 valid, checkpointable answer.
 
@@ -50,6 +56,7 @@ from .base import (
     _check_segment,
     _check_str,
     _raise_if,
+    durable_copy_file,
     parse_utc,
     utc_now,
 )
@@ -122,7 +129,7 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
     Returns
     -------
     dict
-        ``{"job", "snapshot", "acq_id", "records", "forecasts",
+        ``{"job", "snapshot", "acq_id", "records", "forecasts", "files",
         "skipped", "logs", "state_saved"}`` — ``job``/``snapshot``/
         ``acq_id`` are None on an empty pull.
     """
@@ -156,7 +163,8 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
     os.makedirs(raw_dir, exist_ok=True)
     staged = tempfile.mkdtemp(dir=raw_dir, prefix=".stage-")
     norm_staged = tempfile.mkdtemp(dir=root.root, prefix=".stage-norm-")
-    records = forecasts = skipped = 0
+    records = forecasts = files = skipped = 0
+    seen_files = set()
     pending_state, logs = None, []
     eff_min = eff_max = None
     latest_obs = None  # (parsed, raw, message index) — judged at commit
@@ -168,6 +176,9 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
         raw_path = os.path.join(
             payload_dir, stream_filename(stream, storage["payload_codec"])
         )
+        # FILE messages land beside the jsonl, under the stream's own
+        # directory, so the manifest walk below lists them (ADR-0082).
+        files_dir = os.path.join(payload_dir, stream)
         payload_lines = 0
         # ONE kept-open writer per file, all on one stack: gzip members
         # cannot be re-opened per row, and even for "none" the per-row
@@ -200,6 +211,10 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
                     continue
                 if mtype == "STATE":
                     pending_state = msg["state"]  # held until step 6
+                    continue
+                if mtype == "FILE":
+                    _place_file(files_dir, stream, seen_files, msg, i)
+                    files += 1
                     continue
 
                 # RECORD and SCHEMA are the payload — bronze, as received.
@@ -261,12 +276,12 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
             )
 
         # -- empty pull: no snapshot, but a checkpoint is still honored ----
-        if records + forecasts == 0:
+        if records + forecasts + files == 0:
             state_saved = pending_state is not None
             if state_saved:
                 save_state(root, source, stream, mode, pending_state)
             return {"job": None, "snapshot": None, "acq_id": None,
-                    "records": 0, "forecasts": 0, "skipped": skipped,
+                    "records": 0, "forecasts": 0, "files": 0, "skipped": skipped,
                     "logs": logs, "state_saved": state_saved}
 
         # -- settle the commit instant onto the staged rows, line by line:
@@ -336,7 +351,7 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
             "name": f"{source}-{acq_id}",
             "mode": mode,
             "stream": stream,
-            "effective_range": {"start": eff_min, "end": eff_max},
+            "effective_range": {"start": eff_min or "", "end": eff_max or ""},
             "status": "ran",
         },
         refs={"source_config": config_vid},
@@ -349,8 +364,8 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
             "manifest_hash": snapshot_hash(manifest),
             "mode": mode,
             "acquired_at": acquired_at,
-            "effective_start": eff_min,
-            "effective_end": eff_max,
+            "effective_start": eff_min or "",
+            "effective_end": eff_max or "",
         },
         refs={"job": job_vid},
         origin=origin,
@@ -362,8 +377,8 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
         save_state(root, source, stream, mode, pending_state)
 
     return {"job": job_vid, "snapshot": snap_vid, "acq_id": acq_id,
-            "records": records, "forecasts": forecasts, "skipped": skipped,
-            "logs": logs, "state_saved": state_saved}
+            "records": records, "forecasts": forecasts, "files": files,
+            "skipped": skipped, "logs": logs, "state_saved": state_saved}
 
 
 def _restamp_rows(path, codec, acquired_at):
@@ -375,3 +390,32 @@ def _restamp_rows(path, codec, acquired_at):
             row["acquired_at"] = acquired_at
             fh.write(json.dumps(row, sort_keys=True) + "\n")
     os.replace(settled, path)
+
+
+def _place_file(files_dir, stream, seen, msg, index):
+    """Copy one FILE message's source into the staged payload tree (ADR-0082)."""
+    where = f"message {index}: FILE"
+    if msg["stream"] != stream:
+        raise AssetError(
+            [f"{where}.stream {msg['stream']!r} is not the stream being pulled "
+             f"({stream!r}) — a file lands under its own stream or not at all"]
+        )
+    relpath = msg["relpath"]
+    if relpath in seen:
+        raise AssetError(
+            [f"{where} relpath {relpath!r} repeats an earlier FILE in this pull "
+             "— one file per relpath"]
+        )
+    seen.add(relpath)
+    dest = os.path.join(files_dir, *relpath.split("/"))
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        durable_copy_file(msg["path"], dest)
+    except OSError as exc:
+        # A relpath squatting another's directory (``a`` then ``a/b``)
+        # surfaces here as a raw OSError; it crosses the seam typed.
+        raise AssetError(
+            [f"{where} relpath {relpath!r} cannot be placed: {exc}"]
+        ) from exc
+    except AssetError as exc:
+        raise AssetError([f"{where} relpath {relpath!r}: {e}" for e in exc.errors]) from exc
