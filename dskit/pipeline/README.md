@@ -237,6 +237,7 @@ Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 | `derive` | transform | add one declared field per record via `when`/`value` cases (no expression language — deliberately) |
 | `concat` | transform | merge record streams into one |
 | `join` | transform | attach keyed lookup rows to records |
+| `groupby` | transform | one record per group of declared `keys`, carrying declared `aggregates` over a closed op table (ADR-0086) |
 | `table-file` | transform | load a digest-verified keyed table (refuses drift) |
 | `table-write` | report | write a table atomically, never clobbering |
 | `records-write` | report | write a record stream as canonical newline-JSON, atomically, never clobbering; the bytes' digest in `metrics` (ADR-0085) |
@@ -547,7 +548,7 @@ dskit/pipeline/
 ├── attempts.py        the many-attempts bar: AttemptRegistry, session-block
 │                      sign-flip max_bar, the tier-2 scramble seam (ADR-0069)
 ├── split_policy.py    split-assignment policies (record / event-open / event-close) + EventBounds
-├── kinds_flow.py      filter, event-grid, derive, concat, join — record-flow verbs
+├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby — record-flow verbs
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
 │                      accrual -> gate -> ledger spine
 ├── kinds_table.py     table-file, table-write, records-write (digest-verified keyed

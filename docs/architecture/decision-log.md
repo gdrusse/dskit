@@ -4052,3 +4052,51 @@ an APPEND mode and a refuse-on-shrink guard for `overwrite: true` (both
 pmquant asks) — each is a second write semantics and wants its own
 ruling; a `records-file` reader mirroring `table-file` lands when a
 document needs to pin a stream by digest.
+
+---
+
+## ADR-0086 — `groupby`: one record per group over a closed aggregate table; `pivot` ruled a later kind
+
+**Status:** proposed (2026-09-04; owner directed in session: close the
+small TODO items)
+
+**Context.** The flow verbs filter, grid, union, look up and project rows;
+none REDUCES them. "One row per event with its strike count and last mid",
+"per venue, the mean fee" is spelled today either as a document-side
+`derive` chain that cannot count, or as child code (pmquant's `fee-book`
+builds its table by hand — TODO §13 item 11). A reduction is the
+relational family's fourth verb: like `concat`/`join`/`derive` it says what
+a row IS, so it refuses rather than drops.
+
+**Decision.** `kinds_flow.py` gains `groupby` (`GroupBy`, role
+`transform`, outputs `records`/`metrics`). Params: `keys` (a field name or
+a non-empty list, REQUIRED), `aggregates` (REQUIRED, non-empty:
+`{out_field: {"op": <op>, "field": <field>}}`), `order_field` (REQUIRED
+iff an aggregate is `first`/`last`, refused otherwise — a knob nothing
+reads is the approved-value-the-run-never-uses shape). The op vocabulary
+is a CLOSED table of `_AggOp(needs_field, numeric, ordered, reduce)` entries —
+`count`, `sum`, `mean`, `min`, `max`, `first`, `last`, `nunique` — read by
+name, never an `if op ==` chain; `count` takes no `field`, every other op
+requires one, and an `out_field` may not restate a key. Refusals, each
+naming the node, the row and the field: a row missing a key or an
+aggregate's field; an unhashable key value; a non-numeric cell under a
+numeric op (`records.number_ok`, the toolkit's one numeric rule); an
+`order_field` value that is not a number (the fitted family's instant
+rule); key values that cannot be ordered against each other; a reducer
+the cells defeat (`nunique` over unhashable cells). Output is one mapping
+per group — the key fields then the aggregates — SORTED by key values;
+`first`/`last` take the row with the smallest/largest `order_field`,
+ties resolved by input order. Rows may be dicts or attribute-bearing
+records (the module's `_field` accessor); the output rows are always
+dicts.
+
+**Ruling on `pivot`.** A separate, later kind, not built here. A pivot
+(records → a MAPPING keyed by a field's values) is a shape change with no
+reduction, and it raises a question `groupby` never meets — a composite
+key has no JSON-object spelling — that deserves its own ruling; folding a
+conditional `table` output into `groupby` would give one kind two output
+shapes. The two-step spelling (`groupby`, then a pivot) is the design.
+
+**Consequences.** `DEFAULT_NODE_KINDS` grows by one; no existing kind,
+document or hash moves. pmquant's fee-book residue shrinks to the pivot
+half, recorded in TODO.

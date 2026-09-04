@@ -41,7 +41,7 @@ from dskit.pipeline.base import TimeSplitConfig
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.fitted import SIDECAR_NAME, ApplyTransform, Standardize
 from dskit.pipeline.kinds_banking import BankingReport, Eligibility, EventBank
-from dskit.pipeline.kinds_flow import Concat, Derive, EventGrid, Filter, Join
+from dskit.pipeline.kinds_flow import Concat, Derive, EventGrid, Filter, GroupBy, Join
 from dskit.pipeline.kinds_report import RunReport
 from dskit.pipeline.kinds_search import HpoGrid, TopTrials
 from dskit.pipeline.kinds_stats import StatTest, Validate
@@ -64,6 +64,7 @@ TOOLKIT_NODE_KINDS = (
     ("concat", Concat),
     ("join", Join),
     ("derive", Derive),
+    ("groupby", GroupBy),
     ("table-file", TableFile),
     ("table-write", TableWrite),
     ("records-write", RecordsWrite),
@@ -85,11 +86,12 @@ TOOLKIT_ROLES = {
     "hpo-grid": "search",
     "top-trials": "transform",
     "run-report": "report",
-    # The relational three are transforms: they combine rows, they never
-    # decide, score or spend.
+    # The relational verbs are transforms: they combine, project or
+    # reduce rows, they never decide, score or spend.
     "concat": "transform",
     "join": "transform",
     "derive": "transform",
+    "groupby": "transform",
     # The table pair: the reader supplies a value (transform), the
     # writer materialises one and proves it (report) — as does the
     # stream writer beside it (ADR-0085).
@@ -332,6 +334,23 @@ def probes(tmp_path):
                 ],
             },
             required=("field", "cases"),
+            inputs={"records": records},
+            stream_ports=("records",),
+            runnable=True,
+        ),
+        # The reduction: one record per instrument, sorted. ``last`` needs
+        # the order_field, so dropping it must refuse at plan like the rest.
+        "groupby": NodeProbe(
+            params={
+                "keys": "instrument",
+                "order_field": "asof_ms",
+                "aggregates": {
+                    "n": {"op": "count"},
+                    "mid_mean": {"op": "mean", "field": "mid"},
+                    "last_mid": {"op": "last", "field": "mid"},
+                },
+            },
+            required=("keys", "aggregates", "order_field"),
             inputs={"records": records},
             stream_ports=("records",),
             runnable=True,

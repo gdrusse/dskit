@@ -546,7 +546,16 @@ ADR yet, and none blocks the child from starting:
       `observations` kind (`ObservationRows`, memoized per instance,
       `root()`/`source()`/`stream()` + vocabulary hooks); pmquant's two
       readers subclass it.**
-- [ ] 11. A records → keyed-table verb (`groupby`/`pivot`, `kinds_flow.py`).
+- [x] 11. A records → keyed-table verb (`groupby`/`pivot`, `kinds_flow.py`).
+      **Landed via ADR-0086 (2026-09-04): `groupby` reduces a record stream
+      to one row per group of declared `keys`, each carrying declared
+      `aggregates` over the CLOSED op table `count`/`sum`/`mean`/`min`/
+      `max`/`first`/`last`/`nunique` (`first`/`last` require an
+      `order_field`); output sorted by key values, and a missing key or
+      cell, a non-numeric cell under a numeric op, or an out-field that
+      restates a key is refused BY NAME. `pivot` is ruled a separate,
+      later kind — a shape change with no reduction, and a composite key
+      has no JSON-object spelling.**
 - [ ] 12. Search-seam expressiveness for seed-ensemble studies + per-fold
       node-param binding (`kinds_search.py`, `document.py`/`driver.py`).
 - [x] 13. Val-metric checkpoint selection in the torch pack (a `monitor` +
