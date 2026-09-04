@@ -522,13 +522,23 @@ ADR yet, and none blocks the child from starting:
       Efron lfdr, Venn–Abers, proper scoring rules).
 - [ ] 6. Acquire-side coverage hook + guarded parallel acquisition
       (`onboarding/acquire.py`).
-- [ ] 7. A grouped/cardinality suite rule (`onboarding/validate.py` `_RULES`).
+- [x] 7. A grouped/cardinality suite rule (`onboarding/validate.py` `_RULES`).
+      **Landed via ADR-0084 (2026-09-04): `distinct_count` — kwargs
+      `{field, group_by?, min?, max?}`, one failure per GROUP whose
+      distinct non-null values are out of bounds (ungrouped, the stream is
+      the one group); the "at least one bound" check is now derived from
+      the rule table.**
 - [x] 8. Compressed snapshot payloads in onboarding (~96× on gz-class
       archives, ~10× on parquet-class). **Landed via ADR-0036 (2026-08-26;
       the ratified Tier-B sunset path — pmquant's Tier-B bypass retires
       onto it when the child builds).**
-- [ ] 9. A generic `records-write` kind beside `table-write`
-      (`kinds_table.py`).
+- [x] 9. A generic `records-write` kind beside `table-write`
+      (`kinds_table.py`). **Landed via ADR-0085 (2026-09-04): `records-write`
+      writes canonical newline-JSON (sorted keys, compact, one row per
+      line) with the bytes' digest in `metrics`, refusing a frozen envelope
+      / NaN / Infinity by row and field; both writers now share the
+      `FileWrite` base (one no-clobber, one atomic replace). Deferred to
+      their own rulings: append mode and refuse-on-shrink.**
 - [x] 10. A generic onboarding-observations reader kind — the second child
       to need it. **Half landed via ADR-0037 (2026-08-26): the function
       seam (`observations.scan_stream`/`stream_digest`) exists.** **Landed
@@ -536,7 +546,16 @@ ADR yet, and none blocks the child from starting:
       `observations` kind (`ObservationRows`, memoized per instance,
       `root()`/`source()`/`stream()` + vocabulary hooks); pmquant's two
       readers subclass it.**
-- [ ] 11. A records → keyed-table verb (`groupby`/`pivot`, `kinds_flow.py`).
+- [x] 11. A records → keyed-table verb (`groupby`/`pivot`, `kinds_flow.py`).
+      **Landed via ADR-0086 (2026-09-04): `groupby` reduces a record stream
+      to one row per group of declared `keys`, each carrying declared
+      `aggregates` over the CLOSED op table `count`/`sum`/`mean`/`min`/
+      `max`/`first`/`last`/`nunique` (`first`/`last` require an
+      `order_field`); output sorted by key values, and a missing key or
+      cell, a non-numeric cell under a numeric op, or an out-field that
+      restates a key is refused BY NAME. `pivot` is ruled a separate,
+      later kind — a shape change with no reduction, and a composite key
+      has no JSON-object spelling.**
 - [ ] 12. Search-seam expressiveness for seed-ensemble studies + per-fold
       node-param binding (`kinds_search.py`, `document.py`/`driver.py`).
 - [x] 13. Val-metric checkpoint selection in the torch pack (a `monitor` +

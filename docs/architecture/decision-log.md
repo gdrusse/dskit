@@ -4010,3 +4010,127 @@ That is deliberate: a document says which acquisition it trusted. No
 existing document, kind or hash moves; `NODE_KINDS` grows by three. The
 pack's "never downloads" property is unchanged — acquisition is
 onboarding's job.
+
+---
+
+## ADR-0084 — A cardinality rule for validation suites: `distinct_count`, optionally per group
+
+**Status:** proposed (2026-09-04; owner directed in session: close the
+small TODO items)
+
+**Context.** The six built-in rules assert per-row facts (`not_null`,
+`unique`, `accepted_values`, `in_range`, `bitemporal`) or one stream-level
+count (`row_count`). "Every event carries exactly N strikes" and "every
+day has at least one row per venue" are structure-level assertions the
+vocabulary cannot spell, so pmquant flattened rows and inventoried them in
+the pipeline instead (TODO §13 item 7).
+
+**Decision.** One `_RULES` entry, `distinct_count`: kwargs `{field,
+group_by?, min?, max?}` (at least one bound; `group_by` a field name or a
+list of them). The evaluator groups rows by their `group_by` values,
+counts the DISTINCT non-null `field` values per group, and returns the
+number of GROUPS out of bounds. Ungrouped, the whole stream is the one
+group and it exists even when empty — so an empty stream fails a `min`
+exactly as `row_count` does; grouped, an empty stream has no groups and
+fails nothing (emptiness is `row_count`'s assertion). A row whose `field`
+or any `group_by` value is null is skipped — the null discipline of
+`unique` / `in_range`. The "at least one of min/max" check is now DERIVED
+from the table (every rule whose allowed kwargs carry both bounds), not a
+literal tuple that would have had to grow.
+
+**Consequences.** Rule shape `(allowed_kwargs, required_kwargs, evaluator)`,
+the failing-count contract and the result shape are unchanged; existing
+suites hash identically. Semantics stay the declared seam: the rule counts
+values, it does not know what an event is.
+
+---
+
+## ADR-0085 — `records-write`: the record-stream sibling of `table-write`, over one shared write discipline
+
+**Status:** proposed (2026-09-04; owner directed in session: close the
+small TODO items)
+
+**Context.** `table-write` persists a MAPPING atomically, refuses to
+clobber, refuses to create a tree, and proves what it wrote. A run also
+produces STREAMS a later document must pin — the rows a fold scored, a
+resolved universe as records — and the only writer takes a mapping.
+pmquant carried five child-side write kinds for this (TODO §13 item 9).
+Copying `TableWrite` for a second payload shape would put the no-clobber
+rule, the atomic replace and the provenance block in two places with
+nothing pinning them — the defect class CLAUDE.md's "Duplication that
+diverges" names.
+
+**Decision.** `kinds_table.py` gains an abstract base, `FileWrite` (role
+`report`): the four knobs (`path`, `source`, `overwrite`, `expect`), the
+`expect` cross-check before any byte lands, the clobber and missing-parent
+refusals, the `~` expansion, the atomic temp-fsync-replace, and the
+provenance `{path, source, retrieved, sha256, <unit>, bytes}` live there
+ONCE. A member supplies `render(payload) -> (bytes, count)`,
+`payload_problems(payload)`, its port and its unit; `emit` shapes the
+outputs. `TableWrite` becomes the mapping member (behaviour unchanged;
+its refusals keep their words). `RecordsWrite` (kind `records-write`,
+outputs `path`/`provenance`/`metrics`) is the stream member: input port
+`records` (a list or tuple of mapping rows; a one-shot iterable refused by
+name), one JSON object per line in the canonical spelling — sorted keys,
+compact separators, ASCII, trailing newline — so identical rows write
+identical bytes; `metrics` carries `{rows, bytes, sha256}` so the digest
+reaches the run record and the sinks. A row that is not a mapping, a NaN
+or ±Infinity, or a value JSON has no form for is refused BY NAME (row
+index, dotted field path) and nothing reaches disk; both writers share
+that rule, so `table-write` now names the entry instead of surfacing the
+codec's message.
+
+**Consequences.** `DEFAULT_NODE_KINDS` grows by one; no existing kind,
+document or hash moves. Deferred, recorded here so they are not forgotten:
+an APPEND mode and a refuse-on-shrink guard for `overwrite: true` (both
+pmquant asks) — each is a second write semantics and wants its own
+ruling; a `records-file` reader mirroring `table-file` lands when a
+document needs to pin a stream by digest.
+
+---
+
+## ADR-0086 — `groupby`: one record per group over a closed aggregate table; `pivot` ruled a later kind
+
+**Status:** proposed (2026-09-04; owner directed in session: close the
+small TODO items)
+
+**Context.** The flow verbs filter, grid, union, look up and project rows;
+none REDUCES them. "One row per event with its strike count and last mid",
+"per venue, the mean fee" is spelled today either as a document-side
+`derive` chain that cannot count, or as child code (pmquant's `fee-book`
+builds its table by hand — TODO §13 item 11). A reduction is the
+relational family's fourth verb: like `concat`/`join`/`derive` it says what
+a row IS, so it refuses rather than drops.
+
+**Decision.** `kinds_flow.py` gains `groupby` (`GroupBy`, role
+`transform`, outputs `records`/`metrics`). Params: `keys` (a field name or
+a non-empty list, REQUIRED), `aggregates` (REQUIRED, non-empty:
+`{out_field: {"op": <op>, "field": <field>}}`), `order_field` (REQUIRED
+iff an aggregate is `first`/`last`, refused otherwise — a knob nothing
+reads is the approved-value-the-run-never-uses shape). The op vocabulary
+is a CLOSED table of `_AggOp(needs_field, numeric, ordered, reduce)` entries —
+`count`, `sum`, `mean`, `min`, `max`, `first`, `last`, `nunique` — read by
+name, never an `if op ==` chain; `count` takes no `field`, every other op
+requires one, and an `out_field` may not restate a key. Refusals, each
+naming the node, the row and the field: a row missing a key or an
+aggregate's field; an unhashable key value; a non-numeric cell under a
+numeric op (`records.number_ok`, the toolkit's one numeric rule); an
+`order_field` value that is not a number (the fitted family's instant
+rule); key values that cannot be ordered against each other; a reducer
+the cells defeat (`nunique` over unhashable cells). Output is one mapping
+per group — the key fields then the aggregates — SORTED by key values;
+`first`/`last` take the row with the smallest/largest `order_field`,
+ties resolved by input order. Rows may be dicts or attribute-bearing
+records (the module's `_field` accessor); the output rows are always
+dicts.
+
+**Ruling on `pivot`.** A separate, later kind, not built here. A pivot
+(records → a MAPPING keyed by a field's values) is a shape change with no
+reduction, and it raises a question `groupby` never meets — a composite
+key has no JSON-object spelling — that deserves its own ruling; folding a
+conditional `table` output into `groupby` would give one kind two output
+shapes. The two-step spelling (`groupby`, then a pivot) is the design.
+
+**Consequences.** `DEFAULT_NODE_KINDS` grows by one; no existing kind,
+document or hash moves. pmquant's fee-book residue shrinks to the pivot
+half, recorded in TODO.

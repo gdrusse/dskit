@@ -105,7 +105,12 @@ for a worked one. Each rule:
 `{id, target, rule, kwargs, severity, error_if|warn_if, notes}` —
 `target` is a stream; the rule produces a failing count; the threshold
 (default `"!= 0"`) gates on it. Built-ins: `not_null`, `unique`,
-`accepted_values`, `in_range`, `row_count`, `bitemporal`. Tripped
+`accepted_values`, `in_range`, `row_count`, `distinct_count`,
+`bitemporal`. `distinct_count` (ADR-0084) is the cardinality rule:
+`{"field": "strike", "group_by": "event", "min": 3, "max": 3}` fails one
+per group whose distinct non-null `field` values fall outside the bounds
+(`group_by` optional — a field name or a list — and ungrouped the whole
+stream is the one group; nulls skipped). Tripped
 `error` → gating `block`; tripped `warn` → `warn` (warn never blocks).
 A `block` result cannot be certified — amend the suite (a new, auditable
 hash) instead.
