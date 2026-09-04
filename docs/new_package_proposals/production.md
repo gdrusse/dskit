@@ -1,6 +1,6 @@
 # `dskit.production` — the production layer (proposal for ADR-0087 / ADR-0088)
 
-**Status:** revised 2026-09-04 after two correctness passes; follow-up Bugbot review
+**Status:** revised 2026-09-04 after Bugbot's third review; corrected re-review
 pending. Owner approval is still required before any file under
 `dskit/production/` exists.
 
@@ -28,10 +28,10 @@ which **accounting** evidence limits use, which fenced **lease** owns submit,
 which **monitors** watch the decision stream, and where the **ledger** lives. One
 `ServeLoop` class runs it: each tick is a fixed phase order — record start,
 barrier, calendar gate, verify release, fetch, read entry, watermark gate,
-evaluate heads, extract quotes, snapshot account, construct proposals,
-guard/scope, durably record intent, authorize, act, record outcome,
-checkpoint, record finish. Recovery closes any
-unfinished tick before another begins, so every durable `tick_start` eventually
+evaluate heads, identify candidate scope keys, extract quotes, snapshot account, construct proposals,
+guard/scope, durably record intent, authorize, act, record outcome, record the
+terminal decision/tick, checkpoint last. Recovery closes any unfinished tick
+before another begins, so every durable `tick_start` eventually
 has one terminal `tick` and one `decision` in the hash-chained append-only
 ledger, and one `dskit.journal` production row per process. Backtest,
 shadow, paper, and live use the same decision document with validated injected
@@ -181,11 +181,11 @@ brackets.
   available without arming. Immediately before each ordinary live submit, the guard chain
   re-applies the current arming allowlist and overlay to the final proposal and
   current accounting state. `ActPermit` binds `intent_digest`, `client_ref`,
-  instrument, scope/overlay digest, account-state digest, release hash, authority
+  instrument, scope/overlay digest, economic-risk-state digest, release hash, authority
   id and lease fencing token; the executor verifies that exact binding. A
   `ReductionAuthorization` is the sole alternative authority: it does not require
   a current ordinary arm, but permits only its pre-signed reduction intent digests
-  under document limits and expires after one use or its short deadline
+  under document limits; each digest is single-use and the whole authority has a short deadline
   [R5 §2.4, R1 §2.1, R3 §2.5].
 - **D12 — Halt never flattens.** Halt = refuse submissions + best-effort cancel
   of working orders (outcome recorded: `none | submitted | failed | partial |
@@ -193,19 +193,37 @@ brackets.
   `reducing`; the accounting strategy, not a model claim, must prove each
   proposal cannot increase absolute exposure, and every ordinary guard still
   runs. `reduce --proof` enters reducing but grants no submit authority.
-  `flatten-request --plan --proof` records a maker-signed `ReductionPlan` bound
-  to the release, fresh account-state digest, exact proposed intent digests and a
-  short expiry; `approve-flatten --request --proof` requires a distinct checker
-  and creates one-use `ReductionAuthorization`. Each live reduction still needs
-  an intent-bound permit and current fence token. `resume --proof --acknowledge`
+  A verified `flatten-request --plan --proof` records a maker-signed
+  `ReductionPlan` bound to the release, fresh risk-state digest, full canonical
+  intents/digests and a short expiry, then barrier-transitions `active | halted
+  → reducing` without submit authority. `approve-flatten --request --proof`
+  requires a distinct checker
+  and creates a `ReductionAuthorization` with one single-use right per named
+  intent digest. `execute-flatten --authorization --proof` verifies the closed
+  execution purpose and durably queues those stored
+  intents for the active loop, which processes them in canonical order through
+  the same sequential pre-submit gates as model intents. It stops on the first
+  refusal, expiry or ambiguous outcome; completed rights stay consumed and
+  the writer revokes all unused rights after any partial result, requiring a new
+  plan. Crash recovery
+  queries the deterministic client ref and may resume only the same reserved
+  intent after the executor proves it was not sent. Each live reduction still
+  needs an intent-bound permit and current fence token. `resume --proof --acknowledge`
   uses the verifier's reset purpose and only works after cooling-off. Transitions
-  are ledgered/barriered; a prior arm cannot authorize reset or flatten. State
+  are ledgered/barriered; a prior arm cannot authorize reset or flatten. Any
+  transition away from `active` revokes ordinary arming; resume returns
+  `active` but unarmed, so a fresh maker-checker arm is required. Only a
+  verified resume (to `active`) or verified flatten request (to `reducing`)
+  may atomically retire the stable `HALT` sentinel before its transition
+  barrier; a crash in between leaves the ledger folded halted
+  and therefore cannot enable action. State
   persists and never changes on a timer [R5 §1.2, R1 postmortems].
 - **D13 — Record before act, checkpoint last, reconcile before deciding.** The
-  `tick_start` and intent records each cross a mandatory `ledger.barrier()`
-  before work and before `executor.submit`, regardless of batch policy. Arming,
-  breaker, reduction/reset and adoption transitions use the same barrier. An
-  executor call that
+  `tick_start` crosses a mandatory `ledger.barrier()` before work. Each intent,
+  reduction-authority use and live authorization crosses its own barrier before
+  `executor.submit`, regardless of batch policy. Arming, breaker, queued
+  control
+  results, reduction/reset and adoption transitions use the same barrier. An executor call that
   raises after the request leaves `unknown`, which only `executor.order(ref)`
   may resolve — never a blind resend; the checkpoint is written last. Startup
   reconciles before `READY`; mismatches halt or refuse. Adoption is never a
@@ -224,7 +242,9 @@ brackets.
   `Decimal` at the boundary [R8 §2.1–2.3]. `Accounting.snapshot` receives every
   canonical measure/window/scope requirement declared by limits and returns an
   `AccountState` with timestamped, source-digested `MeasureEvidence`, including
-  corrected/reversed-fill folds and window baselines.
+  corrected/reversed-fill folds, window baselines and every candidate-derived
+  scope key. Proposals act strictly sequentially with prior reservations/results
+  folded, so separately safe legs cannot exceed a collective limit.
   There is no generic live default: a live-capable plan must supply a child
   accounting class, valuation freshness bound, approval verifier and fenced lease.
   Core ships shadow, paper and recorded executors plus paper/recorded accounting.
@@ -239,6 +259,9 @@ brackets.
   rebuilds from the chain and refuses a mismatching cache. The head is anchored
   into the journal at every graceful stop and optionally to an external sink
   during long processes [R6 §2.1–2.4, R4 §1.3].
+  The serving process is the sole ledger writer. Concurrent control CLIs use a
+  durable content-addressed inbox; the writer verifies, records and barriers
+  commands idempotently, while `HALT` remains an independent sentinel.
 - **D16 — Monitors are strategy objects with a first-class `insufficient`.**
   `Monitor.fit/observe/verdict/state/restore`; families operational, stream,
   distribution, outcome; `Reference`, `Chunker`, `Threshold`, `Response`
@@ -299,7 +322,7 @@ brackets.
   resolved_classes, code_fingerprints, adapter_digest, feed_spec,
   source_config_hash, approval_fingerprint, lease_fingerprint}`.
   `release_hash = canonical_hash(manifest)`; arming, intents, process records and
-  serve root `<name>-<release_hash8>` use it. Startup and every tick re-verify
+  immutable release subdirectory use it. Startup and every tick re-verify
   all hashes plus artifact age. Immediately before submit, verification runs again;
   expiry records `artifact_expired`, degrades health, refuses action, and requires
   a new release/arming. Every pull proves the pinned source hash, and every submit
@@ -376,7 +399,8 @@ non-identity paths removed: alert and heartbeat endpoint values, `ledger.root`,
 ledger rotation placement, env-file paths, and secret values)`. Everything else
 is graded, including `ledger.fsync`, source identity, accounting, arming, and coordination
 policy. `plan` materialises the immutable `ReleaseManifest` from §5.3.1 and the
-serve root is `<ledger.root>/<name>-<release_hash8>/`. Changing anything that can
+serve-series root is stable `<ledger.root>/<name>/`, with immutable
+`releases/<release_hash>/` metadata beneath it. Changing anything that can
 affect data, decisions, permissions, durability, valuation, or actions therefore
 creates a new release; relocating storage or notification endpoints does not.
 
@@ -453,17 +477,27 @@ object, so two data paths cannot diverge.
   `process` record.
 - `Decider.prepare(release, registry, asof, base_run_dir)` re-verifies the release,
   admits every reachable node through `ServingExecutionPolicy`, and performs the
-  immutable base pass. `read_entry(tick_at_ms) -> EntryBatch` executes only the
+  immutable base pass. The configured serving entry must be a source root after
+  expansion (no data-dependent incoming edge); otherwise `plan` refuses rather
+  than freezing an upstream read in the base pass.
+  `read_entry(tick_at_ms) -> EntryBatch` executes only the
   serving entry under the declared window override. The loop validates its
   watermark, source hash and `inputs_digest` before
   `evaluate(entry_batch) -> HeadOutputs` may execute the entry's descendants
   through the heads. The runner accepts the frozen entry output as a binding, so
   it cannot read a second, newer snapshot between the safety gate and evaluation.
-  The configured proposer extracts quotes from those immutable head outputs;
-  accounting snapshots against those quotes; only then does
-  `propose(head_outputs, account_state) -> Decision` construct proposals.
-  Neither operation may rerun a node.
-- `Proposer(ABC)`: `proposals(head_outputs, state) -> list[Proposal]`,
+  The configured proposer first returns stable, unsized
+  `Candidate{id, instrument, scope_keys}` values and extracts quotes from those
+  immutable head outputs. Accounting expands every declared requirement over
+  those candidate scope keys and snapshots against the quotes; only then does
+  `propose(head_outputs, candidates, account_state) -> Decision` construct an
+  ordered proposal list. A proposal must preserve its candidate id, instrument
+  and declared scope keys; missing/extra/changed keys or duplicate ids refuse.
+  Candidate/scope derivation is release-bound proposer code and cannot depend on
+  mutable account state.
+  Candidate, quote and proposal construction may not rerun a node.
+- `Proposer(ABC)`: `candidates(head_outputs) -> list[Candidate]`,
+  `proposals(head_outputs, candidates, state) -> list[Proposal]`,
   `quotes(head_outputs) -> list[Quote]` is pure and state-independent (default:
   `MarketRecord`-shaped rows via
   the records module's accessors). `IntentRows` (`output`, `fields` map,
@@ -473,7 +507,8 @@ object, so two data paths cannot diverge.
   default is to replay full recorded gate/stat-test outputs; absent or summarised
   evidence refuses rather than recomputing a training-time verdict on live data.
 - Refusals at `plan`: entry node absent or `param` not in its `_PARAMS`; a head
-  absent; a trainable in the subgraph without an artifact dir; an artifact older
+  absent; an entry with a data-dependent ancestor; a trainable in the subgraph
+  without an artifact dir; an artifact older
   than `max_artifact_age`; a needed search node without a recorded winner; a
   `$prev` reference; unsafe/unknown node effects; import or code-fingerprint
   failure; source, artifact, serving-document, run, or release mismatch.
@@ -504,6 +539,7 @@ epoch-ms ints; each record has `to_obj`/`from_obj` (default-deny) and refuses a
 non-finite number.
 
 - `Quote{instrument, bid, ask, mid, asof_ms}`.
+- `Candidate{id, instrument, scope_keys}`.
 - `Proposal{id, instrument, side ∈ {buy, sell, none}, qty | notional, limit | None,
   tif ∈ TIFS, expires_ms, reference_price, exposure, direction, confidence,
   prediction, baseline, expected_value, inputs_asof_ms, extra}`.
@@ -522,14 +558,26 @@ non-finite number.
   insufficient}, statistic, threshold, n_ref, n_cur, window, slice, provisional}`.
 - `EntryBatch{outputs, data_asof_ms, inputs_digest, source_config_hash}`;
   `TickStart{tick_id, tick_at_ms, release_hash}`; `ReductionPlan{release_hash,
-  account_state_digest, intent_digests, expires_ms}`;
+  risk_state_digest, intents, intent_digests, expires_ms}`;
+  `ReductionAuthorization{authority_id, release_hash, request_id,
+  intent_digests, expires_ms}`;
   `ActPermit{authority_id,
   release_hash, intent_digest, client_ref, instrument, action_class,
-  authority_scope_digest, account_state_digest, lease_scope, fencing_token,
-  checked_at_ms}`.
+  authority_scope_digest, risk_state_digest, lease_scope, fencing_token,
+  safety_epoch_digest, valid_until_ms, checked_at_ms}`.
+  The safety-epoch digest covers the verified release result, calendar
+  open/next-close boundary, feed/source/data-asof state, executor link state,
+  health, breaker, rung, pending-control flag and lease token at
+  `checked_at_ms`; a changed component invalidates it. `valid_until_ms` is the
+  minimum hard time boundary, never a freshness promise.
 - `MeasureEvidence{requirement_digest, value, sample_count, window_start_ms,
-  window_end_ms, effective_at_ms, known_at_ms, source_digests}`; `AccountState{asof_ms,
-  balances, positions, working, measure_evidence{}, source_digests}`.
+  window_end_ms, scope_key, effective_at_ms, known_at_ms, source_digests}`;
+  `AccountState{asof_ms, balances, positions, working, measure_evidence{
+  requirement_digest: {scope_key: evidence}}, source_digests}`.
+  `AccountState.risk_digest()` hashes canonical balances, positions, working
+  orders and evidence values/window bounds/source digests, but excludes
+  observation-only `asof/effective/known` timestamps; freshness is checked
+  separately, and any economic correction changes the source digest.
 
 ### 5.5 `guards.py`
 
@@ -552,7 +600,12 @@ non-finite number.
   `on_breach ∈ {refuse, amend, pause, hold, halt}` (`amend` only for scalable
   measures; `pause` needs `pause: {duration | calendar}`; `hold` needs `hold:
   {ttl}`).
-- `Measure(ABC)`: `value(proposal, state, window, scope_key) -> Decimal | float`.
+- `Measure(ABC)`: deterministic
+  `requirements(candidate, window, scope_key) -> tuple[EvidenceRequirement]`
+  plus `value(proposal, state, window, scope_key) -> Decimal | float`.
+  Proposal-local measures such as quantity return no evidence requirement;
+  history/account-dependent measures declare every source value accounting must
+  snapshot before sizing. A guard refuses if declared evidence is absent.
   Registry (stdlib): `quantity, notional, exposure, exposure_after,
   price_deviation, pnl, drawdown, consecutive_losses, decision_count,
   identical_count, direction_changes, open_orders, input_age_ms, feed_age_ms,
@@ -586,13 +639,22 @@ non-finite number.
   performs no network I/O, validates trust-root shape, and its class/code/params
   fingerprint is release-bound. Maker and checker differ for ≥ `live_limited`;
   purposes are closed: `arm_request | arm_approval | reduce | flatten_request |
-  flatten_approval | resume | adopt`; role authorization is verifier-owned.
+  flatten_approval | execute_flatten | resume | adopt`; role authorization is verifier-owned.
   expiry is mandatory and bounded by `arming.max_duration_s`; allowlists may only
   narrow and overlays must be provably stricter. `Arming` binds the release and
   proofs. `current` folds the ledger; `arming.json` is only a head-bound cache.
   Immediately before submit, current scope is applied to the exact intent and a
   bound `ActPermit` is issued; the executor recomputes/compares its digest.
-  Disarm, query, reconcile and cancel remain usable.
+  A reduction authority folds the full stored `ReductionPlan` plus the checker
+  approval and grants one right for each unique intent digest. Before a reduction
+  permit, the sole writer appends/barriers its unique `authority_use`; that
+  reservation is never erased or reused. Recovery of a reserved intent reuses its
+  deterministic client ref, queries first, and can append a replacement
+  `authorization` with the current fence only after `proved_not_sent`; an
+  ambiguous result halts the remaining plan. All control requests, approvals,
+  authority issue/revocation/use, breaker transitions, adoption and command
+  results have the closed schemas in §6 and are folded from the ledger, not from
+  inbox files. Disarm, query, reconcile and cancel remain usable.
 
 ### 5.7 `executor.py`
 
@@ -621,7 +683,8 @@ non-finite number.
 - `RecordedExecutor`: replays the tape's acks/fills for replay parity.
 - `LiveExecutor` can always construct its read/query/cancel channel. Submission
   is a concrete wrapper that recomputes the intent digest, validates authority,
-  release, accounting and current fencing-token bindings, then calls the child's
+  release, accounting, safety-epoch, `valid_until_ms` and current fencing-token
+  bindings immediately before network I/O, then calls the child's
   abstract `_submit_native(intent, fencing_token)`. Ordinary absent/stale arming
   raises `NotArmed`; an exact current `ReductionAuthorization` is accepted.
   Failures never disable reconciliation or cancellation.
@@ -639,9 +702,10 @@ non-finite number.
 
 `Accounting(ABC).snapshot(ledger_state, executor, quotes, at_ms, requirements,
 calendar) -> AccountState` is independent of execution. `requirements` is the
-deduplicated canonical set of every measure × window × scope used by limits,
-including all duration/count/session/day/event boundaries. Each required digest
-must have one fresh `MeasureEvidence`; missing evidence refuses. Implementations
+deduplicated canonical union returned by every configured measure for every
+candidate × window × scope, including all duration/count/session/day/event
+boundaries, expanded over every candidate `scope_key`. Each required pair has one fresh
+`MeasureEvidence`; missing evidence refuses. Implementations
 fold timestamped fills, cash flows, marks and superseding corrections as-of the
 tick, explicitly reversing busted fills, and include the starting baseline for
 each window. Quotes must satisfy `max_valuation_age_ms`. Core
@@ -683,7 +747,32 @@ deadline invalidates the local permit without waiting for nominal expiry.
   process lifetime; torn-tail recovery and segment continuity; directory fsync
   on segment creation; never copytruncate. `barrier()` flushes through fsync.
   Every `tick_start` before work, intent before submit, and arming, breaker,
-  reduction/reset or adoption transition crosses it regardless of batch policy.
+  authorization/use, reduction/reset or adoption transition crosses it regardless
+  of batch policy. Only the process holding `serve.lock` may open the ledger for
+  append; there is never a concurrent CLI ledger writer.
+- `ControlInbox` (implemented in `control.py`) is the sole write path from a
+  control CLI to a running serve process. The CLI canonicalizes the command,
+  assigns a content-addressed `request_id`, writes a unique
+  `commands/inbox/<request_id>.json` with exclusive create, fsyncs the file and
+  directory, and returns success once durably queued. The loop consumes
+  non-HALT commands before a tick or between completed legs, never between an
+  intent and its outcome. Presence of a pending mutating command blocks the next
+  pre-submit action gate until that command is applied or rejected. An
+  `execute-flatten` command owns its sequential cycle against model ticks, while
+  HALT and newly queued controls may still stop it between legs. The writer
+  re-verifies proof/release/expiry,
+  appends and barriers the
+  resulting records as the sole ledger writer, then atomically moves the file to
+  `commands/applied` or `commands/rejected`; replay after a crash is
+  idempotent by `request_id` and payload digest. If no serve process owns the
+  lock, non-executing commands may acquire it and run the same `CommandProcessor`
+  synchronously. `execute-flatten` requires an active ready loop.
+- `halt` additionally creates the out-of-band `HALT` sentinel atomically
+  before queueing its audit command. The loop and its independent control worker
+  poll that sentinel at subsecond cadence; the worker only sets an in-process
+  stop flag and never appends. Thus stopping does not depend on the
+  decision loop, inbox health, or ledger availability; startup observes it before
+  reconciliation/action. Later processing records the halt when possible.
 - The file lock protects only processes sharing that filesystem. Every live plan
   requires the configured fenced child `Lease` from §5.7.2; a local lock or
   unfenced lease can never be configured as sufficient.
@@ -692,17 +781,22 @@ deadline invalidates the local permit without waiting for nominal expiry.
 - Serve root layout:
 
 ```
-<ledger.root>/<name>-<release_hash8>/
-├── document.json      the serve document verbatim
-├── release.json       immutable ReleaseManifest
+<ledger.root>/<name>/   stable serve-series / deployment root
 ├── arming.json        optional head-bound cache; authority is the ledger fold
 ├── breaker.json       optional head-bound cache; authority is the ledger fold
 ├── checkpoint.json    optional head-bound cache; authority is the ledger fold
-├── HALT               kill-switch file (operator or `halt` verb); absent = not halted by file
-├── serve.lock         same-filesystem process lock
+├── HALT               stable cross-release kill switch; absent = not halted by file
+├── serve.lock         same-filesystem, cross-release writer lock
+├── commands/
+│   ├── inbox/         fsynced, content-addressed control requests
+│   ├── applied/       terminal accepted command receipts
+│   └── rejected/      terminal refused command receipts (ledger remains authoritative)
 ├── heartbeat.json     file heartbeat (mtime + status)
-├── ledger/            ledger.0001.jsonl … (the hash chain)
-└── process-<id>/base/ the base-pass run dir of the serving document (config/plan/resolved/nodes)
+├── ledger/            ledger.0001.jsonl … (one chain across releases)
+└── releases/<release_hash>/
+    ├── document.json  the serve document verbatim
+    ├── release.json   immutable ReleaseManifest
+    └── process-<id>/base/  base-pass run dir (config/plan/resolved/nodes)
 ```
 
 ### 5.9 `reconcile.py`
@@ -812,15 +906,30 @@ probe.
   restartable `faulted`. `IdSource` allocates deterministic tick ids before a
   `tick_start`; `ledger.barrier()` completes before any tick work. Phases are
   `gate`, `verify_release` (hashes plus artifact age), `fetch`, `read_entry`,
-  `watermark`, `evaluate`, `quotes`, `account`, `propose`, `guard`
-  (ordinary plus current authority scope, then hard-guard revalidation),
-  `record_intent` (stable client ref and
-  exact intent digest, then `ledger.barrier()`), `authorize` (repeat release-age,
-  take a fresh account snapshot, and re-run all hard guards plus current
-  authority scope against the already-recorded intent without amendment; any
-  account-digest change or breach refuses rather than rewriting that intent;
-  then verify the lease and issue an intent-bound
-  `ActPermit`), `act`, `record_outcome`, `observe`, and `checkpoint` last. Query,
+  `watermark`, `evaluate`, `candidates`, `quotes`, `account`, and
+  `propose`. Proposals are sorted by stable candidate id and never
+  pre-authorized as a batch. For each proposal, strictly sequentially:
+  (1) run ordinary guards and any monotone amendment;
+  (2) refresh the account snapshot with prior legs' working reservations/acks
+  folded, and re-run hard guards and authority scope without amendment;
+  (3) write the exact intent and `ledger.barrier()`;
+  (4) immediately re-evaluate release hashes/age, calendar, feed/link state,
+  watermark age, venue skew, health, breaker, rung/action-matrix cell, a fresh
+  risk snapshot, every hard guard, authority scope and lease—without rereading
+  nodes or changing the recorded proposal;
+  (5) if still safe, derive the permit from the current risk digest and a
+  `valid_until_ms` no later than proposal, data, calendar, applicable authority or lease expiry;
+  for reduction first append/barrier `authority_use`, then append/barrier
+  `authorization` (ordinary live appends/barriers authorization directly);
+  (6) recheck the cheap action-matrix/safety epoch after that barrier, then call
+  `submit`, whose wrapper checks permit time/fence immediately before I/O;
+  (7) record/fold the outcome before considering the next proposal.
+  A changed risk digest alone is not a refusal: the unchanged intent is tested
+  against the fresh state and the permit binds that state. A refusal terminates
+  that intent as `not_sent`; an ambiguous outcome stops all later legs until
+  reconciliation. Thus cumulative exposure, working orders, position/message
+  limits and group scopes include every earlier leg. Finally the loop
+  `observe`s and writes `checkpoint` last. Query,
   reconcile and cancel stay available in every rung/breaker/health state.
   A process crash cannot guarantee a `finally` write; startup folds unmatched
   `tick_start` records into terminal failed/recovered ticks and decisions before
@@ -855,16 +964,21 @@ sha256-canonical idiom.
 |---|---|---|
 | `process` | start / stop / recovered | `release_hash`, `doc_hash`, `serving_hash`, `run_hash`, `artifact_digests`, `source_config_hash`, `rung`, `executor_kind`, `code_version`, `journal_action_id`; on stop `head_seq`, `head_hash`, `exit_code` |
 | `tick_start` | scheduled tick | `tick_id`, `tick_at_ms`, `release_hash` |
-| `tick` | terminal tick | `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash}`, `inputs_digest`, `calendar`, `latency_ms{fetch, evaluate, account, propose, guard, act}`, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}` |
+| `tick` | terminal tick | `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash}`, `inputs_digest`, `calendar`, `latency_ms{fetch, evaluate, account, propose, guard, authorize, act}`, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}` |
 | `decision` | tick (exactly one) | `legs[]{leg_id, instrument, prediction, uncertainty, baseline, expected_value, decision_price, proposal, findings[], final, client_ref}` — a no-op tick has `final: none` per leg or zero legs with `reason` |
-| `intent` | proposal selected for possible submit | `client_ref`, `leg_id`, `proposal (final)`, `created_ms`, `authority_id`, `release_hash`, `account_state_digest` |
-| `authorization` | permitted live intent | `intent_digest`, `authority_id`, `authority_scope_digest`, `account_state_digest`, `lease_scope`, `fencing_token`, `checked_at_ms` |
-| `order_event` | executor report | `client_ref`, `venue_ref`, `event ∈ {ack, reject, fill, partial_fill, cancel, expire, replace, unknown, status}`, `status`, `venue_ts_ms`, `recv_at_ms`, `reason` |
+| `intent` | proposal selected for possible submit | `client_ref`, `leg_id`, `proposal (final)`, `created_ms`, `authority_id`, `release_hash`, `risk_state_digest` |
+| `authorization` | permitted live intent (barrier before submit) | `intent_digest`, `authority_id`, `authority_use_id | null`, `authority_scope_digest`, `risk_state_digest`, `lease_scope`, `fencing_token`, `safety_epoch_digest`, `valid_until_ms`, `checked_at_ms` |
+| `control_request` | durable CLI request | `request_id`, `purpose`, canonical payload (full reduction intents when applicable), `release_hash`, derived principal/proof digest, expiry |
+| `control_approval` | maker-checker approval | `request_id`, `purpose`, checker principal/proof digest, verified payload digest |
+| `authority` | issue / disarm / revoke / expire | `authority_id`, `kind ∈ {ordinary, reduction}`, request/approval ids, release/rung, expiry, allowlist/overlay, reduction intent digests, reason |
+| `authority_use` | consume/reserve one reduction right (barrier before authorization) | unique `(authority_id, intent_digest)`, `client_ref`, `reserved_at_ms`; recovery may reference this reservation but no second intent may |
+| `order_event` | executor/loop report | `client_ref`, `venue_ref`, `event ∈ {not_sent, ack, reject, fill, partial_fill, cancel, expire, replace, unknown, status}`, `status`, `venue_ts_ms`, `recv_at_ms`, `reason` |
 | `fill` | execution | the `Fill` record |
 | `outcome` | label arrival / mark / correction | `leg_id`, `kind ∈ {settled, marked, voided, partial, corrected}`, `effective_at_ms`, `known_at_ms`, `value`, `weight`, `terminal`, `supersedes`, `source` |
 | `recon` | reconciliation run | `scope`, `ours_digest`, `theirs_digest`, `breaks[]`, `status`, `action` |
-| `trip` | breaker transition | `from`, `to`, `reason`, `actor`, `cancel_outcome` |
-| `arming` | request / approve / arm / disarm | proof digests, derived principals, release hash, expiry, allowlist and overlay |
+| `trip` | breaker transition, including reduce/reset/halt | `from`, `to`, `reason`, `actor`, `control_request_id`, proof/principal digest, acknowledged trip id, `cancel_outcome` |
+| `adoption` | authenticated venue-break adoption | `control_request_id`, principal/proof digest, named break ids, delta digest, before/after recon ids |
+| `command_result` | consumed inbox request | `request_id`, `status ∈ {applied, rejected}`, emitted record ids, reason |
 | `monitor` | verdict change / window close | `monitor`, `slice`, `window`, `statistic`, `threshold`, `status`, `provisional` |
 | `alert` | firing / resolved | the `Alert` record + per-sink outcomes |
 | `health` | transition | `from`, `to`, `cause`, `probe_evidence` |
@@ -877,14 +991,15 @@ sha256-canonical idiom.
 | `validate <doc>` | shape and document identity | 0 / 1 |
 | `plan <doc>` | derive/verify the serving document and emit the immutable release | 0 / 1 |
 | `serve <doc> [--once] [--max-ticks N] [--armed]` | run the loop against the document's release | 0 / 1 / 3 / 4 |
-| `arm-request <doc> --rung R --until TS --proof FILE [--allow I]…` | record authenticated maker request | 0 / 1 |
-| `approve-arm <doc> --request ID --proof FILE` / `disarm <doc>` | checker approval or demotion | 0 / 1 |
-| `halt <doc> --reason` / `reduce <doc> --proof FILE` | safe stop, or authenticated reducing transition | 0 / 1 |
-| `flatten-request <doc> --plan FILE --proof FILE` / `approve-flatten <doc> --request ID --proof FILE` | maker-checker reduction authorization | 0 / 1 / 3 |
-| `resume <doc> --acknowledge TRIP --proof FILE` | authenticated reset after cooling-off | 0 / 1 / 3 |
-| `status <doc>` | rung, breaker, health, last tick, pending refs, head hash | 0 |
+| `arm-request <doc> --rung R --until TS --proof FILE [--allow I]…` | queue authenticated maker request | 0 / 1 |
+| `approve-arm <doc> --request ID --proof FILE` / `disarm <doc>` | queue checker approval or safe demotion | 0 / 1 |
+| `halt <doc> --reason` / `reduce <doc> --proof FILE` | set out-of-band halt and queue audit, or queue authenticated reducing transition | 0 / 1 |
+| `flatten-request <doc> --plan FILE --proof FILE` / `approve-flatten <doc> --request ID --proof FILE` | queue maker-checker reduction plan/authorization | 0 / 1 / 3 |
+| `execute-flatten <doc> --authorization ID --proof FILE` | queue authenticated execution of stored reduction intents by an active ready loop | 0 / 1 / 3 |
+| `resume <doc> --acknowledge TRIP --proof FILE` | queue authenticated reset after cooling-off | 0 / 1 / 3 |
+| `status <doc>` | rung, breaker, health, last tick, pending refs, control inbox/results, head hash | 0 |
 | `verify <doc>` | walk the ledger chain; compare the head to the journal anchor | 0 / 1 |
-| `reconcile <doc>` / `adopt <doc> --break ID… --proof FILE` | inspect, or explicitly authenticate and adopt named breaks | 0 / 1 / 3 |
+| `reconcile <doc>` / `adopt <doc> --break ID… --proof FILE` | queue reconciliation, or queue authenticated adoption of named breaks | 0 / 1 / 3 |
 | `replay <serve-dir>` | phase 2: parity report | 0 / 1 |
 | `outcomes <doc>` / `report <doc> [--asof T]` | phase 2 | 0 |
 | `ready <doc>` | phase 2: readiness GO / NO-GO | 0 / 3 |
@@ -892,23 +1007,28 @@ sha256-canonical idiom.
 Only operational flags live on `serve` (`--once`, `--max-ticks`, `--armed`).
 Adapter selection and every semantic knob live in the document. Authenticated
 human acts use dedicated ledgered verbs; no CLI option silently changes semantics.
+For mutating verbs, exit 0 means the request is durably queued or synchronously
+applied, not that an asynchronously queued command has taken effect; `status`
+shows its terminal receipt. Read-only verbs never take the writer lock.
 
 ## 8. Package structure — file by file
 
 ```
 dskit/production/
 ├── __init__.py        public surface (curated re-exports only, no logic)
-├── __main__.py        CLI: validate | plan | serve | arm-request | approve-arm | disarm | halt | reduce | flatten-request | approve-flatten | resume | status | verify | reconcile | adopt | replay | outcomes | report | ready
+├── __main__.py        CLI: validate | plan | serve | arm-request | approve-arm | disarm | halt | reduce | flatten-request | approve-flatten | execute-flatten | resume | status | verify | reconcile | adopt | replay | outcomes | report | ready
 ├── base.py            ProductionError; checkers re-exported from dskit.assets.base; ms/utc helpers; canonical record hashing
 ├── vocab.py           EVERY closed vocabulary, one module: RUNGS, VERDICTS (lattice), STATUSES + TERMINAL, TIFS, SIDES, FILL_STATUSES,
 │                      SEVERITIES (+ the pinned level map), HEALTH_STATES, BREAKER_STATES, LOOP_STATES, TICK_STATUSES, RECORD_KINDS,
 │                      BREAK_CLASSES, DIVERGENCE_CLASSES, MONITOR_STATUSES, RESPONSES, FEED_STATUSES, OUTCOME_KINDS
 ├── document.py        ServeDocument sections including Accounting, Arming, Coordination; default-deny; exact non-identity paths
 ├── release.py         ReleaseManifest; class/code/adapter/source/artifact fingerprints; release verification
-├── records.py         Quote, Proposal, Finding, EntryBatch, TickStart, MeasureEvidence, AccountState, LeasePermit, ActPermit, Intent, execution/monitoring values
+├── records.py         Quote, Candidate, Proposal, Finding, EntryBatch, TickStart, ReductionPlan, ReductionAuthorization, MeasureEvidence,
+│                      AccountState, LeasePermit, ActPermit, Intent, execution/monitoring values
 ├── clock.py           Clock ABC; WallClock, TestClock, ReplayClock
 ├── sessions.py        Calendar ABC; AlwaysOpen, WeeklySessions, EventWindow, Composite; CALENDAR_KINDS
 ├── cadence.py         Cadence ABC; FixedInterval, AlignedBar, AtTimes, OnData; Overrun; CADENCE_KINDS
+├── control.py         ControlInbox; CommandProcessor; atomic request/result spool; sole-writer dispatch
 ├── feed.py            FeedSpec from entry.serving_source; EntrySourceFeed; ReplayFeed; FeedResult; FEED_KINDS
 ├── decider.py         serving_document(); Decider (base pass + per-tick rerun via SubgraphRunner); Proposer ABC; IntentRows,
 │                      TargetPositions; RecordedOutputs (replayed gate / stat_test); PROPOSER_KINDS
@@ -952,26 +1072,28 @@ tests/production/
 ├── test_cadence.py        FixedInterval zero drift over 10^6 ticks with slow handlers; AlignedBar publish delay; AtTimes; overrun policies
 ├── test_feed.py           entry-derived normalized locator; no restatement; source drift; zero-row staleness; ReplayFeed
 ├── test_decider.py        serving_document derivation (mode flip, artifact pins, winner applied, search dropped, foreach expanded, $prev refused,
-│                          cut to ancestors); entry source binding and exact FeedSpec equality; watermark before descendants; evaluate → quotes →
-│                          account → propose ordering without a second node read
+│                          cut to ancestors); source-root entry refusal; exact FeedSpec equality; watermark before descendants; evaluate →
+│                          candidates/scopes → quotes → account → propose ordering without a second node read
 ├── test_guards.py         one refusal per knob; lattice composite = max; every finding carries value/bound/reason; include_working; calendar
 │                          windows; amend never exceeds bound; hypothesis: day_loss halts before the period loss exceeds bound − max single loss;
 │                          cancels bypass the chain
-├── test_breaker.py        persisted trips; authenticated/barriered reduce, flatten request/approval and reset; prior arm cannot reset; halt cancel outcomes
-├── test_arming.py         maker-checker; verifier construction/fingerprint; exact-intent scope application; tighten-only; expiry; release binding
+├── test_breaker.py        persisted trips with request/proof ids; authenticated/barriered reduce/reset; resume requires a fresh arm; halt cancel outcomes
+├── test_arming.py         maker-checker; verifier construction/fingerprint; exact-intent scope application; reduction rights/use replay; tighten-only; expiry
 ├── test_executor.py       conformance; unarmed recovery verbs; exact permit/intent and fencing-token checks; paper matrix; NotArmed
-├── test_accounting.py     every duration/count/calendar window evidenced; corrections/reversed fills; valuation freshness; reducing proof
+├── test_accounting.py     every duration/count/calendar × scope-key evidenced; stable risk digest vs timestamps; economic corrections; freshness; reducing proof
 ├── test_coordination.py   process lease rejected live; cross-release contention; two instances; monotonic fencing; stale token/renewal loss disables submit
+├── test_control.py        concurrent CLI inbox writes; sole ledger writer; crash replay/idempotency; out-of-band HALT; flatten execute/partial recovery
 ├── test_resilience.py     ambiguous writes; retry cap; reserved cancel lane; bounded cancel_all 429/timeout/query/reconcile behavior
-├── test_ledger.py         chain/payload idempotency; tick_start and safety barriers under batch fsync; cache/head mismatch; local lock scope
+├── test_ledger.py         chain/payload idempotency; tick_start/intent/authority-use/authorization/control barriers; cache/head mismatch; writer lock
 ├── test_reconcile.py      every break class; pending refs; automatic halt/refuse only; explicit authenticated adoption then re-reconcile
 ├── test_monitors.py       PSI = 0 on identical samples and χ² scaling; KS hand case; PageHinkley alarms on a shift, not on noise; tracking signal;
 │                          insufficient below min_n; last partial chunk never ok; state round-trip; deterministic verdict records
 ├── test_alerts.py         sink failure never kills the loop; hanging sink bounded (never-replying local socket); construction refusal; dedup /
 │                          group_wait / repeat / rate limit / critical bypass; resolved emitted
 ├── test_health.py         transitions and hysteresis; unhealthy stops heartbeating; heartbeat rid = tick id; second instance exits 4; SIGTERM
-├── test_loop.py           full cell matrix; per-tick/submit artifact expiry; pre-submit account/guard recheck; intent-scope binding; barriered tick recovery; one action/client ref
-├── test_main.py           release, arming, adopt, reduce/flatten maker-checker/reset proofs, unarmed recovery verbs and no semantic overrides
+├── test_loop.py           full matrix; every time-sensitive pre-submit gate; stable-risk revalidation; sequential cumulative multi-leg risk;
+│                          intent/authorization barriers; tick recovery; one action/client ref
+├── test_main.py           release, arming, adopt, reduce/flatten/execute maker-checker/reset proofs, queued receipts, recovery verbs, no semantic overrides
 ├── test_outcomes.py       [phase 2] forward join strictness (hypothesis: label asof > decided_at); vintage reproducibility; supersede chain
 ├── test_report.py         [phase 2] IS components sum; Murphy terms sum to Brier; BSS of baseline vs itself = 0; parity diff classes
 └── test_readiness.py      [phase 2] NO-GO exits 3; waivers
@@ -1041,7 +1163,7 @@ Order per module: the Opus test author writes `tests/production/test_<module>.py
 from §5–§7 (contracts, vocabularies, bounds, invariants) — red; Fable implements
 `dskit/production/<module>.py` — green; Opus reviews the pair. Module order
 follows dependencies: `vocab` → `base` → `records` → `document` → `release`
-→ `clock` → `sessions` → `cadence` → `ledger` → `accounting` → `guards` →
+→ `clock` → `sessions` → `cadence` → `ledger` → `control` → `accounting` → `guards` →
 `breaker` → `arming` → `coordination` → `executor` → `resilience` → `feed` → pipeline
 `SubgraphRunner` → `decider` → `reconcile` → `monitors` → `alerts` →
 `health` → `loop` → `__main__` → docs → examples → skeleton.
@@ -1082,6 +1204,8 @@ The corrected plan takes the prior recommended choices as its explicit defaults:
 5. JSONL ships first; sqlite remains phase 2.
 6. Authenticated, distinct maker/checker proofs are mandatory from
    `live_limited` upward; paper cannot reach a live executor.
+7. The serve process is the sole ledger writer; control commands use a durable inbox.
+8. Multi-leg proposals execute sequentially with cumulative risk reservations.
 
 ## 13. Traceability
 
@@ -1093,6 +1217,7 @@ The corrected plan takes the prior recommended choices as its explicit defaults:
 | order state machine, gate taxonomy, reconciliation, authenticated control acts, postmortems | R1 |
 | guard lattice, `Limit` = measure × window × bound × scope, mode ladder vs breaker, halt ≠ flatten | R5 |
 | ledger kinds, envelope, hash chain + journal anchor, JSONL/sqlite contract, bitemporal outcomes, attribution, parity diff, venue reconciliation job | R6 |
+| single-writer control inbox, barriered authority consumption, sequential cumulative risk | skeptic/Bugbot review |
 | retry classification, ambiguous writes reconcile, breaker per scope, rate limiter, transport timeouts, live conjunction | R3 |
 | symptom alerts, severity map, sink discipline, router, health model, heartbeat, one record per tick, readiness | R4 |
 | monitor ABC and families, references/chunkers/thresholds, `insufficient`, release ladder | R2 |
@@ -1123,15 +1248,20 @@ adapter, approval verifier, fenced lease and source config. Feed identity is
 derived from the resolved entry node rather than restated. Startup, every tick,
 and pre-submit verify content and artifact age. One `ServeLoop` injects separate
 execution, accounting and coordination seams. Serving admits only class-declared
-pure/read nodes, executes the entry first, and checks its watermark before
-descendants. Accounting supplies source-digested evidence for every configured
-measure/window/scope, including corrections and baselines. Guards strictly
-revalidate amendments. An explicit action matrix preserves shadow and paper while
-live submits require an exact-intent maker-checker permit and a fresh fencing
-token; cancel uses reserved bounded transport capacity. Reduction, flatten,
-resume and adoption are authenticated acts. A hash-chained ledger barriers
-`tick_start`, intent and safety transitions; recovery gives every started tick a
-terminal decision. Core supplies shadow/paper/recorded execution and accounting,
+pure/read nodes, requires a source-root entry, and checks its watermark before
+descendants. It evaluates heads once, derives candidate scope keys and quotes,
+then snapshots correction-aware accounting before sizing. Legs run sequentially
+with prior reservations folded; every calendar/freshness/link/health/breaker/risk/
+authority/lease gate is rechecked immediately before action. An explicit action
+matrix preserves shadow and paper while live submits require an exact-intent
+maker-checker permit and a fresh fencing token; cancel uses reserved bounded
+transport capacity. Reduction, flatten execution, resume and adoption are
+authenticated acts. A hash-chained ledger has one writer and barriers
+`tick_start`, intent, authority use/authorization and safety transitions before
+effects; concurrent control CLIs use a durable inbox while HALT remains
+out-of-band. Recovery gives every started tick a terminal decision and every
+reserved reduction right a query-first resolution. Core supplies
+shadow/paper/recorded execution and accounting,
 monitors, alerts, health and resilience. Purity: stdlib + pipeline + onboarding +
 assets + self; journal function-import only.
 
@@ -1161,7 +1291,8 @@ registry, run_dir, heads)` and `rerun(overrides, ctx, bindings)`.
 `ExecutionPolicy` admits a node before every effect. `SearchExecutionPolicy`
 preserves the current search restriction. `ServingExecutionPolicy` requires
 class-level `SERVING_EFFECTS ∈ {pure, read}`, refuses unknown effects, permits one
-entry override, and supports entry-only execution followed—only after the caller's
+source-root entry override, refuses an entry with data-dependent ancestors, and
+supports entry-only execution followed—only after the caller's
 watermark gate—by descendant execution with the frozen entry binding.
 `_SearchSeam` delegates; no grammar, parameter, or hash changes.
 
