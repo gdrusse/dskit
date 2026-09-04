@@ -52,8 +52,8 @@ scored.
 **Generic — belongs in `dskit/production/`.** Its import rule is *stdlib +
 `dskit.pipeline` + `dskit.onboarding` + `dskit.assets` + self, with
 `dskit.journal` at function depth only*. This is deliberately **not** the tier-1
-rule `tests/pipeline/test_purity.py` enforces on `dskit/pipeline/` (stdlib only,
-no `dskit.*` sibling at any depth); `dskit.production` is an application of the
+rule `tests/pipeline/test_purity.py` enforces on `dskit/pipeline/` (stdlib plus
+`dskit.pipeline` itself, and no other `dskit.*` sibling at any depth); `dskit.production` is an application of the
 toolkit, not part of it, so it gets its own gate in `tests/production/
 test_purity.py` and the word "tier 1" is not reused for it. Contents:
 the serve-document grammar, release manifest and identity; clock / calendar /
@@ -357,8 +357,8 @@ brackets.
   an independent sentinel.
 - **D16 — Monitors are strategy objects with a first-class `insufficient`.**
   `Monitor.fit/observe/verdict/state/restore`; families operational, stream,
-  distribution, outcome; `Reference`, `Chunker`, `Threshold`, `Response`
-  strategies; verdicts `ok | warn | alarm | insufficient`; below `min_n` never
+  distribution, outcome; `Reference`, `Chunker` and `Threshold` strategies
+  (`Response` is a closed vocabulary, not a strategy object); verdicts `ok | warn | alarm | insufficient`; below `min_n` never
   `ok`; keep a fixed anchor and a rolling reference [R2 §2].
 - **D17 — Alert on symptoms; closed severities; sinks cannot block the loop.**
   Severities `info | warning | error | critical` are pinned across backends.
@@ -445,7 +445,9 @@ brackets.
   decision/guard/execution/accounting/approval/coordination knob. Rejected: a
   path-aware canonicalizer — it would be a second identity recipe beside the
   pipeline's, and D24's whole point is that serving reuses the one that already
-  pins 20 hashes.
+  pins 17 document identities (16 in `tests/pipeline/test_foreach.py`, one in
+  `tests/pipeline_libs/test_mlflow.py`; the other three sha256 literals under
+  `tests/` are `model_hash` and file-content pins, not `config_hash`).
   Feed source, key/time/digest recipe and required-universe evidence derive from
   the entry's pure ServingContract and are normalized before hashing. `plan` also derives a
   `RuntimeFingerprint`: Python implementation/version/cache tag/ABI, platform and
@@ -546,7 +548,11 @@ named constant read by `validate_params` and the run alike.
 `doc_hash = config_hash(document, exclude=PRODUCTION_NON_IDENTITY_SECTIONS)` —
 the pipeline recipe unchanged (`dskit/pipeline/base.py`): `notes` stripped
 everywhere, sorted keys, compact, ASCII, NaN refused, and whole top-level
-sections dropped. `PRODUCTION_NON_IDENTITY_SECTIONS = ("alerts", "heartbeat",
+sections dropped — with one wrinkle a golden-identity test must respect: a
+section named in `NULLED_IDENTITY_SECTIONS` (today `("tracking",)`) is set to
+`None` and its key stays in the hash material rather than being removed
+(`base.py:226-234`). No production section is nulled, so all four excluded
+sections are genuinely dropped. `PRODUCTION_NON_IDENTITY_SECTIONS = ("alerts", "heartbeat",
 "placement", "env")`.
 
 That recipe can only drop **whole top-level sections**, so the grammar is
@@ -591,7 +597,9 @@ top-level family member, `kind` selects a nested strategy inside one
 "alpha"}` → `THRESHOLD_KINDS`, `fees: {"kind": "bps"}` → `FEE_KINDS`).
 Both resolve through the registries above and neither may be read with an
 `if kind ==` chain; `FEE_KINDS` exists so the five fee strategies of §5.7 are
-registry-resolved like everything else rather than selected by string.
+registry-resolved like everything else rather than selected by string; it is
+the one concept with both a registry and a `vocab.py` tuple
+(`FEE_KIND_NAMES`), and a test pins that their key sets are equal.
 A `uses` or `kind` whose family has no registry is a validation error, not a
 default — `test_document.py` enumerates the §4.1 grammar and asserts every
 selector site names a registry in this list.
@@ -751,7 +759,11 @@ entry output.
 
 ### 5.3.1 `release.py`
 
-`ReleaseReader` is the only capability a `release_read` node receives, and
+`ReleaseReader` reaches a node as the `NodeContext.release_reader` field —
+`None` for every ordinary run, set by the structural planner only for a node
+it classified `release_read`. That is the single cross-package touch point,
+and §9.1 lists it as a `node.py` change. It is
+the only capability a `release_read` node receives, and
 the one API the pipeline planner and production must agree on:
 `get(name) -> value` returns the manifest-named artifact for `name`,
 verifying its recorded digest before returning and raising
@@ -1256,7 +1268,8 @@ place a count lives.
   counted and swallowed like a sink failure; it can never fail a tick.
 - The declared table for phase 1: `ticks_total{status}`,
   `tick_seconds{phase}`, `decisions_total{result}`, `proposals_total{verdict}`,
-  `submits_total{rung, risk_effect, outcome}`, `refusals_total{reason}`,
+  `submits_total{rung, risk_effect, outcome}`, `refusals_total{reason}` (its values are `TICK_STATUSES` refusal members plus
+  the guard verdict names — a closed set like every other label),
   `alert_sink_failures_total{sink}`, `alerts_suppressed_total{why}`,
   `monitor_verdicts_total{monitor, status}`, `recon_breaks_total{class}`,
   `ledger_append_seconds`, `metrics_label_cardinality_dropped_total`.
@@ -1387,12 +1400,15 @@ knob because D13 fixes the answer: query, never resend.
   skipped:no_coverage | refused | failed` and all findings. Exit codes are
   0 stopped · 1 error · 3 halted · 4 already running · 5 refused (readiness
   NO-GO, or a control verb refused because the series state forbids it).
-  Root `CLAUDE.md` documents 3 as "halted at a NO-GO gate", which conflates two
-  states this package must keep apart: a breaker-halted series (operator action
-  required, submissions refused) and a readiness NO-GO (nothing is wrong, the
-  checklist is simply not satisfied). 3 keeps the halted meaning and 5 is added
-  for the refusal; **this is a deliberate extension of the root convention and
-  §9.3 updates that line rather than silently diverging from it.** `--once` runs one tick;
+  Root `CLAUDE.md` and `AGENTS.md` carry the same line: "Exit codes: **0** ran ·
+  **3** halted at a NO-GO gate / `validate` gated `block` (a halt is a result) ·
+  **1** error." That gives 3 three meanings at once — halted, a NO-GO gate, and
+  a gated `block` — and this package must keep the first two apart: a
+  breaker-halted series needs operator action and refuses submissions, while a
+  readiness NO-GO means nothing is wrong and the checklist is simply not yet
+  satisfied. 3 keeps halted, 5 takes the refusal, 4 is already-running;
+  **this is a deliberate extension of the root convention, and §9.3 rewrites
+  that line in both files rather than silently diverging from it.** `--once` runs one tick;
   `--max-ticks N` bounds completed ticks.
 - `outcomes.py` (phase 2): join settlements (`executor.settlements`) and derived
   labels (strict forward as-of over the store via `scan_stream`) into `outcome`
@@ -1448,10 +1464,11 @@ the parts a test can reach. The governing rule is **one concept, one class,
 parameterised — never a family of near-identical classes and never a `kind`
 branch**.
 
-**Abstraction.** Eighteen registry-resolved seam ABCs carry the parts a
-document selects by name: `Clock`, `Calendar`, `Cadence`,
+**Abstraction.** Twenty registry-resolved seam ABCs carry the parts a
+document selects by name — one per registry in §4.3, and a test pins the
+two lists against each other: `Clock`, `Calendar`, `Cadence`,
 `Feed`, `Proposer`, `Guard`, `Measure`, `Executor`, `Accounting`, `Lease`,
-`Ledger`, `Monitor`, `Reference`, `Chunker`, `Threshold`, `AlertSink`,
+`Monitor`, `Reference`, `Chunker`, `Threshold`, `AlertSink`,
 `HealthProbe`, `Transport`, `ApprovalVerifier`, `Fee`, `HeartbeatEmitter`.
 Six further ABCs are structural rather than registry-resolved, named here so
 the count is not mistaken for the whole surface: `SubmittingExecutor` (§5.7),
@@ -1636,7 +1653,8 @@ dskit/production/
 │                      Transport ABC + UrllibTransport + TRANSPORT_KINDS
 ├── ledger.py          Ledger ABC + barrier; JsonlLedger; Checkpoint caches; ServeRoot + series genesis; envelope + chain + verify
 ├── reconcile.py       Reconciler; ReconReport; break classification; on_mismatch policy
-├── monitors.py        Monitor ABC; Reference / Chunker / Threshold / Response strategies; Operational, Stream, Distribution
+├── monitors.py        Monitor ABC; Reference / Chunker / Threshold strategies (Response is a vocabulary); Operational,
+│                      Stream, Distribution
 │                      families (phase 2 adds Outcome and Parity); MONITOR_KINDS, REFERENCE_KINDS, CHUNKER_KINDS,
 │                      THRESHOLD_KINDS
 ├── alerts.py          AlertSink ABC; LogSink, MemorySink, EmailSink, WebhookSink; AlertRouter; ALERT_SINK_KINDS
@@ -1648,8 +1666,9 @@ dskit/production/
 │                      Phase 3 prometheus/otel packs subscribe to it; nothing here imports either.
 ├── redact.py          Secrets resolution via dskit.pipeline.env.load_env; redact(text) applied to every log line, alert body
 │                      and recorded `reason`; webhook URLs and proofs are credentials. No secret ever reaches a ledger record.
-├── loop.py            ServeLoop; Tick ABC (one method per phase, names the latency keys); IdSource + RecordedIdSource;
-│                      injected policies/verifier; lifecycle states; exit codes; journal row per process
+├── loop.py            ServeLoop; the seven collaborator bundles (Schedule, Data, Decision, Safety, Execution, Recording,
+│                      Observability); Tick ABC (one method per phase, names the latency keys) + ServingTick + ReplayTick;
+│                      IdSource ABC + ReleaseIdSource + RecordedIdSource; lifecycle states; exit codes; journal row per process
 ├── outcomes.py        [phase 2] outcome join (settlements, strict forward as-of), supersede chain, as-of cut
 ├── report.py          [phase 2] attribution, calibration, drawdown, replay parity diff, markdown/JSON emitters
 ├── readiness.py       phase-1 release-bound checklist → GO / NO-GO; required for live
@@ -1762,7 +1781,7 @@ carries all three:
   objective's ancestry on every trial — a behaviour change, which is why this
   is a parameter rather than a fallback.
 - **`outputs` is passed in and written in place.** Trials pass a scratch copy
-  (`scratch = dict(self._outputs)`, `driver.py:441`), the winner pass and
+  (`scratch = dict(self._outputs)`, `driver.py:442`), the winner pass and
   serving pass the live dict (`driver.py:490`) because the driver reads it
   afterwards. The runner never decides which; it mutates what it is given and
   returns the same object for convenience.
@@ -1773,6 +1792,9 @@ carries all three:
   why §5.3 speaks of executing "from the frozen entry binding" rather than
   passing bindings in.
 
+`_SearchSeam.__init__`'s remaining two arguments stay with the seam and do not
+move to the runner: `key` (it is what the objective is parsed from) and
+`trial_ctx` (the runner takes a `ctx` per call instead).
 `_SearchSeam` is re-expressed as a thin caller that owns the objective float,
 its own override rule and its `needed` computation, so
 `__call__(overrides) -> float` and every search behaviour stay exactly as they
@@ -1798,7 +1820,10 @@ graph topology without constructing/fingerprinting data nodes or materializing
 requires one source-root `entry_read` dominating all dynamic head paths, defers
 it and its descendants, and rejects all other mutable effects.
 `dskit/pipeline/node.py` defines the closed `Node.serving_effect` classmethod
-with a fail-closed default, and declares
+with a fail-closed default, adds the optional `NodeContext.release_reader`
+field (default `None`, populated only for a node the policy classified
+`release_read`, so every existing node and every ordinary run is unaffected),
+and declares
 `SERVING_EFFECTS = ("pure", "entry_read", "release_read", "forbidden")`
 beside it — the vocabulary lives pipeline-side because pipeline may not
 import production, and production reads it from there rather than restating
@@ -2008,7 +2033,8 @@ dskit/production/
   document.py       ServeDocument; default-deny; the graded/excluded section partition
   release.py        ReleaseManifest; class/code/adapter/source/artifact/runtime fingerprints
   records.py        Quote/Candidate/Proposal/Finding/EntryBatch/DecisionPlan/Intent;
-                    Permit ABC + SimulatedPermit + ActPermit; AccountState; RiskVersion
+                    Permit (frozen dataclass base) + SimulatedPermit + ActPermit; TickResult;
+                    AccountState; RiskVersion
   clock.py          Clock ABC; WallClock, TestClock, ReplayClock; CLOCK_KINDS
   sessions.py       Calendar ABC; AlwaysOpen, WeeklySessions, EventWindow, Composite
   cadence.py        Cadence ABC; FixedInterval, AlignedBar, AtTimes, OnData; Overrun
@@ -2026,7 +2052,7 @@ dskit/production/
   resilience.py     Classifier ABC; Retry; CircuitBreaker; RateLimiter; Transport ABC
   ledger.py         Ledger ABC + barrier; JsonlLedger; Checkpoint; ServeRoot; chain + verify
   reconcile.py      Reconciler; ReconReport; break classification
-  monitors.py       Monitor ABC; Reference/Chunker/Threshold/Response; monitor families
+  monitors.py       Monitor ABC; Reference/Chunker/Threshold strategies; monitor families
   metrics.py        counter/gauge/histogram registry; label cardinality cap; JSONL flush
   alerts.py         AlertSink ABC; Log/Memory/Email/Webhook; AlertRouter; ALERT_SINK_KINDS
   health.py         Health state machine; HealthProbe ABC; Heartbeat; instance lock; signals
