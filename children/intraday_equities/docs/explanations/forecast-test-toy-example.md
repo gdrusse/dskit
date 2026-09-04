@@ -235,3 +235,7 @@ statistic pass and the average improvement is positive.
 
 ## Step 11: account for trying many ideas
 
+**No longer used.** The former Gate-2 multiple-attempt filter is retired by
+ADR-0088. Gate 1 remains the stock-modelability gate. A calibrated model will
+produce each false-signal probability `pi_i`, and the MIO will constrain HFDR
+over the gross capital it actually selects.

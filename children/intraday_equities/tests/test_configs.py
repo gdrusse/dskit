@@ -32,6 +32,8 @@ ACTION_NODES = {
     "universe", "alpaca", "session", "window", "grid", "tradable",
     "train_rows", "val_rows", "qhat", "select",
 }
+MODELABILITY_DOCS = {"run-p10-modelability.json", "run-p11-modelability.json"}
+MODELABILITY_SOURCES = {"alpaca-sip-split", "alpaca-sip-split-b", "alpaca-sip-split-c"}
 
 
 def _path(name):
@@ -323,6 +325,13 @@ def test_run_docs_do_not_restate_the_cohort():
         raw = _raw(name)
         path = _universe_path(raw, name)
         if path != "configs/universe.json":
+            if name in MODELABILITY_DOCS:
+                assert path == "configs/universe-p10.json", name
+                variant = _raw("universe-p10.json")
+                assert len(variant["symbols"]) == 25
+                assert "META" not in variant["symbols"]
+                assert "GROUP" not in variant["symbols"]
+                continue
             # A variant is allowed, but its cohort must be the SAME cohort.
             variant = json.loads(
                 open(os.path.join(CONFIGS, os.path.basename(path))).read()
@@ -494,6 +503,10 @@ def test_every_run_reads_the_split_adjusted_store_from_the_study_start():
                 # Schwab live prints it is compared against.
                 assert params["source"] in ("alpaca-sip", "schwab"), name
                 assert "start_ms" not in params, name
+                continue
+            if name in MODELABILITY_DOCS:
+                assert params["source"] in MODELABILITY_SOURCES, name
+                assert params["start_ms"] == STUDY_START_MS, name
                 continue
             assert params["source"] == SPLIT_SOURCE, name
             if params.get("quote_source") is not None:

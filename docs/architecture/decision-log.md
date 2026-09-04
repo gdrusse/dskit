@@ -3757,6 +3757,9 @@ read is lost.
 **Status:** accepted (2026-09-03; owner approved staged P10 execution,
 study-wide correction, GROUP suppression and the memory strategy)
 
+**Current policy:** Gate 2 and Gate 3 below are no longer used for stock
+selection; ADR-0088 supersedes those selection-policy portions.
+
 **Context.** P10 needs one JSON to coordinate a memory preflight, eight
 horizon walks, two statistical gates, up to nineteen shuffled refits per
 surviving horizon, and one final per-asset result. The existing seams are
@@ -4130,3 +4133,129 @@ shapes. The two-step spelling (`groupby`, then a pivot) is the design.
 **Consequences.** `DEFAULT_NODE_KINDS` grows by one; no existing kind,
 document or hash moves. pmquant's fee-book residue shrinks to the pivot
 half, recorded in TODO.
+
+---
+
+## ADR-0087 — Asset-local stopping is selected before untouched confirmation
+
+**Status:** accepted (2026-09-04; owner approved P11 asset-local fitting,
+ordered stopping, untouched confirmation and fixed-family correction)
+
+**Current policy:** Gate 2 below is no longer used for stock selection;
+ADR-0088 supersedes that selection-policy portion.
+
+**Context.** P10 fit one 25-asset model at every horizon, ran all 200
+asset-horizon cells, then corrected that whole reused-data family. That does
+not answer whether one asset is forecastable from a model trained only on
+that asset. Correcting only the selected survivors on the same observations
+would also ignore the ordered stopping rule that selected them.
+
+The current seams are sufficient. Stages already resume from the append-only
+journal, child walks already run one at a time, the feature cache is immutable,
+and `filter` can reduce feature records to one symbol before
+`NoInformationScan`; SPY may remain in the tape only as the residual-label
+reference. Thus the fitted design and label rows are asset-local while SPY is
+not silently promoted to a training series. `score_walk` already exposes the
+ADR-0067 pooled and fold tests without creating `GROUP` when `group=None`.
+
+Independent confirmation is feasible under the frozen cut. Gate 1's twenty
+63-day validations begin 2022-05-06 and the last ends 2025-10-17. The block
+2025-12-02 through 2026-02-28 is therefore untouched by selection and supplies
+one prospective confirmation fold; its model trains only on that asset through
+the five-day embargo before 2025-12-02. No row dated 2026-03-01 or later is
+read.
+
+**Decision.** P11 is one new resumable staged JSON with only `memory`, `gate1`
+and `gate2`; it has no Gate-3 stage.
+
+1. Preserve P10's exact ordered 25 assets, 2026-02-28 source cut, feature
+   geometry, estimator, existing journal and attempts file. META and synthetic
+   GROUP are refused by count and set assertions. P10 artifacts and attempt
+   rows are never overwritten or reinterpreted; P11 has a new study identity
+   and asset-local architecture key.
+2. Before either gate, run one isolated memory preflight using the asset with
+   the most cached rows (ties use cohort order), `h=1`, and the longer Gate-2
+   confirmation geometry. Peak RSS must remain strictly below 17 GiB. The
+   staged runner and every child walk execute serially, one command at a time.
+3. Gate 1 visits each asset in frozen cohort order and tests
+   `h=[1,2,3,5,10,20,30,60]` in that order. Every fold filters feature records
+   to that asset and asserts exactly one fitted and scored series. A cell passes
+   only by ADR-0067's unchanged pooled-HAC and across-fold tests at alpha 0.05.
+   Its walk and attempt are journaled immediately. At the first failure, that
+   failure is retained, the last consecutive pass is selected, and later
+   horizons are neither run nor registered. Failure at `h=1` selects none.
+4. Gate 2 runs only the selected horizon of each Gate-1 survivor, again with a
+   standalone asset-only fit, on the untouched 2025-12-02–2026-02-28 block.
+   The raw confirmation p-value is ADR-0067's one-sided pooled HAC p-value;
+   the single confirmation fold is not misrepresented as an across-fold test.
+5. Before confirmation, an append-only fixed-family header is written to the
+   existing attempts JSONL: family id, alpha 0.05, the ordered 25 asset keys,
+   and allocation 0.05/25 = 0.002 per asset. Each survivor's result appends its
+   selected horizon, raw p, `min(25*p, 1)`, allocation and decision. An asset
+   passes Gate 2 iff `p <= 0.002`. Unused allocations are never recycled.
+   Bonferroni's union bound controls family-wise error under arbitrary
+   cross-asset dependence, and fixed allocations make every decision final
+   regardless of result arrival order. Duplicate keys, a changed family
+   header, or a changed prior result are refusals.
+6. Reused-data confirmation is not the P11 path. If the untouched block proves
+   infeasible, execution stops for a new owner decision. Any later null-based
+   alternative must refit and replay, inside every null replicate, the complete
+   per-asset ordered sequence, first-failure stopping, selected-horizon rule and
+   Gate-2 statistic. Correcting only observed survivors on reused data is
+   forbidden.
+
+**Consequences.** At most 200 Gate-1 walks run, usually fewer; Gate 2 runs at
+most 25. Results report every Gate-1 stop, unrun horizon, selected horizon,
+Gate-2 p-value/decision, correction-ledger entry and failure, then stop. The
+implementation scope proposed for approval is one new child stage module,
+one new P11 JSON and focused child tests; existing `attempts.py` and its tests
+gain the generic fixed-family ledger. The P10 config gains only the standard
+MLflow sink, which is identity-excluded. Config pins will treat P10/P11 as the
+explicit 25-asset three-source cohort and assert its exact universe and
+`alpaca-sip-split{,-b,-c}` sources instead of forcing the smaller production
+cohort or rewriting P10's identity-bearing fields.
+
+---
+
+## ADR-0088 - Gate 1 selects modelable stocks; HFDR is constrained in MIO
+
+**Status:** accepted (2026-09-04; owner approved option A)
+
+**Context.** Gate 2 applies a hard multiple-testing filter before portfolio
+construction. That controls discovery counts, not the capital actually exposed
+to false signals. A predictive model can instead estimate, for each Gate-1
+survivor, `pi_i = P(signal i is false | information available to the MIO)`.
+The MIO then observes both expected return and `pi_i` when choosing holdings.
+
+**Decision.** Gate 1 remains the locked stock-modelability gate. Gate 2 is no
+longer used for stock selection. Its completed P10/P11 runs remain immutable
+historical evidence and are not reinterpreted.
+
+HFDR is a locked MIO constraint. For selected gross capital `x_i >= 0`, the MIO
+must enforce
+
+`sum_i(x_i * pi_i) <= q * sum_i(x_i)`.
+
+Thus names and capital are chosen jointly while expected false-signal capital
+is at most fraction `q` of invested gross capital. This is not weighted
+Benjamini-Hochberg and no BH prefilter runs before the MIO. The `pi_i` model,
+calibration sample, conservative treatment of estimation error, gross-exposure
+definition and `q` must be prospectively pinned and validated before capital is
+eligible; the optimizer must not infer or backfit them from chosen holdings.
+
+**Consequences.** Decisioning will lock Gate 1 followed by HFDR-in-MIO. Active
+documentation will mark Gate 2 "No longer used"; historical Gate-2 documents
+will retain their evidence beneath that notice. Implementing the `pi_i` model
+or MIO constraint requires a separately approved design and validation run.
+
+---
+
+## ADR-0089 — Gate 1 selects; Gate 3 audits; MIO controls false-signal capital
+
+**Status:** accepted (2026-09-04; owner correction)
+
+**Decision.** Gate 2 is not a modelability filter. Gate 1 produces provisional asset-horizon selections, then Gate 3 directly refits each Gate-1 selection under the frozen 19 whole-session label permutations (seeds 0 through 18) using its identical 20-fold asset-local walk. The real selected result must beat every null refit and the null-statistic calibration must pass. Gate 3 is therefore the mandatory modelability audit, not a later optional screen.
+
+HFDR is a later MIO capital constraint. It does not replace Gate 3, and P11 does not invoke Gate 2. The completed P11 Gate-2 artifacts are historical evidence from the mistaken configuration; they neither select assets nor substitute for the restored Gate-3 audit.
+
+**Consequences.** The active staged document is memory, gate1, gate3_walks, gate3. Its changed identity requires a fresh execution; no new Gate-3 run has been started by this correction.

@@ -19,6 +19,7 @@ import pytest
 from dskit.pipeline.attempts import (
     T_FLOOR,
     AttemptRegistry,
+    FixedFamilyLedger,
     bar_verdict,
     bonferroni_t,
     cell_id,
@@ -103,6 +104,49 @@ class TestTheRegistry:
         with open(path, "a", encoding="utf-8") as fh:
             fh.write("not json\n\n")
         assert reg.count() == 1
+
+
+class TestTheFixedFamilyLedger:
+    def test_header_precedes_results_and_allocations_never_recycle(self, tmp_path):
+        path = tmp_path / "attempts.jsonl"
+        ledger = FixedFamilyLedger(path, "p11", ["A", "B"], alpha=0.05)
+        header = ledger.prepare()
+        result = ledger.record("A", 0.02, horizon=3)
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        assert rows == [header, result]
+        assert result["allocation"] == pytest.approx(0.025)
+        assert result["adjusted_p"] == pytest.approx(0.04)
+        assert result["passes"] is True
+        assert "B" not in ledger.results()
+
+    def test_arbitrary_arrival_order_has_the_same_final_decisions(self, tmp_path):
+        keys = ["A", "B", "C"]
+        first = FixedFamilyLedger(tmp_path / "a.jsonl", "p11", keys)
+        second = FixedFamilyLedger(tmp_path / "b.jsonl", "p11", keys)
+        for key, p_value in (("A", 0.01), ("B", 0.02), ("C", 0.001)):
+            first.record(key, p_value)
+        for key, p_value in (("C", 0.001), ("A", 0.01), ("B", 0.02)):
+            second.record(key, p_value)
+        assert {
+            key: row["passes"] for key, row in first.results().items()
+        } == {
+            key: row["passes"] for key, row in second.results().items()
+        }
+
+    def test_exact_replay_is_idempotent_but_changed_result_is_refused(self, tmp_path):
+        ledger = FixedFamilyLedger(tmp_path / "a.jsonl", "p11", ["A"])
+        first = ledger.record("A", 0.01, horizon=2)
+        assert ledger.record("A", 0.01, horizon=2) == first
+        with pytest.raises(ValueError, match="changed or duplicated"):
+            ledger.record("A", 0.02, horizon=2)
+
+    def test_changed_header_and_undeclared_key_are_refused(self, tmp_path):
+        path = tmp_path / "a.jsonl"
+        FixedFamilyLedger(path, "p11", ["A", "B"]).prepare()
+        with pytest.raises(ValueError, match="header changed"):
+            FixedFamilyLedger(path, "p11", ["B", "A"]).prepare()
+        with pytest.raises(ValueError, match="not in fixed family"):
+            FixedFamilyLedger(path, "p12", ["A"]).record("B", 0.01)
 
 
 class TestTheSessionReduction:

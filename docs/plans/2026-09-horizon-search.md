@@ -205,10 +205,11 @@ the pipeline suppresses every synthetic `GROUP` verdict.
 filtering. For each asset, failure at `h=1` means none; otherwise `h*` is its
 furthest consecutive pass of both pooled and across-fold statistics.
 
-**Gate 2.** Use one study-wide max-statistic family over all 200 asset-horizon
-cells, with the same session resample shared across every cell. A selected `h*`
-must clear the corrected statistic, adjusted probability, and positive lower
-bound. Failure means no survivor; it never falls back to a shorter horizon.
+**Gate 2 - No longer used.** The former P10 max-statistic filter is retained
+only as historical design evidence. ADR-0088 places HFDR control inside MIO.
+
+**No longer active.** Gate 3 depended on the retired Gate-2 funnel and is
+retained only as historical P10 design evidence.
 
 **Gate 3.** Shuffle whole-session labels and refit the identical 25-asset pooled
 model at each unique surviving horizon. Survivors are only scored outputs: the
