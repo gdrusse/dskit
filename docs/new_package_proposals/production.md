@@ -53,7 +53,9 @@ scored.
 `dskit.pipeline` + `dskit.onboarding` + `dskit.assets` + self, with
 `dskit.journal` at function depth only*. This is deliberately **not** the tier-1
 rule `tests/pipeline/test_purity.py` enforces on `dskit/pipeline/` (stdlib plus
-`dskit.pipeline` itself, and no other `dskit.*` sibling at any depth); `dskit.production` is an application of the
+`dskit.pipeline` itself, and no other `dskit.*` sibling at any depth, save the
+two documented function-depth exceptions: `dskit.journal` per ADR-0056 and,
+tier-2 only, the `dskit.onboarding` read seam per ADR-0077); `dskit.production` is an application of the
 toolkit, not part of it, so it gets its own gate in `tests/production/
 test_purity.py` and the word "tier 1" is not reused for it. Contents:
 the serve-document grammar, release manifest and identity; clock / calendar /
@@ -518,7 +520,7 @@ brackets.
     "pred_shift": {"uses": "psi", "params": {"field": "prediction", "bins": 10,
                    "reference": {"uses": "leading", "n": 500}, "window": {"kind": "count", "n": 300},
                    "threshold": {"kind": "alpha", "alpha": 0.01}, "response": "warn"}},
-    "coverage":   {"uses": "operational", "params": {"measure": "decision_count", "window": {"kind": "count", "n": 50},
+    "coverage":   {"uses": "operational", "params": {"measure": "coverage", "window": {"kind": "count", "n": 50},
                    "threshold": {"kind": "constant", "min": 0.5}, "response": "warn"}}
   },
   "health": {"failure_threshold": 3, "success_threshold": 1, "timeout_s": 1.0,   // the default HealthProbe.timeout_s
@@ -553,7 +555,7 @@ everywhere, sorted keys, compact, ASCII, NaN refused, and whole top-level
 sections dropped — with one wrinkle a golden-identity test must respect: a
 section named in `NULLED_IDENTITY_SECTIONS` (today `("tracking",)`) is set to
 `None` and its key stays in the hash material rather than being removed
-(`base.py:226-234`). No production section is nulled, so all four excluded
+(`base.py:226-238`). No production section is nulled, so all four excluded
 sections are genuinely dropped. `PRODUCTION_NON_IDENTITY_SECTIONS = ("alerts", "heartbeat",
 "placement", "env")`.
 
@@ -820,7 +822,13 @@ non-finite number.
   coverage_digest, quote_asof_ms, quote_digest, evidence_asof_ms,
   evidence_digest, risk_version, risk_state_digest}`. This is the sole canonical
   Intent type; ledger rows serialize it rather than define another schema.
-- `Ack{client_ref, venue_ref, status ∈ STATUSES, ts_ms, filled_qty, avg_price, fee,
+- `STATUSES = ("pending", "open", "partial", "pending_cancel", "filled",
+  "cancelled", "expired", "rejected", "replaced", "unknown", "not_sent")` —
+  eleven, of which `TERMINAL_STATUSES = ("filled", "cancelled", "expired",
+  "rejected", "replaced", "not_sent")`; a venue lacking a state collapses
+  toward less certainty, never toward more.
+  `TIFS = ("ioc", "fok", "gtc", "gtd", "day")`.
+  `Ack{client_ref, venue_ref, status ∈ STATUSES, ts_ms, filled_qty, avg_price, fee,
   reason, native}`; `OrderState` = `Ack` + `instrument, side, qty, remaining_qty,
   limit, tif, created_ms, updated_ms` and must satisfy
   `filled_qty + remaining_qty == qty`; `Fill{fill_id, venue_ref, client_ref,
@@ -872,6 +880,15 @@ non-finite number.
   Any change invalidates it. `valid_until_ms` is the minimum of proposal expiry,
   input/quote/accounting freshness deadlines, readiness validity, calendar close,
   authority expiry and lease/local deadline.
+- `EvidenceRequirement{measure, window_kind, window_arg, scope_key,
+  window_start_ms, window_end_ms, baseline_at_ms, include_working}` — what a
+  `Measure` declares it needs before sizing, and the unit accounting snapshots
+  against. `requirement_digest = canonical_hash(EvidenceRequirement)` over
+  exactly those fields in that order, with instants as epoch-ms ints and
+  `window_arg` normalised (a duration to ms, a count to an int, a calendar
+  window to its resolved `[start, end)` bounds) so two measures asking for the
+  same evidence produce the same digest and accounting fetches it once.
+  It carries no value: it is the question, `MeasureEvidence` is the answer.
 - `MeasureEvidence{requirement_digest, value, sample_count, window_start_ms,
   window_end_ms, scope_key, effective_at_ms, known_at_ms, source_digests}`;
   `RiskVersion{economic_seq, executor_token, accounting_tokens}`;
@@ -915,7 +932,10 @@ non-finite number.
   Registry (stdlib): `quantity, notional, exposure, exposure_after,
   price_deviation, pnl, drawdown, consecutive_losses, decision_count,
   identical_count, direction_changes, open_orders, input_age_ms, feed_age_ms,
-  confidence, bankroll_fraction, error_vs_realised`. A child's exposure formula is
+  confidence, bankroll_fraction, error_vs_realised, coverage (the abstaining
+  fraction), latency_p50, latency_p95, refusal_count`. The last four exist so
+  §5.10's operational monitors are the same parameterised class over the same
+  registry a guard reads, not a second vocabulary. A child's exposure formula is
   a `Measure` subclass referenced by path.
 - `RangeGuard(Guard)`: `field`, `min`, `max`, `nan ∈ {refuse, allow}`.
 - Cancels never pass through the chain (a structural rule pinned by a test).
@@ -1009,7 +1029,9 @@ other permit **by type** — refuses meaning it returns
   cross, mid}`, `slippage {bps, ticks, tick}`, `resting_rule ∈ {touch, through}`,
   `p_fill_on_touch`, `queue_frac`, `size_cap ∈ {none, quote_size, frac}`,
   `latency_ms {submit, cancel}`, `fees {kind ∈ none | per_unit | bps |
-  maker_taker_bps | pxq_rate}` (a strategy class per kind), TIF handling (`ioc`,
+  maker_taker_bps | pxq_rate}` — `Fee(ABC).charge(qty, price, liquidity)
+  -> Decimal`, one subclass per kind, registered in `FEE_KINDS` — TIF
+  handling (`ioc`,
   `fok`, `gtd`; `day` refused without `session_end_ms`), `seed`, `partial_fills`.
   Deterministic under `seed`; no wall clock, no network. Every knob in this
   bullet is a graded `execution.params` field; §4.1 illustrates three of them
@@ -1186,7 +1208,11 @@ break ids and release hash; after inspection it records the delta, crosses
   `@abstractmethod verdict() -> Verdict`; `state()`/`restore(state)` (JSON-able,
   carried by the §6 `snapshot` record, which is the sole owner of monitor state;
   `Checkpoint` does not hold it).
-- Strategies: `Response` is a closed vocabulary (`RESPONSES`), not a strategy object;
+- Strategies, each an ABC with one abstract hook —
+  `Reference(ABC).sample() -> tuple` (the comparison population),
+  `Chunker(ABC).chunks(records) -> Iterator[tuple]` (how observations are cut
+  into windows), `Threshold(ABC).breached(statistic, n_ref, n_cur) -> bool`.
+  `Response` is a closed vocabulary (`RESPONSES`), not a strategy object.
   `Reference` (`leading(n)`, `rolling(window)`, `snapshot(path)` — a
   saved `Profile`; phase 2 `run` over the run's predictions parquet via the
   parquet pack); `Chunker` (`count(n)`, `period(iso)`, `sliding(n, step)`);
@@ -1238,7 +1264,9 @@ break ids and release hash; after inspection it records the delta, crosses
   OTel `SeverityNumber` (9/13/17/21), syslog (6/4/3/2), `logging` (20/30/40/50).
 - `Health`: `starting → {ready | degraded | unhealthy} → stopping`; `HealthProbe(ABC)`
   (`name`, `scope ∈ {local, dependency}`, `timeout_s`, `@abstractmethod check() ->
-  ProbeResult`); kinds `ledger-writable` (local), `executor-check` (dependency),
+  ProbeResult`, where `ProbeResult{ok, at_ms, detail}` is a frozen value object
+  and a raise or a timeout is recorded as `ok=False` with the reason in
+  `detail`); kinds `ledger-writable` (local), `executor-check` (dependency),
   `feed-age` (dependency); `failure_threshold`/`success_threshold` hysteresis;
   transitions (not levels) raise alerts; `unhealthy` stops acting AND
   heartbeating; `degraded` observes and refuses acts.
@@ -1250,6 +1278,8 @@ break ids and release hash; after inspection it records the delta, crosses
   and no greater than the cadence period. Phase 2 adds a `systemd` emitter
   (`NOTIFY_SOCKET` datagrams: `READY=1`, `WATCHDOG=1`, `STATUS=`, `STOPPING=1`).
   The worker observes an
+  `HeartbeatEmitter(ABC).emit(payload)` is the hook; core ships the two kinds
+  above. The worker observes an
   atomic last-successful-tick monotonic stamp; when `dead_after_ms` elapses it
   transitions health to unhealthy and stops emitting, allowing the external
   dead-man to page. It is sent in `ready`, and in `degraded` only when `heartbeat.in_degraded`.
@@ -1341,7 +1371,7 @@ knob because D13 fixes the answer: query, never resend.
 
 - `ServeLoop(document, release, schedule, data, decision, safety, execution,
   recording, observability)`: two values plus **seven** collaborator bundles,
-  each a frozen dataclass validated at construction, rather than twenty-seven
+  each a frozen dataclass validated at construction, rather than twenty-eight
   positional arguments —
   `Schedule{clock, calendar, cadence, overrun}`, `Data{feed, decider}`,
   `Decision{guards, monitors}`,
@@ -1656,15 +1686,15 @@ dskit/production/
 ├── release.py         ReleaseManifest; ReleaseReader (the capability handed to release_read nodes); class/code/adapter/
 │                      source/artifact/runtime fingerprints; release verification
 ├── records.py         Quote, Candidate, Proposal, Finding, InputWatermark, EntryBatch, TickStart, DecisionPlan, ReductionPlan,
-│                      ReductionAuthorization, MeasureEvidence, RiskVersion, AccountState, LeasePermit,
-│                      Permit (frozen dataclass base) + SimulatedPermit + ActPermit, TickResult, Intent,
+│                      ReductionAuthorization, EvidenceRequirement + MeasureEvidence, RiskVersion, AccountState,
+│                      LeasePermit is coordination.py's, not here; Permit (frozen dataclass base) + SimulatedPermit + ActPermit, TickResult, Intent,
 │                      execution/monitoring values
 ├── clock.py           Clock ABC; ManualTime (the settable instant TestClock and ReplayClock each compose);
 │                      WallClock, TestClock, ReplayClock; CLOCK_KINDS
 ├── sessions.py        Calendar ABC; AlwaysOpen, WeeklySessions, EventWindow, Composite; CALENDAR_KINDS
 ├── cadence.py         Cadence ABC; FixedInterval, AlignedBar, AtTimes, OnData; Overrun; CADENCE_KINDS
 ├── control.py         ControlInbox; CommandProcessor; atomic request/result spool; sole-writer dispatch
-├── feed.py            ServingContract + FeedSpec; EntrySourceFeed; snapshot coverage/digests; ReplayFeed; FEED_KINDS
+├── feed.py            Feed ABC; ServingContract + FeedSpec; EntrySourceFeed; snapshot coverage/digests; ReplayFeed; FEED_KINDS
 ├── decider.py         serving_document(); Decider (base pass + per-tick rerun via SubgraphRunner); ServingExecutionPolicy
 │                      (implements pipeline ExecutionPolicy); Proposer ABC; IntentRows,
 │                      TargetPositions; RecordedOutputs (replayed gate / stat_test); PROPOSER_KINDS
@@ -1688,7 +1718,8 @@ dskit/production/
 │                      families (phase 2 adds Outcome and Parity); MONITOR_KINDS, REFERENCE_KINDS, CHUNKER_KINDS,
 │                      THRESHOLD_KINDS
 ├── alerts.py          AlertSink ABC; LogSink, MemorySink, EmailSink, WebhookSink; AlertRouter; ALERT_SINK_KINDS
-├── health.py          Health state machine; HealthProbe ABC + PROBE_KINDS; Heartbeat emitters + HEARTBEAT_KINDS;
+├── health.py          Health state machine; HealthProbe ABC + ProbeResult + PROBE_KINDS; HeartbeatEmitter ABC +
+│                      emitters + HEARTBEAT_KINDS;
 │                      single-instance lock; signal handling
 ├── metrics.py         Registry (counter/gauge/histogram); Prometheus naming + base units; closed label sets — an undeclared
 │                      label VALUE drops to the reserved `other` and is counted, never raised on the hot path, while an
@@ -1831,7 +1862,8 @@ its own override rule and its `needed` computation, so
 `__call__(overrides) -> float` and every search behaviour stay exactly as they
 are. **No new params, no grammar change, no identity change**; the regression
 guard is the existing `tests/pipeline/test_driver.py` and
-`tests/pipeline/test_kinds_search.py` suites plus the 20 pinned identity hashes,
+`tests/pipeline/test_kinds_search.py` suites plus all 20 pinned sha256 literals
+under `tests/` (17 of them document identities, per D24),
 all of which must stay unmoved.
 
 `ExecutionPolicy` lives in the pipeline because the structural planner calls it
@@ -1913,8 +1945,10 @@ children are not rewritten by this ADR (§12, item 4).
 
 ### 9.3 Documentation and configuration
 
-Root `README.md` (a fifth pillar, "Serve"), root `CLAUDE.md` and `AGENTS.md`
-(layout tree, commands, and the exit-code line — which gains 4 and 5 and
+Root `README.md` (a fifth pillar, "Serve", **and its own exit-code line at
+`README.md:47-48`, which carries a third variant of the same sentence and must
+be rewritten with the other two or it silently diverges**), root `CLAUDE.md`
+and `AGENTS.md` (layout tree, commands, and the exit-code line — which gains 4 and 5 and
 separates breaker-halted from readiness NO-GO per §5.13), `docs/architecture/README.md` (package table),
 `TODO.md` (the "Long-term goal — a generic SERVING LOOP" section marked
 superseded by ADR-0090 with its constraints listed as satisfied), `pyproject.toml`
