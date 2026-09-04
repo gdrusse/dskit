@@ -1032,8 +1032,12 @@ decides the shape, so settle it before writing code.**
 
 ## Long-term goal — a generic SERVING LOOP in dskit
 
-**Not now. No ADR yet, no code.** Recorded so the design constraints
-discovered on 2026-08-27 are not rediscovered later.
+**Design plan complete; implementation not started.** The implementation-ready
+proposal is `docs/new_package_proposals/production.md` (ADR-0087 / ADR-0088).
+It preserves the constraints recorded here.
+
+- [x] Replace the original sketch with a reviewed, invariant-driven package plan.
+- [ ] Implement `dskit.production` in a separate code change.
 
 **The goal.** dskit runs documents in batch; it has no seam for running a
 fitted model FORWARD on a cadence. `children/intraday_poc/intraday_poc/live.py`
