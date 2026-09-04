@@ -518,9 +518,9 @@ brackets.
   "reconcile": {"on_start": true, "every_s": 300, "on_mismatch": "halt", "lookback_ms": 86400000},
   "monitors": {
     "pred_shift": {"uses": "psi", "params": {"field": "prediction", "bins": 10,
-                   "reference": {"uses": "leading", "n": 500}, "window": {"kind": "count", "n": 300},
+                   "reference": {"uses": "leading", "params": {"n": 500}}, "window": {"kind": "count", "n": 300},
                    "threshold": {"kind": "alpha", "alpha": 0.01}, "response": "warn"}},
-    "coverage":   {"uses": "operational", "params": {"measure": "coverage", "window": {"kind": "count", "n": 50},
+    "coverage":   {"uses": "coverage", "params": {"window": {"kind": "count", "n": 50},
                    "threshold": {"kind": "constant", "min": 0.5}, "response": "warn"}}
   },
   "health": {"failure_threshold": 3, "success_threshold": 1, "timeout_s": 1.0,   // the default HealthProbe.timeout_s
@@ -596,8 +596,11 @@ a kind named `memory`. A test asserts the two registries are disjoint objects
 and that neither name is importable from the other package.
 
 `uses`, `kind` and `measure` are one mechanism at three depths: `uses` selects
-a top-level family member, `measure` selects a `MEASURE_KINDS` entry inside a
-guard or an operational monitor, and `kind` selects a nested strategy inside one
+a family member — at the top level, and also nested where the nested thing is
+itself a registry family (`reference: {"uses": "leading", "params": {"n":
+500}}`, which takes the same `{uses, params}` shape as every other `uses`
+site); `measure` selects a `MEASURE_KINDS` entry inside a guard; and `kind`
+selects a nested strategy inside one
 (`window: {"kind": "count"}` → `CHUNKER_KINDS`, `threshold: {"kind":
 "alpha"}` → `THRESHOLD_KINDS`, `fees: {"kind": "bps"}` → `FEE_KINDS`).
 Both resolve through the registries above and neither may be read with an
@@ -739,8 +742,8 @@ entry output.
   mutable snapshot can occur.
   The configured proposer first returns stable, unsized
   `Candidate{id, instrument, scope_keys}` values and extracts quotes from those
-  immutable head outputs. Accounting expands every declared requirement over
-  those candidate scope keys and snapshots against the quotes; only then does
+  immutable head outputs. Accounting takes the deduplicated union of the requirements the measures
+  already returned per candidate scope key and snapshots against the quotes; only then does
   `Proposer.proposals(head_outputs, candidates, account_state) -> list[Proposal]`
   construct an ordered proposal list. A proposal must preserve its candidate id, instrument
   and declared scope keys; missing/extra/changed keys or duplicate ids refuse.
@@ -750,8 +753,8 @@ entry output.
 - `Proposer(ABC)`: `candidates(head_outputs) -> list[Candidate]`,
   `proposals(head_outputs, candidates, state) -> list[Proposal]`,
   `quotes(head_outputs) -> list[Quote]` is pure and state-independent (default:
-  `MarketRecord`-shaped rows via
-  the records module's accessors). `IntentRows` (`output`, `fields` map,
+  rows shaped like `dskit.pipeline.records.MarketRecord`, read through that
+  module's accessors — not production's own `records.py`). `IntentRows` (`output`, `fields` map,
   `default_tif`), `TargetPositions` (`output`, `fields`, diff against
   `state.positions`).
 - `RecordedOutputs` must satisfy the replaced role's planner rules. The resolved
@@ -809,6 +812,10 @@ epoch-ms ints; each record has `to_obj`/`from_obj` (default-deny) and refuses a
 non-finite number.
 
 - `ExecutionScope{venue, account}`, a canonical non-secret ownership domain.
+- `DuplicateRef` is a `reason` value, not an exception: a venue that rejects a
+  re-used `client_ref` rather than returning the original order yields
+  `Ack(status="rejected", reason="duplicate_ref")`, preserving the rule that
+  `submit` always returns an `Ack`.
 - `Quote{instrument, bid, ask, mid, asof_ms}`;
   `QuoteSet{quotes, quote_digest, min_asof_ms}`.
 - `Candidate{id, instrument, scope_keys}`.
@@ -847,9 +854,11 @@ non-finite number.
   `TickStart{tick_id, tick_at_ms, release_hash}`;
   `TickResult{tick_id, status, data_asof_ms, observed_at_ms, feed_status,
   coverage_digest, inputs_digest, decision_plan_ids, legs, findings,
-  latency_ms, leg_latency_ms, refusal_reason, error}` — exactly the payload
-  §6's terminal `tick` and `decision` records are written from, so a phase
-  never writes a record itself;
+  latency_ms, leg_latency_ms, refusal_reason, error}` — what the phases
+  produce, so a phase never writes a record itself. The loop adds the fields
+  only it holds (`tick_at`, `calendar`, `overrun_absorbed[]`, `health`,
+  `breaker`, `rung`, and the structured `feed{…}` block) when it writes §6's
+  terminal `tick` and `decision`;
   `DecisionPlan{plan_id, inputs_asof_ms, inputs_digest, coverage_digest,
   quote_asof_ms, quote_digest, evidence_asof_ms, evidence_digest,
   provenance_digests, original, final, findings, gate_results, scope_verdict,
@@ -921,8 +930,15 @@ non-finite number.
   measures; `pause` needs `pause: {duration | calendar}`; `hold` needs `hold:
   {ttl}`).
 - `Measure(ABC)`: deterministic
-  `requirements(candidate, window, scope_key) -> tuple[EvidenceRequirement]`
-  plus `value(proposal, state, window, scope_key) -> Decimal | float`. Every
+  `requirements(candidate, window, scope_key, at_ms, calendar) ->
+  tuple[EvidenceRequirement]` plus
+  `value(proposal, state, window, scope_key) -> Decimal | float`.
+  `at_ms` and `calendar` are what let the measure resolve a `{calendar}`
+  window to the `[start, end)` bounds its own `requirement_digest` is computed
+  over; without them the digest could not be formed and two measures asking
+  the same question could not deduplicate. `include_working` is a `Limit`
+  param, so `Limit` stamps it into each requirement its measure returns —
+  the measure never invents it. Every
   monetary or quantity measure returns `Decimal` (§5.4 admits no float in money);
   only dimensionless ratios — `bankroll_fraction`, `confidence` — may be
   `float`, and a test pins which registry entry is which.
@@ -932,11 +948,15 @@ non-finite number.
   Registry (stdlib): `quantity, notional, exposure, exposure_after,
   price_deviation, pnl, drawdown, consecutive_losses, decision_count,
   identical_count, direction_changes, open_orders, input_age_ms, feed_age_ms,
-  confidence, bankroll_fraction, error_vs_realised, coverage (the abstaining
-  fraction), latency_p50, latency_p95, refusal_count`. The last four exist so
-  §5.10's operational monitors are the same parameterised class over the same
-  registry a guard reads, not a second vocabulary. A child's exposure formula is
-  a `Measure` subclass referenced by path.
+  confidence, bankroll_fraction, error_vs_realised`. A child's exposure formula
+  is a `Measure` subclass referenced by path.
+  A `Measure` answers a question about **one proposal against a snapshotted
+  account state** at decision time. It is deliberately NOT the abstraction
+  §5.10's operational monitors use, which answer questions about the **decision
+  record stream** over a rolling window and receive neither a proposal nor an
+  `AccountState`. Two hooks on one class would force every measure to implement
+  a method most of them cannot answer; §5.15 records why these are two concepts
+  rather than one.
 - `RangeGuard(Guard)`: `field`, `min`, `max`, `nan ∈ {refuse, allow}`.
 - Cancels never pass through the chain (a structural rule pinned by a test).
 - After ordinary guards, `GuardChain.check_authority_scope` re-runs the active
@@ -1057,7 +1077,7 @@ other permit **by type** — refuses meaning it returns
 - `executor_conformance_suite(cls, params, quotes)`: a pytest class builder (the
   node `conformance_suite` precedent) running the closed battery [R8 §2.5]:
   default-deny spec; `check` performs no submit; `client_ref` echoed; same
-  `client_ref` twice ⇒ same `venue_ref` or `DuplicateRef`; terminal absorption;
+  `client_ref` twice ⇒ same `venue_ref` or `Ack(rejected, "duplicate_ref")`; terminal absorption;
   `filled_qty` monotone except reversed; `filled_qty + remaining_qty == qty`;
   capability gating before I/O; no duplicate `fill_id`; units pinned; derived
   vs venue positions agree; unarmed/raw authority refused; no initiated replace
@@ -1157,6 +1177,9 @@ deadline invalidates the local permit without waiting for nominal expiry.
 - The file lock protects only processes sharing that filesystem. Every live plan
   requires the configured fenced child `Lease` from §5.7.2; a local lock or
   unfenced lease can never be configured as sufficient.
+- `ServeRoot(root, series_id)` owns the layout below: it creates and validates
+  `series.json`, hands out the paths, and is the only thing that knows the
+  directory shape — no other module builds a serve path by concatenation.
 - `Checkpoint` is an atomic cache of `release_hash, last_tick_at,
   last_completed_tick_at, pending[], positions_snapshot_at, schema_version`.
   Every cache also names its projected `head_seq/head_hash`: a verified
@@ -1220,12 +1243,14 @@ break ids and release hash; after inspection it records the delta, crosses
   `(1/n+1/m)·(B−1+z_α√(2(B−1)))` and the Kolmogorov series, both via
   `statistics.NormalDist`/`math`); `Response ∈ {log, warn, halt}` (phase 2:
   `fallback`, `rollback` as operator acts).
-- Families (phase 1): `OperationalMonitor` — one class parameterised by a
-  `MEASURE_KINDS` entry plus a `Chunker`, not a class per statistic: staleness,
-  decision rate, coverage/abstention, latency percentiles and refusal counts
-  are all `OperationalMonitor` over `input_age_ms`, `decision_count` and their
-  siblings, so a measure is defined once and read by both a guard and a
-  monitor;
+- Families (phase 1): `OperationalMonitor` → `Staleness`, `DecisionRate`,
+  `Coverage` (the abstaining fraction), `LatencyPercentiles`, `RefusalCount` —
+  each a subclass whose `observe(record)` reads named fields of the decision
+  and tick records (`data_asof_ms`, `status`, `legs[].final`,
+  `latency_ms`, `refusal_reason` respectively) and whose `verdict()` reduces
+  its `Chunker`'s current window. These are subclasses rather than one
+  parameterised class because each reads a different record field, which is
+  the only thing that varies — there is no shared numeric parameter to lift;
   `StreamMonitor` → `PageHinkley`, `TrackingSignal`; `DistributionMonitor` →
   `PSI`, `KS` (bins from reference quantiles at `fit`). Phase 2: `DDM`, `ADWIN`,
   `JensenShannon`, `LInf`; `OutcomeMonitor` → `Calibration` (ECE), `Brier`
@@ -1277,7 +1302,6 @@ break ids and release hash; after inspection it records the delta, crosses
   other result counts a failure and never blocks). `every_s` must be at least 1
   and no greater than the cadence period. Phase 2 adds a `systemd` emitter
   (`NOTIFY_SOCKET` datagrams: `READY=1`, `WATCHDOG=1`, `STATUS=`, `STOPPING=1`).
-  The worker observes an
   `HeartbeatEmitter(ABC).emit(payload)` is the hook; core ships the two kinds
   above. The worker observes an
   atomic last-successful-tick monotonic stamp; when `dead_after_ms` elapses it
@@ -1343,7 +1367,8 @@ reconcile}`; an ambiguous write never yields `retry`); `CircuitBreaker` (states
 scope; `min_calls`=5; `failure_rate`=0.5; `open_s`=30; business rejections not
 counted); `RateLimiter` (token buckets per scope from
 `resilience.limiter.{submit,cancel}{rate_per_s, burst, max_in_flight}`,
-`max_in_flight` default 1 for writes, `observe(headers)` capped by
+`max_in_flight` default 1 for writes, `reserved` (the cancel lane keeps its
+capacity even when the submit lane is exhausted), `observe(headers)` capped by
 `MAX_BACKOFF_S`). It has distinct submit
 and cancel lanes: cancel capacity is reserved and has priority, but is still
 bounded. `cancel_all` sends sequentially; transient/429 outcomes retry only
@@ -1449,8 +1474,8 @@ knob because D13 fixes the answer: query, never resend.
   `ServeLoop` itself. Query,
   reconcile and cancel stay available in every rung/breaker/health state.
   A process crash cannot guarantee a `finally` write; startup folds unmatched
-  plans/intents and `tick_start` records into terminal failed/recovered ticks and
-  decisions, preserving recorded findings without rerunning them, before
+  plans/intents and `tick_start` records into terminal `failed` ticks and their
+  decisions (the recovery itself is a `process` record with `recovered`, §6), preserving recorded findings without rerunning them, before
   scheduling new work. Thus every started tick eventually has exactly one terminal
   `tick` and one `decision`, with status `decided | skipped:closed |
   skipped:stale | skipped:skew | skipped:halted | skipped:degraded |
@@ -1477,7 +1502,11 @@ knob because D13 fixes the answer: query, never resend.
   `divergence ∈ {data, nondeterminism, version, guard, state, execution}`;
   markdown and JSON emitters (the `runs.py` pipe-escape rule reused).
 - `readiness.py` (phase 1): a JSON checklist (`item`, `required`, `evidence`,
-  `waiver`) evaluated to GO / NO-GO; NO-GO exits 5. Every live rung requires a
+  `waiver`) evaluated to GO / NO-GO; NO-GO exits 5. The evaluation is appended
+  as a `readiness` record (§6) and barriered, so the GO is durable,
+  release-bound and expiring (`evaluated_at_ms + readiness.valid_for_s`)
+  rather than recomputed at submit time; the action matrix and `ActPermit`
+  read that record, and `ready` journals like every other mutating verb. Every live rung requires a
   current GO record bound to the exact release before arming or submit. Unwaivable
   foundation items include release/runtime verification, executor conformance,
   authenticated execution-scope equality, clean startup reconciliation, fenced
@@ -1485,8 +1514,12 @@ knob because D13 fixes the answer: query, never resend.
 
 ### 5.14 `policy.py` — the cross-cutting invariant matrix
 
-`ActionPolicy`, `TransitionPolicy` and `SubmissionVerifier` are the sole owners of
-the following closed matrices; callers cannot duplicate or extend them by
+`ActionPolicy.permits(operation, risk_effect, rung, breaker, health, readiness,
+authority) -> Decision{allowed, reason}`,
+`TransitionPolicy.permits(from_state, to_state, cause, proof) ->
+Decision{allowed, reason}` and
+`SubmissionVerifier.verify_and_call(intent, permit, native_call) -> Ack` are
+the sole owners of the following closed matrices; callers cannot duplicate or extend them by
 branching. Planning enumerates every cell and refuses any unclassified value.
 
 - **External effects.** Only `query`, `reconcile`, `cancel` and `submit` exist;
@@ -1592,6 +1625,17 @@ an `Executor` can always recover and cancel without knowing the rung. The
 conformance battery runs against the base contract, so a child's venue subclass
 is proven by the same suite that proves `PaperExecutor`.
 
+**Two concepts that look like one.** A guard `Measure` and an operational
+`Monitor` both produce a number from the running system, and an earlier draft
+merged them into one registry. They are not one concept: a `Measure` takes
+`(proposal, AccountState)` and answers at decision time about a single
+candidate; a `Monitor` takes a stream of already-recorded decisions and
+answers over a rolling window. Merging them forces a two-hook interface where
+every implementer must stub the half it cannot answer — interface segregation
+traded away for a smaller registry count. The "one concept, one class" rule
+(§5.15 opening) is about one concept, and this is two; the test that pins the
+ABC list against the registry list is what keeps the distinction visible.
+
 **Where inheritance is deliberately refused.** `RecordedOutputs` substitutes for
 a gate/stat_test node by satisfying that role's planner rules, not by subclassing
 the node it replaces. Children never subclass `ServeLoop`, `GuardChain` or any
@@ -1625,6 +1669,7 @@ sha256-canonical idiom.
 | `order_event` | executor/loop report | `client_ref`, `venue_ref`, `event ∈ {not_sent, ack, reject, fill, partial_fill, cancel, expire, replaced_by_venue, unknown, status}` — `replaced_by_venue` is observed only (D10); no executor verb initiates it, `status`, `venue_ts_ms`, `recv_at_ms`, `reason` |
 | `fill` | execution | the `Fill` record |
 | `outcome` | label arrival / mark / correction | `leg_id`, `kind ∈ {settled, marked, voided, partial, corrected}`, `effective_at_ms`, `known_at_ms`, `value`, `weight`, `terminal`, `supersedes`, `source` |
+| `readiness` | a `ready` evaluation | `release_hash`, `verdict ∈ READINESS_VERDICTS`, `items[]{item, required, evidence, waiver, passed}`, `readiness_digest`, `evaluated_at_ms`, `valid_until_ms` — the durable GO the action matrix reads and `ActPermit` binds; `ready` is the only verb that writes it |
 | `recon` | reconciliation run | `scope`, `ours_digest`, `theirs_digest`, `breaks[]`, `status`, `action` |
 | `trip` | breaker transition, including reduce/reset/halt | `from`, `to`, `reason`, `actor`, `control_request_id`, proof/principal digest, acknowledged trip id, `cancel_outcome` |
 | `adoption` | authenticated venue-break adoption | `control_request_id`, principal/proof digest, named break ids, delta digest, before/after recon ids |
@@ -1678,6 +1723,7 @@ dskit/production/
 │                      RESILIENCE_OUTCOMES (ok|transient|throttled|fatal|ambiguous — distinct from OUTCOME_KINDS),
 │                      RETRY_DECISIONS, JITTER_MODES, RETRY_AFTER_MODES, RETRY_WRITE_MODES, OVERRUN_POLICIES,
 │                      TICK_PHASES (the ten Tick method names, in order), LEG_STEPS (guard|authorize|act),
+│                      WINDOW_KINDS (none|duration|count|calendar) and CALENDAR_WINDOWS (session|day|event),
 │                      READINESS_VERDICTS (go|no_go), METRIC_NAMES + METRIC_LABEL_VALUES (§5.11.1's tables live here,
 │                      not in metrics.py), BREAK_ORIGINS (ours|external),
 │                      AT_TIMES_RELATIVE, CALENDAR_WINDOWS, ON_MISMATCH, RECON_ACTIONS, TRIP_REASONS,
@@ -1750,8 +1796,11 @@ tests/production/
 ├── test_oop.py            §5.15 enforced: every seam ABC has ≥1 @abstractmethod and refuses instantiation; no member of a
 │                          registry-resolved family is instantiated by name outside its registry (composites such as
 │                          GuardChain, AlertRouter, Reconciler, the policies, Checkpoint, Tick and ServeLoop are exempt); ServeLoop/GuardChain/policies are never subclassed in-tree;
+│                          the 20 seam ABCs and the 20 §4.3 registries are pinned against each other, name by name;
 │                          every SubmittingExecutor subclass accepts the base `submit(intent, Permit)` contract (LSP); no class
 │                          both subclasses a seam and reaches a private name of another module
+├── test_base.py           ProductionError accumulates every problem into one raise; canonical_bytes/record_hash pinned against
+│                          the §6 envelope recipe; ms/UTC helpers reject naive datetimes
 ├── test_vocab.py          every vocabulary closed; the severity level map pinned; lattice order pinned; a completeness test scans
 │                          §5–§7 for `∈ {…}` literals and fails if any closed set is not defined in vocab.py
 ├── test_document.py       default-deny; required series UUID/rung/execution scope; arm rung equality; golden identity; non-identity exclusion; round trip
