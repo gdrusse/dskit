@@ -20,9 +20,15 @@ Agent orientation — see README.md for operator commands.
   and this package refuses it.
 - **Decisioning is a journal (ADR-0056).** `journal.json` is the marker.
   Actions append `docs/decisioning/actions.csv`; README is generated.
-  Path to production is owner `journal promote` only. Hooks record
-  pipeline runs and onboarding verbs. `live.main` is wrapped in
-  `production()`. Research writes `docs/research/`.
+  Path and Current Work are human-owner-only. Each Path row has ID, label,
+  purpose, relevant files, and `LOCKED` (`Y`/`N`). The generated README
+  displays the full Path and latest 10 Actions; CSV history is append-only.
+  Hooks record pipeline runs and onboarding verbs. `live.main` is wrapped in
+  `production()`. Research writes `docs/research/` through the CLI.
+- **Standalone explanations live in `docs/explanations/`.** Keep worked
+  child-specific explanations there, separate from research and decisions.
+- **Durable handoffs live in `docs/memos/`.** Keep completed-study evidence,
+  implementation outcomes, and operational caveats there.
 
 ## Invariants
 

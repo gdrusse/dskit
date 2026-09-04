@@ -1,3 +1,4 @@
-id,criteria
-A2822,empirical
-A2850,judgemental
+id,label,purpose,relevant_files,locked,current_work,criteria
+A2822,Gate 1: stock modelability,Lock the stock-modelability selection gate,children/intraday_equities/pipeline_runs/p11-25-asset-modelability-staged-2026-02-28-355b6198/stages/gate1.json; docs/decisioning/framework.md,Y,,empirical
+A2850,Gate 2: HFDR in MIO,Replace the retired Bonferroni screen with an MIO constraint on false-signal gross capital,docs/architecture/decision-log.md#ADR-0088; docs/decisioning/framework.md,Y,,judgemental
+A2851,Gate 3: shuffle refit,Audit Gate-1 selections against a session-scramble refit null,docs/research/gate3-lower-compute-null-design.md; docs/architecture/decision-log.md#ADR-0089,N,Investigating a faster valid shuffle-training solution,empirical

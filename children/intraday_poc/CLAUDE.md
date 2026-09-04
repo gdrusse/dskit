@@ -27,9 +27,15 @@ shape for future children: keep the module set stable
 - **Import = registration**: `intraday_poc/__init__.py` imports `nodes`,
   which registers the kinds (`owned` never set — that is toolkit
   doctrine). `--adapter intraday_poc` is exactly this import.
-- **Decisioning is a journal (ADR-0056).** `live.main` is wrapped in
-  `dskit.journal.hooks.production`. Pipeline/onboarding commands record
-  themselves. Path to production is owner `journal promote` only.
+- **Decisioning is a journal (ADR-0056).** `journal.json` is the walk-up
+  marker. Actions (acquire / research / execute / production) append
+  `docs/decisioning/actions.csv`; README is generated. Path and Current Work
+  are human-owner-only. Every Path row has ID, label, purpose, relevant files,
+  and `LOCKED` (`Y`/`N`). The generated README displays the full Path and
+  latest 10 Actions; CSV history is append-only. Pipeline and onboarding
+  commands record themselves. Research uses `python -m dskit.journal research`
+  (never write `docs/research/` by hand). Wrap `live.main` in
+  `dskit.journal.hooks.production`. An uninitialized child refuses.
 
 ## Layout
 
@@ -49,7 +55,9 @@ configs/            # source-backfill (the ONE source config) / suite-bars /
 tests/              # conftest bootstrap + connectors/nodes/configs suites
 journal.json        # dskit.journal marker (ADR-0056)
 docs/decisioning/   # actions.csv + path.csv; README generated
-docs/research/      # research markdown
+docs/explanations/  # durable explanations; use record-explanation
+docs/memos/         # decision memos; use memo
+docs/research/      # research markdown; use journal research CLI
 pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy/mlflow (run-path)
 .env.example        # Alpaca paper keys — .env is gitignored, never committed
 ```

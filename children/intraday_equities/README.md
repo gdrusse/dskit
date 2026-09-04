@@ -12,7 +12,10 @@ A child consumes dskit, never modifies it. The domain lives in `configs/`.
 Training lock is [`docs/decisioning/framework.md`](docs/decisioning/framework.md)
 (H/L/T/V, holdouts, ensemble, TFT). The process and the action ledger are
 [`docs/decisioning/README.md`](docs/decisioning/README.md) (generated;
-ADR-0056). Path to production is owner `journal promote` only.
+ADR-0056). Path and Current Work are human-owner-only. Every Path row has
+an ID, label, purpose, relevant files, and `LOCKED` (`Y`/`N`); the generated
+README displays the full Path and only the latest 10 Actions. CSV history is
+append-only.
 
 ## Running, end to end
 
@@ -115,6 +118,7 @@ intraday_equities/
 ├── docs/decisioning/    # framework.md + one file per decision
 ├── docs/explanations/   # standalone worked explanations
 ├── docs/memos/          # durable implementation and operational handoffs
+├── docs/research/       # CLI-written research Markdown
 └── tests/
 ```
 
