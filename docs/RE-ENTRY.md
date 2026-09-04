@@ -2,8 +2,19 @@
 
 Current wrap: 2026-09-04. `main` is synchronized with `origin/main`. PR #7
 (the pmquant child) is merged; the staged-study ADR that had also taken the
-number 0075 is now ADR-0081. Last verification: see the end of this file. No
-pipeline is running.
+number 0075 is now ADR-0081. No pipeline is running.
+
+Last verification (all optional libraries installed): Ruff clean; dskit core
++ libs 3739 passed, 124 skipped; pmquant 361 passed, 30 skipped; intraday_poc
+158 passed. Every pre-existing document identity hash is unmoved (218), plus
+pmquant's two. Known failures, none from this wrap: two tests that need a
+non-root user (`test_runs` unlistable dir, `test_mlflow` unwritable parent);
+four `children/intraday_equities/tests/test_configs.py` cases, all about
+`run-p10-modelability.json` — `universe-p10.json` diverges from
+`universe.json`, the document has no `tracking` section, and it reads
+`alpaca-sip-split-b` where the pin expects `alpaca-sip-split`. They fail
+identically on the previous `main`; the P11 session should rule whether the
+pins or the P10 document move.
 
 ## PICK UP HERE: P11 asset-local Gates 1 and 2
 
