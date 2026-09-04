@@ -44,6 +44,7 @@ from .base import (
 from .certify import DECISIONS, certify
 from .connector import (
     DEFAULT_CONNECTORS,
+    MAX_BACKOFF_S,
     MESSAGE_TYPES,
     PROTOCOL,
     RECORD_KINDS,
@@ -78,6 +79,7 @@ __all__ = [
     "DECISIONS",
     "DEFAULT_CONNECTORS",
     "LeadGrid",
+    "MAX_BACKOFF_S",
     "MESSAGE_TYPES",
     "MODES",
     "OnboardingRoot",

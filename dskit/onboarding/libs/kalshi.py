@@ -36,19 +36,19 @@ child normalizes into its own vocabulary):
 **The capture instant.** Rows the venue does not date (``retrieved``,
 ``captured_at``, an open market's listing) are dated at the pull's capture
 instant: the connector clock sampled once per ``read`` and FLOORED TO THE
-MINUTE. The platform stamps ``acquired_at`` just before ``read`` runs and
-refuses an observation dated after it (ADR-0014); a full-precision clock
-read inside ``read`` is always later, and the minute floor keeps the
-capture instant at or before ``acquired_at`` except across a minute
-boundary inside those few milliseconds. One instant per pull also makes a
-pull one capture: two pulls inside a minute collide on their key and the
-later acquisition wins — the designed re-pull behaviour.
+MINUTE. The platform stamps ``acquired_at`` at COMMIT, after ``read`` has
+finished (ADR-0079), so a capture instant inside the pull can never
+post-date it; the minute floor is what makes a pull ONE capture: two
+pulls inside a minute collide on their key and the later acquisition
+wins — the designed re-pull behaviour.
 
 **Transport.** Every request goes through one injectable
 ``getter(url, params) -> dict``; pacing (``pace_s`` between requests), retry
 with exponential backoff on HTTP 429/5xx and network errors (``retries``,
-honoring a numeric ``Retry-After``) and the page walk sit above it, so a
-scripted getter exercises all of them. The default getter is stdlib urllib
+honoring a numeric ``Retry-After``; every single wait is capped at
+``MAX_BACKOFF_S`` seconds, so no server can park a pull for hours) and the
+page walk sit above it, so a scripted getter exercises all of them. The
+default getter is stdlib urllib
 under the ``timeout_s`` knob. No credential: the endpoints are public.
 ``base_url`` moves the host; Kalshi serves the same API from its
 ``external-api`` and ``api.elections`` hosts.
@@ -67,7 +67,7 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 from ..base import AssetError, MODES, parse_utc
-from ..connector import PROTOCOL, Connector
+from ..connector import MAX_BACKOFF_S, PROTOCOL, Connector
 
 __all__ = [
     "CANDLE_FIELDS",
@@ -87,6 +87,7 @@ __all__ = [
     "MARKET_FIELDS",
     "MARKET_KEY_FIELDS",
     "MARKET_STREAM",
+    "MAX_BACKOFF_S",
     "OPEN_STATUS",
     "ORDERBOOK_FIELDS",
     "ORDERBOOK_KEY_FIELDS",
@@ -143,7 +144,7 @@ _STREAMS = {
 STREAMS = tuple(sorted(_STREAMS))
 
 _RETRY_STATUSES = (429, 500, 502, 503, 504)
-#: Backoff base in seconds, doubled per failed attempt.
+#: Backoff base in seconds, doubled per failed attempt up to ``MAX_BACKOFF_S``.
 _BACKOFF_S = 0.5
 _USER_AGENT = "dskit-onboarding"
 #: Candle window when a market's ``open_time`` is missing or unparseable:
@@ -208,13 +209,18 @@ def _quote(segment):
     return urllib.parse.quote(segment, safe="")
 
 
+def _backoff(attempt):
+    """Exponential backoff for the ``attempt``-th failure, capped at ``MAX_BACKOFF_S``."""
+    return min(_BACKOFF_S * 2 ** attempt, MAX_BACKOFF_S)
+
+
 def _retry_after(headers, fallback):
-    """Seconds to wait: a numeric ``Retry-After`` header, else ``fallback``."""
+    """Seconds to wait: a numeric ``Retry-After`` capped at ``MAX_BACKOFF_S``, else ``fallback``."""
     try:
         value = float(headers.get("Retry-After"))
     except (AttributeError, TypeError, ValueError):
         return fallback
-    return max(0.0, value)
+    return min(max(0.0, value), MAX_BACKOFF_S)
 
 
 def _market_row(raw, where):
@@ -388,7 +394,8 @@ class KalshiConnector(Connector):
             },
             "retries": {
                 "notes": "Extra attempts on HTTP 429/5xx and network errors, "
-                         "exponential backoff honoring a numeric Retry-After; "
+                         "exponential backoff honoring a numeric Retry-After, "
+                         f"each wait capped at {MAX_BACKOFF_S} seconds; "
                          f"default {DEFAULT_RETRIES}.",
             },
             "timeout_s": {
@@ -522,10 +529,10 @@ class KalshiConnector(Connector):
                 if exc.code not in _RETRY_STATUSES:
                     raise AssetError([f"Kalshi GET {shown}: HTTP {exc.code}"]) from exc
                 last = f"HTTP {exc.code}"
-                delay = _retry_after(exc.headers, _BACKOFF_S * 2 ** attempt)
+                delay = _retry_after(exc.headers, _backoff(attempt))
             except OSError as exc:
                 last = f"network error: {exc}"
-                delay = _BACKOFF_S * 2 ** attempt
+                delay = _backoff(attempt)
             except ValueError as exc:
                 raise AssetError(
                     [f"Kalshi GET {shown}: response is not JSON: {exc}"]

@@ -595,6 +595,25 @@ def test_retry_backs_off_exponentially_on_5xx_and_network_errors():
     assert sleeps == [0.5, 1.0, 2.0]  # a non-numeric Retry-After falls back
 
 
+def test_retry_after_is_capped_at_max_backoff():
+    conn, script, sleeps = connector({
+        f"/series/{SERIES}": [http_error(429, {"Retry-After": "100000"}), SERIES_BODY]})
+    conn.check(CONFIG)
+    assert len(script.calls) == 2
+    assert sleeps == [kalshi.MAX_BACKOFF_S]
+
+
+def test_exponential_backoff_is_capped_at_max_backoff():
+    # 0.5 * 2**7 = 64 s would be the eighth wait — over the ceiling on the
+    # HTTP path; the ninth (a network error, 128 s) is clamped the same way.
+    conn, script, sleeps = connector({f"/series/{SERIES}": (
+        [http_error(503)] * 8 + [urllib.error.URLError("reset"), SERIES_BODY])})
+    conn.check({**CONFIG, "retries": 9})
+    assert len(script.calls) == 10
+    assert sleeps == [0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0,
+                      kalshi.MAX_BACKOFF_S, kalshi.MAX_BACKOFF_S]
+
+
 def test_retries_exhausted_names_the_url():
     conn, script, sleeps = connector({f"/series/{SERIES}": [http_error(429)] * 3})
     with pytest.raises(AssetError, match=r"giving up.*after 2 attempt") as exc:
@@ -699,8 +718,8 @@ def kalshi_source(registry):
 
 def test_acquisition_repulls_markets_and_dedup_keeps_the_settled_row(
         root, registry, kalshi_source, monkeypatch):
-    # The platform stamps acquired_at just before each read(); the stub
-    # clock moves two days between the pulls, so the stamps follow it.
+    # The platform stamps acquired_at at each pull's commit (ADR-0079); the
+    # stub clock moves two days between the pulls, so the stamps follow it.
     stamps = iter(["2026-09-04T12:00:45+00:00", "2026-09-06T12:00:45+00:00"])
     monkeypatch.setattr(acquire_module, "utc_now", lambda: next(stamps))
 

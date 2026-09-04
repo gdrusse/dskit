@@ -55,6 +55,7 @@ all = [
     "mlflow>=2.9",
     "pyarrow>=15",
     "alpaca-py>=0.44",
+    "huggingface_hub>=0.20",
 ]
 dev = [
     "pytest>=7.4",

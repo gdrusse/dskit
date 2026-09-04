@@ -17,6 +17,10 @@ on it without breaking its rulings (ADR-0012…0016).
   through `durable_write_*` (stage, fsync, rename, fsync dir); the
   checkpoint is saved LAST in `run_acquisition`. Reordering these is a
   correctness bug even when every test still passes.
+- **`acquired_at` is the COMMIT instant** (ADR-0079): `utc_now()` taken
+  after `read()` is exhausted and settled onto the staged rows line by
+  line — a capture stream dating rows at its own clock never races it;
+  only a genuinely future-dated observation refuses.
 - **Declared, never inferred**: mode (`backfill|live`), record kind
   (`observation|forecast`), and certification decisions are closed
   vocabularies stamped as fields. Never derive any of them from dates.
@@ -34,8 +38,9 @@ on it without breaking its rulings (ADR-0012…0016).
   wait; its cursor nests per ticker under the stream key. `libs/kalshi.py`
   is the public-REST shape: its `markets` stream is a deliberate full
   re-pull (settlement lands after close; dedup keeps the latest), and rows
-  the venue does not date are stamped at the pull's capture MINUTE so they
-  never post-date the platform's `acquired_at`.
+  the venue does not date are stamped at the pull's capture MINUTE so two
+  pulls inside a minute collide on their key (`acquired_at` itself is the
+  commit instant, ADR-0079, so a capture instant never post-dates it).
 - **OAuth connectors** — expose `oauth_service(config)` returning
   `OAuth2TokenService`; the CLI stays provider-polymorphic.
 - **Recurring pulls** — call `run_watch`; it repeats `run_acquisition`
@@ -120,6 +125,7 @@ dskit/onboarding/
 ├── publish.py         publish_version — outbox manifests, certification-keyed
 ├── libs/
 │   ├── alpaca.py      Alpaca Market Data stock bars (optional alpaca-py)
+│   ├── alpaca_quotes.py  Alpaca NBBO quotes folded to one bid/ask per minute (stdlib HTTP)
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
 │   ├── localfiles.py  reference connector (stdlib CSV/JSONL)
 │   ├── localtables.py parquet / newline-JSON table directories (ADR-0076)

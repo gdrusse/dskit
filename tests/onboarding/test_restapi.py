@@ -387,3 +387,20 @@ def test_response_shape_errors_named(conn, config):
 
 def test_registered_kind_resolves(conn):
     assert resolve_connector("restapi") is RestApiConnector
+
+
+def test_backoff_never_exceeds_the_shared_ceiling(conn, monkeypatch):
+    # One policy for every pack (connector.MAX_BACKOFF_S): a doubling
+    # backoff that would reach hours is clamped, wait by wait.
+    from dskit.onboarding import MAX_BACKOFF_S
+
+    waits = []
+    monkeypatch.setattr(restapi.time, "sleep", waits.append)
+    script(conn, *([OSError("down")] * 12))
+    with pytest.raises(AssetError):
+        conn._get_json("https://api.example.test/v1/prices", {},
+                       {"max_retries": 11, "timeout": 5}, "prices")
+    assert len(waits) == 11
+    assert waits[:3] == [0.5, 1.0, 2.0]  # the floor doubles until the cap binds
+    assert max(waits) == MAX_BACKOFF_S
+    assert all(w <= MAX_BACKOFF_S for w in waits)

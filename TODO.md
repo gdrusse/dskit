@@ -547,25 +547,28 @@ Found by the pmquant child build (2026-09-04; ADR-0075…0078 landed the
 vendor packs kalshi/polymarket/predexon + `leads.py`, the `localtables`
 connector, the `observations` kind and the public clause DSL):
 
-- [ ] `onboarding/acquire.py` stamps `acquired_at` BEFORE `read()` and refuses
+- [x] `onboarding/acquire.py` stamped `acquired_at` BEFORE `read()` and refused
       any observation dated after it, so a "now"-dated capture stream (Kalshi
-      `orderbooks`/`fee_schedules`, Polymarket `books`) races the stamp; the
-      packs floor their capture instant to the minute as the interim. The fix
-      is the platform's: stamp at commit, or compare against commit time.
+      `orderbooks`/`fee_schedules`, Polymarket `books`) raced the stamp.
+      **Fixed via ADR-0079 (2026-09-04): the stamp is the COMMIT instant,
+      rows are restamped in a bounded second pass; the packs' minute floor
+      stays only to make a pull one capture.**
 - [ ] `libs/torch.py` defaults the optimizer to plain SGD; on the ladder
       transformer that never left the uniform prediction (0.636 = ln 3 / 3
       log-loss at 3, 15 and 40 epochs) until the document declared AdamW.
       Consider whether a declared-model kind should REQUIRE `optimizer`
       rather than default it — a default that silently fails to learn is the
       "approved value the run never uses" shape.
-- [ ] `libs/alpaca_quotes.py` is registered nowhere and absent from the
-      onboarding Contents trees (pre-existing; noticed while syncing them).
-- [ ] The `polymarket` extra (`huggingface_hub`, `pyarrow`) exists; the
-      `all` extra does not yet carry `huggingface_hub`.
-- [ ] `libs/kalshi.py` / `libs/predexon.py` honor a numeric `Retry-After`
-      UNCAPPED (a hostile header sleeps arbitrarily); `libs/polymarket.py`
-      caps at `MAX_BACKOFF_S = 60`. Needs one cap constant or knob across the
-      three packs (skeptic review, 2026-09-04).
+- [x] `libs/alpaca_quotes.py` was registered nowhere and absent from the
+      onboarding Contents trees. **Registered as `alpaca_quotes` and added to
+      the trees and the registry pin (2026-09-04).**
+- [x] The `polymarket` extra (`huggingface_hub`, `pyarrow`) exists; the
+      `all` extra did not carry `huggingface_hub`. **Done (2026-09-04); the
+      real `download()` body is now exercised offline and was probed once
+      against the live dataset (anonymous, the small `meta/` object).**
+- [x] `libs/kalshi.py` / `libs/predexon.py` honored a numeric `Retry-After`
+      UNCAPPED. **One name now: `connector.MAX_BACKOFF_S` (60 s) caps every
+      single wait in all three packs, pinned by identity (2026-09-04).**
 - [ ] `libs/polymarket.py` `slugs` lookup: a CLOSED market whose `end_date`
       is still ahead (early resolution) is an observation dated in the
       future, which the platform refuses. The record kind is declared by the
@@ -576,10 +579,16 @@ connector, the `observations` kind and the public clause DSL):
       venue fee on the total at VWAP (under-bills multi-level fills by
       rate·n·Var(p)); and four frozen panel tail features see the event's
       EVENTUAL rung set. Both change frozen recipes — ADR first.
+- [ ] `assets/base.py` `utc_now` is second-TRUNCATED, so under ADR-0079 an
+      observation dated at full precision inside the commit second would
+      still refuse; no shipped connector dates rows that way (they floor to
+      the minute or carry the venue's stamp). Widen the stamp's precision
+      only with the WORM/acq_id consequences worked through (skeptic
+      review, round 2, 2026-09-04).
 - [ ] `tests/onboarding/test_connector.py::test_resolve_registered_kind`
-      is now a hand-kept list of the eight kinds; deriving it from
-      `DEFAULT_CONNECTORS` would remove the pin, keeping it means adding
-      every new pack there too.
+      is a hand-kept list of the nine kinds (a deliberate restatement);
+      deriving it from `DEFAULT_CONNECTORS` would remove the pin, keeping
+      it means adding every new pack there too.
 
 Found by the first real-data run of `children/intraday_poc` (2026-08-26) —
 reclassified generic by the owner (generic-first: children are wrappers):

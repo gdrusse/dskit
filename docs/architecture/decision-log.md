@@ -3702,3 +3702,27 @@ spellings are gone. Behavior is unchanged.
 
 **Consequences.** The fee book imports the rule and can never drift
 from `derive`.
+
+---
+
+## ADR-0079 — `acquired_at` is the commit instant
+
+**Status:** proposed (2026-09-04; bug-fix amendment to ADR-0014)
+
+**Context.** `run_acquisition` stamped `acquired_at = utc_now()` (second
+precision) BEFORE `read()` and refused any observation dated after it. A
+capture stream that dates rows "now" inside `read()` (order books, fee
+schedules, any live recorder) raced the stamp: a row dated one second later
+was refused, and every real pull failed until the packs floored their
+capture instant to the minute — a workaround, still lost across a boundary.
+
+**Decision.** The stamp is taken AFTER the read loop — the commit instant.
+Rows stage under a provisional stamp and are rewritten line by line (the
+single-copy memory contract holds); the ADR-0014 assertion compares the
+latest-dated observation against the commit instant and refuses by message
+index. Every row, the manifest, the registered `snapshot` record and, via
+the `acq_id`, the job name and the journal row carry that one stamp.
+Nothing else changes: `effective_date <= acquired_at` stays exactly true.
+
+**Consequences.** A live capture stream needs no floored clock; a genuinely
+future-dated observation still refuses, naming the message.

@@ -178,3 +178,24 @@ def test_acquisition_commits_repeated_overlap_as_new_evidence(
 
     assert first["records"] == second["records"] == 2
     assert first["snapshot"] != second["snapshot"]
+
+
+def test_backoff_never_exceeds_the_shared_ceiling(monkeypatch):
+    # One policy for every pack (connector.MAX_BACKOFF_S): a doubling
+    # backoff that would reach hours is clamped, wait by wait.
+    from dskit.onboarding import MAX_BACKOFF_S
+
+    waits = []
+    monkeypatch.setattr(schwab.time, "sleep", waits.append)
+    connector = SchwabBarsConnector()
+
+    def _down(token, symbol, params, timeout):
+        raise OSError("down")
+
+    connector._fetch = _down
+    with pytest.raises(AssetError, match="attempt"):
+        connector._get_json("tok", "AAPL", {}, {"max_retries": 11, "timeout": 5})
+    assert len(waits) == 11
+    assert waits[:3] == [0.5, 1.0, 2.0]
+    assert max(waits) == MAX_BACKOFF_S
+    assert all(w <= MAX_BACKOFF_S for w in waits)

@@ -23,7 +23,12 @@ overrides them (``run_acquisition`` instantiates the class itself, so a
 script must live on a subclass; ``tests/onboarding/test_polymarket.py``
 is the worked double). The defaults are stdlib urllib and
 ``huggingface_hub.hf_hub_download``; the hub client and pyarrow are
-imported only inside ``read``.
+imported only inside ``read``. An archive hour file is ~360 MB, so it is
+filtered in Arrow batches, never loaded whole, and deleted once read
+(``cleanup`` removes the cache symlink AND its blob). The archive is
+public: a token is optional, read from the environment at pull time
+(``token_env``), handed to the hub, and never written into a record, a
+log line or an error.
 
 Two checkpoint choices differ from a market's "natural" key and are
 deliberate. First, an ``events`` row is stamped ``effective_date =
@@ -39,14 +44,14 @@ statement about the future, so it is emitted ``kind: "forecast"``
 (declared by the venue's own flag, never by date arithmetic), never
 advances the cursor, and is re-emitted on every pull.
 
-**The capture instant.** The platform stamps ``acquired_at`` (second
-precision) just before ``read`` runs and refuses an observation dated
-after it; a clock read inside ``read`` is always later. So a row the
-venue does not date (a fee regime's ``retrieved``, a book the CLOB did
-not stamp) is dated at ``now`` FLOORED TO THE MINUTE, and a book the CLOB
-stamped inside that minute keeps its stamp as ``ts`` (the key, the
-venue's truth) but is dated at the capture minute too. The floor holds
-except across a minute boundary inside those few milliseconds.
+**The capture instant.** A row the venue does not date (a fee regime's
+``retrieved``, a book the CLOB did not stamp) is dated at ``now`` FLOORED
+TO THE MINUTE, and a book the CLOB stamped inside that minute keeps its
+stamp as ``ts`` (the key, the venue's truth) but is dated at the capture
+minute too. The floor makes a pull one capture (two pulls inside a minute
+collide on their key; the later acquisition wins); it is no longer what
+keeps rows before ``acquired_at`` — the platform stamps that at COMMIT,
+after ``read`` has finished (ADR-0079).
 
 Import cost: stdlib.
 """
@@ -54,6 +59,7 @@ Import cost: stdlib.
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 import urllib.error
@@ -62,7 +68,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 from ..base import AssetError, MODES, parse_utc
-from ..connector import PROTOCOL, Connector
+from ..connector import MAX_BACKOFF_S, PROTOCOL, Connector
 
 __all__ = [
     "ARCHIVE_EVENT_TYPES",
@@ -147,8 +153,6 @@ DEFAULT_HF_REPO = "phobia76/pmxt-l2-dump"
 DEFAULT_HF_PATH_PATTERN = "hours/%Y/%m/%d/polymarket_orderbook_%Y-%m-%dT%H.parquet"
 DEFAULT_TOKEN_ENV = "HF_TOKEN"
 DEFAULT_CLEANUP = True
-#: Ceiling on any single wait — a server-sent Retry-After included.
-MAX_BACKOFF_S = 60.0
 
 _RETRY_STATUSES = (429, 500, 502, 503, 504)
 _BACKOFF_S = 0.5
@@ -285,6 +289,10 @@ def _retry_after(headers):
     try:
         seconds = float(value)
     except (TypeError, ValueError):
+        return None
+    if math.isnan(seconds):
+        # float() accepts "nan", and max/min pass a NaN straight through
+        # to time.sleep (a ValueError, not a capped wait): unusable.
         return None
     return min(max(seconds, 0.0), MAX_BACKOFF_S)
 
@@ -662,12 +670,13 @@ class PolymarketConnector(Connector):
             },
             "token_env": {
                 "secret": True,
-                "notes": "Environment-variable NAME holding a hub token; default "
-                         f"{DEFAULT_TOKEN_ENV}. Optional: unset means anonymous.",
+                "notes": "Environment-variable NAME holding a hub token, read at pull "
+                         f"time; default {DEFAULT_TOKEN_ENV}. Optional: the archive is "
+                         "public, so unset means anonymous.",
             },
             "cleanup": {
-                "notes": f"Delete each hour file after filtering; default "
-                         f"{DEFAULT_CLEANUP}.",
+                "notes": "Delete each hour file (~360 MB; the cache symlink and its "
+                         f"blob) after filtering; default {DEFAULT_CLEANUP}.",
             },
             "gamma_url": {
                 "notes": f"Gamma API root; default {DEFAULT_GAMMA_URL}.",
@@ -684,8 +693,8 @@ class PolymarketConnector(Connector):
             },
             "retries": {
                 "notes": "Extra attempts on 429/5xx and network faults, with "
-                         f"backoff honoring a numeric Retry-After; default "
-                         f"{DEFAULT_RETRIES}.",
+                         "backoff honoring a numeric Retry-After, every wait "
+                         f"capped at {MAX_BACKOFF_S:g} s; default {DEFAULT_RETRIES}.",
             },
             "pace_s": {
                 "notes": f"Seconds between consecutive requests; default "
@@ -913,28 +922,45 @@ class PolymarketConnector(Connector):
         Returns
         -------
         str or None
-            Local path of the downloaded file, or ``None`` when the
-            repository holds no such file.
+            Local path of the downloaded file (a hub-cache symlink into
+            the blob store), or ``None`` when the repository holds no
+            such file.
 
         Raises
         ------
         AssetError
-            When ``huggingface_hub`` is not installed.
+            When ``huggingface_hub`` is not installed, when the hub is
+            unreachable and the file is not cached (never ``None`` — an
+            outage is not an absent hour), or when the hub refuses the
+            request. The token is never in the text.
         """
         try:
             from huggingface_hub import hf_hub_download
-            from huggingface_hub.utils import EntryNotFoundError
+            from huggingface_hub.utils import (
+                EntryNotFoundError,
+                HfHubHTTPError,
+                LocalEntryNotFoundError,
+            )
         except ImportError as exc:
             raise AssetError(
                 [f"stream {ARCHIVE_STREAM!r} needs the optional huggingface_hub "
                  "package to fetch the archive (pip install huggingface_hub); it is "
                  "imported only here, so every other stream works without it"]
             ) from exc
+        label = f"stream {ARCHIVE_STREAM!r}: {path} in {repo}"
         try:
             return hf_hub_download(repo_id=repo, filename=path, repo_type="dataset",
                                    token=token)
+        except LocalEntryNotFoundError as exc:  # before EntryNotFoundError: it IS one
+            raise AssetError(
+                [f"{label}: the hub is unreachable and the file is not cached — the "
+                 "hour may well exist, so check the connection rather than stepping "
+                 "over it"]
+            ) from exc
         except EntryNotFoundError:
             return None
+        except HfHubHTTPError as exc:
+            raise AssetError([f"{label}: the hub refused the request — {exc}"]) from exc
 
     def sleep(self, seconds):
         """Wait ``seconds``; pacing and backoff both come through here.
@@ -1112,9 +1138,9 @@ class PolymarketConnector(Connector):
         for row in rows:
             if cursor_ms is not None and row["ts"] <= cursor_ms:
                 continue
-            # ts stays the venue's stamp (the key); the effective date may
-            # not pass the platform's acquired_at, so it is capped at the
-            # capture minute (module docs).
+            # ts stays the venue's stamp (the key); the effective date is
+            # capped at the capture minute so one pull is one capture
+            # (module docs) — acquired_at itself is the commit instant.
             effective = _iso_ms(min(row["ts"], capture_ms))
             yield _record(BOOKS_STREAM, effective, "observation", row)
             if emitted_ms is None or row["ts"] > emitted_ms:

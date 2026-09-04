@@ -622,6 +622,22 @@ def test_429_without_retry_after_backs_off_from_the_floor(conn, getter, sleeper,
     assert sleeper.calls == [1.5, 3.0]  # floor * 2**(attempt-1); a non-numeric header falls back
 
 
+def test_429_retry_after_is_capped_at_max_backoff(conn, getter, sleeper, env):
+    config = {**CONFIG, "min_interval_s": 0, "tickers": [TICKER]}
+    getter.script(query(TICKER), (429, {"Retry-After": "100000"}, {}), page([snap(TS1, 1)]))
+    assert len(_records(_read(conn, config))) == 1
+    assert len(getter.calls) == 2
+    assert sleeper.calls == [predexon.MAX_BACKOFF_S]
+
+
+def test_backoff_doubling_is_capped_at_max_backoff(conn, getter, sleeper, env):
+    # The default floor doubles past the ceiling on the sixth failure (2 * 2**5 = 64).
+    config = {**CONFIG, "min_interval_s": 0, "retries": 8, "tickers": [TICKER]}
+    getter.script(query(TICKER), *([(503, {}, {})] * 6), page([snap(TS1, 1)]))
+    assert len(_records(_read(conn, config))) == 1
+    assert sleeper.calls == [2.0, 4.0, 8.0, 16.0, 32.0, predexon.MAX_BACKOFF_S]
+
+
 def test_429_exhausts_the_retries_budget(conn, getter, sleeper, env):
     config = {**CONFIG, "min_interval_s": 0, "retries": 2, "tickers": [TICKER]}
     getter.script(query(TICKER), (429, {}, {}), (429, {}, {}))

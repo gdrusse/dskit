@@ -55,6 +55,7 @@ from .codec import storage_problems
 __all__ = [
     "Connector",
     "DEFAULT_CONNECTORS",
+    "MAX_BACKOFF_S",
     "MESSAGE_TYPES",
     "MODES",
     "PROTOCOL",
@@ -75,11 +76,17 @@ MESSAGE_TYPES = ("RECORD", "STATE", "SCHEMA", "LOG", "ERROR")
 #: mirroring the mode ruling: segregation is never date arithmetic.
 RECORD_KINDS = ("observation", "forecast")
 
+#: The ceiling, in seconds, any pack applies to a SINGLE wait — its own
+#: exponential backoff and a server-sent ``Retry-After`` included. A hostile
+#: or buggy server may ask for hours; a pull never grants more than this.
+MAX_BACKOFF_S = 60.0
+
 #: Registered connector kinds -> import references. Tier-2 connector
 #: packs add entries here; a project's own connectors use
 #: ``pkg.module:Class`` directly and register nothing.
 DEFAULT_CONNECTORS = {
     "alpaca": "dskit.onboarding.libs.alpaca:AlpacaBarsConnector",
+    "alpaca_quotes": "dskit.onboarding.libs.alpaca_quotes:AlpacaQuoteMinutesConnector",
     "kalshi": "dskit.onboarding.libs.kalshi:KalshiConnector",
     "localfiles": "dskit.onboarding.libs.localfiles:LocalFilesConnector",
     "localtables": "dskit.onboarding.libs.localtables:LocalTablesConnector",

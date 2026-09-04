@@ -11,7 +11,9 @@ the assets engine reused as a library, kinds as config.
 Two axes ride on every record: `(effective_date, acquired_at)` — what
 time the data *describes* vs when you *got* it — and **mode**
 (`backfill` | `live`), a declared field with per-(source, stream, mode)
-checkpoint cursors, never an inference from dates.
+checkpoint cursors, never an inference from dates. `acquired_at` is the
+pull's COMMIT instant — stamped after `read()` finishes (ADR-0079), so a
+connector may date a live capture at its own clock, unfloored.
 
 For sparse backfills over units × periods (tickers × days, stations ×
 months) the **coverage ledger** (ADR-0030) is the finer primitive: a
@@ -275,6 +277,7 @@ dskit/onboarding/
 ├── publish.py         publish_version: pointer manifest into the outbox
 ├── libs/
 │   ├── alpaca.py      Alpaca Market Data stock bars (optional alpaca-py)
+│   ├── alpaca_quotes.py  Alpaca NBBO quotes folded to one bid/ask per minute (stdlib HTTP)
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
 │   ├── localfiles.py  reference connector: CSV/JSONL directories (stdlib)
 │   ├── localtables.py parquet / newline-JSON table directories (pyarrow inside verbs, ADR-0076)

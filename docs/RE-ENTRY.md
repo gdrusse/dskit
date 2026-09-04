@@ -22,6 +22,16 @@ tonight and are written into the child's CLAUDE.md: declare
 list every sized series in `fee_rate_by_series` (fail-closed). Journal:
 `children/pmquant/docs/decisioning/actions.csv` holds every execution of
 the build. Follow-ups: `TODO.md` "Found by the pmquant child build".
+**Round 2 (same day, same branch):** the build's open TODOs closed —
+`acquired_at` is the COMMIT instant (ADR-0079; a live capture stream no
+longer races the stamp), one `connector.MAX_BACKOFF_S` caps every wait in
+all five REST packs (pinned by identity), the Polymarket Hugging Face
+archive path is exercised for real (`huggingface_hub` installed; a hub
+outage no longer reads as an absent hour; probed live against the small
+`meta/` object of `phobia76/pmxt-l2-dump`), `alpaca_quotes` registered,
+the `all` extra carries `huggingface_hub`. Still owner rulings: the torch
+pack's SGD default, Polymarket early resolution, the two child recipe
+items, and `utc_now`'s second truncation.
 
 ---
 

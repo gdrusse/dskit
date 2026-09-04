@@ -16,10 +16,11 @@ What the pack decides, and why:
   moving-deadline limiter spaces EVERY attempt, retries included; the
   first call never waits and work done between calls is credited.
 - 429s honour a numeric ``Retry-After`` and otherwise back off from a
-  declared floor, doubling; server faults get a floor on attempts because
-  the vendor's 5xx bursts outlast a three-try budget; other 4xx refuse at
-  once, naming the URL and status. The key travels in a header, never in
-  the URL, so no error message can carry it.
+  declared floor, doubling, and no single wait — the header's ask
+  included — exceeds ``MAX_BACKOFF_S`` seconds; server faults get a floor
+  on attempts because the vendor's 5xx bursts outlast a three-try budget;
+  other 4xx refuse at once, naming the URL and status. The key travels in
+  a header, never in the URL, so no error message can carry it.
 - Pagination follows ``pagination_key`` while ``has_more``. ``has_more``
   with a null key and an exhausted ``max_pages`` both LOG and stop — never
   loop — and the cursor covers what was fetched, so the next pull resumes
@@ -55,7 +56,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 from ..base import AssetError, MODES, parse_utc
-from ..connector import PROTOCOL, Connector
+from ..connector import MAX_BACKOFF_S, PROTOCOL, Connector
 
 __all__ = [
     "DEFAULT_BASE_URL",
@@ -71,6 +72,7 @@ __all__ = [
     "L2_KEY_FIELDS",
     "L2_STREAM",
     "LIMIT_BOUNDS",
+    "MAX_BACKOFF_S",
     "ORDERBOOKS_PATH",
     "SERVER_FAULT_ATTEMPTS_FLOOR",
     "PredexonConnector",
@@ -379,11 +381,11 @@ def _excerpt(body, secret):
 
 
 def _retry_after(headers):
-    """Return the seconds a numeric ``Retry-After`` header asks for, else ``None``."""
+    """Seconds a numeric ``Retry-After`` asks for, capped at ``MAX_BACKOFF_S``; else ``None``."""
     for name, value in headers.items():
         if str(name).lower() == _RETRY_AFTER_HEADER:
             try:
-                return max(0.0, float(value))
+                return min(max(0.0, float(value)), MAX_BACKOFF_S)
             except (TypeError, ValueError):
                 return None
     return None
@@ -533,7 +535,8 @@ class PredexonConnector(Connector):
             "retry_floor_s": {
                 "notes": "First backoff in seconds, doubling per attempt; "
                          f"default {DEFAULT_RETRY_FLOOR_S}. A numeric "
-                         "Retry-After on a 429 overrides it.",
+                         "Retry-After on a 429 overrides it; either way one "
+                         f"wait is capped at {MAX_BACKOFF_S} seconds.",
             },
             "max_pages": {
                 "notes": "Pages followed per ticker per pull; default "
@@ -938,5 +941,5 @@ def _iso_problems(name, value):
 
 
 def _backoff(knobs, attempt):
-    """Return the backoff after the ``attempt``-th failure: the floor, doubled per attempt."""
-    return knobs["retry_floor_s"] * (2 ** (attempt - 1))
+    """Backoff after the ``attempt``-th failure: the floor, doubled per attempt, capped."""
+    return min(knobs["retry_floor_s"] * (2 ** (attempt - 1)), MAX_BACKOFF_S)

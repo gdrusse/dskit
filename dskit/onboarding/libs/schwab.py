@@ -18,7 +18,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 from ..base import AssetError, MODES, parse_utc
-from ..connector import PROTOCOL, Connector
+from ..connector import MAX_BACKOFF_S, PROTOCOL, Connector
 from ..oauth import OAuth2TokenService
 from .alpaca import BAR_FIELDS, BAR_KEY_FIELDS, BAR_STREAM
 
@@ -134,7 +134,8 @@ class SchwabBarsConnector(Connector):
             },
             "max_retries": {
                 "notes": "Extra attempts on throttling, server, and network "
-                         f"failures; default {_DEFAULT_MAX_RETRIES}.",
+                         f"failures, every wait capped at {MAX_BACKOFF_S:g} s; "
+                         f"default {_DEFAULT_MAX_RETRIES}.",
             },
         }}
 
@@ -332,7 +333,7 @@ class SchwabBarsConnector(Connector):
         params = {"symbol": symbol, **params}
         for attempt in range(knobs["max_retries"] + 1):
             if attempt:
-                time.sleep(_BACKOFF_SECONDS * (2 ** (attempt - 1)))
+                time.sleep(min(_BACKOFF_SECONDS * (2 ** (attempt - 1)), MAX_BACKOFF_S))
             try:
                 return self._fetch(token, symbol, params, knobs["timeout"])
             except (ConnectionError, OSError) as exc:

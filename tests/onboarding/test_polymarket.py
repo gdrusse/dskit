@@ -34,6 +34,7 @@ from dskit.onboarding.libs.polymarket import (
     PolymarketConnector,
     fee_rate_of,
 )
+from dskit.onboarding.state import load_state
 
 GAMMA = "https://gamma-api.polymarket.com/events"
 CLOB = "https://clob.polymarket.com/books"
@@ -765,6 +766,169 @@ def test_archive_without_the_hub_client_refuses_by_name(monkeypatch):
     monkeypatch.setitem(sys.modules, "huggingface_hub", None)  # import -> ImportError
     with pytest.raises(AssetError, match="huggingface_hub"):
         list(PolymarketConnector().read(ARCHIVE_CONFIG, ["archive_hours"], {}, "backfill"))
+    with pytest.raises(AssetError, match="huggingface_hub"):
+        PolymarketConnector().download("r/x", HOUR_PATH, None)
+
+
+def test_default_archive_coordinates_render_the_real_hub_layout():
+    # A deliberate restatement of the hub tree as listed on 2026-09-04 —
+    # never derived from the pattern under test.
+    hour = datetime(2026, 8, 10, 0, tzinfo=UTC)
+    assert hour.strftime(polymarket.DEFAULT_HF_PATH_PATTERN) == (
+        "hours/2026/08/10/polymarket_orderbook_2026-08-10T00.parquet")
+    assert polymarket.DEFAULT_HF_REPO == "phobia76/pmxt-l2-dump"
+
+
+def test_archive_streams_batches_and_never_reads_an_hour_whole(conn, monkeypatch, tmp_path):
+    # An hour file is ~360 MB: rows must stream out of ParquetFile.iter_batches
+    # before the next batch exists, and the file is never read() whole.
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    path = str(tmp_path / "hour.parquet")
+    pq.write_table(pa.table({
+        "asset_id": ["tokA", "tokB", "tokA", "tokB"],
+        "timestamp": [T1_MS, T1_MS + 1, T1_MS + 2, T1_MS + 3],
+        "event_type": ["book"] * 4, "bids": ["[]"] * 4, "asks": ["[]"] * 4,
+        "price": [None] * 4, "size": [None] * 4, "side": [None] * 4,
+    }), path)
+    produced = []
+    iter_batches = pq.ParquetFile.iter_batches
+
+    def spying_iter_batches(self, *args, **kwargs):
+        for batch in iter_batches(self, *args, **kwargs):
+            produced.append(batch.num_rows)
+            yield batch
+
+    monkeypatch.setattr(pq.ParquetFile, "iter_batches", spying_iter_batches)
+    monkeypatch.setattr(pq.ParquetFile, "read",
+                        lambda self, *a, **k: pytest.fail("the hour file was read whole"))
+    monkeypatch.setattr(polymarket, "_ARCHIVE_BATCH_ROWS", 2)  # two batches of two rows
+    conn.script["download"] = _serve({("r/x", HOUR_PATH): path})
+    messages = conn.read({**ARCHIVE_CONFIG, "cleanup": False}, ["archive_hours"], {}, "backfill")
+    assert next(messages)["type"] == "SCHEMA"
+    first = next(messages)
+    assert first["data"]["ts"] == T1_MS and produced == [2]  # out before batch two is read
+    rest = list(messages)
+    assert [m["data"]["ts"] for m in _records(rest)] == [T1_MS + 2] and produced == [2, 2]
+
+
+def test_cleanup_removes_the_cache_link_and_its_blob(conn, write_parquet, tmp_path):
+    # hf_hub_download returns a snapshot SYMLINK into the blob store, so a
+    # cleanup that unlinked only the returned path would leave ~360 MB behind.
+    blob = write_parquet("blob.parquet", {
+        "asset_id": ["tokB"], "timestamp": [T1_MS], "event_type": ["book"],
+        "bids": ["[]"], "asks": ["[]"], "price": [None], "size": [None], "side": [None],
+    })
+    link = str(tmp_path / "link.parquet")
+    os.symlink(blob, link)
+    conn.script["download"] = _serve({("r/x", HOUR_PATH): link})
+    _archive_records(conn, {**ARCHIVE_CONFIG, "cleanup": False})
+    assert os.path.lexists(link) and os.path.exists(blob)
+    _archive_records(conn, ARCHIVE_CONFIG)  # cleanup default: True
+    assert not os.path.lexists(link) and not os.path.exists(blob)
+
+
+# -- the real download(): the hub client under the seam ----------------------
+
+
+def _hub_double(monkeypatch, outcome):
+    """Script the real ``download()``'s ``hf_hub_download``; return its kwargs log.
+
+    ``outcome`` is returned, or raised when it is an exception. Keyword-only,
+    so a positional call from the pack is a TypeError here.
+    """
+    hub = pytest.importorskip("huggingface_hub")
+    calls = []
+
+    def fake_hf_hub_download(**kwargs):
+        calls.append(kwargs)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(hub, "hf_hub_download", fake_hf_hub_download)
+    return calls
+
+
+def _hub_http_error(status, message):
+    """A real ``HfHubHTTPError``, as the hub raises it on a refused request."""
+    httpx = pytest.importorskip("httpx")
+    utils = pytest.importorskip("huggingface_hub.utils")
+    response = httpx.Response(status, request=httpx.Request("GET", "https://huggingface.co/x"))
+    return utils.HfHubHTTPError(message, response=response)
+
+
+def test_download_passes_the_dataset_coordinates_and_the_token(monkeypatch, tmp_path):
+    local = str(tmp_path / "hour.parquet")
+    calls = _hub_double(monkeypatch, local)
+    conn = PolymarketConnector()  # the real body, no override
+    assert conn.download("r/x", HOUR_PATH, "hf_SECRET") == local
+    assert conn.download("r/x", HOUR_PATH, None) == local
+    assert calls == [
+        {"repo_id": "r/x", "filename": HOUR_PATH, "repo_type": "dataset", "token": "hf_SECRET"},
+        {"repo_id": "r/x", "filename": HOUR_PATH, "repo_type": "dataset", "token": None},
+    ]
+
+
+def test_download_maps_a_missing_entry_to_none_but_refuses_offline_and_http_faults(monkeypatch):
+    utils = pytest.importorskip("huggingface_hub.utils")
+    conn = PolymarketConnector()
+    _hub_double(monkeypatch, utils.EntryNotFoundError("no such file"))
+    assert conn.download("r/x", HOUR_PATH, None) is None
+
+    # LocalEntryNotFoundError IS an EntryNotFoundError, but it means the hub
+    # was unreachable and nothing is cached — not that the hour is absent,
+    # so it must never answer None (the LOG would say "step over it").
+    _hub_double(monkeypatch, utils.LocalEntryNotFoundError("connection error"))
+    with pytest.raises(AssetError, match="unreachable") as exc:
+        conn.download("r/x", HOUR_PATH, None)
+    assert HOUR_PATH in str(exc.value)
+
+    _hub_double(monkeypatch, _hub_http_error(401, "401 Client Error: Unauthorized"))
+    with pytest.raises(AssetError, match="401") as exc:
+        conn.download("r/x", HOUR_PATH, "hf_SECRET")
+    assert "r/x" in str(exc.value) and HOUR_PATH in str(exc.value)
+    assert "hf_SECRET" not in str(exc.value)
+
+
+def test_download_maps_the_hubs_own_404_to_none(monkeypatch):
+    # What hub 1.x actually raises for a missing file is
+    # RemoteEntryNotFoundError — an HfHubHTTPError AND an EntryNotFoundError
+    # — so the EntryNotFoundError clause must come BEFORE the HfHubHTTPError
+    # one. The bare base class scripted above is not an HfHubHTTPError and
+    # would pass with the two clauses swapped, turning every absent hour
+    # into a refusal.
+    errors = pytest.importorskip("huggingface_hub.errors")
+    httpx = pytest.importorskip("httpx")
+    response = httpx.Response(404, request=httpx.Request("GET", "https://huggingface.co/x"))
+    missing = errors.RemoteEntryNotFoundError("404 Client Error: Entry Not Found",
+                                              response=response)
+    assert isinstance(missing, errors.HfHubHTTPError)  # the order this pins
+    _hub_double(monkeypatch, missing)
+    assert PolymarketConnector().download("r/x", HOUR_PATH, None) is None
+
+
+def test_token_is_read_at_pull_time_and_never_written_anywhere(monkeypatch, write_parquet):
+    served = write_parquet("hour.parquet", {
+        "asset_id": ["tokA"], "timestamp": [T1_MS], "event_type": ["book"],
+        "bids": ["[]"], "asks": ["[]"], "price": [None], "size": [None], "side": [None],
+    })
+    calls = _hub_double(monkeypatch, served)
+    monkeypatch.setenv("MY_HF", "hf_SECRET")
+    config = {**ARCHIVE_CONFIG, "token_env": "MY_HF", "cleanup": False}
+    msgs = _read(PolymarketConnector(), config, ["archive_hours"])  # the real download()
+    assert calls[0]["token"] == "hf_SECRET"  # reaches the hub ...
+    assert len(_records(msgs)) == 1
+    assert "hf_SECRET" not in json.dumps(msgs)  # ... and nothing else: no record, log or state
+
+    monkeypatch.setenv("MY_HF", "hf_ROTATED")  # read at each pull, never cached
+    _read(PolymarketConnector(), config, ["archive_hours"])
+    assert calls[1]["token"] == "hf_ROTATED"
+
+    _hub_double(monkeypatch, _hub_http_error(403, "403 Client Error: Forbidden"))
+    with pytest.raises(AssetError) as exc:
+        list(PolymarketConnector().read(config, ["archive_hours"], {}, "backfill"))
+    assert "hf_ROTATED" not in str(exc.value) and "hf_ROTATED" not in repr(exc.value)
 
 
 # -- retry, backoff, pacing -------------------------------------------------
@@ -816,6 +980,25 @@ def test_retry_after_is_capped_and_non_numeric_falls_back(conn):
     assert ScriptedPolymarket.sleeps == [polymarket.MAX_BACKOFF_S, 1.0]
 
 
+def test_retry_after_nan_is_unusable_and_falls_back(conn):
+    # float("nan") parses, and min(max(nan, 0.0), cap) is still NaN — so
+    # without the guard the wait reached time.sleep as NaN: a ValueError,
+    # neither capped nor an AssetError. Unusable means the exponential
+    # backoff, exactly like a non-numeric header.
+    assert polymarket._retry_after({"Retry-After": "nan"}) is None
+    queue = [_http_error(429, {"Retry-After": "nan"}), []]
+
+    def flaky(url, params):
+        item = queue.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    conn.script["get"] = flaky
+    conn.check({})
+    assert ScriptedPolymarket.sleeps == [0.5]
+
+
 def test_requests_are_paced_between_calls_not_before_the_first(conn):
     conn.script["get"] = _gamma_pages
     _read(conn, {**EVENTS_CONFIG, "pace_s": 0.1}, ["events"])
@@ -855,3 +1038,41 @@ def test_acquisition_commits_one_books_snapshot(root, registry, monkeypatch):
     assert first["state_saved"]
     caught_up = run_acquisition(root, registry, "poly", "books", "live")
     assert caught_up["records"] == 0 and caught_up["snapshot"] is None
+
+
+def test_acquisition_walks_two_archive_hours_and_stops_at_a_missing_one(
+        root, registry, write_parquet):
+    hours = [f"2026-03-01T{h:02d}:00:00+00:00" for h in (10, 11, 12)]
+    paths = {h: f"hours/2026/03/01/polymarket_orderbook_2026-03-01T{h:02d}.parquet"
+             for h in (10, 11, 12)}
+    files = {("r/x", paths[h]): write_parquet(f"h{h}.parquet", {
+        "asset_id": ["tokA", "tokB", "tokA"],
+        "timestamp": [T1_MS + h, T1_MS + h + 1, T1_MS + h + 2],
+        "event_type": ["book", "book", "price_change"],
+        "bids": ["[]", "[]", None], "asks": ["[]", "[]", None],
+        "price": [None, None, "0.5"], "size": [None, None, "1"], "side": [None, None, "BUY"],
+    }) for h in (10, 11)}  # hour 12 absent
+    ScriptedPolymarket.script = {"get": lambda url, params: [{"id": "ping"}],
+                                 "download": _serve(files)}
+    version = registry.register("source_config", {
+        "name": "poly",
+        "catalog_source": "poly-source",
+        "connector": "tests.onboarding.test_polymarket:ScriptedPolymarket",
+        "config": {"token_ids": ["tokA"], "hours": hours, "hf_repo": "r/x"},
+    }, origin="test")
+    registry.transition(version, "active", origin="test")
+
+    first = run_acquisition(root, registry, "poly", "archive_hours", "backfill")
+    assert first["records"] == 4 and first["snapshot"] and first["state_saved"]
+    assert [c[2] for c in _gets("DOWNLOAD")] == [paths[10], paths[11], paths[12]]
+    assert len(first["logs"]) == 1 and paths[12] in first["logs"][0]
+    assert not any(os.path.exists(p) for p in files.values())  # cleanup default: True
+    landed = {"archive_hours": {"cursor": hours[1]}}  # the last hour fully read
+    assert load_state(root, "poly", "archive_hours", "backfill") == landed
+
+    ScriptedPolymarket.calls = []
+    again = run_acquisition(root, registry, "poly", "archive_hours", "backfill")
+    assert again["records"] == 0 and again["snapshot"] is None
+    assert [c[2] for c in _gets("DOWNLOAD")] == [paths[12]]  # 10 and 11 never re-read
+    assert len(again["logs"]) == 1 and paths[12] in again["logs"][0]
+    assert load_state(root, "poly", "archive_hours", "backfill") == landed  # unchanged
