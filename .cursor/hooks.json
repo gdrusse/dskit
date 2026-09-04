@@ -6,6 +6,12 @@
         "command": "git pull --ff-only 2>&1 | tail -3",
         "timeout": 20
       }
+    ],
+    "afterFileEdit": [
+      {
+        "command": ".cursor/hooks/check-agent-doc-pairs.sh",
+        "timeout": 5
+      }
     ]
   }
 }

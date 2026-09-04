@@ -117,9 +117,13 @@ _skeleton/
 │   ├── README.md          # GENERATED — do not edit
 │   ├── actions.csv
 │   └── path.csv
-├── docs/research/         # research agent markdown
-│   └── .gitkeep
+├── docs/explanations/     # child-specific tutorials and walkthroughs
+│   └── README.md          # use record-explanation
 ├── docs/memos/            # durable implementation and operational handoffs
+│   ├── README.md          # use memo
+│   └── .gitkeep
+├── docs/research/         # research agent markdown
+│   ├── README.md          # use record-research
 │   └── .gitkeep
 ├── journal.json           # walk-up marker for dskit.journal
 └── tests/                 # green in-repo AND after graduation, uninstalled

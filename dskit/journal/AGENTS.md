@@ -29,8 +29,11 @@ Orientation for an agent working inside this package. Read
 
 ## Gotchas
 
-- `path.csv` stores `id, criteria` only. Render JOINs the rest.
-  Copying category/step into path.csv is the drift this avoids.
+- `path.csv` stores `id,label,purpose,relevant_files,locked,current_work,criteria`.
+  `locked` is `Y` or `N`; only the human owner writes these rows or `Current
+  Work`. Render JOINs category, step, and database location from Actions, so
+  those values cannot drift. Legacy `id,criteria` rows are read-only: promote
+  refuses them until the human owner explicitly migrates their context.
 - Walk-forward records **one** execute row (the summary), not each
   fold — `run_document(..., journal=False)` from `_run_folds`.
 - Production is one row per process. Do not record per tick.

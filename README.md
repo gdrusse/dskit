@@ -86,13 +86,18 @@ vs when you got it — and a declared `backfill`/`live` mode with its own cursor
 ```bash
 python -m dskit.journal init --root .                                 # once; skeleton ships it
 python -m dskit.journal research "why LightGBM" --body-file finding.md
-python -m dskit.journal promote A0001 --criteria empirical            # owner path
+python -m dskit.journal promote A0001 --criteria empirical --label baseline --purpose compare --relevant-files pipeline_runs/base --locked N  # owner only
 ```
 
 Acquire and execute record themselves. Research must go through the CLI
 (skills: `record-research`). Path to production is owner-only. The process
 is in every child's `docs/decisioning/README.md` and in
-[journal](dskit/journal/README.md).
+[journal](dskit/journal/README.md). The generated decisioning README displays
+the full Path CSV and only the latest 10 Actions; both CSV ledgers retain all
+history.
+
+Browse the [decisioning grids](docs/decisioning/README.md) from this landing
+page.
 
 ## Your project is a child
 

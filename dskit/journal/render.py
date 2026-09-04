@@ -45,10 +45,11 @@ The ledger is CSV, not a database. **Database Location** is a pointer
 to that action's artifacts (onboarding root, run dir, research file).
 MLflow / the asset store hold their own records when used.
 
-**Path to Production** is owner-only:
-`python -m dskit.journal promote <ID> --criteria empirical|judgemental|n/a`.
-Hooks never write it. Pytest does not record. A child without
-`journal.json` refuses acquire / run / live.
+**Path to Production** is human-owner-only: only the owner may add or edit a
+row, including **Current Work**. Agents and hooks never write it. Every row
+has a short label, purpose, relevant evidence files (pipeline run, research
+markdown, or other material evidence), and **LOCKED** (`Y` / `N`). Pytest
+does not record. A child without `journal.json` refuses acquire / run / live.
 """
 
 
@@ -117,14 +118,30 @@ def render_text(actions, path_rows, evidence=()):
                 row.db_location,
                 row.notes,
             ]
-            for row in actions
+            for row in actions[-10:]
         ],
     )
     path_table = _table(
-        ["ID", "Category", "Step", "Decision Criteria", "DB Location"],
+        [
+            "ID",
+            "Label",
+            "Purpose",
+            "Relevant Files",
+            "LOCKED",
+            "Current Work (owner only)",
+            "Category",
+            "Step",
+            "Decision Criteria",
+            "DB Location",
+        ],
         [
             [
                 row.id,
+                row.label,
+                row.purpose,
+                row.relevant_files,
+                row.locked,
+                row.current_work,
                 by_id[row.id].category if row.id in by_id else "?",
                 by_id[row.id].step if row.id in by_id else "?",
                 row.criteria,
@@ -135,7 +152,9 @@ def render_text(actions, path_rows, evidence=()):
     )
     parts = [
         PROCESS,
-        "## Actions",
+        "## Actions (latest 10)",
+        "",
+        "Display only: `actions.csv` remains the complete, append-only journal.",
         "",
         action_table,
         "",

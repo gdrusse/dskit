@@ -48,8 +48,10 @@ def test_cli_loop(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "A0001"
     proc = run_cli(
-        "promote", "A0001", "--criteria", "empirical", "--root", str(tmp_path),
-        cwd=tmp_path,
+        "promote", "A0001", "--criteria", "empirical",
+        "--label", "fit", "--purpose", "validate",
+        "--relevant-files", "configs/run.json", "--locked", "N",
+        "--root", str(tmp_path), cwd=tmp_path,
     )
     assert proc.returncode == 0, proc.stderr
     proc = run_cli("research", "why gaps", "--root", str(tmp_path), cwd=tmp_path)

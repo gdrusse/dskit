@@ -36,12 +36,21 @@ def test_append_and_promote(tmp_path, monkeypatch):
     )
     assert action.id == "A0001"
     assert read_actions(root)[0].step == "hl-scan"
-    promote("A0001", "empirical", start=root.child_root)
+    promote(
+        "A0001", "empirical", label="HL scan", purpose="select horizon",
+        relevant_files="pipeline_runs/x", locked="N", start=root.child_root,
+    )
     assert read_path(root)[0].criteria == "empirical"
     with pytest.raises(JournalError, match="already on the path"):
-        promote("A0001", "judgemental", start=root.child_root)
+        promote(
+            "A0001", "judgemental", label="HL scan", purpose="select horizon",
+            relevant_files="pipeline_runs/x", locked="N", start=root.child_root,
+        )
     with pytest.raises(JournalError, match="no such action"):
-        promote("A9999", "n/a", start=root.child_root)
+        promote(
+            "A9999", "n/a", label="missing", purpose="test",
+            relevant_files="none", locked="N", start=root.child_root,
+        )
 
 
 def test_uninitialized_child_refuses_record(tmp_path, monkeypatch):

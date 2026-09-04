@@ -30,12 +30,15 @@ The ledger is CSV, not a database. **Database Location** is a pointer
 to that action's artifacts (onboarding root, run dir, research file).
 MLflow / the asset store hold their own records when used.
 
-**Path to Production** is owner-only:
-`python -m dskit.journal promote <ID> --criteria empirical|judgemental|n/a`.
-Hooks never write it. Pytest does not record. A child without
-`journal.json` refuses acquire / run / live.
+**Path to Production** is human-owner-only: only the owner may add or edit a
+row, including **Current Work**. Agents and hooks never write it. Every row
+has a short label, purpose, relevant evidence files (pipeline run, research
+markdown, or other material evidence), and **LOCKED** (`Y` / `N`). Pytest
+does not record. A child without `journal.json` refuses acquire / run / live.
 
-## Actions
+## Actions (latest 10)
+
+Display only: `actions.csv` remains the complete, append-only journal.
 
 | ID | Category | Step | Execution Date | Relevant Inputs | Relevant Outputs | Database Location | Notes |
 |---|---|---|---|---|---|---|---|
@@ -43,6 +46,6 @@ Hooks never write it. Pytest does not record. A child without
 
 ## Path to Production
 
-| ID | Category | Step | Decision Criteria | DB Location |
-|---|---|---|---|---|
-| — | — | — | — | — |
+| ID | Label | Purpose | Relevant Files | LOCKED | Current Work (owner only) | Category | Step | Decision Criteria | DB Location |
+|---|---|---|---|---|---|---|---|---|---|
+| — | — | — | — | — | — | — | — | — | — |

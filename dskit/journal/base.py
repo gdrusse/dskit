@@ -61,7 +61,15 @@ ACTION_FIELDS = (
     "notes",
 )
 
-PATH_FIELDS = ("id", "criteria")
+PATH_FIELDS = (
+    "id",
+    "label",
+    "purpose",
+    "relevant_files",
+    "locked",
+    "current_work",
+    "criteria",
+)
 
 ID_PREFIX = "A"
 

@@ -240,15 +240,25 @@ class Action:
 
 @dataclass(frozen=True)
 class PathRow:
-    """One row of the path-to-production table: an action id + criteria.
+    """One owner-authored path-to-production decision.
 
-    Category, step, and db location are JOINed at render time from
-    :class:`Action` so they cannot drift.
+    Category, step, and database location are JOINed at render time from
+    :class:`Action`; all other fields are the owner's explicit record.
 
     Parameters
     ----------
     id : str
         An existing action id.
+    label : str
+        Short human-readable description of the decision.
+    purpose : str
+        Why this action is on the path.
+    relevant_files : str
+        Pipeline run, research markdown, and other material evidence.
+    locked : str
+        ``Y`` or ``N``.
+    current_work : str
+        Owner-maintained statement of the active work.
     criteria : str
         One of :data:`CRITERIA`.
 
@@ -256,12 +266,21 @@ class PathRow:
     --------
     Promote a lock::
 
-        row = PathRow(id="A0001", criteria="empirical")
+        row = PathRow(
+            id="A0001", label="Baseline", purpose="Establish comparator",
+            relevant_files="pipeline_runs/baseline", locked="N",
+            current_work="Validate baseline", criteria="empirical",
+        )
         row.criteria
         # -> empirical
     """
 
     id: str
+    label: str
+    purpose: str
+    relevant_files: str
+    locked: str
+    current_work: str
     criteria: str
 
     def __post_init__(self):
@@ -269,6 +288,14 @@ class PathRow:
         errors = []
         if not isinstance(self.id, str) or not ID_RE.match(self.id):
             errors.append(f"id must match {ID_RE.pattern}, got {self.id!r}")
+        for name in ("label", "purpose", "relevant_files"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"{name} must be a non-empty string")
+        if not isinstance(self.current_work, str):
+            errors.append("current_work must be a string")
+        if self.locked not in ("Y", "N"):
+            errors.append(f"locked must be Y or N, got {self.locked!r}")
         if self.criteria not in CRITERIA:
             errors.append(
                 f"criteria must be one of {CRITERIA}, got {self.criteria!r}"
@@ -307,7 +334,15 @@ class PathRow:
         _reject_unknown(errors, obj, PATH_FIELDS, "path")
         if errors:
             raise JournalError(errors)
-        return cls(id=obj.get("id", ""), criteria=obj.get("criteria", ""))
+        return cls(
+            id=obj.get("id", ""),
+            label=obj.get("label", ""),
+            purpose=obj.get("purpose", ""),
+            relevant_files=obj.get("relevant_files", ""),
+            locked=obj.get("locked", ""),
+            current_work=obj.get("current_work", "") or "",
+            criteria=obj.get("criteria", ""),
+        )
 
 
 def next_id(existing):

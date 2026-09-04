@@ -36,11 +36,26 @@ def test_step_must_be_short():
         )
 
 
-def test_path_row_closed_criteria():
-    row = PathRow(id="A0001", criteria="judgemental")
-    assert row.to_obj() == {"id": "A0001", "criteria": "judgemental"}
+def test_path_row_requires_owner_fields_and_closed_values():
+    row = PathRow(
+        id="A0001", label="baseline", purpose="compare",
+        relevant_files="pipeline_runs/base", locked="Y",
+        current_work="validate", criteria="judgemental",
+    )
+    assert row.to_obj()["locked"] == "Y"
+    assert row.to_obj()["current_work"] == "validate"
     with pytest.raises(JournalError, match="criteria"):
-        PathRow(id="A0001", criteria="practical")
+        PathRow(
+            id="A0001", label="baseline", purpose="compare",
+            relevant_files="pipeline_runs/base", locked="Y",
+            current_work="validate", criteria="practical",
+        )
+    with pytest.raises(JournalError, match="locked"):
+        PathRow(
+            id="A0001", label="baseline", purpose="compare",
+            relevant_files="pipeline_runs/base", locked="maybe",
+            current_work="validate", criteria="empirical",
+        )
 
 
 def test_next_id_monotonic():

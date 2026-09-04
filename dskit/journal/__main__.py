@@ -104,7 +104,16 @@ def cmd_promote(args):
     -------
     int
     """
-    row = promote(args.id, args.criteria, start=_root_arg(args))
+    row = promote(
+        args.id,
+        args.criteria,
+        label=args.label,
+        purpose=args.purpose,
+        relevant_files=args.relevant_files,
+        locked=args.locked,
+        current_work=args.current_work,
+        start=_root_arg(args),
+    )
     print(row.id, row.criteria)
     return 0
 
@@ -202,6 +211,15 @@ def main(argv=None):
     p = sub.add_parser("promote", help="owner: put an action on the path")
     p.add_argument("id")
     p.add_argument("--criteria", required=True, choices=CRITERIA)
+    p.add_argument("--label", required=True, help="short decision description")
+    p.add_argument("--purpose", required=True)
+    p.add_argument("--relevant-files", required=True)
+    p.add_argument("--locked", required=True, choices=("Y", "N"))
+    p.add_argument(
+        "--current-work",
+        default="",
+        help="owner-only description of active work; agents must never update it",
+    )
     p.add_argument("--root", default=".")
     p.set_defaults(fn=cmd_promote)
 

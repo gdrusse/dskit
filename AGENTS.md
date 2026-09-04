@@ -187,6 +187,18 @@ Keep both trees current when files are added or removed.
 }
 ```
 
+## Child decisioning
+
+- **Path is human-owner-only.** Agents never add, edit, regenerate, or
+  otherwise update `docs/decisioning/path.csv`, including `Current Work`.
+  The owner alone maintains those rows.
+- Every Path row has an ID, short label, purpose, relevant files (pipeline
+  run, research markdown, or other material evidence), and `LOCKED` as `Y`
+  or `N`. The generated decisioning README displays the complete Path.
+- The generated Actions table displays only its latest 10 rows. This is
+  display-only: `actions.csv` remains complete and append-only; never delete
+  journal or Path history.
+
 ## Code standards
 
 - **PEP 8.** `ruff` is the dev dependency; keep the tree clean.

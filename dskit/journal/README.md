@@ -30,10 +30,11 @@ The ledger is CSV, not a database. **Database Location** is a pointer
 to that action's artifacts (onboarding root, run dir, research file).
 MLflow / the asset store hold their own records when used.
 
-**Path to Production** is owner-only:
-`python -m dskit.journal promote <ID> --criteria empirical|judgemental|n/a`.
-Hooks never write it. Pytest does not record. A child without
-`journal.json` refuses acquire / run / live.
+**Path to Production** is human-owner-only: only the owner may add or edit a
+row, including **Current Work**. Agents and hooks never write it. Every row
+has a short label, purpose, relevant evidence files (pipeline run, research
+markdown, or other material evidence), and **LOCKED** (`Y` / `N`). Pytest
+does not record. A child without `journal.json` refuses acquire / run / live.
 
 ## 60-second path
 
@@ -41,7 +42,7 @@ Hooks never write it. Pytest does not record. A child without
 python -m dskit.journal init --root .          # once per child (skeleton ships it)
 python -m dskit.pipeline run configs/x.json --asof 2026-01-01   # auto-records
 python -m dskit.journal research "why LightGBM" --body-file finding.md
-python -m dskit.journal promote A0001 --criteria empirical     # owner
+python -m dskit.journal promote A0001 --criteria empirical --label baseline --purpose compare --relevant-files pipeline_runs/base --locked N  # owner only
 ```
 
 `DSKIT_JOURNAL_ROOT` overrides locate.
@@ -52,11 +53,17 @@ python -m dskit.journal promote A0001 --criteria empirical     # owner
 journal.json                 # walk-up marker
 docs/decisioning/
   actions.csv                # the ledger (write here)
-  path.csv                   # owner path (id, criteria only)
+  path.csv                   # owner Path: id, label, purpose, relevant files,
+                             # LOCKED Y/N, Current Work, and criteria
   README.md                  # GENERATED — do not edit
   <evidence>.md              # rationale files, listed in README
 docs/research/               # research agent output (CLI-only writer)
 ```
+
+The generated decisioning README displays the complete Path and only the
+latest 10 Actions. This is display-only: both CSV ledgers retain all history.
+Legacy two-column Paths remain read-only until the human owner explicitly
+migrates them; `promote` never rewrites them.
 
 ## Contents
 

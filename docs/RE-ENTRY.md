@@ -1,10 +1,27 @@
 # Re-entry
 
+## Current wrap: child infrastructure
+
+Branch: `main`.
+
+Landed: the Path schema now records label, purpose, relevant files, `LOCKED`,
+and owner-only Current Work. Generated decisioning README shows the full Path
+and the latest 10 Actions without deleting CSV history. The skeleton now
+initializes decisioning, explanations, memos, and research with skill
+reminders. `refresh-child-infra` and paired AGENTS/CLAUDE edit reminders are
+available.
+
+Verification: 38 focused journal/skeleton tests passed; final Bugbot found no
+bugs. Legacy two-column Path ledgers render read-only and refuse promotion
+until the human owner explicitly migrates them.
+
+Next step: apply `refresh-child-infra` to a chosen child when authorized.
+
 **Current policy:** Gate 1 selects provisional modelability candidates. Gate 3
 is their mandatory 19-seed whole-session refit audit. There is no Gate-2
 filter; HFDR belongs later in MIO (ADR-0089).
 
-Current wrap: 2026-09-04 on `main`. ADR-0089's direct Gate-1-to-Gate-3
+Prior P11 wrap: 2026-09-04 on `main`. ADR-0089's direct Gate-1-to-Gate-3
 correction is implemented. The revised P11 run has not started.
 
 Verification: 77 targeted P11/config/attempt tests passed; Ruff and diff checks
