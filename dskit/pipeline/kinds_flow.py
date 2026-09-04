@@ -1691,9 +1691,29 @@ _AGG_OPS = {
         needs_field=True,
         numeric=False,
         ordered=False,
-        reduce=lambda cells: len(set(cells)),
+        reduce=lambda cells: len({_identity_part(cell) for cell in cells}),
     ),
 }
+
+
+def _identity_part(value):
+    """Type-tag one hashable value so Python equality cannot merge JSON types."""
+    if isinstance(value, bool):
+        return (bool, value)
+    if isinstance(value, float):
+        return (float, repr(value))
+    return (type(value), value)
+
+
+def _sort_part(value):
+    """Preserve normal key ordering while breaking numeric equality ties by type."""
+    if isinstance(value, bool):
+        return (value, 0, repr(value))
+    if isinstance(value, int):
+        return (value, 1, repr(value))
+    if isinstance(value, float):
+        return (value, 2, repr(value))
+    return value
 
 
 def _ordered_op(op) -> bool:
@@ -1960,7 +1980,7 @@ class GroupBy(Node):
 
     def _identity(self, index, row, keys):
         """One row's group identity, refusing a key value nothing can be keyed by."""
-        identity = []
+        raw = []
         for name in keys:
             value = self._cell(index, row, name)
             try:
@@ -1971,13 +1991,19 @@ class GroupBy(Node):
                     f"{value!r} for {name!r} — a group key must be something a "
                     f"mapping can be keyed by ({exc})"
                 ) from exc
-            identity.append(value)
-        return tuple(identity)
+            raw.append(value)
+        raw = tuple(raw)
+        return tuple(_identity_part(value) for value in raw), raw
 
-    def _sorted(self, identities):
+    def _sorted(self, groups):
         """Order the group identities for output, refusing values nothing can order."""
         try:
-            return sorted(identities)
+            return sorted(
+                groups,
+                key=lambda identity: tuple(
+                    _sort_part(value) for value in groups[identity][0]
+                ),
+            )
         except TypeError as exc:
             raise ValueError(
                 f"{self.key}: the group key values cannot be ordered against "
@@ -2073,9 +2099,10 @@ class GroupBy(Node):
         keys = _field_list(self.params["keys"])
         groups = {}
         for index, row in enumerate(records):
-            groups.setdefault(self._identity(index, row, keys), []).append((index, row))
+            identity, raw = self._identity(index, row, keys)
+            groups.setdefault(identity, (raw, []))[1].append((index, row))
         out = [
-            self._group_row(keys, identity, groups[identity])
+            self._group_row(keys, groups[identity][0], groups[identity][1])
             for identity in self._sorted(groups)
         ]
         self.log.info(

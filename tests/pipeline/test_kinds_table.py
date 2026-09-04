@@ -261,6 +261,14 @@ def test_a_value_json_has_no_form_for_is_refused_by_row(tmp_path):
     assert not (tmp_path / "rows.jsonl").exists()
 
 
+def test_records_write_refuses_keys_that_collide_after_stringification(tmp_path):
+    with pytest.raises(ValueError, match="keys 1 and '1' both stringify to '1'"):
+        records_node(tmp_path).run(
+            run_ctx(tmp_path), {"records": [{1: "integer", "1": "string"}]}
+        )
+    assert not (tmp_path / "rows.jsonl").exists()
+
+
 def test_records_write_refuses_to_clobber_and_never_creates_a_tree(tmp_path):
     node = records_node(tmp_path)
     node.run(run_ctx(tmp_path), {"records": ROWS})

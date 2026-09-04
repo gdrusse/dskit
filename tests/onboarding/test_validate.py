@@ -267,6 +267,40 @@ def test_distinct_count_over_an_empty_stream(root, registry, snapshot):
     assert failing == {"whole": 1, "grouped": 0}
 
 
+def test_cardinality_rules_accept_structured_values_and_keep_json_types_distinct(
+    root, registry, fake_source
+):
+    values = [True, 1, 1.0, [1], [1], {"x": 1}, {"x": 1}]
+    FakeConnector.script = [
+        record("json-values", "2026-01-02", {"value": value})
+        for value in values
+    ]
+    snapshot = run_acquisition(
+        root, registry, "fake", "json-values", "live"
+    )["snapshot"]
+    out = run_suite(
+        root,
+        registry,
+        _suite(
+            Rule(
+                id="unique",
+                target="json-values",
+                rule="unique",
+                kwargs={"field": "value"},
+            ),
+            Rule(
+                id="distinct",
+                target="json-values",
+                rule="distinct_count",
+                kwargs={"field": "value", "min": 5, "max": 5},
+            ),
+        ),
+        snapshot,
+    )
+    failing = {r["id"]: r["failing"] for r in out["statistics"]["results"]}
+    assert failing == {"unique": 4, "distinct": 0}
+
+
 def test_distinct_count_reads_from_a_json_suite():
     suite = ValidationSuite.from_obj({"name": "s", "rules": [
         {"id": "strikes", "target": "ladder", "rule": "distinct_count",

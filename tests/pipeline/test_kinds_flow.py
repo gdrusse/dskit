@@ -1101,6 +1101,28 @@ class TestGroupBy:
             {"instrument": "B", "venue": "x", "n": 2},
         ]
 
+    def test_json_numeric_types_are_distinct_groups_and_nunique_values(self, ctx):
+        rows = [
+            {"key": 1.0, "group": "one", "value": 1.0},
+            {"key": True, "group": "one", "value": True},
+            {"key": 1, "group": "one", "value": 1},
+        ]
+        grouped = GroupBy(
+            "g", {"keys": "key", "aggregates": {"n": {"op": "count"}}}
+        ).run(ctx, {"records": rows})["records"]
+        assert [(type(row["key"]), row["n"]) for row in grouped] == [
+            (bool, 1), (int, 1), (float, 1),
+        ]
+        distinct = GroupBy(
+            "g",
+            {
+                "keys": "group",
+                "aggregates": {"n": {"op": "nunique", "field": "value"}},
+            },
+        ).run(ctx, {"records": rows})["records"]
+        assert distinct == [{"group": "one", "n": 3}]
+
+
     def test_attribute_records_group_like_dicts_and_come_out_as_dicts(self, ctx):
         rows = [mrec("A", "A-1", 1, mid=0.5), mrec("A", "A-2", 2, mid=0.7), mrec("B", "B-1", 3, mid=0.1)]
         out = groupby_node().run(ctx, {"records": rows})

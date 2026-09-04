@@ -746,8 +746,8 @@ class RecordsWrite(FileWrite):
         Raises
         ------
         ValueError
-            Naming a row that is not a mapping, or the field JSON cannot
-            carry.
+            Naming a row that is not a mapping, keys that collide after
+            stringification, or a field JSON cannot carry.
         """
         lines = []
         for index, row in enumerate(records):
@@ -757,8 +757,21 @@ class RecordsWrite(FileWrite):
                     "mapping — JSON has no form for a frozen envelope; project "
                     "the rows to mappings before writing"
                 )
-            row = {str(k): v for k, v in row.items()}
-            lines.append(_json_text(self.key, f"row {index}", row, **_LINE_SPELLING))
+            normalized = {}
+            original = {}
+            for field, value in row.items():
+                name = str(field)
+                if name in normalized:
+                    raise ValueError(
+                        f"{self.key}: row {index} keys {original[name]!r} and "
+                        f"{field!r} both stringify to {name!r} - writing either "
+                        "would silently discard the other"
+                    )
+                normalized[name] = value
+                original[name] = field
+            lines.append(
+                _json_text(self.key, f"row {index}", normalized, **_LINE_SPELLING)
+            )
         raw = "".join(f"{line}\n" for line in lines).encode("utf-8")
         return raw, len(lines)
 

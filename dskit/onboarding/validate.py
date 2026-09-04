@@ -104,12 +104,24 @@ def _value(row, field_name):
     return row["data"].get(field_name)
 
 
+def _json_identity(value):
+    """Canonical JSON identity of a value, preserving every JSON type distinction."""
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
+
+
 def _eval_not_null(rows, kw):
     return sum(1 for r in rows if _value(r, kw["field"]) is None)
 
 
 def _eval_unique(rows, kw):
-    counts = Counter(v for r in rows if (v := _value(r, kw["field"])) is not None)
+    """Count every row belonging to a duplicate non-null JSON value."""
+    counts = Counter(
+        _json_identity(v)
+        for r in rows
+        if (v := _value(r, kw["field"])) is not None
+    )
     return sum(c for c in counts.values() if c > 1)
 
 
@@ -166,6 +178,7 @@ def _group_fields(value) -> tuple:
 
 
 def _eval_distinct_count(rows, kw):
+    """Count groups whose distinct non-null JSON values fall outside bounds."""
     lo, hi = kw.get("min"), kw.get("max")
     by = _group_fields(kw.get("group_by"))
     # Ungrouped, the whole stream is the one group and it EXISTS while
@@ -174,10 +187,11 @@ def _eval_distinct_count(rows, kw):
     distinct = {} if by else {(): set()}
     for r in rows:
         v = _value(r, kw["field"])
-        key = tuple(_value(r, g) for g in by)
-        if v is None or any(k is None for k in key):
+        raw_key = tuple(_value(r, g) for g in by)
+        if v is None or any(k is None for k in raw_key):
             continue  # nulls skipped — in the value and in the group alike
-        distinct.setdefault(key, set()).add(v)
+        key = tuple(_json_identity(k) for k in raw_key)
+        distinct.setdefault(key, set()).add(_json_identity(v))
     return sum(
         1 for values in distinct.values()
         if (lo is not None and len(values) < lo) or (hi is not None and len(values) > hi)
