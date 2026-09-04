@@ -1,5 +1,7 @@
 # P11 asset-local modelability pipeline
 
+
+> **Superseded execution record.** This completed Gate-2-only P11 run is historical evidence from a mistaken configuration. ADR-0089 restores the active direct Gate-1-to-Gate-3 audit; the revised document needs a fresh run and Gate 2 remains outside modelability filtering.
 > **No longer used.** Gate 2 below is historical execution evidence, not
 > current stock-selection policy. ADR-0088 places HFDR in MIO.
 

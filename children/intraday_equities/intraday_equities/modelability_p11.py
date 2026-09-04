@@ -1,34 +1,35 @@
-"""P11 asset-local modelability stages with untouched confirmation.
+"""P11 asset-local modelability stages with a direct scramble audit.
 
 P10's immutable cache and journal-backed runner are reused, but its pooled
 estimand is not. Each derived walk filters feature records before fitting;
 the full tape remains available only so non-SPY labels can retain their SPY
-residual reference. Gate 1 stops at the first failed ordered horizon. Gate 2
-uses a disjoint confirmation block and a fixed, dependence-valid family.
+residual reference. Gate 1 stops at the first failed ordered horizon, then
+flows directly to the whole-session refit audit in Gate 3.
 """
 
 from __future__ import annotations
 
-import math
 import os
 
-from dskit.pipeline.attempts import AttemptRegistry, FixedFamilyLedger
+from dskit.pipeline.attempts import AttemptRegistry, tier2_verdict
 from dskit.pipeline.document import PipelineDocument
 from dskit.pipeline.runs import score_walk
 from dskit.pipeline.stages import Stage, reject_unknown_params
 
 from . import modelability as p10
 
-__all__ = ["Gate1Stage", "Gate2Stage", "MemoryPreflightStage"]
+__all__ = [
+    "Gate1Stage",
+    "Gate3ResultStage",
+    "Gate3WalksStage",
+    "MemoryPreflightStage",
+]
 
 _STUDY = "p11-25-asset-modelability"
 _ARCHITECTURE = "lgbm-tight-asset-local"
 _ASSETS = list(p10._ASSETS)
 _HORIZONS = [1, 2, 3, 5, 10, 20, 30, 60]
 _MEMORY_LIMIT = 17 * 1024**3
-_CONFIRM_FIRST = "2025-12-02"
-_CONFIRM_DAYS = 89
-_FAMILY = "p11-asset-local-confirmation-2026-02-28"
 
 
 def _check_params(params, allowed, *, assets=False, horizons=False, alpha=False):
@@ -62,7 +63,9 @@ def _base_key(gate):
     }
 
 
-def _derived_document(ctx, asset, horizon, *, confirmation=False, tag="gate1"):
+def _derived_document(
+    ctx, asset, horizon, *, tag="gate1", scramble_seed=None
+):
     """Build one asset-only derived walk without touching the full tape."""
     if asset not in _ASSETS:
         raise ValueError(f"P11 asset is outside the frozen cohort: {asset!r}")
@@ -83,6 +86,10 @@ def _derived_document(ctx, asset, horizon, *, confirmation=False, tag="gate1"):
     params["fit_symbols"] = [asset]
     params["score_symbols"] = [asset]
     params.pop("label_scramble_seed", None)
+    if scramble_seed is not None:
+        if isinstance(scramble_seed, bool) or not isinstance(scramble_seed, int):
+            raise ValueError(f"P11 scramble seed must be an integer: {scramble_seed!r}")
+        params["label_scramble_seed"] = scramble_seed
     obj["pipeline"] = {
         "universe": original["universe"],
         "features": {
@@ -101,14 +108,6 @@ def _derived_document(ctx, asset, horizon, *, confirmation=False, tag="gate1"):
         },
         "scan": scan,
     }
-    if confirmation:
-        walk = obj["walkforward"]
-        walk["first"] = _CONFIRM_FIRST
-        walk["step_days"] = _CONFIRM_DAYS
-        walk["count"] = 1
-        walk["val_days"] = _CONFIRM_DAYS
-        walk["embargo_days"] = 5
-        walk["train_days"] = 730
     return PipelineDocument.from_obj(obj)
 
 
@@ -141,18 +140,8 @@ def _score_one(summary, asset, horizon, alpha):
     return rows[0]
 
 
-def _normal_sf(value):
-    """Return the ADR-0067 one-sided normal tail for a pooled t value."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"confirmation t_pool is not numeric: {value!r}")
-    value = float(value)
-    if not math.isfinite(value):
-        raise ValueError(f"confirmation t_pool is not finite: {value!r}")
-    return 0.5 * math.erfc(value / math.sqrt(2.0))
-
-
 class MemoryPreflightStage(Stage):
-    """Measure the largest asset under the longer confirmation geometry.
+    """Measure the largest asset under the frozen Gate-1 geometry.
 
     Parameters
     ----------
@@ -189,12 +178,12 @@ class MemoryPreflightStage(Stage):
         return problems
 
     def run(self, ctx, inputs):
-        """Run one capped confirmation-shaped asset walk."""
+        """Run one capped Gate-1-shaped asset walk."""
         del inputs
         _declared, cache_path, digest = p10._feature_cache_info(ctx)
         asset, rows = _largest_asset(cache_path, self.params["assets"])
         document = _derived_document(
-            ctx, asset, 1, confirmation=True, tag="preflight"
+            ctx, asset, 1, tag="preflight"
         )
         summary, peak = p10._run_walk(
             ctx,
@@ -321,117 +310,129 @@ class Gate1Stage(Stage):
         return {"rows": rows, "cells": cells}
 
 
-class Gate2Stage(Stage):
-    """Confirm one selected horizon per survivor on untouched data.
+class Gate3WalksStage(Stage):
+    """Refit each Gate-1 survivor against whole-session null draws.
 
     Parameters
     ----------
     params : dict
-        Frozen ``assets``, attempts/confirmation-ledger path, family id and
-        family-wise ``alpha``.
+        ``seeds`` must be the frozen sequence 0 through 18.
 
     Examples
     --------
-    Instantiate the confirmation gate::
+    Instantiate the null-refit stage::
 
-        stage = Gate2Stage("gate2", {
-            "assets": _ASSETS,
-            "attempt_registry": "docs/decisioning/attempts.jsonl",
-            "family": _FAMILY, "alpha": 0.05,
-        })
+        stage = Gate3WalksStage("gate3_walks", {"seeds": list(range(19))})
     """
 
-    outputs = ("rows", "ledger_header", "ledger_results")
-    _PARAMS = ("assets", "attempt_registry", "family", "alpha")
+    outputs = ("walks", "survivors")
+    _PARAMS = ("seeds",)
 
     @classmethod
     def validate_params(cls, params):
-        """Validate the family, cohort, ledger path and level."""
-        problems = _check_params(params, cls._PARAMS, assets=True, alpha=True)
-        if not isinstance(params.get("attempt_registry"), str):
-            problems.append("attempt_registry must be a path string")
-        if params.get("family") != _FAMILY:
-            problems.append(f"family must be exactly {_FAMILY!r}")
+        """Require the frozen 19-session-permutation sequence."""
+        problems = _check_params(params, cls._PARAMS)
+        if params.get("seeds") != list(range(19)):
+            problems.append("seeds must be exactly [0, ..., 18]")
         return problems
 
     def validate_inputs(self, inputs):
-        """Require one Gate-1 row list."""
+        """Require the ordered Gate-1 outcomes."""
         return [] if set(inputs) == {"gate1"} else ["requires only gate1"]
 
     def run(self, ctx, inputs):
-        """Run confirmation serially and append final Bonferroni decisions."""
+        """Run all null refits for each selected asset-local horizon."""
         gate1 = inputs["gate1"]
         if [row.get("asset") for row in gate1] != _ASSETS:
-            raise ValueError("Gate 2 input is not the frozen ordered 25 assets")
-        ledger_path = os.path.join(
-            p10._child_root(ctx), self.params["attempt_registry"]
-        )
-        confirmations = FixedFamilyLedger(
-            ledger_path,
-            self.params["family"],
-            self.params["assets"],
-            alpha=self.params["alpha"],
-        )
-        header = confirmations.prepare()
-        attempts = AttemptRegistry(ledger_path)
+            raise ValueError("Gate 3 input is not the frozen ordered 25 assets")
+        survivors = [row for row in gate1 if row["gate1_passes"]]
+        walks = {}
+        for row in survivors:
+            asset = row["asset"]
+            horizon = row["gate1_h"]
+            for seed in self.params["seeds"]:
+                tag = f"p11-gate3-{asset.lower()}-h{horizon:02d}-seed{seed:02d}"
+                document = _derived_document(
+                    ctx, asset, horizon, tag=tag, scramble_seed=seed
+                )
+                walks[f"{asset}:{horizon}:{seed}"] = p10._run_bounded_walk(
+                    ctx, document, tag
+                )
+        return {"walks": walks, "survivors": [row["asset"] for row in survivors]}
+
+
+class Gate3ResultStage(Stage):
+    """Require every whole-session null refit to lose to the real result.
+
+    Parameters
+    ----------
+    params : dict
+        ``assets`` and ``seeds`` pin the final output order and null draws;
+        ``alpha`` is passed unchanged to the walk scorer.
+
+    Examples
+    --------
+    Instantiate the final audit::
+
+        stage = Gate3ResultStage("gate3", {
+            "assets": _ASSETS, "seeds": list(range(19)), "alpha": 0.05,
+        })
+    """
+
+    outputs = ("rows",)
+    _PARAMS = ("assets", "seeds", "alpha")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Validate the frozen cohort, null draws and scoring level."""
+        problems = _check_params(params, cls._PARAMS, assets=True, alpha=True)
+        if params.get("seeds") != list(range(19)):
+            problems.append("seeds must be exactly [0, ..., 18]")
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require observed Gate-1 rows/cells and their null refits."""
+        needed = {"gate1", "gate1_cells", "walks"}
+        return [] if set(inputs) == needed else [f"requires {sorted(needed)}"]
+
+    def run(self, ctx, inputs):
+        """Emit one Gate-3 decision for every frozen asset."""
+        del ctx
+        gate1 = inputs["gate1"]
+        if [row.get("asset") for row in gate1] != self.params["assets"]:
+            raise ValueError("Gate 3 result input is not the frozen ordered 25 assets")
+        observed = {
+            (row["asset"], row["horizon"]): row["skill"]
+            for row in inputs["gate1_cells"]
+        }
         rows = []
-        for selected in gate1:
-            asset = selected["asset"]
-            horizon = selected["gate1_h"]
-            if horizon is None:
-                rows.append(
+        for base in gate1:
+            final = {**base, "gate3_status": "not_reached", "gate3_passes": False}
+            if not base["gate1_passes"]:
+                final["not_reached_reason"] = "gate1_failed_at_h1"
+            else:
+                asset = base["asset"]
+                horizon = base["gate1_h"]
+                null_r2 = []
+                null_t = []
+                for seed in self.params["seeds"]:
+                    skill = _score_one(
+                        inputs["walks"][f"{asset}:{horizon}:{seed}"],
+                        asset,
+                        horizon,
+                        self.params["alpha"],
+                    )
+                    null_r2.append(skill["r2oos"])
+                    null_t.append(skill["t_pool"])
+                real = observed[(asset, horizon)]
+                verdict = tier2_verdict(real["r2oos"], null_r2, null_t)
+                final.update(
                     {
-                        **selected,
-                        "gate2_status": "not_reached",
-                        "gate2_passes": False,
-                        "gate2": None,
-                        "not_reached_reason": "gate1_failed_at_h1",
+                        "gate3_status": "pass" if verdict["passes"] else "fail",
+                        "gate3_passes": verdict["passes"],
+                        "gate3": verdict,
+                        "not_reached_reason": None,
                     }
                 )
-                continue
-            document = _derived_document(
-                ctx, asset, horizon, confirmation=True, tag="gate2"
-            )
-            summary = p10._run_bounded_walk(
-                ctx, document, f"p11-gate2-{asset.lower()}-h{horizon:02d}"
-            )
-            skill = _score_one(summary, asset, horizon, self.params["alpha"])
-            p_value = _normal_sf(skill["t_pool"])
-            attempt_key = {
-                **_base_key("gate2-confirmation"),
-                "series": asset,
-                "horizon": horizon,
-            }
-            cell = attempts.record(
-                attempt_key,
-                walk=summary,
-                t_pool=skill["t_pool"],
-                r2oos=skill["r2oos"],
-                p_value=p_value,
-                n_folds=skill["n_folds"],
-                study_gate="gate2",
-            )
-            verdict = confirmations.record(
-                asset,
-                p_value,
-                horizon=horizon,
-                t_pool=skill["t_pool"],
-                r2oos=skill["r2oos"],
-                n_rows=skill["n_rows"],
-                walk=summary,
-                cell=cell,
-            )
-            rows.append(
-                {
-                    **selected,
-                    "gate2_status": "pass" if verdict["passes"] else "fail",
-                    "gate2_passes": verdict["passes"],
-                    "gate2": verdict,
-                    "not_reached_reason": None,
-                }
-            )
-        return {
-            "rows": rows,
-            "ledger_header": header,
-            "ledger_results": list(confirmations.results().values()),
-        }
+            rows.append(final)
+        return {"rows": rows}

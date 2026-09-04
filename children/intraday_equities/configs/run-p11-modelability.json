@@ -189,17 +189,27 @@
         "alpha": 0.05
       }
     },
-    "gate2": {
-      "uses": "intraday_equities.modelability_p11:Gate2Stage",
+    "gate3_walks": {
+      "uses": "intraday_equities.modelability_p11:Gate3WalksStage",
       "inputs": {"gate1": "$gate1.rows"},
+      "params": {
+        "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+      }
+    },
+    "gate3": {
+      "uses": "intraday_equities.modelability_p11:Gate3ResultStage",
+      "inputs": {
+        "gate1": "$gate1.rows",
+        "gate1_cells": "$gate1.cells",
+        "walks": "$gate3_walks.walks"
+      },
       "params": {
         "assets": [
           "AAPL", "JPM", "XOM", "WMT", "LLY", "SPY", "QQQ", "XLF", "XLV",
           "XLE", "XLK", "XLP", "TSLA", "TQQQ", "NVDA", "AMD", "UPRO", "BAC",
           "AMZN", "AVGO", "NFLX", "MSFT", "GOOGL", "SMH", "IWM"
         ],
-        "attempt_registry": "docs/decisioning/attempts.jsonl",
-        "family": "p11-asset-local-confirmation-2026-02-28",
+        "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
         "alpha": 0.05
       }
     }

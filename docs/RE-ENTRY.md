@@ -1,22 +1,22 @@
 # Re-entry
 
-**Current policy:** Gate 2 is no longer used for stock selection. ADR-0088
-locks Gate 1 (A2822) and HFDR-in-MIO (A2850) on the owner path. P10/P11
-Gate-2 material below is historical evidence only.
+**Current policy:** Gate 1 selects provisional modelability candidates. Gate 3
+is their mandatory 19-seed whole-session refit audit. There is no Gate-2
+filter; HFDR belongs later in MIO (ADR-0089).
 
-Current wrap: 2026-09-04 on `main`, synchronized before merging
-`p11-asset-local-gates-1-2`. P11 is complete; no pipeline is running and
-Gate 3 was neither configured nor run.
+Current wrap: 2026-09-04 on `main`. ADR-0089's direct Gate-1-to-Gate-3
+correction is implemented. The revised P11 run has not started.
 
-Post-merge verification: 113 targeted tests passed; Ruff and diff checks are
-clean. One known pre-existing config-pin test still rejects the 2020 start in
-`run-pb-s01-h01-lgbm-cross.json` against 2018. Prior main verification (487
-focused tests plus 47 Hugging Face tests) remains unchanged. The memo skill
-validated; the full suite was not rerun.
+Verification: 77 targeted P11/config/attempt tests passed; Ruff and diff checks
+are clean. One known pre-existing config-pin test still rejects the 2020 start
+in `run-pb-s01-h01-lgbm-cross.json` against 2018. The full suite was not
+rerun.
 
-This merge also adds the reusable `memo` skill and the P11 execution memo.
+The prior Gate-2-only P11 run is historical evidence from a mistaken
+configuration. This wrap also includes the reusable `memo` skill and P11
+execution memo.
 
-## PICK UP HERE: design HFDR-in-MIO implementation
+## Historical P11 record (superseded)
 
 ADR-0087 is accepted. P11 trains one model per asset, stops the ordered
 `h=1,2,3,5,10,20,30,60` search at the first Gate-1 failure, and confirms only
@@ -31,9 +31,9 @@ other 12 assets failed Gate 1 at h1 and never entered confirmation. Full rows
 and decision math are in `children/intraday_equities/docs/memos/` plus the P11
 staged artifacts and append-only decision ledgers.
 
-Next step: design the predictive `pi_i` model and HFDR MIO seam under a
-separately approved ADR. No HFDR implementation or validation run exists yet;
-do not restore Gate 2 as a stock-selection filter.
+Next step: run revised P11 through memory, Gate 1, Gate-3 walks and Gate-3
+result. Do not run Gate 2. Then design the predictive `pi_i` model and HFDR
+MIO seam under a separately approved ADR.
 
 ## Landed this wrap: ADR-0082…0086
 

@@ -4247,3 +4247,15 @@ eligible; the optimizer must not infer or backfit them from chosen holdings.
 documentation will mark Gate 2 "No longer used"; historical Gate-2 documents
 will retain their evidence beneath that notice. Implementing the `pi_i` model
 or MIO constraint requires a separately approved design and validation run.
+
+---
+
+## ADR-0089 — Gate 1 selects; Gate 3 audits; MIO controls false-signal capital
+
+**Status:** accepted (2026-09-04; owner correction)
+
+**Decision.** Gate 2 is not a modelability filter. Gate 1 produces provisional asset-horizon selections, then Gate 3 directly refits each Gate-1 selection under the frozen 19 whole-session label permutations (seeds 0 through 18) using its identical 20-fold asset-local walk. The real selected result must beat every null refit and the null-statistic calibration must pass. Gate 3 is therefore the mandatory modelability audit, not a later optional screen.
+
+HFDR is a later MIO capital constraint. It does not replace Gate 3, and P11 does not invoke Gate 2. The completed P11 Gate-2 artifacts are historical evidence from the mistaken configuration; they neither select assets nor substitute for the restored Gate-3 audit.
+
+**Consequences.** The active staged document is memory, gate1, gate3_walks, gate3. Its changed identity requires a fresh execution; no new Gate-3 run has been started by this correction.
