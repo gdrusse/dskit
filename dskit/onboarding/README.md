@@ -204,9 +204,9 @@ anonymous — the client is handed `token=False`, so its cached login is
 never used). One stream, `snapshot`: per file a `FILE` message and an
 inventory RECORD `{repo_id, repo_type, revision, commit_sha, relpath,
 size, sha256}` dated at the commit. The cursor carries the whole
-SELECTION — `{commit_sha, revision, repo_type, allow_patterns,
+SELECTION — `{repo_id, commit_sha, revision, repo_type, allow_patterns,
 ignore_patterns}` — so an unchanged sha is an empty pull only when the
-filters agree too, and a download matching NO file refuses rather than
+repository and filters agree too, and a download matching NO file refuses rather than
 cursoring past nothing. Cursors are per mode: pick one mode per
 repository, or a `live` pull re-downloads what `backfill` already has.
 Pipeline documents then pin the snapshot by its manifest hash (the

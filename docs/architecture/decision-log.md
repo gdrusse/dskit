@@ -3885,8 +3885,7 @@ seed coverage, cutoff/source pins and memory-gate ordering.
 
 ## ADR-0082 — Binary artifacts are acquisitions: the `FILE` message and the `huggingface` connector pack
 
-**Status:** proposed (2026-09-04; owner directed in session: close the
-Hugging Face TODO items, TDD with a skeptic loop)
+**Status:** accepted (2026-09-04; owner approved after TDD and skeptic review)
 
 **Context.** The transformers pack fine-tunes from a config and restores
 from a local `save_pretrained` directory; it never touches the hub, by
@@ -3921,10 +3920,10 @@ passed through, only the client's own `.cache/huggingface/` metadata
 skipped) and emits one FILE plus one RECORD per file — `{repo_id,
 repo_type, revision, commit_sha, relpath, size, sha256}`,
 `effective_date` the commit's `last_modified` — then STATE
-`{commit_sha, revision, repo_type, allow_patterns, ignore_patterns}`:
-the whole SELECTION, because what was acquired is the commit AS
-FILTERED. "Nothing new" (one LOG, the same STATE, no download) requires
-the sha, the repo type AND both pattern lists to agree; a widened
+`{repo_id, commit_sha, revision, repo_type, allow_patterns, ignore_patterns}`:
+the whole SELECTION, because what was acquired is the repository at the
+commit AS FILTERED. "Nothing new" (one LOG, the same STATE, no download)
+requires the repo id, sha, repo type AND both pattern lists to agree; a widened
 `allow_patterns` at an unchanged sha is new content and lands a second
 snapshot. A download matching NO file REFUSES, naming the sha and the
 patterns, and emits no STATE — the cursor never moves onto nothing.
@@ -3953,7 +3952,7 @@ two downloads and two snapshots: pick one mode.
 
 ## ADR-0083 — Pretrained weights enter the transformers pack pinned by manifest hash: encode, classify, forecast
 
-**Status:** proposed (2026-09-04; owner directed in session)
+**Status:** accepted (2026-09-04; owner approved after TDD and skeptic review)
 
 **Context.** With ADR-0082 a model is a verified WORM snapshot under an
 onboarding root. The pack still needs a way to point a node at it, and
@@ -4015,8 +4014,7 @@ onboarding's job.
 
 ## ADR-0084 — A cardinality rule for validation suites: `distinct_count`, optionally per group
 
-**Status:** proposed (2026-09-04; owner directed in session: close the
-small TODO items)
+**Status:** accepted (2026-09-04; owner approved after TDD and skeptic review)
 
 **Context.** The six built-in rules assert per-row facts (`not_null`,
 `unique`, `accepted_values`, `in_range`, `bitemporal`) or one stream-level
@@ -4047,8 +4045,7 @@ values, it does not know what an event is.
 
 ## ADR-0085 — `records-write`: the record-stream sibling of `table-write`, over one shared write discipline
 
-**Status:** proposed (2026-09-04; owner directed in session: close the
-small TODO items)
+**Status:** accepted (2026-09-04; owner approved after TDD and skeptic review)
 
 **Context.** `table-write` persists a MAPPING atomically, refuses to
 clobber, refuses to create a tree, and proves what it wrote. A run also
@@ -4091,8 +4088,7 @@ document needs to pin a stream by digest.
 
 ## ADR-0086 — `groupby`: one record per group over a closed aggregate table; `pivot` ruled a later kind
 
-**Status:** proposed (2026-09-04; owner directed in session: close the
-small TODO items)
+**Status:** accepted (2026-09-04; owner approved after TDD and skeptic review)
 
 **Context.** The flow verbs filter, grid, union, look up and project rows;
 none REDUCES them. "One row per event with its strike count and last mid",
