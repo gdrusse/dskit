@@ -20,12 +20,37 @@
 - Children: `children/<name>/` = thin tier-3 (connectors.py, nodes.py, live.py optional, models.py, testing.py) + configs (source/suite/run/asset-model/universe) + journal + tests; skeleton file list pinned in `tests/children/test_skeleton.py` (changing the skeleton = update the pin same commit). `intraday_poc/live.py` = the only real forward loop (1368 lines): clock gate via vendor `get_clock()`, vendor fetch (IEX), run's own window node `latest_rows`, artifact restore with sidecar hash verification, run's own selector node solved one timestamp wide, flip position via paper client, `decisions.jsonl` per tick, `production()` wrapper, `--once`/`--dry-run`, hardcoded `paper=True`. `intraday_equities/live.py` = intents only (limit-order intent dicts, paper-only refusal).
 
 ## The owner's recorded constraints for a generic serving loop (TODO.md "Long-term goal")
+
+**These are the owner's words, not the plan's.** They are quoted from TODO.md as
+of the research commit and must not be edited to match a later design — where
+the plan answers a constraint, the answer belongs in `production.md`, not here.
+
 Generic (belongs in dskit): restore a run's artifacts with the hash verification the packs already do; poll a registered source on a cadence; re-execute a declared subgraph of the SAME document the backtest scored; emit one decision record per tick; gate on a supplied calendar.
 NOT generic (tier-3): venue/broker API, order types, position semantics, calendar contents. "The loop takes an executor OBJECT; it never learns a venue."
-Constraints: (1) configs are read, not restated; the entry's manifest-bound ServingContract supplies source and coverage. Structural planning must defer its constructor/fingerprint/data_edge before fetch/gates. (2) Fetch THROUGH the connector; descendants are pure or capability-backed release reads. (3) Re-run the SAME graph once from the frozen entry. (4) Scope-keyed accounting and sequential reservations. (5) Document-declared rung, authenticated release/runtime-bound authority, fencing, deadlines and exact input/quote/evidence/risk verification; external venue races reconcile. (6) Cadence belongs to serve. (7) Serve is sole ledger writer; caller-UUID inbox, HALT out-of-band. Normally completed mutating CLIs journal once after result; SIGKILL gaps are reported, not hidden.
-Fail-closed `Node.serving_effect` metadata supplies the structural classification.
-Live additionally requires release-bound readiness GO and exact authenticated document/executor/lease/gateway scope equality.
+Constraints: (1) the loop READS configs (run-dir `config.json` + source config), never restates them; a third config file duplicates both; only operational flags on the CLI. (2) Fetch THROUGH the connector: a live pull is `acquire --mode live`, not a second data path. (3) Decide with the SAME object the backtest used — re-run a subgraph, never re-implement the decision. (4) Money needs the capital seam (half-built: `twr`/`mwr`/`equity_curve` expected by `kinds_report.py`, nothing produces them; periodic contributions make it a sequential replay). (5) Side effects need a refusal-by-default posture: "actually move money" is an explicit, loud, declared act, never a default, never a config typo away. (6) Cadence: `schedule` parses (hash-excluded, ignored) and `clock` parses and refuses — decide whether the serving loop gives them meaning.
 Prerequisites now landed: `foreach` (ADR-0039), gap-aware windows/`latest_rows` (ADR-0040), `TrainableNode` (ADR-0038).
+
+**How `production.md` answers each** (the plan's claims, kept separate from the
+constraints above): (1) §5.2/§5.3 — the entry's manifest-bound `ServingContract`
+supplies source and coverage, and structural planning defers its
+constructor/fingerprint/`data_edge` before fetch and gates. (2) D4 — `acquire
+--mode live` or a store another `watch` fills; descendants are pure or
+capability-backed release reads. (3) D3 — one re-run of the same graph from the
+frozen entry. (4) **Partly unanswered — see the open item below.** (5) D10/D11 —
+document-declared rung, authenticated release-bound authority, fencing,
+deadlines, and a readiness GO for every live rung. (6) D5 — cadence belongs to
+the serve document; pipeline `schedule`/`clock` stay as they are.
+
+**Open against constraint (4).** The plan's `accounting` seam (§5.7.1) is *venue*
+accounting — positions, balances, fills, exposure — which is what guards and
+sizing need. It is **not** the capital/report seam the owner named:
+`dskit/pipeline/kinds_report.py:214` still expects a `capital` block carrying
+`twr`, `mwr`, `cumulative_contributions`, `equity_curve` and `trading_pnl`, and
+nothing in the repo produces any of them. `report.py` (phase 2) covers
+attribution, calibration and drawdown but not TWR/MWR or the equity curve.
+This proposal therefore does **not** close constraint (4); it neither fills the
+capital seam nor claims to. Recorded here so the gap is not lost a second time —
+it wants its own ADR.
 
 ## Design process the owner expects
 Skeptic review, TDD (tests first per module), OOP pillars, ADR with full file-by-file structure approved before any file is created.

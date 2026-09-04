@@ -78,6 +78,17 @@ names in config, values in the environment).
 onto `resilience.py` (its own ADR); a `sqlite` ledger pack and a `parquet`
 run-reference pack are phase 2 (§11).
 
+**Explicitly NOT closed by this proposal — the capital/report seam.** The owner's
+constraint (4) names a half-built seam: `dskit/pipeline/kinds_report.py` expects
+a `capital` block carrying `twr`, `mwr`, `cumulative_contributions`,
+`equity_curve` and `trading_pnl`, and nothing in the repo produces any of them.
+The `accounting` seam in this proposal is *venue* accounting — positions,
+balances, fills, exposure — which is what guards and sizing require; it is a
+different thing. `report.py` (phase 2) covers attribution, calibration and
+drawdown, not TWR/MWR or the equity curve. This ADR neither fills that seam nor
+claims to, and §13's traceability row should be read accordingly. It wants its
+own ADR.
+
 ## 3. Design decisions
 
 Each is a ruling with its reason and the alternative rejected. Reports in
@@ -1724,6 +1735,53 @@ reserved reduction right a query-first resolution. Core supplies
 shadow/paper/recorded execution and accounting,
 monitors, alerts, health and resilience. Purity: stdlib + pipeline + onboarding +
 assets + self; journal function-import only.
+
+**Contents (package).**
+
+```
+dskit/production/
+  __init__.py       public surface (curated re-exports)
+  __main__.py       validate | plan | serve | arm-request | approve-arm | disarm | halt |
+                    reduce | flatten-request | approve-flatten | execute-flatten | resume |
+                    status | verify | reconcile | adopt | ready | replay | outcomes | report
+  base.py           ProductionError; assets checkers; ms/UTC; canonical record hashing
+  vocab.py          every closed vocabulary, one module
+  redact.py         Secrets resolution; redact() on logs, alerts and reasons
+  document.py       ServeDocument; default-deny; the graded/excluded section partition
+  release.py        ReleaseManifest; class/code/adapter/source/artifact/runtime fingerprints
+  records.py        Quote/Candidate/Proposal/Finding/EntryBatch/DecisionPlan/Intent;
+                    Permit ABC + SimulatedPermit + ActPermit; AccountState; RiskVersion
+  clock.py          Clock ABC; WallClock, TestClock, ReplayClock; CLOCK_KINDS
+  sessions.py       Calendar ABC; AlwaysOpen, WeeklySessions, EventWindow, Composite
+  cadence.py        Cadence ABC; FixedInterval, AlignedBar, AtTimes, OnData; Overrun
+  control.py        ControlInbox; CommandProcessor; sole-writer dispatch
+  feed.py           ServingContract + FeedSpec; EntrySourceFeed; ReplayFeed
+  decider.py        serving_document(); Decider; Proposer ABC; IntentRows, TargetPositions
+  guards.py         Guard ABC; GuardChain; Limit; RangeGuard; Measure ABC + registry
+  breaker.py        Breaker (active | reducing | halted); trips; kill switch; cooling-off
+  arming.py         ApprovalVerifier ABC; maker-checker proofs; Arming fold; ActPermit minting
+  executor.py       Executor ABC (read/query/cancel); SubmittingExecutor; Shadow, Paper,
+                    Recorded, Live; PositionBook; executor_conformance_suite
+  accounting.py     Accounting ABC; PaperAccounting; RecordedAccounting
+  coordination.py   Lease ABC; ProcessLease; LeasePermit; fencing tokens
+  policy.py         ActionPolicy; TransitionPolicy; SubmissionVerifier; the closed matrices
+  resilience.py     Classifier ABC; Retry; CircuitBreaker; RateLimiter; Transport ABC
+  ledger.py         Ledger ABC + barrier; JsonlLedger; Checkpoint; ServeRoot; chain + verify
+  reconcile.py      Reconciler; ReconReport; break classification
+  monitors.py       Monitor ABC; Reference/Chunker/Threshold/Response; monitor families
+  metrics.py        counter/gauge/histogram registry; label cardinality cap; JSONL flush
+  alerts.py         AlertSink ABC; Log/Memory/Email/Webhook; AlertRouter; ALERT_SINK_KINDS
+  health.py         Health state machine; HealthProbe ABC; Heartbeat; instance lock; signals
+  loop.py           ServeLoop; abstract Tick (one method per phase); lifecycle; exit codes
+  readiness.py      release-bound checklist → GO / NO-GO
+  outcomes.py       [phase 2] bitemporal outcome join, supersede chain, as-of cut
+  report.py         [phase 2] attribution, calibration, drawdown, replay parity diff
+  libs/sqlite.py    [phase 2] SqliteLedger
+  libs/parquet.py   [phase 2] RunReference over the run's predictions parquet
+  README.md / AGENTS.md / CLAUDE.md
+tests/production/   purity + oop + every module above + a shadow/paper/live_limited e2e
+examples/production/ serve-shadow.json, serve-paper.json, calendar-weekly.json
+```
 
 **Consequences.** Children stop owning loops: a child ships an executor subclass,
 accounting, approval and fenced-lease implementations, optionally a
