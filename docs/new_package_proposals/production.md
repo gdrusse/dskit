@@ -136,8 +136,8 @@ brackets.
   recipe and manifest-bound required-universe evidence—never inferred from
   dedupe `key_fields`. The configured window param must already exist in the run
   document, preserving the driver's existing-key-only override rule. After fetch,
-  one entry execution returns the rows plus `EntryBatch{outputs,
-  watermarks_by_key, coverage_digest, data_asof_ms, inputs_digest}`; the same
+  one entry execution returns the rows plus the seven-field `EntryBatch`
+  defined in §5.2; the same
   contract validates exact uniform coverage and oldest-input freshness before
   only pure or capability-backed release descendants run. No second mutable
   source can execute. Rejected: ordinary RESOLVE before the gate, a label-only
@@ -333,7 +333,8 @@ brackets.
   baselines and candidate scopes. Proposals act sequentially with prior
   reservations/results folded. Live requires child accounting, valuation
   freshness, approval, a fenced lease and deadline-conforming transport. Core
-  ships shadow, paper and recorded execution/accounting only.
+  ships shadow, paper and recorded execution/accounting, plus the abstract
+  `LiveExecutor` wrapper; every concrete venue subclass is a child.
 - **D15 — One append-only chain per explicit serve series; state is its fold.**
   `series_id` is a required operator-issued UUID, stable across releases and
   distinct from the display name, release and venue/account lease scope. A
@@ -346,7 +347,8 @@ brackets.
   Corrections supersede, never mutate. `arming.json`, `breaker.json` and
   `checkpoint.json` are caches carrying the ledger head they project. A
   valid cache behind the ledger is discarded and rebuilt; an ahead/divergent
-  cache refuses. On graceful stop the writer appends/barriers `process_stop`,
+  cache refuses. On graceful stop the writer appends/barriers a `process` record with
+  `event: stop`,
   obtains the resulting final head, then writes one journal row rendering
   `process_id` and that head into `notes` per D22; the ledger never claims its
   own final hash.
@@ -413,6 +415,7 @@ brackets.
   `record_production` exactly once in `finally`; it does not use the existing
   context manager because that freezes outputs before the attempt. This covers
   `plan` (it writes an immutable release, so it is a mutating verb),
+  `ready` (it appends a `readiness` record),
   `arm-request`, `approve-arm`, `disarm`, `halt`, `reduce`, `flatten-request`,
   `approve-flatten`, `execute-flatten`, `resume`, `reconcile` and `adopt`;
   read-only verbs do not journal. SIGKILL/power loss can leave a durable inbox
@@ -890,7 +893,10 @@ non-finite number.
   input/quote/accounting freshness deadlines, readiness validity, calendar close,
   authority expiry and lease/local deadline.
 - `EvidenceRequirement{measure, window_kind, window_arg, scope_key,
-  window_start_ms, window_end_ms, baseline_at_ms, include_working}` — what a
+  window_start_ms, window_end_ms, baseline_at_ms, include_working (defaulting
+  `True`, stamped by `Limit` before the digest is taken — so
+  `requirement_digest` is computed once, after stamping, never inside
+  `Measure.requirements`)}` — what a
   `Measure` declares it needs before sizing, and the unit accounting snapshots
   against. `requirement_digest = canonical_hash(EvidenceRequirement)` over
   exactly those fields in that order, with instants as epoch-ms ints and
@@ -914,7 +920,12 @@ non-finite number.
   `@abstractmethod check(proposal, state) -> Finding`. `state` is read-only:
   the validated `AccountState`, decision history, feed status and ages, calendar,
   breaker and rung. Stale or incomplete accounting evidence refuses.
-- `GuardChain(guards)`: evaluates every guard against the original proposal and
+- `GuardChain(guards)`: `requirements(candidates, at_ms, calendar) ->
+  tuple[EvidenceRequirement]` collects what every configured measure declares
+  over every candidate scope key, stamps each `Limit`'s `include_working`, and
+  deduplicates by `requirement_digest` — this is the union `Accounting.snapshot`
+  receives, and the chain is its only producer. `check_all` then evaluates
+  every guard against the original proposal and
   records every finding. Verdicts use
   `allow < warn < amend < refuse < hold < halt`; amendments can only reduce one
   declared scalable field, compose by the strictest monotone reduction, and
@@ -1063,7 +1074,8 @@ other permit **by type** — refuses meaning it returns
   Submission accepts only `ActPermit`. Its concrete wrapper holds the act gate
   and delegates the indivisible local verify/call sequence to
   `SubmissionVerifier.verify_and_call`; the callback is
-  `_submit_native(intent, permit, timeout_ms)`. The gateway checks fencing,
+  `@abstractmethod _submit_native(intent, permit, timeout_ms)` — abstract, so
+  core ships the wrapper and only a child's venue subclass is constructible. The gateway checks fencing,
   deadline and idempotency atomically. Ordinary or reduction authorities are
   never executor inputs. `submit` always RETURNS an `Ack` and never raises for
   a permission fact: a non-`ActPermit` is `Ack(not_sent, reason="permit_type")`,
@@ -1209,7 +1221,8 @@ deadline invalidates the local permit without waiting for nominal expiry.
 
 ### 5.9 `reconcile.py`
 
-`Reconciler.run(ledger_state, executor, scope) -> ReconReport{breaks[], status}`
+`Reconciler.run(ledger_state, executor, scope) -> ReconReport{breaks[], status,
+ours_digest, theirs_digest}` (only the reconciler holds both sides)
 resolves every pending ref through `executor.order(ref)` and compares open
 orders, balances and settlements; it compares fill-derived against venue
 positions only when `capabilities().positions == "venue"`, since against a
@@ -1501,7 +1514,12 @@ knob because D13 fixes the answer: query, never resend.
   cumulative value and drawdown; the replay parity diff with
   `divergence ∈ {data, nondeterminism, version, guard, state, execution}`;
   markdown and JSON emitters (the `runs.py` pipe-escape rule reused).
-- `readiness.py` (phase 1): a JSON checklist (`item`, `required`, `evidence`,
+- `readiness.py` (phase 1): `Readiness(document, release)` with
+  `evaluate(at_ms) -> ReadinessResult{verdict, items, readiness_digest,
+  evaluated_at_ms, valid_until_ms}` and `current(ledger) -> ReadinessResult |
+  None` (the folded latest unexpired record). `readiness_digest =
+  canonical_hash(release_hash, sorted items with their verdicts and waivers)`.
+  The checklist is a JSON file (`item`, `required`, `evidence`,
   `waiver`) evaluated to GO / NO-GO; NO-GO exits 5. The evaluation is appended
   as a `readiness` record (§6) and barriered, so the GO is durable,
   release-bound and expiring (`evaluated_at_ms + readiness.valid_for_s`)
@@ -1515,9 +1533,10 @@ knob because D13 fixes the answer: query, never resend.
 ### 5.14 `policy.py` — the cross-cutting invariant matrix
 
 `ActionPolicy.permits(operation, risk_effect, rung, breaker, health, readiness,
-authority) -> Decision{allowed, reason}`,
+authority) -> PolicyDecision{allowed, reason}`,
 `TransitionPolicy.permits(from_state, to_state, cause, proof) ->
-Decision{allowed, reason}` and
+PolicyDecision{allowed, reason}` (named so it cannot be confused with the
+`Decision` collaborator bundle in `loop.py`) and
 `SubmissionVerifier.verify_and_call(intent, permit, native_call) -> Ack` are
 the sole owners of the following closed matrices; callers cannot duplicate or extend them by
 branching. Planning enumerates every cell and refuses any unclassified value.
@@ -1657,8 +1676,8 @@ sha256-canonical idiom.
 |---|---|---|
 | `process` | start / stop / recovered | `series_id`, `release_hash`, `doc_hash`, `serving_hash`, `run_hash`, `artifact_digests`, `source_config_hash`, `runtime_fingerprint`, `rung`, `executor_kind`, `code_version`; stop adds `exit_code`. After its barrier, one journal row is written whose `notes` render the process id and final head in the D22 `production-v1` form |
 | `tick_start` | scheduled tick | `tick_id`, `tick_at_ms`, `release_hash` |
-| `tick` | terminal tick | `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash, required_keys_digest, watermarks_by_key, coverage_digest}`, `inputs_digest`, `calendar`, `overrun_absorbed[]` (the tick instants this tick coalesced or skipped), `latency_ms{gate, verify_release, fetch, read_entry, coverage, evaluate, candidates, quotes, account, propose}` (one key per §5.13 `Tick` phase method, pinned by a test) and `leg_latency_ms{guard, authorize, act}` summed over the tick's legs, since those are per-proposal steps, not phases: `guard` covers §5.13 steps (1)–(3), `authorize` steps (4)–(6), and `act` step (7). Step (8) records the outcome and is charged to the tick, not the leg, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}` |
-| `decision` | tick (exactly one) | `decision_plan_ids[]`, `decision_plan_digests[]`, `legs[]{leg_id, instrument, prediction, uncertainty, baseline, expected_value, decision_price, proposal, findings[], final, client_ref}` — a no-op tick has `final: none` per leg or zero legs with `reason` |
+| `tick` | terminal tick | `tick_id`, `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash, required_keys_digest, watermarks_by_key, coverage_digest}`, `inputs_digest`, `calendar`, `overrun_absorbed[]` (the tick instants this tick coalesced or skipped), `latency_ms{gate, verify_release, fetch, read_entry, coverage, evaluate, candidates, quotes, account, propose}` (one key per §5.13 `Tick` phase method, pinned by a test) and `leg_latency_ms{guard, authorize, act}` summed over the tick's legs, since those are per-proposal steps, not phases: `guard` covers §5.13 steps (1)–(3), `authorize` steps (4)–(6), and `act` step (7). Step (8) records the outcome and is charged to the tick, not the leg, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}` |
+| `decision` | tick (exactly one) | `tick_id`, `decision_plan_ids[]`, `decision_plan_digests[]`, `legs[]{leg_id, instrument, prediction, confidence, baseline, expected_value, reference_price, proposal, findings[], final, client_ref}` — every leg field but `leg_id`, `findings[]`, `final` and `client_ref` is copied from the leg's `Proposal` (§5.4) under the same name — a no-op tick has `final: none` per leg or zero legs with `reason` |
 | `decision_plan` | proposal after complete pre-submit evaluation (barrier before proposal submit) | `plan_id`, entry/head/candidate provenance, original/final proposal, input/quote/evidence as-of+digests, `findings[]`, `gate_results[]`, scope verdict, `risk_effect`, `risk_version`, `risk_state_digest`, `result ∈ {submit, not_sent}` |
 | `intent` | proposal selected for possible submit | the canonical `records.Intent` value object; no second schema |
 | `authorization` | permitted live intent (barrier before submit) | serialized `ActPermit` plus `authority_use_id | null`; no raw authority is executable |
@@ -1723,7 +1742,7 @@ dskit/production/
 │                      RESILIENCE_OUTCOMES (ok|transient|throttled|fatal|ambiguous — distinct from OUTCOME_KINDS),
 │                      RETRY_DECISIONS, JITTER_MODES, RETRY_AFTER_MODES, RETRY_WRITE_MODES, OVERRUN_POLICIES,
 │                      TICK_PHASES (the ten Tick method names, in order), LEG_STEPS (guard|authorize|act),
-│                      WINDOW_KINDS (none|duration|count|calendar) and CALENDAR_WINDOWS (session|day|event),
+│                      WINDOW_KINDS (none|duration|count|calendar),
 │                      READINESS_VERDICTS (go|no_go), METRIC_NAMES + METRIC_LABEL_VALUES (§5.11.1's tables live here,
 │                      not in metrics.py), BREAK_ORIGINS (ours|external),
 │                      AT_TIMES_RELATIVE, CALENDAR_WINDOWS, ON_MISMATCH, RECON_ACTIONS, TRIP_REASONS,
@@ -1902,6 +1921,24 @@ carries all three:
   outputs by pre-seeding `outputs` with them before calling `rerun`, which is
   why §5.3 speaks of executing "from the frozen entry binding" rather than
   passing bindings in.
+
+- **The search-only override validation stays with `_SearchSeam`.** `_execute`
+  today calls `unsearchable_space_why(role, parts[1])` and refuses any override
+  addressing an unsearchable role (`driver.py:508-522`), and `data` is one of
+  them — "a trial would rebuild the source with params the run's identity never
+  hashed" (`planner.py:87-104`). Serving's one override addresses exactly a
+  `data`-role node's window param, so a verbatim extraction would refuse the
+  only override serving needs. The check moves up into `_SearchSeam`, which is
+  where it belongs: its reason is about *search trials*, and it does not hold
+  for serving, because serving's window path must already exist in the run
+  document (§5.3) — the identity did hash it. `SubgraphRunner` validates only
+  that an override addresses a declared node and an existing param path.
+- **`rerun` honours `policy.defer(key)`.** `_execute` computes `dirty` from the
+  override targets plus their descendants, and serving's only override
+  addresses the entry — so a naive extraction would re-run the entry and take a
+  second mutable read, contradicting D3 and D6. `rerun` skips any key the
+  policy defers and uses the output already seeded for it, which is what makes
+  "no second mutable snapshot can occur" true rather than aspirational.
 
 `_SearchSeam.__init__`'s remaining two arguments stay with the seam and do not
 move to the runner: `key` (it is what the objective is parsed from) and
