@@ -1,9 +1,9 @@
 # Re-entry
 
-Current wrap: 2026-09-04. `main` is synchronized with `origin/main` at
-`fde01b5`. P10, its memo, and the skeleton memo guidance are committed and
-pushed. Last verification: 478 passed, 11 skipped; Ruff clean. No pipeline is
-running.
+Current wrap: 2026-09-04. `main` is synchronized with `origin/main`. PR #7
+(the pmquant child) is merged; the staged-study ADR that had also taken the
+number 0075 is now ADR-0081. Last verification: see the end of this file. No
+pipeline is running.
 
 ## PICK UP HERE: P11 asset-local Gates 1 and 2
 
@@ -31,6 +31,25 @@ After approval, implement the revised resumable pipeline, run a memory
 preflight and focused tests, then run Gates 1 and 2 to completion. Journal every
 stage and stop before Gate 3. Report every Gate-1 stop, Gate-2 decision, ledger
 entry, and failure without fallback.
+
+## Landed this wrap: pmquant child (PR #7)
+
+- `children/pmquant/` — prediction-market ladders (Kalshi, Polymarket) as
+  thin tier-3 kinds + JSON over dskit seams. `configs/run-e2e.json` is the
+  proof document (22 nodes; `tests/test_e2e.py` runs it on the synthetic
+  world). `run-kalshi-ladders.json` is its real-data twin.
+- dskit generic, ADR-0075…0080: onboarding packs `kalshi`, `polymarket`,
+  `predexon` + `leads.py`; the `localtables` connector; the `observations`
+  pipeline kind; the public clause DSL; `acquired_at` is the commit instant;
+  one backoff ceiling (`connector.MAX_BACKOFF_S`); Polymarket `closedTime`.
+- **Waiting on the owner:** `PREDEXON_API_KEY` in the environment before
+  `configs/source-predexon.json` can pull; the twin's real-data run on a
+  machine holding `~/pmquant_data`; the rulings listed in `TODO.md` under
+  "Found by the pmquant child build".
+- Also merged: `chore/quote-pull-budget` — the Alpaca quotes backfill
+  `budget_seconds` 3000 → 570, so an interrupted pull loses under ten minutes.
+- `fix/hstar-min-split-gain` is the pre-rewrite lineage (no common ancestor
+  with `main`); every file it carries is already in `main`. Safe to delete.
 
 ## Reference
 

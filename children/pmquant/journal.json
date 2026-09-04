@@ -1,0 +1,4 @@
+{
+  "decisioning_dir": "docs/decisioning",
+  "notes": "Walk-up marker for dskit.journal (ADR-0056). Locate finds this file; CSV + generated README live under decisioning_dir."
+}

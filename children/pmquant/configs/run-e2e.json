@@ -1,0 +1,290 @@
+{
+  "name": "pmquant-ladder-e2e",
+  "notes": "The whole thesis in ONE document, proven on the synthetic ladder world the child ships (pmquant.testing): acquired ladders -> settlement labels -> the banking spine (which series banked enough settled events to be tested at all) -> event panels -> a seeded transformer ensemble for q-hat -> the D-138 edge gate (owned validate over event-clustered log-loss deltas vs the market-implied null, then the owned studentized cluster-bootstrap stat_test with BH) -> the fractional-Kelly MIO over the survivors on the held-out test block -> the run evaluator. Every knob is here; the code reads it. configs/run-kalshi-ladders.json is this document's TWIN for the real Kalshi stores — same DAG, and a test pins that the two differ only in where the data lives, the fee book, the eligibility bar and the training budget. Reproduce: python -c \"from pmquant.testing import acquire_synthetic; acquire_synthetic('./onboarding_root', {'series': ['KXSYNA', 'KXSYNB'], 'events_per_series': 80})\" then python -m dskit.pipeline run configs/run-e2e.json --asof 2026-04-01 --adapter pmquant. tests/test_e2e.py runs exactly this document, relocating only `root`.",
+  "pipeline": {
+    "ladder_records": {
+      "uses": "pmquant-ladder-source",
+      "params": {
+        "root": "./onboarding_root",
+        "source": "synthetic",
+        "venue": "kalshi"
+      },
+      "notes": "One record per (contract, decision epoch) with the resting ladders and the recomputed usable flag; settle rows ride along. venue is a PARAM (owner ruling): a Polymarket run is this document with venue=polymarket. `synthetic` is the source alias pmquant.testing.acquire_synthetic registers; the real twin names the imported stores."
+    },
+    "settlements": {
+      "uses": "pmquant-settlement",
+      "inputs": {
+        "instruments": "$ladder_records.instruments"
+      },
+      "params": {
+        "root": "./onboarding_root",
+        "source": "synthetic"
+      },
+      "notes": "Settled contract -> bool outcomes plus the strike rows; the wired universe keeps the two readers on the same series."
+    },
+    "bankable": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$ladder_records.records"
+      },
+      "params": {
+        "require_usable": true
+      },
+      "notes": "Only usable decision epochs (admissible book AND quality) may bank, be scored, or be sized. Cutting here is the document's job, not the reader's."
+    },
+    "bank": {
+      "uses": "event-bank",
+      "inputs": {
+        "events": "$bankable.records",
+        "outcomes": "$settlements.outcomes"
+      },
+      "params": {
+        "strictly_before": "$splits.train_end_ms"
+      },
+      "notes": "Settled events per series counted strictly before the train boundary — the admission counter reads only what training could have seen."
+    },
+    "eligible_family": {
+      "uses": "eligibility",
+      "inputs": {
+        "banked": "$bank.counts"
+      },
+      "params": {
+        "min_events": 20
+      },
+      "notes": "The eligibility bar. The production bar is 50 settled events (docs/01 §2); 20 here is the bar the synthetic world and a young real corpus can clear — raise it, never lower it, as the store grows."
+    },
+    "banking_report": {
+      "uses": "banking-report",
+      "inputs": {
+        "banked": "$bank.counts",
+        "family": "$eligible_family.instruments",
+        "extents": "$bank.extents"
+      },
+      "params": {
+        "min_events": 20
+      },
+      "notes": "The ledger: who banked what, who was admitted, who is still short."
+    },
+    "panels": {
+      "uses": "pmquant-ladder-panels",
+      "inputs": {
+        "records": "$bankable.records",
+        "outcomes": "$settlements.outcomes",
+        "markets": "$settlements.rows",
+        "family": "$eligible_family.instruments"
+      },
+      "params": {},
+      "notes": "One panel item per settled event (T leads x C rungs x 41 token features), cut into train/val/cal/test on the event's close instant. Defaults are the frozen recipe (the full 21-lead grid, the featurizer's depth); `drop` runs an ablation."
+    },
+    "seed_0": {
+      "uses": "pmquant-ladder-train",
+      "inputs": {
+        "rows": "$panels.train_rows",
+        "val_rows": "$panels.val_rows"
+      },
+      "params": {
+        "adapter": "pmquant.models:LadderPanelAdapter",
+        "module": "pmquant.models:LadderQhatModule",
+        "module_params": {},
+        "epochs": 8,
+        "lr": 0.001,
+        "optimizer": "torch.optim.AdamW",
+        "monitor": "claims_val_event_ll",
+        "loader": {
+          "batch_size": 16,
+          "shuffle": true,
+          "seed": 0
+        }
+      },
+      "notes": "Seed 0 of the ensemble. AdamW is DECLARED because the torch pack's default is plain SGD, which never leaves the uniform prediction on this recipe (the 2026-09-04 e2e sweep: 0.636 = ln-3/3 log-loss at 3, 15 and 40 epochs). Every epoch runs; the checkpoint restored is the one with the best per-event validation log-loss over the eligible events (ADR-0035 monitor). Eight epochs clear the synthetic world's mispricing in seconds; the recipe scales by editing this number, which moves the hash by design."
+    },
+    "seed_1": {
+      "uses": "pmquant-ladder-train",
+      "inputs": {
+        "rows": "$panels.train_rows",
+        "val_rows": "$panels.val_rows"
+      },
+      "params": {
+        "adapter": "pmquant.models:LadderPanelAdapter",
+        "module": "pmquant.models:LadderQhatModule",
+        "module_params": {},
+        "epochs": 8,
+        "lr": 0.001,
+        "optimizer": "torch.optim.AdamW",
+        "monitor": "claims_val_event_ll",
+        "loader": {
+          "batch_size": 16,
+          "shuffle": true,
+          "seed": 1
+        }
+      },
+      "notes": "Seed 1 — identical recipe, a different loader seed. The parent ran five; two is the smallest ensemble whose merge can disagree."
+    },
+    "pred_cal_0": {
+      "uses": "pmquant-ladder-predict",
+      "inputs": {
+        "panel_rows": "$panels.cal_rows",
+        "artifact_path": "$seed_0.artifact_path"
+      },
+      "params": {
+        "module": "pmquant.models:LadderQhatModule",
+        "block": "cal"
+      },
+      "notes": "Seed 0 scored on the CAL band — the block the edge test reads. Never val: the checkpoint was selected there, so a val score is optimistic by construction."
+    },
+    "pred_cal_1": {
+      "uses": "pmquant-ladder-predict",
+      "inputs": {
+        "panel_rows": "$panels.cal_rows",
+        "artifact_path": "$seed_1.artifact_path"
+      },
+      "params": {
+        "module": "pmquant.models:LadderQhatModule",
+        "block": "cal"
+      }
+    },
+    "pred_test_0": {
+      "uses": "pmquant-ladder-predict",
+      "inputs": {
+        "panel_rows": "$panels.test_rows",
+        "artifact_path": "$seed_0.artifact_path"
+      },
+      "params": {
+        "module": "pmquant.models:LadderQhatModule",
+        "block": "test"
+      },
+      "notes": "Seed 0 scored on the TEST block — read only by the sizer and the report, never by the gate."
+    },
+    "pred_test_1": {
+      "uses": "pmquant-ladder-predict",
+      "inputs": {
+        "panel_rows": "$panels.test_rows",
+        "artifact_path": "$seed_1.artifact_path"
+      },
+      "params": {
+        "module": "pmquant.models:LadderQhatModule",
+        "block": "test"
+      }
+    },
+    "ens_cal": {
+      "uses": "pmquant-ensemble",
+      "inputs": {
+        "member_0": "$pred_cal_0.pred_rows",
+        "member_1": "$pred_cal_1.pred_rows"
+      },
+      "params": {
+        "require": 2
+      },
+      "notes": "The loud merge: exactly `require` member frames, per-cell mean q, refusing a frame that disagrees on the cell set."
+    },
+    "ens_test": {
+      "uses": "pmquant-ensemble",
+      "inputs": {
+        "member_0": "$pred_test_0.pred_rows",
+        "member_1": "$pred_test_1.pred_rows"
+      },
+      "params": {
+        "require": 2
+      }
+    },
+    "qhat_cal": {
+      "uses": "pmquant-signal-qhat",
+      "inputs": {
+        "pred_rows": "$ens_cal.pred_rows"
+      },
+      "params": {},
+      "notes": "The ensemble frame as a predict(record) -> belief signal, keyed by (contract, lead)."
+    },
+    "qhat_test": {
+      "uses": "pmquant-signal-qhat",
+      "inputs": {
+        "pred_rows": "$ens_test.pred_rows"
+      },
+      "params": {}
+    },
+    "market_baseline": {
+      "uses": "pmquant-market-implied",
+      "params": {},
+      "notes": "The D-006 null: the market's own price as the belief. Beating it out of sample is the bar for any capital."
+    },
+    "validate": {
+      "uses": "validate",
+      "inputs": {
+        "records": "$bankable.records",
+        "signal": "$qhat_cal.signal",
+        "baseline": "$market_baseline.signal",
+        "outcomes": "$settlements.outcomes"
+      },
+      "params": {
+        "metric": "logloss",
+        "min_events": 5,
+        "split": "cal"
+      },
+      "notes": "Toolkit-OWNED. Per series, per event: baseline log-loss minus model log-loss over the cal band — the D-138 delta the stat test bootstraps. Records are (event, lead, rung) cells; the event is the cluster."
+    },
+    "edge_test": {
+      "uses": "stat_test",
+      "inputs": {
+        "scores": "$validate.cluster_scores"
+      },
+      "params": {
+        "alpha": 0.1,
+        "correction": "bh",
+        "method": "studentized",
+        "n_boot": 1000,
+        "seed": 0
+      },
+      "notes": "Toolkit-OWNED. Studentized cluster bootstrap of the mean delta per series, BH across the family: each series is its own hypothesis (never pooled). Survivors are the only series the sizer may touch."
+    },
+    "size": {
+      "uses": "pmquant-kelly-mio",
+      "inputs": {
+        "records": "$bankable.records",
+        "survivors": "$edge_test.survivors",
+        "signal": "$qhat_test.signal",
+        "markets": "$settlements.rows"
+      },
+      "params": {
+        "bankroll": 10000,
+        "deploy_frac": 0.25,
+        "kelly_fraction": 0.5,
+        "min_lot": 1,
+        "fee_rate_by_series": {
+          "KXSYNA": 0.07,
+          "KXSYNB": 0.07
+        },
+        "tau": 0.0,
+        "n_tangents": 128,
+        "split": "test"
+      },
+      "notes": "Per event, the exact-log fractional-Kelly tangent MILP (HiGHS, deterministic) over the entry-gated survivors on the TEST block: fee-aware net edge (Kalshi ceil-to-cent per order), depth-walked fills, integer lots. Fee rates are per SERIES and FAIL-CLOSED: every series the sizer may touch needs its own entry (a scalar, or dated cases keyed on the market's close instant as the real twin carries) — a missing rate is a refusal, never a default."
+    },
+    "run_report": {
+      "uses": "run-report",
+      "inputs": {
+        "training": "$seed_0.metrics",
+        "validation": "$validate.evidence",
+        "edge": "$edge_test.evidence",
+        "sizing": "$size.evidence",
+        "survivors": "$edge_test.survivors",
+        "lots": "$size.lots",
+        "banked": "$bank.counts",
+        "family": "$eligible_family.instruments"
+      },
+      "params": {
+        "title": "pmquant ladder e2e",
+        "min_events": 20
+      },
+      "notes": "Toolkit-OWNED evaluator: per stage, per instrument, per split — and the LOUD flag when the gate found survivors and the sizer deployed nothing."
+    }
+  },
+  "splits": {
+    "kind": "trailing",
+    "test_days": 10,
+    "cal_days": 8,
+    "val_days": 12,
+    "train_days": "all-prior",
+    "policy": "event-close",
+    "notes": "Rolling windows off the data edge: the newest 10 days of settled events are the test block, the 8 before them the cal band (where the gate is read), the 12 before those the val block (where the checkpoint is selected), everything earlier trains. Every record of an event is cut on the event's CLOSE, so one event lives in one block."
+  }
+}

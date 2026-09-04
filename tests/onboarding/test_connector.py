@@ -4,12 +4,15 @@ import pytest
 
 from dskit.assets.base import AssetError
 from dskit.onboarding import (
+    MAX_BACKOFF_S,
     PROTOCOL,
     Connector,
     check_config,
     check_message,
+    connector,
     resolve_connector,
 )
+from dskit.onboarding.libs import kalshi, polymarket, predexon, restapi, schwab
 
 from .fake_connector import FakeConnector, record
 
@@ -123,7 +126,20 @@ def test_a_spec_may_not_declare_the_reserved_keys():
 # -- resolve_connector ------------------------------------------------------
 
 
-@pytest.mark.parametrize("kind", ["alpaca", "localfiles", "restapi", "schwab"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "alpaca",
+        "alpaca_quotes",
+        "kalshi",
+        "localfiles",
+        "localtables",
+        "polymarket",
+        "predexon",
+        "restapi",
+        "schwab",
+    ],
+)
 def test_resolve_registered_kind(kind):
     cls = resolve_connector(kind)
     assert issubclass(cls, Connector)
@@ -147,3 +163,19 @@ def test_resolve_refuses_non_connector():
 def test_resolve_refuses_missing_attribute():
     with pytest.raises(AssetError, match="no attribute"):
         resolve_connector("tests.onboarding.fake_connector:Ghost")
+
+
+# -- MAX_BACKOFF_S ----------------------------------------------------------
+
+
+def test_max_backoff_is_one_name_across_every_pack():
+    # `is`, not `==`: a pack that restated 60.0 locally would pass equality
+    # and drift silently; identity proves each one BINDS the contract's name.
+    assert (
+        kalshi.MAX_BACKOFF_S is predexon.MAX_BACKOFF_S
+        is polymarket.MAX_BACKOFF_S is restapi.MAX_BACKOFF_S
+        is schwab.MAX_BACKOFF_S is connector.MAX_BACKOFF_S is MAX_BACKOFF_S
+    )
+    # The documented ceiling, restated on purpose — an assertion sourced from
+    # its subject would assert nothing.
+    assert MAX_BACKOFF_S == 60.0

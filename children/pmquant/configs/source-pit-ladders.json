@@ -1,0 +1,14 @@
+{
+  "notes": "The on-disk point-in-time ladder ledger — one newline-JSON file per series under <data root>/history/predexon_l2_pit/ (Kalshi pulls AND the Polymarket backfill share the layout, so ONE source imports both venues; the venue is read off the series prefix downstream, never declared here). Imported through the generic localtables connector: every row is a decision epoch (event_ticker, contract_ticker, kind lead|settle, lead_frac, epoch_ts_ms, book_json, admissible, quality_ok, usable, ...). `stamp_stem_as` writes the file stem — the series — onto each row; a row already carrying a different `series` refuses, so a misfiled ledger cannot enter silently. The instant is epoch_ts_ms in epoch milliseconds, hence `effective_unit: ms`. Register with: python -m dskit.onboarding register-source pit_ladders --connector localtables --config @configs/source-pit-ladders.json --catalog-source <P1 source> --activate; then acquire --mode backfill. Change `path` to your data root; nothing else is machine-specific.",
+  "path": "~/pmquant_data/history",
+  "layout": "directory",
+  "streams": ["predexon_l2_pit"],
+  "formats": ["ndjson", "ndjson.gz"],
+  "effective_field": "epoch_ts_ms",
+  "effective_unit": "ms",
+  "stamp_stem_as": "series",
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

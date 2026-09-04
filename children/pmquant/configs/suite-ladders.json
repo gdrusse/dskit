@@ -1,0 +1,85 @@
+{
+  "name": "ladders",
+  "notes": "Structural gates over the two imported stores before certification — the point-in-time ledger (stream predexon_l2_pit, from source-pit-ladders.json) and the settled-markets table (stream markets, from source-settled-markets.json). Structure only: a row that ARRIVES with its keys, a lawful settlement vocabulary, prices inside [0, 1]. Whether a book is usable is the pipeline's call (pmquant-ladder-source recomputes it from the ladders), never a suite's — the vocabulary here is restated on purpose, so an assertion never reads its expectation from the thing it validates.",
+  "rules": [
+    {
+      "id": "pit-rows-arrived",
+      "target": "predexon_l2_pit",
+      "rule": "row_count",
+      "kwargs": { "min": 1 },
+      "severity": "error",
+      "notes": "An empty ledger import is a wrong path or an empty store, never a quiet session."
+    },
+    {
+      "id": "pit-contract-present",
+      "target": "predexon_l2_pit",
+      "rule": "not_null",
+      "kwargs": { "field": "contract_ticker" },
+      "severity": "error",
+      "notes": "Every decision epoch belongs to a contract; the reader keys on it."
+    },
+    {
+      "id": "pit-event-present",
+      "target": "predexon_l2_pit",
+      "rule": "not_null",
+      "kwargs": { "field": "event_ticker" },
+      "severity": "error",
+      "notes": "The event is the independence unit of every split and every bootstrap cluster."
+    },
+    {
+      "id": "pit-epoch-kind",
+      "target": "predexon_l2_pit",
+      "rule": "accepted_values",
+      "kwargs": { "field": "kind", "values": ["lead", "settle"] },
+      "severity": "error",
+      "notes": "Two epoch kinds exist; anything else is a writer defect."
+    },
+    {
+      "id": "pit-bitemporal",
+      "target": "predexon_l2_pit",
+      "rule": "bitemporal",
+      "kwargs": {},
+      "severity": "error",
+      "notes": "A book dated after it was acquired cannot be point-in-time."
+    },
+    {
+      "id": "markets-rows-arrived",
+      "target": "markets",
+      "rule": "row_count",
+      "kwargs": { "min": 1 },
+      "severity": "error"
+    },
+    {
+      "id": "markets-ticker-unique",
+      "target": "markets",
+      "rule": "unique",
+      "kwargs": { "field": "ticker" },
+      "severity": "error",
+      "notes": "One row per contract; a duplicate means two stores were merged without dedup."
+    },
+    {
+      "id": "markets-result-vocabulary",
+      "target": "markets",
+      "rule": "accepted_values",
+      "kwargs": { "field": "result", "values": ["yes", "no", ""] },
+      "severity": "error",
+      "notes": "Settled contracts read yes/no; an open one carries the empty string. The settlement reader refuses anything else by name."
+    },
+    {
+      "id": "markets-strike-type",
+      "target": "markets",
+      "rule": "accepted_values",
+      "kwargs": { "field": "strike_type", "values": ["less", "between", "greater"] },
+      "severity": "error",
+      "notes": "The three rung geometries; the ladder type is classified from them."
+    },
+    {
+      "id": "markets-yes-bid-range",
+      "target": "markets",
+      "rule": "in_range",
+      "kwargs": { "field": "yes_bid", "min": 0, "max": 1 },
+      "severity": "warn",
+      "notes": "Quotes are dollar probabilities; a value outside [0, 1] is a unit slip upstream."
+    }
+  ]
+}

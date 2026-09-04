@@ -1,0 +1,24 @@
+{
+  "notes": "Polymarket, read-only, no credentials: the Gamma API for settled events + per-event fee schedules (`series_slugs` walked in `window_hours` sub-windows between `start` and `end`), the CLOB for live books of the listed `token_ids`, and the pmxt L2 archive mirrored on the Hugging Face hub for hourly historical books (`archive_hours`; anonymous unless the variable named by `token_env` is set — a NAME, never a value; hour files are ~360 MB, streamed in batches and deleted after filtering while `cleanup` is on). Series slugs are the venue's OWN spellings, read off Gamma's /series listing on 2026-09-04: a daily HIGHEST-temperature ladder is `<city>-daily-weather`, a LOWEST-temperature ladder is `<city>-daily-lowest-temperature` (the inventory's POLYWX* names are internal). tests/test_configs.py pins that shape, so a guessed slug cannot ship. Extend the list when a series crosses the eligibility bar, never by editing code. For `archive_hours`, declare `token_ids` (the markets' clob_token_ids from the events stream) or let the pack resolve them from these slugs. Polymarket fees are per-event and read from the venue (`fee_rate_of`), and its books are two-sided natively (`yes_asks` are real asks — no NO-side mirror, unlike Kalshi). Register with: python -m dskit.onboarding register-source polymarket --connector polymarket --config @configs/source-polymarket.json --catalog-source <P1 source> --activate.",
+  "series_slugs": [
+    "nyc-daily-weather",
+    "nyc-daily-lowest-temperature",
+    "london-daily-weather",
+    "london-daily-lowest-temperature",
+    "chicago-daily-weather",
+    "chicago-daily-lowest-temperature",
+    "hong-kong-daily-weather",
+    "hong-kong-daily-lowest-temperature"
+  ],
+  "start": "2026-06-01",
+  "closed": true,
+  "window_hours": 6,
+  "token_ids": [],
+  "token_env": "HF_TOKEN",
+  "pace_s": 0.2,
+  "retries": 4,
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

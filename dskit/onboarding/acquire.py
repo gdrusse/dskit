@@ -11,11 +11,16 @@ The flow, with its durability ordering (the whole point):
    as received (bronze; the codec is the source config's declared
    ``storage`` block, ADR-0036, default uncompressed); each RECORD also
    normalized to a bitemporal row
-   ``{stream, mode, kind, effective_date, acquired_at, data}`` —
-   observations asserted ``effective_date <= acquired_at``, declared
+   ``{stream, mode, kind, effective_date, acquired_at, data}``, declared
    forecasts segregated into their own root (ADR-0014/OQ-6). STATE is
    remembered, LOG collected, ERROR aborts, unknown types skipped.
-   Compressed staged members are fully re-decoded before commit.
+   ``acquired_at`` is the COMMIT instant — ``utc_now()`` taken only once
+   ``read()`` is exhausted, so nothing observed during the pull can
+   post-date it (ADR-0079): the latest-dated observation is asserted
+   ``<= acquired_at`` (a later one is a forecast someone forgot to
+   declare) and the staged rows are rewritten, line by line, with that
+   one stamp. Compressed staged members are fully re-decoded before
+   commit.
 4. Build the Merkle manifest; rename the snapshot into ``raw/`` (the
    commit point); move normalized rows into ``observations/`` /
    ``forecasts/``.
@@ -48,13 +53,24 @@ from .base import (
     parse_utc,
     utc_now,
 )
-from .codec import check_storage, open_text_writer, stream_filename, verify_member
+from .codec import (
+    check_storage,
+    iter_text_lines,
+    open_text_writer,
+    stream_filename,
+    verify_member,
+)
 from .connector import check_config, check_message, resolve_connector
 from .layout import OnboardingRoot
 from .snapshot import build_manifest, snapshot_hash, write_snapshot
 from .state import load_state, save_state
 
 __all__ = ["find_active_source", "run_acquisition"]
+
+# The PROVISIONAL acquired_at on staged rows — rewritten with the commit
+# instant before anything leaves staging (ADR-0079), so it never reaches
+# raw/ or the records roots.
+_PENDING_STAMP = "pending"
 
 
 def find_active_source(registry, name) -> str:
@@ -134,8 +150,6 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
 
     # -- 2. the mode-keyed cursor ------------------------------------------
     state = load_state(root, source, stream, mode)
-    acquired_at = utc_now()
-    acquired_dt = parse_utc(acquired_at)
 
     # -- 3. stream messages into staging -----------------------------------
     raw_dir = root.raw_dir(source)
@@ -145,6 +159,7 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
     records = forecasts = skipped = 0
     pending_state, logs = None, []
     eff_min = eff_max = None
+    latest_obs = None  # (parsed, raw, message index) — judged at commit
     try:
         payload_dir = os.path.join(staged, "payload")
         os.makedirs(payload_dir)
@@ -195,17 +210,13 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
                 eff = msg["effective_date"]
                 eff_dt = parse_utc(eff)
                 kind = msg.get("kind", "observation")
-                if kind == "observation" and eff_dt > acquired_dt:
-                    # The bitemporal assertion (ADR-0014): an observation
-                    # about the future is a forecast someone forgot to declare.
-                    raise AssetError(
-                        [f"message {i}: observation effective_date {eff!r} is "
-                         f"after acquired_at {acquired_at!r} — declare it "
-                         'kind="forecast" or fix the connector']
-                    )
+                if kind == "observation" and (
+                    latest_obs is None or eff_dt > latest_obs[0]
+                ):
+                    latest_obs = (eff_dt, eff, i)
                 row = {
                     "stream": stream, "mode": mode, "kind": kind,
-                    "effective_date": eff, "acquired_at": acquired_at,
+                    "effective_date": eff, "acquired_at": _PENDING_STAMP,
                     "data": msg["data"],
                 }
                 top = "forecasts" if kind == "forecast" else "observations"
@@ -235,6 +246,20 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
                 if eff_max is None or eff_dt > parse_utc(eff_max):
                     eff_max = eff
 
+        # -- the commit instant (ADR-0079): stamped only now, with read()
+        # exhausted, so nothing observed during the pull can post-date it.
+        # The bitemporal assertion (ADR-0014) judges the latest-dated
+        # observation against it: one about the future is a forecast
+        # someone forgot to declare.
+        acquired_at = utc_now()
+        if latest_obs is not None and latest_obs[0] > parse_utc(acquired_at):
+            _, eff, i = latest_obs
+            raise AssetError(
+                [f"message {i}: observation effective_date {eff!r} is "
+                 f"after acquired_at {acquired_at!r} — declare it "
+                 'kind="forecast" or fix the connector']
+            )
+
         # -- empty pull: no snapshot, but a checkpoint is still honored ----
         if records + forecasts == 0:
             state_saved = pending_state is not None
@@ -243,6 +268,17 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
             return {"job": None, "snapshot": None, "acq_id": None,
                     "records": 0, "forecasts": 0, "skipped": skipped,
                     "logs": logs, "state_saved": state_saved}
+
+        # -- settle the commit instant onto the staged rows, line by line:
+        # the provisional stamp never reaches disk under raw/ or the
+        # records roots, and no file is ever held in memory.
+        for top in ("observations", "forecasts"):
+            path = os.path.join(
+                norm_staged, top,
+                stream_filename(stream, storage["observations_codec"]),
+            )
+            if os.path.exists(path):
+                _restamp_rows(path, storage["observations_codec"], acquired_at)
 
         # -- pre-commit member check (compressed files only): every staged
         # member must decode back to the line count that was written,
@@ -328,3 +364,14 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
     return {"job": job_vid, "snapshot": snap_vid, "acq_id": acq_id,
             "records": records, "forecasts": forecasts, "skipped": skipped,
             "logs": logs, "state_saved": state_saved}
+
+
+def _restamp_rows(path, codec, acquired_at):
+    """Settle ``acquired_at`` onto every row of ``path``, one line at a time."""
+    settled = path + ".restamp"
+    with open_text_writer(settled, codec) as fh:
+        for line in iter_text_lines(path):
+            row = json.loads(line)
+            row["acquired_at"] = acquired_at
+            fh.write(json.dumps(row, sort_keys=True) + "\n")
+    os.replace(settled, path)

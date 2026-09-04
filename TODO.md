@@ -529,16 +529,82 @@ ADR yet, and none blocks the child from starting:
       onto it when the child builds).**
 - [ ] 9. A generic `records-write` kind beside `table-write`
       (`kinds_table.py`).
-- [ ] 10. A generic onboarding-observations reader kind — the second child
+- [x] 10. A generic onboarding-observations reader kind — the second child
       to need it. **Half landed via ADR-0037 (2026-08-26): the function
-      seam (`observations.scan_stream`/`stream_digest`) exists; the
-      pipeline-facing KIND stays open until a second child needs it.**
+      seam (`observations.scan_stream`/`stream_digest`) exists.** **Landed
+      via ADR-0077 (2026-09-04): `libs/observations.py` ships the
+      `observations` kind (`ObservationRows`, memoized per instance,
+      `root()`/`source()`/`stream()` + vocabulary hooks); pmquant's two
+      readers subclass it.**
 - [ ] 11. A records → keyed-table verb (`groupby`/`pivot`, `kinds_flow.py`).
 - [ ] 12. Search-seam expressiveness for seed-ensemble studies + per-fold
       node-param binding (`kinds_search.py`, `document.py`/`driver.py`).
 - [x] 13. Val-metric checkpoint selection in the torch pack (a `monitor` +
       best-state-restore seam; the curve already computes the row).
       **Landed via ADR-0035 (2026-08-26).**
+
+Found by the pmquant child build (2026-09-04; ADR-0075…0078 landed the
+vendor packs kalshi/polymarket/predexon + `leads.py`, the `localtables`
+connector, the `observations` kind and the public clause DSL):
+
+- [x] `onboarding/acquire.py` stamped `acquired_at` BEFORE `read()` and refused
+      any observation dated after it, so a "now"-dated capture stream (Kalshi
+      `orderbooks`/`fee_schedules`, Polymarket `books`) raced the stamp.
+      **Fixed via ADR-0079 (2026-09-04): the stamp is the COMMIT instant,
+      rows are restamped in a bounded second pass; the packs' minute floor
+      stays only to make a pull one capture.**
+- [ ] `libs/torch.py` defaults the optimizer to plain SGD; on the ladder
+      transformer that never left the uniform prediction (0.636 = ln 3 / 3
+      log-loss at 3, 15 and 40 epochs) until the document declared AdamW.
+      Consider whether a declared-model kind should REQUIRE `optimizer`
+      rather than default it — a default that silently fails to learn is the
+      "approved value the run never uses" shape.
+- [x] `libs/alpaca_quotes.py` was registered nowhere and absent from the
+      onboarding Contents trees. **Registered as `alpaca_quotes` and added to
+      the trees and the registry pin (2026-09-04).**
+- [x] The `polymarket` extra (`huggingface_hub`, `pyarrow`) exists; the
+      `all` extra did not carry `huggingface_hub`. **Done (2026-09-04); the
+      real `download()` body is now exercised offline and was probed once
+      against the live dataset (anonymous, the small `meta/` object).**
+- [x] `libs/kalshi.py` / `libs/predexon.py` honored a numeric `Retry-After`
+      UNCAPPED. **One name now: `connector.MAX_BACKOFF_S` (60 s) caps every
+      single wait in all three packs, pinned by identity (2026-09-04).**
+- [x] `libs/polymarket.py` `slugs` lookup: a CLOSED market whose `end_date`
+      was still ahead (early resolution) was an observation dated in the
+      future, which the platform refused. **Fixed via ADR-0080 (2026-09-04):
+      a closed market is dated at the venue's own `closedTime` (live spelling
+      `2026-09-04 12:11:51+00`), `end_date` only as the fallback; a closed
+      market the venue has not dated yet refuses by name.** Same round: the
+      archive stream resolves its token ids from `series_slugs` (declared
+      `token_ids` win), consults the mirror's `meta/` sync state (a known gap
+      is skipped, "not mirrored yet" stops), and keys rows on
+      `(asset_id, ts, seq)` — a real hour showed 2,837 `(asset_id, ts,
+      event_type)` collisions (several price levels change per millisecond).
+- [ ] `children/pmquant` (owner rulings, recorded in its research note
+      `docs/research/skeptic-review-of-the-2026-09-04-rebuild-*.md`): the
+      MIO's in-program fee is the separable per-lot approximation, not the
+      venue fee on the total at VWAP (under-bills multi-level fills by
+      rate·n·Var(p)); and four frozen panel tail features see the event's
+      EVENTUAL rung set. Both change frozen recipes — ADR first.
+- [ ] `assets/base.py` `utc_now` is second-TRUNCATED, so under ADR-0079 an
+      observation dated at full precision inside the commit second would
+      still refuse; no shipped connector dates rows that way (they floor to
+      the minute or carry the venue's stamp). Widen the stamp's precision
+      only with the WORM/acq_id consequences worked through (skeptic
+      review, round 2, 2026-09-04).
+- [ ] `libs/polymarket.py` archive: an hour skipped as a mirror-declared gap
+      (`pending_gap_hours`) advances the cursor and is never revisited, even
+      if the mirror backfills it later; and token resolution from
+      `series_slugs` inherits the `closed` knob, so under the default an
+      OPEN market's tokens are not resolved for recent hours (stated in the
+      knob note). Both are the stated trade-offs of round 3 (2026-09-04); a
+      "revisit declared gaps" knob or an upstream-object fallback
+      (`https://r2v2.pmxt.dev/`, the mirror lags the venue by weeks — the
+      child's I-242) would be an ADR.
+- [ ] `tests/onboarding/test_connector.py::test_resolve_registered_kind`
+      is a hand-kept list of the nine kinds (a deliberate restatement);
+      deriving it from `DEFAULT_CONNECTORS` would remove the pin, keeping
+      it means adding every new pack there too.
 
 Found by the first real-data run of `children/intraday_poc` (2026-08-26) —
 reclassified generic by the owner (generic-first: children are wrappers):

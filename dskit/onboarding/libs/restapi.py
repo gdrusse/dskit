@@ -39,7 +39,8 @@ Config knobs (default-deny, per ``spec()``):
   applies regardless, so an over-returning server stays harmless.
 - ``timeout`` — request timeout in seconds (default 30).
 - ``max_retries`` — extra attempts on 429/5xx/network errors with
-  exponential backoff (default 3).
+  exponential backoff (default 3). Every single wait is capped at
+  ``MAX_BACKOFF_S`` seconds, the ceiling every pack shares.
 
 Cursor semantics are localfiles' exactly: state maps stream ->
 ``{"cursor": <max effective_date emitted>}`` and the logic is identical
@@ -64,7 +65,7 @@ import time
 import urllib.parse
 
 from ..base import AssetError, _check_dict, _check_str, _check_unknown, _raise_if, parse_utc
-from ..connector import PROTOCOL, Connector
+from ..connector import MAX_BACKOFF_S, PROTOCOL, Connector
 
 __all__ = ["RestApiConnector"]
 
@@ -174,7 +175,8 @@ class RestApiConnector(Connector):
                 },
                 "max_retries": {
                     "notes": "Extra attempts on 429/5xx/network errors, "
-                             f"exponential backoff; default {_DEFAULT_MAX_RETRIES}.",
+                             "exponential backoff, every wait capped at "
+                             f"{MAX_BACKOFF_S:g} s; default {_DEFAULT_MAX_RETRIES}.",
                 },
             },
         }
@@ -355,7 +357,7 @@ class RestApiConnector(Connector):
         last = None
         for attempt in range(cfg["max_retries"] + 1):
             if attempt:
-                time.sleep(_BACKOFF * (2 ** (attempt - 1)))
+                time.sleep(min(_BACKOFF * (2 ** (attempt - 1)), MAX_BACKOFF_S))
             try:
                 status, body = self._fetch(url, headers, cfg["timeout"])
             except OSError as exc:

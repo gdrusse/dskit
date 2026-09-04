@@ -1,0 +1,23 @@
+# Standalone child packaging — dskit is the structural coupling (ADR-0021).
+# Every heavy library below is imported only inside run()/read(): a document
+# naming the child's kinds must PLAN on a machine with only dskit installed.
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pmquant"
+version = "0.1.0"
+description = "dskit child: prediction-market ladders (Kalshi, Polymarket) — edge test, transformer q-hat, fractional-Kelly MIO."
+requires-python = ">=3.11"
+dependencies = [
+    "dskit",
+    "numpy",
+    "torch",
+    "pyomo",
+    "highspy",
+    "pyarrow",
+]
+
+[tool.setuptools.packages.find]
+include = ["pmquant*"]

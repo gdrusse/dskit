@@ -1,0 +1,926 @@
+{
+  "name": "pmquant-kalshi-ladders",
+  "notes": "The real-data TWIN of configs/run-e2e.json: the same DAG over the two imported Kalshi stores (configs/source-pit-ladders.json -> source pit_ladders, configs/source-settled-markets.json -> source settled_markets, both acquired into ./onboarding_root). What differs, and a test pins that nothing else does: where the data lives, the fee book (the venue's per-series fee_multiplier as dated cases — read from the trade API on 2026-08-15, fail-closed outside the dated window, so a market closing later refuses until the book is refreshed from the kalshi source's fee_schedules stream), the eligibility bar (50 settled events, docs/01 §2 — never lower it to admit a series) and the training budget. Run: python -m dskit.pipeline run configs/run-kalshi-ladders.json --asof <YYYY-MM-DD> --adapter pmquant. Exit 3 is a NO-GO verdict, which is a result; exit 0 means the sizer ran and evidence.md says what it did with the capital.",
+  "pipeline": {
+    "ladder_records": {
+      "uses": "pmquant-ladder-source",
+      "params": {
+        "root": "./onboarding_root",
+        "source": "pit_ladders",
+        "venue": "kalshi"
+      },
+      "notes": "One record per (contract, decision epoch) with the resting ladders and the recomputed usable flag; settle rows ride along. venue is a PARAM (owner ruling): the Polymarket run is this document with venue=polymarket over the same stores (the backfill writes both venues into one layout)."
+    },
+    "settlements": {
+      "uses": "pmquant-settlement",
+      "inputs": {
+        "instruments": "$ladder_records.instruments"
+      },
+      "params": {
+        "root": "./onboarding_root",
+        "source": "settled_markets"
+      },
+      "notes": "Settled contract -> bool outcomes plus the strike rows; the wired universe keeps the two readers on the same series."
+    },
+    "bankable": {
+      "uses": "filter",
+      "inputs": {
+        "records": "$ladder_records.records"
+      },
+      "params": {
+        "require_usable": true
+      },
+      "notes": "Only usable decision epochs (admissible book AND quality) may bank, be scored, or be sized. Cutting here is the document's job, not the reader's."
+    },
+    "bank": {
+      "uses": "event-bank",
+      "inputs": {
+        "events": "$bankable.records",
+        "outcomes": "$settlements.outcomes"
+      },
+      "params": {
+        "strictly_before": "$splits.train_end_ms"
+      },
+      "notes": "Settled events per series counted strictly before the train boundary — the admission counter reads only what training could have seen."
+    },
+    "eligible_family": {
+      "uses": "eligibility",
+      "inputs": {
+        "banked": "$bank.counts"
+      },
+      "params": {
+        "min_events": 50
+      },
+      "notes": "The eligibility bar — 50 settled events banked before the train boundary (docs/01 §2). Do not lower it to compensate for a thin series; wait for the store to grow."
+    },
+    "banking_report": {
+      "uses": "banking-report",
+      "inputs": {
+        "banked": "$bank.counts",
+        "family": "$eligible_family.instruments",
+        "extents": "$bank.extents"
+      },
+      "params": {
+        "min_events": 50
+      },
+      "notes": "The ledger: who banked what, who was admitted, who is still short."
+    },
+    "panels": {
+      "uses": "pmquant-ladder-panels",
+      "inputs": {
+        "records": "$bankable.records",
+        "outcomes": "$settlements.outcomes",
+        "markets": "$settlements.rows",
+        "family": "$eligible_family.instruments"
+      },
+      "params": {},
+      "notes": "One panel item per settled event (T leads x C rungs x 41 token features), cut into train/val/cal/test on the event's close instant. Defaults are the frozen recipe (the full 21-lead grid, the featurizer's depth); `drop` runs an ablation."
+    },
+    "seed_0": {
+      "uses": "pmquant-ladder-train",
+      "inputs": {
+        "rows": "$panels.train_rows",
+        "val_rows": "$panels.val_rows"
+      },
+      "params": {
+        "adapter": "pmquant.models:LadderPanelAdapter",
+        "module": "pmquant.models:LadderQhatModule",
+        "module_params": {},
+        "epochs": 30,
+        "lr": 0.001,
+        "optimizer": "torch.optim.AdamW",
+        "monitor": "claims_val_event_ll",
+        "loader": {
+          "batch_size": 16,
+          "shuffle": true,
+          "seed": 0
+        }
+      },
+      "notes": "Seed 0 of the ensemble. AdamW is declared (the pack defaults to SGD, which does not learn this recipe). Thirty epochs is the parent's budget class for a few hundred events; the monitor restores the best per-event validation log-loss epoch, so more epochs cost time, not calibration."
+    },
+    "seed_1": {
+      "uses": "pmquant-ladder-train",
+      "inputs": {
+        "rows": "$panels.train_rows",
+        "val_rows": "$panels.val_rows"
+      },
+      "params": {
+        "adapter": "pmquant.models:LadderPanelAdapter",
+        "module": "pmquant.models:LadderQhatModule",
+        "module_params": {},
+        "epochs": 30,
+        "lr": 0.001,
+        "optimizer": "torch.optim.AdamW",
+        "monitor": "claims_val_event_ll",
+        "loader": {
+          "batch_size": 16,
+          "shuffle": true,
+          "seed": 1
+        }
+      },
+      "notes": "Seed 1 — identical recipe, a different loader seed. The parent ran five; two is the smallest ensemble whose merge can disagree."
+    },
+    "pred_cal_0": {
+      "uses": "pmquant-ladder-predict",
+      "inputs": {
+        "panel_rows": "$panels.cal_rows",
+        "artifact_path": "$seed_0.artifact_path"
+      },
+      "params": {
+        "module": "pmquant.models:LadderQhatModule",
+        "block": "cal"
+      },
+      "notes": "Seed 0 scored on the CAL band — the block the edge test reads. Never val: the checkpoint was selected there, so a val score is optimistic by construction."
+    },
+    "pred_cal_1": {
+      "uses": "pmquant-ladder-predict",
+      "inputs": {
+        "panel_rows": "$panels.cal_rows",
+        "artifact_path": "$seed_1.artifact_path"
+      },
+      "params": {
+        "module": "pmquant.models:LadderQhatModule",
+        "block": "cal"
+      }
+    },
+    "pred_test_0": {
+      "uses": "pmquant-ladder-predict",
+      "inputs": {
+        "panel_rows": "$panels.test_rows",
+        "artifact_path": "$seed_0.artifact_path"
+      },
+      "params": {
+        "module": "pmquant.models:LadderQhatModule",
+        "block": "test"
+      },
+      "notes": "Seed 0 scored on the TEST block — read only by the sizer and the report, never by the gate."
+    },
+    "pred_test_1": {
+      "uses": "pmquant-ladder-predict",
+      "inputs": {
+        "panel_rows": "$panels.test_rows",
+        "artifact_path": "$seed_1.artifact_path"
+      },
+      "params": {
+        "module": "pmquant.models:LadderQhatModule",
+        "block": "test"
+      }
+    },
+    "ens_cal": {
+      "uses": "pmquant-ensemble",
+      "inputs": {
+        "member_0": "$pred_cal_0.pred_rows",
+        "member_1": "$pred_cal_1.pred_rows"
+      },
+      "params": {
+        "require": 2
+      },
+      "notes": "The loud merge: exactly `require` member frames, per-cell mean q, refusing a frame that disagrees on the cell set."
+    },
+    "ens_test": {
+      "uses": "pmquant-ensemble",
+      "inputs": {
+        "member_0": "$pred_test_0.pred_rows",
+        "member_1": "$pred_test_1.pred_rows"
+      },
+      "params": {
+        "require": 2
+      }
+    },
+    "qhat_cal": {
+      "uses": "pmquant-signal-qhat",
+      "inputs": {
+        "pred_rows": "$ens_cal.pred_rows"
+      },
+      "params": {},
+      "notes": "The ensemble frame as a predict(record) -> belief signal, keyed by (contract, lead)."
+    },
+    "qhat_test": {
+      "uses": "pmquant-signal-qhat",
+      "inputs": {
+        "pred_rows": "$ens_test.pred_rows"
+      },
+      "params": {}
+    },
+    "market_baseline": {
+      "uses": "pmquant-market-implied",
+      "params": {},
+      "notes": "The D-006 null: the market's own price as the belief. Beating it out of sample is the bar for any capital."
+    },
+    "validate": {
+      "uses": "validate",
+      "inputs": {
+        "records": "$bankable.records",
+        "signal": "$qhat_cal.signal",
+        "baseline": "$market_baseline.signal",
+        "outcomes": "$settlements.outcomes"
+      },
+      "params": {
+        "metric": "logloss",
+        "min_events": 5,
+        "split": "cal"
+      },
+      "notes": "Toolkit-OWNED. Per series, per event: baseline log-loss minus model log-loss over the cal band — the D-138 delta the stat test bootstraps. Records are (event, lead, rung) cells; the event is the cluster."
+    },
+    "edge_test": {
+      "uses": "stat_test",
+      "inputs": {
+        "scores": "$validate.cluster_scores"
+      },
+      "params": {
+        "alpha": 0.1,
+        "correction": "bh",
+        "method": "studentized",
+        "n_boot": 1000,
+        "seed": 0
+      },
+      "notes": "Toolkit-OWNED. Studentized cluster bootstrap of the mean delta per series, BH across the family: each series is its own hypothesis (never pooled). Survivors are the only series the sizer may touch."
+    },
+    "size": {
+      "uses": "pmquant-kelly-mio",
+      "inputs": {
+        "records": "$bankable.records",
+        "survivors": "$edge_test.survivors",
+        "signal": "$qhat_test.signal",
+        "markets": "$settlements.rows"
+      },
+      "params": {
+        "bankroll": 10000,
+        "deploy_frac": 0.25,
+        "kelly_fraction": 0.5,
+        "min_lot": 1,
+        "fee_rate_by_series": {
+          "KXAAAGASD": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXAAAGASD (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXCOPPERD": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXCOPPERD (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXHIGHAUS": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXHIGHAUS (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXHIGHCHI": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXHIGHCHI (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXHIGHDEN": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXHIGHDEN (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXHIGHLAX": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXHIGHLAX (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXHIGHMIA": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXHIGHMIA (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXHIGHNY": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXHIGHNY (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXHIGHTATL": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXHIGHTATL (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXHIGHTBOS": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXHIGHTBOS (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXHIGHTDAL": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXHIGHTDAL (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXHIGHTNOLA": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXHIGHTNOLA (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXHIGHTOKC": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXHIGHTOKC (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXHIGHTPHX": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXHIGHTPHX (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXHIGHTSEA": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXHIGHTSEA (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXHIGHTSFO": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXHIGHTSFO (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXLOWTATL": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXLOWTATL (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXLOWTAUS": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXLOWTAUS (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXLOWTBOS": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXLOWTBOS (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXLOWTDAL": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXLOWTDAL (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXLOWTDC": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXLOWTDC (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXLOWTDEN": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXLOWTDEN (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXLOWTHOU": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXLOWTHOU (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXLOWTLAX": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXLOWTLAX (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXLOWTMIA": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXLOWTMIA (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXLOWTMIN": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXLOWTMIN (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXLOWTNOLA": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXLOWTNOLA (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXLOWTNYC": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXLOWTNYC (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          },
+          "KXLOWTSEA": {
+            "source": "https://trading-api.kalshi.com/trade-api/v2/series/KXLOWTSEA (fee_type / fee_multiplier), decoded by pmquant.core.markets.kalshi.series_fee_rate; published rate table: https://kalshi.com/docs/kalshi-fee-schedule.pdf",
+            "retrieved": "2026-08-15",
+            "cases": [
+              {
+                "when": [
+                  {
+                    "field": "close_ts",
+                    "op": ">=",
+                    "value": "2026-02-24T00:00:00Z"
+                  },
+                  {
+                    "field": "close_ts",
+                    "op": "<",
+                    "value": "2026-08-12T00:00:00Z"
+                  }
+                ],
+                "value": 0.07,
+                "fee_type": "quadratic"
+              }
+            ]
+          }
+        },
+        "tau": 0.0,
+        "n_tangents": 128,
+        "split": "test"
+      },
+      "notes": "The exact-log fractional-Kelly tangent MILP per event over the survivors on the TEST block. The fee book is the venue's, per series, as DATED cases keyed on the market's close instant with the retrieval provenance kept beside each series; a market closing outside every case refuses by name (fail-closed). Refresh it from the kalshi source's fee_schedules stream rather than editing rates by hand."
+    },
+    "run_report": {
+      "uses": "run-report",
+      "inputs": {
+        "training": "$seed_0.metrics",
+        "validation": "$validate.evidence",
+        "edge": "$edge_test.evidence",
+        "sizing": "$size.evidence",
+        "survivors": "$edge_test.survivors",
+        "lots": "$size.lots",
+        "banked": "$bank.counts",
+        "family": "$eligible_family.instruments"
+      },
+      "params": {
+        "title": "pmquant ladder e2e",
+        "min_events": 50
+      },
+      "notes": "Toolkit-OWNED evaluator: per stage, per instrument, per split — and the LOUD flag when the gate found survivors and the sizer deployed nothing."
+    }
+  },
+  "splits": {
+    "kind": "trailing",
+    "test_days": 10,
+    "cal_days": 8,
+    "val_days": 12,
+    "train_days": "all-prior",
+    "policy": "event-close",
+    "notes": "Rolling windows off the data edge: the newest 10 days of settled events are the test block, the 8 before them the cal band (where the gate is read), the 12 before those the val block (where the checkpoint is selected), everything earlier trains. Every record of an event is cut on the event's CLOSE, so one event lives in one block."
+  }
+}
