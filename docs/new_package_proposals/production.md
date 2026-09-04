@@ -1855,7 +1855,7 @@ The corrected plan takes the prior recommended choices as its explicit defaults:
 
 ## Appendix A — ADR-0090 as it will appear in `decision-log.md`
 
-```
+````
 ## ADR-0090 — `dskit.production`: the production layer (serve, guard, act, record, monitor)
 
 **Status:** proposed (2026-09-04; Opus-reviewed; awaiting owner approval)
@@ -1960,11 +1960,11 @@ The skeleton pin and README/AGENTS/CLAUDE trees update together. TODO's plan ite
 is superseded, but implementation remains unchecked until code lands. Phase 1
 lands the foundation; phases 2–3 add evidence and packs. §12 records the resolved
 defaults for this resubmission.
-```
+````
 
 ## Appendix B — ADR-0091 as it will appear
 
-```
+````
 ## ADR-0091 — The driver's subgraph re-execution is a public seam with a policy object
 
 **Status:** proposed (2026-09-04)
@@ -1989,4 +1989,4 @@ metadata for source binding, explicit entity keys, event time, digest recipe and
 manifest-bound required-universe evidence. Dedupe keys are not treated as a
 universe. Pipeline never imports production. Release-bound child code remains a
 declared trusted boundary, backed by code fingerprints and no-direct-I/O tests.
-```
+````
