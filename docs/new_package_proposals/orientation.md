@@ -1,0 +1,62 @@
+# Orientation notes — dskit production package design (2026-09-04)
+
+## Repo facts the plan must honor
+- Four packages ship: pipeline (run), assets (store), onboarding (pull), journal (ledger). Next ADR number: **ADR-0090**. ADR form: `## ADR-NNNN — Title`, `**Status:** proposed (date)`, Context / Decision / Consequences, `---`. A package-founding ADR carries a `Contents (package)` tree (ADR-0056 is the precedent).
+- CLAUDE.md law: new package needs an approved file-by-file plan BEFORE any file; ADR before code = write it and wait; ask before writing new files; tier rules (tier-1 stdlib only; tier-2 packs name the library only inside a method; tier-3 = child); default-deny params (`_PARAMS` tuple + `reject_unknown_params`); one default per name; pin any value that must appear twice; `__all__` + `_` prefix is the API contract; `@abstractmethod` for hooks; no `if kind ==` chains; docstrings NumPy sections, no type hints in signatures, examples with `::` never `>>>`; ruff `select = E4,E7,E9,F,D` numpy convention.
+- Package conventions: `__init__.py` curated re-exports; `__main__.py` CLI (`python -m dskit.<pkg> <verb>`; exit 0 ran / 3 halted / 1 error); `base.py` errors + accumulate-errors checkers; config dataclasses `frozen=True` validate in `__post_init__`, `from_obj` default-deny, `to_obj`; `README.md`, `AGENTS.md`, and `CLAUDE.md` each carry the package tree; `libs/` for tier-2 packs; `tests/<pkg>/test_purity.py` enforces import tiers.
+- Identity: `canonical_hash` (assets.base) = pipeline recipe (sorted keys, compact, ascii, NaN refused, `notes` stripped everywhere). Pipeline document excludes `env`/`outputs`/`schedule`/`tracking` from identity; `schedule` is DOCUMENTATION (runner ignores); `clock` section (`increment: epoch|day|week`, `start`, `until`) parses but REFUSES to run. Optional fields emitted only when present.
+- Secrets: `dskit.pipeline.env.load_env(EnvConfig) -> Secrets` (repr redacts, not JSON-serializable). Connector secret knobs hold the env-var NAME.
+- Backoff ceiling: `dskit.onboarding.connector.MAX_BACKOFF_S = 60.0` (one name).
+- Production identity must bind mutable run/artifact/code/adapter/source inputs in
+  an immutable release; arming binds that release rather than a document path.
+- Recurring pulls: `dskit.onboarding.watch.run_watch(root, registry, source, stream, mode, every_seconds, sleep=None, max_iterations=None, on_result=None)` — repeats `run_acquisition`; first error stops; no retry/daemon/session policy BY DESIGN (ADR-0046).
+- Journal: `production(...)` records one row on handled context exit, never per tick, but its outputs are fixed before yield and SIGKILL cannot run finally; `record_production(...)` records explicit post-result data. Pytest is a no-op; uninitialized child refuses; categories are fixed. Function-import only.
+- Tracking sinks: `Tracker` protocol (`log_params`, `log_metrics(stage, mapping)`, `close()`); `register_sink_kind(kind, validator, factory)`; driver SWALLOWS sink exceptions; a sink must validate loudly at construction and bound its own remote calls (mlflow pack is the template).
+- Legacy structural Protocols (`dskit.pipeline.protocols`): `DataSource`, `SignalProvider`, `Sizer`, `ExecutionModel(book, order)->fill` ("a live run passes its order router here"), `SettlementSource.outcomes_for(instrument)`, `Tracker`, `Accounting.payout_per_unit(outcome)`. `dskit.pipeline.registry.Backend` Protocol + `BackendRegistry` (venue tag → factory; zero venues ship). Both belong to the LEGACY stage-list grammar.
+- Records: `dskit.pipeline.records.MarketRecord` envelope (instrument, contract, group, asof_ms, bid/ask/mid, usable/reason, lead_frac, native), `PositionOutcome`, `settle_position(contract, qty, cost, fee, payout_per_unit)`, `BinaryAccounting` / `MarkToMarketAccounting` (each refuses the other's outcome type), `ASOF_FIELD="asof_ms"`, `number_ok`/`price_ok`. Hot-path records fail loud on first problem with plain `ValueError` (accumulate-errors is for configs).
+- Node lifecycle: `validate_params (classmethod) -> validate_inputs -> run(ctx, inputs) -> validate_outputs`; `NodeContext(name, asof, run_dir, ...)`; `TrainableNode` template: `run_train`/`run_load` abstract, `default_mode`, `effective_mode`, `pinned_artifact`; roles tuple `ROLES = (data, labels, transform, tensor, accrual, gate, search, signal, train, score, stat_test, capital, report, fitted_transform)`; `role: capital` is planner-gated (needs a `stat_test` survivors wire).
+- Run dir layout (`runs.py`): `config.json` (whole document), `result.json`, `carry.json`, `nodes/NN-*.json`, `artifacts/<node key>/` (sidecar with `state_hash`, class ref, params), `predictions` parquet (ADR-0064), `skill.json`, `walkforward.json`.
+- Observations read seam: `scan_stream(...)` + `stream_digest`; `ObservationRows.fingerprint/data_edge` scan mutable storage during ordinary RESOLVE. ADR-0091 therefore adds an earlier structural-policy boundary and pure `serving_contract(params, verified_run_evidence)` metadata for source, explicit entity keys, event time, digest recipe and required-universe evidence; pipeline never imports production.
+- Children: `children/<name>/` = thin tier-3 (connectors.py, nodes.py, live.py optional, models.py, testing.py) + configs (source/suite/run/asset-model/universe) + journal + tests; skeleton file list pinned in `tests/children/test_skeleton.py` (changing the skeleton = update the pin same commit). `intraday_poc/live.py` = the only real forward loop (1368 lines): clock gate via vendor `get_clock()`, vendor fetch (IEX), run's own window node `latest_rows`, artifact restore with sidecar hash verification, run's own selector node solved one timestamp wide, flip position via paper client, `decisions.jsonl` per tick, `production()` wrapper, `--once`/`--dry-run`, hardcoded `paper=True`. `intraday_equities/live.py` = intents only (limit-order intent dicts, paper-only refusal).
+
+## The owner's recorded constraints for a generic serving loop (TODO.md "Long-term goal")
+
+**These are the owner's words, not the plan's.** They are quoted from TODO.md as
+of the research commit and must not be edited to match a later design — where
+the plan answers a constraint, the answer belongs in `production.md`, not here.
+
+Generic (belongs in dskit): restore a run's artifacts with the hash verification the packs already do; poll a registered source on a cadence; re-execute a declared subgraph of the SAME document the backtest scored; emit one decision record per tick; gate on a supplied calendar.
+NOT generic (tier-3): venue/broker API, order types, position semantics, calendar contents. "The loop takes an executor OBJECT; it never learns a venue."
+Constraints: (1) the loop READS configs (run-dir `config.json` + source config), never restates them; a third config file duplicates both; only operational flags on the CLI. (2) Fetch THROUGH the connector: a live pull is `acquire --mode live`, not a second data path. (3) Decide with the SAME object the backtest used — re-run a subgraph, never re-implement the decision. (4) Money needs the capital seam (half-built: `twr`/`mwr`/`equity_curve` expected by `kinds_report.py`, nothing produces them; periodic contributions make it a sequential replay). (5) Side effects need a refusal-by-default posture: "actually move money" is an explicit, loud, declared act, never a default, never a config typo away. (6) Cadence: `schedule` parses (hash-excluded, ignored) and `clock` parses and refuses — decide whether the serving loop gives them meaning.
+Prerequisites now landed: `foreach` (ADR-0039), gap-aware windows/`latest_rows` (ADR-0040), `TrainableNode` (ADR-0038).
+
+**How `production.md` answers each** (the plan's claims, kept separate from the
+constraints above): (1) §5.2/§5.3 — the entry's manifest-bound `ServingContract`
+supplies source and coverage, and structural planning defers its
+constructor/fingerprint/`data_edge` before fetch and gates. (2) D4 — `acquire
+--mode live` or a store another `watch` fills; descendants are pure or
+capability-backed release reads. (3) D3 — one re-run of the same graph from the
+frozen entry. (4) **Partly unanswered — see the open item below.** (5) D10/D11 —
+document-declared rung, authenticated release-bound authority, fencing,
+deadlines, and a readiness GO for every live rung. (6) D5 — cadence belongs to
+the serve document; pipeline `schedule`/`clock` stay as they are.
+
+**Open against constraint (4).** The plan's `accounting` seam (§5.7.1) is *venue*
+accounting — positions, balances, fills, exposure — which is what guards and
+sizing need. It is **not** the capital/report seam the owner named:
+`dskit/pipeline/kinds_report.py:214` still expects a `capital` block carrying
+`twr`, `mwr`, `cumulative_contributions`, `equity_curve` and `trading_pnl`, and
+nothing in the repo produces any of them. `report.py` (phase 2) covers
+attribution, calibration and drawdown but not TWR/MWR or the equity curve.
+This proposal therefore does **not** close constraint (4); it neither fills the
+capital seam nor claims to. Recorded here so the gap is not lost a second time —
+it wants its own ADR.
+
+## Design process the owner expects
+Skeptic review, TDD (tests first per module), OOP pillars, ADR with full file-by-file structure approved before any file is created.
+
+## Owner's model assignments (2026-09-04, verbatim intent)
+- Planning phase: FABLE (this session + any planning helper agents → `model: "fable"`).
+- Initial building phase: FABLE.
+- Reviewers, test development, and subsequent rounds of review: OPUS (`model: "opus"` on every Agent call for review or test-writing).
+- No fable after the initial plan and build.
