@@ -948,8 +948,9 @@ non-finite number.
   window to the `[start, end)` bounds its own `requirement_digest` is computed
   over; without them the digest could not be formed and two measures asking
   the same question could not deduplicate. `include_working` is a `Limit`
-  param, so `Limit` stamps it into each requirement its measure returns —
-  the measure never invents it. Every
+  param, and `GuardChain.requirements` (§5.5) stamps it into each requirement
+  the limit's measure returned — the measure never invents it, and the chain is
+  the only stamper, so the digest is taken once, after stamping. Every
   monetary or quantity measure returns `Decimal` (§5.4 admits no float in money);
   only dimensionless ratios — `bankroll_fraction`, `confidence` — may be
   `float`, and a test pins which registry entry is which.
@@ -1071,7 +1072,7 @@ other permit **by type** — refuses meaning it returns
 - `LiveExecutor` can always construct its read/query/cancel channel. Its bounded,
   authenticated `execution_scope()` result must equal the graded document and
   release scope at startup, every tick and the final gate; disagreement refuses.
-  Submission accepts only `ActPermit`. Its concrete wrapper holds the act gate
+  Submission accepts only `ActPermit`. Its wrapper holds the act gate
   and delegates the indivisible local verify/call sequence to
   `SubmissionVerifier.verify_and_call`; the callback is
   `@abstractmethod _submit_native(intent, permit, timeout_ms)` — abstract, so
@@ -1516,15 +1517,23 @@ knob because D13 fixes the answer: query, never resend.
   markdown and JSON emitters (the `runs.py` pipe-escape rule reused).
 - `readiness.py` (phase 1): `Readiness(document, release)` with
   `evaluate(at_ms) -> ReadinessResult{verdict, items, readiness_digest,
-  evaluated_at_ms, valid_until_ms}` and `current(ledger) -> ReadinessResult |
-  None` (the folded latest unexpired record). `readiness_digest =
-  canonical_hash(release_hash, sorted items with their verdicts and waivers)`.
+  evaluated_at_ms, valid_until_ms}` and `current(ledger, at_ms) -> ReadinessResult |
+  None` (the folded latest record whose `valid_until_ms > at_ms`; the loop
+  passes its injected clock's instant, as every other freshness check does). `readiness_digest = canonical_hash(release_hash, items)` where `items` is
+  sorted by `item` and each contributes exactly
+  `(item, required, evidence, waiver, passed)` in that order — the same
+  "exactly those fields in that order" standard `requirement_digest` follows,
+  because `ActPermit` and the safety epoch bind this value.
   The checklist is a JSON file (`item`, `required`, `evidence`,
   `waiver`) evaluated to GO / NO-GO; NO-GO exits 5. The evaluation is appended
   as a `readiness` record (§6) and barriered, so the GO is durable,
   release-bound and expiring (`evaluated_at_ms + readiness.valid_for_s`)
   rather than recomputed at submit time; the action matrix and `ActPermit`
-  read that record, and `ready` journals like every other mutating verb. Every live rung requires a
+  read that record. `ready` writes it the way §5.8 rules every control verb
+  writes: queued through the durable inbox when a serve process holds the lock,
+  or, when none does, by taking the lock itself and running the same
+  `CommandProcessor` synchronously — the serving process remains the sole
+  ledger writer either way. It journals like every other mutating verb. Every live rung requires a
   current GO record bound to the exact release before arming or submit. Unwaivable
   foundation items include release/runtime verification, executor conformance,
   authenticated execution-scope equality, clean startup reconciliation, fenced
@@ -1580,7 +1589,8 @@ two lists against each other: `Clock`, `Calendar`, `Cadence`,
 `Monitor`, `Reference`, `Chunker`, `Threshold`, `AlertSink`,
 `HealthProbe`, `Transport`, `ApprovalVerifier`, `Fee`, `HeartbeatEmitter`.
 Six further ABCs are structural rather than registry-resolved, named here so
-the count is not mistaken for the whole surface: `SubmittingExecutor` (§5.7),
+the count is not mistaken for the whole surface: `SubmittingExecutor` and the abstract
+`LiveExecutor` wrapper (§5.7),
 `Ledger` and `Classifier` (phase 1 ships one implementation each, so neither
 has a `uses` site until `libs/sqlite.py` lands and adds `LEDGER_KINDS`),
 `Tick` (§5.13), `IdSource` (§5.13) and pipeline-side `ExecutionPolicy`
@@ -1674,13 +1684,13 @@ sha256-canonical idiom.
 
 | kind | one per | body |
 |---|---|---|
-| `process` | start / stop / recovered | `series_id`, `release_hash`, `doc_hash`, `serving_hash`, `run_hash`, `artifact_digests`, `source_config_hash`, `runtime_fingerprint`, `rung`, `executor_kind`, `code_version`; stop adds `exit_code`. After its barrier, one journal row is written whose `notes` render the process id and final head in the D22 `production-v1` form |
+| `process` | start / stop / recovered | `event ∈ {start, stop, recovered}`, `series_id`, `release_hash`, `doc_hash`, `serving_hash`, `run_hash`, `artifact_digests`, `source_config_hash`, `runtime_fingerprint`, `rung`, `executor_kind`, `code_version`; stop adds `exit_code`. After its barrier, one journal row is written whose `notes` render the process id and final head in the D22 `production-v1` form |
 | `tick_start` | scheduled tick | `tick_id`, `tick_at_ms`, `release_hash` |
 | `tick` | terminal tick | `tick_id`, `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash, required_keys_digest, watermarks_by_key, coverage_digest}`, `inputs_digest`, `calendar`, `overrun_absorbed[]` (the tick instants this tick coalesced or skipped), `latency_ms{gate, verify_release, fetch, read_entry, coverage, evaluate, candidates, quotes, account, propose}` (one key per §5.13 `Tick` phase method, pinned by a test) and `leg_latency_ms{guard, authorize, act}` summed over the tick's legs, since those are per-proposal steps, not phases: `guard` covers §5.13 steps (1)–(3), `authorize` steps (4)–(6), and `act` step (7). Step (8) records the outcome and is charged to the tick, not the leg, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}` |
-| `decision` | tick (exactly one) | `tick_id`, `decision_plan_ids[]`, `decision_plan_digests[]`, `legs[]{leg_id, instrument, prediction, confidence, baseline, expected_value, reference_price, proposal, findings[], final, client_ref}` — every leg field but `leg_id`, `findings[]`, `final` and `client_ref` is copied from the leg's `Proposal` (§5.4) under the same name — a no-op tick has `final: none` per leg or zero legs with `reason` |
+| `decision` | tick (exactly one) | `tick_id`, `decision_plan_ids[]`, `decision_plan_digests[]`, `legs[]{leg_id, instrument, prediction, confidence, baseline, expected_value, reference_price, proposal, findings[], final, client_ref}` — `leg_id`, `findings[]`, `final` and `client_ref` are the leg's own; `proposal` carries the serialized final `Proposal`; every remaining field is copied from that `Proposal` (§5.4) under the same name — a no-op tick has `final: none` per leg or zero legs with `reason` |
 | `decision_plan` | proposal after complete pre-submit evaluation (barrier before proposal submit) | `plan_id`, entry/head/candidate provenance, original/final proposal, input/quote/evidence as-of+digests, `findings[]`, `gate_results[]`, scope verdict, `risk_effect`, `risk_version`, `risk_state_digest`, `result ∈ {submit, not_sent}` |
 | `intent` | proposal selected for possible submit | the canonical `records.Intent` value object; no second schema |
-| `authorization` | permitted live intent (barrier before submit) | serialized `ActPermit` plus `authority_use_id | null`; no raw authority is executable |
+| `authorization` | permitted live intent (barrier before submit) | serialized `ActPermit` plus `authority_use_id` (null on the ordinary path); no raw authority is executable |
 | `control_request` | durable CLI request | `request_id`, `purpose`, canonical payload (full reduction intents when applicable), `release_hash`, derived principal/proof digest, expiry |
 | `control_approval` | maker-checker approval | `request_id`, `purpose`, checker principal/proof digest, verified payload digest |
 | `authority` | issue / disarm / revoke / expire | `authority_id`, `kind ∈ {ordinary, reduction}`, request/approval ids, release/rung, expiry, allowlist/overlay, reduction intent digests, reason |
@@ -1742,7 +1752,7 @@ dskit/production/
 │                      RESILIENCE_OUTCOMES (ok|transient|throttled|fatal|ambiguous — distinct from OUTCOME_KINDS),
 │                      RETRY_DECISIONS, JITTER_MODES, RETRY_AFTER_MODES, RETRY_WRITE_MODES, OVERRUN_POLICIES,
 │                      TICK_PHASES (the ten Tick method names, in order), LEG_STEPS (guard|authorize|act),
-│                      WINDOW_KINDS (none|duration|count|calendar),
+│                      WINDOW_KINDS (none|duration|count|calendar), CALENDAR_WINDOWS (session|day|event),
 │                      READINESS_VERDICTS (go|no_go), METRIC_NAMES + METRIC_LABEL_VALUES (§5.11.1's tables live here,
 │                      not in metrics.py), BREAK_ORIGINS (ours|external),
 │                      AT_TIMES_RELATIVE, CALENDAR_WINDOWS, ON_MISMATCH, RECON_ACTIONS, TRIP_REASONS,
@@ -1797,7 +1807,8 @@ dskit/production/
 │                      IdSource ABC + ReleaseIdSource + RecordedIdSource; lifecycle states; exit codes; journal row per process
 ├── outcomes.py        [phase 2] outcome join (settlements, strict forward as-of), supersede chain, as-of cut
 ├── report.py          [phase 2] attribution, calibration, drawdown, replay parity diff, markdown/JSON emitters
-├── readiness.py       phase-1 release-bound checklist → GO / NO-GO; required for live
+├── readiness.py       Readiness(document, release); ReadinessResult; readiness_digest; release-bound checklist →
+│                      GO / NO-GO; required for live
 ├── libs/
 │   ├── __init__.py
 │   ├── sqlite.py      [phase 2] SqliteLedger (WAL + synchronous=FULL pinned; append-only triggers)
@@ -1931,14 +1942,20 @@ carries all three:
   only override serving needs. The check moves up into `_SearchSeam`, which is
   where it belongs: its reason is about *search trials*, and it does not hold
   for serving, because serving's window path must already exist in the run
-  document (§5.3) — the identity did hash it. `SubgraphRunner` validates only
-  that an override addresses a declared node and an existing param path.
+  document (§5.3) — the identity did hash it.   `SubgraphRunner` validates only
+  that an override addresses a declared node and an existing param path. The
+  seam must keep the declared-node check first (`driver.py:507-511` today):
+  `Plan.role_of` indexes `resolved[key]`, so testing unsearchability before
+  declaredness would raise `KeyError` where today it raises `ValueError`.
 - **`rerun` honours `policy.defer(key)`.** `_execute` computes `dirty` from the
   override targets plus their descendants, and serving's only override
   addresses the entry — so a naive extraction would re-run the entry and take a
   second mutable read, contradicting D3 and D6. `rerun` skips any key the
   policy defers and uses the output already seeded for it, which is what makes
-  "no second mutable snapshot can occur" true rather than aspirational.
+  "no second mutable snapshot can occur" true rather than aspirational. The
+  window override is still passed to `rerun`: it is what puts the entry — and
+  therefore its descendants — into `dirty`, so the subgraph is non-empty. A
+  builder who passes `{}` gets an empty `dirty` and executes nothing.
 
 `_SearchSeam.__init__`'s remaining two arguments stay with the seam and do not
 move to the runner: `key` (it is what the objective is parsed from) and
@@ -1967,7 +1984,10 @@ serving. Add a policy-aware structural planner that resolves registry classes an
 graph topology without constructing/fingerprinting data nodes or materializing
 `data_edge`/splits. `ServingExecutionPolicy` runs at this earliest boundary,
 requires one source-root `entry_read` dominating all dynamic head paths, defers
-it and its descendants, and rejects all other mutable effects.
+that entry's construction and fingerprint out of the base pass, and rejects all
+other mutable effects. Deferral is about *when the entry is constructed*, never
+about skipping its descendants: after `read_entry` runs the entry, `rerun`
+executes every descendant from the seeded output.
 `dskit/pipeline/node.py` defines the closed `Node.serving_effect` classmethod
 with a fail-closed default, adds the optional `NodeContext.release_reader`
 field (default `None`, populated only for a node the policy classified
@@ -2243,8 +2263,8 @@ needs the same mechanism with one different override rule and head outputs.
 **Decision.** `SubgraphRunner` becomes public, with a policy-aware structural
 planner that sees class metadata/topology before any source construction,
 fingerprint, `data_edge` or split materialization. Ordinary search resolution is
-unchanged. Serving drops splits, defers the sole source-root `entry_read` and its
-descendants, and requires its existing-param window override. The immutable base
+unchanged. Serving drops splits, defers construction of the sole source-root `entry_read`
+out of the base pass, and requires its existing-param window override. The immutable base
 pass permits pure nodes plus approved release reads only through `ReleaseReader`;
 after fetch, the entry alone runs and its contract validates the frozen snapshot
 before descendants execute from that binding.
