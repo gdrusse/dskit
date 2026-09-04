@@ -592,6 +592,15 @@ connector, the `observations` kind and the public clause DSL):
       the minute or carry the venue's stamp). Widen the stamp's precision
       only with the WORM/acq_id consequences worked through (skeptic
       review, round 2, 2026-09-04).
+- [ ] `libs/polymarket.py` archive: an hour skipped as a mirror-declared gap
+      (`pending_gap_hours`) advances the cursor and is never revisited, even
+      if the mirror backfills it later; and token resolution from
+      `series_slugs` inherits the `closed` knob, so under the default an
+      OPEN market's tokens are not resolved for recent hours (stated in the
+      knob note). Both are the stated trade-offs of round 3 (2026-09-04); a
+      "revisit declared gaps" knob or an upstream-object fallback
+      (`https://r2v2.pmxt.dev/`, the mirror lags the venue by weeks — the
+      child's I-242) would be an ADR.
 - [ ] `tests/onboarding/test_connector.py::test_resolve_registered_kind`
       is a hand-kept list of the nine kinds (a deliberate restatement);
       deriving it from `DEFAULT_CONNECTORS` would remove the pin, keeping

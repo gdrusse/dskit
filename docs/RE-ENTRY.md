@@ -1,6 +1,6 @@
 # Re-entry
 
-**pmquant child rebuild, 2026-09-04 (branch `claude/pmquant-dskit-rebuild-367zis`, both repos).**
+**pmquant child rebuild, 2026-09-04 (branch `claude/pmquant-dskit-rebuild-367zis`, both repos; PRs gdrusse/dskit#7 and gdrusse/pmquant#4 open, three commits + the wrap; the merge is the PR's).**
 pmquant now lives as `children/pmquant/` — thin tier-3 kinds + JSON over
 dskit seams. The success document `children/pmquant/configs/run-e2e.json`
 runs the stat test, trains the transformer ensemble and builds the Kelly
