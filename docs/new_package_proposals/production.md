@@ -297,9 +297,10 @@ brackets.
   startup flag or automatic policy: it is a separate authenticated, ledgered
   operator action after inspection [R7 §2.4–2.6, R3 §1.2, R1 §1.1].
 - **D14 — Execution and accounting are separate venue-neutral seams.**
-  `Executor` owns `spec`, `capabilities`, `check`, `submit`, `cancel`, `order`,
-  `open_orders`, `fills`, `balances`, positions and settlements; it has no
-  initiated replace verb. Read/query/cancel construction is always possible.
+  `Executor` owns `spec`, `capabilities`, `check`, `cancel`, `order`,
+  `open_orders`, `fills`, `balances`, positions and settlements — read, query
+  and cancel only, always constructible, never armed. `SubmittingExecutor(Executor)`
+  adds `submit(intent, permit)` (§5.15). Neither has an initiated replace verb. Read/query/cancel construction is always possible.
   Shadow/paper `submit(intent, SimulatedPermit)` needs no live authority;
   `LiveExecutor.submit` accepts only an `ActPermit`—never a raw ordinary or
   reduction authority. Policy/arming consumes either authority and mints the
@@ -409,6 +410,7 @@ brackets.
   command. Each mutating CLI captures its queue/synchronous result and calls
   `record_production` exactly once in `finally`; it does not use the existing
   context manager because that freezes outputs before the attempt. This covers
+  `plan` (it writes an immutable release, so it is a mutating verb),
   `arm-request`, `approve-arm`, `disarm`, `halt`, `reduce`, `flatten-request`,
   `approve-flatten`, `execute-flatten`, `resume`, `reconcile` and `adopt`;
   read-only verbs do not journal. SIGKILL/power loss can leave a durable inbox
@@ -523,12 +525,12 @@ brackets.
                              "cancel": {"rate_per_s": 10, "burst": 10, "reserved": true}},
                  "transport": {"uses": "urllib", "params": {"connect_s": 2.0, "read_s": 5.0}}},
   "lifecycle": {"cooling_off_s": 900, "shutdown_grace_s": 30},
-  "readiness": {"checklist": "configs/readiness.json", "waivers": []},
-  "heartbeat": {"every_s": 60, "emitters": {"file": {"uses": "file"}}},
+  "readiness": {"checklist": "configs/readiness.json", "waivers": [], "valid_for_s": 86400},
+  "heartbeat": {"every_s": 60, "in_degraded": false, "emitters": {"file": {"uses": "file"}}},
   "alerts": {"sinks": {"ops": {"uses": "webhook", "params": {"url_env": "OPS_WEBHOOK_URL", "template": "slack", "timeout_s": 5}}},
              "routes": [{"severity": "critical", "sinks": ["ops"]}, {"severity": "warning", "sinks": ["ops"]}],
              "group_wait_s": 30, "repeat_interval_s": 14400, "rate_limit": {"max_per_hour": 20, "burst": 5}},
-  "placement": {"ledger_root": "./serve", "rotate": {"by": "day"}, "log_dir": "./serve/logs"},
+  "placement": {"ledger_root": "./serve", "rotate": {"by": "day", "max_bytes": 268435456}, "log_dir": "./serve/logs"},
   "env": {"env_file": ".env", "require": ["OPS_WEBHOOK_URL"]}
 }
 ```
@@ -550,7 +552,7 @@ partitioned to suit it — this is the reason `durability`, `resilience`,
 `execution` or `health`. Every remaining section is graded: `series_id`, `rung`,
 `serving`, `feed`, `schedule`, `guards`, `execution`, `accounting`, `arming`,
 `coordination`, `reconcile`, `monitors`, `health`, `durability`, `resilience`,
-`lifecycle` and `readiness`. Fourteen graded sections plus four excluded plus
+`lifecycle` and `readiness`. Seventeen graded sections plus four excluded plus
 `name` and `notes` account for every key in §4.1; `validate` refuses a top-level
 key that is in neither list, so the partition cannot silently drift.
 
@@ -570,7 +572,8 @@ exactly one of them: `CLOCK_KINDS`, `CALENDAR_KINDS`, `CADENCE_KINDS`,
 `FEED_KINDS`, `PROPOSER_KINDS`, `GUARD_KINDS`, `MEASURE_KINDS`,
 `EXECUTOR_KINDS`, `ACCOUNTING_KINDS`, `APPROVAL_KINDS`, `LEASE_KINDS`,
 `MONITOR_KINDS`, `REFERENCE_KINDS`, `CHUNKER_KINDS`, `THRESHOLD_KINDS`,
-`PROBE_KINDS`, `ALERT_SINK_KINDS`, `HEARTBEAT_KINDS`, `TRANSPORT_KINDS`.
+`PROBE_KINDS`, `ALERT_SINK_KINDS`, `HEARTBEAT_KINDS`, `TRANSPORT_KINDS`,
+`FEE_KINDS`.
 Registering a name twice refuses. A child registers nothing and references its
 classes by path.
 
@@ -579,9 +582,16 @@ taken by `dskit/pipeline/base.py`'s tracking-sink registry, and both would carry
 a kind named `memory`. A test asserts the two registries are disjoint objects
 and that neither name is importable from the other package.
 
-A `uses` whose family has no registry is a validation error, not a default —
-`test_document.py` enumerates the §4.1 grammar and asserts every `uses` site
-names a registry in this list.
+`uses` and `kind` are the same mechanism at two depths: `uses` selects a
+top-level family member, `kind` selects a nested strategy inside one
+(`window: {"kind": "count"}` → `CHUNKER_KINDS`, `threshold: {"kind":
+"alpha"}` → `THRESHOLD_KINDS`, `fees: {"kind": "bps"}` → `FEE_KINDS`).
+Both resolve through the registries above and neither may be read with an
+`if kind ==` chain; `FEE_KINDS` exists so the five fee strategies of §5.7 are
+registry-resolved like everything else rather than selected by string.
+A `uses` or `kind` whose family has no registry is a validation error, not a
+default — `test_document.py` enumerates the §4.1 grammar and asserts every
+selector site names a registry in this list.
 
 ## 5. The seams
 
@@ -602,8 +612,9 @@ than only as a line in §8.
   / syslog / `logging` map) and `EXIT_CODES`. No logic, no imports beyond stdlib,
   `__all__` is the whole surface. Nothing anywhere else may define a closed set.
 - `base.py`: `ProductionError` (accumulate-every-problem, one raise);
-  `reject_unknown_params` and the checker helpers re-exported from
-  `dskit.assets.base`; ms/UTC helpers; `canonical_bytes(obj)` and
+  `reject_unknown_params` re-exported from `dskit.pipeline.node` and the
+  accumulate-errors checkers from `dskit.assets.base` (the same re-export
+  idiom `dskit/onboarding/base.py` already uses); ms/UTC helpers; `canonical_bytes(obj)` and
   `record_hash(prev_hash, envelope)` — the one sha256-canonical idiom §6 names,
   defined once.
 - `redact.py`: `Secrets` resolution through `dskit.pipeline.env.load_env`, and
@@ -615,8 +626,10 @@ than only as a line in §8.
 
 - `Clock(ABC)`: `now_ms()`, `monotonic()`, `sleep_until(epoch_ms, wake)` (returns
   early when `wake()` is true). `WallClock` (≤ 1 s sleep slices so a stop flag is
-  honoured), `TestClock(set, advance)`, `ReplayClock` (a `TestClock` the replay
-  feed advances). Invariant: nothing in the package compares wall stamps to order
+  honoured), `TestClock(set, advance)`, `ReplayClock` — both are `Clock`
+  implementations composing one shared `ManualTime` value; `ReplayClock` is
+  advanced by the replay feed and does NOT subclass `TestClock`, since the
+  relationship is shared mechanism, not is-a. Invariant: nothing in the package compares wall stamps to order
   events.
 - `Calendar(ABC)`: `is_open(ms)`, `next_open(after_ms)`, `next_close(after_ms)`.
   `AlwaysOpen`; `WeeklySessions` params `tz` (IANA, required), `sessions[]`
@@ -641,7 +654,11 @@ an immutable, manifest-named run artifact or full recorded entry output; absence
 refuses. It produces canonical `required_keys` and never infers entity identity
 from dedupe `key_fields`.
 `Feed(ABC).pull(tick_at_ms)` fetches through the contract's source binding and
-returns acquisition/link status only. After the pull, the deferred entry executes
+returns acquisition/link status only. Core ships one implementation,
+`EntrySourceFeed`, parameterised by `pull ∈ {acquire, store}` — `acquire`
+calls `run_acquisition(..., mode="live")` through the onboarding root and
+registry, `store` reads what a separate `watch` process fills and derives
+staleness through `scan_stream` — rather than two near-identical classes. After the pull, the deferred entry executes
 once and the same contract's `snapshot(entry_outputs)` produces
 `EntryBatch{outputs, watermarks_by_key, required_keys_digest, coverage_digest,
 data_asof_ms, inputs_digest, source_config_hash}`. Thus rows, key projection,
@@ -793,7 +810,9 @@ non-finite number.
   evidence_digest, authority_scope_digest, risk_version, risk_state_digest,
   readiness_digest, readiness_until_ms, lease_scope, fencing_token,
   safety_epoch_digest, valid_until_ms, checked_at_ms}`.
-  `Permit(ABC)` is the base both permit types share (`plan_id`,
+  `Permit` is a frozen dataclass base — deliberately NOT a seam ABC, so the
+  §5.15 seam-ABC rule (every seam ABC has an abstract hook) does not reach
+  it — sharing (`plan_id`,
   `decision_plan_digest`, `client_ref`, `valid_until_ms`); `SimulatedPermit`
   adds nothing outward-authorising and is what shadow/paper/recorded executors
   receive, while `ActPermit` above is the live binding. `SubmittingExecutor.submit`
@@ -840,7 +859,10 @@ non-finite number.
   {ttl}`).
 - `Measure(ABC)`: deterministic
   `requirements(candidate, window, scope_key) -> tuple[EvidenceRequirement]`
-  plus `value(proposal, state, window, scope_key) -> Decimal | float`.
+  plus `value(proposal, state, window, scope_key) -> Decimal | float`. Every
+  monetary or quantity measure returns `Decimal` (§5.4 admits no float in money);
+  only dimensionless ratios — `bankroll_fraction`, `confidence` — may be
+  `float`, and a test pins which registry entry is which.
   Proposal-local measures such as quantity return no evidence requirement;
   history/account-dependent measures declare every source value accounting must
   snapshot before sizing. A guard refuses if declared evidence is absent.
@@ -860,15 +882,23 @@ non-finite number.
 - `Breaker`: states `active | reducing | halted`; `trip(reason, actor)` from a
   guard `halt`, `feed.dead`, `executor.link_lost`, `reconcile.mismatch`,
   `operator`; `reduce(actor)`; `reset(actor, acknowledges_trip_id)` refused
-  before `cooling_off_s` elapses or without a trip id; state persisted in
-  `breaker.json` and reloaded before `READY`; every transition is a `trip`
+  before `cooling_off_s` elapses or without a trip id; breaker state is the ledger fold;
+  `breaker.json` is only a head-bound cache, validated against that fold before
+  `READY` and rebuilt when it is behind; every transition is a `trip`
   record; the kill-switch file `HALT` in the serve root is polled by the
   independent control worker at subsecond cadence (§5.8) and re-checked at every
   tick boundary;
   on entering `halted` the loop cancels working orders per `execution.on_halt`
   and records the outcome vocabulary.
-- `ArmRequest{release_hash, rung, allowlist, limits_overlay, requested_until_ms,
-  request_proof}` and `ArmApproval{request_digest, approval_proof}`.
+- `Arming{authority_id, release_hash, rung, maker, checker, armed_at_ms,
+  armed_until_ms, allowlist, limits_overlay, request_proof_digest,
+  approval_proof_digest}` is the folded value object;
+  `ArmRequest{release_hash, rung, allowlist, limits_overlay, requested_until_ms,
+  request_proof}` and `ArmApproval{request_digest, approval_proof}` are its
+  inputs. `Arming.check_conjunction(document, cli_armed, env_release_hash)` is
+  the single place the live conjunction of §5.13(3) is evaluated — document
+  rung, `--armed`, `DSKIT_PRODUCTION_ARM`, a current unexpired arm and the
+  release hash must all agree; no caller re-derives it.
   `ApprovalVerifier(ABC).verify(canonical_bytes, proof, purpose) ->
   VerifiedPrincipal{id, proof_digest}`. It is resolved from the graded
   `arming.approval {uses, params}` object; params may name trust-root env vars
@@ -916,7 +946,9 @@ other permit **by type**. No subclass strengthens a precondition of its base.
   `execution_scope() -> ExecutionScope`,
   `cancel(ref) -> Ack`, `order(ref) -> OrderState`,
   `open_orders()`, `fills(since_ms, cursor=None)`, `balances()`; concrete
-  `positions()` (fill-derived `PositionBook`, reversed fills undone),
+  `positions()` — fill derivation lives in `PositionBook`, which `Executor`
+  *composes*, not in the base method body; a `positions: venue` child
+  overrides `positions()` without inheriting dead derivation code —
   `settlements(since_ms)` (empty), `events()` (none), `venue_time_ms()` (None),
   `cancel_all()` (iterates only refs this executor owns).
 - `ShadowExecutor`: records nothing itself; `submit` returns
@@ -938,8 +970,13 @@ other permit **by type**. No subclass strengthens a precondition of its base.
   `SubmissionVerifier.verify_and_call`; the callback is
   `_submit_native(intent, permit, timeout_ms)`. The gateway checks fencing,
   deadline and idempotency atomically. Ordinary or reduction authorities are
-  never executor inputs. Missing/stale authority raises `NotArmed`; verification
-  mismatch is `not_sent`; a timeout/raise after possible I/O is `unknown`.
+  never executor inputs. `submit` always RETURNS an `Ack` and never raises for
+  a permission fact: a non-`ActPermit` is `Ack(not_sent, reason="permit_type")`,
+  missing or stale authority is `Ack(not_sent, reason="not_armed")`,
+  verification mismatch is `not_sent`, and a timeout or raise after possible
+  I/O is `unknown`. `NotArmed` stays an internal exception inside the wrapper
+  and never crosses the `SubmittingExecutor` contract, so no subclass raises
+  where its base promises a value.
   Failures never disable reconciliation or cancellation.
 
 - `executor_conformance_suite(cls, params, quotes)`: a pytest class builder (the
@@ -1004,9 +1041,15 @@ deadline invalidates the local permit without waiting for nominal expiry.
   `hash = sha256(prev_hash + canonical(envelope − hash))`. Readers tolerate
   unknown fields and upcast `schema_version`.
 - `JsonlLedger`: one serialised line per single `write()` on `O_APPEND`; `fsync ∈
-  {every, batch:{n, ms}, none}` (`none` legal only at `shadow`); `flock` for the
+  {every, batch:{n, ms}, none}` from `durability.fsync` (`none` legal only at
+  `shadow`); `flock` for the
   process lifetime; torn-tail recovery and segment continuity; directory fsync
-  on segment creation; never copytruncate. `barrier()` flushes through fsync.
+  on segment creation; never copytruncate. Rotation is
+  `placement.rotate.by ∈ {size, day, process}` (with `max_bytes` for `size`)
+  into `ledger.NNNN.jsonl`; a new segment carries the prior segment's final
+  `seq` and `prev_hash` so the chain is continuous across files, and
+  `verify()` returns `first_bad_seq | None`. The genesis `prev_hash` is 64
+  zeros. No money field is ever a float in a record. `barrier()` flushes through fsync.
   Every `tick_start` before work, decision plan and intent before submit, and
   arming, breaker, authorization/use, reduction/reset or adoption transition crosses it regardless
   of batch policy. Only the process holding `serve.lock` may open the ledger for
@@ -1069,8 +1112,10 @@ deadline invalidates the local permit without waiting for nominal expiry.
 ### 5.9 `reconcile.py`
 
 `Reconciler.run(ledger_state, executor, scope) -> ReconReport{breaks[], status}`
-resolves pending refs and compares open orders, fill-derived vs venue positions,
-balances and settlements. Breaks are `timing | missing_in_ledger |
+resolves every pending ref through `executor.order(ref)` and compares open
+orders, balances and settlements; it compares fill-derived against venue
+positions only when `capabilities().positions == "venue"`, since against a
+`derived` executor that comparison is vacuous. Breaks are `timing | missing_in_ledger |
 missing_at_venue | quantity | price | fee | state | settlement`, with severity
 `info | warn | block`. Automatic policy is only `halt | refuse`; unknown venue
 orders are `external`, never silently made ours. It runs before `READY`, on the
@@ -1083,7 +1128,8 @@ break ids and release hash; after inspection it records the delta, crosses
 
 - `Monitor(ABC)`: `_PARAMS`; `fit(reference)`; `@abstractmethod observe(record)`;
   `@abstractmethod verdict() -> Verdict`; `state()`/`restore(state)` (JSON-able,
-  restored from the checkpoint).
+  carried by the §6 `snapshot` record, which is the sole owner of monitor state;
+  `Checkpoint` does not hold it).
 - Strategies: `Reference` (`leading(n)`, `rolling(window)`, `snapshot(path)` — a
   saved `Profile`; phase 2 `run` over the run's predictions parquet via the
   parquet pack); `Chunker` (`count(n)`, `period(iso)`, `sliding(n, step)`);
@@ -1091,8 +1137,12 @@ break ids and release hash; after inspection it records the delta, crosses
   `(1/n+1/m)·(B−1+z_α√(2(B−1)))` and the Kolmogorov series, both via
   `statistics.NormalDist`/`math`); `Response ∈ {log, warn, halt}` (phase 2:
   `fallback`, `rollback` as operator acts).
-- Families (phase 1): `OperationalMonitor` → `Staleness`, `DecisionRate`,
-  `Coverage` (abstention), `LatencyPercentiles`, `RefusalCount`;
+- Families (phase 1): `OperationalMonitor` — one class parameterised by a
+  `MEASURE_KINDS` entry plus a `Chunker`, not a class per statistic: staleness,
+  decision rate, coverage/abstention, latency percentiles and refusal counts
+  are all `OperationalMonitor` over `input_age_ms`, `decision_count` and their
+  siblings, so a measure is defined once and read by both a guard and a
+  monitor;
   `StreamMonitor` → `PageHinkley`, `TrackingSignal`; `DistributionMonitor` →
   `PSI`, `KS` (bins from reference quantiles at `fit`). Phase 2: `DDM`, `ADWIN`,
   `JensenShannon`, `LInf`; `OutcomeMonitor` → `Calibration` (ECE), `Brier`
@@ -1132,7 +1182,12 @@ break ids and release hash; after inspection it records the delta, crosses
   heartbeating; `degraded` observes and refuses acts.
 - `Heartbeat` has its own supervised worker and cadence independent of tick
   duration; each emission uses `process_id`, its own sequence and time—not a tick
-  id. Emitters are `file` and deadline-bound `url`. The worker observes an
+  id. Emitters are `file` (atomic rewrite of `heartbeat.json`) and deadline-bound
+  `url` (POST of `{process_id, sequence, at_ms, status}`; 2xx is success, any
+  other result counts a failure and never blocks). `every_s` must be at least 1
+  and no greater than the cadence period. Phase 2 adds a `systemd` emitter
+  (`NOTIFY_SOCKET` datagrams: `READY=1`, `WATCHDOG=1`, `STATUS=`, `STOPPING=1`).
+  The worker observes an
   atomic last-successful-tick monotonic stamp; when `dead_after_ms` elapses it
   transitions health to unhealthy and stops emitting, allowing the external
   dead-man to page. It is sent only in `ready` (or configured `degraded`).
@@ -1140,6 +1195,41 @@ break ids and release hash; after inspection it records the delta, crosses
   the §5.8 deployment lease covers other hosts. Signals wake within 1 s;
   `ticking` finishes the phase and never stops between act and record-outcome;
   `shutdown_grace_s` [1, 300] must be under the supervisor's grace.
+
+### 5.11.1 `metrics.py`
+
+Counters exist because §5.11 swallows sink failures and bounded-queue drops; a
+swallowed failure that is not counted is invisible. The registry is the one
+place a count lives.
+
+- `Metrics`: `counter(name, labels=())`, `gauge(name, labels=())`,
+  `histogram(name, labels=(), buckets=None)` each return a handle
+  (`inc(n=1)` / `set(v)` / `observe(v)`). Names are declared at construction
+  from a closed table; asking for an undeclared name raises `ProductionError`.
+- Naming is Prometheus-shaped and pinned by a test: `snake_case`, base units in
+  the suffix (`_seconds`, `_bytes`, `_total` for monotonic counters), no
+  units elsewhere.
+- **Label sets are closed.** A metric declares its label *names* and the
+  permitted *values* per name. An undeclared name refuses at declaration; an
+  undeclared value is dropped into the reserved value `other` and increments
+  `metrics_label_cardinality_dropped_total` — never unbounded growth, never a
+  raise on the hot path. `labels_max_cardinality` bounds the product.
+- Values are process-local ints/floats, not `Decimal`: metrics are operational
+  telemetry and never an input to a decision, a guard or a record. Nothing in
+  `policy.py`, `guards.py` or `accounting.py` may read them.
+- `flush()` appends one JSON object per tick to `<placement.log_dir>/
+  metrics.jsonl` (`{at_ms, tick_id, metrics: {name: {labels: value}}}`) and is
+  called by the loop after `observe`, outside every barrier. A flush failure is
+  counted and swallowed like a sink failure; it can never fail a tick.
+- The declared table for phase 1: `ticks_total{status}`,
+  `tick_seconds{phase}`, `decisions_total{result}`, `proposals_total{verdict}`,
+  `submits_total{rung, risk_effect, outcome}`, `refusals_total{reason}`,
+  `alert_sink_failures_total{sink}`, `alerts_suppressed_total{why}`,
+  `monitor_verdicts_total{monitor, status}`, `recon_breaks_total{class}`,
+  `ledger_append_seconds`, `metrics_label_cardinality_dropped_total`.
+  §5.11's two counter names resolve here and nowhere else.
+- Phase 3 `prometheus`/`opentelemetry` packs subscribe to this registry;
+  `metrics.py` imports neither and knows nothing about them.
 
 ### 5.12 `resilience.py`
 
@@ -1180,13 +1270,18 @@ knob because D13 fixes the answer: query, never resend.
 
 ### 5.13 `loop.py`, `outcomes.py`, `report.py`, `readiness.py`
 
-- `ServeLoop(document, release, clock, calendar, cadence, feed, decider, guards,
-  breaker, arming, executor, accounting, lease, ledger, inbox, reconciler,
-  action_policy, transition_policy, submission_verifier, resilience, monitors,
-  metrics, alerts, health, heartbeat, id_source, journal_hook)`: every seam the
-  loop drives is injected — D2's "no branch on mode" only holds if the policy
-  objects, the control inbox and the reconciler arrive the same way the executor
-  does. lifecycle `init → locked → leased → reconciling → ready →
+- `ServeLoop(document, release, schedule, data, decision, safety, execution,
+  recording, observability)`: nine collaborator groups, each a frozen bundle
+  validated at construction, rather than twenty-seven positional arguments —
+  `Schedule{clock, calendar, cadence, overrun}`, `Data{feed, decider}`,
+  `Decision{guards, proposer_state, monitors}`,
+  `Safety{breaker, arming, readiness, action_policy, transition_policy,
+  submission_verifier}`, `Execution{executor, accounting, lease, resilience}`,
+  `Recording{ledger, inbox, reconciler, checkpoint, journal_hook, id_source}`,
+  `Observability{metrics, alerts, health, heartbeat}`. D2's "no branch on mode"
+  only holds if the policy objects, the control inbox and the reconciler arrive
+  the same way the executor does; the bundles are what make that legible and are
+  what `mode` composition (D2) selects. Lifecycle `init → locked → leased → reconciling → ready →
   {waiting ⇄ ticking} → stopping → stopped`, plus persisted `halted` and
   restartable `faulted`. `IdSource` allocates deterministic tick ids before a
   `tick_start`; `ledger.barrier()` completes before any tick work. Phases are
@@ -1232,10 +1327,16 @@ knob because D13 fixes the answer: query, never resend.
   `not_sent`; an ambiguous outcome stops all later legs until
   reconciliation. Thus cumulative exposure, working orders, position/message
   limits and group scopes include every earlier leg. Finally the loop
-  `observe`s and writes `checkpoint` last. The phases above are methods on an
-  abstract `Tick`, one method per phase, so a phase can be overridden or
-  instrumented without touching `ServeLoop`, and the §6 `latency_ms` keys are
-  exactly those method names. `ServeLoop` composes a `Tick`; nothing subclasses
+  `observe`s and writes `checkpoint` last.
+  `Tick(ABC)` holds one method per phase — `gate`, `verify_release`, `fetch`,
+  `read_entry`, `coverage`, `evaluate`, `candidates`, `quotes`, `account`,
+  `propose` — plus abstract `run(tick_at_ms) -> TickResult`. It is constructed
+  per tick with the loop's collaborator bundles and owns no state between
+  ticks, so a phase can be overridden or instrumented without touching
+  `ServeLoop`, and the §6 `latency_ms` keys are exactly those method names.
+  Core ships `ServingTick`; `ReplayTick` overrides only `fetch` and
+  `read_entry` to read the tape, which is what makes replay a swap rather
+  than a branch. `ServeLoop` composes a `Tick`; nothing subclasses
   `ServeLoop` itself. Query,
   reconcile and cancel stay available in every rung/breaker/health state.
   A process crash cannot guarantee a `finally` write; startup folds unmatched
@@ -1304,10 +1405,14 @@ the parts a test can reach. The governing rule is **one concept, one class,
 parameterised — never a family of near-identical classes and never a `kind`
 branch**.
 
-**Abstraction.** Nineteen ABCs carry the seams: `Clock`, `Calendar`, `Cadence`,
+**Abstraction.** Twenty registry-resolved seam ABCs carry the swappable parts: `Clock`, `Calendar`, `Cadence`,
 `Feed`, `Proposer`, `Guard`, `Measure`, `Executor`, `Accounting`, `Lease`,
 `Ledger`, `Monitor`, `Reference`, `Chunker`, `Threshold`, `AlertSink`,
-`HealthProbe`, `Classifier`, `Transport`. Each declares its hooks
+`HealthProbe`, `Classifier`, `Transport`, `ApprovalVerifier`. Four further
+ABCs are structural rather than registry-resolved, named here so the count is
+not mistaken for the whole surface: `SubmittingExecutor` (§5.7), `Tick`
+(§5.13), `IdSource` (§5.13) and pipeline-side `ExecutionPolicy` (§9.1).
+`Permit` is a dataclass base, not an ABC. Each seam ABC declares its hooks
 `@abstractmethod` so an incomplete subclass fails at construction, not at the
 first live tick. The serve document names *what* ("`uses`: `weekly-sessions`"),
 never *how*; no caller may instantiate a concrete class by name.
@@ -1380,7 +1485,7 @@ sha256-canonical idiom.
 |---|---|---|
 | `process` | start / stop / recovered | `series_id`, `release_hash`, `doc_hash`, `serving_hash`, `run_hash`, `artifact_digests`, `source_config_hash`, `runtime_fingerprint`, `rung`, `executor_kind`, `code_version`; stop adds `exit_code`. After its barrier, one journal row is written whose `notes` render the process id and final head in the D22 `production-v1` form |
 | `tick_start` | scheduled tick | `tick_id`, `tick_at_ms`, `release_hash` |
-| `tick` | terminal tick | `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash, required_keys_digest, watermarks_by_key, coverage_digest}`, `inputs_digest`, `calendar`, `latency_ms{fetch, read_entry, coverage, evaluate, candidates, quotes, account, propose, guard, authorize, act}` — one key per §5.13 phase, pinned by a test against the phase list, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}` |
+| `tick` | terminal tick | `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash, required_keys_digest, watermarks_by_key, coverage_digest}`, `inputs_digest`, `calendar`, `overrun_absorbed[]` (the tick instants this tick coalesced or skipped), `latency_ms{gate, verify_release, fetch, read_entry, coverage, evaluate, candidates, quotes, account, propose}` (one key per §5.13 `Tick` phase method, pinned by a test) and `leg_latency_ms{guard, authorize, act}` summed over the tick's legs, since those are per-proposal steps (1)–(7), not phases, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}` |
 | `decision` | tick (exactly one) | `decision_plan_ids[]`, `decision_plan_digests[]`, `legs[]{leg_id, instrument, prediction, uncertainty, baseline, expected_value, decision_price, proposal, findings[], final, client_ref}` — a no-op tick has `final: none` per leg or zero legs with `reason` |
 | `decision_plan` | proposal after complete pre-submit evaluation (barrier before proposal submit) | `plan_id`, entry/head/candidate provenance, original/final proposal, input/quote/evidence as-of+digests, `findings[]`, `gate_results[]`, scope verdict, `risk_effect`, `risk_version`, `risk_state_digest`, `result ∈ {submit, not_sent}` |
 | `intent` | proposal selected for possible submit | the canonical `records.Intent` value object; no second schema |
@@ -1407,10 +1512,10 @@ sha256-canonical idiom.
 |---|---|---|
 | `validate <doc>` | shape and document identity | 0 / 1 |
 | `plan <doc>` | derive/verify the serving document and emit the immutable release | 0 / 1 |
-| `serve <doc> [--once] [--max-ticks N] [--armed]` | run the loop against the document's release | 0 / 1 / 3 / 4 |
-| `arm-request <doc> --until TS --proof FILE [--allow I]…` | queue authenticated maker request for the document's rung | 0 / 1 |
-| `approve-arm <doc> --request ID --proof FILE` / `disarm <doc>` | queue checker approval or safe demotion | 0 / 1 |
-| `halt <doc> --reason` / `reduce <doc> --proof FILE` | set out-of-band halt and queue audit, or queue authenticated reducing transition | 0 / 1 |
+| `serve <doc> [--once] [--max-ticks N] [--armed]` | run the loop against the document's release | 0 / 1 / 3 / 4 / 5 |
+| `arm-request <doc> --until TS --proof FILE [--allow I]…` | queue authenticated maker request for the document's rung | 0 / 1 / 5 |
+| `approve-arm <doc> --request ID --proof FILE` / `disarm <doc>` | queue checker approval or safe demotion | 0 / 1 / 5 |
+| `halt <doc> --reason` / `reduce <doc> --proof FILE` | set out-of-band halt and queue audit, or queue authenticated reducing transition | 0 / 1 / 5 |
 | `flatten-request <doc> --plan FILE --proof FILE` / `approve-flatten <doc> --request ID --proof FILE` | queue maker-checker reduction plan/authorization | 0 / 1 / 5 |
 | `execute-flatten <doc> --authorization ID --proof FILE` | queue authenticated execution of stored reduction intents by an active ready loop | 0 / 1 / 5 |
 | `resume <doc> --acknowledge TRIP --proof FILE` | queue authenticated reset after cooling-off | 0 / 1 / 5 |
@@ -1419,7 +1524,7 @@ sha256-canonical idiom.
 | `reconcile <doc>` / `adopt <doc> --break ID… --proof FILE` | queue reconciliation, or queue authenticated adoption of named breaks | 0 / 1 / 5 |
 | `replay <serve-dir>` | phase 2: parity report | 0 / 1 |
 | `outcomes <doc>` / `report <doc> [--asof T]` | phase 2 | 0 |
-| `ready <doc>` | release-bound readiness GO / NO-GO (required for live rungs) | 0 / 5 |
+| `ready <doc>` | release-bound readiness GO / NO-GO (required for live rungs) | 0 / 1 / 5 |
 
 Only operational flags live on `serve` (`--once`, `--max-ticks`, `--armed`).
 Adapter selection and every semantic knob live in the document. Authenticated
@@ -1439,39 +1544,54 @@ dskit/production/
 │                      SEVERITIES (+ the pinned level map), HEALTH_STATES, BREAKER_STATES, LOOP_STATES, TICK_STATUSES, RECORD_KINDS,
 │                      BREAK_CLASSES, BREAK_SEVERITIES, DIVERGENCE_CLASSES, MONITOR_STATUSES, RESPONSES, FEED_STATUSES, LINK_STATES,
 │                      OUTCOME_KINDS, RISK_EFFECTS, OPERATIONS, APPROVAL_PURPOSES, ORDER_EVENTS, CANCEL_OUTCOMES, AUTHORITY_KINDS,
-│                      COMMAND_STATUSES, LIQUIDITY, POSITION_SOURCES, PROBE_SCOPES, EXIT_CODES
+│                      COMMAND_STATUSES, LIQUIDITY, POSITION_SOURCES, PROBE_SCOPES, EXIT_CODES, PULL_MODES, ALERT_STATUSES,
+│                      PLAN_RESULTS, FSYNC_MODES, ROTATE_BY, ON_BREACH, LIMIT_SCOPES, NAN_POLICY, FILL_RULES, RESTING_RULES,
+│                      SIZE_CAPS, FEE_KIND_NAMES, DEDUPE_MODES, POSITION_MODELS, FENCING_MODES,
+│                      RESILIENCE_OUTCOMES (ok|transient|throttled|fatal|ambiguous — distinct from OUTCOME_KINDS),
+│                      RETRY_DECISIONS, JITTER_MODES, RETRY_AFTER_MODES, RETRY_WRITE_MODES,
+│                      CIRCUIT_STATES (closed|open|half_open|forced_open|metrics_only — distinct from BREAKER_STATES)
 ├── document.py        ServeDocument with required series/rung, Accounting, Arming, Coordination; default-deny; identity paths
-├── release.py         ReleaseManifest; class/code/adapter/source/artifact/runtime fingerprints; release verification
+├── release.py         ReleaseManifest; ReleaseReader (the capability handed to release_read nodes); class/code/adapter/
+│                      source/artifact/runtime fingerprints; release verification
 ├── records.py         Quote, Candidate, Proposal, Finding, InputWatermark, EntryBatch, TickStart, DecisionPlan, ReductionPlan,
-│                      ReductionAuthorization, MeasureEvidence, RiskVersion, AccountState, LeasePermit, ActPermit, Intent, execution/monitoring values
-├── clock.py           Clock ABC; WallClock, TestClock, ReplayClock
+│                      ReductionAuthorization, MeasureEvidence, RiskVersion, AccountState, LeasePermit,
+│                      Permit base + SimulatedPermit + ActPermit, Intent, execution/monitoring values
+├── clock.py           Clock ABC; WallClock, TestClock, ReplayClock; CLOCK_KINDS
 ├── sessions.py        Calendar ABC; AlwaysOpen, WeeklySessions, EventWindow, Composite; CALENDAR_KINDS
 ├── cadence.py         Cadence ABC; FixedInterval, AlignedBar, AtTimes, OnData; Overrun; CADENCE_KINDS
 ├── control.py         ControlInbox; CommandProcessor; atomic request/result spool; sole-writer dispatch
 ├── feed.py            ServingContract + FeedSpec; EntrySourceFeed; snapshot coverage/digests; ReplayFeed; FEED_KINDS
-├── decider.py         serving_document(); Decider (base pass + per-tick rerun via SubgraphRunner); Proposer ABC; IntentRows,
+├── decider.py         serving_document(); Decider (base pass + per-tick rerun via SubgraphRunner); ServingExecutionPolicy
+│                      (implements pipeline ExecutionPolicy); Proposer ABC; IntentRows,
 │                      TargetPositions; RecordedOutputs (replayed gate / stat_test); PROPOSER_KINDS
 ├── guards.py          Guard ABC; Finding lattice; GuardChain; Limit; RangeGuard; Measure ABC + MEASURE_KINDS; windows; GUARD_KINDS
 ├── breaker.py         Breaker (active | reducing | halted), persisted; trips; kill-switch file; cooling-off
-├── arming.py          authenticated proofs; ApprovalVerifier; Arming fold; authority-to-records.ActPermit minting; NotArmed
-├── executor.py        Executor ABC; LiveExecutor submit permission; PositionBook; ShadowExecutor; PaperExecutor (+ fill/fee
+├── arming.py          authenticated proofs; ApprovalVerifier ABC + APPROVAL_KINDS; Arming value object + fold;
+│                      authority-to-records.ActPermit minting; NotArmed (internal)
+├── executor.py        Executor ABC (read/query/cancel); SubmittingExecutor(Executor) adds submit(intent, Permit);
+│                      fee strategies + FEE_KINDS;
+│                      LiveExecutor; PositionBook; ShadowExecutor; PaperExecutor (+ fill/fee
 │                      strategies); RecordedExecutor; executor_conformance_suite; EXECUTOR_KINDS
 ├── accounting.py      Accounting ABC; PaperAccounting; RecordedAccounting; ACCOUNTING_KINDS
 ├── coordination.py    Lease ABC; ProcessLease (non-live); LeasePermit; LEASE_KINDS
 ├── policy.py          ActionPolicy; TransitionPolicy; SubmissionVerifier; closed action/state/freshness/identity/crash matrices
-├── resilience.py      Classifier ABC + HttpClassifier; Retry (+ budget); CircuitBreaker; RateLimiter; Transport ABC + UrllibTransport
+├── resilience.py      Classifier ABC + HttpClassifier; Retry (+ budget); CircuitBreaker; RateLimiter;
+│                      Transport ABC + UrllibTransport + TRANSPORT_KINDS
 ├── ledger.py          Ledger ABC + barrier; JsonlLedger; Checkpoint caches; ServeRoot + series genesis; envelope + chain + verify
 ├── reconcile.py       Reconciler; ReconReport; break classification; on_mismatch policy
-├── monitors.py        Monitor ABC; Reference / Chunker / Threshold / Response strategies; Operational, Stream, Distribution families
-│                      (phase 2 adds Outcome and Parity); MONITOR_KINDS
+├── monitors.py        Monitor ABC; Reference / Chunker / Threshold / Response strategies; Operational, Stream, Distribution
+│                      families (phase 2 adds Outcome and Parity); MONITOR_KINDS, REFERENCE_KINDS, CHUNKER_KINDS,
+│                      THRESHOLD_KINDS
 ├── alerts.py          AlertSink ABC; LogSink, MemorySink, EmailSink, WebhookSink; AlertRouter; ALERT_SINK_KINDS
-├── health.py          Health state machine; HealthProbe ABC + probes; Heartbeat emitters; single-instance lock; signal handling
+├── health.py          Health state machine; HealthProbe ABC + PROBE_KINDS; Heartbeat emitters + HEARTBEAT_KINDS;
+│                      single-instance lock; signal handling
 ├── metrics.py         Registry (counter/gauge/histogram); Prometheus naming + base units; closed label sets with a cardinality
 │                      cap that refuses new label values; JSONL flush per tick. Owns every `*_total` name §5.11 emits.
 │                      Phase 3 prometheus/otel packs subscribe to it; nothing here imports either.
 ├── redact.py          Secrets resolution via dskit.pipeline.env.load_env; redact(text) applied to every log line, alert body
 │                      and recorded `reason`; webhook URLs and proofs are credentials. No secret ever reaches a ledger record.
-├── loop.py            ServeLoop; Tick (phase hooks); injected policies/verifier; lifecycle states; exit codes; journal row per process
+├── loop.py            ServeLoop; Tick ABC (one method per phase, names the latency keys); IdSource + RecordedIdSource;
+│                      injected policies/verifier; lifecycle states; exit codes; journal row per process
 ├── outcomes.py        [phase 2] outcome join (settlements, strict forward as-of), supersede chain, as-of cut
 ├── report.py          [phase 2] attribution, calibration, drawdown, replay parity diff, markdown/JSON emitters
 ├── readiness.py       phase-1 release-bound checklist → GO / NO-GO; required for live
@@ -1488,8 +1608,9 @@ tests/production/
 │                          onboarding root), a TestClock, a MemorySink — every test builds on these, no network anywhere
 ├── test_purity.py         static + behavioural: stdlib + dskit.pipeline + dskit.onboarding + dskit.assets + self; journal function-import only;
 │                          no `mode ==` / `rung ==` branch in loop.py
-├── test_oop.py            §5.15 enforced: every seam ABC has ≥1 @abstractmethod and refuses instantiation; no concrete class is
-│                          instantiated by name outside its registry; ServeLoop/GuardChain/policies are never subclassed in-tree;
+├── test_oop.py            §5.15 enforced: every seam ABC has ≥1 @abstractmethod and refuses instantiation; no member of a
+│                          registry-resolved family is instantiated by name outside its registry (composites such as
+│                          GuardChain, AlertRouter, Reconciler, the policies, Checkpoint, Tick and ServeLoop are exempt); ServeLoop/GuardChain/policies are never subclassed in-tree;
 │                          every SubmittingExecutor subclass accepts the base `submit(intent, Permit)` contract (LSP); no class
 │                          both subclasses a seam and reaches a private name of another module
 ├── test_vocab.py          every vocabulary closed; the severity level map pinned; lattice order pinned; a completeness test scans
@@ -1501,7 +1622,10 @@ tests/production/
 ├── test_sessions.py       weekly sessions across spring-forward and fall-back; holidays, special closes, blackouts, buffers; DST-gap refusal
 ├── test_cadence.py        FixedInterval zero drift over 10^6 ticks with slow handlers; AlignedBar publish delay; AtTimes; overrun policies
 ├── test_feed.py           ServingContract evidence; entity ≠ dedupe keys; exact output digests/coverage; per-key min/staleness; drift; ReplayFeed
-├── test_decider.py        closed effect metadata before source construction/fingerprint; no data_edge/splits/store scan; existing override path;
+├── test_decider.py        serving_document derivation, one case per §5.3 rule: trainable mode flip, artifact pin, search winner
+│                          applied and search node dropped, gate/stat_test replayed, cut to ancestors(heads), foreach and splits
+│                          dropped, $prev refused; the no-restatement pin (nothing in the serve doc restates the run doc);
+│                          closed effect metadata before source construction/fingerprint; no data_edge/splits/store scan; existing override path;
 │                          registry classification; entry dominance; ReleaseReader/no-direct-I/O; frozen binding; evaluate → candidates/quotes/account/propose
 ├── test_guards.py         one refusal per knob; lattice composite = max; every finding carries value/bound/reason; include_working; calendar
 │                          windows; amend never exceeds bound; hypothesis: day_loss halts before the period loss exceeds bound − max single loss;
@@ -1509,12 +1633,19 @@ tests/production/
 ├── test_breaker.py        persisted trips with request/proof ids; authenticated/barriered reduce/reset; resume requires a fresh arm; halt cancel outcomes
 ├── test_arming.py         maker-checker; verifier construction/fingerprint; exact-intent scope application; reduction rights/use replay; tighten-only; expiry
 ├── test_policy.py         exhaustive health/breaker/rung/readiness/operation/risk-effect cells; disjoint classification; authority lifecycle; crash cuts
-├── test_executor.py       permit-only live; no replace; frozen-input rehash/no reread; scope/readiness/input/quote/evidence/risk/fence; hung deadline
+├── test_executor.py       the full conformance battery run against Shadow, Paper and Recorded; paper determinism under seed;
+│                          ioc/fok/gtd handling and day refused without session_end_ms; every fee kind against its closed form;
+│                          LSP: every SubmittingExecutor subclass returns an Ack and never raises for a permission fact;
+│                          permit-only live; no replace; frozen-input rehash/no reread;
+│                          scope/readiness/input/quote/evidence/risk/fence; hung deadline
 ├── test_accounting.py     every duration/count/calendar × scope-key evidenced; monotonic source tokens; risk versions/digests; corrections; freshness; reducing proof
 ├── test_coordination.py   expected/authenticated/lease/gateway scope equality; cross-release contention; fencing; stale renewal disables submit
 ├── test_control.py        caller UUID retry vs repeat; sole writer; HALT; normal-exit journal rows; SIGKILL gap reported; flatten recovery
 ├── test_resilience.py     ambiguous writes; retry cap; reserved cancel lane; bounded cancel_all 429/timeout/query/reconcile behavior
-├── test_ledger.py         chain/idempotency; safety barriers; stale cache rebuilt; divergent refused; final-head journal order; writer lock
+├── test_ledger.py         chain/idempotency; genesis prev_hash of 64 zeros; torn tail recovered; an edit/delete/insert/reorder
+│                          located by verify() -> first_bad_seq; rotation continuity across segments for each rotate.by;
+│                          checkpoint atomicity under a crash subprocess mid-batch; no float in any money field;
+│                          safety barriers; stale cache rebuilt; divergent refused; final-head journal order; writer lock
 ├── test_reconcile.py      every break class; pending refs; automatic halt/refuse only; explicit authenticated adoption then re-reconcile
 ├── test_monitors.py       PSI = 0 on identical samples and χ² scaling; KS hand case; PageHinkley alarms on a shift, not on noise; tracking signal;
 │                          insufficient below min_n; last partial chunk never ok; state round-trip; deterministic verdict records
@@ -1539,6 +1670,43 @@ examples/production/
 ## 9. Changes outside the package
 
 ### 9.1 Pipeline — ADR-0091: the subgraph re-execution seam becomes public
+
+**The public API this ADR adds** (the seam the owner is asked to approve):
+
+```
+# dskit/pipeline/driver.py
+class SubgraphRunner:
+    def __init__(self, the_plan, node_outputs, splits_info, prev, policy=None)
+    def rerun(self, overrides, ctx, bindings=None, *, guard_verdicts=False)
+        -> (node_outputs, reran_keys, seconds)
+
+# dskit/pipeline/policy.py  (new module)
+class ExecutionPolicy(ABC):
+    @abstractmethod
+    def classify(self, key, cls, params, evidence) -> str   # one closed effect name
+    def defer(self, key) -> bool                            # concrete, default False
+    def reader(self, key)                                   # concrete, default None
+```
+
+`SubgraphRunner` is the extraction of today's `_SearchSeam._execute(overrides,
+outputs, ctx, bindings, *, guard_verdicts=False)` (`driver.py:498`), keeping its
+`needed ∩ dirty` incremental rule (`driver.py:526`) unchanged. It returns the
+node-output mapping rather than an objective float; `_SearchSeam` is re-expressed
+as a thin caller that owns the float and its own override rule, so
+`__call__(overrides) -> float` and every search behaviour stay exactly as they
+are. **No new params, no grammar change, no identity change**; the regression
+guard is the existing `tests/pipeline/test_driver.py` and
+`tests/pipeline/test_kinds_search.py` suites plus the 20 pinned identity hashes,
+all of which must stay unmoved.
+
+`ExecutionPolicy` lives in the pipeline because the structural planner calls it
+and `dskit/pipeline` may not import `dskit.production` (below). `policy=None`
+is today's behaviour exactly. `dskit/production/decider.py` supplies the
+subclass `ServingExecutionPolicy`, whose `classify` returns the closed
+`Node.serving_effect` result and whose `defer` marks the sole `entry_read`.
+`ReleaseReader` is a production type (`dskit/production/release.py`) that the
+planner receives through `policy.reader(key)` and calls only through that
+handle, so the dependency arrow stays production → pipeline.
 
 `dskit/pipeline/driver.py`: extract `_SearchSeam._execute` into public
 `SubgraphRunner`, but do not reuse the ordinary LOAD → PLAN → RESOLVE path for
@@ -1571,7 +1739,9 @@ does `rerun(bindings=entry.outputs)` execute pure/capability-backed descendants.
 The existing `_SearchSeam` (`driver.py`) keeps its current override rule and is
 not given a policy object by this ADR; it and ordinary RESOLVE remain
 behavior-neutral, and existing search suites and all pinned identities must stay
-unmoved.
+unmoved — specifically `tests/pipeline/test_driver.py` and
+`tests/pipeline/test_kinds_search.py` must pass untouched, and this ADR adds
+**no new params and no grammar change** to the pipeline document.
 
 `dskit/pipeline/libs/observations.py`: replace the locator-only proposal with
 `ObservationRows.serving_contract(params, verified_run_evidence)`, a pure method
@@ -1624,8 +1794,8 @@ follows dependencies: `vocab` → `base` → `redact` → `records` → `documen
 `feed` follows the pipeline change because `ServingContract` is produced by the
 entry class, not by production.
 
-Invariants every phase must keep green: the three existing purity gates and the
-new one; every pinned identity hash unmoved (the 20 sha256 literals pinned
+Invariants every phase must keep green: the four existing purity gates
+(`tests/{assets,journal,onboarding,pipeline}/test_purity.py`) and the new one; every pinned identity hash unmoved (the 20 sha256 literals pinned
 across `tests/`); the full
 suite; `ruff` clean; the skeleton pin.
 
