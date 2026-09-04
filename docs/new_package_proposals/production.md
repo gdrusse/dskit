@@ -482,7 +482,7 @@ brackets.
     "entry": {"node": "bars", "param": "since_ms", "window_ms": 14400000},
     "heads": ["select"],                                      // node keys whose outputs form the proposals
     "proposer": {"uses": "intent-rows", "params": {"output": "picks", "fields": {"instrument": "symbol", "side": "side", "qty": "qty"}}},
-    "replay": {"gate": "recorded", "survivors": "recorded"},  // gate/stat_test nodes replayed from the run's records
+    "replay": {"gate": "recorded", "stat_test": "recorded"},  // by ROLE: gate/stat_test nodes replayed from the run's records
     "max_artifact_age": "P30D"                                // refuse a run older than this (FreqAI expiration_hours)
   },
   "feed": {"uses": "entry-source", "params": {"pull": "acquire"}}, // source and coverage derive from ServingContract
@@ -518,13 +518,15 @@ brackets.
     "pred_shift": {"uses": "psi", "params": {"field": "prediction", "bins": 10,
                    "reference": {"uses": "leading", "n": 500}, "window": {"kind": "count", "n": 300},
                    "threshold": {"kind": "alpha", "alpha": 0.01}, "response": "warn"}},
-    "coverage":   {"uses": "coverage", "params": {"window": {"kind": "count", "n": 50}, "threshold": {"kind": "constant", "min": 0.5}, "response": "warn"}}
+    "coverage":   {"uses": "operational", "params": {"measure": "decision_count", "window": {"kind": "count", "n": 50},
+                   "threshold": {"kind": "constant", "min": 0.5}, "response": "warn"}}
   },
-  "health": {"failure_threshold": 3, "success_threshold": 1, "probe_timeout_s": 1.0,
+  "health": {"failure_threshold": 3, "success_threshold": 1, "timeout_s": 1.0,   // the default HealthProbe.timeout_s
              "probes": {"disk": {"uses": "ledger-writable"}, "venue": {"uses": "executor-check", "scope": "dependency"}}},
   "durability": {"fsync": "every"},                          // GRADED: how safely records land
-  "resilience": {"retry": {"max_attempts": 3, "base_s": 0.05, "cap_s": 20.0, "jitter": "full",
-                           "retry_writes": "idempotent_only"},
+  "resilience": {"retry": {"max_attempts": 3, "base_s": 0.05, "throttle_base_s": 1.0, "cap_s": 20.0,
+                           "jitter": "full", "retry_after": "honor", "retry_writes": "idempotent_only",
+                           "budget": {"capacity": 500, "transient_cost": 14, "throttle_cost": 5, "refund": 1}},
                  "breaker": {"min_calls": 5, "failure_rate": 0.5, "open_s": 30},
                  "limiter": {"submit": {"rate_per_s": 5, "burst": 5, "max_in_flight": 1},
                              "cancel": {"rate_per_s": 10, "burst": 10, "reserved": true}},
@@ -591,8 +593,9 @@ taken by `dskit/pipeline/base.py`'s tracking-sink registry, and both would carry
 a kind named `memory`. A test asserts the two registries are disjoint objects
 and that neither name is importable from the other package.
 
-`uses` and `kind` are the same mechanism at two depths: `uses` selects a
-top-level family member, `kind` selects a nested strategy inside one
+`uses`, `kind` and `measure` are one mechanism at three depths: `uses` selects
+a top-level family member, `measure` selects a `MEASURE_KINDS` entry inside a
+guard or an operational monitor, and `kind` selects a nested strategy inside one
 (`window: {"kind": "count"}` → `CHUNKER_KINDS`, `threshold: {"kind":
 "alpha"}` → `THRESHOLD_KINDS`, `fees: {"kind": "bps"}` → `FEE_KINDS`).
 Both resolve through the registries above and neither may be read with an
@@ -633,7 +636,9 @@ than only as a line in §8.
   idiom `dskit/onboarding/base.py` already uses); ms/UTC helpers; `canonical_bytes(obj)` and
   `record_hash(prev_hash, envelope)` — the one sha256-canonical idiom §6 names,
   defined once.
-- `redact.py`: `Secrets` resolution through `dskit.pipeline.env.load_env`, and
+- `redact.py`: `Secrets` resolution through `dskit.pipeline.env.load_env` over
+  `env.env_file`, refusing at `plan` when any name in `env.require` is unset;
+  and
   `redact(text)` applied by every log line, alert body and recorded `reason`.
   Webhook URLs, proof bytes and env-var values are credentials. A test proves no
   secret can reach a ledger record, an alert payload or a log line.
@@ -721,8 +726,10 @@ entry output.
   only pure nodes or approved `release_read` nodes through `ReleaseReader`;
   it never calls the entry constructor, fingerprint, `data_edge`, split logic or
   run method. The entry must be a source root and dominate every dynamic path.
-  `read_entry(tick_at_ms)` applies the one window override—whose full path must
-  already exist in the run document—constructs and executes only the entry, then
+  `read_entry(tick_at_ms)` applies the one window override — setting the run
+  document path `serving.entry.node`.`serving.entry.param` to
+  `tick_at_ms - serving.entry.window_ms`, a path that must already exist in the
+  run document —constructs and executes only the entry, then
   its `ServingContract.snapshot` creates the EntryBatch from those exact outputs.
   The loop validates source identity, exact coverage, every key's watermark and
   input digest before `evaluate(entry_batch)` executes only pure or
@@ -927,7 +934,8 @@ non-finite number.
   record; the kill-switch file `HALT` in the serve root is polled by the
   independent control worker at subsecond cadence (§5.8) and re-checked at every
   tick boundary;
-  on entering `halted` the loop cancels working orders per `execution.on_halt`
+  on entering `halted` the loop cancels working orders when
+  `execution.on_halt.cancel_open`
   and records the outcome vocabulary.
 - `Arming{authority_id, release_hash, rung, maker, checker, armed_at_ms,
   armed_until_ms, allowlist, limits_overlay, request_proof_digest,
@@ -935,9 +943,10 @@ non-finite number.
   `ArmRequest{release_hash, rung, allowlist, limits_overlay, requested_until_ms,
   request_proof}` and `ArmApproval{request_digest, approval_proof}` are its
   inputs. `Arming.check_conjunction(document, cli_armed, env_release_hash)` is
-  the single place the live conjunction of §5.13(3) is evaluated — document
-  rung, `--armed`, `DSKIT_PRODUCTION_ARM`, a current unexpired arm and the
-  release hash must all agree; no caller re-derives it.
+  the single place D11's live conjunction is evaluated — document rung,
+  `--armed`, `DSKIT_PRODUCTION_ARM`, a current unexpired arm and the release
+  hash must all agree; no caller re-derives it, and §5.13 step (3) calls it
+  rather than restating its terms.
   `ApprovalVerifier(ABC).verify(canonical_bytes, proof, purpose) ->
   VerifiedPrincipal{id, proof_digest}`. It is resolved from the graded
   `arming.approval {uses, params}` object; params may name trust-root env vars
@@ -1002,7 +1011,9 @@ other permit **by type** — refuses meaning it returns
   `latency_ms {submit, cancel}`, `fees {kind ∈ none | per_unit | bps |
   maker_taker_bps | pxq_rate}` (a strategy class per kind), TIF handling (`ioc`,
   `fok`, `gtd`; `day` refused without `session_end_ms`), `seed`, `partial_fills`.
-  Deterministic under `seed`; no wall clock, no network.
+  Deterministic under `seed`; no wall clock, no network. Every knob in this
+  bullet is a graded `execution.params` field; §4.1 illustrates three of them
+  and `validate_params` default-denies the rest into the same block.
 - `RecordedExecutor`: replays the tape's acks/fills for replay parity.
 - `LiveExecutor` can always construct its read/query/cancel channel. Its bounded,
   authenticated `execution_scope()` result must equal the graded document and
@@ -1159,11 +1170,12 @@ orders, balances and settlements; it compares fill-derived against venue
 positions only when `capabilities().positions == "venue"`, since against a
 `derived` executor that comparison is vacuous. Breaks are `timing | missing_in_ledger |
 missing_at_venue | quantity | price | fee | state | settlement`, with severity
-`info | warn | block`. Automatic policy is only `halt | refuse`; unknown venue
+`info | warn | block`. `reconcile.on_mismatch` is the automatic policy and admits only
+`halt | refuse`; unknown venue
 orders are `external`, never silently made ours. `lookback_ms` bounds how far back fills and settlements are queried, since an
 open-orders endpoint cannot distinguish missing from recently closed. It runs
-before `READY`, on the
-configured interval, and always appends a `recon` record without synthesising a
+before `READY` when `reconcile.on_start`, every `reconcile.every_s`
+thereafter, and always appends a `recon` record without synthesising a
 venue action. Adoption is a separate authenticated operator command naming the
 break ids and release hash; after inspection it records the delta, crosses
 `ledger.barrier()`, updates the fold, and immediately reconciles again.
@@ -1193,7 +1205,9 @@ break ids and release hash; after inspection it records the delta, crosses
   `JensenShannon`, `LInf`; `OutcomeMonitor` → `Calibration` (ECE), `Brier`
   (Murphy terms), `Skill` (BSS and Diebold–Mariano against the leg's stored
   `baseline`, reusing `dskit.pipeline` metrics/stats), `PredictionBias`;
-  `ParityMonitor` (§5.13).
+  `ParityMonitor` — phase 2, defined with `replay` in §5.13's `report.py`
+  bullet: it observes the replay divergence classes rather than a data
+  statistic, which is why it is the one family with no phase-1 member.
 - `Profile` value object (per-field count, missing, min, max, sum, sumsq,
   quantile bins, top-k) with `merge()`.
 - Rules pinned by tests: below `min_n` never `ok`; last partial chunk never `ok`;
@@ -1207,12 +1221,15 @@ break ids and release hash; after inspection it records the delta, crosses
   `@abstractmethod send(alert)`; `close()`. Core network sinks use transports
   with real socket deadlines. Each custom sink has one daemon worker; a timeout
   disables that sink without replacement, bounding a permanently stuck call to
-  one thread. Kinds: `log`, `memory`, `email` and `webhook`; endpoint values
-  come from env-var names. Reachability is reported by supervised health probes,
+  one thread. Kinds: `log`, `memory`, `email` and `webhook`, each taking
+  `url_env` (the env-var NAME holding the endpoint — never the endpoint),
+  `template` and `timeout_s`; a sink that names a var absent from
+  `env.require` refuses at `plan`. Reachability is reported by supervised health probes,
   never constructor side effects.
 - `AlertRouter`: fingerprint dedup; `group_wait_s` [0, 600] default 30;
   `repeat_interval_s` [60, 86400] default 14400; per-severity routes; token-bucket
-  rate limit (`critical` bypasses the limit, not dedup); a bounded
+  rate limit from `alerts.rate_limit{max_per_hour, burst}` (`critical` bypasses
+  the limit, not dedup); a bounded
   `queue.Queue` consumed by one worker thread; `put_nowait` overflow and every
   sink exception swallowed and counted (`alert_sink_failures_total`,
   `alerts_suppressed_total{why}`); `status: resolved` emitted on recovery. Phase
@@ -1235,9 +1252,9 @@ break ids and release hash; after inspection it records the delta, crosses
   The worker observes an
   atomic last-successful-tick monotonic stamp; when `dead_after_ms` elapses it
   transitions health to unhealthy and stops emitting, allowing the external
-  dead-man to page. It is sent only in `ready` (or configured `degraded`).
+  dead-man to page. It is sent in `ready`, and in `degraded` only when `heartbeat.in_degraded`.
 - `flock(LOCK_EX | LOCK_NB)` prevents a second process on the same filesystem;
-  the §5.8 deployment lease covers other hosts. Signals wake within 1 s;
+  the §5.7.2 fenced lease covers other hosts. Signals wake within 1 s;
   `ticking` finishes the phase and never stops between act and record-outcome;
   `shutdown_grace_s` [1, 300] must be under the supervisor's grace.
 
@@ -1247,6 +1264,10 @@ Counters exist because §5.11 swallows sink failures and bounded-queue drops; a
 swallowed failure that is not counted is invisible. The registry is the one
 place a count lives.
 
+- The declared name and label-value tables are `METRIC_NAMES` and
+  `METRIC_LABEL_VALUES` in `vocab.py`, not in `metrics.py` — §5.0's rule that
+  no closed set lives outside `vocab.py` admits no exception; `metrics.py`
+  reads them.
 - `Metrics`: `counter(name, labels=())`, `gauge(name, labels=())`,
   `histogram(name, labels=(), buckets=None)` each return a handle
   (`inc(n=1)` / `set(v)` / `observe(v)`). Names are declared at construction
@@ -1290,8 +1311,10 @@ throttle_cost 5, refund 1}`; `decide(attempt, kind, is_write) ∈ {retry, give_u
 reconcile}`; an ambiguous write never yields `retry`); `CircuitBreaker` (states
 `closed | open | half_open | forced_open | metrics_only`; `trip`/`reset`; one per
 scope; `min_calls`=5; `failure_rate`=0.5; `open_s`=30; business rejections not
-counted); `RateLimiter` (token buckets per scope, `max_in_flight` default 1 for
-writes, `observe(headers)` capped by `MAX_BACKOFF_S`). It has distinct submit
+counted); `RateLimiter` (token buckets per scope from
+`resilience.limiter.{submit,cancel}{rate_per_s, burst, max_in_flight}`,
+`max_in_flight` default 1 for writes, `observe(headers)` capped by
+`MAX_BACKOFF_S`). It has distinct submit
 and cancel lanes: cancel capacity is reserved and has priority, but is still
 bounded. `cancel_all` sends sequentially; transient/429 outcomes retry only
 within configured attempts/deadline while honoring capped Retry-After, ambiguous
@@ -1345,7 +1368,8 @@ knob because D13 fixes the answer: query, never resend.
   folded, and re-run hard guards and authority scope without amendment;
   (3) immediately re-evaluate release/runtime, readiness GO, calendar, source
   coverage and every key's watermark age, quote age/digest, accounting evidence
-  age/digest, venue skew, link/scope, health, breaker, document rung, mutually
+  age/digest, venue skew against `schedule.max_venue_skew_ms`, link/scope,
+  health, breaker, document rung, mutually
   exclusive risk effect, authority scope and lease—without rereading decision nodes;
   (4) append a `decision_plan` containing entry/head/candidate provenance,
   original/final proposals, every finding/gate, input/quote/evidence as-of and
@@ -1354,9 +1378,11 @@ knob because D13 fixes the answer: query, never resend.
   (5) append the canonical exact Intent serialized from that plan and barrier it;
   (6) for live, derive an ActPermit from the same readiness/input/quote/evidence/
   risk versions and digests. `valid_until_ms` is the minimum of proposal expiry,
-  oldest-input watermark + max staleness, oldest quote + its allowed age,
-  accounting as-of + max valuation age, readiness validity, calendar close,
-  authority expiry, lease expiry and the configured native-call deadline. The
+  oldest-input watermark + `schedule.max_staleness_ms`, oldest quote +
+  `schedule.max_quote_age_ms`, accounting as-of +
+  `accounting.max_valuation_age_ms`, readiness GO + `readiness.valid_for_s`,
+  calendar close, authority expiry, lease expiry and
+  `execution.submit_timeout_ms`. The
   permit is then appended as an `authorization` record and barriered before any
   submit I/O — on the ordinary path and the reduction path alike. A reduction
   additionally appends/barriers `authority_use` *first*, and policy converts its
@@ -1380,7 +1406,8 @@ knob because D13 fixes the answer: query, never resend.
   `observe`s and writes `checkpoint` last.
   `Tick(ABC)` holds one method per phase — `gate`, `verify_release`, `fetch`,
   `read_entry`, `coverage`, `evaluate`, `candidates`, `quotes`, `account`,
-  `propose` — plus abstract `run(tick_at_ms) -> TickResult`.
+  `propose` — the ten names being `vocab.TICK_PHASES`, in order — plus
+  abstract `run(tick_at_ms) -> TickResult`.
   `Tick(document, release, schedule, data, decision, safety, execution,
   recording, observability, tick_id)` takes the same seven bundles the loop
   holds plus the allocated tick id; it is constructed once per tick and owns
@@ -1556,7 +1583,7 @@ sha256-canonical idiom.
 |---|---|---|
 | `process` | start / stop / recovered | `series_id`, `release_hash`, `doc_hash`, `serving_hash`, `run_hash`, `artifact_digests`, `source_config_hash`, `runtime_fingerprint`, `rung`, `executor_kind`, `code_version`; stop adds `exit_code`. After its barrier, one journal row is written whose `notes` render the process id and final head in the D22 `production-v1` form |
 | `tick_start` | scheduled tick | `tick_id`, `tick_at_ms`, `release_hash` |
-| `tick` | terminal tick | `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash, required_keys_digest, watermarks_by_key, coverage_digest}`, `inputs_digest`, `calendar`, `overrun_absorbed[]` (the tick instants this tick coalesced or skipped), `latency_ms{gate, verify_release, fetch, read_entry, coverage, evaluate, candidates, quotes, account, propose}` (one key per §5.13 `Tick` phase method, pinned by a test) and `leg_latency_ms{guard, authorize, act}` summed over the tick's legs, since those are per-proposal steps (1)–(7), not phases, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}` |
+| `tick` | terminal tick | `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash, required_keys_digest, watermarks_by_key, coverage_digest}`, `inputs_digest`, `calendar`, `overrun_absorbed[]` (the tick instants this tick coalesced or skipped), `latency_ms{gate, verify_release, fetch, read_entry, coverage, evaluate, candidates, quotes, account, propose}` (one key per §5.13 `Tick` phase method, pinned by a test) and `leg_latency_ms{guard, authorize, act}` summed over the tick's legs, since those are per-proposal steps, not phases: `guard` covers §5.13 steps (1)–(3), `authorize` steps (4)–(6), and `act` step (7). Step (8) records the outcome and is charged to the tick, not the leg, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}` |
 | `decision` | tick (exactly one) | `decision_plan_ids[]`, `decision_plan_digests[]`, `legs[]{leg_id, instrument, prediction, uncertainty, baseline, expected_value, decision_price, proposal, findings[], final, client_ref}` — a no-op tick has `final: none` per leg or zero legs with `reason` |
 | `decision_plan` | proposal after complete pre-submit evaluation (barrier before proposal submit) | `plan_id`, entry/head/candidate provenance, original/final proposal, input/quote/evidence as-of+digests, `findings[]`, `gate_results[]`, scope verdict, `risk_effect`, `risk_version`, `risk_state_digest`, `result ∈ {submit, not_sent}` |
 | `intent` | proposal selected for possible submit | the canonical `records.Intent` value object; no second schema |
@@ -1590,11 +1617,11 @@ sha256-canonical idiom.
 | `flatten-request <doc> --plan FILE --proof FILE` / `approve-flatten <doc> --request ID --proof FILE` | queue maker-checker reduction plan/authorization | 0 / 1 / 5 |
 | `execute-flatten <doc> --authorization ID --proof FILE` | queue authenticated execution of stored reduction intents by an active ready loop | 0 / 1 / 5 |
 | `resume <doc> --acknowledge TRIP --proof FILE` | queue authenticated reset after cooling-off | 0 / 1 / 5 |
-| `status <doc>` | rung, breaker, health, last tick, pending refs, control inbox/results, head hash | 0 |
+| `status <doc>` | rung, breaker, health, last tick, pending refs, control inbox/results, head hash | 0 / 1 |
 | `verify <doc>` | walk the ledger chain; compare the head to the journal anchor | 0 / 1 |
 | `reconcile <doc>` / `adopt <doc> --break ID… --proof FILE` | queue reconciliation, or queue authenticated adoption of named breaks | 0 / 1 / 5 |
 | `replay <serve-dir>` | phase 2: parity report | 0 / 1 |
-| `outcomes <doc>` / `report <doc> [--asof T]` | phase 2 | 0 |
+| `outcomes <doc>` / `report <doc> [--asof T]` | phase 2 | 0 / 1 |
 | `ready <doc>` | release-bound readiness GO / NO-GO (required for live rungs) | 0 / 1 / 5 |
 
 Only operational flags live on `serve` (`--once`, `--max-ticks`, `--armed`).
@@ -1620,6 +1647,9 @@ dskit/production/
 │                      SIZE_CAPS, FEE_KIND_NAMES, DEDUPE_MODES, POSITION_MODELS, FENCING_MODES,
 │                      RESILIENCE_OUTCOMES (ok|transient|throttled|fatal|ambiguous — distinct from OUTCOME_KINDS),
 │                      RETRY_DECISIONS, JITTER_MODES, RETRY_AFTER_MODES, RETRY_WRITE_MODES, OVERRUN_POLICIES,
+│                      TICK_PHASES (the ten Tick method names, in order), LEG_STEPS (guard|authorize|act),
+│                      READINESS_VERDICTS (go|no_go), METRIC_NAMES + METRIC_LABEL_VALUES (§5.11.1's tables live here,
+│                      not in metrics.py), BREAK_ORIGINS (ours|external),
 │                      AT_TIMES_RELATIVE, CALENDAR_WINDOWS, ON_MISMATCH, RECON_ACTIONS, TRIP_REASONS,
 │                      CIRCUIT_STATES (closed|open|half_open|forced_open|metrics_only — distinct from BREAKER_STATES)
 ├── document.py        ServeDocument with required series/rung, Accounting, Arming, Coordination; default-deny; identity paths
@@ -1676,6 +1706,7 @@ dskit/production/
 │   ├── __init__.py
 │   ├── sqlite.py      [phase 2] SqliteLedger (WAL + synchronous=FULL pinned; append-only triggers)
 │   └── parquet.py     [phase 2] RunReference over the run's predictions parquet (pyarrow inside the method)
+│                      (sqlite.py also introduces LEDGER_KINDS, the registry `Ledger` has no need of until then)
 ├── README.md          what it does, how to write a serve document, how to build an executor / proposer / measure / guard / monitor / sink; tree
 ├── AGENTS.md          package-scoped design, safety and testing instructions; tree
 └── CLAUDE.md          conventions, extension points, gotchas; tree
