@@ -183,3 +183,135 @@ def test_corrupt_gz_observations_refuse_as_asset_error(
             Rule(id="rc", target="prices", rule="row_count",
                  kwargs={"min": 1})),
             gz_snapshot)
+
+
+# -- distinct_count: cardinality per group (ADR-0084) -------------------------
+
+
+@pytest.fixture
+def ladder_snapshot(root, registry, fake_source):
+    """Two events with unequal strike counts, one null strike, one row
+    that names no event at all."""
+    FakeConnector.script = [
+        record("ladder", "2026-01-02", {"event": "E1", "strike": 10, "venue": "x"}),
+        record("ladder", "2026-01-02", {"event": "E1", "strike": 20, "venue": "x"}),
+        record("ladder", "2026-01-02", {"event": "E1", "strike": 20, "venue": "y"}),
+        record("ladder", "2026-01-03", {"event": "E2", "strike": 10, "venue": "x"}),
+        record("ladder", "2026-01-03", {"event": "E2", "strike": None, "venue": "x"}),
+        record("ladder", "2026-01-03", {"strike": 30, "venue": "x"}),
+    ]
+    return run_acquisition(root, registry, "fake", "ladder", "live")["snapshot"]
+
+
+def _distinct(rid, **kwargs):
+    return Rule(id=rid, target="ladder", rule="distinct_count", kwargs=kwargs)
+
+
+def test_distinct_count_kwargs_are_default_deny_and_bounded():
+    with pytest.raises(AssetError, match="missing required kwarg"):
+        Rule(id="r", target="t", rule="distinct_count", kwargs={"min": 1})
+    with pytest.raises(AssetError, match="min/max"):
+        Rule(id="r", target="t", rule="distinct_count", kwargs={"field": "x"})
+    with pytest.raises(AssetError, match="unknown key"):
+        Rule(id="r", target="t", rule="distinct_count",
+             kwargs={"field": "x", "min": 1, "by": "e"})
+    for bad in (5, "", [], ["e", ""], [1], {"e": 1}):
+        with pytest.raises(AssetError, match="group_by"):
+            Rule(id="r", target="t", rule="distinct_count",
+                 kwargs={"field": "x", "min": 1, "group_by": bad})
+    # a field name and a list of them both name the grouping
+    _distinct("s", field="x", min=1, group_by="e")
+    _distinct("l", field="x", min=1, group_by=["e", "v"])
+
+
+def test_every_bounded_rule_needs_at_least_one_bound():
+    """The min/max check is DERIVED from the rule table: every rule whose
+    kwargs carry both bounds refuses when neither is declared."""
+    for rule, kwargs in (
+        ("in_range", {"field": "x"}),
+        ("row_count", {}),
+        ("distinct_count", {"field": "x"}),
+    ):
+        with pytest.raises(AssetError, match="min/max"):
+            Rule(id="r", target="t", rule=rule, kwargs=kwargs)
+
+
+def test_distinct_count_fails_one_per_group_out_of_bounds(root, registry, ladder_snapshot):
+    out = run_suite(root, registry, _suite(
+        # per event: E1 -> {10, 20}; E2 -> {10} (the null strike is skipped);
+        # the row naming no event belongs to no group and is skipped
+        _distinct("exact", field="strike", group_by="event", min=2, max=2),
+        # per (event, venue): (E1,x) -> 2 ok; (E1,y) -> 1; (E2,x) -> 1
+        _distinct("pair", field="strike", group_by=["event", "venue"], min=2),
+        # ungrouped: the stream carries two events
+        _distinct("events-lo", field="event", min=3),
+        _distinct("events-hi", field="event", max=2),
+    ), ladder_snapshot)
+    failing = {r["id"]: r["failing"] for r in out["statistics"]["results"]}
+    assert failing == {"exact": 1, "pair": 2, "events-lo": 1, "events-hi": 0}
+    assert out["statistics"]["rows"] == {"ladder": 6}
+    assert out["gating"] == "block"
+
+
+def test_distinct_count_over_an_empty_stream(root, registry, snapshot):
+    """Ungrouped, the whole stream is the one group and it EXISTS while
+    empty — a min fails, as row_count's does. Grouped, an empty stream has
+    no groups to fail; emptiness is row_count's assertion."""
+    out = run_suite(root, registry, _suite(
+        Rule(id="whole", target="ghost", rule="distinct_count",
+             kwargs={"field": "x", "min": 1}),
+        Rule(id="grouped", target="ghost", rule="distinct_count",
+             kwargs={"field": "x", "group_by": "g", "min": 1}),
+    ), snapshot)
+    failing = {r["id"]: r["failing"] for r in out["statistics"]["results"]}
+    assert failing == {"whole": 1, "grouped": 0}
+
+
+def test_cardinality_rules_accept_structured_values_and_keep_json_types_distinct(
+    root, registry, fake_source
+):
+    values = [True, 1, 1.0, [1], [1], {"x": 1}, {"x": 1}]
+    FakeConnector.script = [
+        record("json-values", "2026-01-02", {"value": value})
+        for value in values
+    ]
+    snapshot = run_acquisition(
+        root, registry, "fake", "json-values", "live"
+    )["snapshot"]
+    out = run_suite(
+        root,
+        registry,
+        _suite(
+            Rule(
+                id="unique",
+                target="json-values",
+                rule="unique",
+                kwargs={"field": "value"},
+            ),
+            Rule(
+                id="distinct",
+                target="json-values",
+                rule="distinct_count",
+                kwargs={"field": "value", "min": 5, "max": 5},
+            ),
+            Rule(
+                id="accepted",
+                target="json-values",
+                rule="accepted_values",
+                kwargs={"field": "value", "values": [1]},
+            ),
+        ),
+        snapshot,
+    )
+    failing = {r["id"]: r["failing"] for r in out["statistics"]["results"]}
+    assert failing == {"unique": 4, "distinct": 0, "accepted": 6}
+
+
+def test_distinct_count_reads_from_a_json_suite():
+    suite = ValidationSuite.from_obj({"name": "s", "rules": [
+        {"id": "strikes", "target": "ladder", "rule": "distinct_count",
+         "kwargs": {"field": "strike", "group_by": ["event"], "min": 2},
+         "severity": "warn", "warn_if": "> 0"}]})
+    rule = suite.rules[0]
+    assert rule.kwargs == {"field": "strike", "group_by": ["event"], "min": 2}
+    assert suite.to_obj()["rules"][0]["kwargs"] == rule.kwargs

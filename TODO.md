@@ -522,13 +522,29 @@ ADR yet, and none blocks the child from starting:
       Efron lfdr, Venn–Abers, proper scoring rules).
 - [ ] 6. Acquire-side coverage hook + guarded parallel acquisition
       (`onboarding/acquire.py`).
-- [ ] 7. A grouped/cardinality suite rule (`onboarding/validate.py` `_RULES`).
+- [x] 7. A grouped/cardinality suite rule (`onboarding/validate.py` `_RULES`).
+      **Landed via ADR-0084 (2026-09-04): `distinct_count` — kwargs
+      `{field, group_by?, min?, max?}`, one failure per GROUP whose
+      distinct non-null values are out of bounds (ungrouped, the stream is
+      the one group); the "at least one bound" check is now derived from
+      the rule table.**
+      **Skeptic closeout:** `unique`, `accepted_values`, and
+      `distinct_count` now compare canonical JSON identities, preserving
+      bool/int/float distinctions and accepting structured JSON values.
 - [x] 8. Compressed snapshot payloads in onboarding (~96× on gz-class
       archives, ~10× on parquet-class). **Landed via ADR-0036 (2026-08-26;
       the ratified Tier-B sunset path — pmquant's Tier-B bypass retires
       onto it when the child builds).**
-- [ ] 9. A generic `records-write` kind beside `table-write`
-      (`kinds_table.py`).
+- [x] 9. A generic `records-write` kind beside `table-write`
+      (`kinds_table.py`). **Landed via ADR-0085 (2026-09-04): `records-write`
+      writes canonical newline-JSON (sorted keys, compact, one row per
+      line) with the bytes' digest in `metrics`, refusing a frozen envelope
+      / NaN / Infinity by row and field; both writers now share the
+      `FileWrite` base (one no-clobber, one atomic replace). Deferred to
+      their own rulings: append mode and refuse-on-shrink.**
+      **Skeptic closeout:** the writer refuses distinct input keys that
+      stringify to the same output name before any filesystem mutation, so
+      no field can be silently dropped.
 - [x] 10. A generic onboarding-observations reader kind — the second child
       to need it. **Half landed via ADR-0037 (2026-08-26): the function
       seam (`observations.scan_stream`/`stream_digest`) exists.** **Landed
@@ -536,7 +552,19 @@ ADR yet, and none blocks the child from starting:
       `observations` kind (`ObservationRows`, memoized per instance,
       `root()`/`source()`/`stream()` + vocabulary hooks); pmquant's two
       readers subclass it.**
-- [ ] 11. A records → keyed-table verb (`groupby`/`pivot`, `kinds_flow.py`).
+- [x] 11. A records → keyed-table verb (`groupby`/`pivot`, `kinds_flow.py`).
+      **Landed via ADR-0086 (2026-09-04): `groupby` reduces a record stream
+      to one row per group of declared `keys`, each carrying declared
+      `aggregates` over the CLOSED op table `count`/`sum`/`mean`/`min`/
+      `max`/`first`/`last`/`nunique` (`first`/`last` require an
+      `order_field`); output sorted by key values, and a missing key or
+      cell, a non-numeric cell under a numeric op, or an out-field that
+      restates a key is refused BY NAME. `pivot` is ruled a separate,
+      later kind — a shape change with no reduction, and a composite key
+      has no JSON-object spelling.**
+      **Skeptic closeout:** group identities and `nunique` preserve JSON type
+      identity, and NaN / positive or negative Infinity keys are refused
+      before deterministic ordering.
 - [ ] 12. Search-seam expressiveness for seed-ensemble studies + per-fold
       node-param binding (`kinds_search.py`, `document.py`/`driver.py`).
 - [x] 13. Val-metric checkpoint selection in the torch pack (a `monitor` +
@@ -601,10 +629,12 @@ connector, the `observations` kind and the public clause DSL):
       "revisit declared gaps" knob or an upstream-object fallback
       (`https://r2v2.pmxt.dev/`, the mirror lags the venue by weeks — the
       child's I-242) would be an ADR.
-- [ ] `tests/onboarding/test_connector.py::test_resolve_registered_kind`
+- [x] `tests/onboarding/test_connector.py::test_resolve_registered_kind`
       is a hand-kept list of the nine kinds (a deliberate restatement);
       deriving it from `DEFAULT_CONNECTORS` would remove the pin, keeping
-      it means adding every new pack there too.
+      it means adding every new pack there too. **Ruling (2026-09-04):
+      keep the pin — CLAUDE.md's "deliberate independent restatement is
+      correct"; `huggingface` joined it as the tenth kind.**
 
 Found by the first real-data run of `children/intraday_poc` (2026-08-26) —
 reclassified generic by the owner (generic-first: children are wrappers):
@@ -1061,8 +1091,9 @@ gap-aware window transform (kills `latest_feature_row`), and `TrainableNode`
 
 ## Long-term goal — Hugging Face integration in `libs/transformers.py`
 
-**Not now.** Recorded because the blocking decision is architectural, not a
-wrapper-writing task, and is worth deciding once rather than rediscovering.
+**Landed 2026-09-04 (ADR-0082 / ADR-0083; TDD, skeptic-looped).** The
+blocking decision was taken exactly as recommended below: a model download
+is an ACQUISITION. The record of why stays.
 
 **What already exists — a complete fine-tune/predict doorway.**
 `TransformerFit` (role `train`) with a `build_model` hook,
@@ -1080,7 +1111,13 @@ by convention."* So today you can fine-tune a fresh architecture and cannot
 touch a single pretrained weight. For most HF use that IS the point, so this
 is the integration.
 
-- [ ] **Decide how a PRETRAINED model enters without breaking identity.**
+- [x] **Decide how a PRETRAINED model enters without breaking identity.**
+      **Landed via ADR-0082 (2026-09-04): the envelope gained a `FILE`
+      message, the `huggingface` connector acquires one repo at one commit
+      as a WORM snapshot, and documents pin it by manifest hash.**
+      **Skeptic closeout:** the cursor includes `repo_id` with the resolved
+      commit and filters, so two repositories at the same commit sha cannot
+      alias as "nothing new."
       Blocking; everything else waits on it. A bare hub name
       (`"bert-base-uncased"`) is not content-addressed — the weights behind
       it can change while the document hash does not, so two runs would claim
@@ -1096,21 +1133,38 @@ is the integration.
       no-network-at-run, keeps the content digest meaningful, adds no new
       trust surface. If a direct hub path is ever wanted instead, it must
       carry a pinned `revision` commit sha, never a bare name.
-- [ ] **Add a feature-extraction / embedding node — the real gap.** The pack
+- [x] **Add a feature-extraction / embedding node — the real gap.** The pack
+      **Landed via ADR-0083 (2026-09-04): `transformers-encode` (role
+      `tensor`, `rows`/`metrics`) — `text_field` → pooled embedding columns
+      beside `carry_fields`; `transformers-classify` for the sentiment
+      score.**
+      **Skeptic closeout:** classifier labels must name contiguous ids
+      `0..width-1`, preventing shifted logits from being silently mislabeled.
       has train and signal but nothing turning text into FEATURE ROWS for a
       downstream model. For markets work that is the common case: news,
       filings or headlines → embeddings or a sentiment score → columns joined
       onto a bar stream. Shape it like `ArrayFeatures` (role `tensor`,
       outputs `rows`) so it composes with the model- and feature-selection
       work above.
-- [ ] **Time-series foundation models are the domain payoff.** Chronos
+- [x] **Time-series foundation models are the domain payoff.** Chronos
+      **Landed via ADR-0083 (2026-09-04): `transformers-forecast` (role
+      `signal`, always loads) restores the snapshot's own `architectures`
+      and answers the `horizon`-th step. The default hooks fit exactly the
+      models whose forward takes `past_values` alone and returns
+      `prediction_outputs` — PatchTST, PatchTSMixer; a load-time probe
+      refuses anything else BY NAME. Chronos / TimesFM / Moirai — and the
+      time-feature families (TimeSeriesTransformer, Informer, Autoformer) —
+      are subclasses supplying `build_model` + `forecast`.**
       (Amazon), TimesFM (Google), Moirai (Salesforce), Lag-Llama are all
       HF-hosted zero-shot forecasters and directly relevant to quant/markets
       work — a zero-shot baseline you never trained is the strongest check
       that a bespoke LSTM is earning its keep. Needs the pretrained-weights
       decision first. Pairs with the DLinear "honest baseline" argument in
       the architecture-zoo item.
-- [ ] **Then, and only then, the wrappers.** Once weights can enter safely
+- [x] **Then, and only then, the wrappers.** Once weights can enter safely
+      **Landed via ADR-0083 (2026-09-04): embeddings, classification and
+      zero-shot forecast are the three shipped subclasses of the doorway;
+      no per-model registry.**
       the wrappers are the cheap part, following the pack's existing subclass
       contract: sentiment/classification, embeddings, zero-shot forecast.
       Keep them subclasses supplying `build_model` / `encode` — never a

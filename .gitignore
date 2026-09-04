@@ -52,3 +52,7 @@ children/*/decisions.jsonl
 # The journal's writer lock (dskit/journal/base.py). Runtime state, one
 # per child; the ledger it guards is what belongs in git.
 .journal.lock
+
+# Isolated agent worktrees the Claude Code harness creates in-repo — a
+# working copy, never content to commit.
+.claude/worktrees/

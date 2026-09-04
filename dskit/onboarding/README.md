@@ -105,7 +105,12 @@ for a worked one. Each rule:
 `{id, target, rule, kwargs, severity, error_if|warn_if, notes}` —
 `target` is a stream; the rule produces a failing count; the threshold
 (default `"!= 0"`) gates on it. Built-ins: `not_null`, `unique`,
-`accepted_values`, `in_range`, `row_count`, `bitemporal`. Tripped
+`accepted_values`, `in_range`, `row_count`, `distinct_count`,
+`bitemporal`. `distinct_count` (ADR-0084) is the cardinality rule:
+`{"field": "strike", "group_by": "event", "min": 3, "max": 3}` fails one
+per group whose distinct non-null `field` values fall outside the bounds
+(`group_by` optional — a field name or a list — and ungrouped the whole
+stream is the one group; nulls skipped). Tripped
 `error` → gating `block`; tripped `warn` → `warn` (warn never blocks).
 A `block` result cannot be certified — amend the suite (a new, auditable
 hash) instead.
@@ -125,9 +130,12 @@ registration, no entry anywhere needed:
   `"protocol": 1`: `RECORD` (`stream`, ISO `effective_date`, `data`,
   optional `kind: "forecast"` to segregate declared forecasts), `STATE`
   (opaque checkpoint — "everything before this is durable"; persisted
-  only after the snapshot is), `SCHEMA`, `LOG`, `ERROR`. Unknown types
-  are skipped (forward-compat); unknown keys on known types are refused.
-  Heavy imports go INSIDE `read()`.
+  only after the snapshot is), `SCHEMA`, `LOG`, `ERROR`, and `FILE`
+  (`stream`, POSIX-relative `relpath`, local `path` — a binary the
+  platform COPIES into the snapshot at `payload/<stream>/<relpath>` as
+  the message arrives, digested and verified like every payload byte;
+  ADR-0082). Unknown types are skipped (forward-compat); unknown keys on
+  known types are refused. Heavy imports go INSIDE `read()`.
 
 `libs/localfiles.py` is the worked reference —
 `tests/onboarding/test_localfiles.py` drives it through the whole
@@ -186,6 +194,25 @@ the vendor's `best_*`/`*_depth` fields verbatim, a per-ticker
 seams, and the key named by `api_key_env` (default `PREDEXON_API_KEY`).
 `libs/predexon.py` is the knob reference; `native_book` there projects a
 record into Kalshi-native YES/NO bid ladders.
+
+The `huggingface` kind (ADR-0082) acquires one Hugging Face hub repository
+— a pretrained model, or a dataset — as a WORM snapshot: `repo_id` and
+`revision` (branch, tag or commit; resolved to the commit sha at pull
+time and downloaded AT that sha), optional `repo_type`, `allow_patterns`
+/ `ignore_patterns`, and `token_env` (default `HF_TOKEN`; unset means
+anonymous — the client is handed `token=False`, so its cached login is
+never used). One stream, `snapshot`: per file a `FILE` message and an
+inventory RECORD `{repo_id, repo_type, revision, commit_sha, relpath,
+size, sha256}` dated at the commit. The cursor carries the whole
+SELECTION — `{repo_id, commit_sha, revision, repo_type, allow_patterns,
+ignore_patterns}` — so an unchanged sha is an empty pull only when the
+repository and filters agree too, and a download matching NO file refuses rather than
+cursoring past nothing. Cursors are per mode: pick one mode per
+repository, or a `live` pull re-downloads what `backfill` already has.
+Pipeline documents then pin the snapshot by its manifest hash (the
+transformers pack's `transformers-encode` / `-classify` / `-forecast`,
+ADR-0083) — weights enter content-addressed, never by hub name. Install
+`dskit[huggingface]`; `libs/huggingface.py` is the knob reference.
 
 ## OAuth authorization
 
@@ -259,6 +286,16 @@ tamper-shaped store. `stream_digest` fingerprints without ever
 building the whole-snapshot string, byte-identical to
 `sha256(json.dumps(records, sort_keys=True))`.
 
+An acquired FILE tree (a model, ADR-0082) is read back by CONTENT:
+
+```python
+from dskit.onboarding import verified_payload_dir
+
+files_dir = verified_payload_dir(root, manifest_hash, "snapshot")
+# the snapshot is located by its manifest hash, re-hashed, and refused by
+# name on any drift; load from files_dir with local_files_only=True
+```
+
 ## Contents
 
 ```
@@ -272,7 +309,7 @@ dskit/onboarding/
 ├── coverage.py        CoverageLedger: the (source, stream, unit, period) done-set
 ├── leads.py           LeadGrid: capture instants at declared fractions of an expiring life (ADR-0075)
 ├── codec.py           extension-declared codecs: deterministic gzip, loud decode (ADR-0036)
-├── observations.py    the read seam: deduplicated snapshots + content digest (ADR-0037)
+├── observations.py    the read seam: deduplicated snapshots + content digest (ADR-0037); verified_payload_dir for FILE trees (ADR-0083)
 ├── oauth.py           OAuth2 manual exchange + atomic owner-only refresh tokens
 ├── snapshot.py        Merkle manifests, WORM commits, verify, find-by-hash
 ├── acquire.py         run_acquisition: pull -> snapshot -> evidence -> checkpoint
@@ -282,6 +319,7 @@ dskit/onboarding/
 ├── libs/
 │   ├── alpaca.py      Alpaca Market Data stock bars (optional alpaca-py)
 │   ├── alpaca_quotes.py  Alpaca NBBO quotes folded to one bid/ask per minute (stdlib HTTP)
+│   ├── huggingface.py one hub repository at a pinned commit: FILE + inventory RECORD per file (hub client inside the verbs, ADR-0082)
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
 │   ├── localfiles.py  reference connector: CSV/JSONL directories (stdlib)
 │   ├── localtables.py parquet / newline-JSON table directories (pyarrow inside verbs, ADR-0076)

@@ -57,7 +57,12 @@ from .coverage import STATUSES, CoverageLedger
 from .default_model import onboarding_model
 from .layout import OnboardingRoot
 from .leads import LeadGrid
-from .observations import scan_stream, stream_dir, stream_digest
+from .observations import (
+    scan_stream,
+    stream_dir,
+    stream_digest,
+    verified_payload_dir,
+)
 from .oauth import OAuth2TokenService, load_token, save_token
 from .publish import publish_version
 from .snapshot import (
@@ -116,6 +121,7 @@ __all__ = [
     "stream_dir",
     "stream_digest",
     "suite_hash",
+    "verified_payload_dir",
     "verify_snapshot",
     "write_snapshot",
 ]

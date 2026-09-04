@@ -3880,3 +3880,253 @@ and public exports are updated with them. Focused tests cover identity,
 journal resume/refusal, the 200-cell registration barrier, a single correction
 family, absence of `GROUP`, no Gate-2 fallback, immutable 25-asset fits,
 seed coverage, cutoff/source pins and memory-gate ordering.
+
+---
+
+## ADR-0082 — Binary artifacts are acquisitions: the `FILE` message and the `huggingface` connector pack
+
+**Status:** accepted (2026-09-04; owner approved after TDD and skeptic review)
+
+**Context.** The transformers pack fine-tunes from a config and restores
+from a local `save_pretrained` directory; it never touches the hub, by
+construction — so no pretrained weight can enter a run today. A bare hub
+name (`bert-base-uncased`) is not content-addressed: the weights behind it
+can change while the document hash does not, and two runs would claim one
+identity while computing different things. The TODO's recommended shape
+is that a model download is an ACQUISITION. Onboarding already snapshots
+WORM, builds a Merkle manifest and re-hashes on `verify`; a model
+snapshot is the same object as a data snapshot — except that the envelope
+carries JSON rows only, and a safetensors file is neither a row nor small.
+
+**Decision.** (1) The envelope gains one known message type, `FILE`:
+`{stream, relpath, path}`. The connector names a file it already holds
+locally; the platform copies it — stage, fsync, rename, the raw/ write
+discipline — to `payload/<stream>/<relpath>` BEFORE the manifest is
+built, so `build_manifest` lists it and `verify_snapshot` covers it
+unchanged. `relpath` is a POSIX-relative path (no absolute, `.`, `..`,
+empty or backslash segments); a repeated relpath, a missing or
+non-regular source refuse by name and leave no debris. FILE messages are
+NOT echoed into the bronze `<stream>.jsonl`: `path` is machine-local
+provenance, and echoing it would move the manifest hash between two
+pulls of identical bytes. A FILE-only pull commits a snapshot (the
+empty-pull rule counts files); the acquire summary gains `files`. An
+older platform skips `FILE` as an unknown type, and the connector's
+RECORD inventory still lands — the forward-compat valve stays honest.
+(2) `dskit/onboarding/libs/huggingface.py` (kind `huggingface`) acquires
+one hub repository at a declared `revision`: it resolves the revision to
+a commit sha (`HfApi.repo_info`), downloads THAT sha (`snapshot_download`
+into its own temporary directory, `allow_patterns` / `ignore_patterns`
+passed through, only the client's own `.cache/huggingface/` metadata
+skipped) and emits one FILE plus one RECORD per file — `{repo_id,
+repo_type, revision, commit_sha, relpath, size, sha256}`,
+`effective_date` the commit's `last_modified` — then STATE
+`{repo_id, commit_sha, revision, repo_type, allow_patterns, ignore_patterns}`:
+the whole SELECTION, because what was acquired is the repository at the
+commit AS FILTERED. "Nothing new" (one LOG, the same STATE, no download)
+requires the repo id, sha, repo type AND both pattern lists to agree; a widened
+`allow_patterns` at an unchanged sha is new content and lands a second
+snapshot. A download matching NO file REFUSES, naming the sha and the
+patterns, and emits no STATE — the cursor never moves onto nothing.
+`token_env` names the hub token's environment variable (default
+`HF_TOKEN`; unset means anonymous — the client is handed `token=False`,
+never `None`, which it reads as "use my cached login") and the token
+never enters a record, a message, a refusal or an exception chain (every
+seam raises `from None`). `huggingface_hub` is imported inside the verbs
+(the `huggingface` extra, floor `>=0.23` for the `token=False`
+spelling; `all` already carries it).
+
+**Consequences.** Weights enter content-addressed: a document pins the
+snapshot's manifest hash (ADR-0083), and a changed weight is a changed
+hash. No pipeline node ever opens a socket. `MESSAGE_TYPES` grows for the
+first time since ADR-0013; `check_message`, the README's envelope table
+and the acquire summary shape (`files`) move together, and the
+`test_connector` kind pin gains `huggingface`. **Forward-compat caveat:**
+a platform predating `FILE` skips it as an unknown type, so it commits an
+INVENTORY-ONLY snapshot — and saves the cursor beside it. After upgrading,
+that cursor reads as "nothing new" over a snapshot carrying no weights;
+delete `state/<source>/snapshot-<mode>.json` to re-acquire. Cursors are
+also per mode (ADR-0014), so `backfill` then `live` over one repository is
+two downloads and two snapshots: pick one mode.
+
+---
+
+## ADR-0083 — Pretrained weights enter the transformers pack pinned by manifest hash: encode, classify, forecast
+
+**Status:** accepted (2026-09-04; owner approved after TDD and skeptic review)
+
+**Context.** With ADR-0082 a model is a verified WORM snapshot under an
+onboarding root. The pack still needs a way to point a node at it, and
+the three uses the TODO names: text → feature rows (embeddings, a
+sentiment score) for a downstream model, and a zero-shot time-series
+forecast as the baseline a bespoke model must beat.
+
+**Decision.** The read seam (`dskit.onboarding.observations`, the one
+sibling a pack may name, ADR-0077) gains `verified_payload_dir(root,
+manifest_hash, stream)`: it locates the snapshot by hash
+(`find_snapshot_dir`), re-hashes it (`verify_snapshot`) and returns the
+FILE payload directory — or refuses naming the hash, the drift, or the
+missing stream. Three kinds in `libs/transformers.py` take the pin as
+params `root`, `snapshot` (the 64-hex manifest hash) and `stream`
+(default `snapshot`), resolve it once per instance, and load with
+`local_files_only=True`. `transformers-encode` (`PretrainedEncode`, role
+`tensor`, outputs `rows`/`metrics`, the `ArrayFeatures` shape) tokenizes
+`text_field`, pools the last hidden state (`pooling`: `mean` | `cls` |
+`max` — a table, not a branch) into `<prefix><i>` columns beside
+`carry_fields`; a record without text yields no row and is counted.
+`transformers-classify` (`PretrainedClassify`, its subclass) turns a
+sequence-classification head's logits into one `<prefix><label>` column
+per `id2label` entry, the activation chosen from the head's own
+`problem_type` through a table (softmax / sigmoid; `regression` and a
+one-label head refuse by name). `transformers-forecast`
+(`PretrainedForecast`, role `signal`, `default_mode="load"`) restores a
+zero-shot forecaster from the snapshot's own `architectures` (which must
+be a `PreTrainedModel` subclass) and answers `predict(row)` with the
+`horizon`-th step of `prediction_outputs` over the ordered `features`
+context. The default hooks fit exactly the models whose forward takes
+`past_values` ALONE and returns `prediction_outputs` — PatchTST,
+PatchTSMixer; everything else (a forward wanting time features or an
+observed mask, a distribution head, a multi-channel config, Chronos,
+TimesFM, Moirai) is a subclass supplying `build_model` / `forecast`, and
+refuses BY NAME at load: one zero context is probed through the hook
+before a row is scored, beside a context-length and a
+`num_input_channels` check. `mode="train"` refuses, and so does a
+node-level `artifact` path — the pin is a hash, never a path.
+`build_model`, `build_tokenizer`, `vectors`, `context_length_of` and
+`forecast` are the subclass seam, never a registry of per-model classes.
+Every load is `output_loading_info=True` + `use_safetensors=True`: a
+non-empty `missing_keys` refuses (a randomly initialized part is not the
+pinned model), unused weights are logged, and a `.bin`-only snapshot
+refuses rather than unpickling. `PretrainedEncode` refuses a snapshot
+carrying no tokenizer artifacts — `AutoTokenizer` synthesizes a
+specials-only vocabulary there and every text would embed as `[UNK]`.
+
+**Consequences.** Identity is content: moving the weights moves the hash
+in the document, and a tampered snapshot refuses at load by name. The pin
+names an acquisition EVENT, not the bytes alone — the manifest grades
+`acquired_at`, source and mode beside the payload digests, so identical
+weights re-acquired yield a DIFFERENT pin over an identical payload tree.
+That is deliberate: a document says which acquisition it trusted. No
+existing document, kind or hash moves; `NODE_KINDS` grows by three. The
+pack's "never downloads" property is unchanged — acquisition is
+onboarding's job.
+
+---
+
+## ADR-0084 — A cardinality rule for validation suites: `distinct_count`, optionally per group
+
+**Status:** accepted (2026-09-04; owner approved after TDD and skeptic review)
+
+**Context.** The six built-in rules assert per-row facts (`not_null`,
+`unique`, `accepted_values`, `in_range`, `bitemporal`) or one stream-level
+count (`row_count`). "Every event carries exactly N strikes" and "every
+day has at least one row per venue" are structure-level assertions the
+vocabulary cannot spell, so pmquant flattened rows and inventoried them in
+the pipeline instead (TODO §13 item 7).
+
+**Decision.** One `_RULES` entry, `distinct_count`: kwargs `{field,
+group_by?, min?, max?}` (at least one bound; `group_by` a field name or a
+list of them). The evaluator groups rows by their `group_by` values,
+counts the DISTINCT non-null `field` values per group, and returns the
+number of GROUPS out of bounds. Ungrouped, the whole stream is the one
+group and it exists even when empty — so an empty stream fails a `min`
+exactly as `row_count` does; grouped, an empty stream has no groups and
+fails nothing (emptiness is `row_count`'s assertion). A row whose `field`
+or any `group_by` value is null is skipped — the null discipline of
+`unique` / `in_range`. The "at least one of min/max" check is now DERIVED
+from the table (every rule whose allowed kwargs carry both bounds), not a
+literal tuple that would have had to grow.
+
+**Consequences.** Rule shape `(allowed_kwargs, required_kwargs, evaluator)`,
+the failing-count contract and the result shape are unchanged; existing
+suites hash identically. Semantics stay the declared seam: the rule counts
+values, it does not know what an event is.
+
+---
+
+## ADR-0085 — `records-write`: the record-stream sibling of `table-write`, over one shared write discipline
+
+**Status:** accepted (2026-09-04; owner approved after TDD and skeptic review)
+
+**Context.** `table-write` persists a MAPPING atomically, refuses to
+clobber, refuses to create a tree, and proves what it wrote. A run also
+produces STREAMS a later document must pin — the rows a fold scored, a
+resolved universe as records — and the only writer takes a mapping.
+pmquant carried five child-side write kinds for this (TODO §13 item 9).
+Copying `TableWrite` for a second payload shape would put the no-clobber
+rule, the atomic replace and the provenance block in two places with
+nothing pinning them — the defect class CLAUDE.md's "Duplication that
+diverges" names.
+
+**Decision.** `kinds_table.py` gains an abstract base, `FileWrite` (role
+`report`): the four knobs (`path`, `source`, `overwrite`, `expect`), the
+`expect` cross-check before any byte lands, the clobber and missing-parent
+refusals, the `~` expansion, the atomic temp-fsync-replace, and the
+provenance `{path, source, retrieved, sha256, <unit>, bytes}` live there
+ONCE. A member supplies `render(payload) -> (bytes, count)`,
+`payload_problems(payload)`, its port and its unit; `emit` shapes the
+outputs. `TableWrite` becomes the mapping member (behaviour unchanged;
+its refusals keep their words). `RecordsWrite` (kind `records-write`,
+outputs `path`/`provenance`/`metrics`) is the stream member: input port
+`records` (a list or tuple of mapping rows; a one-shot iterable refused by
+name), one JSON object per line in the canonical spelling — sorted keys,
+compact separators, ASCII, trailing newline — so identical rows write
+identical bytes; `metrics` carries `{rows, bytes, sha256}` so the digest
+reaches the run record and the sinks. A row that is not a mapping, a NaN
+or ±Infinity, or a value JSON has no form for is refused BY NAME (row
+index, dotted field path) and nothing reaches disk; both writers share
+that rule, so `table-write` now names the entry instead of surfacing the
+codec's message.
+
+**Consequences.** `DEFAULT_NODE_KINDS` grows by one; no existing kind,
+document or hash moves. Deferred, recorded here so they are not forgotten:
+an APPEND mode and a refuse-on-shrink guard for `overwrite: true` (both
+pmquant asks) — each is a second write semantics and wants its own
+ruling; a `records-file` reader mirroring `table-file` lands when a
+document needs to pin a stream by digest.
+
+---
+
+## ADR-0086 — `groupby`: one record per group over a closed aggregate table; `pivot` ruled a later kind
+
+**Status:** accepted (2026-09-04; owner approved after TDD and skeptic review)
+
+**Context.** The flow verbs filter, grid, union, look up and project rows;
+none REDUCES them. "One row per event with its strike count and last mid",
+"per venue, the mean fee" is spelled today either as a document-side
+`derive` chain that cannot count, or as child code (pmquant's `fee-book`
+builds its table by hand — TODO §13 item 11). A reduction is the
+relational family's fourth verb: like `concat`/`join`/`derive` it says what
+a row IS, so it refuses rather than drops.
+
+**Decision.** `kinds_flow.py` gains `groupby` (`GroupBy`, role
+`transform`, outputs `records`/`metrics`). Params: `keys` (a field name or
+a non-empty list, REQUIRED), `aggregates` (REQUIRED, non-empty:
+`{out_field: {"op": <op>, "field": <field>}}`), `order_field` (REQUIRED
+iff an aggregate is `first`/`last`, refused otherwise — a knob nothing
+reads is the approved-value-the-run-never-uses shape). The op vocabulary
+is a CLOSED table of `_AggOp(needs_field, numeric, ordered, reduce)` entries —
+`count`, `sum`, `mean`, `min`, `max`, `first`, `last`, `nunique` — read by
+name, never an `if op ==` chain; `count` takes no `field`, every other op
+requires one, and an `out_field` may not restate a key. Refusals, each
+naming the node, the row and the field: a row missing a key or an
+aggregate's field; an unhashable key value; a non-numeric cell under a
+numeric op (`records.number_ok`, the toolkit's one numeric rule); an
+`order_field` value that is not a number (the fitted family's instant
+rule); key values that cannot be ordered against each other; a reducer
+the cells defeat (`nunique` over unhashable cells). Output is one mapping
+per group — the key fields then the aggregates — SORTED by key values;
+`first`/`last` take the row with the smallest/largest `order_field`,
+ties resolved by input order. Rows may be dicts or attribute-bearing
+records (the module's `_field` accessor); the output rows are always
+dicts.
+
+**Ruling on `pivot`.** A separate, later kind, not built here. A pivot
+(records → a MAPPING keyed by a field's values) is a shape change with no
+reduction, and it raises a question `groupby` never meets — a composite
+key has no JSON-object spelling — that deserves its own ruling; folding a
+conditional `table` output into `groupby` would give one kind two output
+shapes. The two-step spelling (`groupby`, then a pivot) is the design.
+
+**Consequences.** `DEFAULT_NODE_KINDS` grows by one; no existing kind,
+document or hash moves. pmquant's fee-book residue shrinks to the pivot
+half, recorded in TODO.

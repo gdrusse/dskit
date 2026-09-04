@@ -1,5 +1,5 @@
 """The flow kinds: filter / event-bank / eligibility / banking-report,
-and the relational three: concat / join / derive.
+and the relational four: concat / join / derive / groupby.
 
 The banking three now ship from ``dskit/pipeline/kinds_banking.py``
 (TODO 3e) and their behaviour is still tested here, next to the ★BANKING
@@ -11,7 +11,7 @@ the ★BANKING spine (events -> event-bank -> eligibility ->
 banking-report) wires end to end under the driver, and that a too-high
 bar halts the report as the gate's descendant.
 
-The relational three are tested mostly through what they REFUSE. Their
+The relational verbs are tested mostly through what they REFUSE. Their
 value is entirely in the refusals — an untagged union, an overlapping
 namespace, an unmatched row, a defaulted branch — and a refusal that
 quietly stopped firing looks exactly like a healthy run, which is the
@@ -38,6 +38,7 @@ from dskit.pipeline.kinds_flow import (
     Derive,
     EventGrid,
     Filter,
+    GroupBy,
     Join,
     clause_holds,
     clause_problems,
@@ -1029,15 +1030,252 @@ class TestEventGrid:
         assert node.validate_inputs({"records": {}, "extra": []}) != []
 
 
+# ---------------------------------------------------------------------------
+# groupby — the reduction (ADR-0086)
+# ---------------------------------------------------------------------------
+
+
+def groupby_node(**params):
+    base = {
+        "keys": "instrument",
+        "aggregates": {"n": {"op": "count"}, "mid_mean": {"op": "mean", "field": "mid"}},
+    }
+    return GroupBy("by_instrument", {**base, **params})
+
+
+def ladder_rows():
+    """Two instruments, three and two rows, deliberately out of key AND
+    time order — so the output's sort and the order_field both do work."""
+    return [
+        drec("B", "B-1", 30, mid=0.5, venue="x"),
+        drec("A", "A-1", 10, mid=0.2, venue="x"),
+        drec("A", "A-2", 12, mid=0.4, venue="y"),
+        drec("B", "B-2", 20, mid=0.7, venue="x"),
+        drec("A", "A-3", 11, mid=0.6, venue="x"),
+    ]
+
+
+class TestGroupBy:
+    def test_one_record_per_group_sorted_by_key_with_every_op(self, ctx):
+        node = GroupBy(
+            "g",
+            {
+                "keys": "instrument",
+                "order_field": "asof_ms",
+                "aggregates": {
+                    "n": {"op": "count"},
+                    "total": {"op": "sum", "field": "mid"},
+                    "mean": {"op": "mean", "field": "mid"},
+                    "lo": {"op": "min", "field": "mid"},
+                    "hi": {"op": "max", "field": "mid"},
+                    "first_contract": {"op": "first", "field": "contract"},
+                    "last_contract": {"op": "last", "field": "contract"},
+                    "venues": {"op": "nunique", "field": "venue"},
+                },
+            },
+        )
+        out = node.run(ctx, {"records": ladder_rows()})
+        a, b = out["records"]
+        exact = ("instrument", "n", "first_contract", "last_contract", "venues")
+        assert {k: a[k] for k in exact} == {
+            "instrument": "A", "n": 3, "first_contract": "A-1",
+            "last_contract": "A-2", "venues": 2,
+        }
+        assert (a["total"], a["mean"], a["lo"], a["hi"]) == pytest.approx((1.2, 0.4, 0.2, 0.6))
+        assert {k: b[k] for k in exact} == {
+            "instrument": "B", "n": 2, "first_contract": "B-2",
+            "last_contract": "B-1", "venues": 1,
+        }
+        assert (b["total"], b["mean"], b["lo"], b["hi"]) == pytest.approx((1.2, 0.6, 0.5, 0.7))
+        assert out["metrics"] == {"rows_in": 5, "groups": 2}
+        assert node.validate_outputs(out) == []
+
+    def test_composite_keys_sort_the_output_by_every_key(self, ctx):
+        node = GroupBy(
+            "g", {"keys": ["instrument", "venue"], "aggregates": {"n": {"op": "count"}}}
+        )
+        out = node.run(ctx, {"records": ladder_rows()})
+        assert out["records"] == [
+            {"instrument": "A", "venue": "x", "n": 2},
+            {"instrument": "A", "venue": "y", "n": 1},
+            {"instrument": "B", "venue": "x", "n": 2},
+        ]
+
+    def test_json_numeric_types_are_distinct_groups_and_nunique_values(self, ctx):
+        rows = [
+            {"key": 1.0, "group": "one", "value": 1.0},
+            {"key": True, "group": "one", "value": True},
+            {"key": 1, "group": "one", "value": 1},
+        ]
+        grouped = GroupBy(
+            "g", {"keys": "key", "aggregates": {"n": {"op": "count"}}}
+        ).run(ctx, {"records": rows})["records"]
+        assert [(type(row["key"]), row["n"]) for row in grouped] == [
+            (bool, 1), (int, 1), (float, 1),
+        ]
+        distinct = GroupBy(
+            "g",
+            {
+                "keys": "group",
+                "aggregates": {"n": {"op": "nunique", "field": "value"}},
+            },
+        ).run(ctx, {"records": rows})["records"]
+        assert distinct == [{"group": "one", "n": 3}]
+
+
+    def test_attribute_records_group_like_dicts_and_come_out_as_dicts(self, ctx):
+        rows = [mrec("A", "A-1", 1, mid=0.5), mrec("A", "A-2", 2, mid=0.7), mrec("B", "B-1", 3, mid=0.1)]
+        out = groupby_node().run(ctx, {"records": rows})
+        assert out["records"] == [
+            {"instrument": "A", "n": 2, "mid_mean": pytest.approx(0.6)},
+            {"instrument": "B", "n": 1, "mid_mean": pytest.approx(0.1)},
+        ]
+
+    def test_ties_in_the_order_field_resolve_by_input_order(self, ctx):
+        rows = [drec("A", "A-1", 5), drec("A", "A-2", 5), drec("A", "A-3", 5)]
+        node = GroupBy(
+            "g",
+            {
+                "keys": "instrument",
+                "order_field": "asof_ms",
+                "aggregates": {
+                    "f": {"op": "first", "field": "contract"},
+                    "l": {"op": "last", "field": "contract"},
+                },
+            },
+        )
+        out = node.run(ctx, {"records": rows})
+        assert out["records"] == [{"instrument": "A", "f": "A-1", "l": "A-3"}]
+
+    def test_empty_input_is_an_empty_table(self, ctx):
+        out = groupby_node().run(ctx, {"records": []})
+        assert out == {"records": [], "metrics": {"rows_in": 0, "groups": 0}}
+
+    def test_a_row_missing_a_key_is_refused_by_name(self, ctx):
+        rows = [drec("A", "A-1", 1, mid=0.1), {"contract": "X", "asof_ms": 2, "mid": 0.2}]
+        with pytest.raises(ValueError, match="row 1 carries no 'instrument'"):
+            groupby_node().run(ctx, {"records": rows})
+
+    def test_a_row_missing_an_aggregate_field_is_refused_by_name(self, ctx):
+        rows = [drec("A", "A-1", 1, mid=0.1), drec("A", "A-2", 2)]
+        with pytest.raises(ValueError, match="row 1 carries no 'mid'"):
+            groupby_node().run(ctx, {"records": rows})
+
+    def test_a_non_numeric_cell_under_a_numeric_op_is_refused_by_name(self, ctx):
+        rows = [drec("A", "A-1", 1, mid=0.1), drec("A", "A-2", 2, mid="0.2")]
+        with pytest.raises(ValueError, match=r"'mid_mean' \(mean\).*row 1 field 'mid' holds '0.2'"):
+            groupby_node().run(ctx, {"records": rows})
+        for cell in (None, True, float("nan")):  # none of these is a number here
+            with pytest.raises(ValueError, match="is not a number"):
+                groupby_node().run(ctx, {"records": [drec("A", "A-1", 1, mid=cell)]})
+
+    def test_an_order_value_that_is_not_a_number_is_refused_by_name(self, ctx):
+        node = GroupBy(
+            "g",
+            {
+                "keys": "instrument",
+                "order_field": "asof_ms",
+                "aggregates": {"l": {"op": "last", "field": "mid"}},
+            },
+        )
+        with pytest.raises(ValueError, match="order_field 'asof_ms'.*row 0 holds '2026-01-01'"):
+            node.run(ctx, {"records": [drec("A", "A-1", "2026-01-01", mid=0.1)]})
+        with pytest.raises(ValueError, match="row 0 carries no 'asof_ms'"):
+            node.run(ctx, {"records": [{"instrument": "A", "mid": 0.1}]})
+
+    def test_key_values_that_cannot_be_ordered_against_each_other_are_refused(self, ctx):
+        rows = [drec("A", "A-1", 1, mid=0.1), drec(7, "S-1", 2, mid=0.2)]
+        with pytest.raises(ValueError, match="key values cannot be ordered"):
+            groupby_node().run(ctx, {"records": rows})
+
+    def test_an_unhashable_key_value_is_refused_by_name(self, ctx):
+        with pytest.raises(ValueError, match=r"row 0 has an unusable key value.*'instrument'"):
+            groupby_node().run(ctx, {"records": [drec(["A"], "A-1", 1, mid=0.1)]})
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_a_non_finite_key_value_is_refused_by_name(self, ctx, value):
+        with pytest.raises(
+            ValueError,
+            match=r"row 0 has an unusable key value.*'instrument'.*must be finite",
+        ):
+            groupby_node().run(ctx, {"records": [drec(value, "A-1", 1, mid=0.1)]})
+
+    def test_a_reducer_the_cells_defeat_is_refused_by_name(self, ctx):
+        node = GroupBy(
+            "g", {"keys": "instrument", "aggregates": {"t": {"op": "nunique", "field": "tags"}}}
+        )
+        with pytest.raises(ValueError, match=r"aggregate 't' \(nunique\) cannot reduce group"):
+            node.run(ctx, {"records": [drec("A", "A-1", 1, tags=["x"])]})
+
+    def test_keys_and_aggregates_are_required(self):
+        problems = GroupBy.validate_params({})
+        assert any("keys is required" in p for p in problems)
+        assert any("aggregates is required" in p for p in problems)
+
+    @pytest.mark.parametrize(
+        ("params", "needle"),
+        [
+            ({"keys": "", "aggregates": {"n": {"op": "count"}}}, "keys must be"),
+            ({"keys": ["a", "a"], "aggregates": {"n": {"op": "count"}}}, "names a field twice"),
+            ({"keys": "a", "aggregates": {}}, "aggregates must be a non-empty dict"),
+            ({"keys": "a", "aggregates": {"n": "count"}}, "aggregates['n'] must be a dict"),
+            ({"keys": "a", "aggregates": {"n": {"op": "median", "field": "x"}}}, "op must be one of"),
+            ({"keys": "a", "aggregates": {"n": {"op": ["sum"], "field": "x"}}}, "op must be one of"),
+            ({"keys": "a", "aggregates": {"n": {"op": "sum"}}}, "needs a field"),
+            ({"keys": "a", "aggregates": {"n": {"op": "count", "field": "x"}}}, "count counts rows"),
+            ({"keys": "a", "aggregates": {"n": {"op": "sum", "field": ""}}}, "field must be a non-empty"),
+            ({"keys": "a", "aggregates": {"n": {"op": "sum", "field": "x", "extra": 1}}}, "exactly the keys"),
+            ({"keys": "a", "aggregates": {"a": {"op": "count"}}}, "restates a key"),
+            ({"keys": "a", "aggregates": {"": {"op": "count"}}}, "output field names"),
+            ({"keys": "a", "aggregates": {"l": {"op": "last", "field": "x"}}}, "order_field is required"),
+            ({"keys": "a", "order_field": "t", "aggregates": {"n": {"op": "count"}}}, "order_field is meaningless"),
+            ({"keys": "a", "order_field": 5, "aggregates": {"l": {"op": "last", "field": "x"}}}, "order_field must be"),
+            ({"keys": "a", "aggregates": {"n": {"op": "count"}}, "nope": 1}, "unknown param"),
+        ],
+    )
+    def test_knobs_are_refused_by_name_at_plan(self, params, needle):
+        problems = GroupBy.validate_params(params)
+        assert any(needle in p for p in problems), problems
+
+    def test_the_op_vocabulary_is_closed_and_named(self):
+        problems = GroupBy.validate_params(
+            {"keys": "a", "aggregates": {"n": {"op": "median", "field": "x"}}}
+        )
+        (problem,) = [p for p in problems if "op must be one of" in p]
+        # Deliberate restatement: documents spell these operators.
+        for op in ("count", "sum", "mean", "min", "max", "first", "last", "nunique"):
+            assert f"'{op}'" in problem
+
+    def test_node_references_defer_until_materialized(self):
+        assert GroupBy.validate_params(
+            {"keys": "$other.keys", "aggregates": "$other.aggs", "order_field": "$other.f"}
+        ) == []
+
+    def test_bad_params_refused_at_construction(self):
+        with pytest.raises(ConfigError, match="op must be one of"):
+            GroupBy("g", {"keys": "a", "aggregates": {"n": {"op": "median", "field": "x"}}})
+
+    def test_validate_inputs_wants_a_materialized_sequence(self):
+        node = groupby_node()
+        assert node.validate_inputs({"records": []}) == []
+        assert node.validate_inputs({"records": ()}) == []
+        assert node.validate_inputs({"records": {}}) != []
+        problems = node.validate_inputs({"records": (r for r in ())})
+        assert problems and "one-shot" in problems[0]
+
+
 class TestRegister:
-    def test_registers_all_five_unowned(self):
+    def test_registers_all_six_unowned(self):
         reg = register(NodeKindRegistry())
-        assert {"filter", "concat", "join", "derive", "event-grid"} <= set(reg.kinds())
+        assert {"filter", "concat", "join", "derive", "event-grid", "groupby"} <= set(
+            reg.kinds()
+        )
         assert reg.get("filter") == (Filter, False)
         assert reg.get("concat") == (Concat, False)
         assert reg.get("join") == (Join, False)
         assert reg.get("derive") == (Derive, False)
         assert reg.get("event-grid") == (EventGrid, False)
+        assert reg.get("groupby") == (GroupBy, False)
 
     def test_idempotent_and_never_shadows(self):
         reg = NodeKindRegistry()

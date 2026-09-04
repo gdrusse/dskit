@@ -41,11 +41,11 @@ from dskit.pipeline.base import TimeSplitConfig
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.fitted import SIDECAR_NAME, ApplyTransform, Standardize
 from dskit.pipeline.kinds_banking import BankingReport, Eligibility, EventBank
-from dskit.pipeline.kinds_flow import Concat, Derive, EventGrid, Filter, Join
+from dskit.pipeline.kinds_flow import Concat, Derive, EventGrid, Filter, GroupBy, Join
 from dskit.pipeline.kinds_report import RunReport
 from dskit.pipeline.kinds_search import HpoGrid, TopTrials
 from dskit.pipeline.kinds_stats import StatTest, Validate
-from dskit.pipeline.kinds_table import TableFile, TableWrite
+from dskit.pipeline.kinds_table import RecordsWrite, TableFile, TableWrite
 from dskit.pipeline.node import NodeContext
 
 #: The toolkit kinds, paired explicitly (see module docstring
@@ -64,8 +64,10 @@ TOOLKIT_NODE_KINDS = (
     ("concat", Concat),
     ("join", Join),
     ("derive", Derive),
+    ("groupby", GroupBy),
     ("table-file", TableFile),
     ("table-write", TableWrite),
+    ("records-write", RecordsWrite),
     ("standardize", Standardize),
     ("apply-transform", ApplyTransform),
 )
@@ -84,15 +86,18 @@ TOOLKIT_ROLES = {
     "hpo-grid": "search",
     "top-trials": "transform",
     "run-report": "report",
-    # The relational three are transforms: they combine rows, they never
-    # decide, score or spend.
+    # The relational verbs are transforms: they combine, project or
+    # reduce rows, they never decide, score or spend.
     "concat": "transform",
     "join": "transform",
     "derive": "transform",
+    "groupby": "transform",
     # The table pair: the reader supplies a value (transform), the
-    # writer materialises one and proves it (report).
+    # writer materialises one and proves it (report) — as does the
+    # stream writer beside it (ADR-0085).
     "table-file": "transform",
     "table-write": "report",
+    "records-write": "report",
     # The fitted-transform family: the scaler LEARNS (a trainable role,
     # so ADR-0038's structural bar covers it); the apply kind only
     # projects, so it is an ordinary transform.
@@ -333,6 +338,23 @@ def probes(tmp_path):
             stream_ports=("records",),
             runnable=True,
         ),
+        # The reduction: one record per instrument, sorted. ``last`` needs
+        # the order_field, so dropping it must refuse at plan like the rest.
+        "groupby": NodeProbe(
+            params={
+                "keys": "instrument",
+                "order_field": "asof_ms",
+                "aggregates": {
+                    "n": {"op": "count"},
+                    "mid_mean": {"op": "mean", "field": "mid"},
+                    "last_mid": {"op": "last", "field": "mid"},
+                },
+            },
+            required=("keys", "aggregates", "order_field"),
+            inputs={"records": records},
+            stream_ports=("records",),
+            runnable=True,
+        ),
         # The provenance-pinned book on disk: params name the file AND its
         # digest, so the probe's fixture is written by the factory itself.
         "table-file": NodeProbe(
@@ -354,6 +376,21 @@ def probes(tmp_path):
             required=("path", "source"),
             inputs={"table": {"AAA": 1, "BBB": 2, "CCC": 3}},
             stream_ports=(),  # the table is a materialized mapping
+            runnable=True,
+        ),
+        # The stream sibling: one canonical JSON object per line and the
+        # digest of the exact bytes in metrics; same parent-exists /
+        # target-absent fixture, and ``records`` IS a stream port, so
+        # the one-shot check applies to it.
+        "records-write": NodeProbe(
+            params={
+                "path": str(tmp_path / "produced" / "records.jsonl"),
+                "source": "the conformance run's scored rows",
+                "expect": 3,
+            },
+            required=("path", "source"),
+            inputs={"records": records},
+            stream_ports=("records",),
             runnable=True,
         ),
         "hpo-grid": NodeProbe(

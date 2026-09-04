@@ -8,7 +8,7 @@ from dskit.assets.base import AssetError
 from dskit.onboarding import find_active_source, load_state, run_acquisition
 
 from .conftest import norm_path, norm_read, read_jsonl
-from .fake_connector import FakeConnector, record, state
+from .fake_connector import FakeConnector, file_message, record, state
 
 
 def test_happy_path_builds_the_whole_chain(root, registry, fake_source):
@@ -362,6 +362,264 @@ def test_empty_pull_shape_survives_the_commit_stamp(
     )
     s = run_acquisition(root, registry, "fake", "books", "live")
     assert s == {"job": None, "snapshot": None, "acq_id": None,
-                 "records": 0, "forecasts": 0, "skipped": 0,
+                 "records": 0, "forecasts": 0, "files": 0, "skipped": 0,
                  "logs": ["nothing new"], "state_saved": False}
     assert os.listdir(root.raw_dir("fake")) == []
+
+
+# -- FILE messages (ADR-0082) --------------------------------------------------
+
+
+def _blob(tmp_path, name, data):
+    """A local file the fake connector "holds" — its own staging."""
+    path = tmp_path / "hold" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return str(path)
+
+
+def test_file_messages_land_in_the_payload_tree_and_the_manifest(
+    root, registry, fake_source, tmp_path
+):
+    from dskit.onboarding import file_digest, read_manifest, verify_snapshot
+
+    cfg = _blob(tmp_path, "config.json", b'{"hidden": 8}')
+    weights = _blob(tmp_path, "model.bin", bytes(range(256)) * 3)
+    FakeConnector.script = [
+        file_message("weights", "config.json", cfg),
+        file_message("weights", "sub/model.bin", weights),
+        record("weights", "2026-01-02", {"relpath": "config.json"}),
+        state({"commit": "abc"}),
+    ]
+    s = run_acquisition(root, registry, "fake", "weights", "backfill")
+    assert s["files"] == 2 and s["records"] == 1 and s["state_saved"]
+    snap_dir = root.snapshot_dir("fake", s["acq_id"])
+    payload = os.path.join(snap_dir, "payload")
+    with open(os.path.join(payload, "weights", "config.json"), "rb") as fh:
+        assert fh.read() == b'{"hidden": 8}'
+    with open(os.path.join(payload, "weights", "sub", "model.bin"), "rb") as fh:
+        assert fh.read() == bytes(range(256)) * 3
+    listed = {f["relpath"]: f for f in read_manifest(snap_dir)["files"]}
+    assert set(listed) == {"weights.jsonl", "weights/config.json",
+                           "weights/sub/model.bin"}
+    assert listed["weights/sub/model.bin"]["sha256"] == file_digest(weights)
+    assert listed["weights/sub/model.bin"]["size"] == 768
+    assert verify_snapshot(snap_dir) == []
+    # Bronze holds the RECORD alone: a FILE's `path` is machine-local
+    # provenance and must never become manifest (identity) material.
+    assert len(read_jsonl(os.path.join(payload, "weights.jsonl"))) == 1
+    # Copied, never moved — the connector owns its own staging.
+    assert os.path.exists(weights)
+
+
+def test_a_file_only_pull_commits_a_snapshot(root, registry, fake_source, tmp_path):
+    blob = _blob(tmp_path, "model.bin", b"\x00\x01")
+    FakeConnector.script = [file_message("weights", "model.bin", blob)]
+    s = run_acquisition(root, registry, "fake", "weights", "backfill")
+    assert s["files"] == 1 and s["records"] == 0 and s["snapshot"] is not None
+    snap = registry.get(s["snapshot"])
+    assert snap.payload["mode"] == "backfill"
+    assert os.listdir(root.raw_dir("fake")) == [s["acq_id"]]
+    # No RECORD, so no normalized rows directory either.
+    assert not os.path.isdir(os.path.join(root.root, "observations", "fake"))
+
+
+def test_a_repeated_file_relpath_refuses_leaving_no_debris(
+    root, registry, fake_source, tmp_path
+):
+    blob = _blob(tmp_path, "model.bin", b"\x00")
+    FakeConnector.script = [
+        file_message("weights", "model.bin", blob),
+        file_message("weights", "model.bin", blob),
+    ]
+    with pytest.raises(AssetError, match="message 1") as exc:
+        run_acquisition(root, registry, "fake", "weights", "backfill")
+    assert "relpath" in str(exc.value) and "model.bin" in str(exc.value)
+    assert os.listdir(root.raw_dir("fake")) == []
+
+
+def test_a_file_for_another_stream_refuses(root, registry, fake_source, tmp_path):
+    blob = _blob(tmp_path, "model.bin", b"\x00")
+    FakeConnector.script = [file_message("other", "model.bin", blob)]
+    with pytest.raises(AssetError, match="message 0") as exc:
+        run_acquisition(root, registry, "fake", "weights", "backfill")
+    assert "other" in str(exc.value) and "weights" in str(exc.value)
+    assert os.listdir(root.raw_dir("fake")) == []
+
+
+@pytest.mark.parametrize("shape", ["missing", "directory"])
+def test_an_unusable_file_source_refuses_by_name(
+    root, registry, fake_source, tmp_path, shape
+):
+    if shape == "missing":
+        src = str(tmp_path / "ghost.bin")
+    else:
+        src = str(tmp_path / "a-dir")
+        os.mkdir(src)
+    FakeConnector.script = [file_message("weights", "model.bin", src)]
+    with pytest.raises(AssetError, match="message 0") as exc:
+        run_acquisition(root, registry, "fake", "weights", "backfill")
+    assert src in str(exc.value)
+    assert os.listdir(root.raw_dir("fake")) == []
+    assert load_state(root, "fake", "weights", "backfill") == {}
+
+
+def test_file_payload_is_tamper_evident(root, registry, fake_source, tmp_path):
+    from dskit.onboarding import verify_snapshot
+
+    blob = _blob(tmp_path, "model.bin", b"\x00\x01\x02")
+    FakeConnector.script = [file_message("weights", "model.bin", blob)]
+    s = run_acquisition(root, registry, "fake", "weights", "backfill")
+    snap_dir = root.snapshot_dir("fake", s["acq_id"])
+    copied = os.path.join(snap_dir, "payload", "weights", "model.bin")
+    with open(copied, "r+b") as fh:
+        fh.write(b"\xff")
+    problems = verify_snapshot(snap_dir)
+    assert len(problems) == 1
+    assert "content drift" in problems[0] and "weights/model.bin" in problems[0]
+
+
+def test_two_pulls_of_identical_files_hash_the_same_payload(
+    root, registry, fake_source, tmp_path, monkeypatch
+):
+    from dskit.onboarding import dir_digest
+
+    clock = _clock(monkeypatch, T0)
+    blob = _blob(tmp_path, "model.bin", b"same bytes")
+    digests = []
+    for stamp in (T1, T2):
+        clock[0] = stamp
+        FakeConnector.script = [file_message("weights", "model.bin", blob)]
+        s = run_acquisition(root, registry, "fake", "weights", "backfill")
+        payload = os.path.join(root.snapshot_dir("fake", s["acq_id"]), "payload")
+        digests.append(dir_digest(payload))
+    assert digests[0] == digests[1]
+
+
+def test_a_file_relpath_that_squats_a_directory_refuses_typed(
+    root, registry, fake_source, tmp_path
+):
+    blob = _blob(tmp_path, "model.bin", b"\x00")
+    FakeConnector.script = [
+        file_message("weights", "a", blob),
+        file_message("weights", "a/b", blob),
+    ]
+    with pytest.raises(AssetError, match="message 1") as exc:
+        run_acquisition(root, registry, "fake", "weights", "backfill")
+    assert "a/b" in str(exc.value)
+    assert os.listdir(root.raw_dir("fake")) == []
+
+
+# -- the review round over ADR-0082 ----------------------------------------------
+
+
+def test_a_destination_that_already_exists_refuses_before_copying(tmp_path):
+    # Two distinct relpaths can collapse onto one path on a case-folding or
+    # normalizing filesystem; the second must refuse, never overwrite the first.
+    from dskit.onboarding.acquire import _place_file
+
+    files_dir = tmp_path / "files"
+    files_dir.mkdir()
+    (files_dir / "model.bin").write_bytes(b"first")
+    blob = _blob(tmp_path, "model.bin", b"second")
+    with pytest.raises(AssetError, match="model.bin") as exc:
+        _place_file(str(files_dir), "weights", set(),
+                    file_message("weights", "model.bin", blob), 3)
+    assert "message 3" in str(exc.value) and "already" in str(exc.value)
+    assert (files_dir / "model.bin").read_bytes() == b"first"
+
+
+class _ClosingIterator:
+    """A NON-generator iterator: nothing but an explicit ``close()`` closes it."""
+
+    def __init__(self, messages, log):
+        self._messages = iter(messages)
+        self._log = log
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._messages)
+
+    def close(self):
+        self._log.append("closed")
+
+
+class ClosingConnector(FakeConnector):
+    """``read`` answers a closeable iterator; ``closed`` records the platform's close."""
+
+    closed = []
+
+    def read(self, config, streams, state, mode):
+        return _ClosingIterator(list(FakeConnector.script), type(self).closed)
+
+
+@pytest.fixture
+def closing_source(registry):
+    vid = registry.register("source_config", {
+        "name": "closing", "catalog_source": "fake-src",
+        "connector": "tests.onboarding.test_acquire:ClosingConnector", "config": {},
+    }, origin="test")
+    registry.transition(vid, "active", origin="test")
+    FakeConnector.script, ClosingConnector.closed = [], []
+    yield vid
+    FakeConnector.script, ClosingConnector.closed = [], []
+
+
+@pytest.mark.parametrize("ending", ["exhausted", "error"])
+def test_the_connectors_iterator_is_closed_however_the_pull_ends(
+    root, registry, closing_source, ending
+):
+    # A connector's ``finally`` (deleting its staging) must run when the pull
+    # ends — by exhaustion or by abort — not whenever the GC gets to it.
+    FakeConnector.script = [record("prices", "2026-01-02")]
+    if ending == "error":
+        FakeConnector.script.append(
+            {"protocol": 1, "type": "ERROR", "message": "auth expired"})
+        with pytest.raises(AssetError, match="auth expired"):
+            run_acquisition(root, registry, "closing", "prices", "live")
+    else:
+        run_acquisition(root, registry, "closing", "prices", "live")
+    assert ClosingConnector.closed == ["closed"]
+
+
+def test_identical_bytes_reacquired_yield_a_different_pin(
+    root, registry, fake_source, tmp_path, monkeypatch
+):
+    # The pin (manifest hash) identifies an acquisition EVENT: the manifest
+    # grades acquired_at / source / mode beside the payload digests, so the
+    # same bytes pulled twice are two pins over one payload tree —
+    # deliberate (ADR-0083): a pin names WHICH acquisition a run trusted.
+    from dskit.onboarding import dir_digest
+
+    clock = _clock(monkeypatch, T0)
+    blob = _blob(tmp_path, "model.bin", b"same bytes")
+    pins, digests = [], []
+    for stamp in (T1, T2):
+        clock[0] = stamp
+        FakeConnector.script = [file_message("weights", "model.bin", blob)]
+        s = run_acquisition(root, registry, "fake", "weights", "backfill")
+        pins.append(registry.get(s["snapshot"]).payload["manifest_hash"])
+        digests.append(dir_digest(
+            os.path.join(root.snapshot_dir("fake", s["acq_id"]), "payload")))
+    assert digests[0] == digests[1]
+    assert pins[0] != pins[1]
+
+
+def test_a_gzip_file_only_pull_commits_an_empty_bronze_member_that_verifies(
+    root, registry, gz_source, tmp_path
+):
+    from dskit.onboarding import read_manifest, verify_snapshot
+    from dskit.onboarding.codec import verify_member
+
+    blob = _blob(tmp_path, "model.bin", b"\x00\x01")
+    FakeConnector.script = [file_message("weights", "model.bin", blob)]
+    s = run_acquisition(root, registry, "gz", "weights", "backfill")
+    assert s["files"] == 1 and s["records"] == 0 and s["snapshot"] is not None
+    snap_dir = root.snapshot_dir("gz", s["acq_id"])
+    member = os.path.join(snap_dir, "payload", "weights.jsonl.gz")
+    assert os.path.isfile(member) and verify_member(member) == 0
+    listed = {f["relpath"] for f in read_manifest(snap_dir)["files"]}
+    assert listed == {"weights.jsonl.gz", "weights/model.bin"}
+    assert verify_snapshot(snap_dir) == []

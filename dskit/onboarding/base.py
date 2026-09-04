@@ -33,6 +33,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import stat
 import tempfile
 from datetime import datetime, timezone
 
@@ -53,6 +55,7 @@ __all__ = [
     "AssetError",
     "MODES",
     "canonical_hash",
+    "durable_copy_file",
     "durable_write_bytes",
     "durable_write_json",
     "dir_digest",
@@ -183,6 +186,59 @@ def durable_write_bytes(path, data) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    _fsync_dir(directory)
+
+
+def durable_copy_file(src, dst) -> None:
+    """Copy a regular file with maildir discipline: stage, fsync, rename, fsync dir.
+
+    The landing of a ``FILE`` message (ADR-0082): the connector names a
+    file it holds, the platform copies it into the staged snapshot with
+    the same discipline :func:`durable_write_bytes` gives rows — chunked,
+    never held whole, and either fully present at ``dst`` or absent.
+
+    Parameters
+    ----------
+    src : str
+        An existing regular file. It is read, never moved: the
+        connector owns its own staging. A symlinked source is FOLLOWED
+        (``os.stat``, not ``lstat``): the bytes behind it are copied, so
+        the destination is always a regular file of its own.
+    dst : str
+        Destination path; its directory must exist. Replaced atomically.
+
+    Raises
+    ------
+    AssetError
+        When ``src`` is missing, unreadable or not a regular file, or
+        when ``dst`` cannot be written (a directory squatting the path).
+    """
+    errors = []
+    _check_str(errors, "src", src)
+    _check_str(errors, "dst", dst)
+    _raise_if(errors)
+    try:
+        st = os.stat(src)
+    except OSError as exc:
+        raise AssetError([f"cannot read source file {src!r}: {exc}"]) from exc
+    if not stat.S_ISREG(st.st_mode):
+        raise AssetError([f"source {src!r} is not a regular file"])
+    directory = os.path.dirname(dst) or "."
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".tmp-")
+    try:
+        with os.fdopen(fd, "wb") as out, open(src, "rb") as inp:
+            shutil.copyfileobj(inp, out, 1 << 20)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(tmp, dst)
+    except OSError as exc:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise AssetError([f"cannot copy {src!r} to {dst!r}: {exc}"]) from exc
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)

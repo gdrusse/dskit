@@ -1,10 +1,14 @@
 # Re-entry
 
-Current wrap: 2026-09-04. `main` is synchronized with `origin/main`. PR #7
-(the pmquant child) is merged; the staged-study ADR that had also taken the
+Current wrap: 2026-09-04. `main` is synchronized with `origin/main` after
+the ADR-0082…0086 branch landed and its remote branch was purged. PR #7 (the
+pmquant child) is also merged; the staged-study ADR that had also taken the
 number 0075 is now ADR-0081. No pipeline is running.
 
-Last verification (all optional libraries installed): Ruff clean; dskit core
+Verification for ADR-0082…0086: Bugbot approved all seven corrected code paths
+after 487 focused tests passed (9 skipped); Ruff and diff checks were clean.
+The final cursor-contract documentation correction passed all 47 Hugging Face
+tests. Prior full verification (all optional libraries installed): dskit core
 + libs 3739 passed, 124 skipped; pmquant 361 passed, 30 skipped; intraday_poc
 158 passed. Every pre-existing document identity hash is unmoved (218), plus
 pmquant's two. Known failures, none from this wrap: two tests that need a
@@ -42,6 +46,18 @@ After approval, implement the revised resumable pipeline, run a memory
 preflight and focused tests, then run Gates 1 and 2 to completion. Journal every
 stage and stop before Gate 3. Report every Gate-1 stop, Gate-2 decision, ledger
 entry, and failure without fallback.
+
+## Landed this wrap: ADR-0082…0086
+
+- Hugging Face repositories enter as WORM acquisitions; pretrained encode,
+  classify and forecast nodes load only verified, manifest-pinned payloads.
+- Validation gained JSON-identity-safe `unique`, `accepted_values` and
+  grouped `distinct_count`; record flows gained deterministic `groupby`.
+- Record streams can be written through the shared atomic writer discipline.
+- Skeptic review corrections preserve JSON type identity, refuse output-key
+  collisions, structured-cardinality crashes, non-contiguous classifier labels
+  and non-finite group keys, and bind Hub cursors to `repo_id`.
+- The corresponding TODO entries are checked and ADR-0082…0086 are accepted.
 
 ## Landed this wrap: pmquant child (PR #7)
 

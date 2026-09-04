@@ -1,7 +1,7 @@
-"""The record-flow kinds: filter, event-grid, concat, join, and derive.
+"""The record-flow kinds: filter, event-grid, concat, join, derive, groupby.
 
-One verb reads a single stream; the RELATIONAL three combine streams
-instead of reading one.
+Two verbs read a single stream; the RELATIONAL four combine, project or
+reduce streams instead of reading one.
 
 These are toolkit's plain, un-owned kinds, registered with
 ``owned=False`` (any project may shadow them with its own class via an
@@ -19,6 +19,11 @@ also", two venues are two documents, two ``replay`` nodes and two
 arithmetic performed after the fact on runs that never competed. They
 are venue-blind by construction and take N inputs, never two (D-137: no
 venue is privileged, and nothing here may special-case a pair).
+``groupby`` (ADR-0086) is the family's fourth verb, the REDUCTION — one
+record per group of declared keys, each carrying declared aggregates over
+a closed op table — and it refuses like the three: a mean over the rows
+that happened to carry a field is a different number from the one the
+document declared.
 
 Record tolerance — the rule for the single-stream verbs, here and in
 :mod:`dskit.pipeline.kinds_banking`: records flowing through them are
@@ -54,11 +59,15 @@ from __future__ import annotations
 
 import copy
 import itertools
+import math
 import re
+import statistics
+from dataclasses import dataclass
 
 from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.kinds_stats import _reject_unknown
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
+from dskit.pipeline.records import number_ok
 
 __all__ = [
     "CLAUSE_OPS",
@@ -66,6 +75,7 @@ __all__ = [
     "Derive",
     "EventGrid",
     "Filter",
+    "GroupBy",
     "Join",
     "clause_holds",
     "clause_problems",
@@ -1642,11 +1652,482 @@ class Derive(Node):
 
 
 # ---------------------------------------------------------------------------
+# groupby — the reduction (role: transform)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _AggOp:
+    """One aggregate operator: what it needs, and how it reduces a group."""
+
+    needs_field: bool
+    numeric: bool
+    ordered: bool
+    reduce: object
+
+
+#: The known aggregate operators — a CLOSED table, read by NAME. A
+#: document declares an op and the entry supplies its whole rule: does it
+#: read a field, must its cells be numbers, does it need the group's rows
+#: ORDERED, and what turns those cells into one value. The alternative is
+#: an ``if op ==`` chain in :meth:`GroupBy.run`, where the validator's
+#: vocabulary and the run's would be two lists nothing pins together.
+#: What a document may spell is exactly ``sorted(_AGG_OPS)``, and the
+#: refusal names it; adding an op is one entry here plus its test.
+_AGG_OPS = {
+    "count": _AggOp(needs_field=False, numeric=False, ordered=False, reduce=len),
+    "sum": _AggOp(needs_field=True, numeric=True, ordered=False, reduce=sum),
+    "mean": _AggOp(
+        needs_field=True, numeric=True, ordered=False, reduce=statistics.fmean
+    ),
+    "min": _AggOp(needs_field=True, numeric=True, ordered=False, reduce=min),
+    "max": _AggOp(needs_field=True, numeric=True, ordered=False, reduce=max),
+    "first": _AggOp(
+        needs_field=True, numeric=False, ordered=True, reduce=lambda cells: cells[0]
+    ),
+    "last": _AggOp(
+        needs_field=True, numeric=False, ordered=True, reduce=lambda cells: cells[-1]
+    ),
+    "nunique": _AggOp(
+        needs_field=True,
+        numeric=False,
+        ordered=False,
+        reduce=lambda cells: len({_identity_part(cell) for cell in cells}),
+    ),
+}
+
+
+def _identity_part(value):
+    """Type-tag one hashable value so Python equality cannot merge JSON types."""
+    if isinstance(value, bool):
+        return (bool, value)
+    if isinstance(value, float):
+        return (float, repr(value))
+    return (type(value), value)
+
+
+def _sort_part(value):
+    """Preserve normal key ordering while breaking numeric equality ties by type."""
+    if isinstance(value, bool):
+        return (value, 0, repr(value))
+    if isinstance(value, int):
+        return (value, 1, repr(value))
+    if isinstance(value, float):
+        return (value, 2, repr(value))
+    return value
+
+
+def _ordered_op(op) -> bool:
+    """Whether a declared op reads the group in order — False for an unknown one."""
+    # Type-check before the table lookup: an unhashable op (a JSON list or
+    # object) would make ``in`` raise TypeError out of a validator.
+    return isinstance(op, str) and op in _AGG_OPS and _AGG_OPS[op].ordered
+
+
+def _aggregate_problems(problems, aggregates, keys) -> None:
+    """Append the shape problems with a declared ``aggregates`` block."""
+    if not isinstance(aggregates, dict) or not aggregates:
+        problems.append(
+            "aggregates must be a non-empty dict of {out_field: {'op': ..., "
+            f"'field': ...}}, got {aggregates!r}"
+        )
+        return
+    for out_field, spec in aggregates.items():
+        if not isinstance(out_field, str) or not out_field:
+            problems.append(
+                "aggregates: output field names must be non-empty strings, "
+                f"got {out_field!r}"
+            )
+            continue
+        name = f"aggregates[{out_field!r}]"
+        if out_field in keys:
+            problems.append(
+                f"{name} restates a key — a group's key fields are already on "
+                "its output row, and an aggregate that overwrote one would "
+                "make the row disagree with the group it names"
+            )
+            continue
+        problems.extend(_spec_problems(name, spec))
+
+
+def _spec_problems(name, spec):
+    """Problems with one ``{out_field: spec}`` entry, empty when none."""
+    if not isinstance(spec, dict):
+        return [
+            f"{name} must be a dict naming an op over the closed table "
+            f"{sorted(_AGG_OPS)}, got {spec!r}"
+        ]
+    problems = []
+    if "op" not in spec or set(spec) - {"op", "field"}:
+        problems.append(
+            f"{name} must have exactly the keys 'op'/'field' (an op that reads "
+            f"no field takes 'op' alone), got {sorted(spec, key=repr)!r}"
+        )
+    op = spec.get("op")
+    if not isinstance(op, str) or op not in _AGG_OPS:
+        problems.append(f"{name}.op must be one of {sorted(_AGG_OPS)}, got {op!r}")
+        return problems
+    field = spec.get("field")
+    # PRESENCE, not None-ness: a declared ``"field": null`` under an op
+    # that reads no field is still a knob the run never applies.
+    if not _AGG_OPS[op].needs_field:
+        if "field" in spec:
+            problems.append(
+                f"{name}: {op} counts rows, so it takes no field, got {field!r}"
+            )
+    elif "field" not in spec:
+        problems.append(f"{name}: {op} needs a field to reduce — name the field")
+    elif not isinstance(field, str) or not field:
+        problems.append(f"{name}.field must be a non-empty field name, got {field!r}")
+    return problems
+
+
+class GroupBy(Node):
+    """One record per group, carrying declared aggregates — the ``groupby`` kind.
+
+    Role ``transform``, and the relational family's REDUCTION (ADR-0086).
+    ``filter`` and ``event-grid`` read a stream, ``concat`` unions,
+    ``join`` looks up and ``derive`` projects; nothing REDUCED, so "one
+    row per event with its strike count and its last mid" had to be
+    child code.
+
+    It refuses where the single-stream verbs drop, for the reason the
+    section comment above :class:`Concat` gives: a reduction says what a
+    row IS, and a mean over the rows that happened to carry a field is a
+    different number from the one the document declared. A row missing a
+    key or an aggregate's field, a key value nothing can be keyed by, a
+    non-numeric cell under a numeric op, an order value that is not a
+    number, key values that cannot be ordered against each other — each
+    raises, naming the node, the row and the field.
+
+    Rows may be mappings or attribute-bearing records (the module's
+    :func:`_field` accessor); an output row is always a plain dict
+    carrying the key fields and then the aggregates. Output order is
+    DETERMINISTIC — groups sorted by their key values — so two runs over
+    the same stream write the same rows in the same order.
+
+    Outputs: ``records`` (one row per group) and ``metrics``
+    (``rows_in``/``groups`` — the census that shows a reduction quietly
+    collapsing a stream to one row).
+
+    Parameters
+    ----------
+    params : dict
+        ``keys`` (str or non-empty list of str, REQUIRED) — the field(s)
+        whose values define a group, each of which lands on the output
+        row; ``aggregates`` (non-empty dict, REQUIRED) — ``{out_field:
+        {"op": <op>, "field": <field>}}`` over the closed vocabulary
+        :data:`_AGG_OPS` (``count`` takes no ``field``, every other op
+        requires one, and an ``out_field`` may not restate a key);
+        ``order_field`` (str, REQUIRED iff an aggregate is ``first`` or
+        ``last``, refused otherwise) — the numeric field saying which row
+        of a group is first and which is last, ties resolved by input
+        order.
+
+    Examples
+    --------
+    Reduce a strike ladder to one row per event::
+
+        node = GroupBy(
+            "per_event",
+            {
+                "keys": "instrument",
+                "order_field": "asof_ms",
+                "aggregates": {
+                    "strikes": {"op": "nunique", "field": "contract"},
+                    "last_mid": {"op": "last", "field": "mid"},
+                },
+            },
+        )
+        out = node.run(ctx, {"records": rows})
+        # -> {"records": [{"instrument": "A", "strikes": 3, "last_mid": 0.62}],
+        #     "metrics": {"rows_in": 9, "groups": 1}}
+    """
+
+    role = "transform"
+    outputs = ("records", "metrics")
+
+    #: The class's own knobs — anything else is refused by name.
+    _PARAMS = ("aggregates", "keys", "order_field")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with this node's declared knobs, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's ``params`` block, possibly carrying unmaterialized
+            ``$``-references. The ``order_field`` cross-check waits for a
+            materialized ``aggregates``: whether an order is READ is a
+            fact about the ops declared there.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when the params are legal.
+        """
+        problems = []
+        _reject_unknown(problems, params, cls._PARAMS)
+        keys = cls._key_problems(problems, params)
+        aggregates = params.get("aggregates")
+        if aggregates is None:
+            problems.append(
+                "aggregates is required — a group with nothing measured over "
+                "it is a row that says only that it existed"
+            )
+        elif not is_node_ref(aggregates):
+            _aggregate_problems(problems, aggregates, keys)
+        order_field = params.get("order_field")
+        if (
+            order_field is not None
+            and not is_node_ref(order_field)
+            and (not isinstance(order_field, str) or not order_field)
+        ):
+            problems.append(
+                f"order_field must be a non-empty field name, got {order_field!r}"
+            )
+        cls._order_problems(problems, aggregates, order_field)
+        return problems
+
+    @classmethod
+    def _key_problems(cls, problems, params):
+        """Append the ``keys`` problems; answer the key names, empty when unusable."""
+        keys = params.get("keys")
+        if keys is None:
+            problems.append(
+                "keys is required — name the field(s) whose values define a group"
+            )
+            return ()
+        if is_node_ref(keys):
+            return ()
+        names = _field_list(keys)
+        if names is None:
+            problems.append(
+                "keys must be a field name or a non-empty list of them, "
+                f"got {keys!r}"
+            )
+            return ()
+        repeated = sorted({name for name in names if names.count(name) > 1})
+        if repeated:
+            problems.append(
+                f"keys names a field twice ({repeated}) — a key restated does "
+                "not narrow a group, it just says the same thing again"
+            )
+        return names
+
+    @classmethod
+    def _order_problems(cls, problems, aggregates, order_field) -> None:
+        """Append the ``order_field``-vs-``aggregates`` agreement problems."""
+        if not isinstance(aggregates, dict):
+            return  # unmaterialized or already refused above
+        ordered = sorted(
+            out_field
+            for out_field, spec in aggregates.items()
+            if isinstance(spec, dict) and _ordered_op(spec.get("op"))
+        )
+        if ordered and order_field is None:
+            problems.append(
+                f"order_field is required — aggregate(s) {ordered} take the "
+                "FIRST or LAST row of a group, and which row that is depends "
+                "on an order the document has not named"
+            )
+        elif not ordered and order_field is not None:
+            problems.append(
+                "order_field is meaningless here — no aggregate reads an "
+                "order, so nothing would use it, and a knob nothing reads is "
+                "a value validation approves and the run never applies"
+            )
+
+    def validate_inputs(self, inputs):
+        """Problems with the materialized inputs, empty when none.
+
+        Container shape only — the stream is never walked here, because a
+        one-shot iterable consumed by validation would reach ``run``
+        exhausted; the per-row refusals wait for ``run``.
+
+        Parameters
+        ----------
+        inputs : dict
+            ``records`` — a list or tuple of rows (dicts or record
+            objects); the only port this kind reads.
+
+        Returns
+        -------
+        list of str
+            One message per problem; empty when the inputs are usable.
+        """
+        records = inputs.get("records")
+        if isinstance(records, (str, bytes, dict)) or not isinstance(
+            records, (list, tuple)
+        ):
+            return [
+                "records must be a list or tuple of rows (a one-shot iterable "
+                f"would be consumed by validation), got {records!r}"
+            ]
+        return []
+
+    def _cell(self, index, row, name):
+        """One row's value for a declared field, refusing an absent one by name."""
+        value = _field(row, name)
+        if value is _MISSING:
+            raise ValueError(
+                f"{self.key}: row {index} carries no {name!r} — a reduction "
+                "says what a row IS, and a group measured over the rows that "
+                "happened to carry a field is not the number the document "
+                "declared"
+            )
+        return value
+
+    def _identity(self, index, row, keys):
+        """One row's group identity, refusing a key value nothing can be keyed by."""
+        raw = []
+        for name in keys:
+            value = self._cell(index, row, name)
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError(
+                    f"{self.key}: row {index} has an unusable key value "
+                    f"{value!r} for {name!r} — a group key must be finite, "
+                    "because NaN and Infinity have no stable JSON identity or "
+                    "deterministic order"
+                )
+            try:
+                hash(value)
+            except TypeError as exc:
+                raise ValueError(
+                    f"{self.key}: row {index} has an unusable key value "
+                    f"{value!r} for {name!r} — a group key must be something a "
+                    f"mapping can be keyed by ({exc})"
+                ) from exc
+            raw.append(value)
+        raw = tuple(raw)
+        return tuple(_identity_part(value) for value in raw), raw
+
+    def _sorted(self, groups):
+        """Order the group identities for output, refusing values nothing can order."""
+        try:
+            return sorted(
+                groups,
+                key=lambda identity: tuple(
+                    _sort_part(value) for value in groups[identity][0]
+                ),
+            )
+        except TypeError as exc:
+            raise ValueError(
+                f"{self.key}: the group key values cannot be ordered against "
+                f"each other ({exc}) — output order is what makes two runs "
+                "over one stream write the same rows, so a key whose values "
+                "have no order is refused rather than emitted arbitrarily"
+            ) from exc
+
+    def _instant(self, field, index, row):
+        """One row's order value, refusing anything that cannot order a group."""
+        value = self._cell(index, row, field)
+        if not number_ok(value):
+            raise ValueError(
+                f"{self.key}: order_field {field!r} orders each group's rows, "
+                f"and row {index} holds {value!r} — that is not a number "
+                "(records.number_ok: a non-bool int or a finite float), so "
+                "which row is FIRST and which is LAST cannot be answered"
+            )
+        return value
+
+    def _ordered(self, members):
+        """Order a group's ``(index, row)`` members — input order when undeclared."""
+        field = self.params.get("order_field")
+        if field is None:
+            return members
+        return sorted(members, key=lambda member: self._instant(field, *member))
+
+    def _cells(self, out_field, spec, members):
+        """Read the cells one aggregate reduces, refusing an unusable one by name."""
+        rule = _AGG_OPS[spec["op"]]
+        if not rule.needs_field:
+            return [row for _, row in members]
+        field = spec["field"]
+        cells = []
+        for index, row in members:
+            value = self._cell(index, row, field)
+            if rule.numeric and not number_ok(value):
+                raise ValueError(
+                    f"{self.key}: aggregate {out_field!r} ({spec['op']}) needs "
+                    f"numbers, and row {index} field {field!r} holds {value!r} "
+                    "— that is not a number (records.number_ok), and a "
+                    f"{spec['op']} over the cells that happened to parse is "
+                    "not the number the document declared"
+                )
+            cells.append(value)
+        return cells
+
+    def _reduced(self, out_field, spec, identity, members):
+        """One aggregate's value over a group, refusing cells its reducer defeats."""
+        cells = self._cells(out_field, spec, members)
+        try:
+            return _AGG_OPS[spec["op"]].reduce(cells)
+        except TypeError as exc:
+            raise ValueError(
+                f"{self.key}: aggregate {out_field!r} ({spec['op']}) cannot "
+                f"reduce group {identity!r} ({exc}) — the op is declared and "
+                "the cells are not what it takes"
+            ) from exc
+
+    def _group_row(self, keys, identity, members):
+        """One output record: the group's key fields, then its aggregates."""
+        members = self._ordered(members)
+        row = dict(zip(keys, identity, strict=True))
+        for out_field, spec in self.params["aggregates"].items():
+            row[out_field] = self._reduced(out_field, spec, identity, members)
+        return row
+
+    def run(self, ctx, inputs):
+        """Reduce the stream to one record per group, sorted by key values.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The run frame; unused here beyond the node's own logging.
+        inputs : dict
+            ``records`` — the rows to reduce (list or tuple).
+
+        Returns
+        -------
+        dict
+            ``records`` — one mapping per group (list), sorted by key
+            values; ``metrics`` — ``rows_in`` and ``groups``.
+
+        Raises
+        ------
+        ValueError
+            On a row missing a key, an aggregate's field or the order
+            field; an unusable key value; a non-numeric cell under a
+            numeric op; a non-numeric order value; key values that cannot
+            be ordered against each other; or cells a reducer defeats.
+        """
+        records = inputs["records"]
+        keys = _field_list(self.params["keys"])
+        groups = {}
+        for index, row in enumerate(records):
+            identity, raw = self._identity(index, row, keys)
+            groups.setdefault(identity, (raw, []))[1].append((index, row))
+        out = [
+            self._group_row(keys, groups[identity][0], groups[identity][1])
+            for identity in self._sorted(groups)
+        ]
+        self.log.info(
+            "groupby reduced %d record(s) to %d group(s) by %s",
+            len(records),
+            len(out),
+            list(keys),
+        )
+        return {"records": out, "metrics": {"rows_in": len(records), "groups": len(out)}}
+
+
+# ---------------------------------------------------------------------------
 # registration
 # ---------------------------------------------------------------------------
 
 #: The kinds this module ships, in registration order — the
-#: single-stream verbs, then the three relational ones. The banking chain
+#: single-stream verbs, then the four relational ones. The banking chain
 #: registers separately, from :mod:`dskit.pipeline.kinds_banking`.
 _KINDS = (
     ("filter", Filter),
@@ -1654,11 +2135,12 @@ _KINDS = (
     ("concat", Concat),
     ("join", Join),
     ("derive", Derive),
+    ("groupby", GroupBy),
 )
 
 
 def register(registry=None):
-    """Register the five record-flow kinds, ``owned=False``.
+    """Register the six record-flow kinds, ``owned=False``.
 
     Idempotent by SKIPPING any name already present — never shadowing an
     existing registration (deliberate re-binding goes through the

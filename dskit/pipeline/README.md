@@ -237,8 +237,10 @@ Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 | `derive` | transform | add one declared field per record via `when`/`value` cases (no expression language — deliberately) |
 | `concat` | transform | merge record streams into one |
 | `join` | transform | attach keyed lookup rows to records |
+| `groupby` | transform | one record per group of declared `keys`, carrying declared `aggregates` over a closed op table (ADR-0086) |
 | `table-file` | transform | load a digest-verified keyed table (refuses drift) |
 | `table-write` | report | write a table atomically, never clobbering |
+| `records-write` | report | write a record stream as canonical newline-JSON, atomically, never clobbering; the bytes' digest in `metrics` (ADR-0085) |
 | `event-bank` | accrual | count distinct banked events per instrument |
 | `eligibility` | gate | admission bar `min_events`; empty family ⇒ NO-GO |
 | `banking-report` | report | the banked/in-family/gap ledger |
@@ -359,7 +361,18 @@ CNN1d/PatchTST — `torch.py` stays byte-identical);
 artifacts are hash-pinned); **matplotlib** `mpl-figure` + `FigureNode` base
 (ADR-0029: declared line/scatter/bar/hist marks over a row stream → a PNG
 artifact); **transformers** `transformers-fit` (declared)
-+ `transformers-tiny-fit`/`transformers-predict`; **optuna** `optuna-search`
++ `transformers-tiny-fit`/`transformers-predict` + the pretrained doorway
+`transformers-encode`/`transformers-classify`/`transformers-forecast`
+(ADR-0083: weights are an onboarding ACQUISITION — the `huggingface`
+connector's WORM snapshot, ADR-0082 — pinned by manifest hash through
+`root`/`snapshot`/`stream`, re-verified before a byte loads; text → pooled
+embedding columns or one probability column per `id2label` entry (softmax
+or sigmoid by the head's own `problem_type`), and a zero-shot forecast
+`signal` restored from the snapshot's own `architectures` — the baseline a
+bespoke model must beat. The forecast kind's default hooks fit models whose
+forward takes `past_values` alone and returns `prediction_outputs`
+(PatchTST, PatchTSMixer); anything else refuses at load, by name, and is a
+subclass supplying `build_model`/`forecast`. Never a hub name); **optuna** `optuna-search`
 (categorical lists AND `{"low", "high"[, "log"][, "int"]}` continuous ranges;
 `hpo-grid` keeps refusing ranges — enumerating an interval is meaningless);
 **pyomo** `pyomo-budgeted-select` + `PyomoSolve` base (`build_model`/`extract`
@@ -539,10 +552,11 @@ dskit/pipeline/
 ├── attempts.py        the many-attempts bar: AttemptRegistry, session-block
 │                      sign-flip max_bar, the tier-2 scramble seam (ADR-0069)
 ├── split_policy.py    split-assignment policies (record / event-open / event-close) + EventBounds
-├── kinds_flow.py      filter, event-grid, derive, concat, join — record-flow verbs
+├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby — record-flow verbs
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
 │                      accrual -> gate -> ledger spine
-├── kinds_table.py     table-file, table-write (digest-verified keyed tables)
+├── kinds_table.py     table-file, table-write, records-write (digest-verified keyed
+│                      tables + the FileWrite base both writers share, ADR-0085)
 ├── kinds_stats.py     owned validate + stat_test (plain + studentized bootstrap-t, corrections)
 ├── kinds_search.py    hpo-grid + top-trials (the ctx.rerun seam)
 ├── kinds_report.py    owned run-report (evidence.json / evidence.md)
@@ -568,7 +582,9 @@ dskit/pipeline/
 ├── io.py, resolve.py  stage-list load/save + resolution
 ├── registry.py        venue-backend registry mechanism (no venues ship)
 ├── libs/              tier-2 packs: numpy, sklearn, torch + torch_ts
-│                      (ADR-0041 zoo), transformers, optuna, pyomo, sb3,
+│                      (ADR-0041 zoo), transformers (fit/predict + the
+│                      pretrained encode/classify/forecast trio over an
+│                      acquired snapshot, ADR-0083), optuna, pyomo, sb3,
 │                      matplotlib, mlflow (the tracking SINK pack —
 │                      registers into SINK_KINDS, no node kinds),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077)

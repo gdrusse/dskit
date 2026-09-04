@@ -16,7 +16,10 @@ from dskit.onboarding.observations import (
     scan_stream,
     stream_digest,
     stream_dir,
+    verified_payload_dir,
 )
+
+from .fake_connector import FakeConnector, file_message
 
 ACQUIRED = "2026-01-06T00:00:00+00:00"
 
@@ -790,3 +793,79 @@ def test_stream_dir_is_where_scan_stream_reads(tmp_path):
     assert os.path.isdir(stream_dir(root, "alpaca"))
     with pytest.raises(AssetError, match="no observations directory"):
         scan_stream(root, "nobody", "bars", key_fields=("symbol", "ts"))
+
+
+# -- verified_payload_dir (ADR-0083) -------------------------------------------
+
+
+def _acquire_files(root, registry, tmp_path, names=("config.json", "model.bin")):
+    """One FILE-only pull of ``names`` under stream ``weights``; returns
+    ``(manifest_hash, snapshot_dir)``."""
+    from dskit.onboarding import run_acquisition
+
+    hold = tmp_path / "hold"
+    hold.mkdir(exist_ok=True)
+    script = []
+    for name in names:
+        path = hold / name
+        path.write_bytes(name.encode("utf-8") * 3)
+        script.append(file_message("weights", name, str(path)))
+    FakeConnector.script = script
+    s = run_acquisition(root, registry, "fake", "weights", "backfill")
+    return registry.get(s["snapshot"]).payload["manifest_hash"], root.snapshot_dir(
+        "fake", s["acq_id"]
+    )
+
+
+class TestVerifiedPayloadDir:
+    def test_locates_by_hash_verifies_and_returns_the_stream_dir(
+        self, root, registry, fake_source, tmp_path
+    ):
+        digest, snap_dir = _acquire_files(root, registry, tmp_path)
+        expected = os.path.join(snap_dir, "payload", "weights")
+        assert verified_payload_dir(root.root, digest, "weights") == expected
+        # An OnboardingRoot instance is as good as its path.
+        assert verified_payload_dir(root, digest, "weights") == expected
+        assert sorted(os.listdir(expected)) == ["config.json", "model.bin"]
+
+    def test_an_unknown_hash_refuses_naming_hash_and_root(
+        self, root, registry, fake_source, tmp_path
+    ):
+        _acquire_files(root, registry, tmp_path)
+        ghost = "f" * 64
+        with pytest.raises(AssetError) as exc:
+            verified_payload_dir(root.root, ghost, "weights")
+        assert ghost in str(exc.value) and root.root in str(exc.value)
+
+    def test_a_tampered_snapshot_refuses_on_verification(
+        self, root, registry, fake_source, tmp_path
+    ):
+        digest, snap_dir = _acquire_files(root, registry, tmp_path)
+        with open(os.path.join(snap_dir, "payload", "weights", "model.bin"), "r+b") as fh:
+            fh.write(b"\xff")
+        with pytest.raises(AssetError, match="content drift") as exc:
+            verified_payload_dir(root.root, digest, "weights")
+        assert "weights/model.bin" in str(exc.value)
+
+    def test_a_stream_without_files_refuses_by_name(
+        self, root, registry, fake_source, tmp_path
+    ):
+        digest, _ = _acquire_files(root, registry, tmp_path)
+        with pytest.raises(AssetError, match="other") as exc:
+            verified_payload_dir(root.root, digest, "other")
+        assert "payload/other" in str(exc.value)
+
+    @pytest.mark.parametrize("bad", ["", "abc", "F" * 64, "a" * 64 + "\n", 12, None])
+    def test_a_malformed_hash_refuses_before_any_scan(self, root, bad):
+        with pytest.raises(AssetError, match="manifest_hash"):
+            verified_payload_dir(root.root, bad, "weights")
+
+    def test_an_uninitialized_root_refuses(self, tmp_path):
+        with pytest.raises(AssetError, match="initialized onboarding root"):
+            verified_payload_dir(str(tmp_path / "nowhere"), "a" * 64, "weights")
+
+    def test_is_exported_from_the_package(self):
+        import dskit.onboarding as ob
+
+        assert ob.verified_payload_dir is verified_payload_dir
+        assert "verified_payload_dir" in ob.__all__

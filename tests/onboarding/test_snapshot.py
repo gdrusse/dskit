@@ -109,3 +109,46 @@ def test_manifest_refuses_unknown_keys_and_bad_modes(root, tmp_path):
     m["surprise"] = 1
     with pytest.raises(AssetError, match="unknown key"):
         write_snapshot(root, staged, m)
+
+
+# -- non-regular members (the review round over ADR-0082) -------------------------
+
+
+def test_verify_reports_a_symlinked_directory_as_an_unlisted_symlink(root, tmp_path):
+    # os.walk never descends a symlinked directory, so without inspecting
+    # ``dirs`` a planted link under payload/ was invisible to the gate.
+    staged = _stage(tmp_path, files={"a.jsonl": b"aa\n"})
+    _acq, final = write_snapshot(root, staged, _manifest(staged))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "planted.bin").write_bytes(b"x")
+    os.symlink(str(elsewhere), os.path.join(final, "payload", "link"))
+    assert any("unlisted symlink present: link" in p for p in verify_snapshot(final))
+
+
+def test_verify_refuses_a_non_regular_member_before_digesting_it(root, tmp_path):
+    # A FIFO where a listed file should be would hang the trust gate on
+    # open(); the member is judged by lstat FIRST and never opened.
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("no FIFOs on this platform")
+    staged = _stage(tmp_path, files={"a.jsonl": b"aa\n", "b.jsonl": b"bb\n"})
+    _acq, final = write_snapshot(root, staged, _manifest(staged))
+    payload = os.path.join(final, "payload")
+    os.unlink(os.path.join(payload, "a.jsonl"))
+    os.mkfifo(os.path.join(payload, "a.jsonl"))
+    problems = verify_snapshot(final)
+    assert any("not a regular file: a.jsonl" in p for p in problems)
+    assert not any("drift: a.jsonl" in p for p in problems)
+
+
+def test_verify_reports_a_symlinked_member_as_not_regular(root, tmp_path):
+    # Identical bytes behind a link would verify clean by digest alone — but
+    # a snapshot's member is its own bytes, not a pointer somewhere else.
+    staged = _stage(tmp_path, files={"a.jsonl": b"aa\n"})
+    _acq, final = write_snapshot(root, staged, _manifest(staged))
+    payload = os.path.join(final, "payload")
+    real = tmp_path / "real.jsonl"
+    real.write_bytes(b"aa\n")
+    os.unlink(os.path.join(payload, "a.jsonl"))
+    os.symlink(str(real), os.path.join(payload, "a.jsonl"))
+    assert any("not a regular file: a.jsonl" in p for p in verify_snapshot(final))

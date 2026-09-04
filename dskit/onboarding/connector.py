@@ -21,6 +21,16 @@ STATE     ``state`` (dict) — opaque to the platform. Fivetran
 SCHEMA    ``stream`` (str), ``schema`` (dict).
 LOG       ``message`` (str), optional ``level`` (str).
 ERROR     ``message`` (str) — aborts the acquisition.
+FILE      ``stream`` (str), ``relpath`` (str), ``path`` (str) — a
+          file the connector holds locally (ADR-0082). The
+          platform COPIES it into the snapshot at
+          ``payload/<stream>/<relpath>`` before the manifest is
+          built, so it is digested and verified like every
+          other payload byte. ``relpath`` is POSIX-relative: no
+          leading ``/``, no empty, ``.`` or ``..`` segment, no
+          backslash, no ``:`` (a drive or stream escape on some
+          platforms). ``path`` is machine-local provenance and
+          is never echoed into bronze.
 ========  =====================================================
 
 Unknown types are SKIPPABLE — the forward-compat valve: a newer
@@ -70,7 +80,7 @@ __all__ = [
 PROTOCOL = 1
 
 #: Known message types. Anything else is skippable (forward-compat).
-MESSAGE_TYPES = ("RECORD", "STATE", "SCHEMA", "LOG", "ERROR")
+MESSAGE_TYPES = ("RECORD", "STATE", "SCHEMA", "LOG", "ERROR", "FILE")
 
 #: Record kinds — observation vs forecast is DECLARED on the message,
 #: mirroring the mode ruling: segregation is never date arithmetic.
@@ -87,6 +97,7 @@ MAX_BACKOFF_S = 60.0
 DEFAULT_CONNECTORS = {
     "alpaca": "dskit.onboarding.libs.alpaca:AlpacaBarsConnector",
     "alpaca_quotes": "dskit.onboarding.libs.alpaca_quotes:AlpacaQuoteMinutesConnector",
+    "huggingface": "dskit.onboarding.libs.huggingface:HuggingFaceHubConnector",
     "kalshi": "dskit.onboarding.libs.kalshi:KalshiConnector",
     "localfiles": "dskit.onboarding.libs.localfiles:LocalFilesConnector",
     "localtables": "dskit.onboarding.libs.localtables:LocalTablesConnector",
@@ -106,6 +117,7 @@ _MESSAGE_KEYS = {
     "SCHEMA": ("protocol", "type", "stream", "schema"),
     "LOG": ("protocol", "type", "level", "message"),
     "ERROR": ("protocol", "type", "message"),
+    "FILE": ("protocol", "type", "stream", "relpath", "path"),
 }
 
 # Allowed keys in one spec() knob declaration.
@@ -297,8 +309,28 @@ def check_message(msg):
         _check_dict(errors, "SCHEMA.schema", msg.get("schema"))
     elif mtype in ("LOG", "ERROR"):
         _check_str(errors, f"{mtype}.message", msg.get("message", ""))
+    elif mtype == "FILE":
+        _check_str(errors, "FILE.stream", msg.get("stream", ""))
+        errors.extend(_file_relpath_problems(msg.get("relpath")))
+        _check_str(errors, "FILE.path", msg.get("path", ""))
     _raise_if(errors)
     return mtype
+
+
+def _file_relpath_problems(value):
+    """Why ``value`` is not a safe POSIX-relative path — empty when it is."""
+    if not isinstance(value, str) or not value:
+        return [f"FILE.relpath must be a non-empty string, got {value!r}"]
+    if "\\" in value or "\x00" in value:
+        return [f"FILE.relpath must use '/' separators and carry no NUL byte, got {value!r}"]
+    if value.startswith("/"):
+        return [f"FILE.relpath must be relative — no leading '/' — got {value!r}"]
+    if any(part in ("", ".", "..") for part in value.split("/")):
+        return [f"FILE.relpath may not hold an empty, '.' or '..' segment, got {value!r}"]
+    if ":" in value:
+        return [f"FILE.relpath may not hold ':' in a segment (a drive or alternate-stream "
+                f"escape on some platforms), got {value!r}"]
+    return []
 
 
 def resolve_connector(ref):

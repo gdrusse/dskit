@@ -52,7 +52,19 @@ on it without breaking its rulings.
   tier-3 code writes the domain, not the plumbing. The DECLARED kinds
   (`torch-train`/`torch-predict`, `transformers-fit`) go further: the
   document names the library class, `library_path_problems` /
-  `import_library_class` (base.py) validate it at plan time.
+  `import_library_class` (base.py) validate it at plan time. The
+  PRETRAINED kinds (`transformers-encode`/`-classify`/`-forecast`,
+  ADR-0083) never name a hub: they pin an acquired snapshot by manifest
+  hash (`root`/`snapshot`/`stream`) and resolve it once per PIN per
+  instance through the read seam's `verified_payload_dir`, imported at
+  function depth like `scan_stream`; `build_model` / `build_tokenizer` /
+  `vectors` / `column_names` / `context_length_of` / `forecast` are their
+  hooks. `transformers-forecast` claims only the models whose forward
+  takes `past_values` alone and returns `prediction_outputs` (PatchTST,
+  PatchTSMixer) — a load-time probe refuses everything else BY NAME, and a
+  Chronos- or TimesFM-shaped forecaster is a subclass supplying the hooks.
+  Loads are `output_loading_info=True` + `use_safetensors=True`: a
+  non-empty `missing_keys` refuses, unused weights are only logged.
 - **Reading an acquired stream** — the `observations` kind
   (`libs/observations.py`, ADR-0077) fronts `dskit.onboarding`'s
   `scan_stream`: children subclass `ObservationRows`, narrow `_PARAMS` to
@@ -421,10 +433,10 @@ dskit/pipeline/
 ├── attempts.py        AttemptRegistry + session-block max_bar + tier-2 seam
 │                      (ADR-0069, `bar` verb)
 ├── split_policy.py    split policies (record/event-open/event-close) + EventBounds
-├── kinds_flow.py      filter, event-grid, derive, concat, join — flow verbs
+├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby — flow verbs
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
 │                      accrual -> gate -> ledger spine
-├── kinds_table.py     table-file, table-write
+├── kinds_table.py     table-file, table-write, records-write (+ the FileWrite base, ADR-0085)
 ├── kinds_stats.py     owned validate + stat_test
 ├── kinds_search.py    hpo-grid + top-trials (ctx.rerun seam)
 ├── kinds_report.py    owned run-report
@@ -446,7 +458,9 @@ dskit/pipeline/
 ├── io.py, resolve.py  stage-list load/save + resolution
 ├── registry.py        venue-backend registry (no venues ship)
 ├── libs/              numpy, sklearn, torch + torch_ts (ADR-0041 zoo),
-│                      transformers, optuna, pyomo, sb3, matplotlib,
+│                      transformers (+ the pretrained encode/classify/forecast
+│                      trio over an acquired snapshot, ADR-0083), optuna,
+│                      pyomo, sb3, matplotlib,
 │                      mlflow (tracking SINK pack, no nodes),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077)
 ├── README.md          user-facing docs
