@@ -3568,3 +3568,134 @@ not. That makes ADR-0067's threshold conservative rather than liberal.
 The sd is the check that matters for the variance estimator; a mean that
 drifts below zero is the fitting cost showing up, and a mean ABOVE zero
 would be the alarming direction.
+
+---
+
+## ADR-0075 — A study resumes from journaled stages, and filtering never changes its fit
+
+**Status:** accepted (2026-09-03; owner approved staged P10 execution,
+study-wide correction, GROUP suppression and the memory strategy)
+
+**Context.** P10 needs one JSON to coordinate a memory preflight, eight
+horizon walks, two statistical gates, up to nineteen shuffled refits per
+surviving horizon, and one final per-asset result. The existing seams are
+close, but they do not compose that process.
+
+- `PipelineDocument` owns one node DAG and an optional walk-forward. The
+  `run`, `walkforward`, `skill` and `bar` verbs are separate invocations;
+  `run_walk_forward` refuses an occupied summary directory and journals only
+  after the whole walk finishes. There is no journal-backed stage resume.
+- `score_walk` / `walk_cells` already recover every individual
+  asset-horizon cell from streamed prediction files, and `max_bar` already
+  shares one session coin across every cell passed to it. But `score_bar`
+  partitions those cells by asset, so it cannot express one 200-cell study
+  family. The readers also synthesize a `GROUP` row unconditionally.
+- `NoInformationScan` already fits one pooled model and then scores each
+  prepared asset. Its `records` input nevertheless decides BOTH which assets
+  train and which assets are emitted, so filtering Gate-3 survivors upstream
+  would silently shrink the fit.
+- `BarsFromStore` can bound one source, `concat` can combine sources,
+  `SessionFeatureRows(layout="columns")` already builds per-symbol arrays,
+  and `PredictionWriter` streams scored rows. The remaining high-water marks
+  are float64 feature/design arrays and pooled train/validation assembly.
+- `dskit.journal` is an append-only, locked action ledger with readable
+  execute rows. It is the correct checkpoint authority; the attempts JSONL
+  remains the multiplicity ledger, not a second execution manifest.
+
+**Decision.** Add generic staged orchestration to the node-map document,
+then implement P10 as child-owned stage classes.
+
+1. An optional top-level `stages` map is stored, emitted only when present,
+   and included in document identity. A `Stage` abstract base, stage registry,
+   default-deny `StageSpec`, planner and `staged` CLI verb mirror the node seam:
+   each stage declares `uses`, stage-output `inputs`, and `params`; behaviour
+   arrives by subclass or import path, never a `kind` branch. The planner
+   validates the stage DAG, but the runner executes exactly one ready stage or
+   child walk at a time. `run` and `walkforward` refuse a document carrying
+   `stages`; derived child documents omit the section.
+2. A completed stage appends one ordinary `execute` journal row containing a
+   stable token derived from the parent document hash and stage key, the
+   output path, state and output digest. Resume reads the journal first. An
+   exact completed token with a present, digest-matching artifact is reused;
+   a journal/artifact disagreement refuses; an artifact without the journal
+   row is not completion. Child walks retain their existing journal rows and
+   are reused by the same identity rule. Thus an interruption between walks
+   resumes at the next walk. An interrupted walk remains a loud partial-run
+   refusal rather than guessed completion. There is no independent stage
+   completion manifest: stage JSON files are evidence artifacts, while the
+   existing journal is the execution record. The memory child additionally
+   persists its RSS beside its walk summary so a crash after that expensive
+   walk can recover the measurement; the sidecar is accepted only with the
+   child walk's journal evidence and is not stage completion.
+3. P10's first computational stage is one isolated, most-recent 25-asset fold
+   with the frozen one-minute geometry. It records peak RSS and must finish
+   strictly below `17 * 1024**3` bytes before any full walk is eligible. A
+   killed child or a larger peak halts the study. The permitted remediation,
+   in measured order, is float32 feature/design matrices, single-allocation
+   pooled training assembly, then bounded per-asset scoring after ONE pooled
+   fit. Every option preserves all 25 training assets; batching may change
+   what is resident, never what is fitted. The successful representation is
+   then frozen into the study identity before Gate 1.
+   The accepted representation transfers consumed source-list ownership, uses
+   float32 OHLCV/working/feature arrays, atomically writes a SHA-256-manifested
+   feature cache, verifies it once per staged invocation, and opens its arrays
+   read-only by memory mapping in fold-isolated children. The v5 preflight
+   measured 17,066,532,864 bytes (15.90 GiB), strictly below the
+   18,253,611,008-byte limit, with manifest
+   `0bd3d1a9c9c66328340396c8b05d0dc69ead9876096708ff5109731a888ff760`.
+4. Gate 1 runs exactly eight separately fitted pooled models at horizons
+   `[1, 2, 3, 5, 10, 20, 30, 60]`. Reduction disables synthetic aggregates,
+   asserts exactly 25 named rows per horizon, and records all 200 cells in the
+   existing attempts ledger before computing any survivor. For each asset,
+   failure at 1 selects none; otherwise `gate1_h` is the furthest consecutive
+   horizon whose pooled and across-fold ADR-0067 tests both pass. The first
+   failed horizon is retained as evidence.
+5. The reduction APIs gain injected aggregation and family strategies while
+   keeping today's defaults byte-compatible. P10 supplies no aggregate
+   strategy, so `GROUP` is never created, registered, corrected, shuffled or
+   reported. It supplies one constant family strategy to `max_bar`, so Gate 2
+   jointly resamples ALL 200 cells with the same session draws and performs
+   one Romano–Wolf max-statistic correction. The selected `gate1_h` must clear
+   the study pass mark, adjusted probability and positive lower bound. Failure
+   selects none and never falls back to an earlier horizon.
+6. `NoInformationScan` gains an optional score-only selection. It is applied
+   after the 25 prepared series have built the pooled training matrix and the
+   model has fitted; it controls only prediction/scoring emission. The scan
+   records and asserts the training-series count separately from the scored
+   count. Because SPY is both a fitted/scored asset and the residual reference,
+   its own label uses its raw forward return with the same volatility scaling,
+   rather than the identically-zero SPY-minus-SPY residual; the other 24
+   labels retain SPY residualisation. This document-level policy prevents a
+   nominal 25-asset fit from silently having only 24 finite label series.
+   Gate 3 reads its score selections from Gate-2's saved artifact,
+   groups survivors by their selected horizon, and for each unique horizon
+   runs seeds 0 through 18 sequentially. Every seed refits the same frozen
+   architecture on the same 25-asset universe; only survivor outputs are
+   scored. With 19 null runs, the reported permutation probability is
+   `(1 + nulls >= observed) / 20`, whose minimum is 0.05.
+7. ADR-0074's null calibration becomes directional as its own consequence
+   predicted: the spread must remain inside the frozen `[0.7, 1.4]` interval,
+   while only a centre above `+0.3` is a calibration failure. A negative centre
+   is estimation cost and conservative. Gate 3 still requires the real result
+   to beat every shuffled refit.
+
+The study document pins the 2026-02-28 cut and reads exactly the 25 assets in
+the three split-adjusted sources: the original twelve, TSLA/TQQQ/NVDA/AMD,
+and `alpaca-sip-split-c`'s UPRO, BAC, AMZN, AVGO, NFLX, MSFT, GOOGL, SMH and
+IWM. META is absent and a runtime count/set assertion makes either drift a
+refusal. The final artifact has one row per asset with `gate1_h`, all three
+gate states, evidence counts, first failure and explicit `not_reached` reason.
+Gate filters are written artifacts and are never hand-maintained symbol lists.
+
+**Consequences.** Existing documents, hashes, `bar` output and `GROUP` rows do
+not move because all new sections and strategies are opt-in. The new files are
+`dskit/pipeline/stages.py`, `tests/pipeline/test_stages.py`,
+`children/intraday_equities/intraday_equities/modelability.py`,
+`children/intraday_equities/intraday_equities/feature_cache.py`,
+`children/intraday_equities/tests/test_modelability.py`,
+`children/intraday_equities/tests/test_feature_cache.py`, and
+`children/intraday_equities/configs/run-p10-modelability.json`; package trees
+and public exports are updated with them. Focused tests cover identity,
+journal resume/refusal, the 200-cell registration barrier, a single correction
+family, absence of `GROUP`, no Gate-2 fallback, immutable 25-asset fits,
+seed coverage, cutoff/source pins and memory-gate ordering.

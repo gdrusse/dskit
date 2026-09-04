@@ -406,6 +406,7 @@ dskit/pipeline/
 ├── planner.py         document -> Plan; role rules live here
 ├── driver.py          run_document: LOAD..RECORD, $prev, journal hook
 │                      (ADR-0056); run_walk_forward (ADR-0027)
+├── stages.py          journal-backed staged DAG execution and resume
 ├── runs.py            the READER: scan_runs/format_runs over a run root (`runs` verb)
 ├── predictions.py     every scored validation row -> one parquet per run (ADR-0064)
 ├── ordering.py        calibration slope + per-timestamp cross-sectional IC,

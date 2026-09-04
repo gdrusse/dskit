@@ -328,7 +328,9 @@ def tod_columns(*, mins, parsed, overnight, session, n, shared):
     from_open = mins - rth_start
     columns = {"tod_frac": from_open / span}
     bucket = np.clip(
-        np.floor(from_open / 30.0), 0.0, float(_HH_BUCKETS - 1),
+        np.floor(from_open / 30.0),
+        0.0,
+        float(_HH_BUCKETS - 1),
     )
     columns["hh_bucket"] = bucket
     for i in range(_HH_BUCKETS):
@@ -356,9 +358,7 @@ def tod_columns(*, mins, parsed, overnight, session, n, shared):
             size = lengths[key] = float(calendar.monthrange(*key)[1])
         last[i] = size
     columns["is_month_first2"] = (day_of_month <= 2.0).astype(np.float64)
-    columns["is_month_last3"] = (
-        day_of_month > last - 3.0
-    ).astype(np.float64)
+    columns["is_month_last3"] = (day_of_month > last - 3.0).astype(np.float64)
     columns.update(shared)
     return columns
 
@@ -389,7 +389,8 @@ def _sameslot_return(logp, key, sess_ord, mins, rth_start, days, n):
     target = sess_ord - days
     end_key = target * 1440 + mins.astype(np.int64)
     start_key = target * 1440 + np.maximum(
-        mins.astype(np.int64) - _SAMESLOT_WIDTH, np.int64(rth_start),
+        mins.astype(np.int64) - _SAMESLOT_WIDTH,
+        np.int64(rth_start),
     )
     at_end = np.searchsorted(key, end_key)
     at_start = np.searchsorted(key, start_key)
@@ -446,7 +447,13 @@ def bar_columns(*, logp, ret1, sess_start, mins, session, n, shared):
     total = np.zeros(n, dtype=np.float64)
     for day in range(1, _SAMESLOT_DAYS + 1):
         value = _sameslot_return(
-            logp, key, sess_ord, mins, rth_start, day, n,
+            logp,
+            key,
+            sess_ord,
+            mins,
+            rth_start,
+            day,
+            n,
         )
         if day == 1:
             columns["ret_sameslot_1d"] = value
@@ -461,7 +468,8 @@ def bar_columns(*, logp, ret1, sess_start, mins, session, n, shared):
     del squares, valid, finite
     with np.errstate(divide="ignore", invalid="ignore"):
         columns[f"rv_ratio_{_SHORT_WINDOW}_{_LONG_WINDOW}"] = short / np.maximum(
-            sigma, _EPS,
+            sigma,
+            _EPS,
         )
     del short
     index = np.arange(n)
@@ -471,7 +479,8 @@ def bar_columns(*, logp, ret1, sess_start, mins, session, n, shared):
         past[reach] = logp[reach] - logp[index[reach] - width]
         with np.errstate(divide="ignore", invalid="ignore"):
             columns[f"ret_{width}_z"] = past / np.maximum(
-                sigma * math.sqrt(width), _EPS,
+                sigma * math.sqrt(width),
+                _EPS,
             )
     columns.update(shared)
     return columns
@@ -509,7 +518,12 @@ def _rolling_beta(own, market, width):
 
 
 def cross_columns(
-    *, ret1, sess_start, market_ret, sector_ret, n,
+    *,
+    ret1,
+    sess_start,
+    market_ret,
+    sector_ret,
+    n,
     beta_window=_BETA_WINDOW,
 ):
     """Block C — market, sector and hedged-residual inputs (P3b).
@@ -554,12 +568,12 @@ def cross_columns(
     sec_ok = np.isfinite(sector_ret)
     sec_sum = np.where(sec_ok, sector_ret, 0.0)
     for width in (30, 60):
-        columns[f"res_mkt_cum_{width}"] = (
-            rolling_sum(own_sum, width) - beta * rolling_sum(mkt_sum, width)
-        )
+        columns[f"res_mkt_cum_{width}"] = rolling_sum(
+            own_sum, width
+        ) - beta * rolling_sum(mkt_sum, width)
     for width in (5, 30):
-        columns[f"res_sec_cum_{width}"] = (
-            rolling_sum(own_sum, width) - rolling_sum(sec_sum, width)
+        columns[f"res_sec_cum_{width}"] = rolling_sum(own_sum, width) - rolling_sum(
+            sec_sum, width
         )
     del own_sum, mkt_sum, sec_sum, own_ok, mkt_ok, sec_ok
     for k in range(1, 6):
@@ -572,8 +586,20 @@ def cross_columns(
 
 
 def block_columns(
-    blocks, *, keep, logp, ret1, opn, sess_start, mins, parsed, overnight,
-    session, market_ret=None, sector_ret=None, beta_window=_BETA_WINDOW,
+    blocks,
+    *,
+    keep,
+    logp,
+    ret1,
+    opn,
+    sess_start,
+    mins,
+    parsed,
+    overnight,
+    session,
+    market_ret=None,
+    sector_ret=None,
+    beta_window=_BETA_WINDOW,
 ):
     """Build every selected block's columns and keep only the grid rows.
 
@@ -621,16 +647,25 @@ def block_columns(
         shared = _open_returns(logp, opn, sess_start, mins, session, n)
     if BLOCK_TOD in chosen:
         built = tod_columns(
-            mins=mins, parsed=parsed, overnight=overnight,
-            session=session, n=n, shared=shared,
+            mins=mins,
+            parsed=parsed,
+            overnight=overnight,
+            session=session,
+            n=n,
+            shared=shared,
         )
         for name in TOD_NAMES:
             out[name] = built.pop(name)[keep]
         del built
     if BLOCK_BAR in chosen:
         built = bar_columns(
-            logp=logp, ret1=ret1, sess_start=sess_start, mins=mins,
-            session=session, n=n, shared=shared,
+            logp=logp,
+            ret1=ret1,
+            sess_start=sess_start,
+            mins=mins,
+            session=session,
+            n=n,
+            shared=shared,
         )
         for name in BAR_NAMES:
             if name in out:
@@ -648,8 +683,12 @@ def block_columns(
                 "carry both (ADR-0071)."
             )
         built = cross_columns(
-            ret1=ret1, sess_start=sess_start, market_ret=market_ret,
-            sector_ret=sector_ret, n=n, beta_window=beta_window,
+            ret1=ret1,
+            sess_start=sess_start,
+            market_ret=market_ret,
+            sector_ret=sector_ret,
+            n=n,
+            beta_window=beta_window,
         )
         for name in CROSS_NAMES:
             out[name] = built.pop(name)[keep]
@@ -677,13 +716,22 @@ def _slot_curve(keys, values, size, smooth):
     with np.errstate(divide="ignore", invalid="ignore"):
         mean = np.where(count > 0.0, total / np.maximum(count, 1.0), np.nan)
         second = np.where(
-            count > 0.0, squares / np.maximum(count, 1.0), np.nan,
+            count > 0.0,
+            squares / np.maximum(count, 1.0),
+            np.nan,
         )
     return mean, np.maximum(second - mean * mean, 0.0), count
 
 
 def fit_fold_stats(
-    blocks, *, minutes, bucket, ret, volume, train, smooth=5,
+    blocks,
+    *,
+    minutes,
+    bucket,
+    ret,
+    volume,
+    train,
+    smooth=5,
 ):
     """Fit the training-fold-only statistics. Training rows only.
 
@@ -733,7 +781,9 @@ def fit_fold_stats(
         curve[~np.isfinite(curve) | (count <= 0.0)] = pooled
         fitted["tod_vol"] = curve
         buckets = np.clip(
-            np.nan_to_num(bucket, nan=0.0), 0.0, float(_HH_BUCKETS - 1),
+            np.nan_to_num(bucket, nan=0.0),
+            0.0,
+            float(_HH_BUCKETS - 1),
         ).astype(np.int64)
         b_keys = buckets[rows]
         b_count = np.bincount(b_keys, minlength=_HH_BUCKETS).astype(np.float64)
@@ -756,7 +806,9 @@ def fit_fold_stats(
         mean, _, count = _slot_curve(v_keys, v_values, size, smooth)
         pooled = float(v_values.mean()) if v_values.size else 0.0
         mean = np.where(
-            np.isfinite(mean) & (count > 0.0) & (mean > 0.0), mean, pooled,
+            np.isfinite(mean) & (count > 0.0) & (mean > 0.0),
+            mean,
+            pooled,
         )
         fitted["vol_slot"] = np.maximum(mean, _EPS)
     return fitted
@@ -790,12 +842,16 @@ def apply_fold_stats(fitted, blocks, *, minutes, bucket, volume):
         return out
     size = max(int(fitted.get("slots", 0)), 1)
     slot = np.clip(
-        np.nan_to_num(minutes, nan=0.0), 0.0, float(size - 1),
+        np.nan_to_num(minutes, nan=0.0),
+        0.0,
+        float(size - 1),
     ).astype(np.int64)
     if BLOCK_TOD in chosen:
         out["tod_vol_now"] = fitted["tod_vol"][slot]
         buckets = np.clip(
-            np.nan_to_num(bucket, nan=0.0), 0.0, float(_HH_BUCKETS - 1),
+            np.nan_to_num(bucket, nan=0.0),
+            0.0,
+            float(_HH_BUCKETS - 1),
         ).astype(np.int64)
         out["tod_mean_bucket"] = fitted["tod_mean"][buckets]
     if BLOCK_BAR in chosen:

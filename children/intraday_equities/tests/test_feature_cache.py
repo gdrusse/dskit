@@ -1,0 +1,59 @@
+"""Content-verified, memory-mapped feature-cache tests."""
+
+from __future__ import annotations
+
+import numpy as np
+
+from intraday_equities.feature_cache import SessionFeatureCache, write_feature_cache
+
+
+def _outputs():
+    records = []
+    tape = []
+    for index, symbol in enumerate(("AAA", "BBB")):
+        records.append(
+            {
+                "symbol": symbol,
+                "asof_ms": np.array([1, 2], dtype=np.int64),
+                "close": np.array([2.0, 3.0], dtype=np.float32),
+                "names": ["ret_lag_0"],
+                "X": np.array([[index], [index + 1]], dtype=np.float32),
+            }
+        )
+        tape.append(
+            {
+                "symbol": symbol,
+                "asof_ms": np.array([0, 1, 2], dtype=np.int64),
+                "close": np.array([1.0, 2.0, 3.0], dtype=np.float32),
+                "price_field": "close",
+            }
+        )
+    return {"records": records, "tape": tape}
+
+
+def test_cache_round_trip_is_memory_mapped_and_content_verified(tmp_path):
+    path = tmp_path / "features"
+    digest = write_feature_cache(str(path), _outputs(), {"study": "p10"})
+    node = SessionFeatureCache("cached", {"path": str(path), "manifest_sha256": digest})
+    assert node.validate_params(node.params) == []
+    assert node.fingerprint()["symbols"] == ["AAA", "BBB"]
+    out = node.run(None, {})
+    assert [row["symbol"] for row in out["records"]] == ["AAA", "BBB"]
+    assert isinstance(out["records"][0]["X"], np.memmap)
+    np.testing.assert_array_equal(
+        out["records"][1]["X"], np.array([[1], [2]], dtype=np.float32)
+    )
+
+
+def test_cache_refuses_manifest_drift(tmp_path):
+    path = tmp_path / "features"
+    digest = write_feature_cache(str(path), _outputs(), {"study": "p10"})
+    manifest = path / "manifest.json"
+    manifest.write_text(manifest.read_text().replace('"version": 1', '"version": 2'))
+    node = SessionFeatureCache("cached", {"path": str(path), "manifest_sha256": digest})
+    try:
+        node.fingerprint()
+    except ValueError as exc:
+        assert "manifest digest changed" in str(exc)
+    else:
+        raise AssertionError("manifest drift was accepted")

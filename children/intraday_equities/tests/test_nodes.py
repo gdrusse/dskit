@@ -94,6 +94,7 @@ def _write_universe(path, spec=None):
         json.dump(payload, fh)
     return path
 
+
 _BASE = datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc)
 
 
@@ -250,9 +251,7 @@ def probes(tmp_path):
             params={"path": universe_path},
             required=("path",),
             make=lambda: Universe("universe", {"path": universe_path}),
-            move=lambda: _write_universe(
-                universe_path, _mini_spec(notes="moved")
-            ),
+            move=lambda: _write_universe(universe_path, _mini_spec(notes="moved")),
             grow=lambda: _write_universe(
                 universe_path,
                 _mini_spec(
@@ -388,9 +387,9 @@ TestConformance = conformance_suite(
 def test_window_rows_keeps_n_ahead():
     """ADR-0049: the child does not narrow the path-output knob away."""
     assert "n_ahead" in WindowRows._PARAMS
-    assert WindowRows.validate_params(
-        {"lookback": 2, "label_lead": 1, "n_ahead": 4}
-    ) == []
+    assert (
+        WindowRows.validate_params({"lookback": 2, "label_lead": 1, "n_ahead": 4}) == []
+    )
 
 
 def test_store_window_and_grid_end_to_end(tmp_path):
@@ -455,9 +454,7 @@ def test_portfolio_emits_decision_metrics(tmp_path):
             "y_next": 0.05,
         },
     ]
-    out = PortfolioSelect(
-        "select", {"split": "val", "tradable": ["AAPL", "JPM"]}
-    ).run(
+    out = PortfolioSelect("select", {"split": "val", "tradable": ["AAPL", "JPM"]}).run(
         _ctx(tmp_path),
         {"signal": _FakeSignal(), "records": rows, "labeled": rows},
     )
@@ -482,7 +479,9 @@ def test_portfolio_emits_decision_metrics(tmp_path):
 def _ny_ms(year, month, day, hour, minute):
     from zoneinfo import ZoneInfo
 
-    stamp = datetime(year, month, day, hour, minute, tzinfo=ZoneInfo("America/New_York"))
+    stamp = datetime(
+        year, month, day, hour, minute, tzinfo=ZoneInfo("America/New_York")
+    )
     return int(stamp.timestamp() * 1000)
 
 
@@ -514,7 +513,8 @@ def test_overnight_is_not_a_one_minute_lag():
         None, {"records": friday + spy, "spec": spec}
     )["records"]
     monday = next(
-        row for row in out
+        row
+        for row in out
         if row["symbol"] == "AAPL" and row["asof_ms"] == _ny_ms(2026, 1, 5, 9, 30)
     )
     assert monday["ret_lag_0"] is None
@@ -540,8 +540,7 @@ def test_horizon_verdict_prefers_the_farthest_confident_lead():
 
 def test_horizon_verdict_is_no_go_when_the_curve_is_noise():
     curve = [
-        {"lead": lead, "ic_val": 0.01, "n_val": 400.0}
-        for lead in (5, 390, 780, 1170)
+        {"lead": lead, "ic_val": 0.01, "n_val": 400.0} for lead in (5, 390, 780, 1170)
     ]
     verdict = _horizon_verdict(
         curve, anchors=(390, 780, 1170), se_mult=2.0, band_leads=6
@@ -647,10 +646,7 @@ def test_horizon_scan_drops_labels_that_land_after_val_end():
         "se_mult": 2.0,
         "band_leads": 1,
     }
-    bars = [
-        {"symbol": "AAPL", "asof_ms": _ms(i), "close": 100.0 + i}
-        for i in range(8)
-    ]
+    bars = [{"symbol": "AAPL", "asof_ms": _ms(i), "close": 100.0 + i} for i in range(8)]
     rows = [
         {"symbol": "AAPL", "asof_ms": _ms(i), "ret_lag_0": 0.01 * i, "close": 100.0 + i}
         for i in range(8)
@@ -679,10 +675,7 @@ def test_no_information_scan_drops_labels_that_land_after_val_end():
         "se_mult": 2.0,
         "band_leads": 1,
     }
-    bars = [
-        {"symbol": "AAPL", "asof_ms": _ms(i), "close": 100.0 + i}
-        for i in range(8)
-    ]
+    bars = [{"symbol": "AAPL", "asof_ms": _ms(i), "close": 100.0 + i} for i in range(8)]
     rows = [
         {"symbol": "AAPL", "asof_ms": _ms(i), "ret_lag_0": 0.01 * i, "close": 100.0 + i}
         for i in range(8)
@@ -700,6 +693,60 @@ def test_no_information_scan_drops_labels_that_land_after_val_end():
     assert out["metrics"]["go_AAPL"] in (0.0, 1.0)
     assert out["records"][0]["symbol"] == "AAPL"
     assert out["records"][0]["n"] == 0.0
+
+
+def test_score_symbols_changes_outputs_not_the_pooled_fit():
+    spec = _mini_spec()
+    spec["features"] = ["ret_lag_0"]
+    spec["period_ms"] = 60_000
+    spec["horizon"] = {
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 1,
+        "anchors": [1],
+        "top_k": 1,
+        "se_mult": 2.0,
+        "band_leads": 1,
+    }
+    bars = []
+    rows = []
+    for symbol, phase in (("AAPL", 0), ("JPM", 2)):
+        price = 100.0
+        for i in range(50):
+            ret = 0.002 * (((i + phase) % 7) - 3)
+            price *= math.exp(ret)
+            bars.append({"symbol": symbol, "asof_ms": _ms(i), "close": price})
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "asof_ms": _ms(i),
+                    "ret_lag_0": ret,
+                    "close": price,
+                }
+            )
+    cuts = {
+        "split": "val",
+        "train_end_ms": _ms(29),
+        "val_start_ms": _ms(31),
+        "val_end_ms": _ms(49),
+    }
+    inputs = {"records": rows, "bars": bars, "spec": spec}
+    full = NoInformationScan("full", cuts).run(None, inputs)
+    scored = NoInformationScan(
+        "scored",
+        {**cuts, "fit_symbols": ["AAPL", "JPM"], "score_symbols": ["JPM"]},
+    ).run(None, inputs)
+    assert full["metrics"]["n_series"] == 2.0
+    assert scored["metrics"]["n_series"] == 2.0
+    assert scored["metrics"]["n_scored_series"] == 1.0
+    assert scored["metrics"]["n_train"] == full["metrics"]["n_train"]
+    assert scored["metrics"]["n_fit_series"] == 2.0
+    assert scored["metrics"]["n_val"] == full["metrics"]["n_val"]
+    assert scored["metrics"]["train_mspe"] == pytest.approx(
+        full["metrics"]["train_mspe"]
+    )
+    assert {row["symbol"] for row in scored["records"]} == {"JPM"}
+    assert "go_AAPL" not in scored["metrics"]
 
 
 def test_no_information_scan_writes_every_scored_row(tmp_path):
@@ -734,14 +781,19 @@ def test_no_information_scan_writes_every_scored_row(tmp_path):
             ret = 0.001 * ((i % 7) - 3)
             px *= math.exp(ret)
             bars.append({"symbol": symbol, "asof_ms": _ms(i), "close": px})
-            rows.append({
-                "symbol": symbol,
-                "asof_ms": _ms(i),
-                "ret_lag_0": ret,
-                "close": px,
-            })
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "asof_ms": _ms(i),
+                    "ret_lag_0": ret,
+                    "close": px,
+                }
+            )
     ctx = NodeContext(
-        name="scan", asof="2025-11-30", run_dir=str(tmp_path), fold_index=7,
+        name="scan",
+        asof="2025-11-30",
+        run_dir=str(tmp_path),
+        fold_index=7,
     )
     out = NoInformationScan(
         "scan",
@@ -771,9 +823,9 @@ def test_no_information_scan_writes_every_scored_row(tmp_path):
         assert unit["lead"] == record["lead"]
         assert unit["h_steps"] == 1
         assert len(unit["y"]) == int(record["n"])
-        mspe_model = sum(
-            (y - f) ** 2 for y, f in zip(unit["y"], unit["yhat"])
-        ) / len(unit["y"])
+        mspe_model = sum((y - f) ** 2 for y, f in zip(unit["y"], unit["yhat"])) / len(
+            unit["y"]
+        )
         assert mspe_model == pytest.approx(record["mspe_model"], rel=1e-5)
         assert unit["q"] == pytest.approx(record["mspe_mean"], rel=1e-5)
         assert unit["q"] > 0.0
@@ -809,12 +861,14 @@ def test_no_information_scan_fits_once_and_walks_h():
             ret = 0.001 * ((i % 7) - 3)
             px *= math.exp(ret)
             bars.append({"symbol": symbol, "asof_ms": _ms(i), "close": px})
-            rows.append({
-                "symbol": symbol,
-                "asof_ms": _ms(i),
-                "ret_lag_0": ret,
-                "close": px,
-            })
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "asof_ms": _ms(i),
+                    "ret_lag_0": ret,
+                    "close": px,
+                }
+            )
     out = NoInformationScan(
         "scan",
         {
@@ -859,13 +913,18 @@ def test_session_features_reuse_one_build_across_folds():
         px = 100.0
         for i in range(30):
             px *= math.exp(0.001 * ((i % 5) - 2))
-            bars.append({
-                "symbol": symbol,
-                "asof_ms": _ms(i),
-                "session": "rth",
-                "open": px, "high": px, "low": px, "close": px,
-                "volume": 1000.0,
-            })
+            bars.append(
+                {
+                    "symbol": symbol,
+                    "asof_ms": _ms(i),
+                    "session": "rth",
+                    "open": px,
+                    "high": px,
+                    "low": px,
+                    "close": px,
+                    "volume": 1000.0,
+                }
+            )
     node = SessionFeatureRows("features", {"lookback": 2, "layout": "columns"})
 
     first = node.run(None, {"records": bars, "spec": spec})
@@ -917,12 +976,14 @@ def test_no_information_scan_honours_the_left_training_bound():
         for i in range(n):
             px *= math.exp(0.001 * ((i % 7) - 3))
             bars.append({"symbol": symbol, "asof_ms": _ms(i), "close": px})
-            rows.append({
-                "symbol": symbol,
-                "asof_ms": _ms(i),
-                "ret_lag_0": 0.001 * ((i % 7) - 3),
-                "close": px,
-            })
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "asof_ms": _ms(i),
+                    "ret_lag_0": 0.001 * ((i % 7) - 3),
+                    "close": px,
+                }
+            )
     base = {
         "split": "val",
         "train_end_ms": _ms(40),
@@ -932,9 +993,9 @@ def test_no_information_scan_honours_the_left_training_bound():
     inputs = {"records": rows, "bars": bars, "spec": spec}
 
     unbounded = NoInformationScan("scan", base).run(None, inputs)
-    bounded = NoInformationScan(
-        "scan", {**base, "train_start_ms": _ms(20)}
-    ).run(None, inputs)
+    bounded = NoInformationScan("scan", {**base, "train_start_ms": _ms(20)}).run(
+        None, inputs
+    )
 
     assert unbounded["metrics"]["n_train"] > bounded["metrics"]["n_train"]
     assert bounded["metrics"]["n_train"] > 0.0
@@ -944,13 +1005,15 @@ def test_no_information_scan_honours_the_left_training_bound():
 
 def test_no_information_scan_refuses_a_backwards_training_bound():
     """A left bound at or past the cut is a config error, not a silent 0."""
-    problems = NoInformationScan.validate_params({
-        "split": "val",
-        "train_end_ms": 1_000,
-        "train_start_ms": 2_000,
-        "val_start_ms": 3_000,
-        "val_end_ms": 4_000,
-    })
+    problems = NoInformationScan.validate_params(
+        {
+            "split": "val",
+            "train_end_ms": 1_000,
+            "train_start_ms": 2_000,
+            "val_start_ms": 3_000,
+            "val_end_ms": 4_000,
+        }
+    )
     assert any("train_start_ms must be < train_end_ms" in p for p in problems)
 
 
@@ -993,12 +1056,14 @@ def test_no_information_scan_refuses_a_constant_forecast():
             ret = 0.001 * ((i % 7) - 3)
             px *= math.exp(ret)
             bars.append({"symbol": symbol, "asof_ms": _ms(i), "close": px})
-            rows.append({
-                "symbol": symbol,
-                "asof_ms": _ms(i),
-                "ret_lag_0": ret,
-                "close": px,
-            })
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "asof_ms": _ms(i),
+                    "ret_lag_0": ret,
+                    "close": px,
+                }
+            )
     with pytest.raises(ValueError, match="degenerate forecast"):
         NoInformationScan(
             "scan",
@@ -1014,13 +1079,9 @@ def test_no_information_scan_refuses_a_constant_forecast():
 def test_lead_labels_drop_rows_whose_label_lands_after_the_cut():
     spec = _mini_spec()
     spec["features"] = ["ret_lag_0"]
-    bars = [
-        {"symbol": "AAPL", "asof_ms": _ms(i), "close": 100.0 + i}
-        for i in range(8)
-    ]
+    bars = [{"symbol": "AAPL", "asof_ms": _ms(i), "close": 100.0 + i} for i in range(8)]
     rows = [
-        {"symbol": "AAPL", "asof_ms": _ms(i), "ret_lag_0": 0.01 * i}
-        for i in range(8)
+        {"symbol": "AAPL", "asof_ms": _ms(i), "ret_lag_0": 0.01 * i} for i in range(8)
     ]
     params = {
         "lead": 2,
@@ -1044,7 +1105,11 @@ def test_lookback_scan_picks_a_finite_L_and_keeps_calendar():
     spec = _mini_spec()
     spec["lookback"] = 4
     spec["features"] = [
-        "ret_lag_0", "ret_lag_1", "ret_lag_2", "ret_lag_3", "tod_sin",
+        "ret_lag_0",
+        "ret_lag_1",
+        "ret_lag_2",
+        "ret_lag_3",
+        "tod_sin",
     ]
     spec["scan"] = {
         "l_start": 2,
@@ -1054,8 +1119,7 @@ def test_lookback_scan_picks_a_finite_L_and_keeps_calendar():
         "keep_tau": 0.05,
     }
     bars = [
-        {"symbol": "AAPL", "asof_ms": _ms(i), "close": 100.0 + i}
-        for i in range(16)
+        {"symbol": "AAPL", "asof_ms": _ms(i), "close": 100.0 + i} for i in range(16)
     ]
     rows = [
         {
@@ -1101,11 +1165,12 @@ def test_column_layout_keeps_frames_and_still_scans():
         for symbol in ("AAPL", "SPY")
         for i in range(16)
     ]
-    frames = SessionFeatureRows("features", {"layout": "columns"}).run(
-        None, {"records": rows, "spec": spec}
-    )
+    frames = SessionFeatureRows(
+        "features", {"layout": "columns", "dtype": "float32"}
+    ).run(None, {"records": rows, "spec": spec})
     assert "tape" in frames
     assert "X" in frames["records"][0]
+    assert str(frames["records"][0]["X"].dtype) == "float32"
     kept = KeepSymbols("tradable", {"field": "symbol"}).run(
         None, {"records": frames["records"], "symbols": ["AAPL"]}
     )["records"]
@@ -1119,9 +1184,14 @@ def test_column_layout_keeps_frames_and_still_scans():
             "val_start_ms": _ms(9),
             "val_end_ms": _ms(14),
         },
-    ).run(None, {
-        "records": kept, "bars": frames["tape"], "spec": spec,
-    })
+    ).run(
+        None,
+        {
+            "records": kept,
+            "bars": frames["tape"],
+            "spec": spec,
+        },
+    )
     assert "farthest_confident_lead" in out["metrics"]
 
 
@@ -1157,14 +1227,18 @@ def test_lead_labels_accept_column_frames():
             "val_start_ms": _ms(9),
             "val_end_ms": _ms(14),
         },
-    ).run(None, {
-        "records": kept, "bars": frames["tape"], "spec": spec,
-    })["records"]
+    ).run(
+        None,
+        {
+            "records": kept,
+            "bars": frames["tape"],
+            "spec": spec,
+        },
+    )["records"]
     assert train
     assert "X" not in train[0]
     assert "y_next" in train[0]
     assert train[0]["symbol"] == "AAPL"
-
 
 
 def _label_tape(n=600, seed=7):
@@ -1221,14 +1295,18 @@ def test_vol_normalised_label_reads_no_bar_after_t():
     arrays = _label_tape()
     loc, future = np.array([300]), np.array([305])
     before = _LeadLabel(arrays, 60_000, scale="vol", vol_window=100).values(
-        "JPM", loc, future,
+        "JPM",
+        loc,
+        future,
     )
     stamps, prices = arrays["JPM"]
     moved = prices.copy()
     moved[306:] *= 3.0  # every bar strictly after the label's own window
     shifted = dict(arrays, JPM=(stamps, moved))
     after = _LeadLabel(shifted, 60_000, scale="vol", vol_window=100).values(
-        "JPM", loc, future,
+        "JPM",
+        loc,
+        future,
     )
     assert np.allclose(before, after)
 
@@ -1243,11 +1321,39 @@ def test_market_residual_label_removes_the_reference_move():
     future = loc + 10
     raw = _LeadLabel(arrays, 60_000).values("JPM", loc, future)
     residual = _LeadLabel(arrays, 60_000, residual="SPY", beta_window=200).values(
-        "JPM", loc, future,
+        "JPM",
+        loc,
+        future,
     )
     # JPM is 2x SPY by construction, so beta -> 2 and the residual is
     # the noise term: two orders of magnitude under the raw return.
     assert np.all(np.abs(residual) < 0.05 * np.abs(raw))
+
+
+def test_reference_symbol_can_use_its_raw_label_in_the_pooled_fit():
+    import numpy as np
+
+    from intraday_equities.nodes import _LeadLabel
+
+    arrays = _label_tape()
+    loc = np.array([300, 400])
+    future = loc + 9
+    raw_scaled = _LeadLabel(
+        arrays,
+        60_000,
+        scale="vol",
+        vol_window=100,
+    ).values("SPY", loc, future)
+    pooled = _LeadLabel(
+        arrays,
+        60_000,
+        scale="vol",
+        residual="SPY",
+        residual_self="raw",
+        vol_window=100,
+    ).values("SPY", loc, future)
+    assert np.all(np.isfinite(pooled))
+    assert np.allclose(pooled, raw_scaled)
 
 
 def test_session_boundary_is_not_a_one_minute_return_for_sigma():
@@ -1276,15 +1382,36 @@ def test_label_refuses_an_unknown_scale_and_a_missing_reference():
 def test_scan_validates_the_label_knobs():
     base = {"split": "val", "train_end_ms": 1, "val_start_ms": 2, "val_end_ms": 3}
     assert NoInformationScan.validate_params(base) == []
-    assert NoInformationScan.validate_params(
-        dict(base, label_scale="vol", label_residual="SPY",
-             vol_window_minutes=390, beta_window_minutes=3900, vol_floor=1e-8)
-    ) == []
+    assert (
+        NoInformationScan.validate_params(
+            dict(
+                base,
+                label_scale="vol",
+                label_residual="SPY",
+                vol_window_minutes=390,
+                beta_window_minutes=3900,
+                vol_floor=1e-8,
+            )
+        )
+        == []
+    )
     assert any(
         "label_scale" in problem
         for problem in NoInformationScan.validate_params(
             dict(base, label_scale="sharpe")
         )
+    )
+    assert any(
+        "label_residual_self" in problem
+        for problem in NoInformationScan.validate_params(
+            dict(base, label_residual_self="raw")
+        )
+    )
+    assert (
+        NoInformationScan.validate_params(
+            dict(base, label_residual="SPY", label_residual_self="raw")
+        )
+        == []
     )
     assert any(
         "vol_window_minutes" in problem
@@ -1326,18 +1453,27 @@ def test_vol_normalised_scan_scores_the_reshaped_label():
     spec["features"] = ["ret_lag_0"]
     spec["period_ms"] = 60_000
     spec["horizon"] = {
-        "lead_start": 1, "lead_step": 1, "lead_stop": 2,
-        "anchors": [1], "top_k": 1, "se_mult": 2.0, "band_leads": 1,
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 2,
+        "anchors": [1],
+        "top_k": 1,
+        "se_mult": 2.0,
+        "band_leads": 1,
     }
     n = 120
     bars, rows = [], []
     for i in range(n):
         close = 100.0 + math.sin(i / 3.0)
         bars.append({"symbol": "AAPL", "asof_ms": _ms(i), "close": close})
-        rows.append({
-            "symbol": "AAPL", "asof_ms": _ms(i),
-            "ret_lag_0": math.cos(i / 3.0), "close": close,
-        })
+        rows.append(
+            {
+                "symbol": "AAPL",
+                "asof_ms": _ms(i),
+                "ret_lag_0": math.cos(i / 3.0),
+                "close": close,
+            }
+        )
     cuts = {
         "split": "val",
         "train_end_ms": _ms(80),
@@ -1345,10 +1481,12 @@ def test_vol_normalised_scan_scores_the_reshaped_label():
         "val_end_ms": _ms(n - 1),
     }
     raw = NoInformationScan("scan", cuts).run(
-        None, {"records": rows, "bars": bars, "spec": spec},
+        None,
+        {"records": rows, "bars": bars, "spec": spec},
     )
     scaled = NoInformationScan(
-        "scan", dict(cuts, label_scale="vol", vol_window_minutes=20),
+        "scan",
+        dict(cuts, label_scale="vol", vol_window_minutes=20),
     ).run(None, {"records": rows, "bars": bars, "spec": spec})
     # Same rows, a different label: the label's own sd moves, and MSPE
     # rides with it. The vol run is a different estimand, not a rescale.
@@ -1367,7 +1505,8 @@ def test_bars_source_scans_once_per_store_content(tmp_path, monkeypatch):
     calls = []
     real = nodes.scan_stream
     monkeypatch.setattr(
-        nodes, "scan_stream",
+        nodes,
+        "scan_stream",
         lambda *a, **k: (calls.append(1), real(*a, **k))[1],
     )
     nodes.BarsFromStore._cached_key = None
@@ -1480,9 +1619,13 @@ def test_quote_attachment_knobs_are_refused_without_a_source_or_on_a_clash():
     assert Bars.validate_params(dict(base)) == []
     problems = Bars.validate_params({**base, "quote_fields": ["mid"]})
     assert any("meaningless without quote_source" in p for p in problems)
-    problems = Bars.validate_params({
-        **base, "quote_source": "alpaca-sip-quotes", "quote_fields": ["close"],
-    })
+    problems = Bars.validate_params(
+        {
+            **base,
+            "quote_source": "alpaca-sip-quotes",
+            "quote_fields": ["close"],
+        }
+    )
     assert any("collide with the bar" in p for p in problems)
     problems = Bars.validate_params({**base, "quote_source": ""})
     assert any("quote_source must be a non-empty string" in p for p in problems)
@@ -1495,13 +1638,17 @@ def test_declared_lead_grid_overrides_the_universe():
     horizon = {"lead_start": 5, "lead_step": 5, "lead_stop": 20}
     assert _lead_grid({}, horizon) == ((5, 10, 15, 20), 5)
     assert _lead_grid({"lead_start": 30, "lead_stop": 30}, horizon) == (
-        (30,), 30,
+        (30,),
+        30,
     )
     assert _lead_grid({"lead_stop": 10}, horizon) == ((5, 10), 5)
     base = {"split": "val", "train_end_ms": 1, "val_start_ms": 2, "val_end_ms": 3}
-    assert NoInformationScan.validate_params(
-        dict(base, lead_start=60, lead_step=1, lead_stop=60)
-    ) == []
+    assert (
+        NoInformationScan.validate_params(
+            dict(base, lead_start=60, lead_step=1, lead_stop=60)
+        )
+        == []
+    )
     assert any(
         "lead_stop" in problem
         for problem in NoInformationScan.validate_params(
@@ -1516,9 +1663,7 @@ def test_declared_lead_grid_overrides_the_universe():
         assert knob in NoInformationScan._PARAMS
         assert any(
             knob in problem
-            for problem in NoInformationScan.validate_params(
-                dict(base, **{knob: None})
-            )
+            for problem in NoInformationScan.validate_params(dict(base, **{knob: None}))
         ), f"{knob} is allowed but no validator names it"
 
 
@@ -1527,18 +1672,27 @@ def test_scan_trains_and_walks_the_declared_lead():
     spec["features"] = ["ret_lag_0"]
     spec["period_ms"] = 60_000
     spec["horizon"] = {
-        "lead_start": 1, "lead_step": 1, "lead_stop": 2,
-        "anchors": [1], "top_k": 1, "se_mult": 2.0, "band_leads": 1,
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 2,
+        "anchors": [1],
+        "top_k": 1,
+        "se_mult": 2.0,
+        "band_leads": 1,
     }
     n = 60
     bars, rows = [], []
     for i in range(n):
         close = 100.0 + math.sin(i / 4.0)
         bars.append({"symbol": "AAPL", "asof_ms": _ms(i), "close": close})
-        rows.append({
-            "symbol": "AAPL", "asof_ms": _ms(i),
-            "ret_lag_0": math.cos(i / 4.0), "close": close,
-        })
+        rows.append(
+            {
+                "symbol": "AAPL",
+                "asof_ms": _ms(i),
+                "ret_lag_0": math.cos(i / 4.0),
+                "close": close,
+            }
+        )
     cuts = {
         "split": "val",
         "train_end_ms": _ms(40),
@@ -1546,7 +1700,8 @@ def test_scan_trains_and_walks_the_declared_lead():
         "val_end_ms": _ms(n - 1),
     }
     out = NoInformationScan(
-        "scan", dict(cuts, lead_start=3, lead_step=1, lead_stop=3),
+        "scan",
+        dict(cuts, lead_start=3, lead_step=1, lead_stop=3),
     ).run(None, {"records": rows, "bars": bars, "spec": spec})
     leads = {int(row["lead"]) for row in out["records"]}
     assert leads == {3}, "the declared grid is the grid that was walked"
@@ -1554,12 +1709,17 @@ def test_scan_trains_and_walks_the_declared_lead():
 
 def test_universe_overrides_only_the_three_run_knobs():
     """ADR-0065: spacing and price move per run; the cohort does not."""
-    node = Universe("universe", {
-        "path": UNIVERSE_PATH,
-        "overrides": {
-            "period_ms": 60_000, "offset_ms": 0, "price_field": "vwap",
+    node = Universe(
+        "universe",
+        {
+            "path": UNIVERSE_PATH,
+            "overrides": {
+                "period_ms": 60_000,
+                "offset_ms": 0,
+                "price_field": "vwap",
+            },
         },
-    })
+    )
     out = node.run(None, {})
     assert out["spec"]["period_ms"] == 60_000
     assert out["spec"]["price_field"] == "vwap"
@@ -1582,16 +1742,21 @@ def test_session_features_price_the_declared_field():
     spec = _mini_spec(price_field="vwap", period_ms=60_000, lookback=2)
     bars = []
     for i in range(6):
-        bars.append({
-            "symbol": "AAPL",
-            "asof_ms": _ms(i),
-            "open": 100.0, "high": 101.0, "low": 99.0,
-            "close": 100.0 + i,
-            "vwap": 200.0 + i,
-            "volume": 10.0,
-        })
+        bars.append(
+            {
+                "symbol": "AAPL",
+                "asof_ms": _ms(i),
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0 + i,
+                "vwap": 200.0 + i,
+                "volume": 10.0,
+            }
+        )
     out = SessionFeatureRows("features", {}).run(
-        None, {"records": bars, "spec": spec},
+        None,
+        {"records": bars, "spec": spec},
     )
     tape = out["tape"][0]
     assert tape["price_field"] == "vwap"
@@ -1603,15 +1768,20 @@ def test_session_features_refuse_a_price_field_the_store_lacks():
     spec = _mini_spec(price_field="mid", period_ms=60_000, lookback=2)
     bars = [
         {
-            "symbol": "AAPL", "asof_ms": _ms(i),
-            "open": 100.0, "high": 101.0, "low": 99.0,
-            "close": 100.0 + i, "volume": 10.0,
+            "symbol": "AAPL",
+            "asof_ms": _ms(i),
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.0 + i,
+            "volume": 10.0,
         }
         for i in range(6)
     ]
     with pytest.raises(ValueError, match="mid"):
         SessionFeatureRows("features", {}).run(
-            None, {"records": bars, "spec": spec},
+            None,
+            {"records": bars, "spec": spec},
         )
 
 
@@ -1624,10 +1794,14 @@ def _lattice_inputs(n=40):
             ret = 0.001 * ((i % 7) - 3)
             px *= math.exp(ret)
             bars.append({"symbol": symbol, "asof_ms": _ms(i), "close": px})
-            rows.append({
-                "symbol": symbol, "asof_ms": _ms(i),
-                "ret_lag_0": ret, "close": px,
-            })
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "asof_ms": _ms(i),
+                    "ret_lag_0": ret,
+                    "close": px,
+                }
+            )
     return bars, rows
 
 
@@ -1636,8 +1810,13 @@ def _lattice_spec():
     spec["features"] = ["ret_lag_0"]
     spec["period_ms"] = 60_000
     spec["horizon"] = {
-        "lead_start": 1, "lead_step": 1, "lead_stop": 2,
-        "anchors": [1], "top_k": 1, "se_mult": 2.0, "band_leads": 1,
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 2,
+        "anchors": [1],
+        "top_k": 1,
+        "se_mult": 2.0,
+        "band_leads": 1,
     }
     return spec
 
@@ -1652,10 +1831,12 @@ def test_the_scoring_lattice_thins_validation_and_not_training():
         "val_end_ms": _ms(39),
     }
     plain = NoInformationScan("scan", dict(cuts)).run(
-        None, {"records": rows, "bars": bars, "spec": _lattice_spec()},
+        None,
+        {"records": rows, "bars": bars, "spec": _lattice_spec()},
     )
     latticed = NoInformationScan(
-        "scan", dict(cuts, score_period_ms=300_000),
+        "scan",
+        dict(cuts, score_period_ms=300_000),
     ).run(None, {"records": rows, "bars": bars, "spec": _lattice_spec()})
     # Same fit, a fifth of the scored rows.
     assert latticed["metrics"]["n_train"] == plain["metrics"]["n_train"]
@@ -1671,25 +1852,39 @@ def test_a_lattice_the_row_spacing_cannot_reach_refuses():
     spec = _lattice_spec()
     spec["period_ms"] = 300_000
     with pytest.raises(ValueError, match="whole multiple"):
-        NoInformationScan("scan", {
-            "split": "val",
-            "train_end_ms": _ms(24),
-            "val_start_ms": _ms(26),
-            "val_end_ms": _ms(39),
-            "score_period_ms": 60_000,
-        }).run(None, {"records": rows, "bars": bars, "spec": spec})
+        NoInformationScan(
+            "scan",
+            {
+                "split": "val",
+                "train_end_ms": _ms(24),
+                "val_start_ms": _ms(26),
+                "val_end_ms": _ms(39),
+                "score_period_ms": 60_000,
+            },
+        ).run(None, {"records": rows, "bars": bars, "spec": spec})
 
 
 def test_bars_from_store_start_ms_is_part_of_the_identity():
     """ADR-0066: the study start is declared where the data is read."""
-    assert BarsFromStore.validate_params({
-        "root": "./ob", "source": "alpaca-sip-split",
-        "universe": UNIVERSE_PATH, "start_ms": 1514764800000,
-    }) == []
-    assert BarsFromStore.validate_params({
-        "root": "./ob", "source": "alpaca-sip-split",
-        "universe": UNIVERSE_PATH, "start_ms": -1,
-    })
+    assert (
+        BarsFromStore.validate_params(
+            {
+                "root": "./ob",
+                "source": "alpaca-sip-split",
+                "universe": UNIVERSE_PATH,
+                "start_ms": 1514764800000,
+            }
+        )
+        == []
+    )
+    assert BarsFromStore.validate_params(
+        {
+            "root": "./ob",
+            "source": "alpaca-sip-split",
+            "universe": UNIVERSE_PATH,
+            "start_ms": -1,
+        }
+    )
 
 
 def test_the_bars_node_reads_only_its_universe_and_never_copies_the_tape(
@@ -1704,7 +1899,9 @@ def test_the_bars_node_reads_only_its_universe_and_never_copies_the_tape(
 
     root = str(tmp_path / "ob")
     _write_store(
-        root, "alpaca-sip", n_minutes=6,
+        root,
+        "alpaca-sip",
+        n_minutes=6,
         symbols=("AAPL", "SPY", "QQQ", "XLE"),
     )
     universe_path = _write_universe(str(tmp_path / "universe.json"))
@@ -1725,7 +1922,8 @@ def test_the_bars_node_reads_only_its_universe_and_never_copies_the_tape(
     nodes.scan_stream = _spy
     try:
         rows = nodes.BarsFromStore("bars", params).run(
-            _ctx(tmp_path), {},
+            _ctx(tmp_path),
+            {},
         )["records"]
     finally:
         nodes.scan_stream = real_scan
@@ -1756,7 +1954,8 @@ def test_the_bars_node_bounds_its_read_by_start_ms_and_by_session(tmp_path):
         nodes.BarsFromStore._cached_snap = None
         nodes.BarsFromStore._cached_fingerprint = None
         return nodes.BarsFromStore("bars", {**base, **extra}).run(
-            _ctx(tmp_path), {},
+            _ctx(tmp_path),
+            {},
         )["records"]
 
     whole = _run()
@@ -1808,8 +2007,7 @@ def test_one_design_matrix_is_built_once_per_name(tmp_path):
     # past the cut. Row 3's NaN sits in a column nobody asked for and
     # costs nothing, exactly as when the two selections ran in turn.
     assert kept.tolist() == [0, 60_000, 180_000, 240_000]
-    assert matrix.tolist() == [[2.0, 0.0], [5.0, 3.0],
-                              [11.0, 9.0], [14.0, 12.0]]
+    assert matrix.tolist() == [[2.0, 0.0], [5.0, 3.0], [11.0, 9.0], [14.0, 12.0]]
 
     prepared = [("AAPL", kept, matrix, None, None, None, None)]
     same = _attach_symbol_codes(prepared, {"AAPL": 7})

@@ -81,8 +81,7 @@ class TestTheRegistry:
 
     def test_last_week_s_attempt_still_counts(self, tmp_path):
         path = str(tmp_path / "a.jsonl")
-        AttemptRegistry(path).record({"model": "lgbm", "horizon": 3,
-                                      "series": "JPM"})
+        AttemptRegistry(path).record({"model": "lgbm", "horizon": 3, "series": "JPM"})
         # A fresh process, tonight.
         tonight = AttemptRegistry(path)
         tonight.record({"model": "lgbm", "horizon": 60, "series": "JPM"})
@@ -91,8 +90,9 @@ class TestTheRegistry:
     def test_a_family_is_filtered_by_its_outcome_unit(self, tmp_path):
         reg = AttemptRegistry(str(tmp_path / "a.jsonl"))
         for unit in ("JPM", "JPM", "LLY"):
-            reg.record({"model": "ridge", "horizon": len(reg.cells()) + 1,
-                        "series": unit})
+            reg.record(
+                {"model": "ridge", "horizon": len(reg.cells()) + 1, "series": unit}
+            )
         assert reg.count(series="JPM") == 2
         assert reg.count(series="LLY") == 1
 
@@ -160,8 +160,10 @@ class TestTheStatistic:
         assert bar["pass_mark"] >= 3.0
 
     def test_a_cell_with_no_variance_across_sessions_takes_no_part(self):
-        cells = {"flat": {s: (1.0, 1) for s in range(5)},
-                 "real": {s: (float(s), 1) for s in range(5)}}
+        cells = {
+            "flat": {s: (1.0, 1) for s in range(5)},
+            "real": {s: (float(s), 1) for s in range(5)},
+        }
         bar = max_bar(cells, n_boot=200, seed=1)
         flat = next(r for r in bar["rows"] if r["cell"] == "flat")
         assert flat["t"] is None
@@ -208,14 +210,10 @@ class TestTheNull:
         bar = max_bar(cells, n_boot=10000, seed=5)
         # Every cell is offered a PASSING skill result, so only the P8
         # half of the rule can refuse it — and it does, every time.
-        verdicts = [
-            bar_verdict(name, bar, skill=PASSING_SKILL) for name in cells
-        ]
+        verdicts = [bar_verdict(name, bar, skill=PASSING_SKILL) for name in cells]
         assert not any(v["passes"] for v in verdicts)
         assert bar["rows"][0]["t"] < bar["pass_mark"]
-        assert all(
-            r["adj_p"] is None or r["adj_p"] > 0.05 for r in bar["rows"]
-        )
+        assert all(r["adj_p"] is None or r["adj_p"] > 0.05 for r in bar["rows"])
 
     def test_the_resampled_bar_sits_where_luck_puts_it(self):
         # The 95th percentile of the best-of-40 pure-noise statistics is
@@ -336,18 +334,24 @@ def _write_walk(root, n_folds=4, n_days=6, edge=0.0, seed=3):
                 y = [rng.gauss(0.0, 1.0) for _ in stamps]
                 yhat = [edge * v + (1 - edge) * rng.gauss(0, 1) for v in y]
                 w.append(name, LEAD, stamps, y, yhat, 0.0)
-        folds.append({"cutoff": f"2024-{i + 1:02d}-01", "run_dir": run_dir,
-                      "state": "ran", "score": 0.0})
-    with open(os.path.join(summary, "walkforward.json"), "w",
-              encoding="utf-8") as fh:
+        folds.append(
+            {
+                "cutoff": f"2024-{i + 1:02d}-01",
+                "run_dir": run_dir,
+                "state": "ran",
+                "score": 0.0,
+            }
+        )
+    with open(os.path.join(summary, "walkforward.json"), "w", encoding="utf-8") as fh:
         json.dump({"name": "walk", "asof": "2025-11-30", "folds": folds}, fh)
     return summary
 
 
 class TestReadingARealWalk:
     def test_a_walk_reduces_to_one_cell_per_name_and_the_group(self, tmp_path):
-        cells = walk_cells(_write_walk(str(tmp_path)),
-                           key={"model": "ridge", "spacing": 5})
+        cells = walk_cells(
+            _write_walk(str(tmp_path)), key={"model": "ridge", "spacing": 5}
+        )
         units = {c["key"]["series"] for c in cells}
         assert units == {"AAA", "BBB", "CCC", "GROUP"}
         for cell in cells:
@@ -374,11 +378,36 @@ class TestReadingARealWalk:
         )
         assert "pass mark" in format_bar(scored)
 
+    def test_group_cells_can_be_suppressed(self, tmp_path):
+        cells = walk_cells(
+            _write_walk(str(tmp_path)),
+            key={"model": "ridge", "spacing": 5},
+            group=None,
+        )
+        assert {cell["key"]["series"] for cell in cells} == set(NAMES)
+
+    def test_one_injected_family_can_cover_every_asset(self, tmp_path):
+        scored = score_bar(
+            [_write_walk(str(tmp_path))],
+            keys=[{"model": "ridge", "spacing": 5}],
+            n_boot=200,
+            group=None,
+            family_of=lambda _cell: "whole-study",
+        )
+        assert scored["n_cells"] == len(NAMES)
+        assert set(scored["families"]) == {"whole-study"}
+        family = scored["families"]["whole-study"]
+        assert family["bar"]["k"] == len(NAMES)
+        assert {
+            family["keys"][verdict["cell"]]["series"] for verdict in family["verdicts"]
+        } == set(NAMES)
+
     def test_a_walk_with_no_rows_refuses_rather_than_inventing_a_bar(self, tmp_path):
         summary = os.path.join(str(tmp_path), "empty")
         os.makedirs(summary, exist_ok=True)
-        with open(os.path.join(summary, "walkforward.json"), "w",
-                  encoding="utf-8") as fh:
+        with open(
+            os.path.join(summary, "walkforward.json"), "w", encoding="utf-8"
+        ) as fh:
             json.dump({"name": "w", "asof": "x", "folds": []}, fh)
         with pytest.raises(ValueError, match="no walk kept"):
             score_bar([summary], n_boot=200)

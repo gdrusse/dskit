@@ -464,23 +464,22 @@ def _node_outputs(run_dir):
         # Existing but unlistable (permissions, I/O): name it on this
         # run and let the scan go on — one refusing directory must not
         # take the whole table down.
-        return {}, [f"unlistable {NODES_DIR}/: {exc} — per-node records are not tabulated"]
+        return {}, [
+            f"unlistable {NODES_DIR}/: {exc} — per-node records are not tabulated"
+        ]
     out, notes = {}, []
     for entry in entries:
         record, reason = _load_json(os.path.join(nodes_dir, entry))
         if not isinstance(record, dict):
             notes.append(
-                f"{NODES_DIR}/{entry}: "
-                f"{reason or 'is not an object'} — not tabulated"
+                f"{NODES_DIR}/{entry}: {reason or 'is not an object'} — not tabulated"
             )
             continue
         key, outputs = record.get("node"), record.get("outputs")
         if isinstance(key, str) and isinstance(outputs, dict):
             out[key] = outputs
         else:
-            notes.append(
-                f"{NODES_DIR}/{entry}: no node/outputs pair — not tabulated"
-            )
+            notes.append(f"{NODES_DIR}/{entry}: no node/outputs pair — not tabulated")
     return out, notes
 
 
@@ -529,8 +528,7 @@ def _render_table(columns, rows):
         "|" + "---|" * len(header),
     ]
     lines += [
-        "| " + " | ".join(_render_cell(value) for value in row) + " |"
-        for row in rows
+        "| " + " | ".join(_render_cell(value) for value in row) + " |" for row in rows
     ]
     return lines
 
@@ -683,10 +681,7 @@ def _group_folds(fold_payloads, lead):
 
     folds = []
     for entries in fold_payloads:
-        units = [
-            e for e in entries
-            if e["lead"] == lead and len(e.get("d") or ()) >= 2
-        ]
+        units = [e for e in entries if e["lead"] == lead and len(e.get("d") or ()) >= 2]
         if units:
             fold = cross_sectional_fold(units)
             fold["h_steps"] = units[0].get("h_steps")
@@ -700,9 +695,7 @@ def _side_columns(records):
     ps = [float(r["p_value"]) for r in records if number_ok(r.get("p_value"))]
     return {
         "cw_t_mean": sum(ts) / len(ts) if ts else None,
-        "cw_reject_frac": (
-            sum(1 for p in ps if p <= 0.05) / len(ps) if ps else None
-        ),
+        "cw_reject_frac": (sum(1 for p in ps if p <= 0.05) / len(ps) if ps else None),
     }
 
 
@@ -732,9 +725,12 @@ def _summary_row(series, lead, records, alpha):
     from dskit.pipeline.stats import across_fold_t
 
     kept = [
-        r for r in records
-        if number_ok(r.get("mspe_mean")) and float(r["mspe_mean"]) > 0.0
-        and number_ok(r.get("mspe_model")) and number_ok(r.get("n"))
+        r
+        for r in records
+        if number_ok(r.get("mspe_mean"))
+        and float(r["mspe_mean"]) > 0.0
+        and number_ok(r.get("mspe_model"))
+        and number_ok(r.get("n"))
     ]
     r2 = [1.0 - float(r["mspe_model"]) / float(r["mspe_mean"]) for r in kept]
     weight = sum(float(r["n"]) * float(r["mspe_mean"]) for r in kept)
@@ -778,7 +774,8 @@ def score_walk(summary_dir, alpha=0.05, group="GROUP"):
     alpha : float
         One-sided level for both tests, in ``(0, 1)``.
     group : str
-        The label the cross-sectional row is reported under.
+        The label the cross-sectional row is reported under. ``None``
+        suppresses synthetic aggregation (ADR-0075).
 
     Returns
     -------
@@ -821,7 +818,8 @@ def score_walk(summary_dir, alpha=0.05, group="GROUP"):
             if (series, lead) in by_gap
             else _summary_row(series, lead, seen, alpha)
         )
-    rows.extend(_group_rows(gaps, by_record, exact, alpha, group))
+    if group is not None:
+        rows.extend(_group_rows(gaps, by_record, exact, alpha, group))
     return {
         "summary_dir": summary_dir,
         "n_folds": len(fold_dirs),
@@ -865,12 +863,22 @@ def format_skill(scored):
         print(format_skill(score_walk(summary)))
     """
     columns = [
-        "series", "lead", "n_folds", "n_rows", "t_pool", "t_fold",
-        "r2oos", "cw_t_mean", "cw_reject_frac", "passes",
+        "series",
+        "lead",
+        "n_folds",
+        "n_rows",
+        "t_pool",
+        "t_fold",
+        "r2oos",
+        "cw_t_mean",
+        "cw_reject_frac",
+        "passes",
     ]
-    body = "\n".join(_render_table(
-        columns, [[row.get(c) for c in columns] for row in scored["rows"]]
-    ))
+    body = "\n".join(
+        _render_table(
+            columns, [[row.get(c) for c in columns] for row in scored["rows"]]
+        )
+    )
     tail = "".join("\n\nnote: " + n for n in scored["notes"])
     return body + tail
 
@@ -971,9 +979,7 @@ def unknown_params(runs, params):
         order; empty when every path is real.
     """
     return tuple(
-        path
-        for path in params
-        if not any(_walk(run.config, path)[0] for run in runs)
+        path for path in params if not any(_walk(run.config, path)[0] for run in runs)
     )
 
 
@@ -1062,23 +1068,25 @@ def _calibration_rows(slopes, alpha):
     from dskit.pipeline.ordering import calibration_across_folds
 
     rows = []
-    for (series, lead) in sorted(slopes, key=lambda k: (k[1], k[0])):
+    for series, lead in sorted(slopes, key=lambda k: (k[1], k[0])):
         values = slopes[(series, lead)]
         if len(values) < 2:
             continue
         summary = calibration_across_folds(values)
-        rows.append({
-            "series": series,
-            "lead": lead,
-            "n_folds": summary["n_folds"],
-            "slope": summary["slope_mean"],
-            "slope_se": summary["slope_se"],
-            "t_vs_0": summary["t_vs_0"],
-            "t_vs_1": summary["t_vs_1"],
-            "frac_pos": summary["frac_positive"],
-            "reading": _slope_reading(summary),
-            "alpha": alpha,
-        })
+        rows.append(
+            {
+                "series": series,
+                "lead": lead,
+                "n_folds": summary["n_folds"],
+                "slope": summary["slope_mean"],
+                "slope_se": summary["slope_se"],
+                "t_vs_0": summary["t_vs_0"],
+                "t_vs_1": summary["t_vs_1"],
+                "frac_pos": summary["frac_positive"],
+                "reading": _slope_reading(summary),
+                "alpha": alpha,
+            }
+        )
     return rows
 
 
@@ -1091,39 +1099,45 @@ def _ordering_rows(lead_acc):
     for lead in sorted(lead_acc):
         acc = lead_acc[lead]
         pooled = ic_from_rho(
-            acc["rho"], acc["n_names_all"], h_steps=acc["h_steps"],
+            acc["rho"],
+            acc["n_names_all"],
+            h_steps=acc["h_steps"],
             n_skipped=acc["n_skipped"],
         )
         demeaned = ic_from_rho(
-            acc["rho_demeaned"], acc["n_names_all"], h_steps=acc["h_steps"],
+            acc["rho_demeaned"],
+            acc["n_names_all"],
+            h_steps=acc["h_steps"],
         )
         verdict = ordering_verdict(
-            pooled, demeaned,
-            fold_positive=acc["folds_positive"], n_folds=acc["n_folds"],
+            pooled,
+            demeaned,
+            fold_positive=acc["folds_positive"],
+            n_folds=acc["n_folds"],
         )
-        name_time = (
-            across_fold_t(acc["pooled"]) if len(acc["pooled"]) >= 2 else None
+        name_time = across_fold_t(acc["pooled"]) if len(acc["pooled"]) >= 2 else None
+        rows.append(
+            {
+                "lead": lead,
+                "n_stamps": pooled["n_stamps"],
+                "names_min": pooled["n_names"]["min"],
+                "names_median": pooled["n_names"]["median"],
+                "names_max": pooled["n_names"]["max"],
+                "xs_ic": pooled["ic"],
+                "xs_ic_t": pooled["ic_t"],
+                "xs_ic_p": pooled["ic_p"],
+                "frac_pos": pooled["frac_pos"],
+                "xs_ic_demeaned": demeaned["ic"],
+                "retained": verdict["retained"],
+                "pooled_name_time_ic": None if name_time is None else name_time["mean"],
+                "folds_positive": acc["folds_positive"],
+                "n_folds": acc["n_folds"],
+                "usable": pooled["usable"],
+                "passes": verdict["passes"],
+                "reasons": verdict["reasons"],
+                "unusable_reason": pooled["unusable_reason"],
+            }
         )
-        rows.append({
-            "lead": lead,
-            "n_stamps": pooled["n_stamps"],
-            "names_min": pooled["n_names"]["min"],
-            "names_median": pooled["n_names"]["median"],
-            "names_max": pooled["n_names"]["max"],
-            "xs_ic": pooled["ic"],
-            "xs_ic_t": pooled["ic_t"],
-            "xs_ic_p": pooled["ic_p"],
-            "frac_pos": pooled["frac_pos"],
-            "xs_ic_demeaned": demeaned["ic"],
-            "retained": verdict["retained"],
-            "pooled_name_time_ic": None if name_time is None else name_time["mean"],
-            "folds_positive": acc["folds_positive"],
-            "n_folds": acc["n_folds"],
-            "usable": pooled["usable"],
-            "passes": verdict["passes"],
-            "reasons": verdict["reasons"],
-            "unusable_reason": pooled["unusable_reason"],
-        })
     return rows
 
 
@@ -1190,9 +1204,7 @@ def score_ordering(summary_dir, alpha=0.05):
                 fit = calibration_slope(unit["y"], unit["yhat"], h_steps=steps)
             except ValueError:
                 continue
-            slopes.setdefault((unit["symbol"], unit["lead"]), []).append(
-                fit["slope"]
-            )
+            slopes.setdefault((unit["symbol"], unit["lead"]), []).append(fit["slope"])
         for lead in sorted({u["lead"] for u in units}):
             steps = max(int(units[0].get("h_steps") or 1), 1)
             acc = lead_acc.setdefault(lead, _new_lead_accumulator(steps))
@@ -1238,22 +1250,45 @@ def format_ordering(scored):
         print(format_ordering(score_ordering(summary)))
     """
     size_cols = [
-        "series", "lead", "n_folds", "slope", "slope_se", "t_vs_0", "t_vs_1",
-        "frac_pos", "reading",
+        "series",
+        "lead",
+        "n_folds",
+        "slope",
+        "slope_se",
+        "t_vs_0",
+        "t_vs_1",
+        "frac_pos",
+        "reading",
     ]
     order_cols = [
-        "lead", "n_stamps", "names_min", "names_median", "names_max", "xs_ic",
-        "xs_ic_t", "xs_ic_p", "frac_pos", "xs_ic_demeaned", "retained",
-        "pooled_name_time_ic", "folds_positive", "usable", "passes",
+        "lead",
+        "n_stamps",
+        "names_min",
+        "names_median",
+        "names_max",
+        "xs_ic",
+        "xs_ic_t",
+        "xs_ic_p",
+        "frac_pos",
+        "xs_ic_demeaned",
+        "retained",
+        "pooled_name_time_ic",
+        "folds_positive",
+        "usable",
+        "passes",
     ]
-    size = "\n".join(_render_table(
-        size_cols,
-        [[row.get(c) for c in size_cols] for row in scored["calibration"]],
-    ))
-    order = "\n".join(_render_table(
-        order_cols,
-        [[row.get(c) for c in order_cols] for row in scored["ordering"]],
-    ))
+    size = "\n".join(
+        _render_table(
+            size_cols,
+            [[row.get(c) for c in size_cols] for row in scored["calibration"]],
+        )
+    )
+    order = "\n".join(
+        _render_table(
+            order_cols,
+            [[row.get(c) for c in order_cols] for row in scored["ordering"]],
+        )
+    )
     tail = "".join("\n\nnote: " + n for n in scored["notes"])
     return (
         "SIZE — calibration slope of outcome on forecast, pooled over folds\n\n"
@@ -1261,9 +1296,7 @@ def format_ordering(scored):
         + "\n\nORDER — rank correlation WITHIN each instant (xs_ic), against the "
         "pooled\n(name, time) correlation the scan reports "
         "(pooled_name_time_ic). They are\nnot the same number: the pooled one "
-        "mixes 'when' with 'which name'.\n\n"
-        + order
-        + tail
+        "mixes 'when' with 'which name'.\n\n" + order + tail
     )
 
 
@@ -1329,6 +1362,7 @@ def walk_cells(summary_dir, key=None, session_of=None, alpha=0.05, group="GROUP"
         One-sided level for the per-cell skill test, in ``(0, 1)``.
     group : str
         Label for the cross-sectional row, which is its own outcome unit.
+        ``None`` suppresses that synthetic cell (ADR-0075).
 
     Returns
     -------
@@ -1356,32 +1390,36 @@ def walk_cells(summary_dir, key=None, session_of=None, alpha=0.05, group="GROUP"
         units = [u for u in _fold_gaps(run_dir) if len(u.get("d") or ()) >= 2]
         for unit in units:
             _accumulate_cell(store, (unit["symbol"], unit["lead"]), unit, session_of)
-        for lead in sorted({u["lead"] for u in units}):
-            panel = _group_folds([units], lead)
-            if panel:
-                _accumulate_cell(store, (group, lead), panel[0], session_of)
+        if group is not None:
+            for lead in sorted({u["lead"] for u in units}):
+                panel = _group_folds([units], lead)
+                if panel:
+                    _accumulate_cell(store, (group, lead), panel[0], session_of)
         units = None
     out = []
     for (series, lead), cell in sorted(store.items(), key=lambda kv: kv[0][::-1]):
         knobs = {**base, "series": series, "horizon": lead}
-        out.append({
-            "cell": cell_id(knobs),
-            "key": knobs,
-            "totals": cell["totals"],
-            "skill": _cell_skill(cell, alpha),
-            "n_folds": len(cell["folds"]),
-        })
+        out.append(
+            {
+                "cell": cell_id(knobs),
+                "key": knobs,
+                "totals": cell["totals"],
+                "skill": _cell_skill(cell, alpha),
+                "n_folds": len(cell["folds"]),
+            }
+        )
         cell["folds"] = []
     return out
 
 
-def _collect_cells(summary_dirs, keys, registry, session_of, alpha):
+def _collect_cells(summary_dirs, keys, registry, session_of, alpha, group):
     """Reduce every walk in turn, recording each cell as an attempt."""
     collected = {}
     for i, summary_dir in enumerate(summary_dirs):
         key = keys[i] if keys and i < len(keys) else None
-        for cell in walk_cells(summary_dir, key=key, session_of=session_of,
-                               alpha=alpha):
+        for cell in walk_cells(
+            summary_dir, key=key, session_of=session_of, alpha=alpha, group=group
+        ):
             collected[cell["cell"]] = cell
             if registry is not None:
                 skill = cell["skill"] or {}
@@ -1395,8 +1433,33 @@ def _collect_cells(summary_dirs, keys, registry, session_of, alpha):
     return collected
 
 
-def score_bar(summary_dirs, keys=None, registry=None, session_of=None,
-              n_boot=10000, seed=0, alpha=0.05):
+def _series_family(cell):
+    """Default multiplicity family: one family per scored outcome unit."""
+    return cell["key"]["series"]
+
+
+def _family_count(registry, family_of, family):
+    """Count registered cells assigned to one injected family."""
+    if registry is None:
+        return None
+    return sum(
+        1
+        for row in registry.cells().values()
+        if family_of({"key": row["key"]}) == family
+    )
+
+
+def score_bar(
+    summary_dirs,
+    keys=None,
+    registry=None,
+    session_of=None,
+    n_boot=10000,
+    seed=0,
+    alpha=0.05,
+    group="GROUP",
+    family_of=None,
+):
     """Raise ADR-0067's mark for the many attempts behind it (ADR-0069).
 
     One family per OUTCOME UNIT — each name, and the group — because a
@@ -1428,6 +1491,13 @@ def score_bar(summary_dirs, keys=None, registry=None, session_of=None,
     alpha : float
         Family-wise level, in ``(0, 1)``.
 
+    group : str or None
+        Synthetic aggregate label. ``None`` suppresses aggregate cells.
+    family_of : callable or None
+        Strategy mapping one collected cell to its family key. The default
+        keeps one family per series; a constant strategy makes one study-wide
+        family without changing :func:`max_bar` (ADR-0075).
+
     Returns
     -------
     dict
@@ -1453,24 +1523,44 @@ def score_bar(summary_dirs, keys=None, registry=None, session_of=None,
 
     if not summary_dirs:
         raise ValueError("summary_dirs must name at least one walk")
-    collected = _collect_cells(summary_dirs, keys, registry, session_of, alpha)
+    collected = _collect_cells(
+        summary_dirs,
+        keys,
+        registry,
+        session_of,
+        alpha,
+        group,
+    )
     if not collected:
         raise ValueError(
             "no walk kept per-row predictions — the bar resamples stored "
             "scores, and there are none (ADR-0064 artifact absent)"
         )
+    family_of = _series_family if family_of is None else family_of
+    assigned = {ident: family_of(cell) for ident, cell in collected.items()}
+    bad = sorted(
+        {
+            repr(value)
+            for value in assigned.values()
+            if not isinstance(value, str) or not value
+        }
+    )
+    if bad:
+        raise ValueError(f"family_of must return non-empty strings, got {bad}")
     families, notes = {}, []
-    units = sorted({c["key"]["series"] for c in collected.values()})
-    for unit in units:
+    for unit in sorted(set(assigned.values())):
         cells = {
             c["cell"]: {s: tuple(v) for s, v in c["totals"].items()}
             for c in collected.values()
-            if c["key"]["series"] == unit
+            if assigned[c["cell"]] == unit
         }
-        declared = registry.count(series=unit) if registry is not None else None
+        declared = _family_count(registry, family_of, unit)
         try:
             bar = max_bar(
-                cells, n_boot=n_boot, seed=seed, alpha=alpha,
+                cells,
+                n_boot=n_boot,
+                seed=seed,
+                alpha=alpha,
                 k_declared=declared,
             )
         except ValueError as exc:
@@ -1481,15 +1571,17 @@ def score_bar(summary_dirs, keys=None, registry=None, session_of=None,
             "bar": bar,
             "verdicts": [
                 bar_verdict(
-                    row["cell"], bar,
-                    skill=collected[row["cell"]]["skill"], alpha=alpha,
+                    row["cell"],
+                    bar,
+                    skill=collected[row["cell"]]["skill"],
+                    alpha=alpha,
                 )
                 for row in bar["rows"]
             ],
             "keys": {
                 c["cell"]: c["key"]
                 for c in collected.values()
-                if c["key"]["series"] == unit
+                if assigned[c["cell"]] == unit
             },
         }
     return {
@@ -1520,8 +1612,17 @@ def format_bar(scored):
 
         print(format_bar(score_bar(walks)))
     """
-    columns = ["horizon", "t", "pass_mark", "adj_p", "r2oos", "r2oos_lower",
-               "p5_passes", "passes", "why"]
+    columns = [
+        "horizon",
+        "t",
+        "pass_mark",
+        "adj_p",
+        "r2oos",
+        "r2oos_lower",
+        "p5_passes",
+        "passes",
+        "why",
+    ]
     blocks = []
     for unit in sorted(scored["families"]):
         family = scored["families"][unit]
@@ -1529,13 +1630,19 @@ def format_bar(scored):
         rows = []
         for verdict in family["verdicts"]:
             key = family["keys"][verdict["cell"]]
-            rows.append([
-                key.get("horizon"), verdict["t"], verdict["pass_mark"],
-                verdict["adj_p"], verdict["r2oos"], verdict["r2oos_lower"],
-                _p5_flag(verdict),
-                verdict["passes"],
-                verdict["reasons"][0].split(" — ")[0] if verdict["reasons"] else "",
-            ])
+            rows.append(
+                [
+                    key.get("horizon"),
+                    verdict["t"],
+                    verdict["pass_mark"],
+                    verdict["adj_p"],
+                    verdict["r2oos"],
+                    verdict["r2oos_lower"],
+                    _p5_flag(verdict),
+                    verdict["passes"],
+                    verdict["reasons"][0].split(" — ")[0] if verdict["reasons"] else "",
+                ]
+            )
         blocks.append(
             f"{unit} — {bar['k']} cell(s) resampled of {bar['k_declared']} "
             f"attempted; c* {bar['c_star']:.3f}, pass mark "

@@ -226,9 +226,7 @@ class TestScan:
     def test_default_run_root_agrees_with_the_driver(self, tmp_path, monkeypatch):
         """The reader's default root and the writer's are the same place."""
         monkeypatch.chdir(tmp_path)
-        result = run_document(
-            banking_document(), asof=FIRST, registry=make_registry()
-        )
+        result = run_document(banking_document(), asof=FIRST, registry=make_registry())
         assert result.run_dir.startswith(os.path.abspath(DEFAULT_RUN_ROOT))
         runs, _ = scan_runs(DEFAULT_RUN_ROOT)
         assert [r.run_dir for r in runs] == [result.run_dir]
@@ -277,9 +275,7 @@ class TestScan:
             ),
         }
         second = run_document(
-            banking_document(
-                pipeline=pipeline, outputs=OutputsConfig(run_root=root)
-            ),
+            banking_document(pipeline=pipeline, outputs=OutputsConfig(run_root=root)),
             asof=FIRST,
             registry=registry,
         )
@@ -410,9 +406,7 @@ class TestSummarizedMetrics:
             ),
         }
         run_document(
-            banking_document(
-                pipeline=pipeline, outputs=OutputsConfig(run_root=root)
-            ),
+            banking_document(pipeline=pipeline, outputs=OutputsConfig(run_root=root)),
             asof=FIRST,
             registry=make_registry(),
         )
@@ -464,17 +458,13 @@ class TestLostMeasurements:
             ),
         }
         run_document(
-            banking_document(
-                pipeline=pipeline, outputs=OutputsConfig(run_root=root)
-            ),
+            banking_document(pipeline=pipeline, outputs=OutputsConfig(run_root=root)),
             asof=FIRST,
             registry=make_registry(),
         )
         return root
 
-    def test_a_diverged_top_level_number_is_said_out_loud(
-        self, diverged_scalar_root
-    ):
+    def test_a_diverged_top_level_number_is_said_out_loud(self, diverged_scalar_root):
         (run,), problems = scan_runs(diverged_scalar_root)
         assert problems == ()
         assert "diverged.loss" not in run.metrics  # "inf" is text, not a number
@@ -502,9 +492,7 @@ class TestLostMeasurements:
             ),
         }
         run_document(
-            banking_document(
-                pipeline=pipeline, outputs=OutputsConfig(run_root=root)
-            ),
+            banking_document(pipeline=pipeline, outputs=OutputsConfig(run_root=root)),
             asof=FIRST,
             registry=make_registry(),
         )
@@ -558,9 +546,7 @@ class TestLostMeasurements:
             # The tmp dir must stay removable after the test.
             os.chmod(nodes, 0o755)
 
-    def test_an_unreadable_config_is_named_not_read_as_an_absent_knob(
-        self, two_runs
-    ):
+    def test_an_unreadable_config_is_named_not_read_as_an_absent_knob(self, two_runs):
         """`param_at` reports None for a knob a document never declared —
         a legitimate answer. An unreadable config.json is not that."""
         root, results = two_runs
@@ -887,9 +873,7 @@ class TestVerb:
             ),
         }
         run_document(
-            banking_document(
-                pipeline=pipeline, outputs=OutputsConfig(run_root=root)
-            ),
+            banking_document(pipeline=pipeline, outputs=OutputsConfig(run_root=root)),
             asof=SECOND,
             registry=registry,
         )

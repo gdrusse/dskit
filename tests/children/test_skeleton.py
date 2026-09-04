@@ -19,12 +19,14 @@ SKELETON = os.path.join(REPO_ROOT, "children", "_skeleton")
 #: pin is what makes a stray file, a lost test, or an unreviewed addition
 #: to the template a loud failure instead of something copies inherit.
 EXPECTED_FILES = {
+    "AGENTS.md",
     "CLAUDE.md",
     "README.md",
     "journal.json",
     "docs/decisioning/README.md",
     "docs/decisioning/actions.csv",
     "docs/decisioning/path.csv",
+    "docs/memos/.gitkeep",
     "docs/research/.gitkeep",
     "configs/asset-model.json",
     "configs/run-sample.json",

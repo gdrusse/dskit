@@ -19,6 +19,7 @@ One command line for every project and venue (docs/24 §9, D-145 ruling
   cross-run view, with no dependency on a tracking server.
   ``--metric``/``--param`` select columns; ``--limit`` shows the newest
   N and counts the rest.
+* ``staged <config.json> [--asof YYYY-MM-DD]`` — journal-backed stages.
 * ``skill <walkforward-summary-dir>`` — judge a walk-forward under
   ADR-0067: the Diebold–Mariano gap against the fold's constant training
   mean, pooled over folds and checked across them, per series and for the
@@ -222,6 +223,7 @@ def _doc_validate(path) -> int:
             "tracking",
             "walkforward",
             "foreach",
+            "stages",
         )
         if getattr(doc, s) is not None
     ]
@@ -309,10 +311,14 @@ def cmd_plan(path, adapters=()) -> int:
     """
     from dskit.pipeline.document import load_document
     from dskit.pipeline.planner import plan
+    from dskit.pipeline.stages import plan_stages
 
     try:
         _import_adapters(adapters)
-        resolved = plan(load_document(path))
+        document = load_document(path)
+        resolved = (
+            plan_stages(document) if document.stages is not None else plan(document)
+        )
     except (ImportError, ValueError, OSError) as exc:
         print(exc)
         return 1
@@ -385,6 +391,27 @@ def cmd_walkforward(path, asof, adapters=()) -> int:
     return result.exit_code
 
 
+def cmd_staged(path, asof, adapters=()) -> int:
+    """Execute or resume a document's journal-backed study stages."""
+    from dskit.pipeline.stages import run_staged
+
+    try:
+        _import_adapters(adapters)
+        result = run_staged(path, asof=asof)
+    except (ImportError, ValueError, OSError) as exc:
+        print(exc)
+        return 1
+    final = result.completed[-1] if result.completed else "none"
+    print(
+        f"staged pipeline {result.state}; completed={len(result.completed)}; "
+        f"last={final}"
+    )
+    if result.reason:
+        print(f"reason: {result.reason}")
+    print(f"(staged run dir: {result.run_dir})")
+    return result.exit_code
+
+
 def _a_level(text):
     """Parse a one-sided test level: a number strictly inside (0, 1)."""
     import argparse
@@ -442,7 +469,6 @@ def cmd_skill(summary_dir, alpha=0.05):
     print(f"{scored['summary_dir']} — {scored['n_folds']} fold(s)\n")
     print(format_skill(scored))
     return 0 if scored["exact"] else 3
-
 
 
 def cmd_ordering(summary_dir, alpha=0.05):
@@ -531,7 +557,10 @@ def cmd_bar(summary_dirs, registry=None, n_boot=10000, seed=0, alpha=0.05):
     ledger = AttemptRegistry(registry) if registry else None
     try:
         scored = score_bar(
-            list(summary_dirs), registry=ledger, n_boot=n_boot, seed=seed,
+            list(summary_dirs),
+            registry=ledger,
+            n_boot=n_boot,
+            seed=seed,
             alpha=alpha,
         )
     except (ValueError, ImportError) as exc:
@@ -739,6 +768,18 @@ def main(argv=None) -> int:
         help="the run's asof (defaults to today, UTC)",
     )
     _add_adapter_flag(run_p)
+    staged_p = sub.add_parser(
+        "staged", help="execute or resume journal-backed study stages"
+    )
+    staged_p.add_argument("path", help="path to the document JSON")
+    staged_p.add_argument(
+        "--asof",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="the study asof (defaults to today, UTC)",
+    )
+    _add_adapter_flag(staged_p)
+
     wf_p = sub.add_parser(
         "walkforward",
         help="run the document's declared walkforward section: one run per "
@@ -789,8 +830,7 @@ def main(argv=None) -> int:
         type=_a_shown_count,
         default=None,
         metavar="N",
-        help="show only the newest N runs, N >= 1 (the rest are counted, "
-        "not hidden)",
+        help="show only the newest N runs, N >= 1 (the rest are counted, not hidden)",
     )
     skill_p = sub.add_parser(
         "skill",
@@ -845,7 +885,10 @@ def main(argv=None) -> int:
         help="bootstrap replicates, >= 100 (default 10000)",
     )
     bar_p.add_argument(
-        "--seed", type=int, default=0, metavar="N",
+        "--seed",
+        type=int,
+        default=0,
+        metavar="N",
         help="seeds the per-session coins (default 0)",
     )
     bar_p.add_argument(
@@ -867,6 +910,8 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if args.command == "run":
         return cmd_run(args.path, args.asof, args.adapter)
+    if args.command == "staged":
+        return cmd_staged(args.path, args.asof, args.adapter)
     if args.command == "walkforward":
         return cmd_walkforward(args.path, args.asof, args.adapter)
     if args.command == "plan":

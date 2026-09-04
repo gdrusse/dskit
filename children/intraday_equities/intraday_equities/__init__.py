@@ -16,6 +16,7 @@ stay cheap exactly as before.
 from dskit.pipeline.libs.torch_ts import register as _register_torch_ts
 
 from .connectors import AlpacaBars, SchwabBars
+from .feature_cache import SessionFeatureCache
 from .nodes import (
     NODE_KINDS,
     BarsFromStore,
@@ -41,6 +42,7 @@ __all__ = [
     "LookbackScan",
     "NoInformationScan",
     "NODE_KINDS",
+    "SessionFeatureCache",
     "PortfolioSelect",
     "SchwabBars",
     "SessionFeatureRows",

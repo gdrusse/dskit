@@ -82,7 +82,7 @@ class _StubMixin:
         spec = super().spec()
         spec["params"]["bars_per_symbol"] = {
             "notes": "TEST-ONLY: bars each symbol yields from start; "
-                     f"default {DEFAULT_BARS_PER_SYMBOL}.",
+            f"default {DEFAULT_BARS_PER_SYMBOL}.",
         }
         return spec
 
@@ -100,8 +100,7 @@ class _StubMixin:
             Resolved knobs including ``bars_per_symbol``.
         """
         knobs = super().resolve_knobs(
-            {key: value for key, value in config.items()
-             if key != "bars_per_symbol"}
+            {key: value for key, value in config.items() if key != "bars_per_symbol"}
         )
         knobs["bars_per_symbol"] = config.get(
             "bars_per_symbol", DEFAULT_BARS_PER_SYMBOL
@@ -243,14 +242,16 @@ class StubSchwabBars(_StubMixin, SchwabBars):
             if stamp_ms < start_ms or stamp_ms >= end_ms:
                 continue
             bar = synthetic_bar(symbol, stamp, index)
-            candles.append({
-                "datetime": stamp_ms,
-                "open": bar["open"],
-                "high": bar["high"],
-                "low": bar["low"],
-                "close": bar["close"],
-                "volume": bar["volume"],
-            })
+            candles.append(
+                {
+                    "datetime": stamp_ms,
+                    "open": bar["open"],
+                    "high": bar["high"],
+                    "low": bar["low"],
+                    "close": bar["close"],
+                    "volume": bar["volume"],
+                }
+            )
         return {"candles": candles}
 
 
@@ -276,5 +277,6 @@ class _StubOAuth:
         """
         if not returned:
             from dskit.onboarding import AssetError
+
             raise AssetError(["authorization code must be a non-empty string"])
         return {"access_token": "stub", "refresh_token": "stub"}

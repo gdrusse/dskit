@@ -26,6 +26,8 @@ Agent orientation — see README.md for operator commands.
 - **Standalone explanations live in `docs/explanations/`.** They explain
   child-specific methods or results without becoming decision records or
   journaled research.
+- **Durable handoffs live in `docs/memos/`.** Use them for completed-study
+  evidence, implementation outcomes, and operational caveats.
 
 ## Invariants
 
@@ -56,6 +58,7 @@ journal.json         # dskit.journal marker
 docs/decisioning/    # actions.csv + path.csv; README generated
 docs/research/       # research markdown
 docs/explanations/   # standalone worked explanations
+docs/memos/          # durable implementation and operational handoffs
 tests/               # conftest + connectors/nodes/configs/live
 ```
 

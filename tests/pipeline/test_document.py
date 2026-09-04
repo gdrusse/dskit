@@ -459,7 +459,7 @@ class TestPipelineDocument:
 
     def test_from_obj_rejects_unknown_top_level_keys(self):
         with pytest.raises(ConfigError, match="unknown key"):
-            PipelineDocument.from_obj({"name": "x", "pipeline": {}, "stages": []})
+            PipelineDocument.from_obj({"name": "x", "pipeline": {}, "mystery": []})
 
     def test_round_trip_preserves_identity(self):
         d = doc(

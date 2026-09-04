@@ -78,6 +78,11 @@ from CSV). Acquire and execute record themselves; research is
 `python -m dskit.journal research`; production wraps `live.main`.
 Path to production is owner `journal promote`.
 
+**Memos.** Put durable implementation handoffs, completed-study evidence, and
+operational caveats in `docs/memos/`. They are ordinary reviewed documents,
+not ADRs and not journaled research. The skeleton keeps the folder present via
+`.gitkeep`, so every copied child starts with it.
+
 > The skeleton's sample data node is self-contained, so step 5 works
 > before step 2. A real child's data node reads the store, so there the
 > order is real.
@@ -113,6 +118,8 @@ _skeleton/
 │   ├── actions.csv
 │   └── path.csv
 ├── docs/research/         # research agent markdown
+│   └── .gitkeep
+├── docs/memos/            # durable implementation and operational handoffs
 │   └── .gitkeep
 ├── journal.json           # walk-up marker for dskit.journal
 └── tests/                 # green in-repo AND after graduation, uninstalled

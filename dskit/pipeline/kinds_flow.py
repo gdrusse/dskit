@@ -354,13 +354,9 @@ class EventGrid(Node):
             and offset >= 0
         )
         if not period_ref and not period_ok:
-            problems.append(
-                f"period_ms is required as an int > 0, got {period!r}"
-            )
+            problems.append(f"period_ms is required as an int > 0, got {period!r}")
         if not offset_ref and not offset_ok:
-            problems.append(
-                f"offset_ms is required as an int >= 0, got {offset!r}"
-            )
+            problems.append(f"offset_ms is required as an int >= 0, got {offset!r}")
         if period_ok and offset_ok and offset >= period:
             problems.append(
                 "offset_ms must be less than period_ms, "
@@ -382,10 +378,7 @@ class EventGrid(Node):
             Input problems; empty when valid.
         """
         if not isinstance(inputs.get("records"), list):
-            return [
-                "records must be a list of records, "
-                f"got {inputs.get('records')!r}"
-            ]
+            return [f"records must be a list of records, got {inputs.get('records')!r}"]
         return []
 
     def run(self, ctx, inputs):
@@ -415,9 +408,7 @@ class EventGrid(Node):
                 and (instant - offset) % period == 0
             ):
                 kept.append(record)
-        self.log.info(
-            "event-grid kept %d/%d record(s)", len(kept), len(records)
-        )
+        self.log.info("event-grid kept %d/%d record(s)", len(kept), len(records))
         return {"records": kept}
 
 
@@ -639,6 +630,11 @@ class Concat(Node):
         silently loses a whole source still runs, still reports and is a
         different experiment from the one the document declares — which is
         precisely the failure that "looks fine".
+    ``consume_inputs`` (default ``False``, ``"records"`` only)
+        Clear each mutable input list after its rows have entered ``merged``.
+        This is an explicit ownership transfer for bounded-memory pipelines:
+        downstream receives the same row objects and upstream must not reuse
+        its list. Tuples and declared tables are never mutated.
     ``schema``
         The exact field set every row must carry. Absent, the FIRST row
         seen sets the reference and every later row must match it. Either
@@ -676,6 +672,7 @@ class Concat(Node):
     _PARAMS = (
         "allow_empty",
         "allow_overlap",
+        "consume_inputs",
         "key",
         "provenance",
         "provenance_waiver",
@@ -703,7 +700,9 @@ class Concat(Node):
         """
         problems = []
         _reject_unknown(problems, params, cls._PARAMS)
-        _bool_problems(problems, params, ("allow_empty", "allow_overlap"))
+        _bool_problems(
+            problems, params, ("allow_empty", "allow_overlap", "consume_inputs")
+        )
         shape = params.get("shape")
         if shape is None:
             problems.append(
@@ -760,6 +759,11 @@ class Concat(Node):
                     "another node's output, never a literal in this document"
                 )
         elif shape == "table":
+            if params.get("consume_inputs"):
+                problems.append(
+                    "consume_inputs is a 'records'-shape ownership transfer; "
+                    "tables are never mutated"
+                )
             if provenance is not None or waiver is not None:
                 problems.append(
                     "provenance/provenance_waiver are 'records'-shape knobs — a "
@@ -950,6 +954,7 @@ class Concat(Node):
         ports.update(self.params.get("tables") or {})
         allow_empty = self.params.get("allow_empty", False)
         allow_overlap = self.params.get("allow_overlap", False)
+        consume_inputs = self.params.get("consume_inputs", False)
         provenance = self.params.get("provenance")
         declared = _field_list(self.params.get("schema"))
         reference = frozenset(declared) if declared is not None else None
@@ -997,6 +1002,9 @@ class Concat(Node):
                     for field in (fields or ())
                 },
             }
+            if consume_inputs and port in inputs and isinstance(inputs[port], list):
+                inputs[port].clear()
+            del rows
         if overlaps and not allow_overlap:
             shown = "; ".join(
                 f"{field}={value!r} is claimed by both {first!r} and {second!r}"

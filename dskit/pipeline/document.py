@@ -80,6 +80,7 @@ __all__ = [
     "ForeachSpec",
     "MODES",
     "NodeSpec",
+    "StageSpec",
     "PipelineDocument",
     "RandomSplitSpec",
     "ROLES",
@@ -541,8 +542,7 @@ class NodeSpec:
             errors.append(f"every must be one of {list(CADENCES)}, got {self.every!r}")
         if self.mode is not None and self.mode not in MODES:
             errors.append(
-                f"mode must be one of {list(MODES)} (or absent), "
-                f"got {self.mode!r}"
+                f"mode must be one of {list(MODES)} (or absent), got {self.mode!r}"
             )
         _check_str(errors, "artifact", self.artifact, non_empty=False)
         if self.mode == "load" and not self.artifact:
@@ -589,6 +589,85 @@ class NodeSpec:
             mode=obj.get("mode", None),
             artifact=obj.get("artifact", ""),
             role=obj.get("role", None),
+            notes=obj.get("notes", ""),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class StageSpec:
+    """One resumable study stage (ADR-0075).
+
+    Parameters
+    ----------
+    uses : str
+        Registered stage kind or an import reference.
+    inputs : dict, optional
+        Port names to ``$stage.output`` references.
+    params : dict, optional
+        JSON configuration passed to the stage class.
+    notes : str, optional
+        Explanatory text, excluded from document identity.
+
+    Examples
+    --------
+    A stage consuming a prior stage's artifact::
+
+        spec = StageSpec(
+            uses="example-stage",
+            inputs={"gate": "$gate1.result"},
+            params={"alpha": 0.05},
+        )
+    """
+
+    uses: str
+    inputs: dict = field(default_factory=dict)
+    params: dict = field(default_factory=dict)
+    notes: str = ""
+
+    def __post_init__(self):
+        """Validate the stage declaration."""
+        errors = []
+        _check_str(errors, "uses", self.uses)
+        if (
+            isinstance(self.uses, str)
+            and self.uses
+            and not (re.match(_KIND_OK, self.uses) or is_class_ref(self.uses))
+        ):
+            errors.append(
+                "uses must be a registered stage kind or an import "
+                f"reference, got {self.uses!r}"
+            )
+        if not isinstance(self.inputs, dict):
+            errors.append(f"inputs must be a dict, got {self.inputs!r}")
+        else:
+            for port, ref in self.inputs.items():
+                if not isinstance(port, str) or not re.match(_NODE_KEY_OK, port):
+                    errors.append(f"inputs: bad port name {port!r}")
+                if not is_node_ref(ref):
+                    errors.append(
+                        f"inputs.{port} must be a '$stage.output' reference, "
+                        f"got {ref!r}"
+                    )
+        _check_open_dict(errors, "params", self.params)
+        _check_str(errors, "notes", self.notes, non_empty=False)
+        _raise_if(errors)
+
+    def refs(self):
+        """Return stage input references as ``(source, path)`` pairs."""
+        return tuple(parse_node_ref(ref) for ref in self.inputs.values())
+
+    def to_obj(self):
+        """Return the canonical JSON object."""
+        return _dataclass_to_obj(self)
+
+    @classmethod
+    def from_obj(cls, obj):
+        """Build one stage declaration from a JSON object."""
+        _reject_unknown(obj, ("uses", "inputs", "params", "notes"), "stage")
+        return cls(
+            uses=obj.get("uses", ""),
+            inputs=dict(obj.get("inputs", {})),
+            params=dict(obj.get("params", {})),
             notes=obj.get("notes", ""),
         )
 
@@ -931,9 +1010,7 @@ class WalkForwardSpec:
             if (
                 not isinstance(self.folds, (list, tuple))
                 or not self.folds
-                or any(
-                    not isinstance(f, str) or _date_problem(f) for f in self.folds
-                )
+                or any(not isinstance(f, str) or _date_problem(f) for f in self.folds)
             ):
                 errors.append(
                     "walkforward.folds must be a non-empty list of REAL "
@@ -962,8 +1039,10 @@ class WalkForwardSpec:
         if self.train_days != ALL_PRIOR:
             _check_int(errors, "walkforward.train_days", self.train_days, ge=1)
         _check_int(
-            errors, "walkforward.weight_halflife_folds",
-            self.weight_halflife_folds, ge=0,
+            errors,
+            "walkforward.weight_halflife_folds",
+            self.weight_halflife_folds,
+            ge=0,
         )
         _raise_if(errors)
         if self.folds is not None:
@@ -1208,8 +1287,7 @@ class ForeachSpec:
         for key in self.keys:
             if not isinstance(key, str) or not key:
                 errors.append(
-                    f"foreach.keys: every key must be a non-empty string, "
-                    f"got {key!r}"
+                    f"foreach.keys: every key must be a non-empty string, got {key!r}"
                 )
                 continue
             if key.startswith("$"):
@@ -1247,9 +1325,7 @@ class ForeachSpec:
                 )
             _check_child(errors, f"foreach.pipeline.{key}", spec, NodeSpec)
             if isinstance(spec, NodeSpec):
-                errors.extend(
-                    _template_node_errors(f"foreach.pipeline.{key}", spec)
-                )
+                errors.extend(_template_node_errors(f"foreach.pipeline.{key}", spec))
 
     def to_obj(self):
         """Serialize this section — the identity payload, all of it.
@@ -1304,9 +1380,7 @@ class ForeachSpec:
                 try:
                     templates[key] = NodeSpec.from_obj(node_obj)
                 except ConfigError as exc:
-                    errors.extend(
-                        f"foreach.pipeline.{key}: {e}" for e in exc.errors
-                    )
+                    errors.extend(f"foreach.pipeline.{key}: {e}" for e in exc.errors)
         else:
             templates = raw
         _raise_if(errors)
@@ -1721,14 +1795,13 @@ class PipelineDocument:
     notes: str = ""
     walkforward: object = None
     foreach: object = None
+    stages: object = None
     #: DERIVED, never declared and never emitted: the node map that
     #: actually runs, and ``template key -> instance keys``. ``init=False``
     #: so no caller can inject one, ``compare=False`` because they are a
     #: pure function of the fields that ARE compared.
     expanded: dict = field(default=None, init=False, compare=False, repr=False)
-    foreach_groups: dict = field(
-        default=None, init=False, compare=False, repr=False
-    )
+    foreach_groups: dict = field(default=None, init=False, compare=False, repr=False)
 
     def __post_init__(self):
         """Validate every section, derive the expansion, or raise ConfigError."""
@@ -1776,6 +1849,16 @@ class PipelineDocument:
         _check_child(errors, "tracking", self.tracking, TrackingConfig)
         _check_child(errors, "walkforward", self.walkforward, WalkForwardSpec)
         _check_child(errors, "foreach", self.foreach, ForeachSpec)
+        if self.stages is not None:
+            if not isinstance(self.stages, dict) or not self.stages:
+                errors.append("stages must be a non-empty map when declared")
+            else:
+                for key, spec in self.stages.items():
+                    if not isinstance(key, str) or not re.match(_NODE_KEY_OK, key):
+                        errors.append(
+                            f"stages: keys must match {_NODE_KEY_OK}, got {key!r}"
+                        )
+                    _check_child(errors, f"stages.{key}", spec, StageSpec)
         _check_str(errors, "notes", self.notes, non_empty=False)
         # The derived pair defaults to the declared map — with no foreach
         # that IS the answer, and the expansion overwrites it otherwise.
@@ -1897,6 +1980,19 @@ class PipelineDocument:
                     f"output, got {self.walkforward.objective!r} "
                     f"(declared: {sorted(keys)})"
                 )
+        if self.stages is not None:
+            stage_keys = set(self.stages)
+            for key, spec in self.stages.items():
+                for source, _path in spec.refs():
+                    if source not in stage_keys:
+                        errors.append(
+                            f"stages.{key}: dangling stage reference "
+                            f"${source!s}; declared: {sorted(stage_keys)}"
+                        )
+                    elif source == key:
+                        errors.append(
+                            f"stages.{key}: a stage cannot consume its own output"
+                        )
         return errors
 
     @property
@@ -1938,6 +2034,8 @@ class PipelineDocument:
             # ``foreach_groups``) is emitted NEVER — the hash reads
             # to_obj alone, so what to_obj cannot say cannot be identity.
             obj["foreach"] = self.foreach.to_obj()
+        if self.stages is not None:
+            obj["stages"] = {key: spec.to_obj() for key, spec in self.stages.items()}
         obj["notes"] = self.notes
         return obj
 
@@ -1978,6 +2076,7 @@ class PipelineDocument:
                 "walkforward",
                 "foreach",
                 "notes",
+                "stages",
             ),
             "document",
         )
@@ -2016,6 +2115,23 @@ class PipelineDocument:
         tracking = _section("tracking", TrackingConfig.from_obj)
         walkforward = _section("walkforward", WalkForwardSpec.from_obj)
         foreach = _section("foreach", ForeachSpec.from_obj)
+        stages = None
+        raw_stages = obj.get("stages")
+        if raw_stages is not None:
+            if not isinstance(raw_stages, dict):
+                errors.append("stages: must be an object")
+            else:
+                stages = {}
+                for key, stage_obj in raw_stages.items():
+                    if not isinstance(stage_obj, dict):
+                        errors.append(
+                            f"stages.{key}: a stage must be an object, got {stage_obj!r}"
+                        )
+                        continue
+                    try:
+                        stages[key] = StageSpec.from_obj(stage_obj)
+                    except ConfigError as exc:
+                        errors.extend(f"stages.{key}: {e}" for e in exc.errors)
         _raise_if(errors)
         return cls(
             name=obj.get("name", ""),
@@ -2029,6 +2145,7 @@ class PipelineDocument:
             notes=obj.get("notes", ""),
             walkforward=walkforward,
             foreach=foreach,
+            stages=stages,
         )
 
 

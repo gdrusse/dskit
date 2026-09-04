@@ -530,6 +530,7 @@ dskit/pipeline/
 ├── planner.py         document -> Plan: topo order, role rules, wire checks
 ├── driver.py          LOAD -> IMPORT -> PLAN -> RESOLVE -> EXECUTE -> RECORD; run dirs;
 │                      run_walk_forward (one derived run per fold + summary)
+├── stages.py          journal-backed staged DAG execution and resume
 ├── runs.py            reads run dirs back: scan_runs / format_runs (the `runs` verb)
 ├── predictions.py     PredictionWriter / read_prediction_series: every scored
 │                      validation row, one parquet per run (ADR-0064)

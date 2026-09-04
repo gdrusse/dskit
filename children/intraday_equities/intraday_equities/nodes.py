@@ -118,6 +118,7 @@ LABEL_PARAMS = (
     "label_scale",
     "label_residual",
     "vol_window_minutes",
+    "label_residual_self",
     "beta_window_minutes",
     "vol_floor",
 )
@@ -279,9 +280,7 @@ def _scale_problems(scales):
             problems.append(f"{prefix}.tag must be a non-empty string, got {tag!r}")
         flag = scale.get("cross_session")
         if not isinstance(flag, bool):
-            problems.append(
-                f"{prefix}.cross_session must be a bool, got {flag!r}"
-            )
+            problems.append(f"{prefix}.cross_session must be a bool, got {flag!r}")
     return problems
 
 
@@ -326,9 +325,7 @@ def _horizon_problems(horizon):
         or not isinstance(label_lead, int)
         or label_lead < 1
     ):
-        problems.append(
-            f"horizon.label_lead must be an int >= 1, got {label_lead!r}"
-        )
+        problems.append(f"horizon.label_lead must be an int >= 1, got {label_lead!r}")
     return problems
 
 
@@ -344,12 +341,12 @@ def _universe_problems(spec):
             )
     symbols = set(spec["symbols"]) if _string_list_ok(spec.get("symbols")) else None
     tradable = set(spec["tradable"]) if _string_list_ok(spec.get("tradable")) else None
-    reference = set(spec["reference"]) if _string_list_ok(spec.get("reference")) else None
+    reference = (
+        set(spec["reference"]) if _string_list_ok(spec.get("reference")) else None
+    )
     cross = spec.get("cross")
     if cross is not None and not _string_list_ok(cross):
-        problems.append(
-            f"cross must be a non-empty list of strings, got {cross!r}"
-        )
+        problems.append(f"cross must be a non-empty list of strings, got {cross!r}")
         cross = None
     cross = set(cross) if cross else set()
     if symbols is not None and tradable is not None and reference is not None:
@@ -372,9 +369,8 @@ def _universe_problems(spec):
             )
     problems.extend(_cross_problems(spec, tradable, symbols))
     holidays = spec.get("holidays")
-    if (
-        not isinstance(holidays, (list, tuple))
-        or any(not _iso_date_ok(day) for day in holidays)
+    if not isinstance(holidays, (list, tuple)) or any(
+        not _iso_date_ok(day) for day in holidays
     ):
         problems.append(
             f"holidays must be a list of YYYY-MM-DD strings, got {holidays!r}"
@@ -399,9 +395,7 @@ def _universe_problems(spec):
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         problems.append(f"offset_ms must be an int >= 0, got {offset!r}")
     elif isinstance(period, int) and offset >= period:
-        problems.append(
-            f"offset_ms must be < period_ms, got {offset} >= {period}"
-        )
+        problems.append(f"offset_ms must be < period_ms, got {offset} >= {period}")
     price_field = spec.get("price_field")
     if price_field not in KNOWN_PRICE_FIELDS:
         problems.append(
@@ -440,29 +434,23 @@ def _cross_problems(spec, tradable, symbols):
             problems.append(f"market {market!r} is not one of symbols")
         elif tradable is not None and market in tradable:
             problems.append(
-                f"market {market!r} is tradable; a scored name cannot be "
-                "its own market"
+                f"market {market!r} is tradable; a scored name cannot be its own market"
             )
     sector = spec.get("sector_etf")
     if sector is None:
         return problems
     if not isinstance(sector, dict) or not sector:
-        return problems + [
-            f"sector_etf must be a non-empty object, got {sector!r}"
-        ]
+        return problems + [f"sector_etf must be a non-empty object, got {sector!r}"]
     for name, fund in sector.items():
         if not isinstance(name, str) or not name:
             problems.append(f"sector_etf keys must be symbols, got {name!r}")
             continue
         if not isinstance(fund, str) or not fund:
-            problems.append(
-                f"sector_etf[{name!r}] must be a symbol, got {fund!r}"
-            )
+            problems.append(f"sector_etf[{name!r}] must be a symbol, got {fund!r}")
             continue
         if symbols is not None and fund not in symbols:
             problems.append(
-                f"sector_etf[{name!r}] names {fund!r}, which is not one of "
-                "symbols"
+                f"sector_etf[{name!r}] names {fund!r}, which is not one of symbols"
             )
         if tradable is not None and fund in tradable:
             problems.append(
@@ -481,8 +469,7 @@ def _cross_wiring_problems(spec):
     problems = []
     if not spec.get("market"):
         problems.append(
-            "feature block 'cross' needs the universe to declare 'market' "
-            "(ADR-0071)"
+            "feature block 'cross' needs the universe to declare 'market' (ADR-0071)"
         )
     sector = spec.get("sector_etf")
     if not isinstance(sector, dict) or not sector:
@@ -544,9 +531,7 @@ def _scan_problems(scan, lookback):
         )
     params = scan.get("estimator_params")
     if params is not None and not isinstance(params, dict):
-        problems.append(
-            f"scan.estimator_params must be an object, got {params!r}"
-        )
+        problems.append(f"scan.estimator_params must be an object, got {params!r}")
     for knob, ge in (("l_start", 2), ("l_step", 1), ("lookback_stop", 2)):
         if knob not in scan:
             problems.append(f"scan.{knob} is required")
@@ -557,14 +542,8 @@ def _scan_problems(scan, lookback):
     start = scan.get("l_start")
     stop = scan.get("lookback_stop")
     if isinstance(start, int) and isinstance(stop, int) and stop < start:
-        problems.append(
-            f"scan.lookback_stop must be >= l_start, got {stop} < {start}"
-        )
-    if (
-        isinstance(lookback, int)
-        and isinstance(stop, int)
-        and stop < lookback
-    ):
+        problems.append(f"scan.lookback_stop must be >= l_start, got {stop} < {start}")
+    if isinstance(lookback, int) and isinstance(stop, int) and stop < lookback:
         problems.append(
             f"scan.lookback_stop must be >= lookback, got {stop} < {lookback}"
         )
@@ -577,16 +556,12 @@ def _scan_problems(scan, lookback):
             or not isinstance(value, (int, float))
             or not (lo < float(value) <= hi)
         ):
-            problems.append(
-                f"scan.{knob} must be in ({lo}, {hi}], got {value!r}"
-            )
+            problems.append(f"scan.{knob} must be in ({lo}, {hi}], got {value!r}")
     picked = scan.get("picked_lookback")
     if picked is not None and (
         isinstance(picked, bool) or not isinstance(picked, int) or picked < 2
     ):
-        problems.append(
-            f"scan.picked_lookback must be an int >= 2, got {picked!r}"
-        )
+        problems.append(f"scan.picked_lookback must be an int >= 2, got {picked!r}")
     return problems
 
 
@@ -604,20 +579,12 @@ def _holdout_problems(holdouts):
     a_end = holdouts.get("test_a_end_ms")
     b_start = holdouts.get("test_b_start_ms")
     b_end = holdouts.get("test_b_end_ms")
-    if (
-        isinstance(a_end, int)
-        and isinstance(b_start, int)
-        and b_start <= a_end
-    ):
+    if isinstance(a_end, int) and isinstance(b_start, int) and b_start <= a_end:
         problems.append(
             "holdouts.test_b_start_ms must be > test_a_end_ms, got "
             f"{b_start} <= {a_end}"
         )
-    if (
-        isinstance(b_start, int)
-        and isinstance(b_end, int)
-        and b_end < b_start
-    ):
+    if isinstance(b_start, int) and isinstance(b_end, int) and b_end < b_start:
         problems.append(
             "holdouts.test_b_end_ms must be >= test_b_start_ms, got "
             f"{b_end} < {b_start}"
@@ -633,8 +600,7 @@ def _quote_attach_problems(params):
     fields = params.get("quote_fields", DEFAULT_QUOTE_FIELDS)
     if source is not None and (not isinstance(source, str) or not source):
         problems.append(
-            f"quote_source must be a non-empty string when declared, "
-            f"got {source!r}"
+            f"quote_source must be a non-empty string when declared, got {source!r}"
         )
     if not isinstance(stream, str) or not stream:
         problems.append(f"quote_stream must be a non-empty string, got {stream!r}")
@@ -685,7 +651,9 @@ def _quote_index(root, source, stream, fields, since_ms=None, symbols=None):
     """
     index = {}
     for record in scan_stream(
-        root, source, stream,
+        root,
+        source,
+        stream,
         key_fields=QUOTE_KEY_FIELDS,
         ts_field=DEFAULT_TS_FIELD,
         shared_fields=DEFAULT_SHARED_FIELDS,
@@ -695,9 +663,7 @@ def _quote_index(root, source, stream, fields, since_ms=None, symbols=None):
         symbol, stamp = record.get("symbol"), record.get("asof_ms")
         if not isinstance(symbol, str) or stamp is None:
             continue
-        index[(symbol, int(stamp))] = {
-            field: record.get(field) for field in fields
-        }
+        index[(symbol, int(stamp))] = {field: record.get(field) for field in fields}
     return index
 
 
@@ -758,9 +724,17 @@ class BarsFromStore(Node):
     role = "data"
     outputs = ("records",)
     _PARAMS = (
-        "root", "source", "universe", "stream", "ts_field", "shared_fields",
-        "start_ms", "sessions",
-        "quote_source", "quote_stream", "quote_fields",
+        "root",
+        "source",
+        "universe",
+        "stream",
+        "ts_field",
+        "shared_fields",
+        "start_ms",
+        "sessions",
+        "quote_source",
+        "quote_stream",
+        "quote_fields",
         "quote_uncovered_price",
     )
     _snap = None
@@ -801,8 +775,7 @@ class BarsFromStore(Node):
             value = params.get(name)
             if not isinstance(value, str) or not value:
                 problems.append(
-                    f"{name} is required and must be a non-empty string, "
-                    f"got {value!r}"
+                    f"{name} is required and must be a non-empty string, got {value!r}"
                 )
         universe = params.get("universe")
         if isinstance(universe, str) and universe:
@@ -817,9 +790,7 @@ class BarsFromStore(Node):
             problems.append(f"stream must be a non-empty string, got {stream!r}")
         ts_field = params.get("ts_field", DEFAULT_TS_FIELD)
         if not isinstance(ts_field, str) or not ts_field:
-            problems.append(
-                f"ts_field must be a non-empty string, got {ts_field!r}"
-            )
+            problems.append(f"ts_field must be a non-empty string, got {ts_field!r}")
         start_ms = params.get("start_ms")
         if start_ms is not None:
             check_int_param(problems, "start_ms", start_ms, ge=0)
@@ -835,13 +806,11 @@ class BarsFromStore(Node):
                     f"{list(SESSION_NAMES)}, got {sessions!r}"
                 )
         shared = params.get("shared_fields", DEFAULT_SHARED_FIELDS)
-        if (
-            not isinstance(shared, (list, tuple))
-            or any(not isinstance(field, str) or not field for field in shared)
+        if not isinstance(shared, (list, tuple)) or any(
+            not isinstance(field, str) or not field for field in shared
         ):
             problems.append(
-                f"shared_fields must be a list of field-name strings, "
-                f"got {shared!r}"
+                f"shared_fields must be a list of field-name strings, got {shared!r}"
             )
         problems.extend(_quote_attach_problems(params))
         return problems
@@ -862,9 +831,7 @@ class BarsFromStore(Node):
             self.params["universe"],
             _file_digest(self.params["universe"]),
             self.params.get("start_ms"),
-            dir_digest(
-                stream_dir(self.params["root"], self.params["source"])
-            ),
+            dir_digest(stream_dir(self.params["root"], self.params["source"])),
             self.params.get("quote_source"),
             self.params.get("quote_stream", QUOTE_STREAM),
             tuple(self.params.get("quote_fields", DEFAULT_QUOTE_FIELDS)),
@@ -923,7 +890,10 @@ class BarsFromStore(Node):
             if not isinstance(stamp, str) or not stamp:
                 return wanted is None
             data["session"] = name = session_name(
-                stamp, tz, rth_open, rth_close,
+                stamp,
+                tz,
+                rth_open,
+                rth_close,
             )
             return wanted is None or name in wanted
 
@@ -947,9 +917,7 @@ class BarsFromStore(Node):
             "" if start_ms is None else f" from {start_ms}",
             "" if wanted is None else f", sessions {sorted(wanted)}",
         )
-        quote_fields = tuple(
-            self.params.get("quote_fields", DEFAULT_QUOTE_FIELDS)
-        )
+        quote_fields = tuple(self.params.get("quote_fields", DEFAULT_QUOTE_FIELDS))
         quotes = (
             {}
             if self.params.get("quote_source") is None
@@ -990,7 +958,8 @@ class BarsFromStore(Node):
                 instant = row.get("asof_ms")
                 symbol = row.get("symbol")
                 row.update(
-                    blank if instant is None
+                    blank
+                    if instant is None
                     else quotes.get((symbol, int(instant)), blank)
                 )
                 if (
@@ -1224,9 +1193,7 @@ class WindowRows(ReturnWindows):
             or not math.isfinite(gap)
             or gap <= 0
         ):
-            problems.append(
-                f"max_gap_minutes must be a positive number, got {gap!r}"
-            )
+            problems.append(f"max_gap_minutes must be a positive number, got {gap!r}")
         return problems
 
 
@@ -1252,26 +1219,33 @@ def session_feature_names(lookback, scales, reference, industries=()):
     names = [f"ret_lag_{step}" for step in range(lookback)]
     for scale in scales:
         tag = scale["tag"]
-        names.extend((
-            f"ret_{tag}", f"rv_{tag}", f"range_{tag}",
-            f"vol_{tag}", f"amihud_{tag}",
-        ))
-    names.extend((
-        "clv",
-        "minutes_from_open",
-        "minutes_to_close",
-        "tod_sin",
-        "tod_cos",
-        "dow_sin",
-        "dow_cos",
-        "month_sin",
-        "month_cos",
-        "is_first_rth",
-        "is_last_rth",
-        "overnight_gap",
-        "session_gap_days",
-        "after_holiday",
-    ))
+        names.extend(
+            (
+                f"ret_{tag}",
+                f"rv_{tag}",
+                f"range_{tag}",
+                f"vol_{tag}",
+                f"amihud_{tag}",
+            )
+        )
+    names.extend(
+        (
+            "clv",
+            "minutes_from_open",
+            "minutes_to_close",
+            "tod_sin",
+            "tod_cos",
+            "dow_sin",
+            "dow_cos",
+            "month_sin",
+            "month_cos",
+            "is_first_rth",
+            "is_last_rth",
+            "overnight_gap",
+            "session_gap_days",
+            "after_holiday",
+        )
+    )
     for symbol in reference:
         names.append(f"ref_ret_{symbol}")
         names.append(f"residual_{symbol}")
@@ -1281,7 +1255,12 @@ def session_feature_names(lookback, scales, reference, industries=()):
 
 
 def _emit_feature_names(
-    lookback, scales, reference, industries, extra=(), blocks=(),
+    lookback,
+    scales,
+    reference,
+    industries,
+    extra=(),
+    blocks=(),
 ):
     """Session names, momentum names, then any selected feature block.
 
@@ -1316,9 +1295,9 @@ def horizon_leads(start, step, stop):
 
 def _ny_date_minutes(asof_ms, zone):
     """Split one epoch stamp into a calendar date and clock minutes."""
-    instant = datetime.fromtimestamp(
-        asof_ms / 1000.0, tz=timezone.utc
-    ).astimezone(ZoneInfo(zone))
+    instant = datetime.fromtimestamp(asof_ms / 1000.0, tz=timezone.utc).astimezone(
+        ZoneInfo(zone)
+    )
     return instant.date().isoformat(), instant.hour * 60 + instant.minute
 
 
@@ -1336,8 +1315,20 @@ def _cell(value):
 
 
 def _session_feature_arrays(
-    ms, opn, high, low, close, volume, lookback, max_gap_ms, holidays, scales,
-    session, extra_horizons=(), scale_moms=False, internals=None,
+    ms,
+    opn,
+    high,
+    low,
+    close,
+    volume,
+    lookback,
+    max_gap_ms,
+    holidays,
+    scales,
+    session,
+    extra_horizons=(),
+    scale_moms=False,
+    internals=None,
 ):
     """Build per-bar feature columns for one symbol's RTH tape.
 
@@ -1350,10 +1341,11 @@ def _session_feature_arrays(
     import numpy as np
 
     n = len(close)
-    logp = np.full(n, np.nan)
+    float_dtype = close.dtype
+    logp = np.full(n, np.nan, dtype=float_dtype)
     priced = close > 0
     logp[priced] = np.log(close[priced])
-    ret1 = np.full(n, np.nan)
+    ret1 = np.full(n, np.nan, dtype=float_dtype)
     if n > 1:
         ret1[1:] = logp[1:] - logp[:-1]
     gap = np.zeros(n, dtype=bool)
@@ -1369,7 +1361,7 @@ def _session_feature_arrays(
     columns = {}
     idx = np.arange(n)
     for step in range(lookback):
-        lagged = np.full(n, np.nan)
+        lagged = np.full(n, np.nan, dtype=float_dtype)
         src = idx - step
         ok = (src >= sess_start) & (src >= 0)
         lagged[ok] = ret1[src[ok]]
@@ -1377,11 +1369,11 @@ def _session_feature_arrays(
     for scale in scales:
         width = int(scale["width"])
         tag = scale["tag"]
-        ret_s = np.full(n, np.nan)
-        rv_s = np.full(n, np.nan)
-        rng_s = np.full(n, np.nan)
-        vol_s = np.full(n, np.nan)
-        amihud_s = np.full(n, np.nan)
+        ret_s = np.full(n, np.nan, dtype=float_dtype)
+        rv_s = np.full(n, np.nan, dtype=float_dtype)
+        rng_s = np.full(n, np.nan, dtype=float_dtype)
+        vol_s = np.full(n, np.nan, dtype=float_dtype)
+        amihud_s = np.full(n, np.nan, dtype=float_dtype)
         same_session = not scale["cross_session"]
         if n > width:
             ok = idx >= width
@@ -1389,25 +1381,25 @@ def _session_feature_arrays(
                 ok &= (idx - width) >= sess_start
             ret_s[ok] = logp[ok] - logp[idx[ok] - width]
         if n >= width:
-            rv_s = rolling_std(ret1, width)
+            rv_s = rolling_std(ret1, width).astype(float_dtype, copy=False)
             hi = rolling_max(high, width)
             lo = rolling_min(low, width)
             with np.errstate(divide="ignore", invalid="ignore"):
-                rng_s = np.log(hi / lo)
-            vol_s = rolling_sum(volume, width)
+                rng_s = np.log(hi / lo).astype(float_dtype, copy=False)
+            vol_s = rolling_sum(volume, width).astype(float_dtype, copy=False)
             dollar = rolling_sum(close * volume, width)
             with np.errstate(divide="ignore", invalid="ignore"):
-                amihud_s[width - 1:] = np.abs(ret_s[width - 1:]) / np.maximum(
-                    dollar[width - 1:], 1e-12
+                amihud_s[width - 1 :] = np.abs(ret_s[width - 1 :]) / np.maximum(
+                    dollar[width - 1 :], 1e-12
                 )
             if same_session:
-                start_at = idx[width - 1:] - (width - 1)
-                bad = start_at < sess_start[width - 1:]
-                ret_s[width - 1:][bad] = np.nan
-                rv_s[width - 1:][bad] = np.nan
-                rng_s[width - 1:][bad] = np.nan
-                vol_s[width - 1:][bad] = np.nan
-                amihud_s[width - 1:][bad] = np.nan
+                start_at = idx[width - 1 :] - (width - 1)
+                bad = start_at < sess_start[width - 1 :]
+                ret_s[width - 1 :][bad] = np.nan
+                rv_s[width - 1 :][bad] = np.nan
+                rng_s[width - 1 :][bad] = np.nan
+                vol_s[width - 1 :][bad] = np.nan
+                amihud_s[width - 1 :][bad] = np.nan
         columns[f"ret_{tag}"] = ret_s
         columns[f"rv_{tag}"] = rv_s
         columns[f"range_{tag}"] = rng_s
@@ -1422,20 +1414,20 @@ def _session_feature_arrays(
         width = int(horizon["width"])
         tag = horizon["tag"]
         same_session = not horizon["cross_session"]
-        ret_s = np.full(n, np.nan)
-        rv_s = np.full(n, np.nan)
+        ret_s = np.full(n, np.nan, dtype=float_dtype)
+        rv_s = np.full(n, np.nan, dtype=float_dtype)
         if n > width:
             ok = idx >= width
             if same_session:
                 ok &= (idx - width) >= sess_start
             ret_s[ok] = logp[ok] - logp[idx[ok] - width]
         if n >= width:
-            rv_s = rolling_std(ret1, width)
+            rv_s = rolling_std(ret1, width).astype(float_dtype, copy=False)
             if same_session:
-                start_at = idx[width - 1:] - (width - 1)
-                bad = start_at < sess_start[width - 1:]
-                ret_s[width - 1:][bad] = np.nan
-                rv_s[width - 1:][bad] = np.nan
+                start_at = idx[width - 1 :] - (width - 1)
+                bad = start_at < sess_start[width - 1 :]
+                ret_s[width - 1 :][bad] = np.nan
+                rv_s[width - 1 :][bad] = np.nan
         columns[f"ret_{tag}"] = ret_s
         columns[f"rv_{tag}"] = rv_s
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -1446,13 +1438,19 @@ def _session_feature_arrays(
     with np.errstate(divide="ignore", invalid="ignore"):
         clv = np.where(spread > 0.0, (2.0 * close - high - low) / spread, 0.0)
     columns["clv"] = clv
-    dates = []
-    mins = []
-    for stamp in ms:
-        day, clock = _ny_date_minutes(int(stamp), session["tz"])
-        dates.append(day)
-        mins.append(clock)
-    mins = np.asarray(mins, dtype=np.float64)
+    day_ordinals = np.empty(n, dtype=np.int32)
+    mins = np.empty(n, dtype=float_dtype)
+    dow = np.empty(n, dtype=float_dtype)
+    month = np.empty(n, dtype=float_dtype)
+    parsed = [] if internals is not None else None
+    for i, stamp in enumerate(ms):
+        day_text, mins[i] = _ny_date_minutes(int(stamp), session["tz"])
+        day = date.fromisoformat(day_text)
+        day_ordinals[i] = day.toordinal()
+        dow[i] = day.weekday()
+        month[i] = day.month
+        if parsed is not None:
+            parsed.append(day)
     columns["minutes_from_open"] = mins - session["rth_start_minutes"]
     columns["minutes_to_close"] = session["rth_end_minutes"] - mins
     span = max(float(session["rth_end_minutes"] - session["rth_start_minutes"]), 1.0)
@@ -1467,39 +1465,37 @@ def _session_feature_arrays(
     tod = math.pi * (mins - session["rth_start_minutes"]) / span
     columns["tod_sin"] = np.sin(tod)
     columns["tod_cos"] = np.cos(tod)
-    parsed = [date.fromisoformat(day) for day in dates]
-    dow = np.asarray([d.weekday() for d in parsed], dtype=np.float64)
-    month = np.asarray([d.month for d in parsed], dtype=np.float64)
     columns["dow_sin"] = np.sin(2.0 * math.pi * dow / 7.0)
     columns["dow_cos"] = np.cos(2.0 * math.pi * dow / 7.0)
     columns["month_sin"] = np.sin(2.0 * math.pi * (month - 1.0) / 12.0)
     columns["month_cos"] = np.cos(2.0 * math.pi * (month - 1.0) / 12.0)
-    is_first = np.zeros(n, dtype=np.float64)
-    is_last = np.zeros(n, dtype=np.float64)
+    is_first = np.zeros(n, dtype=float_dtype)
+    is_last = np.zeros(n, dtype=float_dtype)
     if n:
         is_first[0] = 1.0
         is_last[-1] = 1.0
         if n > 1:
-            changed = np.asarray(dates[1:]) != np.asarray(dates[:-1])
+            changed = day_ordinals[1:] != day_ordinals[:-1]
             is_first[1:] = changed.astype(np.float64)
             is_last[:-1] = changed.astype(np.float64)
     columns["is_first_rth"] = is_first
     columns["is_last_rth"] = is_last
-    overnight = np.full(n, np.nan)
-    gap_days = np.zeros(n, dtype=np.float64)
-    after_h = np.zeros(n, dtype=np.float64)
+    overnight = np.full(n, np.nan, dtype=float_dtype)
+    gap_days = np.zeros(n, dtype=float_dtype)
+    after_h = np.zeros(n, dtype=float_dtype)
     starts = [0] if n else []
     starts.extend(int(i) for i in np.flatnonzero(gap))
     hols = {date.fromisoformat(day) for day in holidays}
+    holiday_ordinals = {day.toordinal() for day in hols}
     ends = starts[1:] + [n]
     for start_i, end_i in zip(starts, ends):
         if start_i == 0:
             continue
-        prev = date.fromisoformat(dates[start_i - 1])
-        this = date.fromisoformat(dates[start_i])
-        gap_days[start_i:end_i] = float((this - prev).days)
+        prev = int(day_ordinals[start_i - 1])
+        this = int(day_ordinals[start_i])
+        gap_days[start_i:end_i] = float(this - prev)
         after_h[start_i:end_i] = float(
-            any(prev < day < this for day in hols)
+            any(prev < day < this for day in holiday_ordinals)
         )
         prev_close = close[start_i - 1]
         this_open = opn[start_i]
@@ -1509,17 +1505,19 @@ def _session_feature_arrays(
     columns["session_gap_days"] = gap_days
     columns["after_holiday"] = after_h
     if internals is not None:
-        internals.update({
-            "logp": logp,
-            "ret1": ret1,
-            "sess_start": sess_start,
-            "mins": mins,
-            "parsed": parsed,
-        })
+        internals.update(
+            {
+                "logp": logp,
+                "ret1": ret1,
+                "sess_start": sess_start,
+                "mins": mins,
+                "parsed": parsed,
+            }
+        )
     return columns
 
 
-def _symbol_ohlcv(rows, price_field=DEFAULT_PRICE_FIELD):
+def _symbol_ohlcv(rows, price_field=DEFAULT_PRICE_FIELD, dtype="float64"):
     """Sort one symbol's bars and lift OHLCV arrays.
 
     ``price_field`` names the bar field the returned price array carries
@@ -1531,27 +1529,28 @@ def _symbol_ohlcv(rows, price_field=DEFAULT_PRICE_FIELD):
     """
     import numpy as np
 
+    dtype = np.dtype(dtype)
     rows.sort(key=lambda row: row["asof_ms"])
     ms = np.asarray([int(row["asof_ms"]) for row in rows], dtype=np.int64)
     opn = np.asarray(
         [float(row.get("open", row.get("close", 0.0)) or 0.0) for row in rows],
-        dtype=np.float64,
+        dtype=dtype,
     )
     high = np.asarray(
         [float(row.get("high", row.get("close", 0.0)) or 0.0) for row in rows],
-        dtype=np.float64,
+        dtype=dtype,
     )
     low = np.asarray(
         [float(row.get("low", row.get("close", 0.0)) or 0.0) for row in rows],
-        dtype=np.float64,
+        dtype=dtype,
     )
     close = np.asarray(
         [float(row.get(price_field, 0.0) or 0.0) for row in rows],
-        dtype=np.float64,
+        dtype=dtype,
     )
     volume = np.asarray(
         [float(row.get("volume", 0.0) or 0.0) for row in rows],
-        dtype=np.float64,
+        dtype=dtype,
     )
     return ms, opn, high, low, close, volume
 
@@ -1599,15 +1598,42 @@ def _aligned_series(ms, pair):
 
 
 def _grid_columns(
-    ms, opn, high, low, close, volume, lookback, max_gap_ms, holidays,
-    scales, session, offset_ms, period_ms, skip, extra_horizons, scale_moms,
-    blocks=(), market_ret=None, sector_ret=None,
+    ms,
+    opn,
+    high,
+    low,
+    close,
+    volume,
+    lookback,
+    max_gap_ms,
+    holidays,
+    scales,
+    session,
+    offset_ms,
+    period_ms,
+    skip,
+    extra_horizons,
+    scale_moms,
+    blocks=(),
+    market_ret=None,
+    sector_ret=None,
 ):
     """Grid-aligned feature columns for one symbol; full-tape arrays drop."""
     internals = {} if normalise_blocks(blocks) else None
     columns = _session_feature_arrays(
-        ms, opn, high, low, close, volume, lookback, max_gap_ms,
-        holidays, scales, session, extra_horizons, scale_moms,
+        ms,
+        opn,
+        high,
+        low,
+        close,
+        volume,
+        lookback,
+        max_gap_ms,
+        holidays,
+        scales,
+        session,
+        extra_horizons,
+        scale_moms,
         internals=internals,
     )
     keep = ((ms - offset_ms) % period_ms) == 0
@@ -1621,20 +1647,22 @@ def _grid_columns(
         # Built here, beside the base columns, and reduced to the grid
         # inside block_columns -- one block's working arrays at a time,
         # never a second full-tape copy of the whole frame (ADR-0071).
-        col_kept.update(block_columns(
-            blocks,
-            keep=keep,
-            logp=internals["logp"],
-            ret1=internals["ret1"],
-            opn=opn,
-            sess_start=internals["sess_start"],
-            mins=internals["mins"],
-            parsed=internals["parsed"],
-            overnight=overnight,
-            session=session,
-            market_ret=market_ret,
-            sector_ret=sector_ret,
-        ))
+        col_kept.update(
+            block_columns(
+                blocks,
+                keep=keep,
+                logp=internals["logp"],
+                ret1=internals["ret1"],
+                opn=opn,
+                sess_start=internals["sess_start"],
+                mins=internals["mins"],
+                parsed=internals["parsed"],
+                overnight=overnight,
+                session=session,
+                market_ret=market_ret,
+                sector_ret=sector_ret,
+            )
+        )
         internals.clear()
     return kept_ms, kept_close, col_kept
 
@@ -1662,6 +1690,11 @@ class SessionFeatureRows(Node):
         subset of ``tod``, ``bar``, ``cross``) switches on the ADR-0071
         blocks; the default is none of them, so a document that does not
         name one gets exactly the columns it got before.
+        Optional ``dtype`` is ``float64`` (default) or ``float32`` for the
+        persisted columnar feature matrix.
+        Optional ``cache_dir`` atomically persists these columnar frames and
+        their full-resolution label tapes for later memory-mapped folds. It is
+        write-once: an occupied path is refused.
 
     Examples
     --------
@@ -1673,7 +1706,14 @@ class SessionFeatureRows(Node):
 
     role = "transform"
     outputs = ("records", "tape")
-    _PARAMS = ("lookback", "layout", "momentum_horizons", "feature_blocks")
+    _PARAMS = (
+        "lookback",
+        "layout",
+        "momentum_horizons",
+        "feature_blocks",
+        "dtype",
+        "cache_dir",
+    )
 
     @classmethod
     def validate_params(cls, params):
@@ -1700,9 +1740,7 @@ class SessionFeatureRows(Node):
             and not is_node_ref(layout)
             and layout not in ("rows", "columns")
         ):
-            problems.append(
-                f"layout must be 'rows' or 'columns', got {layout!r}"
-            )
+            problems.append(f"layout must be 'rows' or 'columns', got {layout!r}")
         extra = params.get("momentum_horizons")
         if extra is not None and not is_node_ref(extra):
             problems.extend(
@@ -1712,7 +1750,21 @@ class SessionFeatureRows(Node):
         blocks = params.get("feature_blocks")
         if blocks is not None and not is_node_ref(blocks):
             problems.extend(block_problems(blocks))
+        dtype = params.get("dtype")
+        if (
+            dtype is not None
+            and not is_node_ref(dtype)
+            and dtype
+            not in (
+                "float32",
+                "float64",
+            )
+        ):
+            problems.append(f"dtype must be 'float32' or 'float64', got {dtype!r}")
         return problems
+        cache_dir = params.get("cache_dir")
+        if cache_dir is not None and (not isinstance(cache_dir, str) or not cache_dir):
+            problems.append("cache_dir must be a non-empty path string")
 
     def validate_inputs(self, inputs):
         """Require records and a universe spec.
@@ -1750,12 +1802,9 @@ class SessionFeatureRows(Node):
                     tag = horizon.get("tag")
                     if tag in scale_tags:
                         problems.append(
-                            f"momentum_horizons[{i}].tag {tag!r} collides "
-                            "with scales"
+                            f"momentum_horizons[{i}].tag {tag!r} collides with scales"
                         )
-            if BLOCK_CROSS in normalise_blocks(
-                self.params.get("feature_blocks")
-            ):
+            if BLOCK_CROSS in normalise_blocks(self.params.get("feature_blocks")):
                 problems.extend(_cross_wiring_problems(spec))
         return problems
 
@@ -1778,9 +1827,7 @@ class SessionFeatureRows(Node):
         is not a case that arises.
         """
         n = len(records)
-        sample = (
-            tuple(repr(records[i]) for i in (0, n // 2, n - 1)) if n else ()
-        )
+        sample = tuple(repr(records[i]) for i in (0, n // 2, n - 1)) if n else ()
         return (
             n,
             sample,
@@ -1815,8 +1862,7 @@ class SessionFeatureRows(Node):
         if self._cached_key == _sig:
             cached = self._cached_out
             self.log.info(
-                "session features: reusing cached build, %d row(s) "
-                "from %d symbol(s)",
+                "session features: reusing cached build, %d row(s) from %d symbol(s)",
                 self._cached_rows,
                 len(cached["tape"]),
             )
@@ -1824,10 +1870,15 @@ class SessionFeatureRows(Node):
                 "records": list(cached["records"]),
                 "tape": cached["tape"],
             }
-        lookback = int(self.params["lookback"]) if "lookback" in self.params else int(spec["lookback"])
+        lookback = (
+            int(self.params["lookback"])
+            if "lookback" in self.params
+            else int(spec["lookback"])
+        )
         max_gap_ms = float(spec["max_gap_minutes"]) * 60_000
         period_ms = int(spec["period_ms"])
         offset_ms = int(spec["offset_ms"])
+        matrix_dtype = np.dtype(self.params.get("dtype", "float64"))
         price_field = spec["price_field"]
         holidays = tuple(spec["holidays"])
         scales = list(spec["scales"])
@@ -1854,9 +1905,16 @@ class SessionFeatureRows(Node):
         extra = list(self.params.get("momentum_horizons") or ())
         scale_moms = bool(extra)
         blocks = normalise_blocks(self.params.get("feature_blocks"))
-        feat_names = list(_emit_feature_names(
-            lookback, scales, reference, tags, extra, blocks,
-        ))
+        feat_names = list(
+            _emit_feature_names(
+                lookback,
+                scales,
+                reference,
+                tags,
+                extra,
+                blocks,
+            )
+        )
         if blocks:
             self.log.info(
                 "session features: block(s) %s add %d column(s), %d of them "
@@ -1877,8 +1935,16 @@ class SessionFeatureRows(Node):
             skip.add(f"ref_ret_{symbol}")
             skip.add(f"residual_{symbol}")
         knobs = (
-            lookback, max_gap_ms, holidays, scales, session,
-            offset_ms, period_ms, skip, extra, scale_moms,
+            lookback,
+            max_gap_ms,
+            holidays,
+            scales,
+            session,
+            offset_ms,
+            period_ms,
+            skip,
+            extra,
+            scale_moms,
         )
         # Feature-only symbols that supply the cross block and nothing
         # else: they are read for their one-minute returns and then
@@ -1897,16 +1963,16 @@ class SessionFeatureRows(Node):
         seen = set(order)
         order.extend(symbol for symbol in cross_only if symbol in grouped)
         seen.update(order)
-        order.extend(
-            symbol for symbol in grouped if symbol not in seen
-        )
+        order.extend(symbol for symbol in grouped if symbol not in seen)
         records = []
         tape = []
         n_rows = 0
         for symbol in order:
             rows = grouped.pop(symbol)
             ms, opn, high, low, close, volume = _symbol_ohlcv(
-                rows, price_field,
+                rows,
+                price_field,
+                matrix_dtype,
             )
             del rows
             self.log.info("session features: %s", symbol)
@@ -1928,24 +1994,34 @@ class SessionFeatureRows(Node):
                     "store this run reads does not carry it; acquire it "
                     "before declaring it."
                 )
-            tape.append({
-                "symbol": symbol,
-                "asof_ms": ms,
-                # The price slot, whatever field filled it. Named
-                # 'close' because that is the slot every consumer wires;
-                # 'price_field' beside it says what is actually in it.
-                "close": close,
-                "price_field": price_field,
-            })
+            tape.append(
+                {
+                    "symbol": symbol,
+                    "asof_ms": ms,
+                    # The price slot, whatever field filled it. Named
+                    # 'close' because that is the slot every consumer wires;
+                    # 'price_field' beside it says what is actually in it.
+                    "close": close,
+                    "price_field": price_field,
+                }
+            )
             market_ret = sector_ret = None
             if BLOCK_CROSS in blocks:
                 market_ret = _aligned_series(ms, series.get(market))
                 sector_ret = _aligned_series(
-                    ms, series.get(sector_of.get(symbol)),
+                    ms,
+                    series.get(sector_of.get(symbol)),
                 )
             kept_ms, kept_close, col_kept = _grid_columns(
-                ms, opn, high, low, close, volume, *knobs,
-                blocks=blocks, market_ret=market_ret,
+                ms,
+                opn,
+                high,
+                low,
+                close,
+                volume,
+                *knobs,
+                blocks=blocks,
+                market_ret=market_ret,
                 sector_ret=sector_ret,
             )
             del opn, high, low, volume, market_ret, sector_ret
@@ -1972,21 +2048,29 @@ class SessionFeatureRows(Node):
                 col_kept[f"residual_{ref}"] = residual
             for tag in tags:
                 col_kept[f"industry_{tag}"] = np.full(
-                    n, 1.0 if industry.get(symbol) == tag else 0.0,
+                    n,
+                    1.0 if industry.get(symbol) == tag else 0.0,
                 )
             if layout == "columns":
                 stacked = [
-                    np.asarray(col_kept[name], dtype=np.float64)
-                    if name in col_kept else np.full(n, np.nan)
+                    np.asarray(col_kept[name], dtype=matrix_dtype)
+                    if name in col_kept
+                    else np.full(n, np.nan, dtype=matrix_dtype)
                     for name in feat_names
                 ]
-                records.append({
-                    "symbol": symbol,
-                    "asof_ms": kept_ms,
-                    "close": kept_close,
-                    "names": feat_names,
-                    "X": np.column_stack(stacked) if stacked else np.zeros((n, 0)),
-                })
+                records.append(
+                    {
+                        "symbol": symbol,
+                        "asof_ms": kept_ms,
+                        "close": kept_close,
+                        "names": feat_names,
+                        "X": (
+                            np.column_stack(stacked)
+                            if stacked
+                            else np.zeros((n, 0), dtype=matrix_dtype)
+                        ),
+                    }
+                )
                 del stacked
             else:
                 for i in range(n):
@@ -2010,6 +2094,23 @@ class SessionFeatureRows(Node):
             layout,
         )
         out = {"records": records, "tape": tape}
+        cache_dir = self.params.get("cache_dir")
+        if cache_dir is not None:
+            from .feature_cache import write_feature_cache
+
+            digest = write_feature_cache(
+                cache_dir,
+                out,
+                {
+                    "spec": spec,
+                    "params": {
+                        key: value
+                        for key, value in self.params.items()
+                        if key != "cache_dir"
+                    },
+                },
+            )
+            self.log.info("persisted feature cache %s (%s)", cache_dir, digest[:16])
         # On the CLASS, not the instance: a walk-forward builds a fresh
         # node per fold, so an instance attribute would never be read
         # again. The signature keeps a second document from reading this
@@ -2060,7 +2161,10 @@ class FoldFeatureStats(Node):
     role = "transform"
     outputs = ("records",)
     _PARAMS = (
-        "blocks", "train_start_ms", "train_end_ms", "volume_column",
+        "blocks",
+        "train_start_ms",
+        "train_end_ms",
+        "volume_column",
         "smooth_minutes",
     )
     #: The column every fold statistic is keyed on.
@@ -2095,9 +2199,7 @@ class FoldFeatureStats(Node):
             problems.extend(block_problems(blocks))
         column = params.get("volume_column")
         if column is not None and (not isinstance(column, str) or not column):
-            problems.append(
-                f"volume_column must be a non-empty string, got {column!r}"
-            )
+            problems.append(f"volume_column must be a non-empty string, got {column!r}")
         smooth = params.get("smooth_minutes")
         if smooth is not None and not is_node_ref(smooth):
             check_int_param(problems, "smooth_minutes", smooth, ge=1)
@@ -2168,7 +2270,7 @@ class FoldFeatureStats(Node):
         for frame in records:
             names = list(frame["names"])
             matrix = frame["X"]
-            tail = names[-len(fold_names):]
+            tail = names[-len(fold_names) :]
             if tuple(tail) != tuple(fold_names):
                 raise ValueError(
                     f"fold stats declare blocks {list(blocks)}, whose fitted "
@@ -2194,10 +2296,7 @@ class FoldFeatureStats(Node):
                 if self._BUCKET_COLUMN in index
                 else np.zeros(stamps.size, dtype=np.float64)
             )
-            volume = (
-                matrix[:, index[volume_column]]
-                if volume_column in index else None
-            )
+            volume = matrix[:, index[volume_column]] if volume_column in index else None
             if BLOCK_BAR in blocks and volume is None:
                 raise ValueError(
                     f"fold stats need the {volume_column!r} column for the "
@@ -2206,12 +2305,19 @@ class FoldFeatureStats(Node):
                     "universe does emit (ADR-0071)."
                 )
             fitted = fit_fold_stats(
-                blocks, minutes=minutes, bucket=bucket,
-                ret=matrix[:, index[self._RETURN_COLUMN]], volume=volume,
-                train=train, smooth=smooth,
+                blocks,
+                minutes=minutes,
+                bucket=bucket,
+                ret=matrix[:, index[self._RETURN_COLUMN]],
+                volume=volume,
+                train=train,
+                smooth=smooth,
             )
             filled = apply_fold_stats(
-                fitted, blocks, minutes=minutes, bucket=bucket,
+                fitted,
+                blocks,
+                minutes=minutes,
+                bucket=bucket,
                 volume=volume,
             )
             for offset, name in enumerate(fold_names):
@@ -2223,8 +2329,7 @@ class FoldFeatureStats(Node):
             ",".join(fold_names),
             n_train,
             n_rows,
-            "ALL-PRIOR" if train_start is None
-            else f"[{train_start}, {train_end}]",
+            "ALL-PRIOR" if train_start is None else f"[{train_start}, {train_end}]",
         )
         return {"records": list(records)}
 
@@ -2367,7 +2472,9 @@ class FeedParity(Node):
             )
         self.log.info(
             "feed-parity overlap %d (left %d, right %d)",
-            len(keys), len(left), len(right),
+            len(keys),
+            len(left),
+            len(right),
         )
         return {"records": diffs, "metrics": metrics}
 
@@ -2475,7 +2582,8 @@ def _decision_metrics(picks, inputs):
         "n_stamps": float(len(stamps)),
         "n_labeled": float(
             sum(
-                1 for row in labeled
+                1
+                for row in labeled
                 if isinstance(row, dict) and _finite(row.get("y_next"))
             )
         ),
@@ -2510,11 +2618,7 @@ def build_portfolio_model(per_t, tradable):
 
     allowed = set(tradable)
     filtered = {
-        stamp: {
-            symbol: pred
-            for symbol, pred in preds.items()
-            if symbol in allowed
-        }
+        stamp: {symbol: pred for symbol, pred in preds.items() if symbol in allowed}
         for stamp, preds in per_t.items()
     }
     filtered = {stamp: preds for stamp, preds in filtered.items() if preds}
@@ -2527,14 +2631,13 @@ def build_portfolio_model(per_t, tradable):
     model.x = pyo.Var(index, domain=pyo.Binary)
     model.one_per_t = pyo.Constraint(
         sorted(filtered),
-        rule=lambda m, stamp: sum(
-            m.x[stamp, symbol] for symbol in sorted(filtered[stamp])
-        ) == 1,
+        rule=lambda m, stamp: (
+            sum(m.x[stamp, symbol] for symbol in sorted(filtered[stamp])) == 1
+        ),
     )
     model.objective = pyo.Objective(
         expr=sum(
-            filtered[stamp][symbol] * model.x[stamp, symbol]
-            for stamp, symbol in index
+            filtered[stamp][symbol] * model.x[stamp, symbol] for stamp, symbol in index
         ),
         sense=pyo.maximize,
     )
@@ -2751,9 +2854,7 @@ def _horizon_verdict(curve, anchors, se_mult, band_leads):
     """
     flags = [_passes_ic(row["ic_val"], row["n_val"], se_mult) for row in curve]
     anchor_set = set(anchors)
-    go_anchor = any(
-        ok for row, ok in zip(curve, flags) if row["lead"] in anchor_set
-    )
+    go_anchor = any(ok for row, ok in zip(curve, flags) if row["lead"] in anchor_set)
     run = 0
     go_band = False
     for ok in flags:
@@ -2799,10 +2900,7 @@ def _combo_ic(train_x, train_y, val_x, val_y, names, top_k):
     """
     import numpy as np
 
-    ics = [
-        abs(_spearman(train_x[:, col], train_y))
-        for col in range(train_x.shape[1])
-    ]
+    ics = [abs(_spearman(train_x[:, col], train_y)) for col in range(train_x.shape[1])]
     order = sorted(range(len(names)), key=lambda i: ics[i], reverse=True)
     picked = order[: max(1, min(top_k, len(order)))]
     selected = [names[i] for i in picked]
@@ -2856,7 +2954,6 @@ def _fit_estimator(train_x, train_y, scan, categorical=None, feature_names=None)
         model.fit(train_x, train_y, **kwargs)
         return model
 
-
     class _Lstsq:
         """Intercept + linear map; stdlib stand-in when no estimator is set."""
 
@@ -2905,7 +3002,12 @@ def _mspe(y, yhat):
 
 
 def _fit_split_metrics(
-    model, train_x, train_y, val_x, val_y, prediction_cache=None,
+    model,
+    train_x,
+    train_y,
+    val_x,
+    val_y,
+    prediction_cache=None,
 ):
     """Train vs val MSPE, Spearman IC, and ŷ spread at the training lead.
 
@@ -2968,8 +3070,15 @@ def _hpo_combos(base, space, trials, seed):
 
 
 def _tune_estimator(
-    scan, combos, train_x, train_y, val_x, val_y, categorical=None,
-    objective="mspe", feature_names=None,
+    scan,
+    combos,
+    train_x,
+    train_y,
+    val_x,
+    val_y,
+    categorical=None,
+    objective="mspe",
+    feature_names=None,
 ):
     """Pick a combo on the inner holdout under ``objective``.
 
@@ -2996,7 +3105,10 @@ def _tune_estimator(
         trial_scan = dict(scan)
         trial_scan["estimator_params"] = trial
         model = _fit_estimator(
-            train_x, train_y, trial_scan, categorical=categorical,
+            train_x,
+            train_y,
+            trial_scan,
+            categorical=categorical,
             feature_names=feature_names,
         )
         hat = model.predict(val_x)
@@ -3071,15 +3183,28 @@ def _feature_names_for_rows(spec, records):
     if declared and row_lookback <= int(spec["lookback"]):
         return list(declared)
     lookback = row_lookback if row_lookback >= 2 else int(spec["lookback"])
-    return list(session_feature_names(
-        lookback, spec["scales"], spec["reference"], industries,
-    ))
+    return list(
+        session_feature_names(
+            lookback,
+            spec["scales"],
+            spec["reference"],
+            industries,
+        )
+    )
 
 
-_ALWAYS_KEEP_NAMES = frozenset({
-    "minutes_from_open", "minutes_to_close",
-    "tod_sin", "tod_cos", "dow_sin", "dow_cos", "month_sin", "month_cos",
-})
+_ALWAYS_KEEP_NAMES = frozenset(
+    {
+        "minutes_from_open",
+        "minutes_to_close",
+        "tod_sin",
+        "tod_cos",
+        "dow_sin",
+        "dow_cos",
+        "month_sin",
+        "month_cos",
+    }
+)
 _ALWAYS_KEEP_PREFIXES = ("industry_",)
 
 
@@ -3163,10 +3288,7 @@ def _column_weights(train_x, train_y, names, scan):
         coef = getattr(model, "coef_", None)
         if coef is not None:
             return [abs(float(value)) for value in np.ravel(coef)]
-    return [
-        abs(_spearman(train_x[:, col], train_y))
-        for col in range(len(names))
-    ]
+    return [abs(_spearman(train_x[:, col], train_y)) for col in range(len(names))]
 
 
 def _lookback_verdict(curve):
@@ -3179,8 +3301,16 @@ def _lookback_verdict(curve):
 
 
 def _attach_lead_rows(
-    bars, records, lead, price_field, split, train_end, val_start, val_end,
-    label, features,
+    bars,
+    records,
+    lead,
+    price_field,
+    split,
+    train_end,
+    val_start,
+    val_end,
+    label,
+    features,
 ):
     """Copy feature rows that have a finite RTH-tape label at ``lead``.
 
@@ -3195,8 +3325,15 @@ def _attach_lead_rows(
     arrays = _tapes_from_bars(bars, price_field, val_end)
     if records and _is_frame(records[0]):
         return _attach_lead_frames(
-            arrays, records, lead, split, train_end, val_start, val_end,
-            label, features,
+            arrays,
+            records,
+            lead,
+            split,
+            train_end,
+            val_start,
+            val_end,
+            label,
+            features,
         )
     out = []
     for row in records:
@@ -3243,7 +3380,14 @@ def _attach_lead_rows(
 
 
 def _attach_lead_frames(
-    arrays, records, lead, split, train_end, val_start, val_end, label,
+    arrays,
+    records,
+    lead,
+    split,
+    train_end,
+    val_start,
+    val_end,
+    label,
     features,
 ):
     """Label columnar frames and emit compact row dicts."""
@@ -3279,15 +3423,11 @@ def _attach_lead_frames(
         if split == "train":
             keep = (asof <= train_end) & (future_ms <= train_end)
         else:
-            keep = (
-                (val_start <= asof) & (asof <= val_end) & (future_ms <= val_end)
-            )
+            keep = (val_start <= asof) & (asof <= val_end) & (future_ms <= val_end)
         keep &= np.isfinite(y)
         for j in np.flatnonzero(keep):
             i = int(idx[j])
-            row = {
-                name: float(x[i, k]) for k, name in enumerate(features)
-            }
+            row = {name: float(x[i, k]) for k, name in enumerate(features)}
             row["symbol"] = symbol
             row["asof_ms"] = int(asof[j])
             row[label] = float(y[j])
@@ -3362,18 +3502,14 @@ def _frame_matrix(frame, features, val_end=None):
     import numpy as np
 
     stamps = np.asarray(frame["asof_ms"], dtype=np.int64)
-    matrix = np.asarray(frame["X"], dtype=np.float64)
+    matrix = np.asarray(frame["X"])
     names = list(frame["names"])
     index = {name: i for i, name in enumerate(names)}
     missing = [name for name in features if name not in index]
     if missing:
         return stamps[:0], matrix[:0]
     columns = [index[name] for name in features]
-    keep = (
-        np.ones(stamps.size, dtype=bool)
-        if val_end is None
-        else stamps <= val_end
-    )
+    keep = np.ones(stamps.size, dtype=bool) if val_end is None else stamps <= val_end
     if matrix.ndim < 2 or not columns:
         return stamps[keep], matrix[keep]
     for column in columns:
@@ -3408,11 +3544,15 @@ def _attach_symbol_codes(prepared, codes):
     for i, item in enumerate(prepared):
         symbol, stamps, x, loc, match, t_ms, t_px = item
         code = float(codes[symbol])
+        dtype = x.dtype if np.issubdtype(x.dtype, np.floating) else np.float64
         prepared[i] = (
             symbol,
             stamps,
-            np.column_stack([x, np.full(x.shape[0], code, dtype=np.float64)]),
-            loc, match, t_ms, t_px,
+            np.column_stack([x, np.full(x.shape[0], code, dtype=dtype)]),
+            loc,
+            match,
+            t_ms,
+            t_px,
         )
         # The pre-code matrix has exactly two references left, this
         # frame's and the tuple just replaced; drop both so the next
@@ -3443,10 +3583,7 @@ def _scan_aligned(bars, records, features, price_field, val_end, arrays=None):
                 continue
             t_ms, t_px = tape
             loc = np.searchsorted(t_ms, stamps)
-            match = (
-                (loc < t_ms.size)
-                & (t_ms[np.minimum(loc, t_ms.size - 1)] == stamps)
-            )
+            match = (loc < t_ms.size) & (t_ms[np.minimum(loc, t_ms.size - 1)] == stamps)
             prepared.append((symbol, stamps, x, loc, match, t_ms, t_px))
         prepared.sort(key=lambda item: item[0])
         return prepared
@@ -3549,21 +3686,26 @@ def _label_problems(params):
             f"label_scale must be one of {list(LABEL_SCALES)}, got {scale!r}"
         )
     reference = params.get("label_residual")
-    if reference is not None and (
-        not isinstance(reference, str) or not reference
-    ):
+    if reference is not None and (not isinstance(reference, str) or not reference):
         problems.append(
-            "label_residual must be a reference symbol on the tape, got "
-            f"{reference!r}"
+            f"label_residual must be a reference symbol on the tape, got {reference!r}"
+        )
+    residual_self = params.get("label_residual_self")
+    if "label_residual_self" in params and residual_self is None:
+        problems.append("label_residual_self may not be null")
+    elif residual_self is not None and residual_self != "raw":
+        problems.append("label_residual_self must be 'raw' when declared")
+    if residual_self is not None and reference is None:
+        problems.append(
+            "label_residual_self requires label_residual; there is no "
+            "self-reference otherwise"
         )
     for knob in ("vol_window_minutes", "beta_window_minutes"):
         if params.get(knob) is not None:
             check_int_param(problems, knob, params.get(knob), ge=2)
     floor = params.get("vol_floor")
     if floor is not None and (
-        isinstance(floor, bool)
-        or not isinstance(floor, (int, float))
-        or floor <= 0.0
+        isinstance(floor, bool) or not isinstance(floor, (int, float)) or floor <= 0.0
     ):
         problems.append(f"vol_floor must be a number > 0, got {floor!r}")
     return problems
@@ -3577,13 +3719,13 @@ def _lead_problems(params):
             check_int_param(problems, knob, params.get(knob), ge=1)
     start, stop = params.get("lead_start"), params.get("lead_stop")
     if (
-        isinstance(start, int) and not isinstance(start, bool)
-        and isinstance(stop, int) and not isinstance(stop, bool)
+        isinstance(start, int)
+        and not isinstance(start, bool)
+        and isinstance(stop, int)
+        and not isinstance(stop, bool)
         and stop < start
     ):
-        problems.append(
-            f"lead_stop must be >= lead_start, got {stop} < {start}"
-        )
+        problems.append(f"lead_stop must be >= lead_start, got {stop} < {start}")
     return problems
 
 
@@ -3594,6 +3736,7 @@ def _lead_grid(params, horizon):
     absent one falls back to it, so a document that declares nothing
     computes exactly what it did before ADR-0062.
     """
+
     def pick(knob):
         declared = params.get(knob)
         return int(horizon[knob] if declared is None else declared)
@@ -3608,10 +3751,9 @@ def _label_from_params(params, arrays, period_ms):
         arrays,
         period_ms,
         scale=params.get("label_scale") or "raw",
+        residual_self=params.get("label_residual_self"),
         residual=params.get("label_residual"),
-        vol_window=int(
-            params.get("vol_window_minutes") or DEFAULT_VOL_WINDOW_MINUTES
-        ),
+        vol_window=int(params.get("vol_window_minutes") or DEFAULT_VOL_WINDOW_MINUTES),
         beta_window=int(
             params.get("beta_window_minutes") or DEFAULT_BETA_WINDOW_MINUTES
         ),
@@ -3665,7 +3807,12 @@ class _LeadLabel:
     """
 
     def __init__(
-        self, arrays, period_ms, scale="raw", residual=None,
+        self,
+        arrays,
+        period_ms,
+        scale="raw",
+        residual_self=None,
+        residual=None,
         vol_window=DEFAULT_VOL_WINDOW_MINUTES,
         beta_window=DEFAULT_BETA_WINDOW_MINUTES,
         vol_floor=DEFAULT_VOL_FLOOR,
@@ -3673,6 +3820,13 @@ class _LeadLabel:
         if scale not in LABEL_SCALES:
             raise ValueError(
                 f"label_scale must be one of {LABEL_SCALES}, got {scale!r}"
+            )
+        if residual_self not in (None, "raw"):
+            raise ValueError("label_residual_self must be 'raw' when declared")
+        if residual_self is not None and residual is None:
+            raise ValueError(
+                "label_residual_self requires label_residual; there is no "
+                "self-reference otherwise"
             )
         if residual is not None and residual not in arrays:
             raise ValueError(
@@ -3682,6 +3836,7 @@ class _LeadLabel:
         self.arrays = arrays
         self.period_ms = int(period_ms)
         self.scale = scale
+        self.residual_self = residual_self
         self.residual = residual
         self.vol_window = int(vol_window)
         self.beta_window = int(beta_window)
@@ -3698,6 +3853,8 @@ class _LeadLabel:
         parts = [self.scale]
         if self.residual is not None:
             parts.append(f"residual:{self.residual}")
+        if self.residual_self is not None:
+            parts.append(f"self:{self.residual_self}")
         return "+".join(parts)
 
     def _prepare(self, symbol):
@@ -3710,10 +3867,13 @@ class _LeadLabel:
         own = _bar_returns(stamps, prices, self.period_ms)
         beta = None
         effective = own
-        if self.residual is not None:
+        if self.residual is not None and not (
+            symbol == self.residual and self.residual_self == "raw"
+        ):
             ref_stamps, ref_prices = self.arrays[self.residual]
             ref = _align_returns(
-                stamps, ref_stamps,
+                stamps,
+                ref_stamps,
                 _bar_returns(ref_stamps, ref_prices, self.period_ms),
             )
             # Zero-mean cross products: a 1-minute mean return is noise,
@@ -3726,10 +3886,7 @@ class _LeadLabel:
             with np.errstate(divide="ignore", invalid="ignore"):
                 beta = np.where(var > 0.0, cov / var, np.nan)
             effective = own - beta * ref
-        sigma = (
-            rolling_std(effective, self.vol_window)
-            if self.scale == "vol" else None
-        )
+        sigma = rolling_std(effective, self.vol_window) if self.scale == "vol" else None
         self._prepared_by_symbol[symbol] = (beta, sigma)
         return self._prepared_by_symbol[symbol]
 
@@ -3799,7 +3956,8 @@ def _scan_fold(prepared, lead, train_end, val_start, val_end, label=None):
         loc_ok = loc[ok]
         fut_ok = future[ok]
         y = (
-            label.values(item[0], loc_ok, fut_ok) if label is not None
+            label.values(item[0], loc_ok, fut_ok)
+            if label is not None
             else _raw_lead_return(t_px, loc_ok, fut_ok)
         )
         finite = np.isfinite(y)
@@ -3810,11 +3968,7 @@ def _scan_fold(prepared, lead, train_end, val_start, val_end, label=None):
         x_ok = x[ok][finite]
         y = y[finite]
         train = (stamp <= train_end) & (future_ms <= train_end)
-        val = (
-            (stamp >= val_start)
-            & (stamp <= val_end)
-            & (future_ms <= val_end)
-        )
+        val = (stamp >= val_start) & (stamp <= val_end) & (future_ms <= val_end)
         if np.any(train):
             train_x.append(x_ok[train])
             train_y.append(y[train])
@@ -3942,12 +4096,12 @@ class _DayScramble:
         ordered = sorted(counts.values())
         middle = len(ordered) // 2
         median = (
-            float(ordered[middle]) if len(ordered) % 2
+            float(ordered[middle])
+            if len(ordered) % 2
             else (ordered[middle - 1] + ordered[middle]) / 2.0
         )
         short = {
-            day for day, rows in counts.items()
-            if rows < _SHORT_SESSION_SHARE * median
+            day for day, rows in counts.items() if rows < _SHORT_SESSION_SHARE * median
         }
         return cls(seed, counts, short)
 
@@ -3967,7 +4121,8 @@ class _DayScramble:
         boundary sessions of a window hundreds of sessions wide.
         """
         return [
-            day for day in self.calendar
+            day
+            for day in self.calendar
             if day not in self.short
             and (lo is None or day * _DAY_MS >= lo)
             and (day + 1) * _DAY_MS - 1 <= hi
@@ -4030,7 +4185,8 @@ class _DayScramble:
                 continue
             pool = np.asarray(sorted(donors), dtype=np.int64)
             gift = np.asarray(
-                [donors[int(one)] for one in pool.tolist()], dtype=np.int64,
+                [donors[int(one)] for one in pool.tolist()],
+                dtype=np.int64,
             )
             rows = np.nonzero(mask)[0]
             slot = np.searchsorted(pool, day[rows])
@@ -4066,16 +4222,27 @@ def _session_offsets(stamps, days):
         return stamps - stamps[first]
     _, inverse = np.unique(days, return_inverse=True)
     first = np.full(
-        inverse.max() + 1, np.iinfo(np.int64).max, dtype=np.int64,
+        inverse.max() + 1,
+        np.iinfo(np.int64).max,
+        dtype=np.int64,
     )
     np.minimum.at(first, inverse, stamps)
     return stamps - first[inverse]
 
 
 def _scan_fold_stamped(
-    prepared, lead, train_end, val_start, val_end, train_start=None,
-    label=None, score_period_ms=None, score_offset_ms=0, scramble=None,
+    prepared,
+    lead,
+    train_end,
+    val_start,
+    val_end,
+    train_start=None,
+    label=None,
+    score_period_ms=None,
+    score_offset_ms=0,
+    scramble=None,
     parts=None,
+    series_counts=None,
 ):
     """Like :func:`_scan_fold`, plus val stamps aligned with val rows.
 
@@ -4099,12 +4266,16 @@ def _scan_fold_stamped(
 
     ``parts`` optionally receives each symbol's already-built training
     labels and validation arrays, avoiding a second per-symbol build.
+    ``series_counts`` optionally receives finite train/validation row counts
+    without retaining those arrays.
     """
     import numpy as np
 
     train_x, train_y, val_x, val_y, val_stamps = [], [], [], [], []
     n_features = prepared[0][2].shape[1] if prepared else 0
     for item in prepared:
+        if series_counts is not None:
+            series_counts[item[0]] = {"train": 0, "val": 0}
         stamps, x, loc, match, t_ms, t_px = item[-6:]
         future = loc + lead
         ok = match & (future < t_ms.size)
@@ -4114,7 +4285,8 @@ def _scan_fold_stamped(
         loc_ok = loc[ok_rows]
         fut_ok = future[ok_rows]
         y = (
-            label.values(item[0], loc_ok, fut_ok) if label is not None
+            label.values(item[0], loc_ok, fut_ok)
+            if label is not None
             else _raw_lead_return(t_px, loc_ok, fut_ok)
         )
         # The masks come from the stamps alone, so they are the same
@@ -4131,17 +4303,19 @@ def _scan_fold_stamped(
             & (every_future <= val_end)
         )
         if score_period_ms:
-            val_all &= (
-                ((every_stamp - score_offset_ms) % score_period_ms) == 0
-            )
+            val_all &= ((every_stamp - score_offset_ms) % score_period_ms) == 0
         if scramble is not None:
             y = scramble.apply(
-                every_stamp, y,
+                every_stamp,
+                y,
                 (
-                    (f"train|{train_start}|{train_end}",
-                     train_all, train_start, train_end),
-                    (f"val|{val_start}|{val_end}",
-                     val_all, val_start, val_end),
+                    (
+                        f"train|{train_start}|{train_end}",
+                        train_all,
+                        train_start,
+                        train_end,
+                    ),
+                    (f"val|{val_start}|{val_end}", val_all, val_start, val_end),
                 ),
             )
         finite = np.isfinite(y)
@@ -4152,13 +4326,21 @@ def _scan_fold_stamped(
         y = y[finite]
         train = train_all[finite]
         val = val_all[finite]
+        if series_counts is not None:
+            series_counts[item[0]] = {
+                "train": int(np.count_nonzero(train)),
+                "val": int(np.count_nonzero(val)),
+            }
         one_train_y = y[train]
         one_val_x = x[finite_rows[val]]
         one_val_y = y[val]
         one_val_stamps = stamp[val]
         if parts is not None:
             parts[(item[0], int(lead))] = (
-                one_train_y, one_val_x, one_val_y, one_val_stamps,
+                one_train_y,
+                one_val_x,
+                one_val_y,
+                one_val_stamps,
             )
         if np.any(train):
             train_x.append(x[finite_rows[train]])
@@ -4167,7 +4349,8 @@ def _scan_fold_stamped(
             val_x.append(one_val_x)
             val_y.append(one_val_y)
             val_stamps.append(one_val_stamps)
-    empty_x = np.zeros((0, n_features), dtype=np.float64)
+    x_dtype = prepared[0][2].dtype if prepared else np.float64
+    empty_x = np.zeros((0, n_features), dtype=x_dtype)
     empty_y = np.zeros(0, dtype=np.float64)
     empty_t = np.zeros(0, dtype=np.int64)
     return (
@@ -4246,7 +4429,9 @@ def _lead_skill(symbol, lead, h_steps, y, yhat, mu, mspe_mean, stamps, writer=No
     q = float(mspe_mean)
     mean_gap = sum(gaps) / len(gaps)
     dm = diebold_mariano_test(
-        gaps, lags=dm_lags(len(gaps), h_steps), h_steps=h_steps,
+        gaps,
+        lags=dm_lags(len(gaps), h_steps),
+        h_steps=h_steps,
     )
     if writer is not None:
         writer.append(symbol, lead, stamps, y, yhat, mu)
@@ -4258,10 +4443,21 @@ def _lead_skill(symbol, lead, h_steps, y, yhat, mu, mspe_mean, stamps, writer=No
 
 
 def _walk_no_information_series(
-    prepared_one, model, leads, train_end, val_start, val_end, period_minutes,
-    train_start=None, label=None, writer=None,
-    score_period_ms=None, score_offset_ms=0, scramble=None,
-    parts=None, predictions=None,
+    prepared_one,
+    model,
+    leads,
+    train_end,
+    val_start,
+    val_end,
+    period_minutes,
+    train_start=None,
+    label=None,
+    writer=None,
+    score_period_ms=None,
+    score_offset_ms=0,
+    scramble=None,
+    parts=None,
+    predictions=None,
 ):
     """Sequential h* for one name; GO is that H or none.
 
@@ -4298,10 +4494,16 @@ def _walk_no_information_series(
         built = None if parts is None else parts.get((symbol, int(lead)))
         if built is None:
             _, tr_y, val_x, val_y, val_stamps = _scan_fold_stamped(
-                [prepared_one], lead, train_end, val_start, val_end,
-                train_start=train_start, label=label,
+                [prepared_one],
+                lead,
+                train_end,
+                val_start,
+                val_end,
+                train_start=train_start,
+                label=label,
                 score_period_ms=score_period_ms,
-                score_offset_ms=score_offset_ms, scramble=scramble,
+                score_offset_ms=score_offset_ms,
+                scramble=scramble,
             )
         else:
             tr_y, val_x, val_y, val_stamps = built
@@ -4312,8 +4514,12 @@ def _walk_no_information_series(
             curve.append(row)
             ordered.append({"horizon": lead, "p_value": 1.0})
             continue
-        yhat = None if predictions is None else predictions.get(
-            (symbol, int(lead)),
+        yhat = (
+            None
+            if predictions is None
+            else predictions.get(
+                (symbol, int(lead)),
+            )
         )
         if yhat is None:
             yhat = np.asarray(model.predict(val_x), dtype=np.float64)
@@ -4324,7 +4530,11 @@ def _walk_no_information_series(
             ordered.append({"horizon": lead, "p_value": 1.0})
             continue
         out = no_information_test(
-            val_y.tolist(), yhat.tolist(), mu=mu, lags=lags, horizon=lead,
+            val_y.tolist(),
+            yhat.tolist(),
+            mu=mu,
+            lags=lags,
+            horizon=lead,
         )
         row = {
             "symbol": symbol,
@@ -4341,11 +4551,19 @@ def _walk_no_information_series(
             "n": float(out["n"]),
             "lags": float(out["lags"]),
         }
-        row.update(_lead_skill(
-            symbol, lead, max(lead // period_minutes, 1),
-            val_y.tolist(), yhat.tolist(), mu, out["mspe_mean"],
-            val_stamps.tolist(), writer=writer,
-        ))
+        row.update(
+            _lead_skill(
+                symbol,
+                lead,
+                max(lead // period_minutes, 1),
+                val_y.tolist(),
+                yhat.tolist(),
+                mu,
+                out["mspe_mean"],
+                val_stamps.tolist(),
+                writer=writer,
+            )
+        )
         curve.append(row)
         ordered.append({"horizon": lead, "p_value": out["p_value"]})
     walked = max_informative_horizon(ordered, alpha=_NO_INFO_ALPHA)
@@ -4479,39 +4697,56 @@ class HorizonScan(Node):
         val_end = int(self.params["val_end_ms"])
         price_field = spec["price_field"]
         prepared = _scan_aligned(
-            inputs["bars"], inputs["records"], features, price_field, val_end,
+            inputs["bars"],
+            inputs["records"],
+            features,
+            price_field,
+            val_end,
         )
         curve = []
         for lead in leads:
             train_x, train_y, val_x, val_y = _scan_fold(
-                prepared, lead, train_end, val_start, val_end,
+                prepared,
+                lead,
+                train_end,
+                val_start,
+                val_end,
             )
             n_train, n_val = train_y.size, val_y.size
             if n_train < 2 or n_val < 2:
-                curve.append({
+                curve.append(
+                    {
+                        "lead": lead,
+                        "ic_train": 0.0,
+                        "ic_val": 0.0,
+                        "n_train": float(n_train),
+                        "n_val": float(n_val),
+                        "se": _ic_se(n_val),
+                        "pass_2se": 0.0,
+                        "selected": "",
+                    }
+                )
+                continue
+            ic_train, ic_val, selected = _score_ic(
+                train_x,
+                train_y,
+                val_x,
+                val_y,
+                features,
+                spec,
+            )
+            curve.append(
+                {
                     "lead": lead,
-                    "ic_train": 0.0,
-                    "ic_val": 0.0,
+                    "ic_train": ic_train,
+                    "ic_val": ic_val,
                     "n_train": float(n_train),
                     "n_val": float(n_val),
                     "se": _ic_se(n_val),
-                    "pass_2se": 0.0,
-                    "selected": "",
-                })
-                continue
-            ic_train, ic_val, selected = _score_ic(
-                train_x, train_y, val_x, val_y, features, spec,
+                    "pass_2se": float(_passes_ic(ic_val, n_val, se_mult)),
+                    "selected": ",".join(selected),
+                }
             )
-            curve.append({
-                "lead": lead,
-                "ic_train": ic_train,
-                "ic_val": ic_val,
-                "n_train": float(n_train),
-                "n_val": float(n_val),
-                "se": _ic_se(n_val),
-                "pass_2se": float(_passes_ic(ic_val, n_val, se_mult)),
-                "selected": ",".join(selected),
-            })
         verdict = _horizon_verdict(curve, anchors, se_mult, band_leads)
         farthest = verdict["farthest"]
         peak = verdict["peak"]
@@ -4520,17 +4755,20 @@ class HorizonScan(Node):
             "go_anchor": float(verdict["go_anchor"]),
             "go_band": float(verdict["go_band"]),
             "n_leads": float(len(curve)),
-            "n_anchors_pass": float(sum(
-                1 for row in curve
-                if row["lead"] in set(anchors) and row["pass_2se"]
-            )),
+            "n_anchors_pass": float(
+                sum(
+                    1
+                    for row in curve
+                    if row["lead"] in set(anchors) and row["pass_2se"]
+                )
+            ),
             "peak_lead": int(peak["lead"]) if peak else 0,
             "peak_ic": float(peak["ic_val"]) if peak else 0.0,
             "farthest_confident_lead": int(farthest["lead"]) if farthest else 0,
             "rank_ic": float(farthest["ic_val"]) if farthest else 0.0,
-            "n_val": float(farthest["n_val"]) if farthest else (
-                float(peak["n_val"]) if peak else 0.0
-            ),
+            "n_val": float(farthest["n_val"])
+            if farthest
+            else (float(peak["n_val"]) if peak else 0.0),
         }
         self.log.info(
             "horizon scan: go=%s anchors=%s band=%s farthest=%s ic=%.4f",
@@ -4598,12 +4836,28 @@ class NoInformationScan(Node):
     role = "score"
     outputs = ("records", "metrics")
     _PARAMS = (
-        "split", "train_end_ms", "train_start_ms", "val_start_ms",
-        "val_end_ms",
-        "estimator", "estimator_params",
-        "hpo_trials", "hpo_seed", "hpo_val_days", "hpo_embargo_days",
-        "hpo_space", "hpo_objective",
-    ) + LABEL_PARAMS + LEAD_PARAMS + SCORE_GRID_PARAMS + SCRAMBLE_PARAMS
+        (
+            "split",
+            "train_end_ms",
+            "train_start_ms",
+            "val_start_ms",
+            "val_end_ms",
+            "estimator",
+            "estimator_params",
+            "hpo_trials",
+            "hpo_seed",
+            "hpo_val_days",
+            "hpo_embargo_days",
+            "hpo_space",
+            "hpo_objective",
+            "score_symbols",
+            "fit_symbols",
+        )
+        + LABEL_PARAMS
+        + LEAD_PARAMS
+        + SCORE_GRID_PARAMS
+        + SCRAMBLE_PARAMS
+    )
 
     @classmethod
     def validate_params(cls, params):
@@ -4630,9 +4884,7 @@ class NoInformationScan(Node):
             check_int_param(problems, knob, params.get(knob), ge=0)
         train_start = params.get("train_start_ms")
         if train_start is not None:
-            check_int_param(
-                problems, "train_start_ms", train_start, ge=0
-            )
+            check_int_param(problems, "train_start_ms", train_start, ge=0)
             train_end = params.get("train_end_ms")
             if (
                 isinstance(train_start, int)
@@ -4676,15 +4928,22 @@ class NoInformationScan(Node):
             )
         extra = params.get("estimator_params")
         if extra is not None and not isinstance(extra, dict):
-            problems.append(
-                f"estimator_params must be an object, got {extra!r}"
-            )
+            problems.append(f"estimator_params must be an object, got {extra!r}")
+        for selector in ("fit_symbols", "score_symbols"):
+            symbols = params.get(selector)
+            if symbols is not None and (
+                not isinstance(symbols, (list, tuple))
+                or not symbols
+                or any(not isinstance(v, str) or not v for v in symbols)
+                or len(set(symbols)) != len(symbols)
+            ):
+                problems.append(
+                    f"{selector} must be a non-empty list of unique symbol "
+                    f"strings, got {symbols!r}"
+                )
         objective = params.get("hpo_objective")
         if objective is not None and objective not in ("mspe", "ic"):
-            problems.append(
-                "hpo_objective must be 'mspe' or 'ic', got "
-                f"{objective!r}"
-            )
+            problems.append(f"hpo_objective must be 'mspe' or 'ic', got {objective!r}")
         trials = params.get("hpo_trials")
         if trials is not None:
             check_int_param(problems, "hpo_trials", trials, ge=0)
@@ -4708,7 +4967,8 @@ class NoInformationScan(Node):
                             f"hpo_space keys must be non-empty strings, got {key!r}"
                         )
                     if (
-                        not isinstance(values, list) or not values
+                        not isinstance(values, list)
+                        or not values
                         or any(
                             isinstance(v, bool) or not isinstance(v, (int, float))
                             for v in values
@@ -4722,8 +4982,10 @@ class NoInformationScan(Node):
         problems.extend(_lead_problems(params))
         if params.get("label_scramble_seed") is not None:
             check_int_param(
-                problems, "label_scramble_seed",
-                params.get("label_scramble_seed"), ge=0,
+                problems,
+                "label_scramble_seed",
+                params.get("label_scramble_seed"),
+                ge=0,
             )
         for knob in LABEL_PARAMS + LEAD_PARAMS + SCRAMBLE_PARAMS:
             if knob in params and params[knob] is None:
@@ -4829,7 +5091,9 @@ class NoInformationScan(Node):
         period_minutes = max(period_ms // 60_000, 1)
         offset_ms = int(spec["offset_ms"])
         score_period_ms, score_offset_ms = _score_grid(
-            self.params, period_ms, offset_ms,
+            self.params,
+            period_ms,
+            offset_ms,
         )
         if score_period_ms:
             # The rows that enter the test are the lattice rows, so the
@@ -4839,7 +5103,9 @@ class NoInformationScan(Node):
             self.log.info(
                 "no-information scan: rows every %d min, scored on a "
                 "%d-min lattice (offset %d ms); HAC lag uses the lattice",
-                period_minutes, score_minutes, score_offset_ms,
+                period_minutes,
+                score_minutes,
+                score_offset_ms,
             )
             period_minutes = score_minutes
         arrays = _tapes_from_bars(inputs["bars"], spec["price_field"], val_end)
@@ -4847,19 +5113,38 @@ class NoInformationScan(Node):
         if label.transformed:
             self.log.info("no-information scan: label %s", label.describe())
         prepared = _scan_aligned(
-            inputs["bars"], inputs["records"], features,
-            spec["price_field"], val_end, arrays=arrays,
+            inputs["bars"],
+            inputs["records"],
+            features,
+            spec["price_field"],
+            val_end,
+            arrays=arrays,
         )
+        available = {item[0] for item in prepared}
+        fit_symbols = self.params.get("fit_symbols")
+        if fit_symbols is not None and available != set(fit_symbols):
+            raise ValueError(
+                "fit_symbols must equal the prepared pooled universe; "
+                f"missing={sorted(set(fit_symbols) - available)} "
+                f"extra={sorted(available - set(fit_symbols))}"
+            )
+        wanted = self.params.get("score_symbols")
+        missing = [] if wanted is None else sorted(set(wanted) - available)
+        if missing:
+            raise ValueError(
+                f"score_symbols names absent from the 25-asset fit: {missing}"
+            )
+        score_set = available if wanted is None else set(wanted)
         scramble_seed = self.params.get("label_scramble_seed")
         scramble = (
-            None if scramble_seed is None
+            None
+            if scramble_seed is None
             else _DayScramble.from_prepared(scramble_seed, prepared)
         )
         codes = _symbol_codes(spec, prepared)
         prepared = _attach_symbol_codes(prepared, codes)
-        categorical = (
-            [prepared[0][2].shape[1] - 1] if prepared else None
-        )
+        scoring_prepared = [item for item in prepared if item[0] in score_set]
+        categorical = [prepared[0][2].shape[1] - 1] if prepared else None
         # The design matrix IS the features plus the code column that
         # _attach_symbol_codes just appended; an estimator that splits
         # the row by name reads this, so it is built where the append is.
@@ -4891,6 +5176,7 @@ class NoInformationScan(Node):
         metrics = {
             "n_leads": float(len(leads)),
             "n_series": float(len(prepared)),
+            "n_scored_series": float(len(scoring_prepared)),
         }
         if scramble is not None:
             # Said loudly and recorded as a number: a reader who mistakes
@@ -4904,18 +5190,37 @@ class NoInformationScan(Node):
                 scramble.describe(),
             )
         fold_parts = {} if scramble is not None else None
+        series_counts = {}
         tr_x, tr_y, va_x, va_y, _ = _scan_fold_stamped(
-            prepared, train_lead, train_end, val_start, val_end,
-            train_start=train_start, label=label,
-            score_period_ms=score_period_ms, score_offset_ms=score_offset_ms,
-            scramble=scramble, parts=fold_parts,
+            prepared,
+            train_lead,
+            train_end,
+            val_start,
+            val_end,
+            train_start=train_start,
+            label=label,
+            score_period_ms=score_period_ms,
+            score_offset_ms=score_offset_ms,
+            scramble=scramble,
+            parts=fold_parts,
+            series_counts=series_counts,
         )
         metrics["n_train"] = float(tr_x.shape[0])
         metrics["n_val"] = float(va_x.shape[0])
+        metrics["n_fit_series"] = float(
+            sum(row["train"] > 0 for row in series_counts.values())
+        )
+        if fit_symbols is not None:
+            missing_train = [
+                symbol
+                for symbol in fit_symbols
+                if series_counts.get(symbol, {}).get("train", 0) == 0
+            ]
+            if missing_train:
+                raise ValueError(f"pooled fit has no finite rows for {missing_train}")
         self.log.info(
             "no-information scan: train window %s n_train=%d",
-            "ALL-PRIOR" if train_start is None
-            else f"[{train_start}, {train_end}]",
+            "ALL-PRIOR" if train_start is None else f"[{train_start}, {train_end}]",
             int(tr_x.shape[0]),
         )
         scan = dict(base_scan)
@@ -4924,31 +5229,51 @@ class NoInformationScan(Node):
         if tr_x.shape[0] >= 2:
             if combos:
                 in_x, in_y, ho_x, ho_y, _ = _scan_fold_stamped(
-                    prepared, train_lead, inner_train_end,
-                    inner_val_start, inner_val_end,
-                    train_start=train_start, label=label,
+                    prepared,
+                    train_lead,
+                    inner_train_end,
+                    inner_val_start,
+                    inner_val_end,
+                    train_start=train_start,
+                    label=label,
                     scramble=scramble,
                 )
                 if in_x.shape[0] >= 2 and ho_x.shape[0] >= 2:
                     objective = self.params.get("hpo_objective", "mspe")
                     chosen, inner_score = _tune_estimator(
-                        scan, combos, in_x, in_y, ho_x, ho_y,
-                        categorical=categorical, objective=objective,
+                        scan,
+                        combos,
+                        in_x,
+                        in_y,
+                        ho_x,
+                        ho_y,
+                        categorical=categorical,
+                        objective=objective,
                         feature_names=column_names,
                     )
                     scan["estimator_params"] = chosen
                     metrics[f"hpo_{objective}"] = inner_score
                     self.log.info(
                         "hpo: %d combo(s) on %s, winner %s=%.6g",
-                        len(combos), objective, objective, inner_score,
+                        len(combos),
+                        objective,
+                        objective,
+                        inner_score,
                     )
             model = _fit_estimator(
-                tr_x, tr_y, scan, categorical=categorical,
+                tr_x,
+                tr_y,
+                scan,
+                categorical=categorical,
                 feature_names=column_names,
             )
             split_predictions = {} if fold_parts is not None else None
             fit = _fit_split_metrics(
-                model, tr_x, tr_y, va_x, va_y,
+                model,
+                tr_x,
+                tr_y,
+                va_x,
+                va_y,
                 prediction_cache=split_predictions,
             )
             if fold_parts is not None:
@@ -4990,17 +5315,27 @@ class NoInformationScan(Node):
                     "IC=0. Check min_split_gain and reg_lambda against the "
                     "label variance before reading this fold."
                 )
-        writer = self._open_predictions(ctx, prepared, period_minutes, val_start)
+        writer = self._open_predictions(
+            ctx, scoring_prepared, period_minutes, val_start
+        )
         try:
-            for item in prepared:
+            for item in scoring_prepared:
                 symbol = item[0]
                 rows, series = _walk_no_information_series(
-                    item, model, leads, train_end, val_start, val_end,
-                    period_minutes, train_start=train_start, label=label,
+                    item,
+                    model,
+                    leads,
+                    train_end,
+                    val_start,
+                    val_end,
+                    period_minutes,
+                    train_start=train_start,
+                    label=label,
                     writer=writer,
                     score_period_ms=score_period_ms,
                     score_offset_ms=score_offset_ms,
-                    scramble=scramble, parts=fold_parts,
+                    scramble=scramble,
+                    parts=fold_parts,
                     predictions=fold_predictions,
                 )
                 curve.extend(rows)
@@ -5029,9 +5364,10 @@ class NoInformationScan(Node):
             if writer is not None:
                 self.log.info(
                     "predictions: %d row(s) -> %s",
-                    writer.n_rows, writer.close(),
+                    writer.n_rows,
+                    writer.close(),
                 )
-        n_series = len(prepared)
+        n_series = len(scoring_prepared)
         metrics["n_go"] = float(n_go)
         metrics["go_frac"] = float(n_go / n_series) if n_series else 0.0
         self.log.info(
@@ -5075,7 +5411,11 @@ class LookbackScan(Node):
     role = "score"
     outputs = ("records", "metrics", "lookback", "features")
     _PARAMS = (
-        "split", "lead", "train_end_ms", "val_start_ms", "val_end_ms",
+        "split",
+        "lead",
+        "train_end_ms",
+        "val_start_ms",
+        "val_end_ms",
     )
 
     @classmethod
@@ -5158,11 +5498,18 @@ class LookbackScan(Node):
         val_start = int(self.params["val_start_ms"])
         val_end = int(self.params["val_end_ms"])
         prepared = _scan_aligned(
-            inputs["bars"], inputs["records"], names,
-            spec["price_field"], val_end,
+            inputs["bars"],
+            inputs["records"],
+            names,
+            spec["price_field"],
+            val_end,
         )
         train_x, train_y, val_x, val_y = _scan_fold(
-            prepared, lead, train_end, val_start, val_end,
+            prepared,
+            lead,
+            train_end,
+            val_start,
+            val_end,
         )
         available = sum(1 for name in names if name.startswith("ret_lag_"))
         curve = []
@@ -5170,15 +5517,17 @@ class LookbackScan(Node):
             wanted = _lookback_columns(names, lookback)
             n_train, n_val = train_y.size, val_y.size
             if n_train < 2 or n_val < 2 or not wanted:
-                curve.append({
-                    "lookback": lookback,
-                    "ic_train": 0.0,
-                    "ic_val": 0.0,
-                    "n_train": float(n_train),
-                    "n_val": float(n_val),
-                    "se": _ic_se(n_val),
-                    "selected": "",
-                })
+                curve.append(
+                    {
+                        "lookback": lookback,
+                        "ic_train": 0.0,
+                        "ic_val": 0.0,
+                        "n_train": float(n_train),
+                        "n_val": float(n_val),
+                        "se": _ic_se(n_val),
+                        "selected": "",
+                    }
+                )
                 continue
             ic_train, ic_val, selected = _score_ic(
                 _take_cols(train_x, names, wanted),
@@ -5188,25 +5537,33 @@ class LookbackScan(Node):
                 wanted,
                 spec,
             )
-            curve.append({
-                "lookback": lookback,
-                "ic_train": ic_train,
-                "ic_val": ic_val,
-                "n_train": float(n_train),
-                "n_val": float(n_val),
-                "se": _ic_se(n_val),
-                "selected": ",".join(selected),
-            })
+            curve.append(
+                {
+                    "lookback": lookback,
+                    "ic_train": ic_train,
+                    "ic_val": ic_val,
+                    "n_train": float(n_train),
+                    "n_val": float(n_val),
+                    "se": _ic_se(n_val),
+                    "selected": ",".join(selected),
+                }
+            )
         peak, picked = _lookback_verdict(curve)
         keep_frac = float(scan.get("keep_frac", 0.95))
         keep_tau = float(scan.get("keep_tau", 0.05))
         wanted = _lookback_columns(names, int(picked["lookback"]))
         if train_y.size >= 2 and wanted:
             weights = _column_weights(
-                _take_cols(train_x, names, wanted), train_y, wanted, scan,
+                _take_cols(train_x, names, wanted),
+                train_y,
+                wanted,
+                scan,
             )
             features = _keep_by_importance(
-                wanted, weights, keep_frac, keep_tau,
+                wanted,
+                weights,
+                keep_frac,
+                keep_tau,
             )
         else:
             features = list(wanted)
@@ -5220,7 +5577,9 @@ class LookbackScan(Node):
         }
         self.log.info(
             "lookback scan: L=%s ic=%.4f n_features=%s",
-            picked["lookback"], picked["ic_val"], len(features),
+            picked["lookback"],
+            picked["ic_val"],
+            len(features),
         )
         return {
             "records": curve,
@@ -5259,7 +5618,12 @@ class LeadLabeledRows(Node):
     role = "transform"
     outputs = ("records",)
     _PARAMS = (
-        "lead", "split", "train_end_ms", "val_start_ms", "val_end_ms", "label",
+        "lead",
+        "split",
+        "train_end_ms",
+        "val_start_ms",
+        "val_end_ms",
+        "label",
     )
 
     @classmethod
@@ -5281,9 +5645,8 @@ class LeadLabeledRows(Node):
         lead = params.get("lead")
         if not is_node_ref(lead):
             check_int_param(problems, "lead", lead, ge=1)
-        if (
-            params.get("split") not in ("train", "val")
-            and not is_node_ref(params.get("split"))
+        if params.get("split") not in ("train", "val") and not is_node_ref(
+            params.get("split")
         ):
             problems.append(
                 "split must be 'train' or 'val' (the lockbox is unread), "
@@ -5295,9 +5658,7 @@ class LeadLabeledRows(Node):
                 check_int_param(problems, knob, value, ge=0)
         label = params.get("label", "y_next")
         if "label" in params and (not isinstance(label, str) or not label):
-            problems.append(
-                f"label must be a non-empty row key, got {label!r}"
-            )
+            problems.append(f"label must be a non-empty row key, got {label!r}")
         return problems
 
     def validate_inputs(self, inputs):
@@ -5439,7 +5800,9 @@ class Universe(Node):
         reject_unknown_params(problems, params, cls._PARAMS)
         path = params.get("path")
         if not isinstance(path, str) or not path:
-            problems.append(f"path is required and must be a non-empty string, got {path!r}")
+            problems.append(
+                f"path is required and must be a non-empty string, got {path!r}"
+            )
             return problems
         overrides = params.get("overrides")
         bad_overrides = False
@@ -5483,9 +5846,14 @@ class Universe(Node):
             if key in overrides:
                 spec[key] = overrides[key]
         industries = tuple(sorted(set((spec.get("industry") or {}).values())))
-        derived = list(session_feature_names(
-            spec["lookback"], spec["scales"], spec["reference"], industries,
-        ))
+        derived = list(
+            session_feature_names(
+                spec["lookback"],
+                spec["scales"],
+                spec["reference"],
+                industries,
+            )
+        )
         keep = spec.get("keep_features")
         spec["features"] = list(keep) if keep else derived
         self._spec = spec
@@ -5550,9 +5918,7 @@ class Universe(Node):
             "tradable": list(spec["tradable"]),
             "reference": list(spec["reference"]),
             "features": list(spec["features"]),
-            "lag_features": [
-                f"ret_lag_{step}" for step in range(spec["lookback"])
-            ],
+            "lag_features": [f"ret_lag_{step}" for step in range(spec["lookback"])],
             "lookback": spec["lookback"],
             "max_gap_minutes": spec["max_gap_minutes"],
         }
@@ -5649,14 +6015,16 @@ class KeepSymbols(Node):
         records = inputs["records"]
         if records and _is_frame(records[0]):
             kept = [
-                row for row in records
+                row
+                for row in records
                 if isinstance(row, dict) and row.get(field) in allowed
             ]
             n_in = sum(int(row["asof_ms"].shape[0]) for row in records)
             n_out = sum(int(row["asof_ms"].shape[0]) for row in kept)
         else:
             kept = [
-                row for row in records
+                row
+                for row in records
                 if isinstance(row, dict) and row.get(field) in allowed
             ]
             n_in = len(records)

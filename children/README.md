@@ -44,6 +44,8 @@ _skeleton/
 │   └── path.csv
 ├── docs/research/            # research agent markdown
 │   └── .gitkeep
+├── docs/memos/               # durable implementation and operational handoffs
+│   └── .gitkeep
 ├── journal.json              # walk-up marker for dskit.journal
 └── tests/
     ├── conftest.py           # sys.path bootstrap — works in-repo and after graduation
@@ -84,6 +86,10 @@ _skeleton/
   Research writes `docs/research/<slug>.md`. An uninitialized child
   refuses. The process is in each child's `docs/decisioning/README.md`
   (generated) and in `dskit/journal/README.md`.
+- **Durable handoffs are memos.** Completed-study evidence, implementation
+  outcomes, and operational caveats go in `docs/memos/`. They are reviewed
+  documents, not ADRs and not journaled research. The skeleton initializes the
+  folder so every copied child inherits it.
 - **A vendor knob is a `spec()` knob.** If it selects WHAT you pull — bar
   interval, feed, adjustment, universe — it is config, not a constant in
   `_fetch`. The test: would a second project want it different? Then it

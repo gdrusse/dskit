@@ -631,6 +631,19 @@ class TestConcat:
             concat_node().run(ctx, streams)
         assert len(concat_node(allow_empty=True).run(ctx, streams)["merged"]) == 1
 
+    def test_consume_inputs_transfers_list_ownership(self, ctx):
+        alpha = [alphaish("ALP-1", 1), alphaish("ALP-2", 2)]
+        beta = [betaish("BET-1", 3)]
+        expected = [*alpha, *beta]
+        out = concat_node(consume_inputs=True).run(ctx, {"beta": beta, "alpha": alpha})
+        assert alpha == []
+        assert beta == []
+        assert out["merged"] == expected
+
+    def test_consume_inputs_is_records_only(self):
+        problems = Concat.validate_params({"shape": "table", "consume_inputs": True})
+        assert any("records" in problem for problem in problems)
+
     def test_table_shape_unions_lookup_tables(self, ctx):
         node = Concat("fee_book", {"shape": "table"})
         out = node.run(ctx, {"alpha": {"ALP": 0.07}, "beta": {"BET": 0.07}})
@@ -881,9 +894,7 @@ class TestDerive:
         with pytest.raises(ValueError, match="never overwrites"):
             Derive("fees", {"field": "fee", "cases": FEE_CASES}).run(ctx, rows)
         node = Derive("fees", {"field": "fee", "cases": FEE_CASES, "overwrite": True})
-        assert (
-            node.run(ctx, rows)["records"][0]["fee"]["schedule"] == "alpha-quadratic"
-        )
+        assert node.run(ctx, rows)["records"][0]["fee"]["schedule"] == "alpha-quadratic"
 
     def test_frozen_envelopes_are_refused_by_name(self, ctx):
         node = Derive("fees", {"field": "fee", "cases": [{"when": [], "value": 1}]})
@@ -910,12 +921,12 @@ class TestEventGrid:
             drec("B", "B-0", 2000),
             mrec("B", "B-1", 2500),
         ]
-        whole = EventGrid(
-            "grid", {"period_ms": 1000, "offset_ms": 0}
-        ).run(ctx, {"records": records})
-        half = EventGrid(
-            "grid", {"period_ms": 1000, "offset_ms": 500}
-        ).run(ctx, {"records": records})
+        whole = EventGrid("grid", {"period_ms": 1000, "offset_ms": 0}).run(
+            ctx, {"records": records}
+        )
+        half = EventGrid("grid", {"period_ms": 1000, "offset_ms": 500}).run(
+            ctx, {"records": records}
+        )
         assert whole["records"] == [records[0], records[2]]
         assert half["records"] == [records[1], records[3]]
 
@@ -927,30 +938,38 @@ class TestEventGrid:
             {"instrument": "missing"},
             {"asof_ms": 2000},
         ]
-        out = EventGrid(
-            "grid", {"period_ms": 1000, "offset_ms": 0}
-        ).run(ctx, {"records": records})
+        out = EventGrid("grid", {"period_ms": 1000, "offset_ms": 0}).run(
+            ctx, {"records": records}
+        )
         assert out["records"] == [records[0], records[4]]
 
-    @pytest.mark.parametrize("params", [
-        {},
-        {"period_ms": 0, "offset_ms": 0},
-        {"period_ms": True, "offset_ms": 0},
-        {"period_ms": 1000, "offset_ms": -1},
-        {"period_ms": 1000, "offset_ms": 1000},
-        {"period_ms": 1000, "offset_ms": True},
-        {"period_ms": 1000, "offset_ms": 0, "extra": 1},
-    ])
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {},
+            {"period_ms": 0, "offset_ms": 0},
+            {"period_ms": True, "offset_ms": 0},
+            {"period_ms": 1000, "offset_ms": -1},
+            {"period_ms": 1000, "offset_ms": 1000},
+            {"period_ms": 1000, "offset_ms": True},
+            {"period_ms": 1000, "offset_ms": 0, "extra": 1},
+        ],
+    )
     def test_invalid_params_are_refused(self, params):
         assert EventGrid.validate_params(params)
         with pytest.raises(ConfigError):
             EventGrid("grid", params)
 
     def test_node_references_defer_until_materialized(self):
-        assert EventGrid.validate_params({
-            "period_ms": "$clock.period",
-            "offset_ms": "$clock.offset",
-        }) == []
+        assert (
+            EventGrid.validate_params(
+                {
+                    "period_ms": "$clock.period",
+                    "offset_ms": "$clock.offset",
+                }
+            )
+            == []
+        )
 
     def test_inputs_require_only_a_record_list(self):
         node = EventGrid("grid", {"period_ms": 1000, "offset_ms": 0})
@@ -962,9 +981,7 @@ class TestEventGrid:
 class TestRegister:
     def test_registers_all_five_unowned(self):
         reg = register(NodeKindRegistry())
-        assert {"filter", "concat", "join", "derive", "event-grid"} <= set(
-            reg.kinds()
-        )
+        assert {"filter", "concat", "join", "derive", "event-grid"} <= set(reg.kinds())
         assert reg.get("filter") == (Filter, False)
         assert reg.get("concat") == (Concat, False)
         assert reg.get("join") == (Join, False)

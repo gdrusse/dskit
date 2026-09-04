@@ -57,11 +57,7 @@ def paper_intent(pick, quantity, paper=True):
     symbol = pick.get("symbol")
     if not isinstance(symbol, str) or not symbol:
         raise AssetError([f"pick.symbol must be a non-empty string, got {symbol!r}"])
-    if (
-        isinstance(quantity, bool)
-        or not isinstance(quantity, int)
-        or quantity < 1
-    ):
+    if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1:
         raise AssetError([f"quantity must be an int >= 1, got {quantity!r}"])
     return {
         "venue": "paper",

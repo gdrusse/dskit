@@ -1,12 +1,14 @@
 # Re-entry
 
-Current wrap, 2026-09-03: UPRO, BAC, AMZN, AVGO, NFLX, MSFT, GOOGL, SMH,
-and IWM were registered and backfilled as `alpaca-sip-split-c`: 12,213,670
-verified bars, zero skipped, zero cutoff violations. Disk inventory is 25 assets.
-Codex migration wrap: project-local AGENTS.md guides, session-start fast-forward pull hook, and portable skills were added under .cursor/.
+Current wrap, 2026-09-04: P10's exact 25-asset, three-gate pipeline completed
+all six journaled stages under document `b7c8efe93664c65a71407f81cd903e47503976c6d6849b9e7bb67b6089e6d8dd`.
+The 17 GiB preflight passed at 17,066,532,864 bytes (15.90 GiB). Gate 1
+selected eleven assets; the single study-wide 200-cell Gate 2 retained QQQ at
+three minutes and NFLX at ten. Both beat all 19 shuffled refits, but both
+failed Gate 3's frozen null-spread calibration, so P10 has no final pass.
 
-Refreshed 2026-09-03, end of the horizon-search session. On `main`,
-pushed to `origin`.
+Refreshed 2026-09-04 after P10 completion. The worktree is not yet committed
+or pushed.
 
 This is written for someone arriving cold. No shorthand. The question we
 are answering: **how far ahead can we predict a stock's move and still
@@ -16,40 +18,30 @@ beat simply guessing the average?** That distance is the "look-ahead".
 
 # ▶ PICK UP HERE
 
-## Approved direction, conditional on the skeptic's fixes
+## P10 completed; investigate Gate-3 null calibration next
 
-The nine-candidate backfill is complete. Source `alpaca-sip-split-c` has config
-hash `f7a6cc31f75fc7a0ac885d0b920ceb7ccbdc4cba8d42813700f31812`; it contains
-exactly UPRO, BAC, AMZN, AVGO, NFLX, MSFT, GOOGL, SMH, and IWM, and no META.
+The completed result is
+`pipeline_runs/p10-25-asset-modelability-staged-2026-02-28-b7c8efe9/stages/gate3.json`.
+Its one-row-per-asset output contains no `GROUP` and no META.
 
-One **study pipeline document** coordinates all 25 individual stock/ETF targets.
-It keeps one identical 25-asset pooled training universe throughout and
-suppresses the old synthetic `GROUP` outcome.
+- Gate 1 registered all 200 cells before filtering. Eleven assets selected a
+  consecutive horizon: LLY/TQQQ/UPRO at 20; XLF/XLK/AVGO/NFLX/IWM at 10;
+  QQQ/SMH at 3; and BAC at 1.
+- Gate 2 used one 200-cell, 865-session max-statistic family
+  (`c*=3.421996593475342`) and retained only QQQ@3 and NFLX@10. There was no
+  shorter-horizon fallback.
+- Gate 3 ran seeds 0–18 for those two selected horizons. Every run refitted the
+  same 25-asset pooled model and scored only its survivor. QQQ's null mean/SD
+  were -0.793/0.608; NFLX's were 0.032/0.667. Each real result beat every null,
+  but the frozen calibration requires SD in (0.7, 1.4), so both failed.
+- The float32, SHA-256-verified, read-only memory-mapped feature cache preserved
+  all 25 training assets. The preflight stayed below 17 GiB at 15.90 GiB.
 
-Gate 1 fits eight separate horizon models for
-`{1, 2, 3, 5, 10, 20, 30, 60}` and registers all 200 asset-horizon cells before
-filtering. An asset failing at one minute gets no horizon; otherwise it keeps
-its furthest consecutive Gate-1 pass.
+The next scientific task is to explain the too-narrow Gate-3 null spreads
+without weakening the frozen calibration after seeing these results. Until
+that is resolved prospectively, P10 supports no modelable asset.
 
-Gate 2 must change from one correction per asset to one study-wide correction
-over all 200 cells. A failure does not fall back to a shorter horizon. Gate 3
-uses seeds 0–18 and refits the identical 25-asset model at each unique surviving
-horizon; only the scored outputs are filtered.
-
-The skeptic's other blocking finding is memory: five targets used 13.7 GB on a
-17 GB machine, so a one-fold 25-asset preflight must pass before any full walk.
-If it fails, the implementation must stream/use float32 or reuse one pooled fit
-across bounded scoring batches; it must never shrink the training universe.
-
-The current engine cannot yet resume one JSON across completed walk, bar, and
-shuffle stages, so the ADR must add generic staged orchestration inside the
-pipeline structure. Every stage and child walk still uses the existing journal;
-there is no sidecar manifest. P10 in `docs/plans/2026-09-horizon-search.md` is
-the full working plan. Next:
-inventory the seams, write the required ADR, wait for approval, implement,
-preflight memory, then run. The design is a conditional GO, not yet executable.
-
-## The answer as it stands
+## Previous five-asset answer (historical; superseded by P10 above)
 
 **Three minutes for Lilly. Two minutes for the five stocks taken
 together. Nothing for Apple, JPMorgan, Walmart or Exxon at any setting
@@ -318,11 +310,12 @@ listed under gap 6 above.
 
 ## Next steps, in priority order
 
-1. **Build the 25-asset funnel:** inventory the pipeline seams, write and approve
-   its ADR, implement the staged pipeline, pass the 25-asset memory preflight,
-   then execute Gates 1–3 exactly as P10 specifies.
-2. **Shuffle-test the group's two-minute cell** — the one survivor with
-   no luck check. Nineteen walks, about two and a half hours.
+1. **Explain Gate 3's narrow null spreads prospectively:** diagnose why QQQ@3
+   and NFLX@10 produced SD 0.608 and 0.667, define the remediation before
+   rerunning, and do not relax the frozen 0.7 floor after seeing the result.
+2. **Decide whether legacy GROUP research remains relevant.** P10 deliberately
+   suppresses GROUP, so any return to that estimand needs a separately approved
+   study rather than reuse of the 25-asset funnel.
 3. **Run the model shortlist at one-minute rows, three minutes ahead.**
    It is the largest unrun block and the only fair test of bigger models
    we have, and the only remaining candidate for pushing past three

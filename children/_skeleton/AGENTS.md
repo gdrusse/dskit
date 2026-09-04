@@ -9,6 +9,9 @@ Agent orientation template — see README.md for what the child does.
 - **Standalone explanations live in `docs/explanations/`.** Put worked,
   self-contained explanations there rather than beside decision records or
   research notes.
+- **Durable handoffs live in `docs/memos/`.** Keep implementation outcomes,
+  operational evidence, and known caveats there. A memo is not an ADR and is
+  not journaled research; the skeleton initializes the folder with `.gitkeep`.
 - **Never edit dskit.** A missing capability is either a genuinely
   generic gap — propose an ADR upstream — or domain logic that stays
   here. There is no third option.
@@ -77,6 +80,7 @@ configs/               # asset-model / source-sample / suite-sample / run-sample
 journal.json           # dskit.journal marker
 docs/decisioning/      # actions.csv + path.csv; README generated
 docs/research/         # research markdown
+docs/memos/            # durable implementation and operational handoffs
 tests/                 # conftest bootstrap + configs/connectors/nodes tests
 pyproject.toml         # dependencies = ["dskit"]
 ```

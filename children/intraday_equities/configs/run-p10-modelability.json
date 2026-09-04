@@ -1,0 +1,218 @@
+{
+  "name": "p10-25-asset-modelability",
+  "notes": "P10's single resumable three-gate study. The source-level cut is 2026-02-28. Every fit sees the same 25 split-adjusted SIP assets; Gate 3's score_symbols changes outputs only. Synthetic GROUP rows are suppressed. Memory strategy v5 transfers raw-list ownership, uses float32 arrays, persists preflight RSS, and scores fold-isolated read-only feature-cache mappings.",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {"path": "configs/universe-p10.json"}
+    },
+    "source_a": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split",
+        "universe": "configs/universe-p10.json",
+        "start_ms": 1514764800000,
+        "sessions": ["rth"],
+        "shared_fields": ["symbol", "ts"]
+      }
+    },
+    "source_b": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-b",
+        "universe": "configs/universe-p10.json",
+        "start_ms": 1514764800000,
+        "sessions": ["rth"],
+        "shared_fields": ["symbol", "ts"]
+      }
+    },
+    "source_c": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-c",
+        "universe": "configs/universe-p10.json",
+        "start_ms": 1514764800000,
+        "sessions": ["rth"],
+        "shared_fields": ["symbol", "ts"]
+      }
+    },
+    "pooled": {
+      "uses": "concat",
+      "inputs": {
+        "a": "$source_a.records",
+        "b": "$source_b.records",
+        "c": "$source_c.records"
+      },
+      "params": {
+        "shape": "records",
+        "provenance_waiver": "Each immutable MarketRecord already carries its source; the three symbol namespaces are disjoint and checked below.",
+        "key": "symbol",
+        "consume_inputs": true
+      }
+    },
+    "features": {
+      "uses": "intraday_equities-session-features",
+      "inputs": {
+        "records": "$pooled.merged",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "lookback": 20,
+        "layout": "columns",
+        "dtype": "float32",
+        "cache_dir": "./pipeline_cache/p10-features-f32-v5",
+        "momentum_horizons": [
+          {"width": 3, "tag": "3m", "cross_session": false},
+          {"width": 120, "tag": "2h", "cross_session": true},
+          {"width": 180, "tag": "3h", "cross_session": true},
+          {"width": 780, "tag": "2s", "cross_session": true},
+          {"width": 1950, "tag": "1w", "cross_session": true}
+        ]
+      }
+    },
+    "scan": {
+      "uses": "intraday_equities-no-information-scan",
+      "inputs": {
+        "records": "$features.records",
+        "bars": "$features.tape",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
+        "val_start_ms": "$splits.val_start_ms",
+        "val_end_ms": "$splits.val_end_ms",
+        "label_scale": "vol",
+        "label_residual": "SPY",
+        "label_residual_self": "raw",
+        "fit_symbols": [
+          "AAPL",
+          "JPM",
+          "XOM",
+          "WMT",
+          "LLY",
+          "SPY",
+          "QQQ",
+          "XLF",
+          "XLV",
+          "XLE",
+          "XLK",
+          "XLP",
+          "TSLA",
+          "TQQQ",
+          "NVDA",
+          "AMD",
+          "UPRO",
+          "BAC",
+          "AMZN",
+          "AVGO",
+          "NFLX",
+          "MSFT",
+          "GOOGL",
+          "SMH",
+          "IWM"
+        ],
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 1,
+        "score_period_ms": 1800000,
+        "estimator": "lightgbm.LGBMRegressor",
+        "estimator_params": {
+          "n_estimators": 800,
+          "learning_rate": 0.005,
+          "num_leaves": 4,
+          "max_depth": 2,
+          "min_child_samples": 2000,
+          "reg_lambda": 100.0,
+          "reg_alpha": 0.1,
+          "subsample": 0.5,
+          "subsample_freq": 1,
+          "colsample_bytree": 0.3,
+          "n_jobs": 8,
+          "random_state": 0,
+          "verbosity": -1
+        }
+      }
+    }
+  },
+  "walkforward": {
+    "objective": "$scan.metrics.val_ic",
+    "select": "max",
+    "first": "2022-05-06",
+    "step_days": 63,
+    "count": 20,
+    "val_days": 63,
+    "embargo_days": 5,
+    "train_days": 730
+  },
+  "outputs": {"run_root": "./pipeline_runs"},
+  "stages": {
+    "memory": {
+      "uses": "intraday_equities.modelability:MemoryPreflightStage",
+      "params": {"memory_limit_bytes": 18253611008}
+    },
+    "gate1_walks": {
+      "uses": "intraday_equities.modelability:Gate1WalksStage",
+      "inputs": {"preflight": "$memory.passed"},
+      "params": {"horizons": [1, 2, 3, 5, 10, 20, 30, 60]}
+    },
+    "gate1": {
+      "uses": "intraday_equities.modelability:Gate1SelectStage",
+      "inputs": {"walks": "$gate1_walks.walks"},
+      "params": {
+        "horizons": [1, 2, 3, 5, 10, 20, 30, 60],
+        "assets": [
+          "AAPL", "JPM", "XOM", "WMT", "LLY", "SPY", "QQQ", "XLF", "XLV",
+          "XLE", "XLK", "XLP", "TSLA", "TQQQ", "NVDA", "AMD", "UPRO", "BAC",
+          "AMZN", "AVGO", "NFLX", "MSFT", "GOOGL", "SMH", "IWM"
+        ],
+        "attempt_registry": "docs/decisioning/attempts.jsonl",
+        "alpha": 0.05
+      }
+    },
+    "gate2": {
+      "uses": "intraday_equities.modelability:Gate2Stage",
+      "inputs": {
+        "walks": "$gate1_walks.walks",
+        "gate1": "$gate1.rows"
+      },
+      "params": {
+        "horizons": [1, 2, 3, 5, 10, 20, 30, 60],
+        "assets": [
+          "AAPL", "JPM", "XOM", "WMT", "LLY", "SPY", "QQQ", "XLF", "XLV",
+          "XLE", "XLK", "XLP", "TSLA", "TQQQ", "NVDA", "AMD", "UPRO", "BAC",
+          "AMZN", "AVGO", "NFLX", "MSFT", "GOOGL", "SMH", "IWM"
+        ],
+        "n_boot": 10000,
+        "seed": 0,
+        "alpha": 0.05
+      }
+    },
+    "gate3_walks": {
+      "uses": "intraday_equities.modelability:Gate3WalksStage",
+      "inputs": {"gate2": "$gate2.rows"},
+      "params": {"seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]}
+    },
+    "gate3": {
+      "uses": "intraday_equities.modelability:Gate3ResultStage",
+      "inputs": {
+        "gate2": "$gate2.rows",
+        "gate2_cells": "$gate2.cells",
+        "walks": "$gate3_walks.walks"
+      },
+      "params": {
+        "assets": [
+          "AAPL", "JPM", "XOM", "WMT", "LLY", "SPY", "QQQ", "XLF", "XLV",
+          "XLE", "XLK", "XLP", "TSLA", "TQQQ", "NVDA", "AMD", "UPRO", "BAC",
+          "AMZN", "AVGO", "NFLX", "MSFT", "GOOGL", "SMH", "IWM"
+        ],
+        "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+        "alpha": 0.05
+      }
+    }
+  }
+}

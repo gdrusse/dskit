@@ -329,9 +329,7 @@ def session_totals(stamps, d, session_of=None):
         session_totals([0, 1000], [0.5, 1.5])  # {0: [2.0, 2]}
     """
     if len(stamps) != len(d):
-        raise ValueError(
-            f"{len(stamps)} stamps and {len(d)} gaps — the two must agree"
-        )
+        raise ValueError(f"{len(stamps)} stamps and {len(d)} gaps — the two must agree")
     key_of = utc_day if session_of is None else session_of
     out = {}
     for stamp, gap in zip(stamps, d):
@@ -527,9 +525,7 @@ def _cell_columns(cells, sessions):
 
 def _replicate_matrix(np, columns, order, n_sessions, n_boot, seed, chunk):
     """Draw bootstrap t for every cell under shared per-session flips."""
-    design = np.array(
-        [columns[name]["centred"] for name in order], dtype=np.float64
-    ).T
+    design = np.array([columns[name]["centred"] for name in order], dtype=np.float64).T
     scale = np.array(
         [math.sqrt(sum(v * v for v in columns[name]["centred"])) for name in order]
     )
@@ -541,7 +537,7 @@ def _replicate_matrix(np, columns, order, n_sessions, n_boot, seed, chunk):
         coins = rng.integers(0, 2, size=(take, n_sessions)).astype(np.float64)
         coins *= 2.0
         coins -= 1.0
-        out[done:done + take] = (coins @ design) / scale
+        out[done : done + take] = (coins @ design) / scale
         done += take
     return out
 
@@ -571,7 +567,12 @@ def _stepdown(np, replicates, order, observed, alpha, n_boot):
 
 
 def max_bar(
-    cells, n_boot=10000, seed=0, alpha=0.05, floor_t=T_FLOOR, chunk=500,
+    cells,
+    n_boot=10000,
+    seed=0,
+    alpha=0.05,
+    floor_t=T_FLOOR,
+    chunk=500,
     k_declared=None,
 ):
     """Set the many-attempts bar: resample every cell jointly, take the best.
@@ -902,9 +903,7 @@ def tier2_verdict(observed_r2, scrambled_r2, scrambled_t=()):
     ts = [float(v) for v in scrambled_t if number_ok(v)]
     mean = statistics.fmean(ts) if len(ts) >= 2 else None
     sd = statistics.stdev(ts) if len(ts) >= 2 else None
-    calibrated = (
-        None if mean is None else bool(abs(mean) < 0.3 and 0.7 < sd < 1.4)
-    )
+    calibrated = None if mean is None else bool(mean < 0.3 and 0.7 < sd < 1.4)
     reasons = []
     if not beat:
         reasons.append(
@@ -918,8 +917,9 @@ def tier2_verdict(observed_r2, scrambled_r2, scrambled_t=()):
         )
     elif not calibrated:
         reasons.append(
-            f"scrambled statistics sit at mean {mean:.3f}, sd {sd:.3f}, not "
-            "the (0, 1) a correct variance estimator gives — every p-value in "
+            f"scrambled statistics sit at mean {mean:.3f}, sd {sd:.3f}; "
+            "calibration needs sd in (0.7, 1.4) and mean below +0.3 "
+            "(negative fitting cost is conservative) — every p-value in "
             "the project is suspect until that is fixed"
         )
     return {

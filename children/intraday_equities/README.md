@@ -105,12 +105,15 @@ intraday_equities/
 │   ├── auth.py          # manual Schwab authorize over ADR-0046
 │   ├── connectors.py    # thin Alpaca/Schwab subclasses
 │   ├── nodes.py         # bars, universe, features, H/L + no-info scan, portfolio
+│   ├── feature_cache.py # verified read-only feature-array cache
+│   ├── modelability.py  # staged P10 gate orchestration
 │   ├── models.py        # empty bespoke-architecture seam
 │   ├── live.py          # paper intents from shipped configs
 │   └── testing.py       # network-free connector doubles
 ├── configs/             # universe, sources, suites, scan/action/HPO/train
 ├── docs/decisioning/    # framework.md + one file per decision
 ├── docs/explanations/   # standalone worked explanations
+├── docs/memos/          # durable implementation and operational handoffs
 └── tests/
 ```
 
