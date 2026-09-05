@@ -4569,7 +4569,9 @@ refused. A caller must never source `workers` from a graded document — that
 would reopen exactly the identity instability below.
 
 **The cap is a caller-supplied parameter.** `memory_limit_bytes` is required
-and has NO dskit default: 17 GiB is a P10 study number and a tier-1 default
+and has NO dskit default (it is refused above the platform's C ``long``,
+`sys.maxsize`, so a cap the shim could never set is a constructor error,
+not a fold failure): 17 GiB is a P10 study number and a tier-1 default
 would be exactly the hardcoded threshold this repo forbids. `None` means
 uncapped.
 
@@ -4579,8 +4581,9 @@ divided cap both refuses mappings that measured RSS never sees and breaks
 resume, since a finished fold is accepted back only under the limit it ran at.
 Total memory scales with the width, which the operator chooses.
 
-**The cap is applied by a `setrlimit` + `execv` shim, not by `preexec_fn` and
-not by a shell.** `preexec_fn` bars `posix_spawn`, so the child would fork from
+**The cap is applied by a `setrlimit` + `exec` shim — `os.execvp`, so that
+``argv[0]`` resolves through ``PATH`` exactly as it does uncapped — not by
+`preexec_fn` and not by a shell.** `preexec_fn` bars `posix_spawn`, so the child would fork from
 a pool-running parent and run Python before `exec` — the pattern CPython
 documents as unsafe with threads. The shim runs `setrlimit` after its OWN
 `exec`, so nothing Python happens between the parent's fork and exec. It is
