@@ -4905,6 +4905,31 @@ only the first.
     per-fold time is recorded against the 3.40 s/fold baseline in
     `docs/decisioning/actions.csv`.
 
+**Amended 2026-09-05 (owner ruling, after the build).** The cohort is every
+name on disk, not the forty: the Gate-1 search and the fail-fast Gate 3 run
+on all of them, less the reference and less any name a real-world event
+justifies excluding. The 25 P10 names join as three per-source groups —
+`a` (`alpaca-sip-split`, eleven tradables), `b` (`alpaca-sip-split-b`,
+four) and `c` (`alpaca-sip-split-c`, nine) — beside `d` and `e`, each
+with its own group universe on the P10 geometry, so the document covers
+the 64 fit symbols on disk in five groups declared largest-first (`d`,
+`e`, `a`, `c`, `b`) less the exclusion below; the identity moves, as a cohort
+edit must, and nothing but the one-asset smoke had run under the forty-name
+identity. SPY stays the reference in every group and is fit nowhere: the
+design places the reference in every group cache, and P11's 2026-09-04
+Gate 1 already rejected it at one minute. The 25 are re-gated here under
+the uniform 81-column design matrix rather than by rerunning P11, whose
+revised document is thereby superseded for selection. Exclusion evidence —
+a scan of every name's tape for unadjusted splits, spin-offs and special
+dividends — is the research note
+`docs/research/p12-cohort-tape-check-unadjusted-corporate-actions.md`; a
+name is excluded only when its tape carries a real-world discontinuity the
+split-only adjustment leaves in place inside the walk's window and that
+discontinuity is the largest overnight move in the name's window. One name
+meets both parts: WDC, whose SanDisk spin-off sits in the tape as a −23.6%
+gap on 2025-02-24; it stays in its universe and cache and leaves
+`fit_symbols`, so the document is `p12-63-asset-modelability` over 63.
+
 **Consequences.** The study costs at most `40 × 8 = 320` Gate-1 walks and,
 under ADR-0092, about `2.73` draws per failing passer and `19` per survivor
 in Gate 3; at P11's 3.40 s/fold that is about `320 × 20 × 3.4 / 3600 ≈
