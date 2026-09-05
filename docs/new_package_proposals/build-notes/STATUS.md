@@ -25,11 +25,13 @@ Updated every commit. **Complete** = code green + committed. **Remaining** = not
 | G17 | `leg.py` (LegPipeline, the eight steps, Authority family, ActPermit minting) | 138 |
 | G18 | `compose.py` `loop.py` (bundles, AuthorityTable, handlers, ServeLoop, Tick) | 188 |
 | G19 | `__main__.py` (17 verbs) + the shadow/paper/live_limited end-to-end | 177 |
+| G20 | `test_oop.py` (§5.15) + `test_producers.py` (§5.16 closure) | 272 |
+| G21 | docs: root README/CLAUDE/AGENTS, the package's three, examples, skeleton seam + pin | n/a |
 | S0 | plan: phases 2/2b/3 specified to phase-1 standard; rulings R1–R28 folded; `check_plan.py` CLEAN | n/a |
 
 Reviews done: **R1** foundations+ledger, **R2** seam+state (rulings R15–R17), **R3** authority stack+policy (R23–R24).
 
-Whole production suite: **4465 passed, 87 skipped**. Phase 1 is feature-complete.
+Production + pipeline: **6826 passed, 113 skipped**, one known root-only environment failure. **Phase 1 is complete, including its docs.**
 
 ## REMAINING
 

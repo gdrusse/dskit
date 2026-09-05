@@ -73,6 +73,11 @@ depends on it):
 * §5.5's `check_authority_scope` has no scope object at shadow/paper for the
   same reason. Pinned: the leg records the verdict and `ActionPolicy` decides
   (its authority axis is inert below live), rather than branching on a rung.
+* The readiness GO is the same shape (R29): §7 marks it "required for live
+  rungs" and D10's `live_submit_requires_go` is live-only, so the step-(3)
+  gate RECORDS the verdict and passes, and the policy owns the refusal. A
+  gate that refused at every rung would leave a shadow serve deciding nothing
+  until `ready` had run.
 * A refusal AFTER the plan barrier — a step-(6) drift, a step-(7) mismatch —
   terminates an intent that exists, so the outcome needs a record: pinned as
   an `order_event` with `event`/`status` `not_sent` and a synthesized `Ack`,
