@@ -758,6 +758,8 @@ def test_append_folds_the_full_envelope_into_the_attached_state(serve, open_ledg
     led.append(_rec(kind="fill", rid="f-1", qty=2))
     assert [r["id"] for r in state.applied] == ["t-1", "f-1"]
     assert [r["seq"] for r in state.applied] == [1, 2]
+    assert set(state.applied[0]) == ENVELOPE_KEYS
+    assert state.applied[1]["body"] == {"qty": 2}
     assert state.applied[-1]["hash"] == led.head()[1]
     assert state.applied[-1]["prev_hash"] == state.applied[0]["hash"]
 
