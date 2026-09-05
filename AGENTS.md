@@ -64,6 +64,14 @@ Wrap the *library*, generically — never a project's use of it.
     underscore name leaks into one. Keep that true.
   - **One job per method.** If you need comment headers to mark sections
     inside a body, those sections are the methods.
+  - **Prefer objects to one-off functions** (owner ruling, 2026-09-04).
+    Behavior belongs to a class with a hook a subclass can supply, not to
+    a loose module function; a module-level function is for a pure rule
+    with ONE owner that several classes import. **A function is never
+    repeated across modules** — the second copy is the bug. Find the
+    owner (`records.number_ok`, `node.reject_unknown_params`,
+    `libs.numpy.narrow_params`, the onboarding `_check_*` family) and
+    import it; if none exists, give the rule one home and import that.
 - **Never hardcode what could change.** A literal is only acceptable when
   the value is certain never to vary. If a value must appear twice, PIN the
   agreement with a test (`test_lookback_agrees_everywhere`) or a runtime
@@ -83,6 +91,10 @@ Wrap the *library*, generically — never a project's use of it.
   `.cursor/hooks.json`).
 - **`/wrap`:** refresh `docs/RE-ENTRY.md`, merge into `main` when the work is
   coherent and tests pass, push. Defined in `.cursor/skills/wrap/SKILL.md`.
+- **Commits are authored under the agent's own model name** (owner ruling,
+  2026-09-05): set the author explicitly — `git -c user.name=<model-name> -c
+  user.email=<model-name>@opencode.ai commit` — never the shared `Codex`
+  identity from the ambient git config.
 
 ## Repository layout
 

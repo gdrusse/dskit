@@ -1,5 +1,17 @@
 # Re-entry
 
+## Current state: agent-doc sync + opencode setup (2026-09-05)
+
+Branch: `main`. Synced all nine `AGENTS.md`/`CLAUDE.md` pairs so the Codex-
+facing copies carry the latest rulings (the "prefer objects" ruling,
+ADR-0077/0079/0093, connector shapes, the intraday "Machine knobs" section),
+and added the commit-author standard. Added opencode support: `opencode.json`
+(registers `.cursor/skills` + the session-pull plugin), `.opencode/command/
+{wrap,research}.md`, and `.opencode/plugin/session-pull.ts`. No source code
+changed; no tests run.
+
+Next: restart opencode to load the config, skills, commands, and plugin.
+
 ## Current state: P12 Gate 3 failed; closeout blocked (2026-09-05)
 
 Branch: main; the completed P10/P11, Gate 3, bounded-fold, and cohort-study

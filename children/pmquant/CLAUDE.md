@@ -6,6 +6,9 @@ Agent orientation — see README.md for what the child does and how to run it.
 
 ## The child rules (ADR-0021)
 
+- **Standalone explanations live in `docs/explanations/`.** Put worked,
+  self-contained explanations there rather than beside decision records or
+  research notes.
 - **Never edit dskit.** A missing capability is either a genuinely
   generic gap — propose an ADR upstream — or domain logic that stays
   here. There is no third option.
