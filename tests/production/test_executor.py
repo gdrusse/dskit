@@ -1055,63 +1055,71 @@ def test_a_fee_reaches_the_fill_and_the_ack():
 # ---------------------------------------------------------------------------
 
 
+#: Twelve orders that REST at the touch, so each one's fate is a single draw
+#: against `p_fill_on_touch` when the next quote arrives. Twelve independent
+#: coin flips make "two seeds agree by chance" a 1-in-4096 event per pair, so
+#: the seed-sensitivity check below is not a flaky test.
+COIN_FLIPS = 12
+
+
+def coin_flip_run(seed):
+    """Rest `COIN_FLIPS` orders at the touch, offer each one draw, report the outcome."""
+    clock = TestClock(start_ms=NOW_MS)
+    venue = PaperExecutor(
+        {
+            "fill_rule": "cross",
+            "resting_rule": "touch",
+            "p_fill_on_touch": 0.5,
+            "seed": seed,
+        },
+        clock=clock,
+    )
+    venue.on_quote(QUOTE)
+    acks = [
+        venue.submit(
+            intent(f"r{i}", proposal=proposal(limit="0.42", tif="gtc")),
+            simulated(f"r{i}"),
+            tick_state(),
+        )
+        for i in range(COIN_FLIPS)
+    ]
+    venue.on_quote(dataclasses.replace(QUOTE, asof_ms=NOW_MS + 1))
+    fills, _cursor = venue.fills(0)
+    states = tuple(venue.order(f"r{i}").status for i in range(COIN_FLIPS))
+    return (
+        [ack.to_obj() for ack in acks],
+        [fill.to_obj() for fill in fills],
+        states,
+    )
+
+
 def test_two_instances_with_the_same_seed_produce_identical_acks_and_fills():
     """§5.7: "Deterministic under `seed`." D20's replay parity rests on it —
     a paper rung whose fills depend on process entropy cannot be replayed, and
     a divergence report could never separate `nondeterminism` from `data`."""
-    params = {
-        "fill_rule": "touch",
-        "resting_rule": "touch",
-        "p_fill_on_touch": 0.5,
-        "seed": 7,
-    }
-    runs = []
-    for _ in range(2):
-        clock = TestClock(start_ms=NOW_MS)
-        venue = PaperExecutor(dict(params), clock=clock)
-        acks = []
-        for i in range(6):
-            venue.on_quote(dataclasses.replace(QUOTE, asof_ms=NOW_MS + i))
-            acks.append(
-                venue.submit(
-                    intent(f"r{i}", proposal=proposal(limit="0.41", tif="gtc")),
-                    simulated(f"r{i}"),
-                    tick_state(),
-                )
-            )
-        fills, _cursor = venue.fills(0)
-        runs.append(
-            (
-                [ack.to_obj() for ack in acks],
-                [fill.to_obj() for fill in fills],
-            )
-        )
-    assert runs[0] == runs[1]
+    assert coin_flip_run(7) == coin_flip_run(7)
 
 
-def test_a_different_seed_is_allowed_to_differ():
-    """A seed that changes nothing is a seed that is not being used — the
-    determinism test above would then pass for the wrong reason."""
-    outcomes = set()
-    for seed in (1, 2, 3, 4, 5, 6, 7, 8):
-        clock = TestClock(start_ms=NOW_MS)
-        venue = PaperExecutor(
-            {"fill_rule": "touch", "resting_rule": "touch", "p_fill_on_touch": 0.5,
-             "seed": seed},
-            clock=clock,
-        )
-        acks = []
-        for i in range(6):
-            venue.on_quote(dataclasses.replace(QUOTE, asof_ms=NOW_MS + i))
-            acks.append(
-                venue.submit(
-                    intent(f"r{i}", proposal=proposal(limit="0.41", tif="gtc")),
-                    simulated(f"r{i}"),
-                    tick_state(),
-                ).status
-            )
-        outcomes.add(tuple(acks))
+def test_the_seed_actually_drives_the_draw():
+    """A seed that changes nothing is a seed that is not being used, and the
+    determinism test above would then be passing for the wrong reason."""
+    outcomes = {coin_flip_run(seed)[2] for seed in range(8)}
     assert len(outcomes) > 1
+
+
+def test_a_probability_of_zero_never_fills_a_resting_order():
+    """The knob is a probability, so its endpoints must mean what they say —
+    otherwise "deterministic under seed" hides a model that always fills."""
+    clock = TestClock(start_ms=NOW_MS)
+    venue = PaperExecutor(
+        {"fill_rule": "cross", "resting_rule": "touch", "p_fill_on_touch": 0.0, "seed": 7},
+        clock=clock,
+    )
+    venue.on_quote(QUOTE)
+    venue.submit(intent(proposal=proposal(limit="0.42", tif="gtc")), simulated(), tick_state())
+    venue.on_quote(dataclasses.replace(QUOTE, asof_ms=NOW_MS + 1))
+    assert venue.order("ref-1").status == "open"
+    assert venue.fills(0) == ((), None)
 
 
 def test_on_quote_refuses_anything_but_a_quote():
@@ -1125,11 +1133,11 @@ def test_on_quote_refuses_anything_but_a_quote():
 # ---------------------------------------------------------------------------
 
 
-def recorded_tape():
-    """A recording of one venue session: `(method, args, answer)` triples."""
-    filled = Ack(
-        client_ref="ref-1",
-        venue_ref="v-1",
+def recorded_ack(client_ref):
+    """The `Ack` the recording captured for one submitted `client_ref`."""
+    return Ack(
+        client_ref=client_ref,
+        venue_ref=f"v-{client_ref}",
         status="filled",
         ts_ms=NOW_MS,
         filled_qty=Decimal("10"),
@@ -1138,21 +1146,35 @@ def recorded_tape():
         reason="",
         native={},
     )
-    return (
+
+
+def recorded_tape():
+    """A recording of one venue session: `(method, args, answer)` triples.
+
+    It covers the calls the standalone tests make AND the ones the battery
+    makes, because that is what a tape IS — a recording of the session being
+    replayed. A replay that asks something the recording never did has
+    diverged, which is exactly the refusal `test_a_call_the_recording_never_made
+    _refuses` pins.
+    """
+    submitted = ["ref-1"] + [i.client_ref for i, _p in conformance_orders()]
+    entries = [
         ("capabilities", (), paper().capabilities()),
         ("execution_scope", (), SCOPE),
         ("check", ({"params": {}},), ()),
-        ("submit", ("ref-1",), filled),
-        ("order", ("ref-1",), None),
         ("open_orders", (), ()),
         ("fills", (0, None), ((), None)),
         ("balances", (), ()),
         ("positions", (), ()),
         ("settlements", (0,), ()),
         ("venue_time_ms", (), NOW_MS),
-        ("cancel", ("ref-1",), filled),
         ("cancel_all", (), ()),
-    )
+    ]
+    for ref in submitted:
+        entries.append(("submit", (ref,), recorded_ack(ref)))
+        entries.append(("order", (ref,), None))
+        entries.append(("cancel", (ref,), recorded_ack(ref)))
+    return tuple(entries)
 
 
 def test_recorded_takes_a_tape_of_method_args_answer_triples():
@@ -1499,25 +1521,51 @@ def test_the_native_call_receives_the_bounded_timeout_and_the_full_permit():
     assert 0 < timeout_ms <= permit.valid_until_ms - NOW_MS
 
 
-def test_a_hung_native_call_is_unknown_and_disables_later_sends():
-    """§5.7's battery: "timeout cannot exceed permit/lease lifetime and
-    disables later sends"; D14: "conformance uses a never-returning fake to
-    prove timeout disables further sends". The deadline is judged by the
-    injected clock, so no test waits on a real one."""
-    verifier = FakeVerifier()
+def test_a_gate_that_raises_still_returns_an_ack_and_calls_it_unknown():
+    """The base contract is total (§5.15): `submit` returns an `Ack`
+    describing what happened. If the gate itself blows up after handing the
+    callback over, the request may already have left — so the honest answer
+    is `unknown`, and raising here would put an exception where every caller
+    expects a value. The hung native call itself is judged by the injected
+    clock in `test_verifier.py`; nothing here waits on a real one."""
+    venue, _parts = live(verifier=FakeVerifier(raises=TimeoutError("no answer")))
+    ack = venue.submit(intent(), act_permit(), tick_state())
+    assert isinstance(ack, Ack)
+    assert ack.status == "unknown"
+    assert ack.client_ref == "ref-1"
+
+
+def test_a_native_call_that_never_answers_produces_no_ack_of_its_own():
+    """D14: "A native call must honor the bounded deadline; conformance uses a
+    never-returning fake to prove timeout disables further sends." The
+    never-returning fake here raises when the deadline it was handed passes,
+    so the wrapper's answer comes from the gate rather than from the venue."""
     venue = FakeVenue(
-        {}, clock=TestClock(start_ms=NOW_MS), verifier=verifier,
+        {}, clock=TestClock(start_ms=NOW_MS), verifier=FakeVerifier(),
         lease=FakeLiveLease(), hang=True,
     )
-    with pytest.raises(TimeoutError):
-        verifier.verify_and_call(intent(), act_permit(), tick_state(), venue._submit_native)
+    ack = venue.submit(intent(), act_permit(), tick_state())
+    assert ack.status == "unknown"
     assert len(venue.native_calls) == 1
+    assert venue.native_calls[0][2] > 0
 
 
-def test_an_unknown_from_the_gate_blocks_the_next_submit_but_not_cancellation():
-    """§5.13 step (8): "an ambiguous outcome stops all later legs until
-    reconciliation" — while query and cancel stay available, because they are
-    how the ambiguity gets resolved."""
+def test_a_programming_error_from_the_gate_is_not_dressed_up_as_unknown():
+    """`unknown` means "the request may have left"; it disables further sends
+    and puts the reconciler to work. A wiring defect must not buy that — it
+    is a `ProductionError` and it propagates, exactly as it does everywhere
+    else in this package."""
+    venue, _parts = live(verifier=FakeVerifier(raises=ProductionError(["bad wiring"])))
+    with pytest.raises(ProductionError):
+        venue.submit(intent(), act_permit(), tick_state())
+
+
+def test_an_unknown_leaves_query_and_cancellation_working():
+    """§5.7: "Failures never disable reconciliation or cancellation." §5.13
+    step (8) stops all LATER LEGS after an ambiguous outcome — the disable
+    lives on the gate, which every submit goes through, so query and cancel
+    are untouched. They are how the ambiguity gets resolved
+    (`executor.order(ref)`, never a blind resend — D13)."""
     unknown = Ack(
         client_ref="ref-1", venue_ref=None, status="unknown", ts_ms=NOW_MS,
         filled_qty=Decimal("0"), avg_price=None, fee=Decimal("0"),
