@@ -276,7 +276,10 @@ brackets.
   runs. `reduce --proof` enters reducing but grants no submit authority.
   A verified `flatten-request --plan --proof` records a maker-signed
   `ReductionPlan` bound to the release, fresh risk version/digest, full canonical
-  intents/digests and a short expiry; two entries whose `(instrument, side, qty, limit)` match refuse — the check is
+  intents/digests and a short expiry; each entry's `candidate` must preserve the proposal's instrument and declare
+  the scope keys its limits will be measured over — the §5.3 rule, applied at
+  signing time because here the pair is human-supplied rather than proposer-
+  derived — and two entries whose `(instrument, side, qty, limit)` match refuse — the check is
   over proposal content, not over `reduction_intent_digest`, which now includes
   `index` and so differs for byte-identical proposals. It then
   barrier-transitions `active | halted → reducing` without submit authority.
@@ -589,6 +592,15 @@ section named in `NULLED_IDENTITY_SECTIONS` (today `("tracking",)`) is set to
 (`base.py:226-238`). No production section is nulled, so all four excluded
 sections are genuinely dropped. `PRODUCTION_NON_IDENTITY_SECTIONS = ("alerts", "heartbeat",
 "placement", "env")`.
+
+**One known residual.** Excluding `alerts` wholesale means `alerts.routes`
+can be emptied under a live arm without a new release, silencing the paging path
+D17 treats as a safety control. Splitting the section — graded `routes` and
+severity map, excluded endpoint values — is the fix, and it is deliberately not
+made here: it changes the graded/excluded partition that §4.2 and
+`test_document.py` pin, and this proposal is not the place to move an identity
+boundary. It is recorded so the first implementer meets it as a decision rather
+than a surprise.
 
 That recipe can only drop **whole top-level sections**, so the grammar is
 partitioned to suit it — this is the reason `durability`, `resilience`,
@@ -1116,10 +1128,18 @@ non-finite number.
   the service.
   `ArmRequest{release_hash, rung, allowlist, limits_overlay, requested_until_ms,
   request_proof}` and `ArmApproval{request_digest, approval_proof}` are its
-  inputs. `Arming.check_conjunction(safety.invocation)` is
-  the single place D11's live conjunction is evaluated — document rung,
-  `--armed`, `DSKIT_PRODUCTION_ARM`, a current unexpired arm and the release
-  hash must all agree; no caller re-derives it; §5.13 step (3) is the caller.
+  inputs. `Arming.check_conjunction(invocation, view, origin, at_ms)` is
+  the single place D11's live conjunction is evaluated, and it is
+  **origin-aware**. Four conjuncts apply to every origin: the document rung,
+  `--armed`, `DSKIT_PRODUCTION_ARM` and the release hash must all agree. The
+  fifth differs — a model leg requires a current unexpired **ordinary arm**; a
+  reduction leg requires a current unexpired **unconsumed reduction right**
+  for its `reduction_intent_digest`, and must not require an ordinary arm,
+  because D10 and D12 both revoke ordinary arming on leaving `active` and
+  forbid reissuing it while `reducing`. Demanding one there would refuse every
+  live flatten leg — removing the emergency de-risking path at exactly the
+  rungs it exists for. No caller re-derives any of this; §5.13 step (3) is the
+  caller, and it passes `origin` rather than branching around the check.
   `ApprovalVerifier(ABC).verify(canonical_bytes, proof, purpose) ->
   VerifiedPrincipal{id, proof_digest}`. It is resolved from the graded
   `document.arming.approval {uses, params}` object; params may name trust-root env vars
@@ -1176,7 +1196,10 @@ other permit **by type** — refuses meaning it returns
   `positions() -> tuple[Position]`, `net_qty(instrument)`) owned by
   `SeriesState` (§5.8.1), so ours and theirs are two clearly separate sides; a `positions: venue` child
   overrides `positions()` without inheriting dead derivation code —
-  `settlements(since_ms)` (empty), `events()` (none), `venue_time_ms()` (None),
+  `settlements(since_ms)` (empty), `events()` (none), `venue_time_ms()` (`None` when the venue exposes no clock; a live document whose
+  executor returns `None` must set `document.schedule.max_venue_skew_ms` to `null`
+  explicitly, so an unmeasurable skew is a declared choice rather than a silently
+  vacuous gate),
   `cancel_all()` (iterates only refs this executor owns).
 - `ShadowExecutor`: records nothing itself; `submit` returns
   `Ack(status="not_sent", reason="shadow")`; any socket use raises (pinned by a
@@ -1380,7 +1403,11 @@ section names box 3.
   `risk_version`, `head_seq`, `head_hash`. `Accounting.snapshot` and `Reconciler.run` take it as their
   first argument (both previously written as an untyped `ledger_state`).
 - `TickState{view, account, feed_status, feed_ages, calendar}` is what a
-  `Guard` receives as `state` — one declared type, assembled by the tick. It
+  `Guard` receives as `state` — one declared type. The tick assembles the
+  first one; **each leg rebuilds it at step (2) from a fresh
+  `SeriesState.snapshot()`**, because an earlier leg of the same tick can trip
+  the breaker, take a hold, or add a working reservation, and a guard judging
+  leg 3 against leg 1's fold is judging a state that no longer exists. It
   carries **no rung**: the permission ladder is the action matrix's axis
   (§5.14), no guard or measure in §5.5 needs it, and a child `Measure` is
   referenced by path — outside every in-tree AST test — so handing it the rung
@@ -1645,8 +1672,9 @@ knob because D13 fixes the answer: query, never resend.
   the eight steps below are that class's methods, not prose inside the loop.
   Strictly sequentially:
   (1) run ordinary guards and any monotone amendment;
-  (2) refresh the account snapshot with prior legs' working reservations/acks
-  folded, and re-run hard guards and authority scope without amendment;
+  (2) take a fresh `recording.state.snapshot()` — prior legs of this tick have
+  appended and folded their own reservations and acks, and only a fresh fold
+  carries them — then refresh the account snapshot against it, and re-run hard guards and authority scope without amendment;
   (3) immediately re-evaluate release/runtime, readiness GO, calendar, source
   coverage and every key's watermark age, quote age/digest, accounting evidence
   age/digest, venue skew against `document.schedule.max_venue_skew_ms`, link/scope,
@@ -1657,9 +1685,16 @@ knob because D13 fixes the answer: query, never resend.
   digests, risk effect/version/digest and scope verdict, then barrier it; a
   refusal terminalizes as `not_sent` without an intent;
   (5) append the canonical exact Intent serialized from that plan and barrier it;
-  (6) with `view = bindings.state.view` — the same view steps (4) and (5) bound,
-  never a fresh snapshot, so the plan, intent and permit agree the way §5.16
-  already requires of `AccountState` — and
+  (6) with `view = recording.state.snapshot()` — a **fresh** fold, and then a
+  refusal if any member the plan and intent already bound (`arming`,
+  `readiness`) has moved since. Freezing the whole view instead would be
+  unsafe: `breaker`, `guard_holds`, `working` and `pending` are exactly the
+  members an earlier leg of this same tick can change — an earlier leg's
+  `halt` verdict trips the breaker, and a `reduce` consumed between legs moves
+  it to `reducing` — and a later leg reading a stale `active` would mint a
+  live permit the action matrix forbids. Consistency is what the *bound*
+  members need; freshness is what the *decision* members need, and refusing on
+  drift gives both. Then
   `breaker = safety.breaker.current(view)`,
   `permit = safety.authorities.for_origin(origin, breaker).mint(intent,
   plan, view)` — a table lookup on declared values, no rung test.
@@ -1941,7 +1976,15 @@ procedure inside the loop.
 `TransitionPolicy.permits(from_state, to_state, cause, proof) ->
 PolicyDecision{allowed, reason}` (named so it cannot be confused with the
 `Decision` collaborator bundle in `loop.py`) and
-`SubmissionVerifier.verify_and_call(intent, permit, native_call) -> Ack` are
+`SubmissionVerifier(executor, accounting, lease, arming, guards, document,
+clock)` with
+`verify_and_call(intent, permit, state, native_call) -> Ack` — the same argument
+that justifies the `Authority`'s ten collaborators applies here and was not made
+before: a gate that refreshes quote, accounting, authority, executor identity and
+lease, and rechecks deadlines, hard guards and policy, cannot do any of it from
+`(intent, permit, native_call)`. `compose.py` builds it and hands it to both
+`Safety` and the `LiveExecutor` wrapper, which is the one object held twice by
+design. These three are
 the sole owners of the following rules; callers cannot
 duplicate or extend them by branching.
 
@@ -1970,7 +2013,9 @@ would have been a second copy of the same misconception.
   bounded priority lane; every submit follows proposal → complete decision plan
   → intent → authority/use → final verifier → native call. There is no public
   replace shortcut.
-- **State and authority.** Every rung × health × breaker × operation × risk-effect cell and every
+- **State and authority.** Every rung × health × breaker × readiness × operation × risk-effect × origin
+cell — `origin` included, since origin-keyed rules would otherwise leave
+combinations the completeness test never enumerates — and every
   breaker transition is explicit. Ordinary arms exist only in active/ready;
   reduction authority exists only in reducing; leaving active or resuming revokes
   ordinary arms; halted can enter reducing only through verified flatten.
@@ -2174,14 +2219,18 @@ to the prose, and it is an authoring tool, not a test.
 | `ack` | step 7 |
 | `findings` | `LegEvaluation.findings` |
 | `leg_latency_ms` | `run`, keyed by `LEG_LATENCY_BUCKETS` |
-| `client_ref` | `recording.id_source.client_ref(...)`, allocated at step 5 and kept on the result even when a guard refusal leaves `intent` `None` — §6's `decision.legs[]` requires it for every leg |
+| `client_ref` | `recording.id_source.client_ref(...)`, allocated by `run` **before step (1)**, not at step 5 — a guard refusal terminalizes at step (4) and never reaches step (5), yet §6's `decision.legs[]` requires a `client_ref` for every leg. Ids derive from stable semantic inputs (D20), so allocating early costs nothing and is replay-identical |
 
 **`ActPermit` — where the bindings that are not plain copies come from.** `authority_id` from
 the current `Arming` in `state_view`; `valid_until_ms` the nine-term minimum of
 §5.13 step (6); `checked_at_ms` from `schedule.clock`; `lease_scope`,
 `fencing_token` from `execution.lease`; `readiness_digest`,
-`readiness_until_ms` from `bindings.state.view.readiness`; `authority_scope_digest` from
-the applied `Arming` scope (§5.6);
+`readiness_until_ms` from `bindings.state.view.readiness`; `authority_id` and `authority_scope_digest` from the applied ordinary `Arming`
+scope for a model leg, and from the `ReductionAuthorization` (its
+`authority_id`, and a scope digest over its `reduction_intent_digests` under the
+document limits) for a reduction leg — during `reducing` no ordinary arm exists,
+so sourcing them from `arming` alone would leave both empty on the one path that
+needs them;
 `safety_epoch_digest` over release/runtime, readiness, calendar, coverage and
 watermarks, input/quote/evidence/risk versions, executor link/scope, health,
 breaker, rung, risk effect, authority and pending-control state — which is why
@@ -2218,7 +2267,7 @@ guard while nothing produced one. The records a step *reads* are walked too:
 | `TickState{view, account, feed_status, feed_ages, calendar}` | assembled by `Tick.run` after the `account` phase (§5.13) and carried into each `LegBindings` |
 | `LegBindings` (13 fields) | assembled by `Tick.run` per proposal; `proposal`/`origin` from `propose` (or from `execute-flatten`'s stored plan when `origin == reduction`), `entry_batch`/`head_digest` from `read_entry`/`evaluate`, `quotes` from `quotes`, `state` the `TickState`, `requirements` the second return of `account`, `reduction` `None` for a model leg and otherwise the signed `ReductionIntent` + digest + right, `release`/`rung` from the loop, `tick_id`/`leg_id`/`leg_index` from `recording.id_source` |
 | `Intent` (16 fields) | step 5; `client_ref` from `recording.id_source`, `created_ms` from `schedule.clock`, `release_hash` from `bindings.release`, `decision_plan_id` from step 4 and `decision_plan_digest` by the §5.4 recipe over that plan, `proposal` the `LegEvaluation.final`, `authority_id` from `bindings.state.view.arming` for a model leg and from `bindings.reduction` for a reduction leg (`None` at shadow/paper, where no ordinary arm exists), `inputs_*`/`coverage_digest` from `bindings.entry_batch`, `quote_*` from `bindings.quotes`, and `evidence_*`/`risk_*` from `LegEvaluation.account` — the same one the plan binds |
-| `PolicyRequest` (8 fields) | assembled by the caller of `ActionPolicy.permits`: `operation` at the call site, `risk_effect` from `LegEvaluation`, `rung`/`origin` from `bindings`, `breaker`/`readiness` from `bindings.state.view`, `authority` from `bindings.state.view.arming` (model) or `bindings.reduction` (reduction), `health` from `observability.health` |
+| `PolicyRequest` (8 fields) | assembled by the caller of `ActionPolicy.permits`: `operation` at the call site, `risk_effect` from `LegEvaluation`, `rung`/`origin` from `bindings`, `breaker` from the **fresh** `recording.state.snapshot()` of steps (2)/(3)/(6) — never the tick-assembly view, or a trip raised inside this tick is invisible — `readiness` and `authority` from that same fresh view (`arming` for a model leg, `bindings.reduction` for a reduction leg), `health` from `observability.health` |
 | `LegEvaluation` (9 fields) | steps 1–3, threaded (`risk_effect` from step 2's `execution.accounting.classify`) |
 | `StateView` (14 fields) | `SeriesState.snapshot()` — every member is a projection of the fold and nothing else writes one |
 | `Proposal` | `Data.decider`'s `Proposer.proposals(head_outputs, candidates, state, provenance)`. The economic fields — `instrument`, `side`, `qty`/`notional`, `limit`, `tif`, `reference_price`, `exposure`, `confidence`, `prediction`, `baseline`, `expected_value`, `direction`, `expires_ms`, `extra` — are the proposer's own decision, read from the head outputs through its field map (`intent-rows`) or its target diff (`target-positions`); `id` is the `Candidate.id` it must preserve; the five provenance fields come from the `Provenance` the tick passes in, never stamped on afterwards |
@@ -2457,7 +2506,7 @@ tests/production/
 ├── test_arming.py         maker-checker; verifier construction/fingerprint; exact-intent scope application; reduction rights/use replay; tighten-only; expiry
 ├── test_verifier.py       frozen-input rehash with no reread; every bound version/digest mismatch returns not_sent;
 │                          the native call cannot outlive the permit; a hung call disables further sends
-├── test_policy.py         completeness: every rung/breaker/health/readiness/operation/risk-effect combination is vetoed
+├── test_policy.py         completeness: every rung/breaker/health/readiness/operation/risk-effect/origin combination is vetoed
 │                          by a named rule or explicitly allowed, none falls through; the generated golden table matches
 │                          the checked-in copy; disjoint classification; authority lifecycle; crash cuts
 ├── test_executor.py       the full conformance battery run against Shadow, Paper and Recorded (verifier behaviours belong
@@ -2495,7 +2544,8 @@ tests/production/
 │                          reduction_intent_digest, so signed economic content and scope are what reach the venue;
 │                          each step barriers before its effect; a crash cut after every barrier; cumulative reservations
 │                          across legs; Authority polymorphism — shadow/paper mint without writing, live appends
-│                          authorization, reduction appends authority_use first; no rung or mode name appears in leg.py (AST)
+│                          authorization, reduction appends authority_use first; no `rung ==` or `mode ==` branch in leg.py (AST) — the name
+│                          appears, since LegBindings carries a rung; branching on it is what is forbidden
 ├── test_bundles.py        each bundle is frozen and validates presence and arity only — never types, since type validation
 │                          would import fourteen later modules and re-create the cycle bundles.py exists to break
 ├── test_ids.py            deterministic tick/leg/plan/client ids from stable semantic inputs; independent of wall time and
