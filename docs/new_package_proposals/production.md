@@ -2284,14 +2284,17 @@ follows dependencies: `vocab` → `base` → `redact` → `records` → `documen
 `accounting` → `guards` → `breaker` → `arming` → `coordination` → `policy` →
 `executor` → `resilience` → pipeline `SubgraphRunner` + `serving_contract` →
 `feed` → `decider` → `reconcile` → `readiness` → `verifier` → `monitors` → `metrics` →
-`alerts` → `health` → `leg` → `loop` → `__main__` → docs → examples → skeleton.
+`alerts` → `health` → `leg` → `compose` → `loop` → `__main__` → docs → examples
+→ skeleton.
 
 The order is acyclic, and two placements are the reason `policy.py` was split:
 `ActionPolicy`/`TransitionPolicy` are pure over closed vocabularies so they can
 sit early, but `SubmissionVerifier` rehashes the `EntryBatch` and refreshes
 quote, accounting, executor-scope and lease state — so it must follow `feed`,
 `accounting`, `coordination` and `readiness`, and it gets its own module rather
-than dragging two decision tables down the order behind it. `readiness`
+than dragging two decision tables down the order behind it. `compose` sits between `leg` and `loop` because it can only build a bundle once
+every collaborator class exists, and `loop` receives bundles already built.
+`readiness`
 precedes `verifier` and `leg` because both take a GO as an input; `feed`
 follows the pipeline change because `ServingContract` is produced by the entry
 class, not by production. `document` is written before the registries exist, so
