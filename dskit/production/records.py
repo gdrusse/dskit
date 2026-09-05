@@ -698,10 +698,11 @@ class RiskVersion(_Record):
     ----------
     economic_seq : int
         The fold's economic sequence.
-    executor_token : str
-        The executor's session token.
-    accounting_tokens : tuple of str
-        The accounting sources' monotonic tokens.
+    executor_token : str or None
+        The executor's session token; None until a session acquires one
+        (a fresh or restored fold — §6's snapshot never restores it).
+    accounting_tokens : tuple of str or None
+        The accounting sources' monotonic tokens; None until acquired.
 
     Examples
     --------
@@ -711,8 +712,8 @@ class RiskVersion(_Record):
     """
 
     economic_seq: int
-    executor_token: str
-    accounting_tokens: tuple[str, ...]
+    executor_token: str | None
+    accounting_tokens: tuple[str, ...] | None
 
 
 # ---------------------------------------------------------------------------
