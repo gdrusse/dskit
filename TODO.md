@@ -1032,12 +1032,34 @@ decides the shape, so settle it before writing code.**
 
 ## Long-term goal — a generic SERVING LOOP in dskit
 
-**Design plan complete; implementation not started.** The original sketch is
-superseded by `docs/new_package_proposals/production.md` (ADR-0090 / ADR-0091),
-which preserves the constraints recorded here.
+**Plan approved and logged; implementation not started.** The original sketch is
+superseded by `docs/new_package_proposals/production.md`, whose merge records
+owner approval. ADR-0090 and ADR-0091 are in `docs/architecture/decision-log.md`
+as `proposed`, per the "ADR before code" rule.
 
 - [x] Replace the original sketch with a reviewed, invariant-driven package plan.
-- [ ] Implement `dskit.production` in a separate code change.
+- [x] Survive ten methodology/OOP skeptic reviews to a SAFETY-CLEAN verdict.
+- [x] Log ADR-0090 and ADR-0091 in the decision log.
+- [ ] Implement `dskit.production` phase 1 in a separate code change, TDD per
+      §10's module order, and flip both ADRs to `accepted` when it lands.
+- [ ] Phase 2 (`outcomes`, `report`, `replay`, outcome/parity monitors, sqlite
+      and parquet packs) and phase 2b (widen the `serving_effect` audit beyond
+      the ~13 classes phase 1 classifies).
+
+**Two things the plan deliberately leaves open, recorded so they are met as
+decisions rather than surprises.**
+
+- **Constraint (4), the capital seam, is NOT closed by ADR-0090.**
+  `dskit/pipeline/kinds_report.py` expects a `capital` block carrying `twr`,
+  `mwr`, `cumulative_contributions`, `equity_curve` and `trading_pnl`, and
+  nothing in the repo produces any of them. `dskit.production`'s `accounting`
+  seam is *venue* accounting — positions, balances, fills, exposure — which is a
+  different thing. It wants its own ADR.
+- **`alerts` is excluded from `doc_hash` wholesale**, so `alerts.routes` can be
+  emptied under a live arm, silencing the paging path D17 treats as a safety
+  control. Splitting the section (graded routes and severity map, excluded
+  endpoint values) is the fix; it moves an identity boundary, so it belongs in
+  its own change rather than in the founding ADR.
 
 **The goal.** dskit runs documents in batch; it has no seam for running a
 fitted model FORWARD on a cadence. `children/intraday_poc/intraday_poc/live.py`

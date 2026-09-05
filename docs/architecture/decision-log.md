@@ -4259,3 +4259,145 @@ or MIO constraint requires a separately approved design and validation run.
 HFDR is a later MIO capital constraint. It does not replace Gate 3, and P11 does not invoke Gate 2. The completed P11 Gate-2 artifacts are historical evidence from the mistaken configuration; they neither select assets nor substitute for the restored Gate-3 audit.
 
 **Consequences.** The active staged document is memory, gate1, gate3_walks, gate3. Its changed identity requires a fresh execution; no new Gate-3 run has been started by this correction.
+
+---
+
+## ADR-0090 — `dskit.production`: the production layer (serve, guard, act, record, monitor)
+
+**Status:** proposed (2026-09-04; Opus-reviewed; awaiting owner approval)
+
+**Context.** dskit runs documents in batch and has no seam for running a fitted
+model forward on a cadence. Two hand-rolled tier-3 forward loops exist:
+`children/intraday_poc/intraday_poc/live.py` (1,367 lines, where most of that
+child's HIGH-severity defects live) and
+`children/intraday_equities/intraday_equities/live.py` (191 lines, paper-only
+limit-order intents). TODO.md records the constraints a generic loop must satisfy: read
+the run's configs, fetch through the connector, decide with the same node objects,
+one decision record per tick, gate on a supplied calendar, take an executor
+object, and make moving money an explicit loud act. Nine research reports
+(docs/new_package_proposals/research_reports/) ground the design.
+
+**Decision.** A fifth package, `dskit/production/`, per
+docs/new_package_proposals/production.md (D1–D24, invariant matrix §5.14,
+structure §8): a serve document with a stable series UUID whose immutable release
+binds the run, graph, artifacts, resolved code, complete runtime, adapter,
+approval verifier, fenced lease and source config. The entry's pure
+ServingContract derives source binding, explicit entity keys, event time, digest
+recipe and manifest-bound universe. A structural policy defers its construction,
+fingerprint, data edge and splits before fetch/gates. Startup, every tick and
+pre-submit verify content/runtime and artifact age. One `ServeLoop` injects
+closed policy, execution, accounting and coordination seams. The sole source-root
+`entry_read` dominates every dynamic path; only pure or capability-backed
+release reads surround it. Exact uniform coverage and the oldest key watermark
+pass before descendants.
+It evaluates heads once, derives candidate scope keys and quotes,
+then snapshots correction-aware accounting before sizing. Legs run sequentially
+with prior reservations folded. Closed matrices use disjoint risk effects,
+preserve shadow/paper, forbid replace shortcuts, and make LiveExecutor accept
+only ActPermit. After the final barrier, a bounded verify-and-call gate refreshes
+input/quote/evidence/risk plus calendar, link, health, breaker, authority and
+lease, then passes the full deadline/fence to the gateway. Mismatch is `not_sent`;
+unavoidable external venue races are `unknown` and reconcile. Cancel uses
+reserved bounded capacity. Reduction,
+flatten execution, resume and adoption are
+authenticated acts. A hash-chained ledger has one writer and barriers
+`tick_start`, the complete decision plan and findings, intent, authority
+use/authorization and safety transitions before effects. Flatten refs are
+request/index/digest-derived; caller-UUID controls use a durable inbox and HALT
+remains out-of-band. Normally completed mutating CLIs journal their result once;
+hard-kill cross-store gaps are reported. Serve never journals consumed commands.
+Recovery gives every started tick a terminal decision and every
+reserved reduction right a query-first resolution. Core supplies
+shadow/paper/recorded execution and accounting,
+monitors, alerts, health and resilience. Purity: stdlib + pipeline + onboarding +
+assets + self; journal function-import only.
+
+**Contents (package).**
+
+```
+dskit/production/
+  __init__.py       public surface (curated re-exports)
+  __main__.py       validate | plan | serve | arm-request | approve-arm | disarm | halt |
+                    reduce | flatten-request | approve-flatten | execute-flatten | resume |
+                    status | verify | reconcile | adopt | ready | replay | outcomes | report
+  base.py           ProductionError; assets checkers; ms/UTC; canonical record hashing
+  vocab.py          every closed vocabulary, one module
+  redact.py         Secrets resolution; redact() on logs, alerts and reasons
+  document.py       ServeDocument; default-deny; the graded/excluded section partition
+  release.py        ReleaseManifest; class/code/adapter/source/artifact/runtime fingerprints
+  records.py        Quote/Candidate/Proposal/Finding/EntryBatch/DecisionPlan/Intent;
+                    Permit (frozen dataclass base) + SimulatedPermit + ActPermit; TickResult;
+                    AccountState; RiskVersion
+  clock.py          Clock ABC; WallClock, TestClock, ReplayClock; CLOCK_KINDS
+  sessions.py       Calendar ABC; AlwaysOpen, WeeklySessions, EventWindow, Composite
+  cadence.py        Cadence ABC; FixedInterval, AlignedBar, AtTimes, OnData; Overrun
+  control.py        ControlInbox; CommandProcessor; sole-writer dispatch
+  feed.py           ServingContract + FeedSpec; EntrySourceFeed; ReplayFeed
+  decider.py        serving_document(); Decider; Proposer ABC; IntentRows, TargetPositions
+  guards.py         Guard ABC; GuardChain; Limit; RangeGuard; Measure ABC + registry
+  breaker.py        Breaker (active | reducing | halted); trips; kill switch; cooling-off
+  arming.py         ApprovalVerifier ABC; maker-checker proofs; Arming fold; scope application (minting is leg.py)
+  executor.py       Executor ABC (read/query/cancel); SubmittingExecutor; Shadow, Paper,
+                    Recorded, Live; executor_conformance_suite
+  accounting.py     Accounting ABC; PaperAccounting; RecordedAccounting
+  coordination.py   Lease ABC; ProcessLease; LeasePermit; fencing tokens
+  policy.py         ActionPolicy; TransitionPolicy; Rule sets; the golden decision table
+  verifier.py       SubmissionVerifier — the final verify-and-call gate
+  resilience.py     Classifier ABC; Retry; CircuitBreaker; RateLimiter; Transport ABC
+  ledger.py         Ledger ABC + barrier; JsonlLedger; Checkpoint; ServeRoot; chain + verify
+  state.py          SeriesState (sole ledger fold); StateView; TickState; PositionBook; Recovery
+  reconcile.py      Reconciler; ReconReport; break classification
+  monitors.py       Monitor ABC; Reference/Chunker/Threshold strategies; monitor families
+  metrics.py        counter/gauge/histogram registry; label cardinality cap; JSONL flush
+  alerts.py         AlertSink ABC; Log/Memory/Email/Webhook; AlertRouter; ALERT_SINK_KINDS
+  health.py         Health state machine; HealthProbe ABC; Heartbeat; instance lock; signals
+  loop.py           ServeLoop (the scheduler, not the composition root); Tick template method; lifecycle
+  ids.py            IdSource ABC + ReleaseIdSource + RecordedIdSource
+  leg.py            LegPipeline (the eight submission steps); Authority ABC + the three kinds; permit minting
+  bundles.py        the seven frozen collaborator dataclasses
+  compose.py        AuthorityTable; bundles_for(): the closed rung to collaborator table
+  readiness.py      release-bound checklist → GO / NO-GO
+  outcomes.py       [phase 2] bitemporal outcome join, supersede chain, as-of cut
+  report.py         [phase 2] attribution, calibration, drawdown, replay parity diff
+  libs/__init__.py  pack namespace
+  libs/sqlite.py    [phase 2] SqliteLedger
+  libs/parquet.py   [phase 2] RunReference over the run's predictions parquet
+  README.md / AGENTS.md / CLAUDE.md
+tests/production/   purity + oop + every module above + a shadow/paper/live_limited e2e
+examples/production/ serve-shadow.json, serve-paper.json, calendar-weekly.json
+```
+
+**Consequences.** Children stop owning loops: a child ships an executor subclass,
+accounting, approval and fenced-lease implementations, optionally a
+proposer/measures, and JSON.
+The skeleton pin and README/AGENTS/CLAUDE trees update together. TODO's plan item
+is superseded, but implementation remains unchecked until code lands. Phase 1
+lands the foundation; phases 2–3 add evidence and packs. §12 records the resolved
+defaults for this resubmission.
+
+---
+
+## ADR-0091 — The driver's subgraph re-execution is a public seam with a policy object
+
+**Status:** proposed (2026-09-04)
+
+**Context.** `_SearchSeam._execute` already re-executes `needed ∩ dirty` under
+`"node.param.path"` overrides with the full node lifecycle, but it is private,
+returns an objective float, and hardcodes the search override rule. A serving loop
+needs the same mechanism with one different override rule and head outputs.
+
+**Decision.** `SubgraphRunner` becomes public, with a policy-aware structural
+planner that sees class metadata/topology before any source construction,
+fingerprint, `data_edge` or split materialization. Ordinary search resolution is
+unchanged. Serving drops splits, defers construction of the sole source-root `entry_read`
+out of the base pass, and requires its existing-param window override. The immutable base
+pass permits pure nodes plus approved release reads only through `ReleaseReader`;
+after fetch, the entry alone runs and its contract validates the frozen snapshot
+before descendants execute from that binding.
+
+**Consequences.** Search behavior and pinned identities remain unchanged.
+Observation entries expose pure `serving_contract(params, verified_run_evidence)`
+metadata for source binding, explicit entity keys, event time and digest recipe — declaration only. The required universe is a
+serve-document field pinned by `plan`, not contract output. Dedupe keys are not
+treated as a universe. Pipeline never imports production. Release-bound child code remains a
+declared trusted boundary, backed by code fingerprints and no-direct-I/O tests.
