@@ -4453,42 +4453,76 @@ required, at no cost: ADR-0089 already required one.
 **Status:** proposed (2026-09-05; awaiting owner approval)
 
 **Context.** `intraday_equities` ran each walk's folds through a blocking
-`subprocess.run`, one at a time, and dskit has no parallel execution
-anywhere. Folds are independent by construction — each carries its own
-cutoff and its own single-fold document — so the serial loop is pure
-wall-clock waste. A `ThreadPoolExecutor` now sits in the child
-(`modelability.py`), which is the wrong tier: capped, resumable, parallel
-fold processes is generic pipeline capability, and CLAUDE.md puts capability
-in dskit with only the cohort left in the child.
+`subprocess.run`, one at a time, and dskit has no parallel execution anywhere
+(verified: no `concurrent.futures`, `multiprocessing` or `threading` under
+`dskit/`). Folds are independent by construction, each carrying its own cutoff
+and its own single-fold document, so the serial loop is pure wall-clock waste.
+A `ThreadPoolExecutor` now sits in the child (`modelability.py`), **built and
+shipped without the ADR CLAUDE.md requires first** — this entry records that
+violation rather than tidying it away, and the graduation is its remedy.
 
-**Decision.** Graduate the mechanism into `dskit/pipeline` as a fold-runner
-seam the child calls, keeping in the child only what is domain: which
-document, which cohort, which tag. The seam owns three rules.
+**Decision.** Add `dskit/pipeline/folds.py` with one class:
 
-**The address-space cap is per process and never divided.** `RLIMIT_AS`
-bounds address space, not RSS; the feature cache maps every symbol whatever
-a walk scores; and a divided cap both refuses mappings that measured RSS
-never sees and breaks resume, since a finished fold is accepted back only
-under the limit it ran at. Total memory therefore scales with the width,
-which the operator chooses.
+```text
+class BoundedFoldRunner:
+    _PARAMS = ("workers", "memory_limit_bytes", "env_var")
+    def run(self, documents, execute)  -> list of results, in input order
+    def one(self, index, document, execute)  -> the per-fold hook
+```
 
-**The cap is applied by `ulimit -v` through `/bin/sh`, read back before
-`exec`.** `preexec_fn` bars `posix_spawn`, so the child would fork from a
-pool-running parent and execute Python before `exec` — the pattern CPython
-documents as unsafe with threads — and dash's `ulimit` exits 0 even when
-`setrlimit` fails, so the readback is what makes a failed cap loud.
+`execute` is the caller's per-fold callable; `one` is the subclass hook, so a
+child overrides how a fold runs, never the pooling. The child keeps only what
+is domain — which document, which cohort, which tag — and calls the seam.
 
-**The width is read from the environment, never from a document.** Fold
-count is a property of the machine, not of what a run computes; a graded knob
-would move the identity hash and orphan every prior run each time it was
-tuned. The width used is journalled.
+**The cap is a caller-supplied parameter.** `memory_limit_bytes` is required
+and has NO dskit default: 17 GiB is a P10 study number and a tier-1 default
+would be exactly the hardcoded threshold this repo forbids. `None` means
+uncapped.
 
-**Consequences.** The child keeps its cohort and loses the mechanism; the
-name and default of the environment variable become dskit's, and the child's
-README and CLAUDE.md follow. Concurrency is UNMEASURED and bounded: the pool
-sits inside one walk's folds while the caller still loops walks serially, so
-a width above the fold count buys nothing, and a per-fold estimator with
-`n_jobs = 8` requests `8 x width` threads. `dskit/pipeline` gains its first
-`concurrent.futures` import; `tests/pipeline/test_purity.py` must still pass,
-since `concurrent.futures` and `shlex` are stdlib. A width of 1 must remain
-the historical serial path byte for byte.
+**The cap is per process and never divided.** `RLIMIT_AS` bounds address space,
+not RSS; the feature cache maps every symbol whatever a walk scores; and a
+divided cap both refuses mappings that measured RSS never sees and breaks
+resume, since a finished fold is accepted back only under the limit it ran at.
+Total memory scales with the width, which the operator chooses.
+
+**The cap is applied by a `setrlimit` + `execv` shim, not by `preexec_fn` and
+not by `ulimit`.** `preexec_fn` bars `posix_spawn`, so the child would fork
+from a pool-running parent and run Python before `exec` — unsafe with threads.
+But `ulimit -v` is not the fix: measured on dash, raising the SOFT limit above
+an inherited hard limit exits 0 **and reports the requested value back**, so
+neither `&&` nor a shell readback catches it (only the `-H` form fails loudly,
+exit 2). `resource.setrlimit` raises instead — measured, `ValueError: not
+allowed to raise maximum limit` — and a `python -c "setrlimit; os.execv"` shim
+runs that AFTER its own exec, so nothing Python happens between fork and exec.
+No shell, so no quoting surface and no `$BASH_ENV`.
+
+**The width is read from the environment, never from a document.** Fold count
+is a property of the machine, not of what a run computes; a graded knob would
+move the identity hash and orphan every prior run each time it was tuned.
+`dskit/pipeline/env.py` is not the seam for it: `EnvConfig` is credentials —
+the document names the variable and the environment supplies a secret value.
+Here the document must not name it at all. The variable name is therefore a
+`_PARAMS` knob (`env_var`) the caller supplies, defaulting to
+`DSKIT_FOLD_WORKERS`; unset means 1, empty is refused, and the width used is
+journalled.
+
+**Consequences.** The child keeps its cohort and loses the mechanism; its
+README and CLAUDE.md follow the renamed variable. `dskit/pipeline` gains its
+first `concurrent.futures` import; `test_purity.py` still passes because
+`concurrent.futures`, `shlex` and `resource` are stdlib, though passing that
+gate is necessary and not sufficient for domain-neutrality. A width of 1 must
+remain the serial path.
+
+`peak_rss_bytes` must be dropped or re-sourced, not carried over.
+`RUSAGE_CHILDREN.ru_maxrss` is process-global and monotone, so under a pool a
+fold persists whatever sibling peaked highest and never reports lower — a
+wrong number written to disk and read back on resume. The seam does not
+measure per-fold memory; a caller that needs it must measure inside the fold
+process.
+
+Cancellation is bounded, not immediate: unstarted folds are dropped, a running
+fold's subprocess is not killed, and there is no timeout. The child's current
+private imports of `_aggregate_folds` and `_write_walkforward_summary` (and of
+`score_bar`/`walk_cells`, absent from `runs.__all__`) breach the `__all__`
+contract and are NOT resolved here; whatever of them the seam still needs must
+be made public or given a public wrapper as part of implementing this ADR.
