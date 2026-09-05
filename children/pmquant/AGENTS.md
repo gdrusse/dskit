@@ -59,12 +59,14 @@ Agent orientation — see README.md for what the child does and how to run it.
   its subject asserts nothing.)
 - **Decisioning is a journal (ADR-0056).** `journal.json` is the
   walk-up marker. Actions (acquire / research / execute / production)
-  append `docs/decisioning/actions.csv`; README is generated. Path to
-  production is owner `python -m dskit.journal promote` only. Pipeline
-  runs and onboarding verbs record themselves. Research always goes
-  through `python -m dskit.journal research` (never Write
-  `docs/research/` by hand). Wrap `live.main` in
-  `dskit.journal.hooks.production`. An uninitialized child refuses.
+  append `docs/decisioning/actions.csv`; README is generated. Path and
+  Current Work are human-owner-only. Every Path row has ID, label, purpose,
+  relevant files, and `LOCKED` (`Y`/`N`). The generated README displays the
+  full Path and latest 10 Actions; CSV history is append-only. Pipeline runs
+  and onboarding verbs record themselves. Research always goes through
+  `python -m dskit.journal research` (never Write `docs/research/` by hand).
+  Wrap `live.main` in `dskit.journal.hooks.production`. An uninitialized
+  child refuses.
 - The skeleton's file list is pinned in dskit's
   `tests/children/test_skeleton.py` — reshaping the SKELETON means
   updating that pin in the same commit (copies are unpinned).
@@ -106,7 +108,9 @@ configs/               # run-e2e + run-kalshi-ladders (twins); 5 sources; suite;
 notebooks/             # 01-ladder-e2e.ipynb
 journal.json           # dskit.journal marker
 docs/decisioning/      # actions.csv + path.csv; README generated
-docs/research/         # research markdown (CLI-written)
+docs/explanations/     # durable explanations; use record-explanation
+docs/memos/            # decision memos; use memo
+docs/research/         # research markdown; use journal research CLI
 tests/                 # conftest bootstrap; one file per module + test_configs + test_e2e
 pyproject.toml         # dependencies: dskit, numpy, torch, pyomo, highspy, pyarrow
 ```

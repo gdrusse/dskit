@@ -17,7 +17,12 @@ A child consumes dskit, never modifies it: tier-3 code plus JSON configs
 over the three seams — a connector (onboarding), registered node kinds
 (pipeline), its own asset model (assets). The domain lives in `configs/`.
 The action ledger and the process are
-[`docs/decisioning/README.md`](docs/decisioning/README.md).
+[`docs/decisioning/README.md`](docs/decisioning/README.md). Its generated
+README displays the complete human-owner-only Path and latest 10 Actions;
+CSV history is never deleted. Each Path record has an ID, label, purpose,
+relevant files, and `LOCKED` (`Y`/`N`); Current Work is human-owner-only.
+Pipeline/onboarding commands record themselves; research uses
+`python -m dskit.journal research`.
 
 ```
 intraday_poc/
@@ -40,7 +45,9 @@ intraday_poc/
 │   └── asset-model.json       # the child's catalog kinds
 ├── journal.json              # dskit.journal marker (ADR-0056)
 ├── docs/decisioning/         # generated process + action ledger
-├── docs/research/            # research markdown (CLI-only writer)
+├── docs/explanations/        # durable explanations; use record-explanation
+├── docs/memos/               # decision memos; use memo
+├── docs/research/            # research markdown (journal research CLI)
 └── tests/
     ├── conftest.py            # sys.path bootstrap — in-repo and after graduation
     ├── test_connectors.py     # four-verb contract + acquire→validate e2e (stubbed)

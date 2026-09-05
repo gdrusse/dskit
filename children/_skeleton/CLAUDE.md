@@ -6,6 +6,9 @@ Agent orientation template — see README.md for what the child does.
 
 ## The child rules (ADR-0021)
 
+- **Standalone explanations live in `docs/explanations/`.** Put worked,
+  self-contained explanations there rather than beside decision records or
+  research notes.
 - **Durable handoffs live in `docs/memos/`.** Keep implementation outcomes,
   operational evidence, and known caveats there. A memo is not an ADR and is
   not journaled research; the skeleton initializes the folder with `.gitkeep`.
@@ -65,6 +68,10 @@ Agent orientation template — see README.md for what the child does.
   through `python -m dskit.journal research` (never Write
   `docs/research/` by hand). Wrap `live.main` in
   `dskit.journal.hooks.production`. An uninitialized child refuses.
+- **Path is human-owner-only.** Never add, edit, or regenerate a Path row or
+  its `Current Work` field. The owner alone maintains it. Every Path row must
+  include an ID, a short label, purpose, relevant files (pipeline run,
+  research markdown, or other material evidence), and `LOCKED` as `Y` or `N`.
 - The skeleton's file list is pinned in dskit's
   `tests/children/test_skeleton.py` — reshaping the SKELETON means
   updating that pin in the same commit (copies are unpinned).
@@ -76,8 +83,9 @@ yourproject/           # tier-3 code (connectors.py, nodes.py)
 configs/               # asset-model / source-sample / suite-sample / run-sample
 journal.json           # dskit.journal marker
 docs/decisioning/      # actions.csv + path.csv; README generated
-docs/research/         # research markdown
-docs/memos/            # durable implementation and operational handoffs
+docs/explanations/     # README points to record-explanation
+docs/memos/            # README points to memo
+docs/research/         # README points to record-research
 tests/                 # conftest bootstrap + configs/connectors/nodes tests
 pyproject.toml         # dependencies = ["dskit"]
 ```

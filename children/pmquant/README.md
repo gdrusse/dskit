@@ -99,9 +99,11 @@ declare is refused, never defaulted.
 ## Journal
 
 Every run, acquisition and research note lands in `docs/decisioning/`
-(ADR-0056; the README there is generated from CSV). Pipeline runs and
-onboarding verbs record themselves; research is `python -m dskit.journal
-research`; the path to production is owner `journal promote`.
+(ADR-0056; its README is generated from CSV). The generated README displays
+the full human-owner-only Path and latest 10 Actions; never delete CSV
+history. Path rows carry an ID, label, purpose, relevant files, and `LOCKED`
+(`Y`/`N`); Current Work is also human-owner-only. Pipeline runs and onboarding
+verbs record themselves; research uses `python -m dskit.journal research`.
 
 ## Layout
 
@@ -122,7 +124,9 @@ pmquant/
 configs/                 the documents and sources above
 notebooks/               01-ladder-e2e.ipynb — the document, cell by cell
 docs/decisioning/        actions.csv + path.csv; README generated
-docs/research/           research notes (CLI-written)
+docs/explanations/       durable explanations; use record-explanation
+docs/memos/              decision memos; use memo
+docs/research/           research notes; use journal research CLI
 tests/                   conftest bootstrap; one file per module + test_configs + test_e2e
 journal.json             dskit.journal marker
 pyproject.toml           dependencies: dskit, numpy, torch, pyomo, highspy, pyarrow

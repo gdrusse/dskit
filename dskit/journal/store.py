@@ -87,7 +87,7 @@ def read_actions(root):
 
 
 def read_path(root):
-    """Load ``path.csv``.
+    """Load ``path.csv``, preserving the legacy two-column schema.
 
     Parameters
     ----------
@@ -96,8 +96,49 @@ def read_path(root):
     Returns
     -------
     list of PathRow
+
+    Notes
+    -----
+    Existing children keep their historical ``id,criteria`` rows intact.
+    They render with clearly marked legacy display values until the human
+    owner edits the Path. New children and new rows use :data:`PATH_FIELDS`.
     """
-    return _read_csv(root.path_csv, PATH_FIELDS, PathRow.from_obj)
+    if not os.path.isfile(root.path_csv):
+        raise JournalError([f"missing ledger file {root.path_csv}"])
+    with open(root.path_csv, encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        if reader.fieldnames is None:
+            raise JournalError([f"{root.path_csv} has no header"])
+        got = tuple(reader.fieldnames)
+        if got == PATH_FIELDS:
+            return _read_csv(root.path_csv, PATH_FIELDS, PathRow.from_obj)
+        if got != ("id", "criteria"):
+            raise JournalError(
+                [f"{root.path_csv} header {got} does not match {PATH_FIELDS}"]
+            )
+        rows = []
+        for i, raw in enumerate(reader, start=2):
+            if raw.get(None):
+                raise JournalError(
+                    [f"{root.path_csv}:{i}: extra cells in legacy path row"]
+                )
+            try:
+                rows.append(
+                    PathRow(
+                        id=raw.get("id", ""),
+                        label="Legacy path entry",
+                        purpose="Historical path row; owner must complete context",
+                        relevant_files="See Database Location",
+                        locked="N",
+                        current_work="",
+                        criteria=raw.get("criteria", ""),
+                    )
+                )
+            except JournalError as exc:
+                raise JournalError(
+                    [f"{root.path_csv}:{i}: {p}" for p in exc.problems]
+                ) from exc
+        return rows
 
 
 def _write_csv(path, fields, rows):
@@ -158,6 +199,13 @@ def append_path_row(root, path_row):
             raise JournalError(
                 [f"promote {path_row.id}: no such action — record it first"]
             )
+        with open(root.path_csv, encoding="utf-8", newline="") as fh:
+            header = next(csv.reader(fh), None)
+        if tuple(header or ()) == ("id", "criteria"):
+            raise JournalError([
+                "legacy path.csv is read-only; the human owner must explicitly "
+                "migrate it before promote"
+            ])
         existing = read_path(root)
         if any(row.id == path_row.id for row in existing):
             raise JournalError([f"promote {path_row.id}: already on the path"])

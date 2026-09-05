@@ -6,8 +6,10 @@ import hashlib
 import json
 import os
 import resource
+import shlex
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
 from dskit.pipeline.attempts import AttemptRegistry, tier2_verdict
@@ -221,6 +223,79 @@ def _journal_confirms_walk(summary, document, asof, child_root):
     )
 
 
+#: How many of a walk's fold processes may run at once. Read from the
+#: PROCESS ENVIRONMENT, never from the document: fold count is a property
+#: of the machine, not of what the run computes, and a graded knob would
+#: move the identity hash — orphaning every prior run and stored artifact
+#: — each time the operator tuned it. The value used is journalled by
+#: :func:`_run_bounded_walk`.
+_WORKERS_ENV = "INTRADAY_EQUITIES_FOLD_WORKERS"
+
+
+def _fold_workers():
+    """Return the fold-process width from the environment, default 1.
+
+    Returns
+    -------
+    int
+        The declared width, or 1 when the variable is UNSET — the
+        historical serial path. An empty value is a refusal, not a
+        default: ``export VAR=`` is an accident, and silently running
+        serially would hide it.
+
+    Raises
+    ------
+    ValueError
+        When the variable is set to anything but a positive integer.
+    """
+    raw = os.environ.get(_WORKERS_ENV)
+    if raw is None:
+        return 1
+    try:
+        width = int(raw)
+    except ValueError:
+        width = 0
+    if width < 1:
+        raise ValueError(f"{_WORKERS_ENV} must be a positive integer, got {raw!r}")
+    return width
+
+
+def _capped_command(argv, memory_limit):
+    """Wrap ``argv`` so the shell caps address space, not a fork hook.
+
+    ``preexec_fn`` would be the obvious way to call
+    ``setrlimit(RLIMIT_AS, ...)``, and it is the wrong one: it bars
+    ``posix_spawn``, so the child is forked from this parent and runs
+    Python bytecode before ``exec``. With a fold pool running, a lock a
+    sibling thread held at fork time can wedge that child forever, and
+    CPython documents ``preexec_fn`` as unsafe in the presence of
+    threads. ``ulimit -v`` sets the same rlimit with nothing between
+    fork and exec.
+
+    Parameters
+    ----------
+    argv : list of str
+        The command to run.
+    memory_limit : int or None
+        Address-space cap in bytes; ``None`` runs ``argv`` unwrapped.
+
+    Returns
+    -------
+    list of str
+        Either ``argv`` or a ``/bin/sh -c`` wrapper around it.
+    """
+    if memory_limit is None:
+        return list(argv)
+    quoted = " ".join(shlex.quote(part) for part in argv)
+    kb = memory_limit // 1024
+    # dash's ulimit exits 0 EVEN WHEN setrlimit fails, so neither ";" nor
+    # "&&" catches a cap that never took. Read it back and refuse: a walk
+    # that runs uncapped while the journal records a cap is worse than a
+    # walk that does not run.
+    guard = f'ulimit -v {kb}; [ "$(ulimit -v)" = {kb} ] || exit 111'
+    return ["/bin/sh", "-c", f"{guard}; exec {quoted}"]
+
+
 def _run_walk(ctx, document, tag, *, memory_limit=None):
     child_root = _child_root(ctx)
     configs = os.path.join(ctx.run_dir, "derived")
@@ -248,7 +323,7 @@ def _run_walk(ctx, document, tag, *, memory_limit=None):
         raise ValueError(
             f"walk artifacts exist without matching journal evidence: {summary}"
         )
-    command = [
+    walk = [
         sys.executable,
         "-m",
         "dskit.pipeline",
@@ -259,11 +334,7 @@ def _run_walk(ctx, document, tag, *, memory_limit=None):
         "--adapter",
         "intraday_equities",
     ]
-
-    def limit_address_space():
-        if memory_limit is not None:
-            resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
-
+    command = _capped_command(walk, memory_limit)
     before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     finished = subprocess.run(
         command,
@@ -272,7 +343,6 @@ def _run_walk(ctx, document, tag, *, memory_limit=None):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         check=False,
-        preexec_fn=limit_address_space if memory_limit is not None else None,
     )
     after = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     if finished.returncode != 0:
@@ -320,8 +390,75 @@ def _single_fold_document(document, cutoff, index):
     return PipelineDocument.from_obj(obj)
 
 
-def _run_bounded_walk(ctx, document, tag):
-    """Run each fold in a capped process, then journal one logical summary."""
+def _one_bounded_fold(ctx, document, tag, index, cutoff, memory_limit):
+    """Run fold ``index`` in a capped process and return its one ran row."""
+    part = _single_fold_document(document, cutoff, index)
+    part_summary, _peak = _run_walk(
+        ctx,
+        part,
+        f"{tag}-part-{index:02d}",
+        memory_limit=memory_limit,
+    )
+    with open(
+        os.path.join(part_summary, "walkforward.json"), encoding="utf-8"
+    ) as handle:
+        payload = json.load(handle)
+    part_folds = payload.get("folds")
+    if (
+        payload.get("state") != "ran"
+        or not isinstance(part_folds, list)
+        or len(part_folds) != 1
+        or part_folds[0].get("cutoff") != cutoff
+    ):
+        raise ValueError(
+            f"bounded fold {index} did not produce one ran row for {cutoff}"
+        )
+    return part_folds[0]
+
+
+def _run_bounded_walk(ctx, document, tag, *, workers=None):
+    """Run each fold in a capped process, then journal one logical summary.
+
+    Parameters
+    ----------
+    ctx : object
+        The stage run frame; supplies ``asof`` and ``source_path``.
+    document : dskit.pipeline.document.PipelineDocument
+        The whole multi-fold walk. Each declared cutoff becomes one
+        single-fold document run in its own address-space-capped
+        process.
+    tag : str
+        Short name for the derived per-fold configs and journal rows.
+    workers : int or None
+        How many fold processes may run at once. ``None`` (the default,
+        and what every caller uses) reads :func:`_fold_workers`, so the
+        knob can never be half-applied by a caller that forgot it. The
+        historical serial path is a width of 1. Each process keeps the
+        WHOLE ``_MEMORY_LIMIT`` address-space cap, so a finished fold resumes
+        at any width. The cap is not divided: ``RLIMIT_AS`` bounds
+        address space, the feature cache maps all 25 symbols whatever
+        the walk scores, and a divided cap would refuse mappings that
+        measured RSS never sees. Total memory therefore scales with
+        ``workers`` — choose it for the machine.
+
+    Returns
+    -------
+    str
+        The walk summary directory.
+
+    Raises
+    ------
+    ValueError
+        When ``workers`` is not a positive int, when artifacts exist
+        without journal evidence, or when a fold does not leave exactly
+        one ran row for its cutoff.
+    RuntimeError
+        When the finished summary lacks matching journal evidence.
+    """
+    if workers is None:
+        workers = _fold_workers()
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+        raise ValueError(f"workers must be a positive int, got {workers!r}")
     child_root = _child_root(ctx)
     summary = _summary_dir(document, ctx.asof, child_root)
     if os.path.isdir(summary) and os.listdir(summary):
@@ -330,30 +467,28 @@ def _run_bounded_walk(ctx, document, tag):
         raise ValueError(
             f"walk artifacts exist without matching journal evidence: {summary}"
         )
-    folds = []
-    for index, cutoff in enumerate(_fold_cutoffs(document.walkforward)):
-        part = _single_fold_document(document, cutoff, index)
-        part_summary, _peak = _run_walk(
-            ctx,
-            part,
-            f"{tag}-part-{index:02d}",
-            memory_limit=_MEMORY_LIMIT,
-        )
-        with open(
-            os.path.join(part_summary, "walkforward.json"), encoding="utf-8"
-        ) as handle:
-            payload = json.load(handle)
-        part_folds = payload.get("folds")
-        if (
-            payload.get("state") != "ran"
-            or not isinstance(part_folds, list)
-            or len(part_folds) != 1
-            or part_folds[0].get("cutoff") != cutoff
-        ):
-            raise ValueError(
-                f"bounded fold {index} did not produce one ran row for {cutoff}"
-            )
-        folds.append(part_folds[0])
+    cutoffs = list(_fold_cutoffs(document.walkforward))
+    limit = _MEMORY_LIMIT
+    if workers == 1:
+        folds = [
+            _one_bounded_fold(ctx, document, tag, index, cutoff, limit)
+            for index, cutoff in enumerate(cutoffs)
+        ]
+    else:
+        pool = ThreadPoolExecutor(max_workers=workers)
+        try:
+            futures = [
+                pool.submit(_one_bounded_fold, ctx, document, tag, index, cutoff, limit)
+                for index, cutoff in enumerate(cutoffs)
+            ]
+            # Indexed, not as-completed: the aggregate and the $prev
+            # series both read folds in cutoff order.
+            folds = [future.result() for future in futures]
+        finally:
+            # cancel_futures drops what has not started, so a walk that
+            # is going to fail does not first drain every other fold.
+            # submit() itself can raise, which is why it sits inside.
+            pool.shutdown(wait=True, cancel_futures=True)
     spec = document.walkforward
     aggregate = _aggregate_folds(folds, spec.select, spec.weight_halflife_folds)
     _write_walkforward_summary(
@@ -367,7 +502,7 @@ def _run_bounded_walk(ctx, document, tag):
         notes=(
             f"state=ran folds={len(folds)} hash={document.hash[:8]} "
             f"asof={ctx.asof}; fold_processes=isolated; "
-            f"memory_limit_bytes={_MEMORY_LIMIT}"
+            f"fold_workers={workers}; memory_limit_bytes={limit}"
         ),
         start=child_root,
     )

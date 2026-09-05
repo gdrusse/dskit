@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 
-from .base import JournalError, locked, utc_now
+from .base import JournalError, locked as journal_locked, utc_now
 from .locate import find_journal
 from .model import Action, PathRow, next_id
 from .render import render
@@ -80,7 +80,7 @@ def append_action(
     root = find_journal(start=start)
     if root is None:
         return None
-    with locked(root.decisioning):
+    with journal_locked(root.decisioning):
         rows = read_actions(root)
         action = Action(
             id=next_id(row.id for row in rows),
@@ -97,7 +97,17 @@ def append_action(
     return action
 
 
-def promote(action_id, criteria, start=None):
+def promote(
+    action_id,
+    criteria,
+    *,
+    label,
+    purpose,
+    relevant_files,
+    locked,
+    current_work="",
+    start=None,
+):
     """Put an existing action on the path to production (owner-only).
 
     Parameters
@@ -106,6 +116,12 @@ def promote(action_id, criteria, start=None):
         An id from ``actions.csv``.
     criteria : str
         ``empirical`` / ``judgemental`` / ``n/a``.
+    label, purpose, relevant_files : str
+        Required owner-authored decision context.
+    locked : str
+        ``Y`` when the decision is locked, otherwise ``N``.
+    current_work : str, optional
+        Owner-only description of the active work for this path item.
     start : str, optional
         Locate start; default cwd.
 
@@ -123,8 +139,16 @@ def promote(action_id, criteria, start=None):
         raise JournalError(
             ["no journal here — run `python -m dskit.journal init` in the child"]
         )
-    row = PathRow(id=action_id, criteria=criteria)
-    with locked(root.decisioning):
+    row = PathRow(
+        id=action_id,
+        label=label,
+        purpose=purpose,
+        relevant_files=relevant_files,
+        locked=locked,
+        current_work=current_work,
+        criteria=criteria,
+    )
+    with journal_locked(root.decisioning):
         append_path_row(root, row)
         render(root)
     return row

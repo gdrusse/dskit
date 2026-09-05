@@ -50,7 +50,8 @@ def _prepared(symbol, stamps, prices=None):
     """A ``prepared`` item shaped as :func:`_scan_aligned` returns one."""
     n = stamps.size
     px = (
-        np.asarray(prices, dtype=np.float64) if prices is not None
+        np.asarray(prices, dtype=np.float64)
+        if prices is not None
         else np.linspace(100.0, 101.0, n)
     )
     x = np.arange(n, dtype=np.float64).reshape(n, 1)
@@ -84,7 +85,9 @@ def test_a_whole_session_moves_at_once():
     scramble = _DayScramble.from_prepared(3, [_prepared("LLY", stamps)])
     mask = np.ones(stamps.size, dtype=bool)
     out = scramble.apply(
-        stamps, y, (("w", mask, None, 4 * _DAY_MS - 1),),
+        stamps,
+        y,
+        (("w", mask, None, 4 * _DAY_MS - 1),),
     )
     assert np.all(np.isfinite(out)), (
         "every session is full and in-window, so no row may be refused"
@@ -108,12 +111,15 @@ def test_every_symbol_gets_the_same_permutation():
     """The cross-stock correlation at a minute survives only if it does."""
     stamps = _tape([0, 1, 2, 3])
     scramble = _DayScramble.from_prepared(
-        11, [_prepared("LLY", stamps), _prepared("XOM", stamps)],
+        11,
+        [_prepared("LLY", stamps), _prepared("XOM", stamps)],
     )
     mask = np.ones(stamps.size, dtype=bool)
     bucket = (("w", mask, None, 4 * _DAY_MS - 1),)
     lly = scramble.apply(stamps, np.arange(stamps.size, dtype=np.float64) * 1.0, bucket)
-    xom = scramble.apply(stamps, np.arange(stamps.size, dtype=np.float64) * 10.0, bucket)
+    xom = scramble.apply(
+        stamps, np.arange(stamps.size, dtype=np.float64) * 10.0, bucket
+    )
     assert np.allclose(lly * 10.0, xom), (
         "two names handed the same stamps must be re-labelled by the "
         "same session map, or the scramble destroys the cross-stock "
@@ -129,18 +135,21 @@ def test_the_training_and_validation_windows_are_drawn_apart():
     day = stamps // _DAY_MS
     train, val = day <= 3, day >= 4
     scramble.apply(
-        stamps, y,
+        stamps,
+        y,
         (
             ("train|None|{0}".format(4 * _DAY_MS - 1), train, None, 4 * _DAY_MS - 1),
-            ("val|{0}|{1}".format(4 * _DAY_MS, 7 * _DAY_MS - 1), val,
-             4 * _DAY_MS, 7 * _DAY_MS - 1),
+            (
+                "val|{0}|{1}".format(4 * _DAY_MS, 7 * _DAY_MS - 1),
+                val,
+                4 * _DAY_MS,
+                7 * _DAY_MS - 1,
+            ),
         ),
     )
     keys = sorted(scramble._donors)
     assert len(keys) == 2, "each window draws its own permutation"
-    assert set(scramble._donors[keys[0]]).isdisjoint(
-        set(scramble._donors[keys[1]])
-    ), (
+    assert set(scramble._donors[keys[0]]).isdisjoint(set(scramble._donors[keys[1]])), (
         "a validation session must never appear in the training pool, or "
         "the scrambled walk trains on the sessions it is scored on"
     )
@@ -162,8 +171,9 @@ def test_a_donor_without_that_minute_refuses_the_row():
     y2 = np.arange(ragged.size, dtype=np.float64)
     forced = _DayScramble(0, {0: 5, 1: 2})
     forced._donors["w"] = {0: 1, 1: 0}
-    out2 = forced.apply(ragged, y2, (("w", np.ones(ragged.size, bool), None,
-                                      2 * _DAY_MS - 1),))
+    out2 = forced.apply(
+        ragged, y2, (("w", np.ones(ragged.size, bool), None, 2 * _DAY_MS - 1),)
+    )
     assert np.count_nonzero(np.isnan(out2[:5])) == 3, (
         "session 0's last three minutes have no counterpart in a 2-row "
         "donor and must be refused, not filled"
@@ -215,12 +225,15 @@ def test_a_scrambled_fold_keeps_the_real_folds_geometry():
 
 def test_session_offsets_handle_rows_that_are_not_day_sorted():
     """The uncommon fallback remains correct without rescanning each day."""
-    stamps = np.asarray([
-        _DAY_MS + 2 * MINUTE,
-        3 * MINUTE,
-        _DAY_MS + 5 * MINUTE,
-        7 * MINUTE,
-    ], dtype=np.int64)
+    stamps = np.asarray(
+        [
+            _DAY_MS + 2 * MINUTE,
+            3 * MINUTE,
+            _DAY_MS + 5 * MINUTE,
+            7 * MINUTE,
+        ],
+        dtype=np.int64,
+    )
     days = stamps // _DAY_MS
     assert np.array_equal(
         _session_offsets(stamps, days),
@@ -262,8 +275,14 @@ def test_pooled_fold_parts_avoid_a_second_symbol_scramble(monkeypatch):
     key = ("LLY", 1)
     predictions = {key: np.zeros(parts[key][1].shape[0], dtype=np.float64)}
     _walk_no_information_series(
-        item, ZeroModel(), [1], period_minutes=1,
-        scramble=scramble, parts=parts, predictions=predictions, **cuts,
+        item,
+        ZeroModel(),
+        [1],
+        period_minutes=1,
+        scramble=scramble,
+        parts=parts,
+        predictions=predictions,
+        **cuts,
     )
     assert len(calls) == 1, "the symbol scorer must reuse the pooled build"
     assert ZeroModel.calls == 0, "the scorer must reuse the pooled prediction"
@@ -272,23 +291,19 @@ def test_pooled_fold_parts_avoid_a_second_symbol_scramble(monkeypatch):
 def test_the_knob_is_declared_and_checked():
     """A knob a document may set and nothing honours is worse than none."""
     base = {
-        "split": "val", "train_end_ms": 10, "val_start_ms": 11,
+        "split": "val",
+        "train_end_ms": 10,
+        "val_start_ms": 11,
         "val_end_ms": 20,
     }
-    assert NoInformationScan.validate_params(
-        dict(base, label_scramble_seed=0)
-    ) == []
+    assert NoInformationScan.validate_params(dict(base, label_scramble_seed=0)) == []
     assert any(
         "label_scramble_seed" in p
-        for p in NoInformationScan.validate_params(
-            dict(base, label_scramble_seed=-1)
-        )
+        for p in NoInformationScan.validate_params(dict(base, label_scramble_seed=-1))
     ), "a negative seed is not a seed"
     assert any(
         "label_scramble_seed" in p
-        for p in NoInformationScan.validate_params(
-            dict(base, label_scramble_seed=None)
-        )
+        for p in NoInformationScan.validate_params(dict(base, label_scramble_seed=None))
     ), (
         "a null scramble knob must be refused rather than read as 'off' — "
         "the same rule the label and lead knobs follow"
