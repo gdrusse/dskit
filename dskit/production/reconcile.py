@@ -51,6 +51,7 @@ it is public.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from decimal import Decimal, InvalidOperation
 
@@ -834,13 +835,32 @@ def _typed(items, cls, what):
     return items
 
 
+#: What an absent capability member reads as — never a legal value.
+_NO_CAPABILITY = object()
+
+
 def _capability(caps, *path):
-    """Read a nested capability, refusing an executor that does not declare it (§5.7)."""
+    """Read a nested capability, refusing an executor that does not declare it (§5.7).
+
+    ``capabilities()`` answers the frozen ``Capabilities`` value of §5.7,
+    whose members are attributes, while a nested member (``units.cash``)
+    may be a plain mapping. Both shapes read the same way here, so the
+    reconciler never learns which executor it is talking to.
+    """
     value = caps
     for key in path:
-        if not isinstance(value, dict) or key not in value:
-            raise ProductionError([f"executor capabilities lack {'.'.join(path)!r} (§5.7)"])
-        value = value[key]
+        if isinstance(value, Mapping):
+            if key not in value:
+                raise ProductionError(
+                    [f"executor capabilities lack {'.'.join(path)!r} (§5.7)"]
+                )
+            value = value[key]
+            continue
+        value = getattr(value, key, _NO_CAPABILITY)
+        if value is _NO_CAPABILITY:
+            raise ProductionError(
+                [f"executor capabilities lack {'.'.join(path)!r} (§5.7)"]
+            )
     return value
 
 
@@ -1186,12 +1206,14 @@ class Reconciler:
         release_hash,
         flow_kind,
         external,
+        known_at_ms=None,
     ):
         """Adopt ``cash`` breaks of the last run: bank each amount, then the receipt, one barrier.
 
         For every named break one ``cash_flow`` is appended carrying the
         amount and both instants as values — ``effective_at_ms`` is when
-        the run that found it looked, ``known_at_ms`` is now (D21) — under
+        the run that found it looked, ``known_at_ms`` is when the operator's
+        command was durably queued (D21) — under
         the §6 id, so a replay appends nothing twice; then one ``adoption``
         receipt; then ``ledger.barrier()``. The fold moves through the
         ledger, so the next run no longer sees the break. Nothing is
@@ -1248,7 +1270,11 @@ class Reconciler:
             problems.append(f"adopt: external must be a bool, got {external!r}")
         if problems:
             raise ProductionError(problems)
-        known_at_ms = self._clock.now_ms()
+        # The caller's queued instant, never the clock: a crash-replayed
+        # adopt must rebuild the SAME payload, or the ledger refuses it as a
+        # different one under the same id (§6, D21).
+        if known_at_ms is None:
+            known_at_ms = self._clock.now_ms()
         flows = [
             self._cash_flow(brk, control_request_id, known_at_ms, flow_kind, external)
             for brk in breaks

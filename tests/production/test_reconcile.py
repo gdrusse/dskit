@@ -227,6 +227,21 @@ class FoldingLedger:
         return [kind for name, kind in self.calls if name == "append"]
 
 
+def test_capabilities_are_read_off_the_real_frozen_value_not_a_dict():
+    """§5.7: `capabilities()` answers the frozen `Capabilities` value, so a
+    reconciler that walked it as a dict refused every real executor while
+    passing against a dict-shaped fake — the defect this pins."""
+    from dskit.production.executor import ShadowExecutor
+
+    caps = ShadowExecutor({}, clock=TestClock()).capabilities()
+    assert not isinstance(caps, dict)
+    assert reconcile_module._capability(caps, "positions") == caps.positions
+    assert reconcile_module._capability(caps, "units", "cash") == caps.units["cash"]
+    with pytest.raises(ProductionError) as excinfo:
+        reconcile_module._capability(caps, "units", "no_such_unit")
+    assert "units.no_such_unit" in str(excinfo.value)
+
+
 def capabilities(positions="derived", **overrides):
     """§5.7's capability block, with `positions` the knob these tests turn."""
     caps = {
