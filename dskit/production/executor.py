@@ -952,7 +952,7 @@ class ShadowExecutor(SubmittingExecutor):
         """
         ref = _intent_of(intent).client_ref
         if not isinstance(permit, Permit):
-            raise ProductionError(["permit_type"])
+            return empty_ack(ref, self._clock.now_ms(), _NOT_SENT, "permit_type")
         return empty_ack(ref, self._clock.now_ms(), _NOT_SENT, "shadow")
 
 

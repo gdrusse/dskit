@@ -1,0 +1,39 @@
+{
+  "notes": "A weekly-sessions calendar, standalone so it can be pasted into a serve document's schedule.calendar or read while tuning one. Sessions are local times in `tz`; the arithmetic is UTC, and a boundary that falls in a daylight-saving gap refuses at validation rather than silently shifting.",
+  "uses": "weekly-sessions",
+  "params": {
+    "tz": "America/New_York",
+    "sessions": [
+      {
+        "days": [
+          "mon",
+          "tue",
+          "wed",
+          "thu",
+          "fri"
+        ],
+        "open": "09:30",
+        "close": "16:00"
+      }
+    ],
+    "holidays": [
+      "2026-01-01",
+      "2026-11-26",
+      "2026-12-25"
+    ],
+    "special_closes": [
+      {
+        "date": "2026-11-27",
+        "close": "13:00"
+      }
+    ],
+    "blackouts": [
+      {
+        "from": "2026-07-04T00:00:00Z",
+        "until": "2026-07-05T00:00:00Z"
+      }
+    ],
+    "after_open_s": 60,
+    "before_close_s": 120
+  }
+}
