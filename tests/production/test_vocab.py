@@ -112,6 +112,7 @@ CLOSED_SET_NAMES = (
     "CACHE_STATES",
     "AUTHORITY_EVENTS",
     "TRANSITION_CAUSES",
+    "CONTROL_PURPOSES",
     "ALERT_SUPPRESSIONS",
 )
 
@@ -246,6 +247,10 @@ EXPECTED_MEMBERS = {
     "CACHE_STATES": ("current", "stale"),
     "AUTHORITY_EVENTS": ("issue", "disarm", "revoke", "expire"),
     "TRANSITION_CAUSES": ("reduce", "flatten_request", "trip", "halt", "resume"),
+    "CONTROL_PURPOSES": (
+        "arm_request", "arm_approval", "reduce", "flatten_request", "flatten_approval",
+        "execute_flatten", "resume", "adopt", "halt", "disarm", "reconcile", "ready",
+    ),
     "TICK_STATUSES": (
         "decided",
         "skipped:closed",

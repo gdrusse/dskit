@@ -655,7 +655,10 @@ def test_a_zero_sized_proposal_is_neutral():
 def test_a_position_in_another_instrument_does_not_make_a_proposal_a_reduction():
     """Risk effect is per instrument; netting across instruments would let a
     long in one name license an unbounded new position in another."""
-    account = snapshot(state=view(positions=(position(instrument=INS2, qty="-50"),)))
+    account = snapshot(
+        state=view(positions=(position(instrument=INS2, qty="-50"),)),
+        quotes=quote_set(quote(INS1), quote(INS2)),
+    )
     assert paper().classify(proposal(side="buy"), tick_state(account)) == "increase"
 
 
@@ -1021,7 +1024,15 @@ def test_an_external_deposit_leaves_pnl_evidence_alone_and_the_balance_larger():
         )
     )
     before = snapshot(accounting=traded, at_ms=T1, requirements=(requirement,))
-    after = snapshot(accounting=with_deposit, at_ms=T1, requirements=(requirement,))
+    # The deposit reaches balances through the FOLD (the ledger folded the
+    # cash_flow record); history only digests it — adding it again would
+    # double-count every adopted deposit.
+    after = snapshot(
+        accounting=with_deposit,
+        at_ms=T1,
+        requirements=(requirement,),
+        state=view(balances={"USD": Decimal("1000")}),
+    )
     assert evidence_for(after, requirement).value == evidence_for(before, requirement).value
     assert [b.total for b in after.balances] == [Decimal("1000")]
     assert before.balances == ()

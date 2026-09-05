@@ -829,7 +829,9 @@ class PaperAccounting(Accounting):
         """Return the applied, un-reversed fills known by ``at_ms``, in ``(ts_ms, fill_id)`` order."""
         applied, reversed_ids = {}, set()
         for item in reported:
-            fill = item if isinstance(item, Fill) else Fill.from_obj(item)
+            fill = _fill_of(item)
+            if not isinstance(fill, Fill):
+                raise ProductionError([f"history.fills yielded {fill!r}, not a Fill or its body"])
             if fill.ts_ms > at_ms:
                 continue
             if _APPLIES[fill.status]:
