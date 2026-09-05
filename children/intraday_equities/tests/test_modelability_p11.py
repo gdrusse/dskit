@@ -5,9 +5,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
-from dskit.pipeline.document import load_document
+from dskit.pipeline.document import PipelineDocument, load_document
 
 from intraday_equities import modelability_p11 as p11
+
+
+def load_document_obj(obj):
+    return PipelineDocument.from_obj(obj)
 
 
 def _root():
@@ -229,36 +233,42 @@ def test_derived_walk_keeps_only_spy_when_spy_is_the_asset(tmp_path, monkeypatch
 
 
 def test_fold_workers_reads_the_machine_knob_and_defaults_to_serial(monkeypatch):
-    monkeypatch.delenv(p11._WORKERS_ENV, raising=False)
-    assert p11._fold_workers() == 1
-    monkeypatch.setenv(p11._WORKERS_ENV, "6")
-    assert p11._fold_workers() == 6
+    monkeypatch.delenv(p11.p10._WORKERS_ENV, raising=False)
+    assert p11.p10._fold_workers() == 1
+    monkeypatch.setenv(p11.p10._WORKERS_ENV, "6")
+    assert p11.p10._fold_workers() == 6
 
 
 def test_fold_workers_refuses_a_value_that_is_not_a_positive_int(monkeypatch):
     for bad in ("0", "-2", "four", "2.5", ""):
-        monkeypatch.setenv(p11._WORKERS_ENV, bad)
+        monkeypatch.setenv(p11.p10._WORKERS_ENV, bad)
         try:
-            p11._fold_workers()
+            p11.p10._fold_workers()
         except ValueError as error:
-            assert p11._WORKERS_ENV in str(error)
+            assert p11.p10._WORKERS_ENV in str(error)
         else:  # pragma: no cover - the assertion below reports it
             raise AssertionError(f"{bad!r} was accepted")
 
 
-def test_the_worker_knob_is_never_graded_into_the_document_identity(monkeypatch):
-    source = _root() / "configs" / "run-p11-modelability.json"
-    monkeypatch.delenv(p11._WORKERS_ENV, raising=False)
-    serial = load_document(str(source)).hash
-    monkeypatch.setenv(p11._WORKERS_ENV, "8")
-    assert load_document(str(source)).hash == serial
+def test_the_worker_knob_is_never_graded_into_the_document_identity():
+    # The real claim: no stage declares it, so no width can move the
+    # hash that names the run directory and keys the stored artifacts.
+    raw = json.loads((_root() / "configs" / "run-p11-modelability.json").read_text())
+    for stage in raw["stages"].values():
+        assert "workers" not in stage["params"]
+    assert "workers" not in p11.Gate1Stage._PARAMS
+    assert "workers" not in p11.Gate3WalksStage._PARAMS
+    assert (
+        p11.Gate3WalksStage.validate_params({"seeds": list(range(19)), "workers": 4})
+        != []
+    )
 
 
 def test_gate3_walks_passes_the_machine_worker_count_to_every_bounded_walk(
     monkeypatch,
 ):
     monkeypatch.setattr(p11, "_ASSETS", ["A"])
-    monkeypatch.setenv(p11._WORKERS_ENV, "6")
+    monkeypatch.setenv(p11.p10._WORKERS_ENV, "6")
     walks = p11.Gate3WalksStage("gate3_walks", {"seeds": list(range(19))})
     seen = []
     monkeypatch.setattr(
@@ -269,7 +279,7 @@ def test_gate3_walks_passes_the_machine_worker_count_to_every_bounded_walk(
     monkeypatch.setattr(
         p11.p10,
         "_run_bounded_walk",
-        lambda _ctx, doc, tag, *, workers: seen.append(workers) or f"w-{tag}",
+        lambda _ctx, doc, tag: seen.append(p11.p10._fold_workers()) or f"w-{tag}",
     )
     walks.run(
         SimpleNamespace(),
@@ -283,7 +293,7 @@ def test_gate1_passes_the_machine_worker_count_to_every_bounded_walk(
 ):
     monkeypatch.setattr(p11, "_ASSETS", ["A"])
     monkeypatch.setattr(p11, "_HORIZONS", [1])
-    monkeypatch.setenv(p11._WORKERS_ENV, "3")
+    monkeypatch.setenv(p11.p10._WORKERS_ENV, "3")
     stage = p11.Gate1Stage(
         "gate1",
         {
@@ -301,7 +311,7 @@ def test_gate1_passes_the_machine_worker_count_to_every_bounded_walk(
     monkeypatch.setattr(
         p11.p10,
         "_run_bounded_walk",
-        lambda _ctx, doc, tag, *, workers: seen.append(workers) or "walk",
+        lambda _ctx, doc, tag: seen.append(p11.p10._fold_workers()) or "walk",
     )
     monkeypatch.setattr(
         p11,
@@ -325,3 +335,39 @@ def test_gate1_passes_the_machine_worker_count_to_every_bounded_walk(
     monkeypatch.setattr(p11, "AttemptRegistry", Registry)
     stage.run(SimpleNamespace(), {"preflight": True})
     assert seen == [3]
+
+
+def test_the_reference_tape_follows_the_configs_declared_residual(
+    tmp_path, monkeypatch
+):
+    # The kept tape must be derived from label_residual, not from a
+    # second copy of "SPY": editing the config would otherwise drop the
+    # reference and fail inside the fold subprocess, and only for the
+    # assets that are not themselves the residual.
+    monkeypatch.setattr(
+        p11.p10, "_feature_cache_info", lambda _ctx: ("./cache", "/cache", "a" * 64)
+    )
+    ctx = _context(tmp_path)
+    obj = ctx.document.to_obj()
+    obj["pipeline"]["scan"]["params"]["label_residual"] = "QQQ"
+    ctx.document = PipelineDocument.from_obj(obj)
+    document = p11._derived_document(ctx, "JPM", 3)
+    assert document.pipeline["reference_tape"].params["where"] == [
+        {"field": "symbol", "op": "in", "value": ["JPM", "QQQ"]}
+    ]
+
+
+def test_the_reference_tape_keeps_one_symbol_when_no_residual_is_declared(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        p11.p10, "_feature_cache_info", lambda _ctx: ("./cache", "/cache", "a" * 64)
+    )
+    ctx = _context(tmp_path)
+    obj = ctx.document.to_obj()
+    obj["pipeline"]["scan"]["params"].pop("label_residual")
+    ctx.document = PipelineDocument.from_obj(obj)
+    document = p11._derived_document(ctx, "JPM", 3)
+    assert document.pipeline["reference_tape"].params["where"] == [
+        {"field": "symbol", "op": "in", "value": ["JPM"]}
+    ]

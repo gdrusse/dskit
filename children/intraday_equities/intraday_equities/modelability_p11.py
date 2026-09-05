@@ -30,8 +30,6 @@ _ARCHITECTURE = "lgbm-tight-asset-local"
 _ASSETS = list(p10._ASSETS)
 _HORIZONS = [1, 2, 3, 5, 10, 20, 30, 60]
 _MEMORY_LIMIT = 17 * 1024**3
-#: The only tape a non-SPY label needs besides its own (the ADR-0059 residual).
-_LABEL_RESIDUAL = "SPY"
 
 
 def _check_params(params, allowed, *, assets=False, horizons=False, alpha=False):
@@ -53,43 +51,6 @@ def _check_params(params, allowed, *, assets=False, horizons=False, alpha=False)
     return problems
 
 
-#: How many of a walk's fold processes may run at once. Read from the
-#: PROCESS ENVIRONMENT, never from the document: fold count is a property
-#: of the machine, not of what the run computes, and a graded knob would
-#: move the identity hash — orphaning every prior run and stored artifact
-#: — each time the operator tuned it. The value used is journalled by
-#: :func:`~intraday_equities.modelability._run_bounded_walk`.
-_WORKERS_ENV = "INTRADAY_EQUITIES_FOLD_WORKERS"
-
-
-def _fold_workers():
-    """Return the fold-process width from the environment, default 1.
-
-    Returns
-    -------
-    int
-        The declared width, or 1 when the variable is UNSET — the
-        historical serial path. An empty value is a refusal, not a
-        default: ``export VAR=`` is an accident, and silently running
-        serially would hide it.
-
-    Raises
-    ------
-    ValueError
-        When the variable is set to anything but a positive integer.
-    """
-    raw = os.environ.get(_WORKERS_ENV)
-    if raw is None:
-        return 1
-    try:
-        width = int(raw)
-    except ValueError:
-        width = 0
-    if width < 1:
-        raise ValueError(f"{_WORKERS_ENV} must be a positive integer, got {raw!r}")
-    return width
-
-
 def _base_key(gate):
     """Return the attempt knobs shared by one P11 evidence block."""
     return {
@@ -102,9 +63,28 @@ def _base_key(gate):
     }
 
 
-def _tape_symbols(asset):
-    """Name the only tapes an asset-local walk reads: itself and its reference."""
-    return [asset] if asset == _LABEL_RESIDUAL else [asset, _LABEL_RESIDUAL]
+def _tape_symbols(asset, residual):
+    """Name the only tapes an asset-local walk reads.
+
+    Parameters
+    ----------
+    asset : str
+        The one symbol the walk fits and scores.
+    residual : str or None
+        The scan's declared ``label_residual`` reference symbol, read
+        from the document rather than restated here: a second copy of
+        ``"SPY"`` would silently drop the reference tape the moment the
+        config named a different one, and only for the assets that are
+        not themselves the residual.
+
+    Returns
+    -------
+    list of str
+        The asset, plus the residual when it is a different symbol.
+    """
+    if residual is None or residual == asset:
+        return [asset]
+    return [asset, residual]
 
 
 def _derived_document(ctx, asset, horizon, *, tag="gate1", scramble_seed=None):
@@ -151,7 +131,11 @@ def _derived_document(ctx, asset, horizon, *, tag="gate1", scramble_seed=None):
             "inputs": {"records": "$features.tape"},
             "params": {
                 "where": [
-                    {"field": "symbol", "op": "in", "value": _tape_symbols(asset)}
+                    {
+                        "field": "symbol",
+                        "op": "in",
+                        "value": _tape_symbols(asset, params.get("label_residual")),
+                    }
                 ]
             },
         },
@@ -311,7 +295,6 @@ class Gate1Stage(Stage):
                     ctx,
                     document,
                     f"p11-gate1-{asset.lower()}-h{horizon:02d}",
-                    workers=_fold_workers(),
                 )
                 skill = _score_one(summary, asset, horizon, self.params["alpha"])
                 key = {
@@ -404,7 +387,7 @@ class Gate3WalksStage(Stage):
                     ctx, asset, horizon, tag=tag, scramble_seed=seed
                 )
                 walks[f"{asset}:{horizon}:{seed}"] = p10._run_bounded_walk(
-                    ctx, document, tag, workers=_fold_workers()
+                    ctx, document, tag
                 )
         return {"walks": walks, "survivors": [row["asset"] for row in survivors]}
 

@@ -52,9 +52,7 @@ _MAX_GAP_MS = 5 * 60_000
 
 def _ms(day, minute):
     """Epoch ms of ``minute`` minutes past the open on session ``day``."""
-    return int(
-        (_OPEN + timedelta(days=day, minutes=minute)).timestamp() * 1000
-    )
+    return int((_OPEN + timedelta(days=day, minutes=minute)).timestamp() * 1000)
 
 
 def _tape(prices, days=1, minutes=_DAY_MINUTES):
@@ -76,8 +74,17 @@ def _internals(ms, close, volume):
     """Run the real column builder and hand back its tape internals."""
     out = {}
     columns = _session_feature_arrays(
-        ms, close, close, close, close, volume, 2, _MAX_GAP_MS, (),
-        [{"width": 2, "tag": "2m", "cross_session": False}], SESSION,
+        ms,
+        close,
+        close,
+        close,
+        close,
+        volume,
+        2,
+        _MAX_GAP_MS,
+        (),
+        [{"width": 2, "tag": "2m", "cross_session": False}],
+        SESSION,
         internals=out,
     )
     return columns, out
@@ -131,7 +138,9 @@ def test_each_block_can_be_selected_alone():
     # tod and bar share the two session-open returns; they emit once.
     assert len(block_causal_names(BLOCKS)) == 29 + 7 + 17
     assert block_fold_names(BLOCKS) == (
-        "tod_vol_now", "tod_mean_bucket", "vol_rel_5",
+        "tod_vol_now",
+        "tod_mean_bucket",
+        "vol_rel_5",
     )
 
 
@@ -148,7 +157,7 @@ def test_block_columns_land_after_the_existing_ones():
     before = _emit_feature_names(2, scales, ("SPY",), ("tech",))
     after = _emit_feature_names(2, scales, ("SPY",), ("tech",), (), ("tod",))
     assert after[: len(before)] == before
-    assert after[len(before):] == block_feature_names(("tod",))
+    assert after[len(before) :] == block_feature_names(("tod",))
 
 
 def test_fold_fitted_columns_are_zero_placeholders_here():
@@ -175,8 +184,16 @@ def test_the_open_and_the_close_no_longer_share_a_clock_value():
     )
     close = np.full(minutes, 100.0)
     columns = _session_feature_arrays(
-        ms, close, close, close, close, np.full(minutes, 1.0), 2,
-        _MAX_GAP_MS, (), [{"width": 2, "tag": "2m", "cross_session": False}],
+        ms,
+        close,
+        close,
+        close,
+        close,
+        np.full(minutes, 1.0),
+        2,
+        _MAX_GAP_MS,
+        (),
+        [{"width": 2, "tag": "2m", "cross_session": False}],
         SESSION,
     )
     assert columns["tod_sin"][0] == pytest.approx(0.0, abs=1e-12)
@@ -288,10 +305,12 @@ def test_vol_scaled_past_returns_by_hand():
     # Every finite one-minute return equals `step`, so the root mean
     # square over the window is `step` and a k-minute move is k*step.
     assert built["ret_5_z"][at] == pytest.approx(
-        5.0 * step / (step * math.sqrt(5.0)), rel=1e-6,
+        5.0 * step / (step * math.sqrt(5.0)),
+        rel=1e-6,
     )
     assert built["ret_15_z"][at] == pytest.approx(
-        15.0 * step / (step * math.sqrt(15.0)), rel=1e-6,
+        15.0 * step / (step * math.sqrt(15.0)),
+        rel=1e-6,
     )
     # Long and short windows see the same constant volatility.
     assert built["rv_ratio_30_390"][at] == pytest.approx(1.0, rel=1e-6)
@@ -330,7 +349,12 @@ def test_market_and_sector_lags_by_hand():
     market = market.copy()
     market[7] = 0.05
     built = _build(
-        ("cross",), ms, close, volume, market=market, sector=sector,
+        ("cross",),
+        ms,
+        close,
+        volume,
+        market=market,
+        sector=sector,
     )
     assert built["mkt_lag_1"][8] == pytest.approx(0.05)
     assert built["mkt_lag_2"][9] == pytest.approx(0.05)
@@ -345,12 +369,18 @@ def test_market_and_sector_lags_by_hand():
 def test_sector_residual_is_the_plain_difference():
     ms, close, volume, market, sector = _cross_fixture()
     built = _build(
-        ("cross",), ms, close, volume, market=market, sector=sector,
+        ("cross",),
+        ms,
+        close,
+        volume,
+        market=market,
+        sector=sector,
     )
     at = 10
     own = 5.0 * 0.001
     assert built["res_sec_cum_5"][at] == pytest.approx(
-        own - 5.0 * 0.0002, rel=1e-9,
+        own - 5.0 * 0.0002,
+        rel=1e-9,
     )
 
 
@@ -363,7 +393,12 @@ def test_market_residual_uses_the_trailing_beta():
     market = inner["ret1"].copy()  # the market IS this symbol's own move
     sector = np.zeros(_DAY_MINUTES)
     built = _build(
-        ("cross",), ms, close, volume, market=market, sector=sector,
+        ("cross",),
+        ms,
+        close,
+        volume,
+        market=market,
+        sector=sector,
     )
     # Identical series: beta is one and the residual is zero once the
     # beta window has filled.
@@ -398,7 +433,7 @@ def test_no_column_moves_when_only_the_future_changes(block):
     base = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.001, n)))
     tampered = base.copy()
     # Not a nudge: a different world after the cut.
-    tampered[cut + 1:] = base[cut + 1:] * np.exp(
+    tampered[cut + 1 :] = base[cut + 1 :] * np.exp(
         np.cumsum(rng.normal(0.05, 0.05, n - cut - 1))
     )
     ms, _, volume = _tape(list(base), days=days)
@@ -406,14 +441,23 @@ def test_no_column_moves_when_only_the_future_changes(block):
     sector = np.concatenate(([np.nan], rng.normal(0.0, 0.001, n - 1)))
     market_bad = market.copy()
     sector_bad = sector.copy()
-    market_bad[cut + 1:] = rng.normal(0.2, 0.2, n - cut - 1)
-    sector_bad[cut + 1:] = rng.normal(0.2, 0.2, n - cut - 1)
+    market_bad[cut + 1 :] = rng.normal(0.2, 0.2, n - cut - 1)
+    sector_bad[cut + 1 :] = rng.normal(0.2, 0.2, n - cut - 1)
     honest = _build(
-        (block,), ms, base, volume, market=market, sector=sector,
+        (block,),
+        ms,
+        base,
+        volume,
+        market=market,
+        sector=sector,
     )
     tampered_out = _build(
-        (block,), ms, tampered, volume,
-        market=market_bad, sector=sector_bad,
+        (block,),
+        ms,
+        tampered,
+        volume,
+        market=market_bad,
+        sector=sector_bad,
     )
     assert set(honest) == set(tampered_out)
     for name, values in honest.items():
@@ -431,13 +475,13 @@ def test_the_future_change_does_move_later_columns():
     cut = _DAY_MINUTES * 5 + 10
     base = np.asarray(_walk(n), dtype=np.float64)
     tampered = base.copy()
-    tampered[cut + 1:] += 50.0
+    tampered[cut + 1 :] += 50.0
     ms, _, volume = _tape(list(base), days=days)
     honest = _build(("bar",), ms, base, volume)
     other = _build(("bar",), ms, tampered, volume)
     assert not np.array_equal(
-        honest["ret_since_open"][cut + 1:],
-        other["ret_since_open"][cut + 1:],
+        honest["ret_since_open"][cut + 1 :],
+        other["ret_since_open"][cut + 1 :],
         equal_nan=True,
     )
 
@@ -467,12 +511,20 @@ def test_a_fold_statistic_does_not_move_when_validation_rows_change():
     scrambled_ret[~train] = rng.normal(0.0, 5.0, int((~train).sum()))
     scrambled_vol[~train] = rng.uniform(1e6, 2e6, int((~train).sum()))
     first = fit_fold_stats(
-        BLOCKS, minutes=minutes, bucket=bucket, ret=ret, volume=volume,
+        BLOCKS,
+        minutes=minutes,
+        bucket=bucket,
+        ret=ret,
+        volume=volume,
         train=train,
     )
     second = fit_fold_stats(
-        BLOCKS, minutes=minutes, bucket=bucket, ret=scrambled_ret,
-        volume=scrambled_vol, train=train,
+        BLOCKS,
+        minutes=minutes,
+        bucket=bucket,
+        ret=scrambled_ret,
+        volume=scrambled_vol,
+        train=train,
     )
     for key in ("tod_vol", "tod_mean", "vol_slot"):
         assert np.array_equal(first[key], second[key], equal_nan=True), (
@@ -489,7 +541,11 @@ def test_a_fold_statistic_is_not_fitted_on_the_whole_sample():
     volume = np.where(np.arange(n) < 100, 100.0, 1e6)
     train = np.arange(n) < 100
     fitted = fit_fold_stats(
-        BLOCKS, minutes=minutes, bucket=bucket, ret=ret, volume=volume,
+        BLOCKS,
+        minutes=minutes,
+        bucket=bucket,
+        ret=ret,
+        volume=volume,
         train=train,
     )
     # Training returns are a constant 0.001, so the per-slot spread is
@@ -497,7 +553,11 @@ def test_a_fold_statistic_is_not_fitted_on_the_whole_sample():
     assert float(np.nanmax(fitted["tod_vol"])) == pytest.approx(0.0, abs=1e-12)
     assert float(np.nanmax(fitted["vol_slot"])) == pytest.approx(100.0)
     applied = apply_fold_stats(
-        fitted, BLOCKS, minutes=minutes, bucket=bucket, volume=volume,
+        fitted,
+        BLOCKS,
+        minutes=minutes,
+        bucket=bucket,
+        volume=volume,
     )
     # The validation half is DIVIDED by the training norm, so it reads
     # far above it rather than being normalised away.
@@ -512,8 +572,13 @@ def test_fold_statistics_by_hand():
     volume = np.asarray([10.0, 30.0, 30.0, 90.0, 1.0, 1.0])
     train = np.asarray([True, True, True, True, False, False])
     fitted = fit_fold_stats(
-        ("tod", "bar"), minutes=minutes, bucket=bucket, ret=ret,
-        volume=volume, train=train, smooth=1,
+        ("tod", "bar"),
+        minutes=minutes,
+        bucket=bucket,
+        ret=ret,
+        volume=volume,
+        train=train,
+        smooth=1,
     )
     # Slot 0 holds +0.02 and -0.02: mean 0, root mean square 0.02.
     assert fitted["tod_vol"][0] == pytest.approx(0.02)
@@ -524,7 +589,10 @@ def test_fold_statistics_by_hand():
     assert fitted["vol_slot"][0] == pytest.approx(20.0)
     assert fitted["vol_slot"][1] == pytest.approx(60.0)
     applied = apply_fold_stats(
-        fitted, ("tod", "bar"), minutes=minutes, bucket=bucket,
+        fitted,
+        ("tod", "bar"),
+        minutes=minutes,
+        bucket=bucket,
         volume=volume,
     )
     assert applied["vol_rel_5"][0] == pytest.approx(math.log(10.0 / 20.0))
@@ -543,15 +611,17 @@ def _bar_rows(symbol, prices, days=1, minutes=_DAY_MINUTES):
     for day in range(days):
         for minute in range(minutes):
             price = prices[i]
-            rows.append({
-                "symbol": symbol,
-                "asof_ms": _ms(day, minute),
-                "open": price,
-                "high": price,
-                "low": price,
-                "close": price,
-                "volume": 100.0 + minute,
-            })
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "asof_ms": _ms(day, minute),
+                    "open": price,
+                    "high": price,
+                    "low": price,
+                    "close": price,
+                    "volume": 100.0 + minute,
+                }
+            )
             i += 1
     return rows
 
@@ -575,8 +645,13 @@ def _blocks_spec():
             {"width": 5, "tag": "5m", "cross_session": True},
         ],
         "horizon": {
-            "lead_start": 1, "lead_step": 1, "lead_stop": 2,
-            "anchors": [2], "top_k": 1, "se_mult": 2.0, "band_leads": 2,
+            "lead_start": 1,
+            "lead_step": 1,
+            "lead_stop": 2,
+            "anchors": [2],
+            "top_k": 1,
+            "se_mult": 2.0,
+            "band_leads": 2,
         },
     }
 
@@ -592,7 +667,8 @@ def _feature_frames(tmp_path, blocks):
         path = 100.0 * np.exp(np.cumsum(rng.normal(drift, 0.001, n)))
         records.extend(_bar_rows(symbol, list(path), days=days))
     node = SessionFeatureRows(
-        "features", {"layout": "columns", "feature_blocks": list(blocks)},
+        "features",
+        {"layout": "columns", "feature_blocks": list(blocks)},
     )
     ctx = NodeContext(name="t", asof="2026-01-08", run_dir=str(tmp_path))
     assert node.validate_inputs({"records": records, "spec": spec}) == []
@@ -620,11 +696,14 @@ def test_the_fold_node_fills_the_placeholders_from_training_rows(tmp_path):
     fold_start = len(frame["names"]) - 3
     assert not frame["X"][:, fold_start:].any()
     ctx = NodeContext(name="t", asof="2026-01-08", run_dir=str(tmp_path))
-    node = FoldFeatureStats("foldstats", {
-        "blocks": list(BLOCKS),
-        "train_end_ms": _ms(0, _DAY_MINUTES - 1),
-        "volume_column": "vol_5m",
-    })
+    node = FoldFeatureStats(
+        "foldstats",
+        {
+            "blocks": list(BLOCKS),
+            "train_end_ms": _ms(0, _DAY_MINUTES - 1),
+            "volume_column": "vol_5m",
+        },
+    )
     assert node.validate_inputs({"records": frames}) == []
     node.run(ctx, {"records": frames})
     filled = frame["X"][:, fold_start:]
@@ -640,10 +719,13 @@ def test_the_fold_node_fills_the_placeholders_from_training_rows(tmp_path):
 def test_the_fold_node_refuses_a_frame_it_was_not_built_for(tmp_path):
     frames, _ = _feature_frames(tmp_path, ("tod",))
     ctx = NodeContext(name="t", asof="2026-01-08", run_dir=str(tmp_path))
-    node = FoldFeatureStats("foldstats", {
-        "blocks": ["tod", "bar"],
-        "train_end_ms": _ms(0, 5),
-    })
+    node = FoldFeatureStats(
+        "foldstats",
+        {
+            "blocks": ["tod", "bar"],
+            "train_end_ms": _ms(0, 5),
+        },
+    )
     with pytest.raises(ValueError, match="feature_blocks"):
         node.run(ctx, {"records": frames})
 
@@ -657,7 +739,8 @@ def test_the_fold_node_reads_only_the_training_window(tmp_path):
     index = {name: i for i, name in enumerate(frame["names"])}
     stamps = np.asarray(frame["asof_ms"], dtype=np.int64)
     node = FoldFeatureStats(
-        "foldstats", {"blocks": ["tod"], "train_end_ms": train_end},
+        "foldstats",
+        {"blocks": ["tod"], "train_end_ms": train_end},
     )
     node.run(ctx, {"records": frames})
     honest = frame["X"][:, -2:].copy()
@@ -675,7 +758,8 @@ def test_the_universe_refuses_cross_wiring_it_cannot_honour(tmp_path):
     spec = _blocks_spec()
     del spec["sector_etf"]
     node = SessionFeatureRows(
-        "features", {"layout": "columns", "feature_blocks": ["cross"]},
+        "features",
+        {"layout": "columns", "feature_blocks": ["cross"]},
     )
     problems = node.validate_inputs({"records": [], "spec": spec})
     assert any("sector_etf" in problem for problem in problems)

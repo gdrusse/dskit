@@ -34,10 +34,13 @@ def _read(conn, config, streams, state=None, mode="backfill"):
     return msgs
 
 
-@pytest.mark.parametrize("cls,name", [
-    (AlpacaBars, "source-alpaca-backfill.json"),
-    (SchwabBars, "source-schwab-live.json"),
-])
+@pytest.mark.parametrize(
+    "cls,name",
+    [
+        (AlpacaBars, "source-alpaca-backfill.json"),
+        (SchwabBars, "source-schwab-live.json"),
+    ],
+)
 def test_shipped_sources_pass_the_spec_gate(cls, name):
     check_config(cls(), _load(name))
     with pytest.raises(AssetError, match="unknown key"):
@@ -76,10 +79,14 @@ def test_schwab_stub_emits_closed_bars_without_oauth():
 def test_unknown_stream_is_named():
     conn = StubAlpacaBars()
     with pytest.raises(AssetError, match="unknown stream"):
-        list(conn.read(
-            {"symbols": ["AAPL"], "start": "2026-01-05T14:30:00+00:00"},
-            ["ghost"], {}, "backfill",
-        ))
+        list(
+            conn.read(
+                {"symbols": ["AAPL"], "start": "2026-01-05T14:30:00+00:00"},
+                ["ghost"],
+                {},
+                "backfill",
+            )
+        )
 
 
 def test_acquisition_and_suite_end_to_end(tmp_path):
@@ -91,12 +98,16 @@ def test_acquisition_and_suite_end_to_end(tmp_path):
         "bars_per_symbol": 4,
         "symbols": ["AAPL", "JPM", "XOM", "WMT", "LLY", "SPY"],
     }
-    vid = registry.register("source_config", {
-        "name": "alpaca-sip",
-        "catalog_source": "alpaca-sip-source",
-        "connector": "intraday_equities.testing:StubAlpacaBars",
-        "config": config,
-    }, origin="test")
+    vid = registry.register(
+        "source_config",
+        {
+            "name": "alpaca-sip",
+            "catalog_source": "alpaca-sip-source",
+            "connector": "intraday_equities.testing:StubAlpacaBars",
+            "config": config,
+        },
+        origin="test",
+    )
     registry.transition(vid, "active", origin="test")
     out = run_acquisition(root, registry, "alpaca-sip", "bars", "backfill")
     assert out["records"] > 0
