@@ -333,6 +333,39 @@ def test_gate3_walks_refuse_a_survivor_whose_selected_cell_was_never_scored(
     assert documents == []
 
 
+def test_gate3_walks_refuse_the_whole_cohort_before_the_first_asset_is_audited(
+    monkeypatch,
+):
+    # The cell check covers ALL survivors before ANY of them is audited:
+    # B's unscored selection refuses A too, and A's nulls come first.
+    # Checking each survivor inside the loop instead would burn A's whole
+    # 19-walk family before it ever read B's row.
+    documents, gate1, cells = _gate3_two_survivors(monkeypatch)
+    cells = [cell for cell in cells if cell["asset"] == "A"]
+    spawned = []
+    monkeypatch.setattr(
+        p11.p10,
+        "_run_bounded_walk",
+        lambda _ctx, doc, _tag, **_kw: (
+            spawned.append((doc.asset, doc.seed))
+            or f"walk-{doc.asset}-{doc.horizon}-{doc.seed}"
+        ),
+    )
+    monkeypatch.setattr(
+        p11, "_score_one", _null_scores({seed: -1.0 for seed in range(19)})
+    )
+    walks = p11.Gate3WalksStage("gate3_walks", {"seeds": list(range(19)), "alpha": 0.05})
+    try:
+        walks.run(SimpleNamespace(), {"gate1": gate1, "gate1_cells": cells})
+    except ValueError as error:
+        assert "('B', 5)" in str(error)
+    else:  # pragma: no cover - the assertion below reports it
+        raise AssertionError("an unscored selection was audited")
+    # A is the scored, auditable survivor and it still never runs.
+    assert documents == []
+    assert spawned == []
+
+
 def test_gate3_walks_require_the_observed_cells_and_a_level():
     stage = p11.Gate3WalksStage("gate3_walks", {"seeds": list(range(19)), "alpha": 0.05})
     assert stage.validate_inputs({"gate1": []}) != []
@@ -531,6 +564,68 @@ def test_gate3_result_refuses_a_draw_record_that_is_not_the_three_fields(monkeyp
             assert needle in str(error)
         else:  # pragma: no cover - the assertion below reports it
             raise AssertionError(f"{draw!r} was decided")
+
+
+def test_gate3_result_refuses_a_stop_record_whose_n_draws_denies_the_stop_seed(
+    monkeypatch,
+):
+    # The audit runs the seeds in order, so a stop on seed 2 is the third
+    # draw and nothing else. Taking n_draws=19 there would publish the
+    # completed family's bound 2/20 for an audit that ran three draws.
+    _documents, gate1, cells = _gate3_harness(monkeypatch)
+    monkeypatch.setattr(
+        p11, "_score_one", lambda *_a: (_ for _ in ()).throw(AssertionError("scored"))
+    )
+    draw = {"stopped": True, "stop_seed": 2, "n_draws": 19}
+    try:
+        _result_stage().run(
+            SimpleNamespace(),
+            {"gate1": gate1, "gate1_cells": cells, "walks": {}, "draws": {"A": draw}},
+        )
+    except ValueError as error:
+        assert "n_draws" in str(error) and "stop_seed" in str(error)
+    else:  # pragma: no cover - the assertion below reports it
+        raise AssertionError("a stop record that denies its own seed was decided")
+    problems = p11._draw_problems("A", draw, list(range(19)))
+    assert len(problems) == 1 and "n_draws=19" in problems[0]
+    assert p11._draw_problems("A", {**draw, "n_draws": 3}, list(range(19))) == []
+
+
+def test_gate3_result_refuses_the_whole_cohort_before_the_first_row_is_decided(
+    monkeypatch,
+):
+    # The stop records are checked over ALL survivors before ANY row is
+    # decided: B's short family refuses A too, and A's row comes first.
+    # Checking each row inside the loop instead would re-score A's 19
+    # walks and file its tier-2 verdict before it ever read B's record.
+    _documents, gate1, cells = _gate3_two_survivors(monkeypatch)
+    scored = []
+    verdicts = []
+    monkeypatch.setattr(
+        p11,
+        "_score_one",
+        lambda summary, *_a: scored.append(summary) or {"r2oos": 0.0, "t_pool": 0.0},
+    )
+    monkeypatch.setattr(
+        p11, "tier2_verdict", lambda *args: verdicts.append(args) or {"passes": True}
+    )
+    walks = {f"A:2:{seed}": f"walk-A-2-{seed}" for seed in range(19)}
+    draws = {
+        "A": {"stopped": False, "stop_seed": None, "n_draws": 19},
+        "B": {"stopped": False, "stop_seed": None, "n_draws": 18},
+    }
+    try:
+        _result_stage().run(
+            SimpleNamespace(),
+            {"gate1": gate1, "gate1_cells": cells, "walks": walks, "draws": draws},
+        )
+    except ValueError as error:
+        assert "B did not stop" in str(error) and "n_draws" in str(error)
+    else:  # pragma: no cover - the assertion below reports it
+        raise AssertionError("a short family was scored")
+    # A is the well-formed, decidable survivor and it still never runs.
+    assert scored == []
+    assert verdicts == []
 
 
 def test_gate3_result_requires_the_draws_record(monkeypatch):

@@ -351,25 +351,11 @@ def _observed_skill(cells):
 
 
 def _stopped_row(draw):
-    """Emit the ADR-0092 fields of an asset whose audit stopped early.
-
-    Parameters
-    ----------
-    draw : dict
-        The walks stage's ``{stopped, stop_seed, n_draws}`` record, already
-        checked field by field by :func:`_draw_problems`.
-
-    Returns
-    -------
-    dict
-        A failed Gate-3 verdict carrying ``stopped``, ``stop_seed``,
-        ``n_draws`` and the Besag–Clifford bound ``p_bound =
-        2 / (n_draws + 1)`` at the top level of the row. ``null_mean``
-        and ``null_sd`` are null and ``calibration`` reads
-        ``not_computed_early_stop`` because the family was never
-        completed; there is no ``gate3`` block because
-        :func:`~dskit.pipeline.attempts.tier2_verdict` never ran.
-    """
+    """Emit the ADR-0092 fields of an asset whose audit stopped early."""
+    # The record's three fields were already checked by _draw_problems.
+    # null_mean, null_sd and calibration say nothing was computed and there
+    # is no "gate3" block, because the family was never completed and
+    # tier2_verdict never ran: the Besag–Clifford bound stands in its place.
     n_draws = draw["n_draws"]
     return {
         "gate3_status": "fail",
@@ -397,6 +383,16 @@ def _draw_problems(asset, draw, seeds):
         problems.append(f"{asset} n_draws={n_draws!r} is not a positive int")
     if stopped is True and (isinstance(stop_seed, bool) or stop_seed not in seeds):
         problems.append(f"{asset} stop_seed={stop_seed!r} is not one of the seeds")
+    if (
+        stopped is True
+        and not isinstance(stop_seed, bool)
+        and stop_seed in seeds
+        and n_draws != seeds.index(stop_seed) + 1
+    ):
+        problems.append(
+            f"{asset} stopped at stop_seed={stop_seed!r} but n_draws={n_draws!r} "
+            f"is not the {seeds.index(stop_seed) + 1} seeds run in order before it"
+        )
     if stopped is False and stop_seed is not None:
         problems.append(f"{asset} stop_seed={stop_seed!r} but the audit completed")
     if stopped is False and n_draws != len(seeds):
