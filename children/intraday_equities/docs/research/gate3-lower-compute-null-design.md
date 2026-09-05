@@ -118,7 +118,7 @@ corroborate that at their larger pooled size, 19.27 s/fold for Gate 1 against
 | Path | Walks for 13 Gate-1 names | Measured cost |
 | --- | --- | --- |
 | Current: all 19 seeds, then judge | 247 | ~4.7 h |
-| Fail-fast: stop at first beating null | `H_19 = 3.55` expected on a failure | ~1.2 h if 12 of 13 fail |
+| Fail-fast: stop at first beating null | `E[draws \| fail] = 2.73` | ~52 walks, ~1.0 h if 12 of 13 fail |
 | Passer | still 19 | unchanged |
 | Score bootstrap only | cheap | **wrong question** |
 
