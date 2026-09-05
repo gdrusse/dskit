@@ -1,0 +1,346 @@
+{
+  "name": "yourproject-serve-sample",
+  "series_id": "018f0f4e-7b21-7d3a-9c31-6d8f36d806a1",
+  "rung": "shadow",
+  "notes": "The child's serve document: run-sample.json's run, served forward at the shadow rung. Shadow decides for real and sends nothing, which is why it is where every child starts. Promote by changing `rung` and supplying the tier-3 seams the higher rungs require (execution.py, accounting.py, approvals.py, coordination.py) \u2014 never by adding a flag. tests/test_production.py proves this document validates and that every live-capable template stays fail-closed.",
+  "serving": {
+    "run_dir": "pipeline_runs/yourproject-sample-run-2026-01-01-REPLACE",
+    "adapter": "yourproject",
+    "entry": {
+      "node": "sample",
+      "param": "since_ms",
+      "window_ms": 86400000
+    },
+    "heads": [
+      "enrich"
+    ],
+    "required_universe": "configs/universe-serve.json",
+    "proposer": {
+      "uses": "intent-rows",
+      "params": {
+        "output": "records",
+        "fields": {
+          "instrument": "id",
+          "side": "side",
+          "qty": "derived"
+        }
+      },
+      "notes": "The head's rows are already proposal-shaped; the field map is the whole adapter."
+    },
+    "replay": {
+      "gate": "recorded",
+      "stat_test": "recorded"
+    },
+    "max_artifact_age": "P30D",
+    "notes": "run_dir is a placeholder: run configs/run-sample.json once, then point this at the directory it wrote. The entry node's `since_ms` param must already exist in that run document \u2014 serving may override an existing param, never invent one."
+  },
+  "feed": {
+    "uses": "entry-source",
+    "params": {
+      "pull": "acquire"
+    }
+  },
+  "schedule": {
+    "clock": {
+      "uses": "wall"
+    },
+    "calendar": {
+      "uses": "weekly-sessions",
+      "params": {
+        "tz": "America/New_York",
+        "sessions": [
+          {
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "open": "09:30",
+            "close": "16:00"
+          }
+        ],
+        "holidays": [
+          "2026-11-26"
+        ],
+        "after_open_s": 60,
+        "before_close_s": 120
+      }
+    },
+    "cadence": {
+      "uses": "aligned-bar",
+      "params": {
+        "bar_ms": 60000,
+        "publish_delay_ms": 5000
+      }
+    },
+    "overrun": {
+      "policy": "coalesce",
+      "max_lag_ms": 30000
+    },
+    "dead_after_ms": 600000,
+    "max_staleness_ms": 120000,
+    "max_quote_age_ms": 30000,
+    "max_venue_skew_ms": 1000
+  },
+  "guards": {
+    "size": {
+      "uses": "limit",
+      "params": {
+        "measure": "quantity",
+        "bound": {
+          "max": "100"
+        },
+        "on_breach": "refuse"
+      }
+    },
+    "exposure": {
+      "uses": "limit",
+      "params": {
+        "measure": "exposure_after",
+        "scope": "aggregate",
+        "include_working": true,
+        "bound": {
+          "max": "20000"
+        },
+        "warn_at": 0.8,
+        "on_breach": "refuse"
+      }
+    },
+    "day_loss": {
+      "uses": "limit",
+      "params": {
+        "measure": "pnl",
+        "window": {
+          "calendar": "session"
+        },
+        "bound": {
+          "min": "-500"
+        },
+        "on_breach": "halt"
+      }
+    },
+    "stale": {
+      "uses": "limit",
+      "params": {
+        "measure": "input_age_ms",
+        "bound": {
+          "max": 30000
+        },
+        "on_breach": "refuse"
+      }
+    },
+    "sane": {
+      "uses": "range",
+      "params": {
+        "field": "confidence",
+        "min": 0,
+        "max": 1,
+        "nan": "refuse"
+      }
+    }
+  },
+  "execution": {
+    "uses": "shadow",
+    "params": {},
+    "submit_timeout_ms": 5000,
+    "on_halt": {
+      "cancel_open": true
+    },
+    "notes": "Shadow: submit returns not_sent and no socket is opened."
+  },
+  "accounting": {
+    "uses": "paper",
+    "params": {},
+    "max_valuation_age_ms": 60000
+  },
+  "arming": {
+    "max_duration_s": 14400,
+    "approval": {
+      "uses": "deny-all",
+      "params": {}
+    }
+  },
+  "coordination": {
+    "scope": {
+      "venue": "paper",
+      "account": "strategy-a"
+    },
+    "lease": {
+      "uses": "process",
+      "params": {}
+    },
+    "ttl_ms": 30000,
+    "renew_every_ms": 10000,
+    "renew_timeout_ms": 2000
+  },
+  "reconcile": {
+    "on_start": true,
+    "every_s": 300,
+    "on_mismatch": "halt",
+    "lookback_ms": 86400000
+  },
+  "monitors": {
+    "pred_shift": {
+      "uses": "psi",
+      "params": {
+        "field": "prediction",
+        "bins": 10,
+        "reference": {
+          "uses": "leading",
+          "params": {
+            "n": 500
+          }
+        },
+        "window": {
+          "kind": "count",
+          "n": 300
+        },
+        "threshold": {
+          "kind": "alpha",
+          "alpha": 0.01
+        },
+        "response": "warn"
+      }
+    },
+    "coverage": {
+      "uses": "coverage",
+      "params": {
+        "window": {
+          "kind": "count",
+          "n": 50
+        },
+        "threshold": {
+          "kind": "constant",
+          "min": 0.5
+        },
+        "response": "warn"
+      }
+    }
+  },
+  "health": {
+    "failure_threshold": 3,
+    "success_threshold": 1,
+    "timeout_s": 1.0,
+    "probes": {
+      "disk": {
+        "uses": "ledger-writable"
+      },
+      "venue": {
+        "uses": "executor-check",
+        "scope": "dependency"
+      }
+    }
+  },
+  "durability": {
+    "fsync": "every"
+  },
+  "resilience": {
+    "retry": {
+      "max_attempts": 3,
+      "base_s": 0.05,
+      "throttle_base_s": 1.0,
+      "cap_s": 20.0,
+      "jitter": "full",
+      "retry_after": "honor",
+      "retry_writes": "idempotent_only",
+      "budget": {
+        "capacity": 500,
+        "transient_cost": 14,
+        "throttle_cost": 5,
+        "refund": 1
+      }
+    },
+    "breaker": {
+      "min_calls": 5,
+      "failure_rate": 0.5,
+      "open_s": 30
+    },
+    "limiter": {
+      "submit": {
+        "rate_per_s": 5,
+        "burst": 5,
+        "max_in_flight": 1
+      },
+      "cancel": {
+        "rate_per_s": 10,
+        "burst": 10,
+        "reserved": true
+      }
+    },
+    "transport": {
+      "uses": "urllib",
+      "params": {
+        "connect_s": 2.0,
+        "read_s": 5.0
+      }
+    }
+  },
+  "lifecycle": {
+    "cooling_off_s": 900,
+    "shutdown_grace_s": 30
+  },
+  "readiness": {
+    "checklist": "configs/readiness.json",
+    "waivers": [],
+    "valid_for_s": 86400
+  },
+  "heartbeat": {
+    "every_s": 60,
+    "in_degraded": false,
+    "emitters": {
+      "file": {
+        "uses": "file"
+      }
+    }
+  },
+  "alerting": {
+    "sinks": {
+      "ops": {
+        "uses": "webhook"
+      }
+    },
+    "routes": [
+      {
+        "severity": "critical",
+        "sinks": [
+          "ops"
+        ]
+      },
+      {
+        "severity": "warning",
+        "sinks": [
+          "ops"
+        ]
+      }
+    ],
+    "group_wait_s": 30,
+    "repeat_interval_s": 14400,
+    "rate_limit": {
+      "max_per_hour": 20,
+      "burst": 5
+    }
+  },
+  "alert_endpoints": {
+    "ops": {
+      "url_env": "OPS_WEBHOOK_URL",
+      "template": "slack",
+      "timeout_s": 5
+    }
+  },
+  "placement": {
+    "ledger_root": "./serve",
+    "rotate": {
+      "by": "day"
+    },
+    "log_dir": "./serve/logs",
+    "notes": "Excluded from identity: moving storage is not a new decision process."
+  },
+  "env": {
+    "env_file": ".env",
+    "require": [
+      "OPS_WEBHOOK_URL"
+    ]
+  }
+}
