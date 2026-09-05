@@ -434,7 +434,7 @@ class _Carry:
         self._data = None
 
     def outputs(self, key):
-        """The recorded outputs carried for ``key``, or None when the run carried none."""
+        """Return the recorded outputs carried for ``key``, or None when the run carried none."""
         if self._data is None:
             data = _read_json(self._path)
             if not isinstance(data, dict):
@@ -769,7 +769,7 @@ class ServingExecutionPolicy(ExecutionPolicy):
         return None if make is None else make(self, key)
 
     def _release_reader(self, key):
-        """A reader scoped to this node's own manifest prefix."""
+        """Make a reader scoped to this node's own manifest prefix."""
         prefix = artifact_prefix(key)
         allowed = [name for name in self._release.artifacts if name.startswith(prefix)]
         return ReleaseReader(self._release, allowed, self._root, prefix=prefix)
@@ -978,7 +978,7 @@ class Decider:
             raise ProductionError(problems + exc.problems) from exc
 
     def _evidence(self, key, the_plan):
-        """What the release verified about one node: its mode, pin and whether the pin is bound."""
+        """Collect what the release verified about one node: its mode, pin and whether the pin is bound."""
         spec = the_plan.document.expanded[key]
         prefix = artifact_prefix(key)
         return {
@@ -1029,7 +1029,7 @@ class Decider:
         return problems
 
     def _window_problems(self, spec, cls):
-        """The window param must be a knob of the entry class AND already exist in the run document."""
+        """Check the window param is a knob of the entry class AND already exists in the run document."""
         problems, param = [], self._param
         declared = getattr(cls, "_PARAMS", None)
         if declared is not None and param.split(".")[0] not in declared:
@@ -1049,7 +1049,7 @@ class Decider:
         return problems
 
     def _binding(self, the_plan, evidence, problems):
-        """The entry's contract and the release's feed spec, which must bind that same contract."""
+        """Return the entry's contract and the release's feed spec, which must bind that same contract."""
         try:
             spec = FeedSpec.from_obj(self._release.feed_spec)
         except ProductionError as exc:
@@ -1196,7 +1196,7 @@ def _field(row, name):
 
 
 def _row_obj(row):
-    """A row as JSON-shaped data: a mapping as is, a dataclass by its fields."""
+    """Render a row as JSON-shaped data: a mapping as is, a dataclass by its fields."""
     if isinstance(row, dict):
         return dict(row)
     if is_dataclass(row) and not isinstance(row, type):
@@ -1217,7 +1217,7 @@ def _head_items(head_outputs):
 
 
 def _money(value, name):
-    """A money field as a Decimal; float via its shortest repr; bool and non-numbers refuse."""
+    """Read a money field as a Decimal; float via its shortest repr; bool and non-numbers refuse."""
     if isinstance(value, Decimal):
         return value
     if isinstance(value, bool) or value is _ABSENT:
@@ -1233,19 +1233,19 @@ def _money(value, name):
 
 
 def _money_or_none(value, name):
-    """A nullable money field."""
+    """Read a nullable money field."""
     return None if value is None else _money(value, name)
 
 
 def _ratio(value, name):
-    """A dimensionless field as a float; anything but a finite number refuses."""
+    """Read a dimensionless field as a float; anything but a finite number refuses."""
     if not number_ok(value):
         raise ProductionError([f"{name} must be a finite number, got {value!r}"])
     return float(value)
 
 
 def _instant(value, name):
-    """An epoch-ms field as an int."""
+    """Read an epoch-ms field as an int."""
     problems = []
     check_int_param(problems, name, value, ge=0)
     if problems:
@@ -1254,7 +1254,7 @@ def _instant(value, name):
 
 
 def _text(value, name):
-    """A non-empty string field."""
+    """Read a non-empty string field."""
     problems = []
     _check_str(problems, name, value)
     if problems:
@@ -1263,7 +1263,7 @@ def _text(value, name):
 
 
 def _quote_of(row):
-    """A Quote from a MarketRecord-shaped row, or None when the row carries no full market."""
+    """Build a Quote from a MarketRecord-shaped row, or None when the row carries no full market."""
     instrument, asof = _field(row, "instrument"), _field(row, "asof_ms")
     prices = [_field(row, name) for name in ("bid", "ask", "mid")]
     if not isinstance(instrument, str) or not instrument or not all(price_ok(p) for p in prices):
@@ -1463,7 +1463,7 @@ class _RowProposer(Proposer):
         self._map = dict(params["fields"])
 
     def _tif(self):
-        """The time-in-force an unmapped proposal carries."""
+        """Answer the time-in-force an unmapped proposal carries."""
         return DEFAULT_TIF
 
     @abstractmethod
@@ -1472,7 +1472,7 @@ class _RowProposer(Proposer):
         raise NotImplementedError
 
     def _value(self, row, name):
-        """The row field ``name`` maps to; an unmapped name or an absent field refuses."""
+        """Read the row field ``name`` maps to; an unmapped name or an absent field refuses."""
         source = self._map.get(name)
         if source is None:
             raise ProductionError([f"fields does not map {name!r}"])
@@ -1482,7 +1482,7 @@ class _RowProposer(Proposer):
         return value
 
     def _scope_keys(self, row, instrument):
-        """The candidate's scope keys: mapped, else the instrument alone."""
+        """Derive the candidate's scope keys: mapped, else the instrument alone."""
         if "scope_keys" not in self._map:
             return (instrument,)
         keys = self._value(row, "scope_keys")
@@ -1582,7 +1582,7 @@ class _RowProposer(Proposer):
         return out
 
     def _mapped(self, row):
-        """The carried (non-sizing) mapped fields, read from the row."""
+        """Read the carried (non-sizing) mapped fields from the row."""
         return {name: self._value(row, name) for name in self._map if name not in self._SIZED}
 
     def _proposal(self, candidate, row, state, provenance):
@@ -1666,11 +1666,11 @@ class IntentRows(_RowProposer):
         self._default_tif = params.get("default_tif", DEFAULT_TIF)
 
     def _tif(self):
-        """The configured default time-in-force."""
+        """Answer the configured default time-in-force."""
         return self._default_tif
 
     def _size(self, row, state, instrument):
-        """The row's own side and qty; a sided row without a qty refuses (R10)."""
+        """Take the row's own side and qty; a sided row without a qty refuses (R10)."""
         side = _text(self._value(row, "side"), "side")
         if side not in SIDES:
             raise ProductionError([f"side must be one of {list(SIDES)}, got {side!r}"])

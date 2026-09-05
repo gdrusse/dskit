@@ -597,12 +597,12 @@ class _IsoStamps:
 
     @staticmethod
     def scan_args(recipe, ts_out, since_ms):
-        """The scan keywords: derive ``ts_out`` from ``ts_field``, drop rows before ``since_ms``."""
+        """Build the scan keywords: derive ``ts_out`` from ``ts_field``, drop rows before ``since_ms``."""
         return {"ts_field": recipe.get("ts_field"), "ts_out": ts_out, "since_ms": since_ms}
 
     @staticmethod
     def stamp(record, recipe, ts_out):
-        """The row's instant: the derived field."""
+        """Read the row's instant from the derived field."""
         return record.get(ts_out)
 
 
@@ -611,12 +611,12 @@ class _MsStamps:
 
     @staticmethod
     def scan_args(recipe, ts_out, since_ms):
-        """The scan keywords: nothing derived."""
+        """Build the scan keywords: nothing derived."""
         return {}
 
     @staticmethod
     def stamp(record, recipe, ts_out):
-        """The row's instant: the declared field, as it is."""
+        """Read the row's instant from the declared field, as it is."""
         return record.get(recipe.get("ts_field"))
 
 
