@@ -273,6 +273,19 @@ class TestOutputsInPlace:
         assert base["a"] == {"y": 1.0}
         assert base["mid"] == {"x": 1}
 
+    def test_a_reference_this_pass_cannot_answer_reads_the_base_pass(self, graph):
+        # The clean-node rule: `outputs` holds only what THIS pass wrote,
+        # so `mid`'s `$src.x` resolves against the base the runner was
+        # constructed over — a clean node is read, never re-run.
+        the_plan, ctx, needed, base = graph
+        runner = a_runner(the_plan, needed, base)
+        outputs = {}
+        got, ran, _seconds = runner.run_keys(["mid", "a"], outputs, ctx, {})
+        assert ran == ("mid", "a")
+        assert got["mid"] == {"x": 1}
+        assert "src" not in got
+        assert base["src"] == {"x": 1}
+
     def test_the_documents_params_are_never_mutated(self, graph):
         the_plan, ctx, needed, base = graph
         runner = a_runner(the_plan, needed, base)

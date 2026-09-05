@@ -33,7 +33,7 @@ import pytest
 from dskit.production import state as state_module
 from dskit.production import vocab
 from dskit.production.base import ProductionError, canonical_bytes, canonical_hash
-from dskit.production.records import Fill
+from dskit.production.records import DecisionPlan, Fill
 from dskit.production.state import (
     DEFAULT_MAX_HISTORY,
     PositionBook,
@@ -462,6 +462,40 @@ def decision_plan_body(plan_id="plan-1", result="submit"):
         "risk_state_digest": DIGEST_RISK,
         "result": result,
     }
+
+
+def real_decision_plan(plan_id="plan-1", result="submit"):
+    """A canonical `records.DecisionPlan` — the record `leg.py` will append.
+
+    The hand-written `decision_plan_body` above is deliberately loose (the
+    fold reads bodies tolerantly). This one is the REAL value object, so a
+    test can compare the digest the fold records against the record's own.
+    """
+    proposal = {
+        "id": "cand-1", "instrument": "AAA", "side": "buy", "qty": "10",
+        "notional": None, "limit": "100", "tif": "gtc",
+        "expires_ms": BASE_MS + 60_000, "reference_price": "100",
+        "exposure": "1000", "direction": "long", "confidence": 0.5,
+        "prediction": 0.01, "baseline": 0.0, "expected_value": 5.0,
+        "inputs_asof_ms": BASE_MS, "inputs_digest": DIGEST_INPUTS,
+        "coverage_digest": DIGEST_COVERAGE, "quote_asof_ms": BASE_MS,
+        "quote_digest": DIGEST_QUOTE, "extra": {},
+    }
+    return DecisionPlan.from_obj({
+        "plan_id": plan_id,
+        "inputs_asof_ms": BASE_MS, "inputs_digest": DIGEST_INPUTS,
+        "coverage_digest": DIGEST_COVERAGE,
+        "quote_asof_ms": BASE_MS, "quote_digest": DIGEST_QUOTE,
+        "evidence_asof_ms": BASE_MS, "evidence_digest": DIGEST_EVIDENCE,
+        "provenance_digests": {"head": DIGEST_PLAN},
+        "original": proposal, "final": proposal,
+        "findings": [], "gate_results": [],
+        "scope_verdict": {"allowed": True, "scope_key": "AAA", "reason": ""},
+        "risk_effect": "increase",
+        "risk_version": {"economic_seq": 0, "executor_token": None,
+                         "accounting_tokens": None},
+        "risk_state_digest": DIGEST_RISK, "result": result,
+    })
 
 
 def full_sequence():
@@ -895,10 +929,35 @@ def test_apply_refuses_a_record_from_another_series():
     assert st.head() == (0, GENESIS_HASH)
 
 
+def test_apply_refuses_a_record_whose_prev_hash_is_not_the_folded_head():
+    # D15: the chain is the fold's only anchor — a dense seq alone does
+    # not prove a record continues THIS chain.
+    st, chain = new_state()
+    fold(st, chain, "tick_start", {"tick_id": "T1", "tick_at_ms": BASE_MS})
+    off_chain = chain.env("tick", tick_body(tick_id="T1"))
+    off_chain["prev_hash"] = "e" * 64
+    with pytest.raises(ProductionError):
+        st.apply(off_chain)
+    assert st.head()[0] == 1
+    assert st.open_ticks()[0].tick_id == "T1"
+
+
 def test_apply_refuses_a_record_that_is_not_a_mapping():
     st, _ = new_state()
     with pytest.raises(ProductionError):
         st.apply(["kind", "tick_start"])
+
+
+@pytest.mark.parametrize("body", [None, ["tick_id"], "T1", 7])
+def test_apply_refuses_a_body_that_is_not_a_mapping(body):
+    # §6 nests the record under `body`; a fold hook reading `.get` off a
+    # list would raise an AttributeError instead of naming the problem.
+    st, chain = new_state()
+    envelope = chain.env("tick_start", {"tick_id": "T1", "tick_at_ms": BASE_MS})
+    envelope["body"] = body
+    with pytest.raises(ProductionError):
+        st.apply(envelope)
+    assert st.head() == (0, GENESIS_HASH)
 
 
 def test_apply_tolerates_an_unknown_body_field():
@@ -1036,6 +1095,24 @@ def test_a_reversed_fill_is_undone_exactly_once():
     assert (still.qty, still.avg_cost) == (Decimal("10"), Decimal("100"))
 
 
+def test_one_fill_id_can_never_be_applied_twice():
+    # R3: the book keeps the applied-fill log, and a replayed or duplicated
+    # `fill` would otherwise double the position it moved.
+    st, chain = new_state()
+    fold(st, chain, "intent", intent_body(client_ref="ref-1", qty="20"))
+    fold(st, chain, "order_event",
+         order_event_body(client_ref="ref-1", event="ack", status="open"))
+    fold(st, chain, "fill",
+         fill_body(fill_id="f-1", client_ref="ref-1", qty="10", price="100"))
+    with pytest.raises(ProductionError):
+        st.apply(chain.env("fill", fill_body(fill_id="f-1", client_ref="ref-1",
+                                             qty="10", price="100")))
+    view = st.snapshot()
+    assert position_of(view.positions, "AAA").qty == Decimal("10")
+    assert view.working["ref-1"].filled_qty == Decimal("10")
+    assert view.head_seq == 3
+
+
 def test_a_cash_flow_adjusts_the_balance_and_is_economic():
     st, chain = new_state()
     fold(st, chain, "cash_flow", cash_flow_body(amount="250"))
@@ -1048,6 +1125,20 @@ def test_a_cash_flow_adjusts_the_balance_and_is_economic():
     assert view.risk_version.economic_seq == 3
     assert view.decision_history == ()
     assert view.positions == ()
+
+
+@pytest.mark.parametrize("amount", [250.0, True, "nope", None, float("nan")])
+def test_a_balance_never_moves_on_anything_but_an_exact_decimal(amount):
+    # "Money never touches float" (the package convention) is the fold's
+    # rule too: `balances` is the capital base every bankroll bound reads.
+    st, chain = new_state()
+    fold(st, chain, "cash_flow", cash_flow_body(amount="250"))
+    with pytest.raises(ProductionError):
+        st.apply(chain.env("cash_flow", cash_flow_body(amount=amount)))
+    view = st.snapshot()
+    assert view.balances["USD"] == Decimal("250")
+    assert all(isinstance(value, Decimal) for value in view.balances.values())
+    assert view.risk_version.economic_seq == 1
 
 
 def test_only_economic_events_advance_the_economic_seq():
@@ -1145,6 +1236,34 @@ def test_leaving_active_revokes_the_ordinary_arm():
     assert view.arming is None
 
 
+def test_a_resume_to_active_leaves_the_series_unarmed():
+    # D12: "resume returns `active` but unarmed, so a fresh maker-checker
+    # arm is required" — ANY trip clears the arm, the arrival state
+    # included, or a resume would ride the arm the halt revoked.
+    st, chain = new_state()
+    fold(st, chain, "trip", trip_body("active", "halted"))
+    fold(st, chain, "authority", authority_body(event="issue"))
+    assert st.snapshot().arming is not None
+    fold(st, chain, "trip", trip_body("halted", "active"))
+    view = st.snapshot()
+    assert view.breaker == "active"
+    assert view.arming is None
+
+
+@pytest.mark.parametrize("event", ["disarm", "revoke", "expire"])
+def test_ending_ANOTHER_authority_leaves_the_current_arm_standing(event):
+    # The clear is keyed by `authority_id`: a late `expire` for a
+    # superseded arm must not disarm the one now in force.
+    st, chain = new_state()
+    fold(st, chain, "authority", authority_body(event="issue",
+                                                authority_id="auth-current"))
+    fold(st, chain, "authority", authority_body(event=event,
+                                                authority_id="auth-stale"))
+    arming = st.snapshot().arming
+    assert arming is not None
+    assert arming.authority_id == "auth-current"
+
+
 def test_a_reduction_authority_folds_into_the_reduction_projection():
     st, chain = new_state()
     fold(st, chain, "authority",
@@ -1196,6 +1315,29 @@ def test_an_authority_use_of_an_ungranted_digest_refuses():
     with pytest.raises(ProductionError):
         st.apply(chain.env("authority_use", authority_use_body(digest=RIGHT_B)))
     assert tuple(st.snapshot().reduction.reserved) == ()
+
+
+def test_an_authority_use_naming_another_authority_refuses():
+    # D12: a right belongs to the authority that granted it. A use naming
+    # a stale or forged authority_id must not spend the current grant's.
+    st, chain = new_state()
+    fold(st, chain, "authority",
+         authority_body(role="reduction", authority_id="auth-2",
+                        rights=(RIGHT_A, RIGHT_B)))
+    with pytest.raises(ProductionError):
+        st.apply(chain.env("authority_use",
+                           authority_use_body(digest=RIGHT_A,
+                                              authority_id="auth-other")))
+    reduction = st.snapshot().reduction
+    assert reduction.authority_id == "auth-2"
+    assert tuple(reduction.reserved) == ()
+
+
+def test_an_authority_use_before_any_reduction_authority_refuses():
+    st, chain = new_state()
+    with pytest.raises(ProductionError):
+        st.apply(chain.env("authority_use", authority_use_body(digest=RIGHT_A)))
+    assert st.snapshot().reduction is None
 
 
 def test_revoking_a_reduction_authority_clears_the_projection():
@@ -1292,6 +1434,54 @@ def test_the_history_bound_has_one_named_default():
     assert params["max_history"].default in (None, DEFAULT_MAX_HISTORY)
     with pytest.raises(ProductionError):
         SeriesState(SERIES_ID, max_history=0)
+
+
+def test_the_plan_digest_the_fold_notes_is_the_records_own_recipe():
+    # The `intent` binds its plan by id AND digest, so the two sides must
+    # compute one digest. The owner is
+    # `records.DecisionPlan.decision_plan_digest()`; the fold must not
+    # grow a second recipe, or no intent a producer writes would ever
+    # match and every submitted plan would look ambiguous to recovery.
+    plan = real_decision_plan()
+    st, chain = new_state()
+    fold(st, chain, "tick_start", {"tick_id": "T1", "tick_at_ms": BASE_MS})
+    fold(st, chain, "decision_plan", plan.to_obj())
+    (entry,) = st.tick_plans("T1")
+    assert entry["decision_plan_digest"] == plan.decision_plan_digest()
+    assert entry["plan_id"] == "plan-1"
+    assert entry["result"] == "submit"
+    assert entry["client_ref"] is None
+
+
+def test_an_intent_binds_its_plan_by_id_AND_digest():
+    plan = real_decision_plan()
+    st, chain = new_state()
+    fold(st, chain, "tick_start", {"tick_id": "T1", "tick_at_ms": BASE_MS})
+    fold(st, chain, "decision_plan", plan.to_obj())
+    fold(st, chain, "intent",
+         dict(intent_body(client_ref="ref-1"),
+              decision_plan_id="plan-1",
+              decision_plan_digest=plan.decision_plan_digest()))
+    (bound,) = st.tick_plans("T1")
+    assert bound["client_ref"] == "ref-1"
+
+
+@pytest.mark.parametrize(
+    "over",
+    [{"decision_plan_digest": DIGEST_EVIDENCE}, {"decision_plan_id": "plan-9"}],
+)
+def test_an_intent_that_matches_only_half_the_pair_binds_nothing(over):
+    plan = real_decision_plan()
+    st, chain = new_state()
+    fold(st, chain, "tick_start", {"tick_id": "T1", "tick_at_ms": BASE_MS})
+    fold(st, chain, "decision_plan", plan.to_obj())
+    body = dict(intent_body(client_ref="ref-1"),
+                decision_plan_id="plan-1",
+                decision_plan_digest=plan.decision_plan_digest())
+    body.update(over)
+    fold(st, chain, "intent", body)
+    (unbound,) = st.tick_plans("T1")
+    assert unbound["client_ref"] is None
 
 
 def test_open_ticks_track_a_tick_start_until_its_terminal_tick():
@@ -1456,6 +1646,35 @@ def test_the_snapshot_payload_carries_every_member_plus_monitor_state():
     canonical_bytes(payload)
     assert isinstance(st.monitor_state(), types.MappingProxyType)
     assert st.monitor_state()
+
+
+def test_the_snapshot_carries_the_monitor_windows_a_restart_would_reset():
+    # §6: monitor state is not a `StateView` member and the snapshot
+    # carries it anyway — "dropping it would reset every drift window on
+    # restart, and a monitor below `min_n` cannot alarm until it refills".
+    st, chain = new_state()
+    fold(st, chain, "monitor",
+         {"monitor": "drift", "slice": "all", "window": "count:64",
+          "statistic": "0.02", "threshold": "0.10", "status": "ok",
+          "provisional": False})
+    fold(st, chain, "monitor",
+         {"monitor": "coverage", "slice": "AAA", "window": "1d",
+          "statistic": "0.40", "threshold": "0.50", "status": "warn",
+          "provisional": True})
+    payload = st.to_snapshot_obj()
+    assert payload["monitor_state"] == {
+        "drift": {"all": {"monitor": "drift", "slice": "all",
+                          "window": "count:64", "statistic": "0.02",
+                          "threshold": "0.10", "status": "ok",
+                          "provisional": False}},
+        "coverage": {"AAA": {"monitor": "coverage", "slice": "AAA",
+                             "window": "1d", "statistic": "0.40",
+                             "threshold": "0.50", "status": "warn",
+                             "provisional": True}},
+    }
+    restored = SeriesState(SERIES_ID)
+    restored.restore(snapshot_env(st, chain))
+    assert restored.monitor_state() == st.monitor_state()
 
 
 def test_restore_rebuilds_the_fold_and_drops_live_session_tokens():
@@ -1669,6 +1888,21 @@ def test_recovering_twice_appends_no_second_recovery():
     assert sorted(second.snapshot().working) == ["ref-2", "ref-3"]
 
 
+def test_each_recovery_names_its_own_process_record():
+    # R9: a record `id` is unique across the SERIES. Two recoveries of one
+    # series both append a `recovered` process record, so the id must move
+    # with the head each one recovered to.
+    led, st, ids, executor, report, seeded = recovered_once()
+    first_id = led.records[-1]["id"]
+    second = SeriesState(SERIES_ID)
+    led.state = second
+    Recovery(led, second, FakeIdSource(), executor).run(FakeClock())
+    second_id = led.records[-1]["id"]
+    assert led.records[-1]["kind"] == "process"
+    assert first_id != second_id
+    assert len({r["id"] for r in led.records}) == len(led.records)
+
+
 def test_the_recovery_report_is_a_frozen_value():
     led, st, ids, executor, report, seeded = recovered_once()
     assert dataclasses.is_dataclass(report)
@@ -1688,10 +1922,15 @@ SCAN_READERS = frozenset({
     "state.py", "ledger.py", "reconcile.py", "__main__.py",
     "outcomes.py", "report.py",
 })
-FOLD_OWNERS = frozenset({"state.py", "ledger.py"})
+# §5.8.1: "the sole owner of derived state" is ONE class, in one module —
+# so the fold's own module is the only exemption. §8 names the members a
+# second fold would restate: "positions/working/pending/breaker/arming/
+# readiness/guard-holds", plus the two the view adds and the balances that
+# every bankroll bound reads.
+FOLD_OWNERS = frozenset({"state.py"})
 FOLDED_ATTRS = frozenset({
-    "positions", "working", "breaker", "arming", "readiness",
-    "guard_holds", "reduction", "pending_control",
+    "positions", "working", "pending", "balances", "breaker", "arming",
+    "readiness", "guard_holds", "reduction", "pending_control",
 })
 
 

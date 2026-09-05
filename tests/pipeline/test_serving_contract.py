@@ -119,6 +119,23 @@ class TestServingContract:
         with pytest.raises(ConfigError):
             a_contract(event_time_field="")
 
+    def test_from_obj_is_default_deny(self):
+        # The rebuilt contract is what a serving loop snapshots by; an
+        # unknown key means the two sides disagree about the recipe, and
+        # a missing one means half a declaration.
+        rendered = a_contract().to_obj()
+        with pytest.raises(ConfigError) as exc:
+            contract_class().from_obj(dict(rendered, universe=["AAA"]))
+        assert "universe" in str(exc.value)
+        for name in rendered:
+            short = {k: v for k, v in rendered.items() if k != name}
+            with pytest.raises(ConfigError):
+                contract_class().from_obj(short)
+
+    def test_from_obj_refuses_anything_that_is_not_a_dict(self):
+        with pytest.raises(ConfigError):
+            contract_class().from_obj(["source_binding"])
+
 
 # ---------------------------------------------------------------------------
 # ObservationRows — the one entry class
@@ -185,6 +202,22 @@ class TestObservationRowsContract:
         params = dict(OBS_PARAMS, key_fields=["ts"], ts_field="ts")
         with pytest.raises(ValueError):
             ObservationRows.serving_contract(params, {})
+
+    @pytest.mark.parametrize("name", ["root", "source", "stream"])
+    def test_a_hole_in_the_source_binding_refuses(self, name):
+        # The classmethod reads PARAMS; a subclass that pins one of these
+        # narrows it out of `_PARAMS` and answers from its own hook, which
+        # a classmethod cannot reach. A binding carrying None there would
+        # send the serving loop at nothing at all.
+        missing = dict(OBS_PARAMS)
+        del missing[name]
+        with pytest.raises(ValueError) as exc:
+            ObservationRows.serving_contract(missing, {})
+        assert name in str(exc.value)
+        with pytest.raises(ValueError):
+            ObservationRows.serving_contract(dict(OBS_PARAMS, **{name: None}), {})
+        with pytest.raises(ValueError):
+            ObservationRows.serving_contract(dict(OBS_PARAMS, **{name: ""}), {})
 
     def test_the_contract_is_pure(self, monkeypatch):
         monkeypatch.setattr(builtins, "open", boom)

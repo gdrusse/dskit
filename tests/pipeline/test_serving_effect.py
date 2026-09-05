@@ -106,9 +106,17 @@ RELEASE_READ_CLASSES = (
     synthetic_nodes.SynthTrain,
 )
 
-#: Names that would mean a class reached the filesystem or the network by
-#: itself rather than through ``Node.read_artifact``/``read_artifact_text``.
-IO_NAMES = ("open(", "os.", "io.", "socket", "pathlib")
+#: Names that would mean a class reached the filesystem or the network on
+#: the load path rather than through ``Node.read_artifact`` /
+#: ``read_artifact_text``. The base's WRITE services count: a served tick
+#: hands a ``release_read`` node a reader that can only ANSWER, and a load
+#: hook that persisted anything would be reaching past it — the reader
+#: cannot be given a write verb to intercept, so the write must not be
+#: there at all.
+IO_NAMES = (
+    "open(", "os.", "io.", "socket", "pathlib",
+    "write_artifact", "artifact_dir",
+)
 
 
 def audited_classes():
@@ -490,6 +498,18 @@ class TestReadArtifact:
         ctx = NodeContext(name="t", asof=ASOF, run_dir=str(tmp_path))
         node = ArtifactProbe("probe", {}, artifact=str(pinned))
         assert node.read_artifact(ctx, "model.json", ref=str(other)) == {"learn": 0.9}
+
+    def test_nothing_naming_an_artifact_refuses_by_name(self, tmp_path):
+        # No reader and no pin: the doorway says so rather than opening
+        # whatever ``""`` resolves to and reporting the OS's error.
+        ctx = NodeContext(name="t", asof=ASOF, run_dir=str(tmp_path))
+        node = ArtifactProbe("probe", {})
+        with pytest.raises(ValueError) as exc:
+            node.read_artifact_text(ctx, "model.json")
+        assert "probe" in str(exc.value)
+        assert "model.json" in str(exc.value)
+        with pytest.raises(ValueError):
+            node.read_artifact(ctx, "model.json")
 
     def test_the_reader_wins_over_a_pinned_artifact_on_disk(
         self, tmp_path, monkeypatch

@@ -235,9 +235,22 @@ class ObservationRows(Node):
         Raises
         ------
         ValueError
-            When ``ts_field`` is absent — no instant, no watermark, cannot
+            When the source binding is not fully declared, when
+            ``ts_field`` is absent — no instant, no watermark, cannot
             serve — or when projecting it out leaves no entity key.
         """
+        binding = {name: params.get(name) for name in ("root", "source", "stream")}
+        blank = sorted(name for name, value in binding.items() if not _ok_name(value))
+        if blank:
+            # A subclass that PINS one of these narrows it out of `_PARAMS`
+            # and answers from its own hook, which a classmethod cannot
+            # reach: it owes the serving loop its own `serving_contract`
+            # rather than a binding with a hole in it.
+            raise ValueError(
+                f"observations: serving needs {blank} declared in params — the "
+                "contract binds the stream a tick reads, and a subclass that "
+                "pins one of them must supply its own serving_contract"
+            )
         ts_field = params.get("ts_field")
         if not _ok_name(ts_field):
             raise ValueError(
@@ -254,12 +267,7 @@ class ObservationRows(Node):
                 "and a served snapshot must identify entities across ticks"
             )
         return ServingContract(
-            source_binding={
-                "kind": SOURCE_BINDING_KIND,
-                "root": params.get("root"),
-                "source": params.get("source"),
-                "stream": params.get("stream"),
-            },
+            source_binding={"kind": SOURCE_BINDING_KIND, **binding},
             entity_key_fields=entity,
             event_time_field=params.get("ts_out", DEFAULT_TS_OUT),
             digest_recipe={

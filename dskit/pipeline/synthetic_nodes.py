@@ -340,10 +340,17 @@ class SynthTrain(TrainableNode):
                 f"min_train={floor} but only {len(train_events)} training "
                 "event(s) in the train split"
             )
-        return self._served(ctx, inputs, {"learn": LEARN, "n_train": len(train_events)})
+        model = {"learn": LEARN, "n_train": len(train_events)}
+        return self._served(inputs, model, self.write_artifact(ctx, self._MODEL_FILE, model))
 
     def run_load(self, ctx, inputs):
         """Restore the pinned model through the base's read service; never refit.
+
+        The load path READS and nothing else (ADR-0091): the artifact it
+        answers with is the one it was pinned to, not a fresh copy. A
+        served tick runs this hook under a release reader and must touch
+        the filesystem through no other door — writing the restored model
+        back would be exactly that, and no reader can intercept a write.
 
         Parameters
         ----------
@@ -360,17 +367,15 @@ class SynthTrain(TrainableNode):
         """
         model = self.read_artifact(ctx, self._MODEL_FILE)
         self.log.info("loaded pinned artifact %s", self.artifact)
-        return self._served(ctx, inputs, model)
+        return self._served(inputs, model, self.artifact)
 
-    def _served(self, ctx, inputs, model):
-        """The tail both modes share: persist the model, then price every
-        event with it. Fitted or restored, a run answers the same way."""
-        path = self.write_artifact(ctx, self._MODEL_FILE, model)
+    def _served(self, inputs, model, artifact):
+        """The tail both modes share: price every event with the model."""
         signal = {
             e["contract"]: e["mid"] + model["learn"] * (e["p_true"] - e["mid"])
             for e in inputs["events"]
         }
-        return {"signal": signal, "artifact": path}
+        return {"signal": signal, "artifact": artifact}
 
 
 class SynthScore(Node):

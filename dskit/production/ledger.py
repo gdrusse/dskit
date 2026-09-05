@@ -73,6 +73,7 @@ from dskit.production.base import (
     reject_unknown_params,
 )
 from dskit.production.redact import get_logger
+from dskit.production.release import RELEASES_DIRNAME
 from dskit.production.vocab import (
     FSYNC_MODES,
     RECORD_KINDS,
@@ -315,7 +316,7 @@ class ServeRoot:
             The directory that holds ``document.json``, ``release.json``
             and the per-process base-pass run dirs. Not created here.
         """
-        return os.path.join(self._series_path, "releases", release_hash)
+        return os.path.join(self._series_path, RELEASES_DIRNAME, release_hash)
 
     def process_base_dir(self, release_hash, process_id):
         """Return ``releases/<release_hash>/process-<process_id>/base``.

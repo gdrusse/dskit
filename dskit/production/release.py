@@ -752,40 +752,66 @@ class ReleaseReader:
     release read can reach neither the filesystem nor a mutable store.
     Holds no open file.
 
+    A node's artifacts sit under its own manifest prefix
+    (``artifacts/<key>/``) and a node asks for a file by its bare name
+    (``"fitted.json"``), so a reader is SCOPED: ``names()`` lists the
+    allowed names relative to ``prefix`` and ``get(name)`` resolves
+    ``prefix + name``. A node never learns, and cannot spell, another
+    node's entry.
+
     Parameters
     ----------
     manifest : ReleaseManifest
         The release whose artifacts are readable.
     allowed_names : iterable of str
-        The manifest artifact names THIS node may read; a name the
-        manifest does not carry refuses at construction.
+        The manifest artifact names THIS node may read — the manifest's
+        own full names, every one under ``prefix``; a name the manifest
+        does not carry, or one outside the prefix, refuses at
+        construction.
     root : str or pathlib.Path
         The directory the manifest's artifact names are relative to.
+    prefix : str, optional
+        The manifest-name prefix the reader is scoped to; ``""`` — the
+        default — scopes nothing, so names are the manifest's own.
 
     Raises
     ------
     ProductionError
-        If an allowed name is not an artifact of the manifest.
+        If an allowed name is not an artifact of the manifest or falls
+        outside ``prefix``, or ``prefix`` is not a string.
 
     Examples
     --------
-    A node permitted to read one artifact of a release::
+    A node permitted to read one artifact of a release, by its bare name::
 
-        reader = ReleaseReader(manifest, ("model",), "pipeline_runs/train-2026-01-01-abcd1234")
-        reader.names()  # ('model',)
-        weights = reader.get("model")  # the bytes, after their digest was re-verified
+        reader = ReleaseReader(
+            manifest, ("artifacts/scaled/fitted.json",),
+            "pipeline_runs/train-2026-01-01-abcd1234", prefix="artifacts/scaled/",
+        )
+        reader.names()  # ('fitted.json',)
+        state = reader.get("fitted.json")  # the bytes, after their digest was re-verified
     """
 
-    def __init__(self, manifest, allowed_names, root):
+    def __init__(self, manifest, allowed_names, root, prefix=""):
         allowed = tuple(sorted(allowed_names))
         self._names = frozenset(manifest.artifacts)
+        problems = []
+        if not isinstance(prefix, str):
+            problems.append(f"prefix must be a string, got {prefix!r}")
+            prefix = ""
         ghosts = [name for name in allowed if name not in self._names]
         if ghosts:
-            raise ProductionError(
-                [f"allowed names {ghosts} are not artifacts of release {manifest.release_hash}"]
+            problems.append(
+                f"allowed names {ghosts} are not artifacts of release {manifest.release_hash}"
             )
+        outside = [name for name in allowed if not name.startswith(prefix)]
+        if outside:
+            problems.append(f"allowed names {outside} are outside the reader's prefix {prefix!r}")
+        if problems:
+            raise ProductionError(problems)
         self._digests = {name: manifest.artifacts[name]["digest"] for name in allowed}
         self._root = Path(root)
+        self._prefix = prefix
 
     def names(self):
         """List what this node may read.
@@ -793,9 +819,9 @@ class ReleaseReader:
         Returns
         -------
         tuple of str
-            The allowed artifact names, sorted.
+            The allowed artifact names relative to the prefix, sorted.
         """
-        return tuple(sorted(self._digests))
+        return tuple(sorted(name[len(self._prefix):] for name in self._digests))
 
     def get(self, name):
         """Return an artifact's bytes after re-verifying its recorded digest.
@@ -803,7 +829,8 @@ class ReleaseReader:
         Parameters
         ----------
         name : str
-            A manifest artifact name this node is allowed to read.
+            An artifact name relative to the prefix that this node is
+            allowed to read.
 
         Returns
         -------
@@ -813,18 +840,23 @@ class ReleaseReader:
         Raises
         ------
         ProductionError
-            If ``name`` is not in the manifest, is not readable by this
-            node, is not a file at the root, or no longer matches its
-            recorded digest.
+            If ``prefix + name`` is not in the manifest, is not readable
+            by this node, is not a file at the root, or no longer matches
+            its recorded digest.
         """
-        if name not in self._digests:
-            why = "is not an artifact of this release" if name not in self._names else "is not readable by this node"
+        full = self._prefix + name
+        if full not in self._digests:
+            why = (
+                "is not an artifact of this release"
+                if full not in self._names
+                else "is not readable by this node"
+            )
             raise ProductionError([f"release artifact {name!r} {why}"])
-        path = self._root / name
+        path = self._root / full
         if not path.is_file():
             raise ProductionError([f"release artifact {name!r} is not a file at {path}"])
         data = path.read_bytes()
-        if hashlib.sha256(data).hexdigest() != self._digests[name]:
+        if hashlib.sha256(data).hexdigest() != self._digests[full]:
             raise ProductionError(
                 [f"release artifact {name!r} at {path} no longer matches its recorded digest"]
             )
