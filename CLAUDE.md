@@ -91,6 +91,10 @@ Wrap the *library*, generically — never a project's use of it.
   `.claude/settings.json`).
 - **`/wrap`:** refresh `docs/RE-ENTRY.md`, merge into `main` when the work is
   coherent and tests pass, push. Defined in `.claude/commands/wrap.md`.
+- **Commits are authored under the agent's own model name** (owner ruling,
+  2026-09-05): set the author explicitly — `git -c user.name=<model-name> -c
+  user.email=<model-name>@opencode.ai commit` — never the shared `Codex`
+  identity from the ambient git config.
 
 ## Repository layout
 

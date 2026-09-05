@@ -51,6 +51,13 @@ Agent orientation — see README.md for operator commands.
   (`intraday_equities`). HPO maximizes `$select.metrics.rank_ic`.
   Fill rate / delay decay wait on a fill model.
 
+## Machine knobs
+
+- `INTRADAY_EQUITIES_FOLD_WORKERS` sets fold-process width (default 1).
+  Environment, never a document: a graded knob would move the identity
+  hash and orphan prior runs whenever it was tuned. Each fold keeps the
+  full 17 GiB cap, so total memory scales with the width.
+
 ## Layout
 
 ```

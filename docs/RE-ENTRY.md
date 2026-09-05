@@ -24,6 +24,55 @@ R1 review first), then the remaining implementers, test authors, Stage 0.
 
 ## Current wrap: Gate 3 rebuild built (2026-09-05, overnight, autonomous)
 
+## Current state: agent-doc sync + opencode setup (2026-09-05)
+
+Branch: `main`. Synced all nine `AGENTS.md`/`CLAUDE.md` pairs so the Codex-
+facing copies carry the latest rulings (the "prefer objects" ruling,
+ADR-0077/0079/0093, connector shapes, the intraday "Machine knobs" section),
+and added the commit-author standard. Added opencode support: `opencode.json`
+(registers `.cursor/skills` + the session-pull plugin), `.opencode/command/
+{wrap,research}.md`, and `.opencode/plugin/session-pull.ts`. No source code
+changed; no tests run.
+
+Next: restart opencode to load the config, skills, commands, and plugin.
+
+## Current state: P12 Gate 3 failed; closeout blocked (2026-09-05)
+
+Branch: main; the completed P10/P11, Gate 3, bounded-fold, and cohort-study
+work is committed, merged, and pushed (main equals origin/main). Their
+historical wraps remain below. No local branch from that work is unmerged.
+
+The 63-asset P12 study exited 1 at 16:09:05Z in Gate 3 walks. Memory and
+Gate 1 artifacts are present, but Gate 3 produced no final result. Journal
+row A12579 records the error: its seed-05 NRG h=1 part-00 fold finished
+without journal evidence. Do not infer or publish final Gate 3 verdicts from
+the partial artifacts.
+
+Next: diagnose and repair the missing journal-evidence failure, then resume or
+rerun P12. After a successful result, repair the smoke journal rows A2888-A2909,
+record the prior 64-asset attempt's exit 143, write the result memo, and wrap.
+Do not commit or push the failed P12 run as complete.
+
+## P12 recovery handoff — required sequence
+
+This wrap records the failure and recovery plan only; it does not claim a P12
+result. The next session must preserve the partial artifacts, build an
+asset-and-seed inventory from the persisted Gate 1 selection and Gate 3
+reports/actions, and extract a final outcome only for an auditable complete
+19-draw family. Every other survivor must be rerun.
+
+Verification for this documentation-and-evidence wrap: `git diff --check`;
+no test suite was run because no source code changed.
+
+First reproduce and fix NRG h=1 seed-05 part-00's missing journal evidence
+with a focused test. Obtain independent major/critical review and resolve its
+findings before execution. Then append a provenance-rich recovery journal
+entry plus one separate, source-linked entry for each legitimately
+reconstructed stock-and-horizon verdict. Create the continuation, run
+the remaining work, write a result memo, wrap, commit, and push main.
+
+## Prior wrap: Gate 3 rebuild built (2026-09-05, overnight, autonomous)
+
 Branch: `main`. Everything committed and pushed; the three feature branches
 and their worktrees are purged. `claude/dskit-production-build-3g17vw` and
 `claude/gate-3-null-design-docs-9me2mk` are other sessions' remote branches
@@ -49,7 +98,7 @@ ADR-0094 build 3):
   cache per source group; P11 is now its pinned subclass; `attempts.
   early_stop_p_bound` owns the stop bound. P12 (`configs/run-p12-
   modelability.json`, identity `1a2d194f…`, forty names of cohorts D and E,
-  P11 geometry verbatim) is NOT yet run. Path: A2851 struck through, A2887
+  P11 geometry verbatim) had NOT yet run at the time of this wrap. Path: A2851 struck through, A2887
   "Gate 3: fail-fast scramble refit" beneath it.
 
 Smoke (one asset, ORCL, `INTRADAY_EQUITIES_FOLD_WORKERS=2`): the whole

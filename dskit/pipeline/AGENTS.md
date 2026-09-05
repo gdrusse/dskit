@@ -65,6 +65,14 @@ on it without breaking its rulings.
   Chronos- or TimesFM-shaped forecaster is a subclass supplying the hooks.
   Loads are `output_loading_info=True` + `use_safetensors=True`: a
   non-empty `missing_keys` refuses, unused weights are only logged.
+- **Reading an acquired stream** — the `observations` kind
+  (`libs/observations.py`, ADR-0077) fronts `dskit.onboarding`'s
+  `scan_stream`: children subclass `ObservationRows`, narrow `_PARAMS` to
+  the knobs their domain decides (`key_fields` is a fact about the stream,
+  not a document knob), and override `project()` to turn the deduplicated
+  rows into their record envelope. The scan is memoized per INSTANCE, so
+  `fingerprint()` at resolve and `run()` at execute see one snapshot;
+  `scan_stream` is imported inside the scan, never at module top.
 - **Metrics** — `register_metric` (`metrics.py`); `logloss`/`brier` ship.
 - **Corrections** — `register_correction` (`stats.py`);
   `bh`/`bonferroni`/`none`/`weighted-bh` ship. `needs_weights` metadata
@@ -135,6 +143,14 @@ on it without breaking its rulings.
   over a wired `signal`). ADR-0044 made a member's own knobs searchable,
   so owner flow 2 (a space over `select.n` / `select.selector`) plans
   and runs; the family's three leakage knobs still refuse.
+- **Fold execution** — `BoundedFoldRunner` (`folds.py`, ADR-0093). Subclass
+  it and override `spawn(index, argv, cwd, env)` to change how ONE fold runs
+  — never the pooling; the override runs on a pool thread and must be
+  thread-safe. The cap is the caller's (`memory_limit_bytes`, no default
+  here, never divided); the width is the environment's (`env_var`, unset =
+  1, empty refused, an explicit `workers` wins, never a document's).
+  `measure_one` must be the FIRST child the process reaps: a stage that
+  calls it may have no spawning predecessor in the staged DAG.
 - **One name per shared vocabulary.** `node.class_ref(cls)` is the
   `module:QualName` an artifact sidecar RECORDS and load mode compares —
   three modules used to write that f-string out, and a divergence there
@@ -418,7 +434,9 @@ dskit/pipeline/
 ├── planner.py         document -> Plan; role rules live here
 ├── driver.py          run_document: LOAD..RECORD, $prev, journal hook
 │                      (ADR-0056); run_walk_forward (ADR-0027)
-├── stages.py          journal-backed staged DAG execution and resume
+├── stages.py          journal-backed staged DAG execution and resume (ADR-0081)
+├── folds.py           BoundedFoldRunner: capped, width-bounded fold spawning;
+│                      spawn is the hook, measure_one the one reading (ADR-0093)
 ├── runs.py            the READER: scan_runs/format_runs over a run root (`runs` verb)
 ├── predictions.py     every scored validation row -> one parquet per run (ADR-0064)
 ├── ordering.py        calibration slope + per-timestamp cross-sectional IC,
@@ -454,7 +472,8 @@ dskit/pipeline/
 │                      transformers (+ the pretrained encode/classify/forecast
 │                      trio over an acquired snapshot, ADR-0083), optuna,
 │                      pyomo, sb3, matplotlib,
-│                      mlflow (tracking SINK pack, no nodes)
+│                      mlflow (tracking SINK pack, no nodes),
+│                      observations (the `observations` data kind over the onboarding read seam, ADR-0077)
 ├── README.md          user-facing docs
 └── AGENTS.md          this file
 ```

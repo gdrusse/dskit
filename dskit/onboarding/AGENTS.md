@@ -17,6 +17,10 @@ on it without breaking its rulings (ADR-0012…0016).
   through `durable_write_*` (stage, fsync, rename, fsync dir); the
   checkpoint is saved LAST in `run_acquisition`. Reordering these is a
   correctness bug even when every test still passes.
+- **`acquired_at` is the COMMIT instant** (ADR-0079): `utc_now()` taken
+  after `read()` is exhausted and settled onto the staged rows line by
+  line — a capture stream dating rows at its own clock never races it;
+  only a genuinely future-dated observation refuses.
 - **Declared, never inferred**: mode (`backfill|live`), record kind
   (`observation|forecast`), and certification decisions are closed
   vocabularies stamped as fields. Never derive any of them from dates.
@@ -30,7 +34,20 @@ on it without breaking its rulings (ADR-0012…0016).
   weights) is a `FILE` message (ADR-0082): the connector names a file it
   holds, the platform copies it into `payload/<stream>/<relpath>`;
   `libs/huggingface.py` is that shape — `resolve` / `download` seams,
-  one FILE + one inventory RECORD per file, a commit-sha cursor.
+  one FILE + one inventory RECORD per file, and a SELECTION cursor (sha +
+  repo type + both pattern lists, so a widened `allow_patterns` at an
+  unchanged sha is new content); a download matching no file refuses and
+  moves no cursor. `libs/localtables.py` is the
+  tier-2 shape: the library (pyarrow) imported inside the verbs, only
+  when a shard needs it, refused loudly when absent. `libs/predexon.py`
+  is the keyed-REST shape: getter, clock, and sleeper injected through
+  the constructor so pacing and retry are tested with no network and no
+  wait; its cursor nests per ticker under the stream key. `libs/kalshi.py`
+  is the public-REST shape: its `markets` stream is a deliberate full
+  re-pull (settlement lands after close; dedup keeps the latest), and rows
+  the venue does not date are stamped at the pull's capture MINUTE so two
+  pulls inside a minute collide on their key (`acquired_at` itself is the
+  commit instant, ADR-0079, so a capture instant never post-dates it).
 - **OAuth connectors** — expose `oauth_service(config)` returning
   `OAuth2TokenService`; the CLI stays provider-polymorphic.
 - **Recurring pulls** — call `run_watch`; it repeats `run_acquisition`
@@ -93,6 +110,13 @@ on it without breaking its rulings (ADR-0012…0016).
   range inference — that blind spot is the bug class it exists to
   prevent. One writer per ledger file; `reconcile` adopts store truth
   but never clears a `fetched` claim (that is the operator's `clear`).
+- **`polymarket` seams are METHODS** (`get_json`/`post_json`/`download`/
+  `sleep`/`now`): script them by subclassing (`tests/onboarding/
+  test_polymarket.py`), never by assigning a plain function at class level
+  (it would bind `self`). Its `events` cursor is RECORDED, never consulted
+  (markets close on a per-series lag, so a cursor filter dropped late
+  closers forever): every pull re-walks the window and dedup keeps the
+  latest; `closed: false` rows are `kind: "forecast"` and re-emit every pull.
 
 ## Contents
 
@@ -121,7 +145,7 @@ dskit/onboarding/
 │   ├── kalshi.py      Kalshi trade-API v2 markets/candles/fee_schedules/orderbooks (stdlib urllib, ADR-0075)
 │   ├── localfiles.py  reference connector (stdlib CSV/JSONL)
 │   ├── localtables.py parquet / newline-JSON table directories (ADR-0076)
-│   ├── polymarket.py  Polymarket Gamma/CLOB series, markets, books (stdlib urllib, ADR-0075)
+│   ├── polymarket.py  Polymarket Gamma/CLOB REST + pmxt HF hour archive (stdlib urllib; hub + pyarrow inside read, ADR-0075)
 │   ├── predexon.py    Predexon Kalshi L2 order-book history (stdlib urllib, ADR-0075)
 │   ├── restapi.py     declarative REST connector (stdlib urllib)
 │   └── schwab.py      Schwab closed-minute REST bars + OAuth refresh

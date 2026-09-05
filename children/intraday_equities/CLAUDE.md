@@ -25,10 +25,11 @@ Agent orientation — see README.md for operator commands.
   displays the full Path and latest 10 Actions; CSV history is append-only.
   Hooks record pipeline runs and onboarding verbs. `live.main` is wrapped in
   `production()`. Research writes `docs/research/` through the CLI.
-- **Standalone explanations live in `docs/explanations/`.** Keep worked
-  child-specific explanations there, separate from research and decisions.
-- **Durable handoffs live in `docs/memos/`.** Keep completed-study evidence,
-  implementation outcomes, and operational caveats there.
+- **Standalone explanations live in `docs/explanations/`.** They explain
+  child-specific methods or results without becoming decision records or
+  journaled research.
+- **Durable handoffs live in `docs/memos/`.** Use them for completed-study
+  evidence, implementation outcomes, and operational caveats.
 
 ## Invariants
 
@@ -65,6 +66,8 @@ configs/             # universe + sources, suites, scan/action/HPO/train
 journal.json         # dskit.journal marker
 docs/decisioning/    # actions.csv + path.csv; README generated
 docs/research/       # research markdown
+docs/explanations/   # standalone worked explanations
+docs/memos/          # durable implementation and operational handoffs
 tests/               # conftest + connectors/nodes/configs/live
 ```
 
