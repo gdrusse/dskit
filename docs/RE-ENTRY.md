@@ -1,5 +1,25 @@
 # Re-entry
 
+## Current wrap: dskit.production build — PAUSED mid-phase-1 (2026-09-05)
+
+Branch: `claude/dskit-production-build-3g17vw` (off `main` @ 03d797c). Not merged.
+
+Green and committed: G1 foundations (`vocab/base/redact/records`, purity gate;
+510 tests) and G4 `ledger.py` (154 tests). Red (TDD) tests committed for
+document/release, clock/sessions/cadence, state, resilience/metrics,
+ids/bundles/policy (+ golden table), monitors, breaker/arming/coordination,
+guards, and the ADR-0091 seam under `tests/pipeline/`.
+
+Stopped mid-build at the owner's request: `state.py` (partial or absent),
+the pipeline seam (only `dskit/pipeline/policy.py` started), and the first
+skeptic review of G1+G4. Session working notes — the agent brief, the build
+log with every ruling (R1–R8, nested ledger envelope, cancel_outcome record,
+MONEY_FIELDS, re-anchored evidence), and the seam design — are in
+`docs/new_package_proposals/build-notes/` (branch-only; delete before merge).
+
+Next step: resume per the build log's "TO RESUME" list (F5 state, F11 seam,
+R1 review first), then the remaining implementers, test authors, Stage 0.
+
 ## Current wrap: child infrastructure
 
 Branch: `main`.
