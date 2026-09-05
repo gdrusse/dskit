@@ -31,13 +31,21 @@ as a plan gap; each is the reading this module's neighbours imply):
   the current window is never part of its own reference (a rolling
   reference that contained the window it is compared against would report
   no drift, ever).
-* `verdict()` reads the CURRENT window — the last chunk the chunker yields.
+* `verdict()` reads the CURRENT window — the last chunk the chunker yields —
+  and a window that is not yet full is `insufficient`. `period` is therefore
+  pinned at the chunker only: with no injected clock a monitor cannot know
+  its open period has closed, and §5.10 does not say what closes one.
 * A record that carries none of a monitor's fields is not an observation.
 * `Staleness` reduces its window with `max` (the worst staleness in the
   window is the safety question); `LatencyPercentiles` reports p95 by
   default and sums a §6 `latency_ms` phase map to one tick latency;
   `TrackingSignal` reports |Σe|/MAD so a `constant.max` bound reads as the
   classic |TS| > k.
+* `PageHinkley` is the classic recursion `PH_t = max(0, PH_{t−1} + (x_t −
+  x̄_t − δ))` with x̄_t the running mean INCLUDING x_t, its bound λ supplied
+  by the `threshold` strategy (one bound mechanism, not two), and a full
+  reset — accumulator AND running mean — on alarm, so the observation after
+  an alarm scores exactly 0 instead of re-alarming forever.
 """
 
 import dataclasses
@@ -1283,17 +1291,14 @@ def test_the_window_label_names_the_chunker_that_cut_it():
     feed(monitor, [decision_record([leg(final="none")]) for _ in range(2)])
     assert monitor.verdict().window.startswith("sliding:")
 
-    monitor = build("coverage", window={"kind": "period", "iso": "PT1M"}, min_n=1)
-    feed(monitor, [decision_record([leg(final="none")]) for _ in range(2)])
-    assert monitor.verdict().window.startswith("period:")
-
 
 def test_a_verdict_supplies_every_field_of_the_ledger_monitor_body():
-    monitor = feed(build("psi", name="pred_shift"), [kind_record("psi", i) for i in range(4)])
+    monitor = MONITOR_KINDS.resolve("psi")(kind_params("psi"), name="pred_shift")
+    feed(monitor, [kind_record("psi", i) for i in range(4)])
     verdict = monitor.verdict()
     fields = {f.name for f in dataclasses.fields(verdict)}
     assert set(MONITOR_BODY) - {"monitor"} <= fields
-    assert MONITOR_KINDS.resolve("psi")(kind_params("psi"), name="pred_shift").name == "pred_shift"
+    assert monitor.name == "pred_shift"
 
 
 # ---------------------------------------------------------------------------
