@@ -1,0 +1,364 @@
+{
+  "name": "p12-63-asset-modelability-gate3-continuation",
+  "notes": "P12 Gate-3-only continuation under ADR-0095: original data cut, pipeline, walk geometry, persisted Gate 1 rows and group caches; exclude only journal-backed 19-draw reconstructions and rerun every incomplete family under a new identity.",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe-p12.json"
+      }
+    },
+    "source_a": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split",
+        "universe": "configs/universe-p12.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      },
+      "notes": "alpaca-sip-split holds eleven P10 names and SPY; SPY is the reference every group build reads from this source under its own group universe bound."
+    },
+    "source_b": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-b",
+        "universe": "configs/universe-p12.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      }
+    },
+    "source_c": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-c",
+        "universe": "configs/universe-p12.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      }
+    },
+    "source_d": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-d",
+        "universe": "configs/universe-p12.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      }
+    },
+    "source_e": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-e",
+        "universe": "configs/universe-p12.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      }
+    },
+    "pooled": {
+      "uses": "concat",
+      "inputs": {
+        "a": "$source_a.records",
+        "b": "$source_b.records",
+        "c": "$source_c.records",
+        "d": "$source_d.records",
+        "e": "$source_e.records"
+      },
+      "params": {
+        "shape": "records",
+        "provenance_waiver": "Each immutable MarketRecord already carries its source; the five symbol namespaces are disjoint and checked below.",
+        "key": "symbol",
+        "consume_inputs": true
+      },
+      "notes": "The top-level pipeline is the template the stages derive from and is never run whole: the memory stage builds one cache per group from that group's sources alone (ADR-0094)."
+    },
+    "features": {
+      "uses": "intraday_equities-session-features",
+      "inputs": {
+        "records": "$pooled.merged",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "lookback": 20,
+        "layout": "columns",
+        "dtype": "float32",
+        "cache_dir": "./pipeline_cache/p12-features-f32-v5",
+        "momentum_horizons": [
+          {
+            "width": 3,
+            "tag": "3m",
+            "cross_session": false
+          },
+          {
+            "width": 120,
+            "tag": "2h",
+            "cross_session": true
+          },
+          {
+            "width": 180,
+            "tag": "3h",
+            "cross_session": true
+          },
+          {
+            "width": 780,
+            "tag": "2s",
+            "cross_session": true
+          },
+          {
+            "width": 1950,
+            "tag": "1w",
+            "cross_session": true
+          }
+        ]
+      }
+    },
+    "scan": {
+      "uses": "intraday_equities-no-information-scan",
+      "inputs": {
+        "records": "$features.records",
+        "bars": "$features.tape",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
+        "val_start_ms": "$splits.val_start_ms",
+        "val_end_ms": "$splits.val_end_ms",
+        "label_scale": "vol",
+        "label_residual": "SPY",
+        "label_residual_self": "raw",
+        "fit_symbols": [
+          "AAPL",
+          "JPM",
+          "XOM",
+          "WMT",
+          "LLY",
+          "QQQ",
+          "XLF",
+          "XLV",
+          "XLE",
+          "XLK",
+          "XLP",
+          "TSLA",
+          "TQQQ",
+          "NVDA",
+          "AMD",
+          "UPRO",
+          "BAC",
+          "AMZN",
+          "AVGO",
+          "NFLX",
+          "MSFT",
+          "GOOGL",
+          "SMH",
+          "IWM",
+          "ORCL",
+          "GLD",
+          "MRK",
+          "CRM",
+          "NEM",
+          "XBI",
+          "FCX",
+          "FTNT",
+          "DIS",
+          "DAL",
+          "PYPL",
+          "NRG",
+          "GM",
+          "MDT",
+          "BA",
+          "SBUX",
+          "TGT",
+          "ADM",
+          "MET",
+          "TMUS",
+          "MSTR",
+          "MRVL",
+          "NOW",
+          "LULU",
+          "SHOP",
+          "PANW",
+          "GDX",
+          "BABA",
+          "INTC",
+          "MU",
+          "CIEN",
+          "LRCX",
+          "TER",
+          "BIDU",
+          "LITE",
+          "C",
+          "ADBE",
+          "ANET",
+          "EOG"
+        ],
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 1,
+        "score_period_ms": 1800000,
+        "estimator": "lightgbm.LGBMRegressor",
+        "estimator_params": {
+          "n_estimators": 800,
+          "learning_rate": 0.005,
+          "num_leaves": 4,
+          "max_depth": 2,
+          "min_child_samples": 2000,
+          "reg_lambda": 100.0,
+          "reg_alpha": 0.1,
+          "subsample": 0.5,
+          "subsample_freq": 1,
+          "colsample_bytree": 0.3,
+          "n_jobs": 8,
+          "random_state": 0,
+          "verbosity": -1
+        }
+      }
+    }
+  },
+  "walkforward": {
+    "objective": "$scan.metrics.val_ic",
+    "select": "max",
+    "first": "2022-05-06",
+    "step_days": 63,
+    "count": 20,
+    "val_days": 63,
+    "embargo_days": 5,
+    "train_days": 730
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        },
+        "notes": "Local sqlite beside the invoking cwd."
+      }
+    ],
+    "notes": "Excluded from identity - where metrics land is not what it computes."
+  },
+  "outputs": {
+    "run_root": "./pipeline_runs"
+  },
+  "stages": {
+    "inventory": {
+      "uses": "intraday_equities.modelability_study:Gate3RecoveryInventoryStage",
+      "params": {
+        "source_document": "configs/run-p12-modelability.json",
+        "source_run": "pipeline_runs/p12-63-asset-modelability-staged-2026-02-28-2d203f5c",
+        "source_hash": "2d203f5c95c99eeedb69486cd378df6c884ce2a411840881a50a8e0844dc583b",
+        "data_cut": "2026-02-28",
+        "failure_action": "A12579",
+        "seeds": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18
+        ],
+        "alpha": 0.05
+      }
+    },
+    "gate3_recovery": {
+      "uses": "intraday_equities.modelability_study:Gate3ContinuationStage",
+      "inputs": {
+        "gate1": "$inventory.gate1",
+        "gate1_cells": "$inventory.gate1_cells",
+        "caches": "$inventory.caches",
+        "rerun": "$inventory.rerun",
+        "reconstructed": "$inventory.reconstructed"
+      },
+      "params": {
+        "seeds": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18
+        ],
+        "alpha": 0.05,
+        "expected_rerun": [
+          "NRG:1",
+          "BA:1",
+          "MET:1",
+          "MSTR:10",
+          "NOW:5",
+          "LULU:5",
+          "PANW:5",
+          "INTC:1",
+          "CIEN:5",
+          "LRCX:10",
+          "TER:5",
+          "BIDU:2",
+          "LITE:5",
+          "ADBE:5",
+          "ANET:3"
+        ]
+      }
+    }
+  }
+}

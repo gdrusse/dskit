@@ -21,6 +21,7 @@ once, here.
 from __future__ import annotations
 
 import json
+import math
 import os
 
 from dskit.pipeline.attempts import (
@@ -29,7 +30,10 @@ from dskit.pipeline.attempts import (
     early_stop_p_bound,
     tier2_verdict,
 )
-from dskit.pipeline.document import PipelineDocument
+from dskit.journal import find_journal
+from dskit.journal.store import read_actions
+from dskit.pipeline.document import PipelineDocument, load_document
+from dskit.pipeline.driver import FOLD_FIELDS, FOLD_OPTIONAL_FIELDS
 from dskit.pipeline.runs import score_walk
 from dskit.pipeline.stages import Stage, reject_unknown_params
 
@@ -37,6 +41,8 @@ from . import modelability as p10
 
 __all__ = [
     "Gate1Stage",
+    "Gate3RecoveryInventoryStage",
+    "Gate3ContinuationStage",
     "Gate3ResultStage",
     "Gate3WalksStage",
     "MemoryPreflightStage",
@@ -1015,4 +1021,593 @@ class Gate3ResultStage(_StudyStage):
             "gate3_passes": verdict["passes"],
             "gate3": verdict,
             "not_reached_reason": None,
+        }
+
+# ---------------------------------------------------------- P12 recovery seam
+
+
+def _strict_survivors(rows):
+    """Derive selected families only from persisted rows with an exact true flag."""
+    return [
+        {"asset": row["asset"], "horizon": row["gate1_h"]}
+        for row in rows
+        if row.get("gate1_passes") is True
+    ]
+
+
+def _read_recovery_stage(path, key, source_hash):
+    """Read one exact completed source-stage envelope."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError) as error:
+        raise ValueError(f"unreadable source stage artifact {path}") from error
+    expected_token = f"{source_hash}:{key}"
+    if (
+        not isinstance(payload, dict)
+        or payload.get("stage") != key
+        or payload.get("stage_token") != expected_token
+        or payload.get("state") != "ran"
+        or not isinstance(payload.get("outputs"), dict)
+    ):
+        raise ValueError(
+            f"{path} is not the completed {expected_token} source-stage artifact"
+        )
+    return payload["outputs"]
+
+
+def _matching_stage_actions(actions, artifact, token):
+    """Return journal IDs proving one persisted stage artifact."""
+    digest = p10._file_sha256(artifact)
+    artifact = os.path.abspath(artifact)
+    return [
+        row.id
+        for row in actions
+        if row.category == "execute"
+        and os.path.abspath(row.outputs) == artifact
+        and f"stage_token={token}" in row.notes
+        and "state=ran" in row.notes
+        and f"sha256={digest}" in row.notes
+    ]
+
+
+def _matching_walk_actions(actions, summary, document, asof):
+    """Return journal IDs proving one exact derived walk summary."""
+    summary = os.path.abspath(summary)
+    return [
+        row.id
+        for row in actions
+        if row.category == "execute"
+        and os.path.abspath(row.outputs) == summary
+        and f"hash={document.hash[:8]}" in row.notes
+        and f"asof={asof}" in row.notes
+        and "state=ran" in row.notes
+    ]
+
+
+def _ran_fold_problems(row, cutoff):
+    """Return fail-closed structural problems for one persisted ran fold."""
+    if not isinstance(row, dict):
+        return [f"fold {cutoff} is not an object"]
+    missing = [key for key in FOLD_FIELDS if key not in row]
+    extra = sorted(set(row) - (set(FOLD_FIELDS) | set(FOLD_OPTIONAL_FIELDS)))
+    score = row.get("score")
+    problems = []
+    if missing:
+        problems.append(f"fold {cutoff} missing {missing}")
+    if extra:
+        problems.append(f"fold {cutoff} has unsupported keys {extra}")
+    if row.get("cutoff") != cutoff:
+        problems.append(f"fold cutoff {row.get('cutoff')!r} != {cutoff!r}")
+    if row.get("state") != "ran" or "error" in row:
+        problems.append(
+            f"fold {cutoff} state={row.get('state')!r} error={row.get('error')!r}"
+        )
+    if (
+        isinstance(score, bool)
+        or not isinstance(score, (int, float))
+        or not math.isfinite(score)
+    ):
+        problems.append(f"fold {cutoff} score is not finite numeric: {score!r}")
+    run_dir = row.get("run_dir")
+    if not isinstance(run_dir, str) or not os.path.isdir(run_dir):
+        problems.append(f"fold {cutoff} run_dir is not present: {run_dir!r}")
+    return problems
+
+
+def _skill_problems(label, skill):
+    """Return missing or non-finite verdict inputs for one scored walk."""
+    if not isinstance(skill, dict):
+        return [f"{label} skill is not an object"]
+    problems = []
+    for key in ("r2oos", "t_pool", "t_fold"):
+        value = skill.get(key)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
+            problems.append(
+                f"{label} {key} is not finite numeric: {value!r}"
+            )
+    return problems
+
+
+def _walk_evidence(document, summary, asof, actions):
+    """Inventory one expected walk and its journal evidence without mutation."""
+    record_path = os.path.join(summary, "walkforward.json")
+    report_path = os.path.join(summary, "report.md")
+    problems = []
+    payload = None
+    try:
+        with open(record_path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError) as error:
+        problems.append(f"unreadable walkforward.json: {type(error).__name__}")
+    if not os.path.isfile(report_path):
+        problems.append("missing report.md")
+    if isinstance(payload, dict):
+        expected = {
+            "name": document.name,
+            "document_hash": document.hash,
+            "asof": asof,
+            "state": "ran",
+        }
+        for key, value in expected.items():
+            if payload.get(key) != value:
+                problems.append(f"{key}={payload.get(key)!r}, expected {value!r}")
+        folds = payload.get("folds")
+        cutoffs = p10._fold_cutoffs(document.walkforward)
+        if not isinstance(folds, list) or len(folds) != len(cutoffs):
+            problems.append(
+                f"fold count={len(folds) if isinstance(folds, list) else None}, "
+                f"expected {len(cutoffs)}"
+            )
+        else:
+            for row, cutoff in zip(folds, cutoffs):
+                problems.extend(_ran_fold_problems(row, cutoff))
+    elif payload is not None:
+        problems.append("walkforward.json is not an object")
+    action_ids = _matching_walk_actions(actions, summary, document, asof)
+    if not action_ids:
+        problems.append("missing matching journal evidence")
+    return {
+        "summary": summary,
+        "walkforward": record_path,
+        "report": report_path,
+        "document_hash": document.hash,
+        "action_ids": action_ids,
+        "complete": not problems,
+        "problems": problems,
+    }
+
+
+class Gate3RecoveryInventoryStage(Stage):
+    """Audit immutable P12 source artifacts and reconstruct only full families."""
+
+    outputs = (
+        "gate1",
+        "gate1_cells",
+        "caches",
+        "survivors",
+        "families",
+        "reconstructed",
+        "rerun",
+        "source",
+        "failure",
+    )
+    _PARAMS = (
+        "source_document",
+        "source_run",
+        "source_hash",
+        "data_cut",
+        "failure_action",
+        "seeds",
+        "alpha",
+    )
+
+    @classmethod
+    def validate_params(cls, params):
+        """Validate every immutable source pointer and verdict knob."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        for key in ("source_document", "source_run", "source_hash", "failure_action"):
+            if not isinstance(params.get(key), str) or not params.get(key):
+                problems.append(f"{key} must be a non-empty string")
+        source_hash = params.get("source_hash")
+        if isinstance(source_hash, str) and (
+            len(source_hash) != 64
+            or any(char not in "0123456789abcdef" for char in source_hash)
+        ):
+            problems.append("source_hash must be 64 lowercase hex digits")
+        if not _date_ok(params.get("data_cut")):
+            problems.append("data_cut must be a YYYY-MM-DD date")
+        _check_int_list(problems, "seeds", params.get("seeds"), ordered=False)
+        _check_alpha(problems, params)
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require no inputs; read only explicitly pinned persisted sources."""
+        return [] if inputs == {} else ["inventory takes no stage inputs"]
+
+    def _path(self, ctx, value):
+        return (
+            value if os.path.isabs(value) else os.path.join(p10._child_root(ctx), value)
+        )
+
+    def run(self, ctx, inputs):
+        """Return the evidence inventory, reconstructed families, and rerun set."""
+        del inputs
+        if ctx.asof != self.params["data_cut"]:
+            raise ValueError(
+                f"recovery must run at source data cut {self.params['data_cut']}"
+            )
+        source_path = self._path(ctx, self.params["source_document"])
+        source_document = load_document(source_path)
+        source_hash = self.params["source_hash"]
+        if source_document.hash != source_hash:
+            raise ValueError(
+                f"source document hash {source_document.hash} != pinned {source_hash}"
+            )
+        current = ctx.document.to_obj()
+        source_obj = source_document.to_obj()
+        moved = [
+            key
+            for key in ("pipeline", "walkforward", "outputs")
+            if current.get(key) != source_obj.get(key)
+        ]
+        if moved:
+            raise ValueError(f"continuation changed original computation at {moved}")
+        source_run = self._path(ctx, self.params["source_run"])
+        stage_dir = os.path.join(source_run, "stages")
+        gate1_path = os.path.join(stage_dir, "gate1.json")
+        memory_path = os.path.join(stage_dir, "memory.json")
+        gate1 = _read_recovery_stage(gate1_path, "gate1", source_hash)
+        memory = _read_recovery_stage(memory_path, "memory", source_hash)
+        if set(gate1) != {"rows", "cells"}:
+            raise ValueError("source gate1 outputs are not exactly rows and cells")
+        if memory.get("passed") is not True or not isinstance(
+            memory.get("groups"), dict
+        ):
+            raise ValueError("source memory stage did not persist passed group caches")
+        rows = gate1["rows"]
+        cells = gate1["cells"]
+        cohort = _document_cohort(source_document)
+        if (
+            not isinstance(rows, list)
+            or [row.get("asset") for row in rows if isinstance(row, dict)] != cohort
+        ):
+            raise ValueError("source gate1 rows are not the ordered source cohort")
+        survivors = _strict_survivors(rows)
+        if any(
+            isinstance(item["horizon"], bool)
+            or not isinstance(item["horizon"], int)
+            or item["horizon"] < 1
+            for item in survivors
+        ):
+            raise ValueError("a persisted passing gate1 row has no positive horizon")
+        observed = {}
+        for item in survivors:
+            matches = [
+                cell
+                for cell in cells
+                if cell.get("asset") == item["asset"]
+                and cell.get("horizon") == item["horizon"]
+            ]
+            if len(matches) != 1 or not isinstance(matches[0].get("skill"), dict):
+                raise ValueError(
+                    f"selected Gate-1 cell missing for {item['asset']}@{item['horizon']}"
+                )
+            observed[(item["asset"], item["horizon"])] = matches[0]
+        root = find_journal(start=p10._child_root(ctx))
+        if root is None:
+            raise ValueError("child journal is unavailable")
+        actions = read_actions(root)
+        source_actions = {
+            "gate1": _matching_stage_actions(
+                actions, gate1_path, f"{source_hash}:gate1"
+            ),
+            "memory": _matching_stage_actions(
+                actions, memory_path, f"{source_hash}:memory"
+            ),
+        }
+        if not all(source_actions.values()):
+            raise ValueError(
+                f"source stages lack matching journal evidence: {source_actions}"
+            )
+        caches = memory["groups"]
+        _StudyStage.refuse_moved_universes(self, ctx, caches)
+        placement = _place(cohort, caches)
+        families = []
+        reconstructed = []
+        rerun = []
+        for item in survivors:
+            asset = item["asset"]
+            horizon = item["horizon"]
+            seed_rows = []
+            for seed in self.params["seeds"]:
+                tag = f"gate3-seed{seed:02d}"
+                document = asset_walk_document(
+                    source_document,
+                    source_document.name,
+                    asset,
+                    horizon,
+                    caches[placement[asset]],
+                    tag=tag,
+                    scramble_seed=seed,
+                )
+                summary = p10._summary_dir(
+                    document, self.params["data_cut"], p10._child_root(ctx)
+                )
+                main = _walk_evidence(
+                    document, summary, self.params["data_cut"], actions
+                )
+                parts = []
+                for index, cutoff in enumerate(p10._fold_cutoffs(document.walkforward)):
+                    part = p10._single_fold_document(document, cutoff, index)
+                    part_summary = p10._summary_dir(
+                        part, self.params["data_cut"], p10._child_root(ctx)
+                    )
+                    parts.append(
+                        _walk_evidence(
+                            part, part_summary, self.params["data_cut"], actions
+                        )
+                    )
+                complete = main["complete"] and all(part["complete"] for part in parts)
+                seed_rows.append(
+                    {
+                        "seed": seed,
+                        "complete": complete,
+                        "main": main,
+                        "parts": parts,
+                    }
+                )
+            family_complete = len(seed_rows) == len(self.params["seeds"]) and all(
+                seed["complete"] for seed in seed_rows
+            )
+            family = {
+                "asset": asset,
+                "horizon": horizon,
+                "classification": (
+                    "complete_end_to_end" if family_complete else "incomplete"
+                ),
+                "seeds": seed_rows,
+            }
+            families.append(family)
+            if not family_complete:
+                rerun.append(item)
+                continue
+            draws = []
+            selected = observed[(asset, horizon)]
+            verdict_problems = _skill_problems("observed", selected["skill"])
+            for seed_row in seed_rows:
+                label = f"seed {seed_row['seed']}"
+                try:
+                    skill = _score_one(
+                        seed_row["main"]["summary"],
+                        asset,
+                        horizon,
+                        self.params["alpha"],
+                    )
+                except (KeyError, OSError, TypeError, ValueError) as error:
+                    verdict_problems.append(
+                        f"{label} scoring failed: {type(error).__name__}: {error}"
+                    )
+                    continue
+                skill_problems = _skill_problems(label, skill)
+                verdict_problems.extend(skill_problems)
+                if skill_problems:
+                    continue
+                draws.append(
+                    {
+                        "seed": seed_row["seed"],
+                        "summary": seed_row["main"]["summary"],
+                        "walkforward": seed_row["main"]["walkforward"],
+                        "report": seed_row["main"]["report"],
+                        "summary_action_ids": seed_row["main"]["action_ids"],
+                        "part_summaries": [
+                            part["summary"] for part in seed_row["parts"]
+                        ],
+                        "part_action_ids": [
+                            action_id
+                            for part in seed_row["parts"]
+                            for action_id in part["action_ids"]
+                        ],
+                        "r2oos": skill["r2oos"],
+                        "t_pool": skill["t_pool"],
+                        "t_fold": skill["t_fold"],
+                    }
+                )
+            if verdict_problems:
+                family["classification"] = "non_reconstructable"
+                family["verdict_input_problems"] = verdict_problems
+                rerun.append(item)
+                continue
+            verdict = tier2_verdict(
+                selected["skill"]["r2oos"],
+                [draw["r2oos"] for draw in draws],
+                [draw["t_pool"] for draw in draws],
+            )
+            reconstructed.append(
+                {
+                    "asset": asset,
+                    "horizon": horizon,
+                    "observed": {
+                        "cell": selected["cell"],
+                        "walk": selected["walk"],
+                        "skill": selected["skill"],
+                    },
+                    "draws": draws,
+                    "all_required_draws": (
+                        len(draws) == len(self.params["seeds"]) == 19
+                    ),
+                    "verdict": verdict,
+                    "result": {
+                        "gate3_status": "pass" if verdict["passes"] else "fail",
+                        "gate3_passes": verdict["passes"],
+                        "gate3": verdict,
+                        "not_reached_reason": None,
+                    },
+                    "method": (
+                        "persisted Gate-1 selected cell plus 19 exact journal-backed "
+                        "null summaries; intraday_equities.modelability_study."
+                        "_score_one and dskit.pipeline.attempts.tier2_verdict"
+                    ),
+                }
+            )
+        failure_id = self.params["failure_action"]
+        failure_matches = [row for row in actions if row.id == failure_id]
+        if len(failure_matches) != 1:
+            raise ValueError(f"failure action {failure_id} is not unique")
+        failure = failure_matches[0].to_obj()
+        if (
+            "state=error" not in failure["notes"]
+            or "seed05-nrg-h01-part-00 finished without journal evidence"
+            not in failure["notes"]
+        ):
+            raise ValueError(f"{failure_id} is not the pinned NRG crash")
+        return {
+            "gate1": rows,
+            "gate1_cells": cells,
+            "caches": caches,
+            "survivors": survivors,
+            "families": families,
+            "reconstructed": reconstructed,
+            "rerun": rerun,
+            "source": {
+                "document": source_path,
+                "document_hash": source_hash,
+                "run": source_run,
+                "gate1": gate1_path,
+                "memory": memory_path,
+                "stage_action_ids": source_actions,
+                "data_cut": self.params["data_cut"],
+            },
+            "failure": failure,
+        }
+
+
+class Gate3ContinuationStage(Gate3WalksStage):
+    """Rerun only inventory-declared incomplete families under a new identity."""
+
+    outputs = (
+        "rows",
+        "rerun_rows",
+        "walks",
+        "draws",
+        "rerun_families",
+        "excluded_families",
+    )
+    _PARAMS = ("seeds", "alpha", "expected_rerun")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Validate shipped verdict knobs and the pinned rerun inventory."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        _check_int_list(problems, "seeds", params.get("seeds"), ordered=False)
+        _check_alpha(problems, params)
+        expected = params.get("expected_rerun")
+        if (
+            not isinstance(expected, list)
+            or not expected
+            or any(not isinstance(value, str) or ":" not in value for value in expected)
+            or len(set(expected)) != len(expected)
+        ):
+            problems.append("expected_rerun must be unique asset:horizon strings")
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require the immutable inventory outputs used by the continuation."""
+        needed = {"gate1", "gate1_cells", "caches", "rerun", "reconstructed"}
+        return [] if set(inputs) == needed else [f"requires {sorted(needed)}"]
+
+    def run(self, ctx, inputs):
+        """Audit every rerun family, then and only then emit the combined result."""
+        gate1 = inputs["gate1"]
+        cohort = self.cohort(ctx)
+        if [row.get("asset") for row in gate1] != cohort:
+            raise ValueError("continuation Gate-1 input is not the ordered cohort")
+        survivors = _strict_survivors(gate1)
+        survivor_keys = [f"{item['asset']}:{item['horizon']}" for item in survivors]
+        rerun_families = inputs["rerun"]
+        rerun_keys = [f"{item['asset']}:{item['horizon']}" for item in rerun_families]
+        rerun_key_set = set(rerun_keys)
+        rerun = [
+            row for row in gate1 if f"{row['asset']}:{row['gate1_h']}" in rerun_key_set
+        ]
+        if rerun_keys != self.params["expected_rerun"]:
+            raise ValueError(
+                f"inventory rerun families {rerun_keys} != pinned "
+                f"{self.params['expected_rerun']}"
+            )
+        reconstructed = inputs["reconstructed"]
+        excluded_keys = [f"{item['asset']}:{item['horizon']}" for item in reconstructed]
+        if (
+            len(set(rerun_keys)) != len(rerun_keys)
+            or len(set(excluded_keys)) != len(excluded_keys)
+            or set(rerun_keys) & set(excluded_keys)
+            or set(rerun_keys) | set(excluded_keys) != set(survivor_keys)
+            or any(item.get("all_required_draws") is not True for item in reconstructed)
+        ):
+            raise ValueError(
+                "reconstructed and rerun families do not exactly partition survivors"
+            )
+        caches = self.caches(ctx, inputs)
+        self.refuse_moved_universes(ctx, caches)
+        placement = _place(cohort, caches)
+        observed = _observed_skill(inputs["gate1_cells"])
+        self._refuse_unscored_cells(rerun, observed)
+        walks = {}
+        draws = {}
+        for item in rerun:
+            asset = item["asset"]
+            horizon = item["gate1_h"]
+            draws[asset] = self._audit(
+                ctx,
+                asset,
+                horizon,
+                caches[placement[asset]],
+                observed[(asset, horizon)]["r2oos"],
+                walks,
+            )
+        Gate3ResultStage._refuse_malformed_draws(self, rerun, draws)
+        decision_inputs = {
+            "draws": draws,
+            "walks": walks,
+        }
+        rerun_rows = []
+        for base in rerun:
+            final = dict(base)
+            final.update(
+                Gate3ResultStage._decide(self, base, observed, decision_inputs)
+            )
+            rerun_rows.append(final)
+        rerun_by_key = {f"{row['asset']}:{row['gate1_h']}": row for row in rerun_rows}
+        reconstructed_by_key = {
+            f"{item['asset']}:{item['horizon']}": item for item in reconstructed
+        }
+        rows = []
+        for base in gate1:
+            final = {
+                **base,
+                "gate3_status": "not_reached",
+                "gate3_passes": False,
+            }
+            if not base["gate1_passes"]:
+                final["not_reached_reason"] = "gate1_failed_at_h1"
+            else:
+                key = f"{base['asset']}:{base['gate1_h']}"
+                if key in rerun_by_key:
+                    final = {**base, **rerun_by_key[key]}
+                else:
+                    final.update(reconstructed_by_key[key]["result"])
+            rows.append(final)
+        return {
+            "rows": rows,
+            "rerun_rows": rerun_rows,
+            "walks": walks,
+            "draws": draws,
+            "rerun_families": rerun_keys,
+            "excluded_families": excluded_keys,
         }

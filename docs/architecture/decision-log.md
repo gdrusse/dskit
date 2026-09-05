@@ -4952,3 +4952,41 @@ one-child guard imposes rather than a weakening of the preflight. Adding a
 name is a config edit — its source, its group universe, the union universe
 and `fit_symbols` — and moves the document's identity by design; editing a
 group universe alone is refused by the gates until the document changes.
+
+
+## ADR-0095 — P12 Gate-3 recovery is evidence reconstruction plus a new continuation
+
+**Status:** Accepted
+**Date:** 2026-09-05
+
+**Decision.** The failed P12 staged identity remains immutable. Recovery reads
+Gate-1 survivors and selected horizons only from the persisted `gate1.json`
+rows whose `gate1_passes` value is exactly `true`; it reads the original cache
+mapping from the persisted memory-stage record and refuses a changed source
+document hash, data cut, pipeline, walk geometry, cache universe, or stage
+token. No partial walk artifact is deleted, rewritten, renamed, or promoted.
+
+A historical Gate-3 family is reconstructable only when all 19 declared seed
+summaries and all 20 single-fold summaries per seed have their expected derived
+document identities, `ran` records, reports, run directories, and matching
+append-only journal evidence. The observed selected Gate-1 cell and every null
+`r2oos`/`t_pool`/`t_fold` are retained with their source paths and action IDs;
+the verdict is produced only by the shipped `tier2_verdict`. Anything else is
+classified for rerun, including a complete-looking artifact without journal
+evidence. Reconstruction records no evidence on behalf of an orphan.
+
+Reruns use a Gate-3-only continuation document with the original pipeline,
+walk-forward geometry, source cut, persisted caches, Gate-1 rows, and horizons,
+but a new study name. Its derived walk identities therefore cannot collide
+with the failed P12 directories. The continuation excludes only fully
+reconstructed families, audits every remaining family through the shipped
+ordered fail-fast rule, and emits a combined final row set only after every
+required rerun family has reached its legitimate terminal result. Early-stop
+failures remain legitimate shipped Gate-3 results; reconstructed historical
+families require all 19 draws.
+
+**Consequences.** Recovery is reproducible from named immutable evidence,
+A12579 remains the crash record, and final provenance distinguishes extraction
+from computation. The parent fold runner may journal a fresh exit-zero fold
+only after validating the full document identity and complete finite scored
+row; pre-existing or malformed artifacts still fail closed.

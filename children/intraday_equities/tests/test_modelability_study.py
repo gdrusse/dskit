@@ -914,3 +914,108 @@ def test_p11s_pinned_cohort_is_the_exemption_its_own_document_needs():
     assert "SPY" in str(refusal.value)
     assert stage.cohort(ctx) == p11._ASSETS
     assert len(stage.cohort(ctx)) == 25 and "SPY" in stage.cohort(ctx)
+
+# -- P12 Gate-3 recovery -------------------------------------------------------
+
+
+def test_recovery_survivors_come_only_from_exact_persisted_true_rows():
+    rows = [
+        {"asset": "A", "gate1_h": 1, "gate1_passes": True},
+        {"asset": "B", "gate1_h": 2, "gate1_passes": False},
+        {"asset": "C", "gate1_h": 3, "gate1_passes": "true"},
+        {"asset": "D", "gate1_h": 5},
+    ]
+    assert study._strict_survivors(rows) == [{"asset": "A", "horizon": 1}]
+
+
+@pytest.mark.parametrize("bad", [None, True, float("nan"), float("inf")])
+def test_recovery_refuses_incomplete_or_nonfinite_verdict_inputs(bad):
+    valid = {"r2oos": 0.1, "t_pool": 2.0, "t_fold": 1.5}
+    assert study._skill_problems("seed 0", valid) == []
+    for key in valid:
+        problems = study._skill_problems(
+            "seed 0", {**valid, key: bad}
+        )
+        assert len(problems) == 1
+        assert key in problems[0]
+        assert "finite numeric" in problems[0]
+
+
+def test_recovery_configs_preserve_the_source_computation_and_plan_offline():
+    from dskit.pipeline.stages import plan_stages
+
+    source = _raw("run-p12-modelability.json")
+    inventory = _raw("run-p12-gate3-recovery-inventory.json")
+    continuation = _raw("run-p12-gate3-continuation.json")
+    for recovery in (inventory, continuation):
+        for key in ("pipeline", "walkforward", "outputs"):
+            assert recovery[key] == source[key]
+        params = recovery["stages"]["inventory"]["params"]
+        assert params["source_hash"] == load_document(str(P12)).hash
+        assert params["data_cut"] == "2026-02-28"
+        assert params["failure_action"] == "A12579"
+        assert params["seeds"] == list(range(19))
+    assert list(inventory["stages"]) == ["inventory"]
+    assert list(continuation["stages"]) == ["inventory", "gate3_recovery"]
+    expected = continuation["stages"]["gate3_recovery"]["params"]["expected_rerun"]
+    assert expected[0] == "NRG:1"
+    assert len(expected) == 15
+    assert plan_stages(
+        load_document(str(CONFIGS / "run-p12-gate3-recovery-inventory.json"))
+    ).order == ("inventory",)
+    assert plan_stages(
+        load_document(str(CONFIGS / "run-p12-gate3-continuation.json"))
+    ).order == (
+        "inventory",
+        "gate3_recovery",
+    )
+
+
+def test_continuation_reruns_inventory_family_then_combines_results(
+    tmp_path, monkeypatch
+):
+    nulls = {"A": {0: 0.0, 1: 0.02}, "B": {0: -0.01, 1: -0.01}}
+    ctx, _walks, _result, documents, gate1, cells, caches = _gate3_harness(
+        tmp_path, monkeypatch, nulls
+    )
+    stage = study.Gate3ContinuationStage(
+        "gate3_recovery",
+        {"seeds": [0, 1], "alpha": 0.05, "expected_rerun": ["A:2"]},
+    )
+    reconstructed = [
+        {
+            "asset": "B",
+            "horizon": 5,
+            "all_required_draws": True,
+            "result": {
+                "gate3_status": "pass",
+                "gate3_passes": True,
+                "gate3": {"passes": True},
+                "not_reached_reason": None,
+            },
+        }
+    ]
+    out = stage.run(
+        ctx,
+        {
+            "gate1": gate1,
+            "gate1_cells": cells,
+            "caches": caches,
+            "rerun": [{"asset": "A", "horizon": 2}],
+            "reconstructed": reconstructed,
+        },
+    )
+    a, b, c = out["rows"]
+    assert (a["asset"], a["gate3_status"], a["stop_seed"]) == ("A", "fail", 1)
+    assert (b["asset"], b["gate3_status"], b["gate3_passes"]) == (
+        "B",
+        "pass",
+        True,
+    )
+    assert (c["asset"], c["gate3_status"]) == ("C", "not_reached")
+    assert out["rerun_families"] == ["A:2"]
+    assert out["excluded_families"] == ["B:5"]
+    assert [(asset, horizon) for asset, horizon, _cache, _seed in documents] == [
+        ("A", 2),
+        ("A", 2),
+    ]
