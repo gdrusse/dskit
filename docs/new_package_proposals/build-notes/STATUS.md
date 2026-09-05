@@ -22,20 +22,20 @@ Updated every commit. **Complete** = code green + committed. **Remaining** = not
 | G14 | `verifier.py` `executor.py` (+ conformance battery) | 453 |
 | G15 | `monitors.py` | 188 |
 | G16 | `alerts.py` `health.py` | ~345 |
+| G17 | `leg.py` (LegPipeline, the eight steps, Authority family, ActPermit minting) | 138 |
 | S0 | plan: phases 2/2b/3 specified to phase-1 standard; rulings R1–R28 folded; `check_plan.py` CLEAN | n/a |
 
 Reviews done: **R1** foundations+ledger, **R2** seam+state (rulings R15–R17), **R3** authority stack+policy (R23–R24).
 
 ## REMAINING
 
-1. **G17 `leg.py`** — red tests committed (`test_leg.py`, 138 cases). Build not started.
-2. **G18 `compose.py` + `loop.py`** — tests not written.
-3. **G19 `__main__.py` + e2e** — not started.
-4. **G20 `test_oop.py` + `test_producers.py`** — not started.
-5. **G21 docs/examples/skeleton** (§9.2, §9.3) — not started.
-6. **Reviews outstanding**: guards+feed/decider; control/accounting+reconcile/readiness+monitors+alerts/health; the Stage 0 specification itself; then leg/compose/loop after they build.
-7. **Phase 2, 2b, 3** — specified, not built.
-8. **Wrap** — full suite, ADR-0090/0091 → accepted, TODO/README/CLAUDE/AGENTS trees, merge decision.
+1. **G18 `compose.py` + `loop.py`** — tests not written.
+2. **G19 `__main__.py` + e2e** — not started.
+3. **G20 `test_oop.py` + `test_producers.py`** — not started.
+4. **G21 docs/examples/skeleton** (§9.2, §9.3) — not started.
+5. **Reviews outstanding**: guards+feed/decider; leg; control/accounting+reconcile/readiness+monitors+alerts/health; the Stage 0 specification itself; then leg/compose/loop after they build.
+6. **Phase 2, 2b, 3** — specified, not built.
+7. **Wrap** — full suite, ADR-0090/0091 → accepted, TODO/README/CLAUDE/AGENTS trees, merge decision.
 
 ## Operating rules (owner, this session)
 One subagent at a time; Opus only; commit and push after every unit of work with a status line.
