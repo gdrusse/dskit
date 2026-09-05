@@ -5010,3 +5010,199 @@ in the research root. Legacy flat files stay. Skills
 **Consequences.** Existing slug paths are historical. New rows point at
 the dated relative path. Same-day name collisions append a UTC-time
 stem.
+
+
+## ADR-0097 — The model zoo is a benchmark protocol over declared pipeline documents
+
+**Status:** Accepted (2026-09-05; owner approved implementation)
+
+**Context.** The post-Gate-3 synthesis recommends tabular incumbents,
+small pooled challengers, bounded sequence/foundation challengers and
+model-specific tuning. Most mechanisms already ship: sklearn and LightGBM
+doorways, twelve `torch_ts` architectures, pinned pretrained forecasts,
+grid and Optuna search, feature selectors, seed averaging, walk-forward,
+MLflow, and nineteen parity-pinned P7 documents. The P7 family is unrun.
+What does not ship is one resumable study that inventories those documents,
+enforces their common protocol, executes them, and compares paired outer-fold
+predictions without treating inner tuning scores as evidence.
+
+**Decision.** Build an official model zoo as a JSON-declared benchmark, not
+as a registry of model classes.
+
+1. A staged benchmark document declares candidate pipeline-document paths,
+a stable candidate id, family, representation, feature policy, seed policy,
+and compute class. Estimators remain named inside the candidate documents;
+no hard-coded estimator list enters Python.
+
+2. `dskit.pipeline.benchmarks` supplies three generic stages. `BenchmarkPlan`
+loads every candidate, records its content hash, validates it, and refuses a
+duplicate id/path/hash or a changed shared contract. `BenchmarkRun` invokes
+the existing walk-forward runner and is the only executing stage.
+`BenchmarkCompare` reads the resulting summaries and emits paired fold rows,
+a fixed-compute ranking, a quality-versus-compute frontier, and provenance.
+It never promotes a winner automatically.
+
+3. The shared contract pins the data/universe inputs, target, eligible scoring
+instants, outer purged/embargoed folds, costs, null baseline, primary score,
+lockbox, and attempt family. Candidate-owned fields are representation,
+causal preprocessing, feature/channel selection, model class, search prior,
+early stopping, and seeds. Equality is checked from declared JSON paths; a
+candidate cannot silently move a shared field.
+
+4. Feature selection is part of the candidate estimator pipeline and is fit
+again inside every inner training split. Selector choice/count and estimator
+hyperparameters are tuned jointly. A selector fit once on the whole sample is
+refused. Trees may declare intrinsic selection (`max_features`, column
+sampling and regularization) rather than a redundant external selector;
+sequence models select channel groups and context lengths, not arbitrary
+flattened lag columns.
+
+5. Outer walk-forward folds alone compare candidates. Inner scores select
+features and hyperparameters only. A generic search node that optimizes the
+same fold later reported as evidence is refused by the benchmark contract;
+the existing child inner-holdout HPO is admissible. Every attempted candidate
+enters the multiple-testing family. The simplest statistically
+indistinguishable candidate wins, subject to the predeclared decision metric.
+
+6. Two views are mandatory: a fixed declared compute-class league table and
+a quality-versus-compute frontier. The initial record uses an ordinal
+`compute_rank` and says so in provenance; it must not be described as measured
+compute. Elapsed time, peak memory and inference latency join the frontier only
+after walk-forward owns portable resource fields. Equal trial counts are not
+treated as equal tuning effort.
+
+7. The initial child benchmark reuses the nineteen P7 documents and inventories
+the missing controls required for coverage: elastic net, histogram boosting,
+a small standardized MLP, compact PatchTST/transformer candidates, and a TSFM
+baseline. A gap stays disabled until its parity-pinned candidate document and
+model-specific prerequisite exist. Sequence candidates remain disabled until
+every dynamic channel has a true lag history; foundation candidates remain
+disabled until a manifest-pinned snapshot and its pretraining-cut disclosure
+exist. A disabled candidate carries a named prerequisite and is not an attempt.
+
+8. Mean prediction is selected first. Quantile heads, rolling conformal
+calibration, joint residual scenarios, and conditional-mean uncertainty are a
+second benchmark over promoted models. Realized-return uncertainty and
+uncertainty in expected alpha are separate outputs. Mixed per-name horizons
+cannot feed one optimizer until the downstream decision document declares
+their holding-period semantics or a common decision-unit normalization.
+
+**Implementation files (nothing executes during the build).**
+
+- `dskit/pipeline/benchmarks.py` and `tests/pipeline/test_benchmarks.py`;
+- pipeline README/AGENTS/CLAUDE inventory updates;
+- `children/intraday_equities/configs/run-p13-model-zoo.json`;
+- disabled manifest entries naming the missing candidate documents and gates;
+- child config/contract tests, plus the completed audit canvas outside git.
+
+**Consequences.** The existing P7 work becomes the first inventory rather
+than being duplicated. Model families receive individualized pipelines while
+their evidence stays comparable. The build can be fully planned and tested
+without launching a benchmark; execution remains a separate owner action.
+
+
+## ADR-0098 — One locked predictive-program calendar governs every phase
+
+**Status:** Accepted and locked (2026-09-05; owner directed)
+
+**Context.** ADR-0058's historical 40-fold calendar, ADR-0087's later 20-fold
+modelability schedule, P12 Gate 1/Gate 3, the P7 candidate documents, final
+HPO, uncertainty calibration, and simulation boundaries were described in
+multiple places. A comparison can be temporally valid while still becoming
+irreproducible if those copies drift.
+
+**Decision.** `children/intraday_equities/configs/program-calendar.json` is
+the sole active temporal authority for the predictive program. It supersedes
+ADR-0058 only for the Gate 1/Gate 3/model-zoo fold calendar; ADR-0058 remains
+historical evidence.
+
+1. Gate 1, Gate 3, and the model zoo use the same rolling-origin outer
+schedule: `first=2022-05-06`, `step_days=63`, `count=20`, `val_days=63`,
+`embargo_days=5`, and `train_days=730`. The validation union ends
+2025-10-16; the final fold is `[2025-08-15, 2025-10-17)`.
+
+2. Outer folds are paired development-selection evidence. Feature selection
+and HPO are refit inside training data; no inner score is reported as outer
+evidence. Reuse across modelability and the zoo is declared reuse, not an
+independent confirmation claim.
+
+3. Finalist-only HPO trains through 2025-11-30, embargoes 2025-12-01, and
+validates from 2025-12-02 through 2026-02-28. That validation is spent by
+selection. The frozen winner may then be refit through 2026-02-28.
+
+4. March-May 2026 first confirms the frozen mean model, then calibrates its
+uncertainty from out-of-sample residual vectors. It is not an independent test
+of the newly calibrated uncertainty product. June-August 2026 is the first
+untouched full-system simulation, including August Test B. The mean,
+uncertainty, Gate 2 HFDR, MIO, costs, and execution bundle freeze before
+2026-06-01. Production is ineligible before 2026-09-01 and owner approval.
+
+5. `ProgramCalendar` validates the calendar and pins its SHA-256 digest.
+`BenchmarkPlan` refuses a model-zoo candidate that changes any declared outer
+walk-forward field or whose as-of exceeds the phase limit. Date-bearing
+documents may retain explanatory copies, but the calendar is authoritative.
+
+**Research basis.** Nested selection follows Cawley-Talbot and Varma-Simon;
+rolling temporal evaluation follows Cerqueira et al., Bergmeir et al., and
+Racine; data-snooping control follows White and Hansen; paired predictive
+comparison follows Diebold-Mariano and Giacomini-White; reserving a frozen
+end-to-end backtest responds to Bailey et al. The exact 20/63/730/5 geometry
+and exact boundary dates are judgemental, predeclared engineering choices.
+Full citations and the alignment audit are journaled at
+`children/intraday_equities/docs/research/predictive-program-calendar/2026-09-05-synthesis.md`
+under action A18623.
+
+**Consequences.** Gate 1, Gate 3, and every enabled P13 candidate currently
+match the locked outer schedule. Any future date change must amend this ADR
+and calendar together, move the calendar hash, and invalidate plans created
+under the prior hash. No pipeline execution is authorized by this decision.
+
+
+## ADR-0099 — P13 is a post-Gate-3 benchmark with a reviewed inventory barrier
+
+**Status:** Accepted and locked (2026-09-05; owner directed)
+
+**Context.** ADR-0097 established the benchmark protocol, but its first
+implementation inventory reused the historical five-name P7 shortlist. Gate 3
+later completed under A18622 with 25 approved asset/horizon pairs spanning
+1/2/3/5/10 minutes. A family comparison on the P7 cohort would not answer which
+architecture should serve the eligible portfolio. The first review also found
+that a 9,999-draw bootstrap cannot attain a Bonferroni threshold across roughly
+1,950 all-pairwise tests.
+
+**Decision.** P13 materializes one ordinary asset-local candidate document for
+each enabled architecture and each of the exact 25 A18622 passers. The P12
+source-document identity, Gate-3 result bytes, memory/cache result bytes, group
+membership, and program calendar are pinned. Missing, duplicate, failed, or
+wrong-status Gate-3 rows fail closed.
+
+The locked initial attempt has 13 enabled families: Gate-3 LightGBM incumbent,
+tuned LightGBM, ExtraTrees, RandomForest, HistGradientBoosting, PLS, ridge,
+elastic net, small tabular MLP, NLinear, small GRU, compact PatchTST, and compact
+transformer. Every challenger tunes a family-appropriate feature count or
+causal context inside the outer training data; the unchanged incumbent is the
+control. A foundation-model forecast is outside the attempt until its snapshot
+and pretraining cutoff are verifiably frozen.
+
+`BenchmarkPlan` emits a deterministic inventory hash that excludes transient
+artifact paths. `BenchmarkApproval` makes the first invocation plan-only and
+passes an exact inventory only after a reviewer identity and matching hash are
+written into JSON. `BenchmarkRun` cannot call a candidate without that approval
+and atomically checkpoints every completed candidate. Resume accepts only a
+successful, hash-identical candidate with complete, internally consistent fold
+evidence.
+
+Comparison requires the same families and ordered 20 cutoffs on every approved
+pair. It uses two-sided paired fold differences with a predeclared one-lag
+Newey-West variance estimate and global Bonferroni correction across all
+pairwise tests. “No detectable deficit from the observed best” is a heuristic
+tie-break, not an equivalence claim. Families aggregate with equal weight over
+all 25 approved pairs. No winner is auto-promoted.
+
+**Consequences.** ADR-0097's five-name P7 inventory is superseded; its generic
+benchmark principles remain active. P13 now answers the post-Gate-3 decision on
+the eligible target set, preserves apples-to-apples fold evidence, and cannot
+accidentally begin training during inventory review. The exact family list,
+equal pair weights, HPO grids, ordinal compute ranks, HAC lag, and Bonferroni
+policy are judgemental predeclared choices. No pipeline or test execution is
+authorized by this decision.

@@ -151,6 +151,16 @@ on it without breaking its rulings.
   1, empty refused, an explicit `workers` wins, never a document's).
   `measure_one` must be the FIRST child the process reaps: a stage that
   calls it may have no spawning predecessor in the staged DAG.
+- **Model benchmarks** — `benchmarks.py` is a protocol over ordinary
+  candidate documents, never an estimator registry (ADR-0097). Candidate JSON
+  owns representation, leakage-safe feature policy, inner HPO, seeds, and
+  compute class. `BenchmarkPlan` must remain read-only and reject duplicate
+  identities, contract drift, and generic search nodes under walk-forward;
+  `BenchmarkApproval` must bind the exact reviewed inventory hash before
+  `BenchmarkRun`, the only candidate-executing stage; `BenchmarkCompare` reads
+  paired outer folds and never promotes a winner. Disabled candidates name a
+  prerequisite and do not count as attempts. Until walk-forward records a
+  portable resource contract, call `compute_rank` declared—not measured.
 - **One name per shared vocabulary.** `node.class_ref(cls)` is the
   `module:QualName` an artifact sidecar RECORDS and load mode compares —
   three modules used to write that f-string out, and a divergence there
@@ -435,6 +445,7 @@ dskit/pipeline/
 ├── driver.py          run_document: LOAD..RECORD, $prev, journal hook
 │                      (ADR-0056); run_walk_forward (ADR-0027)
 ├── stages.py          journal-backed staged DAG execution and resume (ADR-0081)
+├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)
 ├── folds.py           BoundedFoldRunner: capped, width-bounded fold spawning;
 │                      spawn is the hook, measure_one the one reading (ADR-0093)
 ├── runs.py            the READER: scan_runs/format_runs over a run root (`runs` verb)

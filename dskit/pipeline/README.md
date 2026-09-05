@@ -149,6 +149,25 @@ kinds resolve. Two more verbs — `demo`
   drop the search node — which moves its hash by design, because a
   different computation is a different identity. A summary whose folds
   declared no search node is byte-identical to a pre-ADR-0043 one.
+- **Model benchmarks** (ADR-0097): a staged JSON composes
+  `dskit.pipeline.benchmarks:BenchmarkPlan`, `BenchmarkApproval`,
+  `BenchmarkRun`, and `BenchmarkCompare`. The plan stage loads ordinary
+  candidate documents,
+  pins their hashes, rejects duplicate identities, enforces declared
+  within-group contract paths, and refuses generic search nodes whose outer
+  validation score would be reused as evidence. The approval stage binds a
+  reviewed inventory hash; while pending, run and compare emit no-launch
+  evidence. The run stage is the only candidate-executing stage and delegates
+  to `run_walk_forward`; the compare stage
+  requires identical ordered fold cutoffs and emits paired scores,
+  fixed-compute-class rankings, a declared-compute frontier, and provenance.
+  Estimators and model-specific preprocessing, feature policy, inner HPO, and
+  seeds stay in candidate JSON. Disabled candidates require a named
+  prerequisite and are not attempts. `validate` and `plan` do not train;
+  `staged` trains only after explicit inventory approval. Current walk-forward
+  records do not yet standardize elapsed
+  time, peak memory, or inference latency, so the frontier says explicitly
+  when it uses the manifest's ordinal `compute_rank`.
 - **Fan-out** (ADR-0039): an optional `foreach` section — `keys` (a declared
   list, sorted at construction) plus a `pipeline` of TEMPLATE nodes — expanded
   at document construction, so "one model per symbol" stops being N
@@ -551,6 +570,7 @@ dskit/pipeline/
 ├── driver.py          LOAD -> IMPORT -> PLAN -> RESOLVE -> EXECUTE -> RECORD; run dirs;
 │                      run_walk_forward (one derived run per fold + summary)
 ├── stages.py          journal-backed staged DAG execution and resume
+├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)
 ├── folds.py           BoundedFoldRunner: a walk's folds as capped child processes at
 │                      the width the ENVIRONMENT declares; measure_one (ADR-0093)
 ├── runs.py            reads run dirs back: scan_runs / format_runs (the `runs` verb)

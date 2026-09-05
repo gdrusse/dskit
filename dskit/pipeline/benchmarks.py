@@ -1,0 +1,1023 @@
+"""JSON-declared, paired walk-forward model benchmarks (ADR-0097).
+
+The benchmark is deliberately a protocol over ordinary pipeline documents,
+not a second estimator registry.  Candidate JSON owns model-specific choices;
+these stages own only inventory validation, execution, and comparison.
+"""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import math
+import os
+
+from dskit.pipeline.document import load_document
+from dskit.pipeline.driver import run_walk_forward
+from dskit.pipeline.planner import plan as plan_document
+from dskit.pipeline.program_calendar import ProgramCalendar
+from dskit.pipeline.stages import Stage, reject_unknown_params
+from dskit.pipeline.stats import bonferroni, newey_west_mean
+
+__all__ = [
+    "BenchmarkApproval",
+    "BenchmarkCompare",
+    "BenchmarkPlan",
+    "BenchmarkRun",
+    "ProgramCalendar",
+]
+
+_CANDIDATE_FIELDS = frozenset(
+    {
+        "id",
+        "path",
+        "group",
+        "family",
+        "representation",
+        "feature_policy",
+        "seed_policy",
+        "compute_class",
+        "compute_rank",
+        "enabled",
+        "prerequisite",
+    }
+)
+_PROTOCOL_FIELDS = frozenset(
+    {
+        "alpha",
+        "attempt_family",
+        "comparison_hac_lags",
+        "primary_score",
+        "null_baseline",
+        "cost_model",
+        "lockbox",
+        "decision_rule",
+        "indifference_method",
+        "multiplicity_method",
+    }
+)
+_PROTOCOL_STRING_FIELDS = _PROTOCOL_FIELDS - {"alpha", "comparison_hac_lags"}
+
+
+def _string(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _candidate_problems(candidate, index):
+    where = f"candidates[{index}]"
+    if not isinstance(candidate, dict):
+        return [f"{where} must be an object"]
+    problems = []
+    unknown = sorted(set(candidate) - _CANDIDATE_FIELDS)
+    if unknown:
+        problems.append(f"{where} has unknown field(s) {unknown}")
+    required = {
+        "id",
+        "group",
+        "family",
+        "representation",
+        "feature_policy",
+        "seed_policy",
+        "compute_class",
+        "compute_rank",
+        "enabled",
+    }
+    missing = sorted(required - set(candidate))
+    if missing:
+        problems.append(f"{where} is missing field(s) {missing}")
+    for key in sorted(required - {"compute_rank", "enabled"}):
+        if key in candidate and not _string(candidate[key]):
+            problems.append(f"{where}.{key} must be a non-empty string")
+    rank = candidate.get("compute_rank")
+    if not isinstance(rank, int) or isinstance(rank, bool) or rank < 1:
+        problems.append(f"{where}.compute_rank must be a positive integer")
+    enabled = candidate.get("enabled")
+    if not isinstance(enabled, bool):
+        problems.append(f"{where}.enabled must be boolean")
+    if enabled is True and not _string(candidate.get("path")):
+        problems.append(f"{where}.path is required when enabled")
+    if enabled is False and not _string(candidate.get("prerequisite")):
+        problems.append(f"{where}.prerequisite is required when disabled")
+    if "path" in candidate and not _string(candidate["path"]):
+        problems.append(f"{where}.path must be a non-empty string")
+    if "prerequisite" in candidate and not _string(candidate["prerequisite"]):
+        problems.append(f"{where}.prerequisite must be a non-empty string")
+    return problems
+
+
+def _protocol_problems(protocol):
+    if not isinstance(protocol, dict):
+        return ["protocol must be an object"]
+    problems = []
+    unknown = sorted(set(protocol) - _PROTOCOL_FIELDS)
+    if unknown:
+        problems.append(f"protocol has unknown field(s) {unknown}")
+    missing = sorted(_PROTOCOL_FIELDS - set(protocol))
+    if missing:
+        problems.append(f"protocol is missing field(s) {missing}")
+    for key in sorted(_PROTOCOL_STRING_FIELDS):
+        if key in protocol and not _string(protocol[key]):
+            problems.append(f"protocol.{key} must be a non-empty string")
+    alpha = protocol.get("alpha")
+    if (
+        not isinstance(alpha, (int, float))
+        or isinstance(alpha, bool)
+        or not 0 < alpha < 1
+    ):
+        problems.append("protocol.alpha must be a number in (0, 1)")
+    lags = protocol.get("comparison_hac_lags")
+    if not isinstance(lags, int) or isinstance(lags, bool) or lags < 0:
+        problems.append(
+            "protocol.comparison_hac_lags must be a non-negative integer"
+        )
+    if protocol.get("multiplicity_method") != "bonferroni_all_pairwise":
+        problems.append(
+            "protocol.multiplicity_method must be bonferroni_all_pairwise"
+        )
+    if protocol.get("indifference_method") != "paired_fold_newey_west_no_detectable_difference":
+        problems.append(
+            "protocol.indifference_method must be "
+            "paired_fold_newey_west_no_detectable_difference"
+        )
+    return problems
+
+
+def _resolve_candidate_path(source_path, candidate_path):
+    base = os.path.dirname(os.path.abspath(source_path))
+    return os.path.abspath(os.path.join(base, candidate_path))
+
+
+def _expected_summary_dir(document, asof):
+    outputs = document.outputs
+    root = os.path.abspath(
+        os.path.expanduser(
+            (outputs.run_root if outputs is not None else "")
+            or "./pipeline_runs"
+        )
+    )
+    return os.path.join(
+        root, f"{document.name}-walkforward-{asof}-{document.hash[:8]}"
+    )
+
+
+def _at_path(obj, dotted):
+    value = obj
+    for segment in dotted.split("."):
+        if not isinstance(value, dict) or segment not in value:
+            raise ValueError(f"contract path {dotted!r} does not exist")
+        value = value[segment]
+    return copy.deepcopy(value)
+
+
+def _candidate_metadata(candidate):
+    return {
+        key: copy.deepcopy(candidate[key])
+        for key in (
+            "id",
+            "group",
+            "family",
+            "representation",
+            "feature_policy",
+            "seed_policy",
+            "compute_class",
+            "compute_rank",
+        )
+    }
+
+
+class BenchmarkPlan(Stage):
+    """Validate and inventory candidate pipeline documents without running them.
+
+    Parameters
+    ----------
+    key : str
+        Stage key in the staged benchmark document.
+    params : dict
+        ``candidates``, ``contract_paths``, and the shared ``protocol``.
+
+    Examples
+    --------
+    Build the stage from the same data a JSON document declares::
+
+        stage = BenchmarkPlan("plan", {"candidates": candidates,
+                              "contract_paths": paths, "protocol": protocol})
+    """
+
+    outputs = ("candidates", "protocol", "contracts", "inventory_sha256")
+    _PARAMS = ("candidates", "contract_paths", "protocol")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return every candidate, contract, and protocol shape problem."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        candidates = params.get("candidates")
+        if candidates is not None:
+            if not isinstance(candidates, list) or not candidates:
+                problems.append("candidates must be a non-empty list when declared")
+            else:
+                for index, candidate in enumerate(candidates):
+                    problems.extend(_candidate_problems(candidate, index))
+        paths = params.get("contract_paths")
+        if (
+            not isinstance(paths, list)
+            or not paths
+            or any(not _string(path) for path in paths)
+        ):
+            problems.append("contract_paths must be a non-empty list of strings")
+        elif len(set(paths)) != len(paths):
+            problems.append("contract_paths must not contain duplicates")
+        problems.extend(_protocol_problems(params.get("protocol")))
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require a validated calendar phase and its content digest."""
+        if inputs == {}:
+            return []
+        wanted = {"phase", "calendar_sha256"}
+        allowed = (wanted, wanted | {"candidates"})
+        if not isinstance(inputs, dict) or set(inputs) not in allowed:
+            return [
+                f"inputs must contain {sorted(wanted)} and may also contain candidates"
+            ]
+        if not isinstance(inputs["phase"], dict):
+            return ["phase must materialize as an object"]
+        if not _string(inputs["calendar_sha256"]):
+            return ["calendar_sha256 must materialize as a non-empty string"]
+        if "candidates" in inputs:
+            candidates = inputs["candidates"]
+            if not isinstance(candidates, list) or not candidates:
+                return ["candidates must materialize as a non-empty list"]
+            problems = []
+            for index, candidate in enumerate(candidates):
+                problems.extend(_candidate_problems(candidate, index))
+            return problems
+        return []
+
+    def run(self, ctx, inputs):
+        """Plan candidates, pin hashes, and enforce group contract equality."""
+        phase = inputs.get("phase")
+        if phase is not None and (phase.get("selection_allowed") is not True or "walkforward" not in phase):
+            raise ValueError(f"calendar phase {phase.get('key')!r} is not a fold-based selection phase")
+        if phase is not None and ctx.asof > phase["latest_asof"]:
+            raise ValueError(f"benchmark asof {ctx.asof} exceeds calendar phase limit {phase['latest_asof']}")
+        candidates = inputs.get("candidates", self.params.get("candidates"))
+        if not isinstance(candidates, list) or not candidates:
+            raise ValueError("benchmark has no materialized candidates")
+        rows = []
+        contracts = {}
+        ids = set()
+        declared_paths = set()
+        hashes = set()
+        for candidate in candidates:
+            metadata = _candidate_metadata(candidate)
+            candidate_id = candidate["id"]
+            if candidate_id in ids:
+                raise ValueError(f"duplicate candidate id {candidate_id!r}")
+            ids.add(candidate_id)
+            if not candidate["enabled"]:
+                rows.append(
+                    {
+                        **metadata,
+                        "state": "disabled",
+                        "prerequisite": candidate["prerequisite"],
+                        **({"calendar_sha256": inputs["calendar_sha256"], "calendar_phase": phase["key"]} if phase is not None else {}),
+                    }
+                )
+                continue
+            declared = candidate["path"]
+            if declared in declared_paths:
+                raise ValueError(f"duplicate candidate path {declared!r}")
+            declared_paths.add(declared)
+            resolved = _resolve_candidate_path(ctx.source_path, declared)
+            document = load_document(resolved)
+            if document.hash in hashes:
+                raise ValueError(
+                    f"candidate {candidate_id!r} duplicates document hash "
+                    f"{document.hash}"
+                )
+            hashes.add(document.hash)
+            planned = plan_document(document)
+            searches = [
+                key for key in planned.order if planned.role_of(key) == "search"
+            ]
+            if document.walkforward is None:
+                raise ValueError(
+                    f"candidate {candidate_id!r} has no walkforward section"
+                )
+            if phase is not None:
+                declared_walk = document.walkforward.to_obj()
+                declared_walk.pop("notes", None)
+                wanted_walk = copy.deepcopy(phase["walkforward"])
+                wanted_walk.pop("last_validation_end_exclusive", None)
+                if declared_walk != wanted_walk:
+                    changed = sorted(
+                        key
+                        for key in set(declared_walk) | set(wanted_walk)
+                        if declared_walk.get(key) != wanted_walk.get(key)
+                    )
+                    raise ValueError(
+                        f"candidate {candidate_id!r} changes calendar "
+                        f"walk-forward field(s) {changed} in phase "
+                        f"{phase['key']!r}"
+                    )
+            if searches:
+                raise ValueError(
+                    f"candidate {candidate_id!r} uses generic search node(s) "
+                    f"{searches}; their fold validation is reported evidence, "
+                    "so use an inner-training search instead"
+                )
+            values = {
+                path: _at_path(document.to_obj(), path)
+                for path in self.params["contract_paths"]
+            }
+            group = candidate["group"]
+            if group not in contracts:
+                contracts[group] = values
+            elif values != contracts[group]:
+                changed = [
+                    path
+                    for path in self.params["contract_paths"]
+                    if values[path] != contracts[group][path]
+                ]
+                raise ValueError(
+                    f"candidate {candidate_id!r} changes shared contract "
+                    f"path(s) {changed} in group {group!r}"
+                )
+            rows.append(
+                {
+                    **metadata,
+                    "state": "planned",
+                    "path": declared,
+                    "document_hash": document.hash,
+                    "name": document.name,
+                    "objective": document.walkforward.objective,
+                    "select": document.walkforward.select,
+                    "asof": ctx.asof,
+                    "expected_fold_count": len(
+                        document.walkforward.fold_cutoffs()
+                    ),
+                    "expected_cutoffs": list(
+                        document.walkforward.fold_cutoffs()
+                    ),
+                    **(
+                        {
+                            "calendar_sha256": inputs["calendar_sha256"],
+                            "calendar_phase": phase["key"],
+                            "latest_asof": phase["latest_asof"],
+                        }
+                        if phase is not None
+                        else {}
+                    ),
+                }
+            )
+        protocol = copy.deepcopy(self.params["protocol"])
+        return {
+            "candidates": rows,
+            "protocol": protocol,
+            "contracts": contracts,
+            "inventory_sha256": _inventory_sha256(rows, protocol, contracts),
+        }
+
+
+def _inventory_sha256(candidates, protocol, contracts):
+    rows = []
+    for candidate in candidates:
+        rows.append(
+            {
+                key: copy.deepcopy(value)
+                for key, value in candidate.items()
+                if key != "path"
+            }
+        )
+    payload = {"candidates": rows, "protocol": protocol, "contracts": contracts}
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+class BenchmarkApproval(Stage):
+    """Require human review of the frozen inventory before any fit starts."""
+
+    outputs = ("approval",)
+    _PARAMS = ("approved_inventory_sha256", "approved_by", "approval_note")
+    _PENDING = "PENDING-PLAN-REVIEW"
+
+    @classmethod
+    def validate_params(cls, params):
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        for field in cls._PARAMS:
+            if not _string(params.get(field)):
+                problems.append(f"{field} must be a non-empty string")
+        digest = params.get("approved_inventory_sha256")
+        if _string(digest) and digest != cls._PENDING and (
+            len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest)
+        ):
+            problems.append(
+                "approved_inventory_sha256 must be PENDING-PLAN-REVIEW or a lowercase SHA-256"
+            )
+        return problems
+
+    def validate_inputs(self, inputs):
+        if not isinstance(inputs, dict) or set(inputs) != {"inventory_sha256"}:
+            return ["inputs must contain exactly inventory_sha256"]
+        digest = inputs["inventory_sha256"]
+        if not _string(digest) or len(digest) != 64:
+            return ["inventory_sha256 must materialize as a SHA-256 string"]
+        return []
+
+    def run(self, ctx, inputs):
+        observed = inputs["inventory_sha256"]
+        approved = self.params["approved_inventory_sha256"]
+        if approved == self._PENDING:
+            return {
+                "approval": {
+                    "approved": False,
+                    "inventory_sha256": observed,
+                    "approved_by": self._PENDING,
+                    "approval_note": self.params["approval_note"],
+                    "state": "awaiting-plan-review",
+                }
+            }
+        if approved != observed:
+            raise ValueError(
+                f"approved inventory hash changed: {approved} -> {observed}"
+            )
+        if self.params["approved_by"] == self._PENDING:
+            raise ValueError("approved_by must identify the reviewer after approval")
+        return {
+            "approval": {
+                "approved": True,
+                "inventory_sha256": observed,
+                "approved_by": self.params["approved_by"],
+                "approval_note": self.params["approval_note"],
+                "state": "approved",
+            }
+        }
+
+
+class BenchmarkRun(Stage):
+    """Execute planned candidates with an atomic per-candidate checkpoint."""
+
+    outputs = ("runs",)
+
+    @classmethod
+    def validate_params(cls, params):
+        problems = []
+        reject_unknown_params(problems, params, ())
+        return problems
+
+    def validate_inputs(self, inputs):
+        wanted = {"approval", "candidates"}
+        if not isinstance(inputs, dict) or set(inputs) != wanted:
+            return [f"inputs must contain exactly {sorted(wanted)}"]
+        if not isinstance(inputs["candidates"], list):
+            return ["candidates must materialize as a list"]
+        approval = inputs["approval"]
+        if not isinstance(approval, dict) or not isinstance(approval.get("approved"), bool):
+            return ["approval must materialize as an approval object"]
+        return []
+
+    def run(self, ctx, inputs):
+        approval = inputs["approval"]
+        if approval.get("approved") is not True:
+            return {
+                "runs": [
+                    {
+                        **copy.deepcopy(candidate),
+                        "state": (
+                            "disabled"
+                            if candidate.get("state") == "disabled"
+                            else "awaiting_approval"
+                        ),
+                    }
+                    for candidate in inputs["candidates"]
+                ]
+            }
+        signature = _run_signature(ctx, inputs["candidates"], approval)
+        checkpoint_path = os.path.join(
+            ctx.artifact_dir, "benchmark-run-checkpoint.json"
+        )
+        completed = {
+            row["id"]: row
+            for row in _load_checkpoint(checkpoint_path, signature)
+        }
+        rows = []
+        for candidate in inputs["candidates"]:
+            if candidate.get("state") == "disabled":
+                rows.append(copy.deepcopy(candidate))
+                continue
+            if candidate.get("state") != "planned":
+                raise ValueError(
+                    f"candidate {candidate.get('id')!r} has invalid plan state "
+                    f"{candidate.get('state')!r}"
+                )
+            resolved = _resolve_candidate_path(ctx.source_path, candidate["path"])
+            document = load_document(resolved)
+            if document.hash != candidate["document_hash"]:
+                raise ValueError(
+                    f"candidate {candidate['id']!r} moved after planning: "
+                    f"{candidate['document_hash']} -> {document.hash}"
+                )
+            if candidate.get("latest_asof") and ctx.asof > candidate["latest_asof"]:
+                raise ValueError(
+                    f"candidate {candidate['id']!r} asof {ctx.asof} exceeds "
+                    f"calendar phase limit {candidate['latest_asof']}"
+                )
+            expected_summary = _expected_summary_dir(document, ctx.asof)
+            if candidate["id"] in completed:
+                prior = copy.deepcopy(completed[candidate["id"]])
+                if prior.get("document_hash") != candidate["document_hash"]:
+                    raise ValueError(
+                        f"checkpoint hash drift for candidate {candidate['id']!r}"
+                    )
+                if prior.get("summary_dir") != expected_summary:
+                    raise ValueError(
+                        f"checkpoint summary path drift for candidate {candidate['id']!r}"
+                    )
+                if prior.get("state") == "running":
+                    prior = {
+                        **copy.deepcopy(candidate),
+                        "state": "ran",
+                        "summary_dir": expected_summary,
+                        "exit_code": 0,
+                        "recovered_after_interruption": True,
+                    }
+                    _validate_summary(prior, _load_summary(prior))
+                    rows.append(prior)
+                    _write_checkpoint(checkpoint_path, signature, rows)
+                    continue
+                if prior.get("state") != "ran" or prior.get("exit_code") != 0:
+                    raise ValueError(
+                        f"candidate {candidate['id']!r} previously ended in "
+                        f"state {prior.get('state')!r}; resolve it under a new "
+                        "benchmark identity"
+                    )
+                _validate_summary(prior, _load_summary(prior))
+                rows.append(prior)
+                continue
+            running = {
+                **copy.deepcopy(candidate),
+                "state": "running",
+                "summary_dir": expected_summary,
+                "exit_code": None,
+            }
+            _write_checkpoint(checkpoint_path, signature, rows + [running])
+            result = run_walk_forward(document, asof=ctx.asof)
+            if result.summary_dir != expected_summary:
+                raise ValueError(
+                    f"candidate {candidate['id']!r} returned an unexpected summary path"
+                )
+            row = {
+                **copy.deepcopy(candidate),
+                "state": result.state,
+                "summary_dir": result.summary_dir,
+                "exit_code": result.exit_code,
+            }
+            if result.state == "ran" and result.exit_code == 0:
+                _validate_summary(row, _load_summary(row))
+            rows.append(row)
+            _write_checkpoint(checkpoint_path, signature, rows)
+            if result.state != "ran" or result.exit_code != 0:
+                raise ValueError(
+                    f"candidate {candidate['id']!r} ended in state "
+                    f"{result.state!r} with exit code {result.exit_code}"
+                )
+        return {"runs": rows}
+
+
+def _run_signature(ctx, candidates, approval):
+    payload = {
+        "benchmark_hash": ctx.document.hash,
+        "asof": ctx.asof,
+        "approved_inventory_sha256": approval["inventory_sha256"],
+        "candidates": [
+            {
+                "id": row.get("id"),
+                "state": row.get("state"),
+                "hash": row.get("document_hash"),
+            }
+            for row in candidates
+        ],
+    }
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _load_checkpoint(path, signature):
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as handle:
+        checkpoint = json.load(handle)
+    if not isinstance(checkpoint, dict) or set(checkpoint) != {"signature", "rows"}:
+        raise ValueError("benchmark checkpoint is malformed")
+    if checkpoint["signature"] != signature:
+        raise ValueError("benchmark checkpoint does not match the current plan")
+    if not isinstance(checkpoint["rows"], list):
+        raise ValueError("benchmark checkpoint rows must be a list")
+    return checkpoint["rows"]
+
+
+def _write_checkpoint(path, signature, rows):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp-{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(
+            {"signature": signature, "rows": rows},
+            handle,
+            sort_keys=True,
+            indent=2,
+            allow_nan=False,
+        )
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+
+
+def _load_summary(candidate):
+    path = os.path.join(candidate["summary_dir"], "walkforward.json")
+    with open(path, "r", encoding="utf-8") as fh:
+        summary = json.load(fh)
+    if summary.get("document_hash") != candidate["document_hash"]:
+        raise ValueError(
+            f"candidate {candidate['id']!r} summary hash does not match its plan"
+        )
+    return summary
+
+
+def _validate_summary(candidate, summary):
+    folds = summary.get("folds")
+    aggregate = summary.get("aggregate")
+    expected_cutoffs = candidate.get("expected_cutoffs")
+    expected_count = candidate.get("expected_fold_count")
+    scores = [] if not isinstance(folds, list) else [fold.get("score") for fold in folds]
+    complete = (
+        summary.get("state") == "ran"
+        and summary.get("asof") == candidate.get("asof")
+        and summary.get("objective") == candidate.get("objective")
+        and summary.get("select") == candidate.get("select")
+        and isinstance(aggregate, dict)
+        and isinstance(expected_cutoffs, list)
+        and expected_count == len(expected_cutoffs)
+        and isinstance(folds, list)
+        and len(folds) == expected_count
+        and [fold.get("cutoff") for fold in folds] == expected_cutoffs
+        and len(set(expected_cutoffs)) == len(expected_cutoffs)
+        and all(fold.get("state") == "ran" for fold in folds)
+        and all(
+            isinstance(score, (int, float))
+            and not isinstance(score, bool)
+            and math.isfinite(score)
+            for score in scores
+        )
+        and aggregate.get("n_folds") == expected_count
+        and aggregate.get("n_scored") == expected_count
+        and isinstance(aggregate.get("mean"), (int, float))
+        and not isinstance(aggregate.get("mean"), bool)
+        and math.isfinite(aggregate.get("mean"))
+    )
+    if complete:
+        observed = sum(float(score) for score in scores) / expected_count
+        complete = math.isclose(
+            float(aggregate["mean"]), observed, rel_tol=1e-12, abs_tol=1e-15
+        )
+    if not complete:
+        raise ValueError(
+            f"candidate {candidate['id']!r} has incomplete or inconsistent fold evidence"
+        )
+    return [float(score) for score in scores]
+
+
+def _better(left, right, select):
+    return left > right if select == "max" else left < right
+
+
+def _frontier(rows, select):
+    frontier = []
+    for row in rows:
+        dominated = False
+        for other in rows:
+            score_no_worse = (
+                other["mean"] >= row["mean"]
+                if select == "max"
+                else other["mean"] <= row["mean"]
+            )
+            if (
+                other["compute_rank"] <= row["compute_rank"]
+                and score_no_worse
+                and (
+                    other["compute_rank"] < row["compute_rank"]
+                    or _better(other["mean"], row["mean"], select)
+                )
+            ):
+                dominated = True
+                break
+        if not dominated:
+            frontier.append(copy.deepcopy(row))
+    return frontier
+
+
+class BenchmarkCompare(Stage):
+    """Compare only complete paired folds with family-wide multiplicity."""
+
+    outputs = (
+        "ranking",
+        "family_ranking",
+        "paired",
+        "pairwise",
+        "frontier",
+        "provenance",
+    )
+
+    @classmethod
+    def validate_params(cls, params):
+        problems = []
+        reject_unknown_params(problems, params, ())
+        return problems
+
+    def validate_inputs(self, inputs):
+        wanted = {"runs", "protocol", "contracts", "approval"}
+        if not isinstance(inputs, dict) or set(inputs) != wanted:
+            return [f"inputs must contain exactly {sorted(wanted)}"]
+        if not isinstance(inputs["runs"], list):
+            return ["runs must materialize as a list"]
+        if not isinstance(inputs["protocol"], dict):
+            return ["protocol must materialize as an object"]
+        if not isinstance(inputs["contracts"], dict):
+            return ["contracts must materialize as an object"]
+        approval = inputs["approval"]
+        if not isinstance(approval, dict) or not isinstance(approval.get("approved"), bool):
+            return ["approval must materialize as an approval object"]
+        return []
+
+    def run(self, ctx, inputs):
+        if inputs["approval"].get("approved") is not True:
+            if any(row.get("state") == "ran" for row in inputs["runs"]):
+                raise ValueError("an unapproved benchmark contains executed candidates")
+            return {
+                "ranking": [],
+                "family_ranking": [],
+                "paired": [],
+                "pairwise": [],
+                "frontier": [],
+                "provenance": {
+                    "benchmark_hash": ctx.document.hash,
+                    "asof": ctx.asof,
+                    "protocol": copy.deepcopy(inputs["protocol"]),
+                    "contracts": copy.deepcopy(inputs["contracts"]),
+                    "approval": copy.deepcopy(inputs["approval"]),
+                    "no_launch": True,
+                },
+            }
+        grouped = {}
+        disabled = []
+        for candidate in inputs["runs"]:
+            if candidate.get("state") == "disabled":
+                disabled.append(copy.deepcopy(candidate))
+                continue
+            if candidate.get("state") != "ran" or candidate.get("exit_code") != 0:
+                raise ValueError(
+                    f"candidate {candidate.get('id')!r} is not a successful run"
+                )
+            summary = _load_summary(candidate)
+            _validate_summary(candidate, summary)
+            row = copy.deepcopy(candidate)
+            row["summary"] = summary
+            grouped.setdefault(candidate["group"], []).append(row)
+
+        ranking = []
+        paired = []
+        frontier = []
+        material = {}
+        for group, candidates in sorted(grouped.items()):
+            selects = {row["summary"].get("select") for row in candidates}
+            if len(selects) != 1 or next(iter(selects)) not in {"max", "min"}:
+                raise ValueError(f"group {group!r} does not share one select direction")
+            select = next(iter(selects))
+            cutoffs = candidates[0]["expected_cutoffs"]
+            scores = {}
+            group_rows = []
+            for candidate in candidates:
+                if candidate["expected_cutoffs"] != cutoffs:
+                    raise ValueError(
+                        f"group {group!r} candidates do not share ordered cutoffs"
+                    )
+                values = [float(fold["score"]) for fold in candidate["summary"]["folds"]]
+                scores[candidate["id"]] = values
+                mean = candidate["summary"]["aggregate"].get("mean")
+                if (
+                    not isinstance(mean, (int, float))
+                    or isinstance(mean, bool)
+                    or not math.isfinite(mean)
+                ):
+                    raise ValueError(f"candidate {candidate['id']!r} has no finite mean")
+                group_rows.append(
+                    {
+                        **_candidate_metadata(candidate),
+                        "state": candidate["state"],
+                        "document_hash": candidate["document_hash"],
+                        "summary_dir": candidate["summary_dir"],
+                        "mean": float(mean),
+                        "std": candidate["summary"]["aggregate"].get("std"),
+                        "n_folds": candidate["expected_fold_count"],
+                        "n_scored": candidate["expected_fold_count"],
+                    }
+                )
+            paired.extend(
+                {
+                    "group": group,
+                    "cutoff": cutoff,
+                    "scores": {
+                        candidate_id: values[index]
+                        for candidate_id, values in sorted(scores.items())
+                    },
+                }
+                for index, cutoff in enumerate(cutoffs)
+            )
+            best = min(
+                group_rows,
+                key=lambda row: (
+                    -row["mean"] if select == "max" else row["mean"],
+                    row["id"],
+                ),
+            )
+            material[group] = {
+                "select": select,
+                "best": best["id"],
+                "rows": group_rows,
+                "scores": scores,
+                "cutoffs": cutoffs,
+            }
+
+        if not material:
+            raise ValueError("benchmark has no approved candidate groups")
+        directions = {item["select"] for item in material.values()}
+        if len(directions) != 1:
+            raise ValueError("all candidate groups must share one select direction")
+        overall_select = next(iter(directions))
+        family_sets = [
+            {row["family"] for row in item["rows"]}
+            for item in material.values()
+        ]
+        if any(families != family_sets[0] for families in family_sets[1:]):
+            raise ValueError("every approved pair must contain the same model families")
+
+        pairwise = []
+        pvalues = {}
+        lags = inputs["protocol"]["comparison_hac_lags"]
+        for group, item in sorted(material.items()):
+            ids = sorted(item["scores"])
+            if len(ids) < 2:
+                raise ValueError(f"group {group!r} needs at least two candidates")
+            if lags >= len(item["cutoffs"]):
+                raise ValueError(
+                    f"comparison_hac_lags={lags} must be smaller than the "
+                    f"{len(item['cutoffs'])} folds in group {group!r}"
+                )
+            for index, left in enumerate(ids):
+                for right in ids[index + 1 :]:
+                    key = f"{group}:{left}:{right}"
+                    differences = [
+                        float(a) - float(b)
+                        for a, b in zip(
+                            item["scores"][left], item["scores"][right]
+                        )
+                    ]
+                    forward = newey_west_mean(differences, lags=lags)
+                    reverse = newey_west_mean(
+                        [-value for value in differences], lags=lags
+                    )
+                    raw = max(
+                        math.nextafter(0.0, 1.0),
+                        min(
+                            1.0,
+                            2.0 * min(
+                                forward["p_value"], reverse["p_value"]
+                            ),
+                        ),
+                    )
+                    pvalues[key] = raw
+                    pairwise.append(
+                        {
+                            "key": key,
+                            "group": group,
+                            "left": left,
+                            "right": right,
+                            "p_value": raw,
+                            "mean_difference_left_minus_right": forward["mean"],
+                            "hac_se": forward["se"],
+                            "hac_lags": lags,
+                        }
+                    )
+        rejected = bonferroni(pvalues, inputs["protocol"]["alpha"])
+        threshold = inputs["protocol"]["alpha"] / len(pvalues)
+        by_pair = {}
+        for test in pairwise:
+            test["reject_equal_performance"] = rejected[test["key"]]
+            test["family_size"] = len(pvalues)
+            test["adjusted_threshold"] = threshold
+            by_pair[(test["group"], frozenset((test["left"], test["right"])))] = test
+
+        for group, item in material.items():
+            eligible = []
+            for row in item["rows"]:
+                best = item["best"]
+                not_detectably_different = row["id"] == best or not by_pair[
+                    (group, frozenset((row["id"], best)))
+                ]["reject_equal_performance"]
+                row["best_mean_candidate"] = best
+                row["statistically_not_detectably_different"] = not_detectably_different
+                if not_detectably_different:
+                    eligible.append(row)
+            chosen = min(
+                eligible,
+                key=lambda row: (
+                    row["compute_rank"],
+                    -row["mean"] if item["select"] == "max" else row["mean"],
+                    row["id"],
+                ),
+            )
+            for row in item["rows"]:
+                row["selected_simplest_not_detectably_different"] = (
+                    row["id"] == chosen["id"]
+                )
+            item["rows"].sort(
+                key=lambda row: (
+                    row["compute_rank"],
+                    -row["mean"] if item["select"] == "max" else row["mean"],
+                    row["id"],
+                )
+            )
+            counts = {}
+            for row in item["rows"]:
+                compute = row["compute_class"]
+                counts[compute] = counts.get(compute, 0) + 1
+                row["fixed_compute_rank"] = counts[compute]
+                ranking.append(row)
+            frontier.extend(_frontier(item["rows"], item["select"]))
+
+        families = {}
+        for row in ranking:
+            entry = families.setdefault(
+                row["family"], {"family": row["family"], "pair_means": [], "pair_ranks": []}
+            )
+            entry["pair_means"].append(row["mean"])
+            same_pair = [other for other in ranking if other["group"] == row["group"]]
+            ordered = sorted(
+                same_pair,
+                key=lambda other: (
+                    -other["mean"] if overall_select == "max" else other["mean"],
+                    other["id"],
+                ),
+            )
+            entry["pair_ranks"].append(
+                1 + [other["id"] for other in ordered].index(row["id"])
+            )
+        family_ranking = []
+        for entry in families.values():
+            family_ranking.append(
+                {
+                    "family": entry["family"],
+                    "n_pairs": len(entry["pair_means"]),
+                    "equal_pair_mean": sum(entry["pair_means"]) / len(entry["pair_means"]),
+                    "equal_pair_mean_rank": sum(entry["pair_ranks"]) / len(entry["pair_ranks"]),
+                }
+            )
+        expected_pairs = len(material)
+        if any(row["n_pairs"] != expected_pairs for row in family_ranking):
+            raise ValueError("family aggregation is missing an approved pair")
+        family_ranking.sort(
+            key=lambda row: (
+                -row["equal_pair_mean"]
+                if overall_select == "max"
+                else row["equal_pair_mean"],
+                row["family"],
+            )
+        )
+
+        return {
+            "ranking": ranking,
+            "family_ranking": family_ranking,
+            "paired": paired,
+            "pairwise": pairwise,
+            "frontier": frontier,
+            "provenance": {
+                "benchmark_hash": ctx.document.hash,
+                "asof": ctx.asof,
+                "protocol": copy.deepcopy(inputs["protocol"]),
+                "contracts": copy.deepcopy(inputs["contracts"]),
+                "approval": copy.deepcopy(inputs["approval"]),
+                "disabled": disabled,
+                "multiplicity_family_size": len(pvalues),
+                "compute_measurement": (
+                    "declared compute_rank; elapsed time, peak memory, and "
+                    "inference latency await a walk-forward resource record"
+                ),
+            },
+        }

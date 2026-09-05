@@ -24,7 +24,9 @@ Agent orientation — see README.md for operator commands.
   purpose, relevant files, and `LOCKED` (`Y`/`N`). The generated README
   displays the full Path and latest 10 Actions; CSV history is append-only.
   Hooks record pipeline runs and onboarding verbs. `live.main` is wrapped in
-  `production()`. Research writes `docs/research/` through the CLI.
+  `production()`. Research writes `docs/research/<topic>/<YYYY-MM-DD>-<name>.md`
+  through the CLI (no markdown in that root; `<date>-synthesis.md` is the
+  task summary).
 - **Standalone explanations live in `docs/explanations/`.** They explain
   child-specific methods or results without becoming decision records or
   journaled research.
@@ -50,6 +52,10 @@ Agent orientation — see README.md for operator commands.
 - Every run document tracks to one local MLflow experiment
   (`intraday_equities`). HPO maximizes `$select.metrics.rank_ic`.
   Fill rate / delay decay wait on a fill model.
+- P13's model zoo is `configs/run-p13-model-zoo.json`: 13 enabled model
+  families expand across the exact 25 Gate-3-approved asset/horizon pairs.
+  The first invocation is inventory-only; `BenchmarkRun` may launch folds only
+  after the materialized inventory hash and reviewer identity are approved.
 
 ## Machine knobs
 
@@ -62,10 +68,10 @@ Agent orientation — see README.md for operator commands.
 
 ```
 intraday_equities/   # auth, connectors, nodes, models, live, testing
-configs/             # universe + sources, suites, scan/action/HPO/train
+configs/             # universe + sources, suites/model-zoo, scan/action/HPO/train
 journal.json         # dskit.journal marker
 docs/decisioning/    # actions.csv + path.csv; README generated
-docs/research/       # research markdown
+docs/research/       # topic folders; <date>-synthesis.md + dated notes
 docs/explanations/   # standalone worked explanations
 docs/memos/          # durable implementation and operational handoffs
 tests/               # conftest + connectors/nodes/configs/live
