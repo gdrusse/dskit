@@ -228,22 +228,61 @@ def test_derived_walk_keeps_only_spy_when_spy_is_the_asset(tmp_path, monkeypatch
     ]
 
 
-def test_fold_workers_reads_the_machine_knob_and_defaults_to_serial(monkeypatch):
-    monkeypatch.delenv(p11.p10._WORKERS_ENV, raising=False)
-    assert p11.p10._fold_workers() == 1
-    monkeypatch.setenv(p11.p10._WORKERS_ENV, "6")
-    assert p11.p10._fold_workers() == 6
+def _preflight_harness(tmp_path, monkeypatch, peak):
+    monkeypatch.setattr(p11, "_ASSETS", ["A"])
+    monkeypatch.setattr(
+        p11.p10, "_feature_cache_info", lambda _ctx: ("./cache", "/cache", "a" * 64)
+    )
+    monkeypatch.setattr(p11, "_largest_asset", lambda _path, _assets: ("A", 10))
+    tags = []
+    monkeypatch.setattr(
+        p11,
+        "_derived_document",
+        lambda _ctx, asset, horizon, **kwargs: (
+            tags.append(kwargs["tag"]) or SimpleNamespace(asset=asset, horizon=horizon)
+        ),
+    )
+    measured = []
+    monkeypatch.setattr(
+        p11.p10,
+        "_measure_walk",
+        lambda _ctx, doc, tag: (measured.append((doc.asset, tag)) or ("/summary", peak)),
+    )
+    monkeypatch.setattr(p11, "_score_one", lambda *_a: {"r2oos": 0.0})
+    stage = p11.MemoryPreflightStage(
+        "memory", {"assets": ["A"], "memory_limit_bytes": p11._MEMORY_LIMIT}
+    )
+    ctx = SimpleNamespace(document=SimpleNamespace(hash="f" * 64))
+    return stage, ctx, tags, measured
 
 
-def test_fold_workers_refuses_a_value_that_is_not_a_positive_int(monkeypatch):
-    for bad in ("0", "-2", "four", "2.5", ""):
-        monkeypatch.setenv(p11.p10._WORKERS_ENV, bad)
-        try:
-            p11.p10._fold_workers()
-        except ValueError as error:
-            assert p11.p10._WORKERS_ENV in str(error)
-        else:  # pragma: no cover - the assertion below reports it
-            raise AssertionError(f"{bad!r} was accepted")
+def test_the_preflight_measures_one_fresh_walk_per_study_identity(
+    tmp_path, monkeypatch
+):
+    # ADR-0093: the reading comes from measure_one, which needs a fresh
+    # spawn, so the derived preflight walk is named for the staged
+    # document's identity — a revised study measures again instead of
+    # tripping over the previous study's finished walk.
+    stage, ctx, tags, measured = _preflight_harness(tmp_path, monkeypatch, peak=5)
+    out = stage.run(ctx, {})
+    assert measured == [("A", "p11-memory-a")]
+    assert tags == ["preflight-" + "f" * 8]
+    assert out["peak_rss_bytes"] == 5
+    assert out["summary_dir"] == "/summary"
+    assert out["passed"] is True
+    assert out["limit_bytes"] == p11._MEMORY_LIMIT
+
+
+def test_the_preflight_refuses_a_peak_at_the_limit(tmp_path, monkeypatch):
+    stage, ctx, _tags, _measured = _preflight_harness(
+        tmp_path, monkeypatch, peak=p11._MEMORY_LIMIT
+    )
+    try:
+        stage.run(ctx, {})
+    except MemoryError as error:
+        assert "strictly below" in str(error)
+    else:  # pragma: no cover - the assertion below reports it
+        raise AssertionError("a peak at the limit passed")
 
 
 def test_the_memory_envelope_is_one_value_in_both_modules():

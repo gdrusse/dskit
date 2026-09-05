@@ -17,7 +17,7 @@ from dskit.pipeline.document import (
     TrailingSplitSpec,
     WalkForwardSpec,
 )
-from dskit.pipeline.driver import _aggregate_folds, _fold_splits, run_walk_forward
+from dskit.pipeline.driver import aggregate_folds, _fold_splits, run_walk_forward
 from dskit.pipeline.node import Node
 from dskit.pipeline.split_policy import EventBounds
 
@@ -1190,10 +1190,75 @@ def test_weighted_mean_uses_recency_and_is_omitted_when_unset():
         {"cutoff": "2025-01-01", "score": 4.0, "state": "ran", "run_dir": ""},
         {"cutoff": "2025-04-01", "score": 2.0, "state": "ran", "run_dir": ""},
     ]
-    plain = _aggregate_folds(folds, "min")
+    plain = aggregate_folds(folds, "min")
     assert "weighted_mean" not in plain
-    weighted = _aggregate_folds(folds, "min", weight_halflife_folds=1)
+    weighted = aggregate_folds(folds, "min", weight_halflife_folds=1)
     assert weighted["weighted_mean"] < plain["mean"]
     assert weighted["weighted_mean"] == pytest.approx(
         (0.5 * 4.0 + 1.0 * 2.0) / 1.5
     )
+
+
+# -- ADR-0093: the fold-row shape has one owner ---------------------------------
+
+
+def test_the_fold_row_shape_has_one_owner():
+    from dskit.pipeline import driver
+
+    assert driver.FOLD_FIELDS == ("cutoff", "run_dir", "state", "score")
+    assert driver.FOLD_OPTIONAL_FIELDS == ("search", "error")
+    for name in (
+        "FOLD_FIELDS",
+        "FOLD_OPTIONAL_FIELDS",
+        "aggregate_folds",
+        "write_walkforward_summary",
+    ):
+        assert name in driver.__all__, name
+    assert not hasattr(driver, "_aggregate_folds")
+    assert not hasattr(driver, "_write_walkforward_summary")
+
+
+def _row(**overrides):
+    row = {"cutoff": "2025-01-01", "run_dir": "", "state": "ran", "score": 1.0}
+    row.update(overrides)
+    return row
+
+
+def test_aggregate_folds_refuses_a_row_missing_a_required_key():
+    row = _row()
+    del row["score"]
+    with pytest.raises(ValueError, match="score"):
+        aggregate_folds([row], "max")
+
+
+def test_aggregate_folds_refuses_a_key_outside_the_union():
+    # Default-deny pins the optional half too: a per-fold memory reading
+    # is exactly the key ADR-0093 removes from the record.
+    with pytest.raises(ValueError, match="peak_rss_bytes"):
+        aggregate_folds([_row(peak_rss_bytes=5)], "max")
+
+
+def test_aggregate_folds_accepts_the_optional_keys():
+    folds = [
+        _row(search={"tune": {"trials_executed": 1, "winner": {"a": 1}}}),
+        _row(cutoff="2025-02-01", state="error", score=None, error="boom"),
+    ]
+    out = aggregate_folds(folds, "max")
+    assert out["n_folds"] == 2
+    assert out["n_scored"] == 1
+
+
+def test_the_rows_the_driver_writes_are_the_rows_the_readers_read(tmp_path):
+    """The round trip ADR-0093 pins: a written summary read back through
+    ``walk_fold_dirs``, ``single_fold_row`` and ``aggregate_folds`` is the
+    summary the driver wrote."""
+    from dskit.pipeline.driver import FOLD_FIELDS
+    from dskit.pipeline.runs import single_fold_row, walk_fold_dirs
+
+    doc = probe_doc(tmp_path, wf_spec(folds=["2025-01-01"]))
+    result = run_walk_forward(doc, asof=ASOF)
+    summary = read_json(result.summary_dir, "walkforward.json")
+    assert [sorted(f) for f in summary["folds"]] == [sorted(FOLD_FIELDS)]
+    assert walk_fold_dirs(result.summary_dir) == [summary["folds"][0]["run_dir"]]
+    assert single_fold_row(result.summary_dir, "2025-01-01") == summary["folds"][0]
+    assert aggregate_folds(summary["folds"], summary["select"]) == summary["aggregate"]

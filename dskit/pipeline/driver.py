@@ -100,7 +100,16 @@ from dskit.pipeline.planner import unsearchable_space_why
 from dskit.pipeline.planner import plan as plan_document
 from dskit.pipeline.runs import _escape_pipe
 
-__all__ = ["DocumentRunResult", "WalkForwardRunResult", "run_document", "run_walk_forward"]
+__all__ = [
+    "FOLD_FIELDS",
+    "FOLD_OPTIONAL_FIELDS",
+    "DocumentRunResult",
+    "WalkForwardRunResult",
+    "aggregate_folds",
+    "run_document",
+    "run_walk_forward",
+    "write_walkforward_summary",
+]
 
 DRIVER_VERSION = "1.0.0"
 
@@ -117,6 +126,19 @@ _RELEASE_MIN_LEN = 256
 
 _SUMMARY_TYPES = frozenset({"list", "tuple", "dict"})
 _KEEP_PORTS = frozenset({"flags"})
+
+#: The keys EVERY fold row of a walk-forward summary carries (ADR-0093).
+#: ``_run_folds`` builds each row from this tuple, ``aggregate_folds``
+#: refuses a row missing any of them, and ``runs.single_fold_row`` reads
+#: the rows back — one owner for the shape the driver writes and the
+#: readers consume.
+FOLD_FIELDS = ("cutoff", "run_dir", "state", "score")
+
+#: The keys a fold row carries ONLY WHEN PRESENT: ``search`` when the fold
+#: had a search node (an always-emitted key would move every HPO-free
+#: summary's bytes, ADR-0043) and ``error`` when the fold refused or
+#: failed. ``aggregate_folds`` refuses any key outside the union.
+FOLD_OPTIONAL_FIELDS = ("search", "error")
 
 _log = logging.getLogger("dskit.pipeline.driver")
 
@@ -2014,23 +2036,12 @@ def _run_folds(document, spec, asof, registry, policy):
             # completed fold's score and write no summary (skeptic pass).
             # The promise is "everything up to it is recorded" — so record.
             folds.append(
-                {
-                    "cutoff": cutoff,
-                    "run_dir": "",
-                    "state": "error",
-                    "score": None,
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
+                _fold_row(cutoff, "", "error", None, error=f"{type(exc).__name__}: {exc}")
             )
             state = "error"
             _log.error("walkforward: fold %s refused: %s", cutoff, exc)
             break
-        fold = {
-            "cutoff": cutoff,
-            "run_dir": result.run_dir,
-            "state": result.state,
-            "score": None,
-        }
+        fold = _fold_row(cutoff, result.run_dir, result.state, None)
         if result.search:
             # Only when the fold HAD a search node: an always-emitted key
             # would move every HPO-free summary's bytes (ADR-0043).
@@ -2127,10 +2138,72 @@ def _aggregate_search(folds):
     return out
 
 
-def _aggregate_folds(folds, select, weight_halflife_folds=0):
-    """Aggregate the scored folds, and name the best one by ``select``."""
+def _fold_row(cutoff, run_dir, state, score, **optional):
+    """One fold row built from :data:`FOLD_FIELDS`, plus present optionals."""
+    row = dict(zip(FOLD_FIELDS, (cutoff, run_dir, state, score)))
+    row.update(optional)
+    _check_fold_rows([row])
+    return row
+
+
+def _check_fold_rows(folds):
+    """Refuse a row missing a required key or carrying one outside the union."""
+    allowed = set(FOLD_FIELDS) | set(FOLD_OPTIONAL_FIELDS)
+    for index, row in enumerate(folds):
+        if not isinstance(row, dict):
+            raise ValueError(f"fold row {index} is not an object: {row!r}")
+        missing = [key for key in FOLD_FIELDS if key not in row]
+        extra = sorted(key for key in row if key not in allowed)
+        if missing or extra:
+            raise ValueError(
+                f"fold row {index} must carry exactly {list(FOLD_FIELDS)} plus "
+                f"any of {list(FOLD_OPTIONAL_FIELDS)}; missing={missing} extra={extra}"
+            )
+
+
+def aggregate_folds(folds, select, weight_halflife_folds=0):
+    """Aggregate the scored folds, and name the best one by ``select``.
+
+    Parameters
+    ----------
+    folds : list of dict
+        Fold rows as ``_run_folds`` writes them: every key of
+        :data:`FOLD_FIELDS`, plus any of :data:`FOLD_OPTIONAL_FIELDS`.
+    select : str
+        ``"max"`` or ``"min"`` — which score is best.
+    weight_halflife_folds : int
+        When nonzero, adds a recency-weighted mean with this half-life
+        in folds.
+
+    Returns
+    -------
+    dict
+        ``n_folds`` and ``n_scored`` always; ``mean``, ``std``, ``min``,
+        ``max``, ``best_cutoff`` and ``best_score`` when any fold scored;
+        ``search`` when any fold carried one; ``weighted_mean`` when
+        asked for.
+
+    Raises
+    ------
+    ValueError
+        When a row is missing a required key or carries a key outside
+        the union of the two tuples.
+
+    Examples
+    --------
+    Two scored folds, best by ``max``::
+
+        aggregate_folds(
+            [
+                {"cutoff": "2025-01-01", "run_dir": "a", "state": "ran", "score": 1.0},
+                {"cutoff": "2025-02-01", "run_dir": "b", "state": "ran", "score": 2.0},
+            ],
+            "max",
+        )["best_cutoff"]  # '2025-02-01'
+    """
     import statistics
 
+    _check_fold_rows(folds)
     scored = [f["score"] for f in folds if f["score"] is not None]
     aggregate = {"n_folds": len(folds), "n_scored": len(scored)}
     search = _aggregate_search(folds)
@@ -2315,10 +2388,37 @@ def _walkforward_report_lines(document, spec, state, folds, aggregate):
     return lines + _walkforward_search_lines(folds, aggregate)
 
 
-def _write_walkforward_summary(
+def write_walkforward_summary(
     summary_dir, document, asof, spec, state, folds, aggregate
 ):
-    """Write the machine record and the human read of one evaluation."""
+    """Write the machine record and the human read of one evaluation.
+
+    Parameters
+    ----------
+    summary_dir : str
+        The walk's summary directory; created when absent.
+    document : PipelineDocument
+        The walk-forward document the folds were derived from.
+    asof : str
+        The ``YYYY-MM-DD`` the walk ran as of.
+    spec : WalkForwardSpec
+        The document's declared walk-forward section.
+    state : str
+        ``ran``, ``halted`` or ``error``.
+    folds : list of dict
+        Fold rows as :func:`aggregate_folds` accepts them.
+    aggregate : dict
+        :func:`aggregate_folds`'s result over ``folds``.
+
+    Examples
+    --------
+    Record a bounded walk's folds beside its report::
+
+        write_walkforward_summary(
+            summary_dir, document, "2026-02-28", document.walkforward,
+            "ran", folds, aggregate_folds(folds, "max"),
+        )
+    """
     os.makedirs(summary_dir, exist_ok=True)
     _write_json(
         os.path.join(summary_dir, "walkforward.json"),
@@ -2399,10 +2499,10 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
     folds, state = _run_folds(
         document, spec, asof, registry, _declared_policy(document)
     )
-    aggregate = _aggregate_folds(
+    aggregate = aggregate_folds(
         folds, spec.select, spec.weight_halflife_folds,
     )
-    _write_walkforward_summary(
+    write_walkforward_summary(
         summary_dir, document, asof, spec, state, folds, aggregate
     )
     result = WalkForwardRunResult(

@@ -1,4 +1,14 @@
-"""P10 modelability orchestration tests (ADR-0081)."""
+"""P10 modelability orchestration tests (ADR-0081, ADR-0093).
+
+The child keeps only what is domain — which document, which cohort,
+which tag — and hands the fold argv batch to dskit's
+``BoundedFoldRunner`` with its documented knob and the frozen 17 GiB
+cap. Pinned here: the batch the seam receives, the resume rule (a
+journaled fold is never re-spawned; artifacts without journal evidence
+refuse), the row reading through ``single_fold_row``, the journalled
+width, and the preflight's one-child measurement through
+``measure_one`` with no per-fold memory record left behind.
+"""
 
 from __future__ import annotations
 
@@ -6,14 +16,14 @@ import json
 import os
 import subprocess
 import sys
-import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from dskit.pipeline.document import PipelineDocument
+from dskit.pipeline.document import PipelineDocument, load_document
 
 from intraday_equities import modelability
+
+ADAPTER_ARGV = ["-m", "dskit.pipeline", "walkforward"]
 
 
 def _document(run_root, count=3):
@@ -54,86 +64,324 @@ def test_single_fold_documents_preserve_pipeline_and_cover_cutoffs(tmp_path):
     assert all(part.pipeline == document.pipeline for part in parts)
 
 
-def test_bounded_walk_runs_one_capped_process_per_fold(tmp_path, monkeypatch):
-    document = _document(tmp_path / "runs")
+def _finish(argv, cwd, journaled):
+    """Leave the one-ran-row summary a real fold walk would, and journal it."""
+    path, asof = argv[4], argv[6]
+    document = load_document(path)
+    summary = modelability._summary_dir(document, asof, cwd)
+    os.makedirs(summary, exist_ok=True)
+    cutoff = document.walkforward.first
+    payload = {
+        "state": "ran",
+        "document_hash": document.hash,
+        "folds": [
+            {
+                "cutoff": cutoff,
+                "run_dir": os.path.join(summary, "run"),
+                "state": "ran",
+                "score": float(int(cutoff[-2:])),
+            }
+        ],
+    }
+    with open(os.path.join(summary, "walkforward.json"), "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+    journaled.add(summary)
+    return summary
+
+
+class FakeRunner:
+    """A seam double: records its construction and the batches it receives."""
+
+    instances = []
+    journaled = set()
+    peak = 123_456_789
+    failure = None
+
+    def __init__(self, memory_limit_bytes, workers=None, env_var="DSKIT_FOLD_WORKERS"):
+        self.memory_limit_bytes = memory_limit_bytes
+        self.env_var = env_var
+        self.workers = 7 if workers is None else workers
+        self.batches = []
+        self.measured = []
+        type(self).instances.append(self)
+
+    def run(self, commands, cwd=None, env=None):
+        self.batches.append((commands, cwd, env))
+        if type(self).failure is not None:
+            raise type(self).failure
+        for argv in commands:
+            _finish(argv, cwd, type(self).journaled)
+        return [subprocess.CompletedProcess(argv, 0, "", "") for argv in commands]
+
+    def measure_one(self, argv, cwd=None, env=None):
+        self.measured.append((argv, cwd, env))
+        _finish(argv, cwd, type(self).journaled)
+        return subprocess.CompletedProcess(argv, 0, "", ""), type(self).peak
+
+
+def _harness(tmp_path, monkeypatch):
+    journaled = set()
+    FakeRunner.instances = []
+    FakeRunner.journaled = journaled
+    FakeRunner.peak = 123_456_789
+    FakeRunner.failure = None
+    monkeypatch.setattr(modelability, "_child_root", lambda _ctx: str(tmp_path))
+    monkeypatch.setattr(
+        modelability,
+        "_journal_confirms_walk",
+        lambda summary, *_args: summary in journaled,
+    )
+    monkeypatch.setattr(
+        modelability,
+        "append_action",
+        lambda *_a, **kw: journaled.add(kw.get("outputs")),
+    )
+    monkeypatch.setattr(modelability, "BoundedFoldRunner", FakeRunner)
     ctx = SimpleNamespace(
         source_path=str(tmp_path / "configs" / "run.json"),
         run_dir=str(tmp_path / "stage"),
         asof="2026-02-28",
+        document=SimpleNamespace(hash="f" * 64),
     )
-    calls = []
+    return ctx, journaled
 
-    def fake_run(_ctx, part, tag, memory_limit=None):
-        calls.append((part.walkforward.first, tag, memory_limit))
-        summary = tmp_path / f"part-{len(calls)}"
-        summary.mkdir()
-        payload = {
-            "state": "ran",
-            "folds": [
-                {
-                    "cutoff": part.walkforward.first,
-                    "run_dir": str(summary / "run"),
-                    "score": float(len(calls)),
-                    "state": "ran",
-                }
-            ],
-        }
-        (summary / "walkforward.json").write_text(json.dumps(payload))
-        return str(summary), 1
 
-    monkeypatch.setattr(modelability, "_run_walk", fake_run)
-    monkeypatch.setattr(modelability, "append_action", lambda *a, **k: None)
-    monkeypatch.setattr(
-        modelability,
-        "_journal_confirms_walk",
-        lambda summary, *_args: (
-            (tmp_path / "runs") in __import__("pathlib").Path(summary).parents
-        ),
-    )
+def test_bounded_walk_hands_one_argv_per_fold_to_the_seam(tmp_path, monkeypatch):
+    ctx, _journaled = _harness(tmp_path, monkeypatch)
+    document = _document(tmp_path / "runs")
     summary = modelability._run_bounded_walk(ctx, document, "gate1-h01")
-    assert [call[0] for call in calls] == modelability._fold_cutoffs(
-        document.walkforward
-    )
-    assert all(call[2] == modelability._MEMORY_LIMIT for call in calls)
-    payload = json.loads(
-        (__import__("pathlib").Path(summary) / "walkforward.json").read_text()
-    )
+    (runner,) = FakeRunner.instances
+    assert runner.memory_limit_bytes == modelability._MEMORY_LIMIT
+    assert runner.env_var == "INTRADAY_EQUITIES_FOLD_WORKERS"
+    ((commands, cwd, env),) = runner.batches
+    assert cwd == str(tmp_path)
+    assert env is None
+    derived = tmp_path / "stage" / "derived"
+    assert [argv[:4] for argv in commands] == [[sys.executable, *ADAPTER_ARGV]] * 3
+    assert [argv[4] for argv in commands] == [
+        str(derived / f"gate1-h01-part-{index:02d}.json") for index in range(3)
+    ]
+    assert [argv[5:] for argv in commands] == [
+        ["--asof", "2026-02-28", "--adapter", "intraday_equities"]
+    ] * 3
+    payload = json.loads((Path(summary) / "walkforward.json").read_text())
+    assert payload["state"] == "ran"
+    assert [row["cutoff"] for row in payload["folds"]] == [
+        "2025-01-03",
+        "2025-01-10",
+        "2025-01-17",
+    ]
     assert payload["aggregate"]["n_folds"] == 3
-    assert payload["aggregate"]["best_score"] == 3.0
+    assert payload["aggregate"]["best_score"] == 17.0
+    assert (Path(summary) / "report.md").is_file()
 
 
-def test_run_walk_recovers_a_journaled_persisted_memory_measurement(
+def test_bounded_walk_never_respawns_a_journaled_fold(tmp_path, monkeypatch):
+    ctx, journaled = _harness(tmp_path, monkeypatch)
+    document = _document(tmp_path / "runs")
+    cutoffs = modelability._fold_cutoffs(document.walkforward)
+    # Fold 1 already ran and was journaled by an earlier invocation.
+    part = modelability._single_fold_document(document, cutoffs[1], 1)
+    done = modelability._summary_dir(part, ctx.asof, str(tmp_path))
+    argv = [sys.executable, *ADAPTER_ARGV, "", "--asof", ctx.asof]
+    os.makedirs(tmp_path / "stage" / "derived", exist_ok=True)
+    path = tmp_path / "stage" / "derived" / "pre.json"
+    path.write_text(modelability._canonical(part))
+    argv[4] = str(path)
+    assert _finish(argv, str(tmp_path), journaled) == done
+    modelability._run_bounded_walk(ctx, document, "tag")
+    ((commands, _cwd, _env),) = FakeRunner.instances[0].batches
+    assert [load_document(argv[4]).walkforward.first for argv in commands] == [
+        cutoffs[0],
+        cutoffs[2],
+    ]
+
+
+def test_bounded_walk_with_every_fold_journaled_never_calls_the_seam(
     tmp_path, monkeypatch
 ):
+    ctx, journaled = _harness(tmp_path, monkeypatch)
+    document = _document(tmp_path / "runs")
+    first = modelability._run_bounded_walk(ctx, document, "tag")
+    journaled.discard(first)
+    import shutil
+
+    shutil.rmtree(first)
+    again = modelability._run_bounded_walk(ctx, document, "tag")
+    assert again == first
+    assert (Path(again) / "walkforward.json").is_file()
+    assert [len(runner.batches) for runner in FakeRunner.instances] == [1, 0]
+
+
+def test_bounded_walk_refuses_a_fold_with_artifacts_but_no_journal(
+    tmp_path, monkeypatch
+):
+    ctx, _journaled = _harness(tmp_path, monkeypatch)
+    document = _document(tmp_path / "runs")
+    cutoffs = modelability._fold_cutoffs(document.walkforward)
+    part = modelability._single_fold_document(document, cutoffs[0], 0)
+    orphan = modelability._summary_dir(part, ctx.asof, str(tmp_path))
+    os.makedirs(orphan)
+    (Path(orphan) / "walkforward.json").write_text("{}")
+    try:
+        modelability._run_bounded_walk(ctx, document, "tag")
+    except ValueError as error:
+        assert "journal evidence" in str(error)
+    else:  # pragma: no cover - the assertion below reports it
+        raise AssertionError("orphaned fold artifacts were accepted")
+    assert all(not runner.batches for runner in FakeRunner.instances)
+
+
+def test_bounded_walk_reads_each_row_through_single_fold_row(tmp_path, monkeypatch):
+    ctx, _journaled = _harness(tmp_path, monkeypatch)
+    document = _document(tmp_path / "runs")
+    seen = []
+    real = modelability.single_fold_row
+
+    def spy(summary_dir, cutoff):
+        seen.append(cutoff)
+        return real(summary_dir, cutoff)
+
+    monkeypatch.setattr(modelability, "single_fold_row", spy)
+    modelability._run_bounded_walk(ctx, document, "tag")
+    assert seen == modelability._fold_cutoffs(document.walkforward)
+
+
+def test_bounded_walk_journals_the_width_the_seam_resolved_and_the_cap(
+    tmp_path, monkeypatch
+):
+    ctx, journaled = _harness(tmp_path, monkeypatch)
+    notes = []
+
+    def journal(*_args, **kwargs):
+        notes.append(kwargs.get("notes", ""))
+        journaled.add(kwargs.get("outputs"))
+
+    monkeypatch.setattr(modelability, "append_action", journal)
+    modelability._run_bounded_walk(ctx, _document(tmp_path / "runs"), "tag")
+    (note,) = notes
+    assert "fold_workers=7" in note
+    assert f"memory_limit_bytes={modelability._MEMORY_LIMIT}" in note
+    assert "fold_processes=isolated" in note
+    assert "state=ran folds=3" in note
+
+
+def test_an_explicit_width_reaches_the_seam(tmp_path, monkeypatch):
+    ctx, _journaled = _harness(tmp_path, monkeypatch)
+    modelability._run_bounded_walk(ctx, _document(tmp_path / "runs"), "tag", workers=4)
+    assert FakeRunner.instances[0].workers == 4
+
+
+def test_a_finished_walk_is_reused_without_touching_the_seam(tmp_path, monkeypatch):
+    ctx, journaled = _harness(tmp_path, monkeypatch)
+    document = _document(tmp_path / "runs")
+    summary = modelability._summary_dir(document, ctx.asof, str(tmp_path))
+    os.makedirs(summary)
+    (Path(summary) / "walkforward.json").write_text("{}")
+    journaled.add(summary)
+    assert modelability._run_bounded_walk(ctx, document, "tag") == summary
+    assert all(not runner.batches for runner in FakeRunner.instances)
+
+
+def test_a_failing_batch_surfaces_and_writes_no_summary(tmp_path, monkeypatch):
+    ctx, _journaled = _harness(tmp_path, monkeypatch)
+    FakeRunner.failure = RuntimeError("fold 0 exited 1; output tail:\nboom")
+    document = _document(tmp_path / "runs")
+    try:
+        modelability._run_bounded_walk(ctx, document, "tag")
+    except RuntimeError as error:
+        assert "boom" in str(error)
+    else:  # pragma: no cover - the assertion below reports it
+        raise AssertionError("the seam's failure did not surface")
+    summary = modelability._summary_dir(document, ctx.asof, str(tmp_path))
+    assert not os.path.exists(summary)
+
+
+def test_the_child_knob_and_cap_are_one_value_each(monkeypatch):
+    monkeypatch.delenv("INTRADAY_EQUITIES_FOLD_WORKERS", raising=False)
+    assert modelability._WORKERS_ENV == "INTRADAY_EQUITIES_FOLD_WORKERS"
+    readme = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    assert modelability._WORKERS_ENV in readme
+    runner = modelability._runner()
+    assert type(runner).__name__ == "BoundedFoldRunner"
+    assert runner.memory_limit_bytes == modelability._MEMORY_LIMIT
+    assert runner.env_var == modelability._WORKERS_ENV
+    assert runner.workers == 1
+    assert modelability._runner(workers=3).workers == 3
+
+
+def _preflight(tmp_path, monkeypatch):
+    ctx, journaled = _harness(tmp_path, monkeypatch)
+    ctx.document = _document(tmp_path / "runs", count=1)
+    monkeypatch.setattr(
+        modelability,
+        "_feature_cache_info",
+        lambda _ctx: ("./cache", str(tmp_path / "cache"), "a" * 64),
+    )
+    monkeypatch.setattr(
+        modelability,
+        "_derived_document",
+        lambda _ctx, name, horizon, **_kw: _document(tmp_path / "runs", count=1),
+    )
+    stage = modelability.MemoryPreflightStage(
+        "memory", {"memory_limit_bytes": modelability._MEMORY_LIMIT}
+    )
+    return ctx, journaled, stage
+
+
+def test_the_memory_preflight_measures_its_one_walk_through_the_seam(
+    tmp_path, monkeypatch
+):
+    ctx, _journaled, stage = _preflight(tmp_path, monkeypatch)
+    out = stage.run(ctx, {})
+    (runner,) = FakeRunner.instances
+    ((argv, cwd, env),) = runner.measured
+    assert not runner.batches, "the preflight went through run, not measure_one"
+    assert cwd == str(tmp_path) and env is None
+    assert argv[:4] == [sys.executable, *ADAPTER_ARGV]
+    assert out["peak_rss_bytes"] == 123_456_789
+    assert out["limit_bytes"] == modelability._MEMORY_LIMIT
+    assert out["passed"] is True
+    assert out["summary_dir"] == modelability._summary_dir(
+        load_document(argv[4]), ctx.asof, str(tmp_path)
+    )
+    stray = [
+        path
+        for path in tmp_path.rglob("memory-preflight.json")
+        if path.parent.name != "derived"
+    ]
+    assert not stray, f"a per-fold memory record was persisted: {stray}"
+
+
+def test_the_memory_preflight_refuses_a_peak_at_or_above_the_limit(
+    tmp_path, monkeypatch
+):
+    ctx, _journaled, stage = _preflight(tmp_path, monkeypatch)
+    FakeRunner.peak = modelability._MEMORY_LIMIT
+    try:
+        stage.run(ctx, {})
+    except MemoryError as error:
+        assert str(modelability._MEMORY_LIMIT) in str(error)
+    else:  # pragma: no cover - the assertion below reports it
+        raise AssertionError("a peak at the limit passed")
+
+
+def test_the_memory_preflight_refuses_to_reuse_a_finished_walk(tmp_path, monkeypatch):
+    # A measurement needs a fresh spawn: a finished walk has no reading
+    # to recover now that the per-fold record is gone (ADR-0093).
+    ctx, journaled, stage = _preflight(tmp_path, monkeypatch)
     document = _document(tmp_path / "runs", count=1)
-    ctx = SimpleNamespace(
-        source_path=str(tmp_path / "child" / "configs" / "run.json"),
-        run_dir=str(tmp_path / "stage"),
-        asof="2026-02-28",
-    )
-    summary = tmp_path / "summary"
-    summary.mkdir()
-    peak = 123456
-    (summary / "walkforward.json").write_text("{}\n")
-    (summary / "memory-preflight.json").write_text(
-        json.dumps(
-            {
-                "document_hash": document.hash,
-                "memory_limit_bytes": modelability._MEMORY_LIMIT,
-                "peak_rss_bytes": peak,
-            }
-        )
-    )
-    monkeypatch.setattr(modelability, "_summary_dir", lambda *args: str(summary))
-    monkeypatch.setattr(modelability, "_journal_confirms_walk", lambda *args: True)
-    reused, measured = modelability._run_walk(
-        ctx,
-        document,
-        "memory-preflight",
-        memory_limit=modelability._MEMORY_LIMIT,
-    )
-    assert reused == str(summary)
-    assert measured == peak
+    summary = modelability._summary_dir(document, ctx.asof, str(tmp_path))
+    os.makedirs(summary)
+    (Path(summary) / "walkforward.json").write_text("{}")
+    journaled.add(summary)
+    try:
+        stage.run(ctx, {})
+    except ValueError as error:
+        assert "fresh spawn" in str(error)
+    else:  # pragma: no cover - the assertion below reports it
+        raise AssertionError("a finished walk was reused as a measurement")
+    assert all(not runner.measured for runner in FakeRunner.instances)
 
 
 def test_p10_config_freezes_the_exact_fit_and_new_source_universe():
@@ -162,299 +410,3 @@ def test_p10_config_freezes_the_exact_fit_and_new_source_universe():
     assert config["stages"]["gate1"]["params"]["assets"] == assets
     assert config["stages"]["gate2"]["params"]["assets"] == assets
     assert config["stages"]["gate3"]["params"]["assets"] == assets
-
-
-def _walkforward_payload(path, cutoff):
-    """Write the one-ran-row artifact a bounded fold is required to leave."""
-    os.makedirs(path, exist_ok=True)
-    with open(os.path.join(path, "walkforward.json"), "w", encoding="utf-8") as handle:
-        json.dump({"state": "ran", "folds": [{"cutoff": cutoff, "score": 1.0}]}, handle)
-
-
-def _bounded_harness(tmp_path, monkeypatch, cutoffs):
-    """Stub every side effect of a bounded walk except the fold loop."""
-    monkeypatch.setattr(modelability, "_child_root", lambda _ctx: str(tmp_path))
-    monkeypatch.setattr(
-        modelability, "_summary_dir", lambda *_a, **_k: str(tmp_path / "sum")
-    )
-    monkeypatch.setattr(modelability, "_fold_cutoffs", lambda _spec: cutoffs)
-    monkeypatch.setattr(modelability, "_journal_confirms_walk", lambda *_a, **_k: True)
-    monkeypatch.setattr(
-        modelability, "_aggregate_folds", lambda folds, *_a: {"folds": folds}
-    )
-    monkeypatch.setattr(
-        modelability, "_write_walkforward_summary", lambda *_a, **_k: None
-    )
-    monkeypatch.setattr(modelability, "append_action", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        modelability,
-        "_single_fold_document",
-        lambda _doc, cutoff, index: SimpleNamespace(cutoff=cutoff, index=index),
-    )
-
-
-def test_bounded_walk_runs_more_than_one_fold_process_at_a_time(tmp_path, monkeypatch):
-    cutoffs = [f"2022-0{i}-01" for i in range(1, 5)]
-    _bounded_harness(tmp_path, monkeypatch, cutoffs)
-    live = []
-    peak = []
-    lock = threading.Lock()
-
-    def fake_run_walk(_ctx, part, tag, *, memory_limit=None):
-        with lock:
-            live.append(1)
-            peak.append(len(live))
-        time.sleep(0.05)
-        with lock:
-            live.pop()
-        out = str(tmp_path / f"part-{part.index}")
-        _walkforward_payload(out, part.cutoff)
-        return out, 1
-
-    monkeypatch.setattr(modelability, "_run_walk", fake_run_walk)
-    document = SimpleNamespace(
-        name="doc",
-        hash="a" * 64,
-        walkforward=SimpleNamespace(select="max", weight_halflife_folds=0),
-    )
-    ctx = SimpleNamespace(asof="2026-02-28", source_path="cfg.json")
-    modelability._run_bounded_walk(ctx, document, "tag", workers=4)
-    assert max(peak) > 1, "folds still ran one at a time"
-
-
-def test_bounded_walk_aggregates_folds_in_cutoff_order_under_concurrency(
-    tmp_path, monkeypatch
-):
-    cutoffs = ["2022-01-01", "2022-02-01", "2022-03-01", "2022-04-01"]
-    _bounded_harness(tmp_path, monkeypatch, cutoffs)
-    seen = {}
-    monkeypatch.setattr(
-        modelability,
-        "_aggregate_folds",
-        lambda folds, *_a: seen.update(order=folds) or {},
-    )
-
-    def fake_run_walk(_ctx, part, tag, *, memory_limit=None):
-        # Reverse the completion order: the last fold finishes first.
-        time.sleep(0.02 * (len(cutoffs) - part.index))
-        out = str(tmp_path / f"part-{part.index}")
-        _walkforward_payload(out, part.cutoff)
-        return out, 1
-
-    monkeypatch.setattr(modelability, "_run_walk", fake_run_walk)
-    document = SimpleNamespace(
-        name="doc",
-        hash="a" * 64,
-        walkforward=SimpleNamespace(select="max", weight_halflife_folds=0),
-    )
-    ctx = SimpleNamespace(asof="2026-02-28", source_path="cfg.json")
-    modelability._run_bounded_walk(ctx, document, "tag", workers=4)
-    assert [row["cutoff"] for row in seen["order"]] == cutoffs
-
-
-def test_the_capped_command_actually_applies_the_cap_in_the_child():
-    # Asserting a substring in argv proves nothing: a subshell, a typo,
-    # or a shell whose ulimit silently no-ops all pass that. Run it and
-    # read the limit back from inside the child.
-    cap = 512 * 1024**2
-    command = modelability._capped_command(
-        [
-            sys.executable,
-            "-c",
-            "import resource;print(resource.getrlimit(resource.RLIMIT_AS))",
-        ],
-        cap,
-    )
-    got = subprocess.run(command, text=True, capture_output=True)
-    assert got.returncode == 0, got.stderr
-    assert got.stdout.strip() == str((cap, cap))
-
-
-def test_an_uncapped_command_is_left_alone():
-    command = modelability._capped_command([sys.executable, "-c", "pass"], None)
-    assert command == [sys.executable, "-c", "pass"]
-
-
-def test_the_cap_is_read_back_so_a_silent_ulimit_failure_cannot_pass():
-    # dash's ulimit exits 0 EVEN WHEN setrlimit fails, so ";" and "&&"
-    # both miss it and the walk would run uncapped while the journal
-    # recorded a cap. The emitted command must read the limit back and
-    # refuse on mismatch. A real refusal cannot be provoked as root (the
-    # hard limit can always be raised again), so the refusal path is
-    # exercised directly with a readback that cannot match.
-    command = modelability._capped_command(
-        [sys.executable, "-c", "print('RAN')"], 1024**3
-    )
-    assert command[:2] == ["/bin/sh", "-c"]
-    assert "$(ulimit -v)" in command[2], "the cap is never read back"
-    forced = command[2].replace('[ "$(ulimit -v)" =', "[ nomatch =")
-    got = subprocess.run(["/bin/sh", "-c", forced], text=True, capture_output=True)
-    assert "RAN" not in got.stdout, "a mismatched cap still ran the walk"
-    assert got.returncode == 111
-
-
-def test_every_concurrent_fold_keeps_the_whole_address_space_cap(tmp_path, monkeypatch):
-    # RLIMIT_AS is address space, not RSS, and the feature cache mmaps
-    # all 25 symbols whatever the walk scores. Dividing the cap between
-    # folds eats a fixed mapping floor that measured RSS never sees.
-    cutoffs = ["2022-01-01", "2022-02-01"]
-    _bounded_harness(tmp_path, monkeypatch, cutoffs)
-    limits = []
-
-    def fake_run_walk(_ctx, part, tag, *, memory_limit=None):
-        limits.append(memory_limit)
-        out = str(tmp_path / f"part-{part.index}")
-        _walkforward_payload(out, part.cutoff)
-        return out, 1
-
-    monkeypatch.setattr(modelability, "_run_walk", fake_run_walk)
-    document = SimpleNamespace(
-        name="doc",
-        hash="a" * 64,
-        walkforward=SimpleNamespace(select="max", weight_halflife_folds=0),
-    )
-    ctx = SimpleNamespace(asof="2026-02-28", source_path="cfg.json")
-    modelability._run_bounded_walk(ctx, document, "tag", workers=4)
-    assert set(limits) == {modelability._MEMORY_LIMIT}
-
-
-def test_a_cached_fold_only_resumes_under_the_limit_it_was_run_at(
-    tmp_path, monkeypatch
-):
-    # The reason the address-space cap must not vary with worker width:
-    # _run_walk refuses a finished fold whose persisted limit differs
-    # from the one asked for, so a width-derived limit would invalidate
-    # every completed fold of a gate whose whole point is resuming.
-    summary = tmp_path / "sum"
-    summary.mkdir()
-    (summary / "walkforward.json").write_text("{}")
-    with open(summary / "memory-preflight.json", "w", encoding="utf-8") as handle:
-        json.dump(
-            {
-                "document_hash": "a" * 64,
-                "memory_limit_bytes": modelability._MEMORY_LIMIT,
-                "peak_rss_bytes": 10,
-            },
-            handle,
-        )
-    monkeypatch.setattr(modelability, "_child_root", lambda _ctx: str(tmp_path))
-    monkeypatch.setattr(modelability, "_summary_dir", lambda *_a, **_k: str(summary))
-    monkeypatch.setattr(modelability, "_save_derived", lambda *_a, **_k: None)
-    monkeypatch.setattr(modelability, "_journal_confirms_walk", lambda *_a, **_k: True)
-    document = SimpleNamespace(name="doc", hash="a" * 64)
-    ctx = SimpleNamespace(asof="2026-02-28", run_dir=str(tmp_path / "r"))
-    got, peak = modelability._run_walk(
-        ctx, document, "tag", memory_limit=modelability._MEMORY_LIMIT
-    )
-    assert (got, peak) == (str(summary), 10)
-    for divided in (modelability._MEMORY_LIMIT // 4, modelability._MEMORY_LIMIT // 2):
-        try:
-            modelability._run_walk(ctx, document, "tag", memory_limit=divided)
-        except ValueError as error:
-            assert "memory" in str(error)
-        else:  # pragma: no cover - the assertion below reports it
-            raise AssertionError("a differing limit silently resumed")
-
-
-def test_a_failing_fold_cancels_the_ones_that_have_not_started(tmp_path, monkeypatch):
-    cutoffs = [f"2022-{i:02d}-01" for i in range(1, 9)]
-    _bounded_harness(tmp_path, monkeypatch, cutoffs)
-    started = []
-
-    def fake_run_walk(_ctx, part, tag, *, memory_limit=None):
-        started.append(part.index)
-        if part.index == 0:
-            raise RuntimeError("fold 0 blew up")
-        time.sleep(0.05)
-        out = str(tmp_path / f"part-{part.index}")
-        _walkforward_payload(out, part.cutoff)
-        return out, 1
-
-    monkeypatch.setattr(modelability, "_run_walk", fake_run_walk)
-    document = SimpleNamespace(
-        name="doc",
-        hash="a" * 64,
-        walkforward=SimpleNamespace(select="max", weight_halflife_folds=0),
-    )
-    ctx = SimpleNamespace(asof="2026-02-28", source_path="cfg.json")
-    try:
-        modelability._run_bounded_walk(ctx, document, "tag", workers=2)
-    except RuntimeError as error:
-        assert "fold 0" in str(error)
-    else:  # pragma: no cover - the assertion below reports it
-        raise AssertionError("the failing fold did not surface")
-    assert len(started) < len(cutoffs), "every fold ran after one had already failed"
-
-
-def test_the_worker_width_defaults_to_the_machine_knob(tmp_path, monkeypatch):
-    cutoffs = ["2022-01-01"]
-    _bounded_harness(tmp_path, monkeypatch, cutoffs)
-    monkeypatch.setenv(modelability._WORKERS_ENV, "5")
-    seen = []
-
-    def fake_run_walk(_ctx, part, tag, *, memory_limit=None):
-        out = str(tmp_path / f"part-{part.index}")
-        _walkforward_payload(out, part.cutoff)
-        return out, 1
-
-    monkeypatch.setattr(modelability, "_run_walk", fake_run_walk)
-    monkeypatch.setattr(
-        modelability,
-        "append_action",
-        lambda *_a, **kw: seen.append(kw.get("notes", "")),
-    )
-    document = SimpleNamespace(
-        name="doc",
-        hash="a" * 64,
-        walkforward=SimpleNamespace(select="max", weight_halflife_folds=0),
-    )
-    ctx = SimpleNamespace(asof="2026-02-28", source_path="cfg.json")
-    modelability._run_bounded_walk(ctx, document, "tag")
-    assert "fold_workers=5" in seen[0]
-
-
-def test_the_pool_is_shut_down_even_when_submitting_a_fold_raises(
-    tmp_path, monkeypatch
-):
-    # The submit loop used to sit outside the try, so a submit failure
-    # left futures unbound and shutdown unreachable: live threads then
-    # blocked interpreter exit — the silent hang the pool was meant to
-    # remove.
-    cutoffs = [f"2022-{i:02d}-01" for i in range(1, 7)]
-    _bounded_harness(tmp_path, monkeypatch, cutoffs)
-
-    def fake_run_walk(_ctx, part, tag, *, memory_limit=None):
-        time.sleep(0.05)
-        out = str(tmp_path / f"part-{part.index}")
-        _walkforward_payload(out, part.cutoff)
-        return out, 1
-
-    monkeypatch.setattr(modelability, "_run_walk", fake_run_walk)
-    real_pool = modelability.ThreadPoolExecutor
-    shutdowns = []
-
-    class CountingPool(real_pool):
-        def submit(self, *args, **kwargs):
-            if len(getattr(self, "_seen", [])) >= 2:
-                raise RuntimeError("can't start new thread")
-            self._seen = getattr(self, "_seen", []) + [args]
-            return super().submit(*args, **kwargs)
-
-        def shutdown(self, *args, **kwargs):
-            shutdowns.append(True)
-            return super().shutdown(*args, **kwargs)
-
-    monkeypatch.setattr(modelability, "ThreadPoolExecutor", CountingPool)
-    document = SimpleNamespace(
-        name="doc",
-        hash="a" * 64,
-        walkforward=SimpleNamespace(select="max", weight_halflife_folds=0),
-    )
-    ctx = SimpleNamespace(asof="2026-02-28", source_path="cfg.json")
-    try:
-        modelability._run_bounded_walk(ctx, document, "tag", workers=2)
-    except RuntimeError as error:
-        assert "new thread" in str(error)
-    else:  # pragma: no cover - the assertion below reports it
-        raise AssertionError("the submit failure never surfaced")
-    assert shutdowns, "the pool was never shut down"

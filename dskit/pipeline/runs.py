@@ -45,9 +45,12 @@ __all__ = [
     "read_skill_series",
     "resolve_run_root",
     "scan_runs",
+    "score_bar",
     "score_walk",
+    "single_fold_row",
     "unknown_metrics",
     "unknown_params",
+    "walk_cells",
     "walk_fold_dirs",
 ]
 
@@ -562,19 +565,77 @@ def walk_fold_dirs(summary_dir):
 
         len(walk_fold_dirs(summary))  # 20
     """
+    return [
+        fold["run_dir"]
+        for fold in _walk_record(summary_dir)["folds"]
+        if isinstance(fold, dict)
+        and fold.get("state") == "ran"
+        and isinstance(fold.get("run_dir"), str)
+    ]
+
+
+def _walk_record(summary_dir):
+    """Read the walk-forward record of ``summary_dir``, refusing what is not one."""
     record, _why = _load_json(os.path.join(summary_dir, WALKFORWARD_FILE))
     if not isinstance(record, dict) or not isinstance(record.get("folds"), list):
         raise ValueError(
             f"{summary_dir} holds no readable {WALKFORWARD_FILE} — "
             "not a walk-forward summary directory"
         )
-    return [
-        fold["run_dir"]
-        for fold in record["folds"]
-        if isinstance(fold, dict)
-        and fold.get("state") == "ran"
-        and isinstance(fold.get("run_dir"), str)
-    ]
+    return record
+
+
+def single_fold_row(summary_dir, cutoff):
+    """Read the one fold row a single-fold walk left, for its cutoff.
+
+    A bounded walk (ADR-0093) runs each fold as its own single-fold
+    document and reads the row back from that document's summary. The
+    seam that spawned it is agnostic to what it produced, so the reading
+    lives here, beside :func:`walk_fold_dirs`, with the
+    :data:`WALKFORWARD_FILE` owner.
+
+    Parameters
+    ----------
+    summary_dir : str
+        A walk-forward summary directory (the one holding
+        :data:`WALKFORWARD_FILE`).
+    cutoff : str
+        The ``YYYY-MM-DD`` cutoff the one row must carry.
+
+    Returns
+    -------
+    dict
+        The fold row, exactly as the driver wrote it.
+
+    Raises
+    ------
+    ValueError
+        When the directory holds no readable walk-forward record, when
+        the record's state is not ``ran``, when it holds anything but
+        exactly one fold row, or when that row's cutoff is not ``cutoff``.
+
+    Examples
+    --------
+    The one row of a one-fold walk::
+
+        single_fold_row(summary, "2025-01-01")["cutoff"]  # '2025-01-01'
+    """
+    record = _walk_record(summary_dir)
+    if record.get("state") != "ran":
+        raise ValueError(
+            f"{summary_dir}: state is {record.get('state')!r}, not 'ran'"
+        )
+    folds = record["folds"]
+    if len(folds) != 1 or not isinstance(folds[0], dict):
+        raise ValueError(
+            f"{summary_dir}: expected exactly one fold row, got {len(folds)}"
+        )
+    if folds[0].get("cutoff") != cutoff:
+        raise ValueError(
+            f"{summary_dir}: the one fold row is for cutoff "
+            f"{folds[0].get('cutoff')!r}, not {cutoff!r}"
+        )
+    return folds[0]
 
 
 def read_skill_series(run_dir):

@@ -211,18 +211,21 @@ class MemoryPreflightStage(Stage):
         return problems
 
     def run(self, ctx, inputs):
-        """Run one capped Gate-1-shaped asset walk."""
+        """Measure one capped Gate-1-shaped asset walk as the first child."""
         del inputs
         _declared, cache_path, digest = p10._feature_cache_info(ctx)
         asset, rows = _largest_asset(cache_path, self.params["assets"])
-        document = _derived_document(ctx, asset, 1, tag="preflight")
-        summary, peak = p10._run_walk(
-            ctx,
-            document,
-            f"p11-memory-{asset.lower()}",
-            memory_limit=self.params["memory_limit_bytes"],
+        # Named for the staged identity: the reading is the seam's
+        # measure_one (ADR-0093), which needs a fresh spawn, so a revised
+        # study measures again rather than tripping over the previous
+        # study's finished preflight walk.
+        document = _derived_document(
+            ctx, asset, 1, tag=f"preflight-{ctx.document.hash[:8]}"
         )
-        if peak is None or peak >= self.params["memory_limit_bytes"]:
+        summary, peak = p10._measure_walk(
+            ctx, document, f"p11-memory-{asset.lower()}"
+        )
+        if peak >= self.params["memory_limit_bytes"]:
             raise MemoryError(
                 f"P11 preflight peak {peak!r} is not strictly below "
                 f"{self.params['memory_limit_bytes']}"
