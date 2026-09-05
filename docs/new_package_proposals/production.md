@@ -100,7 +100,7 @@ survives in a design that folds only trading records: a deposit would be
 indistinguishable from profit, and a mark would exist only inside an
 `AccountState` that is never serialized. So phase 1 adds the `cash_flow`
 record, the `cash` break class that routes an unexplained balance delta into
-it instead of only halting, and `tick.nav`. That is the whole cost — one
+it *after* halting, as an authenticated operator act, and `tick.nav`. That is the whole cost — one
 record kind, one break class, one field — and without it the seam could never
 be filled for any series already running. `trading_pnl` was already
 recoverable from `fill` and `outcome`; the other four now are too.
@@ -484,8 +484,8 @@ brackets.
   inside a kept section, so the grammar is shaped to that constraint rather than
   the reverse: every non-identity value lives in its own excluded top-level
   section, and nothing graded shares a section with anything excluded.
-  `PRODUCTION_NON_IDENTITY_SECTIONS = ("alerts", "heartbeat", "placement",
-  "env")` are dropped; `durability` (holding `fsync`, previously `ledger.fsync`)
+  `PRODUCTION_NON_IDENTITY_SECTIONS = ("alert_endpoints", "heartbeat",
+  "placement", "env")` are dropped; `durability` (holding `fsync`, previously `ledger.fsync`)
   is graded, as are arming policy and every
   decision/guard/execution/accounting/approval/coordination knob. Rejected: a
   path-aware canonicalizer — it would be a second identity recipe beside the
@@ -1276,6 +1276,12 @@ other permit **by type** — refuses meaning it returns
 ### 5.7.1 `accounting.py`
 
 `Accounting(ABC)` has two abstract hooks.
+`value(state_view, quotes, at_ms) -> Decimal | None` returns the marked
+portfolio value that becomes `tick.nav` — `None` when a required mark is
+missing, which is recorded rather than guessed. It is an `Accounting` hook
+because `AccountState` carries no valuation and the loop must not compute a
+second one. Single-currency accounts only: there is no FX seam in this ADR, so
+a document whose `balances` span currencies must leave `nav` null.
 `classify(proposal, state) -> risk_effect ∈ RISK_EFFECTS` is the one D10 means
 by "accounting exclusively classifies a submit's risk effect" and D12 by "the
 accounting strategy, not a model claim, must prove each proposal cannot
@@ -2234,8 +2240,8 @@ recording, observability, tick_id)`;
 `LegPipeline(document, release, bindings, schedule, decision, safety,
 execution, recording, observability)`.
 
-**A naming rule this table exists to enforce.** Ten names are simultaneously a
-serve-document section and a bundle member — `accounting`, `alerts`, `arming`,
+**A naming rule this table exists to enforce.** Nine names are simultaneously a
+serve-document section and a bundle member — `accounting`, `arming`,
 `feed`, `guards`, `health`, `heartbeat`, `monitors`, `readiness`,
 `resilience` — plus `schedule` and `execution`, which name a bundle *type*.
 That collision is what let a leg be specified to read
@@ -2305,8 +2311,8 @@ written here — `test_producers.py`'s completeness assertion is what keeps the
 row and `dataclasses.fields(ActPermit)` equal, and prose arithmetic in this
 section has been wrong three times.
 
-**`TickResult`.** `tick_id` from `recording.id_source`; `observed_at_ms` from `schedule.clock`; `nav` from the `account` phase's
-`AccountState` valued against the tick's `QuoteSet` (`null` when valuation was
+**`TickResult`.** `tick_id` from `recording.id_source`; `observed_at_ms` from `schedule.clock`; `nav` from `execution.accounting.value(view, quotes, at_ms)` during the
+`account` phase (`null` when valuation was
 unavailable — a recorded fact, not a gap, since an equity curve with a hole in
 it must say so); `status`,
 `refusal_reason`, `error` from whichever phase refused; `data_asof_ms`,
@@ -2375,7 +2381,7 @@ sha256-canonical idiom.
 |---|---|---|
 | `process` | start / stop / recovered | `event ∈ {start, stop, recovered}`, `series_id`, `release_hash`, `doc_hash`, `serving_hash`, `run_hash`, `artifact_digests`, `source_config_hash`, `runtime_fingerprint`, `rung`, `executor_kind`, `code_version`; stop adds `exit_code`. After its barrier, one journal row is written whose `notes` render the process id and final head in the D22 `production-v1` form |
 | `tick_start` | scheduled tick | `tick_id`, `tick_at_ms`, `release_hash` |
-| `tick` | terminal tick | `tick_id`, `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash, required_keys_digest, watermarks_by_key, coverage_digest}`, `inputs_digest`, `nav` (the marked portfolio value at this tick, in the document's reporting currency, or `null` when valuation was unavailable), `calendar`, `overrun_absorbed[]` (the tick instants this tick coalesced or skipped), `latency_ms{gate, verify_release, fetch, read_entry, coverage, evaluate, candidates, quotes, account, propose}` (one key per §5.13 `Tick` phase method, pinned by a test) and `leg_latency_ms` keyed by `vocab.LEG_LATENCY_BUCKETS` and summed over the tick's legs — `guard` spans §5.13.1 steps (1)–(3), `authorize` (4)–(6), `act` (7); step (8) records the outcome and is charged to the tick. These are spans over `LEG_STEPS`, not step names, which is why the two vocabularies are separate, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}` |
+| `tick` | terminal tick | `tick_id`, `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash, required_keys_digest, watermarks_by_key, coverage_digest}`, `inputs_digest`, `nav` (the marked portfolio value at this tick, single-currency only, `null` when a mark is missing or balances span currencies), `calendar`, `overrun_absorbed[]` (the tick instants this tick coalesced or skipped), `latency_ms{gate, verify_release, fetch, read_entry, coverage, evaluate, candidates, quotes, account, propose}` (one key per §5.13 `Tick` phase method, pinned by a test) and `leg_latency_ms` keyed by `vocab.LEG_LATENCY_BUCKETS` and summed over the tick's legs — `guard` spans §5.13.1 steps (1)–(3), `authorize` (4)–(6), `act` (7); step (8) records the outcome and is charged to the tick. These are spans over `LEG_STEPS`, not step names, which is why the two vocabularies are separate, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}` |
 | `decision` | tick (exactly one) | `tick_id`, `decision_plan_ids[]`, `decision_plan_digests[]`, `legs[]{leg_id, instrument, prediction, confidence, baseline, expected_value, reference_price, proposal, findings[], final, client_ref}` — `leg_id`, `findings[]`, `final` and `client_ref` are the leg's own; `proposal` carries the serialized final `Proposal`; every remaining field is copied from that `Proposal` (§5.4) under the same name — a no-op tick has `final: none` per leg or zero legs with `reason` |
 | `decision_plan` | proposal after complete pre-submit evaluation (barrier before proposal submit) | `plan_id`, entry/head/candidate provenance, original/final proposal, input/quote/evidence as-of+digests, `findings[]`, `gate_results[]`, scope verdict, `risk_effect`, `risk_version`, `risk_state_digest`, `result ∈ {submit, not_sent}` |
 | `intent` | proposal selected for possible submit | the canonical `records.Intent` value object; no second schema |
@@ -2386,7 +2392,7 @@ sha256-canonical idiom.
 | `authority_use` | consume/reserve one reduction right (barrier before authorization) | unique `(authority_id, reduction_intent_digest)`, `client_ref`, `reserved_at_ms`; recovery may reference this reservation but no second intent may |
 | `order_event` | executor/loop report | `client_ref`, `venue_ref`, `event ∈ {not_sent, ack, reject, fill, partial_fill, cancel, expire, replaced_by_venue, unknown, status}` — `replaced_by_venue` is observed only (D10); no executor verb initiates it, `status`, `venue_ts_ms`, `recv_at_ms`, `reason` |
 | `fill` | execution | the `Fill` record |
-| `cash_flow` | money entering or leaving the account other than by trading | `at_ms`, `currency`, `amount` (signed `Decimal`), `kind ∈ CASH_FLOW_KINDS`, `external` (true for a deposit or withdrawal, false for an interest or fee accrual the venue applied), `source ∈ {venue, operator}`, `evidence` (the balance delta and recon break it explains, or the operator's note) — **without this record an external deposit is indistinguishable from trading profit for the rest of the series' life**, because `StateView.balances` is a fold over trading records only. Nothing downstream can separate them later, so it is recorded when it happens or never |
+| `cash_flow` | money entering or leaving the account other than by trading | `effective_at_ms`, `known_at_ms`, `supersedes` (bitemporal per D21, since a flow found by reconciliation days later has effective ≠ known and a wrongly adopted amount must be correctable rather than merely offset), `currency`, `amount` (signed `Decimal`), `kind ∈ CASH_FLOW_KINDS`, `external` (true for a deposit or withdrawal, false for an interest or fee accrual the venue applied), `source` is always `venue` (the amount is the reconciler's computed delta, never an operator-supplied number); `kind` and `external` come from the operator's proof and never default to `external: true`, `evidence` (the balance delta and recon break it explains, or the operator's note), `id = H("cash-flow-v1", release_hash, control_request_id, break_id)` so a crash-replayed `adopt` cannot append the same money twice. It is appended **before** the `adoption` record and inside the same barrier, so a crash between them cannot leave a break marked resolved with no amount recorded — **without this record an external deposit is indistinguishable from trading profit for the rest of the series' life**. `SeriesState.apply(cash_flow)` adjusts `StateView.balances` and advances `economic_seq` — it is a balance update, which D14 already counts as economic — so the fold carries both the money and the reason it moved, and the re-reconcile after adoption clears the break instead of reproducing it. Nothing downstream can separate them later, so it is recorded when it happens or never. **Every economic measure partitions the fold on `external`**: `pnl`, `drawdown`, `consecutive_losses` and `error_vs_realised` read trading records only and never see an external flow, while `bankroll_fraction` and `exposure` read the capital base *including* it. An external flow changes what you have, never what you earned — without that partition an adopted deposit would inflate a `pnl` halt guard into headroom, and `document.reconcile.lookback_ms` guarantees that any fill older than the window is classified `cash` and adoptable, so this is a routine mis-classification rather than an attack. `test_guards.py` pins that a `cash_flow` cannot move a `pnl` bound |
 | `outcome` | label arrival / mark / correction | `leg_id`, `kind ∈ {settled, marked, voided, partial, corrected}`, `effective_at_ms`, `known_at_ms`, `value`, `weight`, `terminal`, `supersedes`, `source` |
 | `guard_state` | a guard hold or pause | `guard`, `scope_key`, `kind ∈ {hold, pause}`, `reason`, `held_until_ms`, `resume_at_ms`, `finding` — folded by `SeriesState` like breaker and arming, so a restart cannot resume a paused strategy early |
 | `readiness` | a `ready` evaluation | `release_hash`, `verdict ∈ READINESS_VERDICTS`, `items[]{item, required, evidence, waiver, passed}`, `readiness_digest`, `evaluated_at_ms`, `valid_until_ms` — the durable GO the action matrix reads and `ActPermit` binds; `ready` is the only verb that writes it |
@@ -2397,7 +2403,7 @@ sha256-canonical idiom.
 | `monitor` | verdict change / window close | `monitor`, `slice`, `window`, `statistic`, `threshold`, `status`, `provisional` |
 | `alert` | firing / resolved | the `Alert` record + per-sink outcomes |
 | `health` | transition | `from`, `to`, `cause`, `probe_evidence` |
-| `snapshot` | every N records | `at_seq`, `state_digest`, `state` — **every `StateView` member** (positions, working orders, pending refs, balances, decision history, breaker, arming, readiness, guard holds, reduction projection, pending control, risk version), since `Recovery` replays `SeriesState.apply` from the last snapshot forward and cannot restore a member the snapshot never carried |
+| `snapshot` | every N records | `at_seq`, `state_digest`, `state` — **every `StateView` member** (positions, working orders, pending refs, balances, decision history, breaker, arming, readiness, guard holds, reduction projection, pending control, risk version) **plus monitor state**, which §5.10 requires the snapshot to carry and which is not a `StateView` member — dropping it would reset every drift window on restart, and a monitor below `min_n` cannot alarm until it refills. `risk_version`'s `executor_token`/`accounting_tokens` are live session tokens re-acquired on restart, not restored. Since `Recovery` replays `SeriesState.apply` from the last snapshot forward and cannot restore a member the snapshot never carried |
 
 ## 7. CLI — `python -m dskit.production`
 
@@ -2447,7 +2453,7 @@ dskit/production/
 │                      WINDOW_KINDS (none|duration|count|calendar), CALENDAR_WINDOWS (session|day|event),
 │                      LEG_ORIGINS (model|reduction), GUARD_STATE_KINDS (hold|pause), PROCESS_EVENTS (start|stop|recovered),
 │                      ECONOMIC_ATTRS (positions|working|balances),
-│                      CASH_FLOW_KINDS (deposit|withdrawal|interest|fee|adjustment), CASH_FLOW_SOURCES (venue|operator),
+│                      CASH_FLOW_KINDS (deposit|withdrawal|adjustment — the only kinds `adopt` can emit; `interest` and `fee` would need a venue-reported cash-flow producer this ADR does not add),
 │                      READINESS_VERDICTS (go|no_go), METRIC_NAMES + METRIC_LABEL_VALUES (§5.11.1's tables live here,
 │                      not in metrics.py), BREAK_ORIGINS (ours|external),
 │                      AT_TIMES_RELATIVE, CALENDAR_WINDOWS, ON_MISMATCH, RECON_ACTIONS, TRIP_REASONS,
