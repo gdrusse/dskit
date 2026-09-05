@@ -25,6 +25,12 @@ What this file pins, in the plan's own terms (§5.8, §5.8.1, §6, D13, D15):
   its own `seq`; for a deletion or a reorder it is the `seq` that should
   have been at that position. (Reported as a plan gap — §5.8 says only
   `first_bad_seq | None`.)
+* **Money never touches float, ratios may.** The refusal is keyed on
+  `vocab.MONEY_FIELDS`, walked recursively to any depth: a `float` under
+  a money key refuses and the message names the key path, while a float
+  under any other key (`confidence`, `prediction`, `expected_value`,
+  `statistic`) is legal — §5.4/§5.5 are explicit that dimensionless
+  ratios are floats, and §6's `decision` body carries them.
 
 `clock.py` and `state.py` belong to other groups, so the collaborators
 here are local fakes with the two methods the ledger actually calls:
@@ -49,6 +55,10 @@ SERIES = "018f0f4e-7b21-7d3a-9c31-6d8f36d806a1"
 PROCESS = "proc-a"
 RELEASE = "a" * 64
 GENESIS_PREV = "0" * 64
+
+#: `Checkpoint.validate_against` answers with one of these; the names come
+#: from the vocabulary, never from a literal spelled here.
+CURRENT, STALE = vocab.CACHE_STATES
 
 #: The nine fields §6 says the ledger assigns; `kind` and `id` are the
 #: caller's, so the envelope is the caller's record plus these.
@@ -313,6 +323,10 @@ def test_ledger_declares_the_eight_seam_methods_abstract():
         "snapshot",
         "latest_snapshot",
     } <= set(Ledger.__abstractmethods__)
+
+
+def test_ledger_declares_close_so_the_writer_lock_can_be_released():
+    assert callable(getattr(Ledger, "close"))
 
 
 def test_jsonl_ledger_is_a_ledger(serve, open_ledger):
@@ -603,25 +617,66 @@ def test_a_non_dict_record_refuses(serve, open_ledger):
 
 
 # ---------------------------------------------------------------------------
-# Money never touches float (§5.8, §8)
+# Money never touches float; ratios may (§5.8, §8, vocab.MONEY_FIELDS)
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("field", vocab.MONEY_FIELDS)
+def test_a_float_under_any_money_field_refuses(serve, open_ledger, field):
+    led = open_ledger(serve)
+    with pytest.raises(ProductionError) as exc:
+        led.append(_rec(kind="fill", rid="f-1", **{field: 1.5}))
+    assert field in str(exc.value)
+    assert _raw_lines(serve) == []
+
+
 @pytest.mark.parametrize(
-    "body",
+    "body, path_parts",
     [
-        {"price": 1.5},
-        {"fee": {"amount": 0.25}},
-        {"legs": [{"qty": 3.0}]},
-        {"xs": [1, 2, 3.0]},
-        {"deep": {"a": [{"b": {"c": 0.1}}]}},
+        ({"legs": [{"price": 1.5}]}, ("legs", "price")),
+        ({"detail": {"charges": {"fee": 0.25}}}, ("detail", "charges", "fee")),
+        ({"balances": [{"currency": "USD", "total": 1.0}]}, ("balances", "total")),
+        ({"price": [1.0, 2]}, ("price",)),
     ],
 )
-def test_a_float_anywhere_in_a_record_body_refuses(serve, open_ledger, body):
+def test_a_nested_money_float_refuses_and_the_message_names_the_path(
+    serve, open_ledger, body, path_parts
+):
     led = open_ledger(serve)
-    with pytest.raises(ProductionError):
+    with pytest.raises(ProductionError) as exc:
         led.append(_rec(kind="fill", rid="f-1", **body))
+    for part in path_parts:
+        assert part in str(exc.value)
     assert _raw_lines(serve) == []
+
+
+def test_a_float_under_a_non_money_field_is_legal(serve, open_ledger):
+    """§5.4/§5.5: dimensionless ratios are floats and §6's `decision` carries them."""
+    led = open_ledger(serve)
+    led.append(
+        _rec(
+            kind="decision",
+            rid="d-1",
+            confidence=0.42,
+            prediction=-0.9,
+            expected_value=0.0125,
+            statistic=1.5,
+            legs=[{"confidence": 0.5, "qty": 3}],
+        )
+    )
+    (env,) = _envelopes(serve)
+    assert env["confidence"] == 0.42
+    assert env["prediction"] == -0.9
+    assert env["legs"][0]["confidence"] == 0.5
+    for name in ("confidence", "prediction", "expected_value", "statistic"):
+        assert name not in vocab.MONEY_FIELDS
+
+
+@pytest.mark.parametrize("value", [3, 0, -7, "1.50", None])
+def test_a_money_field_that_is_not_a_float_is_accepted(serve, open_ledger, value):
+    led = open_ledger(serve)
+    assert led.append(_rec(kind="fill", rid="f-1", price=value)) == 1
+    assert _envelopes(serve)[0]["price"] == value
 
 
 def test_ints_bools_strings_and_nulls_are_accepted(serve, open_ledger):
@@ -1201,6 +1256,22 @@ def test_snapshot_every_requires_a_state_to_project(serve, open_ledger):
         open_ledger(serve, snapshot_every=3)
 
 
+def test_the_snapshot_cadence_default_is_named_once_and_appends_nothing(
+    serve, open_ledger
+):
+    """One named default (no document knob), and it is off — a stateless
+    ledger must construct, which it could not if the default asked for a
+    projection there is no `state` to supply."""
+    from dskit.production.ledger import DEFAULT_SNAPSHOT_EVERY
+
+    assert DEFAULT_SNAPSHOT_EVERY is None
+    led = open_ledger(serve)
+    for i in range(1, 6):
+        led.append(_rec(rid=f"t-{i}"))
+    assert [e["kind"] for e in _envelopes(serve)] == ["tick_start"] * 5
+    assert led.latest_snapshot() is None
+
+
 def test_a_snapshot_record_is_folded_like_any_other(serve, open_ledger):
     state = RecordingState()
     led = open_ledger(serve, state=state)
@@ -1262,7 +1333,7 @@ def test_a_checkpoint_at_the_ledger_head_is_current(serve, open_ledger):
     for i in range(1, 4):
         led.append(_rec(rid=f"t-{i}"))
     seq, head = led.head()
-    assert _checkpoint(seq, head).validate_against(led) == "current"
+    assert _checkpoint(seq, head).validate_against(led) == CURRENT
 
 
 def test_a_checkpoint_behind_the_ledger_head_is_stale(serve, open_ledger):
@@ -1270,13 +1341,13 @@ def test_a_checkpoint_behind_the_ledger_head_is_stale(serve, open_ledger):
     for i in range(1, 4):
         led.append(_rec(rid=f"t-{i}"))
     second = _envelopes(serve)[1]
-    assert _checkpoint(second["seq"], second["hash"]).validate_against(led) == "stale"
+    assert _checkpoint(second["seq"], second["hash"]).validate_against(led) == STALE
 
 
 def test_a_genesis_checkpoint_against_a_written_ledger_is_stale(serve, open_ledger):
     led = open_ledger(serve)
     led.append(_rec(rid="t-1"))
-    assert _checkpoint(0, GENESIS_PREV).validate_against(led) == "stale"
+    assert _checkpoint(0, GENESIS_PREV).validate_against(led) == STALE
 
 
 def test_a_checkpoint_ahead_of_the_ledger_refuses(serve, open_ledger):

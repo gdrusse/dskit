@@ -31,6 +31,7 @@ from dskit.production.base import ProductionError
 from dskit.production.vocab import (
     FILL_STATUSES,
     LEG_LATENCY_BUCKETS,
+    MONEY_FIELDS,
     SIDES,
     TICK_PHASES,
 )
@@ -527,6 +528,21 @@ def test_a_float_where_money_belongs_refuses(name):
         pytest.skip(f"{name} holds no Decimal field")
     with pytest.raises(ProductionError):
         type(sample).from_obj(dict(sample.to_obj(), **{field: 4.10}))
+
+
+def test_every_declared_money_field_carries_a_decimal():
+    """`vocab.MONEY_FIELDS` is what the ledger refuses a float under, so
+    a field named there that holds anything but a `Decimal` (or `None`)
+    is a float the refusal was written to catch and would not."""
+    offenders = []
+    for name, sample in SAMPLES.items():
+        for field in dataclasses.fields(sample):
+            if field.name not in MONEY_FIELDS:
+                continue
+            value = getattr(sample, field.name)
+            if value is not None and not isinstance(value, Decimal):
+                offenders.append(f"{name}.{field.name} = {value!r}")
+    assert not offenders, offenders
 
 
 # ---------------------------------------------------------------------------

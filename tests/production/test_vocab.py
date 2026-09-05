@@ -107,6 +107,9 @@ CLOSED_SET_NAMES = (
     "RECON_ACTIONS",
     "TRIP_REASONS",
     "CIRCUIT_STATES",
+    # Ruled into vocab.py after §8's list was written.
+    "MONEY_FIELDS",
+    "CACHE_STATES",
 )
 
 #: The names whose value is a MAP, not a tuple — checked by their own tests.
@@ -216,6 +219,28 @@ EXPECTED_MEMBERS = {
     "ECONOMIC_ATTRS": ("positions", "working", "balances"),
     "CASH_FLOW_KINDS": ("deposit", "withdrawal", "adjustment"),
     "READINESS_VERDICTS": ("go", "no_go"),
+    "MONEY_FIELDS": (
+        "qty",
+        "notional",
+        "limit",
+        "price",
+        "fee",
+        "avg_price",
+        "filled_qty",
+        "remaining_qty",
+        "amount",
+        "total",
+        "available",
+        "payout",
+        "avg_cost",
+        "reference_price",
+        "exposure",
+        "nav",
+        "bid",
+        "ask",
+        "mid",
+    ),
+    "CACHE_STATES": ("current", "stale"),
     "TICK_STATUSES": (
         "decided",
         "skipped:closed",

@@ -82,6 +82,19 @@ def test_the_process_environment_wins_over_the_file(env_config, monkeypatch):
     assert secrets["DSKIT_TEST_API_KEY"] == "ak_from_the_process_env"
 
 
+def test_only_the_declared_names_are_treated_as_credentials(env_config, monkeypatch):
+    """`env.require` is the document's declaration of WHICH names hold
+    credentials, and it is the set `redact` learns. Sweeping every value
+    in the process environment instead turns `redact` into a shredder —
+    a one-character value like a path separator then masks every line —
+    so resolution registers the declared names and nothing else."""
+    monkeypatch.setenv("DSKIT_TEST_NOT_REQUIRED", "plain_operational_value_9")
+    resolve_secrets(env_config)
+    assert redact("mode=plain_operational_value_9") == (
+        "mode=plain_operational_value_9"
+    )
+
+
 def test_the_secrets_facade_redacts_its_own_repr(env_config):
     """Why the pipeline's façade is reused rather than a dict: it resists
     display and is not JSON-serializable, so it cannot ride into an
