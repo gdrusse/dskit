@@ -63,8 +63,10 @@ __all__ = [
     "Registry",
     "canonical_bytes",
     "canonical_hash",
+    "check_digest",
     "now_ms",
     "parse_utc_ms",
+    "pin_members",
     "record_hash",
     "reject_money_floats",
     "reject_unknown_params",
@@ -357,6 +359,80 @@ def canonical_hash(obj):
         As for :func:`canonical_bytes`.
     """
     return hashlib.sha256(canonical_bytes(obj)).hexdigest()
+
+
+def check_digest(problems, name, value):
+    """Append a problem unless ``value`` is a lowercase hex sha256 digest.
+
+    The one owner of "is this a digest?" — every record field the plan
+    spells ``*_digest`` or ``*_hash`` is 64 lowercase hex characters, and
+    a module that re-spelled the rule would drift the moment the recipe
+    widened. It accumulates rather than raising so a caller can report
+    every malformed member of a value object at once.
+
+    Parameters
+    ----------
+    problems : list of str
+        The accumulator the caller raises from.
+    name : str
+        What the value is, as the refusal should name it.
+    value : object
+        The candidate digest.
+
+    Returns
+    -------
+    None
+        ``problems`` gains one entry when ``value`` is not 64 lowercase
+        hex characters.
+    """
+    if not isinstance(value, str) or not _HEX_DIGEST.match(value):
+        problems.append(f"{name} must be a 64-hex sha256 digest, got {value!r}")
+
+
+def pin_members(what, members, vocabulary, *, exact=False):
+    """Refuse at IMPORT when a module's own names stray from a closed vocabulary.
+
+    Closed vocabularies live only in ``vocab.py`` (§5.0), so every module
+    that spells one of their members for itself — a dispatch table's keys,
+    a tuple of literals — owes a pin that the spelling is still a member.
+    One owner, because four modules had written the same two lines and a
+    fifth would have written them differently.
+
+    Parameters
+    ----------
+    what : str
+        What is being pinned, as the refusal should name it (``"breaker.py's
+        CAUSE_TARGETS values"``).
+    members : iterable
+        The names the module spells. A mapping contributes its keys.
+    vocabulary : iterable
+        The closed set from ``vocab.py`` they must lie within.
+    exact : bool, optional
+        When True the two sets must be EQUAL — the pin a dispatch table
+        keyed by a vocabulary owes, since a missing key is a silently
+        unhandled member. Default False: membership only.
+
+    Returns
+    -------
+    object
+        ``members``, so a table can be pinned where it is bound.
+
+    Raises
+    ------
+    ProductionError
+        Naming the strays, or both differences under ``exact``.
+    """
+    spelled, closed = set(members), set(vocabulary)
+    stray = sorted(spelled - closed)
+    missing = sorted(closed - spelled) if exact else []
+    faults = []
+    if stray:
+        faults.append(f"{what} strays outside its vocabulary: {stray}")
+    if missing:
+        faults.append(f"{what} does not cover {missing}")
+    if faults:
+        raise ProductionError(faults)
+    return members
 
 
 def record_hash(prev_hash, envelope):

@@ -8,7 +8,10 @@ directory shape — no other module builds a serve path by concatenation),
 HOW a record lands (:class:`JsonlLedger`: one ``O_APPEND`` write per
 record, a graded fsync policy, the ``serve.lock`` writer lock, torn-tail
 recovery and segment rotation), and WHAT a head-bound cache must prove
-before it is trusted (:class:`Checkpoint`).
+before it is trusted (:class:`HeadBoundCache`, the discipline
+``breaker.json`` and ``arming.json`` follow, and :class:`Checkpoint`,
+which applies the same head rule to the projection written last in a
+tick).
 
 The envelope nests the body. A caller hands over exactly
 ``{"kind", "id", "body"}`` and the ledger writes twelve fields: those
@@ -68,6 +71,7 @@ from dskit.production.base import (
     canonical_bytes,
     canonical_hash,
     now_ms,
+    pin_members,
     record_hash,
     reject_money_floats,
     reject_unknown_params,
@@ -75,6 +79,7 @@ from dskit.production.base import (
 from dskit.production.redact import get_logger
 from dskit.production.release import RELEASES_DIRNAME
 from dskit.production.vocab import (
+    CACHE_STATES,
     FSYNC_MODES,
     RECORD_KINDS,
     ROTATE_BY,
@@ -85,6 +90,7 @@ __all__ = [
     "DEFAULT_FSYNC",
     "DEFAULT_ROTATE_BY",
     "DEFAULT_SNAPSHOT_EVERY",
+    "HeadBoundCache",
     "JsonlLedger",
     "Ledger",
     "SCHEMA_VERSION",
@@ -131,9 +137,9 @@ _ENVELOPE_TYPES = {
 #: The one record kind the ledger itself produces (§6 ``snapshot``).
 _SNAPSHOT_KIND = "snapshot"
 
-#: The two answers a cache validation can give — members of
-#: :data:`~dskit.production.vocab.CACHE_STATES`, pinned by test.
+#: The two answers a cache validation can give.
 _CURRENT, _STALE = "current", "stale"
+pin_members("ledger.py's cache states", (_CURRENT, _STALE), CACHE_STATES, exact=True)
 
 _MS_PER_DAY = 86_400_000
 _SEGMENT_NAME = "ledger.{index:04d}.jsonl"
@@ -1216,6 +1222,174 @@ def _hash_at(ledger, seq):
     for envelope in ledger.scan(since_seq=seq - 1):
         return envelope["hash"] if envelope["seq"] == seq else None
     return None
+
+
+# ---------------------------------------------------------------------------
+# The head-bound cache discipline (D15) — breaker.json and arming.json
+# ---------------------------------------------------------------------------
+
+
+class HeadBoundCache:
+    """A JSON projection of the fold, bound to the ledger head it was taken at (D15).
+
+    The file is ``{<member>: <projection>, "head_seq": int, "head_hash":
+    str}``, written atomically and durably. Loading it never trusts the
+    file over the fold: an absent or behind-the-head cache is rebuilt
+    from the fold and rewritten; a cache ahead of the ledger or off its
+    chain refuses (the ledger's ``validate_cache_head`` decides); a cache
+    AT the head whose projection disagrees with the fold refuses too —
+    that forgery is the one a head check alone would wave through.
+
+    Parameters
+    ----------
+    path : str
+        The cache file (``ServeRoot.breaker_cache`` / ``arming_cache``).
+    member : str
+        The key the projection is stored under (``"state"``, ``"arming"``).
+    head_check : callable
+        ``(head_seq, head_hash, ledger) -> vocab.CACHE_STATES member``;
+        the owning module passes a thin function that looks up
+        ``ledger.validate_cache_head`` by name at call time.
+
+    Attributes
+    ----------
+    path : str
+        As given.
+
+    Examples
+    --------
+    A cache of one string member, loaded against a fold::
+
+        cache = HeadBoundCache("./serve/<series>/breaker.json", "state", head_check)
+        cache.write("halted", view)
+        cache.load(ledger, view, view.breaker)  # 'halted'
+    """
+
+    _HEAD_KEYS = ("head_seq", "head_hash")
+
+    def __init__(self, path, member, head_check):
+        problems = []
+        _check_str(problems, "path", path)
+        _check_str(problems, "member", member)
+        if member in self._HEAD_KEYS:
+            problems.append(f"member {member!r} collides with the head keys")
+        if not callable(head_check):
+            problems.append(f"head_check must be callable, got {head_check!r}")
+        if problems:
+            raise ProductionError(problems)
+        self._path = path
+        self._member = member
+        self._head_check = head_check
+
+    @property
+    def path(self):
+        """The cache file's path."""
+        return self._path
+
+    def write(self, projection, view):
+        """Replace the cache with ``projection`` at the view's head, atomically and durably.
+
+        Parameters
+        ----------
+        projection : object
+            A JSON-ready value (str, dict, None, ...).
+        view : StateView
+            Supplies ``head_seq`` and ``head_hash``.
+
+        Returns
+        -------
+        None
+            Returns once the new file is durable; no temp file remains.
+        """
+        durable_write_json(
+            self._path,
+            {self._member: projection, "head_seq": view.head_seq, "head_hash": view.head_hash},
+        )
+
+    def load(self, ledger, view, projection):
+        """Return the fold's projection after validating the cache against it.
+
+        Parameters
+        ----------
+        ledger : Ledger
+            The chain the cached head is placed in.
+        view : StateView
+            The fold at its head.
+        projection : object
+            What the fold holds for this member right now.
+
+        Returns
+        -------
+        object
+            ``projection`` — after rebuilding an absent or stale cache,
+            or confirming a current one agrees.
+
+        Raises
+        ------
+        ProductionError
+            If the file is unreadable or malformed, its head is ahead of
+            or off the ledger's chain, or a current cache disagrees with
+            the fold.
+        """
+        cached = self._read()
+        if cached is None:
+            return self._rebuild(cached, projection, view)
+        placement = self._head_check(cached["head_seq"], cached["head_hash"], ledger)
+        try:
+            resolve = self._PLACEMENTS[placement]
+        except (KeyError, TypeError):
+            raise ProductionError(
+                [f"{self._path}: head check answered {placement!r}, not one of {list(CACHE_STATES)}"]
+            ) from None
+        return resolve(self, cached, projection, view)
+
+    def _rebuild(self, cached, projection, view):
+        """Rewrite the cache from the fold and answer with the fold."""
+        self.write(projection, view)
+        return projection
+
+    def _current(self, cached, projection, view):
+        """Require a cache at the head to agree with the fold; a disagreement is a forgery."""
+        if cached[self._member] != projection:
+            raise ProductionError(
+                [
+                    f"{self._path}: cache at the ledger head carries {self._member} "
+                    f"{cached[self._member]!r} but the fold holds {projection!r}"
+                ]
+            )
+        return projection
+
+    _PLACEMENTS = {"current": _current, "stale": _rebuild}
+
+    def _read(self):
+        """Return the cache object, None when absent; refuse anything malformed."""
+        if not os.path.exists(self._path):
+            return None
+        try:
+            with open(self._path, encoding="utf-8") as handle:
+                obj = json.load(handle)
+        except ValueError as exc:
+            raise ProductionError([f"{self._path}: cache is not JSON ({exc})"]) from exc
+        problems = []
+        _check_dict(problems, self._path, obj)
+        if problems:
+            raise ProductionError(problems)
+        keys = (self._member,) + self._HEAD_KEYS
+        _check_unknown(problems, obj, keys, where=self._path)
+        missing = [key for key in keys if key not in obj]
+        if missing:
+            problems.append(f"{self._path}: missing key(s) {missing}")
+        else:
+            check_int_param(problems, f"{self._path}: head_seq", obj["head_seq"], ge=0)
+            _check_str(problems, f"{self._path}: head_hash", obj["head_hash"])
+        if problems:
+            raise ProductionError(problems)
+        return obj
+
+
+pin_members(
+    "ledger.py's HeadBoundCache placements", HeadBoundCache._PLACEMENTS, CACHE_STATES, exact=True
+)
 
 
 @dataclass(frozen=True)

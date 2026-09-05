@@ -248,6 +248,23 @@ def test_a_policy_refuses_a_rule_set_that_is_not_rules():
         ActionPolicy(rules=("submit_requires_ready_health",))
 
 
+def test_a_policy_refuses_two_rules_that_share_a_name():
+    """The name IS the recorded reason (§5.14), so two rules answering to
+    one name make a refusal ambiguous and hide the second from the
+    completeness test, which walks the rules by name."""
+    twice = Rule("submit_requires_ready_health", lambda req: "no")
+    with pytest.raises(ProductionError) as excinfo:
+        ActionPolicy(rules=(twice, AllowRule("submit_requires_ready_health",
+                                             lambda req: None)))
+    assert "submit_requires_ready_health" in str(excinfo.value)
+
+
+def test_a_transition_policy_refuses_two_rules_that_share_a_name():
+    with pytest.raises(ProductionError):
+        TransitionPolicy(rules=(Rule("door", lambda t: "no"),
+                                Rule("door", lambda t: None)))
+
+
 def test_a_cell_no_rule_claims_is_refused_and_not_named_by_a_rule():
     """Default-deny at the bottom: an unclassified combination is a
     refusal whose reason is not a rule name, which is what makes the

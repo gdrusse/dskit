@@ -37,7 +37,6 @@ barriers before an authorization.
 """
 
 import json
-import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
@@ -51,11 +50,12 @@ from dskit.production.base import (
     _check_unknown,
     canonical_bytes,
     canonical_hash,
+    check_digest,
+    pin_members,
     reject_unknown_params,
 )
-from dskit.production.breaker import HeadBoundCache
 from dskit.production.document import SIZE_MEASURES
-from dskit.production.ledger import validate_cache_head
+from dskit.production.ledger import HeadBoundCache, validate_cache_head
 from dskit.production.records import (
     Proposal,
     ReductionAuthorization,
@@ -126,23 +126,16 @@ _WITHIN = {
 #: measures can be judged against a proposal alone; every other guard the
 #: overlay tightens is enforced by the guard chain with the account.
 _PROPOSAL_FIELDS = {"quantity": "qty", "notional": "notional"}
-_DIGEST = re.compile(r"^[0-9a-f]{64}\Z")
 _ORDINARY_ARM_ID = "ordinary-arm-v1"
 
 
-def _pin_subset(name, members, vocabulary):
-    """Refuse at import when ``members`` strays outside ``vocabulary``."""
-    stray = sorted(set(members) - set(vocabulary))
-    if stray:
-        raise ProductionError([f"arming.py's {name} names {stray} outside its vocabulary"])
-
-
-_pin_subset("purposes", (_ARM_REQUEST, _ARM_APPROVAL), APPROVAL_PURPOSES)
-_pin_subset("authority events", (_ISSUE, _DISARM, _REVOKE, _EXPIRE), AUTHORITY_EVENTS)
-_pin_subset("authority roles", (_ORDINARY, _REDUCTION), AUTHORITY_ROLES)
-_pin_subset("origins", (_MODEL, _REDUCTION_ORIGIN), LEG_ORIGINS)
-if set(_PROPOSAL_FIELDS) != set(SIZE_MEASURES):
-    raise ProductionError(["arming.py's _PROPOSAL_FIELDS must cover exactly document.SIZE_MEASURES"])
+pin_members("arming.py's purposes", (_ARM_REQUEST, _ARM_APPROVAL), APPROVAL_PURPOSES)
+pin_members(
+    "arming.py's authority events", (_ISSUE, _DISARM, _REVOKE, _EXPIRE), AUTHORITY_EVENTS
+)
+pin_members("arming.py's authority roles", (_ORDINARY, _REDUCTION), AUTHORITY_ROLES)
+pin_members("arming.py's origins", (_MODEL, _REDUCTION_ORIGIN), LEG_ORIGINS)
+pin_members("arming.py's _PROPOSAL_FIELDS", _PROPOSAL_FIELDS, SIZE_MEASURES, exact=True)
 
 
 @dataclass(frozen=True)
@@ -154,14 +147,17 @@ class _RungGate:
 
 #: One row per ``vocab.RUNGS`` member, pinned at import: the conjunction and
 #: the distinct-principal rule apply where a live permit exists to gate.
-_RUNG_GATES = {
-    "shadow": _RungGate(live=False),
-    "paper": _RungGate(live=False),
-    "live_limited": _RungGate(live=True),
-    "live": _RungGate(live=True),
-}
-if set(_RUNG_GATES) != set(RUNGS):
-    raise ProductionError(["arming.py's _RUNG_GATES must cover exactly vocab.RUNGS"])
+_RUNG_GATES = pin_members(
+    "arming.py's _RUNG_GATES",
+    {
+        "shadow": _RungGate(live=False),
+        "paper": _RungGate(live=False),
+        "live_limited": _RungGate(live=True),
+        "live": _RungGate(live=True),
+    },
+    RUNGS,
+    exact=True,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -179,12 +175,6 @@ def _agree(problems, what, expected, actual):
     """Append a problem unless two declarations of ``what`` are the same value."""
     if actual != expected:
         problems.append(f"{what} {actual!r} does not agree with the bound {expected!r}")
-
-
-def _check_digest(problems, name, value):
-    """Append a problem unless ``value`` is a lowercase hex sha256 digest."""
-    if not isinstance(value, str) or not _DIGEST.match(value):
-        problems.append(f"{name} must be a 64-hex sha256 digest, got {value!r}")
 
 
 def _check_instant(problems, name, value):
@@ -318,7 +308,7 @@ class ArmingState:
         for name in ("authority_id", "maker", "checker"):
             _check_str(problems, f"ArmingState.{name}", getattr(self, name))
         for name in ("release_hash", "request_proof_digest", "approval_proof_digest"):
-            _check_digest(problems, f"ArmingState.{name}", getattr(self, name))
+            check_digest(problems, f"ArmingState.{name}", getattr(self, name))
         _member(problems, "ArmingState.rung", self.rung, RUNGS)
         _check_instant(problems, "ArmingState.armed_at_ms", self.armed_at_ms)
         _check_instant(problems, "ArmingState.armed_until_ms", self.armed_until_ms)
@@ -484,7 +474,7 @@ class ArmApproval:
     def __post_init__(self):
         """Check the shape."""
         problems = []
-        _check_digest(problems, "ArmApproval.request_digest", self.request_digest)
+        check_digest(problems, "ArmApproval.request_digest", self.request_digest)
         _check_bytes(problems, "ArmApproval.approval_proof", self.approval_proof)
         if problems:
             raise ProductionError(problems)
@@ -523,7 +513,7 @@ class VerifiedPrincipal:
         """Check the shape."""
         problems = []
         _check_str(problems, "VerifiedPrincipal.id", self.id)
-        _check_digest(problems, "VerifiedPrincipal.proof_digest", self.proof_digest)
+        check_digest(problems, "VerifiedPrincipal.proof_digest", self.proof_digest)
         if problems:
             raise ProductionError(problems)
 
@@ -1043,7 +1033,10 @@ class Arming:
         ------
         ProductionError
             On an origin or rung outside its vocabulary, a malformed
-            invocation, or a reduction leg with no reduction binding.
+            invocation, or a reduction leg whose binding is not the
+            maker-signed ``ReductionIntent`` plus that intent's own digest
+            — a digest the leg merely asserted would bind a right to
+            nothing.
         """
         problems = []
         _member(problems, "origin", origin, LEG_ORIGINS)
@@ -1312,16 +1305,21 @@ def _folded_arm(view):
 
 
 def _bound_digest(reduction):
-    """Return the digest a reduction leg's right must name, checked against its signed intent."""
+    """Return the digest a reduction leg's right must name, recomputed from its signed intent."""
     if reduction is None:
         raise ProductionError(
             ["a reduction leg carries its signed ReductionIntent, digest and right; got None"]
         )
     problems = []
     digest = getattr(reduction, "digest", None)
-    _check_digest(problems, "reduction.digest", digest)
+    check_digest(problems, "reduction.digest", digest)
     signed = getattr(reduction, "signed", None)
-    if not problems and isinstance(signed, ReductionIntent):
+    if not isinstance(signed, ReductionIntent):
+        problems.append(
+            f"reduction.signed must be the maker-signed ReductionIntent, got {signed!r}: "
+            "a digest the leg merely asserts binds a right to nothing"
+        )
+    elif not problems:
         _agree(problems, "reduction.digest", signed.reduction_intent_digest(), digest)
     if problems:
         raise ProductionError(problems)
@@ -1457,7 +1455,7 @@ class ReductionRights:
             it never granted, or for one already reserved.
         """
         problems = []
-        _check_digest(problems, "digest", digest)
+        check_digest(problems, "digest", digest)
         _check_str(problems, "client_ref", client_ref)
         if problems:
             raise ProductionError(problems)
@@ -1467,7 +1465,7 @@ class ReductionRights:
             raise ProductionError(
                 [f"reduction authority {grant.authority_id!r} expired at {grant.expires_ms} (now {now})"]
             )
-        grant.reserve(digest)
+        grant.reserve(digest)  # the fold's own rule: granted, and not already reserved
         return {
             "authority_id": grant.authority_id,
             "reduction_intent_digest": digest,

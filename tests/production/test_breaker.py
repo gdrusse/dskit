@@ -45,7 +45,7 @@ import pytest
 from dskit.production import breaker as breaker_module
 from dskit.production import vocab
 from dskit.production.base import ProductionError, canonical_hash
-from dskit.production.breaker import Breaker
+from dskit.production.breaker import Breaker, cancel_outcome
 from dskit.production.document import ServeDocument
 from dskit.production.ledger import ServeRoot
 from dskit.production.records import Ack
@@ -488,6 +488,19 @@ def test_a_trip_persists_the_control_request_and_proof_ids_it_was_given(tmp_path
     assert body["control_request_id"] == HALT_REQUEST
     assert body["principal_digest"] == PRINCIPAL_DIGEST
     assert body["proof_digest"] == PROOF_DIGEST
+
+
+@pytest.mark.parametrize("name", ["principal_digest", "proof_digest"])
+@pytest.mark.parametrize("value", ["", "not-a-digest", "AB" * 32, "7" * 63, 7])
+def test_a_transition_refuses_a_digest_that_is_not_one(tmp_path, name, value):
+    """§6 records the principal and proof DIGESTS; the proofs themselves
+    never cross a record boundary (§5.15).  A raw proof handed in where a
+    digest belongs must refuse rather than be written to the chain."""
+    breaker, ledger, _, _, _, _ = make_breaker(tmp_path, cancel_open=False)
+    with pytest.raises(ProductionError) as excinfo:
+        halt(breaker, **{name: value})
+    assert name in str(excinfo.value)
+    assert ledger.records == []
 
 
 def test_an_automatic_trip_records_no_request_or_proof(tmp_path):
@@ -941,6 +954,51 @@ def test_a_halt_records_failed_when_the_executor_raises(tmp_path):
     halt(breaker)
     assert outcome_of(ledger) == "failed"
     assert state.snapshot().breaker == "halted"
+
+
+def test_a_cancel_that_answered_nothing_at_all_is_unknown():
+    """The rule collapses toward LESS certainty: an executor that
+    returned no acks for orders it was asked to cancel has told us
+    nothing, and `none` would claim the halt deliberately did not try."""
+    assert cancel_outcome(()) == "unknown"
+
+
+def test_a_halt_whose_executor_answers_nothing_records_unknown(tmp_path):
+    executor = FakeExecutor(acks=())
+    breaker, ledger, _, _, _, _ = make_breaker(tmp_path, executor=executor)
+    open_a_working_order(ledger)
+    halt(breaker)
+    assert executor.cancel_all_calls == 1
+    assert outcome_of(ledger) == "unknown"
+
+
+def test_a_halt_with_working_orders_and_no_executor_records_failed(tmp_path):
+    """D12's outcome vocabulary is a record of what happened: working
+    orders left live because nothing could cancel them is `failed`, not
+    `none` — `none` is reserved for a halt that had nothing to do."""
+    breaker, ledger, state, _, _, _ = make_breaker(tmp_path, executor=None)
+    open_a_working_order(ledger)
+    halt(breaker)
+    assert outcome_of(ledger) == "failed"
+    assert state.snapshot().breaker == "halted"
+
+
+def test_a_cancel_answer_that_is_not_an_ack_is_unknown_and_never_raises(tmp_path):
+    """A best-effort cancel may not blow up the halt it reports on: an
+    executor answering something uninterpretable leaves the outcome at
+    the least certain member and the trip already durable."""
+    executor = FakeExecutor(acks=({"status": "cancelled"},))
+    breaker, ledger, state, _, _, _ = make_breaker(tmp_path, executor=executor)
+    open_a_working_order(ledger)
+    halt(breaker)
+    assert outcome_of(ledger) == "unknown"
+    assert cancel_outcome_record(ledger)["body"]["acks"] == []
+    assert state.snapshot().breaker == "halted"
+
+
+def test_the_outcome_rule_refuses_anything_that_is_not_an_ack():
+    with pytest.raises(ProductionError):
+        cancel_outcome((ack("cancelled"), "rejected"))
 
 
 def test_a_halt_records_failed_when_every_cancel_was_refused(tmp_path):

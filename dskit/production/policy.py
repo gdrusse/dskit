@@ -47,7 +47,7 @@ vocabularies.
 import itertools
 from dataclasses import dataclass
 
-from dskit.production.base import ProductionError
+from dskit.production.base import ProductionError, pin_members
 from dskit.production.records import PolicyRequest
 from dskit.production.vocab import (
     AUTHORITY_ROLES,
@@ -274,16 +274,17 @@ class _Lane:
 
 #: One row per ``vocab.RUNGS`` member, keyed by ``request.rung`` and pinned
 #: to the vocabulary at import.
-_LANES = {
-    "shadow": _Lane(live=False, reducing_any_effect=True),
-    "paper": _Lane(live=False, reducing_any_effect=False),
-    "live_limited": _Lane(live=True, reducing_any_effect=False),
-    "live": _Lane(live=True, reducing_any_effect=False),
-}
-if set(_LANES) != set(RUNGS):
-    raise ProductionError(
-        [f"policy.py's lane table keys {sorted(_LANES)} != vocab.RUNGS {sorted(RUNGS)}"]
-    )
+_LANES = pin_members(
+    "policy.py's lane table",
+    {
+        "shadow": _Lane(live=False, reducing_any_effect=True),
+        "paper": _Lane(live=False, reducing_any_effect=False),
+        "live_limited": _Lane(live=True, reducing_any_effect=False),
+        "live": _Lane(live=True, reducing_any_effect=False),
+    },
+    RUNGS,
+    exact=True,
+)
 
 
 def _outside_priority_lane(request):
@@ -530,14 +531,18 @@ _RESUME_DOOR = _Door(
 _DOORS = (_REDUCE_DOOR, _FLATTEN_FROM_HALTED_DOOR, _TRIP_DOOR, _RESUME_DOOR)
 
 _DOOR_TRIPLES = frozenset().union(*(door.triples for door in _DOORS))
-if {state for triple in _DOOR_TRIPLES for state in triple[:2]} != set(BREAKER_STATES):
-    raise ProductionError(
-        [f"policy.py's doors name states other than vocab.BREAKER_STATES {sorted(BREAKER_STATES)}"]
-    )
-if {triple[2] for triple in _DOOR_TRIPLES} != set(TRANSITION_CAUSES):
-    raise ProductionError(
-        [f"policy.py's doors name causes other than vocab.TRANSITION_CAUSES {sorted(TRANSITION_CAUSES)}"]
-    )
+pin_members(
+    "policy.py's door states",
+    {state for triple in _DOOR_TRIPLES for state in triple[:2]},
+    BREAKER_STATES,
+    exact=True,
+)
+pin_members(
+    "policy.py's door causes",
+    {triple[2] for triple in _DOOR_TRIPLES},
+    TRANSITION_CAUSES,
+    exact=True,
+)
 
 
 def _door_of(transition):

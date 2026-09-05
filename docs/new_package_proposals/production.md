@@ -760,14 +760,27 @@ returns acquisition/link status only. Core ships one implementation,
 calls `run_acquisition(..., mode="live")` through the onboarding root and
 registry, `store` reads what a separate `watch` process fills and derives
 staleness through `scan_stream` — rather than two near-identical classes. After the pull, the deferred entry executes
-once and the same contract's `snapshot(entry_outputs)` produces
+once and `snapshot_entry(contract, spec, entry_outputs, source_config_hash)`
+produces
 `EntryBatch{outputs, watermarks_by_key, required_keys_digest, coverage_digest,
-data_asof_ms, inputs_digest, source_config_hash}`. Thus rows, key projection,
+data_asof_ms, inputs_digest, source_config_hash}`. It is a MODULE function of
+`feed.py`, not a `ServingContract` method: the contract is a frozen pipeline-side
+declaration (§9.1) with no methods at all, and a snapshot needs the
+release-bound `FeedSpec` the contract cannot see. Thus rows, key projection,
 event time and per-key digests describe exactly the frozen snapshot descendants
 receive, rather than a second feed read.
+`active_source_identity(registry, source) -> (source_config_hash,
+source_config_version)` is the ONE owner of "what does the ACTIVE alias resolve
+to" — `plan` binds its answer into the `FeedSpec` and every pull re-asks it —
+where `source_config_hash` is the active alias's version id and
+`source_config_version` is the count of registered versions rendered as a
+string, a monotone label rather than a second hash.
 `FeedSpec{source_binding, entity_key_fields, event_time_field, digest_recipe,
 required_keys, required_keys_digest, source_config_hash, source_config_version}`
-is release-bound. The serve document may select `pull: acquire | store` but
+is release-bound; `digest_recipe` is a DICT (the entry class's per-key digest
+recipe verbatim), not a name, so the pack that produced it stays declarative.
+`FeedSpec.from_contract(contract, required_keys, source_config_hash,
+source_config_version)` is the one builder. The serve document may select `pull: acquire | store` but
 cannot restate locator or coverage. Missing/duplicate/extra keys, malformed event
 time, normalized-binding disagreement or source alias/hash/version drift refuses.
 Zero new rows is valid only while every key is fresh; stale/dead derives from the
@@ -786,15 +799,28 @@ entry output.
   ADR-0039 forbids a template pin): every node in `TRAINABLE_ROLES` with
   effective mode `train` becomes `mode: "load"` with `artifact:
   "<run_dir>/artifacts/<key>"`; search winners (from `nodes/NN-<key>.json`
-  `winner`) are applied with the driver's own `_apply_param_override` rule and
-  the search nodes are dropped; nodes of role `gate` / `stat_test` named in
-  `serving.replay` are replaced by a `RecordedOutputs` node (§5.3 note) emitting
-  the run's recorded outputs (refusing a summarised record); the document is cut
+  `winner`) are applied with the driver's public `apply_param_override` rule and
+  the search nodes are dropped — a needed search node without a recorded winner
+  refuses, fail-closed; nodes of role `gate` / `stat_test` named in
+  `document.serving.replay` are replaced by a `RecordedOutputs` node (§5.3 note)
+  emitting the run's recorded outputs, which are read from the run's
+  `carry.json` and NOT from `nodes/NN-<key>.json` — `driver._release_spent`
+  summarises every node record (ADR-0048), so the node files hold a summary
+  while `carry.json` holds the run-over-run state that survives; a node absent
+  from `carry.json` refuses rather than recomputing a training-time verdict; the document is cut
   to `ancestors(heads) ∪ heads`; `foreach` and `splits` are dropped (serving
   neither fits nor scores); a needed node carrying `$prev` refuses;
   `env`/`tracking`/`outputs` are dropped. The derived document's hash is
   recorded beside the run's hash on every `process` record.
-- `Decider.prepare(release, registry, asof, base_run_dir)` re-verifies the release.
+- `Decider(document, release, *, registry, adapter, proposer, clock)` — the
+  release and the document arrive at construction because every later call
+  re-verifies them, and the adapter is imported before any `uses` is resolved so
+  a child's classes are registered when the serving document is planned. It owns
+  the configured `Proposer`, which is how `Data.decider` reaches it (§5.16).
+  `prepare(asof, base_run_dir) -> dict` re-verifies the release and returns the
+  per-key classification `classify_plan` produced; it refuses when the release's
+  `serving_hash`, `run_hash` or `doc_hash` is not the one the derived documents
+  hash to (D24: startup re-verifies all hashes).
   A new structural planning pass resolves class metadata and graph edges without
   constructing/fingerprinting sources. `ServingExecutionPolicy` runs there,
   identifies and defers the sole `entry_read` before ordinary RESOLVE, and
@@ -859,10 +885,16 @@ it classified `release_read`. That is the single cross-package touch point,
 and §9.1 lists it as a `node.py` change. It is
 the only capability a `release_read` node receives, and
 the one API the pipeline planner and production must agree on:
-`get(name) -> value` returns the manifest-named artifact for `name`,
+`ReleaseReader(manifest, allowed_names, root, prefix="")`:
+`get(name) -> bytes` returns the manifest-named artifact for `name`,
 verifying its recorded digest before returning and raising
 `ProductionError` when `name` is not in the manifest or the digest differs;
-`names() -> tuple` lists what this node is permitted to read. There is no
+`names() -> tuple` lists what this node is permitted to read. The reader is
+PER NODE and scoped: `ExecutionPolicy.reader(key)` hands out a reader whose
+`prefix` is `artifacts/<key>/`, so `names()` and `get(name)` speak the node's
+own relative filenames and one node's reader can never name another's
+artifact. It returns bytes, not text, because a manifest digest is over bytes
+and decoding is the caller's business. There is no
 path, no handle and no write verb, so a release read cannot reach the
 filesystem or a mutable store. It is constructed per node from the
 manifest, holds no open file, and is handed over by
@@ -901,10 +933,15 @@ non-finite number.
 - `Quote{instrument, bid, ask, mid, asof_ms}`;
   `QuoteSet{quotes, quote_digest, min_asof_ms}`.
 - `Candidate{id, instrument, scope_keys}`.
-- `Proposal{id, instrument, side ∈ {buy, sell, none}, qty | notional, limit | None,
-  tif ∈ TIFS, expires_ms, reference_price, exposure, direction, confidence,
+- `Proposal{id, instrument, side ∈ SIDES, qty, notional, limit, tif ∈ TIFS,
+  expires_ms, reference_price, exposure, direction, confidence,
   prediction, baseline, expected_value, inputs_asof_ms, inputs_digest,
-  coverage_digest, quote_asof_ms, quote_digest, extra}`.
+  coverage_digest, quote_asof_ms, quote_digest, extra}`. **`qty` is the order
+  size and is REQUIRED whenever `side != "none"`**; `notional` is
+  informational and derived. The earlier `qty | notional` spelling read as a
+  choice of two, which would leave a submitted order with no size and every
+  scalable measure with nothing to reduce — an abstention (`side: "none"`) is
+  the only proposal that may carry a null `qty`.
 - `Finding{guard, measure, value, bound, window, scope_key, verdict, reason}`.
 - `Intent{client_ref, decision_plan_id, decision_plan_digest, proposal,
   created_ms, authority_id, release_hash, inputs_asof_ms, inputs_digest,
@@ -1074,9 +1111,12 @@ non-finite number.
   receives, and the chain is its only producer. `check_all` then evaluates
   every guard against the original proposal and
   records every finding. Verdicts use
-  `allow < warn < amend < refuse < hold < halt`; amendments can only reduce one
-  declared scalable field, compose by the strictest monotone reduction, and
-  conflict by refusing. The final candidate is re-run through every hard guard
+  `allow < warn < amend < refuse < hold < halt`; amendments are produced by
+  `Limit.amend(proposal, state, value) -> Proposal | None`, can only reduce one
+  declared scalable field, round toward zero, compose by the strictest monotone
+  reduction, and conflict by refusing; an amendment that cannot reach the bound
+  at all (a `min`-only bound, or a reduction that would cross zero) is a
+  `refuse`, never a silently unamended proposal. The final candidate is re-run through every hard guard
   with amendment disabled; any remaining breach refuses or halts. `hold` and `pause` append a
   `guard_state` record (§6) that `SeriesState` folds, so `resume_at`/`held_until`
   survive a restart — R9 names restart amnesia as the anti-pattern the fold
@@ -1093,7 +1133,12 @@ non-finite number.
 - `Measure(ABC)`: deterministic
   `requirements(candidate, window, scope_key, at_ms, calendar, include_working)
   -> tuple[EvidenceRequirement]` plus
-  `value(proposal, state, window, scope_key) -> Decimal | float`.
+  `value(proposal, state, window, scope_key, include_working) -> Decimal |
+  float` — `include_working` reaches `value` as well as `requirements`,
+  because the same `Limit` knob decides both which evidence is fetched and
+  whether a working reservation counts toward the number judged, and a
+  measure that read it from only one of the two would answer a question its
+  own evidence never asked.
   `at_ms` and `calendar` are what let the measure resolve a `{calendar}`
   window to the `[start, end)` bounds its own `requirement_digest` is computed
   over; without them the digest could not be formed and two measures asking
@@ -1123,9 +1168,12 @@ non-finite number.
   rather than one.
 - `RangeGuard(Guard)`: `field`, `min`, `max`, `nan ∈ {refuse, allow}`.
 - Cancels never pass through the chain (a structural rule pinned by a test).
-- After ordinary guards, `GuardChain.check_authority_scope` re-runs the active
+- After ordinary guards, `GuardChain.check_authority_scope(proposal, state,
+  scope) -> ScopeVerdict` re-runs the active
   ordinary-arm or reduction-authorization allowlist and overlay against the exact
-  final proposal immediately before permit.
+  final proposal immediately before permit; `scope` is the applied scope
+  `Arming` returned, so the chain judges what the authority actually granted
+  rather than re-deriving it.
 
 ### 5.6 `breaker.py` and `arming.py`
 
@@ -1289,7 +1337,21 @@ increase absolute exposure" — without it `DecisionPlan.risk_effect`,
 `ActPermit.risk_effect` and `PolicyRequest.risk_effect` have no producer and a
 child writing live accounting would never learn it must implement this.
 `snapshot(state_view, executor, quotes, at_ms, requirements,
-calendar) -> AccountState` (`state_view` is §5.8.1's frozen `StateView`) is independent of execution. `requirements` is the
+calendar) -> AccountState` (`state_view` is §5.8.1's frozen `StateView`) is
+independent of execution. It RE-ANCHORS every requirement it is handed at its
+own `at_ms` — resolving each `window_kind`/`window_arg` pair to fresh
+`[start, end)` bounds through the calendar — keys `measure_evidence` by the
+re-anchored `requirement_digest`, and returns `AccountState.asof_ms == at_ms`;
+guards rebuild the same digest from `state.account.asof_ms`, so step (2)'s
+later snapshot still finds the evidence step (1) asked for. The history a
+snapshot folds arrives through one protocol, not by scanning the ledger:
+`fills(since_ms)`, `cash_flows(since_ms)` and `marks(since_ms)`, supplied by
+`LedgerHistory` (§5.9) and asked once per snapshot from the earliest window
+start. Live source tokens arrive through the concrete
+`source_tokens(executor, at_ms) -> (executor_token, accounting_tokens)` hook —
+`(None, None)` in the base, overridden by a live child — while the BASE
+enforces D14's rule that absence, regression or reuse with changed economics
+refuses, so no child can weaken it. `requirements` is the
 deduplicated canonical union returned by every configured measure for every
 candidate × window × scope, including all duration/count/session/day/event
 boundaries, expanded over every candidate `scope_key`. Each required pair has one fresh
@@ -1327,23 +1389,33 @@ deadline invalidates the local permit without waiting for nominal expiry.
 ### 5.8 `ledger.py` and `control.py`
 
 - `Ledger(ABC)`: `append(record) -> seq`, `append_many`, `barrier()`,
-  `scan(kind=None, since_seq=0)`, `head() -> (seq, hash)`, `verify()`,
-  `snapshot(state)`, `latest_snapshot()`. Before assigning ledger fields,
+  `scan(kind=None, since_seq=0)` (`since_seq` is EXCLUSIVE, so a snapshot's
+  `at_seq` replays forward without repeating itself), `head() -> (seq, hash)`,
+  `verify()`, `snapshot(payload)` (the JSON-able payload, which for the
+  auto-snapshot is `SeriesState.to_snapshot_obj()`), `latest_snapshot()` and
+  `close()` — after `close()` reads still work and an append refuses, so a
+  stopped process cannot extend a chain it no longer owns. Before assigning ledger fields,
   append computes `payload_digest` over caller-controlled canonical content,
   looks up the stable caller `id`, and returns the prior sequence only when that
   digest matches; a different payload refuses. It then assigns dense `seq`,
   `recorded_at_ms`, and `prev_hash`, and computes
   `hash = sha256(prev_hash + canonical(envelope − hash))`. Readers tolerate
   unknown fields and upcast `schema_version`.
-- `JsonlLedger`: one serialised line per single `write()` on `O_APPEND`; `fsync ∈
-  {every, batch:{n, ms}, none}` from `document.durability.fsync` (`none` legal only at
-  `shadow`); `flock` for the
+- `JsonlLedger`: one serialised line per single `write()` on `O_APPEND`;
+  `document.durability.fsync` is `"every"`, `"none"` (legal only at `shadow`) or
+  the object `{"batch": {"n": <int>, "ms": <int>}}` — an object rather than a
+  `batch:n:ms` string so the two bounds are separately typed and default-denied;
+  `flock` for the
   process lifetime; torn-tail recovery and segment continuity; directory fsync
   on segment creation; never copytruncate. Rotation is
-  `placement.rotate.by ∈ {size, day, process}` (with `max_bytes` for `size`)
-  into `ledger.NNNN.jsonl`; a new segment carries the prior segment's final
+  `document.placement.rotate.by ∈ ROTATE_BY` into `ledger.NNNN.jsonl`;
+  `max_bytes` is OPTIONAL in every mode and REQUIRED for `size` (a `size`
+  rotation without a bound refuses when the ledger opens, not silently at
+  `validate`); a new segment carries the prior segment's final
   `seq` and `prev_hash` so the chain is continuous across files, and
-  `verify()` returns `first_bad_seq | None`. The genesis `prev_hash` is 64
+  `verify()` returns `first_bad_seq | None` — the seq the walk EXPECTED at the
+  first failing position, so a deletion is located at the hole rather than at
+  the record after it. The genesis `prev_hash` is 64
   zeros. No money field is ever a float in a record. `barrier()` flushes through fsync.
   Every `tick_start` before work, decision plan and intent before submit, and
   arming, breaker, authorization/use, reduction/reset or adoption transition crosses it regardless
@@ -1428,9 +1500,21 @@ section names box 3.
   commands are queued and unconsumed), and the **reduction projection** — the
   current `ReductionAuthorization`, its per-digest rights, and which of them
   `authority_use` has already reserved. Nothing else folds the ledger:
-  `Breaker.current`, `Arming.current`, `Readiness.current`, `Accounting`,
+  `Breaker.current`, `Arming.current`, `Readiness.verdict_for`, `Accounting`,
   `Guard`, `Reconciler` and startup recovery all read this object, and the
   head-bound JSON files remain caches of *its* projection.
+  Beside `snapshot()` it exposes the projections that are not `StateView`
+  members because nothing in a tick reads them: `monitor_state()`,
+  `open_ticks()`, `undecided_ticks()`, `tick_plans(tick_id)`, `last_trip()`
+  and — phase 2 — `silences()` and `alert_acks()`. Every one of them rides in
+  the §6 `snapshot` payload, because `Recovery` replays forward from the last
+  snapshot and cannot restore a member the snapshot never carried.
+  **`economic_seq` advances on economic events only.** A `fill`, a terminal
+  `order_event`, a `cash_flow` (a balance update, D14) and a position
+  correction advance it; an `authority_use` (a rights reservation), an
+  `intent` (a pending order, not yet a reservation), an `outcome` and an
+  `adoption` receipt do not — the first two because §5.13 step (7) rechecks
+  the exact version step (2) bound, the last two because neither moves money.
 - `StateView` is the frozen projection of the fold, and **only** of the fold:
   `positions`, `working`, `pending`, `balances`, `decision_history`, `breaker`,
   `arming`, `readiness`, `guard_holds`, `reduction`, `pending_control`,
@@ -1469,6 +1553,12 @@ section names box 3.
   derives ours from folded fills, so `Reconciler` has exactly two sides to
   compare and it is unambiguous which is which. `Accounting` values that fold
   against quotes; it does not maintain a second one.
+  It keeps a per-instrument log of the fills applied since the position was
+  last flat (`fill_id`, `side`, `qty`, `price`, `fee`), so `reverse(fill_id)`
+  recomputes the position exactly from the log minus that fill rather than
+  subtracting an average it can no longer justify; an unknown or already
+  realised `fill_id` refuses, and the log is part of the snapshot payload, so
+  a busted fill is still reversible after a restart.
 - `Recovery(ledger, state, id_source, executor)` lives here, not in `leg.py`
   (the `executor` is what `order(ref)` is called on — recovery cannot resolve
   an ambiguous client ref without it): it replays
@@ -1498,10 +1588,12 @@ carrying the **amount and timestamp as values**, not merely the delta digest
 every other adoption records. That asymmetry is deliberate — a digest is
 enough to prove what was adopted, but returns cannot be computed from a hash,
 and this is the only moment the amount is knowable. `lookback_ms` bounds how far back fills and settlements are queried, since an
-open-orders endpoint cannot distinguish missing from recently closed. It runs
-before `READY` when `document.reconcile.on_start`, every `document.reconcile.every_s`
-thereafter, and always appends a `recon` record without synthesising a
-venue action. Adoption is a separate authenticated operator command naming the
+open-orders endpoint cannot distinguish missing from recently closed. `Reconciler.due(now_ms, last_run_ms=None) -> bool` is the ONE owner of
+`document.reconcile.on_start` and `document.reconcile.every_s`; the loop asks
+it rather than restating the schedule, and `run` appends a `recon` record
+without synthesising a venue action. `run` refuses a `state_view` whose
+`economic_seq` is not the fold's, so a stale view can never be reconciled
+against a live venue. Adoption is a separate authenticated operator command naming the
 break ids and release hash; after inspection it records the delta, crosses
 `ledger.barrier()`, updates the fold, and immediately reconciles again.
 
@@ -1852,10 +1944,15 @@ knob because D13 fixes the answer: query, never resend.
   markdown and JSON emitters (the `runs.py` pipe-escape rule reused).
 - `readiness.py` (phase 1): `Readiness(document, release)` with
   `evaluate(at_ms) -> ReadinessResult{verdict, items, readiness_digest,
-  evaluated_at_ms, valid_until_ms}` and `current(state_view, at_ms) -> ReadinessResult |
+  evaluated_at_ms, valid_until_ms}`, `record(result) -> seq`,
+  `current(state_view, at_ms) -> ReadinessResult |
   None` — read from `StateView.readiness` (§5.8.1), never by folding the
   ledger again, and unexpired at `at_ms`, which the loop supplies from its
-  injected clock as every other freshness check does. `Breaker.current` and
+  injected clock as every other freshness check does — and
+  `verdict_for(state_view, at_ms) -> READINESS_VERDICTS`, the ONE owner of
+  "an expired GO is a `no_go`", so no caller re-derives expiry from
+  `valid_until_ms` and gets the inclusive bound wrong.
+  `Breaker.current` and
   `Arming.current` take the same `(state_view)` shape for the same reason. `readiness_digest = canonical_hash(release_hash, items)` where `items` is
   sorted by `item` and each contributes exactly
   `(item, required, evidence, waiver, passed)` in that order — the same
@@ -2029,7 +2126,7 @@ procedure inside the loop.
 ### 5.14 `policy.py` — the cross-cutting invariant matrix
 
 `ActionPolicy.permits(request: PolicyRequest) -> PolicyDecision{allowed, reason}`
-(one argument, so the eight-field request and the call cannot drift apart),
+(one argument, so the nine-field request and the call cannot drift apart),
 `TransitionPolicy.permits(from_state, to_state, cause, proof) ->
 PolicyDecision{allowed, reason}` (named so it cannot be confused with the
 `Decision` collaborator bundle in `loop.py`) and
@@ -2058,7 +2155,14 @@ duplicate or extend them by branching.
 × 2 origins × authority — several thousand combinations — so it is *not* enumerated cell by
 cell. It is an ordered tuple of named `Rule` objects, each of which may veto
 with a reason (`Rule.veto(request: PolicyRequest) -> str | None`, §5.4), which is what R5 §2.4
-actually recommends: keep the axes orthogonal and compose them. Two tests
+actually recommends: keep the axes orthogonal and compose them. **The rung
+axis is a module-level LANE TABLE keyed by `request.rung`, not an
+`if rung ==` chain**: each rung names the rules that apply to it, `permits`
+looks the lane up once, and D2's ban then holds inside `policy.py` as it does
+everywhere else — a table lookup on a declared value is not a branch on a
+mode. A request that falls through every rule of its lane is REFUSED with a
+non-rule reason, so an unclassified combination is a refusal and a test
+failure rather than a default allow. Two tests
 give the audit value a hand-written matrix was reaching for without the
 tautology of asserting the rules against themselves:
 
@@ -2369,8 +2473,21 @@ missed that way already.
 ## 6. Ledger records
 
 Envelope on every record: `kind, id, payload_digest, seq, series_id, process_id,
-release_hash, recorded_at_ms, schema_version, prev_hash, hash`. Ledger-assigned
-fields never enter `payload_digest`. `IdSource` derives tick, decision, leg and
+release_hash, recorded_at_ms, schema_version, prev_hash, hash` — twelve fields
+with the record's own content NESTED under `body`, never merged flat. The
+caller passes exactly `{kind, id, body}` and any other top-level key refuses;
+`payload_digest = canonical_hash({kind, id, body})`; `hash = record_hash(
+prev_hash, envelope − hash)`; the no-float-money walk (`vocab.MONEY_FIELDS`)
+runs over `body`. Nesting is what lets a body carry its own `kind`,
+`release_hash` or `series_id` without colliding with the envelope's — a
+recovering process's envelope release legitimately differs from the tick's —
+so every body below is self-describing and the field names in it are the
+body's own. Ledger-assigned
+fields never enter `payload_digest`. **A record `id` is unique across the
+SERIES, not within a kind** (the idempotency index is keyed by `id` alone),
+so every producer qualifies its id with the kind:
+`f"{kind}:{semantic_id}"` — `tick_start:<tick_id>` and `tick:<tick_id>` are
+two records of one tick and must not collide. `IdSource` derives tick, decision, leg and
 model client ids from stable semantic inputs before append, independent of
 sequence or wall time. Flatten refs are
 `H("flatten-v1", release_hash, reduction_request_id, intent_index,

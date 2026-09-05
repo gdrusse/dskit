@@ -798,6 +798,16 @@ def test_an_allowlist_may_only_narrow_the_releases_universe(tmp_path, release, c
     assert "TSLA" in str(excinfo.value)
 
 
+def test_an_allowlist_that_names_nothing_refuses(tmp_path, release, clock, verifier):
+    """D11: the allowlist is what a permit's instrument is checked
+    against, so an empty one is a request that arms nothing — a config
+    slip that must refuse rather than issue an arm no leg can ever use."""
+    arming = make_arming(tmp_path, release, clock, verifier)
+    with pytest.raises(ProductionError) as excinfo:
+        arming.request(arm_request(release, allowlist=()), REQUEST_ID)
+    assert "allowlist" in str(excinfo.value)
+
+
 def test_an_overlay_may_lower_a_max_but_never_raise_one(tmp_path, release, clock,
                                                         verifier):
     arming = make_arming(tmp_path, release, clock, verifier)
@@ -1251,6 +1261,43 @@ def test_an_ordinary_arm_never_satisfies_a_reduction_leg(tmp_path, release, cloc
     assert result.satisfied is False
 
 
+def test_a_reduction_leg_whose_digest_is_not_its_signed_intents_refuses(
+    tmp_path, release, clock, verifier
+):
+    """The right is granted for a DIGEST; the leg submits an INTENT.  If
+    the digest is taken on the leg's word the two are never tied together,
+    and a granted right would cover whatever intent came with it."""
+    arming = make_arming(tmp_path, release, clock, verifier)
+    granted = reduction_intent(release, 0, "AAPL")
+    other = reduction_intent(release, 1, "MSFT")
+    view, _ = reduction_view(release, [granted.reduction_intent_digest()])
+    with pytest.raises(ProductionError) as excinfo:
+        conjunction(
+            arming, release, view, origin="reduction",
+            reduction=FakeReduction(signed=other,
+                                    digest=granted.reduction_intent_digest()),
+        )
+    assert "reduction.digest" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("signed", [None, "an intent", 7])
+def test_a_reduction_leg_without_its_signed_intent_refuses(tmp_path, release, clock,
+                                                           verifier, signed):
+    """§5.16: a reduction leg carries "the signed `ReductionIntent` +
+    digest + right".  Without the intent there is nothing to recompute
+    the digest from, so the digest would be an assertion, not a binding."""
+    arming = make_arming(tmp_path, release, clock, verifier)
+    intent = reduction_intent(release)
+    view, _ = reduction_view(release, [intent.reduction_intent_digest()])
+    with pytest.raises(ProductionError) as excinfo:
+        conjunction(
+            arming, release, view, origin="reduction",
+            reduction=FakeReduction(signed=signed,
+                                    digest=intent.reduction_intent_digest()),
+        )
+    assert "reduction.signed" in str(excinfo.value)
+
+
 def test_a_reduction_leg_with_no_reduction_binding_refuses(tmp_path, release, clock,
                                                            verifier):
     arming = make_arming(tmp_path, release, clock, verifier)
@@ -1335,6 +1382,34 @@ def test_effective_bounds_without_an_arm_are_the_documents_own(tmp_path, release
                                                                clock, verifier):
     arming = make_arming(tmp_path, release, clock, verifier)
     assert arming.effective_bounds(None)["size"]["max"] == Decimal("100")
+
+
+@pytest.mark.parametrize(
+    "overlay, guard, key, kept",
+    [
+        ({"size": {"max": "500"}}, "size", "max", Decimal("100")),
+        ({"day_loss": {"min": "-5000"}}, "day_loss", "min", Decimal("-500")),
+    ],
+)
+def test_a_folded_overlay_can_never_loosen_a_document_bound(
+    tmp_path, release, clock, verifier, overlay, guard, key, kept
+):
+    """D11: "every limit overlay must prove it is at least as strict as
+    the document".  `request` refuses a looser one, but `effective_bounds`
+    reads the FOLD — an arm issued under a since-tightened document, or a
+    forged `arming.json`, is the case where the strictness rule has to
+    hold a second time.  The document's own bound is the floor."""
+    arming = make_arming(tmp_path, release, clock, verifier)
+    loose = sample_state(release_hash=release.release_hash, limits_overlay=overlay)
+    assert arming.effective_bounds(loose)[guard][key] == kept
+
+
+def test_a_folded_overlay_that_is_stricter_still_applies(tmp_path, release, clock,
+                                                         verifier):
+    arming = make_arming(tmp_path, release, clock, verifier)
+    tight = sample_state(release_hash=release.release_hash,
+                         limits_overlay={"size": {"max": "5"}})
+    assert arming.effective_bounds(tight)["size"]["max"] == Decimal("5")
 
 
 # ---------------------------------------------------------------------------

@@ -383,6 +383,25 @@ def test_a_release_id_source_refuses_a_release_hash_it_cannot_bind(release_hash)
         ReleaseIdSource(release_hash)
 
 
+@pytest.mark.parametrize("bad", [-1, True, 1.0, "0", None])
+def test_an_index_that_is_not_a_position_refuses(bad):
+    """Every index is a zero-based POSITION: a leg's, a plan's, an
+    attempt's, a reduction intent's.  A negative or non-int one is not a
+    position at all, and an id derived from it would be a real id for a
+    leg that cannot exist."""
+    source = ReleaseIdSource(RELEASE)
+    for call in (
+        lambda: source.leg_id(TICK_ID, bad),
+        lambda: source.plan_id(TICK_ID, bad),
+        lambda: source.client_ref(TICK_ID, bad, 0),
+        lambda: source.client_ref(TICK_ID, 0, bad),
+        lambda: source.next_tick_id(bad),
+        lambda: source.flatten_client_ref(RELEASE, REQUEST_ID, bad, REDUCTION_DIGEST),
+    ):
+        with pytest.raises(ProductionError):
+            call()
+
+
 # ---------------------------------------------------------------------------
 # RecordedIdSource — the tape (D20: replay allocates nothing new)
 # ---------------------------------------------------------------------------

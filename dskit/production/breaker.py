@@ -31,34 +31,33 @@ rebuilt when it is behind, refused when it is ahead of or off the chain
   :data:`SENTINEL_RETIREMENT_PURPOSES` — before the transition barrier,
   so a crash in between leaves the ledger folded ``halted``.
 
-:class:`HeadBoundCache` is the one owner of the cache discipline both
-``breaker.json`` and ``arming.json`` follow; the head placement itself is
-``ledger.validate_cache_head``, called through this module's name so the
-ledger stays the single owner of the at/behind/off-the-chain rule.
+``ledger.HeadBoundCache`` is the one owner of the cache discipline
+``breaker.json`` and ``arming.json`` follow — it lives beside the chain
+it projects rather than beside either of its two users — and the head
+placement itself is ``ledger.validate_cache_head``, called through this
+module's name so the ledger stays the single owner of the
+at/behind/off-the-chain rule.
 
 Nothing here reads wall time: the clock is injected and cooling-off is
 measured against the acknowledged trip's ``recorded_at_ms``.
 """
 
-import json
 import os
 from dataclasses import dataclass
 
-from dskit.onboarding.base import durable_write_json, fsync_dir
-from dskit.pipeline.node import check_int_param
+from dskit.onboarding.base import fsync_dir
 from dskit.production.base import (
     ProductionError,
-    _check_dict,
     _check_str,
-    _check_unknown,
+    check_digest,
+    pin_members,
 )
-from dskit.production.ledger import validate_cache_head
+from dskit.production.ledger import HeadBoundCache, validate_cache_head
 from dskit.production.records import Ack
 from dskit.production.redact import get_logger, redact
 from dskit.production.vocab import (
     APPROVAL_PURPOSES,
     BREAKER_STATES,
-    CACHE_STATES,
     CANCEL_OUTCOMES,
     STATUSES,
     TRANSITION_CAUSES,
@@ -69,7 +68,6 @@ __all__ = [
     "Breaker",
     "CAUSE_TARGETS",
     "DEFAULT_CANCEL_OPEN",
-    "HeadBoundCache",
     "SENTINEL_RETIREMENT_PURPOSES",
     "cancel_outcome",
 ]
@@ -106,28 +104,30 @@ _CANCEL_REFUSED = ("rejected", "not_sent")
 _UNRESOLVED = "unknown"
 _OUTCOME_NONE, _OUTCOME_SUBMITTED = "none", "submitted"
 _OUTCOME_FAILED, _OUTCOME_PARTIAL, _OUTCOME_UNKNOWN = "failed", "partial", "unknown"
-_CREDENTIAL_NAMES = ("control_request_id", "principal_digest", "proof_digest")
+#: The three optional ids an authenticated transition carries, and the
+#: check each owes. The two digests are 64-hex through ``base.check_digest``
+#: — a ``trip`` body records DIGESTS, so a raw proof handed in where a
+#: digest belongs must refuse rather than be written to the chain (D11).
+_CREDENTIAL_CHECKS = {
+    "control_request_id": _check_str,
+    "principal_digest": check_digest,
+    "proof_digest": check_digest,
+}
 
 
-def _pin_subset(name, members, vocabulary):
-    """Refuse at import when ``members`` strays outside ``vocabulary``."""
-    stray = sorted(set(members) - set(vocabulary))
-    if stray:
-        raise ProductionError([f"breaker.py's {name} names {stray} outside its vocabulary"])
-
-
-_pin_subset("CAUSE_TARGETS values", CAUSE_TARGETS.values(), BREAKER_STATES)
-_pin_subset("SENTINEL_RETIREMENT_PURPOSES", SENTINEL_RETIREMENT_PURPOSES, APPROVAL_PURPOSES)
-_pin_subset("breaker states", (_ACTIVE, _REDUCING, _HALTED), BREAKER_STATES)
-_pin_subset("cancel statuses", _CANCEL_REFUSED + (_UNRESOLVED,), STATUSES)
-_pin_subset(
-    "cancel outcomes",
+pin_members("breaker.py's CAUSE_TARGETS values", CAUSE_TARGETS.values(), BREAKER_STATES)
+pin_members("breaker.py's CAUSE_TARGETS keys", CAUSE_TARGETS, TRANSITION_CAUSES, exact=True)
+pin_members(
+    "breaker.py's SENTINEL_RETIREMENT_PURPOSES", SENTINEL_RETIREMENT_PURPOSES, APPROVAL_PURPOSES
+)
+pin_members("breaker.py's breaker states", (_ACTIVE, _REDUCING, _HALTED), BREAKER_STATES)
+pin_members("breaker.py's cancel statuses", _CANCEL_REFUSED + (_UNRESOLVED,), STATUSES)
+pin_members(
+    "breaker.py's cancel outcomes",
     (_OUTCOME_NONE, _OUTCOME_SUBMITTED, _OUTCOME_FAILED, _OUTCOME_PARTIAL, _OUTCOME_UNKNOWN),
     CANCEL_OUTCOMES,
 )
-_pin_subset("operator reason", (_OPERATOR,), TRIP_REASONS)
-if set(CAUSE_TARGETS) != set(TRANSITION_CAUSES):
-    raise ProductionError(["breaker.py's CAUSE_TARGETS must cover exactly vocab.TRANSITION_CAUSES"])
+pin_members("breaker.py's operator reason", (_OPERATOR,), TRIP_REASONS)
 _HALTING_CAUSES = tuple(cause for cause, target in CAUSE_TARGETS.items() if target == _HALTED)
 
 
@@ -190,173 +190,6 @@ def cancel_outcome(acks):
 
 
 # ---------------------------------------------------------------------------
-# The head-bound cache discipline (D15) — breaker.json and arming.json
-# ---------------------------------------------------------------------------
-
-
-class HeadBoundCache:
-    """A JSON projection of the fold, bound to the ledger head it was taken at (D15).
-
-    The file is ``{<member>: <projection>, "head_seq": int, "head_hash":
-    str}``, written atomically and durably. Loading it never trusts the
-    file over the fold: an absent or behind-the-head cache is rebuilt
-    from the fold and rewritten; a cache ahead of the ledger or off its
-    chain refuses (the ledger's ``validate_cache_head`` decides); a cache
-    AT the head whose projection disagrees with the fold refuses too —
-    that forgery is the one a head check alone would wave through.
-
-    Parameters
-    ----------
-    path : str
-        The cache file (``ServeRoot.breaker_cache`` / ``arming_cache``).
-    member : str
-        The key the projection is stored under (``"state"``, ``"arming"``).
-    head_check : callable
-        ``(head_seq, head_hash, ledger) -> vocab.CACHE_STATES member``;
-        the owning module passes a thin function that looks up
-        ``ledger.validate_cache_head`` by name at call time.
-
-    Attributes
-    ----------
-    path : str
-        As given.
-
-    Examples
-    --------
-    A cache of one string member, loaded against a fold::
-
-        cache = HeadBoundCache("./serve/<series>/breaker.json", "state", head_check)
-        cache.write("halted", view)
-        cache.load(ledger, view, view.breaker)  # 'halted'
-    """
-
-    _HEAD_KEYS = ("head_seq", "head_hash")
-
-    def __init__(self, path, member, head_check):
-        problems = []
-        _check_str(problems, "path", path)
-        _check_str(problems, "member", member)
-        if member in self._HEAD_KEYS:
-            problems.append(f"member {member!r} collides with the head keys")
-        if not callable(head_check):
-            problems.append(f"head_check must be callable, got {head_check!r}")
-        if problems:
-            raise ProductionError(problems)
-        self._path = path
-        self._member = member
-        self._head_check = head_check
-
-    @property
-    def path(self):
-        """The cache file's path."""
-        return self._path
-
-    def write(self, projection, view):
-        """Replace the cache with ``projection`` at the view's head, atomically and durably.
-
-        Parameters
-        ----------
-        projection : object
-            A JSON-ready value (str, dict, None, ...).
-        view : StateView
-            Supplies ``head_seq`` and ``head_hash``.
-
-        Returns
-        -------
-        None
-            Returns once the new file is durable; no temp file remains.
-        """
-        durable_write_json(
-            self._path,
-            {self._member: projection, "head_seq": view.head_seq, "head_hash": view.head_hash},
-        )
-
-    def load(self, ledger, view, projection):
-        """Return the fold's projection after validating the cache against it.
-
-        Parameters
-        ----------
-        ledger : Ledger
-            The chain the cached head is placed in.
-        view : StateView
-            The fold at its head.
-        projection : object
-            What the fold holds for this member right now.
-
-        Returns
-        -------
-        object
-            ``projection`` — after rebuilding an absent or stale cache,
-            or confirming a current one agrees.
-
-        Raises
-        ------
-        ProductionError
-            If the file is unreadable or malformed, its head is ahead of
-            or off the ledger's chain, or a current cache disagrees with
-            the fold.
-        """
-        cached = self._read()
-        if cached is None:
-            return self._rebuild(cached, projection, view)
-        placement = self._head_check(cached["head_seq"], cached["head_hash"], ledger)
-        try:
-            resolve = self._PLACEMENTS[placement]
-        except (KeyError, TypeError):
-            raise ProductionError(
-                [f"{self._path}: head check answered {placement!r}, not one of {list(CACHE_STATES)}"]
-            ) from None
-        return resolve(self, cached, projection, view)
-
-    def _rebuild(self, cached, projection, view):
-        """Rewrite the cache from the fold and answer with the fold."""
-        self.write(projection, view)
-        return projection
-
-    def _current(self, cached, projection, view):
-        """Require a cache at the head to agree with the fold; a disagreement is a forgery."""
-        if cached[self._member] != projection:
-            raise ProductionError(
-                [
-                    f"{self._path}: cache at the ledger head carries {self._member} "
-                    f"{cached[self._member]!r} but the fold holds {projection!r}"
-                ]
-            )
-        return projection
-
-    _PLACEMENTS = {"current": _current, "stale": _rebuild}
-
-    def _read(self):
-        """Return the cache object, None when absent; refuse anything malformed."""
-        if not os.path.exists(self._path):
-            return None
-        try:
-            with open(self._path, encoding="utf-8") as handle:
-                obj = json.load(handle)
-        except ValueError as exc:
-            raise ProductionError([f"{self._path}: cache is not JSON ({exc})"]) from exc
-        problems = []
-        _check_dict(problems, self._path, obj)
-        if problems:
-            raise ProductionError(problems)
-        keys = (self._member,) + self._HEAD_KEYS
-        _check_unknown(problems, obj, keys, where=self._path)
-        missing = [key for key in keys if key not in obj]
-        if missing:
-            problems.append(f"{self._path}: missing key(s) {missing}")
-        else:
-            check_int_param(problems, f"{self._path}: head_seq", obj["head_seq"], ge=0)
-            _check_str(problems, f"{self._path}: head_hash", obj["head_hash"])
-        if problems:
-            raise ProductionError(problems)
-        return obj
-
-
-if set(HeadBoundCache._PLACEMENTS) != set(CACHE_STATES):
-    raise ProductionError(["HeadBoundCache._PLACEMENTS must cover exactly vocab.CACHE_STATES"])
-
-
-# ---------------------------------------------------------------------------
 # The breaker
 # ---------------------------------------------------------------------------
 
@@ -371,13 +204,13 @@ class _Credentials:
 
     def check(self, problems, required):
         """Append a problem per malformed id; per missing id too when ``required``."""
-        for name in _CREDENTIAL_NAMES:
+        for name, checked in _CREDENTIAL_CHECKS.items():
             value = getattr(self, name)
             if value is None:
                 if required:
                     problems.append(f"{name} is required: this is an authenticated act (D12)")
             else:
-                _check_str(problems, name, value)
+                checked(problems, name, value)
 
 
 class Breaker:
