@@ -4791,8 +4791,9 @@ reaped one, so a study that builds two caches can measure only the first.
    the frozen 25 (`_ASSETS`), the frozen horizons and seeds, the P10 cache
    verified against that membership, its historical output contract and
    its `p11-…` walk tags. Its identity, artifacts and row shapes do not
-   change; its tests move a monkeypatch target to the module that now owns
-   the function where one moved, and add nothing else. The loop bodies —
+   change; its tests move monkeypatch targets to the module that now owns
+   a function and widen two fake signatures to the hooks' keyword
+   arguments, and change nothing else. The loop bodies —
    the ordered stop, the fail-fast audit, the stopped row — exist once.
    The P10 module (`modelability.py`) is the pooled historical study and is
    not touched beyond what ADR-0093 already did.
