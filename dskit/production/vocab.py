@@ -83,7 +83,6 @@ __all__ = [
     "READINESS_VERDICTS",
     "RECON_ACTIONS",
     "RECORD_KINDS",
-    "REFUSAL_REASONS",
     "RESILIENCE_OUTCOMES",
     "RESPONSES",
     "RESTING_RULES",
@@ -102,6 +101,7 @@ __all__ = [
     "TICK_PHASES",
     "TICK_STATUSES",
     "TIFS",
+    "TRANSITION_CAUSES",
     "TRIP_REASONS",
     "VERDICTS",
     "VERDICT_ORDER",
@@ -204,11 +204,6 @@ _SKIPPED = (
 #: colon-qualified vocabulary in the package.
 TICK_STATUSES = ("decided",) + _SKIPPED + ("refused", "failed")
 
-#: What ``refusals_total{reason}`` may carry (§5.11.1): the tick statuses
-#: that carry a ``refusal_reason`` (a skipped or refused tick — ``failed``
-#: carries an ``error`` instead) plus the guard verdict names.
-REFUSAL_REASONS = _SKIPPED + ("refused",) + VERDICTS
-
 #: What tripped the breaker (§5.6, plus §5.10's monitor ``alarm`` with
 #: ``response: halt``), spelled ``<source>_<condition>``.
 TRIP_REASONS = (
@@ -219,6 +214,9 @@ TRIP_REASONS = (
     "monitor_alarm",
     "operator",
 )
+
+#: The breaker transition causes ``TransitionPolicy`` judges (§5.14).
+TRANSITION_CAUSES = ("reduce", "flatten_request", "trip", "halt", "resume")
 
 #: A resilience circuit's states — distinct from ``BREAKER_STATES``, which
 #: is the SERIES breaker; this is one network scope's.
@@ -509,7 +507,9 @@ METRIC_LABEL_VALUES = {
     "decisions_total": {"result": PLAN_RESULTS},
     "proposals_total": {"verdict": VERDICTS},
     "submits_total": {"rung": RUNGS, "risk_effect": RISK_EFFECTS, "outcome": STATUSES},
-    "refusals_total": {"reason": REFUSAL_REASONS},
+    # The tick statuses that carry a ``refusal_reason`` (a skipped or refused
+    # tick — ``failed`` carries an ``error`` instead) plus the guard verdicts.
+    "refusals_total": {"reason": _SKIPPED + ("refused",) + VERDICTS},
     "alert_sink_failures_total": {"sink": (METRIC_OTHER,)},
     "alerts_suppressed_total": {"why": ALERT_SUPPRESSIONS},
     "monitor_verdicts_total": {"monitor": (METRIC_OTHER,), "status": MONITOR_STATUSES},
