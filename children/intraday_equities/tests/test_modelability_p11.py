@@ -410,8 +410,16 @@ def test_gate3_result_marks_a_stopped_asset_as_a_bounded_fail(monkeypatch):
     assert row["calibration"] == "not_computed_early_stop"
     assert "gate3" not in row
     assert row["not_reached_reason"] is None
-    assert final["rows"][1]["gate3_status"] == "not_reached"
-    assert "stopped" not in final["rows"][1]
+    # B never reached Gate 3 at all: its row names the reason in words,
+    # and carries neither the stop record nor a verdict.
+    not_reached = final["rows"][1]
+    assert not_reached["asset"] == "B"
+    assert not_reached["gate3_status"] == "not_reached"
+    assert not_reached["gate3_passes"] is False
+    assert not_reached["not_reached_reason"] == "gate1_failed_at_h1"
+    for key in ("stopped", "stop_seed", "n_draws", "p_bound", "calibration"):
+        assert key not in not_reached
+    assert "gate3" not in not_reached
 
 
 def test_gate3_result_bound_is_never_zero_or_absent(monkeypatch):
@@ -451,6 +459,9 @@ def test_gate3_result_scores_a_completed_family_exactly_as_before(monkeypatch):
     assert row["gate3_status"] == "pass"
     assert row["gate3_passes"] is True
     assert row["gate3"] == {"passes": True, "beat_all": True}
+    # A completed family DID reach Gate 3, so the reason is present and empty.
+    assert "not_reached_reason" in row
+    assert row["not_reached_reason"] is None
     for key in ("stopped", "stop_seed", "n_draws", "p_bound", "calibration"):
         assert key not in row
 
@@ -686,6 +697,8 @@ def test_the_walks_stages_own_draws_decide_the_result_stages_rows(monkeypatch):
     assert completed["gate3_status"] == "pass"
     assert completed["gate3_passes"] is True
     assert completed["gate3"] == {"passes": True, "beat_all": True}
+    assert "not_reached_reason" in completed
+    assert completed["not_reached_reason"] is None
     for key in ("stopped", "stop_seed", "n_draws", "p_bound", "calibration"):
         assert key not in completed
     # One verdict, over B's own 19 nulls in seed order — A never reaches it.
