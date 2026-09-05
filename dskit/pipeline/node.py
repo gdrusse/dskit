@@ -472,7 +472,7 @@ class Node(ABC):
         ``"entry_read"`` for the tick's one mutable read,
         ``"release_read"`` when it reads manifest-named values through
         ``ctx.release_reader`` (:class:`TrainableNode` answers so for a
-        pinned load).
+        pinned load of an AUDITED class).
 
         Parameters
         ----------
@@ -866,6 +866,12 @@ class TrainableNode(Node):
         vocabulary, not a second one — and :func:`node_class_errors`
         refuses a class declaring anything else, beside the same refusal
         for ``role``.
+    serving_load_audited : bool
+        Class-level, ``False`` by default. Whether someone read THIS
+        class's ``run_load`` and confirmed it reaches its artifact only
+        through the base's read services. :meth:`serving_effect` needs it
+        alongside the release's evidence before it will answer
+        ``"release_read"``.
 
     Examples
     --------
@@ -895,6 +901,16 @@ class TrainableNode(Node):
     #: kind, ``"load"`` for a kind that only ever restores.
     default_mode = "train"
 
+    #: Whether THIS class's load path was audited to read only through
+    #: ``ctx.release_reader`` (ADR-0091). ``False`` is the fail-closed
+    #: default: the release's evidence says the artifact was pinned, not
+    #: that the code reading it stays inside the reader, so a class
+    #: nobody read may not run in a served tick however well pinned its
+    #: artifact is. Widening is one line on the audited class — and it is
+    #: per class, never per family, because a subclass that overrides
+    #: ``run_load`` replaces the very path the audit covered.
+    serving_load_audited = False
+
     @property
     def effective_mode(self):
         """The mode this node actually runs under: the document's ``mode``
@@ -904,21 +920,25 @@ class TrainableNode(Node):
 
     @classmethod
     def serving_effect(cls, params, verified_run_evidence):
-        """``"release_read"`` for a manifest-pinned LOAD, ``"forbidden"`` otherwise.
+        """``"release_read"`` for an AUDITED class under a manifest-pinned LOAD.
 
-        The family's one widening of the fail-closed default (ADR-0091).
-        A restore reads exactly the artifact the release pinned — through
-        ``ctx.release_reader`` — and nothing else, so it may run in a
-        served tick; a fit, or a load nobody pinned, may not. Both facts
-        come from the release's EVIDENCE, never from the document:
+        The family's one widening of the fail-closed default (ADR-0091),
+        and it takes two independent facts, because either alone is a
+        licence nobody granted. The release's EVIDENCE — never the
+        document — says the run was a restore of a pinned artifact:
         ``mode`` must be ``"load"`` and ``artifact_pinned`` must be
-        ``True`` — the bool, not a truthy stand-in.
+        ``True``, the bool, not a truthy stand-in. The CLASS says its
+        load path was read and reaches that artifact only through
+        ``ctx.release_reader``: :attr:`serving_load_audited`. Evidence
+        without the audit is a pinned artifact read by unreviewed code;
+        the audit without the evidence is reviewed code reading whatever
+        the document happened to name. Anything else is ``"forbidden"``.
 
         Parameters
         ----------
         params : dict
             The node's declared params; unused — the answer is the
-            release's to give.
+            release's and the audit's to give.
         verified_run_evidence : dict
             The release's evidence for this node: ``mode`` and
             ``artifact_pinned`` are read.
@@ -932,7 +952,8 @@ class TrainableNode(Node):
             verified_run_evidence.get("mode") == "load"
             and verified_run_evidence.get("artifact_pinned") is True
         )
-        return "release_read" if pinned_load else "forbidden"
+        audited_load = pinned_load and cls.serving_load_audited is True
+        return "release_read" if audited_load else "forbidden"
 
     # -- the template methods (do not override; override the hooks) --------
 

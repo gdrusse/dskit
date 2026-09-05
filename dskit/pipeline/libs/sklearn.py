@@ -1046,6 +1046,11 @@ class SklearnSelect(FeatureSelector):
         # -> out["features"] == ["ret_lag_0", "spread"]
     """
 
+    #: ADR-0091: no pack class serves in phase 1. The base is audited, so
+    #: this says NO explicitly rather than inheriting a licence granted to
+    #: someone else's load path.
+    serving_load_audited = False
+
     _PARAMS = FeatureSelector._PARAMS + (
         "estimator",
         "estimator_params",

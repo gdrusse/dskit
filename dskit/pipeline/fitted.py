@@ -1106,6 +1106,13 @@ class Standardize(FittedTransform):
         # -> {"transform": ..., "rows": [...], "metrics": {...}}
     """
 
+    #: ADR-0091: the family's ``run_load`` restores this class's state
+    #: from the sidecar through ``read_artifact_text`` and reads nothing
+    #: else, so a served tick may run it. Audited by
+    #: ``tests/pipeline/test_serving_effect.py``; per class, not per
+    #: family, so a member that overrides the load path re-earns it.
+    serving_load_audited = True
+
     _PARAMS = FittedTransform._PARAMS + ("features",)
 
     def features(self):
@@ -1389,6 +1396,13 @@ class FeatureSelector(FittedTransform):
     """
 
     outputs = FittedTransform.outputs + ("features",)
+
+    #: ADR-0091: the family's ``run_load`` restores the surviving column
+    #: list from the sidecar through ``read_artifact_text`` and reads
+    #: nothing else. Audited by ``tests/pipeline/test_serving_effect.py``
+    #: — and NOT inherited in spirit: a pack member subclassing this one
+    #: sets it back to ``False`` until its own load path is read.
+    serving_load_audited = True
 
     _PARAMS = FittedTransform._PARAMS + ("features",)
 

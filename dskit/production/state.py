@@ -36,9 +36,19 @@ importing them.
 an ``authority_use`` is a rights reservation; an ``outcome`` is a label
 and an ``adoption`` a receipt for one (R4).
 
+A ``cash_flow`` whose ``supersedes`` names an earlier one CORRECTS it:
+the fold reverses the amount that record booked, in the currency it
+booked it in, before adding its own, so a re-adopted reconciliation
+break moves the balance to the corrected figure rather than to the sum
+of both. Each record may be superseded once — a second correction of one
+record would reverse an amount no longer in the balance — and a
+``supersedes`` the fold never booked refuses rather than silently
+booking gross.
+
 The snapshot payload (:meth:`SeriesState.to_snapshot_obj`) carries every
 ``StateView`` member plus ``monitor_state`` (§6) and, so a mid-tick
-snapshot can be recovered from, the open ticks and their plans.
+snapshot can be recovered from, the open ticks, their plans and the
+booked cash flows a later correction nets against.
 ``positions`` is the :class:`PositionBook`'s own form — the per-instrument
 applied-fill log since the position was last flat (R3) — from which the
 held positions are recomputed, which is what makes a ``reversed`` fill
@@ -149,6 +159,12 @@ if not set(_SIGNS) < set(SIDES):
 
 #: The keys a tick's plan bookkeeping entry carries (see ``SeriesState.tick_plans``).
 _PLAN_KEYS = ("plan_id", "decision_plan_digest", "result", "client_ref")
+
+#: What the fold keeps of each ``cash_flow`` it has booked, so a later
+#: correction can net the amount it replaces back out (see
+#: ``SeriesState._fold_cash_flow``). Booked in the record's OWN currency,
+#: which is why the currency is kept beside the amount.
+_CASH_FLOW_KEYS = ("currency", "amount", "superseded_by")
 
 #: What the fold keeps of the latest ``trip`` (see ``SeriesState.last_trip``):
 #: the envelope's identity and instant — a reset acknowledges the id and
@@ -498,7 +514,9 @@ class StateView:
     pending : tuple of str
         Client refs whose intent has no ``order_event`` yet.
     balances : mapping of str to Decimal
-        Per currency, folded from ``cash_flow`` records.
+        Per currency, folded from ``cash_flow`` records — net of every
+        correction, since a record that ``supersedes`` another replaces
+        the amount it booked rather than adding to it.
     decision_history : tuple of mapping
         The newest decision legs, each with its ``tick_id`` added, bounded
         by ``max_history``.
@@ -859,13 +877,15 @@ _FILL_FOLDS = {"pending": "_apply_fill", "final": "_apply_fill", "reversed": "_r
 if set(_FILL_FOLDS) != set(FILL_STATUSES):
     raise ProductionError(["state.py: the fill table does not cover FILL_STATUSES"])
 
-#: The snapshot payload's keys: every ``StateView`` member plus the four
-#: the plan, recovery and the breaker's reset need beyond the view.
+#: The snapshot payload's keys: every ``StateView`` member plus the five
+#: the plan, recovery, the breaker's reset and a cash-flow correction need
+#: beyond the view.
 _SNAPSHOT_KEYS = tuple(f.name for f in dataclasses.fields(StateView)) + (
     "monitor_state",
     "open_ticks",
     "tick_plans",
     "last_trip",
+    "cash_flows",
 )
 
 
@@ -885,9 +905,9 @@ class SeriesState:
     place — an unknown kind, a non-dense ``seq``, a ``prev_hash`` that is
     not its head, a record of another series — and refuses a body it
     cannot fold (a second reservation of one reduction right, a second
-    reversal of one fill), leaving itself unchanged. It advances
-    ``economic_seq`` on ``order_event``, ``fill`` and ``cash_flow`` only
-    (D14, R4).
+    reversal of one fill, a second correction of one cash flow), leaving
+    itself unchanged. It advances ``economic_seq`` on ``order_event``,
+    ``fill`` and ``cash_flow`` only (D14, R4).
 
     Parameters
     ----------
@@ -935,6 +955,7 @@ class SeriesState:
         self._filled_notional = {}
         self._pending = {}
         self._balances = {}
+        self._cash_flows = {}
         self._history = deque(maxlen=max_history)
         self._breaker = _ACTIVE
         self._last_trip = None
@@ -1170,14 +1191,45 @@ class SeriesState:
         )
 
     def _fold_cash_flow(self, body, envelope):
-        """Adjust the currency's balance by the signed amount."""
+        """Book the signed amount, netting out the record it supersedes."""
         problems = []
         _check_str(problems, "cash_flow.currency", body.get("currency"))
         amount = _money(problems, "cash_flow.amount", body.get("amount"))
+        record_id = envelope.get("id")
+        _check_str(problems, "cash_flow.id", record_id)
+        superseded = body.get("supersedes")
+        if superseded is not None:
+            self._check_supersedable(problems, superseded)
         if problems:
             raise ProductionError(problems)
+        if superseded is not None:
+            self._unbook(superseded, record_id)
         currency = body["currency"]
         self._balances[currency] = self._balances.get(currency, _ZERO) + amount
+        self._cash_flows[record_id] = (currency, amount, None)
+
+    def _check_supersedable(self, problems, superseded):
+        """Why ``supersedes`` cannot be netted out, if it cannot."""
+        if not isinstance(superseded, str):
+            problems.append(
+                f"cash_flow.supersedes must be a record id, got {superseded!r}"
+            )
+            return
+        booked = self._cash_flows.get(superseded)
+        if booked is None:
+            problems.append(
+                f"cash_flow.supersedes names {superseded!r}, which this fold never booked"
+            )
+        elif booked[2] is not None:
+            problems.append(
+                f"cash_flow {superseded!r} was already superseded by {booked[2]!r}"
+            )
+
+    def _unbook(self, superseded, record_id):
+        """Reverse a booked cash flow in its own currency and mark who replaced it."""
+        currency, amount, _ = self._cash_flows[superseded]
+        self._balances[currency] = self._balances.get(currency, _ZERO) - amount
+        self._cash_flows[superseded] = (currency, amount, record_id)
 
     def _fold_authority(self, body, envelope):
         """Dispatch an authority event by role and event."""
@@ -1422,8 +1474,11 @@ class SeriesState:
         -------
         dict
             Every ``StateView`` member plus ``monitor_state``,
-            ``open_ticks``, ``tick_plans`` and ``last_trip``. ``positions`` is
-            :meth:`PositionBook.to_obj` (the fill logs); each ``working``
+            ``open_ticks``, ``tick_plans``, ``last_trip`` and
+            ``cash_flows`` (the booked amount a later correction nets
+            against, one :data:`_CASH_FLOW_KEYS` entry per record id).
+            ``positions`` is :meth:`PositionBook.to_obj` (the fill logs);
+            each ``working``
             entry pairs the ``OrderState`` form with the exact
             ``filled_notional`` its average price is rendered from;
             ``pending`` holds ``OrderState`` forms, ``guard_holds`` a list
@@ -1455,6 +1510,10 @@ class SeriesState:
             "open_ticks": [start.to_obj() for start in self._open_ticks.values()],
             "tick_plans": _jsonable(self._tick_plans),
             "last_trip": None if self._last_trip is None else dict(self._last_trip),
+            "cash_flows": {
+                record_id: dict(zip(_CASH_FLOW_KEYS, _jsonable(booked)))
+                for record_id, booked in self._cash_flows.items()
+            },
         }
 
     def restore(self, snapshot_env):
@@ -1513,7 +1572,8 @@ class SeriesState:
     def _restore_members(self, state):
         """Rebuild every internal structure from the payload; nothing is assigned here."""
         problems = []
-        for name in ("working", "pending_control", "monitor_state", "tick_plans", "balances"):
+        for name in ("working", "pending_control", "monitor_state", "tick_plans",
+                     "balances", "cash_flows"):
             _check_dict(problems, f"snapshot.state.{name}", state[name])
         for name in ("pending", "decision_history", "guard_holds", "open_ticks"):
             if not isinstance(state[name], list):
@@ -1552,6 +1612,14 @@ class SeriesState:
                 _exact(problems, f"snapshot.state.tick_plans.{tick_id}[{position}]", entry, _PLAN_KEYS)
         for ref, entry in state["working"].items():
             _exact(problems, f"snapshot.state.working.{ref}", entry, ("order", "filled_notional"))
+        for record_id, entry in state["cash_flows"].items():
+            _exact(problems, f"snapshot.state.cash_flows.{record_id}", entry, _CASH_FLOW_KEYS)
+        if problems:
+            raise ProductionError(problems)
+        cash_flows = {
+            record_id: self._booked_flow(problems, record_id, entry)
+            for record_id, entry in state["cash_flows"].items()
+        }
         if problems:
             raise ProductionError(problems)
         filled_notional = {
@@ -1601,7 +1669,18 @@ class SeriesState:
                 for tick_id, plans in state["tick_plans"].items()
             },
             "_last_trip": None if state["last_trip"] is None else dict(state["last_trip"]),
+            "_cash_flows": cash_flows,
         }
+
+    def _booked_flow(self, problems, record_id, entry):
+        """One restored ``_cash_flows`` value from its payload entry."""
+        where = f"snapshot.state.cash_flows.{record_id}"
+        _check_str(problems, f"{where}.currency", entry["currency"])
+        amount = _money(problems, f"{where}.amount", entry["amount"])
+        superseded_by = entry["superseded_by"]
+        if superseded_by is not None:
+            _check_str(problems, f"{where}.superseded_by", superseded_by)
+        return (entry["currency"], amount, superseded_by)
 
 
 # ---------------------------------------------------------------------------
@@ -1641,9 +1720,14 @@ class Recovery:
     """Replay the fold and close what a crash left open — before the scheduler exists (§5.8.1).
 
     ``run`` restores the state from the ledger's last ``snapshot`` (a fresh
-    fold only) and replays every later envelope; appends a ``failed``
-    ``tick`` for each open tick and an empty-legged ``decision`` for each
-    undecided one, preserving recorded findings without rerunning them;
+    fold only) and replays every later envelope; appends an empty-legged
+    ``decision`` for each undecided tick and a ``failed`` ``tick`` for each
+    open one — in that order, the LIVE one, so a recovered tick reads on
+    the chain exactly as a tick that ran does — preserving recorded
+    findings without rerunning them. The terminal tick states what nobody
+    observed as ``null``: a tick that never ran has no ``feed``,
+    ``calendar``, ``health`` or ``rung``, and inventing one would hand a
+    monitor a reading it never took;
     queries ``executor.order(ref)`` for every ambiguous client ref — each
     pending intent, and each submitted plan whose intent never landed,
     whose ref is derived from the ``IdSource`` as the leg would have —
@@ -1762,10 +1846,10 @@ class Recovery:
         closed, derived = [], []
         for tick_id in undecided + [tick_id for tick_id in opens if tick_id not in undecided]:
             plans = self._state.tick_plans(tick_id)
-            if tick_id in opens:
-                self._ledger.append(self._failed_tick(opens[tick_id], now))
             if tick_id in undecided:
                 self._ledger.append(self._empty_decision(tick_id, plans))
+            if tick_id in opens:
+                self._ledger.append(self._failed_tick(opens[tick_id], now))
             closed.append(tick_id)
             for index, plan in enumerate(plans):
                 if plan["result"] == _SUBMIT and plan["client_ref"] is None:
@@ -1783,12 +1867,16 @@ class Recovery:
                 "data_asof_ms": None,
                 "observed_at_ms": now,
                 "status": _FAILED,
+                "feed": None,
                 "inputs_digest": None,
                 "nav": None,
+                "calendar": None,
                 "overrun_absorbed": [],
                 "latency_ms": {},
                 "leg_latency_ms": {},
+                "health": None,
                 "breaker": self._state.snapshot().breaker,
+                "rung": None,
                 "refusal_reason": None,
                 "error": {
                     "class": _RECOVERED,

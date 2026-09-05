@@ -2744,7 +2744,9 @@ and declares
 beside it — the vocabulary lives pipeline-side because pipeline may not
 import production, and production reads it from there rather than restating
 it in its own `vocab.py`. `TrainableNode` returns `release_read` only for a
-manifest-pinned load; `libs/observations.py:ObservationRows` returns
+manifest-pinned load on a class that declares `serving_load_audited = True`
+(the family default is `False`, so an unaudited trainable stays `forbidden`
+even under a pinned load); `libs/observations.py:ObservationRows` returns
 `entry_read`; every audited deterministic built-in used by the serving e2e
 explicitly returns `release_read` or `pure`. `RecordedOutputs` is production-owned
 (§8) and is classified by the same closed API when the decider substitutes it,

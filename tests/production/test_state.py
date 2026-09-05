@@ -255,11 +255,12 @@ def fill_body(
     }
 
 
-def cash_flow_body(currency="USD", amount="250", external=True, flow_kind="deposit"):
+def cash_flow_body(currency="USD", amount="250", external=True, flow_kind="deposit",
+                   supersedes=None):
     return {
         "effective_at_ms": BASE_MS - 86_400_000,
         "known_at_ms": BASE_MS,
-        "supersedes": None,
+        "supersedes": supersedes,
         "currency": currency,
         "amount": amount,
         "flow_kind": flow_kind,
@@ -1141,6 +1142,69 @@ def test_a_balance_never_moves_on_anything_but_an_exact_decimal(amount):
     assert view.risk_version.economic_seq == 1
 
 
+def test_a_superseding_cash_flow_nets_against_the_record_it_replaces():
+    # R15: a reconciliation adopted a 250 break and a later recon corrected
+    # it to 100. The correction NAMES the record it replaces, so the
+    # balance ends at the corrected figure — not at the sum of the two,
+    # which would leave every bankroll bound reading a capital base 250
+    # larger than the venue's.
+    st, chain = new_state()
+    fold(st, chain, "cash_flow", cash_flow_body(amount="250"), rid="cf-1")
+    fold(st, chain, "cash_flow",
+         cash_flow_body(amount="100", supersedes="cf-1"), rid="cf-2")
+    view = st.snapshot()
+    assert view.balances["USD"] == Decimal("100")
+    # Both records are economic: the correction is a balance move too.
+    assert view.risk_version.economic_seq == 2
+    assert view.head_seq == 2
+
+
+def test_a_correction_can_itself_be_corrected_in_a_chain():
+    # Netting is per record, so a second correction supersedes the FIRST
+    # correction, not the original — the chain never re-adds what an
+    # earlier link already reversed.
+    st, chain = new_state()
+    fold(st, chain, "cash_flow", cash_flow_body(amount="250"), rid="cf-1")
+    fold(st, chain, "cash_flow",
+         cash_flow_body(amount="100", supersedes="cf-1"), rid="cf-2")
+    fold(st, chain, "cash_flow",
+         cash_flow_body(amount="60", supersedes="cf-2"), rid="cf-3")
+    assert st.snapshot().balances["USD"] == Decimal("60")
+
+
+def test_one_cash_flow_can_be_superseded_only_once():
+    # A second correction of the SAME record would reverse an amount that
+    # is no longer in the balance.
+    st, chain = new_state()
+    fold(st, chain, "cash_flow", cash_flow_body(amount="250"), rid="cf-1")
+    fold(st, chain, "cash_flow",
+         cash_flow_body(amount="100", supersedes="cf-1"), rid="cf-2")
+    with pytest.raises(ProductionError):
+        st.apply(chain.env("cash_flow",
+                           cash_flow_body(amount="80", supersedes="cf-1"),
+                           rid="cf-3"))
+    view = st.snapshot()
+    assert view.balances["USD"] == Decimal("100")
+    assert view.head_seq == 2
+    assert view.risk_version.economic_seq == 2
+
+
+@pytest.mark.parametrize("supersedes", ["cf-404", 7, ["cf-1"], {}])
+def test_a_cash_flow_the_fold_cannot_net_against_refuses(supersedes):
+    # An id the fold never saw (or a malformed one) would silently book
+    # the gross amount, so it refuses instead.
+    st, chain = new_state()
+    fold(st, chain, "cash_flow", cash_flow_body(amount="250"), rid="cf-1")
+    with pytest.raises(ProductionError):
+        st.apply(chain.env("cash_flow",
+                           cash_flow_body(amount="100", supersedes=supersedes),
+                           rid="cf-2"))
+    view = st.snapshot()
+    assert view.balances["USD"] == Decimal("250")
+    assert view.head_seq == 1
+    assert view.risk_version.economic_seq == 1
+
+
 def test_only_economic_events_advance_the_economic_seq():
     # D14: fills, order events and cash flows move it; an `intent`, an
     # `authority_use`, an `outcome` and an `adoption` deliberately do not.
@@ -1677,6 +1741,48 @@ def test_the_snapshot_carries_the_monitor_windows_a_restart_would_reset():
     assert restored.monitor_state() == st.monitor_state()
 
 
+def test_the_snapshot_carries_the_cash_flow_map_a_later_correction_nets_against():
+    # R15: a correction can name a flow booked BEFORE the last snapshot,
+    # so the amount to reverse must survive the restart. Without the map
+    # in the payload the restored fold would refuse the correction (or,
+    # worse, book it gross).
+    st, chain = new_state()
+    fold(st, chain, "cash_flow", cash_flow_body(amount="250"), rid="cf-1")
+    env = snapshot_env(st, chain)
+    assert env["body"]["state"]["cash_flows"] == {
+        "cf-1": {"currency": "USD", "amount": "250", "superseded_by": None},
+    }
+
+    restored = SeriesState(SERIES_ID)
+    restored.restore(env)
+    restored.apply(env)
+    fold(restored, chain, "cash_flow",
+         cash_flow_body(amount="100", supersedes="cf-1"), rid="cf-2")
+    assert restored.snapshot().balances["USD"] == Decimal("100")
+    assert restored.to_snapshot_obj()["cash_flows"] == {
+        "cf-1": {"currency": "USD", "amount": "250", "superseded_by": "cf-2"},
+        "cf-2": {"currency": "USD", "amount": "100", "superseded_by": None},
+    }
+
+
+def test_restore_refuses_a_cash_flow_entry_that_is_not_the_three_key_form():
+    st, chain = new_state()
+    fold(st, chain, "cash_flow", cash_flow_body(amount="250"), rid="cf-1")
+    broken = copy.deepcopy(snapshot_env(st, chain))
+    broken["body"]["state"]["cash_flows"]["cf-1"].pop("superseded_by")
+    with pytest.raises(ProductionError):
+        SeriesState(SERIES_ID).restore(broken)
+
+
+def test_restore_refuses_a_cash_flow_amount_that_is_not_an_exact_decimal():
+    st, chain = new_state()
+    fold(st, chain, "cash_flow", cash_flow_body(amount="250"), rid="cf-1")
+    broken = copy.deepcopy(snapshot_env(st, chain))
+    broken["body"]["state"]["cash_flows"]["cf-1"]["amount"] = 250.0
+    with pytest.raises(ProductionError):
+        SeriesState(SERIES_ID).restore(broken)
+
+
 def test_restore_rebuilds_the_fold_and_drops_live_session_tokens():
     st, chain = new_state()
     fold(st, chain, "intent", intent_body(client_ref="ref-1", qty="10"))
@@ -1815,16 +1921,39 @@ def test_recovery_replays_only_what_follows_the_last_snapshot():
 
 
 def test_recovery_closes_an_open_tick_with_a_failed_terminal_pair():
+    # R17: the pair is appended in the LIVE order — the `decision` the
+    # legs produced, then the terminal `tick` that closes them out. A
+    # recovered series that reversed the two would read, to anything
+    # walking the chain, as a tick whose decision arrived after it ended.
     led, st, ids, executor, report, seeded = recovered_once()
     appended = led.records[seeded:]
-    assert appended[0]["kind"] == "tick"
+    assert appended[0]["kind"] == "decision"
     assert appended[0]["body"]["tick_id"] == "T1"
-    assert appended[0]["body"]["status"] == "failed"
-    assert appended[1]["kind"] == "decision"
+    assert appended[0]["body"]["legs"] == []
+    assert appended[1]["kind"] == "tick"
     assert appended[1]["body"]["tick_id"] == "T1"
-    assert appended[1]["body"]["legs"] == []
+    assert appended[1]["body"]["status"] == "failed"
     assert tuple(report.closed_ticks) == ("T1",)
     assert st.open_ticks() == ()
+
+
+def test_the_recovered_terminal_tick_carries_every_member_a_live_one_does():
+    # R17: a recovered tick is a §6 `tick`, so it declares the same
+    # members — a reader that indexes `feed` or `rung` must not have to
+    # know which producer wrote the record.
+    led, st, ids, executor, report, seeded = recovered_once()
+    (tick,) = [r for r in led.records[seeded:] if r["kind"] == "tick"]
+    assert set(tick["body"]) == set(tick_body(tick_id="T1"))
+
+
+@pytest.mark.parametrize("member", ["feed", "calendar", "health", "rung"])
+def test_the_recovered_terminal_tick_carries_the_live_only_members_as_nulls(member):
+    # Nothing observed the feed, the calendar, health or the rung for a
+    # tick that never ran, so recovery states the absence rather than
+    # inventing a value a monitor would then read as a real observation.
+    led, st, ids, executor, report, seeded = recovered_once()
+    (tick,) = [r for r in led.records[seeded:] if r["kind"] == "tick"]
+    assert tick["body"][member] is None
 
 
 def test_recovery_queries_every_unmatched_ref_and_never_submits():
@@ -1865,7 +1994,7 @@ def test_recovery_records_unknown_when_the_executor_raises():
 def test_recovery_ends_with_a_recovered_process_record():
     led, st, ids, executor, report, seeded = recovered_once()
     assert led.kinds(seeded) == [
-        "tick", "decision", "order_event", "order_event", "process",
+        "decision", "tick", "order_event", "order_event", "process",
     ]
     last = led.records[-1]
     assert last["body"]["event"] == "recovered"

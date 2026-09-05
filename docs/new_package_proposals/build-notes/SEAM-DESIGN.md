@@ -22,7 +22,9 @@ never imports `dskit.production`; no new document params, no grammar change.
 - `NodeContext.release_reader: object = None` (new last field; every existing construction site
   unaffected).
 - `TrainableNode.serving_effect`: `"release_read"` iff
-  `verified_run_evidence.get("mode") == "load" and verified_run_evidence.get("artifact_pinned") is True`,
+  `verified_run_evidence.get("mode") == "load" and verified_run_evidence.get("artifact_pinned") is True`
+  AND `cls.serving_load_audited is True` (R16 — class attribute, `False` on `TrainableNode`; the
+  evidence says the artifact was pinned, not that the code reading it stays inside the reader),
   else `"forbidden"`.
 - Read-side artifact helpers beside the existing `write_artifact*`:
   `Node.read_artifact_text(ctx, filename, ref=None)` → when `ctx.release_reader` is not None,
@@ -109,8 +111,14 @@ otherwise leave forbidden). `release_read` (load-mode only, via `TrainableNode`)
 `self.read_artifact(ctx, "model.json")`; `FittedTransform._read_sidecar` rewritten to read through
 `self.read_artifact(ctx, SIDECAR_NAME, ref)` — behaviour-neutral in ordinary runs).
 `entry_read`: `ObservationRows`. Everything else registered (`kinds_banking`, `kinds_report`,
-`kinds_search`, `kinds_stats`, `kinds_table`, every `libs/*` pack) stays `forbidden` by the base
-default — the test pins each name's effect so widening in phase 2b is one line per class.
+`kinds_search`, `kinds_stats`, `kinds_table`, every `libs/*` pack) stays `forbidden` — and for the
+TRAINABLES among them that is not the base default doing the work, since `TrainableNode` widens.
+R16: `TrainableNode.serving_load_audited` (class attribute, `False` on the base) gates the
+widening, so `serving_effect` answers `release_read` only when the load evidence holds AND the
+class carries the flag. The three audited classes above set it `True`; `SklearnSelect` and
+`TorchImportance` set it back to `False`, because they subclass the audited `FeatureSelector` and
+would otherwise inherit a licence for a load path nobody read. Widening in phase 2b is literally
+one line per class: audit the load path, set the flag.
 The test proves `serving_effect` performs no I/O for every registered class and `serving_contract`
 returns `None` for every class except `ObservationRows`.
 

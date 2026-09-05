@@ -320,6 +320,11 @@ class SynthTrain(TrainableNode):
     role = "train"
     outputs = ("signal", "artifact")
 
+    #: ADR-0091: ``run_load`` reads the pinned model through
+    #: ``read_artifact`` and touches nothing else, so a served tick may
+    #: run it. Audited by ``tests/pipeline/test_serving_effect.py``.
+    serving_load_audited = True
+
     #: The model artifact's name — written by both modes, read back under
     #: load. One name, so the writer and the reader cannot drift apart.
     _MODEL_FILE = "model.json"

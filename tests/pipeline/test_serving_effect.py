@@ -5,7 +5,10 @@ Four things are pinned here, all of them fail-closed by design:
 * the vocabulary itself (``SERVING_EFFECTS``) and the base defaults —
   an unannotated class is ``forbidden`` and offers no serving contract;
 * ``TrainableNode``'s one widening: ``release_read`` for a
-  manifest-pinned LOAD, and nothing else;
+  manifest-pinned LOAD **of a class whose load path was audited**
+  (``serving_load_audited``), and nothing else — the evidence alone is
+  not enough, because the evidence says the artifact was pinned, not
+  that the code reading it stays inside the reader;
 * the phase-1 audit — one line per registered kind and per synthetic
   class, so a NEW kind must be classified deliberately rather than
   inheriting a blanket answer;
@@ -18,9 +21,11 @@ Four things are pinned here, all of them fail-closed by design:
 import ast
 import builtins
 import dataclasses
+import importlib
 import inspect
 import json
 import os
+import pkgutil
 import socket
 import textwrap
 
@@ -30,7 +35,9 @@ import pytest
 
 import dskit.pipeline  # noqa: F401 — importing REGISTERS the toolkit kinds
 from dskit.pipeline import fitted, synthetic_nodes
+from dskit.pipeline import libs
 from dskit.pipeline import node as node_module
+from dskit.pipeline.base import import_ref
 from dskit.pipeline.libs.observations import ObservationRows
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, NodeContext, TrainableNode
 
@@ -99,11 +106,27 @@ CLASS_EFFECTS = {
 }
 
 #: The classes SEAM-DESIGN §5 audits as ``release_read``: their artifact
-#: reads go through the base's services, never a bare ``open``.
+#: reads go through the base's services, never a bare ``open``. These are
+#: exactly the classes that may carry ``serving_load_audited = True``.
 RELEASE_READ_CLASSES = (
     fitted.Standardize,
     fitted.FeatureSelector,
     synthetic_nodes.SynthTrain,
+)
+
+#: Every trainable a library pack ships, by class ref. NONE of them is
+#: audited, so all of them answer ``forbidden`` even under a pinned load
+#: (R16). The two ``FeatureSelector`` subclasses are the ones that matter
+#: most: they inherit from an AUDITED class, so an inherited flag would
+#: hand a pack's load path a serving licence nobody reviewed.
+LIBS_TRAINABLE_REFS = (
+    "dskit.pipeline.libs.sklearn:SklearnFit",
+    "dskit.pipeline.libs.sklearn:SklearnPredict",
+    "dskit.pipeline.libs.sklearn:SklearnSelect",
+    "dskit.pipeline.libs.torch:TorchTrain",
+    "dskit.pipeline.libs.torch:TorchPredict",
+    "dskit.pipeline.libs.torch:DeclaredTrain",
+    "dskit.pipeline.libs.torch:TorchImportance",
 )
 
 #: Names that would mean a class reached the filesystem or the network on
@@ -117,6 +140,27 @@ IO_NAMES = (
     "open(", "os.", "io.", "socket", "pathlib",
     "write_artifact", "artifact_dir",
 )
+
+
+def toolkit_trainables():
+    """Every ``TrainableNode`` subclass the toolkit and its packs define."""
+    modules = [
+        importlib.import_module(f"{dskit.pipeline.__name__}.{info.name}")
+        for info in pkgutil.iter_modules(dskit.pipeline.__path__)
+        if info.name != "libs"
+    ]
+    modules += [
+        importlib.import_module(f"{libs.__name__}.{info.name}")
+        for info in pkgutil.iter_modules(libs.__path__)
+    ]
+    return {
+        member
+        for module in modules
+        for member in vars(module).values()
+        if inspect.isclass(member)
+        and issubclass(member, TrainableNode)
+        and member is not TrainableNode
+    }
 
 
 def audited_classes():
@@ -267,11 +311,13 @@ class TestReleaseReaderField:
 
 
 class TestTrainableEffect:
-    @pytest.mark.parametrize("cls", [TrainableNode, LoadableTrainable])
-    def test_a_manifest_pinned_load_is_release_read(self, cls):
-        assert cls.serving_effect({}, {"mode": "load", "artifact_pinned": True}) == (
-            "release_read"
-        )
+    @pytest.mark.parametrize(
+        "cls", RELEASE_READ_CLASSES, ids=lambda c: c.__qualname__
+    )
+    def test_a_manifest_pinned_load_of_an_audited_class_is_release_read(self, cls):
+        assert cls.serving_effect(
+            params_for(cls), {"mode": "load", "artifact_pinned": True}
+        ) == "release_read"
 
     @pytest.mark.parametrize(
         "evidence",
@@ -288,7 +334,32 @@ class TestTrainableEffect:
         ],
     )
     def test_everything_short_of_a_pinned_load_is_forbidden(self, evidence):
-        assert LoadableTrainable.serving_effect({}, evidence) == "forbidden"
+        assert synthetic_nodes.SynthTrain.serving_effect({}, evidence) == "forbidden"
+
+    def test_the_family_base_is_unaudited_and_so_answers_forbidden(self):
+        # R16: the flag is per CLASS, and `TrainableNode` names no load
+        # path at all — it is abstract. Answering `release_read` here
+        # would licence every trainable that ever subclasses it.
+        assert TrainableNode.serving_load_audited is False
+        assert TrainableNode.serving_effect({}, LOAD_EVIDENCE) == "forbidden"
+
+    def test_a_trainable_nobody_audited_is_forbidden_under_the_same_evidence(self):
+        # The evidence is identical to the audited case; only the flag
+        # differs, which is the whole point of R16 — a pinned artifact
+        # says nothing about whether the code reading it stays inside
+        # `ctx.release_reader`.
+        assert LoadableTrainable.serving_load_audited is False
+        assert LoadableTrainable.serving_effect({}, LOAD_EVIDENCE) == "forbidden"
+
+    def test_setting_the_flag_is_the_whole_widening(self):
+        # Phase 2b widens by auditing a load path and setting one flag;
+        # nothing else about the class changes. A subclass of the very
+        # class above, flag flipped, answers `release_read`.
+        class Audited(LoadableTrainable):
+            serving_load_audited = True
+
+        assert Audited.serving_effect({}, LOAD_EVIDENCE) == "release_read"
+        assert Audited.serving_effect({}, {"mode": "train"}) == "forbidden"
 
     def test_a_trainable_still_offers_no_serving_contract(self):
         assert LoadableTrainable.serving_contract({}, LOAD_EVIDENCE) is None
@@ -340,6 +411,26 @@ class TestAudit:
         params = params_for(cls)
         assert cls.serving_effect(params, {}) == bare
         assert cls.serving_effect(params, LOAD_EVIDENCE) == pinned
+
+    @pytest.mark.parametrize("ref", LIBS_TRAINABLE_REFS)
+    def test_no_library_packs_trainable_may_serve(self, ref):
+        # The packs import stdlib-only at module level (test_purity.py),
+        # so this needs no library installed — and their load paths are
+        # unaudited, so a pinned load is still `forbidden` (R16).
+        cls = import_ref(ref)
+        assert issubclass(cls, TrainableNode)
+        assert cls.serving_load_audited is False
+        assert cls.serving_effect(params_for(cls), {}) == "forbidden"
+        assert cls.serving_effect(params_for(cls), LOAD_EVIDENCE) == "forbidden"
+
+    def test_only_the_audited_three_carry_the_flag_anywhere_in_the_toolkit(self):
+        # The flag is INHERITED, so a subclass of an audited class would
+        # be licensed silently. Walking every trainable the toolkit and
+        # its packs define is what makes widening a deliberate line.
+        audited = {cls for cls in toolkit_trainables() if cls.serving_load_audited}
+        assert sorted(c.__qualname__ for c in audited) == sorted(
+            c.__qualname__ for c in RELEASE_READ_CLASSES
+        )
 
     def test_only_the_entry_class_offers_a_serving_contract(self):
         offenders = []
