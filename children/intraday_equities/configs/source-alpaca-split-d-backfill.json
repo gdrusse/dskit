@@ -1,0 +1,37 @@
+{
+  "notes": "Fourth immutable research cohort, and the first selected for BREADTH rather than for tradability. It preserves the established split-adjusted SIP minute-bar window, feed, adjustment, interval, codecs and hard cut, so every bar sits on the same price scale as alpaca-sip-split, -b and -c; a separate source name is required because the backfill cursor is per source and the three earlier sources have already run to the cut. Twenty names carry twenty distinct industry labels with at most two in any one sector: software infrastructure and application (ORCL, CRM), gold bullion and gold mining (GLD, NEM), copper (FCX), pharmaceuticals (MRK), biotechnology (XBI), cybersecurity (FTNT), media (DIS), airlines (DAL), payments (PYPL), independent power (NRG), automobiles (GM), medical devices (MDT), aerospace and defence (BA), restaurants (SBUX), broadline retail (TGT), agribusiness (ADM), life insurance (MET) and telecom (TMUS). The roster before this cohort was twenty-five names concentrated in technology and semiconductors with a single name each in financials, health care, energy and staples; this cohort exists so the study can ask whether modelability is a property of the NAME or of the SECTOR AND MECHANISM, which a roster of one name per sector cannot separate. Selection was frozen before any of these names was pulled or scored and used only non-backtest facts - listing history, continuous ticker, SIP coverage, price, volume, realised volatility, quoted-spread structure, corporate actions and mechanism (docs/research/cohort-d-twenty-five-breadth-candidates.md). Symbols are in RANK ORDER by the project rule of thumb, the typical three-minute move over the half-spread, which runs from 95 at ORCL to 16 at TMUS; only the first eleven clear the 25-to-45 band, and that is expected rather than a defect, because the one-cent minimum quoting increment is a fixed 50/P bp of half-spread, so the rule is sector-selective by construction and excludes defensive, low-priced sectors whatever their microstructure - the roster already admitted LLY at 8 and BAC near 13 on the same arithmetic. The low-ratio names are informative precisely because they are expensive to trade. Ranks 21-25 - PLD, PM, NKE, LVS, DHI - are documented spares in the research note, not pulled here. EXACTLY ONE stock split falls inside the window across all twenty names, Fortinet 5-for-1 ex 2022-06-23, and adjustment=split removes it; XBI 3-for-1 2015-09-11, SBUX 2-for-1 2015-04-09 and NKE 2-for-1 2015-12-24 all sit before the start. Three names are NOT continuous back to 2010: GM lists from 2010-11-18 and pre-2010 GM must never be spliced onto it, TMUS from 2013-05-01, and PYPL only from 2015-07-20, five and a half months of history before the window opens - all three are inside the window but a reader must not assume equal pre-window depth. DAL and NRG are post-Chapter-11 relistings (2007-05-03, 2004-03-25). MRK and MET each carry a spin-off inside or near the window - Organon ex 2021-06-03 and Brighthouse ex 2017-08-07 - which is a distribution and NOT a split: some vendors encode them as price factors near 1.048x and 1.122x and some do not, so what Alpaca actually returns must be reconciled against the unadjusted tape before either name is modelled. DIS changed CIK in the 2019 holdco reorganisation but never changed ticker. Backfill only: there is no live mode on a source with a data cut behind us. Secrets are environment-variable names; the material never enters this file or any hash.",
+  "symbols": [
+    "ORCL",
+    "GLD",
+    "MRK",
+    "CRM",
+    "NEM",
+    "XBI",
+    "FCX",
+    "FTNT",
+    "DIS",
+    "DAL",
+    "PYPL",
+    "NRG",
+    "GM",
+    "MDT",
+    "BA",
+    "SBUX",
+    "TGT",
+    "ADM",
+    "MET",
+    "TMUS"
+  ],
+  "start": "2016-01-01",
+  "end": "2026-02-28T23:59:59+00:00",
+  "feed": "sip",
+  "adjustment": "split",
+  "timeframe": [
+    1,
+    "Minute"
+  ],
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}
