@@ -38,6 +38,7 @@ a process, each bounded well under a second.
 
 import json
 import os
+from types import SimpleNamespace
 import signal
 import subprocess
 import sys
@@ -106,7 +107,8 @@ class Env:
     """A `Secrets`-shaped resolver recording every value read."""
 
     def __init__(self, values=None):
-        self._values = dict(values or {URL_ENV: BEAT_URL})
+        # `{}` means "nothing resolvable" — only an omitted argument gets the default.
+        self._values = dict(values if values is not None else {URL_ENV: BEAT_URL})
         self.reads = []
 
     def __contains__(self, name):
@@ -405,13 +407,13 @@ def test_the_ledger_writable_probe_passes_on_a_writable_series(serve, clock):
     assert result.ok is True
 
 
-def test_the_ledger_writable_probe_fails_when_the_series_cannot_be_written(serve):
-    probe = LedgerWritableProbe(None, serve_root=serve)
-    os.chmod(serve.series_path, 0o500)
-    try:
-        result = probe.check()
-    finally:
-        os.chmod(serve.series_path, 0o700)
+def test_the_ledger_writable_probe_fails_when_the_series_cannot_be_written(tmp_path):
+    # A regular file where the series directory should be fails the probe's
+    # write for every uid — mode bits alone would not stop root.
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("x", encoding="utf-8")
+    probe = LedgerWritableProbe(None, serve_root=SimpleNamespace(series_path=str(blocker)))
+    result = probe.check()
     assert result.ok is False
     assert result.detail
 

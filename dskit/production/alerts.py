@@ -19,8 +19,8 @@ and every class here serves one of them:
   answers a non-2xx or never returns is swallowed and COUNTED —
   ``alert_sink_failures_total{sink}`` and ``alerts_suppressed_total{why}``
   are the only evidence (§5.11.1). A core kind sends inline, bounded by
-  its transport's real socket deadline; a custom sink (a class reference
-  outside :data:`ALERT_SINK_KINDS`) sends on its own
+  its transport's real socket deadline; a custom sink — any class that
+  keeps the ABC's ``SUPERVISED = True`` — sends on its own
   :class:`SupervisedWorker`, and a call that outlives ``timeout_s``
   disables that sink for the life of the router without spawning a
   replacement, so a permanently stuck call costs one daemon thread (D23).
@@ -291,10 +291,11 @@ class CallResult:
 
 
 class SupervisedWorker:
-    """One daemon thread for one call site; a stuck call is never replaced.
+    """One call site's supervisor: one daemon thread per call in flight, never two.
 
-    ``call(fn, timeout_s)`` runs ``fn`` on the worker and waits at most
-    ``timeout_s``. If the deadline passes, the caller gets
+    ``call(fn, timeout_s)`` runs ``fn`` on a fresh daemon thread and waits
+    at most ``timeout_s``. A call that returns in time is reaped, leaving
+    no thread behind. A call that does not is abandoned: the caller gets
     ``timed_out=True`` at once and the worker stays BUSY until ``fn``
     finally returns — every call in between is answered ``timed_out``
     immediately, without a second thread. This is D17's and D18's
@@ -312,7 +313,6 @@ class SupervisedWorker:
         worker = SupervisedWorker("ops")
         worker.call(lambda: "sent", timeout_s=0.5).value   # 'sent'
         worker.busy   # False
-        worker.stop()
     """
 
     def __init__(self, name):
@@ -322,8 +322,6 @@ class SupervisedWorker:
             raise ProductionError(problems)
         self._name = name
         self._guard = threading.Lock()
-        self._jobs = queue.Queue()
-        self._thread = None
         self._busy = False
 
     @property
@@ -333,7 +331,7 @@ class SupervisedWorker:
             return self._busy
 
     def call(self, fn, timeout_s):
-        """Run ``fn()`` on the worker and wait at most ``timeout_s`` for it.
+        """Run ``fn()`` on a worker thread and wait at most ``timeout_s`` for it.
 
         Parameters
         ----------
@@ -354,43 +352,28 @@ class SupervisedWorker:
             if self._busy:
                 return CallResult(timed_out=True)
             self._busy = True
-            self._jobs.put((fn, done, box))
-            if self._thread is None or not self._thread.is_alive():
-                self._thread = threading.Thread(
-                    target=self._run, name=f"dskit-production-{self._name}", daemon=True
-                )
-                self._thread.start()
+            thread = threading.Thread(
+                target=self._run,
+                args=(fn, done, box),
+                name=f"dskit-production-{self._name}",
+                daemon=True,
+            )
+            thread.start()
         if not done.wait(timeout_s):
             return CallResult(timed_out=True)
+        thread.join(timeout_s)  # nothing is left to run; reap it so no thread lingers
         return CallResult(value=box.get("value"), error=box.get("error"))
 
-    def stop(self):
-        """Let the thread exit after its current call; never joins a stuck one.
-
-        Returns
-        -------
-        None
-            Idempotent; a worker that never started has nothing to stop.
-        """
-        with self._guard:
-            if self._thread is not None:
-                self._jobs.put(None)
-
-    def _run(self):
-        """Serve jobs until the ``None`` sentinel; free the worker after each."""
-        while True:
-            job = self._jobs.get()
-            if job is None:
-                return
-            fn, done, box = job
-            try:
-                box["value"] = fn()
-            except BaseException as exc:  # a sink may raise anything; nothing escapes
-                box["error"] = exc
-            finally:
-                with self._guard:
-                    self._busy = False
-                done.set()
+    def _run(self, fn, done, box):
+        """Run the one job, free the worker, then signal the caller."""
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # a sink may raise anything; nothing escapes
+            box["error"] = exc
+        finally:
+            with self._guard:
+                self._busy = False
+            done.set()
 
 
 # ---------------------------------------------------------------------------
@@ -399,12 +382,12 @@ class SupervisedWorker:
 
 
 def _json_template(obj):
-    """The whole alert, as is."""
+    """Return the whole alert, as is."""
     return obj
 
 
 def _slack_template(obj):
-    """A Slack incoming-webhook body: one ``text`` line carrying the alert."""
+    """Return a Slack incoming-webhook body: one ``text`` line carrying the alert."""
     labels = " ".join(f"{key}={value}" for key, value in sorted(obj["labels"].items()))
     text = (
         f"[{obj['severity']}] {obj['status']}: {obj['summary']} "
@@ -457,6 +440,12 @@ class AlertSink(ABC):
     KIND : str or None
         The registry name a core kind reports; ``None`` on the ABC, so a
         custom sink reports its class reference.
+    SUPERVISED : bool
+        Whether the router sends through a :class:`SupervisedWorker`
+        bounded by ``timeout_s`` — ``True`` on the ABC, so every custom
+        sink is supervised; the four core kinds set it ``False`` because
+        their transport carries a real socket deadline (D17). A child
+        that sets it ``False`` takes on that deadline itself.
 
     Examples
     --------
@@ -476,6 +465,7 @@ class AlertSink(ABC):
     _PARAMS = ()
     _REQUIRES = ()
     KIND = None
+    SUPERVISED = True
 
     def __init__(self, params, *, endpoint=None, transport=None, clock=None, secrets=None):
         params = {} if params is None else params
@@ -637,6 +627,7 @@ class LogSink(AlertSink):
     """
 
     KIND = "log"
+    SUPERVISED = False
 
     def send(self, alert):
         """Log the masked alert; see :meth:`AlertSink.send`."""
@@ -670,6 +661,7 @@ class MemorySink(AlertSink):
     """
 
     KIND = "memory"
+    SUPERVISED = False
 
     def __init__(self, params, *, endpoint=None, transport=None, clock=None, secrets=None):
         super().__init__(
@@ -711,6 +703,7 @@ class WebhookSink(AlertSink):
     """
 
     KIND = "webhook"
+    SUPERVISED = False
     _REQUIRES = ("endpoint", "transport", "secrets")
 
     def send(self, alert):
@@ -767,6 +760,7 @@ class EmailSink(AlertSink):
     """
 
     KIND = "email"
+    SUPERVISED = False
     _PARAMS = ("sender",)
     _REQUIRES = ("endpoint", "secrets")
 
@@ -828,12 +822,12 @@ class _TokenBucket:
 
 
 class _Group:
-    """One fingerprint's state: what waits, what fired, what is resolving."""
+    """One fingerprint's state: the alert waiting, what fired, what is resolving."""
 
-    __slots__ = ("pending", "due_ms", "firing", "last_alert", "last_notified_ms", "resolve_ms")
+    __slots__ = ("waiting", "due_ms", "firing", "last_alert", "last_notified_ms", "resolve_ms")
 
     def __init__(self):
-        self.pending = None
+        self.waiting = None
         self.due_ms = None
         self.firing = False
         self.last_alert = None
@@ -920,9 +914,7 @@ class AlertRouter:
             _SUPPRESSED, labels=tuple(sorted(vocab.METRIC_LABEL_VALUES[_SUPPRESSED]))
         )
         self._workers = {
-            name: SupervisedWorker(name)
-            for name, sink in sinks.items()
-            if sink.kind not in ALERT_SINK_KINDS
+            name: SupervisedWorker(name) for name, sink in sinks.items() if sink.SUPERVISED
         }
         self._disabled = []
         self._groups = {}
@@ -1067,8 +1059,8 @@ class AlertRouter:
             if group.firing and group.resolve_ms is None:
                 group.resolve_ms = self._clock.now_ms()
                 return True
-            if group.pending is not None and not group.firing:
-                group.pending = None
+            if group.waiting is not None and not group.firing:
+                group.waiting = None
                 self._suppress("group_wait")
                 del self._groups[fingerprint]
             return False
@@ -1126,7 +1118,7 @@ class AlertRouter:
         self._thread.start()
 
     def close(self):
-        """Stop the worker, stop every sink worker and close every sink; idempotent.
+        """Stop the worker and close every sink; idempotent.
 
         Returns
         -------
@@ -1141,8 +1133,6 @@ class AlertRouter:
         if self._thread is not None:
             bound = sum(sink.timeout_s for sink in self._sinks.values()) + WORKER_POLL_S
             self._thread.join(bound)
-        for worker in self._workers.values():
-            worker.stop()
         for name, sink in self._sinks.items():
             try:
                 sink.close()
@@ -1150,7 +1140,7 @@ class AlertRouter:
                 _log.warning("sink %s failed to close: %s", name, _failure_detail(exc))
 
     def _work(self):
-        """The worker: ``process`` now, then sleep a slice, until stopped."""
+        """Run ``process`` now, then sleep a slice, until stopped."""
         while not self._stop.is_set():
             self.process(self._clock.now_ms())
             self._stop.wait(WORKER_POLL_S)
@@ -1170,16 +1160,16 @@ class AlertRouter:
         """Place one arrival: open a group, supersede a pending one, or count it."""
         group = self._groups.setdefault(alert.fingerprint, _Group())
         firing = group.firing and group.resolve_ms is None
-        if group.pending is not None:
-            group.pending = alert
+        if group.waiting is not None:
+            group.waiting = alert
             self._suppress("dedup" if firing else "group_wait")
         elif firing:
             if arrived_ms - group.last_notified_ms >= self._repeat_ms:
-                group.pending, group.due_ms = alert, arrived_ms
+                group.waiting, group.due_ms = alert, arrived_ms
             else:
                 self._suppress("repeat_interval")
         else:
-            group.pending, group.due_ms = alert, arrived_ms + self._group_wait_ms
+            group.waiting, group.due_ms = alert, arrived_ms + self._group_wait_ms
 
     def _suppress(self, why):
         """Count one withheld alert under its ``vocab.ALERT_SUPPRESSIONS`` reason."""
@@ -1196,12 +1186,12 @@ class AlertRouter:
                 obj["status"], obj["at_ms"] = _RESOLVED, group.resolve_ms
                 yield self._notify(Alert.from_obj(obj), now_ms)
                 group.firing, group.last_alert, group.resolve_ms = False, None, None
-                if group.pending is None:
+                if group.waiting is None:
                     del self._groups[fingerprint]
         for group in list(self._groups.values()):
-            if group.pending is None or now_ms < group.due_ms:
+            if group.waiting is None or now_ms < group.due_ms:
                 continue
-            alert, group.pending = group.pending, None
+            alert, group.waiting = group.waiting, None
             if (
                 alert.severity != _BYPASSES_RATE_LIMIT
                 and self._bucket is not None
@@ -1247,14 +1237,14 @@ class AlertRouter:
 
     @staticmethod
     def _send_inline(sink, alert):
-        """A core kind sends on this thread, bounded by its transport's deadline."""
+        """Send on this thread; an unsupervised kind is bounded by its transport's deadline."""
         try:
             return sink.send(alert)
         except Exception as exc:  # a sink's raise is an outcome, never the caller's
             return SinkOutcome(ok=False, detail=_failure_detail(exc))
 
     def _send_supervised(self, name, sink, alert):
-        """A custom sink sends on its worker; a timeout disables it for good."""
+        """Send on the sink's worker; a timeout disables the sink for good."""
         result = self._workers[name].call(lambda: sink.send(alert), sink.timeout_s)
         if result.timed_out:
             self._disabled.append(name)

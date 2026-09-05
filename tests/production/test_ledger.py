@@ -62,6 +62,7 @@ from dskit.production.ledger import (
     ServeRoot,
     validate_cache_head,
 )
+from dskit.production.health import InstanceLock
 from dskit.production.redact import REDACTED, redact, register_secret
 
 SERIES = "018f0f4e-7b21-7d3a-9c31-6d8f36d806a1"
@@ -1354,6 +1355,47 @@ def test_a_second_writer_in_another_process_refuses(serve, open_ledger):
     )
     proc = _child(code)
     assert proc.returncode == 7, proc.stderr
+
+
+def test_a_ledger_opened_with_a_held_instance_lock_takes_no_second_flock(serve, open_ledger):
+    """Ruling R18 — ONE LOCK. The loop takes `serve.lock` through
+    `InstanceLock` BEFORE the ledger opens and hands it in. The ledger must
+    then take no second `flock`: a second flock on the same file from this
+    process would refuse (as `test_a_second_writer_on_the_same_series_refuses`
+    shows), so opening at all is the proof. A second process still refuses
+    while the lock is held, `close()` leaves release to the lock's owner,
+    and a lock that is not held is not a lock."""
+    code = (
+        "from dskit.production.ledger import JsonlLedger, ServeRoot\n"
+        "from dskit.production.base import ProductionError\n"
+        "import sys\n"
+        "class C:\n"
+        "    def now_ms(self):\n"
+        "        return 1\n"
+        "    def monotonic(self):\n"
+        "        return 1.0\n"
+        f"sr = ServeRoot({os.path.dirname(serve.series_path)!r}, {SERIES!r})\n"
+        "try:\n"
+        f"    JsonlLedger(sr, 'proc-child', {RELEASE!r}, clock=C())\n"
+        "except ProductionError:\n"
+        "    sys.exit(7)\n"
+        "sys.exit(0)\n"
+    )
+    lock = InstanceLock(serve.lock_path)
+    lock.acquire()
+    try:
+        led = open_ledger(serve, lock=lock)
+        assert led.append(_rec(rid="t-1")) == 1
+        assert _child(code).returncode == 7
+        led.close()
+        assert lock.held is True
+        assert _child(code).returncode == 7
+    finally:
+        lock.release()
+    assert _child(code).returncode == 0
+    with pytest.raises(ProductionError) as exc:
+        open_ledger(serve, lock=InstanceLock(serve.lock_path))
+    assert "held" in str(exc.value)
 
 
 def test_a_closed_ledger_refuses_every_write_but_still_reads(serve, open_ledger):

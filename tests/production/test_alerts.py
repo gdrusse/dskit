@@ -106,7 +106,8 @@ class Env:
     """
 
     def __init__(self, values=None):
-        self._values = dict(values or {URL_ENV: WEBHOOK_URL})
+        # `{}` means "nothing resolvable" — only an omitted argument gets the default.
+        self._values = dict(values if values is not None else {URL_ENV: WEBHOOK_URL})
         self.reads = []
 
     def __contains__(self, name):

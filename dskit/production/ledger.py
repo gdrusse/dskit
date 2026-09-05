@@ -747,6 +747,16 @@ def _decode(path, lineno, raw):
 # ---------------------------------------------------------------------------
 
 
+def _check_held_lock(problems, lock, lock_path):
+    """Refuse a ``lock`` that is not a HELD instance lock on this series' ``serve.lock``."""
+    if getattr(lock, "held", None) is not True:
+        problems.append(f"lock must be a held InstanceLock, got {lock!r}")
+    elif getattr(lock, "path", None) != lock_path:
+        problems.append(
+            f"lock is on {getattr(lock, 'path', None)!r}, not this series' {lock_path!r}"
+        )
+
+
 class JsonlLedger(Ledger):
     """The JSONL chain: one ``O_APPEND`` write per record, locked, verifiable.
 
@@ -786,11 +796,17 @@ class JsonlLedger(Ledger):
         Append a ``snapshot`` of ``state.to_snapshot_obj()`` after this
         many records since the last one; ``None`` (the default) never
         does. Requires ``state``.
+    lock : health.InstanceLock or None
+        A HELD instance lock on this series' ``serve.lock`` (ruling R18:
+        one lock). Given one, the ledger takes no second ``flock`` and
+        ``close()`` leaves release to the lock's owner; ``None`` (the
+        default) makes the ledger take and release the lock itself.
 
     Raises
     ------
     ProductionError
-        On a malformed argument, when another writer holds
+        On a malformed argument, a ``lock`` that is not held or is not
+        this series' ``serve.lock``, when another writer holds
         ``serve.lock``, or when a sealed segment is damaged.
 
     Examples
@@ -820,10 +836,13 @@ class JsonlLedger(Ledger):
         rotate=None,
         state=None,
         snapshot_every=DEFAULT_SNAPSHOT_EVERY,
+        lock=None,
     ):
         problems = []
         if not isinstance(serve_root, ServeRoot):
             problems.append(f"serve_root must be a ServeRoot, got {serve_root!r}")
+        elif lock is not None:
+            _check_held_lock(problems, lock, serve_root.lock_path)
         _check_str(problems, "process_id", process_id)
         _check_str(problems, "release_hash", release_hash)
         for method in ("now_ms", "monotonic"):
@@ -855,7 +874,7 @@ class JsonlLedger(Ledger):
         self._since_snapshot = 0
         self._cursor = None
         self._closed = False
-        self._lock_fd = self._acquire_lock()
+        self._lock_fd = None if lock is not None else self._acquire_lock()
         try:
             self._recover()
         except BaseException:
@@ -878,11 +897,14 @@ class JsonlLedger(Ledger):
         return fd
 
     def _release_lock(self):
-        """Unlock and close ``serve.lock``."""
+        """Unlock and close ``serve.lock`` — only when this ledger took it."""
+        if self._lock_fd is None:
+            return
+        fd, self._lock_fd = self._lock_fd, None
         try:
-            fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+            fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
-            os.close(self._lock_fd)
+            os.close(fd)
 
     def _recover(self):
         """Walk every segment: head, index, snapshot cadence, and the torn tail."""
@@ -942,12 +964,13 @@ class JsonlLedger(Ledger):
             raise ProductionError(["the ledger is closed"])
 
     def close(self):
-        """Seal the open segment, release ``serve.lock`` and close every fd.
+        """Seal the open segment, close every fd and release ``serve.lock`` if this ledger took it.
 
         Returns
         -------
         None
-            Idempotent; a second call does nothing.
+            Idempotent; a second call does nothing. A lock handed in at
+            open stays with its owner.
         """
         if self._closed:
             return
