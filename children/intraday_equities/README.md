@@ -98,6 +98,23 @@ Do not substitute Yahoo. Keep both vendors as separate sources.
 
 Exit codes: `0` ran · `3` halted at a gate · `1` error.
 
+## Machine knobs
+
+`INTRADAY_EQUITIES_FOLD_WORKERS` — how many of a walk's fold processes run at
+once. Unset means 1, the serial path; an empty value is refused rather than
+defaulted. It is read from the environment and never from a document: fold
+count is a property of the machine, not of what a run computes, and a graded
+knob would move the identity hash and orphan every prior run each time it was
+tuned. The width used is recorded in the journal as `fold_workers=`.
+
+Each fold process keeps the whole 17 GiB address-space cap, so total memory
+scales with the width — choose it for the machine, not just for the cores.
+
+```bash
+INTRADAY_EQUITIES_FOLD_WORKERS=4 python -m dskit.pipeline staged \
+  configs/run-p11-modelability.json --asof 2026-02-28 --adapter intraday_equities
+```
+
 ## Layout
 
 ```

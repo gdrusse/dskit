@@ -4259,3 +4259,301 @@ or MIO constraint requires a separately approved design and validation run.
 HFDR is a later MIO capital constraint. It does not replace Gate 3, and P11 does not invoke Gate 2. The completed P11 Gate-2 artifacts are historical evidence from the mistaken configuration; they neither select assets nor substitute for the restored Gate-3 audit.
 
 **Consequences.** The active staged document is memory, gate1, gate3_walks, gate3. Its changed identity requires a fresh execution; no new Gate-3 run has been started by this correction.
+
+---
+
+## ADR-0090 — `dskit.production`: the production layer (serve, guard, act, record, monitor)
+
+**Status:** proposed (2026-09-04; Opus-reviewed; awaiting owner approval)
+
+**Context.** dskit runs documents in batch and has no seam for running a fitted
+model forward on a cadence. Two hand-rolled tier-3 forward loops exist:
+`children/intraday_poc/intraday_poc/live.py` (1,367 lines, where most of that
+child's HIGH-severity defects live) and
+`children/intraday_equities/intraday_equities/live.py` (191 lines, paper-only
+limit-order intents). TODO.md records the constraints a generic loop must satisfy: read
+the run's configs, fetch through the connector, decide with the same node objects,
+one decision record per tick, gate on a supplied calendar, take an executor
+object, and make moving money an explicit loud act. Nine research reports
+(docs/new_package_proposals/research_reports/) ground the design.
+
+**Decision.** A fifth package, `dskit/production/`, per
+docs/new_package_proposals/production.md (D1–D24, invariant matrix §5.14,
+structure §8): a serve document with a stable series UUID whose immutable release
+binds the run, graph, artifacts, resolved code, complete runtime, adapter,
+approval verifier, fenced lease and source config. The entry's pure
+ServingContract derives source binding, explicit entity keys, event time, digest
+recipe and manifest-bound universe. A structural policy defers its construction,
+fingerprint, data edge and splits before fetch/gates. Startup, every tick and
+pre-submit verify content/runtime and artifact age. One `ServeLoop` injects
+closed policy, execution, accounting and coordination seams. The sole source-root
+`entry_read` dominates every dynamic path; only pure or capability-backed
+release reads surround it. Exact uniform coverage and the oldest key watermark
+pass before descendants.
+It evaluates heads once, derives candidate scope keys and quotes,
+then snapshots correction-aware accounting before sizing. Legs run sequentially
+with prior reservations folded. Closed matrices use disjoint risk effects,
+preserve shadow/paper, forbid replace shortcuts, and make LiveExecutor accept
+only ActPermit. After the final barrier, a bounded verify-and-call gate refreshes
+input/quote/evidence/risk plus calendar, link, health, breaker, authority and
+lease, then passes the full deadline/fence to the gateway. Mismatch is `not_sent`;
+unavoidable external venue races are `unknown` and reconcile. Cancel uses
+reserved bounded capacity. Reduction,
+flatten execution, resume and adoption are
+authenticated acts. A hash-chained ledger has one writer and barriers
+`tick_start`, the complete decision plan and findings, intent, authority
+use/authorization and safety transitions before effects. Flatten refs are
+request/index/digest-derived; caller-UUID controls use a durable inbox and HALT
+remains out-of-band. Normally completed mutating CLIs journal their result once;
+hard-kill cross-store gaps are reported. Serve never journals consumed commands.
+Recovery gives every started tick a terminal decision and every
+reserved reduction right a query-first resolution. Core supplies
+shadow/paper/recorded execution and accounting,
+monitors, alerts, health and resilience. Purity: stdlib + pipeline + onboarding +
+assets + self; journal function-import only.
+
+**Contents (package).**
+
+```
+dskit/production/
+  __init__.py       public surface (curated re-exports)
+  __main__.py       validate | plan | serve | arm-request | approve-arm | disarm | halt |
+                    reduce | flatten-request | approve-flatten | execute-flatten | resume |
+                    status | verify | reconcile | adopt | ready | replay | outcomes | report
+  base.py           ProductionError; assets checkers; ms/UTC; canonical record hashing
+  vocab.py          every closed vocabulary, one module
+  redact.py         Secrets resolution; redact() on logs, alerts and reasons
+  document.py       ServeDocument; default-deny; the graded/excluded section partition
+  release.py        ReleaseManifest; class/code/adapter/source/artifact/runtime fingerprints
+  records.py        Quote/Candidate/Proposal/Finding/EntryBatch/DecisionPlan/Intent;
+                    Permit (frozen dataclass base) + SimulatedPermit + ActPermit; TickResult;
+                    AccountState; RiskVersion
+  clock.py          Clock ABC; WallClock, TestClock, ReplayClock; CLOCK_KINDS
+  sessions.py       Calendar ABC; AlwaysOpen, WeeklySessions, EventWindow, Composite
+  cadence.py        Cadence ABC; FixedInterval, AlignedBar, AtTimes, OnData; Overrun
+  control.py        ControlInbox; CommandProcessor; sole-writer dispatch
+  feed.py           ServingContract + FeedSpec; EntrySourceFeed; ReplayFeed
+  decider.py        serving_document(); Decider; Proposer ABC; IntentRows, TargetPositions
+  guards.py         Guard ABC; GuardChain; Limit; RangeGuard; Measure ABC + registry
+  breaker.py        Breaker (active | reducing | halted); trips; kill switch; cooling-off
+  arming.py         ApprovalVerifier ABC; maker-checker proofs; Arming fold; scope application (minting is leg.py)
+  executor.py       Executor ABC (read/query/cancel); SubmittingExecutor; Shadow, Paper,
+                    Recorded, Live; executor_conformance_suite
+  accounting.py     Accounting ABC; PaperAccounting; RecordedAccounting
+  coordination.py   Lease ABC; ProcessLease; LeasePermit; fencing tokens
+  policy.py         ActionPolicy; TransitionPolicy; Rule sets; the golden decision table
+  verifier.py       SubmissionVerifier — the final verify-and-call gate
+  resilience.py     Classifier ABC; Retry; CircuitBreaker; RateLimiter; Transport ABC
+  ledger.py         Ledger ABC + barrier; JsonlLedger; Checkpoint; ServeRoot; chain + verify
+  state.py          SeriesState (sole ledger fold); StateView; TickState; PositionBook; Recovery
+  reconcile.py      Reconciler; ReconReport; break classification
+  monitors.py       Monitor ABC; Reference/Chunker/Threshold strategies; monitor families
+  metrics.py        counter/gauge/histogram registry; label cardinality cap; JSONL flush
+  alerts.py         AlertSink ABC; Log/Memory/Email/Webhook; AlertRouter; ALERT_SINK_KINDS
+  health.py         Health state machine; HealthProbe ABC; Heartbeat; instance lock; signals
+  loop.py           ServeLoop (the scheduler, not the composition root); Tick template method; lifecycle
+  ids.py            IdSource ABC + ReleaseIdSource + RecordedIdSource
+  leg.py            LegPipeline (the eight submission steps); Authority ABC + the three kinds; permit minting
+  bundles.py        the seven frozen collaborator dataclasses
+  compose.py        AuthorityTable; bundles_for(): the closed rung to collaborator table
+  readiness.py      release-bound checklist → GO / NO-GO
+  outcomes.py       [phase 2] bitemporal outcome join, supersede chain, as-of cut
+  report.py         [phase 2] attribution, calibration, drawdown, replay parity diff
+  libs/__init__.py  pack namespace
+  libs/sqlite.py    [phase 2] SqliteLedger
+  libs/parquet.py   [phase 2] RunReference over the run's predictions parquet
+  README.md / AGENTS.md / CLAUDE.md
+tests/production/   purity + oop + every module above + a shadow/paper/live_limited e2e
+examples/production/ serve-shadow.json, serve-paper.json, calendar-weekly.json
+```
+
+**Consequences.** Children stop owning loops: a child ships an executor subclass,
+accounting, approval and fenced-lease implementations, optionally a
+proposer/measures, and JSON.
+The skeleton pin and README/AGENTS/CLAUDE trees update together. TODO's plan item
+is superseded, but implementation remains unchecked until code lands. Phase 1
+lands the foundation; phases 2–3 add evidence and packs. §12 records the resolved
+defaults for this resubmission.
+
+---
+
+## ADR-0091 — The driver's subgraph re-execution is a public seam with a policy object
+
+**Status:** proposed (2026-09-04)
+
+**Context.** `_SearchSeam._execute` already re-executes `needed ∩ dirty` under
+`"node.param.path"` overrides with the full node lifecycle, but it is private,
+returns an objective float, and hardcodes the search override rule. A serving loop
+needs the same mechanism with one different override rule and head outputs.
+
+**Decision.** `SubgraphRunner` becomes public, with a policy-aware structural
+planner that sees class metadata/topology before any source construction,
+fingerprint, `data_edge` or split materialization. Ordinary search resolution is
+unchanged. Serving drops splits, defers construction of the sole source-root `entry_read`
+out of the base pass, and requires its existing-param window override. The immutable base
+pass permits pure nodes plus approved release reads only through `ReleaseReader`;
+after fetch, the entry alone runs and its contract validates the frozen snapshot
+before descendants execute from that binding.
+
+**Consequences.** Search behavior and pinned identities remain unchanged.
+Observation entries expose pure `serving_contract(params, verified_run_evidence)`
+metadata for source binding, explicit entity keys, event time and digest recipe — declaration only. The required universe is a
+serve-document field pinned by `plan`, not contract output. Dedupe keys are not
+treated as a universe. Pipeline never imports production. Release-bound child code remains a
+declared trusted boundary, backed by code fingerprints and no-direct-I/O tests.
+
+---
+
+## ADR-0092 — Gate 3 stops at the first exceedance
+
+**Status:** proposed (2026-09-05; supersedes the fixed-19-seed portion of
+ADR-0089; awaiting owner approval)
+
+**Context.** ADR-0089 refits every Gate-1 survivor under all 19 whole-session
+permutations. The recorded P11 Gate-1 campaign ran 1,320 fold processes at
+3.40 s each (`docs/decisioning/actions.csv`), and a Gate-3 fold is a Gate-1
+fold with a permuted label, so `13 x 19 x 20 = 4,940` folds is about 4.7
+hours — for a cohort that is not final. But `tier2_verdict` passes an asset
+only when `observed_r2 > max(nulls)`: one exceedance already fails
+`beat_all`, and the remaining seeds cannot change it. `>=` is the exact
+negation of that strict `>`, and `max` is monotone, so stopping at the first
+exceedance cannot diverge from the full-19 outcome, ties included.
+
+**Decision.** Run the frozen seeds 0..18 in order and stop an asset at the
+first completed null with `R2oos >= observed`. That asset is a FAIL. If all
+19 lose, run the existing centre/spread check on that completed family. A
+pass is never stopped early, so a passing asset always carries a full 19-draw
+calibration.
+
+This is Besag–Clifford stopping at the first exceedance (`h = 1`,
+`B_max = 19`). Gandy sequential Monte Carlo is unnecessary here — the rule is
+a rank decision, not a bounded-risk p-value against a moving alpha — rather
+than inapplicable in principle.
+
+**The predicate gets one owner.** `observed_r2 > max(nulls)` is inlined at
+`attempts.py:1114` and exists nowhere else. A per-draw stop cannot call
+`tier2_verdict` (it bundles calibration and refuses fewer than two nulls), so
+implementing this ADR means extracting
+
+```text
+def beat_all(observed_r2, scrambled_r2)  -> bool
+```
+
+into `dskit/pipeline/attempts.py`, exported in `__all__`, with
+`tier2_verdict` calling it. The child imports the same function. Restating
+`null_r2 >= observed_r2` child-side is the second copy CLAUDE.md forbids.
+
+**The stage contract changes.** `Gate3WalksStage` today takes only `gate1`
+and runs all 19 walks unscored; every decision lives in `Gate3ResultStage`,
+which reads `gate1_cells` for the observed `r2oos`. Scoring must move into
+the walks stage, so it gains a `gate1_cells` input and emits per asset:
+`stopped` (bool), `stop_seed` (int or null), `n_draws` (int), and the walk
+handles actually run. `Gate3ResultStage` then emits, for a stopped asset,
+`gate3_status: "fail"`, `null_mean`/`null_sd` as null with
+`calibration: "not_computed_early_stop"`, and `p_bound` = `2/(n_draws + 1)`
+— never zero, never absent, never a point p-value.
+
+**Calibration is not weakened.** Nineteen draws cannot precisely certify a
+narrow SD (a sample SD's relative standard error is
+`1/sqrt(2*18) = 16.7%`) but they detect a large break: P10's Gate-3 spreads
+of 0.608 and 0.667 (QQQ@3, NFLX@10) give `18*s^2` of 6.65 and 8.01 against
+the 5% lower `chi2_18` critical value of 9.39 — p = 0.007 and 0.022. Both of
+those assets beat all 19 nulls and still failed, which is the case this ADR
+must not break. The per-asset band stays on every COMPLETED family;
+calibration is simply not claimed on a stopped asset, which already failed
+the rank test. That chi-square reasoning is justification for keeping the
+band, NOT proposed code — `attempts.py` stays stdlib-only.
+
+**Consequences.** `passes` is two conditions, not one: a completed family can
+beat all 19 and still fail calibration, so this ADR is equivalent to today's
+verdict on the BEAT-ALL limb only, and leaves the calibration limb untouched.
+The saving is an expectation, not a guarantee, and is conditional: under
+exchangeability `E[draws | fail] = 2.73` (simulated 2.738; `H_19 = 3.548` is
+the UNCONDITIONAL figure, which mixes in the 1/20 pass), so twelve failures
+and one passer cost about `12 * 2.73 + 19 = 52` walks against 247. A
+survivor-heavy cohort saves almost nothing. A stopped asset never reaches
+`tier2_verdict`, so its two-draw refusal is never hit. `B = 19` with zero
+exceedances remains `1/20 = 0.05`; a strict `p < 0.05` would need `B >= 20`.
+The staged document's identity moves and a fresh execution is required, at no
+cost: ADR-0089 already required one.
+
+---
+
+## ADR-0093 — Bounded parallel fold execution graduates into dskit
+
+**Status:** proposed (2026-09-05; awaiting owner approval)
+
+**Context.** `intraday_equities` ran each walk's folds through a blocking
+`subprocess.run`, one at a time, and dskit has no parallel execution anywhere
+(verified: no `concurrent.futures`, `multiprocessing` or `threading` under
+`dskit/`). Folds are independent by construction, each carrying its own cutoff
+and its own single-fold document, so the serial loop is pure wall-clock waste.
+A `ThreadPoolExecutor` now sits in the child (`modelability.py`), **built and
+shipped without the ADR CLAUDE.md requires first** — this entry records that
+violation rather than tidying it away, and the graduation is its remedy.
+
+**Decision.** Add `dskit/pipeline/folds.py` with one class:
+
+```text
+class BoundedFoldRunner:
+    _PARAMS = ("workers", "memory_limit_bytes", "env_var")
+    def run(self, documents, execute)  -> list of results, in input order
+    def one(self, index, document, execute)  -> the per-fold hook
+```
+
+`execute` is the caller's per-fold callable; `one` is the subclass hook, so a
+child overrides how a fold runs, never the pooling. The child keeps only what
+is domain — which document, which cohort, which tag — and calls the seam.
+
+**The cap is a caller-supplied parameter.** `memory_limit_bytes` is required
+and has NO dskit default: 17 GiB is a P10 study number and a tier-1 default
+would be exactly the hardcoded threshold this repo forbids. `None` means
+uncapped.
+
+**The cap is per process and never divided.** `RLIMIT_AS` bounds address space,
+not RSS; the feature cache maps every symbol whatever a walk scores; and a
+divided cap both refuses mappings that measured RSS never sees and breaks
+resume, since a finished fold is accepted back only under the limit it ran at.
+Total memory scales with the width, which the operator chooses.
+
+**The cap is applied by a `setrlimit` + `execv` shim, not by `preexec_fn` and
+not by `ulimit`.** `preexec_fn` bars `posix_spawn`, so the child would fork
+from a pool-running parent and run Python before `exec` — unsafe with threads.
+But `ulimit -v` is not the fix: measured on dash, raising the SOFT limit above
+an inherited hard limit exits 0 **and reports the requested value back**, so
+neither `&&` nor a shell readback catches it (only the `-H` form fails loudly,
+exit 2). `resource.setrlimit` raises instead — measured, `ValueError: not
+allowed to raise maximum limit` — and a `python -c "setrlimit; os.execv"` shim
+runs that AFTER its own exec, so nothing Python happens between fork and exec.
+No shell, so no quoting surface and no `$BASH_ENV`.
+
+**The width is read from the environment, never from a document.** Fold count
+is a property of the machine, not of what a run computes; a graded knob would
+move the identity hash and orphan every prior run each time it was tuned.
+`dskit/pipeline/env.py` is not the seam for it: `EnvConfig` is credentials —
+the document names the variable and the environment supplies a secret value.
+Here the document must not name it at all. The variable name is therefore a
+`_PARAMS` knob (`env_var`) the caller supplies, defaulting to
+`DSKIT_FOLD_WORKERS`; unset means 1, empty is refused, and the width used is
+journalled.
+
+**Consequences.** The child keeps its cohort and loses the mechanism; its
+README and CLAUDE.md follow the renamed variable. `dskit/pipeline` gains its
+first `concurrent.futures` import; `test_purity.py` still passes because
+`concurrent.futures`, `shlex` and `resource` are stdlib, though passing that
+gate is necessary and not sufficient for domain-neutrality. A width of 1 must
+remain the serial path.
+
+`peak_rss_bytes` must be dropped or re-sourced, not carried over.
+`RUSAGE_CHILDREN.ru_maxrss` is process-global and monotone, so under a pool a
+fold persists whatever sibling peaked highest and never reports lower — a
+wrong number written to disk and read back on resume. The seam does not
+measure per-fold memory; a caller that needs it must measure inside the fold
+process.
+
+Cancellation is bounded, not immediate: unstarted folds are dropped, a running
+fold's subprocess is not killed, and there is no timeout. The child's current
+private imports of `_aggregate_folds` and `_write_walkforward_summary` (and of
+`score_bar`/`walk_cells`, absent from `runs.__all__`) breach the `__all__`
+contract and are NOT resolved here; whatever of them the seam still needs must
+be made public or given a public wrapper as part of implementing this ADR.
