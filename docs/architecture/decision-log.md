@@ -4406,8 +4406,8 @@ declared trusted boundary, backed by code fingerprints and no-direct-I/O tests.
 
 ## ADR-0092 — Gate 3 stops at the first exceedance
 
-**Status:** proposed (2026-09-05; supersedes the fixed-19-seed portion of
-ADR-0089; awaiting owner approval)
+**Status:** accepted (2026-09-05; owner approved; supersedes the
+fixed-19-seed portion of ADR-0089)
 
 **Context.** ADR-0089 refits every Gate-1 survivor under all 19 whole-session
 permutations. The recorded P11 Gate-1 campaign ran 1,320 fold processes at
@@ -4487,7 +4487,7 @@ cost: ADR-0089 already required one.
 
 ## ADR-0093 — Bounded parallel fold execution graduates into dskit
 
-**Status:** proposed (2026-09-05; awaiting owner approval)
+**Status:** accepted (2026-09-05; owner approved)
 
 **Context.** `intraday_equities` ran each walk's folds through a blocking
 `subprocess.run`, one at a time. Nothing in dskit spawns concurrent work
