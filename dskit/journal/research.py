@@ -1,7 +1,14 @@
 """Write a research markdown file and record it.
 
-Research agents land findings in ``docs/research/<slug>.md``. This
-module is the only writer — a free-hand file with no row is a miss.
+Research agents land findings in a topic folder under ``docs/research/``:
+
+``docs/research/<topic>/<YYYY-MM-DD>-<name>.md``
+
+The synthesis for a task is ``<date>-synthesis.md``. Subagent notes use
+the same folder and date with a different ``name``. Re-running a topic
+adds new dated files; it never overwrites. This module is the only
+writer — a free-hand file with no row is a miss. Markdown never sits in
+the ``docs/research/`` root.
 """
 
 from __future__ import annotations
@@ -16,6 +23,7 @@ from .locate import find_journal
 __all__ = ["slugify", "write_research"]
 
 _NON_SLUG = re.compile(r"[^a-z0-9]+")
+_DEFAULT_NAME = "synthesis"
 
 
 def slugify(title):
@@ -40,17 +48,36 @@ def slugify(title):
     return slug
 
 
-def write_research(title, body=None, start=None):
-    """Create ``docs/research/<slug>.md`` and append a research row.
+def _dated_stem(stamp, name):
+    """``YYYY-MM-DD-<name>``, or a UTC-time variant on collision."""
+    day = stamp[:10]
+    return f"{day}-{name}"
+
+
+def _collision_stem(stamp, name):
+    """Same-day second write: ``YYYY-MM-DDThhmmssZ-<name>``."""
+    day = stamp[:10]
+    clock = stamp[11:19].replace(":", "")
+    return f"{day}T{clock}Z-{name}"
+
+
+def write_research(title, body=None, start=None, topic=None, name=None):
+    """Create a dated file under ``docs/research/<topic>/`` and append a row.
 
     Parameters
     ----------
     title : str
-        Short title; becomes the slug and the ``step``.
+        Short title; becomes the row ``inputs`` and the default topic slug.
     body : str, optional
         Markdown body; a stub is written when omitted.
     start : str, optional
         Locate start; default cwd.
+    topic : str, optional
+        Topic folder slug. Default: slug of ``title``. Re-use the same
+        topic to add later notes beside an earlier synthesis.
+    name : str, optional
+        File stem after the date. Default ``synthesis``. Subagent notes
+        pass a distinct name (``shared-heads``, ``uncertainty-sets``).
 
     Returns
     -------
@@ -60,17 +87,20 @@ def write_research(title, body=None, start=None):
     Raises
     ------
     JournalError
-        No journal, or the file already exists.
+        No journal, empty slugs, or the resolved path already exists
+        after the same-day collision rename.
     """
     root = find_journal(start=start)
     if root is None:
         raise JournalError(
             ["no journal here — run `python -m dskit.journal init` in the child"]
         )
-    os.makedirs(root.research_dir, exist_ok=True)
-    slug = slugify(title)
-    path = os.path.join(root.research_dir, f"{slug}.md")
+    topic_slug = slugify(topic if topic else title)
+    name_slug = slugify(name) if name else _DEFAULT_NAME
     stamp = utc_now()
+    folder = os.path.join(root.research_dir, topic_slug)
+    stem = _dated_stem(stamp, name_slug)
+    path = os.path.join(folder, f"{stem}.md")
     text = body if body is not None else (
         f"# {title}\n\n"
         f"Date: {stamp}\n\n"
@@ -80,12 +110,21 @@ def write_research(title, body=None, start=None):
     )
     if not text.endswith("\n"):
         text += "\n"
-    rel = os.path.relpath(path, root.child_root).replace(os.sep, "/")
-    # File and row are one unit: two agents on the same title must not
-    # both pass the exists check and both write.
     with locked(root.decisioning):
+        os.makedirs(folder, exist_ok=True)
+        if os.path.exists(path):
+            stem = _collision_stem(stamp, name_slug)
+            path = os.path.join(folder, f"{stem}.md")
         if os.path.exists(path):
             raise JournalError([f"research file already exists: {path}"])
+        rel = os.path.relpath(path, root.child_root).replace(os.sep, "/")
         atomic_write_text(path, text)
-        record_research(slug[:80], inputs=title, outputs=rel, db_location=rel)
+        step = f"{topic_slug}/{stem}"[:80]
+        record_research(
+            step,
+            inputs=title,
+            outputs=rel,
+            db_location=rel,
+            start=root.child_root,
+        )
     return path

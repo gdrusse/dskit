@@ -17,10 +17,11 @@ acquire  →  research  →  execute  →  production
    `acquire --mode backfill|live` / `validate` / `certify` / `publish`.
    `watch` is one row per process, not per pull. **Automatic.**
 2. **Research** — only
-   `python -m dskit.journal research "TITLE" --body-file <draft>`.
-   Writes `docs/research/<slug>.md` and the row together. Never write
-   that folder by hand. Skills: `record-research` (Cursor + Claude;
-   Claude `/research`).
+   `python -m dskit.journal research "TITLE" --topic T --name N --body-file <draft>`.
+   Writes `docs/research/<topic>/<YYYY-MM-DD>-<name>.md` and the row
+   together. Default name is `synthesis`. No markdown in the research
+   root. Never write that folder by hand. Skills: `record-research`
+   and `deep-research` (Cursor, Claude, OpenCode).
 3. **Execute** — `python -m dskit.pipeline run|walkforward`.
    **Automatic** after RECORD. Walk-forward is one row, not per fold.
 4. **Production** — wrap `live.main` in
@@ -41,7 +42,7 @@ does not record. A child without `journal.json` refuses acquire / run / live.
 ```bash
 python -m dskit.journal init --root .          # once per child (skeleton ships it)
 python -m dskit.pipeline run configs/x.json --asof 2026-01-01   # auto-records
-python -m dskit.journal research "why LightGBM" --body-file finding.md
+python -m dskit.journal research "why LightGBM" --topic why-lightgbm --body-file finding.md
 python -m dskit.journal promote A0001 --criteria empirical --label baseline --purpose compare --relevant-files pipeline_runs/base --locked N  # owner only
 ```
 
@@ -57,7 +58,7 @@ docs/decisioning/
                              # LOCKED Y/N, Current Work, and criteria
   README.md                  # GENERATED — do not edit
   <evidence>.md              # rationale files, listed in README
-docs/research/               # research agent output (CLI-only writer)
+docs/research/<topic>/       # dated notes + <date>-synthesis.md (CLI-only)
 ```
 
 The generated decisioning README displays the complete Path and only the
@@ -78,7 +79,7 @@ dskit/journal/
 ├── render.py       CSV → README.md (PROCESS text)
 ├── record.py       append_action / promote; pytest skip
 ├── hooks.py        record_* + production()
-├── research.py     docs/research/<slug>.md
+├── research.py     docs/research/<topic>/<date>-<name>.md
 ├── README.md
 └── CLAUDE.md
 ```

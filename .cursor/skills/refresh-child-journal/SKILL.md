@@ -49,7 +49,7 @@ python -m dskit.journal render --root .
 Update the child's `CLAUDE.md` and `README.md` layout trees to include
 `journal.json`, `docs/decisioning/{actions.csv,path.csv,README.md}`,
 `docs/research/`. State: four categories; hooks record acquire/execute;
-research writes `docs/research/<slug>.md`; wrap `live.main` in
+research writes `docs/research/<topic>/<date>-<name>.md`; wrap `live.main` in
 `dskit.journal.hooks.production`; path is owner-only.
 
 ## 5. Live wrap

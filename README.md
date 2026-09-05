@@ -85,7 +85,7 @@ vs when you got it — and a declared `backfill`/`live` mode with its own cursor
 
 ```bash
 python -m dskit.journal init --root .                                 # once; skeleton ships it
-python -m dskit.journal research "why LightGBM" --body-file finding.md
+python -m dskit.journal research "why LightGBM" --topic why-lightgbm --body-file finding.md
 python -m dskit.journal promote A0001 --criteria empirical --label baseline --purpose compare --relevant-files pipeline_runs/base --locked N  # owner only
 ```
 

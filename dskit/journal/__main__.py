@@ -2,7 +2,7 @@
 
 * ``init [--root DIR]`` — marker + empty CSVs + generated README.
 * ``record --category … --step …`` — one action row (hooks usually do this).
-* ``research TITLE`` — write ``docs/research/<slug>.md`` and a row.
+* ``research TITLE`` — write ``docs/research/<topic>/<date>-<name>.md`` and a row.
 * ``promote ID --criteria empirical|judgemental|n/a`` — owner path row.
 * ``render`` — rewrite README from CSV.
 * ``exec --category … --step … -- CMD…`` — run a command, then record it.
@@ -88,7 +88,13 @@ def cmd_research(args):
                 body = fh.read()
         except OSError as exc:
             raise JournalError([f"cannot read --body-file: {exc}"]) from exc
-    path = write_research(args.title, body=body, start=_root_arg(args))
+    path = write_research(
+        args.title,
+        body=body,
+        start=_root_arg(args),
+        topic=args.topic or None,
+        name=args.name or None,
+    )
     print(path)
     return 0
 
@@ -198,13 +204,26 @@ def main(argv=None):
     p.add_argument("--root", default=".")
     p.set_defaults(fn=cmd_record)
 
-    p = sub.add_parser("research", help="write docs/research/<slug>.md + a row")
+    p = sub.add_parser(
+        "research",
+        help="write docs/research/<topic>/<date>-<name>.md + a row",
+    )
     p.add_argument("title")
     p.add_argument("--root", default=".")
     p.add_argument(
         "--body-file",
         default="",
         help="markdown to write; omitted = a Question/Finding/Sources stub",
+    )
+    p.add_argument(
+        "--topic",
+        default="",
+        help="topic folder under docs/research/; default = slug of TITLE",
+    )
+    p.add_argument(
+        "--name",
+        default="",
+        help="file stem after the date; default synthesis",
     )
     p.set_defaults(fn=cmd_research)
 

@@ -1,7 +1,11 @@
 # Research
 
-Use the `record-research` skill to create a research note and its matching
-journal row together.
+Every finding lives in a **topic folder**. No markdown in this root
+(legacy flat files stay). New writes:
 
-Do not write research Markdown here by hand. Use
-`python -m dskit.journal research "TITLE" --body-file <draft>`.
+```
+docs/research/<topic>/<YYYY-MM-DD>-<name>.md
+docs/research/<topic>/<YYYY-MM-DD>-synthesis.md
+```
+
+Use `record-research` / `deep-research`. Never write these files by hand.

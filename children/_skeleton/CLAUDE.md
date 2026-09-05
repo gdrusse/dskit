@@ -65,8 +65,10 @@ Agent orientation template — see README.md for what the child does.
   append `docs/decisioning/actions.csv`; README is generated. Path to
   production is owner `python -m dskit.journal promote` only. Pipeline
   runs and onboarding verbs record themselves. Research always goes
-  through `python -m dskit.journal research` (never Write
-  `docs/research/` by hand). Wrap `live.main` in
+  through `python -m dskit.journal research --topic T --name N`
+  (never Write `docs/research/` by hand; no markdown in that root —
+  only `docs/research/<topic>/<YYYY-MM-DD>-<name>.md`, with
+  `<date>-synthesis.md` as the task summary). Wrap `live.main` in
   `dskit.journal.hooks.production`. An uninitialized child refuses.
 - **Path is human-owner-only.** Never add, edit, or regenerate a Path row or
   its `Current Work` field. The owner alone maintains it. Every Path row must
@@ -85,7 +87,7 @@ journal.json           # dskit.journal marker
 docs/decisioning/      # actions.csv + path.csv; README generated
 docs/explanations/     # README points to record-explanation
 docs/memos/            # README points to memo
-docs/research/         # README points to record-research
+docs/research/         # topic folders; <date>-synthesis.md + dated notes
 tests/                 # conftest bootstrap + configs/connectors/nodes tests
 pyproject.toml         # dependencies = ["dskit"]
 ```

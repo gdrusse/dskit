@@ -1,5 +1,20 @@
 # Re-entry
 
+## Current state: predictor-output research + topic folders (2026-09-05)
+
+Branch: `main`. ADR-0096: `journal research` writes
+`docs/research/<topic>/<YYYY-MM-DD>-<name>.md` (no root markdown). Skills
+copied to Cursor + Claude; OpenCode `/research` updated. Deep-research
+finding for post-Gate-3 output:
+`children/intraday_equities/docs/research/post-gate3-predictor-output/2026-09-05-synthesis.md`
+(A12628–A12635). Journal/skeleton tests 38 passed. P12 Gate-3 recovery
+execute rows continued appending in the same ledger.
+
+**Next (owner):** ratify or amend the synthesis (pooled trunk + \(H_i\)
+heads, 5-seed ensembles, quantiles+conformal, empirical robust sets;
+large transformers as challengers only). P12 recovery still in flight
+elsewhere — do not treat this wrap as a Gate-3 result.
+
 ## Current state: agent-doc sync + opencode setup (2026-09-05)
 
 Branch: `main`. Synced all nine `AGENTS.md`/`CLAUDE.md` pairs so the Codex-

@@ -4990,3 +4990,23 @@ A12579 remains the crash record, and final provenance distinguishes extraction
 from computation. The parent fold runner may journal a fresh exit-zero fold
 only after validating the full document identity and complete finite scored
 row; pre-existing or malformed artifacts still fail closed.
+
+
+## ADR-0096 — Research notes live in dated topic folders
+
+**Status:** Accepted (owner directed 2026-09-05)
+
+**Context.** Flat `docs/research/<slug>.md` collides on re-research and
+mixes subagent notes with the synthesis. Multi-agent deep research needs
+a durable place per topic.
+
+**Decision.** `journal research` writes
+`docs/research/<topic>/<YYYY-MM-DD>-<name>.md`. Default name is
+`synthesis`. Re-use `--topic` to add dated files; never write markdown
+in the research root. Legacy flat files stay. Skills
+`record-research` and `deep-research` ship in `.cursor/skills/` and
+`.claude/skills/`.
+
+**Consequences.** Existing slug paths are historical. New rows point at
+the dated relative path. Same-day name collisions append a UTC-time
+stem.
