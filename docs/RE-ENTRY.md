@@ -2,7 +2,9 @@
 
 ## Current state: P12 Gate 3 recovery complete (2026-09-05)
 
-Branch: `main`. P12 recovered without changing any original partial artifact.
+Branch: `main`; `571884a` is pushed to `origin/main`. Focused recovery,
+staged-run, and concurrent-journal verification: 142 passed. P12 recovered
+without changing any original partial artifact.
 The only Gate 1 selection source was persisted `gate1.json` rows with boolean
 `gate1_passes=true`: 31 survivors. The final Gate 3 result is 25 pass / 6
 fail. Pass: LLY3, QQQ1, XLF3, XLE1, XLK5, BAC1, SMH5, IWM5, XBI1, FCX1,
