@@ -396,10 +396,9 @@ def record_hash(prev_hash, envelope):
 def now_ms():
     """Return the wall clock as epoch milliseconds.
 
-    The one place outside ``clock.py`` that reads the wall clock — every
-    class needing time takes an injected ``Clock``; this helper exists for
-    the places that stamp provenance (a genesis file, a release manifest)
-    and for ``WallClock`` itself.
+    Every class needing time takes an injected ``Clock`` and never calls
+    this; it exists for the places that stamp provenance outside the tick
+    loop (a series genesis file, a release manifest).
 
     Returns
     -------

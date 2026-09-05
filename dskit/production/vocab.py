@@ -64,7 +64,6 @@ __all__ = [
     "LOOP_STATES",
     "METRIC_LABEL_VALUES",
     "METRIC_NAMES",
-    "METRIC_OTHER",
     "MONEY_FIELDS",
     "MONITOR_STATUSES",
     "NAN_POLICY",
@@ -493,14 +492,16 @@ EXIT_CODES = {"stopped": 0, "error": 1, "halted": 3, "already_running": 4, "refu
 #: Why the alert router did not deliver an alert (§5.11's mechanisms).
 ALERT_SUPPRESSIONS = ("dedup", "group_wait", "repeat_interval", "rate_limit", "queue_full")
 
-#: The reserved label value an undeclared value is dropped into
-#: (§5.11.1) — and the only value a document-named label (a sink, a
-#: monitor) can declare here, since its real names exist only at run time.
-METRIC_OTHER = "other"
-
 #: §5.11.1's phase-1 table: metric name -> {label name -> permitted values}.
 #: Label NAMES are closed at declaration; an undeclared VALUE drops to
-#: ``METRIC_OTHER``. Every value set is a vocabulary above, never restated.
+#: ``metrics.RESERVED_LABEL_VALUE`` (``other``), which no set here may
+#: contain. Every value set is a vocabulary above, never restated — except
+#: the two labels named after document-selected objects, ``sink`` and
+#: ``monitor``, whose values are the core KIND names (the registry keys of
+#: ``ALERT_SINK_KINDS`` and ``MONITOR_KINDS``), never a document's instance
+#: names: a child class referenced by path falls to the reserved value by
+#: the normal cardinality rule. A later group pins each tuple equal to its
+#: registry's ``kinds()``, as §4.3 does for ``FEE_KIND_NAMES``.
 METRIC_LABEL_VALUES = {
     "ticks_total": {"status": TICK_STATUSES},
     "tick_seconds": {"phase": TICK_PHASES},
@@ -510,9 +511,22 @@ METRIC_LABEL_VALUES = {
     # The tick statuses that carry a ``refusal_reason`` (a skipped or refused
     # tick — ``failed`` carries an ``error`` instead) plus the guard verdicts.
     "refusals_total": {"reason": _SKIPPED + ("refused",) + VERDICTS},
-    "alert_sink_failures_total": {"sink": (METRIC_OTHER,)},
+    "alert_sink_failures_total": {"sink": ("log", "memory", "email", "webhook")},
     "alerts_suppressed_total": {"why": ALERT_SUPPRESSIONS},
-    "monitor_verdicts_total": {"monitor": (METRIC_OTHER,), "status": MONITOR_STATUSES},
+    "monitor_verdicts_total": {
+        "monitor": (
+            "staleness",
+            "decision_rate",
+            "coverage",
+            "latency",
+            "refusals",
+            "page_hinkley",
+            "tracking_signal",
+            "psi",
+            "ks",
+        ),
+        "status": MONITOR_STATUSES,
+    },
     "recon_breaks_total": {"class": BREAK_CLASSES},
     "ledger_append_seconds": {},
     "metrics_label_cardinality_dropped_total": {},
