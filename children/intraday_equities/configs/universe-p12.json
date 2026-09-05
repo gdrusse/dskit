@@ -1,17 +1,22 @@
 {
-  "notes": "P12's forty-name union universe: cohorts D and E as tradable, SPY as the residual reference, on P10's exact grid, session, scale and horizon geometry (ADR-0094). The top-level document reads through this file; each group cache is built through its own group universe (universe-p12-d.json, universe-p12-e.json), whose tradables partition these forty. Every geometry key is pinned equal to universe-p10.json by test. No industry block, so the two group caches share one design matrix: P11's less its nine industry one-hots, which are constant inside an asset-local fit (ADR-0094).",
+  "notes": "P12's union universe: every name on disk as tradable (the 24 P10 names less SPY, then cohorts D and E), SPY as the residual reference, on P10's exact grid, session, scale and horizon geometry (ADR-0094, amended 2026-09-05). The top-level document reads through this file; each group cache is built through its own group universe (universe-p12-a/b/c/d/e.json, one per source), whose tradables partition these 64. Every geometry key is pinned equal to universe-p10.json by test. No industry block, so every group cache shares one design matrix: P11's less its nine industry one-hots, which are constant inside an asset-local fit.",
   "symbols": [
-    "ORCL", "GLD", "MRK", "CRM", "NEM", "XBI", "FCX", "FTNT", "DIS", "DAL",
-    "PYPL", "NRG", "GM", "MDT", "BA", "SBUX", "TGT", "ADM", "MET", "TMUS",
-    "MSTR", "MRVL", "NOW", "LULU", "SHOP", "PANW", "GDX", "BABA", "INTC", "MU",
-    "CIEN", "WDC", "LRCX", "TER", "BIDU", "LITE", "C", "ADBE", "ANET", "EOG",
-    "SPY"
+    "AAPL", "JPM", "XOM", "WMT", "LLY", "QQQ", "XLF", "XLV", "XLE", "XLK",
+    "XLP", "TSLA", "TQQQ", "NVDA", "AMD", "UPRO", "BAC", "AMZN", "AVGO", "NFLX",
+    "MSFT", "GOOGL", "SMH", "IWM", "ORCL", "GLD", "MRK", "CRM", "NEM", "XBI",
+    "FCX", "FTNT", "DIS", "DAL", "PYPL", "NRG", "GM", "MDT", "BA", "SBUX",
+    "TGT", "ADM", "MET", "TMUS", "MSTR", "MRVL", "NOW", "LULU", "SHOP", "PANW",
+    "GDX", "BABA", "INTC", "MU", "CIEN", "WDC", "LRCX", "TER", "BIDU", "LITE",
+    "C", "ADBE", "ANET", "EOG", "SPY"
   ],
   "tradable": [
-    "ORCL", "GLD", "MRK", "CRM", "NEM", "XBI", "FCX", "FTNT", "DIS", "DAL",
-    "PYPL", "NRG", "GM", "MDT", "BA", "SBUX", "TGT", "ADM", "MET", "TMUS",
-    "MSTR", "MRVL", "NOW", "LULU", "SHOP", "PANW", "GDX", "BABA", "INTC", "MU",
-    "CIEN", "WDC", "LRCX", "TER", "BIDU", "LITE", "C", "ADBE", "ANET", "EOG"
+    "AAPL", "JPM", "XOM", "WMT", "LLY", "QQQ", "XLF", "XLV", "XLE", "XLK",
+    "XLP", "TSLA", "TQQQ", "NVDA", "AMD", "UPRO", "BAC", "AMZN", "AVGO", "NFLX",
+    "MSFT", "GOOGL", "SMH", "IWM", "ORCL", "GLD", "MRK", "CRM", "NEM", "XBI",
+    "FCX", "FTNT", "DIS", "DAL", "PYPL", "NRG", "GM", "MDT", "BA", "SBUX",
+    "TGT", "ADM", "MET", "TMUS", "MSTR", "MRVL", "NOW", "LULU", "SHOP", "PANW",
+    "GDX", "BABA", "INTC", "MU", "CIEN", "WDC", "LRCX", "TER", "BIDU", "LITE",
+    "C", "ADBE", "ANET", "EOG"
   ],
   "reference": ["SPY"],
   "holidays": [],

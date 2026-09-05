@@ -46,7 +46,7 @@ ACTION_NODES = {
 MODELABILITY_DOCS = {
     "run-p10-modelability.json": ("configs/universe-p10.json", 25),
     "run-p11-modelability.json": ("configs/universe-p10.json", 25),
-    "run-p12-modelability.json": ("configs/universe-p12.json", 41),
+    "run-p12-modelability.json": ("configs/universe-p12.json", 65),
 }
 MODELABILITY_SOURCES = {
     "alpaca-sip-split",

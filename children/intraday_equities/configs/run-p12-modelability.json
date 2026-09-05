@@ -1,12 +1,12 @@
 {
-  "name": "p12-40-asset-modelability",
-  "notes": "P12: the forty breadth-cohort names (D and E) through the asset-local modelability study on P11's exact geometry (ADR-0094): memory preflight and per-group feature caches, Gate 1's ordered horizon search per name, then ADR-0092's fail-fast whole-session scramble audit on every passer. The cohort is fit_symbols; universe-p12.json bounds the read and each group cache is built through its own group universe. The source-level cut is 2026-02-28. SPY is the residual reference only; META and GROUP are excluded.",
+  "name": "p12-64-asset-modelability",
+  "notes": "P12: every name on disk (the 24 P10 names less SPY, then cohorts D and E) through the asset-local modelability study on P11's exact geometry (ADR-0094, amended 2026-09-05 by owner ruling): memory preflight and one feature cache per source group, Gate 1's ordered horizon search per name, then ADR-0092's fail-fast whole-session scramble audit on every passer. The cohort is fit_symbols; universe-p12.json bounds the read and each group cache is built through its own group universe. The source-level cut is 2026-02-28. SPY is the residual reference only; META and GROUP are excluded.",
   "pipeline": {
     "universe": {
       "uses": "intraday_equities-universe",
       "params": {"path": "configs/universe-p12.json"}
     },
-    "source_reference": {
+    "source_a": {
       "uses": "intraday_equities-bars",
       "params": {
         "root": "./ob",
@@ -16,7 +16,29 @@
         "sessions": ["rth"],
         "shared_fields": ["symbol", "ts"]
       },
-      "notes": "The reference tape only: alpaca-sip-split holds the P10 names, and the universe bound keeps SPY alone from it."
+      "notes": "alpaca-sip-split holds eleven P10 names and SPY; SPY is the reference every group build reads from this source under its own group universe bound."
+    },
+    "source_b": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-b",
+        "universe": "configs/universe-p12.json",
+        "start_ms": 1514764800000,
+        "sessions": ["rth"],
+        "shared_fields": ["symbol", "ts"]
+      }
+    },
+    "source_c": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-c",
+        "universe": "configs/universe-p12.json",
+        "start_ms": 1514764800000,
+        "sessions": ["rth"],
+        "shared_fields": ["symbol", "ts"]
+      }
     },
     "source_d": {
       "uses": "intraday_equities-bars",
@@ -43,13 +65,15 @@
     "pooled": {
       "uses": "concat",
       "inputs": {
-        "reference": "$source_reference.records",
+        "a": "$source_a.records",
+        "b": "$source_b.records",
+        "c": "$source_c.records",
         "d": "$source_d.records",
         "e": "$source_e.records"
       },
       "params": {
         "shape": "records",
-        "provenance_waiver": "Each immutable MarketRecord already carries its source; the three symbol namespaces are disjoint and checked below.",
+        "provenance_waiver": "Each immutable MarketRecord already carries its source; the five symbol namespaces are disjoint and checked below.",
         "key": "symbol",
         "consume_inputs": true
       },
@@ -92,11 +116,13 @@
         "label_residual": "SPY",
         "label_residual_self": "raw",
         "fit_symbols": [
-          "ORCL", "GLD", "MRK", "CRM", "NEM", "XBI", "FCX", "FTNT", "DIS",
-          "DAL", "PYPL", "NRG", "GM", "MDT", "BA", "SBUX", "TGT", "ADM", "MET",
-          "TMUS", "MSTR", "MRVL", "NOW", "LULU", "SHOP", "PANW", "GDX", "BABA",
-          "INTC", "MU", "CIEN", "WDC", "LRCX", "TER", "BIDU", "LITE", "C",
-          "ADBE", "ANET", "EOG"
+          "AAPL", "JPM", "XOM", "WMT", "LLY", "QQQ", "XLF", "XLV", "XLE", "XLK",
+          "XLP", "TSLA", "TQQQ", "NVDA", "AMD", "UPRO", "BAC", "AMZN", "AVGO",
+          "NFLX", "MSFT", "GOOGL", "SMH", "IWM", "ORCL", "GLD", "MRK", "CRM",
+          "NEM", "XBI", "FCX", "FTNT", "DIS", "DAL", "PYPL", "NRG", "GM", "MDT",
+          "BA", "SBUX", "TGT", "ADM", "MET", "TMUS", "MSTR", "MRVL", "NOW",
+          "LULU", "SHOP", "PANW", "GDX", "BABA", "INTC", "MU", "CIEN", "WDC",
+          "LRCX", "TER", "BIDU", "LITE", "C", "ADBE", "ANET", "EOG"
         ],
         "lead_start": 1,
         "lead_step": 1,
@@ -151,11 +177,14 @@
       "params": {
         "memory_limit_bytes": 18253611008,
         "groups": {
-          "d": {"universe": "configs/universe-p12-d.json", "sources": ["source_reference", "source_d"]},
-          "e": {"universe": "configs/universe-p12-e.json", "sources": ["source_reference", "source_e"]}
+          "d": {"universe": "configs/universe-p12-d.json", "sources": ["source_a", "source_d"]},
+          "e": {"universe": "configs/universe-p12-e.json", "sources": ["source_a", "source_e"]},
+          "a": {"universe": "configs/universe-p12-a.json", "sources": ["source_a"]},
+          "c": {"universe": "configs/universe-p12-c.json", "sources": ["source_a", "source_c"]},
+          "b": {"universe": "configs/universe-p12-b.json", "sources": ["source_a", "source_b"]}
         }
       },
-      "notes": "One feature cache per group under the 17 GiB cap, groups declared largest-first: taking compressed bars on disk as a proxy for records, a single 41-name build would carry about 1.34x the P10 records that peaked at 15.90 GiB, while one group plus SPY carries about 0.68x (D) or 0.66x (E). The first build is measured through the seam's measure_one; a later build is capped but unmeasured (ADR-0093 allows one reading per process). Each group cache path is suffixed with its universe file's digest (ADR-0094)."
+      "notes": "One feature cache per source group under the 17 GiB cap, groups declared largest-first by bars on disk (d 535 MB, e 519 MB, a 363 MB, c 269 MB, b 157 MB): taking compressed bars as a proxy for records, a single 65-name build would carry about 2.1x the P10 records that peaked at 15.90 GiB, while one group plus SPY carries at most about 0.68x; the smoke measured the group-D build at 13.88 GiB. Every group reads SPY from source_a under its own group universe bound. The first build is measured through the seam's measure_one; a later build is capped but unmeasured (ADR-0093 allows one reading per process). Each group cache path is suffixed with its universe file's digest (ADR-0094)."
     },
     "gate1": {
       "uses": "intraday_equities.modelability_study:Gate1Stage",

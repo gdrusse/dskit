@@ -49,6 +49,26 @@ def _digest(name):
     return hashlib.sha256((CONFIGS / name).read_bytes()).hexdigest()
 
 
+#: Group key -> the source config whose symbols (less the reference) the
+#: group universe lists as tradable; the study reads every name on disk.
+SOURCE_FILES = {
+    "a": "source-alpaca-split-backfill.json",
+    "b": "source-alpaca-split-b-backfill.json",
+    "c": "source-alpaca-split-c-backfill.json",
+    "d": "source-alpaca-split-d-backfill.json",
+    "e": "source-alpaca-split-e-backfill.json",
+}
+ALL_GROUPS = ("d", "e", "a", "c", "b")
+
+
+def _group_tradables(key):
+    return [s for s in _raw(SOURCE_FILES[key])["symbols"] if s != "SPY"]
+
+
+def _cohort_on_disk():
+    return [s for key in ("a", "b", "c", "d", "e") for s in _group_tradables(key)]
+
+
 def _ctx(tmp_path, document=None):
     return SimpleNamespace(
         document=document or load_document(str(P12)),
@@ -61,7 +81,7 @@ def _ctx(tmp_path, document=None):
 # -- the shipped document ------------------------------------------------------
 
 
-def test_p12_mirrors_p11_geometry_and_declares_the_forty_as_its_cohort():
+def test_p12_mirrors_p11_geometry_and_declares_every_name_on_disk_as_its_cohort():
     p12 = _raw("run-p12-modelability.json")
     p11 = _raw("run-p11-modelability.json")
     scan12 = {k: v for k, v in p12["pipeline"]["scan"]["params"].items() if k != "fit_symbols"}
@@ -72,11 +92,9 @@ def test_p12_mirrors_p11_geometry_and_declares_the_forty_as_its_cohort():
     assert f12 == f11
     assert p12["walkforward"] == p11["walkforward"]
     assert p12["pipeline"]["features"]["params"]["cache_dir"] != p11["pipeline"]["features"]["params"]["cache_dir"]
-    d = _raw("source-alpaca-split-d-backfill.json")["symbols"]
-    e = _raw("source-alpaca-split-e-backfill.json")["symbols"]
     cohort = p12["pipeline"]["scan"]["params"]["fit_symbols"]
-    assert cohort == d + e
-    assert len(cohort) == 40
+    assert cohort == _cohort_on_disk()
+    assert len(cohort) == 64
     assert "SPY" not in cohort and "META" not in cohort and "GROUP" not in cohort
     assert list(p12["stages"]) == ["memory", "gate1", "gate3_walks", "gate3"]
     for key, stage in p12["stages"].items():
@@ -88,10 +106,10 @@ def test_p12_mirrors_p11_geometry_and_declares_the_forty_as_its_cohort():
     assert p12["stages"]["gate1"]["params"]["horizons"] == [1, 2, 3, 5, 10, 20, 30, 60]
 
 
-def test_the_three_universes_share_p10s_geometry_and_partition_the_cohort():
+def test_the_universes_share_p10s_geometry_and_partition_the_cohort():
     p10 = _raw("universe-p10.json")
     union = _raw("universe-p12.json")
-    groups = {"d": _raw("universe-p12-d.json"), "e": _raw("universe-p12-e.json")}
+    groups = {key: _raw(f"universe-p12-{key}.json") for key in ALL_GROUPS}
     for name, spec in {"union": union, **groups}.items():
         for key in GEOMETRY_KEYS:
             assert spec[key] == p10[key], (name, key)
@@ -99,13 +117,9 @@ def test_the_three_universes_share_p10s_geometry_and_partition_the_cohort():
         assert set(spec["symbols"]) == set(spec["tradable"]) | {"SPY"}
         # ADR-0094 §3: no industry block, so no constant one-hot columns.
         assert "industry" not in spec, name
-    sources = {
-        "d": _raw("source-alpaca-split-d-backfill.json")["symbols"],
-        "e": _raw("source-alpaca-split-e-backfill.json")["symbols"],
-    }
     for key, spec in groups.items():
-        assert spec["tradable"] == sources[key], key
-    assert union["tradable"] == groups["d"]["tradable"] + groups["e"]["tradable"]
+        assert spec["tradable"] == _group_tradables(key), key
+    assert union["tradable"] == _cohort_on_disk()
     assert union["tradable"] == _raw("run-p12-modelability.json")["pipeline"]["scan"]["params"]["fit_symbols"]
 
 
@@ -152,22 +166,28 @@ def test_gate1s_data_cut_is_the_cut_every_source_declares():
         config = _raw(source.replace("alpaca-sip", "source-alpaca", 1) + "-backfill.json")
         assert config["end"].startswith(cut), source
         seen += 1
-    assert seen == 3
+    assert seen == 5
 
 
 def test_the_memory_groups_name_the_group_universes_and_their_sources():
     p12 = _raw("run-p12-modelability.json")
     groups = p12["stages"]["memory"]["params"]["groups"]
+    # Declared largest-first by bars on disk; every group reads SPY from
+    # source_a under its own universe bound (ADR-0094, amended).
     assert groups == {
-        "d": {"universe": "configs/universe-p12-d.json", "sources": ["source_reference", "source_d"]},
-        "e": {"universe": "configs/universe-p12-e.json", "sources": ["source_reference", "source_e"]},
+        "d": {"universe": "configs/universe-p12-d.json", "sources": ["source_a", "source_d"]},
+        "e": {"universe": "configs/universe-p12-e.json", "sources": ["source_a", "source_e"]},
+        "a": {"universe": "configs/universe-p12-a.json", "sources": ["source_a"]},
+        "c": {"universe": "configs/universe-p12-c.json", "sources": ["source_a", "source_c"]},
+        "b": {"universe": "configs/universe-p12-b.json", "sources": ["source_a", "source_b"]},
     }
+    assert list(groups) == list(ALL_GROUPS)
     for group in groups.values():
         for key in group["sources"]:
             assert p12["pipeline"][key]["uses"] == "intraday_equities-bars", key
-    assert p12["pipeline"]["source_reference"]["params"]["source"] == "alpaca-sip-split"
-    assert p12["pipeline"]["source_d"]["params"]["source"] == "alpaca-sip-split-d"
-    assert p12["pipeline"]["source_e"]["params"]["source"] == "alpaca-sip-split-e"
+    assert p12["pipeline"]["source_a"]["params"]["source"] == "alpaca-sip-split"
+    for key in ("b", "c", "d", "e"):
+        assert p12["pipeline"][f"source_{key}"]["params"]["source"] == f"alpaca-sip-split-{key}"
     for key in ("gate1", "gate3_walks"):
         assert p12["stages"][key]["inputs"]["caches"] == "$memory.groups", key
 
@@ -188,8 +208,8 @@ def test_every_declared_asset_gets_its_own_fit_and_no_pooled_fit_exists(tmp_path
     ctx = _ctx(tmp_path)
     cohort = study._document_cohort(ctx.document)
     caches = {
-        "d": {"universe": "configs/universe-p12-d.json", "cache": "./c/d", "manifest_sha256": "a" * 64, "symbols": _raw("universe-p12-d.json")["symbols"]},
-        "e": {"universe": "configs/universe-p12-e.json", "cache": "./c/e", "manifest_sha256": "b" * 64, "symbols": _raw("universe-p12-e.json")["symbols"]},
+        key: {"universe": f"configs/universe-p12-{key}.json", "cache": f"./c/{key}", "manifest_sha256": key * 64, "symbols": _raw(f"universe-p12-{key}.json")["symbols"]}
+        for key in ALL_GROUPS
     }
     placement = study._place(cohort, caches)
     assert sorted(placement) == sorted(cohort)
@@ -213,7 +233,7 @@ def test_every_declared_asset_gets_its_own_fit_and_no_pooled_fit_exists(tmp_path
         scan = build.pipeline["scan"].params
         assert scan["fit_symbols"] == ["SPY"] == scan["score_symbols"]
         fits.append(scan["fit_symbols"])
-    assert len(fits) == 40 * 2 * 2 + 2
+    assert len(fits) == 64 * 2 * 2 + 5
     assert max(len(f) for f in fits) == 1, "a pooled fit exists"
 
 
@@ -246,9 +266,9 @@ def test_placement_refuses_an_asset_in_no_group_or_in_two():
 def test_asset_walk_document_is_p11s_shape_over_the_group_cache(tmp_path):
     ctx = _ctx(tmp_path)
     cache = {"universe": "configs/universe-p12-e.json", "cache": "./pipeline_cache/x/e", "manifest_sha256": "c" * 64, "symbols": ["MSTR", "SPY"]}
-    doc = study.asset_walk_document(ctx.document, "p12-40-asset-modelability", "MSTR", 5, cache, tag="gate3-seed03", scramble_seed=3)
+    doc = study.asset_walk_document(ctx.document, "p12-64-asset-modelability", "MSTR", 5, cache, tag="gate3-seed03", scramble_seed=3)
     assert list(doc.pipeline) == ["universe", "features", "asset_features", "reference_tape", "scan"]
-    assert doc.name == "p12-40-asset-modelability-gate3-seed03-mstr-h05"
+    assert doc.name == "p12-64-asset-modelability-gate3-seed03-mstr-h05"
     assert doc.pipeline["asset_features"].params["where"] == [{"field": "symbol", "op": "==", "value": "MSTR"}]
     assert doc.pipeline["reference_tape"].params["where"] == [{"field": "symbol", "op": "in", "value": ["MSTR", "SPY"]}]
     scan = doc.pipeline["scan"].params
@@ -265,14 +285,14 @@ def test_asset_walk_document_is_p11s_shape_over_the_group_cache(tmp_path):
 
 def test_cache_build_document_reads_only_the_groups_sources_and_fits_the_reference(tmp_path):
     ctx = _ctx(tmp_path)
-    doc = study.cache_build_document(ctx.document, "d", ["source_reference", "source_d"], "configs/universe-p12-d.json", "./pipeline_cache/p12-features-f32-v5/d", "2025-08-15")
-    assert list(doc.pipeline) == ["universe", "source_reference", "source_d", "pooled", "features", "reference_features", "reference_tape", "scan"]
-    assert doc.name == "p12-40-asset-modelability-cache-d"
+    doc = study.cache_build_document(ctx.document, "d", ["source_a", "source_d"], "configs/universe-p12-d.json", "./pipeline_cache/p12-features-f32-v5/d", "2025-08-15")
+    assert list(doc.pipeline) == ["universe", "source_a", "source_d", "pooled", "features", "reference_features", "reference_tape", "scan"]
+    assert doc.name == "p12-64-asset-modelability-cache-d"
     assert doc.pipeline["universe"].params["path"] == "configs/universe-p12-d.json"
-    for key in ("source_reference", "source_d"):
+    for key in ("source_a", "source_d"):
         assert doc.pipeline[key].params["universe"] == "configs/universe-p12-d.json"
         assert doc.pipeline[key].params["source"] == ctx.document.pipeline[key].params["source"]
-    assert doc.pipeline["pooled"].inputs == {"reference": "$source_reference.records", "d": "$source_d.records"}
+    assert doc.pipeline["pooled"].inputs == {"a": "$source_a.records", "d": "$source_d.records"}
     assert doc.pipeline["features"].params["cache_dir"] == "./pipeline_cache/p12-features-f32-v5/d"
     assert doc.pipeline["features"].inputs["records"] == "$pooled.merged"
     assert doc.pipeline["reference_features"].params["where"] == [{"field": "symbol", "op": "==", "value": "SPY"}]
@@ -293,7 +313,7 @@ def test_cache_build_document_refuses_a_source_that_is_not_a_bars_node_or_a_docu
     obj = ctx.document.to_obj()
     obj["pipeline"]["scan"]["params"].pop("label_residual")
     with pytest.raises(ValueError, match="label_residual"):
-        study.cache_build_document(PipelineDocument.from_obj(obj), "d", ["source_reference", "source_d"], "configs/universe-p12-d.json", "./c/d", "2025-08-15")
+        study.cache_build_document(PipelineDocument.from_obj(obj), "d", ["source_a", "source_d"], "configs/universe-p12-d.json", "./c/d", "2025-08-15")
 
 
 def test_cache_build_document_refuses_two_sources_that_name_one_pooled_input(tmp_path):
@@ -358,7 +378,7 @@ def _memory_harness(tmp_path, monkeypatch, present):
     """Fake the seam and the cache verifier; record what the stage does."""
     ctx = _ctx(tmp_path)
     log = []
-    universes = {"d": _raw("universe-p12-d.json"), "e": _raw("universe-p12-e.json")}
+    universes = {key: _raw(f"universe-p12-{key}.json") for key in ALL_GROUPS}
 
     def verified(path, group_universe, features_params):
         group = os.path.basename(path).split("-")[0]
@@ -392,6 +412,9 @@ def test_memory_builds_each_absent_group_and_measures_only_the_first(tmp_path, m
     assert [entry for entry in log if entry[0] != "verify"] == [
         ("measure", f"{name}-cache-d"),
         ("run", f"{name}-cache-e"),
+        ("run", f"{name}-cache-a"),
+        ("run", f"{name}-cache-c"),
+        ("run", f"{name}-cache-b"),
     ]
     assert out["measured"] == {"kind": "cache_build", "name": "d", "summary_dir": f"/summary/{name}-cache-d", "peak_rss_bytes": 7_000_000_000}
     assert out["passed"] is True
@@ -411,20 +434,21 @@ def test_memory_builds_each_absent_group_and_measures_only_the_first(tmp_path, m
 
 
 def test_memory_reuses_a_verified_cache_and_measures_an_asset_fold_when_nothing_is_built(tmp_path, monkeypatch):
-    ctx, log = _memory_harness(tmp_path, monkeypatch, present={"d", "e"})
+    ctx, log = _memory_harness(tmp_path, monkeypatch, present=set(ALL_GROUPS))
     out = _memory_stage().run(ctx, {})
     measured = [entry for entry in log if entry[0] == "measure"]
-    assert measured == [("measure", f"{ctx.document.name}-memory-orcl")]
+    # Ties on the faked size resolve to cohort order: AAPL, group a.
+    assert measured == [("measure", f"{ctx.document.name}-memory-aapl")]
     assert not [entry for entry in log if entry[0] == "run"]
     assert out["measured"]["kind"] == "asset_fold"
-    assert out["measured"]["name"] == "ORCL"
+    assert out["measured"]["name"] == "AAPL"
     assert out["passed"] is True
 
 
 def test_the_asset_fold_measures_the_largest_cached_asset_across_every_group(tmp_path, monkeypatch):
     # The reading has to cover the heaviest fold in the study, so the
     # choice is over every group's cached assets, not the first group's.
-    ctx, _log = _memory_harness(tmp_path, monkeypatch, present={"d", "e"})
+    ctx, _log = _memory_harness(tmp_path, monkeypatch, present=set(ALL_GROUPS))
     sizes = {"MSTR": 500}
 
     def largest(_path, assets):
@@ -456,7 +480,7 @@ def test_the_measured_asset_fold_is_one_fold_at_the_last_cutoff_over_its_group_c
     # the study's heaviest — the last cutoff, whose training window is the
     # longest — and exactly one of them. Left at the template's own twenty
     # folds the preflight would measure a job no gate ever runs.
-    ctx, _log = _memory_harness(tmp_path, monkeypatch, present={"d", "e"})
+    ctx, _log = _memory_harness(tmp_path, monkeypatch, present=set(ALL_GROUPS))
     seen = {}
 
     def measure(_ctx, document, tag):
@@ -473,18 +497,18 @@ def test_the_measured_asset_fold_is_one_fold_at_the_last_cutoff_over_its_group_c
     assert measured.walkforward.first != template.first
     scan = measured.pipeline["scan"].params
     lead = ctx.document.pipeline["scan"].params["lead_start"]
-    assert scan["fit_symbols"] == ["ORCL"] == scan["score_symbols"]
+    assert scan["fit_symbols"] == ["AAPL"] == scan["score_symbols"]
     assert scan["lead_start"] == scan["lead_step"] == scan["lead_stop"] == lead
-    assert measured.pipeline["features"].params["path"] == out["groups"]["d"]["cache"]
-    assert measured.pipeline["features"].params["manifest_sha256"] == "d" * 64
-    assert measured.pipeline["universe"].params["path"] == "configs/universe-p12-d.json"
+    assert measured.pipeline["features"].params["path"] == out["groups"]["a"]["cache"]
+    assert measured.pipeline["features"].params["manifest_sha256"] == "a" * 64
+    assert measured.pipeline["universe"].params["path"] == "configs/universe-p12-a.json"
 
 
 def test_the_preflight_scores_the_one_row_of_the_walk_it_measured(tmp_path, monkeypatch):
     # A peak is a reading of THIS study's fold only if the capped child
     # actually produced the study's row; score_one is that check, and it is a
     # hook so a pinned study routes the row its own way.
-    ctx, _log = _memory_harness(tmp_path, monkeypatch, present={"d", "e"})
+    ctx, _log = _memory_harness(tmp_path, monkeypatch, present=set(ALL_GROUPS))
     stage = _memory_stage()
     scored = []
     monkeypatch.setattr(
@@ -494,24 +518,24 @@ def test_the_preflight_scores_the_one_row_of_the_walk_it_measured(tmp_path, monk
     )
     out = stage.run(ctx, {})
     lead = ctx.document.pipeline["scan"].params["lead_start"]
-    assert scored == [(out["measured"]["summary_dir"], "ORCL", lead)]
+    assert scored == [(out["measured"]["summary_dir"], "AAPL", lead)]
 
 
 def test_the_preflight_propagates_the_refusal_of_the_row_it_measured(tmp_path, monkeypatch):
     # Without the call the stage would report a passed preflight over a child
     # that scored nothing at all, so the refusal has to reach run().
-    ctx, _log = _memory_harness(tmp_path, monkeypatch, present={"d", "e"})
+    ctx, _log = _memory_harness(tmp_path, monkeypatch, present=set(ALL_GROUPS))
 
     def refuse(_summary, asset, lead, _alpha):
         raise ValueError(f"expected one exact row for {asset}@{lead}")
 
     monkeypatch.setattr(study, "_score_one", refuse)
-    with pytest.raises(ValueError, match="one exact row for ORCL@1"):
+    with pytest.raises(ValueError, match="one exact row for AAPL@1"):
         _memory_stage().run(ctx, {})
 
 
 def test_memory_builds_only_the_missing_group_and_measures_it(tmp_path, monkeypatch):
-    ctx, log = _memory_harness(tmp_path, monkeypatch, present={"d"})
+    ctx, log = _memory_harness(tmp_path, monkeypatch, present={"d", "a", "c", "b"})
     out = _memory_stage().run(ctx, {})
     assert [entry for entry in log if entry[0] in ("measure", "run")] == [("measure", f"{ctx.document.name}-cache-e")]
     assert out["measured"]["name"] == "e"
@@ -625,7 +649,7 @@ def test_gate1_searches_each_asset_alone_in_order_and_stops_at_the_first_failure
     out = stage.run(ctx, {"preflight": True, "caches": _caches()})
     assert [(a, h) for a, h, _c, _kw in documents] == [("A", 1), ("A", 2), ("A", 3), ("B", 1)]
     assert [c for _a, _h, c, _kw in documents] == ["./c/d", "./c/d", "./c/d", "./c/e"]
-    assert walks == ["p12-40-asset-modelability-gate1-a-h01", "p12-40-asset-modelability-gate1-a-h02", "p12-40-asset-modelability-gate1-a-h03", "p12-40-asset-modelability-gate1-b-h01"]
+    assert walks == ["p12-64-asset-modelability-gate1-a-h01", "p12-64-asset-modelability-gate1-a-h02", "p12-64-asset-modelability-gate1-a-h03", "p12-64-asset-modelability-gate1-b-h01"]
     assert out["rows"] == [
         {"asset": "A", "gate1_h": 2, "gate1_passes": True, "first_failed_h": 3, "attempted_horizons": [1, 2, 3], "unrun_horizons": [5, 10, 20, 30, 60]},
         {"asset": "B", "gate1_h": None, "gate1_passes": False, "first_failed_h": 1, "attempted_horizons": [1], "unrun_horizons": [2, 3, 5, 10, 20, 30, 60]},
@@ -634,7 +658,7 @@ def test_gate1_searches_each_asset_alone_in_order_and_stops_at_the_first_failure
     assert registered[0] == ("open", str(CHILD / "docs/decisioning/attempts.jsonl"))
     key, fields = registered[1]
     assert key == {
-        "study": "p12-40-asset-modelability",
+        "study": "p12-64-asset-modelability",
         "architecture": "lgbm-tight-asset-local",
         "data_cut": "2026-02-28",
         "evidence": "gate1-selection",
