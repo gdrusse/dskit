@@ -99,7 +99,8 @@ class BoundedFoldRunner:
     memory_limit_bytes : int or None
         Address-space cap (``RLIMIT_AS``) applied to EVERY spawned fold,
         never divided between them; ``None`` runs the folds uncapped.
-        Required, with no default here: a cap is a study's number.
+        Required, with no default here: a cap is a study's number. At
+        most ``sys.maxsize``, the platform's C ``long`` bound.
     workers : int or None
         How many folds may run at once. ``None`` (the default) reads
         ``env_var`` from the process environment: unset means 1, the
@@ -142,6 +143,15 @@ class BoundedFoldRunner:
                 "memory_limit_bytes must be a positive int or None, "
                 f"got {memory_limit_bytes!r}"
             )
+        # Above the C long range the cap passes _check_cap — the hard
+        # RLIMIT_AS is RLIM_INFINITY — and then raises OverflowError
+        # inside the shim, surfacing as a fold failure. A cap failure is
+        # configuration, never wrapped (ADR-0093).
+        if memory_limit_bytes is not None and memory_limit_bytes > sys.maxsize:
+            raise ValueError(
+                "memory_limit_bytes must be at most the platform C long "
+                f"{sys.maxsize}, got {memory_limit_bytes!r}"
+            )
         if not isinstance(env_var, str) or not env_var:
             raise ValueError(f"env_var must be a non-empty string, got {env_var!r}")
         self.memory_limit_bytes = memory_limit_bytes
@@ -181,10 +191,7 @@ class BoundedFoldRunner:
         _check_commands(commands)
         self._check_cap()
         if self.workers == 1:
-            return [
-                self.spawn(index, argv, cwd, env)
-                for index, argv in enumerate(commands)
-            ]
+            return self._run_serial(commands, cwd, env)
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.workers)
         try:
             futures = [
@@ -253,9 +260,10 @@ class BoundedFoldRunner:
         exactly one child: ``RUSAGE_CHILDREN.ru_maxrss`` is the
         high-water mark over EVERY child this process has ever reaped,
         so a nonzero reading before the spawn means the counter is
-        contaminated and the measurement impossible here. The command
-        runs through :meth:`run` under the instance's own cap, so it
-        inherits the parent-side validation and the :meth:`spawn` hook.
+        contaminated and the measurement impossible here. The one
+        command runs at width 1 whatever ``workers`` says, under the
+        instance's own cap and through the same parent-side validation
+        and :meth:`spawn` hook.
 
         Parameters
         ----------
@@ -274,8 +282,9 @@ class BoundedFoldRunner:
         Raises
         ------
         ValueError
-            When the child counter is already nonzero, or from
-            :meth:`run`'s parent-side cap validation.
+            When the child counter is already nonzero, when ``argv`` is
+            not an argv list of strings, or from the same parent-side
+            cap validation :meth:`run` does.
         RuntimeError
             From :meth:`spawn` when the fold exits nonzero.
         """
@@ -287,9 +296,19 @@ class BoundedFoldRunner:
                 f"RUSAGE_CHILDREN.ru_maxrss is already {before}: this process has "
                 "reaped a child, so a one-child memory reading is impossible here"
             )
-        done = self.run([argv], cwd, env)[0]
+        _check_commands([argv])
+        self._check_cap()
+        # The serial path, never the pool: a pool for one command is a
+        # thread and a queue for nothing (ADR-0093).
+        done = self._run_serial([argv], cwd, env)[0]
         after = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
         return done, after * _RU_MAXRSS_UNIT
+
+    def _run_serial(self, commands, cwd, env):
+        """Run every command one after another, building no pool."""
+        return [
+            self.spawn(index, argv, cwd, env) for index, argv in enumerate(commands)
+        ]
 
     def _check_cap(self):
         """Refuse, in the parent, a cap the children could never set."""

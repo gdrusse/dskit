@@ -251,22 +251,27 @@ _WORKERS_ENV = "INTRADAY_EQUITIES_FOLD_WORKERS"
 _ADAPTER = "intraday_equities"
 
 
+class _WalkRunner(BoundedFoldRunner):
+    """The child's fold seam: a failed fold is named by its derived config."""
+
+    def spawn(self, index, argv, cwd, env):
+        """Run one fold, naming its derived config when it exits nonzero."""
+        try:
+            return super().spawn(index, argv, cwd, env)
+        except RuntimeError as error:
+            # The seam numbers the PENDING batch, so on a resumed walk
+            # with folds 0-2 journaled "fold 0" is cutoff 3. argv is
+            # _walk_argv's, whose <tag>-part-NN.json path names the fold.
+            config = argv[4] if len(argv) > 4 else " ".join(argv)
+            raise RuntimeError(f"fold config {config}: {error}") from error
+
+
 def _runner(workers=None):
-    """Return the fold seam under the frozen cap, reading the child's knob.
-
-    Parameters
-    ----------
-    workers : int or None
-        An explicit width for callers and tests; ``None`` (what every
-        stage passes) lets the seam read :data:`_WORKERS_ENV`.
-
-    Returns
-    -------
-    dskit.pipeline.folds.BoundedFoldRunner
-        Capped at :data:`_MEMORY_LIMIT` — the WHOLE cap per fold, never
-        divided (ADR-0093), so a finished fold resumes at any width.
-    """
-    return BoundedFoldRunner(_MEMORY_LIMIT, workers=workers, env_var=_WORKERS_ENV)
+    """Return the child's fold seam under the frozen cap, reading the knob."""
+    # workers=None — what every stage passes — lets the seam read
+    # _WORKERS_ENV; the cap is the WHOLE _MEMORY_LIMIT per fold, never
+    # divided (ADR-0093), so a finished fold resumes at any width.
+    return _WalkRunner(_MEMORY_LIMIT, workers=workers, env_var=_WORKERS_ENV)
 
 
 def _walk_argv(path, asof):
@@ -285,31 +290,11 @@ def _walk_argv(path, asof):
 
 
 def _prepare_walk(ctx, document, tag):
-    """Save a derived walk and say whether it still needs to run.
-
-    Parameters
-    ----------
-    ctx : object
-        The stage run frame; supplies ``asof``, ``run_dir`` and
-        ``source_path``.
-    document : dskit.pipeline.document.PipelineDocument
-        The derived walk.
-    tag : str
-        Short name for the derived config under ``run_dir/derived``.
-
-    Returns
-    -------
-    tuple
-        ``(argv, summary_dir, reused)`` — the command to run (``None``
-        when ``reused``), where its summary lands, and whether a
-        journaled summary is already there.
-
-    Raises
-    ------
-    ValueError
-        When artifacts sit at the summary path without journal evidence:
-        a partial or foreign walk is never silently adopted.
-    """
+    """Save a derived walk and say whether it still needs to run."""
+    # Returns (argv, summary_dir, reused): the command — None when
+    # reused — where its summary lands, and whether a journaled summary
+    # is already there. Artifacts at that path WITHOUT journal evidence
+    # refuse: a partial or foreign walk is never silently adopted.
     child_root = _child_root(ctx)
     configs = os.path.join(ctx.run_dir, "derived")
     os.makedirs(configs, exist_ok=True)
@@ -326,33 +311,11 @@ def _prepare_walk(ctx, document, tag):
 
 
 def _measure_walk(ctx, document, tag):
-    """Run one derived walk as this process's first child and read its peak.
-
-    Parameters
-    ----------
-    ctx : object
-        The stage run frame; supplies ``asof``, ``run_dir`` and
-        ``source_path``.
-    document : dskit.pipeline.document.PipelineDocument
-        The one walk to measure, usually a single fold.
-    tag : str
-        Short name for the derived config.
-
-    Returns
-    -------
-    tuple
-        ``(summary_dir, peak_rss_bytes)`` — the reading is the seam's
-        ``measure_one``; nothing persists it beside the walk.
-
-    Raises
-    ------
-    ValueError
-        When a finished walk already sits at the summary path — a
-        measurement needs a fresh spawn (ADR-0093) — or from the seam's
-        contamination and cap guards.
-    RuntimeError
-        When the walk exits nonzero or leaves no journal evidence.
-    """
+    """Run one derived walk as this process's first child and read its peak."""
+    # Returns (summary_dir, peak_rss_bytes) from the seam's measure_one;
+    # nothing persists the reading beside the walk. A walk that already
+    # finished refuses — a measurement needs a fresh spawn (ADR-0093) —
+    # as do the seam's own contamination and cap guards.
     argv, summary, reused = _prepare_walk(ctx, document, tag)
     if reused:
         raise ValueError(
@@ -515,7 +478,13 @@ class MemoryPreflightStage(Stage):
         """Measure the isolated most-recent fold as this process's first child."""
         del inputs
         limit = self.params["memory_limit_bytes"]
-        doc = _derived_document(ctx, f"{_STUDY}-preflight", 1, one_fold=True)
+        # Named for the staged identity: the reading is the seam's
+        # measure_one (ADR-0093), which needs a fresh spawn, so a revised
+        # study measures afresh rather than hard-stopping on the walk the
+        # previous study finished under this name.
+        doc = _derived_document(
+            ctx, f"{_STUDY}-preflight-{ctx.document.hash[:8]}", 1, one_fold=True
+        )
         summary, peak = _measure_walk(ctx, doc, "memory-preflight")
         if peak >= limit:
             raise MemoryError(

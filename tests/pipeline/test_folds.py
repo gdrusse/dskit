@@ -155,6 +155,17 @@ class TestTheCap:
         Spy(2 * MIB, workers=1).run([[PY, "-c", "pass"]])
         assert spawned == [0]
 
+    def test_a_cap_above_the_platform_c_long_is_refused_in_the_constructor(self):
+        # It passes _check_cap (the hard limit is RLIM_INFINITY) and then
+        # blows up inside the shim as OverflowError, which would surface
+        # as a FOLD failure for what is configuration (ADR-0093).
+        with pytest.raises(ValueError, match="memory_limit_bytes"):
+            BoundedFoldRunner(sys.maxsize + 1, workers=1)
+
+    def test_a_cap_at_the_platform_c_long_is_allowed(self):
+        runner = BoundedFoldRunner(sys.maxsize, workers=1)
+        assert runner.memory_limit_bytes == sys.maxsize
+
     def test_the_cap_is_the_same_for_every_fold_never_divided(self):
         cap = 512 * MIB
         out = BoundedFoldRunner(cap, workers=3).run([RLIMIT_PROBE] * 3)
@@ -382,6 +393,28 @@ class TestMeasureOne:
         done, peak = Spy(GIB, workers=3).measure_one(["x"], cwd="/c", env={"E": "1"})
         assert seen == [(0, ["x"], "/c", {"E": "1"})]
         assert done.stdout == "done"
+        assert peak == 0
+
+    def test_the_one_command_runs_at_width_one_whatever_workers_says(
+        self, monkeypatch
+    ):
+        # ADR-0093: measure_one "runs the one command at width 1" — a
+        # pool for a single command is a thread and a queue for nothing.
+        import concurrent.futures
+        import resource
+
+        monkeypatch.setattr(
+            resource, "getrusage", lambda _who: SimpleNamespace(ru_maxrss=0)
+        )
+
+        def boom(*_args, **_kwargs):
+            raise AssertionError("measure_one built a pool for its one command")
+
+        monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", boom)
+        done, peak = BoundedFoldRunner(None, workers=3).measure_one(
+            [PY, "-c", "print('one')"]
+        )
+        assert done.stdout.strip() == "one"
         assert peak == 0
 
     def test_it_validates_the_cap_in_the_parent_like_run(self, monkeypatch):

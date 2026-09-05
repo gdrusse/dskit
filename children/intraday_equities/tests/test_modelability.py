@@ -20,6 +20,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from dskit.pipeline.document import PipelineDocument, load_document
+from dskit.pipeline.folds import BoundedFoldRunner
 
 from intraday_equities import modelability
 
@@ -136,7 +137,7 @@ def _harness(tmp_path, monkeypatch):
         "append_action",
         lambda *_a, **kw: journaled.add(kw.get("outputs")),
     )
-    monkeypatch.setattr(modelability, "BoundedFoldRunner", FakeRunner)
+    monkeypatch.setattr(modelability, "_WalkRunner", FakeRunner)
     ctx = SimpleNamespace(
         source_path=str(tmp_path / "configs" / "run.json"),
         run_dir=str(tmp_path / "stage"),
@@ -303,11 +304,28 @@ def test_the_child_knob_and_cap_are_one_value_each(monkeypatch):
     readme = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
     assert modelability._WORKERS_ENV in readme
     runner = modelability._runner()
-    assert type(runner).__name__ == "BoundedFoldRunner"
+    assert isinstance(runner, BoundedFoldRunner)
     assert runner.memory_limit_bytes == modelability._MEMORY_LIMIT
     assert runner.env_var == modelability._WORKERS_ENV
     assert runner.workers == 1
     assert modelability._runner(workers=3).workers == 3
+
+
+def test_a_failing_fold_names_its_derived_config_not_its_position(tmp_path):
+    # The seam numbers the PENDING batch, so on a resumed walk with folds
+    # 0-2 journaled a failure in cutoff 3 is "fold 0"; the child names the
+    # derived config instead, which carries the cutoff (ADR-0093).
+    config = str(tmp_path / "gate1-h01-part-03.json")
+    shaped = modelability._walk_argv(config, "2026-02-28")
+    argv = [sys.executable, "-c", "import sys; sys.exit(9)", *shaped[3:]]
+    assert argv[4] == config
+    try:
+        modelability._runner(workers=1).spawn(0, argv, None, None)
+    except RuntimeError as error:
+        assert config in str(error)
+        assert "exited 9" in str(error)
+    else:  # pragma: no cover - the assertion below reports it
+        raise AssertionError("a nonzero fold did not raise")
 
 
 def _preflight(tmp_path, monkeypatch):
@@ -382,6 +400,32 @@ def test_the_memory_preflight_refuses_to_reuse_a_finished_walk(tmp_path, monkeyp
     else:  # pragma: no cover - the assertion below reports it
         raise AssertionError("a finished walk was reused as a measurement")
     assert all(not runner.measured for runner in FakeRunner.instances)
+
+
+def test_the_preflight_walk_is_named_for_the_staged_document(tmp_path, monkeypatch):
+    # A study-identity-blind preflight name hard-stops a revised study:
+    # measure_one needs a fresh spawn, so _measure_walk refuses the walk
+    # the PREVIOUS study finished under that same name (ADR-0093).
+    ctx, _journaled, stage = _preflight(tmp_path, monkeypatch)
+    names = []
+
+    def _named(_ctx, name, _horizon, **_kw):
+        names.append(name)
+        obj = _document(tmp_path / "runs", count=1).to_obj()
+        obj["name"] = name
+        return PipelineDocument.from_obj(obj)
+
+    monkeypatch.setattr(modelability, "_derived_document", _named)
+    first = stage.run(ctx, {})
+    revised = _document(tmp_path / "runs", count=2)
+    hashes = [ctx.document.hash, revised.hash]
+    assert hashes[0] != hashes[1]
+    ctx.document = revised
+    ctx.run_dir = str(tmp_path / "stage-revised")
+    second = stage.run(ctx, {})
+    assert names[0] != names[1], "the preflight name is study-identity-blind"
+    assert [digest[:8] in name for digest, name in zip(hashes, names)] == [True, True]
+    assert first["summary_dir"] != second["summary_dir"]
 
 
 def test_p10_config_freezes_the_exact_fit_and_new_source_universe():
