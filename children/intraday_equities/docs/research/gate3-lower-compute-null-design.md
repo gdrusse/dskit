@@ -1,186 +1,213 @@
 # Gate 3: lower-compute, statistically defensible null design
 
-Date: 2026-09-04.
+Date: 2026-09-04. Revised: 2026-09-05.
 
 ## Conclusion
 
-This is a research recommendation, not an execution record or a change to the
-modelability rule. The statistically defensible lower-compute design is a
-**two-tier test**:
+A research recommendation, not an execution record and not a change to the
+modelability rule.
 
-1. Make the routine, global test from genuinely out-of-sample stored loss or
-   prediction contributions. Resample them in shared session blocks, with no
-   model refit.
-2. Keep whole-pipeline session-label scrambles for the few survivors and for
-   material pipeline changes. Use sequential Monte Carlo stopping rather than a
-   fixed seed count.
-3. Test availability-lineage controls and null-statistic calibration separately.
-   Neither an untouched holdout nor a clean scramble proves no feature leakage.
+Gate 3 today refits every Gate-1 survivor under 19 whole-session label
+permutations (ADR-0089). Each survivor gets its own 19 refits, so the
+recorded 13-survivor cohort costs `13 x 19 = 247` asset-local 20-fold walks,
+and the cost grows with every asset added.
 
-This agrees with the existing P8 structure: its Tier 1 is a cheap,
-session-shared test over stored loss differentials, and Tier 2 refits
-session-scrambled labels for winners only. The proposed refinement is to state
-the scope of each tier precisely and use a resampling-risk-bounded sequential
-rule for Tier 2.
+**The recommendation is to pool the null refits across assets.** Under the
+null the statistic's distribution is a property of the fitting procedure and
+the fold geometry, not of the ticker. Spread `B` scramble draws across the
+survivors, pool them into ONE null reference distribution, and rank every
+asset's observed statistic against it. The test is unchanged — same refit,
+same whole-session scramble, same procedure under the null — but `B` is a
+budget for the cohort rather than a cost per asset.
 
-## What each layer establishes
+At today's resolution that is 19 walks instead of 247. At `B = 100` it is 100
+walks, still cheaper than now, with five times the resolution.
 
-| Evidence layer | Valid claim | Does not establish |
+## What Gate 3 asks
+
+*Can the same fitting procedure produce this result when the features carry
+no information about the labels?*
+
+Six things could manufacture a Gate-1 pass. What actually catches each:
+
+| Failure mode | Stored-score resample | Scramble refit |
 | --- | --- | --- |
-| Frozen walk-forward / lockbox predictions | The declared procedure has forward association or loss advantage on outcomes it did not influence. | Stability in a new regime or absence of leakage present in both training and scoring. |
-| Stored-score session bootstrap or dependent-data test | Uncertainty and selection multiplicity for the fixed prediction panel. | The null distribution of adaptive fitting and tuning. |
-| Full pipeline, session-scrambled label refit | The same fitting path cannot easily manufacture the observed result when the input-label link is broken under the stated null. | An exact time-series p-value without exchangeable sessions, or universal proof of no leakage. |
-| Availability assertions and negative controls | Known timestamp, join, and target-leakage routes are blocked. | Economic capacity or future-regime robustness. |
+| Luck across the 25 assets | yes — shared session resample | yes, at resolution `1/(1+B)` |
+| Luck across horizons | free — fixed ordered stop spends no alpha | free |
+| Variance estimator wrong | no | **yes** |
+| Fold geometry or embargo broken | no | **yes** |
+| Feature leakage | no | **no** |
+| Tuning overfit | not applicable here | not applicable here |
 
-The refit audit therefore remains important: rescoring a stored model cannot
-reveal an artefact already embedded in its predictions. It should simply be
-spent where that additional protection is valuable.
+Two entries decide the design.
 
-## Proposed operating design
+**The refit uniquely buys the last two rows it can reach — a variance-estimator
+check and a fold-geometry check — and both are properties of the PIPELINE, not
+of the asset.** Running them once per survivor tests the same thing thirteen
+times. That is the redundancy the pooled null removes.
 
-### Preserve the information boundary
+**Neither test catches feature leakage.** A sign flip never sees a leak already
+baked into a stored forecast. A label scramble breaks the feature-label link
+but leaves an illegal future field in the features, so a leaked result passes
+the scramble. Availability and lineage checks are the only defence.
 
-At every walk origin, fit transforms, missing-value rules, universe membership,
-feature selection, tuning, and candidate choice using only information then
-available. Record source lineage and availability timestamps. Use an embargo at
-least as long as label overlap and execution exposure.
+"Tuning overfit" is not applicable because the P11 scan carries a single fixed
+LightGBM configuration, and the node's optional HPO is an inner split of fold
+TRAIN, never fold val (`nodes.py`). The walk-forward `objective`/`select` pair
+only names the best fold for reporting; it selects no model. With a rolling
+730-day training window and a five-day embargo, the stored `d_t` are therefore
+genuinely out of sample, and the estimation error is already inside them —
+Giacomini and White's framework covers exactly this case and requires the
+finite rolling window we use.
 
-For intraday equities, retain the complete regular-trading session as the
-scramble unit. With horizons at most 60 minutes, this preserves within-session
-autocorrelation, overlapping labels, time-of-day effects, and the cross-stock
-vector. Training and validation maps should remain independent; one map should
-be shared across stocks.
+## The pooled null
 
-### Tier 1: score-level, dependence-aware global inference
+Each scramble draw runs the identical preparation and scoring path with whole
+regular-trading sessions donating each other's labels. Nothing changes in how
+one draw is produced. What changes is how the draws are spent.
 
-Each origin stores a predeclared contribution such as
-
-```text
-d_t = (y_t - benchmark_t)^2 - (y_t - model_t)^2.
-```
-
-Positive `d_t` favours the model. Stack every candidate's `d_t` on common
-timestamps, retain session IDs, and calculate the reported mean advantage with
-the same HAC rule used in the final statistic. Obtain a global maximum or
-stepdown critical value from one shared session-block resample of the whole
-matrix. The shared resample is essential: it retains cross-candidate and
-cross-stock dependence and calibrates the selection maximum, not unrelated
-single-cell p-values.
-
-The P8 session-sign wild bootstrap and stationary/circular-block cross-check
-already have this form. Use a substantial count because these draws are
-arithmetic on stored numbers: 2,000 is a reasonable floor and 10,000 gives
-useful tail resolution. A forecast-evaluation test on the walk-forward panel is
-also academically standard: Giacomini and White's framework is explicitly for
-out-of-sample predictive ability while retaining estimation uncertainty. Keep a
-final untouched tail for confirmation; rolling origins improve precision but do
-not license reuse of that final tail.
-
-### Tier 2: refit only survivors, with sequential Monte Carlo
-
-For a Tier-1 survivor, rerun the identical preparation, tuning, and scoring
-path after session-level label scrambling. Before starting, fix:
-
-- the decision threshold `alpha`, including the family adjustment;
-- a resampling-risk bound `epsilon` (for example, `0.001`); and
-- a maximum operational budget. A case that remains near the boundary at that
-  budget is `inconclusive`, not an optionally stopped pass.
-
-Run scrambles in small batches. Gandy's sequential Monte Carlo test can stop
-when it has decided whether the ideal infinite-resampling p-value lies on the
-required side of `alpha`, with the probability that simulation stopping changes
-that decision bounded by `epsilon`. A rule that stops when a running proportion
-looks favourable has no equivalent guarantee.
-
-If reporting a numerical p-value rather than a decision, use a fixed final
-budget and the plus-one correction:
+Instead of `B` draws per survivor, take `B` draws total, allocated across the
+survivors, and pool them. Asset `i` passes when its observed statistic ranks
+above the pooled null at the declared level:
 
 ```text
-p_MC = (1 + number of null statistics >= observed statistic) / (1 + B).
+p_i = (1 + number of pooled null statistics >= observed_i) / (1 + B).
 ```
 
-This avoids reporting zero from a finite simulation. In the pooled 25-asset
-fit, one full scrambled refit can generate every survivor's statistic using one
-shared scramble map. That both cuts compute and retains the joint variation
-needed for a family decision.
+The plus-one correction avoids reporting zero from a finite simulation
+(Phipson and Smyth).
 
-## Calibration is separate from the observed-test p-value
+### The condition, and how it is checked
 
-Check the null statistic's centre and spread. A flexible fitted model can have
-a slightly negative mean loss advantage against a constant benchmark because
-fitting noise costs performance; an unexpectedly positive centre is the
-dangerous direction. This diagnostic verifies the standard-error and null
-construction, not just the rank of the observed statistic.
+Pooling is valid when the null statistic is **asset-invariant** — a draw from
+LLY and a draw from XLP come from the same distribution.
 
-Nineteen refits are a coarse smoke check. When none exceeds the observed value,
-the smallest plus-one p-value is `1/20 = 0.05`. Under independent normal null
-draws, the sample SD's relative standard error at `B=19` is about
-`1/sqrt(2*(19-1)) = 16.7%`, so it cannot precisely certify a narrow spread.
+Use `t_pool = mean(g_t) / HAC_SE(mean(g_t))` as the pooled statistic, not
+`r2oos`. Dividing by its own standard error removes the asset's volatility,
+sample size and noise level, which is what makes the draws exchangeable.
+`tier2_verdict` already computes both; today the beat-all test uses `r2oos`
+and only the calibration check uses `t`.
 
-A claim about test size requires independent outer null panels—simulated null
-instances or multiple non-overlapping historical anchors processed by the full
-pipeline. At `alpha=0.05`, 100 outer runs have about five expected rejections
-and a wide approximate 95% interval of 1.6%--11.3%; 400 have about 20 and an
-interval of 3.2%--7.7%. Make this a periodic pipeline-version validation, not a
-per-asset Gate 3 cost.
+Invariance can fail if session counts or autocorrelation differ sharply
+between assets, or if the HAC standard error is biased differently for one of
+them. Two guards, both free:
 
-## Why it is faster
+- The pooled null must sit near mean 0 and sd 1. This is the check
+  `tier2_verdict` already performs, now on `B` draws instead of 19.
+- Report each asset's own null moments alongside the pool. A contributor whose
+  draws sit visibly wider is excluded before pooling, so one contaminated
+  asset cannot raise the bar for the rest.
 
-Let `C_fit` be one complete fitting walk, `B` full null refits, and `K` rolling
-origins used to create frozen predictions.
+### Output
 
-- Repeated full-refit null testing costs about `B * C_fit` after the real run.
-- Fixed-score inference costs about `K * C_fit`, then inexpensive resampling of
-  the stored `N` score rows and `M` candidates.
-- With `B=500` and `K=5`, the number of expensive fits is about 100 times
-  lower. That is a compute comparison, not a promised 100-fold wall-clock
-  speed-up: cache reuse, loading, and parallelism determine elapsed time.
-- Sequential Tier-2 refits reduce expected cost when a p-value is clearly on
-  one side of the threshold. They do not guarantee a saving near `alpha`; a
-  hard case should consume more evidence.
+One row per asset — observed `t_pool`, its rank against the pooled null, `p_i`,
+and the decision — plus ONE shared block recording the pooled null: `B`, the
+contributing assets, `null_mean`, `null_sd`, `calibrated`, and the per-asset
+moments. That replaces today's binary "beat all 19", which is pinned at exactly
+`1/20 = 0.05` and cannot resolve any finer no matter how strong the result.
 
-P8 already captures the major saving: many cheap global score resamples over
-all attempts, then expensive refits only for winners. This recommendation does
-not remove Tier 2.
+## The cheap companion test
+
+The multiplicity question does not need a refit at all. `max_bar` in
+`dskit/pipeline/attempts.py` already implements it and P11 does not call it:
+build one matrix of per-timestamp loss differentials over every candidate,
+recentre each column so the null holds exactly, draw one `+/-1` coin per
+session shared by every column and every stock, recompute each studentised
+statistic, and take the maximum. Stepdown by dropping rejected cells
+(Romano and Wolf).
+
+Two details are load-bearing and easy to get wrong:
+
+- **Recentre the columns.** Subtracting each column's mean is what imposes the
+  null. Without it the critical value is wrong.
+- **Keep the session-cluster standard error.** It is invariant under the sign
+  flip, which is what makes the bootstrap pivotal, and it is at least as
+  conservative as a Bartlett band truncated at the label's overlap depth. A
+  Newey-West denominator is NOT flip-invariant and breaks the procedure — even
+  though Newey-West is the right choice for the reported statistic itself.
+
+`B = 10,000` is arithmetic on stored numbers; 2,000 is a floor. This costs no
+walks and can run every night.
+
+## Calibration is a pipeline property, not a per-asset cost
+
+The null statistic's centre and spread test the variance estimator itself. A
+flexible model can sit slightly below zero against a constant benchmark
+because fitting noise costs performance; an unexpectedly positive centre is
+the dangerous direction.
+
+Nineteen draws are a coarse smoke check. Under independent normal draws the
+sample standard deviation's relative standard error at `B = 19` is about
+`1/sqrt(2 * (19 - 1)) = 16.7%`, so the current `0.7 < sd < 1.4` band is being
+certified to roughly one significant figure. Pooling raises `B` at constant
+cost, which is the direct fix.
+
+A claim about the gate's SIZE is a different and larger exercise: it needs
+independent outer null panels — simulated null instances or non-overlapping
+historical anchors put through the whole pipeline. At `alpha = 0.05`, 100
+outer runs give about five expected rejections with an exact 95% interval of
+1.6%--11.3%; 400 give about 20 with 3.1%--7.6%. That is a periodic
+pipeline-version validation, never a per-asset Gate-3 cost.
+
+## Compute
+
+Features are already cached, so a scramble draw is 20 folds of LightGBM on one
+asset. The count of draws is the whole cost.
+
+| Design | Walks | Resolution |
+| --- | --- | --- |
+| Today: 19 seeds per survivor, 13 survivors | 247 | `p = 0.05` floor |
+| Pooled, `B = 19` | 19 | `p = 0.05` floor |
+| Pooled, `B = 100` | 100 | `p = 0.01` floor |
+
+The important property is not the ratio but the scaling: `B` is a cohort
+budget, so a larger cohort costs nothing extra. This is not the final set of
+stocks, which is exactly why per-asset scaling is the thing to remove.
+
+One saving is already spent and should not be double-counted. P10's pooled
+architecture shares a single scramble map across every survivor at one horizon
+(`modelability.py`), so one refit yields every asset's null statistic there.
+ADR-0089 made the active gate asset-local (`modelability_p11.py`), one fit per
+asset per seed, so that saving is not available and pooling the DRAWS is the
+replacement for it.
 
 ## Time-series qualification
 
 A whole-session shuffle is not automatically an exact permutation test. Exact
-randomisation inference requires sessions to be exchangeable under the stated
-null. Session scrambling preserves the important intra-session structure, but
-daily dependence, volatility clustering, and regimes can still violate that
-condition.
+randomisation inference needs sessions to be exchangeable under the stated
+null, and daily dependence, volatility clustering and regime shifts can
+violate that. Report a refit result as a test under its documented
+session-scramble null, not as an unconditional exact p-value.
 
-Therefore, call a refit result a test under its documented session-scramble
-null, not an unconditional exact p-value. Use session blocks or stationary
-bootstrap for the routine stored-score test, sensitivity-check plausible block
-lengths, and use the more conservative P8 critical value if the sign and block
-bootstrap disagree. If nonstationarity is material, restrict donors by a
-predeclared calendar/regime stratum or use multi-session blocks; this increases
-null realism but reduces the effective donor pool and power.
+The session is the right unit here: horizons run to 60 minutes, features never
+bridge a tape gap, and the scoring lattice is 30 minutes, so moving a session
+moves every overlapping label with it. Do not use row permutations — they
+destroy the overlap and the autocorrelation, and ordinary permutation need not
+be level for dependent series (Romano and Tirlea). Drop half-days from the
+donor pool; session lengths must match. Keep the training and validation
+permutation maps independent, and share one map across stocks.
 
-Do not use row permutations. They destroy overlapping labels and temporal
-dependence. Romano and Tirlea show that ordinary permutation need not be level
-for dependent time series. Surrogate tests likewise require a clearly stated
-null and a surrogate that retains the structure not under test.
+For the stored-score test, cross-check the session sign-flip against a
+recentred stationary or circular block bootstrap and take the more
+conservative critical value if they disagree.
 
-## Leakage controls required alongside the tests
+## Where the family correction lives
 
-Run deterministic negative controls: impossible feature lags, deliberate input
-delays, label-time offsets, and train/validation assertions that every learned
-transform was fit only on permitted history. A final holdout can score well when
-an illegal future field is present in both training and scoring; a label
-scramble can only test the particular data path it changes. Availability and
-lineage checks are the direct defence.
+Gate 3 carries no multiple-testing correction. ADR-0088 removed Gate 2 from
+stock selection and placed false-signal control in the MIO as a capital
+constraint, `sum_i(x_i * pi_i) <= q * sum_i(x_i)`, which is explicitly not
+weighted Benjamini-Hochberg and runs no BH prefilter. Nothing here changes
+that; the pooled null reports `p_i` at the level Gate 3 declares, and the
+`max_bar` companion reports the family-adjusted view separately.
 
 ## Proposed future Gate 3 rule
 
-An asset passes only if it has (1) a positive predeclared forward statistic
-clearing the shared dependence-aware family correction, (2) passing availability
-and negative controls, (3) a survivor refit audit decided by a sequential,
-resampling-risk-bounded rule, and (4) an adequate calibration record for the
-pipeline version. Report effect size and a dependence-aware interval alongside
-any pass; never treat a small p-value by itself as a trading claim.
+An asset passes only if it has (1) a positive predeclared forward statistic,
+(2) passing availability and negative controls, (3) `p_i` at or below the
+declared level against a pooled null whose calibration record passes, and (4)
+per-asset null moments consistent with the pool. Report the effect size and a
+dependence-aware interval alongside any pass; a small p-value alone is not a
+trading claim.
 
 ## Sources
 
@@ -194,6 +221,11 @@ any pass; never treat a small p-value by itself as a trading claim.
   <https://www.eco.uc3m.es/~jgonzalo/teaching/PhdTimeSeries/GiacominiWhite.pdf>
 - White, H. (2000), *A Reality Check for Data Snooping*, Econometrica 68,
   1097--1126. <https://users.ssc.wisc.edu/~behansen/718/White2000.pdf>
+- Romano, J. P. and Wolf, M. (2005), *Stepwise Multiple Testing as Formalized
+  Data Snooping*, Econometrica 73, 1237--1282.
+  <https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1468-0262.2005.00615.x>
+- Shao, X. (2010), *The Dependent Wild Bootstrap*, JASA 105, 218--235.
+  <https://www.tandfonline.com/doi/abs/10.1198/jasa.2009.tm08744>
 - Politis, D. N. and Romano, J. P. (1994), *The Stationary Bootstrap*, JASA
   89, 1303--1313. <https://www.tandfonline.com/doi/abs/10.1080/01621459.1994.10476870>
 - Theiler, J., Eubank, S., Longtin, A., Galdrikian, B. and Farmer, J. D.
@@ -205,7 +237,11 @@ any pass; never treat a small p-value by itself as a trading claim.
 
 ## Related intraday-equities documents
 
+- `docs/architecture/decision-log.md` ADR-0089 — the active Gate-1-to-Gate-3
+  audit this document proposes to change; ADR-0088 — HFDR in MIO.
 - `docs/research/p8-bar-a-bootstrap-max-over-every-attempt-plus-a-day-block-scramble.md`
-  — current Tier-1/Tier-2 design.
+  — the Tier-1/Tier-2 design the companion test comes from.
 - `docs/explanations/shuffle-and-retrain-test.md` — refit-audit explanation.
-- `docs/memos/p10-modelability-pipeline.md` — pooled-model execution record.
+- `docs/memos/p11-modelability-pipeline.md` — the asset-local execution record
+  and the 13-survivor count; `docs/memos/p10-modelability-pipeline.md` — the
+  superseded pooled record.
