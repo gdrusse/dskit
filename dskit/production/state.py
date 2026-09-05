@@ -150,6 +150,12 @@ if not set(_SIGNS) < set(SIDES):
 #: The keys a tick's plan bookkeeping entry carries (see ``SeriesState.tick_plans``).
 _PLAN_KEYS = ("plan_id", "decision_plan_digest", "result", "client_ref")
 
+#: What the fold keeps of the latest ``trip`` (see ``SeriesState.last_trip``):
+#: the envelope's identity and instant — a reset acknowledges the id and
+#: cooling-off is measured from ``recorded_at_ms`` — plus the body fields
+#: that say what the transition was.
+_LAST_TRIP_KEYS = ("id", "seq", "recorded_at_ms", "from", "to", "reason", "acknowledged_trip_id")
+
 
 def _money(problems, path, value):
     """Return ``value`` as a finite Decimal; a float, a bool or garbage refuses."""
@@ -853,12 +859,13 @@ _FILL_FOLDS = {"pending": "_apply_fill", "final": "_apply_fill", "reversed": "_r
 if set(_FILL_FOLDS) != set(FILL_STATUSES):
     raise ProductionError(["state.py: the fill table does not cover FILL_STATUSES"])
 
-#: The snapshot payload's keys: every ``StateView`` member plus the three
-#: the plan and recovery need beyond the view.
+#: The snapshot payload's keys: every ``StateView`` member plus the four
+#: the plan, recovery and the breaker's reset need beyond the view.
 _SNAPSHOT_KEYS = tuple(f.name for f in dataclasses.fields(StateView)) + (
     "monitor_state",
     "open_ticks",
     "tick_plans",
+    "last_trip",
 )
 
 
@@ -930,6 +937,7 @@ class SeriesState:
         self._balances = {}
         self._history = deque(maxlen=max_history)
         self._breaker = _ACTIVE
+        self._last_trip = None
         self._arming = None
         self._readiness = None
         self._guard_holds = {}
@@ -1252,14 +1260,26 @@ class SeriesState:
         self._readiness = ReadinessProjection.from_body(body)
 
     def _fold_trip(self, body, envelope):
-        """Move the breaker; every transition revokes the ordinary arm (D10)."""
+        """Move the breaker and remember the trip; every transition revokes the ordinary arm (D10)."""
+        problems = []
         target = body.get("to")
         if target not in BREAKER_STATES:
-            raise ProductionError(
-                [f"trip.to must be one of {list(BREAKER_STATES)}, got {target!r}"]
-            )
+            problems.append(f"trip.to must be one of {list(BREAKER_STATES)}, got {target!r}")
+        _check_str(problems, "trip record.id", envelope.get("id"))
+        check_int_param(problems, "trip record.recorded_at_ms", envelope.get("recorded_at_ms"), ge=0)
+        if problems:
+            raise ProductionError(problems)
         self._breaker = target
         self._arming = None
+        self._last_trip = {
+            "id": envelope["id"],
+            "seq": envelope["seq"],
+            "recorded_at_ms": envelope["recorded_at_ms"],
+            "from": body.get("from"),
+            "to": target,
+            "reason": body.get("reason"),
+            "acknowledged_trip_id": body.get("acknowledged_trip_id"),
+        }
 
     def _fold_control_request(self, body, envelope):
         """Queue the request until its ``command_result``."""
@@ -1337,6 +1357,22 @@ class SeriesState:
             {monitor: MappingProxyType(dict(slices)) for monitor, slices in self._monitor_state.items()}
         )
 
+    def last_trip(self):
+        """Return the latest breaker transition the fold holds.
+
+        The breaker's ``reset`` acknowledges this trip's ``id`` and measures
+        cooling-off from its ``recorded_at_ms`` — read here, from the fold,
+        because nothing but the fold walks the ledger (§5.8.1).
+
+        Returns
+        -------
+        mapping or None
+            Read-only ``{id, seq, recorded_at_ms, from, to, reason,
+            acknowledged_trip_id}`` of the latest ``trip`` record; None
+            before any transition.
+        """
+        return None if self._last_trip is None else MappingProxyType(dict(self._last_trip))
+
     def open_ticks(self):
         """Return the ticks started but not yet given a terminal ``tick``.
 
@@ -1386,7 +1422,7 @@ class SeriesState:
         -------
         dict
             Every ``StateView`` member plus ``monitor_state``,
-            ``open_ticks`` and ``tick_plans``. ``positions`` is
+            ``open_ticks``, ``tick_plans`` and ``last_trip``. ``positions`` is
             :meth:`PositionBook.to_obj` (the fill logs); each ``working``
             entry pairs the ``OrderState`` form with the exact
             ``filled_notional`` its average price is rendered from;
@@ -1418,6 +1454,7 @@ class SeriesState:
             "monitor_state": _jsonable(self._monitor_state),
             "open_ticks": [start.to_obj() for start in self._open_ticks.values()],
             "tick_plans": _jsonable(self._tick_plans),
+            "last_trip": None if self._last_trip is None else dict(self._last_trip),
         }
 
     def restore(self, snapshot_env):
@@ -1487,6 +1524,8 @@ class SeriesState:
                 f"got {state['breaker']!r}"
             )
         _check_dict(problems, "snapshot.state.risk_version", state["risk_version"])
+        if state["last_trip"] is not None:
+            _exact(problems, "snapshot.state.last_trip", state["last_trip"], _LAST_TRIP_KEYS)
         if problems:
             raise ProductionError(problems)
         check_int_param(
@@ -1561,6 +1600,7 @@ class SeriesState:
                 tick_id: [dict(entry) for entry in plans]
                 for tick_id, plans in state["tick_plans"].items()
             },
+            "_last_trip": None if state["last_trip"] is None else dict(state["last_trip"]),
         }
 
 

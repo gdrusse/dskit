@@ -37,7 +37,6 @@ barriers before an authorization.
 """
 
 import json
-import os
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
@@ -751,7 +750,7 @@ def approval_verifier(document):
 # ---------------------------------------------------------------------------
 
 
-class Arming(object):
+class Arming:
     """Proofs, the arming fold and scope application — never a permit (§5.6, §5.13.1).
 
     Parameters
@@ -941,7 +940,7 @@ class Arming(object):
         _agree(problems, "rung", self._rung, request.rung)
         _agree(problems, "release_hash", self._release.release_hash, request.release_hash)
         self._check_expiry(problems, request.requested_until_ms)
-        self._check_allowlist(problems, request.allowlist)
+        self._check_universe(problems, request.allowlist)
         self._check_overlay(problems, request.limits_overlay)
 
     def _check_expiry(self, problems, until_ms):
@@ -955,8 +954,8 @@ class Arming(object):
                 f"({self._max_duration_ms // 1000} s from now {now})"
             )
 
-    def _check_allowlist(self, problems, allowlist):
-        """An allowlist names at least one instrument and only ones the release serves."""
+    def _check_universe(self, problems, allowlist):
+        """Require at least one instrument, each one the release serves."""
         if not allowlist:
             problems.append("allowlist must name at least one instrument")
         outside = [key for key in allowlist if key not in self._universe]
@@ -985,7 +984,7 @@ class Arming(object):
                     self._check_tightening(problems, where, key, bounds[key], declared)
 
     def _check_tightening(self, problems, where, key, value, declared):
-        """An overlay bound must exist in the document and lie within it."""
+        """Require the overlay bound to exist in the document and lie within it."""
         if key not in declared:
             problems.append(f"{where}.{key}: the document declares no {key} bound to tighten")
             return
@@ -1066,7 +1065,7 @@ class Arming(object):
         return self._ORIGIN_CONJUNCTS[origin](self, view, reduction, at_ms)
 
     def _common_conjuncts(self, invocation):
-        """The flag and the environment variable, naming this release — or the reason not."""
+        """Check the flag and the environment variable name this release; return why not."""
         if not invocation.armed:
             return "not_armed_flag"
         env = invocation.env_release_hash
@@ -1077,7 +1076,7 @@ class Arming(object):
         return _SATISFIED
 
     def _model_conjunct(self, view, reduction, at_ms):
-        """A model leg needs a current unexpired ordinary arm bound to this release and rung."""
+        """Require a current unexpired ordinary arm bound to this release and rung."""
         state = self.current(view, at_ms)
         if state is None:
             return ConjunctionResult(satisfied=False, reason="not_armed")
@@ -1091,7 +1090,7 @@ class Arming(object):
         return ConjunctionResult(satisfied=True, reason=_SATISFIED)
 
     def _reduction_conjunct(self, view, reduction, at_ms):
-        """A reduction leg needs an unconsumed right for ITS digest — and no ordinary arm."""
+        """Require an unconsumed right for the leg's own digest — never an ordinary arm."""
         digest = _bound_digest(reduction)
         grant = view.reduction
         if grant is None:
@@ -1245,7 +1244,7 @@ class Arming(object):
         return self._ordinary_event(view, _EXPIRE, "expired", None)
 
     def _ordinary_event(self, view, event, reason, request_id):
-        """The §6 ``authority`` body for a non-issue event on the current ordinary arm."""
+        """Build the §6 ``authority`` body for a non-issue event on the current ordinary arm."""
         projection = view.arming
         if projection is None:
             raise ProductionError([f"cannot {event}: nothing is armed"])
@@ -1302,7 +1301,7 @@ class Arming(object):
 
 
 def _projection(view):
-    """The JSON form of the fold's arm, or None."""
+    """Return the JSON form of the fold's arm, or None."""
     return None if view.arming is None else view.arming.to_obj()
 
 
@@ -1313,7 +1312,7 @@ def _folded_arm(view):
 
 
 def _bound_digest(reduction):
-    """The digest a reduction leg's right must name, checked against its signed intent."""
+    """Return the digest a reduction leg's right must name, checked against its signed intent."""
     if reduction is None:
         raise ProductionError(
             ["a reduction leg carries its signed ReductionIntent, digest and right; got None"]
@@ -1330,7 +1329,7 @@ def _bound_digest(reduction):
 
 
 def _declared_bounds(guards):
-    """The ``{guard: {"min"/"max": Decimal}}`` the document's guards declare under ``params.bound``."""
+    """Collect the ``{guard: {"min"/"max": Decimal}}`` the guards declare under ``params.bound``."""
     problems, bounds = [], {}
     for name, guard in guards.items():
         params = guard.params if guard is not None and guard.params is not None else {}
@@ -1351,7 +1350,7 @@ def _declared_bounds(guards):
 
 
 def _proposal_fields(guards):
-    """``{guard: Proposal field}`` for the guards whose measure a proposal alone can answer."""
+    """Map each guard whose measure a proposal alone can answer to its ``Proposal`` field."""
     fields_by_guard = {}
     for name, guard in guards.items():
         params = guard.params if guard is not None and guard.params is not None else {}
@@ -1509,7 +1508,7 @@ class ReductionRights:
 
 
 def _current_grant(view, verb):
-    """The fold's reduction projection, or a refusal naming what could not be done."""
+    """Return the fold's reduction projection, or refuse naming what could not be done."""
     grant = view.reduction
     if grant is None:
         raise ProductionError([f"cannot {verb}: no reduction authority is current"])

@@ -314,7 +314,7 @@ class HeadBoundCache:
         return projection
 
     def _current(self, cached, projection, view):
-        """A cache at the head must agree with the fold, or it is a forgery."""
+        """Require a cache at the head to agree with the fold; a disagreement is a forgery."""
         if cached[self._member] != projection:
             raise ProductionError(
                 [
@@ -398,10 +398,11 @@ class Breaker:
     serve_root : ServeRoot
         Supplies ``breaker_cache`` and ``halt_sentinel``.
     ledger : Ledger
-        Where transitions are appended and barriered; ``scan(kind="trip")``
-        finds the trip a reset acknowledges.
+        Where transitions are appended and barriered.
     state : SeriesState
-        The fold; ``snapshot()`` is the current breaker state.
+        The fold; ``snapshot()`` is the current breaker state and
+        ``last_trip()`` the trip a reset acknowledges (§5.8.1: nothing
+        but the fold walks the ledger).
     clock : Clock
         ``now_ms()`` measures cooling-off against the trip's ``recorded_at_ms``.
     transition_policy : TransitionPolicy
@@ -590,7 +591,7 @@ class Breaker:
             nothing is appended and the sentinel stays.
         """
         credentials = self._authenticated(actor, control_request_id, principal_digest, proof_digest)
-        latest = self._latest_trip()
+        latest = self._state.last_trip()
         problems = []
         if acknowledges_trip_id is None:
             problems.append("reset must acknowledge the trip holding the series down; none given")
@@ -651,13 +652,6 @@ class Breaker:
         self._ledger.barrier()
         _LOG.info("breaker %s -> %s (%s) by %s", from_state, to_state, cause, redact(actor))
         return seq, record_id
-
-    def _latest_trip(self):
-        """Return the last ``trip`` envelope in the ledger, or None."""
-        latest = None
-        for envelope in self._ledger.scan(kind=_TRIP):
-            latest = envelope
-        return latest
 
     # -- the halt's best-effort cancel (D12, R6) ----------------------------------
 
