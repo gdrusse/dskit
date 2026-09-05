@@ -12,9 +12,10 @@ private base:
   it exists. Problems accumulate into one :class:`ProductionError`.
 * **Money never touches float.** Every money, quantity and price field
   is a ``Decimal`` — a decimal string in JSON, an int or decimal string
-  on the way in, a float refused — and a float under a
-  :data:`~dskit.production.vocab.MONEY_FIELDS` name is refused at any
-  depth of an opaque venue payload too. Instants are epoch-ms ``int``s.
+  on the way in, a float refused — and an opaque venue payload is walked
+  by :func:`~dskit.production.base.reject_money_floats`, the same rule
+  ``ledger.py`` applies to a record body, so a float under a money name
+  refuses at any depth here too. Instants are epoch-ms ``int``s.
   Only dimensionless ratios (``confidence``, a monitor ``statistic``) are
   floats, and a non-finite number refuses everywhere.
 * **JSON both ways.** ``to_obj()`` is JSON-ready with no custom encoder
@@ -50,7 +51,12 @@ import typing
 from dataclasses import dataclass, fields
 from decimal import Decimal, InvalidOperation
 
-from dskit.production.base import ProductionError, _check_unknown, canonical_hash
+from dskit.production.base import (
+    ProductionError,
+    _check_unknown,
+    canonical_hash,
+    reject_money_floats,
+)
 from dskit.production.vocab import (
     ALERT_STATUSES,
     AUTHORITY_ROLES,
@@ -61,7 +67,6 @@ from dskit.production.vocab import (
     LEG_LATENCY_BUCKETS,
     LEG_ORIGINS,
     LIQUIDITY,
-    MONEY_FIELDS,
     MONITOR_STATUSES,
     OPERATIONS,
     PLAN_RESULTS,
@@ -219,16 +224,14 @@ def _none(value, path, problems):
 _SCALARS = {Decimal: _decimal, int: _int, float: _float, bool: _bool, str: _str, _NONE: _none}
 
 
-def _json_value(value, path, problems, money=False):
+def _json_value(value, path, problems):
     """Return an opaque JSON value canonicalised (tuples to lists), finite."""
     if value is None or isinstance(value, (bool, str)):
         return value
     if isinstance(value, int):
         return value
     if isinstance(value, float):
-        if money:
-            problems.append(f"{path}: money never touches float, got {value!r}")
-        elif not math.isfinite(value):
+        if not math.isfinite(value):
             problems.append(f"{path}: non-finite number {value!r} refused")
         return value
     if isinstance(value, Decimal):
@@ -243,10 +246,16 @@ def _json_value(value, path, problems, money=False):
             if not isinstance(key, str):
                 problems.append(f"{path}: key {key!r} is not a string")
                 continue
-            out[key] = _json_value(item, f"{path}.{key}", problems, key in MONEY_FIELDS)
+            out[key] = _json_value(item, f"{path}.{key}", problems)
         return out
     problems.append(f"{path}: {type(value).__name__} is not a JSON value")
     return value
+
+
+def _opaque(value, path, problems):
+    """Apply the money rule to a venue payload, then canonicalise it."""
+    reject_money_floats(problems, value, path)
+    return _json_value(value, path, problems)
 
 
 def _coerce_union(members, value, path, problems):
@@ -322,9 +331,9 @@ def _coerce(hint, value, path, problems):
         if not isinstance(value, dict):
             problems.append(f"{path}: expected a mapping, got {value!r}")
             return value
-        return _json_value(value, path, problems)
+        return _opaque(value, path, problems)
     if hint is object:
-        return _json_value(value, path, problems)
+        return _opaque(value, path, problems)
     if isinstance(hint, type) and issubclass(hint, _Record):
         return _coerce_record(hint, value, path, problems)
     rule = _SCALARS.get(hint)

@@ -225,7 +225,9 @@ CIRCUIT_STATES = ("closed", "open", "half_open", "forced_open", "metrics_only")
 # Ledger record kinds and their closed fields (§6)
 # ---------------------------------------------------------------------------
 
-#: The twenty-five record kinds of §6's table, in table order.
+#: §6's twenty-five record kinds in table order, plus ``cancel_outcome``
+#: (ruling R6: a halting ``trip`` is barriered BEFORE the cancel I/O, so
+#: what the cancel came to is a record of its own) — twenty-six.
 RECORD_KINDS = (
     "process",
     "tick_start",

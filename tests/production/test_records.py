@@ -530,6 +530,62 @@ def test_a_float_where_money_belongs_refuses(name):
         type(sample).from_obj(dict(sample.to_obj(), **{field: 4.10}))
 
 
+@pytest.mark.parametrize(
+    "payload, path_part",
+    [
+        ({"fee": 1.5}, "native.fee"),
+        ({"charges": {"fee": 0.25}}, "native.charges.fee"),
+        ({"price": [1.0, 2]}, "native.price[0]"),
+        ({"legs": [{"qty": 2.0}]}, "native.legs[0].qty"),
+    ],
+)
+def test_a_money_float_inside_an_opaque_payload_refuses(payload, path_part):
+    """`native`/`extra` are the venue's own JSON and are not typed field
+    by field, so the money rule has to walk them. A list under a money
+    name inherits it — `{"price": [1.0]}` is a price that is a float —
+    which is the same reading `ledger.py` applies to a record body,
+    because both call the one walk in `base.py`."""
+    with pytest.raises(ProductionError) as exc:
+        records.Ack(
+            client_ref="cref-1",
+            venue_ref="vref-1",
+            status="filled",
+            ts_ms=MS,
+            filled_qty=Decimal("10"),
+            avg_price=Decimal("0.41"),
+            fee=Decimal("0.02"),
+            reason="",
+            native=payload,
+        )
+    assert path_part in str(exc.value)
+
+
+def test_a_ratio_inside_an_opaque_payload_stays_a_float():
+    """Only the money NAMES are closed; a `confidence` or a weight list
+    is dimensionless and legal (§5.4)."""
+    ack = records.Ack(
+        client_ref="cref-1",
+        venue_ref="vref-1",
+        status="filled",
+        ts_ms=MS,
+        filled_qty=Decimal("10"),
+        avg_price=Decimal("0.41"),
+        fee=Decimal("0.02"),
+        reason="",
+        native={"confidence": 0.61, "weights": [0.25, 0.75]},
+    )
+    assert ack.native["confidence"] == 0.61
+    assert ack.native["weights"] == [0.25, 0.75]
+
+
+def test_the_opaque_money_walk_is_the_shared_owner():
+    """One walk, imported — not a second copy that came to disagree with
+    the ledger's about a list under a money key (CLAUDE.md)."""
+    from dskit.production import base
+
+    assert records.reject_money_floats is base.reject_money_floats
+
+
 def test_every_declared_money_field_carries_a_decimal():
     """`vocab.MONEY_FIELDS` is what the ledger refuses a float under, so
     a field named there that holds anything but a `Decimal` (or `None`)
@@ -883,6 +939,44 @@ def test_reduction_intent_digest_binds_the_index():
     assert other.reduction_intent_digest() != REDUCTION_INTENT.reduction_intent_digest()
 
 
+def test_a_reduction_plan_refuses_digests_that_disagree_with_its_intents():
+    """The stored plan carries both the intents and their digests, and
+    the checker's authorization names the digests. If the two could
+    disagree, a maker would sign one order and a single-use right would
+    authorise another — so the record pins the agreement at
+    construction (CLAUDE.md: a value that must appear twice is pinned)."""
+    good = records.ReductionPlan(
+        release_hash=RELEASE,
+        risk_state_digest=DIGEST_B,
+        intents=(REDUCTION_INTENT,),
+        reduction_intent_digests=(REDUCTION_INTENT.reduction_intent_digest(),),
+        expires_ms=MS + 600_000,
+    )
+    assert good.reduction_intent_digests == (
+        REDUCTION_INTENT.reduction_intent_digest(),
+    )
+    with pytest.raises(ProductionError) as exc:
+        records.ReductionPlan(
+            release_hash=RELEASE,
+            risk_state_digest=DIGEST_B,
+            intents=(REDUCTION_INTENT,),
+            reduction_intent_digests=(DIGEST_C,),
+            expires_ms=MS + 600_000,
+        )
+    assert "reduction_intent_digest" in str(exc.value)
+
+
+def test_a_reduction_plan_refuses_a_digest_list_of_the_wrong_length():
+    with pytest.raises(ProductionError):
+        records.ReductionPlan(
+            release_hash=RELEASE,
+            risk_state_digest=DIGEST_B,
+            intents=(REDUCTION_INTENT,),
+            reduction_intent_digests=(),
+            expires_ms=MS + 600_000,
+        )
+
+
 def test_a_reduction_intent_digest_is_never_an_intent_digest():
     """§5.4: a different hash of a different object, never spelled the
     same way — the maker signs the first, the leg builds the second."""
@@ -1076,6 +1170,15 @@ def test_risk_digest_is_a_hex_sha256():
 def test_every_sampled_record_is_public_api():
     missing = [name for name in RECORD_NAMES if name not in records.__all__]
     assert not missing, f"records.__all__ omits: {missing}"
+
+
+def test_every_public_record_has_a_sample():
+    """The sample table is what the eight generic contract tests walk, so
+    a record added to `__all__` without one is a record whose frozenness,
+    round trip, default-deny and money rule nobody checked — a pinning
+    test that omits a knob is worse than none (CLAUDE.md)."""
+    unsampled = [name for name in records.__all__ if name not in SAMPLES]
+    assert not unsampled, f"no sample for: {unsampled}"
 
 
 def test_records_exports_no_private_name():

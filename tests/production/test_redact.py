@@ -7,10 +7,11 @@ are the ones that keep "no secret ever reaches a record" true at the
 source.
 
 Scope note: the CROSS-MODULE proofs — that no secret reaches a ledger
-record, an alert payload or the CLI's output — need `ledger.py`,
-`alerts.py` and `__main__.py`, which later groups build. They belong in
+record, an alert payload or the CLI's output — belong in
 `test_ledger.py` / `test_alerts.py` / `test_main.py` against real records,
 not as stubs here; a stub would assert against a fake and prove nothing.
+`test_ledger.py` carries the ledger half against a real chain; the other
+two arrive with `alerts.py` and `__main__.py`.
 """
 
 import logging
@@ -95,6 +96,20 @@ def test_only_the_declared_names_are_treated_as_credentials(env_config, monkeypa
     )
 
 
+def test_a_required_name_that_is_set_but_empty_refuses(tmp_path, monkeypatch):
+    """A present-but-empty credential passes `load_env`'s presence check
+    and would then be registered as a zero-length secret — which masks
+    nothing and hides the fact that the deployment has no key. It is the
+    same failure as an unset name, and refuses the same way."""
+    monkeypatch.delenv("DSKIT_TEST_EMPTY_NAME", raising=False)
+    path = tmp_path / "blank.env"
+    path.write_text("DSKIT_TEST_EMPTY_NAME=\n", encoding="utf-8")
+    config = EnvConfig(env_file=str(path), require=("DSKIT_TEST_EMPTY_NAME",))
+    with pytest.raises(ProductionError) as excinfo:
+        resolve_secrets(config)
+    assert "DSKIT_TEST_EMPTY_NAME" in str(excinfo.value)
+
+
 def test_the_secrets_facade_redacts_its_own_repr(env_config):
     """Why the pipeline's façade is reused rather than a dict: it resists
     display and is not JSON-serializable, so it cannot ride into an
@@ -155,6 +170,44 @@ def test_redact_is_idempotent():
     register_secret("sk_idempotence_probe_1")
     once = redact("value=sk_idempotence_probe_1 url=https://h.example.com/a/b/c")
     assert redact(once) == once
+
+
+def test_a_secret_containing_another_is_masked_whole():
+    """Longest first: masking `ak_live_1` before `ak_live_1_extended`
+    would leave `[REDACTED]_extended` — the tail of a credential, in a
+    log line, looking redacted."""
+    register_secret("ak_prefix_2931")
+    register_secret("ak_prefix_2931_and_the_rest")
+    masked = redact("key=ak_prefix_2931_and_the_rest")
+    assert "and_the_rest" not in masked
+    assert masked == f"key={REDACTED}"
+
+
+def test_an_empty_secret_refuses_rather_than_masking_everything():
+    """A zero-length secret matches at every position; registering one
+    would replace the whole line with markers and lose the message."""
+    with pytest.raises(ProductionError):
+        register_secret("")
+
+
+def test_a_secret_that_is_part_of_the_marker_refuses():
+    """Masking must be idempotent, and a secret inside `[REDACTED]` would
+    make the second pass rewrite the first pass's own marker."""
+    with pytest.raises(ProductionError):
+        register_secret(REDACTED)
+    with pytest.raises(ProductionError):
+        register_secret("REDACT")
+
+
+@pytest.mark.parametrize("bad", [None, 42, ["a"]])
+def test_register_secret_refuses_a_value_that_is_not_text(bad):
+    with pytest.raises(ProductionError):
+        register_secret(bad)
+
+
+def test_get_logger_refuses_a_module_that_is_not_a_name():
+    with pytest.raises(ProductionError):
+        get_logger("")
 
 
 def test_redact_leaves_text_without_a_secret_alone():

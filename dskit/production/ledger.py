@@ -32,10 +32,12 @@ Durability is graded by ``durability.fsync`` (``every`` / ``batch`` /
 ``none``) but :meth:`Ledger.barrier` always reaches the platter: D13's
 safety records cross it regardless of policy, and a segment roll seals the
 old segment and fsyncs the directory so a new file cannot vanish with the
-power. Money never touches float: a ``float`` under any
-:data:`~dskit.production.vocab.MONEY_FIELDS` name, at any depth of the
-body (a list under a money name inherits it), refuses before anything is
-written, while a ratio under any other name stays a float.
+power. Money never touches float: the walk is
+:func:`~dskit.production.base.reject_money_floats` — the same function
+``records.py`` validates a venue payload with, never a second copy — so a
+``float`` under any money name, at any depth of the body (a list under a
+money name inherits it), refuses before anything is written, while a
+ratio under any other name stays a float.
 
 ``verify()`` locates damage rather than merely detecting it: it walks
 every segment and returns the ``seq`` the walk EXPECTED at the first
@@ -44,8 +46,8 @@ an insertion or a reorder reports the ``seq`` that should have stood
 there.
 
 Import cost: stdlib plus :mod:`dskit.onboarding.base` (the maildir write
-the caches and the genesis use) and the package's own ``base``, ``vocab``
-and ``redact``.
+the caches and the genesis use, and its ``fsync_dir`` barrier) and the
+package's own ``base``, ``vocab`` and ``redact``.
 """
 
 import fcntl
@@ -55,7 +57,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
 
-from dskit.onboarding.base import _fsync_dir, durable_write_json
+from dskit.onboarding.base import durable_write_json, fsync_dir
 from dskit.pipeline.node import check_int_param
 from dskit.production.base import (
     GENESIS_HASH,
@@ -67,12 +69,12 @@ from dskit.production.base import (
     canonical_hash,
     now_ms,
     record_hash,
+    reject_money_floats,
     reject_unknown_params,
 )
 from dskit.production.redact import get_logger
 from dskit.production.vocab import (
     FSYNC_MODES,
-    MONEY_FIELDS,
     RECORD_KINDS,
     ROTATE_BY,
 )
@@ -708,21 +710,8 @@ def _rotation(problems, rotate):
 
 
 # ---------------------------------------------------------------------------
-# Record checks and line codec
+# The line codec — a written line back to its envelope
 # ---------------------------------------------------------------------------
-
-
-def _check_money(problems, value, path, money):
-    """Refuse a float under a money name at any depth; a list inherits the name."""
-    if isinstance(value, float):
-        if money:
-            problems.append(f"{path}: money never touches float, got {value!r}")
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            _check_money(problems, item, f"{path}.{key}", key in MONEY_FIELDS)
-    elif isinstance(value, (list, tuple)):
-        for position, item in enumerate(value):
-            _check_money(problems, item, f"{path}[{position}]", money)
 
 
 def _read(path):
@@ -928,7 +917,7 @@ class JsonlLedger(Ledger):
             os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_EXCL,
             0o644,
         )
-        _fsync_dir(self._root.ledger_dir)
+        fsync_dir(self._root.ledger_dir)
         return _Cursor(index, fd, 0, last_ms, opened_here=True)
 
     def _roll(self):
@@ -982,7 +971,7 @@ class JsonlLedger(Ledger):
         body = record.get("body")
         _check_dict(problems, f"{where}.body", body)
         if isinstance(body, dict):
-            _check_money(problems, body, f"{where}.body", False)
+            reject_money_floats(problems, body, f"{where}.body")
         if problems:
             raise ProductionError(problems)
         caller = {"kind": record_kind, "id": record["id"], "body": body}

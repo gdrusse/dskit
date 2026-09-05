@@ -24,6 +24,8 @@ import os
 import socket
 import textwrap
 
+import subprocess
+import sys
 import pytest
 
 import dskit.pipeline  # noqa: F401 — importing REGISTERS the toolkit kinds
@@ -291,7 +293,18 @@ class TestTrainableEffect:
 
 class TestAudit:
     def test_every_registered_kind_is_classified_deliberately(self):
-        assert set(DEFAULT_NODE_KINDS.kinds()) == set(KIND_EFFECTS)
+        # A fresh interpreter: another test module's adapter (synth_adapter)
+        # registers extra kinds into the shared registry when it is imported
+        # in the same process, and those are the ADAPTER's to classify.
+        code = (
+            "import json, dskit.pipeline\n"
+            "from dskit.pipeline.node import DEFAULT_NODE_KINDS\n"
+            "print(json.dumps(sorted(DEFAULT_NODE_KINDS.kinds())))"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, check=True
+        )
+        assert set(json.loads(done.stdout)) == set(KIND_EFFECTS)
 
     def test_every_synthetic_node_class_is_classified_deliberately(self):
         declared = {

@@ -37,7 +37,7 @@ import logging
 import os
 import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 from dskit.pipeline.base import (
     ConfigError,
@@ -53,6 +53,8 @@ __all__ = [
     "NodeContext",
     "NodeKindRegistry",
     "ResolvedUse",
+    "SERVING_EFFECTS",
+    "ServingContract",
     "TrainableNode",
     "check_int_param",
     "class_ref",
@@ -199,6 +201,161 @@ def class_ref(cls) -> str:
     return f"{cls.__module__}:{cls.__qualname__}"
 
 
+#: The closed vocabulary of what a node DOES when a served tick runs it
+#: (ADR-0091). ``pure`` — reads only its inputs and params; ``entry_read``
+#: — the tick's ONE mutable read (the entry); ``release_read`` — reads
+#: manifest-named, digest-checked values through ``ctx.release_reader``;
+#: ``forbidden`` — may not run in a served tick at all, the fail-closed
+#: default every unaudited class answers. It lives pipeline-side because
+#: the pipeline may not import the serving package: production reads it
+#: from here rather than restating it.
+SERVING_EFFECTS = ("pure", "entry_read", "release_read", "forbidden")
+
+
+@dataclass(frozen=True)
+class ServingContract:
+    """What an ENTRY class declares so a serving loop can snapshot its read.
+
+    Four fields and deliberately no fifth (ADR-0091): the required
+    universe is the serve document's business, and a pure, document-blind
+    classmethod could only have inferred one from the dedupe keys — which
+    may contain time. Declared here, beside :data:`SERVING_EFFECTS`, so a
+    pipeline-side node author implements against a declaration rather
+    than a duck-typed dict; production reads it from here because the
+    pipeline may not import production.
+
+    Parameters
+    ----------
+    source_binding : dict
+        Where the rows come from, as the entry class spells it — e.g.
+        ``{"kind": "onboarding-stream", "root", "source", "stream"}``.
+        JSON-able.
+    entity_key_fields : tuple of str
+        The fields that identify an ENTITY across ticks: the dedupe key
+        with the time field projected out. Non-empty; a list is accepted
+        and stored as a tuple.
+    event_time_field : str
+        The epoch-ms field every emitted row carries — a watermark needs
+        one, so it is required.
+    digest_recipe : dict
+        How a snapshot is digested, JSON-able — e.g. ``{"kind":
+        "stream-digest", "key_fields", "ts_field", "ts_unit"}``.
+
+    Examples
+    --------
+    The contract a bar stream deduplicated on ``(symbol, ts)`` declares::
+
+        contract = ServingContract(
+            source_binding={
+                "kind": "onboarding-stream", "root": "./ob",
+                "source": "alpaca", "stream": "bars",
+            },
+            entity_key_fields=("symbol",),
+            event_time_field="asof_ms",
+            digest_recipe={
+                "kind": "stream-digest", "key_fields": ["symbol", "ts"],
+                "ts_field": "ts", "ts_unit": "iso",
+            },
+        )
+        ServingContract.from_obj(contract.to_obj()) == contract   # True
+    """
+
+    source_binding: dict
+    entity_key_fields: tuple
+    event_time_field: str
+    digest_recipe: dict
+
+    def __post_init__(self):
+        """Hold the four fields to their types; a list of keys becomes a tuple."""
+        if isinstance(self.entity_key_fields, list):
+            object.__setattr__(self, "entity_key_fields", tuple(self.entity_key_fields))
+        problems = []
+        for name in ("source_binding", "digest_recipe"):
+            problems.extend(self._json_dict_problems(name, getattr(self, name)))
+        keys = self.entity_key_fields
+        if (
+            not isinstance(keys, tuple)
+            or not keys
+            or any(not isinstance(k, str) or not k for k in keys)
+        ):
+            problems.append(
+                f"entity_key_fields must be a non-empty tuple of field names "
+                f"(the dedupe key less its time field), got {keys!r}"
+            )
+        if not isinstance(self.event_time_field, str) or not self.event_time_field:
+            problems.append(
+                "event_time_field must name the epoch-ms field rows carry — a "
+                f"watermark needs one — got {self.event_time_field!r}"
+            )
+        if problems:
+            raise ConfigError([f"ServingContract: {p}" for p in problems])
+
+    @staticmethod
+    def _json_dict_problems(name, value):
+        """One problem when ``value`` is not a JSON-able dict, else none."""
+        if not isinstance(value, dict):
+            return [f"{name} must be a dict, got {type(value).__name__}"]
+        try:
+            json.dumps(value, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            return [f"{name} must be JSON-able: {exc}"]
+        return []
+
+    def to_obj(self):
+        """Render the contract as JSON-ready data.
+
+        Returns
+        -------
+        dict
+            The four fields, ``entity_key_fields`` as a list; the two
+            dicts are deep copies, so a caller cannot reach the
+            contract's own.
+        """
+        return {
+            "source_binding": copy.deepcopy(self.source_binding),
+            "entity_key_fields": list(self.entity_key_fields),
+            "event_time_field": self.event_time_field,
+            "digest_recipe": copy.deepcopy(self.digest_recipe),
+        }
+
+    @classmethod
+    def from_obj(cls, obj):
+        """Rebuild a contract from :meth:`to_obj`'s rendering, default-deny.
+
+        Parameters
+        ----------
+        obj : dict
+            Exactly the four field names; an unknown or missing key
+            refuses.
+
+        Returns
+        -------
+        ServingContract
+            The contract, its keys a tuple again.
+
+        Raises
+        ------
+        ConfigError
+            A non-dict, an unknown key, a missing key, or a field that
+            fails construction.
+        """
+        if not isinstance(obj, dict):
+            raise ConfigError(
+                [f"ServingContract: expected a dict, got {type(obj).__name__}"]
+            )
+        names = [f.name for f in fields(cls)]
+        problems = []
+        unknown = sorted(set(obj) - set(names))
+        if unknown:
+            problems.append(f"unknown key(s) {unknown} — allowed: {names}")
+        missing = [n for n in names if n not in obj]
+        if missing:
+            problems.append(f"missing key(s) {missing}")
+        if problems:
+            raise ConfigError([f"ServingContract: {p}" for p in problems])
+        return cls(**obj)
+
+
 @dataclass(frozen=True)
 class NodeContext:
     """What the driver hands every node's ``run`` — the run's frame.
@@ -216,7 +373,12 @@ class NodeContext:
     ``fold_index`` is this run's 0-based ordinal within a walk-forward,
     ``None`` for a standalone run — a node that persists per-row evidence
     must be able to STAMP which fold produced a row, and the fold
-    document carries only its cutoff (ADR-0064).
+    document carries only its cutoff (ADR-0064). ``release_reader`` is
+    the per-node reader a serving policy hands a ``release_read`` node
+    (ADR-0091): :meth:`Node.read_artifact_text` answers from it instead
+    of the filesystem. ``None`` — the default — for every ordinary run
+    and for every node the policy names no reader for; last on purpose,
+    so no positional construction site moves.
     """
 
     name: str
@@ -229,6 +391,7 @@ class NodeContext:
     prev: dict = field(default_factory=dict)
     rerun: object = None
     fold_index: object = None
+    release_reader: object = None
 
 
 class Node(ABC):
@@ -292,6 +455,62 @@ class Node(ABC):
         planner can check a document before instantiation. Override to
         enforce this class's knobs; the base default accepts anything."""
         return []
+
+    # -- the serving classification (ADR-0091) ------------------------------
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify what this class DOES when a served tick runs it.
+
+        Asked of the CLASS before anything is constructed, so it must be
+        pure — no filesystem, no socket: a data node's constructor scans
+        its stream, and a classifier that instantiated first would take
+        the very mutable read it exists to gate. The base answers
+        ``"forbidden"``, the fail-closed default — a class nobody audited
+        may not run in a served tick. An audited class overrides:
+        ``"pure"`` when it reads only its inputs and params,
+        ``"entry_read"`` for the tick's one mutable read,
+        ``"release_read"`` when it reads manifest-named values through
+        ``ctx.release_reader`` (:class:`TrainableNode` answers so for a
+        pinned load).
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params, as the document states them.
+        verified_run_evidence : dict
+            What the release verified about the node's training run —
+            ``mode``, ``artifact_pinned`` and the like; empty when
+            nothing was.
+
+        Returns
+        -------
+        str
+            A member of :data:`SERVING_EFFECTS`; ``"forbidden"`` here.
+        """
+        return "forbidden"
+
+    @classmethod
+    def serving_contract(cls, params, verified_run_evidence):
+        """Declare how a serving loop snapshots this class's read, if it can be the entry.
+
+        Pure, like :meth:`serving_effect`. The base answers ``None`` —
+        "cannot serve as the entry"; an entry class returns a
+        :class:`ServingContract`.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+        verified_run_evidence : dict
+            The release's evidence for the node; empty when none.
+
+        Returns
+        -------
+        ServingContract or None
+            ``None`` here.
+        """
+        return None
 
     def validate_inputs(self, inputs):
         """Problems with the materialized ``inputs``, empty when none.
@@ -418,6 +637,83 @@ class Node(ABC):
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text)
         return path
+
+    def read_artifact_text(self, ctx, filename, ref=None):
+        """Read one TEXT artifact of this node through the one sanctioned doorway.
+
+        Under a release reader — ``ctx.release_reader`` is set, a served
+        tick (ADR-0091) — the answer is the reader's: ``get(filename)``
+        returns the manifest-named, digest-checked text and no file is
+        opened here. The reader is per node, so ``filename`` is scoped to
+        this node's own artifact entry. Otherwise ``ref`` — or the node's
+        own pinned ``artifact`` — is resolved: a directory joins
+        ``filename``, a file is read as it is, whatever ``filename`` says.
+
+        An audited ``release_read`` class reads its artifact ONLY through
+        this and :meth:`read_artifact`, which is what makes "no direct
+        I/O on the load path" checkable rather than promised.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The run frame; its ``release_reader`` decides the source.
+        filename : str
+            The artifact's name within this node's entry (``"model.json"``).
+        ref : str, optional
+            An explicit artifact reference — a directory or a file — that
+            wins over the node's own ``artifact`` pin.
+
+        Returns
+        -------
+        str
+            The artifact's text.
+
+        Raises
+        ------
+        ValueError
+            When no reader is set and neither ``ref`` nor the node's
+            ``artifact`` names anything to read.
+        OSError
+            When the resolved file cannot be read.
+        """
+        if ctx.release_reader is not None:
+            return ctx.release_reader.get(filename)
+        target = ref or self.artifact
+        if not target:
+            raise ValueError(
+                f"{self.key}: nothing names an artifact to read {filename!r} "
+                "from — pin one node-level, or pass a reference"
+            )
+        path = os.path.join(target, filename) if os.path.isdir(target) else target
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+
+    def read_artifact(self, ctx, filename, ref=None):
+        """Read one JSON artifact of this node; :meth:`read_artifact_text`, parsed.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The run frame; its ``release_reader`` decides the source.
+        filename : str
+            The artifact's name within this node's entry.
+        ref : str, optional
+            An explicit artifact reference that wins over the node's pin.
+
+        Returns
+        -------
+        object
+            The parsed JSON.
+
+        Raises
+        ------
+        ValueError
+            When the text is not JSON (``json.JSONDecodeError`` is one),
+            or when nothing names an artifact to read.
+        OSError
+            When the resolved file cannot be read.
+        """
+        return json.loads(self.read_artifact_text(ctx, filename, ref))
 
     # -- the pinned-artifact services (ADR-0038) ---------------------------
     #
@@ -600,6 +896,38 @@ class TrainableNode(Node):
         when it declared one, else :attr:`default_mode`. Read-only — the
         document decides, never the node."""
         return self.mode or type(self).default_mode
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """``"release_read"`` for a manifest-pinned LOAD, ``"forbidden"`` otherwise.
+
+        The family's one widening of the fail-closed default (ADR-0091).
+        A restore reads exactly the artifact the release pinned — through
+        ``ctx.release_reader`` — and nothing else, so it may run in a
+        served tick; a fit, or a load nobody pinned, may not. Both facts
+        come from the release's EVIDENCE, never from the document:
+        ``mode`` must be ``"load"`` and ``artifact_pinned`` must be
+        ``True`` — the bool, not a truthy stand-in.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params; unused — the answer is the
+            release's to give.
+        verified_run_evidence : dict
+            The release's evidence for this node: ``mode`` and
+            ``artifact_pinned`` are read.
+
+        Returns
+        -------
+        str
+            ``"release_read"`` or ``"forbidden"``.
+        """
+        pinned_load = (
+            verified_run_evidence.get("mode") == "load"
+            and verified_run_evidence.get("artifact_pinned") is True
+        )
+        return "release_read" if pinned_load else "forbidden"
 
     # -- the template methods (do not override; override the hooks) --------
 

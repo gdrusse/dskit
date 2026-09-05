@@ -31,9 +31,11 @@ from dskit.production.base import (
     now_ms,
     parse_utc_ms,
     record_hash,
+    reject_money_floats,
     reject_unknown_params,
     utc_iso,
 )
+from dskit.production.vocab import MONEY_FIELDS
 
 #: The genesis link of every series chain (§6): 64 zeros, never a hash.
 GENESIS = "0" * 64
@@ -300,6 +302,64 @@ def test_record_hash_is_hex_sha256(envelope):
 
 
 # ---------------------------------------------------------------------------
+# reject_money_floats — the money rule, one owner (§5.4, §5.8)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("field", MONEY_FIELDS)
+def test_a_float_under_any_money_name_is_a_problem(field):
+    problems = []
+    reject_money_floats(problems, {field: 1.5}, "body")
+    assert len(problems) == 1
+    assert field in problems[0]
+
+
+def test_a_float_under_any_other_name_is_a_legal_ratio():
+    """§5.4/§5.5: dimensionless ratios ARE floats; only the money names
+    are closed. A walk that refused every float would refuse a
+    `confidence`."""
+    problems = []
+    reject_money_floats(
+        problems, {"confidence": 0.61, "prediction": -0.9, "statistic": 1.5}, "body"
+    )
+    assert problems == []
+
+
+def test_the_money_rule_reaches_any_depth():
+    problems = []
+    reject_money_floats(problems, {"detail": {"charges": {"fee": 0.25}}}, "body")
+    assert problems and "body.detail.charges.fee" in problems[0]
+
+
+def test_a_list_under_a_money_name_inherits_it():
+    """`{"price": [1.0]}` is a price that is a float. The list carries the
+    name down, which is the semantics the ledger's own suite pins and the
+    reason both callers must share ONE walk."""
+    problems = []
+    reject_money_floats(problems, {"price": [1.0, 2]}, "body")
+    assert len(problems) == 1
+    assert "body.price[0]" in problems[0]
+
+
+def test_a_list_under_a_ratio_name_does_not_inherit_money():
+    problems = []
+    reject_money_floats(problems, {"weights": [0.25, 0.75]}, "body")
+    assert problems == []
+
+
+def test_every_offending_float_is_reported_not_just_the_first():
+    problems = []
+    reject_money_floats(problems, {"fee": 0.1, "legs": [{"qty": 2.0}]}, "body")
+    assert len(problems) == 2
+
+
+def test_a_decimal_an_int_and_a_string_under_a_money_name_pass():
+    problems = []
+    reject_money_floats(problems, {"price": "1.50", "qty": 3, "fee": None}, "body")
+    assert problems == []
+
+
+# ---------------------------------------------------------------------------
 # ms / UTC helpers
 # ---------------------------------------------------------------------------
 
@@ -360,6 +420,30 @@ def test_the_assets_checkers_are_re_exported_by_identity():
 
     for name in ("_check_str", "_check_dict", "_check_unknown", "_raise_if"):
         assert getattr(production_base, name) is getattr(assets_base, name), name
+
+
+def test_the_money_walk_has_one_owner_that_both_callers_import():
+    """`records.py` validating an opaque venue payload and `ledger.py`
+    validating a record body must not each walk the rule: a second copy
+    is how the two came to disagree about a list under a money key
+    (CLAUDE.md, "a function is never repeated across modules")."""
+    from dskit.production import base as production_base
+    from dskit.production import ledger, records
+
+    assert ledger.reject_money_floats is production_base.reject_money_floats
+    assert records.reject_money_floats is production_base.reject_money_floats
+
+
+def test_the_directory_barrier_has_one_owner_in_onboarding():
+    """The ledger fsyncs its directory after CREATING a segment, which is
+    not the rename `durable_write_json` already covers; it imports the
+    onboarding barrier by its public name rather than reaching for a
+    private one or copying the walk."""
+    from dskit.onboarding import base as onboarding_base
+    from dskit.production import ledger
+
+    assert ledger.fsync_dir is onboarding_base.fsync_dir
+    assert "fsync_dir" in onboarding_base.__all__
 
 
 def test_the_re_exported_private_checkers_are_not_public_api():

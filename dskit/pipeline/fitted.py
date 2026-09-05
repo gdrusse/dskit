@@ -74,7 +74,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from abc import abstractmethod
 
 from dskit.pipeline.document import SPLIT_NAMES, is_node_ref
@@ -648,6 +647,7 @@ class FittedTransform(TrainableNode):
             misdescribe the restored state.
         """
         payload = self._sidecar(
+            ctx,
             self.pinned_artifact(
                 wired=(inputs or {}).get("artifact_path"),
                 missing="mode='load' needs the artifact this transform was "
@@ -917,20 +917,21 @@ class FittedTransform(TrainableNode):
             ) from exc
         return state
 
-    def _sidecar(self, ref):
+    def _sidecar(self, ctx, ref):
         """Read and verify the sidecar behind an artifact reference."""
-        path = os.path.join(ref, SIDECAR_NAME) if os.path.isdir(ref) else ref
+        # Through the base's read service and nothing else (ADR-0091): a
+        # served tick answers from the release reader, an ordinary run from
+        # the pinned directory (joining the sidecar's name) or file.
         try:
-            with open(path, encoding="utf-8") as fh:
-                payload = json.load(fh)
+            payload = self.read_artifact(ctx, SIDECAR_NAME, ref)
         except (OSError, ValueError) as exc:
             raise ValueError(
-                f"{self.key}: cannot read the fitted state at {path}: {exc}"
+                f"{self.key}: cannot read the fitted state at {ref}: {exc}"
             ) from exc
         declared = class_ref(type(self))
         if payload.get("node_class") != declared:
             raise ValueError(
-                f"{self.key}: {path} records node_class "
+                f"{self.key}: {ref} records node_class "
                 f"{payload.get('node_class')!r}, not {declared!r} — wrong "
                 "artifact for this node; a state means nothing apart from the "
                 "class that projects with it"
@@ -944,7 +945,7 @@ class FittedTransform(TrainableNode):
             )
         if not isinstance(payload.get("state"), dict):
             raise ValueError(
-                f"{self.key}: {path} carries no fitted state"
+                f"{self.key}: {ref} carries no fitted state"
             )
         problems = self.state_problems(payload["state"])
         if problems:
@@ -982,6 +983,24 @@ class ApplyTransform(Node):
     outputs = ("rows",)
 
     _PARAMS = ()
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: ``"pure"`` — a projection reads only its two ports (ADR-0091).
+
+        Parameters
+        ----------
+        params : dict
+            The declared params; unused — this kind has none.
+        verified_run_evidence : dict
+            The release's evidence; unused — a pure node needs none.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
 
     @classmethod
     def validate_params(cls, params):

@@ -112,6 +112,7 @@ CLOSED_SET_NAMES = (
     "CACHE_STATES",
     "AUTHORITY_EVENTS",
     "TRANSITION_CAUSES",
+    "ALERT_SUPPRESSIONS",
 )
 
 #: The names whose value is a MAP, not a tuple — checked by their own tests.
@@ -300,6 +301,19 @@ def test_every_closed_set_the_plan_names_is_defined_and_exported(name):
     )
 
 
+def test_the_completeness_list_is_the_whole_surface_both_ways():
+    """The list above is only a completeness pin if nothing can be added
+    to `vocab.py` without joining it: a set that is exported but not
+    listed is a closed set nobody checked the shape or members of, and a
+    pinning test that omits a knob is worse than none (CLAUDE.md). A new
+    vocabulary is added HERE, deliberately, in the same commit."""
+    unpinned = sorted(set(vocab.__all__) - set(CLOSED_SET_NAMES))
+    assert not unpinned, (
+        f"exported but not in CLOSED_SET_NAMES: {unpinned} — add the name to "
+        "the restated list so its shape and members are checked"
+    )
+
+
 def test_all_is_the_whole_surface_and_leaks_no_private_name():
     assert vocab.__all__, "vocab.py must declare __all__"
     assert sorted(vocab.__all__) == sorted(set(vocab.__all__)), "duplicate in __all__"
@@ -463,7 +477,10 @@ def test_loop_states_carry_the_lifecycle_plus_halted_and_faulted():
     assert vocab.LOOP_STATES[0] == "init"
 
 
-def test_record_kinds_are_the_twenty_five_ledger_kinds_of_the_record_table():
+def test_record_kinds_are_the_twenty_six_ledger_kinds_of_the_record_table():
+    """§6's table names twenty-five; ruling R6 added `cancel_outcome`, so
+    that a halting `trip` can be barriered BEFORE the cancel I/O and what
+    the cancel came to is still recorded."""
     assert set(vocab.RECORD_KINDS) == {
         "process",
         "tick_start",

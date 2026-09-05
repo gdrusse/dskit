@@ -29,8 +29,11 @@ records everything that ran.
 Search semantics (docs/24 §8): a ``search``-role node — and only a
 search node — receives ``ctx.rerun``, the :class:`_SearchSeam` closure
 that re-executes the objective's dirty subgraph per trial against a
-scratch copy of the outputs. When the node returns a non-empty
-``best_params``, the driver re-executes that subgraph ONE final time
+scratch copy of the outputs. Its engine is :class:`SubgraphRunner`, the
+PUBLIC seam a serving loop drives too (ADR-0091): the same per-node
+lifecycle, the caller's own override rule, an optional
+:class:`~dskit.pipeline.policy.ExecutionPolicy`. When the node returns a
+non-empty ``best_params``, the driver re-executes that subgraph ONE final time
 with the winning overrides and REPLACES those nodes' outputs, timings,
 and sink metrics — everything downstream of the search consumes the
 winner pass, and the search node's record carries ``trials_executed``
@@ -67,6 +70,7 @@ import sys
 import tempfile
 import time
 import traceback
+from collections import ChainMap
 from dataclasses import dataclass, field, replace
 
 from dskit.pipeline.base import (
@@ -104,8 +108,10 @@ __all__ = [
     "DocumentRunResult",
     "FOLD_FIELDS",
     "FOLD_OPTIONAL_FIELDS",
+    "SubgraphRunner",
     "WalkForwardRunResult",
     "aggregate_folds",
+    "apply_param_override",
     "run_document",
     "run_walk_forward",
     "write_walkforward_summary",
@@ -126,6 +132,11 @@ _RELEASE_MIN_LEN = 256
 
 _SUMMARY_TYPES = frozenset({"list", "tuple", "dict"})
 _KEEP_PORTS = frozenset({"flags"})
+
+#: The roles whose ``verdict`` output decides a halt (spec §7): a NO-GO from
+#: one halts its DAG descendants, and a winner pass may not flip one to
+#: NO-GO after the base pass decided. One name, read by both rules.
+_VERDICT_ROLES = ("gate", "stat_test")
 
 #: The keys EVERY fold row of a walk-forward summary carries (ADR-0093).
 #: ``_run_folds`` builds each row from this tuple, ``aggregate_folds``
@@ -361,13 +372,38 @@ def _materialize(obj, where, outputs, splits_info, prev, bindings):
 # ---------------------------------------------------------------------------
 
 
-def _apply_param_override(params, node_key, path, value) -> None:
+def apply_param_override(params, node_key, path, value):
     """Set ``value`` at ``path`` inside one node's (deep-copied) params.
 
-    Overrides may only address EXISTING params: every segment must
-    navigate an existing dict key, and the terminal key must already be
-    there — creating a missing key is an error, never a feature (a typo
-    must not become a silent new knob).
+    The one override rule every re-execution shares — a search trial,
+    the winner pass, a serving window (ADR-0091): an override may only
+    address an EXISTING param. Every segment must navigate an existing
+    dict key and the terminal key must already be there; creating a
+    missing key is an error, never a feature. A typo must not become a
+    silent new knob — and a document that will be SERVED declares its
+    window (``"since_ms": null``) so the serving override finds it.
+
+    Parameters
+    ----------
+    params : dict
+        The node's params, already deep-copied — edited in place.
+    node_key : str
+        The addressed node, quoted into a refusal.
+    path : tuple of str
+        The param path below the node (``("opt", "lr")``).
+    value : object
+        The value to set.
+
+    Returns
+    -------
+    None
+        ``params`` is edited in place.
+
+    Raises
+    ------
+    ValueError
+        When a segment has nothing to descend into, or the terminal key
+        is not an existing param.
     """
     where = f"override '{node_key}.{'.'.join(path)}'"
     cursor = params
@@ -392,24 +428,299 @@ def _apply_param_override(params, node_key, path, value) -> None:
     cursor[last] = value
 
 
+#: The private spelling the rule was first published under — an ALIAS of
+#: the one owner above, never a second definition, kept so a caller of the
+#: old name keeps working while it moves to :func:`apply_param_override`.
+_apply_param_override = apply_param_override
+
+
+def _override_targets(overrides, declared):
+    """Parse overrides to ``(node, path, value)``; a non-dict or undeclared node refuses."""
+    if not isinstance(overrides, dict):
+        raise ValueError(
+            f"overrides must be a dict of 'node.param.path' -> value, "
+            f"got {overrides!r}"
+        )
+    for target, value in overrides.items():
+        parts = target.split(".") if isinstance(target, str) else []
+        if len(parts) < 2 or parts[0] not in declared:
+            raise ValueError(
+                f"override {target!r} must be '<node>.<param.path>' "
+                f"addressing a declared node (declared: {sorted(declared)})"
+            )
+        yield parts[0], tuple(parts[1:]), value
+
+
+class SubgraphRunner:
+    """Re-execute part of a planned DAG under param overrides (ADR-0091).
+
+    The engine behind the search seam, made public so a serving loop can
+    drive the same lifecycle under a different override rule. Given the
+    plan and a BASE pass, :meth:`rerun` applies ``"node.param.path"``
+    overrides into deep copies of the addressed specs' params and runs
+    ``order ∩ needed ∩ dirty`` — the addressed nodes plus their DAG
+    descendants, restricted to the ancestry the caller asked for — with
+    the full per-node lifecycle (``validate_inputs -> run ->
+    validate_outputs``). :meth:`run_keys` runs a given key set with no
+    overrides at all: the serving base pass's verb. Clean nodes are never
+    re-run — a ``$node`` reference that ``outputs`` does not hold is read
+    from the base pass.
+
+    The runner keeps exactly two override clauses — a DECLARED node and
+    an EXISTING param path (:func:`apply_param_override`) — and nothing
+    else. Which roles a SEARCH may re-tune is the search seam's rule, not
+    the runner's: serving's one override addresses a ``data`` node's
+    window, which a search may never touch.
+
+    Parameters
+    ----------
+    the_plan : Plan
+        The resolved DAG (:func:`~dskit.pipeline.planner.plan`).
+    needed : set of str
+        The nodes a pass may run at all — the caller's ancestry
+        (``ancestors(target) | {target}`` for a search objective,
+        ``ancestors(heads) | heads`` for serving). A dirty node outside it
+        is never executed. A parameter, not a derivation: the runner
+        cannot know what the pass is for.
+    node_outputs : dict
+        The base pass — ``key -> outputs`` of every node that has run.
+        Read, never written: a reference a pass's own ``outputs`` cannot
+        answer resolves here.
+    splits_info : dict
+        The materialized splits' JSON view, behind ``$splits`` references.
+    prev : dict
+        The previous run's carry, behind ``$prev`` references.
+    policy : ExecutionPolicy, optional
+        ``None`` — the default, and today's search behaviour exactly —
+        defers nothing and hands no node a reader. A policy's
+        :meth:`~dskit.pipeline.policy.ExecutionPolicy.defer` skips a key
+        whose output the caller SEEDED in ``outputs`` (the entry, read
+        once elsewhere: no second mutable read), and its
+        :meth:`~dskit.pipeline.policy.ExecutionPolicy.reader` reaches a
+        node as ``ctx.release_reader``.
+
+    Examples
+    --------
+    Re-run one node and the objective below it, on a scratch copy of the
+    base pass, leaving the base untouched::
+
+        runner = SubgraphRunner(the_plan, {"src", "mid", "a"}, base, {}, {})
+        scratch = dict(base)
+        outputs, ran, seconds = runner.rerun({"mid.bump": 5}, scratch, ctx, {})
+        ran                  # ('mid', 'a')
+        outputs is scratch   # True
+    """
+
+    def __init__(self, the_plan, needed, node_outputs, splits_info, prev, policy=None):
+        self._plan = the_plan
+        self._specs = the_plan.document.expanded
+        self._needed = frozenset(needed)
+        self._base = node_outputs
+        self._splits_info = splits_info
+        self._prev = prev
+        self._policy = policy
+
+    def rerun(self, overrides, outputs, ctx, prev_bindings, *, guard_verdicts=False):
+        """Re-execute the dirty subgraph under ``overrides``, in place.
+
+        Parameters
+        ----------
+        overrides : dict
+            ``"node.param.path" -> value``. Each target must address a
+            declared node and an existing param path; the addressed nodes
+            and all their descendants are DIRTY. An empty map dirties
+            nothing and executes nothing.
+        outputs : dict
+            What this pass reads from and writes into — a scratch copy for
+            a trial, the live dict for a winner or a serving pass. Mutated
+            in place and returned. A node the policy defers must already
+            be seeded here; the base pass never stands in for it.
+        ctx : NodeContext
+            The run frame handed to every node — as is, or carrying the
+            policy's reader as ``release_reader`` for the nodes it names.
+        prev_bindings : dict
+            OUT parameter: where this pass's ``$prev`` resolutions land
+            (``"node.output" -> "prev" | "default"``).
+        guard_verdicts : bool, optional
+            Refuse a ``gate``/``stat_test`` node whose verdict FLIPS to
+            NO-GO against the output held for it — the winner-pass rule,
+            because halt decisions were already made on the base pass.
+
+        Returns
+        -------
+        tuple
+            ``(outputs, ran, seconds)`` — the SAME ``outputs`` object, the
+            keys actually executed in plan order (deferred keys are not
+            among them), and each one's wall time in seconds.
+
+        Raises
+        ------
+        ValueError
+            An override map that is not a dict; a target that is not
+            ``'<node>.<param.path>'`` on a declared node; a param path
+            that does not exist; a deferred key with no seeded output; a
+            guarded verdict flip.
+        ConfigError
+            A node's ``validate_inputs`` or ``validate_outputs`` problems.
+        """
+        per_node = {}
+        for node, path, value in _override_targets(overrides, self._specs):
+            per_node.setdefault(node, []).append((path, value))
+        dirty = set(per_node)
+        for head in per_node:
+            dirty |= self._plan.descendants(head)
+        subgraph = [k for k in self._plan.order if k in self._needed and k in dirty]
+        return self._run(subgraph, per_node, outputs, ctx, prev_bindings, guard_verdicts)
+
+    def run_keys(self, keys, outputs, ctx, prev_bindings):
+        """Run exactly ``keys``, in plan order, with no overrides, in place.
+
+        The serving BASE PASS verb: production hands it the needed keys
+        that are neither the entry nor its descendants, so the immutable
+        part of the DAG runs once for the process lifetime. ``needed``
+        does not filter here — the caller named the keys.
+
+        Parameters
+        ----------
+        keys : iterable of str
+            The nodes to run; every one must be declared.
+        outputs : dict
+            Read from and written into, in place; returned.
+        ctx : NodeContext
+            The run frame, as for :meth:`rerun`.
+        prev_bindings : dict
+            OUT parameter, as for :meth:`rerun`.
+
+        Returns
+        -------
+        tuple
+            ``(outputs, ran, seconds)``, as for :meth:`rerun`.
+
+        Raises
+        ------
+        ValueError
+            An undeclared key, or a deferred key with no seeded output.
+        ConfigError
+            A node's ``validate_inputs`` or ``validate_outputs`` problems.
+        """
+        wanted = set(keys)
+        undeclared = sorted(str(k) for k in wanted if k not in self._specs)
+        if undeclared:
+            raise ValueError(
+                f"run_keys: {undeclared} are not declared nodes "
+                f"(declared: {sorted(self._specs)})"
+            )
+        subgraph = [k for k in self._plan.order if k in wanted]
+        return self._run(subgraph, {}, outputs, ctx, prev_bindings, False)
+
+    def _run(self, subgraph, per_node, outputs, ctx, prev_bindings, guard_verdicts):
+        """Run ``subgraph`` in order, skipping deferred keys, timing each node."""
+        view = ChainMap(outputs, self._base)
+        ran, seconds = [], {}
+        for key in subgraph:
+            if self._deferred(key, outputs):
+                continue
+            t0 = time.perf_counter()
+            outputs[key] = self._run_node(
+                key, per_node.get(key, ()), view, ctx, prev_bindings, guard_verdicts
+            )
+            seconds[key] = round(time.perf_counter() - t0, 6)
+            ran.append(key)
+        return outputs, tuple(ran), seconds
+
+    def _deferred(self, key, outputs):
+        """Say whether the policy defers ``key``; a deferred key must be seeded."""
+        if self._policy is None or not self._policy.defer(key):
+            return False
+        if key not in outputs:
+            raise ValueError(
+                f"{key}: the policy defers this node, so its output must be "
+                "seeded in outputs before the pass — none is, and the base "
+                "pass's value may not stand in for a deferred read"
+            )
+        return True
+
+    def _run_node(self, key, overrides, view, ctx, prev_bindings, guard_verdicts):
+        """Materialize, construct, validate and run ONE node; return its outputs."""
+        spec = self._specs[key]
+        raw = copy.deepcopy(spec.params)
+        for path, value in overrides:
+            apply_param_override(raw, key, path, value)
+        params = _materialize(
+            raw,
+            f"pipeline.{key}.params",
+            view,
+            self._splits_info,
+            self._prev,
+            prev_bindings,
+        )
+        inputs = {
+            port: _materialize(
+                ref,
+                f"pipeline.{key}.inputs.{port}",
+                view,
+                self._splits_info,
+                self._prev,
+                prev_bindings,
+            )
+            for port, ref in spec.inputs.items()
+        }
+        node = self._plan.resolved[key].cls(
+            key, params, mode=spec.mode, artifact=spec.artifact
+        )
+        problems = node.validate_inputs(inputs)
+        if problems:
+            raise ConfigError([f"{key}: {p}" for p in problems])
+        out = node.run(self._frame_for(key, ctx), inputs)
+        problems = node.validate_outputs(out)
+        if problems:
+            raise ConfigError([f"{key}: {p}" for p in problems])
+        if guard_verdicts:
+            self._refuse_flip(key, out, view)
+        return out
+
+    def _frame_for(self, key, ctx):
+        """``ctx`` as is, or carrying the policy's release reader for ``key``."""
+        reader = None if self._policy is None else self._policy.reader(key)
+        return ctx if reader is None else replace(ctx, release_reader=reader)
+
+    def _refuse_flip(self, key, out, view):
+        """Refuse a verdict node flipping to NO-GO after the base pass decided."""
+        role = self._plan.role_of(key)
+        if (
+            role in _VERDICT_ROLES
+            and out.get("verdict") == "NO-GO"
+            and view.get(key, {}).get("verdict") != "NO-GO"
+        ):
+            raise ValueError(
+                f"{key}: the winner pass flipped this {role} node's verdict to "
+                "NO-GO after halt decisions were made on the base pass — "
+                "refusing to ride a stale GO"
+            )
+
+
 class _SearchSeam:
     """One search node's subgraph re-execution seam (docs/24 §8).
 
-    Injected as ``ctx.rerun`` for search-role nodes ONLY. For a search
-    node S whose ``objective`` references score node T:
+    Injected as ``ctx.rerun`` for search-role nodes ONLY. A thin caller of
+    :class:`SubgraphRunner` that owns what is SEARCH's alone: the
+    objective float, the unsearchable-role rule and the ``needed`` set.
+    For a search node S whose ``objective`` references score node T:
 
     * ``needed`` = ancestors(T) ∪ {T} — the minimal subgraph that can
-      produce the objective;
+      produce the objective; the runner is built over it;
     * ``dirty(overrides)`` = the nodes the override paths address plus
       all their DAG descendants;
-    * ``rerun(overrides) -> float`` applies each ``"node.param.path"``
-      override into a DEEP COPY of the affected specs' params, re-executes
-      ``needed ∩ dirty`` in plan order against a SCRATCH copy of the base
-      outputs (clean nodes are read from the base pass, never re-run),
-      full per-node lifecycle, and digs the objective path out of T's
-      trial outputs. Trials run with the tracker silenced — the sinks
-      reflect the final pass, not exploration. A trial that raises
-      propagates a clear error naming the trial's overrides.
+    * ``rerun(overrides) -> float`` refuses an override on a role a search
+      may never re-tune, then has the runner apply each
+      ``"node.param.path"`` override into a DEEP COPY of the affected
+      specs' params and re-execute ``needed ∩ dirty`` in plan order
+      against a SCRATCH copy of the base outputs (clean nodes are read
+      from the base pass, never re-run), full per-node lifecycle, and
+      digs the objective path out of T's trial outputs. Trials run with
+      the tracker silenced — the sinks reflect the final pass, not
+      exploration. A trial that raises propagates a clear error naming
+      the trial's overrides.
     * ``seed_targets`` names the ``"node.seed"`` override paths of
       train-role nodes inside the full re-execution set that already
       declare a top-level ``seed`` param — the seeds-ensemble contract
@@ -430,8 +741,6 @@ class _SearchSeam:
         self._plan = the_plan
         self._specs = the_plan.document.expanded
         self._outputs = node_outputs  # the LIVE dict; trials copy, winner writes
-        self._splits_info = splits_info
-        self._prev = prev
         self._trial_ctx = trial_ctx
         self.calls = 0
         # The planner guaranteed the objective is a $-ref into a declared
@@ -439,6 +748,9 @@ class _SearchSeam:
         target, path = parse_node_ref(self._specs[key].params["objective"])
         self._target, self._obj_path = target, path
         self.needed = the_plan.ancestors(target) | {target}
+        self._runner = SubgraphRunner(
+            the_plan, self.needed, node_outputs, splits_info, prev
+        )
         space = self._specs[key].params.get(SEARCH_SPACE_PARAM)
         heads = set()
         if isinstance(space, dict):
@@ -463,7 +775,8 @@ class _SearchSeam:
         self.calls += 1
         scratch = dict(self._outputs)
         try:
-            self._execute(overrides, scratch, self._trial_ctx, {})
+            self._refuse_unsearchable(overrides)
+            self._runner.rerun(overrides, scratch, self._trial_ctx, {})
             value = _dig(
                 scratch[self._target],
                 self._obj_path,
@@ -508,94 +821,34 @@ class _SearchSeam:
             to NO-GO under the winner.
         """
         try:
-            return self._execute(
+            self._refuse_unsearchable(overrides)
+            _, reran, seconds = self._runner.rerun(
                 overrides, self._outputs, ctx, bindings, guard_verdicts=True
             )
+            return reran, seconds
         except Exception as exc:
             raise RuntimeError(
                 f"search {self._key}: applying winner overrides {overrides!r} "
                 f"failed: {exc}"
             ) from exc
 
-    def _execute(self, overrides, outputs, ctx, bindings, *, guard_verdicts=False):
-        if not isinstance(overrides, dict):
-            raise ValueError(
-                f"overrides must be a dict of 'node.param.path' -> value, "
-                f"got {overrides!r}"
-            )
-        per_node = {}
-        for target, value in overrides.items():
-            parts = target.split(".") if isinstance(target, str) else []
-            if len(parts) < 2 or parts[0] not in self._specs:
-                raise ValueError(
-                    f"override {target!r} must be '<node>.<param.path>' "
-                    f"addressing a declared node (declared: {sorted(self._specs)})"
-                )
-            # The planner refuses unsearchable heads in the DOCUMENT's
-            # space; this is the runtime twin, because a custom search
-            # kind can hand ctx.rerun any overrides it likes.
-            role = self._plan.role_of(parts[0])
-            why = unsearchable_space_why(role, parts[1])
+    def _refuse_unsearchable(self, overrides):
+        """Refuse an override on a role a search may never re-tune."""
+        # The planner refuses unsearchable heads in the DOCUMENT's space;
+        # this is the runtime twin, because a custom search kind can hand
+        # ctx.rerun any overrides it likes. Declaredness is checked FIRST,
+        # target by target, by the rule the runner shares: Plan.role_of
+        # indexes resolved[key], so an undeclared node must refuse by name
+        # before its role is ever asked for.
+        for node, path, _value in _override_targets(overrides, self._specs):
+            role = self._plan.role_of(node)
+            why = unsearchable_space_why(role, path[0])
             if why is not None:
+                target = f"{node}.{'.'.join(path)}"
                 raise ValueError(
-                    f"override {target!r} addresses node {parts[0]!r} of "
+                    f"override {target!r} addresses node {node!r} of "
                     f"role {role!r}, which a search may never re-tune — {why}"
                 )
-            per_node.setdefault(parts[0], []).append((tuple(parts[1:]), value))
-        dirty = set(per_node)
-        for head in per_node:
-            dirty |= self._plan.descendants(head)
-        subgraph = tuple(k for k in self._plan.order if k in self.needed and k in dirty)
-        seconds = {}
-        for k in subgraph:
-            spec = self._specs[k]
-            t0 = time.perf_counter()
-            raw = copy.deepcopy(spec.params)
-            for path, value in per_node.get(k, ()):
-                _apply_param_override(raw, k, path, value)
-            params = _materialize(
-                raw,
-                f"pipeline.{k}.params",
-                outputs,
-                self._splits_info,
-                self._prev,
-                bindings,
-            )
-            inputs = {
-                port: _materialize(
-                    ref,
-                    f"pipeline.{k}.inputs.{port}",
-                    outputs,
-                    self._splits_info,
-                    self._prev,
-                    bindings,
-                )
-                for port, ref in spec.inputs.items()
-            }
-            node = self._plan.resolved[k].cls(
-                k, params, mode=spec.mode, artifact=spec.artifact
-            )
-            problems = node.validate_inputs(inputs)
-            if problems:
-                raise ConfigError([f"{k}: {p}" for p in problems])
-            out = node.run(ctx, inputs)
-            problems = node.validate_outputs(out)
-            if problems:
-                raise ConfigError([f"{k}: {p}" for p in problems])
-            if (
-                guard_verdicts
-                and self._plan.role_of(k) in ("gate", "stat_test")
-                and out.get("verdict") == "NO-GO"
-                and outputs.get(k, {}).get("verdict") != "NO-GO"
-            ):
-                raise ValueError(
-                    f"{k}: the winner pass flipped this {self._plan.role_of(k)} "
-                    "node's verdict to NO-GO after halt decisions were made on "
-                    "the base pass — refusing to ride a stale GO"
-                )
-            outputs[k] = out
-            seconds[k] = round(time.perf_counter() - t0, 6)
-        return subgraph, seconds
 
 
 # ---------------------------------------------------------------------------
@@ -1455,7 +1708,7 @@ def _apply_verdict(run, key, the_plan, outputs):
     a RESULT (exit code 3), never an error.
     """
     if (
-        the_plan.role_of(key) not in ("gate", "stat_test")
+        the_plan.role_of(key) not in _VERDICT_ROLES
         or outputs.get("verdict") != "NO-GO"
     ):
         return

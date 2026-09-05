@@ -52,9 +52,17 @@ from decimal import Decimal
 
 import pytest
 
+from dskit.production import ledger as ledger_module
 from dskit.production import vocab
 from dskit.production.base import ProductionError, canonical_hash, record_hash
-from dskit.production.ledger import Checkpoint, JsonlLedger, Ledger, ServeRoot
+from dskit.production.ledger import (
+    Checkpoint,
+    JsonlLedger,
+    Ledger,
+    ServeRoot,
+    validate_cache_head,
+)
+from dskit.production.redact import REDACTED, redact, register_secret
 
 SERIES = "018f0f4e-7b21-7d3a-9c31-6d8f36d806a1"
 PROCESS = "proc-a"
@@ -568,6 +576,20 @@ def test_the_same_id_with_a_different_payload_refuses_naming_the_id(serve, open_
     assert len(_raw_lines(serve)) == 1
 
 
+def test_an_id_reused_under_a_different_kind_refuses(serve, open_ledger):
+    """The idempotency index is keyed by the caller's `id` ALONE (§5.8),
+    so a record `id` is unique across the whole series, not per kind. The
+    payload digest covers `kind`, so reusing a tick's id for its terminal
+    record refuses rather than silently returning the `tick_start`'s seq
+    — the safe direction, but a constraint every producer must know."""
+    led = open_ledger(serve)
+    led.append(_rec(kind="tick_start", rid="tick-1", tick_at_ms=1))
+    with pytest.raises(ProductionError) as exc:
+        led.append(_rec(kind="tick", rid="tick-1", status="decided"))
+    assert "tick-1" in str(exc.value)
+    assert len(_raw_lines(serve)) == 1
+
+
 def test_idempotency_survives_a_reopen(serve, open_ledger):
     led = open_ledger(serve)
     rec = _rec(kind="fill", rid="f-1", qty=3)
@@ -587,6 +609,23 @@ def test_a_deduplicated_append_does_not_refold_the_state(serve, open_ledger):
     led.append(dict(rec))
     led.append(dict(rec))
     assert len(state.applied) == 1
+
+
+def test_append_many_writes_nothing_when_any_record_is_malformed(
+    serve, open_ledger
+):
+    """Every record is validated before the first is written, so a bad
+    third record cannot leave a half-applied batch on the chain — the
+    caller retries the whole batch and idempotency does the rest."""
+    led = open_ledger(serve)
+    with pytest.raises(ProductionError) as exc:
+        led.append_many(
+            [_rec(rid="t-1"), _rec(rid="t-2"), _rec(kind="not_a_kind", rid="t-3")]
+        )
+    assert "not_a_kind" in str(exc.value)
+    assert _raw_lines(serve) == []
+    assert led.head() == (0, GENESIS_PREV)
+    assert led.append(_rec(rid="t-1")) == 1
 
 
 def test_append_many_deduplicates_within_the_batch(serve, open_ledger):
@@ -854,6 +893,50 @@ def test_a_torn_tail_does_not_lose_the_idempotency_index(serve, open_ledger):
         reopened.append(_rec(kind="fill", rid="f-1", qty=4))
 
 
+def test_a_complete_but_corrupt_line_refuses_at_open(serve, open_ledger):
+    """A torn TAIL is a write the crash cut short and is discarded; a
+    COMPLETE line that is not an envelope is damage, and a reader that
+    shrugged at it would carry on from a head it never verified."""
+    led = open_ledger(serve)
+    led.append(_rec(rid="t-1"))
+    led.close()
+    with open(_segment_paths(serve)[-1], "a", encoding="utf-8") as fh:
+        fh.write("not json at all\n")
+    with pytest.raises(ProductionError) as exc:
+        open_ledger(serve)
+    assert "not JSON" in str(exc.value)
+
+
+def test_a_complete_line_that_is_not_an_envelope_refuses_at_open(serve, open_ledger):
+    """JSON is not enough: the twelve fields and their types are what
+    makes a line a record."""
+    led = open_ledger(serve)
+    led.append(_rec(rid="t-1"))
+    led.close()
+    with open(_segment_paths(serve)[-1], "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"kind": "tick_start", "id": "t-2"}) + "\n")
+    with pytest.raises(ProductionError) as exc:
+        open_ledger(serve)
+    assert "envelope" in str(exc.value)
+
+
+def test_a_torn_line_inside_a_sealed_segment_refuses(serve, open_ledger):
+    """Only the LAST segment can hold a torn write. A line without its
+    newline in a sealed segment means the chain lost records mid-file,
+    and skipping it would resume from a `seq` the ledger cannot reach."""
+    led = open_ledger(serve, rotate={"by": "size", "max_bytes": 256})
+    for i in range(1, 7):
+        led.append(_rec(rid=f"t-{i}", filler="x" * 200))
+    led.close()
+    paths = _segment_paths(serve)
+    assert len(paths) >= 3
+    with open(paths[0], "r+b") as fh:
+        fh.truncate(os.path.getsize(paths[0]) - 1)
+    with pytest.raises(ProductionError) as exc:
+        open_ledger(serve)
+    assert "sealed" in str(exc.value)
+
+
 # ---------------------------------------------------------------------------
 # Rotation and segment continuity (§4.1 placement.rotate)
 # ---------------------------------------------------------------------------
@@ -878,6 +961,25 @@ def test_segments_are_named_ledger_nnnn_jsonl(serve, open_ledger):
     names = [os.path.basename(p) for p in _segment_paths(serve)]
     assert names[0] == "ledger.0001.jsonl"
     assert names == [f"ledger.{i:04d}.jsonl" for i in range(1, len(names) + 1)]
+
+
+def test_segments_are_ordered_by_their_number_not_by_their_name(serve):
+    """`ServeRoot` is the only thing that knows the layout, so it owns the
+    chain ORDER too. Sorting by name puts `ledger.10000` before
+    `ledger.9999`, which would read the chain out of order and report the
+    join as damage."""
+    for index in (1, 2, 9999, 10000):
+        open(serve.segment_path(index), "w", encoding="utf-8").close()
+    assert [i for i, _ in serve.segment_paths()] == [1, 2, 9999, 10000]
+
+
+def test_a_file_that_is_not_a_segment_is_not_part_of_the_chain(serve):
+    open(os.path.join(serve.ledger_dir, "ledger.0001.jsonl"), "w").close()
+    open(os.path.join(serve.ledger_dir, "notes.txt"), "w").close()
+    open(os.path.join(serve.ledger_dir, "ledger.jsonl"), "w").close()
+    assert [os.path.basename(p) for _, p in serve.segment_paths()] == [
+        "ledger.0001.jsonl"
+    ]
 
 
 def test_rotate_by_size_rolls_and_keeps_the_chain_continuous(serve, open_ledger):
@@ -1254,6 +1356,56 @@ def test_a_second_writer_in_another_process_refuses(serve, open_ledger):
     assert proc.returncode == 7, proc.stderr
 
 
+def test_a_closed_ledger_refuses_every_write_but_still_reads(serve, open_ledger):
+    """`close()` gives up `serve.lock`, so another process may already be
+    the writer: appending after it would fork the chain. Reading the
+    files it already wrote stays legal — `verify` and `status` are
+    read-only verbs."""
+    led = open_ledger(serve)
+    seq = led.append(_rec(rid="t-1"))
+    _, head = led.head()
+    led.close()
+    for write in (
+        lambda: led.append(_rec(rid="t-2")),
+        lambda: led.append_many([_rec(rid="t-3")]),
+        lambda: led.barrier(),
+        lambda: led.snapshot({"any": "payload"}),
+    ):
+        with pytest.raises(ProductionError) as exc:
+            write()
+        assert "closed" in str(exc.value)
+    assert led.head() == (seq, head)
+    assert led.verify() is None
+    assert [e["seq"] for e in led.scan()] == [1]
+    assert len(_raw_lines(serve)) == 1
+
+
+def test_a_short_write_is_truncated_back_so_the_segment_holds_whole_lines(
+    serve, open_ledger, monkeypatch
+):
+    """A partial line is not a record. The writer puts the segment back
+    to its last known-good size and refuses, so the in-memory head and
+    the file still agree and the next append chains from the right hash."""
+    led = open_ledger(serve)
+    led.append(_rec(rid="t-1"))
+    _, head_before = led.head()
+    real_write = os.write
+
+    def short_write(fd, data):
+        return real_write(fd, data[: len(data) // 2])
+
+    monkeypatch.setattr(os, "write", short_write)
+    with pytest.raises(ProductionError) as exc:
+        led.append(_rec(rid="t-2"))
+    assert "short write" in str(exc.value)
+    monkeypatch.undo()
+    assert led.head() == (1, head_before)
+    assert len(_raw_lines(serve)) == 1
+    assert led.append(_rec(rid="t-2")) == 2
+    assert _envelopes(serve)[-1]["prev_hash"] == head_before
+    assert led.verify() is None
+
+
 # ---------------------------------------------------------------------------
 # Snapshots (§6 `snapshot` record)
 # ---------------------------------------------------------------------------
@@ -1422,6 +1574,52 @@ def test_a_checkpoint_that_diverges_at_its_own_seq_refuses(serve, open_ledger):
         _checkpoint(2, "f" * 64).validate_against(led)
 
 
+def test_a_checkpoint_at_the_head_seq_with_a_different_hash_refuses(
+    serve, open_ledger
+):
+    """The divergent case §5.8 refuses: same `seq`, different `hash`. The
+    cache was written against a history this ledger does not have, so
+    trusting it would restore positions the chain never recorded — a
+    behind cache is stale and rebuilt, this one is not."""
+    led = open_ledger(serve)
+    for i in range(1, 4):
+        led.append(_rec(rid=f"t-{i}"))
+    seq, head = led.head()
+    with pytest.raises(ProductionError) as exc:
+        _checkpoint(seq, "f" * 64).validate_against(led)
+    assert "diverges" in str(exc.value)
+    assert _checkpoint(seq, head).validate_against(led) == CURRENT
+
+
+def test_the_cache_head_rule_has_one_owner_the_checkpoint_delegates_to(
+    serve, open_ledger
+):
+    """`arming.json`, `breaker.json` and `checkpoint.json` apply the same
+    at/behind/ahead/divergent rule; a second copy would drift the moment
+    one of the three loosened a bound (ruling R7)."""
+    led = open_ledger(serve)
+    led.append(_rec(rid="t-1"))
+    seq, head = led.head()
+    assert "validate_cache_head" in ledger_module.__all__
+    assert validate_cache_head(seq, head, led) == CURRENT
+    assert validate_cache_head(0, GENESIS_PREV, led) == STALE
+    assert _checkpoint(seq, head).validate_against(led) == validate_cache_head(
+        seq, head, led
+    )
+    with pytest.raises(ProductionError):
+        validate_cache_head(seq + 1, head, led)
+
+
+@pytest.mark.parametrize("bad", [-1, "3", None, True])
+def test_a_cache_head_seq_that_is_not_a_sequence_number_refuses(
+    serve, open_ledger, bad
+):
+    led = open_ledger(serve)
+    led.append(_rec(rid="t-1"))
+    with pytest.raises(ProductionError):
+        validate_cache_head(bad, led.head()[1], led)
+
+
 def test_a_genesis_checkpoint_with_a_wrong_hash_refuses(serve, open_ledger):
     led = open_ledger(serve)
     led.append(_rec(rid="t-1"))
@@ -1482,6 +1680,38 @@ def test_a_process_killed_mid_batch_leaves_a_verifiable_chain(serve, open_ledger
     assert led.head()[0] == 3
     assert [e["id"] for e in led.scan()] == ["t-0", "t-1", "t-2"]
     assert led.append(_rec(rid="t-3")) == 4
+
+
+# ---------------------------------------------------------------------------
+# No secret reaches a record (§5.0)
+# ---------------------------------------------------------------------------
+
+
+def test_a_redacted_reason_reaches_the_record_with_no_secret_in_it(
+    serve, open_ledger
+):
+    """§5.0 asks for the proof against a REAL record, not a stub: every
+    recorded `reason` passes through `redact`, so the credential in the
+    venue's error text is masked in the line on disk and in the body the
+    fold is handed — and the surrounding reason survives, or operators
+    would stop recording reasons at all."""
+    secret = "ak_live_never_in_a_record_8812"
+    register_secret(secret)
+    led = open_ledger(serve, state=(state := RecordingState()))
+    led.append(
+        _rec(
+            kind="order_event",
+            rid="oe-1",
+            event="reject",
+            reason=redact(f"venue refused key={secret} at https://v.example.com/o/9"),
+        )
+    )
+    raw = _raw_lines(serve)[0]
+    assert secret not in raw
+    assert "v.example.com" not in raw
+    assert REDACTED in raw
+    assert "venue refused key=" in raw
+    assert secret not in json.dumps(state.applied)
 
 
 # ---------------------------------------------------------------------------

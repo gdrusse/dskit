@@ -4,7 +4,7 @@ One error type, one registry shape, one canonical-bytes recipe, one set of
 time helpers — each defined exactly once so that a digest computed in
 ``records.py`` and a chain hash computed in ``ledger.py`` cannot disagree,
 and so that every ``uses`` site in the serve document resolves the same
-way. Three rules the module enforces for the whole package:
+way. Four rules the module enforces for the whole package:
 
 1. **Errors accumulate.** :class:`ProductionError` carries a LIST of
    problems; validation appends every problem it finds and raises once.
@@ -23,13 +23,18 @@ way. Three rules the module enforces for the whole package:
    built on it and nowhere else. Unlike the assets recipe it does NOT strip
    ``notes``: a record is not a config, and two records that differ in any
    field are different records.
+4. **Money never touches float.** :func:`reject_money_floats` is the one
+   walk of that rule — ``records.py`` validating an opaque venue payload
+   and ``ledger.py`` validating a record body call the SAME function, so
+   the two cannot disagree about what a money name is or how deep the
+   rule reaches.
 
 Instants are epoch-millisecond ``int``s everywhere; :func:`utc_iso` and
 :func:`parse_utc_ms` convert to and from ISO-8601 and refuse a naive
 stamp, because a stamp with no zone is a guess.
 
-Import cost: stdlib plus the tier-1 cores of ``dskit.pipeline`` and
-``dskit.assets``.
+Import cost: stdlib, ``dskit.production.vocab``, and the tier-1 cores of
+``dskit.pipeline`` and ``dskit.assets``.
 """
 
 import hashlib
@@ -50,6 +55,7 @@ from dskit.assets.base import (  # noqa: F401
 )
 from dskit.pipeline.base import import_ref, is_class_ref
 from dskit.pipeline.node import reject_unknown_params  # noqa: F401  (re-export)
+from dskit.production.vocab import MONEY_FIELDS
 
 __all__ = [
     "GENESIS_HASH",
@@ -60,6 +66,7 @@ __all__ = [
     "now_ms",
     "parse_utc_ms",
     "record_hash",
+    "reject_money_floats",
     "reject_unknown_params",
     "utc_iso",
 ]
@@ -386,6 +393,52 @@ def record_hash(prev_hash, envelope):
         raise ProductionError(problems)
     body = {key: value for key, value in envelope.items() if key != "hash"}
     return hashlib.sha256(prev_hash.encode("ascii") + canonical_bytes(body)).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Money — one rule, one owner (§5.4, §5.8)
+# ---------------------------------------------------------------------------
+
+
+def reject_money_floats(problems, value, path, money=False):
+    """Append a problem for every float under a money name in ``value``.
+
+    The one owner of the money rule: a ``float`` under any
+    :data:`~dskit.production.vocab.MONEY_FIELDS` name is refused at any
+    depth of an opaque payload, and a list under such a name INHERITS it
+    — ``{"price": [1.0]}`` is a price that is a float. Every other float
+    is a dimensionless ratio (``confidence``, a monitor ``statistic``)
+    and stays legal. ``records.py`` and ``ledger.py`` both call this
+    rather than each walking a payload, so a payload a value object
+    accepts is a payload the chain accepts.
+
+    Parameters
+    ----------
+    problems : list of str
+        Accumulator; one entry per offending float, naming its path.
+    value : object
+        The payload to walk: a dict, a sequence, or a scalar.
+    path : str
+        Where ``value`` sits, for the messages (``"record.body"``).
+    money : bool
+        Whether ``value`` itself already sits under a money name. The
+        recursion sets it; a caller starting at a payload root leaves it
+        false.
+
+    Returns
+    -------
+    None
+        Problems are appended; the caller raises once.
+    """
+    if isinstance(value, float):
+        if money:
+            problems.append(f"{path}: money never touches float, got {value!r}")
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            reject_money_floats(problems, item, f"{path}.{key}", key in MONEY_FIELDS)
+    elif isinstance(value, (list, tuple)):
+        for position, item in enumerate(value):
+            reject_money_floats(problems, item, f"{path}[{position}]", money)
 
 
 # ---------------------------------------------------------------------------
