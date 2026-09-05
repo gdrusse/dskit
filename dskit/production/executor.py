@@ -2116,7 +2116,7 @@ def executor_conformance_suite(
         raise AssertionError(f"fills paged {_MAX_FILL_PAGES} times without exhausting the cursor")
 
     def filled_qty(venue, ref, ack):
-        """The filled quantity the venue reports for ``ref`` — the ack's when it holds no order."""
+        """Return the venue's filled quantity for ``ref``, or the ack's when it holds no order."""
         order = venue.order(ref)
         return ack.filled_qty if order is None else order.filled_qty
 

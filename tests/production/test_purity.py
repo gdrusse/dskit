@@ -81,6 +81,21 @@ def _all_files():
     return _core_files() + _pack_files()
 
 
+#: The one third-party name the package may reach, and only from inside the
+#: conformance-suite builder (§5.7's `executor_conformance_suite`, the
+#: `dskit.pipeline.conformance` precedent): pytest, at function depth, in
+#: `executor.py`. A serve process never executes that builder.
+CONFORMANCE_MODULE = "executor.py"
+CONFORMANCE_IMPORT = "pytest"
+
+
+def _is_conformance_import(path, module):
+    """Say whether ``module`` is the conformance builder's lazy pytest import."""
+    return path.name == CONFORMANCE_MODULE and (
+        module == CONFORMANCE_IMPORT or module.startswith(CONFORMANCE_IMPORT + ".")
+    )
+
+
 def _is_journal(module):
     return module == JOURNAL or module.startswith(JOURNAL + ".")
 
@@ -134,6 +149,10 @@ def test_the_package_imports_only_the_toolkit_and_stdlib_at_any_depth():
     for path in _core_files():
         for module, top in _imports(path, PACKAGE):
             if _is_journal(module):
+                if top:
+                    offenders.append(f"{path.name}: {module} (function depth only)")
+                continue
+            if _is_conformance_import(path, module):
                 if top:
                     offenders.append(f"{path.name}: {module} (function depth only)")
                 continue
