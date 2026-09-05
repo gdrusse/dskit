@@ -114,12 +114,7 @@ from dskit.production.records import (
     RiskVersion,
     SimulatedPermit,
 )
-from dskit.production.state import (
-    ArmingProjection,
-    ReadinessProjection,
-    SeriesState,
-    TickState,
-)
+from dskit.production.state import ReadinessProjection, SeriesState, TickState
 from dskit.production import leg as leg_module
 from dskit.production.leg import (
     Authority,
@@ -156,6 +151,12 @@ LEASE_TTL_MS = 30_000
 #: in force (D11). Restated here for the SCENARIO builders only — `leg.py`
 #: itself may never read a rung (D2), which the AST test at the bottom pins.
 LIVE_RUNGS = ("live_limited", "live")
+
+#: How long before the leg the tick's `account` phase ran. Non-zero on
+#: purpose: §5.16 rules the plan, intent and permit bind step (2)'s REFRESHED
+#: account and "never `bindings.state.account`", and a scenario where the two
+#: agree could not tell the difference.
+TICK_ASSEMBLY_LAG_MS = 5_000
 
 #: The three §4.1 freshness budgets and the two deadlines the leg reads from
 #: the document. Restated here only so a test can say "one millisecond past
@@ -381,7 +382,13 @@ class FakeAccounting:
                 accounting_tokens=accounting_tokens,
             ),
             asof_ms=at_ms - self.stale_by_ms,
-            evidence_digest=canonical_hash([r.requirement_digest for r in requirements]),
+            # The digest moves with the snapshot instant as well as the
+            # requirements, so a plan that bound the tick-assembly account
+            # instead of the step-(2) refresh is visible rather than
+            # coincidentally equal (§5.16).
+            evidence_digest=canonical_hash(
+                [at_ms] + [r.requirement_digest for r in requirements]
+            ),
             balances=tuple(
                 Balance(currency=ccy, total=amount, available=amount, native=None)
                 for ccy, amount in sorted(view.balances.items())
@@ -650,10 +657,14 @@ def guard_chain(*, size_max="100", exposure_max="20000", on_size_breach="refuse"
     )
 
 
-def arming_projection(*, until_ms=NOW_MS + 1_800_000, allowlist=(INSTRUMENT, OTHER_INSTRUMENT),
-                      overlay=None, authority_id="auth-arm-1", rung="live_limited"):
-    """The ordinary arm the fold holds, as `StateView.arming` carries it."""
-    return ArmingProjection(
+def arming_state(*, until_ms=NOW_MS + 1_800_000, allowlist=(INSTRUMENT, OTHER_INSTRUMENT),
+                 overlay=None, authority_id="auth-arm-1", rung="live_limited"):
+    """The ordinary arm, as ruling R5 embeds it in the `authority` issue body.
+
+    The fold projects it into `StateView.arming`; seeding the RECORD rather
+    than the projection is what makes the leg's reads a property of the fold.
+    """
+    return ArmingState(
         authority_id=authority_id,
         release_hash=RELEASE_HASH,
         rung=rung,
@@ -902,13 +913,14 @@ def seed_state(*, breaker="active", arm=None, ready=None, reduction=None):
 def build(*, origin="model", rung="live_limited", breaker=None, reduction=None,
           prop=None, guards=None, accounting=None, health="ready", readiness="go",
           pending_control=(), lease_ms=None, batch=None, quotes=None,
-          venue_time_ms=None, authorities=None, leg_index=0, cut_after_barrier=None):
+          venue_time_ms=None, authorities=None, leg_index=0, cut_after_barrier=None,
+          reduction_expires_ms=None):
     """Assemble one consistent scenario; every knob moves exactly one member."""
     doc = document(rung)
     release = FakeRelease()
     # §5.16: no ordinary arm exists at shadow/paper, and none exists while
     # `reducing` — D10/D12 revoke it on leaving `active`.
-    arm = arming_projection(rung=rung) if (origin == "model" and rung in LIVE_RUNGS) else None
+    arm = arming_state(rung=rung) if (origin == "model" and rung in LIVE_RUNGS) else None
     grant = None
     binding = None
     if origin == "reduction":
@@ -916,7 +928,10 @@ def build(*, origin="model", rung="live_limited", breaker=None, reduction=None,
             prop=prop if prop is not None else proposal(pid="cand-red-1")
         )
         digest = signed.reduction_intent_digest()
-        grant = reduction_authorization([digest])
+        grant = reduction_authorization(
+            [digest], **({} if reduction_expires_ms is None
+                         else {"expires_ms": reduction_expires_ms})
+        )
         binding = ReductionBinding(signed=signed, digest=digest, right=digest)
         prop = signed.proposal
     state, clock, ledger = seed_state(
@@ -947,7 +962,11 @@ def build(*, origin="model", rung="live_limited", breaker=None, reduction=None,
     the_batch = batch if batch is not None else entry_batch()
     the_quotes = quotes if quotes is not None else quote_set()
     view = state.snapshot()
-    account = account_source.snapshot(view, executor, the_quotes, NOW_MS, (), calendar)
+    # The tick's `account` phase ran a moment before this leg — so the
+    # tick-assembly account and step (2)'s refresh are distinguishable.
+    account = account_source.snapshot(
+        view, executor, the_quotes, NOW_MS - TICK_ASSEMBLY_LAG_MS, (), calendar
+    )
     id_source = ReleaseIdSource(RELEASE_HASH)
     arming = Arming(
         doc, release, serve_root=_ServeRootStub(), verifier=AcceptingVerifier({}), clock=clock
@@ -967,6 +986,9 @@ def build(*, origin="model", rung="live_limited", breaker=None, reduction=None,
         leg_id=id_source.leg_id(TICK_ID, leg_index),
         leg_index=leg_index,
     )
+    # The tick assembly's own snapshot is not the leg's: forget it, so
+    # `accounting.snapshots[0]` is always the step-(2) refresh.
+    account_source.snapshots.clear()
     scenario = Scenario(
         doc=doc,
         release=release,
@@ -1474,7 +1496,7 @@ def test_refresh_takes_a_fresh_snapshot_rather_than_reusing_the_tick_view(live_l
         {
             "kind": "guard_state",
             "id": "guard_state:size:OTHER",
-            "body": {"guard": "size", "scope_key": OTHER_INSTRUMENT, "kind": "hold",
+            "body": {"guard": "size", "scope_key": OTHER_INSTRUMENT, "state_kind": "hold",
                      "reason": "an earlier leg held another scope",
                      "held_until_ms": NOW_MS + 60_000, "resume_at_ms": None, "finding": {}},
         }
@@ -1535,6 +1557,23 @@ def test_the_scope_verdict_comes_from_the_guard_chains_authority_gate(live_leg):
         "scope_key": result.final.instrument,
         "reason": "",
     }
+
+
+def test_an_unarmed_shadow_leg_still_submits(shadow_leg):
+    """PLAN GAP (safety-critical, §5.5 vs §5.16). §5.5 rules
+    `check_authority_scope` runs "immediately before permit" against "the
+    active ordinary-arm or reduction-authorization" — and §5.16 rules that at
+    shadow/paper there IS no arm. `Arming.apply_scope(proposal, None)` answers
+    `not_armed`, so a leg that terminalized on `allowed is False` could never
+    submit at shadow, which is the rung the whole package is supposed to run
+    at first. Pinned: the leg RECORDS the verdict and `ActionPolicy` decides —
+    its `simulated_submit` rule allows below live and the authority axis is
+    inert there — so no leg-side rung branch is needed. The plan should say so
+    in §5.5."""
+    result = run(shadow_leg)
+    assert shadow_leg.view().arming is None
+    assert result.result == "open"
+    assert len(shadow_leg.executor.submits) == 1
 
 
 def test_an_instrument_outside_the_arming_allowlist_refuses_before_any_intent(live_leg):
@@ -1806,6 +1845,19 @@ def test_every_intent_field_has_the_producer_section_five_sixteen_names(live_leg
     }
     assert set(expected) == {f.name for f in dataclasses.fields(Intent)}
     assert {name: getattr(intent, name) for name in expected} == expected
+
+
+def test_intent_authority_id_admits_none_because_shadow_and_paper_have_no_arm():
+    """PLAN GAP (safety-critical, §5.16 vs `records.py`). §5.16 rules
+    `Intent.authority_id` "None at shadow/paper, where no ordinary arm
+    exists", but the built `Intent` annotates it `str` and refuses `None`, so
+    no shadow or paper leg can construct one. The narrowest fix is the
+    annotation: `authority_id: str | None`. Recording a placeholder id instead
+    would make the ledger claim an authority that was never issued, and
+    `intent_digest` covers the field — so two intents under different arms
+    must not hash alike, which a placeholder would defeat."""
+    hints = {f.name: f.type for f in dataclasses.fields(Intent)}
+    assert "None" in str(hints["authority_id"]), hints["authority_id"]
 
 
 def test_a_shadow_intent_carries_no_authority_id(shadow_leg):
@@ -2162,7 +2214,7 @@ def test_each_of_the_nine_terms_can_be_the_binding_one(term):
     )
     if term == "readiness":
         scen.state, scen.clock, scen.ledger = seed_state(
-            arm=arming_projection(),
+            arm=arming_state(),
             ready=readiness_projection(
                 evaluated_at_ms=tight - READINESS_VALID_FOR_S * 1000
             ),
@@ -2173,7 +2225,7 @@ def test_each_of_the_nine_terms_can_be_the_binding_one(term):
         scen.calendar.close_ms = tight
     if term == "authority_expiry":
         scen.state, scen.clock, scen.ledger = seed_state(
-            arm=arming_projection(until_ms=tight), ready=readiness_projection()
+            arm=arming_state(until_ms=tight), ready=readiness_projection()
         )
         scen.ledger.mark()
         scen.executor.ledger = scen.ledger
@@ -2189,15 +2241,21 @@ def test_each_of_the_nine_terms_can_be_the_binding_one(term):
     assert permit.valid_until_ms == tight
 
 
-def test_a_reduction_permit_takes_the_reduction_authoritys_expiry(reduction_leg):
+def test_a_reduction_permit_takes_the_reduction_authoritys_expiry():
     """The seventh term is "authority expiry", and in `reducing` there is no
     ordinary arm: the authority whose expiry binds is the
     `ReductionAuthorization`'s. Sourcing it from `arming` alone would leave
-    the term missing on the one path that needs it (§5.16)."""
-    grant = reduction_leg.view().reduction
-    run(reduction_leg)
-    _intent, permit, _state = reduction_leg.executor.submits[0]
-    assert permit.valid_until_ms <= grant.expires_ms
+    the term missing — and the permit unbounded — on the one path that needs
+    it (§5.16). The grant here expires before every other term, so it must be
+    the minimum the permit took."""
+    tight = NOW_MS + 2_000
+    scen = build(origin="reduction", reduction_expires_ms=tight)
+    wire_authorities(scen)
+    grant = scen.view().reduction
+    assert grant.expires_ms == tight
+    run(scen)
+    _intent, permit, _state = scen.executor.submits[0]
+    assert permit.valid_until_ms == tight
 
 
 # ---------------------------------------------------------------------------
@@ -2273,10 +2331,15 @@ def test_a_reduction_permit_binds_the_right_it_consumed(reduction_leg):
     order is the one planned and match the second to prove the right
     authorises it."""
     binding = reduction_leg.bindings.reduction
-    run(reduction_leg)
+    result = run(reduction_leg)
     _intent, permit, _state = reduction_leg.executor.submits[0]
     assert permit.reduction_right_digest == binding.digest
     assert permit.intent_digest != permit.reduction_right_digest
+    assert permit.intent_digest == result.intent.intent_digest()
+    # And the risk state it binds is THIS tick's, not the maker's: §5.4 rules
+    # the signed digest deliberately not re-verified at execution.
+    assert permit.risk_state_digest == result.intent.risk_state_digest
+    assert permit.risk_state_digest != binding.signed.risk_state_digest
 
 
 def test_the_safety_epoch_digest_moves_when_any_member_it_covers_moves():
@@ -2328,7 +2391,7 @@ def test_the_authority_scope_digest_moves_with_the_arm():
     run(wide)
     narrow = build()
     narrow.state, narrow.clock, narrow.ledger = seed_state(
-        arm=arming_projection(allowlist=(INSTRUMENT,)), ready=readiness_projection()
+        arm=arming_state(allowlist=(INSTRUMENT,)), ready=readiness_projection()
     )
     narrow.ledger.mark()
     narrow.executor.ledger = narrow.ledger
@@ -2543,17 +2606,26 @@ def test_a_crash_after_the_reduction_reservation_leaves_the_right_reserved():
     assert scen.executor.submits == []
 
 
-def test_a_crash_after_the_submit_barrier_still_leaves_no_order_event():
-    """The one cut that is genuinely ambiguous: the request may have left. The
-    ledger holds the authorization and the intent, so recovery has the
-    deterministic `client_ref` it needs to query rather than resend (D12,
-    D13)."""
-    scen = build(cut_after_barrier=4)
+def test_a_death_between_the_native_call_and_its_record_leaves_the_ambiguity():
+    """§5.14's other cut: "immediately before/after native I/O". This is the
+    one genuinely ambiguous instant — the request may have left. What survives
+    must be the intent and the authorization, because their deterministic
+    `client_ref` is what lets recovery QUERY the venue rather than resend
+    (D12, D13); an outcome record must not exist, since none was observed."""
+    scen = build()
     wire_authorities(scen)
+
+    class DyingExecutor(FakeExecutor):
+        def submit(self, intent, permit, state):
+            super().submit(intent, permit, state)
+            raise Cut("the process died after the request left")
+
+    scen.executor = DyingExecutor(ledger=scen.ledger)
     with pytest.raises(Cut):
         run(scen)
-    assert "order_event" not in scen.ledger.kinds()
+    assert scen.ledger.kinds() == ["decision_plan", "intent", "authorization"]
     assert len(scen.executor.submits) == 1
+    assert scen.ledger.one("intent")["client_ref"] in scen.view().pending
 
 
 # ---------------------------------------------------------------------------
@@ -2574,23 +2646,26 @@ def test_leg_two_sees_leg_ones_reservation_because_it_re_snapshots():
     assert first.client_ref not in tick_assembly_view.working
 
     second = build_second_leg(scen)
+    assert second.bindings.state.view is tick_assembly_view
     run(second)
     view, *_ = second.accounting.snapshots[0]
     assert first.client_ref in view.working
 
 
-def build_second_leg(scen):
-    """A second leg of the SAME tick over the same fold, ledger and clock."""
-    view = scen.state.snapshot()
-    account = scen.accounting.snapshot(view, scen.executor, scen.bindings.quotes,
-                                       scen.clock.now_ms(), (), scen.calendar)
+def build_second_leg(scen, prop=None):
+    """A second leg of the SAME tick, over the same fold, ledger and clock.
+
+    `state` is deliberately the ORIGINAL `TickState`: §5.13 has `Tick.run`
+    assemble it ONCE after the `account` phase and put the same one in every
+    leg's `LegBindings`. So the tick view a second leg is handed predates the
+    first leg entirely, and only step (2)'s own re-snapshot can carry the
+    first leg's reservation — which is the whole reason step (2) re-snapshots.
+    """
     scen.ledger.mark()
     scen.accounting.snapshots.clear()
     scen.bindings = dataclasses.replace(
         scen.bindings,
-        proposal=proposal(pid="cand-2"),
-        state=tick_state(view, account, calendar=scen.calendar,
-                         batch=scen.bindings.entry_batch),
+        proposal=prop if prop is not None else proposal(pid="cand-2"),
         leg_id=scen.id_source.leg_id(TICK_ID, 1),
         leg_index=1,
     )
@@ -2599,18 +2674,29 @@ def build_second_leg(scen):
 
 def test_leg_two_exposure_guard_is_measured_against_leg_ones_working_order():
     """The money property, not the plumbing: the second leg's `exposure_after`
-    limit must include the first leg's order. A guard chain fed the
+    limit must include the first leg's working order. A guard chain fed the
     tick-assembly account would size the second order as if the first had
-    never happened."""
-    scen = build(guards=guard_chain(exposure_max="10"))
+    never happened — which is the failure mode that turns a per-proposal limit
+    into no limit at all."""
+    scen = build(
+        prop=proposal(side="buy"),
+        guards=guard_chain(exposure_max="5"),
+        accounting=FakeAccounting(risk_effect="increase"),
+    )
     wire_authorities(scen)
     first = run(scen)
-    assert first.result == "open"
+    assert first.result == "open", [f.to_obj() for f in first.findings]
 
-    second = build_second_leg(scen)
+    second = build_second_leg(scen, prop=proposal(side="buy", pid="cand-2"))
     result = run(second)
-    breaches = [f for f in result.findings if f.guard == "exposure" and f.verdict == "refuse"]
-    assert breaches, [f.to_obj() for f in result.findings]
+    exposures = [f for f in result.findings if f.guard == "exposure"]
+    # Step (1) judged the tick-assembly account and allowed 4.10; step (2)
+    # re-ran the hard guards against the refreshed one and saw 8.20.
+    assert [f.value for f in exposures] == [Decimal("4.10"), Decimal("8.20")], [
+        f.to_obj() for f in exposures
+    ]
+    assert exposures[0].verdict == "allow"
+    assert exposures[1].verdict == "refuse"
     assert result.result == "not_sent"
 
 
