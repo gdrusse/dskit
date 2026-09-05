@@ -264,7 +264,7 @@ brackets.
   quote, evidence and risk versions/digests, scope, authority, deadline and fence.
   The executor accepts only this type. `ReductionAuthorization` is an alternative
   input to policy/arming—not execution—which the `ReductionAuthority` of §5.13.1
-  converts into a permit;and permits only its pre-signed reduction
+  converts into a permit; it permits only its pre-signed reduction
   intent digests under document limits; each digest is single-use and the whole
   authority has a short deadline
   [R5 §2.4, R1 §2.1, R3 §2.5].
@@ -891,13 +891,19 @@ non-finite number.
   `GateResult{gate, passed, reason, at_ms}` — one per checked gate, the element
   type of `DecisionPlan.gate_results[]`;
   `FeedResult{status, acq_id, records_added, source_config_hash, at_ms}`;
+  `FeedAge{key, age_ms, watermark_ms}`;
   `ScopeVerdict{allowed, scope_key, reason}`;
   `PolicyRequest{operation, risk_effect, rung, breaker, health, readiness,
   authority, origin}` — what `Rule.veto` receives;
   `TickStart{tick_id, tick_at_ms, release_hash}`;
   `TickResult{tick_id, status, data_asof_ms, observed_at_ms, feed_status,
   coverage_digest, inputs_digest, decision_plan_ids, legs, findings,
-  latency_ms, leg_latency_ms, refusal_reason, error}` — what the phases
+  latency_ms, leg_latency_ms, refusal_reason, error, feed{status, acq_id,
+  records_added, source_config_hash, required_keys_digest, watermarks_by_key,
+  coverage_digest}}` — the `feed` block is a member because §6's `tick` record
+  requires all seven and five of them live only in `FeedResult`/`EntryBatch`,
+  which are phase-local; the loop never sees an `EntryBatch` and so could not
+  add them. What the phases
   produce, so a phase never writes a record itself. The loop adds the fields
   only it holds (`tick_at`, `calendar`, `overrun_absorbed[]`, `health`,
   `breaker`, `rung`, and the structured `feed{…}` block) when it writes §6's
@@ -905,8 +911,8 @@ non-finite number.
   `LegEvaluation{original, final, findings, gate_results, scope_verdict,
   account, risk_effect, risk_version, risk_state_digest}` — the frozen
   accumulator `LegPipeline`'s steps thread, and the sole input to `plan()`;
-  every `DecisionPlan` field is either one of its members, a `LegBindings`
-  member, or an id from `IdSource`.
+  every `DecisionPlan` field is one of its members, a `LegBindings` member, an
+  id from `IdSource`, or step 4's own `result` — §5.16 is the authority on which.
   `DecisionPlan{plan_id, inputs_asof_ms, inputs_digest, coverage_digest,
   quote_asof_ms, quote_digest, evidence_asof_ms, evidence_digest,
   provenance_digests, original, final, findings, gate_results, scope_verdict,
@@ -1037,9 +1043,13 @@ non-finite number.
   on entering `halted` the loop cancels working orders when
   `execution.on_halt.cancel_open`
   and records the outcome vocabulary.
-- `Arming{authority_id, release_hash, rung, maker, checker, armed_at_ms,
+- `ArmingState{authority_id, release_hash, rung, maker, checker, armed_at_ms,
   armed_until_ms, allowlist, limits_overlay, request_proof_digest,
-  approval_proof_digest}` is the folded value object;
+  approval_proof_digest}` is the frozen folded value, and `Arming(document,
+  release)` is the service that reads it — the same value/service split
+  `Readiness`/`ReadinessResult` and `Breaker`/breaker-state already use, and
+  the one §5.15's "one concept, one class" rule requires. `Safety.arming` is
+  the service.
   `ArmRequest{release_hash, rung, allowlist, limits_overlay, requested_until_ms,
   request_proof}` and `ArmApproval{request_digest, approval_proof}` are its
   inputs. `Arming.check_conjunction(document, cli_armed, env_release_hash)` is
@@ -1529,7 +1539,7 @@ knob because D13 fixes the answer: query, never resend.
 
 - `ServeLoop(document, release, schedule, data, decision, safety, execution,
   recording, observability)`: two values plus **seven** collaborator bundles,
-  each a frozen dataclass validated at construction, rather than twenty-eight
+  each a frozen dataclass validated at construction, rather than thirty
   positional arguments —
   `Schedule{clock, calendar, cadence, overrun}`, `Data{feed, decider}`,
   `Decision{guards, monitors}`,
@@ -1539,9 +1549,10 @@ knob because D13 fixes the answer: query, never resend.
   id_source}` — `state` is the `SeriesState` of §5.8.1, and it is a bundle
   member because six declared APIs take a `state_view` and nothing else could
   supply one,
-  `Observability{metrics, alerts, health, heartbeat}`. The seven bundle dataclasses live in
-  `compose.py`, which is what builds them — `loop.py` importing them from
-  there is what keeps the §10 order acyclic. D2's "no branch on mode"
+  `Observability{metrics, alerts, health, heartbeat}`. The seven bundle dataclasses live in their own
+  `bundles.py`, ahead of both `leg` and `compose` in the §10 order, because
+  `LegPipeline` takes six of them as constructor arguments and `compose` builds
+  them — putting them in either module makes the order cyclic. D2's "no branch on mode"
   only holds if the policy objects, the control inbox and the reconciler arrive
   the same way the executor does; the bundles are what make that legible and are
   what `mode` composition (D2) selects. Lifecycle `init → locked → leased → reconciling → ready →
@@ -1617,12 +1628,21 @@ knob because D13 fixes the answer: query, never resend.
   `self`, so the dataflow between phases is part of the contract:
   `gate(tick_at_ms) -> GateResult` · `verify_release() -> None` (refuses) ·
   `fetch(tick_at_ms) -> FeedResult` · `read_entry(tick_at_ms) -> EntryBatch` ·
-  `coverage(batch) -> None` (refuses) · `evaluate(batch) -> head_outputs` ·
+  `coverage(batch) -> tuple[FeedAge]` (refuses on any gap, and returns the
+  per-key ages — `clock.now_ms()` minus each `EntryBatch.watermarks_by_key`
+  entry — because `feed_age_ms` is a registered measure and nothing else
+  computes them) · `evaluate(batch) -> head_outputs` ·
   `candidates(head_outputs) -> tuple[Candidate]` ·
   `quotes(head_outputs) -> QuoteSet` ·
   `account(candidates, quotes, at_ms) -> AccountState` ·
   `propose(head_outputs, candidates, account) -> tuple[Proposal]`.
   `run` threads those values; a phase holds no scratch state between calls.
+  After `account`, `run` assembles the `TickState` every guard receives —
+  `view` from `recording.state.snapshot()`, `account` from the `account`
+  phase, `feed_status` from `fetch`'s `FeedResult`, `feed_ages` from
+  `coverage`, `calendar` from `schedule` — and puts it in each leg's
+  `LegBindings`. It is a tick product, not something a leg can reconstruct:
+  two of its five members are this tick's fetch result and exist nowhere else.
   `Tick(document, release, schedule, data, decision, safety, execution,
   recording, observability, tick_id)` takes the same seven bundles the loop
   holds plus the allocated tick id; it is constructed once per tick and owns
@@ -1694,21 +1714,27 @@ The eight steps above carry every barrier, every reservation, the cumulative-ris
 folding and the one place money leaves the process. They are a class, not a
 procedure inside the loop.
 
-- `LegPipeline(bindings, schedule, decision, safety, execution, recording,
-  observability)` — `schedule` is present because the leg needs the injected
+- `LegPipeline(document, release, bindings, schedule, decision, safety,
+  execution, recording, observability)` — `document` is present because step
+  (3) enforces four document thresholds
+  (`document.schedule.max_staleness_ms`, `document.schedule.max_quote_age_ms`,
+  `document.schedule.max_venue_skew_ms`,
+  `document.accounting.max_valuation_age_ms`) and §4.1 rules that code holds
+  no threshold; `schedule` is present because the leg needs the injected
   clock: step (2) re-snapshots at an `at_ms`, step (3) checks watermark, quote,
   evidence and skew ages, `fold` reports `leg_latency_ms`, and `ActPermit`
   carries `checked_at_ms`/`valid_until_ms`. Reaching for `time.time()` instead
   would break the D20 replay parity that rests on the injected clock.
-  `LegPipeline(bindings, schedule, decision, safety, execution, recording,
-  observability)`
-  is a **concrete class**, not an ABC — the invariant is that `run` is final,
+  It is a **concrete class**, not an ABC — the invariant is that `run` is final,
   not that the steps are abstract, and the tick must be able to construct it.
   `bindings` is the frozen
-  `LegBindings{proposal, origin, entry_batch, head_digest, quotes, account,
-  release, rung, tick_id, leg_index, calendar, readiness}` — `head_digest` is
+  `LegBindings{proposal, origin, entry_batch, head_digest, quotes, state,
+  release, rung, tick_id, leg_id, leg_index, readiness}` — `state` is the
+  `TickState` the tick assembled (which carries `account` and `calendar`, so
+  neither is a separate member), and step (2) rebuilds it with the refreshed
+  account before re-running the hard guards — `head_digest` is
   the head-output provenance §6 requires in `provenance_digests`, which the
-  leg cannot otherwise see because `head_outputs` never leaves the tick, the tick assembles once and every
+  leg cannot otherwise see because `head_outputs` never leaves the tick. The tick assembles these once and every
   step rebinds against. `release` and `rung` are members because step (3)
   re-evaluates release/runtime and the document rung, and steps (4)–(5) bind
   `release_hash` into the `DecisionPlan` and `Intent`.
@@ -1722,7 +1748,10 @@ procedure inside the loop.
   threaded through a frozen `LegEvaluation` accumulator rather than scratch on
   `self`:
   `guard() -> (Proposal, tuple[Finding])` — the possibly-amended final proposal ·
-  `refresh(final, findings) -> (AccountState, ScopeVerdict, tuple[Finding])` ·
+  `refresh(final, findings) -> (AccountState, ScopeVerdict, risk_effect,
+  tuple[Finding])` — `risk_effect` here, from
+  `execution.accounting.classify(final, state)`, because this is the step that
+  holds both the final proposal and the refreshed account ·
   `rebind(account) -> tuple[GateResult]` (refuses on any changed
   version/digest) ·
   `plan(evaluation) -> DecisionPlan` (appends + barriers; `evaluation` carries
@@ -1732,7 +1761,7 @@ procedure inside the loop.
   `origin` is `reduction`) ·
   `authorize(intent, plan) -> Permit` ·
   `act(intent, permit) -> Ack` ·
-  `fold(intent, permit, ack, findings) -> LegResult{result, plan_id,
+  `fold(intent, permit, ack, findings) -> LegResult{result, leg_id, plan_id,
   plan_digest, final, intent, ack, findings, leg_latency_ms}`. `plan_id`,
   `plan_digest` and `final` are members because a guard refusal terminalizes
   without an `Intent` (step (4)), and §6's `decision.legs[]` and
@@ -1745,9 +1774,11 @@ procedure inside the loop.
   step names and three bucket names collide while meaning different spans.
 - `Authority(clock, calendar, arming, lease, health, executor, document,
   release, ledger)` — constructed only by `compose.py`, and it takes those
-  nine because `ActPermit` binds them: `valid_until_ms` is a minimum over
-  calendar close, lease expiry, authority expiry and
-  `execution.submit_timeout_ms`; `lease_scope`/`fencing_token` come from the
+  nine because `ActPermit` binds them: `valid_until_ms` is the minimum over
+  **all nine terms §5.13 step (6) lists** — stated once there and never
+  restated, because an authority that dropped proposal expiry, input
+  staleness, quote age, evidence age or readiness validity would mint a permit
+  that outlives the data it binds; `lease_scope`/`fencing_token` come from the
   `Lease`; and `safety_epoch_digest` covers calendar, health, executor
   link/scope, rung and pending-control state. A permit cannot be minted from
   `(intent, plan, state_view)` alone, which is why the constructor is stated
@@ -1802,7 +1833,7 @@ duplicate or extend them by branching.
 
 **How the matrix is actually represented.** The permission space is
 4 rungs × 3 breaker × 5 health × 2 readiness × 4 operations × 3 risk effects
-× authority — over 1,400 combinations — so it is *not* enumerated cell by
+× 2 origins × authority — several thousand combinations — so it is *not* enumerated cell by
 cell. It is an ordered tuple of named `Rule` objects, each of which may veto
 with a reason (`Rule.veto(request: PolicyRequest) -> str | None`, §5.4), which is what R5 §2.4
 actually recommends: keep the axes orthogonal and compose them. Two tests
@@ -1982,8 +2013,16 @@ construction:
 recording, observability)`;
 `Tick(document, release, schedule, data, decision, safety, execution,
 recording, observability, tick_id)`;
-`LegPipeline(bindings, schedule, decision, safety, execution, recording,
-observability)`.
+`LegPipeline(document, release, bindings, schedule, decision, safety,
+execution, recording, observability)`.
+
+**A naming rule this table exists to enforce.** `schedule` and `execution` name
+both a bundle and a serve-document section, and that collision is what let a
+leg be specified to read `schedule.max_venue_skew_ms` while holding a
+`Schedule` bundle that has no such member. Throughout §5 a document read is
+always written `document.<section>.<key>` and a bundle read is always the bare
+member; `test_producers.py` rejects a bare `schedule.`/`execution.` followed by
+a key that is not a bundle member.
 
 **`DecisionPlan` — all eighteen fields.**
 
@@ -1999,32 +2038,80 @@ observability)`.
 | `findings` | `LegEvaluation.findings` (steps 1–2) |
 | `gate_results` | `LegEvaluation.gate_results` (step 3) |
 | `scope_verdict` | `LegEvaluation.scope_verdict` (step 2) |
-| `risk_effect` | `execution.accounting.classify(final, state)` |
+| `risk_effect` | `LegEvaluation.risk_effect`, set by step 2 from `execution.accounting.classify(final, state)` |
 | `risk_version`, `risk_state_digest` | `LegEvaluation.account` |
 | `result` | step 4's own verdict |
 
-**`LegResult`.** `result`/`leg_latency_ms` from `run`; `plan_id`/`plan_digest`/
-`final` from the `DecisionPlan`; `intent` from step 5 (`None` on a guard
-refusal, which is why the three above are members); `ack` from step 7;
-`findings` from `LegEvaluation`.
+**`LegResult` — every field, since §6's `decision.legs[]` is written from it.**
 
-**`ActPermit` — where the twenty-four bindings come from.** `authority_id`,
-`valid_until_ms`, `checked_at_ms` from the `Authority` (its `clock`, `calendar`,
-`arming` and `lease`); `lease_scope`, `fencing_token` from `execution.lease`;
+| field | producer |
+|---|---|
+| `result` | step 8's own verdict |
+| `leg_id` | `bindings.leg_id` (allocated by `recording.id_source.leg_id`) |
+| `plan_id`, `plan_digest`, `final` | the `DecisionPlan` from step 4 |
+| `intent` | step 5 — `None` on a guard refusal, which is why the three above are members |
+| `ack` | step 7 |
+| `findings` | `LegEvaluation.findings` |
+| `leg_latency_ms` | `run`, keyed by `LEG_LATENCY_BUCKETS` |
+
+**`ActPermit` — where the twenty-four bindings come from.** `authority_id` from
+the current `Arming` in `state_view`; `valid_until_ms` the nine-term minimum of
+§5.13 step (6); `checked_at_ms` from `schedule.clock`; `lease_scope`,
+`fencing_token` from `execution.lease`; `readiness_digest`,
+`readiness_until_ms` from `state_view.readiness`; `authority_scope_digest` from
+the applied `Arming` scope (§5.6);
 `safety_epoch_digest` over release/runtime, readiness, calendar, coverage and
 watermarks, input/quote/evidence/risk versions, executor link/scope, health,
 breaker, rung, risk effect, authority and pending-control state — which is why
-the `Authority` constructor takes nine collaborators and not three; every
-remaining field is copied from the `Intent` and the `DecisionPlan` it binds.
+the `Authority` constructor takes nine collaborators and not three. The
+remaining seventeen fields are copied from the `Intent` and the `DecisionPlan`
+it binds — those three were **not**, which is why they are named here.
 
-**`TickResult`** is filled by the ten `Tick` phases in order; the loop adds
-`tick_at`, `calendar`, `overrun_absorbed[]`, `health`, `breaker`, `rung` and the
-`feed{…}` block when it writes §6's `tick` (§5.4).
+**`TickResult`.** `tick_id` from `recording.id_source`; `status`,
+`refusal_reason`, `error` from whichever phase refused; `data_asof_ms`,
+`coverage_digest`, `inputs_digest` and the seven-member `feed` block from
+`fetch`'s `FeedResult` and `read_entry`'s `EntryBatch`, which is why `feed` is
+a `TickResult` member and not something the loop adds; `decision_plan_ids`,
+`legs`, `findings`, `leg_latency_ms` from the `LegResult`s; `latency_ms` from
+`run`. The loop adds only what it alone holds — `tick_at`, `calendar`,
+`overrun_absorbed[]`, `health`, `breaker`, `rung` — when it writes §6's `tick`.
 
-**The rule this table encodes.** A record field with no producer, or a
-collaborator no bundle carries, is a plan defect and not an implementation
-detail to be settled later. `test_producers.py` walks this table against §8 and
-§5.4 and fails on the first field it cannot resolve.
+**Input records — the half an earlier draft of this section missed.** Walking
+only the records the leg *writes* is what let `LegPipeline` be specified to read
+four document thresholds it had no route to, and `TickState` be required by every
+guard while nothing produced one. The records a step *reads* are walked too:
+
+| record | producer |
+|---|---|
+| `TickState{view, account, feed_status, feed_ages, calendar}` | assembled by `Tick.run` after the `account` phase (§5.13) and carried into each `LegBindings` |
+| `LegBindings` (12 fields) | assembled by `Tick.run` per proposal; `proposal`/`origin` from `propose`, `entry_batch`/`head_digest` from `read_entry`/`evaluate`, `quotes` from `quotes`, `state` the `TickState`, `release`/`rung` from the loop, ids from `recording.id_source` |
+| `Intent` (16 fields) | step 5; `client_ref` from `id_source`, `decision_plan_id`/`digest` from step 4, `authority_id` from `state.view.arming` (`None` at shadow/paper, since no ordinary arm exists there), the freshness bindings from `LegBindings`, `proposal` the `LegEvaluation.final` |
+| `PolicyRequest` (8 fields) | assembled by the caller of `ActionPolicy.permits`: `operation` at the call site, `risk_effect` from `LegEvaluation`, `rung` from `LegBindings`, `origin` from `LegBindings`, `breaker`/`readiness`/`authority` from `state.view`, `health` from `observability.health` |
+| `LegEvaluation` (9 fields) | steps 1–3, threaded (`risk_effect` from step 2's `execution.accounting.classify`) |
+
+**The rule this table encodes.** A record field with no producer, a collaborator
+no bundle carries, or a call whose arguments no caller can supply, is a plan
+defect and not an implementation detail to be settled later. `ServeRoot` is the
+one deliberate exception: it is a construction-time dependency of `Ledger`,
+`Breaker` and `ControlInbox` rather than a bundle member, and it is named here so
+the exception is explicit rather than an oversight.
+
+**`test_producers.py` is a real check, not a restatement.** The table above lands
+in code as a module-level
+`PRODUCERS: dict[tuple[str, str], str]` mapping `(record, field)` to a dotted
+producer path, with a sentinel for the handful whose producer is a step verdict
+rather than an attribute. Two assertions, and the second is what makes it bite:
+
+- **resolution** — every dotted path resolves by `getattr` chain against the
+  built classes, so a renamed collaborator fails here;
+- **completeness** — for *every* dataclass in `records.py`, `leg.py` and
+  `loop.py`, `{field for (rec, field) in PRODUCERS if rec == R} ==
+  {f.name for f in dataclasses.fields(R)}`. A field added to a record without a
+  producer fails; a producer naming a field that no longer exists fails.
+
+The completeness half is the half an earlier draft lacked, and it is why this
+test would have caught the four object-graph holes the fifth design review found
+by hand.
 
 ## 6. Ledger records
 
@@ -2121,6 +2208,7 @@ dskit/production/
 │                      source/artifact/runtime fingerprints; release verification
 ├── records.py         Quote, Candidate, Proposal, Finding, InputWatermark, EntryBatch, TickStart, DecisionPlan, ReductionPlan,
 │                      ReductionAuthorization, EvidenceRequirement + MeasureEvidence, RiskVersion, AccountState,
+│                      QuoteSet, GateResult, FeedResult, FeedAge, ScopeVerdict, PolicyRequest, TickState;
 │                      LeasePermit is coordination.py's, not here; Permit (frozen dataclass base) + SimulatedPermit + ActPermit, TickResult, Intent,
 │                      execution/monitoring values
 ├── clock.py           Clock ABC; ManualTime (the settable instant TestClock and ReplayClock each compose);
@@ -2173,9 +2261,11 @@ dskit/production/
 ├── leg.py             LegPipeline (concrete; final run() walking LEG_STEPS, eight step methods); LegBindings;
 │                      LegEvaluation; LegResult; Authority ABC + SimulatedAuthority + LiveAuthority +
 │                      ReductionAuthority (closed to core, no registry); ActPermit minting
-├── compose.py         the seven collaborator bundles (Schedule, Data, Decision, Safety, Execution, Recording,
-│                      Observability); AuthorityTable; bundles_for(): the closed rung → collaborator table;
-│                      the one module that may read a rung
+├── bundles.py         the seven frozen collaborator dataclasses (Schedule, Data, Decision, Safety, Execution,
+│                      Recording, Observability) — their own module because LegPipeline takes six of them as
+│                      constructor arguments and is built before compose
+├── compose.py         AuthorityTable; bundles_for(): the closed rung → collaborator table; the one module
+│                      that may read a rung
 ├── outcomes.py        [phase 2] outcome join (settlements, strict forward as-of), supersede chain, as-of cut
 ├── report.py          [phase 2] attribution, calibration, drawdown, replay parity diff, markdown/JSON emitters
 ├── readiness.py       Readiness(document, release); ReadinessResult; readiness_digest; release-bound checklist →
@@ -2194,8 +2284,9 @@ tests/production/
 │                          onboarding root), a TestClock, a MemorySink — every test builds on these, no network anywhere
 ├── test_purity.py         static + behavioural: stdlib + dskit.pipeline + dskit.onboarding + dskit.assets + self; journal function-import only;
 │                          no `mode ==` / `rung ==` branch in any module except compose.py
-├── test_producers.py      every field in §5.16 resolves to a declared attribute of a declared object; every object named
-│                          there appears in §8; no record field is left without a producer
+├── test_producers.py      PRODUCERS resolves by getattr chain against the built classes; and for every dataclass in
+│                          records.py/leg.py/loop.py its PRODUCERS keys equal dataclasses.fields() exactly — the
+│                          completeness half, which fails on a field added without a producer
 ├── test_oop.py            §5.15 enforced: every seam ABC has ≥1 @abstractmethod and refuses instantiation; no member of a
 │                          registry-resolved family is instantiated by name outside its registry (composites such as
 │                          GuardChain, AlertRouter, Reconciler, the policies, Checkpoint, Tick and ServeLoop are exempt); ServeLoop/GuardChain/policies are never subclassed in-tree;
@@ -2473,7 +2564,8 @@ from §5–§7 (contracts, vocabularies, bounds, invariants) — red; Fable impl
 `dskit/production/<module>.py` — green; Opus reviews the pair. Module order
 follows dependencies: `vocab` → `base` → `redact` → `records` → `document` →
 `release` → `clock` → `sessions` → `cadence` → `ledger` → `state` → `control` →
-`accounting` → `guards` → `breaker` → `arming` → `coordination` → `ids` → `policy` →
+`accounting` → `guards` → `breaker` → `arming` → `coordination` → `ids` →
+`bundles` → `policy` →
 `executor` → `resilience` → pipeline `SubgraphRunner` + `serving_contract` →
 `feed` → `decider` → `reconcile` → `readiness` → `verifier` → `monitors` → `metrics` →
 `alerts` → `health` → `leg` → `compose` → `loop` → `__main__` → docs → examples
@@ -2662,7 +2754,8 @@ dskit/production/
   loop.py           ServeLoop (the scheduler, not the composition root); Tick template method; lifecycle
   ids.py            IdSource ABC + ReleaseIdSource + RecordedIdSource
   leg.py            LegPipeline (the eight submission steps); Authority ABC + the three kinds; permit minting
-  compose.py        the seven collaborator bundles; AuthorityTable; bundles_for()
+  bundles.py        the seven frozen collaborator dataclasses
+  compose.py        AuthorityTable; bundles_for(): the closed rung to collaborator table
   readiness.py      release-bound checklist → GO / NO-GO
   outcomes.py       [phase 2] bitemporal outcome join, supersede chain, as-of cut
   report.py         [phase 2] attribution, calibration, drawdown, replay parity diff
