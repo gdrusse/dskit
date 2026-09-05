@@ -323,6 +323,12 @@ APPROVAL_PURPOSES = (
     "adopt",
 )
 
+#: What the control spool carries (§5.8): the eight authenticated
+#: ``APPROVAL_PURPOSES`` plus the four §7 verbs that queue without a
+#: maker-checker proof. One home, so the inbox and every handler agree
+#: on what a command may ask for.
+CONTROL_PURPOSES = APPROVAL_PURPOSES + ("halt", "disarm", "reconcile", "ready")
+
 #: The ``alert`` record's ``status``.
 ALERT_STATUSES = ("firing", "resolved")
 
