@@ -4402,6 +4402,8 @@ serve-document field pinned by `plan`, not contract output. Dedupe keys are not
 treated as a universe. Pipeline never imports production. Release-bound child code remains a
 declared trusted boundary, backed by code fingerprints and no-direct-I/O tests.
 
+---
+
 ## ADR-0092 — Gate 3 stops at the first exceedance
 
 **Status:** proposed (2026-09-05; supersedes the fixed-19-seed portion of
@@ -4413,40 +4415,69 @@ permutations. The recorded P11 Gate-1 campaign ran 1,320 fold processes at
 fold with a permuted label, so `13 x 19 x 20 = 4,940` folds is about 4.7
 hours — for a cohort that is not final. But `tier2_verdict` passes an asset
 only when `observed_r2 > max(nulls)`: one exceedance already fails
-`beat_all`, and the remaining seeds cannot change it.
+`beat_all`, and the remaining seeds cannot change it. `>=` is the exact
+negation of that strict `>`, and `max` is monotone, so stopping at the first
+exceedance cannot diverge from the full-19 outcome, ties included.
 
 **Decision.** Run the frozen seeds 0..18 in order and stop an asset at the
-first completed null with `R2oos >= observed`. That asset is a FAIL, recorded
-with the stopping seed and the draws taken. If all 19 lose, run the existing
-centre/spread check on that completed family. A pass is never stopped early,
-so a passing asset always carries a full 19-draw calibration.
+first completed null with `R2oos >= observed`. That asset is a FAIL. If all
+19 lose, run the existing centre/spread check on that completed family. A
+pass is never stopped early, so a passing asset always carries a full 19-draw
+calibration.
 
 This is Besag–Clifford stopping at the first exceedance (`h = 1`,
-`B_max = 19`) — equivalent to today's pass/fail, not a looser test. Gandy
-sequential Monte Carlo does not apply: the rule is a rank decision, not a
-bounded-risk p-value against a moving alpha.
+`B_max = 19`). Gandy sequential Monte Carlo is unnecessary here — the rule is
+a rank decision, not a bounded-risk p-value against a moving alpha — rather
+than inapplicable in principle.
+
+**The predicate gets one owner.** `observed_r2 > max(nulls)` is inlined at
+`attempts.py:1114` and exists nowhere else. A per-draw stop cannot call
+`tier2_verdict` (it bundles calibration and refuses fewer than two nulls), so
+implementing this ADR means extracting
+
+```text
+def beat_all(observed_r2, scrambled_r2)  -> bool
+```
+
+into `dskit/pipeline/attempts.py`, exported in `__all__`, with
+`tier2_verdict` calling it. The child imports the same function. Restating
+`null_r2 >= observed_r2` child-side is the second copy CLAUDE.md forbids.
+
+**The stage contract changes.** `Gate3WalksStage` today takes only `gate1`
+and runs all 19 walks unscored; every decision lives in `Gate3ResultStage`,
+which reads `gate1_cells` for the observed `r2oos`. Scoring must move into
+the walks stage, so it gains a `gate1_cells` input and emits per asset:
+`stopped` (bool), `stop_seed` (int or null), `n_draws` (int), and the walk
+handles actually run. `Gate3ResultStage` then emits, for a stopped asset,
+`gate3_status: "fail"`, `null_mean`/`null_sd` as null with
+`calibration: "not_computed_early_stop"`, and `p_bound` = `2/(n_draws + 1)`
+— never zero, never absent, never a point p-value.
 
 **Calibration is not weakened.** Nineteen draws cannot precisely certify a
 narrow SD (a sample SD's relative standard error is
 `1/sqrt(2*18) = 16.7%`) but they detect a large break: P10's Gate-3 spreads
-of 0.608 and 0.667 give `18*s^2` of 6.65 and 8.01 against the 5% lower
-`chi2_18` critical value of 9.39 — p = 0.007 and 0.022. The per-asset band
-stays on every COMPLETED family. Calibration is simply not claimed on a
-stopped asset, which already failed the rank test.
+of 0.608 and 0.667 (QQQ@3, NFLX@10) give `18*s^2` of 6.65 and 8.01 against
+the 5% lower `chi2_18` critical value of 9.39 — p = 0.007 and 0.022. Both of
+those assets beat all 19 nulls and still failed, which is the case this ADR
+must not break. The per-asset band stays on every COMPLETED family;
+calibration is simply not claimed on a stopped asset, which already failed
+the rank test. That chi-square reasoning is justification for keeping the
+band, NOT proposed code — `attempts.py` stays stdlib-only.
 
-**Consequences.** The saving is expectation, not guarantee: `E[draws]` on a
-failure is `H_19 = 3.55`, so twelve failures and one passer cost about 62
-walks against 247, but a survivor-heavy cohort saves almost nothing.
-`Gate3WalksStage` becomes a sequential per-asset loop that scores as it
-draws, so scoring moves into the walks stage and the walks/result boundary
-shifts; the stop must CALL the beat-all rule, never restate it. A stopped
-asset never reaches `tier2_verdict`, so its refusal of fewer than two nulls
-is not hit; `Gate3ResultStage` emits `null_mean`/`null_sd` as null with an
-explicit reason for those rows, never zero and never absent, and reports the
-bound `p >= 2/(B+1)` rather than a point value. `B = 19` with zero
-exceedances remains `1/20 = 0.05`; a strict `p < 0.05` would need
-`B >= 20`. The staged document's identity moves and a fresh execution is
-required, at no cost: ADR-0089 already required one.
+**Consequences.** `passes` is two conditions, not one: a completed family can
+beat all 19 and still fail calibration, so this ADR is equivalent to today's
+verdict on the BEAT-ALL limb only, and leaves the calibration limb untouched.
+The saving is an expectation, not a guarantee, and is conditional: under
+exchangeability `E[draws | fail] = 2.73` (simulated 2.738; `H_19 = 3.548` is
+the UNCONDITIONAL figure, which mixes in the 1/20 pass), so twelve failures
+and one passer cost about `12 * 2.73 + 19 = 52` walks against 247. A
+survivor-heavy cohort saves almost nothing. A stopped asset never reaches
+`tier2_verdict`, so its two-draw refusal is never hit. `B = 19` with zero
+exceedances remains `1/20 = 0.05`; a strict `p < 0.05` would need `B >= 20`.
+The staged document's identity moves and a fresh execution is required, at no
+cost: ADR-0089 already required one.
+
+---
 
 ## ADR-0093 — Bounded parallel fold execution graduates into dskit
 
