@@ -111,6 +111,7 @@ CLOSED_SET_NAMES = (
     "MONEY_FIELDS",
     "CACHE_STATES",
     "AUTHORITY_EVENTS",
+    "TRANSITION_CAUSES",
 )
 
 #: The names whose value is a MAP, not a tuple — checked by their own tests.
@@ -243,6 +244,7 @@ EXPECTED_MEMBERS = {
     ),
     "CACHE_STATES": ("current", "stale"),
     "AUTHORITY_EVENTS": ("issue", "disarm", "revoke", "expire"),
+    "TRANSITION_CAUSES": ("reduce", "flatten_request", "trip", "halt", "resume"),
     "TICK_STATUSES": (
         "decided",
         "skipped:closed",
