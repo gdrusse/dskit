@@ -2553,8 +2553,10 @@ tests/production/
 │                          both subclasses a seam and reaches a private name of another module
 ├── test_base.py           ProductionError accumulates every problem into one raise; canonical_bytes/record_hash pinned against
 │                          the §6 envelope recipe; ms/UTC helpers reject naive datetimes
-├── test_vocab.py          every vocabulary closed; the severity level map pinned; lattice order pinned; a completeness test scans
-│                          §5–§7 for `∈ {…}` literals and fails if any closed set is not defined in vocab.py
+├── test_vocab.py          every vocabulary closed; the severity level map pinned; lattice order pinned; a completeness test
+│                          carries its own restated list of §8's closed-set names and fails if any is not defined in
+│                          vocab.py (the prose scan of §5–§7 for `∈ {…}` literals lives in check_plan.py, since a shipped
+│                          test must not read this document — §5.16)
 ├── test_document.py       default-deny; required series UUID/rung/execution scope; arm rung equality; golden identity; non-identity exclusion; round trip
 ├── test_release.py        all release inputs and expected execution scope bound; mutation/source/runtime/distribution drift refuses; exact non-identity paths
 ├── test_records.py        Decimal/non-finite; ExecutionScope; canonical Intent/ActPermit; readiness/input/quote/evidence/risk values; quantity invariant

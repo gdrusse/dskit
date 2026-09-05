@@ -45,6 +45,7 @@ problems = []
 
 
 def add(kind, ln, msg):
+    """Record one finding as ``(kind, line, message)``."""
     problems.append((kind, ln, msg))
 
 
