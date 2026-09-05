@@ -101,9 +101,9 @@ from dskit.pipeline.planner import plan as plan_document
 from dskit.pipeline.runs import _escape_pipe
 
 __all__ = [
+    "DocumentRunResult",
     "FOLD_FIELDS",
     "FOLD_OPTIONAL_FIELDS",
-    "DocumentRunResult",
     "WalkForwardRunResult",
     "aggregate_folds",
     "run_document",

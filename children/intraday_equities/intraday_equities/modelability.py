@@ -348,40 +348,15 @@ def _single_fold_document(document, cutoff, index):
 
 
 def _run_bounded_walk(ctx, document, tag, *, workers=None):
-    """Run each fold in a capped process, then journal one logical summary.
-
-    Parameters
-    ----------
-    ctx : object
-        The stage run frame; supplies ``asof``, ``run_dir`` and
-        ``source_path``.
-    document : dskit.pipeline.document.PipelineDocument
-        The whole multi-fold walk. Each declared cutoff becomes one
-        single-fold document run in its own address-space-capped
-        process by the seam.
-    tag : str
-        Short name for the derived per-fold configs and journal rows.
-    workers : int or None
-        How many fold processes may run at once. ``None`` (the default,
-        and what every caller uses) lets the seam read
-        :data:`_WORKERS_ENV`, so the knob can never be half-applied by
-        a caller that forgot it. A finished, journaled fold is never
-        re-spawned, whatever the width it ran at.
-
-    Returns
-    -------
-    str
-        The walk summary directory.
-
-    Raises
-    ------
-    ValueError
-        When ``workers`` or the knob is not a positive int, when
-        artifacts exist without journal evidence, or when a fold does
-        not leave exactly one ran row for its cutoff.
-    RuntimeError
-        When a fold exits nonzero, or a summary lacks journal evidence.
-    """
+    """Run each fold of ``document`` in a capped process; journal one summary."""
+    # Every declared cutoff becomes one single-fold document run in its own
+    # address-space-capped process by the seam. ``workers`` None (what every
+    # caller passes) lets the seam read _WORKERS_ENV, so the knob can never
+    # be half-applied by a caller that forgot it. A finished, journaled fold
+    # is never re-spawned, whatever the width it ran at. Raises ValueError on
+    # a bad width, artifacts without journal evidence, or a fold that leaves
+    # no single ran row for its cutoff; RuntimeError when a fold exits
+    # nonzero or a summary lacks journal evidence.
     runner = _runner(workers)
     child_root = _child_root(ctx)
     summary = _summary_dir(document, ctx.asof, child_root)
