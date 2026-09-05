@@ -472,11 +472,17 @@ class BoomVerifier:
 
 
 class FakeHealth:
-    """The health state machine's current `HEALTH_STATES` member."""
+    """The health state machine's current `HEALTH_STATES` member.
+
+    `Health.state` is a PROPERTY (§5.11), so the double is one too: a fake
+    that answered a callable is what let `leg.py` call `health.state()` and
+    raise `TypeError` against every real `Health`.
+    """
 
     def __init__(self, state="ready"):
         self._state = state
 
+    @property
     def state(self):
         return self._state
 

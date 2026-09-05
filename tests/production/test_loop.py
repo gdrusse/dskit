@@ -265,7 +265,10 @@ class FakeProposer:
 
     def quotes(self, head_outputs):
         self.calls.add("proposer.quotes", head_outputs)
-        return a_quote_set()
+        # §5.3: `Proposer.quotes(head_outputs) -> list[Quote]`. Assembling
+        # them into §5.13's `QuoteSet` — with its digest and oldest instant —
+        # is the TICK's job, so the fake answers what the real base answers.
+        return list(a_quote_set().quotes)
 
     def proposals(self, head_outputs, candidates, state, provenance):
         self.calls.add("proposer.proposals", head_outputs, candidates, state, provenance)

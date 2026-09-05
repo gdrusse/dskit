@@ -508,7 +508,7 @@ class SubmissionVerifier:
             risk_effect=permit.risk_effect,
             rung=self._document.rung,
             breaker=view.breaker,
-            health=self._health.state(),
+            health=self._health.state,
             readiness=view.readiness.verdict,
             authority=origin.role,
             origin=origin.name,

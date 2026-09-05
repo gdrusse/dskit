@@ -41,7 +41,7 @@ import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
-from dskit.production.base import ProductionError, pin_members
+from dskit.production.base import ProductionError, canonical_hash, pin_members
 from dskit.production.compose import handlers_for
 from dskit.production.control import EXECUTING_PURPOSES, CommandProcessor
 from dskit.production.decider import DEFAULT_MAX_ARTIFACT_AGE
@@ -52,6 +52,7 @@ from dskit.production.records import (
     FeedAge,
     PolicyRequest,
     Provenance,
+    QuoteSet,
     ReductionPlan,
     TickResult,
     TickStart,
@@ -763,6 +764,13 @@ class Tick:
     def quotes(self, head_outputs):
         """Return the quotes every proposal, plan and permit binds.
 
+        The proposer EXTRACTS quotes — §5.3 declares
+        ``Proposer.quotes(head_outputs) -> list[Quote]``, pure and
+        state-independent. Assembling them into §5.13's ``QuoteSet`` is the
+        TICK's job, because the digest and the oldest instant are tick
+        facts: ``DecisionPlan``, ``Intent`` and ``ActPermit`` each bind
+        both, and a leg could not rebuild them from its own proposal.
+
         Parameters
         ----------
         head_outputs : dict
@@ -770,8 +778,20 @@ class Tick:
         Returns
         -------
         QuoteSet
+            Empty when no head row is quote-shaped; its ``min_asof_ms`` is
+            then this instant, since a set with no quote has nothing that
+            can be stale — and nothing prices against it either, so an
+            executor answers ``no_quote`` and accounting refuses a held
+            instrument with no mark.
         """
-        return self.data.decider.proposer.quotes(head_outputs)
+        found = tuple(self.data.decider.proposer.quotes(head_outputs))
+        return QuoteSet(
+            quotes=found,
+            quote_digest=canonical_hash([quote.to_obj() for quote in found]),
+            min_asof_ms=min(
+                (quote.asof_ms for quote in found), default=self.schedule.clock.now_ms()
+            ),
+        )
 
     def account(self, candidates, quotes, at_ms):
         """Snapshot the account against the whole tick's evidence requirements.
@@ -1316,18 +1336,28 @@ class ServeLoop:
         return self._close(code, _HALTED if halted else _STOPPED, "")
 
     def _close(self, code, state, reason):
-        """Append the ``process`` stop record, then D22's one journal row (D15)."""
+        """Append the ``process`` stop record, then D22's one journal row (D15).
+
+        The checkpoint is replaced AFTER the observability workers stop,
+        because stopping them appends: ``Health.stop`` writes the deferred
+        ``health`` record D23 keeps off the worker thread. Writing the cache
+        before that would leave every cleanly stopped series' checkpoint one
+        record behind its own head — "checkpoint last" (D13) means last.
+        """
         self._state = _STOPPING
         self._release_lease()
         try:
             self._append("process", f"stop:{self._process_id()}", self._process_body("stop", code))
             self.recording.ledger.barrier()
-            self._write_checkpoint(self._last_tick_at)
         except Exception as exc:  # noqa: BLE001 - a chain we cannot extend is still a stop
             _LOG.error("could not record the process stop: %s", redact(str(exc)))
         self.observability.health.stop()
         self.observability.heartbeat.close()
         self.observability.alerts.close()
+        try:
+            self._write_checkpoint(self._last_tick_at)
+        except Exception as exc:  # noqa: BLE001 - a cache we cannot replace is still a stop
+            _LOG.error("could not replace the checkpoint: %s", redact(str(exc)))
         if state is not _FAULTED:
             self._journal(code)
         self._state = state
@@ -1357,9 +1387,13 @@ class ServeLoop:
         seq, head_hash = self.recording.ledger.head()
         try:
             self.recording.journal_hook(
+                # Every field is a STRING: the journal's `Action` row refuses
+                # anything else (`dskit/journal/model.py`), and a hook that
+                # raised would lose D22's one row for the whole process —
+                # silently, since a journal failure never changes the exit.
                 step=JOURNAL_STEP.format(verb=SERVE_VERB, rung=self.document.rung),
-                inputs=[self.release.release_hash],
-                outputs=[str(code)],
+                inputs=self.release.release_hash,
+                outputs=str(code),
                 db_location=self.recording.inbox.serve_root.series_path,
                 notes=JOURNAL_NOTES.format(
                     process_id=self._process_id(), seq=seq, head_hash=head_hash

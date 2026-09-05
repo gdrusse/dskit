@@ -808,7 +808,7 @@ class Authority(ABC):
                     "risk_version": intent.risk_version.to_obj(),
                     "risk_state_digest": intent.risk_state_digest,
                     "executor_scope": self._executor.execution_scope().to_obj(),
-                    "health": self._health.state(),
+                    "health": self._health.state,
                     "breaker": state_view.breaker,
                     "rung": self._document.rung,
                     "risk_effect": plan.risk_effect,
@@ -1341,7 +1341,7 @@ class LegPipeline:
 
     def _gate_health(self, at_ms, view, account):
         """Re-check health: degraded and unhealthy refuse a submit in every rung (D10)."""
-        state = self.observability.health.state()
+        state = self.observability.health.state
         if state != _READY_HEALTH:
             return False, f"health is {state}, not {_READY_HEALTH}"
         return True, _SATISFIED
@@ -1451,7 +1451,7 @@ class LegPipeline:
             risk_effect=risk_effect,
             rung=self.bindings.rung,
             breaker=view.breaker,
-            health=self.observability.health.state(),
+            health=self.observability.health.state,
             readiness=self.safety.readiness.verdict_for(view, self.schedule.clock.now_ms()),
             authority=self._stage.scope.authority,
             origin=self.bindings.origin,

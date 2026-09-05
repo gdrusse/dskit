@@ -258,12 +258,18 @@ class FakeCalendar:
 
 
 class FakeHealth:
-    """The health state machine's current member of `HEALTH_STATES`."""
+    """The health state machine's current member of `HEALTH_STATES`.
+
+    `Health.state` is a PROPERTY (§5.11), so the double is one too: a fake
+    that answered a callable is what let `verifier.py` call
+    `health.state()` and raise `TypeError` against every real `Health`.
+    """
 
     def __init__(self, state="ready"):
         self._state = state
         self.calls = 0
 
+    @property
     def state(self):
         self.calls += 1
         return self._state

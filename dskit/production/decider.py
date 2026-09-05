@@ -94,6 +94,7 @@ __all__ = [
     "CARRY_FILENAME",
     "CONFIG_FILENAME",
     "DEFAULT_MAX_ARTIFACT_AGE",
+    "DEFAULT_PROPOSAL_TTL_MS",
     "DEFAULT_TIF",
     "NODES_DIRNAME",
     "PROPOSER_KINDS",
@@ -117,6 +118,16 @@ __all__ = [
 
 #: ``serving.max_artifact_age`` when the document names none.
 DEFAULT_MAX_ARTIFACT_AGE = "P30D"
+
+#: How long an unmapped proposal stays actionable after its inputs' as-of
+#: instant. It cannot be zero: ``inputs_asof_ms`` is always strictly in the
+#: past (rows are published before a tick reads them), an ``ActPermit``
+#: binds ``proposal_expiry`` as one of its nine deadline terms, and the
+#: submission verifier's deadline check is INCLUSIVE — so a proposal whose
+#: expiry IS its inputs' as-of is born expired and no live submit could ever
+#: pass. A head row states its own ``expires_ms`` wherever the domain has
+#: one; ``ttl_ms`` is the document knob for when it does not.
+DEFAULT_PROPOSAL_TTL_MS = 60_000
 
 #: The time-in-force a proposal carries when neither the head row nor the
 #: proposer's ``default_tif`` names one: immediate-or-cancel, so a served
@@ -1404,7 +1415,7 @@ class Proposer(ABC):
 class _RowProposer(Proposer):
     """One row of one head port per candidate; sizing is the subclass's :meth:`_size` hook."""
 
-    _PARAMS = ("output", "fields")
+    _PARAMS = ("output", "fields", "ttl_ms")
     #: The Proposal fields ``fields`` may map to a head row field.
     _MAPPABLE = (
         "instrument",
@@ -1443,6 +1454,8 @@ class _RowProposer(Proposer):
         """
         problems = super().validate_params(params)
         _check_str(problems, "output", params.get("output"))
+        if "ttl_ms" in params:
+            check_int_param(problems, "ttl_ms", params.get("ttl_ms"), ge=1)
         mapping = params.get("fields")
         if not isinstance(mapping, dict):
             problems.append(f"fields must map Proposal field -> head row field, got {mapping!r}")
@@ -1458,9 +1471,10 @@ class _RowProposer(Proposer):
         return problems
 
     def _configure(self, params):
-        """Keep the port and the field map."""
+        """Keep the port, the field map and the unmapped-expiry horizon."""
         self._output = params["output"]
         self._map = dict(params["fields"])
+        self._ttl_ms = params.get("ttl_ms", DEFAULT_PROPOSAL_TTL_MS)
 
     def _tif(self):
         """Answer the time-in-force an unmapped proposal carries."""
@@ -1597,7 +1611,9 @@ class _RowProposer(Proposer):
             notional=_money_or_none(mapped.get("notional"), "notional"),
             limit=_money_or_none(mapped.get("limit"), "limit"),
             tif=_text(mapped.get("tif", self._tif()), "tif"),
-            expires_ms=_instant(mapped.get("expires_ms", provenance.inputs_asof_ms), "expires_ms"),
+            expires_ms=_instant(
+                mapped.get("expires_ms", provenance.inputs_asof_ms + self._ttl_ms), "expires_ms"
+            ),
             reference_price=_money(mapped.get("reference_price", UNMAPPED_MONEY), "reference_price"),
             exposure=_money(mapped.get("exposure", UNMAPPED_MONEY), "exposure"),
             direction=_text(mapped.get("direction", _DIRECTIONS[side]), "direction"),
@@ -1622,7 +1638,10 @@ class IntentRows(_RowProposer):
     params : dict
         ``output`` (str, REQUIRED) — the head port holding the rows;
         ``fields`` (dict, REQUIRED) — Proposal field -> row field, at
-        least ``instrument``, ``side`` and ``qty``; ``default_tif`` (one
+        least ``instrument``, ``side`` and ``qty``; ``ttl_ms`` (int >= 1,
+        default :data:`DEFAULT_PROPOSAL_TTL_MS`) — how long a proposal
+        whose row states no ``expires_ms`` stays actionable after its
+        inputs' as-of instant; ``default_tif`` (one
         of ``TIFS``, default :data:`DEFAULT_TIF`) — the time-in-force of
         a row that maps none.
 
@@ -1639,7 +1658,7 @@ class IntentRows(_RowProposer):
         proposals = proposer.proposals(head_outputs, candidates, account, provenance)
     """
 
-    _PARAMS = ("output", "fields", "default_tif")
+    _PARAMS = _RowProposer._PARAMS + ("default_tif",)
     _REQUIRED_MAP = ("instrument", "side", "qty")
 
     @classmethod
@@ -1688,8 +1707,11 @@ class TargetPositions(_RowProposer):
     params : dict
         ``output`` (str, REQUIRED) — the head port holding the rows;
         ``fields`` (dict, REQUIRED) — Proposal field -> row field, at
-        least ``instrument`` and ``qty`` (the target); ``side`` is never
-        mapped, the diff decides it.
+        least ``instrument`` and ``qty`` (the target); ``ttl_ms``
+        (int >= 1, default :data:`DEFAULT_PROPOSAL_TTL_MS`) — how long a
+        proposal whose row states no ``expires_ms`` stays actionable after
+        its inputs' as-of instant; ``side`` is never mapped, the diff
+        decides it.
 
     Examples
     --------
