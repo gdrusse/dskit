@@ -38,6 +38,7 @@ from dskit.production.state import (
     DEFAULT_MAX_HISTORY,
     PositionBook,
     Recovery,
+    ReductionProjection,
     SeriesState,
     StateView,
     TickState,
@@ -96,6 +97,17 @@ VIEW_MEMBERS = (
     "risk_version",
     "head_seq",
     "head_hash",
+)
+
+# `ReductionProjection`'s members, in order — the order `to_obj` renders
+# and a `snapshot` restores key-exact. R24 added `release_hash` so
+# `arming.check_conjunction` can refuse a right that survived a re-plan.
+REDUCTION_PROJECTION_MEMBERS = (
+    "authority_id",
+    "release_hash",
+    "rights",
+    "reserved",
+    "expires_ms",
 )
 
 # D14: `economic_seq` advances on economic events ONLY. A `cash_flow` is
@@ -1339,6 +1351,51 @@ def test_a_reduction_authority_folds_into_the_reduction_projection():
     assert tuple(reduction.reserved) == ()
     assert reduction.expires_ms == RIGHTS_EXPIRE_MS
     assert st.snapshot().arming is None
+
+
+def test_the_reduction_projection_carries_the_release_its_rights_were_granted_under():
+    """R24: the grant's `release_hash` is folded and kept, so the arming
+    conjunct can refuse a right that outlived the plan it was granted for
+    instead of honouring authority for a plan this release never made."""
+    st, chain = new_state()
+    fold(st, chain, "authority",
+         authority_body(role="reduction", authority_id="auth-2", rights=(RIGHT_A,)))
+    reduction = st.snapshot().reduction
+    assert tuple(f.name for f in dataclasses.fields(ReductionProjection)) == (
+        REDUCTION_PROJECTION_MEMBERS
+    )
+    assert reduction.release_hash == RELEASE_HASH
+    assert reduction.release_hash == reduction_authorization_obj()["release_hash"]
+
+
+def test_a_snapshot_round_trips_the_reduction_release_hash():
+    """The projection is restored key-exact, so a process that came back
+    from a snapshot refuses the same foreign right the folding process
+    would have."""
+    st, chain = new_state()
+    fold(st, chain, "authority",
+         authority_body(role="reduction", authority_id="auth-2",
+                        rights=(RIGHT_A, RIGHT_B)))
+    fold(st, chain, "authority_use", authority_use_body(RIGHT_A))
+    payload = st.to_snapshot_obj()
+    assert set(payload["reduction"]) == set(REDUCTION_PROJECTION_MEMBERS)
+    assert payload["reduction"]["release_hash"] == RELEASE_HASH
+    restored = SeriesState(SERIES_ID)
+    restored.restore(snapshot_env(st, chain))
+    assert restored.snapshot().reduction == st.snapshot().reduction
+    assert restored.snapshot().reduction.release_hash == RELEASE_HASH
+
+
+def test_a_restored_reduction_projection_refuses_an_unknown_member():
+    """Default-deny on the way back in: a payload carrying a member this
+    build does not know is a version skew, not a projection to guess at."""
+    st, chain = new_state()
+    fold(st, chain, "authority",
+         authority_body(role="reduction", authority_id="auth-2", rights=(RIGHT_A,)))
+    broken = copy.deepcopy(snapshot_env(st, chain))
+    broken["body"]["state"]["reduction"]["granted_by"] = "someone"
+    with pytest.raises(ProductionError):
+        SeriesState(SERIES_ID).restore(broken)
 
 
 def test_an_authority_use_reserves_one_right_and_is_not_economic():

@@ -42,6 +42,7 @@ from dskit.production import arming as arming_module
 from dskit.production import vocab
 from dskit.production.arming import (
     APPROVAL_KINDS,
+    CONJUNCTION_REASONS,
     ApprovalVerifier,
     ArmApproval,
     ArmingState,
@@ -352,11 +353,33 @@ def arm_approval(request, principal=CHECKER):
     )
 
 
+def approve_arm(arming, approval, request, request_id=REQUEST_ID,
+                approval_id=APPROVAL_ID, *, view=None, at_ms=BASE_MS,
+                readiness_verdict="go", sentinel_present=False):
+    """`Arming.approve` with R23's world keywords — the one owner of their defaults.
+
+    Every call site goes through here, so adding a conjunct to `approve`
+    is one edit, and a test that wants a refusal names only the conjunct
+    it is breaking.  The defaults are the world an arm may be issued in:
+    an active breaker, no `HALT` sentinel and a readiness GO.
+    """
+    return arming.approve(
+        approval,
+        request,
+        request_id,
+        approval_id,
+        view=view_with() if view is None else view,
+        at_ms=at_ms,
+        readiness_verdict=readiness_verdict,
+        sentinel_present=sentinel_present,
+    )
+
+
 def issue(arming, release, **overrides):
     """Run one full maker-checker cycle; return `(body, ArmingState)`."""
     request = arm_request(release, **overrides)
     arming.request(request, REQUEST_ID)
-    return arming.approve(arm_approval(request), request, REQUEST_ID, APPROVAL_ID)
+    return approve_arm(arming, arm_approval(request), request)
 
 
 def ledger_with(*records):
@@ -393,6 +416,20 @@ def reduction_issue_body(authorization, request_id="req-flatten-1"):
         "approval_id": "apr-flatten-1",
         "reason": None,
         "authorization": authorization.to_obj(),
+    }
+
+
+def trip_body(to_state, from_state="active"):
+    """§6's `trip` body — the only record that moves the fold's breaker."""
+    return {
+        "from": from_state,
+        "to": to_state,
+        "reason": "operator",
+        "actor": "operator",
+        "control_request_id": "req-trip-1",
+        "principal_digest": DIGEST_A,
+        "proof_digest": DIGEST_B,
+        "acknowledged_trip_id": None,
     }
 
 
@@ -915,7 +952,7 @@ def test_the_issued_state_binds_the_release_rung_expiry_scope_and_both_proofs(
     request = arm_request(release, allowlist=("AAPL",),
                           limits_overlay={"size": {"max": "50"}})
     arming.request(request, REQUEST_ID)
-    _, state = arming.approve(arm_approval(request), request, REQUEST_ID, APPROVAL_ID)
+    _, state = approve_arm(arming, arm_approval(request), request)
     assert state.release_hash == release.release_hash
     assert state.rung == "live_limited"
     assert state.maker == MAKER
@@ -946,7 +983,7 @@ def test_an_approval_over_a_different_request_refuses(tmp_path, release, clock,
     other = arm_request(release, allowlist=("MSFT",))
     arming.request(request, REQUEST_ID)
     with pytest.raises(ProductionError) as excinfo:
-        arming.approve(arm_approval(other), request, REQUEST_ID, APPROVAL_ID)
+        approve_arm(arming, arm_approval(other), request)
     assert "request_digest" in str(excinfo.value)
 
 
@@ -957,7 +994,7 @@ def test_an_approval_of_a_request_that_has_already_expired_refuses(tmp_path, rel
     arming.request(request, REQUEST_ID)
     clock.advance(60_000)
     with pytest.raises(ProductionError):
-        arming.approve(arm_approval(request), request, REQUEST_ID, APPROVAL_ID)
+        approve_arm(arming, arm_approval(request), request, at_ms=clock.now_ms())
 
 
 @pytest.mark.parametrize("rung", ["live_limited", "live"])
@@ -968,8 +1005,7 @@ def test_maker_and_checker_must_differ_at_the_live_rungs(tmp_path, release, cloc
     request = arm_request(release, rung=rung)
     arming.request(request, REQUEST_ID)
     with pytest.raises(ProductionError) as excinfo:
-        arming.approve(arm_approval(request, principal=MAKER), request, REQUEST_ID,
-                       APPROVAL_ID)
+        approve_arm(arming, arm_approval(request, principal=MAKER), request)
     assert MAKER in str(excinfo.value)
 
 
@@ -983,8 +1019,7 @@ def test_one_principal_may_arm_a_rung_that_moves_no_real_money(tmp_path, release
     arming = make_arming(tmp_path, release, clock, verifier, document=obj)
     request = arm_request(release, rung=rung)
     arming.request(request, REQUEST_ID)
-    _, state = arming.approve(arm_approval(request, principal=MAKER), request,
-                              REQUEST_ID, APPROVAL_ID)
+    _, state = approve_arm(arming, arm_approval(request, principal=MAKER), request)
     assert state.maker == state.checker == MAKER
 
 
@@ -996,7 +1031,7 @@ def test_an_approval_the_verifier_refuses_issues_nothing(tmp_path, release, cloc
     bad = ArmApproval(request_digest=request.request_digest(),
                       approval_proof=b"not-a-proof")
     with pytest.raises(ProductionError):
-        arming.approve(bad, request, REQUEST_ID, APPROVAL_ID)
+        approve_arm(arming, bad, request)
 
 
 def test_the_authority_id_is_derived_and_never_depends_on_wall_time(tmp_path, release,
@@ -1004,13 +1039,161 @@ def test_the_authority_id_is_derived_and_never_depends_on_wall_time(tmp_path, re
     arming = make_arming(tmp_path, release, clock, verifier)
     request = arm_request(release)
     arming.request(request, REQUEST_ID)
-    _, first = arming.approve(arm_approval(request), request, REQUEST_ID, APPROVAL_ID)
+    _, first = approve_arm(arming, arm_approval(request), request)
     clock.advance(1234)
-    _, again = arming.approve(arm_approval(request), request, REQUEST_ID, APPROVAL_ID)
-    _, other = arming.approve(arm_approval(request), request, REQUEST_ID, "apr-arm-2")
+    _, again = approve_arm(arming, arm_approval(request), request)
+    _, other = approve_arm(arming, arm_approval(request), request,
+                           approval_id="apr-arm-2")
     assert first.authority_id == again.authority_id
     assert first.authority_id != other.authority_id
     assert len(first.authority_id) == 64
+
+
+# ---------------------------------------------------------------------------
+# The world `approve` arms into (R23, D10): active breaker, no HALT, a GO
+# ---------------------------------------------------------------------------
+
+#: The four world arguments R23 adds, in the order the signature declares them.
+APPROVE_WORLD = ("view", "at_ms", "readiness_verdict", "sentinel_present")
+
+
+def test_approve_takes_the_world_it_judges_as_required_keyword_only_arguments():
+    """Keyword-only and defaultless, so an older four-argument call fails
+    loudly instead of arming under an assumed GO into a tripped breaker."""
+    signature = inspect.signature(Arming.approve)
+    assert tuple(signature.parameters) == (
+        "self", "arm_approval", "request", "request_id", "approval_id",
+    ) + APPROVE_WORLD
+    for name in APPROVE_WORLD:
+        parameter = signature.parameters[name]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY, name
+        assert parameter.default is inspect.Parameter.empty, name
+
+
+@pytest.mark.parametrize("breaker", ["reducing", "halted"])
+def test_no_ordinary_arm_is_issued_unless_the_breaker_is_active(tmp_path, release,
+                                                                clock, verifier,
+                                                                breaker):
+    """D10: ordinary arming is issued only while `active`.  Every breaker
+    transition revokes it and D12 forbids reissuing it while `reducing`,
+    so an arm approved into a tripped breaker would hand back exactly the
+    authority the trip removed — without a second trip to notice."""
+    arming = make_arming(tmp_path, release, clock, verifier)
+    request = arm_request(release)
+    arming.request(request, REQUEST_ID)
+    with pytest.raises(ProductionError) as excinfo:
+        approve_arm(arming, arm_approval(request), request,
+                    view=view_with(("trip", trip_body(breaker))))
+    assert "breaker" in str(excinfo.value)
+    assert breaker in str(excinfo.value)
+
+
+def test_no_ordinary_arm_is_issued_while_the_halt_sentinel_is_present(tmp_path, release,
+                                                                      clock, verifier):
+    """The `HALT` file is the out-of-band kill switch (§5.6/D12) and it is
+    retired only by a verified resume.  While it is there the operator has
+    said stop, and arming under it is authority the switch was pulled to
+    remove."""
+    arming = make_arming(tmp_path, release, clock, verifier)
+    request = arm_request(release)
+    arming.request(request, REQUEST_ID)
+    with pytest.raises(ProductionError) as excinfo:
+        approve_arm(arming, arm_approval(request), request, sentinel_present=True)
+    assert "HALT" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("rung", ["live_limited", "live"])
+def test_no_live_arm_is_issued_under_a_no_go_readiness(tmp_path, release, clock,
+                                                       verifier, rung):
+    """D10 wants "a release-bound GO".  The verdict is
+    `Readiness.verdict_for(view, at_ms)`'s — the one owner of "expired
+    means `no_go`" — and `approve` refuses without it rather than letting
+    the handler decide what a stale checklist means."""
+    obj = document_for(rung)
+    arming = make_arming(tmp_path, release, clock, verifier, document=obj)
+    request = arm_request(release, rung=rung)
+    arming.request(request, REQUEST_ID)
+    with pytest.raises(ProductionError) as excinfo:
+        approve_arm(arming, arm_approval(request), request, readiness_verdict="no_go")
+    assert "readiness" in str(excinfo.value)
+    assert "no_go" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("rung", ["shadow", "paper"])
+def test_a_rung_with_no_live_permit_to_gate_arms_without_a_go(tmp_path, release, clock,
+                                                              verifier, rung):
+    """The GO conjunct rides the same rung-keyed table the conjunction does,
+    never a `rung ==` test (D2).  Below `live_limited` no live permit exists
+    to gate, and demanding a GO would make the paper rehearsal harder than
+    the thing it rehearses."""
+    obj = document_for(rung)
+    arming = make_arming(tmp_path, release, clock, verifier, document=obj)
+    request = arm_request(release, rung=rung)
+    arming.request(request, REQUEST_ID)
+    _, state = approve_arm(arming, arm_approval(request), request,
+                           readiness_verdict="no_go")
+    assert state.rung == rung
+    assert state.release_hash == release.release_hash
+
+
+@pytest.mark.parametrize("rung", ["shadow", "paper"])
+def test_the_breaker_and_the_sentinel_gate_every_rung(tmp_path, release, clock,
+                                                      verifier, rung):
+    """Only the GO is rung-dependent.  A halted breaker and a live `HALT`
+    file stop a paper arm too — the rehearsal would otherwise practise
+    ignoring the kill switch."""
+    obj = document_for(rung)
+    arming = make_arming(tmp_path, release, clock, verifier, document=obj)
+    request = arm_request(release, rung=rung)
+    arming.request(request, REQUEST_ID)
+    with pytest.raises(ProductionError):
+        approve_arm(arming, arm_approval(request), request,
+                    view=view_with(("trip", trip_body("halted"))))
+    with pytest.raises(ProductionError):
+        approve_arm(arming, arm_approval(request), request, sentinel_present=True)
+
+
+def test_every_failed_world_conjunct_is_named_at_once(tmp_path, release, clock,
+                                                      verifier):
+    """Accumulate, never stop at the first: an operator clearing one refusal
+    at a time would learn about the sentinel only after fixing the breaker."""
+    arming = make_arming(tmp_path, release, clock, verifier)
+    request = arm_request(release)
+    arming.request(request, REQUEST_ID)
+    with pytest.raises(ProductionError) as excinfo:
+        approve_arm(arming, arm_approval(request), request,
+                    view=view_with(("trip", trip_body("halted"))),
+                    readiness_verdict="no_go", sentinel_present=True)
+    assert len(excinfo.value.problems) >= 3
+
+
+def test_approve_refuses_a_readiness_verdict_outside_the_vocabulary(tmp_path, release,
+                                                                    clock, verifier):
+    """The verdict is a `READINESS_VERDICTS` member the caller took from
+    `Readiness.verdict_for`; anything else — `True`, `"ok"`, a forgotten
+    `None` — is a caller bug, not a GO."""
+    arming = make_arming(tmp_path, release, clock, verifier)
+    request = arm_request(release)
+    arming.request(request, REQUEST_ID)
+    for verdict in ("ok", None, True):
+        with pytest.raises(ProductionError) as excinfo:
+            approve_arm(arming, arm_approval(request), request,
+                        readiness_verdict=verdict)
+        assert "readiness_verdict" in str(excinfo.value)
+    assert set(vocab.READINESS_VERDICTS) == {"go", "no_go"}
+
+
+def test_approve_refuses_a_sentinel_flag_that_is_not_a_bool(tmp_path, release, clock,
+                                                            verifier):
+    """A truthy path string would read as "present" and an empty one as
+    "absent"; the caller answers the question, it does not hand over its
+    working."""
+    arming = make_arming(tmp_path, release, clock, verifier)
+    request = arm_request(release)
+    arming.request(request, REQUEST_ID)
+    with pytest.raises(ProductionError) as excinfo:
+        approve_arm(arming, arm_approval(request), request, sentinel_present="HALT")
+    assert "sentinel_present" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
@@ -1163,10 +1346,11 @@ def test_a_model_leg_whose_arm_names_another_release_refuses(tmp_path, release, 
     assert result.reason == "release_mismatch"
 
 
-def reduction_view(release, digests, reserved=(), expires_ms=BASE_MS + 600_000):
+def reduction_view(release, digests, reserved=(), expires_ms=BASE_MS + 600_000,
+                   release_hash=None):
     authorization = ReductionAuthorization(
         authority_id="auth-red-1",
-        release_hash=release.release_hash,
+        release_hash=release_hash or release.release_hash,
         request_id="req-flatten-1",
         reduction_intent_digests=tuple(digests),
         expires_ms=expires_ms,
@@ -1246,6 +1430,43 @@ def test_a_reduction_leg_with_no_reduction_authority_at_all_refuses(tmp_path, re
     )
     assert result.satisfied is False
     assert result.reason == "no_reduction_authority"
+
+
+def test_a_reduction_right_granted_under_another_release_refuses(tmp_path, release,
+                                                                 clock, verifier):
+    """R24: rights never survive a re-plan.  A right is granted for a
+    `reduction_intent_digest` computed from one release's artifacts, and
+    honouring it under another would consume authority for a plan this
+    release never made — the digests would not even be comparable."""
+    arming = make_arming(tmp_path, release, clock, verifier)
+    signed = reduction_intent(release)
+    digest = signed.reduction_intent_digest()
+    view, _ = reduction_view(release, [digest], release_hash="c" * 64)
+    assert view.reduction.release_hash == "c" * 64
+    result = conjunction(arming, release, view, origin="reduction",
+                         reduction=FakeReduction(signed=signed, digest=digest))
+    assert result.satisfied is False
+    assert result.reason == "reduction_release_mismatch"
+    assert result.reason in CONJUNCTION_REASONS
+
+
+def test_both_origins_refuse_an_authority_bound_to_another_release(tmp_path, release,
+                                                                   clock, verifier):
+    """The two conjuncts are symmetric: each compares the release the
+    authority was issued under with THIS release's hash, so a re-plan
+    cannot leave one of the two origins open."""
+    arming = make_arming(tmp_path, release, clock, verifier)
+    foreign = sample_state(release_hash="c" * 64)
+    model = conjunction(arming, release, view_with(("authority",
+                                                    ordinary_issue_body(foreign))))
+    signed = reduction_intent(release)
+    digest = signed.reduction_intent_digest()
+    view, _ = reduction_view(release, [digest], release_hash="c" * 64)
+    reduction = conjunction(arming, release, view, origin="reduction",
+                            reduction=FakeReduction(signed=signed, digest=digest))
+    assert (model.satisfied, reduction.satisfied) == (False, False)
+    assert {model.reason, reduction.reason} <= set(CONJUNCTION_REASONS)
+    assert model.reason != reduction.reason
 
 
 def test_an_ordinary_arm_never_satisfies_a_reduction_leg(tmp_path, release, clock,

@@ -30,7 +30,10 @@ agree" is one rule.
 needs a current unexpired unconsumed right for ITS OWN digest and must
 not need an ordinary arm, because D10/D12 revoke ordinary arming on
 leaving ``active`` — demanding one there would refuse every live flatten
-leg. :class:`ReductionRights` folds a stored ``ReductionPlan`` plus the
+leg. Both origins compare the release the authority was issued under with
+this release's hash (ruling R24): rights never survive a re-plan, and the
+two conjuncts stay symmetric so a re-plan cannot leave one of them open.
+:class:`ReductionRights` folds a stored ``ReductionPlan`` plus the
 checker's approval into one single-use right per intent digest and
 reserves a right through the ``authority_use`` body the sole writer
 barriers before an authorization.
@@ -69,7 +72,9 @@ from dskit.production.vocab import (
     APPROVAL_PURPOSES,
     AUTHORITY_EVENTS,
     AUTHORITY_ROLES,
+    BREAKER_STATES,
     LEG_ORIGINS,
+    READINESS_VERDICTS,
     RUNGS,
 )
 
@@ -101,6 +106,7 @@ CONJUNCTION_REASONS = (
     "release_mismatch",
     "not_armed",
     "no_reduction_authority",
+    "reduction_release_mismatch",
     "reduction_authority_expired",
     "reduction_right_unknown",
     "reduction_right_consumed",
@@ -127,6 +133,10 @@ _WITHIN = {
 #: overlay tightens is enforced by the guard chain with the account.
 _PROPOSAL_FIELDS = {"quantity": "qty", "notional": "notional"}
 _ORDINARY_ARM_ID = "ordinary-arm-v1"
+#: The only breaker state and readiness verdict an ordinary arm may be issued
+#: in (D10, ruling R23). Named once, so the refusal and the test read one word.
+_ACTIVE = "active"
+_GO = "go"
 
 
 pin_members("arming.py's purposes", (_ARM_REQUEST, _ARM_APPROVAL), APPROVAL_PURPOSES)
@@ -135,6 +145,8 @@ pin_members(
 )
 pin_members("arming.py's authority roles", (_ORDINARY, _REDUCTION), AUTHORITY_ROLES)
 pin_members("arming.py's origins", (_MODEL, _REDUCTION_ORIGIN), LEG_ORIGINS)
+pin_members("arming.py's breaker states", (_ACTIVE,), BREAKER_STATES)
+pin_members("arming.py's readiness verdicts", (_GO,), READINESS_VERDICTS)
 pin_members("arming.py's _PROPOSAL_FIELDS", _PROPOSAL_FIELDS, SIZE_MEASURES, exact=True)
 
 
@@ -765,7 +777,9 @@ class Arming:
         arming = Arming(document, release, serve_root=serve_root,
                         verifier=verifier, clock=clock)
         control_body = arming.request(request, "req-arm-1")
-        authority_body, state = arming.approve(approval, request, "req-arm-1", "apr-arm-1")
+        authority_body, state = arming.approve(
+            approval, request, "req-arm-1", "apr-arm-1", view=view, at_ms=now_ms,
+            readiness_verdict=readiness.verdict_for(view, now_ms), sentinel_present=False)
         arming.check_conjunction(invocation, view, "model", None, "live_limited", now_ms)
         # -> ConjunctionResult(satisfied=True, reason='')
     """
@@ -837,8 +851,17 @@ class Arming:
 
     # -- the checker half -----------------------------------------------------------
 
-    def approve(self, arm_approval, request, request_id, approval_id):
-        """Verify the checker's approval and issue the arm.
+    def approve(self, arm_approval, request, request_id, approval_id, *, view, at_ms,
+                readiness_verdict, sentinel_present):
+        """Verify the checker's approval and issue the arm — into an armable world.
+
+        D10 issues ordinary arming only while the breaker is ``active``,
+        with the ``HALT`` sentinel absent and, where a live permit exists
+        to gate, under a release-bound GO. That conjunction is checked
+        HERE, at the one call that mints authority, so no handler can
+        reach a state the trip removed by approving into it (ruling R23).
+        The GO applies through the same rung-keyed table the conjunction
+        uses, never a test on the rung.
 
         Parameters
         ----------
@@ -848,6 +871,19 @@ class Arming:
             this is the call that issues authority.
         request_id, approval_id : str
             The two control record ids the authority binds.
+        view : StateView
+            The fold this arm would be issued into; ``breaker`` is read.
+        at_ms : int
+            The instant the caller judged the world at — the same instant
+            it passed to :meth:`Readiness.verdict_for`, so the three world
+            answers describe one moment and the refusal names it.
+        readiness_verdict : str
+            A ``vocab.READINESS_VERDICTS`` member the caller obtained from
+            ``Readiness.verdict_for(view, at_ms)`` — the one owner of
+            "expired means ``no_go``". The control handler passes it;
+            nothing here re-derives it.
+        sentinel_present : bool
+            ``Breaker.halt_sentinel_present()``, answered by the caller.
 
         Returns
         -------
@@ -859,9 +895,11 @@ class Arming:
         Raises
         ------
         ProductionError
-            If the approval is over another request's digest, the request
-            no longer validates (expired, say), either proof fails, or the
-            maker and checker coincide at a live rung.
+            Naming every failed conjunct at once: a breaker other than
+            ``active``, a present ``HALT`` sentinel, a ``no_go`` at a live
+            rung, an approval over another request's digest, a request
+            that no longer validates (expired, say), a proof the verifier
+            refuses, or a maker and checker who coincide at a live rung.
         """
         problems = []
         _check_str(problems, "request_id", request_id)
@@ -870,8 +908,14 @@ class Arming:
             problems.append(f"arm_approval must be an ArmApproval, got {arm_approval!r}")
         if not isinstance(request, ArmRequest):
             problems.append(f"request must be an ArmRequest, got {request!r}")
+        _check_instant(problems, "at_ms", at_ms)
+        _member(problems, "readiness_verdict", readiness_verdict, READINESS_VERDICTS)
+        if not isinstance(sentinel_present, bool):
+            problems.append(f"sentinel_present must be a bool, got {sentinel_present!r}")
+        _member(problems, "view.breaker", getattr(view, "breaker", None), BREAKER_STATES)
         if problems:
             raise ProductionError(problems)
+        self._check_world(problems, view, at_ms, readiness_verdict, sentinel_present)
         _agree(problems, "approval request_digest", request.request_digest(),
                arm_approval.request_digest)
         self._check_request(problems, request)
@@ -912,6 +956,24 @@ class Arming:
         _LOG.info("arm issued %s by %s / %s until %d", state.authority_id, redact(state.maker),
                   redact(state.checker), state.armed_until_ms)
         return body, state
+
+    def _check_world(self, problems, view, at_ms, readiness_verdict, sentinel_present):
+        """Accumulate every reason this world may not be armed into (D10, R23)."""
+        if view.breaker != _ACTIVE:
+            problems.append(
+                f"the breaker is {view.breaker!r} at {at_ms}, not {_ACTIVE!r}: an ordinary "
+                "arm is issued only while active"
+            )
+        if sentinel_present:
+            problems.append(
+                f"the HALT sentinel is present at {at_ms}: an ordinary arm is issued only "
+                "while it is absent"
+            )
+        if self._gate.live and readiness_verdict != _GO:
+            problems.append(
+                f"readiness is {readiness_verdict!r} at {at_ms}, not {_GO!r}: rung "
+                f"{self._rung!r} arms only under a release-bound GO"
+            )
 
     def _verify(self, problems, payload, proof, purpose):
         """Ask the verifier; fold a refusal into ``problems`` and return None."""
@@ -1088,6 +1150,11 @@ class Arming:
         grant = view.reduction
         if grant is None:
             return ConjunctionResult(satisfied=False, reason="no_reduction_authority")
+        problems = []
+        _agree(problems, "reduction release_hash", self._release.release_hash,
+               grant.release_hash)
+        if problems:
+            return ConjunctionResult(satisfied=False, reason="reduction_release_mismatch")
         if at_ms >= grant.expires_ms:
             return ConjunctionResult(satisfied=False, reason="reduction_authority_expired")
         if digest not in grant.rights:

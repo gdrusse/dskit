@@ -26,7 +26,8 @@ by modules built later: :class:`ArmingProjection` (the eleven
 ``ArmingState`` fields of §5.6, restored from the issue body's embedded
 ``arming``), :class:`ReadinessProjection` (the five ``ReadinessResult``
 fields of §5.13) and :class:`ReductionProjection` (the current reduction
-authority, its rights and which of them ``authority_use`` has reserved).
+authority, the release it was granted under, its rights and which of them
+``authority_use`` has reserved).
 Each has an exact ``to_obj()`` so ``arming.py`` and ``readiness.py`` can
 rebuild their own value objects from the view without this module
 importing them.
@@ -429,6 +430,10 @@ class ReductionProjection(_Projection):
     Parameters
     ----------
     authority_id : str
+    release_hash : str
+        The release the rights were granted under, so ``arming.py`` can
+        refuse a right that outlived the plan it was granted for (R24) —
+        rights never survive a re-plan.
     rights : tuple of str
         Every granted ``reduction_intent_digest``.
     reserved : tuple of str
@@ -439,12 +444,14 @@ class ReductionProjection(_Projection):
     --------
     ::
 
-        grant = ReductionProjection(authority_id="auth-2", rights=("a1" * 32, "a2" * 32),
-                                    reserved=(), expires_ms=1_767_269_100_000)
+        grant = ReductionProjection(authority_id="auth-2", release_hash="d" * 64,
+                                    rights=("a1" * 32, "a2" * 32), reserved=(),
+                                    expires_ms=1_767_269_100_000)
         grant.reserve("a1" * 32).reserved  # ('a1a1…',)
     """
 
     authority_id: str
+    release_hash: str
     rights: tuple
     reserved: tuple
     expires_ms: int
@@ -1260,6 +1267,7 @@ class SeriesState:
         grant = ReductionAuthorization.from_obj(body.get("authorization"))
         self._reduction = ReductionProjection(
             authority_id=grant.authority_id,
+            release_hash=grant.release_hash,
             rights=grant.reduction_intent_digests,
             reserved=(),
             expires_ms=grant.expires_ms,
