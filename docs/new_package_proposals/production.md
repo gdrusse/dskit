@@ -322,13 +322,13 @@ brackets.
   `Executor` owns `spec`, `capabilities`, `check`, `cancel`, `order`,
   `open_orders`, `fills`, `balances`, positions and settlements — read, query
   and cancel only, always constructible, never armed. `SubmittingExecutor(Executor)`
-  adds `submit(intent, permit)` (§5.15). Neither has an initiated replace verb. Read/query/cancel construction is always possible.
+  adds `submit(intent, permit, state)` (§5.15). Neither has an initiated replace verb. Read/query/cancel construction is always possible.
   Shadow/paper `submit(intent, SimulatedPermit)` needs no live authority;
   `LiveExecutor.submit` accepts only an `ActPermit`—never a raw ordinary or
   reduction authority. Policy/arming consumes either authority and supplies its scope; the injected
   `Authority` (§5.13.1) mints the exact permit. Minting has exactly one home.
   After the final barrier, the live wrapper holds the local act gate and calls
-  `SubmissionVerifier.verify_and_call(intent, permit, native_call)`. It rehashes
+  `SubmissionVerifier.verify_and_call(intent, permit, state, native_call)`. It rehashes
   the already frozen `EntryBatch` in memory and checks its source identity and
   input deadline without rereading mutable rows. It refreshes quote, accounting,
   authority, executor identity and lease state; requires exact bound
@@ -346,7 +346,12 @@ brackets.
   advances on economic events only — an `authority_use` is a rights
   reservation, not an economic one, and must not advance it, or every reduction
   submit would fail step (7)'s exact-version recheck against the version its
-  own plan bound. It changes on every position
+  own plan bound. **The same exemption covers the leg's own `intent`**: step
+  (5) appends it and the fold records it as `pending`, which is not yet a
+  position reservation — an intent becomes economic when it is acknowledged,
+  not when it is recorded. Without this every live submit would refuse at step
+  (7) against the version step (2) bound, which is a systematic failure an
+  end-to-end run would surface immediately. It changes on every position
   reservation, order/fill/correction/balance/position or evidence update; a live
   adapter lacking monotonic source tokens refuses at plan. Eleven order statuses
   preserve terminality; every `OrderState` enforces
@@ -920,7 +925,7 @@ non-finite number.
   `FeedAge{key, age_ms, watermark_ms}`;
   `ScopeVerdict{allowed, scope_key, reason}`;
   `PolicyRequest{operation, risk_effect, rung, breaker, health, readiness,
-  authority, origin}` — what `Rule.veto` receives;
+  authority, origin, pending_control}` — what `Rule.veto` receives;
   `TickStart{tick_id, tick_at_ms, release_hash}`;
   `TickResult{tick_id, status, data_asof_ms, coverage_digest, inputs_digest, decision_plan_ids, legs, findings,
   observed_at_ms, latency_ms, leg_latency_ms, refusal_reason, error,
@@ -970,13 +975,16 @@ non-finite number.
   receives an order whose economic content — instrument, side, quantity, limit
   — is byte-identical to what was signed, while its tick-local bindings are
   this tick's. That identity is the property D12 needs, and it is checkable:
-  `test_leg.py` rebuilds the `ReductionIntent` using `release_hash`, `candidate`
-  and `proposal` **from the constructed `Intent`** and `request_id`, `index`,
+  `test_leg.py` rebuilds the `ReductionIntent` using `release_hash` and
+  `proposal` **from the constructed `Intent`** — `candidate` is not an `Intent`
+  field and comes from `bindings.reduction.signed` with the other four — and `request_id`, `index`,
   `expires_ms` and `risk_state_digest` from `bindings.reduction.signed` — the
   last four are not `Intent` fields and cannot be recovered from one — then
-  asserts `reduction_intent_digest` is unchanged. That pins **economic content
-  and scope**, which is the property claimed and the only one this check
-  establishes.
+  asserts `reduction_intent_digest` is unchanged. That pins **economic
+  content** — the order that reaches the venue is the order signed. Scope is
+  guaranteed structurally rather than by this check: the signed `candidate` is
+  the leg's only source of scope keys, so there is nothing for it to diverge
+  from.
   `ReductionIntent.risk_state_digest` is deliberately **not** re-verified at
   execution: positions move legitimately as earlier legs of the same plan
   fill, so requiring it to match would make every multi-intent plan fail after
@@ -1128,18 +1136,23 @@ non-finite number.
   the service.
   `ArmRequest{release_hash, rung, allowlist, limits_overlay, requested_until_ms,
   request_proof}` and `ArmApproval{request_digest, approval_proof}` are its
-  inputs. `Arming.check_conjunction(invocation, view, origin, at_ms)` is
+  inputs. `Arming.check_conjunction(invocation, view, origin, reduction, rung, at_ms)` is
   the single place D11's live conjunction is evaluated, and it is
   **origin-aware**. Four conjuncts apply to every origin: the document rung,
   `--armed`, `DSKIT_PRODUCTION_ARM` and the release hash must all agree. The
   fifth differs — a model leg requires a current unexpired **ordinary arm**; a
-  reduction leg requires a current unexpired **unconsumed reduction right**
-  for its `reduction_intent_digest`, and must not require an ordinary arm,
+  reduction leg requires a current unexpired **unconsumed reduction right for
+  its own `reduction.digest`** — the specific right, which is why the digest is
+  an argument and not left as "some right is unconsumed" — and must not require an ordinary arm,
   because D10 and D12 both revoke ordinary arming on leaving `active` and
   forbid reissuing it while `reducing`. Demanding one there would refuse every
   live flatten leg — removing the emergency de-risking path at exactly the
   rungs it exists for. No caller re-derives any of this; §5.13 step (3) is the
-  caller, and it passes `origin` rather than branching around the check.
+  caller, and it passes `origin` rather than branching around the check. The
+  conjunction applies at `live_limited` and `live` only: `rung` is an argument
+  so the check itself decides that, rather than a caller testing the rung and
+  skipping it, which D2 forbids outside `compose.py`. At `shadow`/`paper` it
+  returns satisfied — no live permit exists to gate.
   `ApprovalVerifier(ABC).verify(canonical_bytes, proof, purpose) ->
   VerifiedPrincipal{id, proof_digest}`. It is resolved from the graded
   `document.arming.approval {uses, params}` object; params may name trust-root env vars
@@ -1175,7 +1188,7 @@ non-finite number.
 
 The hierarchy is the §5.15 Liskov split: `Executor(ABC)` carries read, query and
 cancel and is always constructible; `SubmittingExecutor(Executor)` adds
-`submit(intent, permit)` with `permit` required of every subclass;
+`submit(intent, permit, state)` with `permit` required of every subclass;
 `ShadowExecutor`, `PaperExecutor` and `RecordedExecutor` take a
 `SimulatedPermit`, `LiveExecutor` accepts only an `ActPermit` and refuses any
 other permit **by type** — refuses meaning it returns
@@ -1386,7 +1399,8 @@ seam signatures and let position state be derived three separate ways. This
 section names box 3.
 
 - `SeriesState`: the single fold over the ledger and the sole owner of derived
-  state. `apply(record)` folds one record; `snapshot() -> StateView` returns an
+  state. `apply(record)` folds one record, and `Ledger.append` calls it — the fold is
+  never behind the chain, which is what makes a mid-tick snapshot meaningful; `snapshot() -> StateView` returns an
   immutable read-only view; `head() -> (seq, hash)` reports what it has folded.
   It owns positions (through `PositionBook`), working orders, pending client
   refs, the breaker state, the current arming, the current readiness result,
@@ -1686,8 +1700,10 @@ knob because D13 fixes the answer: query, never resend.
   refusal terminalizes as `not_sent` without an intent;
   (5) append the canonical exact Intent serialized from that plan and barrier it;
   (6) with `view = recording.state.snapshot()` — a **fresh** fold, and then a
-  refusal if any member the plan and intent already bound (`arming`,
-  `readiness`) has moved since. Freezing the whole view instead would be
+  refusal if any member the plan and intent already bound has moved since —
+  `arming` and `readiness` for a model leg, and `readiness` plus the leg's own
+  right in `view.reduction` for a reduction leg, since that is the authority a
+  reduction bound. Freezing the whole view instead would be
   unsafe: `breaker`, `guard_holds`, `working` and `pending` are exactly the
   members an earlier leg of this same tick can change — an earlier leg's
   `halt` verdict trips the breaker, and a `reduce` consumed between legs moves
@@ -1762,8 +1778,15 @@ knob because D13 fixes the answer: query, never resend.
   `LegBindings`. It is a tick product, not something a leg can reconstruct:
   two of its five members are this tick's fetch result and exist nowhere else.
   `Tick(document, release, schedule, data, decision, safety, execution,
-  recording, observability, tick_id)` takes the same seven bundles the loop
-  holds plus the allocated tick id; it is constructed once per tick and owns
+  recording, observability, tick_id, reduction_cycle=None)` takes the same
+  seven bundles the loop holds, the allocated tick id, and — for a reduction
+  cycle only — the stored `ReductionPlan` and its authorization. That argument
+  is how `execute-flatten`'s candidates reach `Tick.account`: `candidates`
+  returns the proposer's candidates for a model tick and the plan's signed
+  `ReductionIntent.candidate`s for a cycle, and `propose` likewise returns the
+  plan's stored proposals. Without the parameter the contribution §5.13.1
+  requires has no caller, and an implementer inventing the route is where the
+  scope-key guarantee would be lost; it is constructed once per tick and owns
   no state between ticks, and core needs no subclass of it. There is deliberately
   **no** `ReplayTick`: replay is already the five-object swap D2 and D20 rest
   on (`ReplayClock`, `ReplayFeed`, `RecordedExecutor`, `RecordedAccounting`,
@@ -1862,16 +1885,17 @@ procedure inside the loop.
   checkable rather than aspirational: it holds `signed` (the `ReductionIntent`,
   including its signed `candidate`), its `reduction_intent_digest`, and the right
   being consumed.
-  **`execute-flatten` contributes each stored `ReductionIntent.candidate` to
-  the tick's candidate set** before `Tick.account` runs, so their scope keys
+  **`execute-flatten` contributes each stored `ReductionIntent.candidate`
+  through `Tick(reduction_cycle=…)`** (§5.13), so they are in the candidate set
+  before `Tick.account` runs, so their scope keys
   are in the requirement union and their guards find the evidence they demand.
   No proposer runs for a stored plan — the candidate is signed, not derived,
   which is why it had to be a `ReductionIntent` field — without that a reduction leg
   refuses for missing evidence, which is the opposite of what the path is for.
   **A reduction leg's bindings are assembled by `execute-flatten`'s cycle, not
   by `propose`**: its proposal comes from the stored `ReductionPlan`, and its
-  `entry_batch`, `head_digest` and `quotes` are those of the tick the cycle
-  runs inside, since D12 sends stored intents through the same sequential
+  `entry_batch`, `head_digest` and `quotes` are those of the cycle tick itself
+  (`Tick.run` assembles every leg's bindings, for both origins), since D12 sends stored intents through the same sequential
   pre-submit gates as model intents — `head_digest` is
   the head-output provenance §6 requires in `provenance_digests`, which the
   leg cannot otherwise see because `head_outputs` never leaves the tick. The tick assembles these once and every
@@ -1927,9 +1951,15 @@ procedure inside the loop.
   `Lease`; and `safety_epoch_digest` covers calendar, health, executor
   link/scope, rung and pending-control state. A permit cannot be minted from
   `(intent, plan, state_view)` alone, which is why the constructor is stated
-  rather than left implicit. `inbox` is the tenth because the epoch also covers
-  pending-control state, which is an unconsumed file in `commands/inbox/` and
-  reaches no other collaborator.
+  rather than left implicit. `inbox` is the tenth because the epoch covers pending-control state. That
+  state has **one** owner: `ControlInbox` is the writer and `SeriesState`
+  folds a `control_request` into `StateView.pending_control` when it is
+  queued, so the fold is authoritative and the inbox files are its spool. The
+  `Authority` reads the projection like everything else; `inbox` is in the
+  constructor so a queued-but-unfolded command cannot be missed at the moment
+  a permit is minted. §5.8's rule that a pending mutating command blocks the
+  next pre-submit gate is enforced by `ActionPolicy`, which reads
+  `PolicyRequest.pending_control`.
   `Authority.mint(intent, plan, state_view) -> Permit` is the seam D2 needs.
   `SimulatedAuthority` writes nothing and returns a `SimulatedPermit`;
   `LiveAuthority` mints an `ActPermit` and appends/barriers `authorization`;
@@ -1976,9 +2006,17 @@ procedure inside the loop.
 `TransitionPolicy.permits(from_state, to_state, cause, proof) ->
 PolicyDecision{allowed, reason}` (named so it cannot be confused with the
 `Decision` collaborator bundle in `loop.py`) and
-`SubmissionVerifier(executor, accounting, lease, arming, guards, document,
-clock)` with
-`verify_and_call(intent, permit, state, native_call) -> Ack` — the same argument
+`SubmissionVerifier(executor, accounting, lease, arming, guards, action_policy,
+release, inbox, calendar, document, clock)` with
+`verify_and_call(intent, permit, state, native_call) -> Ack`, where `state` is
+the leg's step-(2) `TickState` — `LiveExecutor` receives it alongside the
+permit, since `SubmittingExecutor.submit(intent, permit, state)` is the only
+route it has. `release` because D24 re-verifies hashes, artifact age and the
+runtime fingerprint immediately before submit; `action_policy` because the
+gate rechecks policy and a `PolicyRequest` needs breaker, health and
+readiness; `inbox` and `calendar` because `safety_epoch_digest` covers
+pending-control state and the calendar, and a digest the permit binds must be
+recomputable by whatever rechecks it — the same argument
 that justifies the `Authority`'s ten collaborators applies here and was not made
 before: a gate that refreshes quote, accounting, authority, executor identity and
 lease, and rechecks deadlines, hard guards and policy, cannot do any of it from
@@ -2105,7 +2143,7 @@ more than its base. The hierarchy is split instead:
 - `Executor(ABC)` — `spec`, `capabilities`, `check`, `execution_scope`, `order`,
   `open_orders`, `fills`, `balances`, `positions`, `settlements`, `cancel`,
   `cancel_all`. Read, query and cancel only; always constructible, never armed.
-- `SubmittingExecutor(Executor)` — adds `submit(intent, permit)`, where `permit`
+- `SubmittingExecutor(Executor)` — adds `submit(intent, permit, state)`, where `permit`
   is **required** for every subclass.
 - `Permit` — a frozen dataclass base, not an ABC (§5.4) — with
   `SimulatedPermit` (shadow/paper: carries the decision-plan
@@ -2221,8 +2259,7 @@ to the prose, and it is an authoring tool, not a test.
 | `leg_latency_ms` | `run`, keyed by `LEG_LATENCY_BUCKETS` |
 | `client_ref` | `recording.id_source.client_ref(...)`, allocated by `run` **before step (1)**, not at step 5 — a guard refusal terminalizes at step (4) and never reaches step (5), yet §6's `decision.legs[]` requires a `client_ref` for every leg. Ids derive from stable semantic inputs (D20), so allocating early costs nothing and is replay-identical |
 
-**`ActPermit` — where the bindings that are not plain copies come from.** `authority_id` from
-the current `Arming` in `state_view`; `valid_until_ms` the nine-term minimum of
+**`ActPermit` — where the bindings that are not plain copies come from.** `valid_until_ms` the nine-term minimum of
 §5.13 step (6); `checked_at_ms` from `schedule.clock`; `lease_scope`,
 `fencing_token` from `execution.lease`; `readiness_digest`,
 `readiness_until_ms` from `bindings.state.view.readiness`; `authority_id` and `authority_scope_digest` from the applied ordinary `Arming`
@@ -2267,7 +2304,7 @@ guard while nothing produced one. The records a step *reads* are walked too:
 | `TickState{view, account, feed_status, feed_ages, calendar}` | assembled by `Tick.run` after the `account` phase (§5.13) and carried into each `LegBindings` |
 | `LegBindings` (13 fields) | assembled by `Tick.run` per proposal; `proposal`/`origin` from `propose` (or from `execute-flatten`'s stored plan when `origin == reduction`), `entry_batch`/`head_digest` from `read_entry`/`evaluate`, `quotes` from `quotes`, `state` the `TickState`, `requirements` the second return of `account`, `reduction` `None` for a model leg and otherwise the signed `ReductionIntent` + digest + right, `release`/`rung` from the loop, `tick_id`/`leg_id`/`leg_index` from `recording.id_source` |
 | `Intent` (16 fields) | step 5; `client_ref` from `recording.id_source`, `created_ms` from `schedule.clock`, `release_hash` from `bindings.release`, `decision_plan_id` from step 4 and `decision_plan_digest` by the §5.4 recipe over that plan, `proposal` the `LegEvaluation.final`, `authority_id` from `bindings.state.view.arming` for a model leg and from `bindings.reduction` for a reduction leg (`None` at shadow/paper, where no ordinary arm exists), `inputs_*`/`coverage_digest` from `bindings.entry_batch`, `quote_*` from `bindings.quotes`, and `evidence_*`/`risk_*` from `LegEvaluation.account` — the same one the plan binds |
-| `PolicyRequest` (8 fields) | assembled by the caller of `ActionPolicy.permits`: `operation` at the call site, `risk_effect` from `LegEvaluation`, `rung`/`origin` from `bindings`, `breaker` from the **fresh** `recording.state.snapshot()` of steps (2)/(3)/(6) — never the tick-assembly view, or a trip raised inside this tick is invisible — `readiness` and `authority` from that same fresh view (`arming` for a model leg, `bindings.reduction` for a reduction leg), `health` from `observability.health` |
+| `PolicyRequest` (9 fields) | assembled by the caller of `ActionPolicy.permits`: `operation` at the call site, `risk_effect` from `LegEvaluation`, `rung`/`origin` from `bindings`, `breaker` from the **fresh** `recording.state.snapshot()` of steps (2)/(3)/(6) — never the tick-assembly view, or a trip raised inside this tick is invisible — `readiness` and `authority` from that same fresh view (`arming` for a model leg, `bindings.reduction` for a reduction leg), `health` from `observability.health`, `pending_control` from that same fresh view |
 | `LegEvaluation` (9 fields) | steps 1–3, threaded (`risk_effect` from step 2's `execution.accounting.classify`) |
 | `StateView` (14 fields) | `SeriesState.snapshot()` — every member is a projection of the fold and nothing else writes one |
 | `Proposal` | `Data.decider`'s `Proposer.proposals(head_outputs, candidates, state, provenance)`. The economic fields — `instrument`, `side`, `qty`/`notional`, `limit`, `tif`, `reference_price`, `exposure`, `confidence`, `prediction`, `baseline`, `expected_value`, `direction`, `expires_ms`, `extra` — are the proposer's own decision, read from the head outputs through its field map (`intent-rows`) or its target diff (`target-positions`); `id` is the `Candidate.id` it must preserve; the five provenance fields come from the `Provenance` the tick passes in, never stamped on afterwards |
