@@ -1577,11 +1577,15 @@ def cache_of(arming):
         return json.load(handle)
 
 
-def forge_cache(arming, **overrides):
-    """Rewrite the cache file with the given keys replaced."""
-    cached = cache_of(arming)
+def forge_cache(service, **overrides):
+    """Rewrite the cache file with the given keys replaced.
+
+    The first parameter is not called ``arming`` because ``arming`` is
+    itself one of the cache keys a test overrides (``arming=None``).
+    """
+    cached = cache_of(service)
     cached.update(overrides)
-    with open(arming.cache_path, "w", encoding="utf-8") as handle:
+    with open(service.cache_path, "w", encoding="utf-8") as handle:
         json.dump(cached, handle)
 
 

@@ -551,7 +551,7 @@ _FEED_SPEC = {
     "source_binding": _check_dict,
     "entity_key_fields": _check_str_list,
     "event_time_field": _check_str,
-    "digest_recipe": _check_str,
+    "digest_recipe": _check_dict,
     "required_keys": _check_str_list,
     "required_keys_digest": _check_str,
     "source_config_hash": _check_str,
@@ -632,7 +632,7 @@ class ReleaseManifest:
             feed_spec={
                 "source_binding": {"source": "bars-1m", "connector": "yourproject:Bars"},
                 "entity_key_fields": ["symbol"], "event_time_field": "ts_ms",
-                "digest_recipe": "sha256/canonical-rows", "required_keys": ["AAPL"],
+                "digest_recipe": {"kind": "stream-digest"}, "required_keys": ["AAPL"],
                 "required_keys_digest": "7a" * 32, "source_config_hash": "5b" * 32,
                 "source_config_version": "3",
             },

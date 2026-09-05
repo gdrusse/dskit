@@ -1086,6 +1086,27 @@ def test_a_trip_folds_the_breaker_state():
     assert st.snapshot().breaker in vocab.BREAKER_STATES
 
 
+def test_last_trip_tracks_the_latest_trip_and_is_none_before_any():
+    """§5.8.1: the breaker's reset reads the trip it acknowledges — and
+    the instant cooling-off runs from — off the fold, never off the ledger."""
+    st, chain = new_state()
+    assert st.last_trip() is None
+    first = fold(st, chain, "trip", trip_body("active", "reducing"))
+    latest = st.last_trip()
+    assert isinstance(latest, types.MappingProxyType)
+    assert set(latest) == {"id", "seq", "recorded_at_ms", "from", "to", "reason",
+                           "acknowledged_trip_id"}
+    assert (latest["id"], latest["seq"], latest["recorded_at_ms"]) == (
+        first["id"], first["seq"], first["recorded_at_ms"])
+    assert (latest["from"], latest["to"]) == ("active", "reducing")
+    second = fold(st, chain, "trip", trip_body("reducing", "halted"))
+    assert st.last_trip()["id"] == second["id"]
+    assert st.last_trip()["to"] == "halted"
+    restored = SeriesState(SERIES_ID)
+    restored.restore(snapshot_env(st, chain))
+    assert restored.last_trip() == st.last_trip()
+
+
 def test_an_ordinary_authority_issue_folds_into_the_arming():
     st, chain = new_state()
     fold(st, chain, "authority", authority_body(event="issue", role="ordinary"))

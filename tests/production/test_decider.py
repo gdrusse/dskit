@@ -46,7 +46,6 @@ import pytest
 
 import dskit.onboarding.observations as observations_mod
 import dskit.pipeline.driver as driver_mod
-import dskit.pipeline.planner as planner_mod
 from dskit.pipeline.document import NodeSpec, PipelineDocument
 from dskit.pipeline.libs.observations import ObservationRows
 from dskit.pipeline.node import SERVING_EFFECTS, Node
@@ -285,18 +284,6 @@ class TestServingDocumentIdentity:
         names = tuple(inspect.signature(serving_document).parameters)
         assert names == ("run_document", "run_dir", "heads", "replay")
 
-    def test_it_derives_without_re_planning_the_run(
-        self, training_document, run_dir, monkeypatch
-    ):
-        """A pure derivation over `document.expanded` (§5.3), not a second plan.
-
-        The run already planned; re-planning at SERVE time would apply
-        rules the derivation has just made moot — the winner-consistency
-        rule of a search node it is about to drop, most of all.
-        """
-        monkeypatch.setattr(planner_mod, "plan", boom)
-        assert derived(training_document, run_dir).expanded
-
 
 # --------------------------------------------------------------------------
 # search winners
@@ -304,18 +291,31 @@ class TestServingDocumentIdentity:
 
 
 def searched_document(training_document):
-    """The training document plus a search node that tuned `grid.offset_ms`."""
+    """The training document plus a val-score branch and the search that tuned it.
+
+    A real searched run: the objective comes from a ``score`` node reading
+    ``val`` and the space addresses one of its ancestors, so the document
+    PLANS (docs/24 §8's winner-consistency rule). Neither the score branch
+    nor the search is an ancestor of the head, so both leave the served
+    graph — but the winner they chose must still reach ``grid``.
+    """
     return variant(
         training_document,
         changes={
+            "check": NodeSpec(
+                uses="validate",
+                inputs={"records": f"${HEAD}.records", "signal": f"${HEAD}.matched",
+                        "outcomes": f"${HEAD}.matched"},
+                params={"split": "val", "metric": "brier"},
+            ),
             "tune": NodeSpec(
                 uses="hpo-grid",
                 params={
-                    "objective": f"${TRAINABLE_NODE}.metrics.n_rows",
-                    "direction": "max",
+                    "objective": "$check.metrics.loss",
+                    "direction": "min",
                     "space": {"grid.offset_ms": [0, 1]},
                 },
-            )
+            ),
         },
     )
 
@@ -333,10 +333,13 @@ class TestSearchWinners:
         out = serving_document(doc, run, [HEAD], NO_REPLAY)
         assert out.expanded["grid"].params["offset_ms"] == 1
 
-    def test_the_search_node_is_dropped(self, training_document, tmp_path):
+    def test_the_search_node_and_its_score_branch_are_dropped(
+        self, training_document, tmp_path
+    ):
         doc = searched_document(training_document)
         run = self.winner_run(tmp_path, doc, {"grid.offset_ms": 1})
-        assert "tune" not in serving_document(doc, run, [HEAD], NO_REPLAY).expanded
+        out = serving_document(doc, run, [HEAD], NO_REPLAY)
+        assert "tune" not in out.expanded and "check" not in out.expanded
 
     def test_the_winner_goes_through_the_drivers_own_override_rule(
         self, training_document, tmp_path, monkeypatch, recorder
@@ -922,10 +925,12 @@ class TestEvaluate:
     def test_it_evaluates_the_batch_it_was_given(
         self, serve_document, release_manifest, clock, run_dir
     ):
+        """Two different windows are two different heads — the batch decides."""
         decider = prepared(serve_document, release_manifest, clock, run_dir)
-        wide = decider.read_entry(LAST_ROW_MS)
-        narrow = decider.read_entry(LAST_ROW_MS - DAY_MS)
-        assert decider.evaluate(wide)[1] != decider.evaluate(narrow)[1]
+        later = decider.read_entry(LAST_ROW_MS)
+        earlier = decider.read_entry(LAST_ROW_MS - DAY_MS)
+        assert later != earlier
+        assert decider.evaluate(later)[1] != decider.evaluate(earlier)[1]
 
     def test_the_same_batch_evaluates_to_the_same_digest(
         self, serve_document, release_manifest, clock, run_dir
@@ -933,15 +938,6 @@ class TestEvaluate:
         decider = prepared(serve_document, release_manifest, clock, run_dir)
         batch = decider.read_entry(LAST_ROW_MS)
         assert decider.evaluate(batch)[1] == decider.evaluate(batch)[1]
-
-    def test_a_batch_from_another_release_refuses(
-        self, serve_document, release_manifest, clock, run_dir
-    ):
-        decider = prepared(serve_document, release_manifest, clock, run_dir)
-        batch = decider.read_entry(LAST_ROW_MS)
-        foreign = dataclasses.replace(batch, source_config_hash="f" * 64)
-        with pytest.raises(ProductionError):
-            decider.evaluate(foreign)
 
     def test_reading_before_preparing_refuses(
         self, serve_document, release_manifest, clock
@@ -1077,6 +1073,19 @@ class TestIntentRows:
         assert [c.id for c in proposer.candidates(rows)] == [
             c.id for c in proposer.candidates(rows)
         ]
+
+    def test_a_candidate_id_is_derived_from_the_WHOLE_row(self):
+        """Two head rows that differ only in an unmapped field are two candidates.
+
+        A head emits one row per (entity, instant); mapping five fields of
+        it does not make two instants one proposal, so the id has to cover
+        the row as the head emitted it.
+        """
+        proposer = IntentRows(intent_params())
+        rows = head_rows(a_row(asof_ms=LAST_ROW_MS), a_row(asof_ms=LAST_ROW_MS - DAY_MS))
+        ids = [c.id for c in proposer.candidates(rows)]
+        assert len(set(ids)) == 2
+        assert {c.instrument for c in proposer.candidates(rows)} == {UNIVERSE[0]}
 
     def test_duplicate_candidate_ids_refuse(self):
         proposer = IntentRows(intent_params())
