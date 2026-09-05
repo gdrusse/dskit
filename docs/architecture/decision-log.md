@@ -4448,16 +4448,22 @@ and runs all 19 walks unscored; every decision lives in `Gate3ResultStage`,
 which reads `gate1_cells` for the observed `r2oos`. Scoring must move into
 the walks stage, so it gains a `gate1_cells` input and emits per asset:
 `stopped` (bool), `stop_seed` (int or null), `n_draws` (int), and the walk
-handles actually run. `Gate3ResultStage` then emits, for a stopped asset,
-`gate3_status: "fail"`, `null_mean`/`null_sd` as null with
-`calibration: "not_computed_early_stop"`, and `p_bound` = `2/(n_draws + 1)`
-— never zero, never absent, never a point p-value.
+handles actually run. `Gate3WalksStage` carries them on a new `draws`
+output — `{asset: {stopped, stop_seed, n_draws}}` — beside the existing
+`walks` and `survivors`, and
+`Gate3ResultStage` takes `draws` as a fourth input. On a stopped asset it
+emits `gate3_status: "fail"` and, TOP-LEVEL on the row rather than inside the
+`gate3` sub-dict, `null_mean`/`null_sd` as null with
+`calibration: "not_computed_early_stop"` and `p_bound` = `2/(n_draws + 1)` —
+never zero, never absent, never a point p-value. Top-level because the `gate3`
+sub-dict is `tier2_verdict`'s own return, which a stopped asset never
+produces, and which already carries a boolean `calibrated`.
 
 **Calibration is not weakened.** Nineteen draws cannot precisely certify a
 narrow SD (a sample SD's relative standard error is
 `1/sqrt(2*18) = 16.7%`) but they detect a large break: P10's Gate-3 spreads
 of 0.608 and 0.667 (QQQ@3, NFLX@10) give `18*s^2` of 6.65 and 8.01 against
-the 5% lower `chi2_18` critical value of 9.39 — p = 0.007 and 0.022. Both of
+the 5% lower `chi2_18` critical value of 9.39 — p = 0.007 and 0.021. Both of
 those assets beat all 19 nulls and still failed, which is the case this ADR
 must not break. The per-asset band stays on every COMPLETED family;
 calibration is simply not claimed on a stopped asset, which already failed
