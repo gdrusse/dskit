@@ -817,7 +817,7 @@ class ControlVerb(SeriesVerb):
                 recording.inbox,
                 recording.ledger,
                 recording.state,
-                self._handlers(document, bundles),
+                self._handlers(document, bundles, release),
                 clock,
             )
             results = processor.process_pending(recording.state.snapshot())
@@ -828,11 +828,11 @@ class ControlVerb(SeriesVerb):
             lock.release()
 
     @staticmethod
-    def _handlers(document, bundles):
+    def _handlers(document, bundles, release):
         """Return the dispatch table minus the purposes only a running loop can honour."""
         return {
             purpose: handler
-            for purpose, handler in handlers_for(document, bundles).items()
+            for purpose, handler in handlers_for(document, bundles, release=release).items()
             if purpose not in EXECUTING_PURPOSES
         }
 
@@ -1081,6 +1081,28 @@ class Adopt(ControlVerb):
         }
 
 
+class Outcomes(ControlVerb):
+    """`outcomes`: collect what resolved and record it up to the cut (§5.13.2)."""
+
+    NAME = "outcomes"
+    HELP = "collect and record outcomes up to the cut"
+    PURPOSE = "outcomes"
+    AUTHENTICATED = False
+
+    @classmethod
+    def add_act_arguments(cls, parser):
+        """Declare the optional cut; without it the command's own queue instant is used."""
+        parser.add_argument("--asof", default=None,
+                            help="UTC instant to collect up to, e.g. 2026-01-06T04:00:00Z; "
+                                 "defaults to when the command was queued")
+
+    def payload(self, document, release):
+        """Carry the cut when the operator named one; the sources are the document's."""
+        if self.args.asof is None:
+            return {}
+        return {"asof_ms": parse_utc_ms(self.args.asof)}
+
+
 class Ready(ControlVerb):
     """`ready`: the release-bound GO / NO-GO the action matrix reads (§5.13).
 
@@ -1293,10 +1315,11 @@ class Verify(SeriesVerb):
 # Wiring
 # ---------------------------------------------------------------------------
 
-#: §7's phase-1 table, in the order it lists the verbs. The phase-2 rows
-#: (`replay`, `outcomes`, `report`, `approve-hold`, `ack`, `silence`) are
-#: deliberately absent: a verb the CLI offers and nothing honours is a
-#: control an operator would believe they had taken.
+#: §7's table, in the order it lists the verbs. The phase-2 rows still
+#: absent (`replay`, `report`, `approve-hold`, `ack`, `silence`) are
+#: deliberately so: a verb the CLI offers and nothing honours is a control
+#: an operator would believe they had taken. `outcomes` is here because
+#: §5.13.2's join now honours it.
 VERBS = {
     verb.NAME: verb
     for verb in (
@@ -1316,6 +1339,7 @@ VERBS = {
         Verify,
         Reconcile,
         Adopt,
+        Outcomes,
         Ready,
     )
 }

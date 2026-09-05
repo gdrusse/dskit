@@ -30,6 +30,8 @@ from dskit.production import records
 from dskit.production.base import ProductionError
 from dskit.production.vocab import (
     FILL_STATUSES,
+    OUTCOME_KINDS,
+    OUTCOME_SOURCES,
     LEG_LATENCY_BUCKETS,
     MONEY_FIELDS,
     SIDES,
@@ -464,6 +466,30 @@ SAMPLES = {
     ),
     "TickStart": records.TickStart(
         tick_id="tick-1", tick_at_ms=MS, release_hash=RELEASE
+    ),
+    "Outcome": records.Outcome(
+        leg_id="leg-1",
+        outcome_kind="settled",
+        effective_at_ms=MS,
+        known_at_ms=MS + 60_000,
+        value=Decimal("1.20"),
+        weight=Decimal("10"),
+        terminal=True,
+        source="settlement",
+        supersedes=None,
+    ),
+    "DecidedLeg": records.DecidedLeg(
+        leg_id="leg-1",
+        tick_id="tick-1",
+        instrument="INS1",
+        decided_at_ms=MS,
+        final="buy",
+        client_ref="cref-1",
+        qty=Decimal("10"),
+        prediction=0.58,
+        baseline=0.50,
+        expected_value=0.03,
+        reference_price=Decimal("0.41"),
     ),
 }
 
@@ -1210,3 +1236,152 @@ def test_every_public_record_has_a_sample():
 
 def test_records_exports_no_private_name():
     assert not [n for n in records.__all__ if n.startswith("_")]
+
+
+# ---------------------------------------------------------------------------
+# `Outcome` and `DecidedLeg` — §5.13.2's two value objects
+# ---------------------------------------------------------------------------
+
+
+def an_outcome(**overrides):
+    """The sampled `Outcome`, with overrides."""
+    fields = dict(
+        leg_id="leg-1",
+        outcome_kind="settled",
+        effective_at_ms=MS,
+        known_at_ms=MS + 60_000,
+        value=Decimal("1.20"),
+        weight=Decimal("10"),
+        terminal=True,
+        source="settlement",
+        supersedes=None,
+    )
+    fields.update(overrides)
+    return records.Outcome(**fields)
+
+
+def test_the_outcome_is_the_section_6_body_itself_one_schema_not_two():
+    """§5.13.2: the value object "IS the §6 `outcome` body, the way `fill`
+    IS a `Fill` — one schema, not two". Its `to_obj()` is therefore exactly
+    the body a producer appends."""
+    assert [f.name for f in dataclasses.fields(records.Outcome)] == [
+        "leg_id",
+        "outcome_kind",
+        "effective_at_ms",
+        "known_at_ms",
+        "value",
+        "weight",
+        "terminal",
+        "source",
+        "supersedes",
+    ]
+    assert set(an_outcome().to_obj()) == {f.name for f in dataclasses.fields(records.Outcome)}
+
+
+def test_nothing_is_knowable_before_it_is_effective():
+    """§5.13.2 and §6: `effective_at_ms > known_at_ms` refuses."""
+    with pytest.raises(ProductionError) as excinfo:
+        an_outcome(effective_at_ms=MS + 1, known_at_ms=MS)
+    assert "known_at_ms" in str(excinfo.value)
+    assert an_outcome(effective_at_ms=MS, known_at_ms=MS).known_at_ms == MS
+
+
+@pytest.mark.parametrize("kind", OUTCOME_KINDS)
+def test_an_outcome_kind_comes_from_the_closed_set(kind):
+    assert an_outcome(outcome_kind=kind).outcome_kind == kind
+
+
+def test_an_undeclared_outcome_kind_refuses():
+    with pytest.raises(ProductionError):
+        an_outcome(outcome_kind="resolved")
+
+
+@pytest.mark.parametrize("source", OUTCOME_SOURCES)
+def test_an_outcome_source_comes_from_the_closed_set(source):
+    assert an_outcome(source=source).source == source
+
+
+def test_an_undeclared_outcome_source_refuses():
+    with pytest.raises(ProductionError):
+        an_outcome(source="venue")
+
+
+def test_an_outcomes_value_and_weight_never_touch_float():
+    for field in ("value", "weight"):
+        with pytest.raises(ProductionError) as excinfo:
+            an_outcome(**{field: 1.5})
+        assert "float" in str(excinfo.value)
+
+
+def test_an_outcome_terminal_flag_is_a_bool_not_a_truthy_value():
+    with pytest.raises(ProductionError):
+        an_outcome(terminal=1)
+
+
+def test_a_supersedes_is_a_record_id_or_nothing():
+    assert an_outcome(supersedes="outcome:" + DIGEST_A).supersedes == "outcome:" + DIGEST_A
+    with pytest.raises(ProductionError):
+        an_outcome(supersedes=7)
+
+
+def a_decided_leg(**overrides):
+    """The sampled `DecidedLeg`, with overrides."""
+    fields = dict(
+        leg_id="leg-1",
+        tick_id="tick-1",
+        instrument="INS1",
+        decided_at_ms=MS,
+        final="buy",
+        client_ref="cref-1",
+        qty=Decimal("10"),
+        prediction=0.58,
+        baseline=0.50,
+        expected_value=0.03,
+        reference_price=Decimal("0.41"),
+    )
+    fields.update(overrides)
+    return records.DecidedLeg(**fields)
+
+
+def test_a_decided_leg_carries_the_eleven_fields_section_5_16_walks():
+    assert [f.name for f in dataclasses.fields(records.DecidedLeg)] == [
+        "leg_id",
+        "tick_id",
+        "instrument",
+        "decided_at_ms",
+        "final",
+        "client_ref",
+        "qty",
+        "prediction",
+        "baseline",
+        "expected_value",
+        "reference_price",
+    ]
+
+
+def test_decided_at_ms_is_the_ticks_observed_instant_and_never_its_data_asof():
+    """§5.13.2: "a tick's inputs are older than the tick, so the later of
+    the two is the conservative bound for a forward join, and joining from
+    the earlier one would admit a label the decision could itself have
+    seen". The field is therefore named for the wall instant the decision
+    existed, and `DecidedLeg` carries no `data_asof_ms` for a caller to
+    reach for by mistake."""
+    names = {f.name for f in dataclasses.fields(records.DecidedLeg)}
+    assert "decided_at_ms" in names
+    assert "data_asof_ms" not in names and "inputs_asof_ms" not in names
+    observed, data_asof = MS, MS - 60_000
+    leg = a_decided_leg(decided_at_ms=observed)
+    assert leg.decided_at_ms == observed > data_asof
+
+
+def test_a_decided_legs_final_side_comes_from_the_closed_set():
+    assert a_decided_leg(final="none").final == "none"
+    with pytest.raises(ProductionError):
+        a_decided_leg(final="hold")
+
+
+def test_a_decided_leg_may_carry_no_quantity_and_never_a_float_one():
+    assert a_decided_leg(qty=None).qty is None
+    with pytest.raises(ProductionError) as excinfo:
+        a_decided_leg(qty=10.0)
+    assert "float" in str(excinfo.value)

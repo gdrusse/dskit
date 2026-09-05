@@ -101,6 +101,7 @@ from dskit.production.ledger import Checkpoint, JsonlLedger
 from dskit.production.leg import LiveAuthority, ReductionAuthority, SimulatedAuthority
 from dskit.production.metrics import Metrics
 from dskit.production.monitors import MONITOR_KINDS
+from dskit.production.outcomes import OUTCOME_SOURCE_KINDS, OutcomeJoin
 from dskit.production.policy import ActionPolicy, TransitionPolicy
 from dskit.production.readiness import Readiness
 from dskit.production.reconcile import LedgerHistory, Reconciler, enact
@@ -125,6 +126,7 @@ __all__ = [
     "RUNG_TABLE",
     "bundles_for",
     "handlers_for",
+    "outcome_join",
 ]
 
 _LOG = get_logger("compose")
@@ -629,6 +631,35 @@ def _emitters(document, *, serve_root, resilience, secrets):
     return built
 
 
+def _outcome_sources(document, wiring):
+    """Build the document's named outcome sources, in the order it declares them.
+
+    The same shape as every other registry-resolved family: the document
+    names WHAT, the §4.3 registry answers WHICH class, and each class is
+    handed only the collaborators its own ``__init__`` declares. The
+    onboarding root is opened only when a declared source asks for one — a
+    document with no label stream never touches the store.
+    """
+    sites = _outcome_sites(document)
+    resolved = {name: OUTCOME_SOURCE_KINDS.resolve(site.uses) for name, site in sites.items()}
+    offer = {"executor": wiring.execution.executor}
+    if any("root" in _accepted(cls) for cls in resolved.values()):
+        root = OnboardingRoot(wiring.data.decider.contract.source_binding["root"])
+        offer.update(root=root, registry=root.registry())
+    return {
+        name: resolved[name](_selector(site), **_offered(resolved[name], offer))
+        for name, site in sites.items()
+    }
+
+
+def _outcome_sites(document):
+    """Return the ``outcomes.sources`` selectors the document declares; none when absent."""
+    section = document.outcomes
+    if section is None or section.sources is None:
+        return {}
+    return dict(section.sources)
+
+
 def _monitors(document):
     """Build the document's named monitors, each resolving its own strategies."""
     return {
@@ -960,7 +991,14 @@ def _journal_hook():
 
 @dataclass(frozen=True)
 class _Wiring:
-    """What every control handler reads: the document and the seven bundles."""
+    """What every control handler reads: the document, the seven bundles, and the join.
+
+    ``join`` is the one phase-2 composite a control verb owns (§5.16: the
+    outcome join is not a bundle member). It is ``None`` when
+    :func:`handlers_for` was called without the release every outcome id is
+    bound to, and the ``outcomes`` verb refuses rather than recording
+    against an unnamed release.
+    """
 
     document: object
     schedule: object
@@ -970,6 +1008,7 @@ class _Wiring:
     execution: object
     recording: object
     observability: object
+    join: object = None
 
 
 class _Verb(ABC):
@@ -1264,6 +1303,38 @@ class _Reconcile(_Verb):
         return self.applied(reason=action)
 
 
+class _Outcomes(_Verb):
+    """`outcomes`: collect what resolved and record it (§5.13.2)."""
+
+    PURPOSE = "outcomes"
+
+    def run(self, command, view):
+        """Collect at the cut and record what is new; the join appends and barriers.
+
+        The cut is the consumed command's ``queued_at_ms`` unless the
+        operator named one, never the handler's clock: a crash-replayed
+        ``outcomes`` must produce byte-identical payloads or
+        ``Ledger.append`` refuses them as changed payloads under reused
+        ids, and the operator's second attempt becomes a second arrival.
+        """
+        if self._w.join is None:
+            raise ProductionError(
+                [
+                    "the outcomes verb needs the release every outcome id is bound to — "
+                    "call handlers_for(document, bundles, release=release)"
+                ]
+            )
+        at_ms = command["payload"].get("asof_ms")
+        if at_ms is None:
+            at_ms = command["queued_at_ms"]
+        elif not isinstance(at_ms, int) or isinstance(at_ms, bool) or at_ms < 0:
+            return self.rejected(
+                f"outcomes asof_ms must be a non-negative epoch-ms int, got {at_ms!r}"
+            )
+        recorded = self._w.join.record(self._w.join.collect(at_ms))
+        return self.applied(reason=f"recorded {len(recorded)} outcome(s)")
+
+
 class _Ready(_Verb):
     """`ready`: the release-bound GO / NO-GO the action matrix reads (§5.13)."""
 
@@ -1341,6 +1412,7 @@ _VERBS = pin_members(
             _Disarm,
             _Reconcile,
             _Ready,
+            _Outcomes,
         )
     },
     CONTROL_PURPOSES,
@@ -1379,7 +1451,65 @@ def _arm_request(payload, proof):
         raise ProductionError([redact(problem) for problem in exc.problems]) from exc
 
 
-def handlers_for(document, bundles):
+def outcome_join(document, release, bundles):
+    """Build the bitemporal outcome join this document declares (§5.13.2, §5.16).
+
+    ``OutcomeJoin`` is a composite rather than a bundle member, so the
+    composition root builds it here beside the objects it names: the
+    ordered ``name -> OutcomeSource`` map comes from
+    ``document.outcomes.sources`` through the §4.3 registry, and the join
+    is handed the ledger, the fold and the clock the rest of the process
+    already shares.
+
+    Parameters
+    ----------
+    document : ServeDocument
+        Read for ``outcomes.sources``; a document that declares none gets a
+        join with no sources, which collects nothing.
+    release : ReleaseManifest
+        Binds ``release_hash``, a term of every outcome id.
+    bundles : tuple
+        The seven bundles :func:`bundles_for` returned, in §5.16's order.
+
+    Returns
+    -------
+    OutcomeJoin
+        Ready to ``collect``, ``record`` and answer at any cut.
+
+    Raises
+    ------
+    ProductionError
+        When ``bundles`` is not the seven-tuple ``bundles_for`` returns, or
+        a declared source refuses its own params.
+
+    Examples
+    --------
+    ::
+
+        join = outcome_join(document, release, bundles)
+        join.record(join.collect(clock.now_ms()))
+    """
+    wiring = _Wiring(document, *_seven(bundles))
+    return OutcomeJoin(
+        document,
+        release,
+        ledger=wiring.recording.ledger,
+        state=wiring.recording.state,
+        clock=wiring.schedule.clock,
+        sources=_outcome_sources(document, wiring),
+    )
+
+
+def _seven(bundles):
+    """Return ``bundles`` as the seven-tuple every composite takes, or refuse."""
+    if not isinstance(bundles, (list, tuple)) or len(bundles) != 7:
+        raise ProductionError(
+            [f"this composite takes the seven bundles bundles_for returned, got {bundles!r}"]
+        )
+    return tuple(bundles)
+
+
+def handlers_for(document, bundles, *, release=None):
     """Return the control-verb dispatch table ``CommandProcessor`` runs on.
 
     Parameters
@@ -1389,6 +1519,10 @@ def handlers_for(document, bundles):
         except through this object (§5.16).
     bundles : tuple
         The seven bundles :func:`bundles_for` returned, in §5.16's order.
+    release : ReleaseManifest, optional
+        The release the ``outcomes`` verb binds every outcome id to. Every
+        caller that can run that verb passes it; without it the verb
+        refuses rather than recording against an unnamed release.
 
     Returns
     -------
@@ -1405,13 +1539,11 @@ def handlers_for(document, bundles):
     --------
     ::
 
-        handlers = handlers_for(document, bundles)
+        handlers = handlers_for(document, bundles, release=release)
         processor = CommandProcessor(inbox, ledger, state, handlers, clock)
         processor.process_pending(state.snapshot())
     """
-    if not isinstance(bundles, (list, tuple)) or len(bundles) != 7:
-        raise ProductionError(
-            [f"handlers_for takes the seven bundles bundles_for returned, got {bundles!r}"]
-        )
-    wiring = _Wiring(document, *bundles)
+    bundles = _seven(bundles)
+    join = None if release is None else outcome_join(document, release, bundles)
+    wiring = _Wiring(document, *bundles, join=join)
     return {purpose: verb(wiring) for purpose, verb in _VERBS.items()}

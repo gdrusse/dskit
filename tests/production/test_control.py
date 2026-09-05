@@ -80,9 +80,11 @@ AUTHENTICATED_PURPOSES = (
     "adopt",
 )
 
-#: The four §7 mutating verbs that carry no maker-checker proof and so are not
-#: `APPROVAL_PURPOSES` members, yet still queue through the same spool.
-UNAUTHENTICATED_PURPOSES = ("halt", "disarm", "reconcile", "ready")
+#: The §7 mutating verbs that carry no maker-checker proof and so are not
+#: `APPROVAL_PURPOSES` members, yet still queue through the same spool. Four
+#: in phase 1, plus §5.13.2's `outcomes`, which records observed facts
+#: rather than an operator's claim and so carries no proof either.
+UNAUTHENTICATED_PURPOSES = ("halt", "disarm", "reconcile", "ready", "outcomes")
 
 #: What `ControlInbox.queue` accepts, and nothing else.
 CONTROL_PURPOSES = AUTHENTICATED_PURPOSES + UNAUTHENTICATED_PURPOSES

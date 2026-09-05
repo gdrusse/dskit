@@ -72,6 +72,7 @@ from dskit.production.ledger import Ledger
 from dskit.production.leg import Authority, LegPipeline
 from dskit.production.loop import ServeLoop, Tick
 from dskit.production.monitors import Chunker, Monitor, Reference, Threshold
+from dskit.production.outcomes import OutcomeSource
 from dskit.production.policy import ActionPolicy, TransitionPolicy
 from dskit.production.records import Ack
 from dskit.production.resilience import Classifier, Transport
@@ -91,11 +92,13 @@ PACKAGE_DIR = pathlib.Path(production.__file__).parent
 #: name (§5.15, §8). Every other module must be handed its collaborators.
 COMPOSER = "compose.py"
 
-#: The twenty registry-resolved seam ABCs of §5.15, each with the §4.3
-#: registry that resolves it and the module both live in. Restated here
-#: INDEPENDENTLY of the package: a list read from its subject asserts nothing
-#: (CLAUDE.md, "deliberate independent restatement"), and this table is one
-#: half of the two-way pin the section asks for.
+#: The registry-resolved seam ABCs of §5.15, each with the §4.3 registry
+#: that resolves it and the module both live in — twenty in phase 1, plus
+#: `OutcomeSource`, which §4.3 names as one of the three families phase 2
+#: adds. Restated here INDEPENDENTLY of the package: a list read from its
+#: subject asserts nothing (CLAUDE.md, "deliberate independent
+#: restatement"), and this table is one half of the two-way pin the section
+#: asks for.
 SEAM_ABCS = (
     ("Clock", "clock", "CLOCK_KINDS"),
     ("Calendar", "sessions", "CALENDAR_KINDS"),
@@ -117,6 +120,7 @@ SEAM_ABCS = (
     ("ApprovalVerifier", "arming", "APPROVAL_KINDS"),
     ("Fee", "executor", "FEE_KINDS"),
     ("HeartbeatEmitter", "health", "HEARTBEAT_KINDS"),
+    ("OutcomeSource", "outcomes", "OUTCOME_SOURCE_KINDS"),
 )
 
 #: The seven ABCs §5.15 calls structural rather than registry-resolved, named
@@ -143,6 +147,7 @@ ABC_BY_NAME = {
         Clock, Calendar, Cadence, Feed, Proposer, Guard, Measure, Executor,
         Accounting, Lease, Monitor, Reference, Chunker, Threshold, AlertSink,
         HealthProbe, Transport, ApprovalVerifier, Fee, HeartbeatEmitter,
+        OutcomeSource,
     )
 }
 
@@ -262,10 +267,10 @@ def test_each_seam_abc_is_its_registrys_family_in_its_own_module(name, module, r
     assert found.abc is cls
 
 
-def test_the_package_holds_exactly_the_twenty_declared_registries():
-    """The other half of the pin: §4.3 lists twenty and §5.15 lists twenty
-    ABCs "and a test pins the two lists against each other". A twenty-first
-    registry added without a seam ABC — or without §4.3 — fails here."""
+def test_the_package_holds_exactly_the_declared_registries():
+    """The other half of the pin: §4.3 lists the families and §5.15 lists
+    the ABCs "and a test pins the two lists against each other". A registry
+    added without a seam ABC — or without §4.3 — fails here."""
     assert set(registries()) == {row[2] for row in SEAM_ABCS}
 
 

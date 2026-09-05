@@ -73,6 +73,7 @@ __all__ = [
     "OPERATIONS",
     "ORDER_EVENTS",
     "OUTCOME_KINDS",
+    "OUTCOME_SOURCES",
     "OVERRUN_POLICIES",
     "PLAN_RESULTS",
     "POSITION_MODELS",
@@ -288,6 +289,13 @@ CANCEL_OUTCOMES = ("none", "submitted", "failed", "partial", "unknown")
 #: The ``outcome`` record's ``kind`` — label arrival, mark or correction.
 OUTCOME_KINDS = ("settled", "marked", "voided", "partial", "corrected")
 
+#: Where an ``outcome`` came from (§5.13.2): the venue's own settlement,
+#: a derived label stream, or an operator who recorded it by hand. It is
+#: NOT the ``outcome_source`` registry's key set — the registry is the open
+#: doorway of the classes that PRODUCE outcomes, and ``operator`` has no
+#: class, because a hand-recorded outcome polls nothing.
+OUTCOME_SOURCES = ("settlement", "label", "operator")
+
 #: The ``cash_flow`` record's ``kind`` — the only kinds ``adopt`` can emit.
 CASH_FLOW_KINDS = ("deposit", "withdrawal", "adjustment")
 
@@ -328,7 +336,16 @@ APPROVAL_PURPOSES = (
 #: ``APPROVAL_PURPOSES`` plus the four §7 verbs that queue without a
 #: maker-checker proof. One home, so the inbox and every handler agree
 #: on what a command may ask for.
-CONTROL_PURPOSES = APPROVAL_PURPOSES + ("halt", "disarm", "reconcile", "ready")
+CONTROL_PURPOSES = APPROVAL_PURPOSES + (
+    "halt",
+    "disarm",
+    "reconcile",
+    "ready",
+    # §5.13.2: the ``outcomes`` verb MUTATES — it appends ``outcome``
+    # records — so it takes the same one path, with no proof: it records
+    # observed facts rather than an operator's claim.
+    "outcomes",
+)
 
 #: The ``alert`` record's ``status``.
 ALERT_STATUSES = ("firing", "resolved")

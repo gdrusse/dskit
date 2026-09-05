@@ -66,19 +66,24 @@ from dskit.production.leg import (
     ReductionBinding,
 )
 from dskit.production.loop import Tick
+from dskit.production.outcomes import OutcomeJoin, OutcomeSource
 from dskit.production.readiness import Readiness
+from dskit.production.reconcile import LedgerHistory
 from dskit.production.records import (
     AccountState,
     ActPermit,
     Candidate,
+    DecidedLeg,
     DecisionPlan,
     EntryBatch,
     Intent,
+    Outcome,
     PolicyRequest,
     Proposal,
     Provenance,
     QuoteSet,
     ReductionIntent,
+    Settlement,
     TickResult,
 )
 from dskit.production.release import ReleaseManifest
@@ -126,6 +131,13 @@ ROOTS = {
     "ReductionIntent": ReductionIntent,
     "TickState": TickState,
     "Tick": Tick,
+    # Phase 2's producers are not bundle members: `OutcomeJoin` is a
+    # composite `compose.py` builds, so the rows name the object and the
+    # step rather than a dotted bundle path (§5.16).
+    "OutcomeJoin": OutcomeJoin,
+    "OutcomeSource": OutcomeSource,
+    "LedgerHistory": LedgerHistory,
+    "DecidedLeg": DecidedLeg,
 }
 
 #: What a prefix HOLDS, where the holder cannot say. A bundle annotates every
@@ -170,6 +182,9 @@ TYPES = {
     "Intent.proposal": Proposal,
     "LegEvaluation.account": AccountState,
     "ReductionBinding.signed": ReductionIntent,
+    "OutcomeSource.poll": Outcome,
+    "LedgerHistory.legs": DecidedLeg,
+    "execution.executor.settlements": Settlement,
 }
 
 #: The paths that appear in several rows, named once so a rename moves one
@@ -359,6 +374,27 @@ PRODUCERS = {
             "quote_digest",
         )
     },
+    # --- Outcome — one `OutcomeSource.poll`, stamped by the join ---------
+    **{
+        ("Outcome", name): "OutcomeSource.poll"
+        for name in ("outcome_kind", "terminal", "source")
+    },
+    ("Outcome", "leg_id"): "DecidedLeg.leg_id",
+    ("Outcome", "effective_at_ms"): (
+        "execution.executor.settlements.settled_ms + OutcomeSource.poll.effective_at_ms"
+    ),
+    ("Outcome", "value"): "OutcomeSource.poll.value",
+    ("Outcome", "weight"): "OutcomeSource.poll.weight",
+    ("Outcome", "supersedes"): "OutcomeJoin.collect",
+    ("Outcome", "known_at_ms"): "OutcomeJoin.collect",
+    # --- DecidedLeg — `LedgerHistory.legs`, §6's decision.legs[] + its tick
+    **{
+        ("DecidedLeg", name): "LedgerHistory.legs"
+        for name in (
+            "leg_id", "instrument", "final", "client_ref", "prediction", "baseline",
+            "expected_value", "reference_price", "qty", "tick_id", "decided_at_ms",
+        )
+    },
     # --- Provenance — from the EntryBatch and the QuoteSet -----------------
     ("Provenance", "inputs_asof_ms"): "EntryBatch.data_asof_ms",
     ("Provenance", "inputs_digest"): "EntryBatch.inputs_digest",
@@ -367,11 +403,14 @@ PRODUCERS = {
     ("Provenance", "quote_digest"): "QuoteSet.quote_digest",
 }
 
-#: The twelve records §5.16 walks in phase 1. Extending the table extends the
-#: test, which is the intended way to add one — the phase-2 rows
-#: (`Outcome`, `Report`, `ParityDiff`, the alert-state records) join this
-#: tuple when the classes they name exist.
+#: The records §5.16 walks. Extending the table extends the test, which is
+#: the intended way to add one — twelve in phase 1, plus §5.13.2's `Outcome`
+#: and `DecidedLeg`; the remaining phase-2 rows (`Attribution`,
+#: `CalibrationReport`, `ValuePoint`, `ParityDiff`, the alert-state records)
+#: join this tuple when the classes they name exist.
 WALKED = (
+    Outcome,
+    DecidedLeg,
     DecisionPlan,
     LegResult,
     ActPermit,

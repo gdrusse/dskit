@@ -55,6 +55,12 @@ GRADED_SECTIONS = (
     "resilience",
     "lifecycle",
     "readiness",
+    # Phase 2 (§4.2): OPTIONAL and GRADED. An absent key is absent from the
+    # hash material, so a document written against phase 1 keeps its
+    # identity, its release and its running chain; it is graded rather than
+    # excluded because an `outcome` feeds the `error_vs_realised` measure
+    # and the outcome monitors, which can trip the breaker.
+    "outcomes",
     "alerting",
 )
 
@@ -267,6 +273,9 @@ def example_document(**overrides):
             "checklist": "configs/readiness.json",
             "waivers": [],
             "valid_for_s": 86400,
+        },
+        "outcomes": {
+            "sources": {"settle": {"uses": "settlement", "params": {"lookback_ms": 604800000}}}
         },
         "heartbeat": {"every_s": 60, "in_degraded": False, "emitters": {"file": {"uses": "file"}}},
         "alerting": {
@@ -1039,7 +1048,8 @@ def test_the_example_top_level_accounts_for_every_key_in_the_partition():
         "name",
         "notes",
     }
-    assert len(GRADED_SECTIONS) == 18
+    # Eighteen in phase 1, plus phase 2's OPTIONAL `outcomes` (§4.2).
+    assert len(GRADED_SECTIONS) == 19
 
 
 def test_doc_hash_is_the_golden_sha256_of_the_hash_material():
@@ -1148,6 +1158,7 @@ GRADED_MUTATIONS = (
     ("resilience", ("resilience", "retry", "max_attempts"), 5),
     ("lifecycle", ("lifecycle", "cooling_off_s"), 60),
     ("readiness", ("readiness", "valid_for_s"), 3600),
+    ("outcomes", ("outcomes", "sources", "settle", "params", "lookback_ms"), 86400000),
     ("alerting", ("alerting", "group_wait_s"), 45),
 )
 
@@ -1164,6 +1175,62 @@ def test_every_graded_section_changes_identity(section, path, value):
     moved = ServeDocument.from_obj(set_path(example_document(rung="shadow"), path, value))
     assert moved.doc_hash != base.doc_hash
     assert moved.doc_hash == expected_doc_hash(moved.to_obj())
+
+
+def test_a_document_that_declares_no_outcomes_never_materialises_one():
+    """§4.2: phase 2's sections are OPTIONAL, so "an absent key is absent
+    from the hash material" — a rendered default would move the identity of
+    every document written against phase 1, orphaning its runs and every
+    stored artifact keyed to it."""
+    obj = example_document()
+    del obj["outcomes"]
+    doc = ServeDocument.from_obj(obj)
+    assert "outcomes" not in doc.to_obj()
+    assert "outcomes" not in doc.identity_obj()
+    assert doc.outcomes is None
+    assert doc.doc_hash == expected_doc_hash(obj)
+
+
+def test_declaring_outcomes_changes_identity_because_it_changes_numbers_someone_acts_on():
+    """§4.2 considered and rejected excluding it: an `outcome` feeds the
+    `error_vs_realised` measure and the outcome monitors, which can trip the
+    breaker."""
+    without = example_document()
+    del without["outcomes"]
+    assert ServeDocument.from_obj(without).doc_hash != ServeDocument.from_obj(
+        example_document()
+    ).doc_hash
+
+
+def test_the_outcomes_section_is_default_deny_at_every_level():
+    for path, value in (
+        (("outcomes", "source"), {}),
+        (("outcomes", "sources", "settle", "use"), "settlement"),
+    ):
+        obj = set_path(example_document(), path, value)
+        with pytest.raises(ProductionError) as excinfo:
+            ServeDocument.from_obj(obj)
+        assert path[-1] in str(excinfo.value)
+
+
+def test_an_outcomes_block_must_declare_its_sources():
+    with pytest.raises(ProductionError) as excinfo:
+        ServeDocument.from_obj(set_path(example_document(), ("outcomes",), {}))
+    assert "sources" in str(excinfo.value)
+
+
+def test_every_outcome_source_names_a_kind():
+    obj = set_path(example_document(), ("outcomes", "sources"), {"settle": {"params": {}}})
+    with pytest.raises(ProductionError) as excinfo:
+        ServeDocument.from_obj(obj)
+    assert "uses" in str(excinfo.value)
+
+
+def test_the_outcome_sources_read_as_an_ordered_read_only_mapping():
+    doc = ServeDocument.from_obj(example_document())
+    assert list(doc.outcomes.sources) == ["settle"]
+    assert doc.outcomes.sources["settle"].uses == "settlement"
+    assert dict(doc.outcomes.sources["settle"].params) == {"lookback_ms": 604800000}
 
 
 def test_the_display_name_is_in_the_hash_material_like_every_pipeline_config():

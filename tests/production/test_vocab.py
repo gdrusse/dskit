@@ -56,6 +56,7 @@ CLOSED_SET_NAMES = (
     "FEED_STATUSES",
     "LINK_STATES",
     "OUTCOME_KINDS",
+    "OUTCOME_SOURCES",
     "RISK_EFFECTS",
     "OPERATIONS",
     "APPROVAL_PURPOSES",
@@ -141,6 +142,7 @@ EXPECTED_MEMBERS = {
     "FEED_STATUSES": ("live", "degraded", "stale", "dead", "closed"),
     "LINK_STATES": ("connected", "recovering", "disconnected"),
     "OUTCOME_KINDS": ("settled", "marked", "voided", "partial", "corrected"),
+    "OUTCOME_SOURCES": ("settlement", "label", "operator"),
     "RISK_EFFECTS": ("increase", "neutral", "reduce"),
     "OPERATIONS": ("submit", "cancel", "query", "reconcile"),
     "APPROVAL_PURPOSES": (
@@ -250,6 +252,9 @@ EXPECTED_MEMBERS = {
     "CONTROL_PURPOSES": (
         "arm_request", "arm_approval", "reduce", "flatten_request", "flatten_approval",
         "execute_flatten", "resume", "adopt", "halt", "disarm", "reconcile", "ready",
+        # Phase 2 (§5.13.2): `outcomes` MUTATES — it appends `outcome`
+        # records — so it takes §5.8's one path and carries no proof.
+        "outcomes",
     ),
     "TICK_STATUSES": (
         "decided",

@@ -646,7 +646,8 @@ partitioned to suit it — this is the reason `durability`, `resilience`,
 `serving`, `feed`, `schedule`, `guards`, `execution`, `accounting`, `arming`,
 `coordination`, `reconcile`, `monitors`, `health`, `durability`, `resilience`,
 `lifecycle`, `readiness` and `alerting`. Eighteen graded sections plus four excluded plus
-`name` and `notes` account for every key in §4.1; `validate` refuses a top-level
+`name` and `notes` account for every key in §4.1 at phase 1 (nineteen once
+`outcomes` lands, twenty with `reporting`, and `test_document.py` counts them); `validate` refuses a top-level
 key that is in neither list, so the partition cannot silently drift.
 
 Phase 2 adds two more GRADED sections, `outcomes` and `reporting`, and both are
@@ -2641,29 +2642,53 @@ makes an attribution number auditable rather than merely current.
   itself have seen.
 - `LedgerHistory` (§5.9) gains the two readers this needs —
   `legs(since_ms) -> tuple[DecidedLeg]` and
-  `outcomes(since_ms) -> tuple[Outcome]` — rather than a second module learning
-  to scan the ledger; it is already the one reader `accounting.py` and
-  `reconcile.py` share, and `marks(since_ms)` is `outcomes` filtered to
-  `marked`.
+  `outcomes(since_ms) -> tuple[(record_id, Outcome)]` — rather than a second
+  module learning to scan the ledger; it is already the one reader
+  `accounting.py` and `reconcile.py` share, and `marks(since_ms)` is
+  `outcomes` filtered to `marked`. **`outcomes` carries the ENVELOPE's id**,
+  as `cash_flows` and `marks` already do, because `supersedes` names a
+  record: `release_hash` is a term of the id recipe below, a serve series
+  outlives the release it was started under, and a reader that re-derived
+  the id would compute a different one for every record written before the
+  last deployment and lose the chain there without saying so.
 - `forward_asof(legs, events, key, at) -> tuple` is the ONE forward as-of rule
   and a module function because both sources need exactly it: for each leg, the
   FIRST event whose `key(event)` equals the leg's and whose `at(event)` is
   **strictly greater** than that leg's `decided_at_ms`; events are consumed in
   `at` order, a leg matches at most one event, and a leg with no such event is
-  dropped rather than matched to something earlier. The strict `>` is the whole
+  dropped rather than matched to something earlier. `key` is ONE callable
+  applied to a leg and to an event alike — the join is symmetric, so a
+  second key function would be two spellings of one rule — and legs claim
+  events in `(decided_at_ms, leg_id)` order, so the earlier decision takes
+  the earlier event and the tie is broken by a stable name rather than by
+  whatever order the caller happened to build its list in. The strict `>` is the whole
   anti-leak property, and `test_outcomes.py` proves it with a hypothesis case
   over `label_asof > decided_at`.
-- `OutcomeSource(ABC)`: `@abstractmethod poll(legs, at_ms) -> tuple[Outcome]`,
-  where `legs` are the not-yet-terminal `DecidedLeg`s the join supplies and
-  `at_ms` is the cut. A source reads no ledger and stamps no `known_at_ms` —
-  the join does both — so it cannot back-date what it found.
+- `OutcomeSource(ABC)`: `@abstractmethod poll(legs, at_ms, standing) ->
+  tuple[Outcome]`, where `legs` are the `DecidedLeg`s decided at or before
+  the cut, `at_ms` is the cut, and `standing` is the read-only
+  `leg_id -> Outcome` head the join already knows. A source reads no ledger
+  and stamps no `known_at_ms` — the join does both — so it cannot back-date
+  what it found, and it is handed the head OUTCOME only, never the record id,
+  which is the join's business. An earlier draft said `poll(legs, at_ms)`
+  over "the not-yet-terminal legs", which cannot be implemented as written:
+  a source that never sees a resolved leg can never notice that a settlement
+  disagrees with it, and the same bullet requires `SettlementOutcomes` to
+  produce `corrected`. Supplying every decided leg and letting `collect`'s
+  DROP rule discard an answer that merely repeats what already stands is
+  what keeps a resolved leg free. `supersedes` is likewise the JOIN's to
+  fill, for the same reason it fills `known_at_ms`: it is a record id, and a
+  source holds none. A source names the kind `corrected`; the join links it.
   `OUTCOME_SOURCE_KINDS = Registry("outcome_source", OutcomeSource)`.
   - `SettlementOutcomes(params, *, executor)` reads
     `executor.settlements(since_ms)`; params `lookback_ms` (default
     `DEFAULT_OUTCOME_LOOKBACK_MS`). A settlement joined to a leg yields
     `settled` with `value = payout / qty` (the per-unit resolution, so legs of
     different size are comparable) and `weight = qty`; a settled quantity below
-    the leg's is `partial`; a settlement whose `qty` is zero is `voided`; and a
+    the leg's is `partial`; a settlement whose `qty` is zero is `voided`, and carries
+    `value = weight = 0` because a per-unit resolution is undefined with no
+    units and `accounting`'s realised rule already says a `voided` leg
+    realises nothing; and a
     settlement for a leg that already carries a terminal outcome with a
     different value is `corrected` and names it in `supersedes`.
   - `LabelOutcomes(params, *, root, registry)` reads a derived label stream
@@ -2687,7 +2712,10 @@ makes an attribution number auditable rather than merely current.
     rule §6 states for `cash_flow.known_at_ms`, for the same reason) — drops
     anything already standing unsuperseded in the fold, and orders by
     `(known_at_ms, leg_id, source)`. It reads; it writes nothing.
-  - `record(outcomes) -> tuple[str]` appends each with
+  - `record(outcomes) -> tuple[str]` refuses to extend a chain the fold has
+    not seen the whole of — the fold's head must be the ledger's, or an
+    outcome would be recorded against a series that has already moved — then
+    appends each with
     `id = f"outcome:{H('outcome-v1', release_hash, leg_id, source, effective_at_ms, known_at_ms)}"`
     and one `barrier()` after the batch. It refuses a `supersedes` naming
     anything that is not an `outcome` record of this series, or one that has

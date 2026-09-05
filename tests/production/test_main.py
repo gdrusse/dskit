@@ -48,6 +48,7 @@ from dskit.production.monitors import (
     REFERENCE_KINDS,
     THRESHOLD_KINDS,
 )
+from dskit.production.outcomes import OUTCOME_SOURCE_KINDS
 from dskit.production.readiness import UNWAIVABLE_ITEMS, checklist_digest
 from dskit.production.release import (
     DOCUMENT_FILENAME,
@@ -65,6 +66,8 @@ from tests.production.conftest import DAY_MS, NOW_MS, SERIES_ID, UNIVERSE
 # --------------------------------------------------------------------------
 
 #: The seventeen phase-1 verbs of §7, in the order that table lists them.
+#: `outcomes` is not here: it is a phase-2 row, listed below with the ones
+#: still unregistered.
 PHASE_ONE_VERBS = (
     "validate",
     "plan",
@@ -85,8 +88,14 @@ PHASE_ONE_VERBS = (
     "ready",
 )
 
-#: The six verbs §7 marks [phase 2]; G19 leaves them unregistered.
+#: The six verbs §7 marks [phase 2]. `outcomes` is the one §5.13.2's join
+#: now honours, so it is registered; the other five are not, and offering
+#: one would advertise a control nothing would take.
 PHASE_TWO_VERBS = ("replay", "outcomes", "report", "approve-hold", "ack", "silence")
+LANDED_PHASE_TWO_VERBS = ("outcomes",)
+UNLANDED_PHASE_TWO_VERBS = tuple(
+    verb for verb in PHASE_TWO_VERBS if verb not in LANDED_PHASE_TWO_VERBS
+)
 
 #: §7: "Only operational flags live on `serve`".
 SERVE_FLAGS = ("--once", "--max-ticks", "--armed")
@@ -106,6 +115,9 @@ MUTATING_VERBS = (
     "resume",
     "reconcile",
     "adopt",
+    # §5.13.2: the `outcomes` verb MUTATES — it appends `outcome` records —
+    # so it journals once, like every other mutating verb (D22).
+    "outcomes",
 )
 
 #: The read-only verbs of §7 — no journal row, no writer lock.
@@ -313,17 +325,23 @@ def test_every_phase_one_verb_of_section_7_is_registered():
     assert set(_subcommands(cli.build_parser())) >= set(PHASE_ONE_VERBS)
 
 
-def test_no_phase_two_verb_is_registered():
-    """§7 marks six verbs [phase 2]; offering one now would advertise a
-    control an operator could take and nothing would honour."""
+def test_no_unhonoured_phase_two_verb_is_registered():
+    """§7 marks six verbs [phase 2]; offering one whose owner does not exist
+    yet would advertise a control an operator could take and nothing would
+    honour. `outcomes` has its owner (§5.13.2), so it is offered."""
     offered = set(_subcommands(cli.build_parser()))
-    assert not offered & set(PHASE_TWO_VERBS), sorted(offered & set(PHASE_TWO_VERBS))
+    assert not offered & set(UNLANDED_PHASE_TWO_VERBS), sorted(
+        offered & set(UNLANDED_PHASE_TWO_VERBS)
+    )
+    assert set(LANDED_PHASE_TWO_VERBS) <= offered
 
 
-def test_the_cli_offers_exactly_the_phase_one_verbs():
+def test_the_cli_offers_exactly_the_verbs_whose_owners_exist():
     """No verb beyond §7's table: an undeclared verb is an undocumented
     control surface."""
-    assert sorted(_subcommands(cli.build_parser())) == sorted(PHASE_ONE_VERBS)
+    assert sorted(_subcommands(cli.build_parser())) == sorted(
+        PHASE_ONE_VERBS + LANDED_PHASE_TWO_VERBS
+    )
 
 
 def test_an_unknown_verb_refuses():
@@ -573,6 +591,7 @@ def control_argv(verb, doc_path, proof, request_id, extra=None):
         "disarm": [],
         "reconcile": [],
         "ready": [],
+        "outcomes": [],
     }[verb]
     return [verb, doc_path, *needs_proof, "--request-id", request_id, *(extra or [])]
 
@@ -591,6 +610,7 @@ VERB_PURPOSE = {
     "reconcile": "reconcile",
     "adopt": "adopt",
     "ready": "ready",
+    "outcomes": "outcomes",
 }
 
 
@@ -1345,7 +1365,9 @@ def test_adopt_requires_the_breaks_origin(doc_path, proof, journal):
 # §4.3 — every selector in the grammar names a registry
 # ==========================================================================
 
-#: §4.3's twenty families, restated: name -> the registry object.
+#: §4.3's families, restated: name -> the registry object. Twenty in phase
+#: 1, plus `OUTCOME_SOURCE_KINDS`, the first of the three §4.3 says phase 2
+#: adds.
 REGISTRIES = {
     "CLOCK_KINDS": CLOCK_KINDS,
     "CALENDAR_KINDS": CALENDAR_KINDS,
@@ -1367,6 +1389,7 @@ REGISTRIES = {
     "HEARTBEAT_KINDS": HEARTBEAT_KINDS,
     "TRANSPORT_KINDS": TRANSPORT_KINDS,
     "FEE_KINDS": FEE_KINDS,
+    "OUTCOME_SOURCE_KINDS": OUTCOME_SOURCE_KINDS,
 }
 
 #: Every `uses` / `kind` / `measure` site §4.1's grammar spells, with the
@@ -1401,6 +1424,7 @@ GRAMMAR_SELECTORS = (
     ("resilience.transport.uses", "urllib", "TRANSPORT_KINDS"),
     ("alerting.sinks.ops.uses", "webhook", "ALERT_SINK_KINDS"),
     ("heartbeat.emitters.file.uses", "file", "HEARTBEAT_KINDS"),
+    ("outcomes.sources.settle.uses", "settlement", "OUTCOME_SOURCE_KINDS"),
 )
 
 
@@ -1415,9 +1439,9 @@ def test_every_selector_in_the_grammar_names_a_registry(where, value, family):
     assert value in REGISTRIES[family]
 
 
-def test_the_grammar_reaches_every_one_of_the_twenty_families():
-    """§4.3 lists twenty families; a family no grammar site selects would be
-    a registry nothing can reach from a document."""
+def test_the_grammar_reaches_every_one_of_the_declared_families():
+    """§4.3 lists the families; one no grammar site selects would be a
+    registry nothing can reach from a document."""
     assert sorted({family for _w, _v, family in GRAMMAR_SELECTORS}) == sorted(REGISTRIES)
 
 

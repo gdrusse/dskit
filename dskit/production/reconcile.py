@@ -66,9 +66,11 @@ from dskit.production.base import (
 )
 from dskit.production.records import (
     Balance,
+    DecidedLeg,
     ExecutionScope,
     Fill,
     OrderState,
+    Outcome,
     Position,
     Settlement,
 )
@@ -306,10 +308,15 @@ _ZERO = Decimal(0)
 #: The vocabulary members this module spells, each pinned to its tuple at
 #: import so a renamed member cannot leave a stale literal behind.
 _RECON, _CASH_FLOW, _ADOPTION, _FILL, _OUTCOME = "recon", "cash_flow", "adoption", "fill", "outcome"
+_DECISION, _TICK = pin_members("reconcile.py's leg reader", ("decision", "tick"), RECORD_KINDS)
 _TIMING, _MISSING_IN_LEDGER, _MISSING_AT_VENUE = "timing", "missing_in_ledger", "missing_at_venue"
 _QUANTITY, _SETTLEMENT, _CASH = "quantity", "settlement", "cash"
 _PENDING, _NOT_SENT, _MARKED = "pending", "not_sent", "marked"
 _NO_ACTION = "none"
+#: The record-body keys the history reader names: the envelope id
+#: :func:`_with_id` attaches, the outcome's own kind, and the two members
+#: of §6's ``tick`` a decided leg is joined to.
+_ID, _OUTCOME_KIND, _TICK_ID, _OBSERVED_AT = "id", "outcome_kind", "tick_id", "observed_at_ms"
 #: The clean status: the weakest severity, which is the first of the ladder.
 _CLEAN = BREAK_SEVERITIES[0]
 #: The ``cash_flow.source`` §6 fixes: the amount is the reconciler's delta.
@@ -859,8 +866,56 @@ class LedgerHistory:
             if envelope["body"]["effective_at_ms"] >= since_ms
         )
 
+    def _outcome_bodies(self, since_ms):
+        """Scan ``outcome`` once: bodies with their envelope id, bounded inclusively."""
+        _check_since(since_ms)
+        return tuple(
+            _with_id(envelope)
+            for envelope in self._ledger.scan(kind=_OUTCOME)
+            if envelope["body"]["effective_at_ms"] >= since_ms
+        )
+
+    def outcomes(self, since_ms):
+        """Return every ``outcome`` record with ``effective_at_ms >= since_ms``.
+
+        Parameters
+        ----------
+        since_ms : int
+            Epoch-ms lower bound, inclusive; ``0`` for all time.
+
+        Returns
+        -------
+        tuple of tuple
+            ``(record_id, Outcome)`` pairs. The body is rebuilt as the
+            value object (§5.13.2: the record IS the ``Outcome``, so a body
+            of any other shape refuses here rather than reaching the join),
+            and the ENVELOPE's id travels with it because ``supersedes``
+            names a record. Re-deriving that id from the body would be a
+            second copy of §5.13.2's recipe, and the two would disagree the
+            moment a series outlived the release the recipe hashes.
+
+        Raises
+        ------
+        ProductionError
+            If ``since_ms`` is not a non-negative int, or a body is not an
+            ``Outcome``.
+        """
+        return tuple(
+            (
+                body[_ID],
+                Outcome.from_obj({key: value for key, value in body.items() if key != _ID}),
+            )
+            for body in self._outcome_bodies(since_ms)
+        )
+
     def marks(self, since_ms):
         """Return every ``marked`` outcome body with ``effective_at_ms >= since_ms``.
+
+        :meth:`outcomes` filtered to ``marked`` — one scan and one bound,
+        rather than a second reader that could disagree about either. The
+        answer is the §6 BODY plus its envelope ``id`` rather than the value
+        object, because ``supersedes`` names a record and the measures that
+        read marks net on that chain.
 
         Parameters
         ----------
@@ -879,13 +934,73 @@ class LedgerHistory:
         ProductionError
             If ``since_ms`` is not a non-negative int.
         """
-        _check_since(since_ms)
         return tuple(
-            _with_id(envelope)
-            for envelope in self._ledger.scan(kind=_OUTCOME)
-            if envelope["body"]["outcome_kind"] == _MARKED
-            and envelope["body"]["effective_at_ms"] >= since_ms
+            body for body in self._outcome_bodies(since_ms) if body[_OUTCOME_KIND] == _MARKED
         )
+
+    def legs(self, since_ms):
+        """Return every decided leg with ``decided_at_ms >= since_ms``, in ledger order.
+
+        §6's ``decision.legs[]`` entries joined to their tick's
+        ``observed_at_ms``: the leg's own body carries no instant, so the
+        join is against the ``tick`` record. Recovery appends the
+        ``decision`` BEFORE the ``tick``, so a decision whose tick never
+        landed has no instant and is DROPPED — a forward join from an
+        invented instant is worse than no join.
+
+        Parameters
+        ----------
+        since_ms : int
+            Epoch-ms lower bound on ``decided_at_ms``, inclusive.
+
+        Returns
+        -------
+        tuple of DecidedLeg
+
+        Raises
+        ------
+        ProductionError
+            If ``since_ms`` is not a non-negative int, or a leg entry is
+            not shaped like §6's ``decision.legs[]``.
+        """
+        _check_since(since_ms)
+        observed = {
+            envelope["body"].get(_TICK_ID): envelope["body"].get(_OBSERVED_AT)
+            for envelope in self._ledger.scan(kind=_TICK)
+        }
+        found = []
+        for envelope in self._ledger.scan(kind=_DECISION):
+            tick_id = envelope["body"].get(_TICK_ID)
+            decided_at_ms = observed.get(tick_id)
+            if not isinstance(decided_at_ms, int) or isinstance(decided_at_ms, bool):
+                continue
+            if decided_at_ms < since_ms:
+                continue
+            found.extend(
+                _decided_leg(entry, tick_id, decided_at_ms)
+                for entry in envelope["body"].get("legs") or ()
+            )
+        return tuple(found)
+
+
+def _decided_leg(entry, tick_id, decided_at_ms):
+    """Build one ``DecidedLeg`` from a §6 ``decision.legs[]`` entry and its tick's instant."""
+    if not isinstance(entry, dict):
+        raise ProductionError([f"decision.legs entry must be an object, got {entry!r}"])
+    proposal = entry.get("proposal")
+    return DecidedLeg(
+        leg_id=entry.get("leg_id"),
+        tick_id=tick_id,
+        instrument=entry.get("instrument"),
+        decided_at_ms=decided_at_ms,
+        final=entry.get("final"),
+        client_ref=entry.get("client_ref"),
+        qty=proposal.get("qty") if isinstance(proposal, dict) else None,
+        prediction=entry.get("prediction"),
+        baseline=entry.get("baseline"),
+        expected_value=entry.get("expected_value"),
+        reference_price=entry.get("reference_price"),
+    )
 
 
 def _check_since(since_ms):

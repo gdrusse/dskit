@@ -76,14 +76,16 @@ points one way; the pipeline receives a `ReleaseReader` through
 ## Where things live
 
 `compose.py` builds the seven bundles from the document and is the composition
-root; `loop.py` is the scheduler and owns the ten tick phases; `leg.py` owns the
+root, plus the composites that are not bundle members (`outcome_join`);
+`loop.py` is the scheduler and owns the ten tick phases; `leg.py` owns the
 eight submission steps and is where a permit is minted. `Tick.run` and
 `LegPipeline.run` are **final** — the phases and steps are the hooks.
 
 ## Extension points
 
-The twenty registry-resolved seam ABCs (one per `§4.3` registry) plus `Proposer`
-and `Measure`. A child implements the venue executor, its accounting, its
+The registry-resolved seam ABCs (one per `§4.3` registry — twenty in phase 1,
+plus `OutcomeSource`), and `Proposer` and `Measure`. A child implements the
+venue executor, its accounting, its
 approval verifier and its fenced lease, and references them by
 `pkg.module:Class`. Children never subclass `ServeLoop`, `GuardChain` or a
 policy.

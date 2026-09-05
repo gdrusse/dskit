@@ -52,7 +52,16 @@ from dskit.production.reconcile import (
     Reconciler,
     classify_breaks,
 )
-from dskit.production.records import Balance, ExecutionScope, Fill, OrderState, Position, Settlement
+from dskit.production.records import (
+    Balance,
+    DecidedLeg,
+    ExecutionScope,
+    Fill,
+    OrderState,
+    Outcome,
+    Position,
+    Settlement,
+)
 from dskit.production.state import SeriesState
 from tests.production.test_document import minimal_document, set_path
 
@@ -447,17 +456,62 @@ def cash_flow_body(amount="5000", effective_at_ms=BASE_MS - 2 * LOOKBACK_MS, flo
     }
 
 
-def outcome_body(leg_id="leg-1", outcome_kind="marked", effective_at_ms=BASE_MS - 500):
+def outcome_body(
+    leg_id="leg-1",
+    outcome_kind="marked",
+    effective_at_ms=BASE_MS - 500,
+    value="1.5",
+    source="settlement",
+):
+    """§6's `outcome` body — exactly `records.Outcome.to_obj()` (§5.13.2)."""
+    return Outcome(
+        leg_id=leg_id,
+        outcome_kind=outcome_kind,
+        effective_at_ms=effective_at_ms,
+        known_at_ms=effective_at_ms + 10,
+        value=Decimal(value),
+        weight=Decimal(1),
+        terminal=outcome_kind != "marked",
+        supersedes=None,
+        source=source,
+    ).to_obj()
+
+
+def decision_body(legs, tick_id="tick-1"):
+    """§6's `decision` body, one entry per leg, as `loop.py` writes it."""
+    return {
+        "tick_id": tick_id,
+        "decision_plan_ids": [],
+        "decision_plan_digests": [],
+        "legs": list(legs),
+    }
+
+
+def decision_leg(leg_id="leg-1", instrument="AAPL", qty="10", side="buy"):
+    """One `decision.legs[]` entry — the shape `LedgerHistory.legs` reads."""
     return {
         "leg_id": leg_id,
-        "outcome_kind": outcome_kind,
-        "effective_at_ms": effective_at_ms,
-        "known_at_ms": effective_at_ms + 10,
-        "value": "1.5",
-        "weight": 1.0,
-        "terminal": outcome_kind == "settled",
-        "supersedes": None,
-        "source": "venue",
+        "instrument": instrument,
+        "prediction": 0.6,
+        "confidence": 0.7,
+        "baseline": 0.5,
+        "expected_value": 0.1,
+        "reference_price": "1.00",
+        "proposal": {"qty": qty, "side": side},
+        "findings": [],
+        "final": side,
+        "client_ref": f"ref-{leg_id}",
+    }
+
+
+def tick_body(tick_id="tick-1", observed_at_ms=BASE_MS):
+    """§6's terminal `tick` body, reduced to what the leg reader joins on."""
+    return {
+        "tick_id": tick_id,
+        "tick_at": observed_at_ms,
+        "data_asof_ms": observed_at_ms - 60_000,
+        "observed_at_ms": observed_at_ms,
+        "status": "decided",
     }
 
 
@@ -1369,6 +1423,93 @@ def test_ledger_history_answers_nothing_on_an_empty_ledger():
     reconciler, ledger, state, clock = make_reconciler()
     history = LedgerHistory(ledger)
     assert history.fills(0) == () and history.cash_flows(0) == () and history.marks(0) == ()
+    assert history.legs(0) == () and history.outcomes(0) == ()
+
+
+def test_ledger_history_reads_outcomes_as_the_value_object_they_are():
+    """§5.13.2: `outcomes(since_ms) -> tuple[(record_id, Outcome)]`. The §6
+    body IS the record, so a body of any other shape refuses here rather
+    than reaching the join."""
+    reconciler, ledger, state, clock = make_reconciler()
+    fold(ledger, "outcome", outcome_body(leg_id="leg-1", outcome_kind="settled"))
+    found = LedgerHistory(ledger).outcomes(0)
+    assert [outcome.leg_id for _record_id, outcome in found] == ["leg-1"]
+    assert all(isinstance(outcome, Outcome) for _record_id, outcome in found)
+
+
+def test_ledger_history_bounds_outcomes_inclusively_by_their_effective_instant():
+    reconciler, ledger, state, clock = make_reconciler()
+    fold(ledger, "outcome", outcome_body(leg_id="leg-1", effective_at_ms=BASE_MS - 3000))
+    fold(ledger, "outcome", outcome_body(leg_id="leg-2", effective_at_ms=BASE_MS - 1000))
+    found = LedgerHistory(ledger).outcomes(BASE_MS - 1000)
+    assert [outcome.leg_id for _record_id, outcome in found] == ["leg-2"]
+
+
+def test_marks_are_the_outcomes_filtered_to_marked_and_nothing_else():
+    """§5.13.2: "`marks(since_ms)` is `outcomes` filtered to `marked`" — one
+    scan, one bound, one extra filter, rather than a second reader."""
+    reconciler, ledger, state, clock = make_reconciler()
+    fold(ledger, "outcome", outcome_body(leg_id="leg-1", outcome_kind="marked"))
+    fold(ledger, "outcome", outcome_body(leg_id="leg-2", outcome_kind="settled"))
+    history = LedgerHistory(ledger)
+    assert [mark["leg_id"] for mark in history.marks(0)] == ["leg-1"]
+    assert {outcome.leg_id for _id, outcome in history.outcomes(0)} == {"leg-1", "leg-2"}
+
+
+def test_outcomes_carries_the_id_the_ledger_stored_rather_than_a_derivation():
+    """§5.13.2: `supersedes` names a RECORD, and `release_hash` is a term of
+    the id recipe — so a reader that re-derived the id would compute a
+    different one for anything written before the last deployment. The
+    envelope's own id travels with the body, as `cash_flows` and `marks`
+    already do."""
+    reconciler, ledger, state, clock = make_reconciler()
+    fold(ledger, "outcome", outcome_body(leg_id="leg-1"), record_id="outcome:stored-one")
+    (pair,) = LedgerHistory(ledger).outcomes(0)
+    assert pair[0] == "outcome:stored-one"
+    assert pair[1].leg_id == "leg-1"
+
+
+def test_ledger_history_reads_decided_legs_joined_to_their_ticks_observed_instant():
+    """§5.16: "`decided_at_ms` is the paired `tick` record's
+    `observed_at_ms` — the leg's own body carries no instant, which is why
+    the join is against the tick"."""
+    reconciler, ledger, state, clock = make_reconciler()
+    fold(ledger, "decision", decision_body([decision_leg()]))
+    fold(ledger, "tick", tick_body(observed_at_ms=BASE_MS + 7))
+    legs = LedgerHistory(ledger).legs(0)
+    assert [leg.leg_id for leg in legs] == ["leg-1"]
+    assert all(isinstance(leg, DecidedLeg) for leg in legs)
+    assert legs[0].decided_at_ms == BASE_MS + 7
+    assert legs[0].tick_id == "tick-1"
+    assert legs[0].qty == Decimal("10")
+
+
+def test_a_decision_whose_tick_never_landed_has_no_instant_and_is_dropped():
+    """Recovery appends the `decision` BEFORE the `tick` (§6), so a crash
+    between them leaves a decision with no instant. A forward join from an
+    invented instant is worse than no join at all."""
+    reconciler, ledger, state, clock = make_reconciler()
+    fold(ledger, "decision", decision_body([decision_leg()]))
+    assert LedgerHistory(ledger).legs(0) == ()
+
+
+def test_ledger_history_bounds_legs_inclusively_by_the_instant_they_were_decided():
+    reconciler, ledger, state, clock = make_reconciler()
+    fold(ledger, "decision", decision_body([decision_leg(leg_id="leg-1")], tick_id="t1"))
+    fold(ledger, "tick", tick_body(tick_id="t1", observed_at_ms=BASE_MS - 3000))
+    fold(ledger, "decision", decision_body([decision_leg(leg_id="leg-2")], tick_id="t2"))
+    fold(ledger, "tick", tick_body(tick_id="t2", observed_at_ms=BASE_MS - 1000))
+    legs = LedgerHistory(ledger).legs(BASE_MS - 1000)
+    assert [leg.leg_id for leg in legs] == ["leg-2"]
+
+
+@pytest.mark.parametrize("reader", ("fills", "cash_flows", "marks", "outcomes", "legs"))
+def test_every_reader_refuses_a_bound_that_is_not_a_non_negative_instant(reader):
+    reconciler, ledger, state, clock = make_reconciler()
+    with pytest.raises(ProductionError):
+        getattr(LedgerHistory(ledger), reader)(-1)
+    with pytest.raises(ProductionError):
+        getattr(LedgerHistory(ledger), reader)("0")
 
 
 # ---------------------------------------------------------------------------

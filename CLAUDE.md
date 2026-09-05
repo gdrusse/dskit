@@ -332,6 +332,7 @@ python -m dskit.journal    init|record|research|promote|render|exec
 python -m dskit.production validate|plan|serve|ready|status|verify|reconcile|adopt
 python -m dskit.production arm-request|approve-arm|disarm|halt|reduce|resume
 python -m dskit.production flatten-request|approve-flatten|execute-flatten
+python -m dskit.production outcomes                # phase 2: record what happened to each leg
 ```
 
 Exit codes: **0** ran · **1** error · **3** halted (a NO-GO gate, a `validate`

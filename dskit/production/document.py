@@ -574,6 +574,12 @@ _READINESS = _Fixed(
     {"checklist": _STR, "waivers": _KEY_LIST, "valid_for_s": _Int(ge=MIN_VALID_FOR_S)},
     required=("checklist", "waivers", "valid_for_s"),
 )
+#: [phase 2] §5.13.2's outcome sources: an ordered map of author-chosen
+#: names to ``OUTCOME_SOURCE_KINDS`` selectors. OPTIONAL and GRADED (§4.2) —
+#: an absent key is absent from the hash material, so a document written
+#: against phase 1 keeps its identity, while a document that declares one
+#: changes numbers someone acts on and therefore changes identity.
+_OUTCOMES = _Fixed({"sources": _Named(_SELECTOR)}, required=("sources",))
 _HEARTBEAT = _Fixed(
     {
         "every_s": _Int(ge=MIN_HEARTBEAT_EVERY_S),
@@ -625,6 +631,7 @@ _GRAMMAR = _Fixed(
         "resilience": _RESILIENCE,
         "lifecycle": _LIFECYCLE,
         "readiness": _READINESS,
+        "outcomes": _OUTCOMES,
         "alerting": _ALERTING,
         "alert_endpoints": _Named(_ENDPOINT),
         "heartbeat": _HEARTBEAT,
@@ -655,8 +662,9 @@ _GRAMMAR = _Fixed(
     ),
 )
 
-#: The eighteen graded sections (§4.2): the grammar minus the four excluded
-#: sections, ``name`` (graded, but not a section) and ``notes``.
+#: The graded sections (§4.2): the grammar minus the four excluded
+#: sections, ``name`` (graded, but not a section) and ``notes``. Eighteen
+#: in phase 1, plus phase 2's OPTIONAL ``outcomes``.
 GRADED_SECTIONS = tuple(
     key for key in _GRAMMAR.keys if key not in PRODUCTION_NON_IDENTITY_SECTIONS + ("name",)
 )

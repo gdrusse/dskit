@@ -60,6 +60,7 @@ from dskit.production.compose import (
     RUNG_TABLE,
     bundles_for,
     handlers_for,
+    outcome_join,
 )
 from dskit.production.control import CommandProcessor, ControlInbox
 from dskit.production.coordination import Lease, LeasePermit, ProcessLease
@@ -79,6 +80,7 @@ from dskit.production.ids import ReleaseIdSource
 from dskit.production.ledger import Checkpoint, JsonlLedger, ServeRoot
 from dskit.production.leg import LiveAuthority, ReductionAuthority, SimulatedAuthority
 from dskit.production.metrics import Metrics
+from dskit.production.outcomes import OutcomeJoin, SettlementOutcomes
 from dskit.production.policy import ActionPolicy, TransitionPolicy
 from dskit.production.readiness import Readiness
 from dskit.production.reconcile import Reconciler
@@ -116,6 +118,32 @@ CHILD_LEASE = "tests.production.test_compose:ChildLease"
 # --------------------------------------------------------------------------
 # child collaborators — what a live rung requires and core cannot ship
 # --------------------------------------------------------------------------
+
+
+class RecordingSource(SettlementOutcomes):
+    """A child outcome source, referenced by path the way a child supplies one.
+
+    It keeps what `compose.py` handed it and the cut it was polled with, so
+    "the executor and nothing else" and "the command's own instant" are
+    assertions about the composition rather than about a stub.
+    """
+
+    built = {}
+    polled = []
+
+    def __init__(self, params=None, *, executor):
+        type(self).built["executor"] = executor
+        super().__init__(params, executor=executor)
+
+    def poll(self, legs, at_ms, standing):
+        """Record the cut and answer nothing."""
+        type(self).polled.append(at_ms)
+        return ()
+
+
+#: How the recording source is named by a document — a `pkg.module:Class`
+#: reference, which is the whole point of the registry doorway (§4.3).
+RECORDING_SOURCE = "tests.production.test_compose:RecordingSource"
 
 
 class ChildLease(Lease):
@@ -814,6 +842,128 @@ def owner_bundles(bundles, **owners):
         else:
             recording = dataclasses.replace(recording, **{name: value})
     return (schedule, data, decision, safety, execution, recording, observability)
+
+
+# ==========================================================================
+# outcome_join — the phase-2 composite that is not a bundle member (§5.16)
+# ==========================================================================
+
+
+def with_outcome_sources(document, sources):
+    """The same document, declaring `outcomes.sources`."""
+    obj = document.to_obj()
+    obj["outcomes"] = {"sources": sources}
+    return ServeDocument.from_obj(obj)
+
+
+def test_outcome_join_builds_the_declared_sources_through_their_registry(
+    shadow_document, composer, release_manifest
+):
+    """§4.3: the document names WHAT, the registry answers WHICH class —
+    the same resolution every other family gets, and the reason a child can
+    supply its own source by path without editing the package."""
+    document = with_outcome_sources(
+        shadow_document, {"settle": {"uses": "settlement", "params": {"lookback_ms": 1_000}}}
+    )
+    bundles = composer.build(document)
+    join = outcome_join(document, release_manifest, bundles)
+    assert isinstance(join, OutcomeJoin)
+    assert join.collect(NOW_MS) == ()
+
+
+def test_outcome_join_hands_each_source_only_the_collaborators_it_declares(
+    shadow_document, composer, release_manifest
+):
+    """`SettlementOutcomes` takes the executor and nothing else. The offer
+    is filtered by what each class's own `__init__` declares, as probes and
+    emitters are, so a source is never handed a collaborator it did not ask
+    for."""
+    RecordingSource.polled.clear()
+    document = with_outcome_sources(shadow_document, {"settle": {"uses": RECORDING_SOURCE}})
+    bundles = composer.build(document)
+    outcome_join(document, release_manifest, bundles).collect(NOW_MS)
+    assert RecordingSource.built["executor"] is bundles[4].executor
+
+
+def test_a_document_that_declares_no_outcomes_gets_a_join_that_collects_nothing(
+    shadow_document, shadow_bundles, release_manifest
+):
+    """A phase-1 document keeps working: the join exists, has no sources,
+    and finds nothing rather than refusing."""
+    join = outcome_join(shadow_document, release_manifest, shadow_bundles)
+    assert join.collect(NOW_MS) == ()
+
+
+def test_outcome_join_refuses_anything_but_the_seven_bundles(
+    shadow_document, shadow_bundles, release_manifest
+):
+    with pytest.raises(ProductionError):
+        outcome_join(shadow_document, release_manifest, shadow_bundles[:3])
+
+
+def test_the_outcomes_handler_records_through_the_join(
+    shadow_document, composer, release_manifest
+):
+    """§5.13.2: the `outcomes` verb collects at the cut and records what is
+    new — through the join, never by reaching a settlement directly."""
+    document = with_outcome_sources(shadow_document, {"settle": {"uses": "settlement"}})
+    bundles = composer.build(document)
+    handlers = handlers_for(document, bundles, release=release_manifest)
+    records, status, reason = handlers["outcomes"](command("outcomes"), bundles[5].state.snapshot())
+    assert (records, status) == ((), "applied")
+    assert "outcome" in reason
+
+
+def test_the_outcomes_handler_reads_the_cut_from_the_consumed_command(
+    shadow_document, composer, release_manifest
+):
+    """§6's rule for `cash_flow.known_at_ms`, for the same reason: a
+    crash-replayed command must produce byte-identical payloads, so the cut
+    is the command's own `queued_at_ms` and never the handler's clock."""
+    RecordingSource.polled.clear()
+    document = with_outcome_sources(shadow_document, {"settle": {"uses": RECORDING_SOURCE}})
+    bundles = composer.build(document)
+    handlers = handlers_for(document, bundles, release=release_manifest)
+    handlers["outcomes"](
+        command("outcomes", queued_at_ms=NOW_MS - 9_000), bundles[5].state.snapshot()
+    )
+    assert RecordingSource.polled == [NOW_MS - 9_000]
+
+
+def test_the_outcomes_handler_prefers_the_cut_the_operator_named(
+    shadow_document, composer, release_manifest
+):
+    RecordingSource.polled.clear()
+    document = with_outcome_sources(shadow_document, {"settle": {"uses": RECORDING_SOURCE}})
+    bundles = composer.build(document)
+    handlers = handlers_for(document, bundles, release=release_manifest)
+    handlers["outcomes"](
+        command("outcomes", {"asof_ms": NOW_MS - 1_000}, queued_at_ms=NOW_MS),
+        bundles[5].state.snapshot(),
+    )
+    assert RecordingSource.polled == [NOW_MS - 1_000]
+
+
+def test_the_outcomes_handler_rejects_a_cut_that_is_not_an_instant(
+    shadow_document, shadow_bundles, release_manifest
+):
+    handlers = handlers_for(shadow_document, shadow_bundles, release=release_manifest)
+    _records, status, reason = handlers["outcomes"](
+        command("outcomes", {"asof_ms": "yesterday"}), shadow_bundles[5].state.snapshot()
+    )
+    assert status == "rejected"
+    assert "asof_ms" in reason
+
+
+def test_the_outcomes_handler_refuses_when_no_release_was_composed(
+    shadow_document, shadow_bundles
+):
+    """Every outcome id is bound to a release; a handler built without one
+    refuses loudly rather than recording against an unnamed release."""
+    handlers = handlers_for(shadow_document, shadow_bundles)
+    with pytest.raises(ProductionError) as excinfo:
+        handlers["outcomes"](command("outcomes"), shadow_bundles[5].state.snapshot())
+    assert "release" in str(excinfo.value)
 
 
 def test_handlers_for_covers_every_control_purpose(shadow_document, shadow_bundles):

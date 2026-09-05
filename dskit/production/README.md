@@ -178,6 +178,7 @@ dskit/production/
 ├── compose.py         bundles_for(); the AuthorityTable; the one rung reader
 ├── loop.py            ServeLoop (the scheduler); Tick (the ten phases)
 ├── readiness.py       release-bound checklist → GO / NO-GO
+├── outcomes.py        forward_asof; OutcomeSource + registry; OutcomeJoin (D21)
 ├── libs/              [phase 2] sqlite ledger, parquet run reference
 ├── README.md          this file
 ├── CLAUDE.md          agent orientation

@@ -71,6 +71,8 @@ from dskit.production.vocab import (
     LIQUIDITY,
     MONITOR_STATUSES,
     OPERATIONS,
+    OUTCOME_KINDS,
+    OUTCOME_SOURCES,
     PLAN_RESULTS,
     POSITION_SOURCES,
     READINESS_VERDICTS,
@@ -93,6 +95,7 @@ __all__ = [
     "Alert",
     "Balance",
     "Candidate",
+    "DecidedLeg",
     "DecisionPlan",
     "EntryBatch",
     "EvidenceRequirement",
@@ -106,6 +109,7 @@ __all__ = [
     "Intent",
     "MeasureEvidence",
     "OrderState",
+    "Outcome",
     "Permit",
     "PolicyRequest",
     "Position",
@@ -1943,6 +1947,128 @@ class SafetyEpoch(_Record):
 
 
 pin_members("records.py's safety-epoch window", (SafetyEpoch.WINDOW,), CALENDAR_WINDOWS)
+
+
+# ---------------------------------------------------------------------------
+# Outcomes — D21's bitemporal pair (§5.13.2)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Outcome(_Record):
+    """What happened to one leg, and when it became knowable (§5.13.2, §6).
+
+    This IS the §6 ``outcome`` body, the way :class:`Fill` is the ``fill``
+    body — one schema, not two — so ``to_obj()`` is exactly what a
+    producer appends. It is bitemporal (D21): ``effective_at_ms`` is when
+    the resolution HAPPENED and ``known_at_ms`` when it was learned, which
+    is what lets the same question be answered the same way twice.
+
+    Parameters
+    ----------
+    leg_id : str
+        The ``decision.legs[]`` entry this resolves.
+    outcome_kind : str
+        One of ``OUTCOME_KINDS``; spelled ``outcome_kind``, not ``kind``,
+        because the §6 envelope already owns ``kind``.
+    effective_at_ms, known_at_ms : int
+        Epoch ms. ``effective_at_ms > known_at_ms`` refuses: nothing is
+        knowable before it is effective.
+    value, weight : Decimal
+        The resolution and what it weighs. ``value`` is PER UNIT, so legs
+        of different size compare.
+    terminal : bool
+        Whether the leg is resolved for good; a mark is not.
+    source : str
+        One of ``OUTCOME_SOURCES``.
+    supersedes : str or None
+        The ``outcome`` record id this one replaces; ``None`` on a first
+        arrival. A chain link may be replaced once.
+
+    Examples
+    --------
+    A settlement learned a minute after it happened::
+
+        outcome = Outcome(
+            leg_id="leg-1", outcome_kind="settled",
+            effective_at_ms=1_767_268_800_000, known_at_ms=1_767_268_860_000,
+            value=Decimal("1.20"), weight=Decimal("10"), terminal=True,
+            source="settlement", supersedes=None,
+        )
+        outcome.to_obj()["value"]  # '1.20'
+    """
+
+    leg_id: str
+    outcome_kind: str
+    effective_at_ms: int
+    known_at_ms: int
+    value: Decimal
+    weight: Decimal
+    terminal: bool
+    source: str
+    supersedes: str | None
+
+    _CLOSED = (("outcome_kind", OUTCOME_KINDS), ("source", OUTCOME_SOURCES))
+
+    def _check(self, problems):
+        if self.effective_at_ms > self.known_at_ms:
+            problems.append(
+                f"Outcome.known_at_ms {self.known_at_ms} is before effective_at_ms "
+                f"{self.effective_at_ms}: nothing is knowable before it is effective (§6)"
+            )
+
+
+@dataclass(frozen=True)
+class DecidedLeg(_Record):
+    """One ``decision.legs[]`` entry joined to its tick's instant (§5.13.2).
+
+    ``decided_at_ms`` is the paired ``tick`` record's ``observed_at_ms`` —
+    the wall instant at which the decision existed — and deliberately NOT
+    ``data_asof_ms``: a tick's inputs are older than the tick, so the
+    later of the two is the conservative bound for a forward join, and
+    joining from the earlier one would admit a label the decision could
+    itself have seen. The leg's own body carries no instant, which is why
+    the join is against the tick.
+
+    Parameters
+    ----------
+    leg_id, tick_id, instrument, client_ref : str
+    decided_at_ms : int
+        The tick's ``observed_at_ms``, epoch ms.
+    final : str
+        One of ``SIDES`` — the side of the leg's final proposal.
+    qty : Decimal or None
+        The final proposal's size; ``None`` for a notional-sized one.
+    prediction, baseline, expected_value : float
+        Dimensionless.
+    reference_price : Decimal
+
+    Examples
+    --------
+    ::
+
+        leg = DecidedLeg(
+            leg_id="leg-1", tick_id="tick-1", instrument="INS1",
+            decided_at_ms=1_767_268_800_000, final="buy", client_ref="cref-1",
+            qty=Decimal("10"), prediction=0.58, baseline=0.50,
+            expected_value=0.03, reference_price=Decimal("0.41"),
+        )
+        leg.qty  # Decimal('10')
+    """
+
+    leg_id: str
+    tick_id: str
+    instrument: str
+    decided_at_ms: int
+    final: str
+    client_ref: str
+    qty: Decimal | None
+    prediction: float
+    baseline: float
+    expected_value: float
+    reference_price: Decimal
+
+    _CLOSED = (("final", SIDES),)
 
 
 # ---------------------------------------------------------------------------

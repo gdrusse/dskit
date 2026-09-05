@@ -310,7 +310,10 @@ def mark_body(
         "weight": "1",
         "terminal": True,
         "supersedes": supersedes,
-        "source": "venue",
+        # A `vocab.OUTCOME_SOURCES` member: `records.Outcome` closes the
+        # field, and a fixture that spelled it otherwise would not be a
+        # §6 body at all.
+        "source": "settlement",
     }
 
 
