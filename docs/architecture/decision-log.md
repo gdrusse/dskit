@@ -4406,8 +4406,8 @@ declared trusted boundary, backed by code fingerprints and no-direct-I/O tests.
 
 ## ADR-0092 — Gate 3 stops at the first exceedance
 
-**Status:** proposed (2026-09-05; supersedes the fixed-19-seed portion of
-ADR-0089; awaiting owner approval)
+**Status:** accepted (2026-09-05; owner approved; supersedes the
+fixed-19-seed portion of ADR-0089)
 
 **Context.** ADR-0089 refits every Gate-1 survivor under all 19 whole-session
 permutations. The recorded P11 Gate-1 campaign ran 1,320 fold processes at
@@ -4487,7 +4487,7 @@ cost: ADR-0089 already required one.
 
 ## ADR-0093 — Bounded parallel fold execution graduates into dskit
 
-**Status:** proposed (2026-09-05; awaiting owner approval)
+**Status:** accepted (2026-09-05; owner approved)
 
 **Context.** `intraday_equities` ran each walk's folds through a blocking
 `subprocess.run`, one at a time. Nothing in dskit spawns concurrent work
@@ -4509,10 +4509,55 @@ class BoundedFoldRunner:
         # -> list of CompletedProcess, in input order
     def spawn(self, index, argv, cwd, env)
         # the hook; the default caps argv and runs it
+    def measure_one(self, argv, cwd=None, env=None)
+        # -> (CompletedProcess, peak_rss_bytes) for ONE serial spawn
 ```
 
+`measure_one` is the only way the seam reports memory, and it reports it for
+exactly one child: it reads `RUSAGE_CHILDREN.ru_maxrss` before spawning and
+raises `ValueError` if it is nonzero — an earlier child has been reaped and
+the counter is contaminated — then runs the one command at width 1 and returns
+the high-water mark after it. That trap is a property of the seam, pooled
+subprocesses against a process-global counter, not of any child, so the guard
+lives here. A caller keeps only its threshold and its choice of what to run,
+and owes one precondition: `measure_one` must be the first child this process
+reaps — a stage that calls it must have no spawning predecessor in the staged
+DAG. `measure_one` runs its one command through the serial path under the
+instance's own cap, after the same command and cap validation `run`
+applies, so it inherits the parent-side validation and the `spawn` hook
+and never builds a pool for a single command.
+`spawn`'s default raises `RuntimeError` carrying the output tail on a nonzero
+exit, as `_run_walk` does today; that raise is what lets `run` cancel the
+unstarted folds.
+
 `commands` is a list of argv lists — the seam owns the spawn, so the cap is
-its mechanism and not something a caller re-implements. `cwd` and `env` are
+its mechanism and not something a caller re-implements. The seam is agnostic
+to what a command produces, so reading a fold's result is a separate public
+function beside `walk_fold_dirs` in `runs.py`, which already owns the
+`walkforward.json` format:
+
+```text
+def single_fold_row(summary_dir, cutoff)   # -> the one fold row
+```
+
+It raises `ValueError` unless the summary's state is `ran`, its `folds` list
+has exactly one row, and that row's cutoff matches. That logic is generic and
+today hand-rolled in the child's `_one_bounded_fold`; leaving it there would
+repeat the violation this ADR remedies.
+
+The fold-row shape the driver writes and these readers consume gets one owner
+in `driver.py`, exported alongside two renamed functions:
+
+```text
+FOLD_FIELDS = ("cutoff", "run_dir", "state", "score")   # every row
+FOLD_OPTIONAL_FIELDS = ("search", "error")               # when present
+def aggregate_folds(folds, select, weight_halflife_folds=0)
+def write_walkforward_summary(summary_dir, document, asof, spec, state,
+                              folds, aggregate)
+```
+
+`aggregate_folds` raises `ValueError` on a row missing a required key or
+carrying a key outside the union. `cwd` and `env` are
 batch-wide because a batch is one walk: children run UNINSTALLED and import
 dskit and themselves through the working directory (ADR-0021), so a child
 that could not pass `cwd` would have to override `spawn` wholesale and
@@ -4526,7 +4571,9 @@ refused. A caller must never source `workers` from a graded document — that
 would reopen exactly the identity instability below.
 
 **The cap is a caller-supplied parameter.** `memory_limit_bytes` is required
-and has NO dskit default: 17 GiB is a P10 study number and a tier-1 default
+and has NO dskit default (it is refused above the platform's C ``long``,
+`sys.maxsize`, so a cap the shim could never set is a constructor error,
+not a fold failure): 17 GiB is a P10 study number and a tier-1 default
 would be exactly the hardcoded threshold this repo forbids. `None` means
 uncapped.
 
@@ -4536,26 +4583,31 @@ divided cap both refuses mappings that measured RSS never sees and breaks
 resume, since a finished fold is accepted back only under the limit it ran at.
 Total memory scales with the width, which the operator chooses.
 
-**The cap is applied by a `setrlimit` + `execv` shim, not by `preexec_fn` and
-not by a shell.** `preexec_fn` bars `posix_spawn`, so the child would fork from
+**The cap is applied by a `setrlimit` + `exec` shim — `os.execvp`, so that
+``argv[0]`` resolves through ``PATH`` exactly as it does uncapped — not by
+`preexec_fn` and not by a shell.** `preexec_fn` bars `posix_spawn`, so the child would fork from
 a pool-running parent and run Python before `exec` — the pattern CPython
 documents as unsafe with threads. The shim runs `setrlimit` after its OWN
 `exec`, so nothing Python happens between the parent's fork and exec. It is
-chosen over `/bin/sh -c 'ulimit -v'` for three reasons, none of which is
+chosen over `/bin/sh -c 'ulimit -v'` for two reasons, neither of which is
 silence: measured on dash, `ulimit` DOES fail loudly when the hard limit is
 genuinely constrained (exit 2, stderr, readback unchanged). Rather, the shim
-avoids a shell interpreter and its `$BASH_ENV`/quoting surface entirely; it
-raises a typed `ValueError` instead of a shell exit code that must be told
-apart from the fold's own (the walkforward CLI reserves exit 3 for a halted
-fold); and it needs no hand-picked sentinel exit code to signal a failed cap.
+avoids a shell interpreter and its `$BASH_ENV`/quoting surface entirely, and
+— because the cap is validated in the parent below — it needs no sentinel
+exit code at all, where the shell form had to reserve one (`exit 111`) and
+keep it clear of the fold's own (the walkforward CLI uses 3 for a halt).
+`resource` is imported inside `run`, `spawn` and `measure_one`, the three
+methods that touch it, so the module imports on any platform.
 
 The cap is validated in the PARENT before anything spawns: children inherit
 the hard `RLIMIT_AS`, so `run` reads `resource.getrlimit` once and raises
-`ValueError` if `memory_limit_bytes` exceeds that hard limit. The shim's own
-`setrlimit` therefore cannot fail, and no cross-process signal is needed to
-turn a failed cap into a parent-side exception. A cap failure is
-configuration, not a fold result: it is raised before any fold starts and
-never wrapped into a `CompletedProcess`.
+`ValueError` when the hard limit is finite and `memory_limit_bytes` exceeds
+it. `RLIM_INFINITY` is `-1`, and every default machine reports it, so the
+comparison is guarded — `hard != RLIM_INFINITY and cap > hard` — or it would
+refuse everywhere. The shim's own `setrlimit` therefore cannot fail, and no
+cross-process signal is needed. A cap failure is configuration, not a fold
+result: it is raised before any fold starts and never wrapped into a
+`CompletedProcess`.
 
 **The width is read from the environment, never from a document.** Fold count
 is a property of the machine, not of what a run computes; a graded knob would
@@ -4572,18 +4624,16 @@ still passes because `concurrent.futures` and `resource` are stdlib, though
 passing that gate is necessary and not sufficient for domain-neutrality. A
 width of 1 must remain the serial path.
 
-The seam measures no memory. `RUSAGE_CHILDREN.ru_maxrss` is process-global and
+`run` measures no memory. `RUSAGE_CHILDREN.ru_maxrss` is process-global and
 monotone — the high-water mark over EVERY child this process has ever reaped,
 so `max(before, after)` is always just `after` — and under a pool a fold would
 persist whatever sibling peaked highest. `peak_rss_bytes` therefore leaves the
-per-fold record. `MemoryPreflightStage` keeps its measurement by wrapping its
-own `workers=1`, single-command call with `getrusage`, and makes the
-precondition a runtime refusal rather than an assumption: it reads
-`RUSAGE_CHILDREN.ru_maxrss` BEFORE spawning and refuses if it is not zero,
-because a nonzero value means an earlier child has already been reaped and
-the reading after the spawn would be contaminated. That is enforced in the
-stage, not by the staged document happening to list it first. The stage owns
-the child's memory contract and stays in the child.
+per-fold record. `MemoryPreflightStage` calls `measure_one` instead of
+hand-rolling the same reading, keeps only its 17 GiB threshold and its choice
+of asset, and stays in the child as the owner of that contract. The
+contamination refusal is `measure_one`'s, a `ValueError` — the one exception
+the `staged` CLI already reports cleanly — enforced in the seam rather than by
+the staged document happening to list the stage first.
 
 Cancellation is bounded, not immediate: unstarted folds are dropped, a running
 fold's subprocess is not killed, and there is no timeout.
@@ -4595,16 +4645,285 @@ as they are. The driver pair is not: `_aggregate_folds` and
 `_write_walkforward_summary` take a fold-row shape built inline in
 `_run_folds` with no stated contract, and an underscore name never enters an
 `__all__` here. Documenting that shape in a docstring would only restate it —
-a value in two places with nothing pinning them. So the shape gets ONE owner:
-`driver.FOLD_FIELDS`, exported, names the fold-row keys; `_run_folds` builds
-every row from it; the renamed `aggregate_folds` refuses a row missing any of
-them at runtime; and a test round-trips a written summary through
-`walk_fold_dirs` and `aggregate_folds` to pin that the on-disk rows the child
-reads are the rows the driver writes. Only then are `aggregate_folds` and
-`write_walkforward_summary` added to `driver.__all__`.
+a value in two places with nothing pinning them. And the shape is not one
+key set: `_run_folds` always writes `cutoff`, `run_dir`, `state` and
+`score`, and adds `search` and `error` only when present — a clean fold row
+is pinned to exactly those four (`test_walkforward.py`), so an exhaustive
+required set would refuse every ordinary walk. The shape therefore gets ONE
+owner in two exported names: `driver.FOLD_FIELDS`, the four keys every row
+carries, and `driver.FOLD_OPTIONAL_FIELDS`, `("search", "error")`. `_run_folds`
+builds every row from them; the renamed `aggregate_folds` refuses a row
+missing any required key AND a row carrying any key outside the union, so
+the optional half is pinned by default-deny rather than left loose; and a
+test round-trips a written summary through `walk_fold_dirs`,
+`single_fold_row` and `aggregate_folds` to pin that the on-disk rows the
+child reads are the rows the driver writes. Only then are `aggregate_folds`
+and `write_walkforward_summary` added to `driver.__all__`.
 
-`BoundedFoldRunner` is NOT re-exported from `dskit/pipeline/__init__.py`:
-`resource` is POSIX-only, so it is imported inside `spawn`, and the class is
-reached by path. `dskit/pipeline/README.md` and `CLAUDE.md` gain
-`folds.py` in their directory trees, as CLAUDE.md requires when a file is
-added.
+`BoundedFoldRunner` is NOT re-exported from `dskit/pipeline/__init__.py`,
+which already omits `stages`, `attempts` and `predictions`; it is reached by
+path. A `spawn` override runs on a pool thread and must be thread-safe.
+`dskit/pipeline/README.md` and `CLAUDE.md` gain `folds.py` in their directory
+trees and an Extension-points bullet for the `spawn` hook; the `CLAUDE.md`
+tree also gains `stages.py`, which it omits today while the README lists it.
+
+---
+
+## ADR-0094 — The breadth cohort: one asset-local study over forty new names, group-cached
+
+**Status:** accepted (2026-09-05; the owner pre-authorized a cohort study
+in the Gate 3 rebuild brief and asked for this ADR looped clean before it
+is built; skeptic-cleared in three rounds)
+
+**Context.** Forty names landed as two immutable sources and nothing else:
+cohort D (`alpaca-sip-split-d`, twenty names chosen for industry breadth —
+ORCL, GLD, MRK, CRM, NEM, XBI, FCX, FTNT, DIS, DAL, PYPL, NRG, GM, MDT, BA,
+SBUX, TGT, ADM, MET, TMUS) and cohort E (`alpaca-sip-split-e`, twenty chosen
+by the project's move-over-half-spread rule — MSTR, MRVL, NOW, LULU, SHOP,
+PANW, GDX, BABA, INTC, MU, CIEN, WDC, LRCX, TER, BIDU, LITE, C, ADBE, ANET,
+EOG). Both pulls were data only; no universe, suite or run document names
+them, and none has been through a gate. The brief's "about 40 new stocks"
+is the two together: each source holds exactly twenty, on the same window,
+feed, adjustment, interval and 2026-02-28 cut. The question they exist to
+answer is P11's, asked of them: is each name forecastable by a model trained
+on that name alone, under the ordered horizon search, and does the selection
+survive the whole-session scramble audit?
+
+P11 cannot ask it. `modelability_p11.py` pins `_ASSETS` to exactly the 25
+P10 names and refuses anything else, its feature cache is verified against
+that membership, and its document identity keys a completed run whose
+artifacts must not be reinterpreted (ADR-0087, ADR-0089). Copying the P11
+stages for a second cohort would repeat every function across two modules,
+which CLAUDE.md forbids; a study that takes its cohort from the document is
+the capability that is missing. The Gate 1 row of the Path (A2822) names
+the P11 staged run `p11-25-asset-modelability-staged-2026-02-28-355b6198`,
+which is `configs/run-p11-modelability.json` at its pre-ADR-0092 identity;
+ADR-0092 changed its stages and not its scan, label or walk-forward
+geometry, so that document is the geometry this study mirrors.
+
+Two facts about the machine shape the design. First, memory: the P10
+preflight built the 25-name feature cache in one process at a measured
+15.90 GiB peak under the 17 GiB cap (`stages/memory.json` of the P10 run,
+6.5% headroom). The bars those 25 names occupy on disk total 789 MB across
+the three split-adjusted sources; cohort D is 535 MB and cohort E 519 MB.
+Taking compressed bytes as a proxy for record count and peak RSS as
+proportional to records — an assumption, with no constant term — a single
+41-name build (both cohorts plus SPY) carries about 1.34 times P10's records
+and is expected to exceed the cap, while one cohort plus SPY carries about
+0.68 (D) or 0.66 (E) times and is expected to fit. Second, ADR-0093's
+`measure_one` reports memory for exactly ONE child and refuses a process
+that has already reaped one, so a study that builds two caches can measure
+only the first.
+
+**Decision.**
+
+1. **One new staged document,** `configs/run-p12-modelability.json`, study
+   name `p12-40-asset-modelability`, stages `memory` → `gate1` →
+   `gate3_walks` → `gate3`, journaled and resumable exactly as P11
+   (ADR-0081). Its scan, label and walk-forward geometry is P11's verbatim:
+   the features node's `lookback` param 20 (the emitted lag depth; the
+   universe key `lookback` 30 is P10's declared depth, which that param
+   overrides) and the five momentum horizons on float32 column frames; a
+   vol-scaled label residualised to SPY with SPY's own label raw; the
+   30-minute scoring lattice; the LightGBM parameters; walk-forward
+   `first` 2022-05-06, `step_days` 63, `count` 20, `val_days` 63,
+   `embargo_days` 5, `train_days` 730; `start_ms` 2018-01-01 and RTH-only
+   reads. A config test pins P12's scan parameters (less the fit list),
+   its features parameters (less `cache_dir`) and its walk-forward section
+   equal to P11's. Two pins in `tests/test_configs.py` refuse the P12
+   document today and change to admit it deliberately:
+   `MODELABILITY_DOCS` becomes a mapping of document to universe path and
+   symbol count, which `test_run_docs_do_not_restate_the_cohort` reads for
+   the study's own universe branch, and `MODELABILITY_SOURCES` gains
+   `alpaca-sip-split-d` and `alpaca-sip-split-e` beside the three P10
+   sources, which
+   `test_every_run_reads_the_split_adjusted_store_from_the_study_start`
+   checks every bars node of a modelability document against.
+
+2. **The cohort is `scan.params.fit_symbols`** — graded, and the ONE place
+   the document names it: ORCL … TMUS then MSTR … EOG, forty names in
+   source order, SPY absent (it is the residual reference, not a fitted
+   name, and P11 already tested it). Stage params carry no asset list. The
+   universe the document reads, `configs/universe-p12.json`, lists the forty
+   as `tradable` with SPY as `reference`; the stages refuse a fit symbol the
+   universe does not list as tradable, and a fit symbol that no group
+   (below) holds or that two groups hold.
+
+3. **The three P12 universes carry no `industry` block.** Feature names
+   include one `industry_*` column per distinct tag in the universe that
+   built the cache, and those columns survive every importance cut; inside
+   an asset-local fit every one of them is constant, so they carry no
+   information and only dilute the per-tree column sample. With a tag per
+   name, cohort D's cache would have carried 20 such columns, cohort E's
+   13 and P11's 9 — three different design matrices for one study. With
+   none, the two group caches carry the same 81 columns, which are P11's 90
+   less its nine dead one-hots; the per-tree sample under
+   `colsample_bytree` 0.3 moves from 27 of 90 (about 24.3 informative) to
+   24 of 81 (all informative). A config test pins the feature names the
+   child derives for the three P12 universes equal to each other and equal
+   to P11's less every `industry_*` name. The industry labels stay where
+   they were selected, in the two research notes; the breadth question is
+   answered by reading the per-name rows against those notes, not by a
+   column in the fit.
+
+4. **Feature caches are built per source group, under the cap, by the
+   `memory` stage.** Its `groups` param maps a group key to `{"universe":
+   <path>, "sources": [<bars node keys>]}`: group `d` is
+   `configs/universe-p12-d.json` (the twenty cohort-D names as tradable, SPY
+   as reference) read from `source_reference` and `source_d`; group `e`
+   likewise from `source_reference` and `source_e`. Groups are declared
+   largest-first by on-disk bars, so the build that is measured is the
+   heavier one. A group's cache lives at `<features.cache_dir>/<group>-<the
+   first eight hex digits of the group universe file's SHA-256>`, so an
+   edited universe names a fresh cache instead of colliding with the
+   write-once directory the old one built. For each group in declared order
+   the stage reuses a cache that is present and verifies — manifest and
+   file digests once per process, membership exactly the group universe's
+   symbols, manifest metadata equal to the document's `features` params
+   less `cache_dir` and to the group universe — and otherwise builds it by
+   ONE single-fold walk of the last cutoff whose pipeline is the group
+   universe, the group's bars nodes with their `universe` rewritten to it,
+   a `concat` of those sources, the document's `features` node with the
+   group cache path, and the scan fitting and scoring the reference symbol
+   alone behind two `filter` nodes (its own label raw, as
+   `label_residual_self` declares). The first build in the process goes
+   through `measure_one`; any later build goes through `run`, still capped
+   but unmeasured — an overrun there is a `MemoryError` inside the child
+   and a loud stage error, not a graded refusal, and the stage's output
+   says which build was measured. When every cache was reused, the stage
+   measures instead the largest cached asset's one-fold Gate-1-shaped walk,
+   as P11 does, so a measurement always exists. Output: `groups`
+   (`{key: {universe, universe_sha256, cache, manifest_sha256, symbols}}`),
+   `measured` (`{kind, name, summary_dir, peak_rss_bytes}` with `kind`
+   `cache_build` or `asset_fold`), `limit_bytes`, and `passed`, which
+   requires the peak strictly below the limit. The three universe files
+   restate the P10 geometry — session, scales, `period_ms`, `offset_ms`,
+   `price_field`, `max_gap_minutes`, `lookback`, `holidays` (empty, as
+   P10 chose) and the `horizon` block — and config tests pin every one of
+   those keys equal across `universe-p10.json` and the three P12 files,
+   each group universe's tradables equal to its source config's `symbols`,
+   and the union's tradables equal to the two groups' tradables in order.
+
+5. **Identity.** The staged document holds the universe PATHS, and the
+   `intraday_equities-universe` node fingerprints each file's CONTENTS at
+   run time, so an edited universe moves every later derived walk's
+   identity while the staged journal would keep resuming the study under
+   one name — P11's existing exposure, closed here: the `memory` stage pins
+   each group universe's SHA-256 in its output, and `gate1` and
+   `gate3_walks` refuse a group whose universe file no longer matches its
+   pinned digest, naming the change; a changed cohort universe is a new
+   study identity, made by editing the graded document.
+
+6. **Gate 1** visits the fit symbols in order and the declared `horizons`
+   (`[1, 2, 3, 5, 10, 20, 30, 60]`) in order, stopping an asset at its first
+   failure exactly as ADR-0087 rule 3. Every derived walk is asset-local:
+   the group universe, the group cache, a `filter` to the asset's frames
+   and one to the asset's and the reference's tapes, `fit_symbols` and
+   `score_symbols` both `[asset]`, one exact scored row required. Cells are
+   registered in the attempt ledger under the key `{study: <document
+   name>, architecture: <the stage's `architecture` param>, data_cut: <the
+   stage's `data_cut` param>, evidence: "gate1-selection",
+   row_spacing_minutes: <universe period_ms / 60000>, score_lattice_minutes:
+   <scan score_period_ms / 60000>, series, horizon}` — P11's key with its
+   literals owned by the document instead of restated in code. `data_cut`
+   is graded and pinned by a config test to the `end` date every source the
+   document reads declares (all five say 2026-02-28); the stage refuses to
+   run as of any other date, so the append-only ledger can never carry an
+   invocation's `--asof` as the data's cut.
+
+7. **Gate 3** is ADR-0092's fail-fast audit on every Gate-1 passer: the
+   declared `seeds` (`0..18`) in order, each null scored as it completes,
+   the asset stopped at the first null whose `r2oos` matches or beats the
+   observed cell, a pass never stopped; `gate3_walks` emits `walks`,
+   `survivors` and `draws`; `gate3` emits one row per fit symbol carrying
+   `asset`, `gate1_h`, `gate1_passes`, `first_failed_h`,
+   `attempted_horizons`, `unrun_horizons`, `gate3_status`, and either the
+   stop record (`stopped`, `stop_seed`, `n_draws`, `p_bound`, `null_mean`
+   and `null_sd` null, `calibration` `not_computed_early_stop`) or the
+   `tier2_verdict` block. The stop bound `2 / (n_draws + 1)` gets one
+   owner beside `beat_all`: `dskit/pipeline/attempts.py` gains
+   `early_stop_p_bound(n_draws)` in `__all__`, and every stopped row —
+   P11's included — takes the number from it.
+
+8. **Code placement.** The stages live in ONE new child module,
+   `intraday_equities/modelability_study.py`: the asset-local modelability
+   study over whatever cohort a document declares — `MemoryPreflightStage`,
+   `Gate1Stage`, `Gate3WalksStage`, `Gate3ResultStage`, each with
+   default-deny `_PARAMS`, plus the two derived-document builders. The
+   cohort, the study name, the group caches, the ledger key, the walk tags,
+   the derived document and the scorer are HOOK METHODS on those classes.
+   `modelability_p11.py` keeps its public names and its document untouched;
+   its four classes become subclasses that supply only what is P11's — the
+   frozen 25 (`_ASSETS`), the frozen horizons and seeds, the one P10 cache
+   verified against that membership, its historical output contract, its
+   ledger key and its `p11-` walk tags. Those hooks read the module-level
+   `_ASSETS` and `_HORIZONS` at call time, so the fixtures that patch them
+   today keep reaching them. P11's derived documents keep their names
+   (`p11-25-asset-modelability-<tag>-<asset>-h<NN>`) and their pipelines
+   byte for byte, so the fold runs on disk from 2026-09-04 stay resumable;
+   its identity, artifacts and row shapes do not change. Its tests change
+   in exactly two ways: the monkeypatch targets for `AttemptRegistry` and
+   `tier2_verdict` move to the study module that now owns those calls, and
+   two fake `_derived_document` signatures accept the hooks' keyword
+   arguments. The loop bodies — the ordered stop, the fail-fast audit, the
+   stopped row — exist once. P10 (`modelability.py`, the pooled historical
+   study) is edited in one place of substance — `_feature_cache_info`
+   splits into the generic once-per-process verification
+   `_verify_cache_once(path)`, which the study module imports, and the
+   P10/P11 membership pin it keeps — and one docstring, the private
+   `_run_bounded_walk` collapsed to the house one-liner.
+
+9. **A test asserts the estimand.** Over the shipped P12 document, every
+   derived Gate-1 and Gate-3 walk for every declared asset fits and scores
+   exactly `[asset]` AND reads the cache of the group that holds the asset;
+   the group-build walk fits only the reference; and no derived document
+   anywhere in the study carries more than one fit symbol — there is no
+   pooled fit. A second test plans the document offline through
+   `plan_stages` and pins the stage order and every wired input to a
+   declared output.
+
+10. **The Path.** Under the owner's explicit exception to "Path is
+    human-owner-only", the current Gate 3 row (A2851) has its label struck
+    through (`~~Gate 3: shuffle refit~~`) and keeps its other fields; one
+    execute action is recorded for the new procedure and promoted through
+    `python -m dskit.journal promote` — label "Gate 3: fail-fast scramble
+    refit", criteria `empirical`, `LOCKED` `N`, no current-work text,
+    relevant files ADR-0092, ADR-0093, this ADR and the P12 document — which
+    appends it directly beneath A2851, the last row; the decisioning README
+    is regenerated through `python -m dskit.journal render`; no other Path
+    row is touched.
+
+11. **Execution.** The full gate is NOT launched by the build. The wiring is
+    proven end to end on ONE asset — ORCL, cohort D's first name — with
+    `INTRADAY_EQUITIES_FOLD_WORKERS=2`, through a copy of the document that
+    declares `fit_symbols` `["ORCL"]` and only group `d`, kept under the
+    child's ignored `pipeline_runs/` and reproduced verbatim in the memo, so
+    it builds the real group-D cache the study will reuse and leaves its
+    own staged identity. That cache's manifest records the universe and the
+    features params that built it, which the study verifies before reuse;
+    the document that produced it is the memo's record. The measured
+    per-fold time is recorded against the 3.40 s/fold baseline in
+    `docs/decisioning/actions.csv`.
+
+**Consequences.** The study costs at most `40 × 8 = 320` Gate-1 walks and,
+under ADR-0092, about `2.73` draws per failing passer and `19` per survivor
+in Gate 3; at P11's 3.40 s/fold that is about `320 × 20 × 3.4 / 3600 ≈
+6.0` hours for Gate 1 in the worst case, and P11's observed stop pattern
+(66 cells for 25 names) suggests about 2 hours. The cap binds only the two
+cache builds: a P11 asset-local fold measured 0.99 GiB against 15.90 GiB for
+the pooled P10 build. The two group caches together hold SPY twice, which is
+harmless and lets each group's walks read one directory. Five names carry
+distributions the selection notes say are owed a reconciliation against the
+unadjusted `alpaca-sip` tree before they are modelled — MRK (Organon), MET
+(Brighthouse), WDC (SanDisk), EOG (seven specials) and PANW (the CyberArk
+issuance) — and that tree holds only the original six names, so the check
+cannot be done from what is on disk; they stay in the cohort, the study's
+rows for them are provisional until that check is done, and the memo says
+so. Cohort E's note also flags NOW as effectively two instruments across its
+2025-12-18 split, and cohort D's ranks 21–25 (PLD, PM, NKE, LVS, DHI) are
+documented spares that were never pulled; neither changes the design. The
+`memory` stage's second build is capped but unmeasured, a limit ADR-0093's
+one-child guard imposes rather than a weakening of the preflight. Adding a
+name is a config edit — its source, its group universe, the union universe
+and `fit_symbols` — and moves the document's identity by design; editing a
+group universe alone is refused by the gates until the document changes.

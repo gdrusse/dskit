@@ -21,8 +21,10 @@ from dskit.pipeline.attempts import (
     AttemptRegistry,
     FixedFamilyLedger,
     bar_verdict,
+    beat_all,
     bonferroni_t,
     cell_id,
+    early_stop_p_bound,
     expected_max_null,
     implied_trials,
     max_bar,
@@ -389,6 +391,102 @@ def _write_walk(root, n_folds=4, n_days=6, edge=0.0, seed=3):
     with open(os.path.join(summary, "walkforward.json"), "w", encoding="utf-8") as fh:
         json.dump({"name": "walk", "asof": "2025-11-30", "folds": folds}, fh)
     return summary
+
+
+class TestBeatAll:
+    """ADR-0092: the strict beat-all predicate has ONE owner.
+
+    ``tier2_verdict`` inlined ``observed_r2 > max(nulls)``; the fail-fast
+    Gate 3 asks the same question after EVERY draw, where the verdict's
+    two-null refusal and calibration band cannot be applied. Restating the
+    comparison child-side would be the second copy CLAUDE.md forbids, so
+    the predicate is extracted and the verdict calls it.
+    """
+
+    def test_it_is_on_the_module_surface(self):
+        from dskit.pipeline import attempts
+
+        assert "beat_all" in attempts.__all__
+
+    def test_the_real_walk_must_exceed_every_null(self):
+        assert beat_all(0.01, [0.001, -0.002, 0.0]) is True
+        assert beat_all(0.01, [0.02, -0.002]) is False
+
+    def test_a_tie_is_not_a_win(self):
+        # ">=" on one null is exactly the negation of the strict ">" the
+        # verdict applies, so a tie stops the audit as a failure.
+        assert beat_all(0.01, [0.01]) is False
+        assert beat_all(0.01, [0.0, 0.01, -0.5]) is False
+
+    def test_one_null_is_enough_to_ask(self):
+        # tier2_verdict refuses fewer than two nulls; the per-draw stop
+        # asks after each single one.
+        assert beat_all(0.01, [0.0]) is True
+        assert beat_all(0.01, [0.02]) is False
+
+    def test_no_null_at_all_is_refused(self):
+        with pytest.raises(ValueError, match="at least 1"):
+            beat_all(0.01, [])
+
+    def test_a_non_finite_value_is_refused(self):
+        with pytest.raises(ValueError, match="observed_r2"):
+            beat_all(float("nan"), [0.0])
+        with pytest.raises(ValueError, match="scrambled_r2"):
+            beat_all(0.01, [float("inf")])
+
+    def test_a_boolean_is_not_a_number(self):
+        with pytest.raises(ValueError):
+            beat_all(True, [0.0])
+
+    def test_tier2_verdict_takes_its_beat_all_limb_from_the_one_owner(
+        self, monkeypatch
+    ):
+        from dskit.pipeline import attempts
+
+        seen = []
+
+        def spy(observed, nulls):
+            seen.append((observed, list(nulls)))
+            return False
+
+        monkeypatch.setattr(attempts, "beat_all", spy)
+        out = tier2_verdict(0.05, [0.001, 0.002], scrambled_t=[0.1, -0.2])
+        assert seen == [(0.05, [0.001, 0.002])]
+        assert out["beat_all"] is False
+        assert out["passes"] is False
+
+    def test_tier2_verdict_still_refuses_a_single_null(self):
+        with pytest.raises(ValueError, match="at least 2"):
+            tier2_verdict(0.05, [0.001])
+
+
+class TestTheEarlyStopBound:
+    """ADR-0094: the bound a stopped audit carries has ONE owner.
+
+    Besag–Clifford stopping at the first exceedance (ADR-0092): after
+    ``n_draws`` completed nulls whose last one matched or beat the real
+    result, the real result ranks at best second among ``n_draws + 1``
+    exchangeable values, so its p-value is bounded by ``2 / (n_draws + 1)``.
+    """
+
+    def test_it_is_on_the_module_surface(self):
+        from dskit.pipeline import attempts
+
+        assert "early_stop_p_bound" in attempts.__all__
+
+    @pytest.mark.parametrize(
+        ("n_draws", "bound"), [(1, 1.0), (3, 0.5), (19, 0.1), (99, 0.02)]
+    )
+    def test_two_over_draws_plus_one(self, n_draws, bound):
+        assert early_stop_p_bound(n_draws) == pytest.approx(bound)
+
+    def test_it_is_never_zero(self):
+        assert early_stop_p_bound(10**6) > 0
+
+    @pytest.mark.parametrize("bad", [0, -1, True, 2.5, "3", None])
+    def test_it_refuses_anything_but_a_positive_int(self, bad):
+        with pytest.raises(ValueError, match="n_draws"):
+            early_stop_p_bound(bad)
 
 
 class TestReadingARealWalk:

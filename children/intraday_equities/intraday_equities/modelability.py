@@ -1,22 +1,32 @@
-"""P10's child-owned 25-asset modelability stages (ADR-0081)."""
+"""P10's child-owned 25-asset modelability stages (ADR-0081).
+
+Fold execution is not the child's: every walk's folds run through
+dskit's ``BoundedFoldRunner`` (ADR-0093) under the frozen 17 GiB cap at
+the width the child's documented environment knob declares. What stays
+here is domain — which document, which cohort, which tag — and the
+journal evidence a walk must leave.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import os
-import resource
-import shlex
-import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
 from dskit.pipeline.attempts import AttemptRegistry, tier2_verdict
 from dskit.journal import append_action
 from dskit.pipeline.document import PipelineDocument
-from dskit.pipeline.driver import _aggregate_folds, _write_walkforward_summary
-from dskit.pipeline.runs import resolve_run_root, score_bar, score_walk, walk_cells
+from dskit.pipeline.driver import aggregate_folds, write_walkforward_summary
+from dskit.pipeline.folds import BoundedFoldRunner
+from dskit.pipeline.runs import (
+    resolve_run_root,
+    score_bar,
+    score_walk,
+    single_fold_row,
+    walk_cells,
+)
 from dskit.pipeline.stages import Stage, reject_unknown_params
 
 __all__ = [
@@ -112,14 +122,19 @@ def _feature_cache_info(ctx):
             f"got {symbols!r}"
         )
     path = os.path.abspath(path)
-    digest = _file_sha256(manifest)
+    return declared, path, _verify_cache_once(path)
+
+
+def _verify_cache_once(path):
+    """Hash every array of one cache once per process; return its manifest digest."""
+    digest = _file_sha256(os.path.join(path, "manifest.json"))
     key = (path, digest)
     if key not in _VERIFIED_CACHES:
         from .feature_cache import verify_feature_cache
 
         verify_feature_cache(path, digest)
         _VERIFIED_CACHES.add(key)
-    return declared, path, digest
+    return digest
 
 
 def _base_key():
@@ -223,80 +238,63 @@ def _journal_confirms_walk(summary, document, asof, child_root):
     )
 
 
-#: How many of a walk's fold processes may run at once. Read from the
-#: PROCESS ENVIRONMENT, never from the document: fold count is a property
-#: of the machine, not of what the run computes, and a graded knob would
-#: move the identity hash — orphaning every prior run and stored artifact
-#: — each time the operator tuned it. The value used is journalled by
-#: :func:`_run_bounded_walk`.
+#: The child's documented machine knob: how many of a walk's fold
+#: processes may run at once. The seam reads it from the PROCESS
+#: ENVIRONMENT, never from the document: fold count is a property of
+#: the machine, not of what the run computes, and a graded knob would
+#: move the identity hash — orphaning every prior run and stored
+#: artifact — each time the operator tuned it. The width used is
+#: journalled by :func:`_run_bounded_walk`.
 _WORKERS_ENV = "INTRADAY_EQUITIES_FOLD_WORKERS"
 
-
-def _fold_workers():
-    """Return the fold-process width from the environment, default 1.
-
-    Returns
-    -------
-    int
-        The declared width, or 1 when the variable is UNSET — the
-        historical serial path. An empty value is a refusal, not a
-        default: ``export VAR=`` is an accident, and silently running
-        serially would hide it.
-
-    Raises
-    ------
-    ValueError
-        When the variable is set to anything but a positive integer.
-    """
-    raw = os.environ.get(_WORKERS_ENV)
-    if raw is None:
-        return 1
-    try:
-        width = int(raw)
-    except ValueError:
-        width = 0
-    if width < 1:
-        raise ValueError(f"{_WORKERS_ENV} must be a positive integer, got {raw!r}")
-    return width
+#: The adapter every fold process imports (ADR-0021: import = registration).
+_ADAPTER = "intraday_equities"
 
 
-def _capped_command(argv, memory_limit):
-    """Wrap ``argv`` so the shell caps address space, not a fork hook.
+class _WalkRunner(BoundedFoldRunner):
+    """The child's fold seam: a failed fold is named by its derived config."""
 
-    ``preexec_fn`` would be the obvious way to call
-    ``setrlimit(RLIMIT_AS, ...)``, and it is the wrong one: it bars
-    ``posix_spawn``, so the child is forked from this parent and runs
-    Python bytecode before ``exec``. With a fold pool running, a lock a
-    sibling thread held at fork time can wedge that child forever, and
-    CPython documents ``preexec_fn`` as unsafe in the presence of
-    threads. ``ulimit -v`` sets the same rlimit with nothing between
-    fork and exec.
-
-    Parameters
-    ----------
-    argv : list of str
-        The command to run.
-    memory_limit : int or None
-        Address-space cap in bytes; ``None`` runs ``argv`` unwrapped.
-
-    Returns
-    -------
-    list of str
-        Either ``argv`` or a ``/bin/sh -c`` wrapper around it.
-    """
-    if memory_limit is None:
-        return list(argv)
-    quoted = " ".join(shlex.quote(part) for part in argv)
-    kb = memory_limit // 1024
-    # dash's ulimit exits 0 EVEN WHEN setrlimit fails, so neither ";" nor
-    # "&&" catches a cap that never took. Read it back and refuse: a walk
-    # that runs uncapped while the journal records a cap is worse than a
-    # walk that does not run.
-    guard = f'ulimit -v {kb}; [ "$(ulimit -v)" = {kb} ] || exit 111'
-    return ["/bin/sh", "-c", f"{guard}; exec {quoted}"]
+    def spawn(self, index, argv, cwd, env):
+        """Run one fold, naming its derived config when it exits nonzero."""
+        try:
+            return super().spawn(index, argv, cwd, env)
+        except RuntimeError as error:
+            # The seam numbers the PENDING batch, so on a resumed walk
+            # with folds 0-2 journaled "fold 0" is cutoff 3. argv is
+            # _walk_argv's, whose <tag>-part-NN.json path names the fold.
+            config = argv[4] if len(argv) > 4 else " ".join(argv)
+            raise RuntimeError(f"fold config {config}: {error}") from error
 
 
-def _run_walk(ctx, document, tag, *, memory_limit=None):
+def _runner(workers=None):
+    """Return the child's fold seam under the frozen cap, reading the knob."""
+    # workers=None — what every stage passes — lets the seam read
+    # _WORKERS_ENV; the cap is the WHOLE _MEMORY_LIMIT per fold, never
+    # divided (ADR-0093), so a finished fold resumes at any width.
+    return _WalkRunner(_MEMORY_LIMIT, workers=workers, env_var=_WORKERS_ENV)
+
+
+def _walk_argv(path, asof):
+    """Return the walk-forward command for one saved derived document."""
+    return [
+        sys.executable,
+        "-m",
+        "dskit.pipeline",
+        "walkforward",
+        path,
+        "--asof",
+        asof,
+        "--adapter",
+        _ADAPTER,
+    ]
+
+
+def _prepare_walk(ctx, document, tag):
+    """Save a derived walk and say whether it still needs to run."""
+    # Returns (argv, summary_dir, reused): the command — None when
+    # reused — where its summary lands, and whether a journaled summary
+    # is already there. Artifacts at that path WITHOUT journal evidence
+    # refuse: a partial or foreign walk is never silently adopted.
     child_root = _child_root(ctx)
     configs = os.path.join(ctx.run_dir, "derived")
     os.makedirs(configs, exist_ok=True)
@@ -305,71 +303,30 @@ def _run_walk(ctx, document, tag, *, memory_limit=None):
     summary = _summary_dir(document, ctx.asof, child_root)
     if os.path.isdir(summary) and os.listdir(summary):
         if _journal_confirms_walk(summary, document, ctx.asof, child_root):
-            peak = None
-            measurement = os.path.join(summary, "memory-preflight.json")
-            if memory_limit is not None and os.path.isfile(measurement):
-                with open(measurement, encoding="utf-8") as handle:
-                    payload = json.load(handle)
-                if (
-                    payload.get("document_hash") != document.hash
-                    or payload.get("memory_limit_bytes") != memory_limit
-                    or not isinstance(payload.get("peak_rss_bytes"), int)
-                ):
-                    raise ValueError(
-                        f"invalid persisted memory measurement: {measurement}"
-                    )
-                peak = payload["peak_rss_bytes"]
-            return summary, peak
+            return None, summary, True
         raise ValueError(
             f"walk artifacts exist without matching journal evidence: {summary}"
         )
-    walk = [
-        sys.executable,
-        "-m",
-        "dskit.pipeline",
-        "walkforward",
-        path,
-        "--asof",
-        ctx.asof,
-        "--adapter",
-        "intraday_equities",
-    ]
-    command = _capped_command(walk, memory_limit)
-    before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-    finished = subprocess.run(
-        command,
-        cwd=child_root,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
-    after = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-    if finished.returncode != 0:
-        tail = finished.stdout[-4000:]
-        raise RuntimeError(
-            f"walk {tag} exited {finished.returncode}; output tail:\n{tail}"
+    return _walk_argv(path, ctx.asof), summary, False
+
+
+def _measure_walk(ctx, document, tag):
+    """Run one derived walk as this process's first child and read its peak."""
+    # Returns (summary_dir, peak_rss_bytes) from the seam's measure_one;
+    # nothing persists the reading beside the walk. A walk that already
+    # finished refuses — a measurement needs a fresh spawn (ADR-0093) —
+    # as do the seam's own contamination and cap guards.
+    argv, summary, reused = _prepare_walk(ctx, document, tag)
+    if reused:
+        raise ValueError(
+            f"walk {tag} already finished at {summary}; a memory measurement "
+            "needs a fresh spawn — remove that summary to measure again"
         )
+    child_root = _child_root(ctx)
+    _done, peak = _runner().measure_one(argv, cwd=child_root)
     if not _journal_confirms_walk(summary, document, ctx.asof, child_root):
         raise RuntimeError(f"walk {tag} finished without journal evidence")
-    peak_bytes = max(before, after) * 1024
-    if memory_limit is not None:
-        measurement = os.path.join(summary, "memory-preflight.json")
-        temporary = f"{measurement}.tmp-{os.getpid()}"
-        with open(temporary, "w", encoding="utf-8") as handle:
-            json.dump(
-                {
-                    "document_hash": document.hash,
-                    "memory_limit_bytes": memory_limit,
-                    "peak_rss_bytes": peak_bytes,
-                },
-                handle,
-                indent=2,
-                sort_keys=True,
-            )
-            handle.write("\n")
-        os.replace(temporary, measurement)
-    return summary, peak_bytes
+    return summary, peak
 
 
 def _fold_cutoffs(spec):
@@ -390,75 +347,17 @@ def _single_fold_document(document, cutoff, index):
     return PipelineDocument.from_obj(obj)
 
 
-def _one_bounded_fold(ctx, document, tag, index, cutoff, memory_limit):
-    """Run fold ``index`` in a capped process and return its one ran row."""
-    part = _single_fold_document(document, cutoff, index)
-    part_summary, _peak = _run_walk(
-        ctx,
-        part,
-        f"{tag}-part-{index:02d}",
-        memory_limit=memory_limit,
-    )
-    with open(
-        os.path.join(part_summary, "walkforward.json"), encoding="utf-8"
-    ) as handle:
-        payload = json.load(handle)
-    part_folds = payload.get("folds")
-    if (
-        payload.get("state") != "ran"
-        or not isinstance(part_folds, list)
-        or len(part_folds) != 1
-        or part_folds[0].get("cutoff") != cutoff
-    ):
-        raise ValueError(
-            f"bounded fold {index} did not produce one ran row for {cutoff}"
-        )
-    return part_folds[0]
-
-
 def _run_bounded_walk(ctx, document, tag, *, workers=None):
-    """Run each fold in a capped process, then journal one logical summary.
-
-    Parameters
-    ----------
-    ctx : object
-        The stage run frame; supplies ``asof`` and ``source_path``.
-    document : dskit.pipeline.document.PipelineDocument
-        The whole multi-fold walk. Each declared cutoff becomes one
-        single-fold document run in its own address-space-capped
-        process.
-    tag : str
-        Short name for the derived per-fold configs and journal rows.
-    workers : int or None
-        How many fold processes may run at once. ``None`` (the default,
-        and what every caller uses) reads :func:`_fold_workers`, so the
-        knob can never be half-applied by a caller that forgot it. The
-        historical serial path is a width of 1. Each process keeps the
-        WHOLE ``_MEMORY_LIMIT`` address-space cap, so a finished fold resumes
-        at any width. The cap is not divided: ``RLIMIT_AS`` bounds
-        address space, the feature cache maps all 25 symbols whatever
-        the walk scores, and a divided cap would refuse mappings that
-        measured RSS never sees. Total memory therefore scales with
-        ``workers`` — choose it for the machine.
-
-    Returns
-    -------
-    str
-        The walk summary directory.
-
-    Raises
-    ------
-    ValueError
-        When ``workers`` is not a positive int, when artifacts exist
-        without journal evidence, or when a fold does not leave exactly
-        one ran row for its cutoff.
-    RuntimeError
-        When the finished summary lacks matching journal evidence.
-    """
-    if workers is None:
-        workers = _fold_workers()
-    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
-        raise ValueError(f"workers must be a positive int, got {workers!r}")
+    """Run each fold of ``document`` in a capped process; journal one summary."""
+    # Every declared cutoff becomes one single-fold document run in its own
+    # address-space-capped process by the seam. ``workers`` None (what every
+    # caller passes) lets the seam read _WORKERS_ENV, so the knob can never
+    # be half-applied by a caller that forgot it. A finished, journaled fold
+    # is never re-spawned, whatever the width it ran at. Raises ValueError on
+    # a bad width, artifacts without journal evidence, or a fold that leaves
+    # no single ran row for its cutoff; RuntimeError when a fold exits
+    # nonzero or a summary lacks journal evidence.
+    runner = _runner(workers)
     child_root = _child_root(ctx)
     summary = _summary_dir(document, ctx.asof, child_root)
     if os.path.isdir(summary) and os.listdir(summary):
@@ -468,30 +367,25 @@ def _run_bounded_walk(ctx, document, tag, *, workers=None):
             f"walk artifacts exist without matching journal evidence: {summary}"
         )
     cutoffs = list(_fold_cutoffs(document.walkforward))
-    limit = _MEMORY_LIMIT
-    if workers == 1:
-        folds = [
-            _one_bounded_fold(ctx, document, tag, index, cutoff, limit)
-            for index, cutoff in enumerate(cutoffs)
-        ]
-    else:
-        pool = ThreadPoolExecutor(max_workers=workers)
-        try:
-            futures = [
-                pool.submit(_one_bounded_fold, ctx, document, tag, index, cutoff, limit)
-                for index, cutoff in enumerate(cutoffs)
-            ]
-            # Indexed, not as-completed: the aggregate and the $prev
-            # series both read folds in cutoff order.
-            folds = [future.result() for future in futures]
-        finally:
-            # cancel_futures drops what has not started, so a walk that
-            # is going to fail does not first drain every other fold.
-            # submit() itself can raise, which is why it sits inside.
-            pool.shutdown(wait=True, cancel_futures=True)
+    parts = [
+        _single_fold_document(document, cutoff, index)
+        for index, cutoff in enumerate(cutoffs)
+    ]
+    planned = [
+        _prepare_walk(ctx, part, f"{tag}-part-{index:02d}")
+        for index, part in enumerate(parts)
+    ]
+    pending = [argv for argv, _summary, reused in planned if not reused]
+    if pending:
+        runner.run(pending, cwd=child_root)
+    folds = []
+    for part, cutoff, (_argv, part_summary, _reused) in zip(parts, cutoffs, planned):
+        if not _journal_confirms_walk(part_summary, part, ctx.asof, child_root):
+            raise RuntimeError(f"fold walk {part.name} finished without journal evidence")
+        folds.append(single_fold_row(part_summary, cutoff))
     spec = document.walkforward
-    aggregate = _aggregate_folds(folds, spec.select, spec.weight_halflife_folds)
-    _write_walkforward_summary(
+    aggregate = aggregate_folds(folds, spec.select, spec.weight_halflife_folds)
+    write_walkforward_summary(
         summary, document, ctx.asof, spec, "ran", folds, aggregate
     )
     append_action(
@@ -502,7 +396,7 @@ def _run_bounded_walk(ctx, document, tag, *, workers=None):
         notes=(
             f"state=ran folds={len(folds)} hash={document.hash[:8]} "
             f"asof={ctx.asof}; fold_processes=isolated; "
-            f"fold_workers={workers}; memory_limit_bytes={limit}"
+            f"fold_workers={runner.workers}; memory_limit_bytes={_MEMORY_LIMIT}"
         ),
         start=child_root,
     )
@@ -512,7 +406,24 @@ def _run_bounded_walk(ctx, document, tag, *, workers=None):
 
 
 class MemoryPreflightStage(Stage):
-    """Run the most recent single fold in a process capped at 17 GiB."""
+    """Measure the most recent single pooled fold under the 17 GiB cap.
+
+    The reading is the seam's ``measure_one`` (ADR-0093): this stage is
+    the study's first, so the walk it spawns is the first child this
+    process reaps, and the stage keeps only its threshold and its choice
+    of what to run.
+
+    Parameters
+    ----------
+    params : dict
+        ``memory_limit_bytes`` must be exactly 17 GiB.
+
+    Examples
+    --------
+    Instantiate the frozen preflight::
+
+        stage = MemoryPreflightStage("memory", {"memory_limit_bytes": 17 * 1024**3})
+    """
 
     outputs = (
         "summary_dir",
@@ -539,16 +450,17 @@ class MemoryPreflightStage(Stage):
         return problems
 
     def run(self, ctx, inputs):
-        """Run and measure the isolated most-recent fold."""
+        """Measure the isolated most-recent fold as this process's first child."""
         del inputs
         limit = self.params["memory_limit_bytes"]
-        doc = _derived_document(ctx, f"{_STUDY}-preflight", 1, one_fold=True)
-        summary, peak = _run_walk(ctx, doc, "memory-preflight", memory_limit=limit)
-        if peak is None:
-            raise ValueError(
-                "preflight walk was already present but its isolated peak RSS "
-                "was not journaled by this stage"
-            )
+        # Named for the staged identity: the reading is the seam's
+        # measure_one (ADR-0093), which needs a fresh spawn, so a revised
+        # study measures afresh rather than hard-stopping on the walk the
+        # previous study finished under this name.
+        doc = _derived_document(
+            ctx, f"{_STUDY}-preflight-{ctx.document.hash[:8]}", 1, one_fold=True
+        )
+        summary, peak = _measure_walk(ctx, doc, "memory-preflight")
         if peak >= limit:
             raise MemoryError(
                 f"25-asset fold used {peak} bytes, not strictly below {limit}"

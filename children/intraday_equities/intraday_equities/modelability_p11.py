@@ -4,19 +4,26 @@ P10's immutable cache and journal-backed runner are reused, but its pooled
 estimand is not. Each derived walk filters feature records before fitting;
 each walk keeps only its own tape and the one its label declares as the
 residual reference. Gate 1 stops at the first failed ordered horizon, then
-flows directly to the whole-session refit audit in Gate 3.
+flows directly to the whole-session refit audit in Gate 3, which stops an
+asset at the first null that matches or beats its real result
+(ADR-0092): one such null already decides the strict beat-all limb, so
+the remaining seeds are never run, while a pass always carries the full
+19-draw calibration.
+
+P11 is the pinned special case of :mod:`.modelability_study` (ADR-0094):
+its four stages subclass the study's and supply only what is P11's — the
+frozen 25 assets, the frozen horizons and seeds, the one P10 cache verified
+against that membership, its historical output contract and its ``p11-``
+walk tags. The loop bodies live in the study module, once.
 """
 
 from __future__ import annotations
 
-import os
-
-from dskit.pipeline.attempts import AttemptRegistry, tier2_verdict
-from dskit.pipeline.document import PipelineDocument
-from dskit.pipeline.runs import score_walk
-from dskit.pipeline.stages import Stage, reject_unknown_params
+from dskit.pipeline.stages import reject_unknown_params
 
 from . import modelability as p10
+from . import modelability_study as study
+from .modelability_study import _PREFLIGHT_ALPHA, _largest_asset, _score_one
 
 __all__ = [
     "Gate1Stage",
@@ -30,6 +37,7 @@ _ARCHITECTURE = "lgbm-tight-asset-local"
 _ASSETS = list(p10._ASSETS)
 _HORIZONS = [1, 2, 3, 5, 10, 20, 30, 60]
 _MEMORY_LIMIT = 17 * 1024**3
+_SEEDS = list(range(19))
 
 
 def _check_params(params, allowed, *, assets=False, horizons=False, alpha=False):
@@ -63,117 +71,30 @@ def _base_key(gate):
     }
 
 
-def _tape_symbols(asset, residual):
-    """Name the only tapes an asset-local walk reads.
-
-    Parameters
-    ----------
-    asset : str
-        The one symbol the walk fits and scores.
-    residual : str or None
-        The scan's declared ``label_residual`` reference symbol, read
-        from the document rather than restated here: a second copy of
-        ``"SPY"`` would silently drop the reference tape the moment the
-        config named a different one, and only for the assets that are
-        not themselves the residual.
-
-    Returns
-    -------
-    list of str
-        The asset, plus the residual when it is a different symbol.
-    """
-    if residual is None or residual == asset:
-        return [asset]
-    return [asset, residual]
+def _p10_cache(ctx):
+    """Describe the one P10 cache every P11 walk reads, verified once per process."""
+    declared, _path, digest = p10._feature_cache_info(ctx)
+    return {
+        "universe": ctx.document.pipeline["universe"].params["path"],
+        "cache": declared,
+        "manifest_sha256": digest,
+        "symbols": list(_ASSETS),
+    }
 
 
 def _derived_document(ctx, asset, horizon, *, tag="gate1", scramble_seed=None):
-    """Build one asset-only derived walk without touching the full tape."""
+    """Build one asset-only derived walk over the P10 cache."""
     if asset not in _ASSETS:
         raise ValueError(f"P11 asset is outside the frozen cohort: {asset!r}")
     if horizon not in _HORIZONS:
         raise ValueError(f"P11 horizon is outside the frozen order: {horizon!r}")
-    declared, _cache_path, manifest_sha256 = p10._feature_cache_info(ctx)
-    obj = ctx.document.to_obj()
-    obj.pop("stages", None)
-    obj["name"] = f"{_STUDY}-{tag}-{asset.lower()}-h{horizon:02d}"
-    original = obj["pipeline"]
-    scan = original["scan"]
-    scan["inputs"]["records"] = "$asset_features.records"
-    scan["inputs"]["bars"] = "$reference_tape.records"
-    params = scan["params"]
-    params["lead_start"] = horizon
-    params["lead_step"] = horizon
-    params["lead_stop"] = horizon
-    params["fit_symbols"] = [asset]
-    params["score_symbols"] = [asset]
-    params.pop("label_scramble_seed", None)
-    if scramble_seed is not None:
-        if isinstance(scramble_seed, bool) or not isinstance(scramble_seed, int):
-            raise ValueError(f"P11 scramble seed must be an integer: {scramble_seed!r}")
-        params["label_scramble_seed"] = scramble_seed
-    obj["pipeline"] = {
-        "universe": original["universe"],
-        "features": {
-            "uses": "intraday_equities-session-feature-cache",
-            "params": {
-                "path": declared,
-                "manifest_sha256": manifest_sha256,
-            },
-        },
-        "asset_features": {
-            "uses": "filter",
-            "inputs": {"records": "$features.records"},
-            "params": {"where": [{"field": "symbol", "op": "==", "value": asset}]},
-        },
-        "reference_tape": {
-            "uses": "filter",
-            "inputs": {"records": "$features.tape"},
-            "params": {
-                "where": [
-                    {
-                        "field": "symbol",
-                        "op": "in",
-                        "value": _tape_symbols(asset, params.get("label_residual")),
-                    }
-                ]
-            },
-        },
-        "scan": scan,
-    }
-    return PipelineDocument.from_obj(obj)
+    return study.asset_walk_document(
+        ctx.document, _STUDY, asset, horizon, _p10_cache(ctx),
+        tag=tag, scramble_seed=scramble_seed,
+    )
 
 
-def _largest_asset(cache_path, assets):
-    """Return the first frozen asset with the largest cached feature frame."""
-    import numpy as np
-
-    sizes = []
-    for asset in assets:
-        path = os.path.join(cache_path, f"{asset}.features.X.npy")
-        rows = int(np.load(path, mmap_mode="r", allow_pickle=False).shape[0])
-        sizes.append((rows, asset))
-    largest = max(rows for rows, _asset in sizes)
-    return next(asset for rows, asset in sizes if rows == largest), largest
-
-
-def _score_one(summary, asset, horizon, alpha):
-    """Require one exact, non-GROUP row from an asset-local walk."""
-    scored = score_walk(summary, alpha=alpha, group=None)
-    rows = [
-        row
-        for row in scored["rows"]
-        if row.get("series") == asset and row.get("lead") == horizon
-    ]
-    if not scored["exact"] or len(rows) != 1 or len(scored["rows"]) != 1:
-        raise ValueError(
-            f"P11 expected one exact row for {asset}@{horizon}; "
-            f"exact={scored['exact']} rows={scored['rows']!r}"
-        )
-    return rows[0]
-
-
-class MemoryPreflightStage(Stage):
+class MemoryPreflightStage(study.MemoryPreflightStage):
     """Measure the largest asset under the frozen Gate-1 geometry.
 
     Parameters
@@ -210,36 +131,74 @@ class MemoryPreflightStage(Stage):
             problems.append(f"memory_limit_bytes must be exactly {_MEMORY_LIMIT}")
         return problems
 
+    def score_one(self, summary, asset, lead):
+        """Score the measured walk through P11's own module-level scorer."""
+        # The study's method would resolve the scorer in the study module;
+        # P11's tests fake it here, where P11's other seams are faked.
+        return _score_one(summary, asset, lead, _PREFLIGHT_ALPHA)
+
     def run(self, ctx, inputs):
-        """Run one capped Gate-1-shaped asset walk."""
+        """Measure one capped Gate-1-shaped asset walk as the first child."""
         del inputs
         _declared, cache_path, digest = p10._feature_cache_info(ctx)
         asset, rows = _largest_asset(cache_path, self.params["assets"])
-        document = _derived_document(ctx, asset, 1, tag="preflight")
-        summary, peak = p10._run_walk(
-            ctx,
-            document,
-            f"p11-memory-{asset.lower()}",
-            memory_limit=self.params["memory_limit_bytes"],
+        # Named for the staged identity: the reading is the seam's
+        # measure_one (ADR-0093), which needs a fresh spawn, so a revised
+        # study measures again rather than tripping over the previous
+        # study's finished preflight walk.
+        document = _derived_document(
+            ctx, asset, 1, tag=f"preflight-{ctx.document.hash[:8]}"
         )
-        if peak is None or peak >= self.params["memory_limit_bytes"]:
-            raise MemoryError(
-                f"P11 preflight peak {peak!r} is not strictly below "
-                f"{self.params['memory_limit_bytes']}"
-            )
-        _score_one(summary, asset, 1, 0.05)
+        measured = self.measure_document(
+            ctx, document, asset, 1, f"p11-memory-{asset.lower()}"
+        )
+        self.refuse_over_limit(measured["peak_rss_bytes"])
         return {
             "asset": asset,
             "feature_rows": rows,
-            "summary_dir": summary,
-            "peak_rss_bytes": peak,
+            "summary_dir": measured["summary_dir"],
+            "peak_rss_bytes": measured["peak_rss_bytes"],
             "limit_bytes": self.params["memory_limit_bytes"],
             "feature_cache_manifest_sha256": digest,
             "passed": True,
         }
 
 
-class Gate1Stage(Stage):
+class _Pinned:
+    """The hooks every P11 stage shares: the frozen cohort over the P10 cache."""
+
+    def cohort(self, ctx):
+        """Return the frozen ordered 25 assets."""
+        del ctx
+        return list(self.params.get("assets") or _ASSETS)
+
+    def study(self, ctx):
+        """Return P11's study name."""
+        del ctx
+        return _STUDY
+
+    def caches(self, ctx, inputs):
+        """Return one placement group: every frozen asset over the P10 cache."""
+        del ctx, inputs
+        return {"p10": {"symbols": list(_ASSETS)}}
+
+    def tag(self, ctx, kind, asset, horizon, seed=None):
+        """Name one walk with P11's short ``p11-`` prefix."""
+        del ctx
+        prefix = f"p11-{kind}-{asset.lower()}-h{horizon:02d}"
+        return prefix if seed is None else f"{prefix}-seed{seed:02d}"
+
+    def document(self, ctx, asset, horizon, cache, *, tag, scramble_seed=None):
+        """Derive one asset-only walk over the P10 cache, ignoring ``cache``."""
+        del cache
+        return _derived_document(ctx, asset, horizon, tag=tag, scramble_seed=scramble_seed)
+
+    def score(self, summary, asset, horizon):
+        """Score one asset-local walk at the stage's level."""
+        return _score_one(summary, asset, horizon, self.params["alpha"])
+
+
+class Gate1Stage(_Pinned, study.Gate1Stage):
     """Fit each asset alone and stop its ordered horizon walk on failure.
 
     Parameters
@@ -276,124 +235,66 @@ class Gate1Stage(Stage):
         """Require a passed memory preflight."""
         return [] if inputs == {"preflight": True} else ["requires passed preflight"]
 
-    def run(self, ctx, inputs):
-        """Run, score and register only consecutive asset-local cells."""
-        del inputs
-        ledger_path = os.path.join(
-            p10._child_root(ctx), self.params["attempt_registry"]
-        )
-        attempts = AttemptRegistry(ledger_path)
-        cells = []
-        rows = []
-        for asset in self.params["assets"]:
-            selected = None
-            first_failed = None
-            attempted = []
-            for horizon in self.params["horizons"]:
-                document = _derived_document(ctx, asset, horizon)
-                summary = p10._run_bounded_walk(
-                    ctx,
-                    document,
-                    f"p11-gate1-{asset.lower()}-h{horizon:02d}",
-                )
-                skill = _score_one(summary, asset, horizon, self.params["alpha"])
-                key = {
-                    **_base_key("gate1-selection"),
-                    "series": asset,
-                    "horizon": horizon,
-                }
-                cell = attempts.record(
-                    key,
-                    walk=summary,
-                    t_pool=skill["t_pool"],
-                    t_fold=skill["t_fold"],
-                    r2oos=skill["r2oos"],
-                    n_folds=skill["n_folds"],
-                    study_gate="gate1",
-                )
-                evidence = {
-                    "cell": cell,
-                    "asset": asset,
-                    "horizon": horizon,
-                    "walk": summary,
-                    "skill": skill,
-                }
-                cells.append(evidence)
-                attempted.append(horizon)
-                if skill.get("passes") is True:
-                    selected = horizon
-                    continue
-                first_failed = horizon
-                break
-            unrun = [h for h in self.params["horizons"] if h not in attempted]
-            rows.append(
-                {
-                    "asset": asset,
-                    "gate1_h": selected,
-                    "gate1_passes": selected is not None,
-                    "first_failed_h": first_failed,
-                    "attempted_horizons": attempted,
-                    "unrun_horizons": unrun,
-                }
-            )
-        if {row["asset"] for row in rows} != set(_ASSETS) or len(rows) != len(_ASSETS):
-            raise ValueError("Gate 1 did not emit the exact frozen 25 assets")
-        return {"rows": rows, "cells": cells}
+    def ledger_key(self, ctx, gate):
+        """Return P11's historical attempt-ledger key."""
+        del ctx
+        return _base_key(gate)
+
+    def check_asof(self, ctx):
+        """P11 pins its cut in the ledger key itself; the invocation is not checked."""
+        del ctx
 
 
-class Gate3WalksStage(Stage):
-    """Refit each Gate-1 survivor against whole-session null draws.
+class Gate3WalksStage(_Pinned, study.Gate3WalksStage):
+    """Refit each Gate-1 survivor against whole-session nulls, stopping early.
+
+    The frozen seeds run in order and an asset stops at the first
+    completed null whose ``r2oos`` matches or beats the real walk's,
+    i.e. when :func:`~dskit.pipeline.attempts.beat_all` is false for
+    that one draw (ADR-0092). A pass is never stopped: an asset that
+    beats every null runs all 19 and carries a full calibration family.
 
     Parameters
     ----------
     params : dict
-        ``seeds`` must be the frozen sequence 0 through 18.
+        ``seeds`` must be the frozen sequence 0 through 18; ``alpha`` is
+        passed unchanged to the walk scorer.
 
     Examples
     --------
-    Instantiate the null-refit stage::
+    Instantiate the fail-fast null-refit stage::
 
-        stage = Gate3WalksStage("gate3_walks", {"seeds": list(range(19))})
+        stage = Gate3WalksStage(
+            "gate3_walks", {"seeds": list(range(19)), "alpha": 0.05}
+        )
     """
 
-    outputs = ("walks", "survivors")
-    _PARAMS = ("seeds",)
+    outputs = ("walks", "survivors", "draws")
+    _PARAMS = ("seeds", "alpha")
 
     @classmethod
     def validate_params(cls, params):
-        """Require the frozen 19-session-permutation sequence."""
-        problems = _check_params(params, cls._PARAMS)
-        if params.get("seeds") != list(range(19)):
+        """Require the frozen 19-session-permutation sequence and a level."""
+        problems = _check_params(params, cls._PARAMS, alpha=True)
+        if params.get("seeds") != _SEEDS:
             problems.append("seeds must be exactly [0, ..., 18]")
         return problems
 
     def validate_inputs(self, inputs):
-        """Require the ordered Gate-1 outcomes."""
-        return [] if set(inputs) == {"gate1"} else ["requires only gate1"]
-
-    def run(self, ctx, inputs):
-        """Run all null refits for each selected asset-local horizon."""
-        gate1 = inputs["gate1"]
-        if [row.get("asset") for row in gate1] != _ASSETS:
-            raise ValueError("Gate 3 input is not the frozen ordered 25 assets")
-        survivors = [row for row in gate1 if row["gate1_passes"]]
-        walks = {}
-        for row in survivors:
-            asset = row["asset"]
-            horizon = row["gate1_h"]
-            for seed in self.params["seeds"]:
-                tag = f"p11-gate3-{asset.lower()}-h{horizon:02d}-seed{seed:02d}"
-                document = _derived_document(
-                    ctx, asset, horizon, tag=tag, scramble_seed=seed
-                )
-                walks[f"{asset}:{horizon}:{seed}"] = p10._run_bounded_walk(
-                    ctx, document, tag
-                )
-        return {"walks": walks, "survivors": [row["asset"] for row in survivors]}
+        """Require the ordered Gate-1 outcomes and their scored cells."""
+        needed = {"gate1", "gate1_cells"}
+        return [] if set(inputs) == needed else [f"requires {sorted(needed)}"]
 
 
-class Gate3ResultStage(Stage):
-    """Require every whole-session null refit to lose to the real result.
+class Gate3ResultStage(_Pinned, study.Gate3ResultStage):
+    """Decide every asset: a stopped audit fails, a completed one is judged.
+
+    A stopped asset (ADR-0092) emits ``gate3_status`` ``fail`` with the
+    stop record and the bound ``2 / (n_draws + 1)`` at the top level of
+    its row, and no ``gate3`` block. A completed asset calls
+    :func:`~dskit.pipeline.attempts.tier2_verdict` over all 19 draws
+    exactly as before, so its beat-all and calibration limbs are
+    unchanged.
 
     Parameters
     ----------
@@ -417,53 +318,6 @@ class Gate3ResultStage(Stage):
     def validate_params(cls, params):
         """Validate the frozen cohort, null draws and scoring level."""
         problems = _check_params(params, cls._PARAMS, assets=True, alpha=True)
-        if params.get("seeds") != list(range(19)):
+        if params.get("seeds") != _SEEDS:
             problems.append("seeds must be exactly [0, ..., 18]")
         return problems
-
-    def validate_inputs(self, inputs):
-        """Require observed Gate-1 rows/cells and their null refits."""
-        needed = {"gate1", "gate1_cells", "walks"}
-        return [] if set(inputs) == needed else [f"requires {sorted(needed)}"]
-
-    def run(self, ctx, inputs):
-        """Emit one Gate-3 decision for every frozen asset."""
-        del ctx
-        gate1 = inputs["gate1"]
-        if [row.get("asset") for row in gate1] != self.params["assets"]:
-            raise ValueError("Gate 3 result input is not the frozen ordered 25 assets")
-        observed = {
-            (row["asset"], row["horizon"]): row["skill"]
-            for row in inputs["gate1_cells"]
-        }
-        rows = []
-        for base in gate1:
-            final = {**base, "gate3_status": "not_reached", "gate3_passes": False}
-            if not base["gate1_passes"]:
-                final["not_reached_reason"] = "gate1_failed_at_h1"
-            else:
-                asset = base["asset"]
-                horizon = base["gate1_h"]
-                null_r2 = []
-                null_t = []
-                for seed in self.params["seeds"]:
-                    skill = _score_one(
-                        inputs["walks"][f"{asset}:{horizon}:{seed}"],
-                        asset,
-                        horizon,
-                        self.params["alpha"],
-                    )
-                    null_r2.append(skill["r2oos"])
-                    null_t.append(skill["t_pool"])
-                real = observed[(asset, horizon)]
-                verdict = tier2_verdict(real["r2oos"], null_r2, null_t)
-                final.update(
-                    {
-                        "gate3_status": "pass" if verdict["passes"] else "fail",
-                        "gate3_passes": verdict["passes"],
-                        "gate3": verdict,
-                        "not_reached_reason": None,
-                    }
-                )
-            rows.append(final)
-        return {"rows": rows}

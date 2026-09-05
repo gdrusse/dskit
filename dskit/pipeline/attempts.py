@@ -57,8 +57,10 @@ __all__ = [
     "AttemptRegistry",
     "FixedFamilyLedger",
     "bar_verdict",
+    "beat_all",
     "bonferroni_t",
     "cell_id",
+    "early_stop_p_bound",
     "expected_max_null",
     "implied_trials",
     "max_bar",
@@ -1069,6 +1071,88 @@ def tier2_plan(sessions, n_runs=100, seed=0, drop=()):
     return plans
 
 
+def beat_all(observed_r2, scrambled_r2):
+    """Whether the real walk beats EVERY scrambled one, strictly.
+
+    The one owner of the rank predicate (ADR-0092). :func:`tier2_verdict`
+    takes its beat-all limb from here, and a fail-fast Gate 3 asks the
+    same question after every single draw: one null at or above the real
+    result already decides the family, and the remaining draws cannot
+    change it. ``>=`` on that null is the exact negation of the strict
+    ``>`` here, and ``max`` is monotone, so stopping at the first
+    exceedance cannot diverge from the full family, ties included.
+
+    Parameters
+    ----------
+    observed_r2 : float
+        The real walk's pooled out-of-sample R².
+    scrambled_r2 : list or tuple of float
+        One per scrambled walk; a single value is allowed, so the
+        per-draw stop can ask after each one.
+
+    Returns
+    -------
+    bool
+        ``True`` only when ``observed_r2`` exceeds every scrambled value.
+
+    Raises
+    ------
+    ValueError
+        When ``observed_r2`` is not finite, when ``scrambled_r2`` is
+        empty, or when any scrambled value is not finite.
+
+    Examples
+    --------
+    A tie is a loss, and one null is enough to ask::
+
+        beat_all(0.01, [0.001, -0.002])  # True
+        beat_all(0.01, [0.01])  # False
+    """
+    if not number_ok(observed_r2):
+        raise ValueError(f"observed_r2 must be finite, got {observed_r2!r}")
+    nulls = list(scrambled_r2)
+    if not nulls or not all(number_ok(v) for v in nulls):
+        raise ValueError("scrambled_r2 needs at least 1 finite value")
+    return observed_r2 > max(float(v) for v in nulls)
+
+
+def early_stop_p_bound(n_draws):
+    """Bound the p-value of a null audit that stopped at its first exceedance.
+
+    Besag–Clifford stopping (ADR-0092): after ``n_draws`` completed
+    nulls, the last of which matched or beat the real result, the real
+    result ranks at best second among the ``n_draws + 1`` exchangeable
+    values, so its p-value is bounded by ``2 / (n_draws + 1)`` — never
+    zero, never a point value. The stopped row of every fail-fast audit
+    takes the number from here (ADR-0094).
+
+    Parameters
+    ----------
+    n_draws : int
+        Draws completed when the audit stopped, the stopping draw
+        included; at least 1.
+
+    Returns
+    -------
+    float
+        ``2 / (n_draws + 1)``.
+
+    Raises
+    ------
+    ValueError
+        When ``n_draws`` is not a positive int.
+
+    Examples
+    --------
+    Stopping on the third draw::
+
+        early_stop_p_bound(3)  # 0.5
+    """
+    if isinstance(n_draws, bool) or not isinstance(n_draws, int) or n_draws < 1:
+        raise ValueError(f"n_draws must be a positive int, got {n_draws!r}")
+    return 2 / (n_draws + 1)
+
+
 def tier2_verdict(observed_r2, scrambled_r2, scrambled_t=()):
     """Read a finished expensive scramble — both of its checks.
 
@@ -1111,7 +1195,7 @@ def tier2_verdict(observed_r2, scrambled_r2, scrambled_t=()):
     nulls = [float(v) for v in scrambled_r2]
     if len(nulls) < 2 or not all(number_ok(v) for v in nulls):
         raise ValueError("scrambled_r2 needs at least 2 finite values")
-    beat = observed_r2 > max(nulls)
+    beat = beat_all(observed_r2, nulls)
     ts = [float(v) for v in scrambled_t if number_ok(v)]
     mean = statistics.fmean(ts) if len(ts) >= 2 else None
     sd = statistics.stdev(ts) if len(ts) >= 2 else None

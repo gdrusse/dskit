@@ -40,8 +40,21 @@ ACTION_NODES = {
     "qhat",
     "select",
 }
-MODELABILITY_DOCS = {"run-p10-modelability.json", "run-p11-modelability.json"}
-MODELABILITY_SOURCES = {"alpaca-sip-split", "alpaca-sip-split-b", "alpaca-sip-split-c"}
+# The staged modelability studies read their OWN universe variant — the
+# cohort each one asks about — rather than universe.json's; the value is
+# (universe path, symbol count including the reference).
+MODELABILITY_DOCS = {
+    "run-p10-modelability.json": ("configs/universe-p10.json", 25),
+    "run-p11-modelability.json": ("configs/universe-p10.json", 25),
+    "run-p12-modelability.json": ("configs/universe-p12.json", 41),
+}
+MODELABILITY_SOURCES = {
+    "alpaca-sip-split",
+    "alpaca-sip-split-b",
+    "alpaca-sip-split-c",
+    "alpaca-sip-split-d",
+    "alpaca-sip-split-e",
+}
 
 
 def _path(name):
@@ -361,9 +374,10 @@ def test_run_docs_do_not_restate_the_cohort():
         path = _universe_path(raw, name)
         if path != "configs/universe.json":
             if name in MODELABILITY_DOCS:
-                assert path == "configs/universe-p10.json", name
-                variant = _raw("universe-p10.json")
-                assert len(variant["symbols"]) == 25
+                expected_path, n_symbols = MODELABILITY_DOCS[name]
+                assert path == expected_path, name
+                variant = _raw(os.path.basename(expected_path))
+                assert len(variant["symbols"]) == n_symbols, name
                 assert "META" not in variant["symbols"]
                 assert "GROUP" not in variant["symbols"]
                 continue

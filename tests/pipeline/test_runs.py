@@ -942,6 +942,65 @@ class TestDocsCurrency:
         assert "dskit.pipeline runs" in commands
 
 
+class TestSingleFoldRow:
+    """ADR-0093: the one-fold reader beside ``walk_fold_dirs``.
+
+    A bounded walk runs every fold as its own single-fold document and
+    reads the one row back; the seam is agnostic to what a command
+    produces, so the reading lives with the ``walkforward.json`` owner.
+    """
+
+    def _summary(self, tmp_path, payload):
+        from dskit.pipeline.runs import WALKFORWARD_FILE
+
+        (tmp_path / WALKFORWARD_FILE).write_text(json.dumps(payload))
+        return str(tmp_path)
+
+    def test_returns_the_one_ran_row_for_its_cutoff(self, tmp_path):
+        from dskit.pipeline.runs import single_fold_row
+
+        row = {"cutoff": "2025-01-01", "run_dir": "/r", "state": "ran", "score": 1.0}
+        summary = self._summary(tmp_path, {"state": "ran", "folds": [row]})
+        assert single_fold_row(summary, "2025-01-01") == row
+
+    def test_refuses_a_summary_whose_state_is_not_ran(self, tmp_path):
+        from dskit.pipeline.runs import single_fold_row
+
+        row = {"cutoff": "2025-01-01", "run_dir": "", "state": "error", "score": None}
+        summary = self._summary(tmp_path, {"state": "error", "folds": [row]})
+        with pytest.raises(ValueError, match="state"):
+            single_fold_row(summary, "2025-01-01")
+
+    @pytest.mark.parametrize("n_rows", [0, 2])
+    def test_refuses_anything_but_exactly_one_row(self, tmp_path, n_rows):
+        from dskit.pipeline.runs import single_fold_row
+
+        row = {"cutoff": "2025-01-01", "run_dir": "/r", "state": "ran", "score": 1.0}
+        summary = self._summary(tmp_path, {"state": "ran", "folds": [row] * n_rows})
+        with pytest.raises(ValueError, match="exactly one"):
+            single_fold_row(summary, "2025-01-01")
+
+    def test_refuses_a_row_for_another_cutoff(self, tmp_path):
+        from dskit.pipeline.runs import single_fold_row
+
+        row = {"cutoff": "2025-02-01", "run_dir": "/r", "state": "ran", "score": 1.0}
+        summary = self._summary(tmp_path, {"state": "ran", "folds": [row]})
+        with pytest.raises(ValueError, match="cutoff"):
+            single_fold_row(summary, "2025-01-01")
+
+    def test_refuses_a_directory_that_is_not_a_summary(self, tmp_path):
+        from dskit.pipeline.runs import single_fold_row
+
+        with pytest.raises(ValueError, match="walkforward.json"):
+            single_fold_row(str(tmp_path), "2025-01-01")
+
+    def test_the_readers_the_child_imports_are_on_the_surface(self):
+        from dskit.pipeline import runs
+
+        for name in ("score_bar", "single_fold_row", "walk_cells", "walk_fold_dirs"):
+            assert name in runs.__all__, name
+
+
 def test_the_reader_is_on_the_package_surface():
     import dskit.pipeline as pkg
 

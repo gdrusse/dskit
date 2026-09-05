@@ -1,0 +1,37 @@
+{
+  "notes": "Fifth immutable research cohort, and the deliberate INVERSE of cohort D. It preserves the established split-adjusted SIP minute-bar window, feed, adjustment, interval, codecs and hard cut, so every bar sits on the same price scale as alpaca-sip-split, -b, -c and -d; a separate source name is required because the backfill cursor is per source and the four earlier sources have already run to the cut. Cohort D was selected for industry spread and, by design, only eleven of its twenty-five candidates cleared the project rule of thumb - the typical three-minute move over the half-spread, which must be roughly 25 to 45 to clear the spread at 0.3% skill. This cohort selects on that rule instead: ALL TWENTY clear the band and twelve clear its upper edge, from MSTR at 155 down to EOG at 31, against a cohort-D median of 23. Symbols are in RANK ORDER by that ratio. The concentration is not a preference but an arithmetic consequence: at the one-cent quoting floor the ratio is about 0.011 times annualised volatility times share price, so the band selects whatever is simultaneously volatile, penny-quoted and not so expensive that the tick stops binding, and in this regime that is the AI complex. Fourteen of the twenty are technology at sector level, though the three-names-per-industry cap was enforced and binds exactly three times: semiconductors (MRVL, INTC, MU), application software (NOW, SHOP, ADBE) and communication equipment (CIEN, LITE, ANET). Non-technology mechanisms carried deliberately: MSTR as a bitcoin proxy repricing a 24-hour reference, GDX as an overnight-bullion metal-to-miner lead-lag, BABA and BIDU as two independent China channels whose Hong Kong close at 04:00 ET makes the US open a scored instant, C as a rate and credit channel against JPM and BAC, LULU as consumer idiosyncratic flow at semiconductor volatility, and EOG as crude pass-through against the 10:30 ET Wednesday EIA print. Selection was frozen before any name was pulled or scored and used only non-backtest facts (docs/research/cohort-e-twenty-candidates-selected-for-modelability.md). SPLITS INSIDE THE WINDOW, all removed by adjustment=split: MSTR 10-for-1 ex 2024-08-08; NOW 5-for-1 ex 2025-12-18; SHOP 10-for-1 ex 2022-06-29; PANW 3-for-1 ex 2022-09-14 and 2-for-1 ex 2024-12-16; LRCX 10-for-1 ex 2024-10-03; ANET 4-for-1 ex 2021-11-18 and 4-for-1 ex 2024-12-04. NOW is therefore effectively two instruments and only the last ten weeks of the window are the tick-constrained name its ratio describes. DISTRIBUTIONS AND ISSUANCE, which are NOT splits and which adjustment=split does not remove: the WDC SanDisk spin-off separately trading 2025-02-24, seven EOG special dividends across 2021-2023, and the PANW share issuance for CyberArk closing 2026-02-11, eighteen days before the cut. Each must be reconciled against the unadjusted alpaca-sip tree before the name is modelled, exactly as MRK/Organon and MET/Brighthouse are owed from cohort D. ADS RATIO CHANGES: BABA's 2019-07-30 eight-for-one ordinary split and BIDU's 2021-03-01 subdivision were each offset by a matching ADS-ratio change, so neither is an action at the ADS level a US tape would see. TWO NAMES HAVE THIN PRE-WINDOW HISTORY: SHOP lists 2015-05-21 and LITE 2015-08-04, so both open on the first session of the window but carry only months rather than years behind it. Two rejections worth recording because a ticker-continuity check alone passes both: KLAC would have ranked fifth at 68 on its post-split price, but its 10-for-1 has ex-date 2026-06-12, AFTER the hard cut, so the instrument that actually traded through the window was a roughly $1,856 stock and it rescores near 11; and SMCI has held its ticker since 2007 but was delisted from Nasdaq 2019-03-22 and traded OTC until 2020-01-14, a seventeen-month hole inside the window. Backfill only: there is no live mode on a source with a data cut behind us. Secrets are environment-variable names; the material never enters this file or any hash.",
+  "symbols": [
+    "MSTR",
+    "MRVL",
+    "NOW",
+    "LULU",
+    "SHOP",
+    "PANW",
+    "GDX",
+    "BABA",
+    "INTC",
+    "MU",
+    "CIEN",
+    "WDC",
+    "LRCX",
+    "TER",
+    "BIDU",
+    "LITE",
+    "C",
+    "ADBE",
+    "ANET",
+    "EOG"
+  ],
+  "start": "2016-01-01",
+  "end": "2026-02-28T23:59:59+00:00",
+  "feed": "sip",
+  "adjustment": "split",
+  "timeframe": [
+    1,
+    "Minute"
+  ],
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

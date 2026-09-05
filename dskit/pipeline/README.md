@@ -73,6 +73,13 @@ kinds resolve. Two more verbs — `demo`
   (ADR-0043).
 - **Series and folds** — `_find_prev_run` + `_materialize` bind `$prev`;
   `run_walk_forward` + `_fold_splits` → `WalkForwardRunResult` (`driver.py`).
+- **Bounded fold execution** — `BoundedFoldRunner` (`folds.py`, ADR-0093)
+  runs single-fold documents as child processes under one caller-supplied
+  `RLIMIT_AS` cap, at most `$DSKIT_FOLD_WORKERS` (or the caller's own
+  variable) at once, results in input order; `measure_one` is its one
+  memory reading. `FOLD_FIELDS` / `FOLD_OPTIONAL_FIELDS`, `aggregate_folds`
+  and `write_walkforward_summary` (`driver.py`) own the fold-row shape, and
+  `single_fold_row` (`runs.py`) reads one back.
 - **Reading runs back** — `scan_runs` → `RunSummary` / `RunProblem`,
   `format_runs`, `param_at` (`runs.py`), behind the `runs` verb.
 
@@ -544,6 +551,8 @@ dskit/pipeline/
 ├── driver.py          LOAD -> IMPORT -> PLAN -> RESOLVE -> EXECUTE -> RECORD; run dirs;
 │                      run_walk_forward (one derived run per fold + summary)
 ├── stages.py          journal-backed staged DAG execution and resume
+├── folds.py           BoundedFoldRunner: a walk's folds as capped child processes at
+│                      the width the ENVIRONMENT declares; measure_one (ADR-0093)
 ├── runs.py            reads run dirs back: scan_runs / format_runs (the `runs` verb)
 ├── predictions.py     PredictionWriter / read_prediction_series: every scored
 │                      validation row, one parquet per run (ADR-0064)
