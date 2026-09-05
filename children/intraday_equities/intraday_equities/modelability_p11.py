@@ -68,24 +68,11 @@ def _base_key(gate):
 
 
 def _tape_symbols(asset, residual):
-    """Name the only tapes an asset-local walk reads.
-
-    Parameters
-    ----------
-    asset : str
-        The one symbol the walk fits and scores.
-    residual : str or None
-        The scan's declared ``label_residual`` reference symbol, read
-        from the document rather than restated here: a second copy of
-        ``"SPY"`` would silently drop the reference tape the moment the
-        config named a different one, and only for the assets that are
-        not themselves the residual.
-
-    Returns
-    -------
-    list of str
-        The asset, plus the residual when it is a different symbol.
-    """
+    """Name the only tapes an asset-local walk reads."""
+    # The residual is read from the document rather than restated here: a
+    # second copy of "SPY" would silently drop the reference tape the moment
+    # the config named a different one, and only for the assets that are not
+    # themselves the residual.
     if residual is None or residual == asset:
         return [asset]
     return [asset, residual]

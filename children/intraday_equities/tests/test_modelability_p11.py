@@ -640,6 +640,60 @@ def test_gate3_result_requires_the_draws_record(monkeypatch):
     )
 
 
+def test_the_walks_stages_own_draws_decide_the_result_stages_rows(monkeypatch):
+    # ADR-0092's seam, end to end: the stop records the walks stage really
+    # produces are the ones the result stage decides on. Every other
+    # result-stage test hand-authors its draws dict, so an audit that
+    # miscounted its own draws — or named the wrong stop seed — would pass
+    # both stages while the published Besag-Clifford bound was wrong.
+    _documents, gate1, cells = _gate3_two_survivors(monkeypatch)
+    a_nulls = {seed: 0.0 for seed in range(19)}
+    a_nulls[3] = 0.02  # the tie that stops A on its fourth draw
+    b_nulls = {seed: -0.001 * (seed + 1) for seed in range(19)}
+    monkeypatch.setattr(
+        p11, "_score_one", _null_scores_per_asset({"A": a_nulls, "B": b_nulls})
+    )
+    seen = []
+
+    def verdict(observed, nulls, ts):
+        seen.append((observed, list(nulls), list(ts)))
+        return {"passes": True, "beat_all": True}
+
+    monkeypatch.setattr(p11, "tier2_verdict", verdict)
+    walks = p11.Gate3WalksStage("gate3_walks", {"seeds": list(range(19)), "alpha": 0.05})
+    out = walks.run(SimpleNamespace(), {"gate1": gate1, "gate1_cells": cells})
+    stopped, completed = _result_stage().run(
+        SimpleNamespace(),
+        {
+            "gate1": gate1,
+            "gate1_cells": cells,
+            "walks": out["walks"],
+            "draws": out["draws"],
+        },
+    )["rows"]
+    assert stopped["asset"] == "A"
+    assert stopped["gate3_status"] == "fail"
+    assert stopped["gate3_passes"] is False
+    assert stopped["stopped"] is True
+    assert stopped["stop_seed"] == 3
+    assert stopped["n_draws"] == 4
+    # The bound the row publishes counts the null walks the audit really ran.
+    ran = [key for key in out["walks"] if key.startswith("A:")]
+    assert stopped["n_draws"] == len(ran)
+    assert stopped["p_bound"] == 2 / 5
+    assert "gate3" not in stopped
+    assert completed["asset"] == "B"
+    assert completed["gate3_status"] == "pass"
+    assert completed["gate3_passes"] is True
+    assert completed["gate3"] == {"passes": True, "beat_all": True}
+    for key in ("stopped", "stop_seed", "n_draws", "p_bound", "calibration"):
+        assert key not in completed
+    # One verdict, over B's own 19 nulls in seed order — A never reaches it.
+    assert seen == [
+        (0.04, [b_nulls[seed] for seed in range(19)], [0.1 * seed for seed in range(19)])
+    ]
+
+
 def test_derived_walk_filters_the_tape_to_the_asset_and_its_reference(
     tmp_path, monkeypatch
 ):
