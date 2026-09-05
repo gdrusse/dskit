@@ -1,6 +1,57 @@
 # Re-entry
 
-## Current wrap: Gate 3 redesign (2026-09-05)
+## Current wrap: Gate 3 rebuild built (2026-09-05, overnight, autonomous)
+
+Branch: `main`. Everything committed and pushed; the three feature branches
+and their worktrees are purged. `claude/dskit-production-build-3g17vw` and
+`claude/gate-3-null-design-docs-9me2mk` are other sessions' remote branches
+and were left alone.
+
+Landed, each looped through hostile review until no CRITICAL or MAJOR
+remained (rounds: ADR-0092 build 5, ADR-0093 build 2, ADR-0094 text 3,
+ADR-0094 build 3):
+
+- **ADR-0092 built.** `attempts.beat_all` owns the strict rank predicate;
+  P11's `Gate3WalksStage` stops an asset at the first null that matches or
+  beats it and emits `draws`; `Gate3ResultStage` takes `draws`, and a
+  stopped asset carries `p_bound = 2/(n_draws+1)` top-level with no
+  `gate3` block. P11's identity moved `355b6198 → b0388de8` (new stage
+  input/output); its completed artifacts are untouched.
+- **ADR-0093 built.** `dskit/pipeline/folds.py::BoundedFoldRunner` (cap in
+  the parent, `setrlimit` + `execvp` shim, width from the environment,
+  `measure_one` as the one memory reading), `runs.single_fold_row`,
+  `driver.FOLD_FIELDS`/`aggregate_folds`/`write_walkforward_summary`; the
+  child's own pool, cap wrapper and persisted per-fold peak are gone.
+- **ADR-0094 written, looped clean, accepted, built.** `modelability_study.py`
+  is the asset-local study over a document-declared cohort with one feature
+  cache per source group; P11 is now its pinned subclass; `attempts.
+  early_stop_p_bound` owns the stop bound. P12 (`configs/run-p12-
+  modelability.json`, identity `1a2d194f…`, forty names of cohorts D and E,
+  P11 geometry verbatim) is NOT yet run. Path: A2851 struck through, A2887
+  "Gate 3: fail-fast scramble refit" beneath it.
+
+Smoke (one asset, ORCL, `INTRADAY_EQUITIES_FOLD_WORKERS=2`): the whole
+staged document ran in 6 min 55 s; group-D cache build measured 13.88 GiB
+under the 17 GiB cap; median 2.10 s per fold against the 3.40 s baseline
+(journal A2886); ORCL failed Gate 1 at h=1, so no null draw ran inside the
+staged run — one was run separately as evidence (A2888–A2908). Memo:
+`children/intraday_equities/docs/memos/gate3-rebuild-fail-fast-fold-seam-and-p12.md`.
+
+Verification on the merged tree: child suite 341 passed, 11 skipped, 1 failed (the pre-existing start pin); tests/pipeline 1919 passed, 25 skipped. The one failure is the
+pre-existing `run-pb-s01-h01-lgbm-cross.json` start pin; the other two
+failures the brief named (the no-information-scan conformance ImportError,
+the root-only chmod test) did not reproduce on this machine.
+
+**Next step (owner):** decide whether to run P12 now
+(`INTRADAY_EQUITIES_FOLD_WORKERS=<w> python -m dskit.pipeline staged
+configs/run-p12-modelability.json --asof 2026-02-28 --adapter
+intraday_equities`; the group-E cache builds and is measured first, ~6 min;
+Gate 1 ~0.6–1.9 h at width 2) or first reconcile the five names the
+selection notes flag (MRK, MET, WDC, EOG, PANW); and whether to launch the
+revised P11 run under its new identity. Every judgement call taken
+overnight is listed in the memo's "Decisions taken without the owner".
+
+## Prior wrap: Gate 3 redesign (2026-09-05)
 
 Branch: `main`. Everything committed and pushed; merged feature branches
 purged. `claude/dskit-production-build-3g17vw` is another session's live
