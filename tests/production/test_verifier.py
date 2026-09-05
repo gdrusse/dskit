@@ -1295,6 +1295,34 @@ def test_an_unknown_disables_the_next_send_until_reconciliation(gate):
     assert native.calls == []
 
 
+def test_a_gateway_that_reports_unknown_rather_than_raising_also_disables(gate):
+    """§5.14 disables on "an `unknown`", not on the raise: a child gateway
+    that turns its own timeout into `Ack(unknown)` leaves exactly the same
+    ambiguous reference, and a second send while it is unresolved is the
+    double-fill this package exists to prevent."""
+    verifier, _parts, scen = gate
+    ambiguous = NativeCall(
+        answer=Ack(
+            client_ref=CLIENT_REF,
+            venue_ref=None,
+            status="unknown",
+            ts_ms=NOW_MS,
+            filled_qty=Decimal("0"),
+            avg_price=None,
+            fee=Decimal("0"),
+            reason="gateway timed out",
+            native={},
+        )
+    )
+    ack = verifier.verify_and_call(scen.intent, scen.permit, scen.state, ambiguous)
+    assert ack.status == "unknown"
+    assert verifier.disabled is True
+    native = NativeCall()
+    later = verifier.verify_and_call(scen.intent, scen.permit, scen.state, native)
+    assert (later.status, later.reason) == ("not_sent", "disabled")
+    assert native.calls == []
+
+
 def test_reset_after_reconcile_re_enables_the_gate(gate):
     """Reconciliation is what resolves the ambiguous reference (D13), so it
     is what clears the disable — not a timer, and not the next tick."""

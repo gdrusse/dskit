@@ -358,11 +358,19 @@ class SubmissionVerifier:
             _LOG.info("refused %s: %s", intent.client_ref, refusal.reason)
             return empty_ack(intent.client_ref, now, _NOT_SENT, refusal.reason)
         try:
-            return native_call(intent, permit, timeout_ms)
+            ack = native_call(intent, permit, timeout_ms)
         except Exception as exc:
             self._disabled = True
             _LOG.error("native call for %s left an ambiguous outcome: %r", intent.client_ref, exc)
             return empty_ack(intent.client_ref, self._clock.now_ms(), _UNKNOWN, type(exc).__name__)
+        if getattr(ack, "status", None) == _UNKNOWN:
+            # A gateway that REPORTS its own timeout rather than raising leaves
+            # the same ambiguity, and §5.14 disables on the `unknown`, not on
+            # the raise: only reconciliation may resolve the reference.
+            self._disabled = True
+            _LOG.error("native call for %s answered %s; sends stop until reconciliation",
+                       intent.client_ref, _UNKNOWN)
+        return ack
 
     # -- argument discipline ---------------------------------------------
 

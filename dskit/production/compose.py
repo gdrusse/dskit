@@ -61,6 +61,7 @@ from dskit.production.arming import (
     Arming,
     ReductionRights,
     approval_verifier,
+    authority_record,
 )
 from dskit.production.base import (
     ProductionError,
@@ -1076,7 +1077,7 @@ class _Disarm(_Verb):
     def run(self, command, view):
         """Return the ``authority`` body that ends the current arm."""
         body = self._w.safety.arming.disarm(view, request_id=command["request_id"])
-        return self.applied([self.record("authority", body["authority_id"], body)])
+        return self.applied([authority_record(body)])
 
 
 class _ArmRequestVerb(_Verb):
@@ -1144,7 +1145,7 @@ class _ArmApproval(_Verb):
                         "verified_payload_digest": approval.request_digest,
                     },
                 ),
-                self.record("authority", body["authority_id"], body),
+                authority_record(body),
             ]
         )
 
@@ -1209,9 +1210,7 @@ class _FlattenApproval(_Verb):
                         "verified_payload_digest": canonical_hash(plan.to_obj()),
                     },
                 ),
-                self.record(
-                    "authority",
-                    authority_id,
+                authority_record(
                     {
                         "authority_id": authority_id,
                         "event": "issue",
@@ -1220,7 +1219,7 @@ class _FlattenApproval(_Verb):
                         "approval_id": command["request_id"],
                         "reason": None,
                         "authorization": grant.to_obj(),
-                    },
+                    }
                 ),
             ]
         )

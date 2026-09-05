@@ -385,6 +385,10 @@ class FakeBreaker:
         self.state = "halted"
         return 1
 
+    def cancel_working(self, view, trip_id):
+        """§6/R6: the best-effort sweep recovery re-issues for an unanswered halt."""
+        self.calls.add("breaker.cancel_working", trip_id)
+
 
 class FakeArming:
     """The loop never mints; it only expires an arm that fell due."""
@@ -569,6 +573,17 @@ class FakeReconciler:
         return self.action
 
 
+class FakeVerifier:
+    """The act gate the loop holds only to clear its disable after a clean run."""
+
+    def __init__(self, calls):
+        self.calls = calls
+
+    def reset_after_reconcile(self):
+        """§5.14: reconciliation is what re-enables sends after an `unknown`."""
+        self.calls.add("verifier.reset_after_reconcile")
+
+
 class FakeMonitor:
     """One monitor: what it observed, what it says, and its own state."""
 
@@ -687,6 +702,7 @@ class Harness:
             "heartbeat": FakeHeartbeat(calls),
             "lease": FakeLease(calls),
             "reconciler": FakeReconciler(calls),
+            "submission_verifier": FakeVerifier(calls),
             "invocation": Invocation(
                 armed=False, env_release_hash=None, once=True, max_ticks=None
             ),
@@ -713,7 +729,7 @@ class Harness:
             invocation=parts["invocation"],
             action_policy=ActionPolicy(),
             transition_policy=TransitionPolicy(),
-            submission_verifier=object(),
+            submission_verifier=parts["submission_verifier"],
         )
         self.execution = Execution(
             executor=parts["executor"],
@@ -1106,6 +1122,35 @@ def test_a_coverage_gap_skips_the_tick_with_no_coverage(
         made.close()
 
 
+def test_a_batch_covering_a_key_the_release_does_not_require_skips_the_tick(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """§5.13 names the phase "`coverage` (EXACT required keys, per-key source
+    and oldest watermark)". An extra key is a batch that is not the one the
+    release describes, and deciding from it would bind a coverage digest the
+    verifier can rehash but nobody planned against."""
+    batch = a_batch()
+    extra = dataclasses.replace(
+        batch,
+        watermarks_by_key={
+            **batch.watermarks_by_key,
+            "NOT-REQUIRED": InputWatermark(
+                key="NOT-REQUIRED", latest_asof_ms=NOW_MS, source_digest="3" * 64
+            ),
+        },
+    )
+    made = make_harness(
+        tmp_path, serve_document, release_manifest, clock, calls,
+        decider=FakeDecider(calls, batch=extra),
+    )
+    try:
+        result = made.tick().run(NOW_MS)
+        assert result.status == "skipped:no_coverage"
+        assert calls.count("decider.evaluate") == 0
+    finally:
+        made.close()
+
+
 def test_coverage_returns_a_feed_age_per_required_key(harness):
     """§5.13: `coverage(batch) -> tuple[FeedAge]` "returns the per-key ages
     — `clock.now_ms()` minus each `EntryBatch.watermarks_by_key` entry —
@@ -1116,6 +1161,38 @@ def test_coverage_returns_a_feed_age_per_required_key(harness):
     assert tuple(sorted(age.key for age in ages)) == tuple(sorted(UNIVERSE))
     assert all(isinstance(age, FeedAge) for age in ages)
     assert all(age.age_ms == NOW_MS - age.watermark_ms for age in ages)
+
+
+def test_the_quote_sets_instant_is_the_oldest_quote_not_the_newest(harness, monkeypatch):
+    """§5.13 binds `quote_asof_ms` into the plan, the intent and the permit,
+    and step (3) ages it against `max_quote_age_ms`. Reading the NEWEST quote
+    would let one fresh instrument hide a stale one — the same D6 rule the
+    feed ladder and the watermark gate both follow."""
+    stale = Quote(
+        instrument=UNIVERSE[0], bid=Decimal("10"), ask=Decimal("11"),
+        mid=Decimal("10.5"), asof_ms=NOW_MS - 60_000,
+    )
+    fresh = Quote(
+        instrument=UNIVERSE[1], bid=Decimal("10"), ask=Decimal("11"),
+        mid=Decimal("10.5"), asof_ms=NOW_MS - 1_000,
+    )
+    monkeypatch.setattr(
+        harness.parts["decider"].proposer, "quotes", lambda head_outputs: [fresh, stale]
+    )
+    quotes = harness.tick().quotes({})
+    assert quotes.min_asof_ms == NOW_MS - 60_000
+    assert quotes.quote_digest == canonical_hash([fresh.to_obj(), stale.to_obj()])
+
+
+def test_an_empty_quote_set_is_stamped_at_the_phase_instant(harness, monkeypatch):
+    """§5.13: "a set with no quote has nothing that can be stale" — so its
+    instant is now, not epoch zero, which would refuse every leg on quote
+    age instead of letting the executor answer `no_quote`."""
+    monkeypatch.setattr(
+        harness.parts["decider"].proposer, "quotes", lambda head_outputs: []
+    )
+    quotes = harness.tick().quotes({})
+    assert quotes.quotes == () and quotes.min_asof_ms == NOW_MS
 
 
 def test_a_production_error_inside_a_decision_phase_refuses_the_tick(
@@ -1464,6 +1541,41 @@ def test_a_reduction_legs_binding_names_the_signed_intent_and_its_digest(
         made.close()
 
 
+def test_a_reduction_legs_right_is_the_one_the_fold_actually_granted(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """§5.13.1: the binding holds "the right being consumed", and step (5)
+    refuses when the rebuilt `reduction_intent_digest` "does not match the
+    right". The right therefore has to be the digest the AUTHORITY granted
+    — an authority id, or anything else that is not a
+    `reduction_intent_digest`, refuses every reduction leg forever."""
+    plan, digests = a_reduction_cycle()
+    made = make_harness(tmp_path, serve_document, release_manifest, clock, calls)
+    try:
+        a_reduction_grant(made, digests)
+        made.tick(reduction_cycle=plan).run(NOW_MS)
+        assert [leg.bindings.reduction.right for leg in FakeLeg.built] == list(digests)
+        assert [leg.bindings.reduction.digest for leg in FakeLeg.built] == list(digests)
+    finally:
+        made.close()
+
+
+def test_a_reduction_leg_whose_digest_the_authority_never_granted_carries_no_right(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """Looking the right up in the fold is what makes the rebuild check bite:
+    a signed intent the current authority never authorised leaves the leg
+    with nothing to match, and step (5) refuses before any reservation."""
+    plan, _digests = a_reduction_cycle()
+    made = make_harness(tmp_path, serve_document, release_manifest, clock, calls)
+    try:
+        a_reduction_grant(made, ("f" * 64,))
+        made.tick(reduction_cycle=plan).run(NOW_MS)
+        assert [leg.bindings.reduction.right for leg in FakeLeg.built] == [None] * len(plan.intents)
+    finally:
+        made.close()
+
+
 def test_a_reduction_cycles_candidates_reach_the_account_phase(
     tmp_path, serve_document, release_manifest, clock, calls
 ):
@@ -1481,6 +1593,152 @@ def test_a_reduction_cycles_candidates_reach_the_account_phase(
         assert sorted(c.id for c in args[0]) == sorted(i.candidate.id for i in plan.intents)
     finally:
         made.close()
+
+
+def a_reduction_grant(made, digests, reserved=()):
+    """Fold a `reduction` authority issue and any reservations into the state."""
+    authority_id = "d" * 64
+    made.ledger.append(
+        {
+            "kind": "authority",
+            "id": f"authority:{authority_id}:issue",
+            "body": {
+                "authority_id": authority_id,
+                "event": "issue",
+                "role": "reduction",
+                "request_id": "req-1",
+                "approval_id": "approval-1",
+                "reason": None,
+                "authorization": {
+                    "authority_id": authority_id,
+                    "release_hash": RELEASE_HASH,
+                    "request_id": "req-1",
+                    "reduction_intent_digests": list(digests),
+                    "expires_ms": NOW_MS + 600_000,
+                },
+            },
+        }
+    )
+    for digest in reserved:
+        made.ledger.append(
+            {
+                "kind": "authority_use",
+                "id": f"authority_use:{authority_id}:{digest}",
+                "body": {
+                    "authority_id": authority_id,
+                    "reduction_intent_digest": digest,
+                    "client_ref": "c" * 64,
+                    "reserved_at_ms": NOW_MS,
+                },
+            }
+        )
+    return authority_id
+
+
+def test_a_partial_reduction_cycle_revokes_every_right_it_did_not_consume(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """D12: "completed rights stay consumed and the writer revokes all
+    unused rights after any partial result, requiring a new plan". A right
+    the cycle never reserved must not stay spendable by a second
+    `execute-flatten` against the same authorization."""
+    _plan, digests = a_reduction_cycle()
+    made = make_harness(tmp_path, serve_document, release_manifest, clock, calls)
+    try:
+        authority_id = a_reduction_grant(made, digests, reserved=digests[:1])
+        made.loop()._revoke_unused_rights()
+        revokes = made.records("authority")[-1]
+        assert revokes["id"] == f"authority:{authority_id}:revoke"
+        assert revokes["body"]["event"] == "revoke"
+        assert made.state.snapshot().reduction is None
+    finally:
+        made.close()
+
+
+def test_a_cycle_that_consumed_every_right_revokes_nothing(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """Nothing was left over, so there is nothing to take away: writing a
+    revoke here would claim a partial result that never happened."""
+    _plan, digests = a_reduction_cycle()
+    made = make_harness(tmp_path, serve_document, release_manifest, clock, calls)
+    try:
+        a_reduction_grant(made, digests, reserved=digests)
+        before = len(made.records("authority"))
+        made.loop()._revoke_unused_rights()
+        assert len(made.records("authority")) == before
+        assert made.state.snapshot().reduction is not None
+    finally:
+        made.close()
+
+
+def test_every_reduction_cycle_is_followed_by_the_unused_right_revocation():
+    """The rule is worth nothing unless the serve loop actually applies it
+    after each cycle it runs, so pin the call site next to the cycle."""
+    source = inspect.getsource(ServeLoop._serve)
+    cycle = source.index("reduction_cycle=plan")
+    assert "_revoke_unused_rights()" in source[cycle:]
+
+
+def a_halting_trip(made, trip_id="trip:operator:1"):
+    """Fold one halting `trip` — appended and barriered before any cancel I/O."""
+    made.ledger.append(
+        {
+            "kind": "trip",
+            "id": trip_id,
+            "body": {
+                "from": "active", "to": "halted", "reason": "operator", "actor": "operator",
+                "control_request_id": None, "principal_digest": None, "proof_digest": None,
+                "acknowledged_trip_id": None,
+            },
+        }
+    )
+    return trip_id
+
+
+def test_a_halt_with_no_cancel_outcome_is_swept_again_at_recovery(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """§6: "A halting `trip` with no later `cancel_outcome` is what recovery
+    looks for: it re-issues `cancel_all` query-first rather than assuming
+    either answer." The trip is barriered BEFORE the cancel I/O, so a crash
+    in between leaves the ledger saying halted with the venue still holding
+    working orders."""
+    made = make_harness(tmp_path, serve_document, release_manifest, clock, calls)
+    try:
+        trip_id = a_halting_trip(made)
+        made.loop().run()
+        assert calls.first("breaker.cancel_working")[0] == (trip_id,)
+    finally:
+        made.close()
+
+
+def test_a_halt_already_answered_by_a_cancel_outcome_is_not_swept_twice(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """The `cancel_outcome` is the answer; re-issuing over it would cancel
+    orders a later resume legitimately placed."""
+    made = make_harness(tmp_path, serve_document, release_manifest, clock, calls)
+    try:
+        trip_id = a_halting_trip(made)
+        made.ledger.append(
+            {
+                "kind": "cancel_outcome",
+                "id": f"cancel_outcome:{trip_id}",
+                "body": {"trip_id": trip_id, "outcome": "none", "acks": []},
+            }
+        )
+        made.loop().run()
+        assert calls.count("breaker.cancel_working") == 0
+    finally:
+        made.close()
+
+
+def test_an_active_series_sweeps_nothing_at_recovery(harness):
+    """Nothing halted, so nothing is owed a sweep: cancelling here would
+    take out the working orders of a perfectly healthy series."""
+    harness.loop().run()
+    assert harness.calls.count("breaker.cancel_working") == 0
 
 
 # ==========================================================================
@@ -1628,6 +1886,61 @@ def test_a_reconcile_mismatch_that_says_halt_trips_the_breaker_before_ready(
         made.close()
 
 
+def test_the_reconciler_is_asked_at_every_tick_boundary_not_only_at_startup(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """§5.9: `due(now_ms, last_run_ms)` "is the ONE owner of
+    `document.reconcile.on_start` and `document.reconcile.every_s`; the loop
+    asks it rather than restating the schedule". Asking once at startup would
+    make `every_s` a knob that never fires."""
+    made = make_harness(tmp_path, serve_document, release_manifest, clock, calls)
+    try:
+        made.loop().run()
+        assert calls.count("reconciler.due") >= 2
+        order = calls.names()
+        assert order.index("reconciler.due") < order.index("feed.pull")
+        assert [i for i, name in enumerate(order) if name == "reconciler.due"][-1] < order.index(
+            "feed.pull"
+        )
+    finally:
+        made.close()
+
+
+def test_a_clean_reconciliation_re_enables_the_act_gate(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """§5.14: an `unknown` "disables every later send until
+    `reset_after_reconcile()` — reconciliation is what resolves the
+    ambiguous reference (D13), never a resend". Without this call the first
+    ambiguous outcome would end the process's ability to submit for good."""
+    made = make_harness(
+        tmp_path, serve_document, release_manifest, clock, calls,
+        reconciler=FakeReconciler(calls, due=True, action="none"),
+    )
+    try:
+        made.loop().run()
+        assert calls.count("verifier.reset_after_reconcile") >= 1
+    finally:
+        made.close()
+
+
+def test_a_reconciliation_that_found_a_mismatch_does_not_re_enable_the_gate(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """A run that ends in `halt` resolved nothing an operator has not seen;
+    clearing the disable there would let the very sends the mismatch argues
+    against continue."""
+    made = make_harness(
+        tmp_path, serve_document, release_manifest, clock, calls,
+        reconciler=FakeReconciler(calls, due=True, action="halt"),
+    )
+    try:
+        made.loop().run()
+        assert calls.count("verifier.reset_after_reconcile") == 0
+    finally:
+        made.close()
+
+
 def test_a_fault_stops_the_process_with_exit_one_and_records_it(
     tmp_path, serve_document, release_manifest, clock, calls
 ):
@@ -1711,17 +2024,25 @@ def test_the_tick_start_crosses_a_barrier_before_any_phase_runs(harness, monkeyp
     was pulled could be lost by a crash that the fetch already caused."""
     seen = []
     real_barrier = harness.ledger.barrier
+    real_append = harness.ledger.append
     monkeypatch.setattr(
-        harness.ledger, "barrier", lambda: (seen.append(("barrier", harness.ledger.head()[0])), real_barrier())[1]
+        harness.ledger, "barrier", lambda: (seen.append(("barrier", None)), real_barrier())[1]
+    )
+    monkeypatch.setattr(
+        harness.ledger,
+        "append",
+        lambda record: (seen.append(("append", record["kind"])), real_append(record))[1],
     )
     original = harness.parts["feed"].pull
     monkeypatch.setattr(
         harness.parts["feed"], "pull", lambda at: (seen.append(("pull", None)), original(at))[1]
     )
     harness.loop().run()
-    first_pull = [i for i, (name, _seq) in enumerate(seen) if name == "pull"][0]
-    barriers_before = [seq for name, seq in seen[:first_pull] if name == "barrier"]
-    assert barriers_before, "no barrier crossed before the first fetch"
+    started = [i for i, (name, kind) in enumerate(seen) if (name, kind) == ("append", "tick_start")][0]
+    first_pull = [i for i, (name, _kind) in enumerate(seen) if name == "pull"][0]
+    assert started < first_pull
+    between = [name for name, _kind in seen[started:first_pull] if name == "barrier"]
+    assert between, "the tick_start was not barriered before the first fetch"
 
 
 def test_exactly_one_decision_and_one_tick_close_each_tick_start(

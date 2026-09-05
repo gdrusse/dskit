@@ -226,8 +226,10 @@ class ReductionBinding:
         What the maker signed at ``flatten-request`` time.
     digest : str
         ``signed.reduction_intent_digest()``.
-    right : str
-        The ``reduction_intent_digest`` the authorization granted.
+    right : str or None
+        The ``reduction_intent_digest`` the authorization granted, looked
+        up in the fold's own rights — ``None`` where the authority in force
+        granted no such right, which step (5) then refuses.
 
     Examples
     --------
@@ -242,7 +244,7 @@ class ReductionBinding:
 
     signed: ReductionIntent
     digest: str
-    right: str
+    right: str | None
 
 
 @dataclass(frozen=True)

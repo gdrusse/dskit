@@ -1471,6 +1471,20 @@ def test_the_effective_instant_may_precede_the_instant_it_became_known():
     assert body["known_at_ms"] == BASE_MS + 3 * 86_400_000
 
 
+def test_adopt_stamps_the_known_instant_the_caller_gave_it_not_the_clock():
+    """§6: "`known_at_ms` is the CONSUMED COMMAND's `queued_at_ms`, never
+    `clock.now_ms()` at the handler — a crash-replayed `adopt` must produce
+    a byte-identical payload or `Ledger.append` refuses it as a changed
+    payload under a reused id"."""
+    reconciler, ledger, state, clock, executor, brk = a_cash_break_run()
+    queued = BASE_MS - 5_000
+    clock.advance(90_000)
+    adopt_it(reconciler, state, brk, known_at_ms=queued)
+    body = ledger.of_kind("cash_flow")[-1]["body"]
+    assert body["known_at_ms"] == queued
+    assert body["known_at_ms"] != clock.now_ms()
+
+
 def test_the_adoption_body_is_exactly_section_6s_seven_keys():
     reconciler, ledger, state, clock, executor, brk = a_cash_break_run()
     adopt_it(reconciler, state, brk)

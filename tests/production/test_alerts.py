@@ -1322,11 +1322,13 @@ def test_close_returns_even_with_a_sink_still_stuck(clock, metrics, hanging):
 def test_start_runs_one_worker_that_delivers_what_was_enqueued(metrics):
     # The only test that leans on the thread: the guarantee IS the thread.
     delivered = threading.Event()
+    sending_thread = []
 
     class Watched(CountingSink):
         def send(self, alert):
             """Deliver, then let the test stop waiting."""
             outcome = super().send(alert)
+            sending_thread.append(threading.current_thread())
             delivered.set()
             return outcome
 
@@ -1339,12 +1341,14 @@ def test_start_runs_one_worker_that_delivers_what_was_enqueued(metrics):
     router = AlertRouter(
         doc.alerting, {"ops": ops}, clock=TestClock(start_ms=NOW_MS), metrics=metrics
     )
-    before = threading.active_count()
     router.start()
     try:
         router.raise_alert(an_alert())
-        assert delivered.wait(2.0) is True
-        assert threading.active_count() >= before + 1
+        assert delivered.wait(5.0) is True
+        # `threading.active_count()` is process-global and other tests' threads
+        # come and go, so ask the guarantee directly: the delivery ran on a
+        # thread the caller is not.
+        assert sending_thread and sending_thread[0] is not threading.current_thread()
     finally:
         router.close()
     assert len(ops.sent) == 1

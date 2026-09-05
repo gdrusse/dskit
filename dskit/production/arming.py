@@ -92,6 +92,7 @@ __all__ = [
     "SCOPE_REASONS",
     "VerifiedPrincipal",
     "approval_verifier",
+    "authority_record",
     "verifier_fingerprint",
 ]
 
@@ -137,6 +138,53 @@ _ORDINARY_ARM_ID = "ordinary-arm-v1"
 #: in (D10, ruling R23). Named once, so the refusal and the test read one word.
 _ACTIVE = "active"
 _GO = "go"
+
+
+#: The kind every authority event is recorded under (§6).
+_AUTHORITY = "authority"
+
+
+def authority_record(body):
+    """Return the ``{kind, id, body}`` record one ``authority`` event is appended as.
+
+    §6 keys the idempotency index by ``id`` ALONE, so the semantic id has to
+    name the event as well as the authority: an ``issue`` and the ``disarm``,
+    ``revoke`` or ``expire`` that ends it are several records of one
+    authority, and sharing one id would make the second an ``append`` of a
+    changed payload under a reused id — a refusal, not a demotion. One owner,
+    so the composition root and the loop spell it once.
+
+    Parameters
+    ----------
+    body : dict
+        A §6 ``authority`` body, carrying ``authority_id`` (str) and
+        ``event`` (a ``vocab.AUTHORITY_EVENTS`` member).
+
+    Returns
+    -------
+    dict
+        ``{"kind": "authority", "id": "authority:<authority_id>:<event>",
+        "body": body}``.
+
+    Raises
+    ------
+    ProductionError
+        On a body without a string ``authority_id`` or an ``event`` outside
+        ``vocab.AUTHORITY_EVENTS``.
+    """
+    problems = []
+    if not isinstance(body, dict):
+        problems.append(f"an authority record is built from its body, got {body!r}")
+        raise ProductionError(problems)
+    authority_id, event = body.get("authority_id"), body.get("event")
+    _check_str(problems, "authority.authority_id", authority_id)
+    if event not in AUTHORITY_EVENTS:
+        problems.append(
+            f"authority.event must be one of {list(AUTHORITY_EVENTS)}, got {event!r}"
+        )
+    if problems:
+        raise ProductionError(problems)
+    return {"kind": _AUTHORITY, "id": f"{_AUTHORITY}:{authority_id}:{event}", "body": body}
 
 
 pin_members("arming.py's purposes", (_ARM_REQUEST, _ARM_APPROVAL), APPROVAL_PURPOSES)

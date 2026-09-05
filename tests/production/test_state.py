@@ -1262,7 +1262,8 @@ def test_last_trip_tracks_the_latest_trip_and_is_none_before_any():
     latest = st.last_trip()
     assert isinstance(latest, types.MappingProxyType)
     assert set(latest) == {"id", "seq", "recorded_at_ms", "from", "to", "reason",
-                           "acknowledged_trip_id"}
+                           "acknowledged_trip_id", "cancelled"}
+    assert latest["cancelled"] is False
     assert (latest["id"], latest["seq"], latest["recorded_at_ms"]) == (
         first["id"], first["seq"], first["recorded_at_ms"])
     assert (latest["from"], latest["to"]) == ("active", "reducing")

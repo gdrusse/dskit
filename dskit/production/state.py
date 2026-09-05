@@ -170,8 +170,13 @@ _CASH_FLOW_KEYS = ("currency", "amount", "superseded_by")
 #: What the fold keeps of the latest ``trip`` (see ``SeriesState.last_trip``):
 #: the envelope's identity and instant — a reset acknowledges the id and
 #: cooling-off is measured from ``recorded_at_ms`` — plus the body fields
-#: that say what the transition was.
-_LAST_TRIP_KEYS = ("id", "seq", "recorded_at_ms", "from", "to", "reason", "acknowledged_trip_id")
+#: that say what the transition was, and whether a ``cancel_outcome`` has
+#: answered it yet: §6 makes "a halting trip with no later cancel_outcome"
+#: exactly what recovery looks for, and the fold is the only walk of the
+#: ledger a restart gets.
+_LAST_TRIP_KEYS = (
+    "id", "seq", "recorded_at_ms", "from", "to", "reason", "acknowledged_trip_id", "cancelled",
+)
 
 
 def _money(problems, path, value):
@@ -868,7 +873,7 @@ _FOLDS = {
     "readiness": ("_fold_readiness", False),
     "recon": ("_fold_nothing", False),
     "trip": ("_fold_trip", False),
-    "cancel_outcome": ("_fold_nothing", False),
+    "cancel_outcome": ("_fold_cancel_outcome", False),
     "adoption": ("_fold_nothing", False),
     "command_result": ("_fold_command_result", False),
     "monitor": ("_fold_monitor", False),
@@ -1050,6 +1055,16 @@ class SeriesState:
 
     def _fold_nothing(self, body, envelope):
         """Fold a kind that projects nothing beyond the head."""
+
+    def _fold_cancel_outcome(self, body, envelope):
+        """Mark the halting trip this outcome answers, so recovery re-issues only what is open."""
+        trip_id = body.get("trip_id")
+        if not isinstance(trip_id, str) or not trip_id:
+            raise ProductionError(
+                [f"cancel_outcome.trip_id must name the trip it answers, got {trip_id!r}"]
+            )
+        if self._last_trip is not None and self._last_trip["id"] == trip_id:
+            self._last_trip["cancelled"] = True
 
     def _fold_tick_start(self, body, envelope):
         """Open a tick; the body's ``release_hash`` falls back on the envelope's."""
@@ -1345,6 +1360,7 @@ class SeriesState:
             "to": target,
             "reason": body.get("reason"),
             "acknowledged_trip_id": body.get("acknowledged_trip_id"),
+            "cancelled": False,
         }
 
     def _fold_control_request(self, body, envelope):
@@ -1434,8 +1450,10 @@ class SeriesState:
         -------
         mapping or None
             Read-only ``{id, seq, recorded_at_ms, from, to, reason,
-            acknowledged_trip_id}`` of the latest ``trip`` record; None
-            before any transition.
+            acknowledged_trip_id, cancelled}`` of the latest ``trip``
+            record; None before any transition. ``cancelled`` says whether
+            a ``cancel_outcome`` naming this trip has been folded, which is
+            what recovery asks before re-issuing the sweep (§6).
         """
         return None if self._last_trip is None else MappingProxyType(dict(self._last_trip))
 

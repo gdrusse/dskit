@@ -1679,6 +1679,27 @@ def test_a_quote_older_than_max_quote_age_refuses_naming_quote_age():
     assert gate["gate"] == "quote_age"
 
 
+def test_a_quote_set_that_is_not_the_one_the_proposal_priced_refuses_naming_quote_digest():
+    """§5.13 step (3) re-checks the quote DIGEST, not only the age: a set
+    refreshed between `propose` and the leg would price the order off quotes
+    nobody planned from, and the permit binds the planned digest."""
+    scen = build(quotes=dataclasses.replace(quote_set(), quote_digest="9" * 64))
+    wire_authorities(scen)
+    gate = failing_gate(scen)
+    assert gate["gate"] == "quote_digest"
+    assert "9" * 64 in gate["reason"] or QUOTE_DIGEST in gate["reason"]
+
+
+def test_a_batch_whose_coverage_digest_is_not_the_proposals_refuses_naming_coverage():
+    """The same rule for the entry batch: the plan, intent and permit all
+    bind `coverage_digest`, so a proposal claiming another batch's coverage
+    can never be the one the verifier rehashes."""
+    scen = build(prop=dataclasses.replace(proposal(), coverage_digest="8" * 64))
+    wire_authorities(scen)
+    gate = failing_gate(scen)
+    assert gate["gate"] == "coverage"
+
+
 def test_accounting_evidence_older_than_max_valuation_age_refuses_naming_evidence_age():
     """The account is the sole economic authority inside a guard (§5.8.1);
     stale evidence must refuse rather than size an order from it."""
@@ -2068,6 +2089,81 @@ def test_a_trip_folded_between_steps_five_and_six_refuses_without_minting():
     assert authority.minted == 0
     assert "authorization" not in scen.ledger.kinds()
     assert scen.executor.submits == []
+
+
+class _EconomicLeg(LegPipeline):
+    """Folds one economic record between steps (5) and (6).
+
+    A `cash_flow` moves `economic_seq` without touching the breaker, the
+    arm or health — so nothing but step (6)'s own drift check can catch it.
+    """
+
+    def intent(self, plan):
+        built = super().intent(plan)
+        self.recording.ledger.append(
+            {
+                "kind": "cash_flow",
+                "id": "cash_flow:mid-leg",
+                "body": {
+                    "effective_at_ms": NOW_MS,
+                    "known_at_ms": NOW_MS,
+                    "supersedes": None,
+                    "currency": "USD",
+                    "amount": "25.00",
+                    "flow_kind": "deposit",
+                    "external": True,
+                    "source": "venue",
+                    "evidence": {},
+                },
+            }
+        )
+        return built
+
+
+def test_a_risk_version_that_moved_between_steps_five_and_six_refuses_without_minting():
+    """§5.13 step (6): "then a refusal if any member the plan and intent
+    already bound has moved since". `risk_version` is bound by the plan, the
+    intent AND the permit, so a balance folded in between must refuse — the
+    action matrix cannot see this one, because the breaker, the arm and
+    health are all unchanged."""
+    scen = build()
+    table = wire_authorities(scen, model=TrippingAuthority)
+    authority = table.by_origin["model"]
+    result = _EconomicLeg(*scen.parts()).run()
+    assert result.result == "not_sent"
+    assert authority.minted == 0
+    assert "authorization" not in scen.ledger.kinds()
+    assert scen.executor.submits == []
+    assert "economic_seq moved" in result.ack.reason
+
+
+def test_a_refusal_after_the_plan_barrier_terminalises_with_a_not_sent_order_event():
+    """§5.13 step (8) and R28: "a refusal AFTER it terminalises through the
+    same step (8) by appending an `order_event` whose `event` and `status`
+    are `not_sent` with a synthesized `Ack`, so a leg that reached step (5)
+    always has an outcome record and recovery never has to guess whether an
+    intent was answered"."""
+    scen = build()
+    wire_authorities(scen)
+    result = _EconomicLeg(*scen.parts()).run()
+    assert scen.ledger.kinds()[-1] == "order_event"
+    body = scen.ledger.one("order_event")
+    assert (body["event"], body["status"]) == ("not_sent", "not_sent")
+    assert body["client_ref"] == result.client_ref
+    assert result.ack is not None and result.ack.status == "not_sent"
+    assert result.ack.filled_qty == Decimal("0") and result.ack.venue_ref is None
+
+
+def test_a_refusal_before_the_plan_barrier_writes_only_the_plan():
+    """The other half of R28: "A refusal BEFORE the plan barrier writes only
+    the `decision_plan` with `result: not_sent`" — there is no intent to owe
+    an outcome for, so an `order_event` would be a record of an order that
+    never existed."""
+    scen = build(batch=entry_batch(data_asof_ms=NOW_MS - MAX_STALENESS_MS - 1))
+    wire_authorities(scen)
+    result = run(scen)
+    assert scen.ledger.kinds() == ["decision_plan"]
+    assert result.ack is None and result.intent is None
 
 
 class RecordingAuthority(LiveAuthority):

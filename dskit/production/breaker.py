@@ -343,7 +343,7 @@ class Breaker:
             raise ProductionError(problems)
         view = self._state.snapshot()
         seq, trip_id = self._transition(view, _HALTED, cause, reason, actor, credentials, None, None)
-        self._cancel_working(view, trip_id)
+        self.cancel_working(view, trip_id)
         return seq
 
     def reduce(self, actor, control_request_id, principal_digest, proof_digest):
@@ -488,8 +488,32 @@ class Breaker:
 
     # -- the halt's best-effort cancel (D12, R6) ----------------------------------
 
-    def _cancel_working(self, view, trip_id):
-        """Cancel working orders if asked, then record what it came to — after the halt's barrier."""
+    def cancel_working(self, view, trip_id):
+        """Cancel working orders if asked, then record what it came to — after the halt's barrier.
+
+        Public because §6 makes an unanswered halt a recovery duty: "A
+        halting ``trip`` with no later ``cancel_outcome`` is what recovery
+        looks for: it re-issues ``cancel_all`` query-first rather than
+        assuming either answer" (ruling R6). ``executor.cancel_all``
+        queries ``open_orders`` before it cancels anything, so a re-issue
+        after a crash cancels what is still open rather than what the fold
+        remembers.
+
+        Parameters
+        ----------
+        view : StateView
+            The fold as the caller has it; its ``working`` decides whether
+            there is anything to sweep.
+        trip_id : str
+            The halting ``trip`` record this sweep answers; the
+            ``cancel_outcome`` is appended under ``cancel_outcome:<trip_id>``,
+            so a second call for one trip dedups instead of double-recording.
+
+        Returns
+        -------
+        None
+            The outcome is a record, not a return value.
+        """
         acks = ()
         if not self._cancel_open or not view.working:
             outcome = _OUTCOME_NONE

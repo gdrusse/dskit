@@ -41,6 +41,7 @@ import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
+from dskit.production.arming import ReductionRights, authority_record
 from dskit.production.base import ProductionError, canonical_hash, pin_members
 from dskit.production.compose import handlers_for
 from dskit.production.control import EXECUTING_PURPOSES, CommandProcessor
@@ -67,6 +68,7 @@ from dskit.production.vocab import (
     LEG_LATENCY_BUCKETS,
     LOOP_STATES,
     METRIC_LABEL_VALUES,
+    RECON_ACTIONS,
     TICK_PHASES,
     TICK_STATUSES,
     TRIP_REASONS,
@@ -113,8 +115,18 @@ _OPERATOR_TRIP = pin_members("loop.py's operator trip", ("operator",), TRIP_REAS
 #: `Breaker.trip`'s cause for the out-of-band kill switch (§5.6).
 _HALT_CAUSE = "halt"
 
-#: What `Reconciler.apply_policy` answers when the document says to halt.
-_RECON_HALTS = "halt"
+#: What `Reconciler.apply_policy` answers when the document says to halt,
+#: and when it found nothing that needs a decision at all. Pinned to the
+#: closed set so a renamed action refuses at import rather than silently
+#: never matching.
+_RECON_HALTS, _RECON_CLEAN = pin_members(
+    "loop.py's reconciliation actions", ("halt", "none"), RECON_ACTIONS
+)
+
+#: Why the writer revokes what a reduction cycle did not consume. D12:
+#: "completed rights stay consumed and the writer revokes all unused rights
+#: after any partial result, requiring a new plan."
+_UNUSED_RIGHTS = "partial_result"
 
 #: The feed status a tick that never fetched reports in memory. The §6
 #: `tick` record carries `feed: null` for such a tick instead — inventing
@@ -248,14 +260,22 @@ class _ReductionCycle(_Cycle):
         return tuple(intent.proposal for intent in self._plan.intents)
 
     def binding(self, tick, proposal, view):
-        """Bind the signed intent, its digest and the right being consumed."""
+        """Bind the signed intent, its digest and the right the fold actually granted.
+
+        ``right`` is looked up in the fold's own ``rights`` rather than
+        echoed from the signed intent: step (5)'s rebuild check is what
+        proves "the digest the right names is the digest that reaches the
+        venue", and a right this authority never granted must leave it with
+        nothing to match.
+        """
         intent = self._by_id[proposal.id]
         digest = intent.reduction_intent_digest()
         grant = view.reduction
+        rights = () if grant is None else grant.rights
         return self.ORIGIN, ReductionBinding(
             signed=intent,
             digest=digest,
-            right=None if grant is None else grant.authority_id,
+            right=digest if digest in rights else None,
         )
 
 
@@ -1046,7 +1066,7 @@ class ServeLoop:
         self._lease()
         self._recover()
         self._announce()
-        self._reconcile_on_start()
+        self._reconcile_if_due()
         self._gate_readiness()
         self._state = _READY
         self.observability.heartbeat.start()
@@ -1071,14 +1091,37 @@ class ServeLoop:
         ).run(self.schedule.clock)
         _LOG.info("recovered %d record(s), closed %d tick(s)",
                   report.replayed, len(report.closed_ticks))
+        self._finish_halt_cancel()
+
+    def _finish_halt_cancel(self):
+        """Re-issue the cancel sweep a crash cut off (§6's ``cancel_outcome``, R6).
+
+        A halting ``trip`` is appended and barriered BEFORE any cancel I/O,
+        so a process that died in between leaves the ledger saying "halted"
+        with the venue still holding working orders. §6: such a trip "is
+        what recovery looks for: it re-issues ``cancel_all`` query-first
+        rather than assuming either answer".
+        """
+        trip = self.recording.state.last_trip()
+        if trip is None or trip["to"] != _HALTED_BREAKER or trip["cancelled"]:
+            return
+        _LOG.warning("halt %s has no cancel outcome; re-issuing the sweep", trip["id"])
+        self.safety.breaker.cancel_working(self.recording.state.snapshot(), trip["id"])
 
     def _announce(self):
         """Append and barrier this process's §6 ``process`` start record (D24)."""
         self._append("process", f"start:{self._process_id()}", self._process_body("start"))
         self.recording.ledger.barrier()
 
-    def _reconcile_on_start(self):
-        """Reconcile before READY when the document says to; mismatches halt (D13)."""
+    def _reconcile_if_due(self):
+        """Reconcile whenever the document's schedule says to; a mismatch halts (D13).
+
+        §5.9 makes ``Reconciler.due(now_ms, last_run_ms)`` the ONE owner of
+        ``reconcile.on_start`` and ``reconcile.every_s``, and "the loop asks
+        it rather than restating the schedule" — so it is asked before READY
+        AND at every tick boundary, or ``every_s`` would be a knob that
+        never fires.
+        """
         now = self.schedule.clock.now_ms()
         if not self.recording.reconciler.due(now, self._last_recon_ms):
             return
@@ -1088,8 +1131,14 @@ class ServeLoop:
             self.document.coordination.scope,
         )
         self._last_recon_ms = now
-        if self.recording.reconciler.apply_policy(report) == _RECON_HALTS:
+        action = self.recording.reconciler.apply_policy(report)
+        if action == _RECON_HALTS:
             self.safety.breaker.trip(_RECONCILE_TRIP, SERVE_VERB)
+        elif action == _RECON_CLEAN:
+            # D13/§5.14: reconciliation is what resolves an ambiguous client
+            # ref, so it is what clears the gate's disable — never a timer,
+            # and never the next tick on its own.
+            self.safety.submission_verifier.reset_after_reconcile()
 
     def _gate_readiness(self):
         """Refuse a live serve without a current release-bound GO (§5.13).
@@ -1143,6 +1192,7 @@ class ServeLoop:
                 self._completed += 1
                 for plan in self._drain_cycles():
                     self._tick(tick_at, (), reduction_cycle=plan)
+                    self._revoke_unused_rights()
 
     def _due(self):
         """Return every grid instant now due, waiting for the next when none is.
@@ -1187,6 +1237,25 @@ class ServeLoop:
         cycles, self._cycles = tuple(self._cycles), []
         return cycles
 
+    def _revoke_unused_rights(self):
+        """Revoke every right the cycle did not consume — D12's partial result.
+
+        A cycle stops on the first refusal, expiry or ambiguous outcome, so
+        what it did not reserve must not stay spendable: D12 requires a new
+        maker-signed plan rather than a second run at the leftovers. A cycle
+        that consumed every right leaves nothing to revoke and writes no
+        record.
+        """
+        view = self.recording.state.snapshot()
+        grant = view.reduction
+        if grant is None or not set(grant.rights) - set(grant.reserved):
+            return
+        body = ReductionRights(clock=self.schedule.clock).revoke_unused(view, _UNUSED_RIGHTS)
+        self.recording.ledger.append(authority_record(body))
+        self.recording.ledger.barrier()
+        _LOG.warning("revoked %d unused reduction right(s) after a partial cycle",
+                     len(set(grant.rights) - set(grant.reserved)))
+
     # -- one tick -----------------------------------------------------------
 
     def _tick(self, tick_at_ms, absorbed, reduction_cycle=None):
@@ -1213,7 +1282,7 @@ class ServeLoop:
         self._after_tick(result, decision_body, tick_body)
 
     def _before_tick(self, tick_at_ms):
-        """Consume the control inbox, re-check the kill switch and evaluate health."""
+        """Consume the control inbox, re-check the kill switch, evaluate health, reconcile."""
         self.observability.health.evaluate(self.schedule.clock.now_ms())
         self._check_sentinel()
         pending = {command["request_id"]: command for command in self.recording.inbox.pending()}
@@ -1225,6 +1294,7 @@ class ServeLoop:
                 and command["purpose"] in EXECUTING_PURPOSES
             ):
                 self._queue_cycle(command)
+        self._reconcile_if_due()
 
     def _check_sentinel(self):
         """§5.6: the HALT sentinel is re-checked at every tick boundary."""

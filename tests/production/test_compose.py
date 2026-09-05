@@ -39,6 +39,7 @@ from dskit.production.arming import (
     Arming,
     ArmRequest,
     VerifiedPrincipal,
+    authority_record,
 )
 from dskit.production.base import ProductionError, canonical_hash
 from dskit.production.breaker import Breaker
@@ -903,6 +904,29 @@ def test_the_disarm_handler_returns_the_armings_authority_record(shadow_document
     assert arming.named("disarm")
 
 
+def test_an_issue_and_the_disarm_that_ends_it_are_two_record_ids(
+    shadow_document, shadow_bundles
+):
+    """§6 keys the idempotency index by `id` ALONE, and R9 makes every
+    producer qualify its id with the kind. Both events of one authority
+    therefore have to name the EVENT too: sharing `authority:<id>` would
+    make the disarm an append of a changed payload under a reused id, which
+    `Ledger.append` refuses — an operator's safe demotion would be
+    impossible for the life of the arm."""
+    authority_id = "a" * 64
+    disarmed = Owner(answer=lambda *a, **k: {"authority_id": authority_id, "event": "disarm"})
+    handlers = handlers_for(shadow_document, owner_bundles(shadow_bundles, arming=disarmed))
+    records, _status, _reason = handlers["disarm"](
+        command("disarm"), shadow_bundles[5].state.snapshot()
+    )
+    issue = authority_record({"authority_id": authority_id, "event": "issue"})
+    assert issue["id"] != records[0]["id"]
+    assert (issue["id"], records[0]["id"]) == (
+        f"authority:{authority_id}:issue",
+        f"authority:{authority_id}:disarm",
+    )
+
+
 def test_the_reconcile_handler_runs_the_reconciler_over_the_documents_scope(
     shadow_document, shadow_bundles
 ):
@@ -1028,7 +1052,9 @@ def test_the_arm_approval_handler_asks_readiness_and_the_sentinel_for_the_world(
     The maker's raw proof comes back out of the consumed command's own
     receipt, never out of a ledger record — §6 keeps proof bytes off the
     chain, and `approve` re-verifies the maker."""
-    arming = Owner(answer=lambda *a, **k: ({"authority_id": "a" * 64}, object()))
+    arming = Owner(
+        answer=lambda *a, **k: ({"authority_id": "a" * 64, "event": "issue"}, object())
+    )
     readiness = Owner(answer=lambda *a, **k: "go")
     breaker = Owner(answer=lambda *a, **k: False)
     handlers = handlers_for(
