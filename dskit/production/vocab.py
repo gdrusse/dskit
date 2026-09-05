@@ -246,6 +246,7 @@ RECORD_KINDS = (
     "readiness",
     "recon",
     "trip",
+    "cancel_outcome",
     "adoption",
     "command_result",
     "monitor",

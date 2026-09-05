@@ -380,7 +380,6 @@ def trip_body(from_state="active", to_state="reducing"):
         "principal_digest": DIGEST_RISK,
         "proof_digest": DIGEST_PLAN,
         "acknowledged_trip_id": None,
-        "cancel_outcome": "none",
     }
 
 
@@ -517,6 +516,7 @@ def full_sequence():
         ("decision", decision_body()),
         ("tick", tick_body()),
         ("trip", trip_body()),
+        ("cancel_outcome", {"trip_id": "trip-1", "outcome": "none", "acks": []}),
         ("authority", authority_body(role="reduction", authority_id="auth-2",
                                      rights=(RIGHT_A, RIGHT_B))),
         ("authority_use", authority_use_body()),

@@ -484,6 +484,7 @@ def test_record_kinds_are_the_twenty_five_ledger_kinds_of_the_record_table():
         "readiness",
         "recon",
         "trip",
+        "cancel_outcome",
         "adoption",
         "command_result",
         "monitor",
