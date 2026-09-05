@@ -84,9 +84,9 @@ onto `resilience.py` (its own ADR); a `sqlite` ledger pack and a `parquet`
 run-reference pack are phase 2 (§11).
 
 **Explicitly NOT closed by this proposal — the capital/report seam.** The owner's
-constraint (4) names a half-built seam: `dskit/pipeline/kinds_report.py` expects
-a `capital` block carrying `twr`, `mwr`, `cumulative_contributions`,
-`equity_curve` and `trading_pnl`, and nothing in the repo produces any of them.
+constraint (4) names a half-built seam: `dskit/pipeline/kinds_report.py` expects a `capital` block carrying `twr`,
+`mwr`, `cumulative_contributions`, `trading_pnl` (`:214-226`) and
+`equity_curve` (`:1121`), and nothing in the repo produces any of them.
 The `accounting` seam in this proposal is *venue* accounting — positions,
 balances, fills, exposure — which is what guards and sizing require; it is a
 different thing. `report.py` (phase 2) covers attribution, calibration and
@@ -140,8 +140,8 @@ brackets.
   The entry must be a source root and dominate every non-release-bound path. Its
   class supplies a pure `serving_contract(params, verified_run_evidence)` with
   source locator, entity-key projection, event-time extraction, per-key digest
-  recipe and manifest-bound required-universe evidence—never inferred from
-  dedupe `key_fields`. The configured window param must already exist in the run
+  recipe. The universe is not the contract's business: it comes from the
+  document (§5.2) and is never inferred from dedupe `key_fields`. The configured window param must already exist in the run
   document, preserving the driver's existing-key-only override rule. After fetch,
   one entry execution returns the rows plus the seven-field `EntryBatch`
   defined in §5.2; the same
@@ -462,8 +462,9 @@ brackets.
   pins 17 document identities (16 in `tests/pipeline/test_foreach.py`, one in
   `tests/pipeline_libs/test_mlflow.py`; the other three sha256 literals under
   `tests/` are `model_hash` and file-content pins, not `config_hash`).
-  Feed source, key/time/digest recipe and required-universe evidence derive from
-  the entry's pure ServingContract and are normalized before hashing. `plan` also derives a
+  Feed source and key/time/digest recipe derive from the entry's pure
+  ServingContract, and `required_keys` from the serve document; both are
+  normalized before hashing. `plan` also derives a
   `RuntimeFingerprint`: Python implementation/version/cache tag/ABI, platform and
   libc, project/lock digests, and the complete installed-distribution inventory
   (`name`, `version`, `direct_url`, `RECORD` digest), plus a container image digest
@@ -599,7 +600,7 @@ exactly one of them: `CLOCK_KINDS`, `CALENDAR_KINDS`, `CADENCE_KINDS`,
 `EXECUTOR_KINDS`, `ACCOUNTING_KINDS`, `APPROVAL_KINDS`, `LEASE_KINDS`,
 `MONITOR_KINDS`, `REFERENCE_KINDS`, `CHUNKER_KINDS`, `THRESHOLD_KINDS`,
 `PROBE_KINDS`, `ALERT_SINK_KINDS`, `HEARTBEAT_KINDS`, `TRANSPORT_KINDS`,
-`FEE_KINDS`, `AUTHORITY_KINDS`.
+`FEE_KINDS`.
 Registering a name twice refuses. A child registers nothing and references its
 classes by path.
 
@@ -687,11 +688,16 @@ than only as a line in §8.
 ### 5.2 `feed.py`
 
 `ServingContract{source_binding, entity_key_fields, event_time_field,
-digest_recipe, required_universe_evidence}` is returned by the entry class's pure
-`serving_contract(params, verified_run_evidence)`. Required-universe evidence is the serve document's `serving.required_universe`
-— an inline sorted key list, or a path to a JSON list — which `plan` reads,
-canonicalises and binds into the immutable `ReleaseManifest` as
-`required_keys` + `required_keys_digest`; absence refuses at `plan`.
+digest_recipe}` — four fields, and deliberately **no** universe: the method is
+pure, pipeline-side and takes no document, so it cannot know the required key
+set. `plan` reads `serving.required_universe` and puts
+`required_keys`/`required_keys_digest` into the `FeedSpec` itself is returned by the entry class's pure
+`serving_contract(params, verified_run_evidence)`. The required key set is the serve document's `serving.required_universe` — an
+inline sorted key list, or a path to a JSON list — which `plan` reads,
+canonicalises and binds into the `FeedSpec` inside the immutable
+`ReleaseManifest` as `required_keys` + `required_keys_digest`; absence refuses
+at `plan`. It never passes through `ServingContract`, which is pipeline-side
+and document-blind.
 It is **not** read back from the run dir: `driver._release_spent` replaces
 spent record streams with summaries (ADR-0048, `driver.py:747`), and
 `ObservationRows` emits exactly such a stream, so neither the entry's rows nor
@@ -933,8 +939,8 @@ non-finite number.
 
 - `Guard(ABC)`: class attribute `_PARAMS`; `validate_params` classmethod;
   `@abstractmethod check(proposal, state) -> Finding`, where `state` is the
-  frozen `StateView` of §5.8.1 plus the tick's validated `AccountState` — a
-  view, never the fold itself, so a guard cannot mutate what it judges. Stale or incomplete accounting evidence refuses.
+  frozen `TickState` of §5.8.1 — a view, never the fold itself, so a guard
+  cannot mutate what it judges, and `state.account` is its economic authority. Stale or incomplete accounting evidence refuses.
 - `GuardChain(guards)`: `requirements(candidates, at_ms, calendar) ->
   tuple[EvidenceRequirement]` collects what every configured measure declares
   over every candidate scope key — passing each `Limit`'s `include_working`
@@ -1032,7 +1038,7 @@ non-finite number.
   flatten_approval | execute_flatten | resume | adopt`; role authorization is verifier-owned.
   expiry is mandatory and bounded by `arming.max_duration_s`; allowlists may only
   narrow and overlays must be provably stricter. `Arming` binds the release and
-  proofs. `current` folds the ledger; `arming.json` is only a head-bound cache.
+  proofs. `current` reads `SeriesState` (§5.8.1); `arming.json` is only a head-bound cache.
   Immediately before submit, current scope is applied to the exact intent and a
   bound `ActPermit` is issued with input, quote, evidence and risk bindings. The
   `SubmissionVerifier` rechecks those bindings after the final barrier; the
@@ -1258,21 +1264,39 @@ section names box 3.
   `Breaker.current`, `Arming.current`, `Readiness.current`, `Accounting`,
   `Guard`, `Reconciler` and startup recovery all read this object, and the
   head-bound JSON files remain caches of *its* projection.
-- `StateView` is what a `Guard` receives as `state` and what `Accounting.snapshot`
-  and `Reconciler.run` take as their first argument (both previously written as an
-  untyped `ledger_state`): `positions`, `working`, `pending`, `balances`,
-  `decision_history`, `feed_status`, `feed_ages`, `calendar`, `breaker`, `rung`,
-  `readiness`, `risk_version`, `head_seq`, `head_hash`. It is frozen and has no
-  setter, so a guard cannot mutate what it is judging.
+- `StateView` is the frozen projection of the fold, and **only** of the fold:
+  `positions`, `working`, `pending`, `balances`, `decision_history`, `breaker`,
+  `arming`, `readiness`, `guard_holds`, `risk_version`, `head_seq`,
+  `head_hash`. `Accounting.snapshot` and `Reconciler.run` take it as their
+  first argument (both previously written as an untyped `ledger_state`).
+- `TickState{view, account, feed_status, feed_ages, calendar, rung}` is what a
+  `Guard` receives as `state` — one declared type, assembled by the tick. The
+  last four members are deliberately not in `StateView` because they are not
+  folds: `feed_status`/`feed_ages` are *this* tick's fetch result (a folded
+  feed age would report the previous completed tick's staleness, which is
+  exactly the bug `input_age_ms` exists to catch), `calendar` is an injected
+  collaborator and `rung` is a document field.
+- **`AccountState` is the sole authority for economics inside a guard.**
+  `TickState.view` and `TickState.account` overlap on positions, working orders
+  and balances, and they are derived differently on purpose: the view is the
+  fold at head, the account is the correction-aware snapshot with prior legs'
+  reservations folded (§5.13 step 2). A `Measure` reads `state.account`; the
+  view is there for provenance and for non-economic history. A test pins that
+  no `Measure` reads `state.view.positions`.
+  Both are frozen and setterless, so a guard cannot mutate what it judges.
 - **One fold, not three.** `PositionBook` belongs to `SeriesState`, not to
   `Executor`: the executor reports what the venue says (`positions()` when
   `capabilities().positions == "venue"`, otherwise nothing) and `SeriesState`
   derives ours from folded fills, so `Reconciler` has exactly two sides to
   compare and it is unambiguous which is which. `Accounting` values that fold
   against quotes; it does not maintain a second one.
-- Recovery is `SeriesState.apply` over the ledger from the last `snapshot`
-  record forward, so restart amnesia is structurally impossible rather than a
-  rule each subsystem remembers.
+- `Recovery(ledger, state, id_source)` lives here, not in `leg.py`: it replays
+  `SeriesState.apply` from the last `snapshot` record forward, then closes
+  unmatched `tick_start`/`decision_plan`/`intent` records into terminal `tick`
+  and `decision` records, queries any ambiguous client ref and never resends.
+  It runs before the scheduler exists and has nothing to do with a leg, so
+  restart amnesia is structurally impossible rather than a rule each subsystem
+  remembers.
 
 ### 5.9 `reconcile.py`
 
@@ -1297,7 +1321,7 @@ break ids and release hash; after inspection it records the delta, crosses
 
 - `Monitor(ABC)`: `_PARAMS`; `fit(reference)`; `@abstractmethod observe(record)`;
   `@abstractmethod verdict() -> Verdict`; `state()`/`restore(state)` (JSON-able,
-  carried by the §6 `snapshot` record, which is the sole owner of monitor state;
+  folded by `SeriesState` and durably carried by the §6 `snapshot` record;
   `Checkpoint` does not hold it).
 - Strategies, each an ABC with one abstract hook —
   `Reference(ABC).sample() -> tuple` (the comparison population),
@@ -1540,7 +1564,16 @@ knob because D13 fixes the answer: query, never resend.
   keys structural rather than advisory. The ten phase methods — `gate`,
   `verify_release`, `fetch`, `read_entry`, `coverage`, `evaluate`,
   `candidates`, `quotes`, `account`, `propose` — are the `@abstractmethod`
-  hooks.
+  hooks, and each takes and returns declared values rather than mutating
+  `self`, so the dataflow between phases is part of the contract:
+  `gate(tick_at_ms) -> GateResult` · `verify_release() -> None` (refuses) ·
+  `fetch(tick_at_ms) -> FeedResult` · `read_entry(tick_at_ms) -> EntryBatch` ·
+  `coverage(batch) -> None` (refuses) · `evaluate(batch) -> head_outputs` ·
+  `candidates(head_outputs) -> tuple[Candidate]` ·
+  `quotes(head_outputs) -> QuoteSet` ·
+  `account(candidates, quotes, at_ms) -> AccountState` ·
+  `propose(head_outputs, candidates, account) -> tuple[Proposal]`.
+  `run` threads those values; a phase holds no scratch state between calls.
   `Tick(document, release, schedule, data, decision, safety, execution,
   recording, observability, tick_id)` takes the same seven bundles the loop
   holds plus the allocated tick id; it is constructed once per tick and owns
@@ -1611,24 +1644,46 @@ The eight steps above carry every barrier, every reservation, the cumulative-ris
 folding and the one place money leaves the process. They are a class, not a
 procedure inside the loop.
 
-- `LegPipeline(proposal, plan_inputs, decision, safety, execution, recording,
-  observability)`: `run() -> LegResult{result, intent, ack, findings,
-  leg_latency_ms}`, with one method per step — `guard`, `refresh`, `rebind`,
-  `plan`, `intent`, `authorize`, `act`, `fold` — mapping onto `vocab.LEG_STEPS`
-  for the §6 latency buckets. Each barrier is that method's own last act, so
-  "record before act" is visible in one file rather than distributed through a
-  loop body.
+- `LegPipeline(proposal, bindings, decision, safety, execution, recording,
+  observability)` where `bindings` is the frozen
+  `LegBindings{entry_batch, quotes, account, tick_id, leg_index, calendar,
+  readiness}` the tick assembles once and every step rebinds against.
+  `run() -> LegResult{result, intent, ack, findings, leg_latency_ms}` is
+  **concrete and final** and walks `vocab.LEG_STEPS` — the same template-method
+  shape as `Tick.run`, so "record before act" is enforced by the base rather
+  than by convention inside eight methods. The eight `@abstractmethod` steps:
+  `guard(proposal) -> tuple[Finding]` ·
+  `refresh(findings) -> AccountState` ·
+  `rebind(account) -> None` (refuses on any changed version/digest) ·
+  `plan(findings, account) -> DecisionPlan` (appends + barriers) ·
+  `intent(plan) -> Intent` (appends + barriers) ·
+  `authorize(intent, plan) -> Permit` (delegates to `safety.authority.mint`) ·
+  `act(intent, permit) -> Ack` · `fold(ack) -> LegResult`.
+  `vocab.LEG_STEPS` is those eight names in order;
+  `vocab.LEG_LATENCY_BUCKETS` is the three §6 buckets, with the mapping
+  `guard → (1)-(3)`, `authorize → (4)-(6)`, `act → (7)` pinned by a test and
+  step (8) charged to the tick. The two tuples are separate because three
+  step names and three bucket names collide while meaning different spans.
 - `Authority(ABC).mint(intent, plan, state_view) -> Permit` is the seam D2 needs.
   `SimulatedAuthority` writes nothing and returns a `SimulatedPermit`;
   `LiveAuthority` mints an `ActPermit` and appends/barriers `authorization`;
   `ReductionAuthority` appends/barriers `authority_use` for its single-use
-  intent digest first. `AUTHORITY_KINDS` registers them and mode composition
-  (D2) selects one at construction, so no leg ever asks what rung it is.
-- `Recovery(ledger, state, id_source)` owns startup terminalization: fold, close
-  unmatched `tick_start`/`decision_plan`/`intent` records into terminal `tick`
-  and `decision` records, query any ambiguous client ref, and never resend. It is
-  a separate object because it runs before the scheduler exists.
-- `ServeLoop` is therefore the scheduler and composition root: lifecycle FSM,
+  intent digest first. There is deliberately **no** `AUTHORITY_KINDS`: an
+  authority mints the object that authorises real money, so it is closed to
+  core and must not be reachable through the document's `pkg.module:Class`
+  doorway. `compose.py` selects one from the rung, so no leg ever asks what
+  rung it is.
+- `compose.py` is the composition root, and the one legal place a rung is read.
+  `bundles_for(document, release, registry) -> (Schedule, Data, Decision,
+  Safety, Execution, Recording, Observability)` holds the closed rung →
+  {executor, accounting, authority, approval, coordination} table D2 rests on,
+  refuses an incompatible combination at construction (`paper` can never select
+  a `LiveExecutor`), and is the only module permitted to instantiate an
+  `Authority` by name. `test_purity.py`'s AST ban on `rung ==` covers every
+  module except this one, and `test_compose.py` enumerates the table — without
+  a named owner the branch would simply relocate to `__main__.py`, which D2
+  did not anticipate because it guarded a spelling rather than a place.
+- `ServeLoop` is therefore the scheduler, not the composition root: lifecycle FSM,
   cadence/overrun, control-inbox consumption, `Tick` construction, monitor
   `observe`, metrics flush, checkpoint, journal row and exit code. It does not
   contain the submission sequence.
@@ -1701,20 +1756,20 @@ two lists against each other: `Clock`, `Calendar`, `Cadence`,
 `Feed`, `Proposer`, `Guard`, `Measure`, `Executor`, `Accounting`, `Lease`,
 `Monitor`, `Reference`, `Chunker`, `Threshold`, `AlertSink`,
 `HealthProbe`, `Transport`, `ApprovalVerifier`, `Fee`, `HeartbeatEmitter`.
-Six further ABCs are structural rather than registry-resolved, named here so
+Seven further ABCs are structural rather than registry-resolved, named here so
 the count is not mistaken for the whole surface: `SubmittingExecutor` and the abstract
 `LiveExecutor` wrapper (§5.7),
 `Ledger` and `Classifier` (phase 1 ships one implementation each, so neither
 has a `uses` site until `libs/sqlite.py` lands and adds `LEDGER_KINDS`),
-`Tick` (§5.13), `IdSource` (§5.13) and pipeline-side `ExecutionPolicy`
-(§9.1). `Permit` is a frozen dataclass base, not an ABC. Each seam ABC
+`Tick` (§5.13), `IdSource` (§5.13), `Authority` (§5.13.1 — closed to core, so
+deliberately unregistered) and pipeline-side `ExecutionPolicy` (§9.1). `Permit` is a frozen dataclass base, not an ABC. Each seam ABC
 declares its hooks
 `@abstractmethod` so an incomplete subclass fails at construction, not at the
 first live tick. The serve document names *what* ("`uses`: `weekly-sessions`"),
 never *how*; no caller may instantiate a concrete class by name.
 
 **Encapsulation.** Folded state has exactly one owner and no setter. Guards
-receive a read-only `AccountState` and cannot mutate it. `arming.json`,
+receive a read-only `TickState` (§5.8.1) and cannot mutate it. `arming.json`,
 `breaker.json` and `checkpoint.json` are private projections of the ledger fold,
 never inputs — a divergent cache refuses rather than being trusted. Secrets live
 behind `redact.py` and never cross a record boundary. `__all__` plus the `_`
@@ -1810,7 +1865,7 @@ sha256-canonical idiom.
 |---|---|---|
 | `process` | start / stop / recovered | `event ∈ {start, stop, recovered}`, `series_id`, `release_hash`, `doc_hash`, `serving_hash`, `run_hash`, `artifact_digests`, `source_config_hash`, `runtime_fingerprint`, `rung`, `executor_kind`, `code_version`; stop adds `exit_code`. After its barrier, one journal row is written whose `notes` render the process id and final head in the D22 `production-v1` form |
 | `tick_start` | scheduled tick | `tick_id`, `tick_at_ms`, `release_hash` |
-| `tick` | terminal tick | `tick_id`, `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash, required_keys_digest, watermarks_by_key, coverage_digest}`, `inputs_digest`, `calendar`, `overrun_absorbed[]` (the tick instants this tick coalesced or skipped), `latency_ms{gate, verify_release, fetch, read_entry, coverage, evaluate, candidates, quotes, account, propose}` (one key per §5.13 `Tick` phase method, pinned by a test) and `leg_latency_ms{guard, authorize, act}` summed over the tick's legs, since those are per-proposal steps, not phases: `guard` covers §5.13 steps (1)–(3), `authorize` steps (4)–(6), and `act` step (7). Step (8) records the outcome and is charged to the tick, not the leg, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}` |
+| `tick` | terminal tick | `tick_id`, `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash, required_keys_digest, watermarks_by_key, coverage_digest}`, `inputs_digest`, `calendar`, `overrun_absorbed[]` (the tick instants this tick coalesced or skipped), `latency_ms{gate, verify_release, fetch, read_entry, coverage, evaluate, candidates, quotes, account, propose}` (one key per §5.13 `Tick` phase method, pinned by a test) and `leg_latency_ms` keyed by `vocab.LEG_LATENCY_BUCKETS` and summed over the tick's legs — `guard` spans §5.13.1 steps (1)–(3), `authorize` (4)–(6), `act` (7); step (8) records the outcome and is charged to the tick. These are spans over `LEG_STEPS`, not step names, which is why the two vocabularies are separate, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}` |
 | `decision` | tick (exactly one) | `tick_id`, `decision_plan_ids[]`, `decision_plan_digests[]`, `legs[]{leg_id, instrument, prediction, confidence, baseline, expected_value, reference_price, proposal, findings[], final, client_ref}` — `leg_id`, `findings[]`, `final` and `client_ref` are the leg's own; `proposal` carries the serialized final `Proposal`; every remaining field is copied from that `Proposal` (§5.4) under the same name — a no-op tick has `final: none` per leg or zero legs with `reason` |
 | `decision_plan` | proposal after complete pre-submit evaluation (barrier before proposal submit) | `plan_id`, entry/head/candidate provenance, original/final proposal, input/quote/evidence as-of+digests, `findings[]`, `gate_results[]`, scope verdict, `risk_effect`, `risk_version`, `risk_state_digest`, `result ∈ {submit, not_sent}` |
 | `intent` | proposal selected for possible submit | the canonical `records.Intent` value object; no second schema |
@@ -1876,7 +1931,8 @@ dskit/production/
 │                      SIZE_CAPS, FEE_KIND_NAMES, DEDUPE_MODES, POSITION_MODELS, FENCING_MODES,
 │                      RESILIENCE_OUTCOMES (ok|transient|throttled|fatal|ambiguous — distinct from OUTCOME_KINDS),
 │                      RETRY_DECISIONS, JITTER_MODES, RETRY_AFTER_MODES, RETRY_WRITE_MODES, OVERRUN_POLICIES,
-│                      TICK_PHASES (the ten Tick method names, in order), LEG_STEPS (guard|authorize|act),
+│                      TICK_PHASES (the ten Tick method names, in order), LEG_STEPS (the eight LegPipeline method
+│                      names, in order), LEG_LATENCY_BUCKETS (guard|authorize|act, the §6 spans),
 │                      WINDOW_KINDS (none|duration|count|calendar), CALENDAR_WINDOWS (session|day|event),
 │                      READINESS_VERDICTS (go|no_go), METRIC_NAMES + METRIC_LABEL_VALUES (§5.11.1's tables live here,
 │                      not in metrics.py), BREAK_ORIGINS (ours|external),
@@ -1904,7 +1960,7 @@ dskit/production/
 │                      authority-to-records.ActPermit minting; NotArmed (internal)
 ├── executor.py        Executor ABC (read/query/cancel); SubmittingExecutor(Executor) adds submit(intent, Permit);
 │                      fee strategies + FEE_KINDS;
-│                      LiveExecutor; PositionBook; ShadowExecutor; PaperExecutor (+ fill/fee
+│                      LiveExecutor; ShadowExecutor; PaperExecutor (+ fill/fee
 │                      strategies); RecordedExecutor; executor_conformance_suite; EXECUTOR_KINDS
 ├── accounting.py      Accounting ABC; PaperAccounting; RecordedAccounting; ACCOUNTING_KINDS
 ├── coordination.py    Lease ABC; ProcessLease (non-live); LeasePermit; LEASE_KINDS
@@ -1914,7 +1970,7 @@ dskit/production/
 ├── resilience.py      Classifier ABC + HttpClassifier; Retry (+ budget); CircuitBreaker; RateLimiter;
 │                      Transport ABC + UrllibTransport + TRANSPORT_KINDS
 ├── ledger.py          Ledger ABC + barrier; JsonlLedger; Checkpoint caches; ServeRoot + series genesis; envelope + chain + verify
-├── state.py           SeriesState (the sole ledger fold); StateView; PositionBook; recovery replay
+├── state.py           SeriesState (the sole ledger fold); StateView; TickState; PositionBook; Recovery
 ├── reconcile.py       Reconciler; ReconReport; break classification; on_mismatch policy
 ├── monitors.py        Monitor ABC; Reference / Chunker / Threshold strategies (Response is a vocabulary); Operational,
 │                      Stream, Distribution
@@ -1933,8 +1989,9 @@ dskit/production/
 ├── loop.py            ServeLoop (scheduler + composition root); the seven collaborator bundles (Schedule, Data, Decision,
 │                      Safety, Execution, Recording, Observability); Tick ABC (final run() walking TICK_PHASES, ten abstract
 │                      phase hooks) + ServingTick; IdSource ABC + ReleaseIdSource + RecordedIdSource; lifecycle; exit codes
-├── leg.py             LegPipeline (the eight submission steps, one method each); LegResult; Authority ABC +
-│                      SimulatedAuthority + LiveAuthority + ReductionAuthority + AUTHORITY_KINDS; Recovery
+├── leg.py             LegPipeline (final run() walking LEG_STEPS, eight step methods); LegResult; Authority ABC +
+│                      SimulatedAuthority + LiveAuthority + ReductionAuthority (closed to core, no registry)
+├── compose.py        bundles_for(): the closed rung → collaborator table; the one module that may read a rung
 ├── outcomes.py        [phase 2] outcome join (settlements, strict forward as-of), supersede chain, as-of cut
 ├── report.py          [phase 2] attribution, calibration, drawdown, replay parity diff, markdown/JSON emitters
 ├── readiness.py       Readiness(document, release); ReadinessResult; readiness_digest; release-bound checklist →
@@ -2011,6 +2068,8 @@ tests/production/
 ├── test_metrics.py        naming/base units pinned; undeclared label name refuses at declaration, undeclared value drops to
 │                          `other` and increments the dropped counter; every §5.11 counter name exists; JSONL flush
 ├── test_redact.py         env-var values, webhook URLs and proof bytes never appear in a log line, alert body or ledger record
+├── test_compose.py        every rung maps to exactly one collaborator set; paper cannot select LiveExecutor or LiveAuthority;
+│                          an incompatible combination refuses at construction; this is the only module reading a rung
 ├── test_leg.py            each step barriers before its effect; a crash cut after every barrier; cumulative reservations
 │                          across legs; Authority polymorphism — shadow/paper mint without writing, live appends
 │                          authorization, reduction appends authority_use first; no rung or mode name appears in leg.py (AST)
@@ -2173,8 +2232,9 @@ unmoved — specifically `tests/pipeline/test_driver.py` and
 `dskit/pipeline/libs/observations.py`: replace the locator-only proposal with
 `ObservationRows.serving_contract(params, verified_run_evidence)`, a pure method
 returning source binding, explicit entity-key projection, event-time extraction,
-per-key digest recipe and required-universe evidence. The required universe comes from the serve document's
-`serving.required_universe`, pinned into the release at `plan` (§5.2); the
+per-key digest recipe only — no universe, because the method is document-blind.
+The required universe comes from the serve document's
+`serving.required_universe`, which `plan` puts into the `FeedSpec` (§5.2); the
 pipeline stores no such artifact and this ADR does not add one. It is never inferred from dedupe `key_fields`, which
 may contain time. `ServingContract` is a frozen dataclass declared in `dskit/pipeline/node.py`
 beside `SERVING_EFFECTS`, for the same reason: pipeline may not import
@@ -2186,6 +2246,10 @@ hashes the exact rows delivered to descendants.
 
 ### 9.2 Skeleton (pin updated in the same commit)
 
+`children/_skeleton/yourproject/nodes.py` gains `serving_effect` on both sample
+classes and `serving_contract` on the `data` one — without them the fail-closed
+default (§9.1) refuses every node and `configs/serve-sample.json` could not
+`plan`, which is exactly what `tests/test_production.py` is specified to prove.
 `children/_skeleton/yourproject/execution.py` supplies a `LiveExecutor` template
 with read/query/cancel available and permit-gated submit; `accounting.py`,
 `approvals.py`, and `coordination.py` supply refusing live accounting,
@@ -2387,21 +2451,22 @@ dskit/production/
   breaker.py        Breaker (active | reducing | halted); trips; kill switch; cooling-off
   arming.py         ApprovalVerifier ABC; maker-checker proofs; Arming fold; ActPermit minting
   executor.py       Executor ABC (read/query/cancel); SubmittingExecutor; Shadow, Paper,
-                    Recorded, Live; PositionBook; executor_conformance_suite
+                    Recorded, Live; executor_conformance_suite
   accounting.py     Accounting ABC; PaperAccounting; RecordedAccounting
   coordination.py   Lease ABC; ProcessLease; LeasePermit; fencing tokens
   policy.py         ActionPolicy; TransitionPolicy; Rule sets; the golden decision table
   verifier.py       SubmissionVerifier — the final verify-and-call gate
   resilience.py     Classifier ABC; Retry; CircuitBreaker; RateLimiter; Transport ABC
   ledger.py         Ledger ABC + barrier; JsonlLedger; Checkpoint; ServeRoot; chain + verify
-  state.py          SeriesState (sole ledger fold); StateView; PositionBook
+  state.py          SeriesState (sole ledger fold); StateView; TickState; PositionBook; Recovery
   reconcile.py      Reconciler; ReconReport; break classification
   monitors.py       Monitor ABC; Reference/Chunker/Threshold strategies; monitor families
   metrics.py        counter/gauge/histogram registry; label cardinality cap; JSONL flush
   alerts.py         AlertSink ABC; Log/Memory/Email/Webhook; AlertRouter; ALERT_SINK_KINDS
   health.py         Health state machine; HealthProbe ABC; Heartbeat; instance lock; signals
   loop.py           ServeLoop (scheduler + composition root); Tick template method; lifecycle; exit codes
-  leg.py            LegPipeline (the eight submission steps); Authority ABC + the three kinds; Recovery
+  leg.py            LegPipeline (the eight submission steps); Authority ABC + the three kinds
+  compose.py        bundles_for(): the closed rung to collaborator table
   readiness.py      release-bound checklist → GO / NO-GO
   outcomes.py       [phase 2] bitemporal outcome join, supersede chain, as-of cut
   report.py         [phase 2] attribution, calibration, drawdown, replay parity diff
@@ -2446,7 +2511,7 @@ before descendants execute from that binding.
 **Consequences.** Search behavior and pinned identities remain unchanged.
 Observation entries expose pure `serving_contract(params, verified_run_evidence)`
 metadata for source binding, explicit entity keys, event time, digest recipe and
-manifest-bound required-universe evidence. Dedupe keys are not treated as a
-universe. Pipeline never imports production. Release-bound child code remains a
+digest recipe — declaration only, no universe, which is a serve-document field
+pinned by `plan`. Dedupe keys are not treated as a universe. Pipeline never imports production. Release-bound child code remains a
 declared trusted boundary, backed by code fingerprints and no-direct-I/O tests.
 ````
