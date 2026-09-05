@@ -25,9 +25,7 @@ def _context(tmp_path):
 
 
 def test_p11_config_has_gate1_followed_directly_by_gate3():
-    raw = json.loads(
-        (_root() / "configs" / "run-p11-modelability.json").read_text()
-    )
+    raw = json.loads((_root() / "configs" / "run-p11-modelability.json").read_text())
     assert list(raw["stages"]) == ["memory", "gate1", "gate3_walks", "gate3"]
     assert "gate2" not in raw["stages"]
     assert raw["stages"]["gate3_walks"]["params"]["seeds"] == list(range(19))
@@ -60,13 +58,19 @@ def test_derived_walk_filters_features_but_keeps_reference_tape(tmp_path, monkey
         lambda _ctx: ("./cache", "/cache", "a" * 64),
     )
     document = p11._derived_document(_context(tmp_path), "JPM", 3)
-    assert list(document.pipeline) == ["universe", "features", "asset_features", "scan"]
+    assert list(document.pipeline) == [
+        "universe",
+        "features",
+        "asset_features",
+        "reference_tape",
+        "scan",
+    ]
     filt = document.pipeline["asset_features"]
     assert filt.inputs == {"records": "$features.records"}
     assert filt.params["where"] == [{"field": "symbol", "op": "==", "value": "JPM"}]
     scan = document.pipeline["scan"]
     assert scan.inputs["records"] == "$asset_features.records"
-    assert scan.inputs["bars"] == "$features.tape"
+    assert scan.inputs["bars"] == "$reference_tape.records"
     assert scan.params["fit_symbols"] == ["JPM"]
     assert scan.params["score_symbols"] == ["JPM"]
     assert document.stages is None
@@ -97,7 +101,9 @@ def test_gate1_stops_on_first_failure_and_never_runs_or_registers_later(
     monkeypatch.setattr(
         p11.p10,
         "_run_bounded_walk",
-        lambda _ctx, doc, _tag: calls.append(doc.horizon) or f"walk-{doc.horizon}",
+        lambda _ctx, doc, _tag, **_kw: (
+            calls.append(doc.horizon) or f"walk-{doc.horizon}"
+        ),
     )
     monkeypatch.setattr(
         p11,
@@ -144,15 +150,17 @@ def test_gate3_refits_only_gate1_survivors_and_requires_all_nulls_to_lose(
     monkeypatch.setattr(
         p11,
         "_derived_document",
-        lambda _ctx, asset, horizon, **kwargs: documents.append(
-            (asset, horizon, kwargs)
-        )
-        or SimpleNamespace(asset=asset, horizon=horizon, seed=kwargs["scramble_seed"]),
+        lambda _ctx, asset, horizon, **kwargs: (
+            documents.append((asset, horizon, kwargs))
+            or SimpleNamespace(
+                asset=asset, horizon=horizon, seed=kwargs["scramble_seed"]
+            )
+        ),
     )
     monkeypatch.setattr(
         p11.p10,
         "_run_bounded_walk",
-        lambda _ctx, doc, _tag: f"walk-{doc.asset}-{doc.horizon}-{doc.seed}",
+        lambda _ctx, doc, _tag, **_kw: f"walk-{doc.asset}-{doc.horizon}-{doc.seed}",
     )
     gate1 = [
         {"asset": "A", "gate1_h": 2, "gate1_passes": True},
@@ -181,3 +189,139 @@ def test_gate3_refits_only_gate1_survivors_and_requires_all_nulls_to_lose(
     )
     assert final["rows"][0]["gate3_status"] == "pass"
     assert final["rows"][1]["gate3_status"] == "not_reached"
+
+
+def test_derived_walk_filters_the_tape_to_the_asset_and_its_reference(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        p11.p10,
+        "_feature_cache_info",
+        lambda _ctx: ("./cache", "/cache", "a" * 64),
+    )
+    document = p11._derived_document(_context(tmp_path), "JPM", 3)
+    assert list(document.pipeline) == [
+        "universe",
+        "features",
+        "asset_features",
+        "reference_tape",
+        "scan",
+    ]
+    tape = document.pipeline["reference_tape"]
+    assert tape.uses == "filter"
+    assert tape.inputs == {"records": "$features.tape"}
+    assert tape.params["where"] == [
+        {"field": "symbol", "op": "in", "value": ["JPM", "SPY"]}
+    ]
+    assert document.pipeline["scan"].inputs["bars"] == "$reference_tape.records"
+
+
+def test_derived_walk_keeps_only_spy_when_spy_is_the_asset(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        p11.p10,
+        "_feature_cache_info",
+        lambda _ctx: ("./cache", "/cache", "a" * 64),
+    )
+    document = p11._derived_document(_context(tmp_path), "SPY", 3)
+    assert document.pipeline["reference_tape"].params["where"] == [
+        {"field": "symbol", "op": "in", "value": ["SPY"]}
+    ]
+
+
+def test_fold_workers_reads_the_machine_knob_and_defaults_to_serial(monkeypatch):
+    monkeypatch.delenv(p11._WORKERS_ENV, raising=False)
+    assert p11._fold_workers() == 1
+    monkeypatch.setenv(p11._WORKERS_ENV, "6")
+    assert p11._fold_workers() == 6
+
+
+def test_fold_workers_refuses_a_value_that_is_not_a_positive_int(monkeypatch):
+    for bad in ("0", "-2", "four", "2.5", ""):
+        monkeypatch.setenv(p11._WORKERS_ENV, bad)
+        try:
+            p11._fold_workers()
+        except ValueError as error:
+            assert p11._WORKERS_ENV in str(error)
+        else:  # pragma: no cover - the assertion below reports it
+            raise AssertionError(f"{bad!r} was accepted")
+
+
+def test_the_worker_knob_is_never_graded_into_the_document_identity(monkeypatch):
+    source = _root() / "configs" / "run-p11-modelability.json"
+    monkeypatch.delenv(p11._WORKERS_ENV, raising=False)
+    serial = load_document(str(source)).hash
+    monkeypatch.setenv(p11._WORKERS_ENV, "8")
+    assert load_document(str(source)).hash == serial
+
+
+def test_gate3_walks_passes_the_machine_worker_count_to_every_bounded_walk(
+    monkeypatch,
+):
+    monkeypatch.setattr(p11, "_ASSETS", ["A"])
+    monkeypatch.setenv(p11._WORKERS_ENV, "6")
+    walks = p11.Gate3WalksStage("gate3_walks", {"seeds": list(range(19))})
+    seen = []
+    monkeypatch.setattr(
+        p11,
+        "_derived_document",
+        lambda _ctx, asset, horizon, **kwargs: SimpleNamespace(asset=asset),
+    )
+    monkeypatch.setattr(
+        p11.p10,
+        "_run_bounded_walk",
+        lambda _ctx, doc, tag, *, workers: seen.append(workers) or f"w-{tag}",
+    )
+    walks.run(
+        SimpleNamespace(),
+        {"gate1": [{"asset": "A", "gate1_h": 2, "gate1_passes": True}]},
+    )
+    assert seen == [6] * 19
+
+
+def test_gate1_passes_the_machine_worker_count_to_every_bounded_walk(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(p11, "_ASSETS", ["A"])
+    monkeypatch.setattr(p11, "_HORIZONS", [1])
+    monkeypatch.setenv(p11._WORKERS_ENV, "3")
+    stage = p11.Gate1Stage(
+        "gate1",
+        {
+            "assets": ["A"],
+            "horizons": [1],
+            "attempt_registry": "attempts.jsonl",
+            "alpha": 0.05,
+        },
+    )
+    seen = []
+    monkeypatch.setattr(p11.p10, "_child_root", lambda _ctx: str(tmp_path))
+    monkeypatch.setattr(
+        p11, "_derived_document", lambda _ctx, asset, horizon: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        p11.p10,
+        "_run_bounded_walk",
+        lambda _ctx, doc, tag, *, workers: seen.append(workers) or "walk",
+    )
+    monkeypatch.setattr(
+        p11,
+        "_score_one",
+        lambda *_a: {
+            "passes": True,
+            "t_pool": 2.0,
+            "t_fold": 2.0,
+            "r2oos": 0.01,
+            "n_folds": 20,
+        },
+    )
+
+    class Registry:
+        def __init__(self, _path):
+            pass
+
+        def record(self, key, **_fields):
+            return "cell"
+
+    monkeypatch.setattr(p11, "AttemptRegistry", Registry)
+    stage.run(SimpleNamespace(), {"preflight": True})
+    assert seen == [3]

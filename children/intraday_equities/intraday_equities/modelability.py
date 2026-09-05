@@ -13,6 +13,8 @@ from datetime import date, timedelta
 from dskit.pipeline.attempts import AttemptRegistry, tier2_verdict
 from dskit.journal import append_action
 from dskit.pipeline.document import PipelineDocument
+from concurrent.futures import ThreadPoolExecutor
+
 from dskit.pipeline.driver import _aggregate_folds, _write_walkforward_summary
 from dskit.pipeline.runs import resolve_run_root, score_bar, score_walk, walk_cells
 from dskit.pipeline.stages import Stage, reject_unknown_params
@@ -320,8 +322,68 @@ def _single_fold_document(document, cutoff, index):
     return PipelineDocument.from_obj(obj)
 
 
-def _run_bounded_walk(ctx, document, tag):
-    """Run each fold in a capped process, then journal one logical summary."""
+def _one_bounded_fold(ctx, document, tag, index, cutoff, memory_limit):
+    """Run fold ``index`` in a capped process and return its one ran row."""
+    part = _single_fold_document(document, cutoff, index)
+    part_summary, _peak = _run_walk(
+        ctx,
+        part,
+        f"{tag}-part-{index:02d}",
+        memory_limit=memory_limit,
+    )
+    with open(
+        os.path.join(part_summary, "walkforward.json"), encoding="utf-8"
+    ) as handle:
+        payload = json.load(handle)
+    part_folds = payload.get("folds")
+    if (
+        payload.get("state") != "ran"
+        or not isinstance(part_folds, list)
+        or len(part_folds) != 1
+        or part_folds[0].get("cutoff") != cutoff
+    ):
+        raise ValueError(
+            f"bounded fold {index} did not produce one ran row for {cutoff}"
+        )
+    return part_folds[0]
+
+
+def _run_bounded_walk(ctx, document, tag, *, workers=1):
+    """Run each fold in a capped process, then journal one logical summary.
+
+    Parameters
+    ----------
+    ctx : object
+        The stage run frame; supplies ``asof`` and ``source_path``.
+    document : dskit.pipeline.document.PipelineDocument
+        The whole multi-fold walk. Each declared cutoff becomes one
+        single-fold document run in its own address-space-capped
+        process.
+    tag : str
+        Short name for the derived per-fold configs and journal rows.
+    workers : int
+        How many fold processes may run at once (default 1, which is
+        the historical serial path byte for byte). Folds share one
+        address-space envelope: each concurrent process is capped at
+        ``_MEMORY_LIMIT // workers``, so the total stays at the limit
+        one serial fold was already allowed.
+
+    Returns
+    -------
+    str
+        The walk summary directory.
+
+    Raises
+    ------
+    ValueError
+        When ``workers`` is not a positive int, when artifacts exist
+        without journal evidence, or when a fold does not leave exactly
+        one ran row for its cutoff.
+    RuntimeError
+        When the finished summary lacks matching journal evidence.
+    """
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+        raise ValueError(f"workers must be a positive int, got {workers!r}")
     child_root = _child_root(ctx)
     summary = _summary_dir(document, ctx.asof, child_root)
     if os.path.isdir(summary) and os.listdir(summary):
@@ -330,30 +392,22 @@ def _run_bounded_walk(ctx, document, tag):
         raise ValueError(
             f"walk artifacts exist without matching journal evidence: {summary}"
         )
-    folds = []
-    for index, cutoff in enumerate(_fold_cutoffs(document.walkforward)):
-        part = _single_fold_document(document, cutoff, index)
-        part_summary, _peak = _run_walk(
-            ctx,
-            part,
-            f"{tag}-part-{index:02d}",
-            memory_limit=_MEMORY_LIMIT,
-        )
-        with open(
-            os.path.join(part_summary, "walkforward.json"), encoding="utf-8"
-        ) as handle:
-            payload = json.load(handle)
-        part_folds = payload.get("folds")
-        if (
-            payload.get("state") != "ran"
-            or not isinstance(part_folds, list)
-            or len(part_folds) != 1
-            or part_folds[0].get("cutoff") != cutoff
-        ):
-            raise ValueError(
-                f"bounded fold {index} did not produce one ran row for {cutoff}"
-            )
-        folds.append(part_folds[0])
+    cutoffs = list(_fold_cutoffs(document.walkforward))
+    limit = _MEMORY_LIMIT // workers
+    if workers == 1:
+        folds = [
+            _one_bounded_fold(ctx, document, tag, index, cutoff, limit)
+            for index, cutoff in enumerate(cutoffs)
+        ]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [
+                pool.submit(_one_bounded_fold, ctx, document, tag, index, cutoff, limit)
+                for index, cutoff in enumerate(cutoffs)
+            ]
+            # Indexed, not as-completed: the aggregate and the $prev
+            # series both read folds in cutoff order.
+            folds = [future.result() for future in futures]
     spec = document.walkforward
     aggregate = _aggregate_folds(folds, spec.select, spec.weight_halflife_folds)
     _write_walkforward_summary(
@@ -367,7 +421,7 @@ def _run_bounded_walk(ctx, document, tag):
         notes=(
             f"state=ran folds={len(folds)} hash={document.hash[:8]} "
             f"asof={ctx.asof}; fold_processes=isolated; "
-            f"memory_limit_bytes={_MEMORY_LIMIT}"
+            f"fold_workers={workers}; memory_limit_bytes={limit}"
         ),
         start=child_root,
     )

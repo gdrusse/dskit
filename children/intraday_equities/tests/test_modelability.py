@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -157,3 +160,120 @@ def test_p10_config_freezes_the_exact_fit_and_new_source_universe():
     assert config["stages"]["gate1"]["params"]["assets"] == assets
     assert config["stages"]["gate2"]["params"]["assets"] == assets
     assert config["stages"]["gate3"]["params"]["assets"] == assets
+
+
+def _walkforward_payload(path, cutoff):
+    """Write the one-ran-row artifact a bounded fold is required to leave."""
+    os.makedirs(path, exist_ok=True)
+    with open(os.path.join(path, "walkforward.json"), "w", encoding="utf-8") as handle:
+        json.dump({"state": "ran", "folds": [{"cutoff": cutoff, "score": 1.0}]}, handle)
+
+
+def _bounded_harness(tmp_path, monkeypatch, cutoffs):
+    """Stub every side effect of a bounded walk except the fold loop."""
+    monkeypatch.setattr(modelability, "_child_root", lambda _ctx: str(tmp_path))
+    monkeypatch.setattr(
+        modelability, "_summary_dir", lambda *_a, **_k: str(tmp_path / "sum")
+    )
+    monkeypatch.setattr(modelability, "_fold_cutoffs", lambda _spec: cutoffs)
+    monkeypatch.setattr(modelability, "_journal_confirms_walk", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        modelability, "_aggregate_folds", lambda folds, *_a: {"folds": folds}
+    )
+    monkeypatch.setattr(
+        modelability, "_write_walkforward_summary", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(modelability, "append_action", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        modelability,
+        "_single_fold_document",
+        lambda _doc, cutoff, index: SimpleNamespace(cutoff=cutoff, index=index),
+    )
+
+
+def test_bounded_walk_runs_folds_concurrently_and_keeps_them_in_order(
+    tmp_path, monkeypatch
+):
+    cutoffs = [f"2022-0{i}-01" for i in range(1, 5)]
+    _bounded_harness(tmp_path, monkeypatch, cutoffs)
+    live = []
+    peak = []
+    lock = threading.Lock()
+
+    def fake_run_walk(_ctx, part, tag, *, memory_limit=None):
+        with lock:
+            live.append(1)
+            peak.append(len(live))
+        time.sleep(0.05)
+        with lock:
+            live.pop()
+        out = str(tmp_path / f"part-{part.index}")
+        _walkforward_payload(out, part.cutoff)
+        return out, 1
+
+    monkeypatch.setattr(modelability, "_run_walk", fake_run_walk)
+    document = SimpleNamespace(
+        name="doc",
+        hash="a" * 64,
+        walkforward=SimpleNamespace(select="max", weight_halflife_folds=0),
+    )
+    ctx = SimpleNamespace(asof="2026-02-28", source_path="cfg.json")
+    modelability._run_bounded_walk(ctx, document, "tag", workers=4)
+    assert max(peak) > 1, "folds still ran one at a time"
+
+
+def test_bounded_walk_aggregates_folds_in_cutoff_order_under_concurrency(
+    tmp_path, monkeypatch
+):
+    cutoffs = ["2022-01-01", "2022-02-01", "2022-03-01", "2022-04-01"]
+    _bounded_harness(tmp_path, monkeypatch, cutoffs)
+    seen = {}
+    monkeypatch.setattr(
+        modelability,
+        "_aggregate_folds",
+        lambda folds, *_a: seen.update(order=folds) or {},
+    )
+
+    def fake_run_walk(_ctx, part, tag, *, memory_limit=None):
+        # Reverse the completion order: the last fold finishes first.
+        time.sleep(0.02 * (len(cutoffs) - part.index))
+        out = str(tmp_path / f"part-{part.index}")
+        _walkforward_payload(out, part.cutoff)
+        return out, 1
+
+    monkeypatch.setattr(modelability, "_run_walk", fake_run_walk)
+    document = SimpleNamespace(
+        name="doc",
+        hash="a" * 64,
+        walkforward=SimpleNamespace(select="max", weight_halflife_folds=0),
+    )
+    ctx = SimpleNamespace(asof="2026-02-28", source_path="cfg.json")
+    modelability._run_bounded_walk(ctx, document, "tag", workers=4)
+    assert [row["cutoff"] for row in seen["order"]] == cutoffs
+
+
+def test_bounded_walk_divides_the_memory_envelope_between_concurrent_folds(
+    tmp_path, monkeypatch
+):
+    cutoffs = ["2022-01-01", "2022-02-01"]
+    _bounded_harness(tmp_path, monkeypatch, cutoffs)
+    limits = []
+
+    def fake_run_walk(_ctx, part, tag, *, memory_limit=None):
+        limits.append(memory_limit)
+        out = str(tmp_path / f"part-{part.index}")
+        _walkforward_payload(out, part.cutoff)
+        return out, 1
+
+    monkeypatch.setattr(modelability, "_run_walk", fake_run_walk)
+    document = SimpleNamespace(
+        name="doc",
+        hash="a" * 64,
+        walkforward=SimpleNamespace(select="max", weight_halflife_folds=0),
+    )
+    ctx = SimpleNamespace(asof="2026-02-28", source_path="cfg.json")
+    modelability._run_bounded_walk(ctx, document, "tag", workers=4)
+    assert set(limits) == {modelability._MEMORY_LIMIT // 4}
+    limits.clear()
+    modelability._run_bounded_walk(ctx, document, "tag")
+    assert set(limits) == {modelability._MEMORY_LIMIT}

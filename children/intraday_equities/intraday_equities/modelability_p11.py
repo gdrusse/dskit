@@ -30,6 +30,8 @@ _ARCHITECTURE = "lgbm-tight-asset-local"
 _ASSETS = list(p10._ASSETS)
 _HORIZONS = [1, 2, 3, 5, 10, 20, 30, 60]
 _MEMORY_LIMIT = 17 * 1024**3
+#: The only tape a non-SPY label needs besides its own (the ADR-0059 residual).
+_LABEL_RESIDUAL = "SPY"
 
 
 def _check_params(params, allowed, *, assets=False, horizons=False, alpha=False):
@@ -51,6 +53,43 @@ def _check_params(params, allowed, *, assets=False, horizons=False, alpha=False)
     return problems
 
 
+#: How many of a walk's fold processes may run at once. Read from the
+#: PROCESS ENVIRONMENT, never from the document: fold count is a property
+#: of the machine, not of what the run computes, and a graded knob would
+#: move the identity hash — orphaning every prior run and stored artifact
+#: — each time the operator tuned it. The value used is journalled by
+#: :func:`~intraday_equities.modelability._run_bounded_walk`.
+_WORKERS_ENV = "INTRADAY_EQUITIES_FOLD_WORKERS"
+
+
+def _fold_workers():
+    """Return the fold-process width from the environment, default 1.
+
+    Returns
+    -------
+    int
+        The declared width, or 1 when the variable is UNSET — the
+        historical serial path. An empty value is a refusal, not a
+        default: ``export VAR=`` is an accident, and silently running
+        serially would hide it.
+
+    Raises
+    ------
+    ValueError
+        When the variable is set to anything but a positive integer.
+    """
+    raw = os.environ.get(_WORKERS_ENV)
+    if raw is None:
+        return 1
+    try:
+        width = int(raw)
+    except ValueError:
+        width = 0
+    if width < 1:
+        raise ValueError(f"{_WORKERS_ENV} must be a positive integer, got {raw!r}")
+    return width
+
+
 def _base_key(gate):
     """Return the attempt knobs shared by one P11 evidence block."""
     return {
@@ -63,9 +102,12 @@ def _base_key(gate):
     }
 
 
-def _derived_document(
-    ctx, asset, horizon, *, tag="gate1", scramble_seed=None
-):
+def _tape_symbols(asset):
+    """Name the only tapes an asset-local walk reads: itself and its reference."""
+    return [asset] if asset == _LABEL_RESIDUAL else [asset, _LABEL_RESIDUAL]
+
+
+def _derived_document(ctx, asset, horizon, *, tag="gate1", scramble_seed=None):
     """Build one asset-only derived walk without touching the full tape."""
     if asset not in _ASSETS:
         raise ValueError(f"P11 asset is outside the frozen cohort: {asset!r}")
@@ -78,7 +120,7 @@ def _derived_document(
     original = obj["pipeline"]
     scan = original["scan"]
     scan["inputs"]["records"] = "$asset_features.records"
-    scan["inputs"]["bars"] = "$features.tape"
+    scan["inputs"]["bars"] = "$reference_tape.records"
     params = scan["params"]
     params["lead_start"] = horizon
     params["lead_step"] = horizon
@@ -102,8 +144,15 @@ def _derived_document(
         "asset_features": {
             "uses": "filter",
             "inputs": {"records": "$features.records"},
+            "params": {"where": [{"field": "symbol", "op": "==", "value": asset}]},
+        },
+        "reference_tape": {
+            "uses": "filter",
+            "inputs": {"records": "$features.tape"},
             "params": {
-                "where": [{"field": "symbol", "op": "==", "value": asset}]
+                "where": [
+                    {"field": "symbol", "op": "in", "value": _tape_symbols(asset)}
+                ]
             },
         },
         "scan": scan,
@@ -182,9 +231,7 @@ class MemoryPreflightStage(Stage):
         del inputs
         _declared, cache_path, digest = p10._feature_cache_info(ctx)
         asset, rows = _largest_asset(cache_path, self.params["assets"])
-        document = _derived_document(
-            ctx, asset, 1, tag="preflight"
-        )
+        document = _derived_document(ctx, asset, 1, tag="preflight")
         summary, peak = p10._run_walk(
             ctx,
             document,
@@ -261,7 +308,10 @@ class Gate1Stage(Stage):
             for horizon in self.params["horizons"]:
                 document = _derived_document(ctx, asset, horizon)
                 summary = p10._run_bounded_walk(
-                    ctx, document, f"p11-gate1-{asset.lower()}-h{horizon:02d}"
+                    ctx,
+                    document,
+                    f"p11-gate1-{asset.lower()}-h{horizon:02d}",
+                    workers=_fold_workers(),
                 )
                 skill = _score_one(summary, asset, horizon, self.params["alpha"])
                 key = {
@@ -303,9 +353,7 @@ class Gate1Stage(Stage):
                     "unrun_horizons": unrun,
                 }
             )
-        if {row["asset"] for row in rows} != set(_ASSETS) or len(rows) != len(
-            _ASSETS
-        ):
+        if {row["asset"] for row in rows} != set(_ASSETS) or len(rows) != len(_ASSETS):
             raise ValueError("Gate 1 did not emit the exact frozen 25 assets")
         return {"rows": rows, "cells": cells}
 
@@ -356,7 +404,7 @@ class Gate3WalksStage(Stage):
                     ctx, asset, horizon, tag=tag, scramble_seed=seed
                 )
                 walks[f"{asset}:{horizon}:{seed}"] = p10._run_bounded_walk(
-                    ctx, document, tag
+                    ctx, document, tag, workers=_fold_workers()
                 )
         return {"walks": walks, "survivors": [row["asset"] for row in survivors]}
 
