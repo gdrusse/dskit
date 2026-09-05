@@ -61,12 +61,22 @@ SOURCE_FILES = {
 ALL_GROUPS = ("d", "e", "a", "c", "b")
 
 
+#: Names on disk that are NOT fit, each with its tape evidence
+#: (docs/research/p12-cohort-tape-check-unadjusted-corporate-actions.md).
+#: Deliberately restated here: a pin sourced from the document pins nothing.
+EXCLUDED = ["WDC"]
+
+
 def _group_tradables(key):
     return [s for s in _raw(SOURCE_FILES[key])["symbols"] if s != "SPY"]
 
 
-def _cohort_on_disk():
+def _names_on_disk():
     return [s for key in ("a", "b", "c", "d", "e") for s in _group_tradables(key)]
+
+
+def _cohort_on_disk():
+    return [s for s in _names_on_disk() if s not in EXCLUDED]
 
 
 def _ctx(tmp_path, document=None):
@@ -94,7 +104,9 @@ def test_p12_mirrors_p11_geometry_and_declares_every_name_on_disk_as_its_cohort(
     assert p12["pipeline"]["features"]["params"]["cache_dir"] != p11["pipeline"]["features"]["params"]["cache_dir"]
     cohort = p12["pipeline"]["scan"]["params"]["fit_symbols"]
     assert cohort == _cohort_on_disk()
-    assert len(cohort) == 64
+    assert len(cohort) == 63
+    assert set(EXCLUDED) <= set(_raw("universe-p12.json")["tradable"])
+    assert not set(EXCLUDED) & set(cohort)
     assert "SPY" not in cohort and "META" not in cohort and "GROUP" not in cohort
     assert list(p12["stages"]) == ["memory", "gate1", "gate3_walks", "gate3"]
     for key, stage in p12["stages"].items():
@@ -119,8 +131,9 @@ def test_the_universes_share_p10s_geometry_and_partition_the_cohort():
         assert "industry" not in spec, name
     for key, spec in groups.items():
         assert spec["tradable"] == _group_tradables(key), key
-    assert union["tradable"] == _cohort_on_disk()
-    assert union["tradable"] == _raw("run-p12-modelability.json")["pipeline"]["scan"]["params"]["fit_symbols"]
+    assert union["tradable"] == _names_on_disk()
+    fit = _raw("run-p12-modelability.json")["pipeline"]["scan"]["params"]["fit_symbols"]
+    assert [s for s in union["tradable"] if s not in EXCLUDED] == fit
 
 
 def _feature_names(universe, features):
@@ -233,7 +246,7 @@ def test_every_declared_asset_gets_its_own_fit_and_no_pooled_fit_exists(tmp_path
         scan = build.pipeline["scan"].params
         assert scan["fit_symbols"] == ["SPY"] == scan["score_symbols"]
         fits.append(scan["fit_symbols"])
-    assert len(fits) == 64 * 2 * 2 + 5
+    assert len(fits) == 63 * 2 * 2 + 5
     assert max(len(f) for f in fits) == 1, "a pooled fit exists"
 
 
@@ -266,9 +279,9 @@ def test_placement_refuses_an_asset_in_no_group_or_in_two():
 def test_asset_walk_document_is_p11s_shape_over_the_group_cache(tmp_path):
     ctx = _ctx(tmp_path)
     cache = {"universe": "configs/universe-p12-e.json", "cache": "./pipeline_cache/x/e", "manifest_sha256": "c" * 64, "symbols": ["MSTR", "SPY"]}
-    doc = study.asset_walk_document(ctx.document, "p12-64-asset-modelability", "MSTR", 5, cache, tag="gate3-seed03", scramble_seed=3)
+    doc = study.asset_walk_document(ctx.document, "p12-63-asset-modelability", "MSTR", 5, cache, tag="gate3-seed03", scramble_seed=3)
     assert list(doc.pipeline) == ["universe", "features", "asset_features", "reference_tape", "scan"]
-    assert doc.name == "p12-64-asset-modelability-gate3-seed03-mstr-h05"
+    assert doc.name == "p12-63-asset-modelability-gate3-seed03-mstr-h05"
     assert doc.pipeline["asset_features"].params["where"] == [{"field": "symbol", "op": "==", "value": "MSTR"}]
     assert doc.pipeline["reference_tape"].params["where"] == [{"field": "symbol", "op": "in", "value": ["MSTR", "SPY"]}]
     scan = doc.pipeline["scan"].params
@@ -287,7 +300,7 @@ def test_cache_build_document_reads_only_the_groups_sources_and_fits_the_referen
     ctx = _ctx(tmp_path)
     doc = study.cache_build_document(ctx.document, "d", ["source_a", "source_d"], "configs/universe-p12-d.json", "./pipeline_cache/p12-features-f32-v5/d", "2025-08-15")
     assert list(doc.pipeline) == ["universe", "source_a", "source_d", "pooled", "features", "reference_features", "reference_tape", "scan"]
-    assert doc.name == "p12-64-asset-modelability-cache-d"
+    assert doc.name == "p12-63-asset-modelability-cache-d"
     assert doc.pipeline["universe"].params["path"] == "configs/universe-p12-d.json"
     for key in ("source_a", "source_d"):
         assert doc.pipeline[key].params["universe"] == "configs/universe-p12-d.json"
@@ -649,7 +662,7 @@ def test_gate1_searches_each_asset_alone_in_order_and_stops_at_the_first_failure
     out = stage.run(ctx, {"preflight": True, "caches": _caches()})
     assert [(a, h) for a, h, _c, _kw in documents] == [("A", 1), ("A", 2), ("A", 3), ("B", 1)]
     assert [c for _a, _h, c, _kw in documents] == ["./c/d", "./c/d", "./c/d", "./c/e"]
-    assert walks == ["p12-64-asset-modelability-gate1-a-h01", "p12-64-asset-modelability-gate1-a-h02", "p12-64-asset-modelability-gate1-a-h03", "p12-64-asset-modelability-gate1-b-h01"]
+    assert walks == ["p12-63-asset-modelability-gate1-a-h01", "p12-63-asset-modelability-gate1-a-h02", "p12-63-asset-modelability-gate1-a-h03", "p12-63-asset-modelability-gate1-b-h01"]
     assert out["rows"] == [
         {"asset": "A", "gate1_h": 2, "gate1_passes": True, "first_failed_h": 3, "attempted_horizons": [1, 2, 3], "unrun_horizons": [5, 10, 20, 30, 60]},
         {"asset": "B", "gate1_h": None, "gate1_passes": False, "first_failed_h": 1, "attempted_horizons": [1], "unrun_horizons": [2, 3, 5, 10, 20, 30, 60]},
@@ -658,7 +671,7 @@ def test_gate1_searches_each_asset_alone_in_order_and_stops_at_the_first_failure
     assert registered[0] == ("open", str(CHILD / "docs/decisioning/attempts.jsonl"))
     key, fields = registered[1]
     assert key == {
-        "study": "p12-64-asset-modelability",
+        "study": "p12-63-asset-modelability",
         "architecture": "lgbm-tight-asset-local",
         "data_cut": "2026-02-28",
         "evidence": "gate1-selection",

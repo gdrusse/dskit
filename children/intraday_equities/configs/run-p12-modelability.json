@@ -1,6 +1,6 @@
 {
-  "name": "p12-64-asset-modelability",
-  "notes": "P12: every name on disk (the 24 P10 names less SPY, then cohorts D and E) through the asset-local modelability study on P11's exact geometry (ADR-0094, amended 2026-09-05 by owner ruling): memory preflight and one feature cache per source group, Gate 1's ordered horizon search per name, then ADR-0092's fail-fast whole-session scramble audit on every passer. The cohort is fit_symbols; universe-p12.json bounds the read and each group cache is built through its own group universe. The source-level cut is 2026-02-28. SPY is the residual reference only; META and GROUP are excluded.",
+  "name": "p12-63-asset-modelability",
+  "notes": "P12: every name on disk (the 24 P10 names less SPY, then cohorts D and E) through the asset-local modelability study on P11's exact geometry (ADR-0094, amended 2026-09-05 by owner ruling): memory preflight and one feature cache per source group, Gate 1's ordered horizon search per name, then ADR-0092's fail-fast whole-session scramble audit on every passer at its selected horizon. The cohort is fit_symbols; universe-p12.json bounds the read and each group cache is built through its own group universe. One name on disk is not fit: WDC, whose unadjusted SanDisk spin-off gap (-23.6% on 2025-02-24) excludes it on the tape-check evidence in docs/research/. The source-level cut is 2026-02-28. SPY is the residual reference only; META and GROUP are excluded.",
   "pipeline": {
     "universe": {
       "uses": "intraday_equities-universe",
@@ -121,8 +121,8 @@
           "NFLX", "MSFT", "GOOGL", "SMH", "IWM", "ORCL", "GLD", "MRK", "CRM",
           "NEM", "XBI", "FCX", "FTNT", "DIS", "DAL", "PYPL", "NRG", "GM", "MDT",
           "BA", "SBUX", "TGT", "ADM", "MET", "TMUS", "MSTR", "MRVL", "NOW",
-          "LULU", "SHOP", "PANW", "GDX", "BABA", "INTC", "MU", "CIEN", "WDC",
-          "LRCX", "TER", "BIDU", "LITE", "C", "ADBE", "ANET", "EOG"
+          "LULU", "SHOP", "PANW", "GDX", "BABA", "INTC", "MU", "CIEN", "LRCX",
+          "TER", "BIDU", "LITE", "C", "ADBE", "ANET", "EOG"
         ],
         "lead_start": 1,
         "lead_step": 1,
