@@ -500,9 +500,14 @@ def test_a_probe_that_raises_is_recorded_as_a_failure(clock):
 
 def test_a_probe_that_raises_never_reaches_the_caller(clock):
     # A probe is auxiliary work (D23); an exception escaping it would kill
-    # the tick it was supposed to be reporting on.
-    health = a_health({"disk": ScriptedProbe(answers=[RuntimeError("boom")])}, clock)
-    assert health.evaluate(NOW_MS) in vocab.HEALTH_STATES
+    # the tick it was supposed to be reporting on. It still COUNTS as a
+    # failure — swallowing it into `ready` would be worse than crashing.
+    health = a_health(
+        {"disk": ScriptedProbe(answers=[RuntimeError("boom")], name="disk", scope="local")},
+        clock,
+        failure_threshold=1,
+    )
+    assert health.evaluate(NOW_MS) == "unhealthy"
 
 
 def test_a_probe_failure_detail_is_redacted(clock):
@@ -1205,8 +1210,29 @@ def test_the_lock_refuses_a_path_it_cannot_create(tmp_path):
 # --------------------------------------------------------------------------
 
 
+@pytest.fixture
+def guarded_signals():
+    """Absorb SIGTERM/SIGINT for the test, then put the real handlers back.
+
+    Without this, a `SignalHandler` that fails to install would not FAIL the
+    test — it would deliver the default disposition and kill the test
+    session, which is the one outcome a red phase must never produce.
+    """
+    absorbed = []
+
+    def absorb(signum, frame):
+        absorbed.append(signum)
+
+    previous = {sig: signal.signal(sig, absorb) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        yield absorbed
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
 @pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
-def test_a_signal_sets_the_stop_flag(signum):
+def test_a_signal_sets_the_stop_flag(guarded_signals, signum):
     # The handler sets a flag and returns: it runs on whatever stack the
     # signal interrupted, so it must not do shutdown work there (D23).
     stop = threading.Event()
@@ -1216,28 +1242,20 @@ def test_a_signal_sets_the_stop_flag(signum):
         assert stop.is_set() is False
         signal.raise_signal(signum)
         assert stop.is_set() is True
+        assert guarded_signals == []
     finally:
         handler.restore()
 
 
-def test_restoring_puts_the_previous_handlers_back():
-    seen = []
-
-    def previous(signum, frame):
-        seen.append(signum)
-
-    original = signal.signal(signal.SIGTERM, previous)
-    try:
-        handler = SignalHandler(threading.Event())
-        handler.install()
-        handler.restore()
-        signal.raise_signal(signal.SIGTERM)
-        assert seen == [signal.SIGTERM]
-    finally:
-        signal.signal(signal.SIGTERM, original)
+def test_restoring_puts_the_previous_handlers_back(guarded_signals):
+    handler = SignalHandler(threading.Event())
+    handler.install()
+    handler.restore()
+    signal.raise_signal(signal.SIGTERM)
+    assert guarded_signals == [signal.SIGTERM]
 
 
-def test_the_signal_handler_is_a_context_manager():
+def test_the_signal_handler_is_a_context_manager(guarded_signals):
     stop = threading.Event()
     original = signal.getsignal(signal.SIGTERM)
     with SignalHandler(stop):
@@ -1246,7 +1264,7 @@ def test_the_signal_handler_is_a_context_manager():
     assert signal.getsignal(signal.SIGTERM) is original
 
 
-def test_a_second_signal_is_harmless():
+def test_a_second_signal_is_harmless(guarded_signals):
     stop = threading.Event()
     with SignalHandler(stop):
         signal.raise_signal(signal.SIGTERM)

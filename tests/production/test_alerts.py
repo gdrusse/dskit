@@ -597,8 +597,9 @@ def test_a_non_2xx_answer_is_a_failed_outcome_not_a_raise():
 
 @pytest.mark.parametrize("status", [200, 201, 202, 204, 299])
 def test_every_2xx_answer_is_a_success(status):
-    sink = a_webhook(transport=FakeTransport(answer=(status, {}, b"")))
-    assert sink.send(an_alert()).ok is True
+    transport = FakeTransport(answer=(status, {}, b""))
+    assert a_webhook(transport=transport).send(an_alert()).ok is True
+    assert len(transport.calls) == 1
 
 
 def test_a_transport_raise_is_a_failed_outcome_with_a_redacted_detail():
@@ -1054,7 +1055,11 @@ def test_every_suppression_reason_is_a_member_of_the_vocabulary(clock, metrics):
         clock.set(at)
         router.raise_alert(an_alert(fingerprint=f"f{index % 3}", at_ms=at))
         router.process(at)
-    for why in counts(metrics, SUPPRESSED):
+    counted = counts(metrics, SUPPRESSED)
+    # A run this tight MUST have withheld something; a silent registry
+    # would make the assertion below true by holding nothing at all.
+    assert sum(counted.values()) > 0
+    for why in counted:
         assert why in vocab.ALERT_SUPPRESSIONS
 
 
