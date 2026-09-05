@@ -4661,3 +4661,180 @@ path. A `spawn` override runs on a pool thread and must be thread-safe.
 `dskit/pipeline/README.md` and `CLAUDE.md` gain `folds.py` in their directory
 trees and an Extension-points bullet for the `spawn` hook; the `CLAUDE.md`
 tree also gains `stages.py`, which it omits today while the README lists it.
+
+---
+
+## ADR-0094 — The breadth cohort: one asset-local study over forty new names, group-cached
+
+**Status:** proposed (2026-09-05; the owner pre-authorized a cohort study
+in the Gate 3 rebuild brief and asked for this ADR before it is built)
+
+**Context.** Forty names landed as two immutable sources and nothing else:
+cohort D (`alpaca-sip-split-d`, twenty names chosen for industry breadth —
+ORCL, GLD, MRK, CRM, NEM, XBI, FCX, FTNT, DIS, DAL, PYPL, NRG, GM, MDT, BA,
+SBUX, TGT, ADM, MET, TMUS) and cohort E (`alpaca-sip-split-e`, twenty chosen
+by the project's move-over-half-spread rule — MSTR, MRVL, NOW, LULU, SHOP,
+PANW, GDX, BABA, INTC, MU, CIEN, WDC, LRCX, TER, BIDU, LITE, C, ADBE, ANET,
+EOG). Both pulls were data only; no universe, suite or run document names
+them, and none has been through a gate. The question they exist to answer
+is P11's, asked of them: is each name forecastable by a model trained on
+that name alone, under the ordered horizon search, and does the selection
+survive the whole-session scramble audit?
+
+P11 cannot ask it. `modelability_p11.py` pins `_ASSETS` to exactly the 25
+P10 names and refuses anything else, its feature cache is verified against
+that membership, and its document identity keys a completed run whose
+artifacts must not be reinterpreted (ADR-0087, ADR-0089). Copying the P11
+stages for a second cohort would repeat every function across two modules,
+which CLAUDE.md forbids; a study that takes its cohort from the document is
+the capability that is missing.
+
+Two facts about the machine shape the design. First, memory: the P10
+preflight built the 25-name feature cache in one process at a measured
+15.90 GiB peak under the 17 GiB cap (`stages/memory.json` of the P10 run).
+The bars those 25 names occupy on disk total 789 MB across the three
+split-adjusted sources; cohort D is 535 MB and cohort E 519 MB, so a
+single 41-name build (both cohorts plus SPY) carries roughly 1.4 times
+P10's records and cannot be expected to fit, while one cohort plus SPY
+carries roughly 0.7 times and can. Second, ADR-0093's `measure_one`
+reports memory for exactly ONE child and refuses a process that has already
+reaped one, so a study that builds two caches can measure only the first.
+
+**Decision.**
+
+1. **One new staged document,** `configs/run-p12-modelability.json`, study
+   name `p12-40-asset-modelability`, stages `memory` → `gate1` →
+   `gate3_walks` → `gate3`, journaled and resumable exactly as P11
+   (ADR-0081). It mirrors P11's scan, label and walk-forward geometry
+   verbatim: `lookback` 20 and the five momentum horizons on float32 column
+   frames; a vol-scaled label residualised to SPY with SPY's own label raw;
+   the 30-minute scoring lattice; the LightGBM parameters; walk-forward
+   `first` 2022-05-06, `step_days` 63, `count` 20, `val_days` 63,
+   `embargo_days` 5, `train_days` 730; `start_ms` 2018-01-01 and RTH-only
+   reads. A config test pins P12's scan parameters (less the fit list) and
+   walk-forward section equal to P11's, so the two studies cannot drift
+   apart silently.
+
+2. **The cohort is `scan.params.fit_symbols`** — graded, and the ONE place
+   the document names it: ORCL … TMUS then MSTR … EOG, forty names in
+   source order, SPY absent (it is the residual reference, not a fitted
+   name, and P11 already tested it). Stage params carry no asset list. The
+   universe the document reads, `configs/universe-p12.json`, lists the forty
+   as `tradable` with SPY as `reference` and an `industry` tag per name
+   transcribed from the two selection notes; the stages refuse a fit symbol
+   the universe does not list as tradable, and a fit symbol that no group
+   (below) holds or that two groups hold.
+
+3. **Feature caches are built per source group, under the cap, by the
+   `memory` stage.** Its `groups` param maps a group key to `{"universe":
+   <path>, "sources": [<bars node keys>]}`: group `d` is
+   `configs/universe-p12-d.json` (the twenty cohort-D names as tradable, SPY
+   as reference) read from `source_reference` and `source_d`; group `e`
+   likewise from `source_reference` and `source_e`. A group's cache lives at
+   `<features.cache_dir>/<group>`. For each group in declared order the
+   stage reuses a cache that is present and verifies — manifest and file
+   digests, membership exactly the group universe's symbols, manifest
+   metadata equal to the document's `features` params less `cache_dir` and
+   to the group universe — and otherwise builds it by ONE single-fold walk
+   of the last cutoff whose pipeline is the group universe, the group's
+   bars nodes with their `universe` rewritten to it, a `concat` of those
+   sources, the document's `features` node with the group cache path, and
+   the scan fitting and scoring the reference symbol alone behind two
+   `filter` nodes. The first build in the process goes through
+   `measure_one`; any later build goes through `run`, still capped but
+   unmeasured, which the stage says in its output. When every cache was
+   reused, the stage measures instead the largest cached asset's one-fold
+   Gate-1-shaped walk, as P11 does, so a measurement always exists. Output:
+   `groups` (`{key: {universe, cache, manifest_sha256, symbols}}`),
+   `measured` (`{kind, name, summary_dir, peak_rss_bytes}` with `kind`
+   `cache_build` or `asset_fold`), `limit_bytes`, and `passed`, which
+   requires the peak strictly below the limit. The three universe files
+   restate the P10 geometry — session, scales, `period_ms`, `offset_ms`,
+   `price_field`, `max_gap_minutes`, `lookback`, `holidays` (empty, as
+   P10 chose) and the `horizon` block — and config tests pin every one of
+   those keys equal across `universe-p10.json` and the three P12 files,
+   each group universe's tradables equal to its source config's `symbols`,
+   and the union's tradables equal to the two groups' tradables in order.
+
+4. **Gate 1** visits the fit symbols in order and the declared `horizons`
+   (`[1, 2, 3, 5, 10, 20, 30, 60]`) in order, stopping an asset at its first
+   failure exactly as ADR-0087 rule 3. Every derived walk is asset-local:
+   the group universe, the group cache, a `filter` to the asset's frames
+   and one to the asset's and the reference's tapes, `fit_symbols` and
+   `score_symbols` both `[asset]`, one exact scored row required. Cells are
+   registered in the attempt ledger under the key `{study: <document
+   name>, architecture: <the stage's `architecture` param>, data_cut:
+   <asof>, evidence: "gate1-selection", row_spacing_minutes: <universe
+   period_ms / 60000>, score_lattice_minutes: <scan score_period_ms /
+   60000>, series, horizon}` — P11's key with its literals derived from the
+   document instead of restated.
+
+5. **Gate 3** is ADR-0092's fail-fast audit on every Gate-1 passer: the
+   declared `seeds` (`0..18`) in order, each null scored as it completes,
+   the asset stopped at the first null whose `r2oos` matches or beats the
+   observed cell, a pass never stopped; `gate3_walks` emits `walks`,
+   `survivors` and `draws`; `gate3` emits one row per fit symbol carrying
+   `asset`, `gate1_h`, `gate1_passes`, `first_failed_h`,
+   `attempted_horizons`, `unrun_horizons`, `gate3_status`, and either the
+   stop record (`stopped`, `stop_seed`, `n_draws`, `p_bound`, `null_mean`
+   and `null_sd` null, `calibration` `not_computed_early_stop`) or the
+   `tier2_verdict` block.
+
+6. **Code placement.** The stages live in ONE new child module,
+   `intraday_equities/modelability_study.py`: the asset-local modelability
+   study over whatever cohort a document declares — `MemoryPreflightStage`,
+   `Gate1Stage`, `Gate3WalksStage`, `Gate3ResultStage`, each with
+   default-deny `_PARAMS`. The cohort, the horizons, the seeds, the group
+   caches and the derived-document builder are HOOKS on those classes.
+   `modelability_p11.py` keeps its public names and its document untouched
+   but its four classes become subclasses that supply only what is P11's:
+   the frozen 25 (`_ASSETS`), the frozen horizons and seeds, the P10 cache
+   verified against that membership, its historical output contract and
+   its `p11-…` walk tags. Its identity, artifacts and row shapes do not
+   change; its tests move a monkeypatch target to the module that now owns
+   the function where one moved, and add nothing else. The loop bodies —
+   the ordered stop, the fail-fast audit, the stopped row — exist once.
+   The P10 module (`modelability.py`) is the pooled historical study and is
+   not touched beyond what ADR-0093 already did.
+
+7. **A test asserts the estimand.** Over the shipped P12 document, every
+   derived Gate-1 and Gate-3 walk fits and scores exactly `[asset]` for
+   every declared asset, the group-build walk fits only the reference, and
+   no derived document anywhere in the study carries more than one fit
+   symbol — there is no pooled fit. A second test plans the document
+   offline through `plan_stages` and pins the stage order and every wired
+   input to a declared output.
+
+8. **The Path.** Under the owner's explicit exception to "Path is
+   human-owner-only", the current Gate 3 row's label is struck through and
+   a new Gate 3 row is added directly beneath it, pointing at ADR-0092,
+   ADR-0093, this ADR and the P12 document; the decisioning README is
+   regenerated through the journal tooling; no other Path row is touched.
+
+9. **Execution.** The full gate is NOT launched by the build. The wiring is
+   proven end to end on ONE asset — ORCL, cohort D's first name — with
+   `INTRADAY_EQUITIES_FOLD_WORKERS=2`, through a copy of the document that
+   declares `fit_symbols` `["ORCL"]` and only group `d`, kept under the
+   child's ignored `pipeline_runs/` and reproduced in the memo, so it
+   builds the real group-D cache the study will reuse and leaves its own
+   staged identity. The measured per-fold time is recorded against the
+   3.40 s/fold baseline in `docs/decisioning/actions.csv`.
+
+**Consequences.** The study costs at most `40 × 8 = 320` Gate-1 walks and,
+under ADR-0092, about `2.73` draws per failing passer and `19` per survivor
+in Gate 3; at P11's 3.40 s/fold that is about `320 × 20 × 3.4 / 3600 ≈
+6.0` hours for Gate 1 in the worst case, and P11's observed stop pattern
+(66 cells for 25 names) suggests about 2 hours. The cap binds only the two
+cache builds: a P11 asset-local fold measured 0.99 GiB against 15.90 GiB for
+the pooled P10 build. The two group caches together hold SPY twice, which is
+harmless and lets each group's walks read one directory. Five names carry
+distributions the selection notes say are owed a reconciliation against an
+unadjusted tape before they are modelled — MRK (Organon), MET
+(Brighthouse), WDC (SanDisk), EOG (seven specials) and PANW (the CyberArk
+issuance) — and no unadjusted tape exists for them; they stay in the
+cohort, the study's rows for them are provisional until that check is
+done, and the memo says so. The `memory` stage's second build is capped but
+unmeasured, a limit ADR-0093's one-child guard imposes rather than a
+weakening of the preflight. Adding a name is a config edit — its source,
+its group universe, the union universe and `fit_symbols` — and moves the
+document's identity by design.
