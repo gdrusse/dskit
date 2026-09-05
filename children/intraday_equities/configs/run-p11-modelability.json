@@ -1,6 +1,6 @@
 {
   "name": "p11-25-asset-modelability",
-  "notes": "P11's one resumable asset-local study through Gates 1 and 2 only. The source-level cut is 2026-02-28. Each fit trains on one of the exact 25 P10 assets; SPY remains tape-only label-reference data for the other 24. Gate 1 stops an asset at its first failed ordered horizon. Gate 2 tests only its selected horizon on untouched 2025-12-02 through 2026-02-28 data under one fixed dependence-valid family. META and GROUP are excluded.",
+  "notes": "P11's one resumable asset-local study: memory preflight, Gate 1, then the Gate-3 whole-session scramble audit (ADR-0089) that stops an asset at the first null matching or beating its real result (ADR-0092). The source-level cut is 2026-02-28. Each fit trains on one of the exact 25 P10 assets; SPY remains tape-only label-reference data for the other 24. Gate 1 stops an asset at its first failed ordered horizon. Gate 2 is not run (ADR-0088). META and GROUP are excluded.",
   "pipeline": {
     "universe": {
       "uses": "intraday_equities-universe",
@@ -191,17 +191,20 @@
     },
     "gate3_walks": {
       "uses": "intraday_equities.modelability_p11:Gate3WalksStage",
-      "inputs": {"gate1": "$gate1.rows"},
+      "inputs": {"gate1": "$gate1.rows", "gate1_cells": "$gate1.cells"},
       "params": {
-        "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
-      }
+        "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+        "alpha": 0.05
+      },
+      "notes": "ADR-0092: seeds run in order and an asset stops at the first null whose R2oos matches or beats its observed Gate-1 cell, so the walks stage now scores each draw itself (hence gate1_cells and alpha) and emits the draws record beside the walks. A pass is never stopped early."
     },
     "gate3": {
       "uses": "intraday_equities.modelability_p11:Gate3ResultStage",
       "inputs": {
         "gate1": "$gate1.rows",
         "gate1_cells": "$gate1.cells",
-        "walks": "$gate3_walks.walks"
+        "walks": "$gate3_walks.walks",
+        "draws": "$gate3_walks.draws"
       },
       "params": {
         "assets": [
