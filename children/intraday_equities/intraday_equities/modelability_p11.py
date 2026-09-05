@@ -359,7 +359,8 @@ def _stopped_row(draw):
     Parameters
     ----------
     draw : dict
-        The walks stage's ``{stopped, stop_seed, n_draws}`` record.
+        The walks stage's ``{stopped, stop_seed, n_draws}`` record, already
+        checked field by field by :func:`_draw_problems`.
 
     Returns
     -------
@@ -371,15 +372,8 @@ def _stopped_row(draw):
         ``not_computed_early_stop`` because the family was never
         completed; there is no ``gate3`` block because
         :func:`~dskit.pipeline.attempts.tier2_verdict` never ran.
-
-    Raises
-    ------
-    ValueError
-        When ``n_draws`` is not a positive int.
     """
-    n_draws = draw.get("n_draws")
-    if isinstance(n_draws, bool) or not isinstance(n_draws, int) or n_draws < 1:
-        raise ValueError(f"a stopped audit needs a positive n_draws, got {n_draws!r}")
+    n_draws = draw["n_draws"]
     return {
         "gate3_status": "fail",
         "gate3_passes": False,
@@ -392,6 +386,28 @@ def _stopped_row(draw):
         "null_sd": None,
         "calibration": "not_computed_early_stop",
     }
+
+
+def _draw_problems(asset, draw, seeds):
+    """List what is malformed in one survivor's ADR-0092 stop record."""
+    stopped = draw.get("stopped")
+    stop_seed = draw.get("stop_seed")
+    n_draws = draw.get("n_draws")
+    problems = []
+    if not isinstance(stopped, bool):
+        problems.append(f"{asset} stopped={stopped!r} is not a bool")
+    if isinstance(n_draws, bool) or not isinstance(n_draws, int) or n_draws < 1:
+        problems.append(f"{asset} n_draws={n_draws!r} is not a positive int")
+    if stopped is True and (isinstance(stop_seed, bool) or stop_seed not in seeds):
+        problems.append(f"{asset} stop_seed={stop_seed!r} is not one of the seeds")
+    if stopped is False and stop_seed is not None:
+        problems.append(f"{asset} stop_seed={stop_seed!r} but the audit completed")
+    if stopped is False and n_draws != len(seeds):
+        problems.append(
+            f"{asset} did not stop but n_draws={n_draws!r} is not the "
+            f"{len(seeds)} frozen seeds"
+        )
+    return problems
 
 
 class Gate3WalksStage(Stage):
@@ -441,6 +457,7 @@ class Gate3WalksStage(Stage):
             raise ValueError("Gate 3 input is not the frozen ordered 25 assets")
         observed = _observed_skill(inputs["gate1_cells"])
         survivors = [row for row in gate1 if row["gate1_passes"]]
+        self._refuse_unscored_cells(survivors, observed)
         walks = {}
         draws = {}
         for row in survivors:
@@ -454,6 +471,19 @@ class Gate3WalksStage(Stage):
             "survivors": [row["asset"] for row in survivors],
             "draws": draws,
         }
+
+    def _refuse_unscored_cells(self, survivors, observed):
+        """Refuse a survivor whose selected cell Gate 1 never scored."""
+        missing = [
+            (row["asset"], row["gate1_h"])
+            for row in survivors
+            if (row["asset"], row["gate1_h"]) not in observed
+        ]
+        if missing:
+            raise ValueError(
+                f"Gate 3 has no Gate-1 cell for the selected {missing}; "
+                "the audit is refused before any null walk is run"
+            )
 
     def _audit(self, ctx, asset, horizon, observed_r2, walks):
         """Run the seeds in order; stop at the first null that is not beaten."""
@@ -519,6 +549,7 @@ class Gate3ResultStage(Stage):
         gate1 = inputs["gate1"]
         if [row.get("asset") for row in gate1] != self.params["assets"]:
             raise ValueError("Gate 3 result input is not the frozen ordered 25 assets")
+        self._refuse_malformed_draws(gate1, inputs["draws"])
         observed = _observed_skill(inputs["gate1_cells"])
         rows = []
         for base in gate1:
@@ -530,6 +561,22 @@ class Gate3ResultStage(Stage):
             rows.append(final)
         return {"rows": rows}
 
+    def _refuse_malformed_draws(self, gate1, draws):
+        """Refuse a missing or malformed stop record before any verdict."""
+        problems = []
+        for base in gate1:
+            if not base["gate1_passes"]:
+                continue
+            asset = base["asset"]
+            if not isinstance(draws.get(asset), dict):
+                problems.append(f"{asset} has no draws record")
+                continue
+            problems.extend(_draw_problems(asset, draws[asset], self.params["seeds"]))
+        if problems:
+            raise ValueError(
+                "Gate 3 result cannot decide a survivor: " + "; ".join(problems)
+            )
+
     def _decide(self, base, observed, inputs):
         """One survivor's verdict: the stop record, or the full family."""
         asset = base["asset"]
@@ -537,11 +584,10 @@ class Gate3ResultStage(Stage):
         draw = inputs["draws"][asset]
         if draw["stopped"]:
             return _stopped_row(draw)
-        if draw["n_draws"] != len(self.params["seeds"]):
-            raise ValueError(
-                f"{asset} did not stop but n_draws={draw['n_draws']!r} is not "
-                f"the {len(self.params['seeds'])} frozen seeds"
-            )
+        # Each of these walks was scored once already, inside the audit's own
+        # stop test. Re-scoring a stored summary is cheap beside the walk that
+        # produced it, and the alternative is widening the draws record past
+        # the three fields ADR-0092 gives it.
         null_r2 = []
         null_t = []
         for seed in self.params["seeds"]:
