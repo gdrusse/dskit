@@ -1096,7 +1096,6 @@ def test_notes_anywhere_never_change_identity():
         ("env", ("env", "require"), ["OPS_WEBHOOK_URL", "EXTRA_TOKEN"]),
         ("heartbeat", ("heartbeat", "every_s"), 120),
         ("heartbeat", ("heartbeat", "in_degraded"), True),
-        ("alert_endpoints", ("alert_endpoints", "ops", "url_env"), "OTHER_WEBHOOK_URL"),
         ("alert_endpoints", ("alert_endpoints", "ops", "template"), "plain"),
         ("alert_endpoints", ("alert_endpoints", "ops", "timeout_s"), 9),
     ),
@@ -1104,6 +1103,17 @@ def test_notes_anywhere_never_change_identity():
 def test_an_excluded_section_never_changes_identity(section, path, value):
     base = ServeDocument.from_obj(example_document())
     moved = ServeDocument.from_obj(set_path(example_document(), path, value))
+    assert moved.to_obj() != base.to_obj()
+    assert moved.doc_hash == base.doc_hash
+
+
+def test_moving_a_sink_url_env_with_its_required_name_never_changes_identity():
+    # §5.11: the sink's url_env must be declared in env.require, so renaming
+    # the variable moves BOTH excluded sections — and still not the identity.
+    base = ServeDocument.from_obj(example_document())
+    doc = set_path(example_document(), ("env", "require"), ["OTHER_WEBHOOK_URL"])
+    doc = set_path(doc, ("alert_endpoints", "ops", "url_env"), "OTHER_WEBHOOK_URL")
+    moved = ServeDocument.from_obj(doc)
     assert moved.to_obj() != base.to_obj()
     assert moved.doc_hash == base.doc_hash
 

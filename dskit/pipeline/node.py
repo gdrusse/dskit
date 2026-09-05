@@ -677,7 +677,12 @@ class Node(ABC):
             When the resolved file cannot be read.
         """
         if ctx.release_reader is not None:
-            return ctx.release_reader.get(filename)
+            # The reader hands back the digest-checked BYTES (it has no
+            # notion of text); the text doorway decodes them once, here.
+            value = ctx.release_reader.get(filename)
+            if isinstance(value, (bytes, bytearray)):
+                return bytes(value).decode("utf-8")
+            return value
         target = ref or self.artifact
         if not target:
             raise ValueError(
