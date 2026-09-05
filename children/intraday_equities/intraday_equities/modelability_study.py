@@ -362,10 +362,16 @@ def _verified_cache(path, group_universe, features_params):
     with open(manifest, encoding="utf-8") as handle:
         payload = json.load(handle)
     metadata = payload.get("metadata") or {}
-    if metadata.get("params") != features_params or metadata.get("spec") != group_universe:
+    # The universe node patches derived keys (the feature-name list) into
+    # the spec it emits, so the recorded spec is the raw file plus those;
+    # every key the raw file declares must match, and the params exactly.
+    spec = metadata.get("spec") or {}
+    moved = [key for key, value in group_universe.items() if spec.get(key) != value]
+    if metadata.get("params") != features_params or moved:
         raise ValueError(
             f"feature cache {path} was built under other metadata than this "
-            "document's features params and group universe; it cannot be reused"
+            f"document's features params and group universe (differs at "
+            f"{moved or 'params'}); it cannot be reused"
         )
     digest = p10._verify_cache_once(os.path.abspath(path))
     return {"manifest_sha256": digest, "symbols": list(payload.get("symbols") or [])}

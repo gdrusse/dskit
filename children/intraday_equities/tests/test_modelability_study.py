@@ -429,6 +429,15 @@ def test_the_cache_verifier_checks_digests_membership_and_metadata(tmp_path):
         study._verified_cache(str(path), spec, {"lookback": 30, "layout": "columns"})
     with pytest.raises(ValueError, match="metadata"):
         study._verified_cache(str(path), {**spec, "lookback": 99}, params)
+    # The universe node patches the derived feature-name list into the spec
+    # it emits, so a real manifest's spec is the raw file plus `features`;
+    # the verifier must accept that superset and refuse a changed raw key.
+    emitted = {**spec, "features": ["a"]}
+    path2 = tmp_path / "d2"
+    digest2 = write_feature_cache(str(path2), {"records": frames, "tape": tapes}, {"spec": emitted, "params": params})
+    assert study._verified_cache(str(path2), spec, params) == {"manifest_sha256": digest2, "symbols": ["ORCL", "SPY"]}
+    with pytest.raises(ValueError, match="metadata"):
+        study._verified_cache(str(path2), {**spec, "reference": ["QQQ"]}, params)
 
 
 # -- Gate 1 ---------------------------------------------------------------------
