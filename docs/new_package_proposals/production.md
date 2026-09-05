@@ -457,8 +457,9 @@ brackets.
   `plan` (it writes an immutable release, so it is a mutating verb),
   `ready` (it appends a `readiness` record),
   `arm-request`, `approve-arm`, `disarm`, `halt`, `reduce`, `flatten-request`,
-  `approve-flatten`, `execute-flatten`, `resume`, `reconcile` and `adopt`;
-  read-only verbs do not journal. SIGKILL/power loss can leave a durable inbox
+  `approve-flatten`, `execute-flatten`, `resume`, `reconcile` and `adopt`, plus
+  phase 2's `outcomes`, `approve-hold`, `ack` and `silence`;
+  read-only verbs — including phase 2's `report` and `replay` — do not journal. SIGKILL/power loss can leave a durable inbox
   command without a CLI journal row because the stores have no shared transaction;
   `verify` reports that gap. The ledger/inbox is authoritative, and the plan
   makes no impossible exactly-once claim across independent stores.
@@ -585,6 +586,8 @@ live arm. Same hole as `required_universe`, same fix.
                  "transport": {"uses": "urllib", "params": {"connect_s": 2.0, "read_s": 5.0}}},
   "lifecycle": {"cooling_off_s": 900, "shutdown_grace_s": 30},
   "readiness": {"checklist": "configs/readiness.json", "waivers": [], "valid_for_s": 86400},
+  "outcomes": {"sources": {"settle": {"uses": "settlement", "params": {"lookback_ms": 604800000}}}},  // [phase 2] OPTIONAL and graded
+  "reporting": {"bins": 10, "markouts_ms": [60000, 300000], "markout_tolerance_ms": 5000, "scoring": "brier"},  // [phase 2] OPTIONAL and graded
   "heartbeat": {"every_s": 60, "in_degraded": false, "emitters": {"file": {"uses": "file"}}},
   "alerting": {"sinks": {"ops": {"uses": "webhook"}},                 // GRADED: which sinks exist and HOW they deliver
                "routes": [{"severity": "critical", "sinks": ["ops"]}, {"severity": "warning", "sinks": ["ops"]}],
@@ -630,6 +633,18 @@ partitioned to suit it — this is the reason `durability`, `resilience`,
 `lifecycle`, `readiness` and `alerting`. Eighteen graded sections plus four excluded plus
 `name` and `notes` account for every key in §4.1; `validate` refuses a top-level
 key that is in neither list, so the partition cannot silently drift.
+
+Phase 2 adds two more GRADED sections, `outcomes` and `reporting`, and both are
+OPTIONAL: an absent key is absent from the hash material, so every document
+written against phase 1 keeps its identity, its release and its running chain.
+They are graded rather than excluded because both change numbers someone acts
+on — an `outcome` feeds the `error_vs_realised` measure and the outcome
+monitors, which can trip the breaker, and an attribution figure computed under
+two different markout horizons must not claim one release. The alternative
+considered and rejected was putting `reporting` in
+`PRODUCTION_NON_IDENTITY_SECTIONS` on the grounds that no guard reads it; that
+would leave two reports disagreeing under one release hash, which is the thing
+identity exists to prevent.
 
 The stable root is `<placement.ledger_root>/<series_id>/`; `series.json` must
 match before the ledger opens, and immutable release metadata lives under
@@ -733,6 +748,36 @@ than only as a line in §8.
   `Overrun(policy ∈ {skip, coalesce, queue}, max_lag_ms)`; default `coalesce`;
   the tick record names absorbed ticks.
 
+### 5.1.1 `libs/exchange_calendars.py` (phase 3)
+
+`WeeklySessions` makes a document restate an exchange's schedule by hand, which
+is correct for a venue nobody has published and wasteful for one everybody has.
+This pack reads the published one without letting a library upgrade quietly
+change when the loop trades.
+
+`ExchangeCalendar(params)`, a `Calendar` registered as `exchange` in
+`CALENDAR_KINDS`. Params: `exchange` (the library's calendar code, required),
+`bounds` (`{from, until}`, ISO dates, REQUIRED — an unbounded library query is
+not reproducible and would answer differently as the library's own horizon
+moves), `tz` (an override; default the library's), `after_open_s`,
+`before_close_s`, `blackouts` and `notes`.
+
+At construction it materialises the schedule ONCE, inside `_materialise`, into
+exactly the session list `WeeklySessions` already consumes, and every question —
+`is_open`, `next_open`, `next_close`, `window(kind, at_ms)`, `tz_name` — is
+answered by that phase-1 owner. Buffers, half-open `[open, close)` bounds, the
+DST-gap refusal and the `CALENDAR_WINDOWS` dispatch are therefore not
+re-derived here; the pack's whole job is turning a library into a session list.
+`exchange_calendars` is imported inside `_materialise` and nowhere else.
+
+`Calendar` gains a concrete `data_fingerprint()` hook returning `None`, which
+this pack overrides with the digest of the materialised schedule. `plan` writes
+it into the calendar's existing `classes` entry in the manifest as
+`data_digest`, and ONLY when it is not `None`, so every phase-1 release hash is
+unmoved while a library upgrade that moves a holiday now refuses instead of
+silently changing a trading day under a fixed release and a live arm. A code
+fingerprint alone would not catch it: the code is identical, the DATA moved.
+
 ### 5.2 `feed.py`
 
 `ServingContract{source_binding, entity_key_fields, event_time_field,
@@ -791,6 +836,37 @@ the first, the executor the second, and D10's matrix reads both.
 `ReplayFeed` uses the recorded contract and EntryBatch. Tests prove acquisition
 and entry use one normalized binding and that snapshot metadata hashes the exact
 entry output.
+
+### 5.2.1 `feed.py` — the stream seam (phase 3)
+
+A push source, expressed as one more `Feed` subclass with the same
+`pull(tick_at_ms) -> FeedResult` and the same `EntryBatch` downstream, so
+nothing after the feed learns that rows arrived differently.
+
+`StreamFeed(params, *, root, registry, contract, spec, clock, transport,
+max_staleness_ms, dead_after_ms)`, registered as `websocket` in `FEED_KINDS`.
+Params: `url_env` (the env-var NAME), `subscribe` (the subscription payload the
+connector sends on connect), `queue_max`, and `reconnect` (a
+`document.resilience`-shaped `Retry` block, built by `resilience.py` rather
+than a second backoff).
+
+One supervised daemon worker owns the socket; the loop never touches it, per
+D23. **The worker does not hold the rows.** It writes what it receives through
+the source's own onboarding connector — the same write path a `watch` process
+uses — so the entry node still reads the store it was trained from (D4), the
+per-key watermarks still come from `scan_stream`, and `snapshot_entry` still
+produces the `EntryBatch`. A private in-process buffer would make the stream a
+second source of truth beside the store, which is the drift D4 exists to
+forbid; this design makes `StreamFeed` a *writer into* the existing path rather
+than an alternative to it, and that is the whole reason it can be one subclass.
+
+`pull(tick_at_ms)` therefore does what `EntrySourceFeed`'s `store` mode does —
+grade the oldest required key's watermark against the ladder — and adds only
+the link state: a dropped connection is `LINK_STATES` `recovering` and the feed
+is at best `stale`; an exhausted reconnect budget is `dead`; a full queue drops
+the OLDEST row and counts it, because a stream that blocks the writer to keep
+an old row is a stream that stops the loop. Ordering and duplicate suppression
+stay the connector's, which already owns them.
 
 ### 5.3 `decider.py` (+ the pipeline seam, §9.1)
 
@@ -1175,6 +1251,31 @@ non-finite number.
   `Arming` returned, so the chain judges what the authority actually granted
   rather than re-deriving it.
 
+### 5.5.1 `guards.py` — releasing a hold (phase 2)
+
+§5.5 rules that a `hold` expires as `refuse` at its `ttl` and names the phase-2
+verb that ends one early. It is `approve-hold`, spelled like the two approve
+verbs already in §7 rather than as a bare `approve`, which beside
+`approve-arm` and `approve-flatten` would not say what it approves.
+
+`GuardChain.approve_hold(state_view, guard, scope_key, credentials, at_ms) ->
+dict` returns the §6 `guard_state` body with `state_kind: "released"` — the
+third `GUARD_STATE_KINDS` member — naming the hold it clears and the
+`control_request_id`, `principal_digest` and `proof_digest` of the act.
+`SeriesState` folds it by dropping that `(guard, scope_key)` hold, so the
+release is durable and a restart cannot resurrect the hold it cleared. It
+refuses a `(guard, scope_key)` pair that holds nothing, a guard the document
+does not declare, and a hold whose `held_until_ms` has already passed (there is
+nothing left to release, and pretending otherwise would record an act that did
+nothing).
+
+It is an AUTHENTICATED control act with purpose `approve_hold` in
+`APPROVAL_PURPOSES`, on §5.8's one path, and it journals like every other
+mutating verb. A hold is a guard's refusal to keep acting on a scope; ending
+one early is an operator overriding a safety verdict, which is exactly the
+class of act D11 requires a verifier for. It grants no submit authority: the
+next proposal on that scope is evaluated by the whole chain again.
+
 ### 5.6 `breaker.py` and `arming.py`
 
 - `Breaker`: states `active | reducing | halted`; `trip(reason, actor)` from a
@@ -1482,45 +1583,6 @@ deadline invalidates the local permit without waiting for nominal expiry.
     └── process-<id>/base/  base-pass run dir (config/plan/resolved/nodes)
 ```
 
-### 5.8.2 `libs/sqlite.py` — `SqliteLedger` (phase 2)
-
-The second `Ledger`, and the reason the seam is an ABC. It is a pack because
-`sqlite3` is stdlib but the SCHEMA and its pragmas are a library-shaped choice,
-and because §8's tier rule puts a named library's plumbing in `libs/`.
-
-- `SqliteLedger(serve_root, process_id, release_hash, *, clock, fsync="every",
-  rotate=None, state=None, snapshot_every=None, lock=None)` — the SAME
-  constructor as `JsonlLedger`, so `compose.py` builds either from one site and
-  nothing downstream learns which it got.
-- `journal_mode=WAL` and `synchronous=FULL` are PINNED and not configurable. A
-  document's `document.durability.fsync` grades the BARRIER cadence — how often
-  the writer commits — and never the pragma, because a chain whose durability
-  can be lowered by a config key is not a chain. `fsync: "none"` therefore
-  still means "commit lazily", not "lose the write", and remains legal only at
-  `shadow` for the same reason it is in `JsonlLedger`.
-- One table `records(seq INTEGER PRIMARY KEY, kind, id UNIQUE, envelope TEXT
-  NOT NULL, hash, prev_hash)`, plus three triggers refusing `UPDATE` and
-  `DELETE` on it. Append-only is enforced by the STORE, not only by the code
-  that writes to it, which is the property JSONL gets from `O_APPEND` and a
-  sqlite file would otherwise lack.
-- `barrier()` is the `COMMIT`; `scan(kind, since_seq)` is one indexed query;
-  `head()`, `verify()`, `snapshot(payload)`, `latest_snapshot()` and `close()`
-  answer exactly §5.8's contract, and `verify()` returns the same
-  `first_bad_seq | None` walking in `seq` order.
-- `rotate` REFUSES: a sqlite chain is one file, and `document.placement.rotate`
-  names a JSONL segmentation policy. A document that selects `sqlite` while
-  declaring `rotate` refuses at `plan` rather than silently ignoring a knob its
-  author believed in.
-- `sqlite3` is named only inside methods, per §8's tier-2 rule.
-- **`LEDGER_KINDS = Registry("ledger", Ledger)` lives in `ledger.py`, beside
-  the ABC** — §4.3's rule that a family's registry sits with its seam — and
-  `ledger.py` registers `jsonl`. This pack registers `sqlite` on import; §8's
-  earlier note that `sqlite.py` "introduces" the registry meant that it is the
-  second implementation that gives the registry a purpose, not that the
-  registry moves into a pack. `document.durability.ledger` is the OPTIONAL
-  `{uses, params}` site, defaulting to `jsonl`, so every phase-1 document keeps
-  both its identity and its existing chain.
-
 ### 5.8.1 `state.py` — the fold
 
 R9's consensus decomposition has seven boxes, and box 3 (the state cache /
@@ -1607,6 +1669,45 @@ section names box 3.
   It runs before the scheduler exists and has nothing to do with a leg, so
   restart amnesia is structurally impossible rather than a rule each subsystem
   remembers.
+
+### 5.8.2 `libs/sqlite.py` — `SqliteLedger` (phase 2)
+
+The second `Ledger`, and the reason the seam is an ABC. It is a pack because
+`sqlite3` is stdlib but the SCHEMA and its pragmas are a library-shaped choice,
+and because §8's tier rule puts a named library's plumbing in `libs/`.
+
+- `SqliteLedger(serve_root, process_id, release_hash, *, clock, fsync="every",
+  rotate=None, state=None, snapshot_every=None, lock=None)` — the SAME
+  constructor as `JsonlLedger`, so `compose.py` builds either from one site and
+  nothing downstream learns which it got.
+- `journal_mode=WAL` and `synchronous=FULL` are PINNED and not configurable. A
+  document's `document.durability.fsync` grades the BARRIER cadence — how often
+  the writer commits — and never the pragma, because a chain whose durability
+  can be lowered by a config key is not a chain. `fsync: "none"` therefore
+  still means "commit lazily", not "lose the write", and remains legal only at
+  `shadow` for the same reason it is in `JsonlLedger`.
+- One table `records(seq INTEGER PRIMARY KEY, kind, id UNIQUE, envelope TEXT
+  NOT NULL, hash, prev_hash)`, plus three triggers refusing `UPDATE` and
+  `DELETE` on it. Append-only is enforced by the STORE, not only by the code
+  that writes to it, which is the property JSONL gets from `O_APPEND` and a
+  sqlite file would otherwise lack.
+- `barrier()` is the `COMMIT`; `scan(kind, since_seq)` is one indexed query;
+  `head()`, `verify()`, `snapshot(payload)`, `latest_snapshot()` and `close()`
+  answer exactly §5.8's contract, and `verify()` returns the same
+  `first_bad_seq | None` walking in `seq` order.
+- `rotate` REFUSES: a sqlite chain is one file, and `document.placement.rotate`
+  names a JSONL segmentation policy. A document that selects `sqlite` while
+  declaring `rotate` refuses at `plan` rather than silently ignoring a knob its
+  author believed in.
+- `sqlite3` is named only inside methods, per §8's tier-2 rule.
+- **`LEDGER_KINDS = Registry("ledger", Ledger)` lives in `ledger.py`, beside
+  the ABC** — §4.3's rule that a family's registry sits with its seam — and
+  `ledger.py` registers `jsonl`. This pack registers `sqlite` on import; §8's
+  earlier note that `sqlite.py` "introduces" the registry meant that it is the
+  second implementation that gives the registry a purpose, not that the
+  registry moves into a pack. `document.durability.ledger` is the OPTIONAL
+  `{uses, params}` site, defaulting to `jsonl`, so every phase-1 document keeps
+  both its identity and its existing chain.
 
 ### 5.9 `reconcile.py`
 
@@ -2262,10 +2363,13 @@ seam as an operator's proof.
   or, when none does, by taking the lock itself and running the same
   `CommandProcessor` synchronously — the serving process remains the sole
   ledger writer either way. It journals like every other mutating verb. Every live rung requires a
-  current GO record bound to the exact release before arming or submit. Unwaivable
-  foundation items include release/runtime verification, executor conformance,
+  current GO record bound to the exact release before arming or submit. The six
+  unwaivable
+  foundation items are release/runtime verification, executor conformance,
   authenticated execution-scope equality, clean startup reconciliation, fenced
-  lease capability and required safety controls. Outcome evidence extends it in phase 2.
+  lease capability and required safety controls; `UNWAIVABLE_ITEMS` names them
+  and a waiver against any of them refuses. Outcome evidence extends the
+  checklist in phase 2 — §5.13.4.
 
 ### 5.13.1 `leg.py` — the submission pipeline
 
@@ -2598,6 +2702,41 @@ pipe-escape rule — `dskit.pipeline.runs.render_cell`, made public by §9.1 for
 this, since production may not import a private pipeline name — because a
 table's format is taste and its escaping is correctness. The `report` verb is
 READ-ONLY: it appends nothing, takes no lock and does not journal.
+
+### 5.13.4 `readiness.py` — outcome evidence (phase 2)
+
+§5.13's readiness bullet ends "Outcome evidence extends it in phase 2." This is
+what that means, and it is deliberately small: the checklist mechanism does not
+change, only the kinds of evidence an item may cite.
+
+Phase 1 evaluates each checklist item's `evidence` as an operator-supplied
+assertion plus the unwaivable foundation checks the code performs itself.
+Phase 2 adds a third kind — evidence the SERIES itself can prove — through one
+concrete hook, `Readiness.evidence_for(name, view, at_ms) -> (bool, detail)`,
+resolved against a module-level table of evidence names rather than by a
+branch, so a new evidence name is a table entry and a test line. The names
+phase 2 adds, all backed by the `outcome` fold of §5.13.2:
+
+- `outcome_coverage` — the fraction of decided legs in the last
+  `document.readiness.outcome_window` that carry a terminal `outcome`, against
+  a declared minimum. A series whose labels never arrive cannot be shown to be
+  working, and a GO earned without that is the checklist agreeing with itself.
+- `outcome_freshness` — the age of the newest `known_at_ms`, against a declared
+  maximum. It catches the stopped label feed that `outcome_coverage` alone
+  would not, because a long window keeps its average up for a while after the
+  arrivals stop.
+- `calibration_current` — the phase-2 `Calibration` monitor's latest verdict is
+  not `alarm`, and not `provisional`. A provisional verdict is explicitly NOT
+  evidence: §5.10.1 makes an outcome monitor say out loud that its labels are
+  still arriving, and treating "not yet known" as "fine" is the failure that
+  hook exists to prevent.
+
+These are ordinary WAIVABLE items — a shadow series has no outcomes yet, and a
+new release legitimately starts with none — so they do not join
+`UNWAIVABLE_ITEMS`, which stays the six foundation items §5.13 lists. What
+changes is that a live series can now be REQUIRED by its own checklist to prove
+its decisions have been scored, which is the one readiness question phase 1 has
+no way to ask.
 
 ### 5.14 `policy.py` — the cross-cutting invariant matrix
 
@@ -2995,7 +3134,9 @@ sha256-canonical idiom.
 | `adoption` | authenticated venue-break adoption | `control_request_id`, `principal_digest`/`proof_digest`, `break_ids[]`, `delta_digest`, `before_recon_id` — the `recon` record the adoption acted on. There is no `after_recon_id`: the follow-up reconciliation is its own `recon` record appended after this barrier, and a field naming a record that does not exist yet has no producer |
 | `command_result` | consumed inbox request | `request_id`, `status ∈ {applied, rejected}`, emitted record ids, reason |
 | `monitor` | verdict change / window close | `monitor`, `slice`, `window`, `statistic`, `threshold`, `status`, `provisional` |
-| `alert` | firing / resolved | the `Alert` record + per-sink outcomes |
+| `alert` | firing / resolved | the `Alert` record + per-sink outcomes. Appended only by `AlertRouter.process`, only from the loop thread (§5.11) |
+| `silence` | [phase 2] one operator silence window | `Silence.to_obj()` — `silence_id`, `matchers`, `starts_at_ms`, `ends_at_ms`, `created_by`, `comment`, `state ∈ SILENCE_STATES` — plus `control_request_id`, `principal_digest`, `proof_digest`. `ends_at_ms` is required and bounded, since an unbounded silence is how a page is lost forever; `state` is derived from the clock at read time and the stored value is only what it was when written |
+| `alert_ack` | [phase 2] one operator acknowledgement | `AlertAck.to_obj()` — `fingerprint`, `acknowledged_until_ms`, `by`, `reason` — plus `control_request_id`, `principal_digest`, `proof_digest`. An ack stops ESCALATION and nothing else: the alert keeps firing and keeps being recorded, because an ack means a human owns it, not that it is fixed |
 | `health` | transition | `from`, `to`, `cause`, `probe_evidence` |
 | `snapshot` | every N records | `at_seq`, `state_digest`, `state` — **every `StateView` member** (positions, working orders, pending refs, balances, decision history, breaker, arming, readiness, guard holds, reduction projection, pending control, risk version) **plus monitor state**, which §5.10 requires the snapshot to carry and which is not a `StateView` member — dropping it would reset every drift window on restart, and a monitor below `min_n` cannot alarm until it refills. `risk_version`'s `executor_token`/`accounting_tokens` are live session tokens re-acquired on restart, not restored. Since `Recovery` replays `SeriesState.apply` from the last snapshot forward and cannot restore a member the snapshot never carried |
 
@@ -3015,9 +3156,16 @@ sha256-canonical idiom.
 | `status <doc>` | rung, breaker, health, last tick, pending refs, control inbox/results, head hash | 0 / 1 |
 | `verify <doc>` | walk the ledger chain; compare the head to the journal anchor | 0 / 1 |
 | `reconcile <doc>` / `adopt <doc> --break ID… --proof FILE` | queue reconciliation, or queue authenticated adoption of named breaks | 0 / 1 / 5 |
-| `replay <serve-dir>` | phase 2: parity report | 0 / 1 |
-| `outcomes <doc>` / `report <doc> [--asof T]` | phase 2 | 0 / 1 |
+| `replay <serve-dir> [--strict] [--format markdown\|json]` | [phase 2] re-run the tape through the recorded five objects and diff it (§5.13.3); read-only, writes only under its own scratch root | 0 / 1 |
+| `outcomes <doc> [--asof TS]` | [phase 2] collect and record outcomes up to the cut (§5.13.2); mutating, so queued or synchronous under the lock, and journaled | 0 / 1 / 5 |
+| `report <doc> [--asof T] [--format markdown\|json] [--out FILE]` | [phase 2] attribution, calibration, value and parity at the cut; read-only, no lock, no journal row | 0 / 1 |
+| `approve-hold <doc> --guard NAME --scope KEY --proof FILE` | [phase 2] authenticated early release of one guard hold (§5.5.1) | 0 / 1 / 5 |
+| `ack <doc> --fingerprint F --proof FILE [--for D]` / `silence <doc> --matcher K=V… --until TS --proof FILE` | [phase 2] authenticated alert acknowledgement, or an operator silence window (§5.11.2) | 0 / 1 / 5 |
 | `ready <doc>` | release-bound readiness GO / NO-GO (required for live rungs) | 0 / 1 / 5 |
+
+`replay --strict` exits 1 when the diff is non-empty, and plain `replay` exits
+0 and reports; no new exit code is minted, because a divergence under
+`--strict` is an error and a divergence without it is a finding.
 
 Only operational flags live on `serve` (`--once`, `--max-ticks`, `--armed`).
 Adapter selection and every semantic knob live in the document. Authenticated
@@ -3031,7 +3179,8 @@ shows its terminal receipt. Read-only verbs never take the writer lock.
 ```
 dskit/production/
 ├── __init__.py        public surface (curated re-exports only, no logic)
-├── __main__.py        CLI: validate | plan | serve | arm-request | approve-arm | disarm | halt | reduce | flatten-request | approve-flatten | execute-flatten | resume | status | verify | reconcile | adopt | replay | outcomes | report | ready
+├── __main__.py        CLI: validate | plan | serve | arm-request | approve-arm | disarm | halt | reduce | flatten-request | approve-flatten | execute-flatten | resume | status | verify | reconcile | adopt | ready
+│                      [phase 2] replay | outcomes | report | approve-hold | ack | silence
 ├── base.py            ProductionError; checkers re-exported from dskit.assets.base; ms/utc helpers; canonical record hashing
 ├── vocab.py           EVERY closed vocabulary, one module: RUNGS, VERDICTS (lattice), STATUSES + TERMINAL, TIFS, SIDES, FILL_STATUSES,
 │                      SEVERITIES (+ the pinned level map), HEALTH_STATES, BREAKER_STATES, LOOP_STATES, TICK_STATUSES, RECORD_KINDS,
@@ -3050,8 +3199,22 @@ dskit/production/
 │                      CASH_FLOW_KINDS (deposit|withdrawal|adjustment — the only kinds `adopt` can emit; `interest` and `fee` would need a venue-reported cash-flow producer this ADR does not add),
 │                      READINESS_VERDICTS (go|no_go), METRIC_NAMES + METRIC_LABEL_VALUES (§5.11.1's tables live here,
 │                      not in metrics.py), BREAK_ORIGINS (ours|external),
-│                      AT_TIMES_RELATIVE, CALENDAR_WINDOWS, ON_MISMATCH, RECON_ACTIONS, TRIP_REASONS,
-│                      CIRCUIT_STATES (closed|open|half_open|forced_open|metrics_only — distinct from BREAKER_STATES)
+│                      AT_TIMES_RELATIVE, ON_MISMATCH, RECON_ACTIONS, TRIP_REASONS,
+│                      CIRCUIT_STATES (closed|open|half_open|forced_open|metrics_only — distinct from BREAKER_STATES),
+│                      MONEY_FIELDS (the names under which a float is never legal at any depth of a record body —
+│                      ratios such as confidence are floats and are NOT named here), CACHE_STATES (current|stale),
+│                      AUTHORITY_EVENTS (issue|disarm|revoke|expire), TRANSITION_CAUSES (reduce|flatten_request|trip|halt|resume),
+│                      ALERT_SUPPRESSIONS (dedup|group_wait|repeat_interval|rate_limit|queue_full, + phase 2 inhibited|silenced),
+│                      CONTROL_PURPOSES (APPROVAL_PURPOSES + halt|disarm|reconcile|ready, + phase 2 outcomes),
+│                      EXECUTING_PURPOSES (the purposes that own a sequential cycle against model ticks),
+│                      UNWAIVABLE_ITEMS (the six readiness foundation items), CONJUNCTION_REASONS and SCOPE_REASONS
+│                      (why Arming.check_conjunction / apply_scope refused);
+│                      EXIT_CODES is a MAP (name -> code), not a tuple — the one place 0/1/3/4/5 are named;
+│                      [phase 2] OUTCOME_SOURCES (settlement|label|operator), ATTRIBUTION_COMPONENTS (impact|opportunity|fees),
+│                      SILENCE_STATES (pending|active|expired), ESCALATION_LEVELS (primary|secondary|final),
+│                      SIGNER_ALGORITHMS (sha256|sha512); [phase 3] OTEL_PROTOCOLS (grpc|http/protobuf).
+│                      RECORD_KINDS gains cancel_outcome (phase 1) and silence, alert_ack (phase 2);
+│                      GUARD_STATE_KINDS gains released (phase 2); APPROVAL_PURPOSES gains approve_hold, ack, silence (phase 2)
 ├── document.py        ServeDocument with required series/rung, Accounting, Arming, Coordination; default-deny; identity paths
 ├── release.py         ReleaseManifest; ReleaseReader (the capability handed to release_read nodes); class/code/adapter/
 │                      source/artifact/runtime fingerprints; release verification
@@ -3060,7 +3223,8 @@ dskit/production/
 │                      AccountState,
 │                      QuoteSet, GateResult, FeedResult, FeedAge, ScopeVerdict, PolicyRequest, Provenance;
 │                      LeasePermit is coordination.py's, not here; Permit (frozen dataclass base) + SimulatedPermit + ActPermit, TickResult, Intent,
-│                      execution/monitoring values
+│                      execution/monitoring values; [phase 2] Outcome (which IS the §6 outcome body), DecidedLeg,
+│                      Silence, AlertAck
 ├── clock.py           Clock ABC; ManualTime (the settable instant TestClock and ReplayClock each compose);
 │                      WallClock, TestClock, ReplayClock; CLOCK_KINDS
 ├── sessions.py        Calendar ABC; AlwaysOpen, WeeklySessions, EventWindow, Composite; CALENDAR_KINDS
@@ -3068,11 +3232,13 @@ dskit/production/
 ├── control.py         ControlInbox (the atomic request/result spool, testable alone); CommandProcessor, which owns no
 │                      verb logic and dispatches to handlers injected by compose.py — which is why the spool can be
 │                      built at its place in the §10 order while breaker/arming/reconcile/readiness come later
-├── feed.py            Feed ABC; ServingContract + FeedSpec; EntrySourceFeed; snapshot coverage/digests; ReplayFeed; FEED_KINDS
+├── feed.py            Feed ABC; FeedSpec (ServingContract is pipeline-side, §9.1); EntrySourceFeed; snapshot_entry() and
+│                      active_source_identity() as module functions; ReplayFeed; FEED_KINDS; [phase 3] StreamFeed (websocket)
 ├── decider.py         serving_document(); Decider (base pass + per-tick rerun via SubgraphRunner); ServingExecutionPolicy
 │                      (implements pipeline ExecutionPolicy); Proposer ABC; IntentRows,
 │                      TargetPositions; RecordedOutputs (replayed gate / stat_test); PROPOSER_KINDS
-├── guards.py          Guard ABC; Finding lattice; GuardChain; Limit; RangeGuard; Measure ABC + MEASURE_KINDS; windows; GUARD_KINDS
+├── guards.py          Guard ABC; Finding lattice; GuardChain; Limit; RangeGuard; Measure ABC + MEASURE_KINDS; windows; GUARD_KINDS;
+│                      [phase 2] GuardChain.approve_hold (§5.5.1)
 ├── breaker.py         Breaker (active | reducing | halted), persisted; trips; kill-switch file; cooling-off
 ├── arming.py          authenticated proofs; ApprovalVerifier ABC + APPROVAL_KINDS; Arming value object + fold;
 │                      scope application (minting lives in leg.py); NotArmed (internal)
@@ -3086,22 +3252,30 @@ dskit/production/
 ├── verifier.py        SubmissionVerifier (the final verify-and-call gate) — separate from policy.py because it performs
 │                      I/O against feed/quote/accounting/lease state, while the policies are pure over closed vocabularies
 ├── resilience.py      Classifier ABC + HttpClassifier; Retry (+ budget); CircuitBreaker; RateLimiter;
-│                      Transport ABC + UrllibTransport + TRANSPORT_KINDS
-├── ledger.py          Ledger ABC + barrier; JsonlLedger; Checkpoint caches; ServeRoot + series genesis; envelope + chain + verify
-├── state.py           SeriesState (the sole ledger fold); StateView; TickState; PositionBook; Recovery
+│                      Transport ABC + UrllibTransport + TRANSPORT_KINDS; [phase 2] Signer ABC + HmacSigner +
+│                      SIGNER_KINDS — §5.12.1
+├── ledger.py          Ledger ABC + barrier; JsonlLedger; LEDGER_KINDS (the registry lives with its seam, §4.3; libs/sqlite.py is
+│                      what gives it a second member); Checkpoint caches; ServeRoot + series genesis; envelope + chain + verify
+├── state.py           SeriesState (the sole ledger fold, with the non-StateView accessors monitor_state/open_ticks/
+│                      undecided_ticks/tick_plans/last_trip); StateView; TickState; PositionBook (with its per-instrument
+│                      fill log); Recovery; [phase 2] silences()/alert_acks()
 ├── reconcile.py       Reconciler; ReconReport; break classification; on_mismatch policy
 ├── monitors.py        Monitor ABC; Reference / Chunker / Threshold strategies (Response is a vocabulary); Operational,
-│                      Stream, Distribution
-│                      families (phase 2 adds Outcome and Parity); MONITOR_KINDS, REFERENCE_KINDS, CHUNKER_KINDS,
-│                      THRESHOLD_KINDS
-├── alerts.py          AlertSink ABC; LogSink, MemorySink, EmailSink, WebhookSink; AlertRouter; ALERT_SINK_KINDS
-├── health.py          Health state machine; HealthProbe ABC + ProbeResult + PROBE_KINDS; HeartbeatEmitter ABC +
-│                      emitters + HEARTBEAT_KINDS;
-│                      single-instance lock; signal handling
+│                      Stream, Distribution families; MONITOR_KINDS, REFERENCE_KINDS, CHUNKER_KINDS, THRESHOLD_KINDS;
+│                      [phase 2] DDM, ADWIN, JensenShannon, LInf, OutcomeMonitor (Calibration, Brier, Skill,
+│                      PredictionBias) and ParityMonitor — §5.10.1
+├── alerts.py          AlertSink ABC; LogSink, MemorySink, EmailSink, WebhookSink; AlertRouter (the sole appender of the
+│                      alert record, called only from the loop thread); ALERT_SINK_KINDS; [phase 2] InhibitRule, Silence
+│                      and AlertAck handling, escalation — §5.11.2
+├── health.py          Health state machine; HealthProbe ABC + ProbeResult + PROBE_KINDS; HeartbeatEmitter ABC (emit, plus
+│                      the concrete ready()/stopping() lifecycle hooks) + emitters + HEARTBEAT_KINDS;
+│                      InstanceLock — ONE flock on serve.lock, held before the ledger opens and handed to it;
+│                      signal handling; [phase 2] SystemdEmitter
 ├── metrics.py         Registry (counter/gauge/histogram); Prometheus naming + base units; closed label sets — an undeclared
 │                      label VALUE drops to the reserved `other` and is counted, never raised on the hot path, while an
 │                      undeclared label NAME refuses at declaration; JSONL flush per tick. Owns every `*_total` name §5.11 emits.
-│                      Phase 3 prometheus/otel packs subscribe to it; nothing here imports either.
+│                      [phase 3] MetricSink ABC + Metrics.subscribe() + METRIC_SINK_KINDS, which the prometheus/otel packs
+│                      register into; nothing here imports either library.
 ├── redact.py          Secrets resolution via dskit.pipeline.env.load_env; redact(text) applied to every log line, alert body
 │                      and recorded `reason`; webhook URLs and proofs are credentials. No secret ever reaches a ledger record.
 ├── loop.py            ServeLoop (the scheduler; NOT the composition root); Tick (concrete, final run() walking TICK_PHASES,
@@ -3113,18 +3287,28 @@ dskit/production/
 │                      ReductionAuthority (closed to core, no registry); ActPermit minting
 ├── bundles.py         the seven frozen collaborator dataclasses (Schedule, Data, Decision, Safety, Execution,
 │                      Recording, Observability) — their own module because LegPipeline takes six of them as
-│                      constructor arguments and is built before compose
+│                      constructor arguments and is built before compose — plus Invocation{armed, env_release_hash,
+│                      once, max_ticks}, which Safety carries and __main__ builds from the flags and the environment
 ├── compose.py         AuthorityTable; bundles_for(): the closed rung → collaborator table; the one module
 │                      that may read a rung
-├── outcomes.py        [phase 2] outcome join (settlements, strict forward as-of), supersede chain, as-of cut
-├── report.py          [phase 2] attribution, calibration, drawdown, replay parity diff, markdown/JSON emitters
+├── outcomes.py        [phase 2] Outcome + DecidedLeg join; forward_asof() (the one strict-forward rule); OutcomeSource ABC
+│                      + SettlementOutcomes + LabelOutcomes + OUTCOME_SOURCE_KINDS; OutcomeJoin (collect/record/
+│                      current_outcome/as_of) — §5.13.2
+├── report.py          [phase 2] Attribution, CalibrationReport, ValuePoint; Tape + Replay + ParityDiff + Divergence +
+│                      ParityReport; ReportEmitter ABC + MarkdownReport + JsonReport — §5.13.3
 ├── readiness.py       Readiness(document, release); ReadinessResult; readiness_digest; release-bound checklist →
 │                      GO / NO-GO; required for live
 ├── libs/
 │   ├── __init__.py
-│   ├── sqlite.py      [phase 2] SqliteLedger (WAL + synchronous=FULL pinned; append-only triggers)
-│   └── parquet.py     [phase 2] RunReference over the run's predictions parquet (pyarrow inside the method)
-│                      (sqlite.py also introduces LEDGER_KINDS, the registry `Ledger` has no need of until then)
+│   ├── sqlite.py      [phase 2] SqliteLedger — WAL + synchronous=FULL PINNED (durability.fsync grades the barrier
+│   │                  cadence, never the pragma), append-only triggers, rotate refused; registers `sqlite` into
+│   │                  ledger.py's LEDGER_KINDS — §5.8.2
+│   ├── parquet.py     [phase 2] RunReference over the run's predictions parquet, registered as `run` in
+│   │                  REFERENCE_KINDS; pyarrow inside the method — §5.10.2
+│   ├── exchange_calendars.py  [phase 3] ExchangeCalendar — the published schedule materialised once into the
+│   │                  WeeklySessions session list, with a data_digest bound into the release — §5.1.1
+│   ├── prometheus.py  [phase 3] PrometheusSink over metrics.py's MetricSink seam — §5.11.3
+│   └── opentelemetry.py  [phase 3] OtelSink over the same seam — §5.11.3
 ├── README.md          what it does, how to write a serve document, how to build an executor / proposer / measure / guard / monitor / sink; tree
 ├── AGENTS.md          package-scoped design, safety and testing instructions; tree
 └── CLAUDE.md          conventions, extension points, gotchas; tree
@@ -3217,9 +3401,25 @@ tests/production/
 ├── test_loop.py           per-key/quote/evidence deadlines; bound-state change at each barrier; cumulative risk; durable findings;
 │                          final verify/call refusal, acknowledged external race, crash cuts; one action/client ref
 ├── test_main.py           release, control proofs, normal-exit mutating-verb journal rows, hard-kill gap reporting, queued receipts, recovery verbs, no semantic overrides
-├── test_outcomes.py       [phase 2] forward join strictness (hypothesis: label asof > decided_at); vintage reproducibility; supersede chain
-├── test_report.py         [phase 2] IS components sum; Murphy terms sum to Brier; BSS of baseline vs itself = 0; parity diff classes
-└── test_readiness.py      release binding; unwaivable foundation items; live refuses without GO; NO-GO exits 5; waivers
+├── test_outcomes.py       [phase 2] forward join strictness (hypothesis: label asof > decided_at, never >=); vintage
+│                          reproducibility — as_of(T) is byte-identical when re-asked after later arrivals; supersede chain,
+│                          and a second supersession of one record refuses; known_at_ms comes from the run's one instant, so a
+│                          replayed collect dedups instead of refusing; every OUTCOME_KINDS member has a producing source
+├── test_report.py         [phase 2] IS components sum to shortfall exactly in Decimal; Murphy terms sum to Brier on the exact
+│                          stratification and NOT on bins; BSS of a baseline against itself = 0; a missing markout is None, never 0;
+│                          external cash flows never enter cumulative; every DIVERGENCE_CLASSES member is reachable and an
+│                          unclassified field falls to nondeterminism; the markdown emitter escapes a pipe in every cell
+└── test_readiness.py      release binding; unwaivable foundation items; live refuses without GO; NO-GO exits 5; waivers;
+                           [phase 2] a provisional calibration verdict is not evidence
+
+tests/production_libs/     [phase 2/3] the tier-2 packs, beside tests/pipeline_libs and tests/assets_libs
+├── test_sqlite.py         [phase 2] the §5.8 chain contract run against SqliteLedger — same envelope, same first_bad_seq, same
+│                          idempotency; WAL + synchronous=FULL cannot be lowered by a document; UPDATE and DELETE refuse at the
+│                          store; a document declaring rotate refuses at plan
+├── test_parquet.py        [phase 2] RunReference reads once and lazily, add() refuses, a missing column refuses at sample()
+├── test_exchange_calendars.py  [phase 3] the materialised schedule answers identically to an equivalent WeeklySessions; a moved
+│                          holiday changes data_digest and therefore refuses under a fixed release
+└── test_prometheus.py / test_opentelemetry.py  [phase 3] a raising sink is counted and never fails a flush
 
 examples/production/
 ├── serve-shadow.json      the synthetic run served at shadow — the 60-second path
@@ -3410,6 +3610,15 @@ behavior-neutral, and existing search suites and all pinned identities must stay
 unmoved — specifically `tests/pipeline/test_driver.py` and
 `tests/pipeline/test_kinds_search.py` must pass untouched, and this ADR adds
 **no new params and no grammar change** to the pipeline document.
+
+`dskit/pipeline/runs.py`: give the markdown cell renderer a public name.
+`_render_cell` / `_escape_pipe` already carry the rule that a raw `|` ends a
+cell, and `driver._md_cell` already takes it from there rather than restating
+it; `report.py` (§5.13.3) is the third caller and lives in another package, so
+it needs `render_cell` public. Behaviour is unchanged and the private spelling
+stays as an alias — production may not import a private pipeline name
+(`tests/production/test_purity.py` fails it), and a fourth copy of an escaping
+rule is exactly the duplication root `CLAUDE.md` forbids.
 
 `dskit/pipeline/libs/observations.py`: replace the locator-only proposal with
 `ObservationRows.serving_contract(params, verified_run_evidence)`, a pure method
