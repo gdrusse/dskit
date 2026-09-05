@@ -6,9 +6,14 @@ What this file pins, in the plan's own terms (§5.8, §5.8.1, §6, D13, D15):
   creates `<root>/<series_id>/` plus the `series.json` genesis on first
   use, refuses a series id that disagrees with an existing genesis, and
   hands out one accessor per line of the §5.8 tree.
-* **The envelope** is exactly §6's eleven ledger fields merged with the
-  caller's record. Ledger-assigned fields never enter `payload_digest`,
-  and `hash = record_hash(prev_hash, envelope - hash)` with a genesis
+* **The envelope nests the body.** A caller passes exactly
+  `{"kind", "id", "body"}` and the ledger writes twelve fields — §6's
+  eleven plus `body`. The nesting is not cosmetic: §6 bodies legitimately
+  carry their own `kind`, `series_id` and `release_hash` (a `tick_start`
+  body's release can differ from the writing process's during recovery),
+  so a flat merge would silently overwrite one with the other. Ledger
+  fields never enter `payload_digest`, and
+  `hash = record_hash(prev_hash, envelope - hash)` from a genesis
   `prev_hash` of 64 zeros.
 * **Idempotency** is by the caller's stable `id` plus that digest: the
   same payload returns the prior `seq` and writes nothing, a different
@@ -74,6 +79,9 @@ ASSIGNED = (
     "hash",
 )
 
+#: The twelve fields on a written line: §6's eleven plus the nested body.
+ENVELOPE_KEYS = {"kind", "id", "body", *ASSIGNED}
+
 
 # ---------------------------------------------------------------------------
 # Local fakes — clock.py and state.py are other groups' modules
@@ -106,12 +114,14 @@ class RecordingState:
 
     def __init__(self):
         self.applied = []
+        self.snapshot_calls = 0
 
     def apply(self, record):
         self.applied.append(record)
 
-    def snapshot(self):
-        return {"folded": len(self.applied)}
+    def to_snapshot_obj(self):
+        self.snapshot_calls += 1
+        return {"folded": len(self.applied), "call": self.snapshot_calls}
 
 
 # ---------------------------------------------------------------------------
@@ -120,9 +130,7 @@ class RecordingState:
 
 
 def _rec(kind="tick_start", rid="tick-1", **body):
-    rec = {"kind": kind, "id": rid}
-    rec.update(body)
-    return rec
+    return {"kind": kind, "id": rid, "body": dict(body)}
 
 
 def _segment_paths(serve):
@@ -368,16 +376,41 @@ def test_append_assigns_dense_one_based_seqs(serve, open_ledger):
     assert [e["seq"] for e in _envelopes(serve)] == [1, 2, 3, 4]
 
 
-def test_the_envelope_is_the_callers_record_plus_the_nine_assigned_fields(
+def test_the_envelope_is_twelve_fields_with_the_callers_body_nested(
     serve, open_ledger
 ):
     led = open_ledger(serve)
-    led.append(_rec(kind="tick_start", rid="t-1", tick_at_ms=17, release_hash_note="x"))
+    led.append(_rec(kind="tick_start", rid="t-1", tick_at_ms=17, tick_id="tk-1"))
     (env,) = _envelopes(serve)
-    assert set(env) == {"kind", "id", "tick_at_ms", "release_hash_note", *ASSIGNED}
+    assert set(env) == ENVELOPE_KEYS
     assert env["kind"] == "tick_start"
     assert env["id"] == "t-1"
-    assert env["tick_at_ms"] == 17
+    assert env["body"] == {"tick_at_ms": 17, "tick_id": "tk-1"}
+
+
+def test_a_body_carries_its_own_kind_series_id_and_release_hash_untouched(
+    serve, open_ledger
+):
+    """Why the body nests: §6 bodies own these names and the ledger owns them too."""
+    led = open_ledger(serve)
+    body = {
+        "kind": "reduction",
+        "series_id": "not-the-series",
+        "release_hash": "b" * 64,
+        "event": "start",
+    }
+    led.append({"kind": "authority", "id": "a-1", "body": dict(body)})
+    (env,) = _envelopes(serve)
+    assert env["body"] == body
+    assert env["kind"] == "authority"
+    assert env["series_id"] == SERIES
+    assert env["release_hash"] == RELEASE
+
+
+def test_an_empty_body_is_legal(serve, open_ledger):
+    led = open_ledger(serve)
+    assert led.append({"kind": "tick_start", "id": "t-1", "body": {}}) == 1
+    assert _envelopes(serve)[0]["body"] == {}
 
 
 def test_the_assigned_fields_carry_the_series_process_release_and_clock(
@@ -585,29 +618,43 @@ def test_an_unknown_kind_refuses(serve, open_ledger):
 def test_a_missing_kind_refuses(serve, open_ledger):
     led = open_ledger(serve)
     with pytest.raises(ProductionError):
-        led.append({"id": "x-1"})
+        led.append({"id": "x-1", "body": {}})
 
 
 def test_a_missing_id_refuses(serve, open_ledger):
     led = open_ledger(serve)
     with pytest.raises(ProductionError):
-        led.append({"kind": "tick_start"})
+        led.append({"kind": "tick_start", "body": {}})
 
 
 @pytest.mark.parametrize("bad_id", ["", 7, None])
 def test_a_non_string_or_empty_id_refuses(serve, open_ledger, bad_id):
     led = open_ledger(serve)
     with pytest.raises(ProductionError):
-        led.append({"kind": "tick_start", "id": bad_id})
+        led.append({"kind": "tick_start", "id": bad_id, "body": {}})
 
 
-@pytest.mark.parametrize("field", ASSIGNED)
-def test_a_record_body_may_not_carry_a_ledger_assigned_field(serve, open_ledger, field):
+@pytest.mark.parametrize("field", (*ASSIGNED, "event", "at_seq"))
+def test_a_top_level_key_other_than_kind_id_body_refuses(serve, open_ledger, field):
     led = open_ledger(serve)
+    rec = {"kind": "tick_start", "id": "t-1", "body": {}, field: "forged"}
     with pytest.raises(ProductionError) as exc:
-        led.append(_rec(**{field: "forged"}))
+        led.append(rec)
     assert field in str(exc.value)
     assert _raw_lines(serve) == []
+
+
+def test_a_missing_body_refuses(serve, open_ledger):
+    led = open_ledger(serve)
+    with pytest.raises(ProductionError):
+        led.append({"kind": "tick_start", "id": "t-1"})
+
+
+@pytest.mark.parametrize("bad", [None, [], "body", 7])
+def test_a_non_dict_body_refuses(serve, open_ledger, bad):
+    led = open_ledger(serve)
+    with pytest.raises(ProductionError):
+        led.append({"kind": "tick_start", "id": "t-1", "body": bad})
 
 
 def test_a_non_dict_record_refuses(serve, open_ledger):
@@ -622,7 +669,7 @@ def test_a_non_dict_record_refuses(serve, open_ledger):
 
 
 @pytest.mark.parametrize("field", vocab.MONEY_FIELDS)
-def test_a_float_under_any_money_field_refuses(serve, open_ledger, field):
+def test_a_float_under_any_money_field_of_the_body_refuses(serve, open_ledger, field):
     led = open_ledger(serve)
     with pytest.raises(ProductionError) as exc:
         led.append(_rec(kind="fill", rid="f-1", **{field: 1.5}))
@@ -665,9 +712,9 @@ def test_a_float_under_a_non_money_field_is_legal(serve, open_ledger):
         )
     )
     (env,) = _envelopes(serve)
-    assert env["confidence"] == 0.42
-    assert env["prediction"] == -0.9
-    assert env["legs"][0]["confidence"] == 0.5
+    assert env["body"]["confidence"] == 0.42
+    assert env["body"]["prediction"] == -0.9
+    assert env["body"]["legs"][0]["confidence"] == 0.5
     for name in ("confidence", "prediction", "expected_value", "statistic"):
         assert name not in vocab.MONEY_FIELDS
 
@@ -676,7 +723,7 @@ def test_a_float_under_a_non_money_field_is_legal(serve, open_ledger):
 def test_a_money_field_that_is_not_a_float_is_accepted(serve, open_ledger, value):
     led = open_ledger(serve)
     assert led.append(_rec(kind="fill", rid="f-1", price=value)) == 1
-    assert _envelopes(serve)[0]["price"] == value
+    assert _envelopes(serve)[0]["body"]["price"] == value
 
 
 def test_ints_bools_strings_and_nulls_are_accepted(serve, open_ledger):
@@ -685,18 +732,18 @@ def test_ints_bools_strings_and_nulls_are_accepted(serve, open_ledger):
         _rec(kind="cash_flow", rid="c-1", amount=100, external=True, reason=None)
     )
     (env,) = _envelopes(serve)
-    assert env["amount"] == 100
-    assert env["external"] is True
-    assert env["reason"] is None
+    assert env["body"]["amount"] == 100
+    assert env["body"]["external"] is True
+    assert env["body"]["reason"] is None
 
 
 def test_a_decimal_money_field_lands_in_the_file_as_a_string(serve, open_ledger):
     led = open_ledger(serve)
     led.append(_rec(kind="fill", rid="f-1", price=Decimal("1.50"), fee=Decimal("0.02")))
     (env,) = _envelopes(serve)
-    assert env["price"] == "1.50"
-    assert env["fee"] == "0.02"
-    assert isinstance(env["price"], str)
+    assert env["body"]["price"] == "1.50"
+    assert env["body"]["fee"] == "0.02"
+    assert isinstance(env["body"]["price"], str)
 
 
 # ---------------------------------------------------------------------------
@@ -944,7 +991,7 @@ def test_verify_locates_an_edited_line(serve, open_ledger):
     path = _segment_paths(serve)[0]
     lines = _raw_lines(serve)
     env = json.loads(lines[2])
-    env["note"] = "tampered"
+    env["body"]["note"] = "tampered"
     lines[2] = json.dumps(env, sort_keys=True, separators=(",", ":"))
     _rewrite(path, lines)
     led = open_ledger(serve)
@@ -1005,7 +1052,7 @@ def test_verify_walks_every_segment(serve, open_ledger):
         lines = [ln for ln in fh.read().split("\n") if ln.strip()]
     env = json.loads(lines[0])
     bad_seq = env["seq"]
-    env["filler"] = "tampered"
+    env["body"]["filler"] = "tampered"
     lines[0] = json.dumps(env, sort_keys=True, separators=(",", ":"))
     _rewrite(victim, lines)
     reopened = open_ledger(serve)
@@ -1018,10 +1065,12 @@ def test_verify_accepts_a_line_carrying_an_unknown_envelope_field(serve, open_le
     led.append(_rec(rid="t-1"))
     led.close()
     prior = _envelopes(serve)[-1]
+    hand = {"kind": "tick_start", "id": "hand-1", "body": {"tick_id": "tk-9"}}
     env = {
-        "kind": "tick_start",
-        "id": "hand-1",
-        "payload_digest": canonical_hash({"kind": "tick_start", "id": "hand-1"}),
+        "kind": hand["kind"],
+        "id": hand["id"],
+        "body": hand["body"],
+        "payload_digest": canonical_hash(hand),
         "seq": prior["seq"] + 1,
         "series_id": SERIES,
         "process_id": PROCESS,
@@ -1214,15 +1263,17 @@ def test_snapshot_appends_a_snapshot_record_naming_the_head_it_projects(
     led = open_ledger(serve)
     led.append(_rec(rid="t-1"))
     led.append(_rec(rid="t-2"))
-    view = {"positions": {"AAA": "3"}, "breaker": "active"}
-    seq = led.snapshot(view)
+    payload = {"positions": {"AAA": "3"}, "breaker": "active"}
+    seq = led.snapshot(payload)
     assert seq == 3
     env = _envelopes(serve)[-1]
     assert env["kind"] == "snapshot"
     assert env["seq"] == 3
-    assert env["at_seq"] == 2
-    assert env["state"] == view
-    assert env["state_digest"] == canonical_hash(view)
+    assert env["body"] == {
+        "at_seq": 2,
+        "state_digest": canonical_hash(payload),
+        "state": payload,
+    }
     assert isinstance(env["id"], str) and env["id"]
 
 
@@ -1235,8 +1286,9 @@ def test_latest_snapshot_returns_the_last_one_after_reopen(serve, open_ledger):
     led.close()
     reopened = open_ledger(serve)
     latest = reopened.latest_snapshot()
-    assert latest["state"] == {"n": 2}
-    assert latest["at_seq"] == 3
+    assert latest["kind"] == "snapshot"
+    assert latest["body"]["state"] == {"n": 2}
+    assert latest["body"]["at_seq"] == 3
     assert reopened.verify() is None
 
 
@@ -1247,7 +1299,10 @@ def test_snapshot_every_n_records_appends_one_automatically(serve, open_ledger):
         led.append(_rec(rid=f"t-{i}"))
     kinds = [e["kind"] for e in _envelopes(serve)]
     assert kinds == ["tick_start", "tick_start", "tick_start", "snapshot"]
-    assert _envelopes(serve)[-1]["at_seq"] == 3
+    auto = _envelopes(serve)[-1]["body"]
+    assert auto["at_seq"] == 3
+    assert auto["state"] == {"folded": 3, "call": 1}
+    assert auto["state_digest"] == canonical_hash(auto["state"])
     assert led.head()[0] == 4
 
 
@@ -1415,7 +1470,7 @@ def test_a_process_killed_mid_batch_leaves_a_verifiable_chain(serve, open_ledger
         f"led = JsonlLedger(sr, 'proc-child', {RELEASE!r}, clock=C(),\n"
         "                  fsync={'batch': {'n': 1000, 'ms': 1000000}})\n"
         "for i in range(3):\n"
-        "    led.append({'kind': 'tick_start', 'id': 't-%d' % i})\n"
+        "    led.append({'kind': 'tick_start', 'id': 't-%d' % i, 'body': {}})\n"
         "os._exit(9)\n"
     )
     proc = _child(code)
@@ -1436,16 +1491,14 @@ def test_head_reflects_the_process_stop_record_the_journal_row_renders(
     serve, open_ledger
 ):
     led = open_ledger(serve)
-    led.append(
-        _rec(kind="process", rid="p-start", event="start", series_id_note=SERIES)
-    )
+    led.append(_rec(kind="process", rid="p-start", event="start", series_id=SERIES))
     led.append(_rec(kind="tick_start", rid="t-1"))
     stop_seq = led.append(_rec(kind="process", rid="p-stop", event="stop", exit_code=0))
     led.barrier()
     stop = _envelopes(serve)[-1]
     assert stop["kind"] == "process"
-    assert stop["event"] == "stop"
-    assert stop["event"] in vocab.PROCESS_EVENTS
+    assert stop["body"]["event"] == "stop"
+    assert stop["body"]["event"] in vocab.PROCESS_EVENTS
     assert led.head() == (stop_seq, stop["hash"])
     led.close()
     reopened = open_ledger(serve)
