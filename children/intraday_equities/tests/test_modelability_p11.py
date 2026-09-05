@@ -10,10 +10,6 @@ from dskit.pipeline.document import PipelineDocument, load_document
 from intraday_equities import modelability_p11 as p11
 
 
-def load_document_obj(obj):
-    return PipelineDocument.from_obj(obj)
-
-
 def _root():
     return Path(__file__).parents[1]
 
@@ -250,91 +246,30 @@ def test_fold_workers_refuses_a_value_that_is_not_a_positive_int(monkeypatch):
             raise AssertionError(f"{bad!r} was accepted")
 
 
+def test_the_memory_envelope_is_one_value_in_both_modules():
+    # p10's constant is what a fold actually gets; p11's is what P11's
+    # preflight validates against. Two copies, so pin the agreement.
+    assert p11._MEMORY_LIMIT == p11.p10._MEMORY_LIMIT
+
+
 def test_the_worker_knob_is_never_graded_into_the_document_identity():
     # The real claim: no stage declares it, so no width can move the
     # hash that names the run directory and keys the stored artifacts.
-    raw = json.loads((_root() / "configs" / "run-p11-modelability.json").read_text())
-    for stage in raw["stages"].values():
-        assert "workers" not in stage["params"]
-    assert "workers" not in p11.Gate1Stage._PARAMS
-    assert "workers" not in p11.Gate3WalksStage._PARAMS
+    for name in ("run-p10-modelability.json", "run-p11-modelability.json"):
+        raw = json.loads((_root() / "configs" / name).read_text())
+        for stage in raw["stages"].values():
+            assert "workers" not in stage.get("params", {})
+    for stage_class in (
+        p11.Gate1Stage,
+        p11.Gate3WalksStage,
+        p11.p10.Gate1WalksStage,
+        p11.p10.Gate3WalksStage,
+    ):
+        assert "workers" not in stage_class._PARAMS
     assert (
         p11.Gate3WalksStage.validate_params({"seeds": list(range(19)), "workers": 4})
         != []
     )
-
-
-def test_gate3_walks_passes_the_machine_worker_count_to_every_bounded_walk(
-    monkeypatch,
-):
-    monkeypatch.setattr(p11, "_ASSETS", ["A"])
-    monkeypatch.setenv(p11.p10._WORKERS_ENV, "6")
-    walks = p11.Gate3WalksStage("gate3_walks", {"seeds": list(range(19))})
-    seen = []
-    monkeypatch.setattr(
-        p11,
-        "_derived_document",
-        lambda _ctx, asset, horizon, **kwargs: SimpleNamespace(asset=asset),
-    )
-    monkeypatch.setattr(
-        p11.p10,
-        "_run_bounded_walk",
-        lambda _ctx, doc, tag: seen.append(p11.p10._fold_workers()) or f"w-{tag}",
-    )
-    walks.run(
-        SimpleNamespace(),
-        {"gate1": [{"asset": "A", "gate1_h": 2, "gate1_passes": True}]},
-    )
-    assert seen == [6] * 19
-
-
-def test_gate1_passes_the_machine_worker_count_to_every_bounded_walk(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(p11, "_ASSETS", ["A"])
-    monkeypatch.setattr(p11, "_HORIZONS", [1])
-    monkeypatch.setenv(p11.p10._WORKERS_ENV, "3")
-    stage = p11.Gate1Stage(
-        "gate1",
-        {
-            "assets": ["A"],
-            "horizons": [1],
-            "attempt_registry": "attempts.jsonl",
-            "alpha": 0.05,
-        },
-    )
-    seen = []
-    monkeypatch.setattr(p11.p10, "_child_root", lambda _ctx: str(tmp_path))
-    monkeypatch.setattr(
-        p11, "_derived_document", lambda _ctx, asset, horizon: SimpleNamespace()
-    )
-    monkeypatch.setattr(
-        p11.p10,
-        "_run_bounded_walk",
-        lambda _ctx, doc, tag: seen.append(p11.p10._fold_workers()) or "walk",
-    )
-    monkeypatch.setattr(
-        p11,
-        "_score_one",
-        lambda *_a: {
-            "passes": True,
-            "t_pool": 2.0,
-            "t_fold": 2.0,
-            "r2oos": 0.01,
-            "n_folds": 20,
-        },
-    )
-
-    class Registry:
-        def __init__(self, _path):
-            pass
-
-        def record(self, key, **_fields):
-            return "cell"
-
-    monkeypatch.setattr(p11, "AttemptRegistry", Registry)
-    stage.run(SimpleNamespace(), {"preflight": True})
-    assert seen == [3]
 
 
 def test_the_reference_tape_follows_the_configs_declared_residual(

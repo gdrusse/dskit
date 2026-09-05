@@ -287,7 +287,13 @@ def _capped_command(argv, memory_limit):
     if memory_limit is None:
         return list(argv)
     quoted = " ".join(shlex.quote(part) for part in argv)
-    return ["/bin/sh", "-c", f"ulimit -v {memory_limit // 1024}; exec {quoted}"]
+    kb = memory_limit // 1024
+    # dash's ulimit exits 0 EVEN WHEN setrlimit fails, so neither ";" nor
+    # "&&" catches a cap that never took. Read it back and refuse: a walk
+    # that runs uncapped while the journal records a cap is worse than a
+    # walk that does not run.
+    guard = f'ulimit -v {kb}; [ "$(ulimit -v)" = {kb} ] || exit 111'
+    return ["/bin/sh", "-c", f"{guard}; exec {quoted}"]
 
 
 def _run_walk(ctx, document, tag, *, memory_limit=None):
@@ -427,9 +433,8 @@ def _run_bounded_walk(ctx, document, tag, *, workers=None):
         How many fold processes may run at once. ``None`` (the default,
         and what every caller uses) reads :func:`_fold_workers`, so the
         knob can never be half-applied by a caller that forgot it. The
-        historical serial path is a width of 1. Otherwise: (the
-        historical serial path). Each process keeps the WHOLE
-        ``_MEMORY_LIMIT`` address-space cap, so a finished fold resumes
+        historical serial path is a width of 1. Each process keeps the
+        WHOLE ``_MEMORY_LIMIT`` address-space cap, so a finished fold resumes
         at any width. The cap is not divided: ``RLIMIT_AS`` bounds
         address space, the feature cache maps all 25 symbols whatever
         the walk scores, and a divided cap would refuse mappings that
@@ -471,23 +476,19 @@ def _run_bounded_walk(ctx, document, tag, *, workers=None):
         ]
     else:
         pool = ThreadPoolExecutor(max_workers=workers)
-        futures = [
-            pool.submit(_one_bounded_fold, ctx, document, tag, index, cutoff, limit)
-            for index, cutoff in enumerate(cutoffs)
-        ]
         try:
+            futures = [
+                pool.submit(_one_bounded_fold, ctx, document, tag, index, cutoff, limit)
+                for index, cutoff in enumerate(cutoffs)
+            ]
             # Indexed, not as-completed: the aggregate and the $prev
             # series both read folds in cutoff order.
             folds = [future.result() for future in futures]
-        except BaseException:
-            # Cancel BEFORE shutdown, or the pool drains every remaining
-            # fold before the first failure surfaces and a walk that is
-            # going to fail spends its whole length finding out.
-            for future in futures:
-                future.cancel()
-            pool.shutdown(wait=True)
-            raise
-        pool.shutdown(wait=True)
+        finally:
+            # cancel_futures drops what has not started, so a walk that
+            # is going to fail does not first drain every other fold.
+            # submit() itself can raise, which is why it sits inside.
+            pool.shutdown(wait=True, cancel_futures=True)
     spec = document.walkforward
     aggregate = _aggregate_folds(folds, spec.select, spec.weight_halflife_folds)
     _write_walkforward_summary(
@@ -501,7 +502,7 @@ def _run_bounded_walk(ctx, document, tag, *, workers=None):
         notes=(
             f"state=ran folds={len(folds)} hash={document.hash[:8]} "
             f"asof={ctx.asof}; fold_processes=isolated; "
-            f"fold_workers={workers}; memory_limit_bytes={_MEMORY_LIMIT}"
+            f"fold_workers={workers}; memory_limit_bytes={limit}"
         ),
         start=child_root,
     )

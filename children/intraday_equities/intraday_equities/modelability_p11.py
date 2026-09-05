@@ -2,7 +2,7 @@
 
 P10's immutable cache and journal-backed runner are reused, but its pooled
 estimand is not. Each derived walk filters feature records before fitting;
-the full tape remains available only so non-SPY labels can retain their SPY
+each walk keeps only its own tape and the one its label declares as the
 residual reference. Gate 1 stops at the first failed ordered horizon, then
 flows directly to the whole-session refit audit in Gate 3.
 """

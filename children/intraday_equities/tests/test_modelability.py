@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -250,35 +252,45 @@ def test_bounded_walk_aggregates_folds_in_cutoff_order_under_concurrency(
     assert [row["cutoff"] for row in seen["order"]] == cutoffs
 
 
-def test_the_memory_cap_is_applied_without_a_fork_time_python_hook(
-    tmp_path, monkeypatch
-):
-    # preexec_fn bars posix_spawn, so the child is forked from a parent
-    # that now has a fold pool running: CPython documents that as unsafe
-    # and it can wedge before exec. The cap has to survive to exec
-    # without Python running in between.
-    seen = {}
-
-    def fake_run(command, **kwargs):
-        seen["command"] = command
-        seen["kwargs"] = kwargs
-        return SimpleNamespace(returncode=0, stdout="")
-
-    monkeypatch.setattr(modelability.subprocess, "run", fake_run)
-    monkeypatch.setattr(modelability, "_child_root", lambda _ctx: str(tmp_path))
-    monkeypatch.setattr(
-        modelability, "_summary_dir", lambda *_a, **_k: str(tmp_path / "fresh")
+def test_the_capped_command_actually_applies_the_cap_in_the_child():
+    # Asserting a substring in argv proves nothing: a subshell, a typo,
+    # or a shell whose ulimit silently no-ops all pass that. Run it and
+    # read the limit back from inside the child.
+    cap = 512 * 1024**2
+    command = modelability._capped_command(
+        [
+            sys.executable,
+            "-c",
+            "import resource;print(resource.getrlimit(resource.RLIMIT_AS))",
+        ],
+        cap,
     )
-    monkeypatch.setattr(modelability, "_save_derived", lambda *_a, **_k: None)
-    monkeypatch.setattr(modelability, "_journal_confirms_walk", lambda *_a, **_k: True)
-    document = SimpleNamespace(name="doc", hash="a" * 64)
-    ctx = SimpleNamespace(asof="2026-02-28", run_dir=str(tmp_path / "r"))
-    os.makedirs(tmp_path / "fresh", exist_ok=True)
-    modelability._run_walk(ctx, document, "tag", memory_limit=8 * 1024**3)
-    assert seen["kwargs"].get("preexec_fn") is None
-    joined = " ".join(seen["command"])
-    assert f"ulimit -v {8 * 1024**3 // 1024}" in joined
-    assert " exec " in joined
+    got = subprocess.run(command, text=True, capture_output=True)
+    assert got.returncode == 0, got.stderr
+    assert got.stdout.strip() == str((cap, cap))
+
+
+def test_an_uncapped_command_is_left_alone():
+    command = modelability._capped_command([sys.executable, "-c", "pass"], None)
+    assert command == [sys.executable, "-c", "pass"]
+
+
+def test_the_cap_is_read_back_so_a_silent_ulimit_failure_cannot_pass():
+    # dash's ulimit exits 0 EVEN WHEN setrlimit fails, so ";" and "&&"
+    # both miss it and the walk would run uncapped while the journal
+    # recorded a cap. The emitted command must read the limit back and
+    # refuse on mismatch. A real refusal cannot be provoked as root (the
+    # hard limit can always be raised again), so the refusal path is
+    # exercised directly with a readback that cannot match.
+    command = modelability._capped_command(
+        [sys.executable, "-c", "print('RAN')"], 1024**3
+    )
+    assert command[:2] == ["/bin/sh", "-c"]
+    assert "$(ulimit -v)" in command[2], "the cap is never read back"
+    forced = command[2].replace('[ "$(ulimit -v)" =', "[ nomatch =")
+    got = subprocess.run(["/bin/sh", "-c", forced], text=True, capture_output=True)
+    assert "RAN" not in got.stdout, "a mismatched cap still ran the walk"
+    assert got.returncode == 111
 
 
 def test_every_concurrent_fold_keeps_the_whole_address_space_cap(tmp_path, monkeypatch):
@@ -399,3 +411,50 @@ def test_the_worker_width_defaults_to_the_machine_knob(tmp_path, monkeypatch):
     ctx = SimpleNamespace(asof="2026-02-28", source_path="cfg.json")
     modelability._run_bounded_walk(ctx, document, "tag")
     assert "fold_workers=5" in seen[0]
+
+
+def test_the_pool_is_shut_down_even_when_submitting_a_fold_raises(
+    tmp_path, monkeypatch
+):
+    # The submit loop used to sit outside the try, so a submit failure
+    # left futures unbound and shutdown unreachable: live threads then
+    # blocked interpreter exit — the silent hang the pool was meant to
+    # remove.
+    cutoffs = [f"2022-{i:02d}-01" for i in range(1, 7)]
+    _bounded_harness(tmp_path, monkeypatch, cutoffs)
+
+    def fake_run_walk(_ctx, part, tag, *, memory_limit=None):
+        time.sleep(0.05)
+        out = str(tmp_path / f"part-{part.index}")
+        _walkforward_payload(out, part.cutoff)
+        return out, 1
+
+    monkeypatch.setattr(modelability, "_run_walk", fake_run_walk)
+    real_pool = modelability.ThreadPoolExecutor
+    shutdowns = []
+
+    class CountingPool(real_pool):
+        def submit(self, *args, **kwargs):
+            if len(getattr(self, "_seen", [])) >= 2:
+                raise RuntimeError("can't start new thread")
+            self._seen = getattr(self, "_seen", []) + [args]
+            return super().submit(*args, **kwargs)
+
+        def shutdown(self, *args, **kwargs):
+            shutdowns.append(True)
+            return super().shutdown(*args, **kwargs)
+
+    monkeypatch.setattr(modelability, "ThreadPoolExecutor", CountingPool)
+    document = SimpleNamespace(
+        name="doc",
+        hash="a" * 64,
+        walkforward=SimpleNamespace(select="max", weight_halflife_folds=0),
+    )
+    ctx = SimpleNamespace(asof="2026-02-28", source_path="cfg.json")
+    try:
+        modelability._run_bounded_walk(ctx, document, "tag", workers=2)
+    except RuntimeError as error:
+        assert "new thread" in str(error)
+    else:  # pragma: no cover - the assertion below reports it
+        raise AssertionError("the submit failure never surfaced")
+    assert shutdowns, "the pool was never shut down"

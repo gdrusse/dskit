@@ -121,9 +121,9 @@ ADR-0089 and needs its own ADR first.
 **The tape was never filtered.** An asset-local walk fits and scores one
 symbol, but `_derived_document` handed the scan all 25 tapes, so
 `_tapes_from_bars` masked and copied every symbol's full 1-minute history from
-2018 on every one of the 4,940 fold processes. Only the asset and its SPY
-residual reference are read. A `reference_tape` filter node now keeps those
-two.
+2018 on every one of the 4,940 fold processes. Only the asset and the tape its label
+declares as the residual reference are read, so a `reference_tape` filter node
+now keeps those two — the residual read from the document, never restated.
 
 **Nothing ran in parallel.** `_run_bounded_walk` drove its 20 folds through a
 blocking `subprocess.run`, one at a time, and dskit has no parallel execution
