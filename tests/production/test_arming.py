@@ -68,7 +68,7 @@ from dskit.production.state import SeriesState
 from tests.production.test_document import (
     example_document,
     live_capable_document,
-    set_path,
+    minimal_document,
 )
 from tests.production.test_release import artifact_root, manifest
 
@@ -140,8 +140,6 @@ AUTHORITY_ISSUE_KEYS = {
     "reason",
     "arming",
 }
-
-CALLER_KEYS = ("kind", "id", "body")
 
 REQUEST_ID = "req-arm-1"
 APPROVAL_ID = "apr-arm-1"
@@ -258,6 +256,34 @@ class Chain:
         return env
 
 
+class RecordLedger:
+    """Envelopes, the fold they produce, and the `head`/`scan` a cache needs."""
+
+    def __init__(self, series_id=SERIES_ID):
+        self.state = SeriesState(series_id)
+        self.chain = Chain(series_id)
+        self.records = []
+
+    def add(self, kind, body):
+        env = self.chain.env(kind, body)
+        self.records.append(env)
+        self.state.apply(env)
+        return env
+
+    def head(self):
+        return self.state.head()
+
+    def scan(self, kind=None, since_seq=0):
+        return tuple(
+            env
+            for env in self.records
+            if env["seq"] > since_seq and (kind is None or env["kind"] == kind)
+        )
+
+    def view(self):
+        return self.state.snapshot()
+
+
 # ---------------------------------------------------------------------------
 # Assembly
 # ---------------------------------------------------------------------------
@@ -279,9 +305,18 @@ def verifier():
     return FakeVerifier()
 
 
+def document_for(rung):
+    """The smallest document that validates at `rung`."""
+    if rung in ("live_limited", "live"):
+        return live_capable_document(rung)
+    if rung == "paper":
+        return example_document(rung="paper")
+    return minimal_document()
+
+
 def make_arming(tmp_path, release, clock, verifier, document=None, rung="live_limited"):
     """An `Arming` over a live-capable document unless told otherwise."""
-    obj = document if document is not None else live_capable_document(rung)
+    obj = document if document is not None else document_for(rung)
     obj["series_id"] = SERIES_ID
     return Arming(
         ServeDocument.from_obj(obj),
@@ -323,13 +358,17 @@ def issue(arming, release, **overrides):
     return arming.approve(arm_approval(request), request, REQUEST_ID, APPROVAL_ID)
 
 
+def ledger_with(*records):
+    """A `RecordLedger` holding the hand-built §6 envelopes given."""
+    led = RecordLedger()
+    for kind, body in records:
+        led.add(kind, body)
+    return led
+
+
 def view_with(*records):
     """A `StateView` folded from hand-built §6 envelopes."""
-    state = SeriesState(SERIES_ID)
-    chain = Chain()
-    for kind, body in records:
-        state.apply(chain.env(kind, body))
-    return state.snapshot()
+    return ledger_with(*records).view()
 
 
 def ordinary_issue_body(state, request_id=REQUEST_ID, approval_id=APPROVAL_ID):
@@ -391,14 +430,15 @@ def proposal(instrument="AAPL", qty="10", notional="1000"):
     )
 
 
-def reduction_intent(release, index=0, instrument="AAPL", request_id="req-flatten-1"):
+def reduction_intent(release, index=0, instrument="AAPL", request_id="req-flatten-1",
+                     release_hash=None, qty="10"):
     return ReductionIntent(
-        release_hash=release.release_hash,
+        release_hash=release_hash or release.release_hash,
         request_id=request_id,
         index=index,
         candidate=Candidate(id=f"cand-{index}", instrument=instrument,
                             scope_keys=(instrument,)),
-        proposal=proposal(instrument=instrument),
+        proposal=proposal(instrument=instrument, qty=qty),
         risk_state_digest=DIGEST_RISK,
         expires_ms=BASE_MS + 600_000,
     )
@@ -495,7 +535,7 @@ def test_an_arming_state_refuses_a_member_no_permit_could_rest_on(overrides):
 # ---------------------------------------------------------------------------
 
 
-def test_arm_request_carries_the_six_members_of_5_6_in_order(release):
+def test_arm_request_carries_the_six_members_of_5_6_in_order():
     assert tuple(f.name for f in dataclasses.fields(ArmRequest)) == ARM_REQUEST_MEMBERS
     assert ArmRequest.__dataclass_params__.frozen is True
 
@@ -912,7 +952,7 @@ def test_an_approval_of_a_request_that_has_already_expired_refuses(tmp_path, rel
 @pytest.mark.parametrize("rung", ["live_limited", "live"])
 def test_maker_and_checker_must_differ_at_the_live_rungs(tmp_path, release, clock,
                                                          verifier, rung):
-    obj = live_capable_document(rung)
+    obj = document_for(rung)
     arming = make_arming(tmp_path, release, clock, verifier, document=obj)
     request = arm_request(release, rung=rung)
     arming.request(request, REQUEST_ID)
@@ -928,7 +968,7 @@ def test_one_principal_may_arm_a_rung_that_moves_no_real_money(tmp_path, release
     """D11 requires distinct principals "for >= live_limited"; below it
     there is no live permit to gate, and demanding a second human would
     make the shadow rehearsal harder than the thing it rehearses."""
-    obj = example_document(rung=rung)
+    obj = document_for(rung)
     arming = make_arming(tmp_path, release, clock, verifier, document=obj)
     request = arm_request(release, rung=rung)
     arming.request(request, REQUEST_ID)
@@ -1023,7 +1063,7 @@ def test_the_conjunction_result_is_a_frozen_satisfied_reason_pair():
 @pytest.mark.parametrize("rung", ["shadow", "paper"])
 def test_a_rung_with_no_live_permit_to_gate_is_always_satisfied(tmp_path, release,
                                                                 clock, verifier, rung):
-    obj = example_document(rung=rung)
+    obj = document_for(rung)
     arming = make_arming(tmp_path, release, clock, verifier, document=obj)
     result = conjunction(
         arming, release, view_with(), rung=rung,
@@ -1236,7 +1276,7 @@ def test_an_origin_outside_the_vocabulary_refuses(tmp_path, release, clock, veri
 def test_an_instrument_in_the_allowlist_is_in_scope(tmp_path, release, clock, verifier):
     arming = make_arming(tmp_path, release, clock, verifier)
     _, state = issue(arming, release)
-    verdict = arming.apply_scope(proposal("AAPL"), state, arming.document)
+    verdict = arming.apply_scope(proposal("AAPL"), state)
     assert verdict.allowed is True
     assert verdict.scope_key == "AAPL"
     assert verdict.reason == ""
@@ -1246,7 +1286,7 @@ def test_an_instrument_outside_the_allowlist_is_refused(tmp_path, release, clock
                                                         verifier):
     arming = make_arming(tmp_path, release, clock, verifier)
     _, state = issue(arming, release)
-    verdict = arming.apply_scope(proposal("MSFT"), state, arming.document)
+    verdict = arming.apply_scope(proposal("MSFT"), state)
     assert verdict.allowed is False
     assert verdict.scope_key == "MSFT"
     assert verdict.reason == "instrument_not_allowlisted"
@@ -1254,7 +1294,7 @@ def test_an_instrument_outside_the_allowlist_is_refused(tmp_path, release, clock
 
 def test_no_arm_means_no_scope(tmp_path, release, clock, verifier):
     arming = make_arming(tmp_path, release, clock, verifier)
-    verdict = arming.apply_scope(proposal("AAPL"), None, arming.document)
+    verdict = arming.apply_scope(proposal("AAPL"), None)
     assert verdict.allowed is False
     assert verdict.reason == "not_armed"
 
@@ -1265,11 +1305,10 @@ def test_an_overlay_bound_is_applied_to_the_exact_proposal(tmp_path, release, cl
     final proposal immediately before permit"."""
     arming = make_arming(tmp_path, release, clock, verifier)
     _, tight = issue(arming, release, limits_overlay={"size": {"max": "5"}})
-    refused = arming.apply_scope(proposal("AAPL", qty="10"), tight, arming.document)
+    refused = arming.apply_scope(proposal("AAPL", qty="10"), tight)
     assert refused.allowed is False
     assert "size" in refused.reason
-    assert arming.apply_scope(proposal("AAPL", qty="5"), tight,
-                              arming.document).allowed is True
+    assert arming.apply_scope(proposal("AAPL", qty="5"), tight).allowed is True
 
 
 def test_the_same_proposal_passes_the_documents_own_bound_without_an_overlay(
@@ -1277,15 +1316,14 @@ def test_the_same_proposal_passes_the_documents_own_bound_without_an_overlay(
 ):
     arming = make_arming(tmp_path, release, clock, verifier)
     _, state = issue(arming, release)
-    assert arming.apply_scope(proposal("AAPL", qty="10"), state,
-                              arming.document).allowed is True
+    assert arming.apply_scope(proposal("AAPL", qty="10"), state).allowed is True
 
 
 def test_effective_bounds_tighten_only_the_guards_the_overlay_names(tmp_path, release,
                                                                     clock, verifier):
     arming = make_arming(tmp_path, release, clock, verifier)
     _, state = issue(arming, release, limits_overlay={"size": {"max": "50"}})
-    bounds = arming.effective_bounds(state, arming.document)
+    bounds = arming.effective_bounds(state)
     assert bounds["size"]["max"] == Decimal("50")
     assert bounds["exposure"]["max"] == Decimal("20000")
     assert bounds["day_loss"]["min"] == Decimal("-500")
@@ -1295,9 +1333,7 @@ def test_effective_bounds_tighten_only_the_guards_the_overlay_names(tmp_path, re
 def test_effective_bounds_without_an_arm_are_the_documents_own(tmp_path, release,
                                                                clock, verifier):
     arming = make_arming(tmp_path, release, clock, verifier)
-    assert arming.effective_bounds(None, arming.document)["size"]["max"] == Decimal(
-        "100"
-    )
+    assert arming.effective_bounds(None)["size"]["max"] == Decimal("100")
 
 
 # ---------------------------------------------------------------------------
@@ -1320,18 +1356,51 @@ def test_a_plan_grants_one_right_per_unique_intent_digest(release):
     assert authorization.expires_ms == BASE_MS + 300_000
 
 
-def test_a_plan_whose_digest_list_disagrees_with_its_intents_refuses(release):
-    intents = (reduction_intent(release, 0, "AAPL"),)
-    plan = ReductionPlan(
-        release_hash=release.release_hash,
-        risk_state_digest=DIGEST_RISK,
-        intents=intents,
-        reduction_intent_digests=("f" * 64,),
-        expires_ms=BASE_MS + 600_000,
-    )
+@pytest.mark.parametrize("approval", [None, CHECKER, {"id": CHECKER}])
+def test_a_plan_approved_by_nothing_verified_refuses(release, approval):
     with pytest.raises(ProductionError):
-        ReductionRights.from_plan(plan, checker_principal(), "auth-red-1",
+        ReductionRights.from_plan(reduction_plan(release), approval, "auth-red-1",
                                   BASE_MS + 300_000)
+
+
+def test_a_plan_whose_entries_are_out_of_maker_approved_index_order_refuses(release):
+    """D12: `execute-flatten` processes the stored intents "in
+    maker-approved `index` order", and "execution stops on the first
+    refusal" means that order — so a plan whose indices are not 0..n-1
+    in sequence has no order to stop in."""
+    intents = (reduction_intent(release, 1, "MSFT"), reduction_intent(release, 0, "AAPL"))
+    with pytest.raises(ProductionError):
+        ReductionRights.from_plan(reduction_plan(release, intents), checker_principal(),
+                                  "auth-red-1", BASE_MS + 300_000)
+
+
+def test_a_plan_carrying_an_intent_bound_to_another_release_refuses(release):
+    intents = (reduction_intent(release, 0, "AAPL", release_hash="c" * 64),)
+    with pytest.raises(ProductionError):
+        ReductionRights.from_plan(reduction_plan(release, intents), checker_principal(),
+                                  "auth-red-1", BASE_MS + 300_000)
+
+
+def test_two_entries_with_the_same_order_content_refuse(release):
+    """D12: "two entries whose `(instrument, side, qty, limit)` match
+    refuse — the check is over proposal content, not over
+    `reduction_intent_digest`, which now includes `index` and so differs
+    for byte-identical proposals"."""
+    intents = (reduction_intent(release, 0, "AAPL"), reduction_intent(release, 1, "AAPL"))
+    assert intents[0].reduction_intent_digest() != intents[1].reduction_intent_digest()
+    with pytest.raises(ProductionError):
+        ReductionRights.from_plan(reduction_plan(release, intents), checker_principal(),
+                                  "auth-red-1", BASE_MS + 300_000)
+
+
+def test_two_entries_that_differ_only_in_quantity_are_both_authorised(release):
+    intents = (reduction_intent(release, 0, "AAPL", qty="10"),
+               reduction_intent(release, 1, "AAPL", qty="4"))
+    authorization = ReductionRights.from_plan(
+        reduction_plan(release, intents), checker_principal(), "auth-red-1",
+        BASE_MS + 300_000
+    )
+    assert len(authorization.reduction_intent_digests) == 2
 
 
 def test_a_plan_with_no_intents_authorises_nothing_and_refuses(release):
@@ -1507,119 +1576,101 @@ def cache_of(arming):
         return json.load(handle)
 
 
+def forge_cache(arming, **overrides):
+    """Rewrite the cache file with the given keys replaced."""
+    cached = cache_of(arming)
+    cached.update(overrides)
+    with open(arming.cache_path, "w", encoding="utf-8") as handle:
+        json.dump(cached, handle)
+
+
 def folded(arming, release):
-    """A real `SeriesState` holding one issued arm, plus its view."""
+    """A `RecordLedger` holding one issued arm, and that `ArmingState`."""
     _, state = issue(arming, release)
-    series = SeriesState(SERIES_ID)
-    chain = Chain()
-    series.apply(chain.env("authority", ordinary_issue_body(state)))
-    return series, state
-
-
-class HeadLedger:
-    """A ledger that only has to answer `head` and `scan` for a cache."""
-
-    def __init__(self, series):
-        self.series = series
-
-    def head(self):
-        return self.series.head()
-
-    def scan(self, kind=None, since_seq=0):
-        return ()
+    return ledger_with(("authority", ordinary_issue_body(state))), state
 
 
 def test_the_cache_path_is_the_serve_roots_arming_json(tmp_path, release, clock,
                                                        verifier):
     arming = make_arming(tmp_path, release, clock, verifier)
-    assert arming.cache_path == os.path.join(
-        os.path.dirname(arming.cache_path), "arming.json"
-    )
-    assert arming.cache_path.endswith(os.path.join(SERIES_ID, "arming.json"))
+    assert arming.cache_path == ServeRoot(
+        str(tmp_path / "serve"), SERIES_ID
+    ).arming_cache
 
 
 def test_write_cache_records_the_arm_and_the_head_it_projects(tmp_path, release, clock,
                                                               verifier):
     arming = make_arming(tmp_path, release, clock, verifier)
-    series, state = folded(arming, release)
-    arming.write_cache(series.snapshot())
+    led, state = folded(arming, release)
+    arming.write_cache(led.view())
     cached = cache_of(arming)
     assert set(cached) == {"arming", "head_seq", "head_hash"}
     assert cached["arming"] == state.to_obj()
-    assert (cached["head_seq"], cached["head_hash"]) == series.head()
+    assert (cached["head_seq"], cached["head_hash"]) == led.head()
 
 
 def test_an_unarmed_cache_records_no_arm_rather_than_omitting_the_key(tmp_path, release,
                                                                       clock, verifier):
     arming = make_arming(tmp_path, release, clock, verifier)
-    arming.write_cache(SeriesState(SERIES_ID).snapshot())
+    arming.write_cache(ledger_with().view())
     assert cache_of(arming)["arming"] is None
 
 
 def test_a_cache_at_the_head_is_used_as_it_stands(tmp_path, release, clock, verifier):
     arming = make_arming(tmp_path, release, clock, verifier)
-    series, state = folded(arming, release)
-    arming.write_cache(series.snapshot())
-    assert arming.load_cache(HeadLedger(series), series.snapshot()) == state
+    led, state = folded(arming, release)
+    arming.write_cache(led.view())
+    assert arming.load_cache(led, led.view()) == state
 
 
 def test_a_cache_behind_the_head_is_rebuilt_and_rewritten(tmp_path, release, clock,
                                                           verifier):
     arming = make_arming(tmp_path, release, clock, verifier)
-    empty = SeriesState(SERIES_ID)
-    arming.write_cache(empty.snapshot())
-    series, state = folded(arming, release)
-    assert arming.load_cache(HeadLedger(series), series.snapshot()) == state
+    arming.write_cache(ledger_with().view())
+    led, state = folded(arming, release)
+    assert arming.load_cache(led, led.view()) == state
     assert cache_of(arming)["arming"] == state.to_obj()
-    assert cache_of(arming)["head_seq"] == series.head()[0]
+    assert (cache_of(arming)["head_seq"], cache_of(arming)["head_hash"]) == led.head()
 
 
 def test_an_absent_cache_is_rebuilt_from_the_fold(tmp_path, release, clock, verifier):
     arming = make_arming(tmp_path, release, clock, verifier)
-    series, state = folded(arming, release)
+    led, state = folded(arming, release)
     assert not os.path.exists(arming.cache_path)
-    assert arming.load_cache(HeadLedger(series), series.snapshot()) == state
+    assert arming.load_cache(led, led.view()) == state
     assert os.path.exists(arming.cache_path)
 
 
 def test_a_cache_ahead_of_the_ledger_refuses(tmp_path, release, clock, verifier):
     arming = make_arming(tmp_path, release, clock, verifier)
-    series, _ = folded(arming, release)
-    arming.write_cache(series.snapshot())
-    forged = cache_of(arming)
-    forged["head_seq"] += 5
-    with open(arming.cache_path, "w", encoding="utf-8") as handle:
-        json.dump(forged, handle)
+    led, _ = folded(arming, release)
+    arming.write_cache(led.view())
+    forge_cache(arming, head_seq=cache_of(arming)["head_seq"] + 5)
     with pytest.raises(ProductionError):
-        arming.load_cache(HeadLedger(series), series.snapshot())
+        arming.load_cache(led, led.view())
 
 
 def test_a_cache_that_diverges_at_its_own_seq_refuses(tmp_path, release, clock,
                                                       verifier):
     arming = make_arming(tmp_path, release, clock, verifier)
-    series, _ = folded(arming, release)
-    arming.write_cache(series.snapshot())
-    forged = cache_of(arming)
-    forged["head_hash"] = "f" * 64
-    with open(arming.cache_path, "w", encoding="utf-8") as handle:
-        json.dump(forged, handle)
+    led, _ = folded(arming, release)
+    arming.write_cache(led.view())
+    forge_cache(arming, head_hash="f" * 64)
     with pytest.raises(ProductionError):
-        arming.load_cache(HeadLedger(series), series.snapshot())
+        arming.load_cache(led, led.view())
 
 
 def test_a_current_cache_that_disagrees_with_the_fold_refuses(tmp_path, release, clock,
                                                               verifier):
-    """A head-bound file claiming an arm the fold does not carry is the
-    one forgery a head check alone would wave through."""
+    """A head-bound file claiming an arm the fold does not carry — or
+    dropping one it does — is the forgery a head check alone waves
+    through, which is why §5.6 validates the cache *against the fold*."""
     arming = make_arming(tmp_path, release, clock, verifier)
-    series, state = folded(arming, release)
-    arming.write_cache(series.snapshot())
-    forged = cache_of(arming)
-    forged["arming"] = None
-    with open(arming.cache_path, "w", encoding="utf-8") as handle:
-        json.dump(forged, handle)
+    led, _ = folded(arming, release)
+    arming.write_cache(led.view())
+    forge_cache(arming, arming=None)
     with pytest.raises(ProductionError):
-        arming.load_cache(HeadLedger(series), series.snapshot())
+        arming.load_cache(led, led.view())
 
 
 @pytest.mark.parametrize("text", ["", "{", "[]", '{"arming": null}'])
@@ -1627,16 +1678,16 @@ def test_an_unreadable_cache_refuses_rather_than_reporting_unarmed(tmp_path, rel
                                                                    clock, verifier,
                                                                    text):
     arming = make_arming(tmp_path, release, clock, verifier)
-    series, _ = folded(arming, release)
+    led, _ = folded(arming, release)
     with open(arming.cache_path, "w", encoding="utf-8") as handle:
         handle.write(text)
     with pytest.raises(ProductionError):
-        arming.load_cache(HeadLedger(series), series.snapshot())
+        arming.load_cache(led, led.view())
 
 
 def test_a_cache_write_leaves_no_temp_file_behind(tmp_path, release, clock, verifier):
     arming = make_arming(tmp_path, release, clock, verifier)
-    arming.write_cache(SeriesState(SERIES_ID).snapshot())
+    arming.write_cache(ledger_with().view())
     names = os.listdir(os.path.dirname(arming.cache_path))
     assert "arming.json" in names
     assert [name for name in names if name.startswith("arming.json.")] == []

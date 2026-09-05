@@ -955,6 +955,35 @@ def test_a_flatten_retires_the_sentinel_before_its_transition_barrier(tmp_path):
     assert seen == [False]
 
 
+@pytest.mark.parametrize("verb", ["flatten", "reset"])
+def test_a_vetoed_transition_never_retires_the_sentinel(tmp_path, verb):
+    """The kill switch outlives a refused transition: retirement is part
+    of the transition, not a step taken on the way to asking for one."""
+    allow = RecordingPolicy()
+    breaker, ledger, _, clock, _, _ = make_breaker(
+        tmp_path, policy=allow, cancel_open=False
+    )
+    halt(breaker)
+    breaker.create_halt_sentinel()
+    clock.advance(COOLING_OFF_MS)
+    allow.allowed = False
+    allow.reason = "transition_not_permitted"
+    call = {"flatten": flatten, "reset": lambda b: resume(b, ledger)}[verb]
+    with pytest.raises(ProductionError):
+        call(breaker)
+    assert breaker.halt_sentinel_present() is True
+
+
+def test_a_reset_refused_for_cooling_off_never_retires_the_sentinel(tmp_path):
+    breaker, ledger, _, clock, _, _ = make_breaker(tmp_path, cancel_open=False)
+    halt(breaker)
+    breaker.create_halt_sentinel()
+    clock.advance(COOLING_OFF_MS - 1)
+    with pytest.raises(ProductionError):
+        resume(breaker, ledger)
+    assert breaker.halt_sentinel_present() is True
+
+
 @pytest.mark.parametrize("verb", ["trip", "reduce"])
 def test_neither_a_trip_nor_a_reduce_retires_the_sentinel(tmp_path, verb):
     breaker, _, _, _, _, _ = make_breaker(tmp_path, cancel_open=False)

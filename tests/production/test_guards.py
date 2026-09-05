@@ -277,7 +277,7 @@ def account(
         ),
         asof_ms=asof_ms,
         evidence_digest=D_EVIDENCE,
-        balances=tuple(balance() if balances is None else balances),
+        balances=tuple((balance(),) if balances is None else balances),
         positions=tuple((position(),) if positions is None else positions),
         working=tuple((working(),) if orders is None else orders),
         measure_evidence=dict(measure_evidence or {}),
@@ -1446,7 +1446,7 @@ def test_every_guard_judges_the_original_proposal_first():
     # An amendment must never hide a breach from a guard that would have seen
     # it: the reducing guard is declared FIRST and the strict guard still
     # records a finding against the original 250.
-    amender = Limit(limit_params(name=None, on_breach="amend", bound={"max": "100"}), name="cap")
+    amender = Limit(limit_params(on_breach="amend", bound={"max": "100"}), name="cap")
     strict = a_limit(name="hard_cap", bound={"max": "60"})
     chain = chain_of(amender, strict)
     final, findings = chain.check_all(proposal(qty=Decimal("250")), tick_state())
@@ -1582,7 +1582,8 @@ def test_an_empty_chain_allows_and_asks_for_nothing():
 
 
 def test_the_chains_public_surface_is_exactly_four_names():
-    public = {name for name in dir(GuardChain) if not name.startswith("_")}
+    chain = chain_of(a_limit(name="size"))
+    public = {name for name in dir(chain) if not name.startswith("_")}
     assert public == {"requirements", "check_all", "check_authority_scope", "guards"}
 
 
@@ -2171,6 +2172,40 @@ def class_named(tree, name):
     raise AssertionError(f"guards.py defines no class {name!r}")
 
 
+MODULE_FUNCTIONS = {
+    node.name: node for node in GUARDS_TREE.body if isinstance(node, ast.FunctionDef)
+}
+
+
+def called_names(node):
+    """The bare function names called anywhere under `node`."""
+    return {
+        call.func.id
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    }
+
+
+def measure_attrs(kind):
+    """Every attribute a measure's own code reads — its class, its in-module bases,
+    and any module-level helper those bodies call.
+
+    A measure may put its work in a shared base or in one module-level rule with
+    one owner; what it must NOT do is share either with a measure on the other
+    side of §6's `cash_flow` partition.
+    """
+    attrs = set()
+    for cls in MEASURE_KINDS.resolve(kind).__mro__:
+        if getattr(cls, "__module__", None) != guards_module.__name__:
+            continue
+        node = class_named(GUARDS_TREE, cls.__name__)
+        attrs |= {path[-1] for path, _ in attribute_paths(node)}
+        for called in called_names(node) & set(MODULE_FUNCTIONS):
+            helper = MODULE_FUNCTIONS[called]
+            attrs |= {path[-1] for path, _ in attribute_paths(helper)}
+    return attrs
+
+
 def test_the_ast_scanner_catches_what_it_forbids():
     planted = ast.parse("class Bad:\n    def value(self, p, s, w, k, iw):\n        return s.view.positions\n")
     assert reads_view_economics(planted)
@@ -2193,17 +2228,16 @@ def test_the_view_is_still_read_for_the_things_it_owns():
 
 @pytest.mark.parametrize("kind", TRADING_ONLY_MEASURES)
 def test_a_trading_measure_reads_evidence_and_never_a_balance(kind):
-    node = class_named(GUARDS_TREE, MEASURE_KINDS.resolve(kind).__name__)
-    attrs = {path[-1] for path, _ in attribute_paths(node)}
+    attrs = measure_attrs(kind)
     assert "measure_evidence" in attrs
     assert not attrs & set(vocab.ECONOMIC_ATTRS)
 
 
-def test_the_capital_base_measures_do_read_balances():
+@pytest.mark.parametrize("kind", ("bankroll_fraction", "exposure"))
+def test_the_capital_base_measures_do_read_the_account_they_are_measured_over(kind):
     # The complement of the test above: the partition is real only if the other
     # side of it actually reads what the trading measures may not.
-    node = class_named(GUARDS_TREE, MEASURE_KINDS.resolve("bankroll_fraction").__name__)
-    assert "balances" in {path[-1] for path, _ in attribute_paths(node)}
+    assert measure_attrs(kind) & set(vocab.ECONOMIC_ATTRS)
 
 
 def test_guards_never_reaches_for_a_rung():
