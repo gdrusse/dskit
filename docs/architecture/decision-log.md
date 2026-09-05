@@ -4666,9 +4666,9 @@ tree also gains `stages.py`, which it omits today while the README lists it.
 
 ## ADR-0094 — The breadth cohort: one asset-local study over forty new names, group-cached
 
-**Status:** proposed (2026-09-05; the owner pre-authorized a cohort study
-in the Gate 3 rebuild brief and asked for this ADR before it is built;
-revised after two skeptic rounds)
+**Status:** accepted (2026-09-05; the owner pre-authorized a cohort study
+in the Gate 3 rebuild brief and asked for this ADR looped clean before it
+is built; skeptic-cleared in three rounds)
 
 **Context.** Forty names landed as two immutable sources and nothing else:
 cohort D (`alpaca-sip-split-d`, twenty names chosen for industry breadth —
