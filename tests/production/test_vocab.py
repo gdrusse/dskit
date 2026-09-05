@@ -110,6 +110,7 @@ CLOSED_SET_NAMES = (
     # Ruled into vocab.py after §8's list was written.
     "MONEY_FIELDS",
     "CACHE_STATES",
+    "AUTHORITY_EVENTS",
 )
 
 #: The names whose value is a MAP, not a tuple — checked by their own tests.
@@ -241,6 +242,7 @@ EXPECTED_MEMBERS = {
         "mid",
     ),
     "CACHE_STATES": ("current", "stale"),
+    "AUTHORITY_EVENTS": ("issue", "disarm", "revoke", "expire"),
     "TICK_STATUSES": (
         "decided",
         "skipped:closed",

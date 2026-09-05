@@ -8,12 +8,15 @@ projection of that fold and of nothing else; `Recovery` replays it from
 the last `snapshot` record and closes what a crash left open. Two AST
 tests pin the "nothing else folds the ledger" half.
 
-Record shape: the §6 envelope is FLAT — ledger-assigned fields and body
-fields share one dict (`tests/production/test_ledger.py` pins that, and
-refuses a body carrying a ledger-assigned field). Four §6 bodies name a
-field `kind`, which the envelope already owns; this file uses `role`
-(authority), `state_kind` (guard_state), `outcome_kind` (outcome) and
-`flow_kind` (cash_flow). See the report: the plan needs the rename.
+Record shape: the §6 envelope NESTS its body. A caller appends exactly
+`{"kind", "id", "body"}` and the ledger assigns the rest, so a body may
+carry its own `kind`, `release_hash` or `series_id` — a recovering
+process's envelope `release_hash` legitimately differs from a
+`tick_start` body's. The fold reads body fields off `record["body"]` and
+`kind`/`seq`/`hash`/`release_hash` off the envelope. Bodies stay
+self-describing all the same: `role` (authority), `state_kind`
+(guard_state), `outcome_kind` (outcome), `flow_kind` (cash_flow) and
+`verified_payload_digest` (control_approval).
 """
 
 import ast
@@ -62,8 +65,7 @@ RIGHT_A = "a1" * 32
 RIGHT_B = "a2" * 32
 DERIVED_REF = "derived-ref-1"
 
-# Ledger-assigned envelope fields (test_ledger.py's ASSIGNED): a §6 body
-# may not carry one, so the fold reads them off the envelope.
+# What the ledger assigns; a caller supplies only `kind`, `id` and `body`.
 ASSIGNED = (
     "payload_digest",
     "seq",
@@ -75,6 +77,8 @@ ASSIGNED = (
     "prev_hash",
     "hash",
 )
+CALLER_KEYS = ("kind", "id", "body")
+ENVELOPE_KEYS = frozenset(ASSIGNED) | frozenset(CALLER_KEYS)
 
 # The 14 `StateView` members, in §5.8.1's order.
 VIEW_MEMBERS = (
@@ -94,11 +98,10 @@ VIEW_MEMBERS = (
     "head_hash",
 )
 
-# D14: `economic_seq` advances on economic events ONLY.
+# D14: `economic_seq` advances on economic events ONLY. A `cash_flow` is
+# a balance update and does advance it; an `outcome` (a label or mark) and
+# an `adoption` (a receipt for one) do not.
 ECONOMIC_KINDS = ("order_event", "fill", "cash_flow")
-# Reported as a plan gap — §6/D14 do not say whether these are economic,
-# so nothing here asserts either way.
-UNDECIDED_ECONOMIC = ("outcome", "adoption")
 
 
 # ---------------------------------------------------------------------------
@@ -114,16 +117,14 @@ class Chain:
         self.seq = seq
         self.head_hash = head_hash
 
-    def env(self, kind, body=None, **overrides):
-        body = dict(body or {})
-        clash = sorted(set(body) & set(ASSIGNED))
-        assert not clash, f"{kind} body carries ledger-assigned {clash}"
+    def env(self, kind, body=None, rid=None, **overrides):
         self.seq += 1
         prev = self.head_hash
-        digest = hashlib.sha256(f"{kind}:{self.seq}".encode()).hexdigest()
+        caller = {"kind": kind, "id": rid or f"{kind}-{self.seq}",
+                  "body": dict(body or {})}
+        digest = canonical_hash(caller)
         env = {
-            "kind": kind,
-            "id": f"{kind}-{self.seq}",
+            **caller,
             "payload_digest": digest,
             "seq": self.seq,
             "series_id": self.series_id,
@@ -134,7 +135,7 @@ class Chain:
             "prev_hash": prev,
             "hash": hashlib.sha256((prev + digest).encode()).hexdigest(),
         }
-        env.update(body)
+        assert set(env) == ENVELOPE_KEYS, sorted(set(env) ^ ENVELOPE_KEYS)
         env.update(overrides)
         self.head_hash = env["hash"]
         return env
@@ -268,20 +269,53 @@ def cash_flow_body(currency="USD", amount="250", external=True, flow_kind="depos
     }
 
 
-def authority_body(event="issue", role="ordinary", authority_id="auth-1", rights=()):
+ARMED_UNTIL_MS = BASE_MS + 3_600_000
+RIGHTS_EXPIRE_MS = BASE_MS + 300_000
+
+
+def arming_obj(authority_id="auth-1"):
+    """`ArmingState.to_obj()` as the `authority` issue body embeds it."""
     return {
+        "authority_id": authority_id,
+        "release_hash": RELEASE_HASH,
+        "rung": "live_limited",
+        "maker": "principal-maker",
+        "checker": "principal-checker",
+        "armed_at_ms": BASE_MS,
+        "armed_until_ms": ARMED_UNTIL_MS,
+        "allowlist": ["AAA"],
+        "limits_overlay": {},
+        "request_proof_digest": DIGEST_PLAN,
+        "approval_proof_digest": DIGEST_EVIDENCE,
+    }
+
+
+def reduction_authorization_obj(authority_id="auth-2", rights=()):
+    """`ReductionAuthorization.to_obj()` as a reduction issue embeds it."""
+    return {
+        "authority_id": authority_id,
+        "release_hash": RELEASE_HASH,
+        "request_id": "req-flatten-1",
+        "reduction_intent_digests": list(rights),
+        "expires_ms": RIGHTS_EXPIRE_MS,
+    }
+
+
+def authority_body(event="issue", role="ordinary", authority_id="auth-1", rights=()):
+    body = {
         "authority_id": authority_id,
         "event": event,
         "role": role,
         "request_id": "req-1",
         "approval_id": "apr-1",
-        "rung": "live_limited",
-        "expires_ms": BASE_MS + 3_600_000,
-        "allowlist": ["AAA"],
-        "limits_overlay": {},
-        "reduction_intent_digests": list(rights),
         "reason": None,
     }
+    if event == "issue" and role == "ordinary":
+        body["arming"] = arming_obj(authority_id=authority_id)
+    if event == "issue" and role == "reduction":
+        body["authorization"] = reduction_authorization_obj(
+            authority_id=authority_id, rights=rights)
+    return body
 
 
 def authority_use_body(digest=RIGHT_A, authority_id="auth-2", client_ref="ref-9"):
@@ -461,7 +495,9 @@ def full_sequence():
         ("intent", intent_body()),
         ("authorization", {"authority_use_id": None,
                            "permit": {"client_ref": "ref-1",
-                                      "intent_digest": DIGEST_PLAN}}),
+                                      "authority_id": "auth-1",
+                                      "intent_digest": DIGEST_PLAN,
+                                      "valid_until_ms": BASE_MS + 5_000}}),
         ("order_event", order_event_body()),
         ("fill", fill_body()),
         ("guard_state", guard_state_body()),
@@ -543,9 +579,11 @@ class FakeLedger:
         self.barrier_calls = 0
 
     def append(self, record):
-        assert isinstance(record, dict) and "kind" in record, record
-        body = {key: value for key, value in record.items() if key != "kind"}
-        env = self.chain.env(record["kind"], body)
+        # A caller supplies exactly kind/id/body; the ledger assigns the rest.
+        assert isinstance(record, dict), record
+        assert set(record) == set(CALLER_KEYS), sorted(record)
+        assert isinstance(record["body"], dict), record["body"]
+        env = self.chain.env(record["kind"], record["body"], rid=record["id"])
         self.records.append(env)
         if self.state is not None:
             self.state.apply(env)
@@ -572,12 +610,16 @@ class FakeLedger:
         self.barrier_calls += 1
 
     def snapshot(self, payload):
+        at_seq = self.head()[0]
         return self.append(
             {
                 "kind": "snapshot",
-                "at_seq": self.head()[0],
-                "state": payload,
-                "state_digest": canonical_hash(payload),
+                "id": f"snapshot-{at_seq}",
+                "body": {
+                    "at_seq": at_seq,
+                    "state": payload,
+                    "state_digest": canonical_hash(payload),
+                },
             }
         )
 
@@ -686,34 +728,42 @@ def crashed_series():
         {
             "kind": "process",
             "id": "p-1",
-            "event": "start",
-            "doc_hash": DIGEST_PLAN,
-            "serving_hash": DIGEST_INPUTS,
-            "run_hash": DIGEST_QUOTE,
-            "artifact_digests": {},
-            "source_config_hash": DIGEST_INPUTS,
-            "runtime_fingerprint": DIGEST_RISK,
-            "rung": "live_limited",
-            "executor_kind": "paper",
-            "code_version": "0.0.1",
+            "body": {
+                "event": "start",
+                "series_id": SERIES_ID,
+                "release_hash": RELEASE_HASH,
+                "doc_hash": DIGEST_PLAN,
+                "serving_hash": DIGEST_INPUTS,
+                "run_hash": DIGEST_QUOTE,
+                "artifact_digests": {},
+                "source_config_hash": DIGEST_INPUTS,
+                "runtime_fingerprint": DIGEST_RISK,
+                "rung": "live_limited",
+                "executor_kind": "paper",
+                "code_version": "0.0.1",
+            },
         }
     )
-    led.append({"kind": "tick_start", "id": "ts-0", "tick_id": "T0",
-                "tick_at_ms": BASE_MS})
-    led.append({"kind": "tick", "id": "tk-0", **tick_body(tick_id="T0")})
+    led.append({"kind": "tick_start", "id": "ts-0",
+                "body": {"tick_id": "T0", "tick_at_ms": BASE_MS,
+                         "release_hash": RELEASE_HASH}})
+    led.append({"kind": "tick", "id": "tk-0", "body": tick_body(tick_id="T0")})
     led.append({"kind": "decision", "id": "dc-0",
-                **decision_body(tick_id="T0", legs=("leg-0",))})
+                "body": decision_body(tick_id="T0", legs=("leg-0",))})
     led.snapshot(producer.to_snapshot_obj())
-    led.append({"kind": "tick_start", "id": "ts-1", "tick_id": "T1",
-                "tick_at_ms": BASE_MS + 60_000})
+    led.append({"kind": "tick_start", "id": "ts-1",
+                "body": {"tick_id": "T1", "tick_at_ms": BASE_MS + 60_000,
+                         "release_hash": RELEASE_HASH}})
     led.append({"kind": "decision_plan", "id": "dp-1",
-                **decision_plan_body(plan_id="plan-1", result="submit")})
+                "body": decision_plan_body(plan_id="plan-1", result="submit")})
     led.append({"kind": "decision_plan", "id": "dp-2",
-                **decision_plan_body(plan_id="plan-2", result="not_sent")})
-    led.append({"kind": "intent", "id": "in-2", **intent_body(client_ref="ref-2")})
-    led.append({"kind": "intent", "id": "in-3", **intent_body(client_ref="ref-3")})
+                "body": decision_plan_body(plan_id="plan-2", result="not_sent")})
+    led.append({"kind": "intent", "id": "in-2",
+                "body": intent_body(client_ref="ref-2")})
+    led.append({"kind": "intent", "id": "in-3",
+                "body": intent_body(client_ref="ref-3")})
     led.append({"kind": "order_event", "id": "oe-3",
-                **order_event_body(client_ref="ref-3")})
+                "body": order_event_body(client_ref="ref-3")})
     led.state = None
     return led
 
@@ -1001,15 +1051,13 @@ def test_a_cash_flow_adjusts_the_balance_and_is_economic():
 
 
 def test_only_economic_events_advance_the_economic_seq():
-    # D14: fills, order events and cash flows move it; an `intent` and an
-    # `authority_use` deliberately do not.
+    # D14: fills, order events and cash flows move it; an `intent`, an
+    # `authority_use`, an `outcome` and an `adoption` deliberately do not.
     st, chain = new_state()
     pairs = full_sequence()
     expected = 0
     walked = 0
     for kind, body in pairs:
-        if kind in UNDECIDED_ECONOMIC:
-            break
         if kind == "snapshot":
             payload = st.to_snapshot_obj()
             body = {"at_seq": st.head()[0], "state": payload,
@@ -1019,7 +1067,7 @@ def test_only_economic_events_advance_the_economic_seq():
             expected += 1
         walked += 1
         assert st.snapshot().risk_version.economic_seq == expected, kind
-    assert walked == len(pairs) - len(UNDECIDED_ECONOMIC)
+    assert walked == len(pairs)
     assert expected == 3
 
 
@@ -1045,12 +1093,19 @@ def test_an_ordinary_authority_issue_folds_into_the_arming():
     assert arming.authority_id == "auth-1"
     assert arming.release_hash == RELEASE_HASH
     assert arming.rung == "live_limited"
-    assert arming.armed_until_ms == BASE_MS + 3_600_000
+    assert arming.maker == "principal-maker"
+    assert arming.checker == "principal-checker"
+    assert arming.armed_at_ms == BASE_MS
+    assert arming.armed_until_ms == ARMED_UNTIL_MS
     assert tuple(arming.allowlist) == ("AAA",)
+    assert arming.limits_overlay == {}
+    assert arming.request_proof_digest == DIGEST_PLAN
+    assert arming.approval_proof_digest == DIGEST_EVIDENCE
 
 
 @pytest.mark.parametrize("event", ["disarm", "revoke", "expire"])
 def test_disarm_revoke_and_expire_clear_the_arming(event):
+    assert vocab.AUTHORITY_EVENTS == ("issue", "disarm", "revoke", "expire")
     st, chain = new_state()
     fold(st, chain, "authority", authority_body(event="issue"))
     assert st.snapshot().arming is not None
@@ -1078,6 +1133,7 @@ def test_a_reduction_authority_folds_into_the_reduction_projection():
     assert reduction.authority_id == "auth-2"
     assert tuple(reduction.rights) == (RIGHT_A, RIGHT_B)
     assert tuple(reduction.reserved) == ()
+    assert reduction.expires_ms == RIGHTS_EXPIRE_MS
     assert st.snapshot().arming is None
 
 
@@ -1296,6 +1352,34 @@ def test_reverse_restores_the_state_the_fill_changed():
     assert book.positions() == ()
 
 
+def test_reverse_recomputes_the_position_from_the_remaining_log():
+    # Not "undo the last fill": reversing the FIRST leaves exactly what
+    # applying the second alone would have built.
+    book = book_with(
+        fill_body(fill_id="f-1", qty="10", price="100"),
+        fill_body(fill_id="f-2", qty="10", price="120"),
+    )
+    book.reverse("f-1")
+    held = position_of(book.positions(), "AAA")
+    assert (held.qty, held.avg_cost) == (Decimal("10"), Decimal("120"))
+    alone = book_with(fill_body(fill_id="f-2", qty="10", price="120"))
+    assert book.positions() == alone.positions()
+
+
+def test_reverse_refuses_a_fill_realised_by_going_flat():
+    # The log runs from the last flat: once the position closes, those
+    # fills are realised and there is nothing left to recompute from.
+    book = book_with(
+        fill_body(fill_id="f-1", qty="10", price="100"),
+        fill_body(fill_id="f-2", side="sell", qty="10", price="130"),
+    )
+    assert book.positions() == ()
+    for fill_id in ("f-1", "f-2"):
+        with pytest.raises(ProductionError):
+            book.reverse(fill_id)
+    assert book.net_qty("AAA") == Decimal("0")
+
+
 def test_reverse_refuses_an_unknown_fill():
     book = book_with(fill_body(fill_id="f-1", qty="10", price="100"))
     with pytest.raises(ProductionError):
@@ -1364,8 +1448,9 @@ def test_restore_rebuilds_the_fold_and_drops_live_session_tokens():
     env = snapshot_env(st, chain)
 
     loaded = copy.deepcopy(env)
-    loaded["state"]["risk_version"]["executor_token"] = "live-session-token"
-    loaded["state"]["risk_version"]["accounting_tokens"] = {"paper": 7}
+    tokens = loaded["body"]["state"]["risk_version"]
+    tokens["executor_token"] = "live-session-token"
+    tokens["accounting_tokens"] = {"paper": 7}
     restored = SeriesState(SERIES_ID)
     restored.restore(loaded)
 
@@ -1373,7 +1458,8 @@ def test_restore_rebuilds_the_fold_and_drops_live_session_tokens():
     assert view.risk_version.executor_token is None
     assert view.risk_version.accounting_tokens is None
     assert view.risk_version.economic_seq == 3
-    assert restored.head() == (env["at_seq"], env["state"]["head_hash"])
+    assert restored.head() == (env["body"]["at_seq"],
+                               env["body"]["state"]["head_hash"])
     assert view == st.snapshot()
 
 
@@ -1388,7 +1474,7 @@ def test_restore_refuses_a_payload_missing_a_member():
     st, chain = new_state()
     fold(st, chain, "cash_flow", cash_flow_body())
     broken = copy.deepcopy(snapshot_env(st, chain))
-    broken["state"].pop("guard_holds")
+    broken["body"]["state"].pop("guard_holds")
     with pytest.raises(ProductionError):
         SeriesState(SERIES_ID).restore(broken)
 
@@ -1397,7 +1483,7 @@ def test_restore_refuses_an_at_seq_that_disagrees_with_the_head_it_carries():
     st, chain = new_state()
     fold(st, chain, "cash_flow", cash_flow_body())
     broken = copy.deepcopy(snapshot_env(st, chain))
-    broken["at_seq"] = broken["at_seq"] + 1
+    broken["body"]["at_seq"] = broken["body"]["at_seq"] + 1
     with pytest.raises(ProductionError):
         SeriesState(SERIES_ID).restore(broken)
 
@@ -1410,6 +1496,26 @@ def test_restore_refuses_a_fold_that_has_already_started():
     fold(other, other_chain, "cash_flow", cash_flow_body())
     with pytest.raises(ProductionError):
         other.restore(env)
+
+
+def test_a_reversal_after_a_restart_recomputes_from_the_restored_log():
+    st, chain = new_state()
+    fold(st, chain, "intent", intent_body(client_ref="ref-1", qty="20"))
+    fold(st, chain, "order_event", order_event_body(client_ref="ref-1"))
+    fold(st, chain, "fill", fill_body(fill_id="f-1", qty="10", price="100"))
+    fold(st, chain, "fill", fill_body(fill_id="f-2", qty="10", price="120"))
+    env = snapshot_env(st, chain)
+
+    restored = SeriesState(SERIES_ID)
+    restored.restore(env)
+    restored.apply(env)
+    fold(restored, chain, "fill",
+         fill_body(fill_id="f-1", qty="10", price="100", status="reversed"))
+
+    held = position_of(restored.snapshot().positions, "AAA")
+    alone = book_with(fill_body(fill_id="f-2", qty="10", price="120"))
+    assert (held.qty, held.avg_cost) == (Decimal("10"), Decimal("120"))
+    assert (held,) == alone.positions()
 
 
 def test_recovery_from_the_last_snapshot_reproduces_the_same_view():
@@ -1442,7 +1548,8 @@ def test_recovery_from_the_last_snapshot_reproduces_the_same_view():
 
     second = SeriesState(SERIES_ID)
     second.restore(env)
-    assert second.head() == (env["at_seq"], env["state"]["head_hash"])
+    assert second.head() == (env["body"]["at_seq"],
+                             env["body"]["state"]["head_hash"])
     second.apply(env)
     assert second.head() == (env["seq"], env["hash"])
     for record in later:
@@ -1471,11 +1578,11 @@ def test_recovery_closes_an_open_tick_with_a_failed_terminal_pair():
     led, st, ids, executor, report, seeded = recovered_once()
     appended = led.records[seeded:]
     assert appended[0]["kind"] == "tick"
-    assert appended[0]["tick_id"] == "T1"
-    assert appended[0]["status"] == "failed"
+    assert appended[0]["body"]["tick_id"] == "T1"
+    assert appended[0]["body"]["status"] == "failed"
     assert appended[1]["kind"] == "decision"
-    assert appended[1]["tick_id"] == "T1"
-    assert appended[1]["legs"] == []
+    assert appended[1]["body"]["tick_id"] == "T1"
+    assert appended[1]["body"]["legs"] == []
     assert tuple(report.closed_ticks) == ("T1",)
     assert st.open_ticks() == ()
 
@@ -1494,10 +1601,11 @@ def test_recovery_queries_every_unmatched_ref_and_never_submits():
 def test_recovery_records_the_venue_answer_as_a_status_event():
     led, st, ids, executor, report, seeded = recovered_once()
     (answered,) = [r for r in led.records[seeded:]
-                   if r["kind"] == "order_event" and r["client_ref"] == "ref-2"]
-    assert answered["event"] == "status"
-    assert answered["status"] == "open"
-    assert answered["venue_ref"] == "v-2"
+                   if r["kind"] == "order_event"
+                   and r["body"]["client_ref"] == "ref-2"]
+    assert answered["body"]["event"] == "status"
+    assert answered["body"]["status"] == "open"
+    assert answered["body"]["venue_ref"] == "v-2"
     view = st.snapshot()
     assert sorted(view.working) == ["ref-2", "ref-3"]
     assert view.pending == ()
@@ -1507,9 +1615,9 @@ def test_recovery_records_unknown_when_the_executor_raises():
     led, st, ids, executor, report, seeded = recovered_once()
     (ambiguous,) = [r for r in led.records[seeded:]
                     if r["kind"] == "order_event"
-                    and r["client_ref"] == DERIVED_REF]
-    assert ambiguous["event"] == "unknown"
-    assert ambiguous["status"] == "unknown"
+                    and r["body"]["client_ref"] == DERIVED_REF]
+    assert ambiguous["body"]["event"] == "unknown"
+    assert ambiguous["body"]["status"] == "unknown"
     assert "unknown" in vocab.ORDER_EVENTS
     assert "unknown" in vocab.STATUSES
 
@@ -1520,7 +1628,7 @@ def test_recovery_ends_with_a_recovered_process_record():
         "tick", "decision", "order_event", "order_event", "process",
     ]
     last = led.records[-1]
-    assert last["event"] == "recovered"
+    assert last["body"]["event"] == "recovered"
     assert "recovered" in vocab.PROCESS_EVENTS
     assert led.barrier_calls >= 1
 
