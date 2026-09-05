@@ -4549,8 +4549,13 @@ raises a typed `ValueError` instead of a shell exit code that must be told
 apart from the fold's own (the walkforward CLI reserves exit 3 for a halted
 fold); and it needs no hand-picked sentinel exit code to signal a failed cap.
 
-A cap failure is configuration, not a fold result: `run` cancels unstarted
-folds and re-raises it. It never wraps into a `CompletedProcess`.
+The cap is validated in the PARENT before anything spawns: children inherit
+the hard `RLIMIT_AS`, so `run` reads `resource.getrlimit` once and raises
+`ValueError` if `memory_limit_bytes` exceeds that hard limit. The shim's own
+`setrlimit` therefore cannot fail, and no cross-process signal is needed to
+turn a failed cap into a parent-side exception. A cap failure is
+configuration, not a fold result: it is raised before any fold starts and
+never wrapped into a `CompletedProcess`.
 
 **The width is read from the environment, never from a document.** Fold count
 is a property of the machine, not of what a run computes; a graded knob would
@@ -4568,22 +4573,38 @@ passing that gate is necessary and not sufficient for domain-neutrality. A
 width of 1 must remain the serial path.
 
 The seam measures no memory. `RUSAGE_CHILDREN.ru_maxrss` is process-global and
-monotone, so under a pool a fold would persist whatever sibling peaked highest
-and never report lower; `peak_rss_bytes` therefore leaves the per-fold record.
-`MemoryPreflightStage` keeps its measurement by wrapping its own call —
-`workers=1`, one command — with `getrusage`, which is valid precisely because
-a single serial fold has no siblings. That stage owns the child's memory
-contract and stays in the child.
+monotone — the high-water mark over EVERY child this process has ever reaped,
+so `max(before, after)` is always just `after` — and under a pool a fold would
+persist whatever sibling peaked highest. `peak_rss_bytes` therefore leaves the
+per-fold record. `MemoryPreflightStage` keeps its measurement by wrapping its
+own `workers=1`, single-command call with `getrusage`, and makes the
+precondition a runtime refusal rather than an assumption: it reads
+`RUSAGE_CHILDREN.ru_maxrss` BEFORE spawning and refuses if it is not zero,
+because a nonzero value means an earlier child has already been reaped and
+the reading after the spawn would be contaminated. That is enforced in the
+stage, not by the staged document happening to list it first. The stage owns
+the child's memory contract and stays in the child.
 
 Cancellation is bounded, not immediate: unstarted folds are dropped, a running
 fold's subprocess is not killed, and there is no timeout.
 
-The child imports four private names today, breaching the `__all__` contract.
-`score_bar` and `walk_cells` read the stable on-disk `walkforward.json`, carry
-full docstrings, and are promoted to `runs.__all__` as they are. The driver
-pair is not: `_aggregate_folds` and `_write_walkforward_summary` take a
-fold-row shape dictated by `_run_folds`'s internals with no stated contract,
-and an underscore name never enters an `__all__` here. They are RENAMED to
-`aggregate_folds` and `write_walkforward_summary`, given docstrings that state
-the fold-row fields they require, and only then added to `driver.__all__`.
-Promoting them unrenamed would ratify the breach rather than fix it.
+The child imports four unexported names today, breaching the `__all__`
+contract. `score_bar` and `walk_cells` read the stable on-disk
+`walkforward.json`, carry full docstrings, and are promoted to `runs.__all__`
+as they are. The driver pair is not: `_aggregate_folds` and
+`_write_walkforward_summary` take a fold-row shape built inline in
+`_run_folds` with no stated contract, and an underscore name never enters an
+`__all__` here. Documenting that shape in a docstring would only restate it —
+a value in two places with nothing pinning them. So the shape gets ONE owner:
+`driver.FOLD_FIELDS`, exported, names the fold-row keys; `_run_folds` builds
+every row from it; the renamed `aggregate_folds` refuses a row missing any of
+them at runtime; and a test round-trips a written summary through
+`walk_fold_dirs` and `aggregate_folds` to pin that the on-disk rows the child
+reads are the rows the driver writes. Only then are `aggregate_folds` and
+`write_walkforward_summary` added to `driver.__all__`.
+
+`BoundedFoldRunner` is NOT re-exported from `dskit/pipeline/__init__.py`:
+`resource` is POSIX-only, so it is imported inside `spawn`, and the class is
+reached by path. `dskit/pipeline/README.md` and `CLAUDE.md` gain
+`folds.py` in their directory trees, as CLAUDE.md requires when a file is
+added.
