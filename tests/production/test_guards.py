@@ -1901,7 +1901,9 @@ def test_quantity_is_the_proposals_own_size():
 
 
 def test_notional_is_the_proposals_declared_value():
-    assert value_of("notional", proposal(notional=Decimal("100"))) == Decimal("100")
+    # 10 @ 10 would be 100; the proposer's own number wins.
+    prop = proposal(notional=Decimal("77"), qty=Decimal("10"), reference_price=Decimal("10"))
+    assert value_of("notional", prop) == Decimal("77")
 
 
 def test_notional_falls_back_to_size_times_reference_price():
