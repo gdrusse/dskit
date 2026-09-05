@@ -65,10 +65,10 @@ valuation, the breaker, authenticated arming; the executor ABC with shadow /
 paper / recorded executors and a conformance battery; the ledger, checkpoint,
 and reconciliation; monitors; alerts, health, heartbeats; resilience policies
 (retry, circuit breaker, rate limiter, transport); outcomes, attribution, replay
-parity; the readiness checklist; the CLI. **Phase 1 ships `shadow` and `paper` only**
-(§11): the live-authority stack is phase 1b, landed with the first venue
-adapter that can exercise it, and a phase-1 serve document may only reference
-nodes in the audited `serving_effect` set (§9.1).
+parity; the readiness checklist; the CLI. Phase 1 ships all four rungs and the full
+authority stack (§11), exercised end to end with fakes; the one phase-1 limit
+is that a serve document may reference only nodes in the audited
+`serving_effect` set (§9.1).
 
 **Child (tier 3) — never in dskit:** the venue executor subclass (translation of
 units, order types, error codes, dedup and observed native-replace semantics), the proposer when a
@@ -2256,26 +2256,25 @@ their own deterministic chain assertions.
 
 | phase | lands | model |
 |---|---|---|
-| 1 — foundation, `shadow` and `paper` only | every module in §8 not marked phase 2 or 1b, ADR-0091, the §7 verbs reachable without live (`validate`, `plan`, `serve`, `halt`, `status`, `verify`, `reconcile`, `adopt`), README/AGENTS/CLAUDE, examples, skeleton, doc updates | tests: Opus · code: Fable · review: Opus |
-| 1b — the live stack | `arming.py`, `coordination.py`, `readiness.py`, `LiveExecutor` + `LiveAuthority` + `ReductionAuthority`, the maker-checker and reduction/flatten verbs, `RuntimeFingerprint`, and `RUNGS` extended past `paper` — landed **with the first real venue adapter that can exercise them**, not before | tests: Opus · code: Opus · review: Opus |
-| 2 — evidence (pull forward if phase 1b slips) | `outcomes`, `report`, `replay` verb, outcome-readiness evidence, Outcome + Parity monitor families, DDM/ADWIN/JS/Linf, alert inhibition/silences/escalation/ack + sqlite state, systemd heartbeat, `libs/sqlite.py`, `libs/parquet.py`, `Signer`, the `approve` verb for `hold` | tests: Opus · code: Opus · review: Opus |
+| 1 — foundation | every module in §8 not marked phase 2, including the full authority stack (`arming.py`, `coordination.py`, `readiness.py`, `LiveExecutor`, `LiveAuthority`, `ReductionAuthority`) and all four rungs; ADR-0091, all §7 verbs, README/AGENTS/CLAUDE, examples, skeleton, doc updates | tests: Opus · code: Fable · review: Opus |
+| 2 — evidence | `outcomes`, `report`, `replay` verb, outcome-readiness evidence, Outcome + Parity monitor families, DDM/ADWIN/JS/Linf, alert inhibition/silences/escalation/ack + sqlite state, systemd heartbeat, `libs/sqlite.py`, `libs/parquet.py`, `Signer`, the `approve` verb for `hold` | tests: Opus · code: Opus · review: Opus |
 | 2b — audit | classify the remaining registered `kinds_*.py` / `libs/*.py` classes for `serving_effect`, widening what a serve document may reference | Opus |
 | 3 — packs | `exchange_calendars`, `prometheus`/`opentelemetry` sinks, the stream seam, migrating onboarding packs onto `resilience.py` (own ADR) | Opus |
 
 Per the owner: no Fable after the initial plan and build.
 
-**Why 1b is separate.** Every object in it exists solely to gate `live`, and at
-the end of phase 1 there is no live executor to gate: §2 puts every venue
-subclass in tier 3, §9.2's skeleton templates are fail-closed, and both
-existing children are paper-only. Shipping the two-man-rule flattening
-workflow before anything can execute a live order means building, testing and
-maintaining roughly a third of phase 1's surface against no exercise — while
-deferring the outcome and parity machinery that is the only thing shadow and
-paper actually produce. The D10–D14 rulings are unchanged and approved as they
-stand; this is a sequencing decision, not a design one. Phase 1 satisfies the
-owner's constraint (5) structurally: with `RUNGS` stopping at `paper` and no
-`LiveExecutor` in the tree, "actually move money" is not a config typo away
-because it is not present.
+**Why the authority stack ships in phase 1 rather than waiting for a venue.**
+A reviewer argued it should be deferred until a real adapter can exercise it,
+since every object in it exists to gate `live` and no live executor exists at
+the end of phase 1. The argument does not hold, for two reasons. First it is
+not unexercised: §10's e2e runs an all-fake `live_limited` case with distinct
+maker and checker proofs, a matching authenticated execution scope and a
+two-instance fenced lease that proves stale-token rejection — the whole path
+except the socket. Second, deferring it inverts the dependency: the first
+venue adapter is a tier-3 child written against these seams, so the seams must
+exist first or the child author invents them and the package inherits whatever
+they chose. A safety stack is also the wrong thing to bolt on after the loop
+is running. It ships whole.
 
 ## 12. Resolved choices in this resubmission
 
