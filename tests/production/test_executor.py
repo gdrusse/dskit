@@ -479,8 +479,11 @@ def test_capabilities_is_a_frozen_value():
 
 def test_spec_declares_the_knobs_and_names_env_vars_for_secrets():
     """§5.7: "`spec()` (default-deny knobs; secret knobs name env vars)" —
-    the knob inventory and the default-deny list are one fact, and a secret
-    that is a literal in a graded document is a secret in the release hash."""
+    the knob inventory and the default-deny list are ONE fact, so `spec` is a
+    classmethod beside `validate_params` rather than something only a
+    constructed venue can be asked. A secret spelled as a literal in a graded
+    document is a secret inside the release hash."""
+    assert inspect.ismethod(PaperExecutor.spec)
     spec = PaperExecutor.spec()
     assert set(spec) == {"params", "secrets"}
     assert set(spec["params"]) == set(PaperExecutor._PARAMS)
@@ -799,6 +802,48 @@ def test_a_resting_order_is_open_and_appears_in_open_orders():
     )
     assert ack.status == "open"
     assert [order.client_ref for order in venue.open_orders()] == ["ref-1"]
+
+
+def test_a_resting_order_fills_when_the_market_touches_it():
+    """`resting_rule: touch` — the market coming TO the price is enough, and
+    each quote offers a resting order one chance at `p_fill_on_touch`. With
+    the probability at 1 the model is deterministic and the rule alone is
+    what is being tested."""
+    venue = paper(
+        {"fill_rule": "cross", "resting_rule": "touch", "p_fill_on_touch": 1.0}
+    )
+    venue.submit(intent(proposal=proposal(limit="0.42", tif="gtc")), simulated(), tick_state())
+    assert venue.order("ref-1").status == "open"
+    venue.on_quote(dataclasses.replace(QUOTE, asof_ms=NOW_MS + 1))
+    assert venue.order("ref-1").status == "filled"
+
+
+def test_the_through_rule_needs_the_market_to_trade_past_the_limit():
+    """`resting_rule: through` is the pessimistic queue model: standing AT the
+    touch is not a fill, because everyone ahead in the queue trades first."""
+    venue = paper(
+        {"fill_rule": "cross", "resting_rule": "through", "p_fill_on_touch": 1.0}
+    )
+    venue.submit(intent(proposal=proposal(limit="0.42", tif="gtc")), simulated(), tick_state())
+    venue.on_quote(dataclasses.replace(QUOTE, asof_ms=NOW_MS + 1))
+    assert venue.order("ref-1").status == "open"
+    venue.on_quote(
+        dataclasses.replace(QUOTE, ask=Decimal("0.41"), mid=Decimal("0.40"), asof_ms=NOW_MS + 2)
+    )
+    assert venue.order("ref-1").status == "filled"
+
+
+def test_a_resting_order_fills_at_its_own_limit():
+    """A resting order is the passive side: it receives its limit, never the
+    touch it happened to be crossed at."""
+    venue = paper(
+        {"fill_rule": "cross", "resting_rule": "through", "p_fill_on_touch": 1.0}
+    )
+    venue.submit(intent(proposal=proposal(limit="0.42", tif="gtc")), simulated(), tick_state())
+    venue.on_quote(
+        dataclasses.replace(QUOTE, ask=Decimal("0.41"), mid=Decimal("0.40"), asof_ms=NOW_MS + 2)
+    )
+    assert venue.order("ref-1").avg_price == Decimal("0.42")
 
 
 def test_cancel_terminalizes_and_a_second_cancel_is_absorbed():
