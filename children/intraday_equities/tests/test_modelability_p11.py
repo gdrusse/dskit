@@ -30,6 +30,20 @@ def test_p11_config_has_gate1_followed_directly_by_gate3():
     assert "gate2" not in raw["stages"]
     assert raw["stages"]["gate3_walks"]["params"]["seeds"] == list(range(19))
     assert raw["stages"]["gate3"]["params"]["seeds"] == list(range(19))
+    # ADR-0092: the walks stage scores each draw, so it reads the observed
+    # cells and the scoring level; the result stage reads the stop record.
+    assert raw["stages"]["gate3_walks"]["inputs"] == {
+        "gate1": "$gate1.rows",
+        "gate1_cells": "$gate1.cells",
+    }
+    assert raw["stages"]["gate3"]["inputs"]["draws"] == "$gate3_walks.draws"
+    alphas = {
+        key: stage["params"]["alpha"]
+        for key, stage in raw["stages"].items()
+        if "alpha" in stage.get("params", {})
+    }
+    assert set(alphas) == {"gate1", "gate3_walks", "gate3"}
+    assert len(set(alphas.values())) == 1
     assert raw["pipeline"]["scan"]["params"]["fit_symbols"] == p11._ASSETS
     assert len(p11._ASSETS) == 25
     assert "META" not in p11._ASSETS
@@ -141,11 +155,18 @@ def test_gate1_stops_on_first_failure_and_never_runs_or_registers_later(
     ]
 
 
-def test_gate3_refits_only_gate1_survivors_and_requires_all_nulls_to_lose(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(p11, "_ASSETS", ["A", "B"])
-    walks = p11.Gate3WalksStage("gate3_walks", {"seeds": list(range(19))})
+def _null_scores(by_seed, observed=None):
+    """A ``_score_one`` double keyed on the walk handle's trailing seed."""
+
+    def score(summary, _asset, _horizon, _alpha):
+        seed = int(str(summary).rsplit("-", 1)[-1])
+        return {"r2oos": by_seed[seed], "t_pool": 0.1 * seed}
+
+    return score
+
+
+def _gate3_harness(monkeypatch, assets=("A", "B")):
+    monkeypatch.setattr(p11, "_ASSETS", list(assets))
     documents = []
     monkeypatch.setattr(
         p11,
@@ -166,29 +187,186 @@ def test_gate3_refits_only_gate1_survivors_and_requires_all_nulls_to_lose(
         {"asset": "A", "gate1_h": 2, "gate1_passes": True},
         {"asset": "B", "gate1_h": None, "gate1_passes": False},
     ]
-    out = walks.run(SimpleNamespace(), {"gate1": gate1})
-    assert len(documents) == 19
-    assert {asset for asset, _horizon, _kwargs in documents} == {"A"}
+    cells = [{"asset": "A", "horizon": 2, "skill": {"r2oos": 0.02, "t_pool": 2.0}}]
+    return documents, gate1, cells
+
+
+def test_gate3_walks_stop_an_asset_at_the_first_null_that_is_not_beaten(
+    monkeypatch,
+):
+    # ADR-0092: seeds run in order and the asset stops at the first null
+    # with R2oos >= observed — a TIE included, because ">=" is the exact
+    # negation of the strict ">" the verdict applies. Seeds 3..18 are
+    # neither derived nor run.
+    documents, gate1, cells = _gate3_harness(monkeypatch)
+    by_seed = {seed: 0.0 for seed in range(19)}
+    by_seed[1] = 0.005
+    by_seed[2] = 0.02  # the tie
+    monkeypatch.setattr(p11, "_score_one", _null_scores(by_seed))
+    walks = p11.Gate3WalksStage("gate3_walks", {"seeds": list(range(19)), "alpha": 0.05})
+    out = walks.run(SimpleNamespace(), {"gate1": gate1, "gate1_cells": cells})
+    assert [kw["scramble_seed"] for _a, _h, kw in documents] == [0, 1, 2]
+    assert set(out["walks"]) == {"A:2:0", "A:2:1", "A:2:2"}
+    assert out["draws"] == {"A": {"stopped": True, "stop_seed": 2, "n_draws": 3}}
     assert out["survivors"] == ["A"]
 
-    result = p11.Gate3ResultStage(
+
+def test_gate3_walks_never_stop_a_pass_and_run_every_seed(monkeypatch):
+    documents, gate1, cells = _gate3_harness(monkeypatch)
+    by_seed = {seed: -0.001 * (seed + 1) for seed in range(19)}
+    monkeypatch.setattr(p11, "_score_one", _null_scores(by_seed))
+    walks = p11.Gate3WalksStage("gate3_walks", {"seeds": list(range(19)), "alpha": 0.05})
+    out = walks.run(SimpleNamespace(), {"gate1": gate1, "gate1_cells": cells})
+    assert [kw["scramble_seed"] for _a, _h, kw in documents] == list(range(19))
+    assert len(out["walks"]) == 19
+    assert out["draws"] == {"A": {"stopped": False, "stop_seed": None, "n_draws": 19}}
+
+
+def test_gate3_walks_stop_on_the_last_seed_too(monkeypatch):
+    # Stopping on seed 18 is still a stop: n_draws is 19 and the bound is
+    # 2/20, not the verdict's calibration read.
+    documents, gate1, cells = _gate3_harness(monkeypatch)
+    by_seed = {seed: -0.001 for seed in range(19)}
+    by_seed[18] = 0.5
+    monkeypatch.setattr(p11, "_score_one", _null_scores(by_seed))
+    walks = p11.Gate3WalksStage("gate3_walks", {"seeds": list(range(19)), "alpha": 0.05})
+    out = walks.run(SimpleNamespace(), {"gate1": gate1, "gate1_cells": cells})
+    assert out["draws"] == {"A": {"stopped": True, "stop_seed": 18, "n_draws": 19}}
+    assert len(documents) == 19
+
+
+def test_gate3_walks_take_the_observed_result_from_the_gate1_cells(monkeypatch):
+    # The stop compares against the SELECTED cell's r2oos, not another
+    # horizon's: with two cells for A only the h=2 one may be read.
+    documents, gate1, cells = _gate3_harness(monkeypatch)
+    cells = [
+        {"asset": "A", "horizon": 1, "skill": {"r2oos": 0.9, "t_pool": 2.0}},
+        {"asset": "A", "horizon": 2, "skill": {"r2oos": 0.02, "t_pool": 2.0}},
+    ]
+    by_seed = {seed: 0.03 for seed in range(19)}
+    monkeypatch.setattr(p11, "_score_one", _null_scores(by_seed))
+    walks = p11.Gate3WalksStage("gate3_walks", {"seeds": list(range(19)), "alpha": 0.05})
+    out = walks.run(SimpleNamespace(), {"gate1": gate1, "gate1_cells": cells})
+    assert out["draws"]["A"] == {"stopped": True, "stop_seed": 0, "n_draws": 1}
+
+
+def test_gate3_walks_require_the_observed_cells_and_a_level():
+    stage = p11.Gate3WalksStage("gate3_walks", {"seeds": list(range(19)), "alpha": 0.05})
+    assert stage.validate_inputs({"gate1": []}) != []
+    assert stage.validate_inputs({"gate1": [], "gate1_cells": []}) == []
+    assert p11.Gate3WalksStage.validate_params({"seeds": list(range(19))}) != []
+    assert (
+        p11.Gate3WalksStage.validate_params({"seeds": list(range(19)), "alpha": 1.5})
+        != []
+    )
+
+
+def _result_stage():
+    return p11.Gate3ResultStage(
         "gate3", {"assets": ["A", "B"], "seeds": list(range(19)), "alpha": 0.05}
     )
+
+
+def test_gate3_result_marks_a_stopped_asset_as_a_bounded_fail(monkeypatch):
+    _documents, gate1, cells = _gate3_harness(monkeypatch)
     monkeypatch.setattr(
-        p11,
-        "_score_one",
-        lambda summary, _asset, _horizon, _alpha: {
-            "r2oos": 0.01 if summary.startswith("walk") else 0.0,
-            "t_pool": 0.0,
-        },
+        p11, "_score_one", lambda *_a: (_ for _ in ()).throw(AssertionError("scored"))
     )
-    cells = [{"asset": "A", "horizon": 2, "skill": {"r2oos": 0.02}}]
-    monkeypatch.setattr(p11, "tier2_verdict", lambda *_args: {"passes": True})
-    final = result.run(
-        SimpleNamespace(), {"gate1": gate1, "gate1_cells": cells, "walks": out["walks"]}
+    monkeypatch.setattr(
+        p11, "tier2_verdict", lambda *_a: (_ for _ in ()).throw(AssertionError("verdict"))
     )
-    assert final["rows"][0]["gate3_status"] == "pass"
+    walks = {f"A:2:{seed}": f"walk-A-2-{seed}" for seed in range(3)}
+    draws = {"A": {"stopped": True, "stop_seed": 2, "n_draws": 3}}
+    final = _result_stage().run(
+        SimpleNamespace(),
+        {"gate1": gate1, "gate1_cells": cells, "walks": walks, "draws": draws},
+    )
+    row = final["rows"][0]
+    assert row["asset"] == "A"
+    assert row["gate3_status"] == "fail"
+    assert row["gate3_passes"] is False
+    assert row["stopped"] is True
+    assert row["stop_seed"] == 2
+    assert row["n_draws"] == 3
+    assert row["p_bound"] == 2 / 4
+    assert row["null_mean"] is None
+    assert row["null_sd"] is None
+    assert row["calibration"] == "not_computed_early_stop"
+    assert "gate3" not in row
+    assert row["not_reached_reason"] is None
     assert final["rows"][1]["gate3_status"] == "not_reached"
+    assert "stopped" not in final["rows"][1]
+
+
+def test_gate3_result_bound_is_never_zero_or_absent(monkeypatch):
+    _documents, gate1, cells = _gate3_harness(monkeypatch)
+    monkeypatch.setattr(p11, "_score_one", lambda *_a: {"r2oos": 0.0, "t_pool": 0.0})
+    for n_draws, stop_seed in ((1, 0), (19, 18)):
+        walks = {f"A:2:{seed}": f"walk-A-2-{seed}" for seed in range(n_draws)}
+        draws = {"A": {"stopped": True, "stop_seed": stop_seed, "n_draws": n_draws}}
+        row = _result_stage().run(
+            SimpleNamespace(),
+            {"gate1": gate1, "gate1_cells": cells, "walks": walks, "draws": draws},
+        )["rows"][0]
+        assert row["p_bound"] == 2 / (n_draws + 1)
+        assert row["p_bound"] > 0
+
+
+def test_gate3_result_scores_a_completed_family_exactly_as_before(monkeypatch):
+    _documents, gate1, cells = _gate3_harness(monkeypatch)
+    by_seed = {seed: -0.001 * (seed + 1) for seed in range(19)}
+    monkeypatch.setattr(p11, "_score_one", _null_scores(by_seed))
+    seen = []
+
+    def verdict(observed, nulls, ts):
+        seen.append((observed, list(nulls), list(ts)))
+        return {"passes": True, "beat_all": True}
+
+    monkeypatch.setattr(p11, "tier2_verdict", verdict)
+    walks = {f"A:2:{seed}": f"walk-A-2-{seed}" for seed in range(19)}
+    draws = {"A": {"stopped": False, "stop_seed": None, "n_draws": 19}}
+    row = _result_stage().run(
+        SimpleNamespace(),
+        {"gate1": gate1, "gate1_cells": cells, "walks": walks, "draws": draws},
+    )["rows"][0]
+    assert seen == [
+        (0.02, [by_seed[s] for s in range(19)], [0.1 * s for s in range(19)])
+    ]
+    assert row["gate3_status"] == "pass"
+    assert row["gate3_passes"] is True
+    assert row["gate3"] == {"passes": True, "beat_all": True}
+    for key in ("stopped", "stop_seed", "n_draws", "p_bound", "calibration"):
+        assert key not in row
+
+
+def test_gate3_result_refuses_a_completed_family_short_of_the_seeds(monkeypatch):
+    # "not stopped" with fewer draws than seeds is an inconsistent record,
+    # never a smaller family scored as a full one.
+    _documents, gate1, cells = _gate3_harness(monkeypatch)
+    monkeypatch.setattr(p11, "_score_one", lambda *_a: {"r2oos": 0.0, "t_pool": 0.0})
+    walks = {f"A:2:{seed}": f"walk-A-2-{seed}" for seed in range(19)}
+    draws = {"A": {"stopped": False, "stop_seed": None, "n_draws": 18}}
+    try:
+        _result_stage().run(
+            SimpleNamespace(),
+            {"gate1": gate1, "gate1_cells": cells, "walks": walks, "draws": draws},
+        )
+    except ValueError as error:
+        assert "n_draws" in str(error)
+    else:  # pragma: no cover - the assertion below reports it
+        raise AssertionError("a short family was scored")
+
+
+def test_gate3_result_requires_the_draws_record(monkeypatch):
+    monkeypatch.setattr(p11, "_ASSETS", ["A", "B"])
+    stage = _result_stage()
+    assert stage.validate_inputs({"gate1": [], "gate1_cells": [], "walks": {}}) != []
+    assert (
+        stage.validate_inputs(
+            {"gate1": [], "gate1_cells": [], "walks": {}, "draws": {}}
+        )
+        == []
+    )
 
 
 def test_derived_walk_filters_the_tape_to_the_asset_and_its_reference(
