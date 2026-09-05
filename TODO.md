@@ -1,5 +1,75 @@
 # TODO
 
+## P12 Gate 3 recovery contract (2026-09-05; execute in order)
+
+- [x] **Record the failure without calling it a result.** A12579 records that
+      P12 stopped in Gate 3 after NRG h=1, seed 05, fold 00 finished without
+      journal evidence. Preserve every partial artifact and the existing
+      append-only journal rows; do not delete, rewrite, or relabel them.
+- [ ] **Inventory the exact Gate 3 state by asset and seed.** Derive the
+      selected Gate 1 assets and horizons only from the persisted gate1.json
+      rows where gate1_passes is true. Reconcile each null summary directory,
+      its 20-fold report/walkforward record, and its actions.csv evidence.
+- [ ] **Extract only legitimate completed outcomes.** A stock can receive a
+      recovered Gate 3 verdict only if all 19 required null draws, their
+      score/test-statistic inputs, and their journal evidence are present.
+      Rebuild the existing verdict with the shipped logic; retain provenance.
+      Any incomplete, unjournaled, or non-reconstructable family is rerun.
+- [ ] **Diagnose and fix the missing journal-evidence failure.** Reproduce
+      the NRG seed-05 fold failure with a focused red test, identify whether
+      it is a journal race or another integrity defect, implement the narrow
+      fix, and prove the affected fold/walk contract.
+- [ ] **Obtain an independent major/critical review of the fix.** Resolve
+      every major or critical finding and re-run the focused verification
+      before any recovery execution or code commit.
+- [ ] **Append a recovery journal entry after verification.** It must name
+      A12579, the crash, exactly which outcomes were extracted from saved
+      evidence, exactly which were rerun, the fix commit, and artifact paths.
+      Never fabricate a pass/fail result or edit historical action rows.
+- [ ] **Build a Gate-3-only continuation for remaining work.** Its manifest
+      must be generated from the original persisted Gate 1 selections and
+      retain the original data cut, caches, horizons, and provenance. Exclude
+      only families whose final result was legitimately reconstructed; rerun
+      every other survivor from Gate 3, including NRG as required.
+- [ ] **Run, verify, memo, wrap, and release only after recovery succeeds.**
+      Write the durable results memo, refresh the journal/TODO/re-entry,
+      commit the reviewed fix and verified recovery evidence on main, then
+      push main.
+## Gate 3 / P11 closeout audit (2026-09-05)
+
+- [x] **Gate 3 rebuild and P11 development are closed.** ADR-0092
+      fail-fast audit, ADR-0093 bounded fold execution, and ADR-0094's
+      asset-local study, their tests, and the P12 smoke work were reviewed,
+      committed, merged to main, and pushed. Historical wraps are retained
+      in docs/RE-ENTRY.md.
+- [x] **Earlier P10/P11 code and evidence are closed.** Their commits are
+      ancestors of both main and origin/main; there are no unmerged local
+      branches from this work.
+- [ ] **After the active P12 process exits, repair the smoke evidence paths.**
+      Journal rows A2888-A2909 still name the removed
+      /home/russell/wt/adr-0094 worktree; the artifacts live under
+      /home/russell/dskit/children/intraday_equities/pipeline_runs/.
+- [ ] **After the active P12 process exits, record the first P12 attempt's
+      termination and wrap.** Its completed steps are rows A2910-A2918, but
+      exit 143 is currently only in /home/russell/p12-run.log.
+
+      Do not mark the active P12 study complete or commit its live decisioning
+      journal before it exits.
+
+- [ ] **Add per-asset Gate 3 progress records after P12 closes.** When an
+      asset stops or completes its 19 null draws, append one clearly interim
+      record with its observed R2oos, t-fold and t-pool, status, draw count,
+      stopping seed or best null, and the relevant artifact path. Emit
+      p_bound only for an early stop; a completed family must say that final
+      beat-all and calibration are still pending. The final Gate 3 result
+      remains the sole final verdict.
+
+- [ ] **Diagnose the failed P12 Gate 3 walk before resuming.** The 63-asset
+      run exited 1 at 16:09:05Z because
+      p12-63-asset-modelability-gate3-seed05-nrg-h01-part-00 finished without
+      journal evidence (A12579). Preserve the partial artifacts; do not claim
+      final Gate 3 results or commit the failed run as complete.
+
 ## Code standard (2026-08-27)
 
 Everything needed to continue is in THIS file — each item below carries its
