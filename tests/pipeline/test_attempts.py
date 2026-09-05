@@ -23,6 +23,7 @@ from dskit.pipeline.attempts import (
     bar_verdict,
     beat_all,
     bonferroni_t,
+    early_stop_p_bound,
     cell_id,
     expected_max_null,
     implied_trials,
@@ -457,6 +458,35 @@ class TestBeatAll:
     def test_tier2_verdict_still_refuses_a_single_null(self):
         with pytest.raises(ValueError, match="at least 2"):
             tier2_verdict(0.05, [0.001])
+
+
+class TestTheEarlyStopBound:
+    """ADR-0094: the bound a stopped audit carries has ONE owner.
+
+    Besag–Clifford stopping at the first exceedance (ADR-0092): after
+    ``n_draws`` completed nulls whose last one matched or beat the real
+    result, the real result ranks at best second among ``n_draws + 1``
+    exchangeable values, so its p-value is bounded by ``2 / (n_draws + 1)``.
+    """
+
+    def test_it_is_on_the_module_surface(self):
+        from dskit.pipeline import attempts
+
+        assert "early_stop_p_bound" in attempts.__all__
+
+    @pytest.mark.parametrize(
+        ("n_draws", "bound"), [(1, 1.0), (3, 0.5), (19, 0.1), (99, 0.02)]
+    )
+    def test_two_over_draws_plus_one(self, n_draws, bound):
+        assert early_stop_p_bound(n_draws) == pytest.approx(bound)
+
+    def test_it_is_never_zero(self):
+        assert early_stop_p_bound(10**6) > 0
+
+    @pytest.mark.parametrize("bad", [0, -1, True, 2.5, "3", None])
+    def test_it_refuses_anything_but_a_positive_int(self, bad):
+        with pytest.raises(ValueError, match="n_draws"):
+            early_stop_p_bound(bad)
 
 
 class TestReadingARealWalk:

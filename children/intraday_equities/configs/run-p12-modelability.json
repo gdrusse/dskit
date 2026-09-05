@@ -1,0 +1,198 @@
+{
+  "name": "p12-40-asset-modelability",
+  "notes": "P12: the forty breadth-cohort names (D and E) through the asset-local modelability study on P11's exact geometry (ADR-0094): memory preflight and per-group feature caches, Gate 1's ordered horizon search per name, then ADR-0092's fail-fast whole-session scramble audit on every passer. The cohort is fit_symbols; universe-p12.json bounds the read and each group cache is built through its own group universe. The source-level cut is 2026-02-28. SPY is the residual reference only; META and GROUP are excluded.",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {"path": "configs/universe-p12.json"}
+    },
+    "source_reference": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split",
+        "universe": "configs/universe-p12.json",
+        "start_ms": 1514764800000,
+        "sessions": ["rth"],
+        "shared_fields": ["symbol", "ts"]
+      },
+      "notes": "The reference tape only: alpaca-sip-split holds the P10 names, and the universe bound keeps SPY alone from it."
+    },
+    "source_d": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-d",
+        "universe": "configs/universe-p12.json",
+        "start_ms": 1514764800000,
+        "sessions": ["rth"],
+        "shared_fields": ["symbol", "ts"]
+      }
+    },
+    "source_e": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-e",
+        "universe": "configs/universe-p12.json",
+        "start_ms": 1514764800000,
+        "sessions": ["rth"],
+        "shared_fields": ["symbol", "ts"]
+      }
+    },
+    "pooled": {
+      "uses": "concat",
+      "inputs": {
+        "reference": "$source_reference.records",
+        "d": "$source_d.records",
+        "e": "$source_e.records"
+      },
+      "params": {
+        "shape": "records",
+        "provenance_waiver": "Each immutable MarketRecord already carries its source; the three symbol namespaces are disjoint and checked below.",
+        "key": "symbol",
+        "consume_inputs": true
+      },
+      "notes": "The top-level pipeline is the template the stages derive from and is never run whole: the memory stage builds one cache per group from that group's sources alone (ADR-0094)."
+    },
+    "features": {
+      "uses": "intraday_equities-session-features",
+      "inputs": {
+        "records": "$pooled.merged",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "lookback": 20,
+        "layout": "columns",
+        "dtype": "float32",
+        "cache_dir": "./pipeline_cache/p12-features-f32-v5",
+        "momentum_horizons": [
+          {"width": 3, "tag": "3m", "cross_session": false},
+          {"width": 120, "tag": "2h", "cross_session": true},
+          {"width": 180, "tag": "3h", "cross_session": true},
+          {"width": 780, "tag": "2s", "cross_session": true},
+          {"width": 1950, "tag": "1w", "cross_session": true}
+        ]
+      }
+    },
+    "scan": {
+      "uses": "intraday_equities-no-information-scan",
+      "inputs": {
+        "records": "$features.records",
+        "bars": "$features.tape",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
+        "val_start_ms": "$splits.val_start_ms",
+        "val_end_ms": "$splits.val_end_ms",
+        "label_scale": "vol",
+        "label_residual": "SPY",
+        "label_residual_self": "raw",
+        "fit_symbols": [
+          "ORCL", "GLD", "MRK", "CRM", "NEM", "XBI", "FCX", "FTNT", "DIS",
+          "DAL", "PYPL", "NRG", "GM", "MDT", "BA", "SBUX", "TGT", "ADM", "MET",
+          "TMUS", "MSTR", "MRVL", "NOW", "LULU", "SHOP", "PANW", "GDX", "BABA",
+          "INTC", "MU", "CIEN", "WDC", "LRCX", "TER", "BIDU", "LITE", "C",
+          "ADBE", "ANET", "EOG"
+        ],
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 1,
+        "score_period_ms": 1800000,
+        "estimator": "lightgbm.LGBMRegressor",
+        "estimator_params": {
+          "n_estimators": 800,
+          "learning_rate": 0.005,
+          "num_leaves": 4,
+          "max_depth": 2,
+          "min_child_samples": 2000,
+          "reg_lambda": 100.0,
+          "reg_alpha": 0.1,
+          "subsample": 0.5,
+          "subsample_freq": 1,
+          "colsample_bytree": 0.3,
+          "n_jobs": 8,
+          "random_state": 0,
+          "verbosity": -1
+        }
+      }
+    }
+  },
+  "walkforward": {
+    "objective": "$scan.metrics.val_ic",
+    "select": "max",
+    "first": "2022-05-06",
+    "step_days": 63,
+    "count": 20,
+    "val_days": 63,
+    "embargo_days": 5,
+    "train_days": 730
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        },
+        "notes": "Local sqlite beside the invoking cwd."
+      }
+    ],
+    "notes": "Excluded from identity - where metrics land is not what it computes."
+  },
+  "outputs": {"run_root": "./pipeline_runs"},
+  "stages": {
+    "memory": {
+      "uses": "intraday_equities.modelability_study:MemoryPreflightStage",
+      "params": {
+        "memory_limit_bytes": 18253611008,
+        "groups": {
+          "d": {"universe": "configs/universe-p12-d.json", "sources": ["source_reference", "source_d"]},
+          "e": {"universe": "configs/universe-p12-e.json", "sources": ["source_reference", "source_e"]}
+        }
+      },
+      "notes": "One feature cache per group under the 17 GiB cap, groups declared largest-first: taking compressed bars on disk as a proxy for records, a single 41-name build would carry about 1.34x the P10 records that peaked at 15.90 GiB, while one group plus SPY carries about 0.68x (D) or 0.66x (E). The first build is measured through the seam's measure_one; a later build is capped but unmeasured (ADR-0093 allows one reading per process). Each group cache path is suffixed with its universe file's digest (ADR-0094)."
+    },
+    "gate1": {
+      "uses": "intraday_equities.modelability_study:Gate1Stage",
+      "inputs": {"preflight": "$memory.passed", "caches": "$memory.groups"},
+      "params": {
+        "horizons": [1, 2, 3, 5, 10, 20, 30, 60],
+        "attempt_registry": "docs/decisioning/attempts.jsonl",
+        "alpha": 0.05,
+        "architecture": "lgbm-tight-asset-local",
+        "data_cut": "2026-02-28"
+      },
+      "notes": "data_cut is the sources' end date, pinned by test to every source this document reads; the stage refuses to run as of any other date so the attempt ledger never records an invocation's --asof as the data's cut (ADR-0094)."
+    },
+    "gate3_walks": {
+      "uses": "intraday_equities.modelability_study:Gate3WalksStage",
+      "inputs": {
+        "gate1": "$gate1.rows",
+        "gate1_cells": "$gate1.cells",
+        "caches": "$memory.groups"
+      },
+      "params": {
+        "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+        "alpha": 0.05
+      }
+    },
+    "gate3": {
+      "uses": "intraday_equities.modelability_study:Gate3ResultStage",
+      "inputs": {
+        "gate1": "$gate1.rows",
+        "gate1_cells": "$gate1.cells",
+        "walks": "$gate3_walks.walks",
+        "draws": "$gate3_walks.draws"
+      },
+      "params": {
+        "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+        "alpha": 0.05
+      }
+    }
+  }
+}

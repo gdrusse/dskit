@@ -127,7 +127,8 @@ intraday_equities/
 │   ├── nodes.py         # bars, universe, features, H/L + no-info scan, portfolio
 │   ├── feature_cache.py # verified read-only feature-array cache
 │   ├── modelability.py  # staged P10 gate orchestration
-│   ├── modelability_p11.py # asset-local stopping + untouched confirmation
+│   ├── modelability_study.py # the asset-local study over any declared cohort (ADR-0094)
+│   ├── modelability_p11.py # P11: the frozen 25 as a pinned study
 │   ├── models.py        # empty bespoke-architecture seam
 │   ├── live.py          # paper intents from shipped configs
 │   └── testing.py       # network-free connector doubles

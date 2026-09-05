@@ -122,14 +122,19 @@ def _feature_cache_info(ctx):
             f"got {symbols!r}"
         )
     path = os.path.abspath(path)
-    digest = _file_sha256(manifest)
+    return declared, path, _verify_cache_once(path)
+
+
+def _verify_cache_once(path):
+    """Hash every array of one cache once per process; return its manifest digest."""
+    digest = _file_sha256(os.path.join(path, "manifest.json"))
     key = (path, digest)
     if key not in _VERIFIED_CACHES:
         from .feature_cache import verify_feature_cache
 
         verify_feature_cache(path, digest)
         _VERIFIED_CACHES.add(key)
-    return declared, path, digest
+    return digest
 
 
 def _base_key():

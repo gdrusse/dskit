@@ -123,7 +123,7 @@ def test_gate1_stops_on_first_failure_and_never_runs_or_registers_later(
     monkeypatch.setattr(
         p11,
         "_derived_document",
-        lambda _ctx, asset, horizon: SimpleNamespace(asset=asset, horizon=horizon),
+        lambda _ctx, asset, horizon, **_kw: SimpleNamespace(asset=asset, horizon=horizon),
     )
     monkeypatch.setattr(
         p11.p10,
@@ -152,7 +152,7 @@ def test_gate1_stops_on_first_failure_and_never_runs_or_registers_later(
             registered.append(key["horizon"])
             return f"cell-{key['horizon']}"
 
-    monkeypatch.setattr(p11, "AttemptRegistry", Registry)
+    monkeypatch.setattr(p11.study, "AttemptRegistry", Registry)
     out = stage.run(SimpleNamespace(), {"preflight": True})
     assert calls == [1, 2]
     assert registered == [1, 2]
@@ -389,7 +389,7 @@ def test_gate3_result_marks_a_stopped_asset_as_a_bounded_fail(monkeypatch):
         p11, "_score_one", lambda *_a: (_ for _ in ()).throw(AssertionError("scored"))
     )
     monkeypatch.setattr(
-        p11, "tier2_verdict", lambda *_a: (_ for _ in ()).throw(AssertionError("verdict"))
+        p11.study, "tier2_verdict", lambda *_a: (_ for _ in ()).throw(AssertionError("verdict"))
     )
     walks = {f"A:2:{seed}": f"walk-A-2-{seed}" for seed in range(3)}
     draws = {"A": {"stopped": True, "stop_seed": 2, "n_draws": 3}}
@@ -446,7 +446,7 @@ def test_gate3_result_scores_a_completed_family_exactly_as_before(monkeypatch):
         seen.append((observed, list(nulls), list(ts)))
         return {"passes": True, "beat_all": True}
 
-    monkeypatch.setattr(p11, "tier2_verdict", verdict)
+    monkeypatch.setattr(p11.study, "tier2_verdict", verdict)
     walks = {f"A:2:{seed}": f"walk-A-2-{seed}" for seed in range(19)}
     draws = {"A": {"stopped": False, "stop_seed": None, "n_draws": 19}}
     row = _result_stage().run(
@@ -498,7 +498,7 @@ def test_gate3_result_reads_each_survivors_own_draw_record(monkeypatch):
         seen.append((observed, list(nulls), list(ts)))
         return {"passes": True, "beat_all": True}
 
-    monkeypatch.setattr(p11, "tier2_verdict", verdict)
+    monkeypatch.setattr(p11.study, "tier2_verdict", verdict)
     walks = {f"A:2:{seed}": f"walk-A-2-{seed}" for seed in range(2)}
     walks.update({f"B:5:{seed}": f"walk-B-5-{seed}" for seed in range(19)})
     draws = {
@@ -597,9 +597,9 @@ def test_gate3_result_refuses_a_stop_record_whose_n_draws_denies_the_stop_seed(
         assert "n_draws" in str(error) and "stop_seed" in str(error)
     else:  # pragma: no cover - the assertion below reports it
         raise AssertionError("a stop record that denies its own seed was decided")
-    problems = p11._draw_problems("A", draw, list(range(19)))
+    problems = p11.study._draw_problems("A", draw, list(range(19)))
     assert len(problems) == 1 and "n_draws=19" in problems[0]
-    assert p11._draw_problems("A", {**draw, "n_draws": 3}, list(range(19))) == []
+    assert p11.study._draw_problems("A", {**draw, "n_draws": 3}, list(range(19))) == []
 
 
 def test_gate3_result_refuses_the_whole_cohort_before_the_first_row_is_decided(
@@ -618,7 +618,7 @@ def test_gate3_result_refuses_the_whole_cohort_before_the_first_row_is_decided(
         lambda summary, *_a: scored.append(summary) or {"r2oos": 0.0, "t_pool": 0.0},
     )
     monkeypatch.setattr(
-        p11, "tier2_verdict", lambda *args: verdicts.append(args) or {"passes": True}
+        p11.study, "tier2_verdict", lambda *args: verdicts.append(args) or {"passes": True}
     )
     walks = {f"A:2:{seed}": f"walk-A-2-{seed}" for seed in range(19)}
     draws = {
@@ -670,7 +670,7 @@ def test_the_walks_stages_own_draws_decide_the_result_stages_rows(monkeypatch):
         seen.append((observed, list(nulls), list(ts)))
         return {"passes": True, "beat_all": True}
 
-    monkeypatch.setattr(p11, "tier2_verdict", verdict)
+    monkeypatch.setattr(p11.study, "tier2_verdict", verdict)
     walks = p11.Gate3WalksStage("gate3_walks", {"seeds": list(range(19)), "alpha": 0.05})
     out = walks.run(SimpleNamespace(), {"gate1": gate1, "gate1_cells": cells})
     stopped, completed = _result_stage().run(

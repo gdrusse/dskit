@@ -60,6 +60,7 @@ __all__ = [
     "beat_all",
     "bonferroni_t",
     "cell_id",
+    "early_stop_p_bound",
     "expected_max_null",
     "implied_trials",
     "max_bar",
@@ -1113,6 +1114,43 @@ def beat_all(observed_r2, scrambled_r2):
     if not nulls or not all(number_ok(v) for v in nulls):
         raise ValueError("scrambled_r2 needs at least 1 finite value")
     return observed_r2 > max(float(v) for v in nulls)
+
+
+def early_stop_p_bound(n_draws):
+    """Bound the p-value of a null audit that stopped at its first exceedance.
+
+    Besag–Clifford stopping (ADR-0092): after ``n_draws`` completed
+    nulls, the last of which matched or beat the real result, the real
+    result ranks at best second among the ``n_draws + 1`` exchangeable
+    values, so its p-value is bounded by ``2 / (n_draws + 1)`` — never
+    zero, never a point value. The stopped row of every fail-fast audit
+    takes the number from here (ADR-0094).
+
+    Parameters
+    ----------
+    n_draws : int
+        Draws completed when the audit stopped, the stopping draw
+        included; at least 1.
+
+    Returns
+    -------
+    float
+        ``2 / (n_draws + 1)``.
+
+    Raises
+    ------
+    ValueError
+        When ``n_draws`` is not a positive int.
+
+    Examples
+    --------
+    Stopping on the third draw::
+
+        early_stop_p_bound(3)  # 0.5
+    """
+    if isinstance(n_draws, bool) or not isinstance(n_draws, int) or n_draws < 1:
+        raise ValueError(f"n_draws must be a positive int, got {n_draws!r}")
+    return 2 / (n_draws + 1)
 
 
 def tier2_verdict(observed_r2, scrambled_r2, scrambled_t=()):

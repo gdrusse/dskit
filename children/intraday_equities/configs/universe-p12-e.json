@@ -1,0 +1,41 @@
+{
+  "notes": "P12 group E: cohort E's twenty modelability-selected names (alpaca-sip-split-e) with SPY as the residual reference, on P10's exact grid, session, scale and horizon geometry (ADR-0094). This file bounds the group's cache build and every asset-local walk that reads that cache; the study's cohort itself is the document's fit_symbols. No industry block: an industry one-hot is constant inside an asset-local fit and a per-group vocabulary would give the two group caches different design matrices (ADR-0094); the labels live in docs/research/cohort-e-twenty-candidates-selected-for-modelability.md.",
+  "symbols": [
+    "MSTR", "MRVL", "NOW", "LULU", "SHOP", "PANW", "GDX", "BABA", "INTC", "MU",
+    "CIEN", "WDC", "LRCX", "TER", "BIDU", "LITE", "C", "ADBE", "ANET", "EOG",
+    "SPY"
+  ],
+  "tradable": [
+    "MSTR", "MRVL", "NOW", "LULU", "SHOP", "PANW", "GDX", "BABA", "INTC", "MU",
+    "CIEN", "WDC", "LRCX", "TER", "BIDU", "LITE", "C", "ADBE", "ANET", "EOG"
+  ],
+  "reference": ["SPY"],
+  "holidays": [],
+  "lookback": 30,
+  "max_gap_minutes": 5,
+  "period_ms": 300000,
+  "offset_ms": 0,
+  "price_field": "close",
+  "session": {
+    "tz": "America/New_York",
+    "rth_start_minutes": 570,
+    "rth_end_minutes": 960
+  },
+  "scales": [
+    {"width": 5, "tag": "5m", "cross_session": false},
+    {"width": 15, "tag": "15m", "cross_session": false},
+    {"width": 60, "tag": "60m", "cross_session": true},
+    {"width": 390, "tag": "1s", "cross_session": true},
+    {"width": 1170, "tag": "3s", "cross_session": true}
+  ],
+  "horizon": {
+    "lead_start": 1,
+    "lead_step": 1,
+    "lead_stop": 60,
+    "anchors": [1, 2, 3, 5, 10, 20, 30, 60],
+    "top_k": 8,
+    "se_mult": 2.0,
+    "band_leads": 8,
+    "label_lead": 1
+  }
+}
