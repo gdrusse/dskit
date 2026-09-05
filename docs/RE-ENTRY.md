@@ -1,6 +1,46 @@
 # Re-entry
 
-## Current wrap: child infrastructure
+## Current wrap: Gate 3 redesign (2026-09-05)
+
+Branch: `main`. Everything committed and pushed; merged feature branches
+purged. `claude/dskit-production-build-3g17vw` is another session's live
+work and was left alone.
+
+Landed: the Gate 3 null-design research doc, reviewed four rounds and merged
+with an independent revision that was already on `main`. Two ADRs, both
+skeptic-cleared and both still **proposed, awaiting owner approval**:
+
+- **ADR-0092** — Gate 3 stops at the first null exceedance (Besag–Clifford,
+  `h=1`, `B_max=19`). Same beat-all verdict; `E[draws | fail] = 2.73`, so
+  twelve failures and one passer cost ~52 walks against 247. Requires
+  extracting `beat_all` into `dskit/pipeline/attempts.py` and a `draws`
+  output on `Gate3WalksStage`. Calibration stays per-asset on completed
+  families.
+- **ADR-0093** — bounded parallel fold execution graduates from the child into
+  `dskit/pipeline/folds.py` as `BoundedFoldRunner` (seven rounds). Cap is
+  caller-supplied and never divided; `setrlimit`+`execv` shim, cap validated
+  in the parent with an `RLIM_INFINITY` guard; width from the environment;
+  `measure_one` owns the `RUSAGE_CHILDREN` contamination guard;
+  `single_fold_row`, `FOLD_FIELDS`/`FOLD_OPTIONAL_FIELDS`, and the driver
+  renames pin the fold-row shape.
+
+Shipped ahead of ADR-0093 (recorded there as the violation it is): the tape
+filter and a child-side fold pool in `modelability.py`. Measured on the
+recorded run: 3.40 s/fold, so today's gate is ~4.7 h; the tape filter is
+3.9% of a fold; concurrency is unmeasured. The pooled-null idea was rejected
+— `t_pool` is not location-pivotal (LLY's null centre is −0.37).
+
+Verification: child 278 passed; `tests/pipeline` 1,733 passed. Three
+pre-existing unrelated failures: the `run-pb-s01-h01-lgbm-cross.json` start
+pin, the `no-information-scan` conformance ImportError, and a root-only
+chmod test.
+
+**Next step (owner):** approve or amend ADR-0092/0093, then build under the
+TDD + skeptic loop. Nothing has been built. A new cohort (~40 stocks) wired
+through Gate 1 → Gate 3 needs its own ADR first: P11 pins `_ASSETS` to
+exactly 25.
+
+## Prior wrap: child infrastructure
 
 Branch: `main`.
 
