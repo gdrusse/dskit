@@ -451,6 +451,65 @@ def test_the_asset_fold_measures_the_largest_cached_asset_across_every_group(tmp
     assert seen["document"].pipeline["universe"].params["path"] == "configs/universe-p12-e.json"
 
 
+def test_the_measured_asset_fold_is_one_fold_at_the_last_cutoff_over_its_group_cache(tmp_path, monkeypatch):
+    # ADR-0093 allows ONE reading per process, so the fold it reads has to be
+    # the study's heaviest — the last cutoff, whose training window is the
+    # longest — and exactly one of them. Left at the template's own twenty
+    # folds the preflight would measure a job no gate ever runs.
+    ctx, _log = _memory_harness(tmp_path, monkeypatch, present={"d", "e"})
+    seen = {}
+
+    def measure(_ctx, document, tag):
+        seen["document"] = document
+        return f"/summary/{tag}", 7_000_000_000
+
+    monkeypatch.setattr(study.p10, "_measure_walk", measure)
+    out = _memory_stage().run(ctx, {})
+    template = ctx.document.walkforward
+    measured = seen["document"]
+    assert template.count == 20
+    assert measured.walkforward.count == 1
+    assert measured.walkforward.first == study.p10._last_first(template)
+    assert measured.walkforward.first != template.first
+    scan = measured.pipeline["scan"].params
+    lead = ctx.document.pipeline["scan"].params["lead_start"]
+    assert scan["fit_symbols"] == ["ORCL"] == scan["score_symbols"]
+    assert scan["lead_start"] == scan["lead_step"] == scan["lead_stop"] == lead
+    assert measured.pipeline["features"].params["path"] == out["groups"]["d"]["cache"]
+    assert measured.pipeline["features"].params["manifest_sha256"] == "d" * 64
+    assert measured.pipeline["universe"].params["path"] == "configs/universe-p12-d.json"
+
+
+def test_the_preflight_scores_the_one_row_of_the_walk_it_measured(tmp_path, monkeypatch):
+    # A peak is a reading of THIS study's fold only if the capped child
+    # actually produced the study's row; score_one is that check, and it is a
+    # hook so a pinned study routes the row its own way.
+    ctx, _log = _memory_harness(tmp_path, monkeypatch, present={"d", "e"})
+    stage = _memory_stage()
+    scored = []
+    monkeypatch.setattr(
+        stage,
+        "score_one",
+        lambda summary, asset, lead: scored.append((summary, asset, lead)) or {"r2oos": 0.0},
+    )
+    out = stage.run(ctx, {})
+    lead = ctx.document.pipeline["scan"].params["lead_start"]
+    assert scored == [(out["measured"]["summary_dir"], "ORCL", lead)]
+
+
+def test_the_preflight_propagates_the_refusal_of_the_row_it_measured(tmp_path, monkeypatch):
+    # Without the call the stage would report a passed preflight over a child
+    # that scored nothing at all, so the refusal has to reach run().
+    ctx, _log = _memory_harness(tmp_path, monkeypatch, present={"d", "e"})
+
+    def refuse(_summary, asset, lead, _alpha):
+        raise ValueError(f"expected one exact row for {asset}@{lead}")
+
+    monkeypatch.setattr(study, "_score_one", refuse)
+    with pytest.raises(ValueError, match="one exact row for ORCL@1"):
+        _memory_stage().run(ctx, {})
+
+
 def test_memory_builds_only_the_missing_group_and_measures_it(tmp_path, monkeypatch):
     ctx, log = _memory_harness(tmp_path, monkeypatch, present={"d"})
     out = _memory_stage().run(ctx, {})
@@ -610,19 +669,22 @@ def test_the_gates_refuse_a_fit_symbol_the_universe_does_not_list_as_tradable(
     obj = ctx.document.to_obj()
     obj["pipeline"]["scan"]["params"]["fit_symbols"] = ["ORCL", "ZZZ", "MSTR", "YYY"]
     ctx.document = PipelineDocument.from_obj(obj)
-    documents = []
+    # The caches are made to hold all four names, so placement cannot be what
+    # refuses them: the tradable branch is the only refusal left standing.
+    caches = _caches()
+    caches["d"]["symbols"] = ["ORCL", "ZZZ", "SPY"]
+    caches["e"]["symbols"] = ["MSTR", "YYY", "SPY"]
     monkeypatch.setattr(
         study,
         "asset_walk_document",
-        lambda *a, **kw: documents.append(a) or SimpleNamespace(),
+        lambda *a, **kw: pytest.fail("a walk was derived for a symbol the universe does not list as tradable"),
     )
     with pytest.raises(ValueError, match="tradable") as refusal:
-        gate1.run(ctx, {"preflight": True, "caches": _caches()})
+        gate1.run(ctx, {"preflight": True, "caches": caches})
     assert "ZZZ" in str(refusal.value) and "YYY" in str(refusal.value)
     walks = study.Gate3WalksStage("gate3_walks", stages["gate3_walks"]["params"])
     with pytest.raises(ValueError, match="tradable"):
-        walks.run(ctx, {"gate1": [], "gate1_cells": [], "caches": _caches()})
-    assert documents == []
+        walks.run(ctx, {"gate1": [], "gate1_cells": [], "caches": caches})
     # The residual reference is not tradable anywhere, which is why P11 —
     # whose cohort holds SPY — overrides the hook instead of inheriting it.
     assert "SPY" not in _raw("universe-p12.json")["tradable"]
@@ -791,3 +853,27 @@ def test_p11_stages_are_subclasses_of_the_study_and_keep_their_contract():
     )
     assert len(p11._ASSETS) == 25
     assert p11.Gate1Stage("gate1", {"assets": p11._ASSETS, "horizons": p11._HORIZONS, "attempt_registry": "x", "alpha": 0.05}).validate_inputs({"preflight": True}) == []
+
+
+def test_p11s_pinned_cohort_is_the_exemption_its_own_document_needs():
+    # SPY is one of P11's twenty-five fit symbols and universe-p10.json lists
+    # it under reference, not tradable, so the study's base cohort check would
+    # refuse the shipped P11 document outright. The pinned hook is what keeps
+    # the finished study runnable — not a stylistic override.
+    from intraday_equities import modelability_p11 as p11
+
+    source = str(CONFIGS / "run-p11-modelability.json")
+    ctx = SimpleNamespace(
+        document=load_document(source),
+        source_path=source,
+        run_dir=str(CHILD),
+        asof="2026-02-28",
+    )
+    assert "SPY" in ctx.document.pipeline["scan"].params["fit_symbols"]
+    assert "SPY" not in _raw("universe-p10.json")["tradable"]
+    stage = p11.Gate1Stage("gate1", _raw("run-p11-modelability.json")["stages"]["gate1"]["params"])
+    with pytest.raises(ValueError, match="tradable") as refusal:
+        study._StudyStage.cohort(stage, ctx)
+    assert "SPY" in str(refusal.value)
+    assert stage.cohort(ctx) == p11._ASSETS
+    assert len(stage.cohort(ctx)) == 25 and "SPY" in stage.cohort(ctx)
