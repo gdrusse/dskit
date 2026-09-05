@@ -19,6 +19,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from dskit.pipeline.document import PipelineDocument, load_document
 from dskit.pipeline.folds import BoundedFoldRunner
 
@@ -426,6 +428,50 @@ def test_the_preflight_walk_is_named_for_the_staged_document(tmp_path, monkeypat
     assert names[0] != names[1], "the preflight name is study-identity-blind"
     assert [digest[:8] in name for digest, name in zip(hashes, names)] == [True, True]
     assert first["summary_dir"] != second["summary_dir"]
+
+
+def _cache(path):
+    """Write a two-symbol feature cache and return its manifest digest."""
+    import numpy as np
+
+    from intraday_equities.feature_cache import write_feature_cache
+
+    frames = []
+    tapes = []
+    for symbol in ("ORCL", "SPY"):
+        frames.append({
+            "symbol": symbol,
+            "asof_ms": np.array([1], dtype=np.int64),
+            "close": np.array([1.0], dtype=np.float32),
+            "names": ["a"],
+            "X": np.array([[1.0]], dtype=np.float32),
+        })
+        tapes.append({
+            "symbol": symbol,
+            "asof_ms": np.array([1], dtype=np.int64),
+            "close": np.array([1.0], dtype=np.float32),
+            "price_field": "close",
+        })
+    return write_feature_cache(
+        str(path), {"records": frames, "tape": tapes}, {"spec": {}, "params": {}}
+    )
+
+
+def test_verify_cache_once_hashes_every_array_and_refuses_a_corrupted_one(tmp_path):
+    # The once-per-process verification is what stands between a bit-rotted
+    # array and every derived fold that memory-maps it; the manifest digest
+    # alone cannot see a changed .npy.
+    clean = tmp_path / "clean"
+    digest = _cache(clean)
+    assert modelability._verify_cache_once(str(clean)) == digest
+    corrupt = tmp_path / "corrupt"
+    _cache(corrupt)
+    array = corrupt / "ORCL.features.X.npy"
+    raw = bytearray(array.read_bytes())
+    raw[-1] ^= 0xFF
+    array.write_bytes(bytes(raw))
+    with pytest.raises(ValueError, match="digest"):
+        modelability._verify_cache_once(str(corrupt))
 
 
 def test_p10_config_freezes_the_exact_fit_and_new_source_universe():

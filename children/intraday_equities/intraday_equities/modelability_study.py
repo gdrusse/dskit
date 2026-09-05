@@ -47,6 +47,8 @@ __all__ = [
 _MS_PER_MINUTE = 60_000
 _BARS_KIND = "intraday_equities-bars"
 _GROUP_KEY_OK = "abcdefghijklmnopqrstuvwxyz0123456789_"
+# Only labels the preflight's one scored row; no selection is decided here.
+_PREFLIGHT_ALPHA = 0.05
 
 
 # --------------------------------------------------------------- the document
@@ -125,24 +127,11 @@ def _place(cohort, caches):
 
 
 def _tape_symbols(asset, residual):
-    """Name the only tapes an asset-local walk reads.
-
-    Parameters
-    ----------
-    asset : str
-        The one symbol the walk fits and scores.
-    residual : str or None
-        The scan's declared ``label_residual`` reference symbol, read
-        from the document rather than restated here: a second copy of
-        ``"SPY"`` would silently drop the reference tape the moment the
-        config named a different one, and only for the assets that are
-        not themselves the residual.
-
-    Returns
-    -------
-    list of str
-        The asset, plus the residual when it is a different symbol.
-    """
+    """Name the only tapes an asset-local walk reads."""
+    # The residual is read from the document rather than restated here: a
+    # second copy of "SPY" would silently drop the reference tape the moment
+    # the config named a different one, and only for the assets that are not
+    # themselves the residual.
     if residual is None or residual == asset:
         return [asset]
     return [asset, residual]
@@ -276,8 +265,9 @@ def cache_build_document(document, group, sources, universe, cache_dir, cutoff):
     Raises
     ------
     ValueError
-        When a source key is unknown or not a bars node, or when the
-        document declares no ``label_residual``.
+        When a source key is unknown or not a bars node, when two
+        sources name one pooled input, or when the document declares
+        no ``label_residual``.
 
     Examples
     --------
@@ -305,7 +295,18 @@ def cache_build_document(document, group, sources, universe, cache_dir, cutoff):
         node["params"] = {**node["params"], "universe": universe}
         pipeline[key] = node
     pooled = dict(original["pooled"])
-    pooled["inputs"] = {key.replace("source_", "", 1): f"${key}.records" for key in sources}
+    # The input name is the node key less its "source_" prefix, so two
+    # distinct bars nodes can collapse onto one name and drop a cohort.
+    inputs = {}
+    for key in sources:
+        name = key.replace("source_", "", 1)
+        if name in inputs:
+            raise ValueError(
+                f"group {group!r} sources {sources} name one pooled input "
+                f"{name!r} twice; each source must reach the concat separately"
+            )
+        inputs[name] = f"${key}.records"
+    pooled["inputs"] = inputs
     pipeline["pooled"] = pooled
     features = dict(original["features"])
     features["params"] = {**features["params"], "cache_dir": cache_dir}
@@ -488,8 +489,17 @@ class _StudyStage(Stage):
     """The hooks every study stage shares; a pinned study overrides them."""
 
     def cohort(self, ctx):
-        """Return the ordered cohort: the document's ``fit_symbols``."""
-        return _document_cohort(ctx.document)
+        """Return the ordered cohort: the document's tradable ``fit_symbols``."""
+        cohort = _document_cohort(ctx.document)
+        path = ctx.document.pipeline["universe"].params["path"]
+        tradable = _universe_spec(ctx, path).get("tradable") or []
+        outside = [symbol for symbol in cohort if symbol not in tradable]
+        if outside:
+            raise ValueError(
+                f"fit symbol(s) {outside} are not tradable in {path}; the "
+                "study fits only names its own universe lists as tradable"
+            )
+        return cohort
 
     def study(self, ctx):
         """Return the study name derived documents and tags start with."""
@@ -596,18 +606,34 @@ class MemoryPreflightStage(Stage):
             groups[group] = entry
         if measured is None:
             measured = self._measure_asset_fold(ctx, groups)
-        peak = measured["peak_rss_bytes"]
-        if peak >= self.params["memory_limit_bytes"]:
-            raise MemoryError(
-                f"preflight peak {peak!r} is not strictly below "
-                f"{self.params['memory_limit_bytes']}"
-            )
+        self.refuse_over_limit(measured["peak_rss_bytes"])
         return {
             "groups": groups,
             "measured": measured,
             "limit_bytes": self.params["memory_limit_bytes"],
             "passed": True,
         }
+
+    def measure_document(self, ctx, document, asset, lead, tag):
+        """Measure one capped child walk and score the single row it must produce."""
+        summary, peak = p10._measure_walk(ctx, document, tag)
+        self.score_one(summary, asset, lead)
+        return {
+            "kind": "asset_fold",
+            "name": asset,
+            "summary_dir": summary,
+            "peak_rss_bytes": peak,
+        }
+
+    def score_one(self, summary, asset, lead):
+        """Score the measured walk's one row; a pinned study routes it its own way."""
+        return _score_one(summary, asset, lead, _PREFLIGHT_ALPHA)
+
+    def refuse_over_limit(self, peak):
+        """Refuse a measured peak that is not strictly below the declared cap."""
+        limit = self.params["memory_limit_bytes"]
+        if peak >= limit:
+            raise MemoryError(f"preflight peak {peak!r} is not strictly below {limit}")
 
     def _group(self, ctx, group, spec, declared, expected, measured):
         """Reuse or build one group cache; return its entry and the reading."""
@@ -675,14 +701,7 @@ class MemoryPreflightStage(Stage):
         obj["walkforward"]["count"] = 1
         document = PipelineDocument.from_obj(obj)
         tag = f"{ctx.document.name}-memory-{asset.lower()}"
-        summary, peak = p10._measure_walk(ctx, document, tag)
-        _score_one(summary, asset, lead, 0.05)
-        return {
-            "kind": "asset_fold",
-            "name": asset,
-            "summary_dir": summary,
-            "peak_rss_bytes": peak,
-        }
+        return self.measure_document(ctx, document, asset, lead, tag)
 
 
 class Gate1Stage(_StudyStage):

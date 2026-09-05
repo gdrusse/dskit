@@ -296,6 +296,46 @@ def test_cache_build_document_refuses_a_source_that_is_not_a_bars_node_or_a_docu
         study.cache_build_document(PipelineDocument.from_obj(obj), "d", ["source_reference", "source_d"], "configs/universe-p12-d.json", "./c/d", "2025-08-15")
 
 
+def test_cache_build_document_refuses_two_sources_that_name_one_pooled_input(tmp_path):
+    # The pooled input name is the source key less its "source_" prefix,
+    # so two distinct bars nodes can collapse onto one input and silently
+    # drop a whole cohort from the cache the group builds.
+    ctx = _ctx(tmp_path)
+    obj = ctx.document.to_obj()
+    obj["pipeline"]["d"] = json.loads(json.dumps(obj["pipeline"]["source_d"]))
+    document = PipelineDocument.from_obj(obj)
+    with pytest.raises(ValueError, match="pooled input"):
+        study.cache_build_document(
+            document, "d", ["source_d", "d"],
+            "configs/universe-p12-d.json", "./c/d", "2025-08-15",
+        )
+
+
+# -- the scorer -----------------------------------------------------------------
+
+
+def test_score_one_refuses_a_walk_that_scored_anything_but_the_one_asset_row(monkeypatch):
+    row = {"series": "A", "lead": 2, "r2oos": 0.01}
+    scored = {"exact": True, "rows": [row]}
+    monkeypatch.setattr(
+        study,
+        "score_walk",
+        lambda summary, alpha, group: {"exact": scored["exact"], "rows": list(scored["rows"])},
+    )
+    assert study._score_one("/s", "A", 2, 0.05) == row
+    # A GROUP row beside the asset row: the asset filter still finds one.
+    scored["rows"] = [row, {"series": "GROUP", "lead": 2, "r2oos": 0.0}]
+    with pytest.raises(ValueError, match="one exact row"):
+        study._score_one("/s", "A", 2, 0.05)
+    scored["rows"] = [row, dict(row)]
+    with pytest.raises(ValueError, match="one exact row"):
+        study._score_one("/s", "A", 2, 0.05)
+    scored["rows"] = [row]
+    scored["exact"] = False
+    with pytest.raises(ValueError, match="one exact row"):
+        study._score_one("/s", "A", 2, 0.05)
+
+
 # -- the memory stage -----------------------------------------------------------
 
 
@@ -381,6 +421,36 @@ def test_memory_reuses_a_verified_cache_and_measures_an_asset_fold_when_nothing_
     assert out["passed"] is True
 
 
+def test_the_asset_fold_measures_the_largest_cached_asset_across_every_group(tmp_path, monkeypatch):
+    # The reading has to cover the heaviest fold in the study, so the
+    # choice is over every group's cached assets, not the first group's.
+    ctx, _log = _memory_harness(tmp_path, monkeypatch, present={"d", "e"})
+    sizes = {"MSTR": 500}
+
+    def largest(_path, assets):
+        best = max(assets, key=lambda asset: (sizes.get(asset, 1), asset))
+        return best, sizes.get(best, 1)
+
+    seen = {}
+
+    def measure(_ctx, document, tag):
+        seen["document"] = document
+        seen["tag"] = tag
+        return f"/summary/{tag}", 7_000_000_000
+
+    monkeypatch.setattr(study, "_largest_asset", largest)
+    monkeypatch.setattr(study.p10, "_measure_walk", measure)
+    out = _memory_stage().run(ctx, {})
+    assert out["measured"] == {
+        "kind": "asset_fold",
+        "name": "MSTR",
+        "summary_dir": f"/summary/{ctx.document.name}-memory-mstr",
+        "peak_rss_bytes": 7_000_000_000,
+    }
+    assert seen["document"].pipeline["features"].params["path"] == out["groups"]["e"]["cache"]
+    assert seen["document"].pipeline["universe"].params["path"] == "configs/universe-p12-e.json"
+
+
 def test_memory_builds_only_the_missing_group_and_measures_it(tmp_path, monkeypatch):
     ctx, log = _memory_harness(tmp_path, monkeypatch, present={"d"})
     out = _memory_stage().run(ctx, {})
@@ -450,9 +520,21 @@ def _caches():
     }
 
 
+def _admit(monkeypatch, symbols):
+    """Let a harness's fake cohort through the union universe's tradable list."""
+    spec = study._universe_spec
+
+    def admitted(ctx, path):
+        raw = spec(ctx, path)
+        return {**raw, "tradable": list(raw["tradable"]) + list(symbols)}
+
+    monkeypatch.setattr(study, "_universe_spec", admitted)
+
+
 def _gate1_harness(tmp_path, monkeypatch, passes):
     ctx = _ctx(tmp_path)
     monkeypatch.setattr(study, "_document_cohort", lambda _document: ["A", "B"])
+    _admit(monkeypatch, ["A", "B"])
     documents = []
     monkeypatch.setattr(
         study,
@@ -514,6 +596,38 @@ def test_gate1_refuses_a_failed_preflight_and_an_asset_without_a_cache(tmp_path,
         stage.run(ctx, {"preflight": True, "caches": {"d": {**_caches()["d"], "symbols": ["SPY"]}}})
 
 
+def test_the_gates_refuse_a_fit_symbol_the_universe_does_not_list_as_tradable(
+    tmp_path, monkeypatch
+):
+    # ADR-0094 §2: the cohort is graded, but a name the document's own
+    # universe does not list as tradable would be fitted against bars no
+    # group cache holds. Both gates refuse before deriving any walk.
+    stages = _raw("run-p12-modelability.json")["stages"]
+    gate1 = study.Gate1Stage("gate1", stages["gate1"]["params"])
+    declared = _raw("run-p12-modelability.json")["pipeline"]["scan"]["params"]["fit_symbols"]
+    assert gate1.cohort(_ctx(tmp_path)) == declared
+    ctx = _ctx(tmp_path)
+    obj = ctx.document.to_obj()
+    obj["pipeline"]["scan"]["params"]["fit_symbols"] = ["ORCL", "ZZZ", "MSTR", "YYY"]
+    ctx.document = PipelineDocument.from_obj(obj)
+    documents = []
+    monkeypatch.setattr(
+        study,
+        "asset_walk_document",
+        lambda *a, **kw: documents.append(a) or SimpleNamespace(),
+    )
+    with pytest.raises(ValueError, match="tradable") as refusal:
+        gate1.run(ctx, {"preflight": True, "caches": _caches()})
+    assert "ZZZ" in str(refusal.value) and "YYY" in str(refusal.value)
+    walks = study.Gate3WalksStage("gate3_walks", stages["gate3_walks"]["params"])
+    with pytest.raises(ValueError, match="tradable"):
+        walks.run(ctx, {"gate1": [], "gate1_cells": [], "caches": _caches()})
+    assert documents == []
+    # The residual reference is not tradable anywhere, which is why P11 —
+    # whose cohort holds SPY — overrides the hook instead of inheriting it.
+    assert "SPY" not in _raw("universe-p12.json")["tradable"]
+
+
 def test_gate1_refuses_to_run_as_of_any_date_but_its_data_cut(tmp_path, monkeypatch):
     ctx, stage, documents, _w, _r = _gate1_harness(tmp_path, monkeypatch, passes=lambda a, h: False)
     ctx.asof = "2026-03-01"
@@ -558,6 +672,7 @@ def _gate3_harness(tmp_path, monkeypatch, nulls):
     """Two survivors at different horizons: A (h2) and B (h5); C failed Gate 1."""
     ctx = _ctx(tmp_path)
     monkeypatch.setattr(study, "_document_cohort", lambda _document: ["A", "B", "C"])
+    _admit(monkeypatch, ["A", "B", "C"])
     documents = []
     monkeypatch.setattr(
         study,
@@ -653,14 +768,26 @@ def test_gate3_params_take_any_seed_list_but_refuse_a_malformed_one():
 def test_p11_stages_are_subclasses_of_the_study_and_keep_their_contract():
     from intraday_equities import modelability_p11 as p11
 
+    assert issubclass(p11.MemoryPreflightStage, study.MemoryPreflightStage)
     assert issubclass(p11.Gate1Stage, study.Gate1Stage)
     assert issubclass(p11.Gate3WalksStage, study.Gate3WalksStage)
     assert issubclass(p11.Gate3ResultStage, study.Gate3ResultStage)
+    assert p11.MemoryPreflightStage._PARAMS == ("assets", "memory_limit_bytes")
     assert p11.Gate1Stage._PARAMS == ("assets", "horizons", "attempt_registry", "alpha")
     assert p11.Gate3WalksStage._PARAMS == ("seeds", "alpha")
     assert p11.Gate3ResultStage._PARAMS == ("assets", "seeds", "alpha")
     assert p11.Gate1Stage.outputs == study.Gate1Stage.outputs == ("rows", "cells")
     assert p11.Gate3WalksStage.outputs == study.Gate3WalksStage.outputs == ("walks", "survivors", "draws")
     assert p11.Gate3ResultStage.outputs == study.Gate3ResultStage.outputs == ("rows",)
+    assert study.MemoryPreflightStage.outputs == ("groups", "measured", "limit_bytes", "passed")
+    assert p11.MemoryPreflightStage.outputs == (
+        "asset",
+        "feature_rows",
+        "summary_dir",
+        "peak_rss_bytes",
+        "limit_bytes",
+        "feature_cache_manifest_sha256",
+        "passed",
+    )
     assert len(p11._ASSETS) == 25
     assert p11.Gate1Stage("gate1", {"assets": p11._ASSETS, "horizons": p11._HORIZONS, "attempt_registry": "x", "alpha": 0.05}).validate_inputs({"preflight": True}) == []

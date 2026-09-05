@@ -19,11 +19,11 @@ walk tags. The loop bodies live in the study module, once.
 
 from __future__ import annotations
 
-from dskit.pipeline.stages import Stage, reject_unknown_params
+from dskit.pipeline.stages import reject_unknown_params
 
 from . import modelability as p10
 from . import modelability_study as study
-from .modelability_study import _largest_asset, _score_one
+from .modelability_study import _PREFLIGHT_ALPHA, _largest_asset, _score_one
 
 __all__ = [
     "Gate1Stage",
@@ -94,7 +94,7 @@ def _derived_document(ctx, asset, horizon, *, tag="gate1", scramble_seed=None):
     )
 
 
-class MemoryPreflightStage(Stage):
+class MemoryPreflightStage(study.MemoryPreflightStage):
     """Measure the largest asset under the frozen Gate-1 geometry.
 
     Parameters
@@ -131,6 +131,12 @@ class MemoryPreflightStage(Stage):
             problems.append(f"memory_limit_bytes must be exactly {_MEMORY_LIMIT}")
         return problems
 
+    def score_one(self, summary, asset, lead):
+        """Score the measured walk through P11's own module-level scorer."""
+        # The study's method would resolve the scorer in the study module;
+        # P11's tests fake it here, where P11's other seams are faked.
+        return _score_one(summary, asset, lead, _PREFLIGHT_ALPHA)
+
     def run(self, ctx, inputs):
         """Measure one capped Gate-1-shaped asset walk as the first child."""
         del inputs
@@ -143,20 +149,15 @@ class MemoryPreflightStage(Stage):
         document = _derived_document(
             ctx, asset, 1, tag=f"preflight-{ctx.document.hash[:8]}"
         )
-        summary, peak = p10._measure_walk(
-            ctx, document, f"p11-memory-{asset.lower()}"
+        measured = self.measure_document(
+            ctx, document, asset, 1, f"p11-memory-{asset.lower()}"
         )
-        if peak >= self.params["memory_limit_bytes"]:
-            raise MemoryError(
-                f"P11 preflight peak {peak!r} is not strictly below "
-                f"{self.params['memory_limit_bytes']}"
-            )
-        _score_one(summary, asset, 1, 0.05)
+        self.refuse_over_limit(measured["peak_rss_bytes"])
         return {
             "asset": asset,
             "feature_rows": rows,
-            "summary_dir": summary,
-            "peak_rss_bytes": peak,
+            "summary_dir": measured["summary_dir"],
+            "peak_rss_bytes": measured["peak_rss_bytes"],
             "limit_bytes": self.params["memory_limit_bytes"],
             "feature_cache_manifest_sha256": digest,
             "passed": True,

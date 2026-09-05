@@ -4867,9 +4867,11 @@ only the first.
    two fake `_derived_document` signatures accept the hooks' keyword
    arguments. The loop bodies — the ordered stop, the fail-fast audit, the
    stopped row — exist once. P10 (`modelability.py`, the pooled historical
-   study) is edited in one place: `_feature_cache_info` splits into the
-   generic once-per-process verification `_verify_cache_once(path)`, which
-   the study module imports, and the P10/P11 membership pin it keeps.
+   study) is edited in one place of substance — `_feature_cache_info`
+   splits into the generic once-per-process verification
+   `_verify_cache_once(path)`, which the study module imports, and the
+   P10/P11 membership pin it keeps — and one docstring, the private
+   `_run_bounded_walk` collapsed to the house one-liner.
 
 9. **A test asserts the estimand.** Over the shipped P12 document, every
    derived Gate-1 and Gate-3 walk for every declared asset fits and scores
