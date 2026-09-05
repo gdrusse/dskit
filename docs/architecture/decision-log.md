@@ -4522,8 +4522,10 @@ subprocesses against a process-global counter, not of any child, so the guard
 lives here. A caller keeps only its threshold and its choice of what to run,
 and owes one precondition: `measure_one` must be the first child this process
 reaps — a stage that calls it must have no spawning predecessor in the staged
-DAG. `measure_one` delegates to `run([argv], cwd, env)` under the instance's
-own cap, so it inherits the parent-side validation and the `spawn` hook.
+DAG. `measure_one` runs its one command through the serial path under the
+instance's own cap, after the same command and cap validation `run`
+applies, so it inherits the parent-side validation and the `spawn` hook
+and never builds a pool for a single command.
 `spawn`'s default raises `RuntimeError` carrying the output tail on a nonzero
 exit, as `_run_walk` does today; that raise is what lets `run` cancel the
 unstarted folds.
