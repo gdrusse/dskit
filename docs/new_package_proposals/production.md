@@ -337,7 +337,11 @@ brackets.
   make those atomic—so such races are recorded `unknown` and reconciled, never
   blindly retried. A native call must honor the bounded deadline; conformance
   uses a never-returning fake to prove timeout disables further sends.
-  `RiskVersion{economic_seq, executor_token, accounting_tokens}` changes on every
+  `RiskVersion{economic_seq, executor_token, accounting_tokens}`: `economic_seq`
+  advances on economic events only — an `authority_use` is a rights
+  reservation, not an economic one, and must not advance it, or every reduction
+  submit would fail step (7)'s exact-version recheck against the version its
+  own plan bound. It changes on every position
   reservation, order/fill/correction/balance/position or evidence update; a live
   adapter lacking monotonic source tokens refuses at plan. Eleven order statuses
   preserve terminality; every `OrderState` enforces
@@ -782,7 +786,8 @@ entry output.
   `Candidate{id, instrument, scope_keys}` values and extracts quotes from those
   immutable head outputs. Accounting takes the deduplicated union of the requirements the measures
   already returned per candidate scope key and snapshots against the quotes; only then does
-  `Proposer.proposals(head_outputs, candidates, account_state) -> list[Proposal]`
+  `Proposer.proposals(head_outputs, candidates, account_state, provenance)
+  -> list[Proposal]`
   construct an ordered proposal list. A proposal must preserve its candidate id, instrument
   and declared scope keys; missing/extra/changed keys or duplicate ids refuse.
   Candidate/scope derivation is release-bound proposer code and cannot depend on
@@ -924,8 +929,23 @@ non-finite number.
   quote_asof_ms, quote_digest, evidence_asof_ms, evidence_digest,
   provenance_digests, original, final, findings, gate_results, scope_verdict,
   risk_effect, risk_version, risk_state_digest, result}`;
+  `ReductionIntent{release_hash, request_id, index, proposal,
+  risk_state_digest, expires_ms}` — what a maker actually signs at
+  `flatten-request` time, and the only thing that can be signed then: a full
+  `Intent` names a `DecisionPlan` that will not exist until a later tick, an
+  `authority_id` the checker has not yet issued, and input/quote digests that
+  belong to a tick that has not run. `reduction_intent_digest =
+  canonical_hash(ReductionIntent)` over exactly those six fields in that
+  order; it is what the single-use right names, what `authority_use` reserves,
+  and what the leg carries into `ActPermit.intent_digest`. Step (5) builds the
+  full `Intent` from it plus this leg's plan and bindings, so the venue
+  receives an order whose economic content — instrument, side, quantity, limit
+  — is byte-identical to what was signed, while its tick-local bindings are
+  this tick's. That identity is the property D12 needs, and it is checkable:
+  `test_leg.py` rebuilds the `ReductionIntent` from the constructed `Intent`
+  and asserts the digest is unchanged.
   `ReductionPlan{release_hash, risk_state_digest, intents, intent_digests,
-  expires_ms}`;
+  expires_ms}` (its `intents` are `ReductionIntent`s);
   `ReductionAuthorization{authority_id, release_hash, request_id,
   intent_digests, expires_ms}`;
   `ActPermit{authority_id, decision_plan_digest, release_hash, intent_digest,
@@ -950,7 +970,14 @@ non-finite number.
   executor link/scope, health, breaker, rung, risk effect, authority, pending-control state and lease.
   Any change invalidates it. `valid_until_ms` is the nine-term minimum defined
   once in §5.13 step (6) and never restated here.
-- `EvidenceRequirement{measure, window_kind, window_arg, scope_key,
+- `intent_digest = canonical_hash(Intent minus client_ref, authority_id)` —
+  the exclusions matter: `client_ref` is derived *from* the digest on the
+  flatten path (D12), so including it would be circular, and `authority_id`
+  is assigned after the intent is built. `decision_plan_digest =
+  canonical_hash(DecisionPlan)` over its eighteen fields in declared order.
+  Both sit here beside `requirement_digest` because §5.16 binds them and a
+  digest without a stated recipe is not a binding.
+  `EvidenceRequirement{measure, window_kind, window_arg, scope_key,
   window_start_ms, window_end_ms, baseline_at_ms, include_working}` — what a
   `Measure` declares it needs before sizing, and the unit accounting snapshots
   against. `requirement_digest = canonical_hash(EvidenceRequirement)` over
@@ -1061,8 +1088,7 @@ non-finite number.
   inputs. `Arming.check_conjunction(safety.invocation)` is
   the single place D11's live conjunction is evaluated — document rung,
   `--armed`, `DSKIT_PRODUCTION_ARM`, a current unexpired arm and the release
-  hash must all agree; no caller re-derives it, and §5.13 step (3) calls it
-  rather than restating its terms.
+  hash must all agree; no caller re-derives it; §5.13 step (3) is the caller.
   `ApprovalVerifier(ABC).verify(canonical_bytes, proof, purpose) ->
   VerifiedPrincipal{id, proof_digest}`. It is resolved from the graded
   `document.arming.approval {uses, params}` object; params may name trust-root env vars
@@ -1556,8 +1582,8 @@ knob because D13 fixes the answer: query, never resend.
   transition_policy, submission_verifier}` — `invocation` is the frozen
   `Invocation{armed, env_release_hash, once, max_ticks}` that `__main__`
   builds from `--armed`, `DSKIT_PRODUCTION_ARM`, `--once` and `--max-ticks`;
-  without it `Arming.check_conjunction` (§5.6) is specified to be evaluated by
-  an object that cannot see two of its three inputs,, `Execution{executor, accounting, lease, resilience}`,
+  without it `Arming.check_conjunction` (§5.6) would be evaluated by an object
+  that cannot see two of its three inputs, `Execution{executor, accounting, lease, resilience}`,
   `Recording{ledger, state, inbox, reconciler, checkpoint, journal_hook,
   id_source}` — `state` is the `SeriesState` of §5.8.1, and it is a bundle
   member because six declared APIs take a `state_view` and nothing else could
@@ -1594,7 +1620,9 @@ knob because D13 fixes the answer: query, never resend.
   digests, risk effect/version/digest and scope verdict, then barrier it; a
   refusal terminalizes as `not_sent` without an intent;
   (5) append the canonical exact Intent serialized from that plan and barrier it;
-  (6) with `view = recording.state.snapshot()` and
+  (6) with `view = bindings.state.view` — the same view steps (4) and (5) bound,
+  never a fresh snapshot, so the plan, intent and permit agree the way §5.16
+  already requires of `AccountState` — and
   `breaker = safety.breaker.current(view)`,
   `permit = safety.authorities.for_origin(origin, breaker).mint(intent,
   plan, view)` — a table lookup on declared values, no rung test.
@@ -1647,7 +1675,10 @@ knob because D13 fixes the answer: query, never resend.
   computes them) · `evaluate(batch) -> head_outputs` ·
   `candidates(head_outputs) -> tuple[Candidate]` ·
   `quotes(head_outputs) -> QuoteSet` ·
-  `account(candidates, quotes, at_ms) -> AccountState` ·
+  `account(candidates, quotes, at_ms) -> (AccountState,
+  tuple[EvidenceRequirement])` — the requirement union is returned, not
+  discarded, because `LegPipeline.refresh` must call `Accounting.snapshot`
+  with it and cannot rebuild it from one proposal ·
   `propose(head_outputs, candidates, account, provenance) -> tuple[Proposal]`.
   `run` threads those values; a phase holds no scratch state between calls.
   After `account`, `run` assembles the `TickState` every guard receives —
@@ -1753,7 +1784,12 @@ procedure inside the loop.
   `reduction` is `None` for a model leg and otherwise carries the stored
   `Intent`, its digest and the single-use right being consumed; it is what
   makes "the digest the right names is the digest that reaches the venue"
-  checkable rather than aspirational.
+  checkable rather than aspirational: it holds `signed` (the
+  `ReductionIntent`), its digest, and the right being consumed.
+  **`execute-flatten`'s stored proposals join the candidate set** before
+  `Tick.account` runs, so their scope keys are in the requirement union and
+  their guards find the evidence they demand — without that a reduction leg
+  refuses for missing evidence, which is the opposite of what the path is for.
   **A reduction leg's bindings are assembled by `execute-flatten`'s cycle, not
   by `propose`**: its proposal comes from the stored `ReductionPlan`, and its
   `entry_batch`, `head_digest` and `quotes` are those of the tick the cycle
@@ -1764,10 +1800,14 @@ procedure inside the loop.
   step rebinds against. `release` and `rung` are members because step (3)
   re-evaluates release/runtime and the document rung, and steps (4)–(5) bind
   `release_hash` into the `DecisionPlan` and `Intent`.
-  `origin ∈ {model, reduction}` is where the leg's intent comes from, and it is
-  a declared value, not a mode: a model leg constructs its `Intent` at step (5),
-  a reduction leg carries the pre-signed one from its `ReductionPlan` so the
-  digest the single-use right names is the digest that reaches the venue.
+  `origin ∈ {model, reduction}` is where the leg's proposal comes from, and it
+  is a declared value, not a mode. Both origins construct their `Intent` at
+  step (5) — a pre-signed full `Intent` is impossible, since half its fields
+  name a plan and an authority that do not exist at signing time (§5.4). What
+  a reduction leg carries is the signed `ReductionIntent`, whose digest the
+  single-use right names; step (5) builds the full `Intent` around it and
+  `test_leg.py` asserts the rebuilt `ReductionIntent` digest still matches, so
+  the economic content that reaches the venue is the content that was signed.
   `run() -> LegResult` is **concrete and final** and walks `vocab.LEG_STEPS`, so
   "record before act" is enforced by the base rather than by convention inside
   eight methods. Each step returns what the next one and the records need,
@@ -1783,8 +1823,9 @@ procedure inside the loop.
   `plan(evaluation) -> DecisionPlan` (appends + barriers; `evaluation` carries
   the original and final proposals, every finding, the gate results and the
   scope verdict, which is how all eighteen `DecisionPlan` fields are reachable) ·
-  `intent(plan) -> Intent` (appends + barriers; returns the stored intent when
-  `origin` is `reduction`) ·
+  `intent(plan) -> Intent` (appends + barriers; for `origin == reduction` it
+  builds the `Intent` around `bindings.reduction.signed`, re-derives that
+  `ReductionIntent`'s digest and refuses if it moved) ·
   `authorize(intent, plan) -> Permit` ·
   `act(intent, permit) -> Ack` ·
   `fold(intent, permit, ack, findings) -> LegResult{result, leg_id, plan_id,
@@ -2052,11 +2093,12 @@ That collision is what let a leg be specified to read
 `schedule.max_venue_skew_ms` while holding a `Schedule` bundle with no such
 member. Throughout §5 a document read is always written
 `document.<section>.<key>` and a bundle read is always the bare member.
-`test_producers.py` enforces it by scanning **this document** — §5 through §7,
-the same fixture `test_vocab.py` already scans — and failing any
-`<colliding>.<key>` that is neither prefixed with `document.` nor a declared
-member of that bundle. The plan file is therefore a test fixture, and §8 lists
-it as one.
+The spelling rule is enforced on the *package source*, not on this document:
+`test_producers.py` fails a module that reads a document key without going
+through the `ServeDocument` object. A shipped test must not depend on a
+proposal file in `docs/`, which would make this document a permanent build
+artifact of the package; `check_plan.py` (§9.3) applies the same rule to the
+prose, and it is an authoring tool, not a test.
 
 **`DecisionPlan` — all eighteen fields.**
 
@@ -2098,9 +2140,13 @@ the applied `Arming` scope (§5.6);
 `safety_epoch_digest` over release/runtime, readiness, calendar, coverage and
 watermarks, input/quote/evidence/risk versions, executor link/scope, health,
 breaker, rung, risk effect, authority and pending-control state — which is why
-the `Authority` constructor takes ten collaborators and not three. The nine
-named above are the ones that come from neither the `Intent` nor the
-`DecisionPlan`; every remaining field is copied from one of those two, and
+the `Authority` constructor takes ten collaborators and not three.
+`intent_digest` is computed by the recipe in §5.4 over the `Intent` the leg
+just built; `decision_plan_digest` likewise over the `DecisionPlan` from step
+(4) — both are digests the permit binds, not fields it copies, which is why
+they need recipes and not sources. `instrument` is
+`intent.proposal.instrument`, one level down rather than a direct copy. Those
+three plus the nine named above are the ones that are not a plain copy; every remaining field is copied from one of those two, and
 `plan_id` is inherited from the `Permit` base. A count is deliberately not
 written here — `test_producers.py`'s completeness assertion is what keeps the
 row and `dataclasses.fields(ActPermit)` equal, and prose arithmetic in this
@@ -2124,12 +2170,12 @@ guard while nothing produced one. The records a step *reads* are walked too:
 | record | producer |
 |---|---|
 | `TickState{view, account, feed_status, feed_ages, calendar}` | assembled by `Tick.run` after the `account` phase (§5.13) and carried into each `LegBindings` |
-| `LegBindings` (13 fields) | assembled by `Tick.run` per proposal; `proposal`/`origin` from `propose`, `entry_batch`/`head_digest` from `read_entry`/`evaluate`, `quotes` from `quotes`, `state` the `TickState`, `release`/`rung` from the loop, ids from `recording.id_source` |
-| `Intent` (16 fields) | step 5; `client_ref` from `recording.id_source`, `created_ms` from `schedule.clock`, `release_hash` from `bindings.release`, `decision_plan_id`/`digest` from step 4, `proposal` the `LegEvaluation.final`, `authority_id` from `bindings.state.view.arming` for a model leg and from `bindings.reduction` for a reduction leg (`None` at shadow/paper, where no ordinary arm exists), `inputs_*`/`coverage_digest` from `bindings.entry_batch`, `quote_*` from `bindings.quotes`, and `evidence_*`/`risk_*` from `LegEvaluation.account` — the same one the plan binds |
+| `LegBindings` (13 fields) | assembled by `Tick.run` per proposal; `proposal`/`origin` from `propose` (or from `execute-flatten`'s stored plan when `origin == reduction`), `entry_batch`/`head_digest` from `read_entry`/`evaluate`, `quotes` from `quotes`, `state` the `TickState`, `requirements` the second return of `account`, `reduction` `None` for a model leg and otherwise the signed `ReductionIntent` + digest + right, `release`/`rung` from the loop, `tick_id`/`leg_id`/`leg_index` from `recording.id_source` |
+| `Intent` (16 fields) | step 5; `client_ref` from `recording.id_source`, `created_ms` from `schedule.clock`, `release_hash` from `bindings.release`, `decision_plan_id` from step 4 and `decision_plan_digest` by the §5.4 recipe over that plan, `proposal` the `LegEvaluation.final`, `authority_id` from `bindings.state.view.arming` for a model leg and from `bindings.reduction` for a reduction leg (`None` at shadow/paper, where no ordinary arm exists), `inputs_*`/`coverage_digest` from `bindings.entry_batch`, `quote_*` from `bindings.quotes`, and `evidence_*`/`risk_*` from `LegEvaluation.account` — the same one the plan binds |
 | `PolicyRequest` (8 fields) | assembled by the caller of `ActionPolicy.permits`: `operation` at the call site, `risk_effect` from `LegEvaluation`, `rung`/`origin` from `bindings`, `breaker`/`readiness` from `bindings.state.view`, `authority` from `bindings.state.view.arming` (model) or `bindings.reduction` (reduction), `health` from `observability.health` |
 | `LegEvaluation` (9 fields) | steps 1–3, threaded (`risk_effect` from step 2's `execution.accounting.classify`) |
 | `StateView` (14 fields) | `SeriesState.snapshot()` — every member is a projection of the fold and nothing else writes one |
-| `Proposal` | `Data.decider`'s `Proposer.proposals(head_outputs, candidates, state, provenance)`; the five provenance fields come from the `Provenance` the tick passes in, never stamped on afterwards |
+| `Proposal` | `Data.decider`'s `Proposer.proposals(head_outputs, candidates, state, provenance)`. The ten economic fields — `instrument`, `side`, `qty`/`notional`, `limit`, `tif`, `reference_price`, `exposure`, `confidence`, `prediction`, `baseline`, `expected_value`, `direction`, `expires_ms`, `extra` — are the proposer's own decision, read from the head outputs through its field map (`intent-rows`) or its target diff (`target-positions`); `id` is the `Candidate.id` it must preserve; the five provenance fields come from the `Provenance` the tick passes in, never stamped on afterwards |
 | `Provenance` (5 fields) | assembled by `Tick.run` from the `EntryBatch` (`read_entry`) and `QuoteSet` (`quotes`) |
 
 **The rule this table encodes.** A record field with no producer, a collaborator
@@ -2147,8 +2193,9 @@ rather than an attribute. Two assertions, and the second is what makes it bite:
 
 - **resolution** — every dotted path resolves by `getattr` chain against the
   built classes, so a renamed collaborator fails here;
-- **completeness** — for *every* dataclass in `records.py`, `state.py`,
-  `bundles.py`, `leg.py` and `loop.py`, `{field for (rec, field) in PRODUCERS if rec == R} ==
+- **completeness** — for every record **this table walks** (the twelve above;
+  extending the table extends the test, and that is the intended way to add
+  one), `{field for (rec, field) in PRODUCERS if rec == R} ==
   {f.name for f in dataclasses.fields(R)}`. A field added to a record without a
   producer fails; a producer naming a field that no longer exists fails.
 
@@ -2328,8 +2375,9 @@ tests/production/
 ├── test_purity.py         static + behavioural: stdlib + dskit.pipeline + dskit.onboarding + dskit.assets + self; journal function-import only;
 │                          no `mode ==` / `rung ==` branch in any module except compose.py
 ├── test_producers.py      PRODUCERS resolves by getattr chain against the built classes; and for every dataclass in
-│                          records.py/leg.py/loop.py its PRODUCERS keys equal dataclasses.fields() exactly — the
-│                          completeness half, which fails on a field added without a producer
+│                          every record §5.16 walks, PRODUCERS keys equal dataclasses.fields() exactly — the
+│                          completeness half, which fails on a field added without a producer; plus: no module reads a
+│                          document key except through ServeDocument
 ├── test_oop.py            §5.15 enforced: every seam ABC has ≥1 @abstractmethod and refuses instantiation; no member of a
 │                          registry-resolved family is instantiated by name outside its registry (composites such as
 │                          GuardChain, AlertRouter, Reconciler, the policies, Checkpoint, Tick and ServeLoop are exempt); ServeLoop/GuardChain/policies are never subclassed in-tree;
@@ -2657,7 +2705,7 @@ their own deterministic chain assertions.
 
 | phase | lands | model |
 |---|---|---|
-| 1 — foundation | every module in §8 not marked phase 2, including the full authority stack (`arming.py`, `coordination.py`, `readiness.py`, `LiveExecutor`, `LiveAuthority`, `ReductionAuthority`) and all four rungs; ADR-0091, all §7 verbs, README/AGENTS/CLAUDE, examples, skeleton, doc updates | tests: Opus · code: Fable · review: Opus |
+| 1 — foundation | every module in §8 not marked phase 2, including the full authority stack (`arming.py`, `coordination.py`, `readiness.py`, `LiveExecutor`, `LiveAuthority`, `ReductionAuthority`) and all four rungs; ADR-0091, every §7 verb not marked phase 2, README/AGENTS/CLAUDE, examples, skeleton, doc updates | tests: Opus · code: Fable · review: Opus |
 | 2 — evidence | `outcomes`, `report`, `replay` verb, outcome-readiness evidence, Outcome + Parity monitor families, DDM/ADWIN/JS/Linf, alert inhibition/silences/escalation/ack + sqlite state, systemd heartbeat, `libs/sqlite.py`, `libs/parquet.py`, `Signer`, the `approve` verb for `hold` | tests: Opus · code: Opus · review: Opus |
 | 2b — audit | classify the remaining registered `kinds_*.py` / `libs/*.py` classes for `serving_effect`, widening what a serve document may reference | Opus |
 | 3 — packs | `exchange_calendars`, `prometheus`/`opentelemetry` sinks, the stream seam, migrating onboarding packs onto `resilience.py` (own ADR) | Opus |
