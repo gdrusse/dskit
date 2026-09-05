@@ -589,6 +589,11 @@ class TickState:
         Per-key ages from this tick's ``coverage``.
     calendar : Calendar
         The schedule's calendar.
+    entry_batch : EntryBatch or None
+        The frozen batch this tick read (R20): the final gate rehashes it
+        in memory rather than rereading rows (§5.14). ``Tick.run`` always
+        supplies it; the default exists only for constructors that predate
+        the member.
 
     Examples
     --------
@@ -596,7 +601,7 @@ class TickState:
 
         state = TickState(view=fold.snapshot(), account=account, feed_status="live",
                           feed_ages=(FeedAge(key="INS1", age_ms=1_000, watermark_ms=0),),
-                          calendar=calendar)
+                          calendar=calendar, entry_batch=batch)
         state.view.breaker  # 'active'
     """
 
@@ -605,6 +610,7 @@ class TickState:
     feed_status: str
     feed_ages: tuple
     calendar: object
+    entry_batch: object = None
 
 
 # ---------------------------------------------------------------------------

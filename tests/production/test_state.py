@@ -896,9 +896,9 @@ def test_a_fresh_fold_starts_at_the_genesis_head_with_an_empty_view():
     assert (view.head_seq, view.head_hash) == (0, GENESIS_HASH)
 
 
-def test_tick_state_carries_five_members_and_no_rung():
+def test_tick_state_carries_six_members_and_no_rung():
     names = tuple(f.name for f in dataclasses.fields(TickState))
-    assert names == ("view", "account", "feed_status", "feed_ages", "calendar")
+    assert names == ("view", "account", "feed_status", "feed_ages", "calendar", "entry_batch")
     assert TickState.__dataclass_params__.frozen is True
     assert "rung" not in names
     assert not hasattr(TickState, "rung")
