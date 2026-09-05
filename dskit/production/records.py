@@ -1913,8 +1913,9 @@ class PolicyRequest(_Record):
         One of ``HEALTH_STATES``.
     readiness : str
         One of ``READINESS_VERDICTS``.
-    authority : str
-        One of ``AUTHORITY_ROLES``.
+    authority : str or None
+        One of ``AUTHORITY_ROLES``, or ``None`` when no authority is in force
+        (the request must be able to say so — D11 refuses such a submit).
     origin : str
         One of ``LEG_ORIGINS``.
     pending_control : bool
@@ -1936,7 +1937,7 @@ class PolicyRequest(_Record):
     breaker: str
     health: str
     readiness: str
-    authority: str
+    authority: str | None
     origin: str
     pending_control: bool
 
