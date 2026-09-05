@@ -89,10 +89,21 @@ constraint (4) names a half-built seam: `dskit/pipeline/kinds_report.py` expects
 `equity_curve` (`:1121`), and nothing in the repo produces any of them.
 The `accounting` seam in this proposal is *venue* accounting — positions,
 balances, fills, exposure — which is what guards and sizing require; it is a
-different thing. `report.py` (phase 2) covers attribution, calibration and
-drawdown, not TWR/MWR or the equity curve. This ADR neither fills that seam nor
-claims to, and §13's traceability row should be read accordingly. It wants its
-own ADR.
+different thing. `report.py` (phase 2) covers attribution, calibration and drawdown, not TWR/MWR
+or the equity curve, and this ADR does not fill the seam.
+
+**But phase 1 records what a later fill of that seam needs, because three of
+those inputs cannot be recovered afterwards.** TWR, MWR and
+`cumulative_contributions` all require the dated series of external cash
+flows, and `equity_curve` requires a periodic portfolio valuation. Neither
+survives in a design that folds only trading records: a deposit would be
+indistinguishable from profit, and a mark would exist only inside an
+`AccountState` that is never serialized. So phase 1 adds the `cash_flow`
+record, the `cash` break class that routes an unexplained balance delta into
+it instead of only halting, and `tick.nav`. That is the whole cost — one
+record kind, one break class, one field — and without it the seam could never
+be filled for any series already running. `trading_pnl` was already
+recoverable from `fill` and `outcome`; the other four now are too.
 
 ## 3. Design decisions
 
@@ -575,9 +586,10 @@ live arm. Same hole as `required_universe`, same fix.
   "lifecycle": {"cooling_off_s": 900, "shutdown_grace_s": 30},
   "readiness": {"checklist": "configs/readiness.json", "waivers": [], "valid_for_s": 86400},
   "heartbeat": {"every_s": 60, "in_degraded": false, "emitters": {"file": {"uses": "file"}}},
-  "alerts": {"sinks": {"ops": {"uses": "webhook", "params": {"url_env": "OPS_WEBHOOK_URL", "template": "slack", "timeout_s": 5}}},
-             "routes": [{"severity": "critical", "sinks": ["ops"]}, {"severity": "warning", "sinks": ["ops"]}],
-             "group_wait_s": 30, "repeat_interval_s": 14400, "rate_limit": {"max_per_hour": 20, "burst": 5}},
+  "alerting": {"sinks": {"ops": {"uses": "webhook"}},                 // GRADED: which sinks exist and HOW they deliver
+               "routes": [{"severity": "critical", "sinks": ["ops"]}, {"severity": "warning", "sinks": ["ops"]}],
+               "group_wait_s": 30, "repeat_interval_s": 14400, "rate_limit": {"max_per_hour": 20, "burst": 5}},
+  "alert_endpoints": {"ops": {"url_env": "OPS_WEBHOOK_URL", "template": "slack", "timeout_s": 5}},  // EXCLUDED: where it goes
   "placement": {"ledger_root": "./serve", "rotate": {"by": "day", "max_bytes": 268435456}, "log_dir": "./serve/logs"},
   "env": {"env_file": ".env", "require": ["OPS_WEBHOOK_URL"]}
 }
@@ -595,17 +607,19 @@ sections dropped — with one wrinkle a golden-identity test must respect: a
 section named in `NULLED_IDENTITY_SECTIONS` (today `("tracking",)`) is set to
 `None` and its key stays in the hash material rather than being removed
 (`base.py:226-238`). No production section is nulled, so all four excluded
-sections are genuinely dropped. `PRODUCTION_NON_IDENTITY_SECTIONS = ("alerts", "heartbeat",
+sections are genuinely dropped. `PRODUCTION_NON_IDENTITY_SECTIONS = ("alert_endpoints", "heartbeat",
 "placement", "env")`.
 
-**One known residual.** Excluding `alerts` wholesale means `alerts.routes`
-can be emptied under a live arm without a new release, silencing the paging path
-D17 treats as a safety control. Splitting the section — graded `routes` and
-severity map, excluded endpoint values — is the fix, and it is deliberately not
-made here: it changes the graded/excluded partition that §4.2 and
-`test_document.py` pin, and this proposal is not the place to move an identity
-boundary. It is recorded so the first implementer meets it as a decision rather
-than a surprise.
+**Why alerting is split in two.** Emptying `routes` under a live arm would
+silence the paging path D17 treats as a safety control, so alerting policy is
+graded: `routes`, `group_wait_s`, `repeat_interval_s`, `rate_limit`, **and the
+sink kinds** — switching a route's only sink from `webhook` to `memory`
+silences it exactly as effectively as emptying `routes`, so the delivery
+mechanism is policy, not placement. Only the endpoint values move to the
+excluded `alert_endpoints`: the env-var name holding the URL, the message
+template, the socket timeout. Every alert is ledgered regardless of delivery
+(§6's `alert` record carries per-sink outcomes), so the exposure this closes is
+latency of human awareness rather than loss of evidence.
 
 That recipe can only drop **whole top-level sections**, so the grammar is
 partitioned to suit it — this is the reason `durability`, `resilience`,
@@ -613,7 +627,7 @@ partitioned to suit it — this is the reason `durability`, `resilience`,
 `execution` or `health`. Every remaining section is graded: `series_id`, `rung`,
 `serving`, `feed`, `schedule`, `guards`, `execution`, `accounting`, `arming`,
 `coordination`, `reconcile`, `monitors`, `health`, `durability`, `resilience`,
-`lifecycle` and `readiness`. Seventeen graded sections plus four excluded plus
+`lifecycle`, `readiness` and `alerting`. Eighteen graded sections plus four excluded plus
 `name` and `notes` account for every key in §4.1; `validate` refuses a top-level
 key that is in neither list, so the partition cannot silently drift.
 
@@ -928,7 +942,7 @@ non-finite number.
   authority, origin, pending_control}` — what `Rule.veto` receives;
   `TickStart{tick_id, tick_at_ms, release_hash}`;
   `TickResult{tick_id, status, data_asof_ms, coverage_digest, inputs_digest, decision_plan_ids, legs, findings,
-  observed_at_ms, latency_ms, leg_latency_ms, refusal_reason, error,
+  observed_at_ms, nav, latency_ms, leg_latency_ms, refusal_reason, error,
   feed{status, acq_id,
   records_added, source_config_hash, required_keys_digest, watermarks_by_key,
   coverage_digest}}` — the `feed` block is a member because §6's `tick` record
@@ -1467,10 +1481,17 @@ resolves every pending ref through `executor.order(ref)` and compares open
 orders, balances and settlements; it compares fill-derived against venue
 positions only when `capabilities().positions == "venue"`, since against a
 `derived` executor that comparison is vacuous. Breaks are `timing | missing_in_ledger |
-missing_at_venue | quantity | price | fee | state | settlement`, with severity
+missing_at_venue | quantity | price | fee | state | settlement | cash`, with severity
 `info | warn | block`. `document.reconcile.on_mismatch` is the automatic policy and admits only
 `halt | refuse`; unknown venue
-orders are `external`, never silently made ours. `lookback_ms` bounds how far back fills and settlements are queried, since an
+orders are `external`, never silently made ours.
+A `cash` break is a balance delta no fill, settlement or fee explains — a
+deposit or withdrawal. It is the one break class with a resolution other than
+halt-or-refuse: `adopt` on a `cash` break appends a `cash_flow` record
+carrying the **amount and timestamp as values**, not merely the delta digest
+every other adoption records. That asymmetry is deliberate — a digest is
+enough to prove what was adopted, but returns cannot be computed from a hash,
+and this is the only moment the amount is knowable. `lookback_ms` bounds how far back fills and settlements are queried, since an
 open-orders endpoint cannot distinguish missing from recently closed. It runs
 before `READY` when `document.reconcile.on_start`, every `document.reconcile.every_s`
 thereafter, and always appends a `recon` record without synthesising a
@@ -1532,7 +1553,7 @@ break ids and release hash; after inspection it records the delta, crosses
   never constructor side effects.
 - `AlertRouter`: fingerprint dedup; `group_wait_s` [0, 600] default 30;
   `repeat_interval_s` [60, 86400] default 14400; per-severity routes; token-bucket
-  rate limit from `document.alerts.rate_limit{max_per_hour, burst}` (`critical` bypasses
+  rate limit from `document.alerting.rate_limit{max_per_hour, burst}` (`critical` bypasses
   the limit, not dedup); a bounded
   `queue.Queue` consumed by one worker thread; `put_nowait` overflow and every
   sink exception swallowed and counted (`alert_sink_failures_total`,
@@ -2284,8 +2305,10 @@ written here — `test_producers.py`'s completeness assertion is what keeps the
 row and `dataclasses.fields(ActPermit)` equal, and prose arithmetic in this
 section has been wrong three times.
 
-**`TickResult`.** `tick_id` from `recording.id_source`; `observed_at_ms` from
-`schedule.clock`; `status`,
+**`TickResult`.** `tick_id` from `recording.id_source`; `observed_at_ms` from `schedule.clock`; `nav` from the `account` phase's
+`AccountState` valued against the tick's `QuoteSet` (`null` when valuation was
+unavailable — a recorded fact, not a gap, since an equity curve with a hole in
+it must say so); `status`,
 `refusal_reason`, `error` from whichever phase refused; `data_asof_ms`,
 `coverage_digest`, `inputs_digest` and the seven-member `feed` block from
 `fetch`'s `FeedResult` and `read_entry`'s `EntryBatch`, which is why `feed` is
@@ -2352,7 +2375,7 @@ sha256-canonical idiom.
 |---|---|---|
 | `process` | start / stop / recovered | `event ∈ {start, stop, recovered}`, `series_id`, `release_hash`, `doc_hash`, `serving_hash`, `run_hash`, `artifact_digests`, `source_config_hash`, `runtime_fingerprint`, `rung`, `executor_kind`, `code_version`; stop adds `exit_code`. After its barrier, one journal row is written whose `notes` render the process id and final head in the D22 `production-v1` form |
 | `tick_start` | scheduled tick | `tick_id`, `tick_at_ms`, `release_hash` |
-| `tick` | terminal tick | `tick_id`, `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash, required_keys_digest, watermarks_by_key, coverage_digest}`, `inputs_digest`, `calendar`, `overrun_absorbed[]` (the tick instants this tick coalesced or skipped), `latency_ms{gate, verify_release, fetch, read_entry, coverage, evaluate, candidates, quotes, account, propose}` (one key per §5.13 `Tick` phase method, pinned by a test) and `leg_latency_ms` keyed by `vocab.LEG_LATENCY_BUCKETS` and summed over the tick's legs — `guard` spans §5.13.1 steps (1)–(3), `authorize` (4)–(6), `act` (7); step (8) records the outcome and is charged to the tick. These are spans over `LEG_STEPS`, not step names, which is why the two vocabularies are separate, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}` |
+| `tick` | terminal tick | `tick_id`, `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash, required_keys_digest, watermarks_by_key, coverage_digest}`, `inputs_digest`, `nav` (the marked portfolio value at this tick, in the document's reporting currency, or `null` when valuation was unavailable), `calendar`, `overrun_absorbed[]` (the tick instants this tick coalesced or skipped), `latency_ms{gate, verify_release, fetch, read_entry, coverage, evaluate, candidates, quotes, account, propose}` (one key per §5.13 `Tick` phase method, pinned by a test) and `leg_latency_ms` keyed by `vocab.LEG_LATENCY_BUCKETS` and summed over the tick's legs — `guard` spans §5.13.1 steps (1)–(3), `authorize` (4)–(6), `act` (7); step (8) records the outcome and is charged to the tick. These are spans over `LEG_STEPS`, not step names, which is why the two vocabularies are separate, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}` |
 | `decision` | tick (exactly one) | `tick_id`, `decision_plan_ids[]`, `decision_plan_digests[]`, `legs[]{leg_id, instrument, prediction, confidence, baseline, expected_value, reference_price, proposal, findings[], final, client_ref}` — `leg_id`, `findings[]`, `final` and `client_ref` are the leg's own; `proposal` carries the serialized final `Proposal`; every remaining field is copied from that `Proposal` (§5.4) under the same name — a no-op tick has `final: none` per leg or zero legs with `reason` |
 | `decision_plan` | proposal after complete pre-submit evaluation (barrier before proposal submit) | `plan_id`, entry/head/candidate provenance, original/final proposal, input/quote/evidence as-of+digests, `findings[]`, `gate_results[]`, scope verdict, `risk_effect`, `risk_version`, `risk_state_digest`, `result ∈ {submit, not_sent}` |
 | `intent` | proposal selected for possible submit | the canonical `records.Intent` value object; no second schema |
@@ -2363,6 +2386,7 @@ sha256-canonical idiom.
 | `authority_use` | consume/reserve one reduction right (barrier before authorization) | unique `(authority_id, reduction_intent_digest)`, `client_ref`, `reserved_at_ms`; recovery may reference this reservation but no second intent may |
 | `order_event` | executor/loop report | `client_ref`, `venue_ref`, `event ∈ {not_sent, ack, reject, fill, partial_fill, cancel, expire, replaced_by_venue, unknown, status}` — `replaced_by_venue` is observed only (D10); no executor verb initiates it, `status`, `venue_ts_ms`, `recv_at_ms`, `reason` |
 | `fill` | execution | the `Fill` record |
+| `cash_flow` | money entering or leaving the account other than by trading | `at_ms`, `currency`, `amount` (signed `Decimal`), `kind ∈ CASH_FLOW_KINDS`, `external` (true for a deposit or withdrawal, false for an interest or fee accrual the venue applied), `source ∈ {venue, operator}`, `evidence` (the balance delta and recon break it explains, or the operator's note) — **without this record an external deposit is indistinguishable from trading profit for the rest of the series' life**, because `StateView.balances` is a fold over trading records only. Nothing downstream can separate them later, so it is recorded when it happens or never |
 | `outcome` | label arrival / mark / correction | `leg_id`, `kind ∈ {settled, marked, voided, partial, corrected}`, `effective_at_ms`, `known_at_ms`, `value`, `weight`, `terminal`, `supersedes`, `source` |
 | `guard_state` | a guard hold or pause | `guard`, `scope_key`, `kind ∈ {hold, pause}`, `reason`, `held_until_ms`, `resume_at_ms`, `finding` — folded by `SeriesState` like breaker and arming, so a restart cannot resume a paused strategy early |
 | `readiness` | a `ready` evaluation | `release_hash`, `verdict ∈ READINESS_VERDICTS`, `items[]{item, required, evidence, waiver, passed}`, `readiness_digest`, `evaluated_at_ms`, `valid_until_ms` — the durable GO the action matrix reads and `ActPermit` binds; `ready` is the only verb that writes it |
@@ -2373,7 +2397,7 @@ sha256-canonical idiom.
 | `monitor` | verdict change / window close | `monitor`, `slice`, `window`, `statistic`, `threshold`, `status`, `provisional` |
 | `alert` | firing / resolved | the `Alert` record + per-sink outcomes |
 | `health` | transition | `from`, `to`, `cause`, `probe_evidence` |
-| `snapshot` | every N records | `at_seq`, `state_digest`, `state` (positions, open orders, pending refs, monitor states) |
+| `snapshot` | every N records | `at_seq`, `state_digest`, `state` — **every `StateView` member** (positions, working orders, pending refs, balances, decision history, breaker, arming, readiness, guard holds, reduction projection, pending control, risk version), since `Recovery` replays `SeriesState.apply` from the last snapshot forward and cannot restore a member the snapshot never carried |
 
 ## 7. CLI — `python -m dskit.production`
 
@@ -2423,6 +2447,7 @@ dskit/production/
 │                      WINDOW_KINDS (none|duration|count|calendar), CALENDAR_WINDOWS (session|day|event),
 │                      LEG_ORIGINS (model|reduction), GUARD_STATE_KINDS (hold|pause), PROCESS_EVENTS (start|stop|recovered),
 │                      ECONOMIC_ATTRS (positions|working|balances),
+│                      CASH_FLOW_KINDS (deposit|withdrawal|interest|fee|adjustment), CASH_FLOW_SOURCES (venue|operator),
 │                      READINESS_VERDICTS (go|no_go), METRIC_NAMES + METRIC_LABEL_VALUES (§5.11.1's tables live here,
 │                      not in metrics.py), BREAK_ORIGINS (ours|external),
 │                      AT_TIMES_RELATIVE, CALENDAR_WINDOWS, ON_MISMATCH, RECON_ACTIONS, TRIP_REASONS,
