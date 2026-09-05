@@ -1178,7 +1178,7 @@ class ReferenceStd(Threshold):
     ::
 
         threshold = ReferenceStd({"k": 2})
-        for statistic in (1.0, 2.0, 3.0):
+        for statistic in (1.0, 2.0, 1.5):
             threshold.breached(statistic, 10, 10)  # False, False, False
         threshold.breached(30.0, 10, 10)  # True
     """
