@@ -29,8 +29,16 @@ HORIZONS = {
     "run-action-60m.json": (3_600_000, 60),
 }
 ACTION_NODES = {
-    "universe", "alpaca", "session", "window", "grid", "tradable",
-    "train_rows", "val_rows", "qhat", "select",
+    "universe",
+    "alpaca",
+    "session",
+    "window",
+    "grid",
+    "tradable",
+    "train_rows",
+    "val_rows",
+    "qhat",
+    "select",
 }
 MODELABILITY_DOCS = {"run-p10-modelability.json", "run-p11-modelability.json"}
 MODELABILITY_SOURCES = {"alpaca-sip-split", "alpaca-sip-split-b", "alpaca-sip-split-c"}
@@ -81,8 +89,13 @@ def test_action_documents_share_cuts_and_ridge():
     for name in ACTION_DOCS[1:]:
         other = _raw(name)
         assert other["splits"] == first["splits"]
-        assert other["pipeline"]["qhat"]["params"] == first["pipeline"]["qhat"]["params"]
-        assert other["pipeline"]["select"]["params"] == first["pipeline"]["select"]["params"]
+        assert (
+            other["pipeline"]["qhat"]["params"] == first["pipeline"]["qhat"]["params"]
+        )
+        assert (
+            other["pipeline"]["select"]["params"]
+            == first["pipeline"]["select"]["params"]
+        )
         assert other["pipeline"]["select"]["inputs"]["tradable"] == "$universe.tradable"
 
 
@@ -136,8 +149,11 @@ def test_hstar_cv_series_walkforward_pins():
     assert scan_params["hpo_trials"] == 8
     assert scan_params["hpo_val_days"] == 63
     assert set(scan_params["hpo_space"]) == {
-        "num_leaves", "max_depth", "min_child_samples",
-        "learning_rate", "reg_lambda",
+        "num_leaves",
+        "max_depth",
+        "min_child_samples",
+        "learning_rate",
+        "reg_lambda",
     }
     feat = raw["pipeline"]["features"]["params"]
     assert feat["lookback"] == 0
@@ -145,17 +161,22 @@ def test_hstar_cv_series_walkforward_pins():
     assert [row["tag"] for row in extra] == ["3m", "2h", "3h", "2s", "1w"]
     industry = tuple(sorted(set((UNIVERSE.get("industry") or {}).values())))
     base = session_feature_names(
-        0, UNIVERSE["scales"], UNIVERSE["reference"], industry,
+        0,
+        UNIVERSE["scales"],
+        UNIVERSE["reference"],
+        industry,
     )
     assert len(base) == 46
     assert all(not name.startswith("ret_lag_") for name in base)
     names = _emit_feature_names(
-        0, UNIVERSE["scales"], UNIVERSE["reference"], industry, extra,
+        0,
+        UNIVERSE["scales"],
+        UNIVERSE["reference"],
+        industry,
+        extra,
     )
     assert len(names) == 66
-    assert raw["pipeline"]["scan"]["uses"] == (
-        "intraday_equities-no-information-scan"
-    )
+    assert raw["pipeline"]["scan"]["uses"] == ("intraday_equities-no-information-scan")
     assert "test_end_ms" not in json.dumps(raw["pipeline"]["scan"])
     document = load_document(_path("run-hstar-cv-series.json"))
     assert document.walkforward.fold_cutoffs()[-1] == "2025-09-29"
@@ -177,10 +198,14 @@ def test_horizon_models_labels_stop_at_the_cuts():
         assert params["train_end_ms"] == "$splits.train_end_ms"
         assert params["val_end_ms"] == "$splits.val_end_ms"
         assert "test_end_ms" not in params
-    session_cols = list(session_feature_names(
-        UNIVERSE["lookback"], UNIVERSE["scales"], UNIVERSE["reference"],
-        tuple(sorted(set((UNIVERSE.get("industry") or {}).values()))),
-    ))
+    session_cols = list(
+        session_feature_names(
+            UNIVERSE["lookback"],
+            UNIVERSE["scales"],
+            UNIVERSE["reference"],
+            tuple(sorted(set((UNIVERSE.get("industry") or {}).values()))),
+        )
+    )
     for key in ("ridge", "tree"):
         assert raw["pipeline"][key]["params"]["features"] == session_cols
         assert raw["pipeline"][key]["params"]["label"] == "y_next"
@@ -230,10 +255,14 @@ def test_hpo_documents_declare_their_trial_counts():
 def test_framework_pins_hl_keep_and_holdouts():
     raw = _raw("run-framework.json")
     keep = UNIVERSE["keep_features"]
-    derived = set(session_feature_names(
-        UNIVERSE["lookback"], UNIVERSE["scales"], UNIVERSE["reference"],
-        tuple(sorted(set((UNIVERSE.get("industry") or {}).values()))),
-    ))
+    derived = set(
+        session_feature_names(
+            UNIVERSE["lookback"],
+            UNIVERSE["scales"],
+            UNIVERSE["reference"],
+            tuple(sorted(set((UNIVERSE.get("industry") or {}).values()))),
+        )
+    )
     assert keep
     assert all(name in derived for name in keep)
     assert all(not name.startswith("ret_lag_") for name in keep)
@@ -244,9 +273,7 @@ def test_framework_pins_hl_keep_and_holdouts():
     assert pipe["label_train"]["params"]["lead"] == (
         "$universe.spec.horizon.label_lead"
     )
-    assert pipe["label_val"]["params"]["lead"] == (
-        "$universe.spec.horizon.label_lead"
-    )
+    assert pipe["label_val"]["params"]["lead"] == ("$universe.spec.horizon.label_lead")
     assert pipe["qhat"]["params"]["features"] == keep
     assert pipe["search"]["params"]["n_trials"] == 50
     assert pipe["search"]["params"]["objective"] == "$select.metrics.rank_ic"
@@ -294,8 +321,16 @@ def test_sources_and_suites_follow_the_universe():
 # NOT move any of these, because two copies of a cohort that can drift are
 # the defect this file exists to prevent.
 _COHORT_KEYS = (
-    "symbols", "tradable", "reference", "industry", "holidays",
-    "session", "period_ms", "offset_ms", "price_field", "max_gap_minutes",
+    "symbols",
+    "tradable",
+    "reference",
+    "industry",
+    "holidays",
+    "session",
+    "period_ms",
+    "offset_ms",
+    "price_field",
+    "max_gap_minutes",
 )
 
 
@@ -361,10 +396,14 @@ def test_sources_pin_the_same_one_minute_cohort():
     assert alpaca["start"] == "2016-01-01"
     assert alpaca["feed"] == "sip"
     assert alpaca["adjustment"] == "raw"
-    assert alpaca["storage"] == schwab["storage"] == {
-        "payload_codec": "gzip",
-        "observations_codec": "gzip",
-    }
+    assert (
+        alpaca["storage"]
+        == schwab["storage"]
+        == {
+            "payload_codec": "gzip",
+            "observations_codec": "gzip",
+        }
+    )
     check_config(AlpacaBars(), alpaca)
     check_config(SchwabBars(), schwab)
 
@@ -412,7 +451,8 @@ def test_suites_and_asset_model_validate():
 
 def _run_docs():
     return sorted(
-        name for name in os.listdir(CONFIGS)
+        name
+        for name in os.listdir(CONFIGS)
         if name.startswith("run-") and name.endswith(".json")
     )
 
@@ -580,28 +620,48 @@ def test_a_run_may_move_spacing_and_price_without_a_second_universe():
     )
 
     assert set(UNIVERSE_OVERRIDE_KEYS) == {
-        "period_ms", "offset_ms", "price_field",
+        "period_ms",
+        "offset_ms",
+        "price_field",
     }
     path = _path("universe.json")
-    assert Universe.validate_params({
-        "path": path,
-        "overrides": {"period_ms": 60_000, "price_field": "vwap"},
-    }) == []
+    assert (
+        Universe.validate_params(
+            {
+                "path": path,
+                "overrides": {"period_ms": 60_000, "price_field": "vwap"},
+            }
+        )
+        == []
+    )
     # The cohort keys stay in the cohort file.
-    problems = Universe.validate_params({
-        "path": path, "overrides": {"symbols": ["AAPL"]},
-    })
+    problems = Universe.validate_params(
+        {
+            "path": path,
+            "overrides": {"symbols": ["AAPL"]},
+        }
+    )
     assert problems and "cohort" in problems[0]
     # A price field the store cannot carry is a typo, not a knob.
-    assert Universe.validate_params({
-        "path": path, "overrides": {"price_field": "closing"},
-    })
+    assert Universe.validate_params(
+        {
+            "path": path,
+            "overrides": {"price_field": "closing"},
+        }
+    )
     # P1's grid: rows every minute, every cell judged every 30.
-    assert NoInformationScan.validate_params({
-        "split": "val",
-        "train_end_ms": 1, "val_start_ms": 2, "val_end_ms": 3,
-        "score_period_ms": 1_800_000,
-    }) == []
+    assert (
+        NoInformationScan.validate_params(
+            {
+                "split": "val",
+                "train_end_ms": 1,
+                "val_start_ms": 2,
+                "val_end_ms": 3,
+                "score_period_ms": 1_800_000,
+            }
+        )
+        == []
+    )
 
 
 # The scan knobs a P7 cell is ALLOWED to move. Everything else in the
@@ -609,16 +669,25 @@ def test_a_run_may_move_spacing_and_price_without_a_second_universe():
 # look-ahead — that is what makes the shortlist a model comparison
 # rather than a second grid (ADR-0072).
 _MODEL_BLOCK = {
-    "estimator", "estimator_params", "hpo_trials", "hpo_seed",
-    "hpo_val_days", "hpo_embargo_days", "hpo_space", "hpo_objective",
+    "estimator",
+    "estimator_params",
+    "hpo_trials",
+    "hpo_seed",
+    "hpo_val_days",
+    "hpo_embargo_days",
+    "hpo_space",
+    "hpo_objective",
 }
 
 
 def _p7_cells():
-    return tuple(sorted(
-        name for name in os.listdir(CONFIGS)
-        if name.startswith("run-p7-") and name.endswith(".json")
-    ))
+    return tuple(
+        sorted(
+            name
+            for name in os.listdir(CONFIGS)
+            if name.startswith("run-p7-") and name.endswith(".json")
+        )
+    )
 
 
 def test_the_p7_shortlist_moves_the_model_and_nothing_else():
@@ -674,10 +743,7 @@ def test_the_p7_nets_are_searched_where_the_old_nets_were_not():
     assert old["estimator_params"]["weight_decay"] == 0.0
     assert old["estimator_params"]["epochs"] == 30
 
-    nets = [
-        name for name in _p7_cells()
-        if "gru4" in name or "nlinear" in name
-    ]
+    nets = [name for name in _p7_cells() if "gru4" in name or "nlinear" in name]
     assert len(nets) == 7, nets
     for name in nets:
         params = _raw(name)["pipeline"]["scan"]["params"]
@@ -723,8 +789,13 @@ def test_the_p1_cell_differs_from_its_baseline_in_two_knobs_only():
     )
     assert cell["walkforward"] == base["walkforward"]
     for knob in (
-        "estimator", "estimator_params", "label_scale", "label_residual",
-        "lead_start", "lead_step", "lead_stop",
+        "estimator",
+        "estimator_params",
+        "label_scale",
+        "label_residual",
+        "lead_start",
+        "lead_step",
+        "lead_stop",
     ):
         assert (
             cell["pipeline"]["scan"]["params"][knob]

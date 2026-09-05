@@ -2,7 +2,7 @@
 
 P10's immutable cache and journal-backed runner are reused, but its pooled
 estimand is not. Each derived walk filters feature records before fitting;
-the full tape remains available only so non-SPY labels can retain their SPY
+each walk keeps only its own tape and the one its label declares as the
 residual reference. Gate 1 stops at the first failed ordered horizon, then
 flows directly to the whole-session refit audit in Gate 3.
 """
@@ -63,9 +63,31 @@ def _base_key(gate):
     }
 
 
-def _derived_document(
-    ctx, asset, horizon, *, tag="gate1", scramble_seed=None
-):
+def _tape_symbols(asset, residual):
+    """Name the only tapes an asset-local walk reads.
+
+    Parameters
+    ----------
+    asset : str
+        The one symbol the walk fits and scores.
+    residual : str or None
+        The scan's declared ``label_residual`` reference symbol, read
+        from the document rather than restated here: a second copy of
+        ``"SPY"`` would silently drop the reference tape the moment the
+        config named a different one, and only for the assets that are
+        not themselves the residual.
+
+    Returns
+    -------
+    list of str
+        The asset, plus the residual when it is a different symbol.
+    """
+    if residual is None or residual == asset:
+        return [asset]
+    return [asset, residual]
+
+
+def _derived_document(ctx, asset, horizon, *, tag="gate1", scramble_seed=None):
     """Build one asset-only derived walk without touching the full tape."""
     if asset not in _ASSETS:
         raise ValueError(f"P11 asset is outside the frozen cohort: {asset!r}")
@@ -78,7 +100,7 @@ def _derived_document(
     original = obj["pipeline"]
     scan = original["scan"]
     scan["inputs"]["records"] = "$asset_features.records"
-    scan["inputs"]["bars"] = "$features.tape"
+    scan["inputs"]["bars"] = "$reference_tape.records"
     params = scan["params"]
     params["lead_start"] = horizon
     params["lead_step"] = horizon
@@ -102,8 +124,19 @@ def _derived_document(
         "asset_features": {
             "uses": "filter",
             "inputs": {"records": "$features.records"},
+            "params": {"where": [{"field": "symbol", "op": "==", "value": asset}]},
+        },
+        "reference_tape": {
+            "uses": "filter",
+            "inputs": {"records": "$features.tape"},
             "params": {
-                "where": [{"field": "symbol", "op": "==", "value": asset}]
+                "where": [
+                    {
+                        "field": "symbol",
+                        "op": "in",
+                        "value": _tape_symbols(asset, params.get("label_residual")),
+                    }
+                ]
             },
         },
         "scan": scan,
@@ -182,9 +215,7 @@ class MemoryPreflightStage(Stage):
         del inputs
         _declared, cache_path, digest = p10._feature_cache_info(ctx)
         asset, rows = _largest_asset(cache_path, self.params["assets"])
-        document = _derived_document(
-            ctx, asset, 1, tag="preflight"
-        )
+        document = _derived_document(ctx, asset, 1, tag="preflight")
         summary, peak = p10._run_walk(
             ctx,
             document,
@@ -261,7 +292,9 @@ class Gate1Stage(Stage):
             for horizon in self.params["horizons"]:
                 document = _derived_document(ctx, asset, horizon)
                 summary = p10._run_bounded_walk(
-                    ctx, document, f"p11-gate1-{asset.lower()}-h{horizon:02d}"
+                    ctx,
+                    document,
+                    f"p11-gate1-{asset.lower()}-h{horizon:02d}",
                 )
                 skill = _score_one(summary, asset, horizon, self.params["alpha"])
                 key = {
@@ -303,9 +336,7 @@ class Gate1Stage(Stage):
                     "unrun_horizons": unrun,
                 }
             )
-        if {row["asset"] for row in rows} != set(_ASSETS) or len(rows) != len(
-            _ASSETS
-        ):
+        if {row["asset"] for row in rows} != set(_ASSETS) or len(rows) != len(_ASSETS):
             raise ValueError("Gate 1 did not emit the exact frozen 25 assets")
         return {"rows": rows, "cells": cells}
 

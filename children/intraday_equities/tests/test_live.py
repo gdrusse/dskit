@@ -33,12 +33,17 @@ def test_real_money_is_refused():
 def test_intents_read_the_train_document_tradable():
     import json
 
-    with open(os.path.join(CHILD_ROOT, "configs", "universe.json"), encoding="utf-8") as fh:
+    with open(
+        os.path.join(CHILD_ROOT, "configs", "universe.json"), encoding="utf-8"
+    ) as fh:
         tradable = json.load(fh)["tradable"]
     load_document(RUN_DOC)
     records = [
-        {"symbol": symbol, "asof_ms": 1_700_000_000_000 + i * 60_000,
-         "close": 100.0 + i}
+        {
+            "symbol": symbol,
+            "asof_ms": 1_700_000_000_000 + i * 60_000,
+            "close": 100.0 + i,
+        }
         for i in range(40)
         for symbol in tradable
     ]
