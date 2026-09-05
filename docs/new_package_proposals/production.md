@@ -276,7 +276,9 @@ brackets.
   runs. `reduce --proof` enters reducing but grants no submit authority.
   A verified `flatten-request --plan --proof` records a maker-signed
   `ReductionPlan` bound to the release, fresh risk version/digest, full canonical
-  intents/digests and a short expiry; duplicate intent digests refuse. It then
+  intents/digests and a short expiry; two entries whose `(instrument, side, qty, limit)` match refuse — the check is
+  over proposal content, not over `reduction_intent_digest`, which now includes
+  `index` and so differs for byte-identical proposals. It then
   barrier-transitions `active | halted → reducing` without submit authority.
   `approve-flatten --request --proof` requires a distinct checker and creates a
   `ReductionAuthorization` with one single-use right per named intent digest.
@@ -285,7 +287,7 @@ brackets.
   processes them in canonical order through the same sequential pre-submit
   gates as model intents. Each client reference is
   `H("flatten-v1", release_hash, reduction_request_id, zero_based_intent_index,
-  intent_digest)`, independent of CLI/process time, ledger sequence or retries.
+  reduction_intent_digest)`, independent of CLI/process time, ledger sequence or retries.
   Execution stops on the first refusal, expiry or ambiguous outcome; completed
   rights stay consumed and the writer revokes all unused rights after any partial
   result, requiring a new plan. Crash recovery queries the deterministic client
@@ -788,8 +790,8 @@ entry output.
   already returned per candidate scope key and snapshots against the quotes; only then does
   `Proposer.proposals(head_outputs, candidates, account_state, provenance)
   -> list[Proposal]`
-  construct an ordered proposal list. A proposal must preserve its candidate id, instrument
-  and declared scope keys; missing/extra/changed keys or duplicate ids refuse.
+  construct an ordered proposal list. A proposal must preserve its candidate's id and instrument, and the
+  candidate's declared scope keys are what its limits are measured over; missing/extra/changed keys or duplicate ids refuse.
   Candidate/scope derivation is release-bound proposer code and cannot depend on
   mutable account state.
   Candidate, quote and proposal construction may not rerun a node.
@@ -929,29 +931,56 @@ non-finite number.
   quote_asof_ms, quote_digest, evidence_asof_ms, evidence_digest,
   provenance_digests, original, final, findings, gate_results, scope_verdict,
   risk_effect, risk_version, risk_state_digest, result}`;
-  `ReductionIntent{release_hash, request_id, index, proposal,
-  risk_state_digest, expires_ms}` — what a maker actually signs at
+  `ReductionIntent{release_hash, request_id, index, candidate, proposal,
+  risk_state_digest, expires_ms}` — `candidate` is a full `Candidate`
+  (`id`, `instrument`, `scope_keys`) and is signed with the rest, because
+  scope keys live on the candidate and not on the proposal: without it a
+  reduction leg contributes nothing to `GuardChain.requirements`, accounting
+  snapshots no evidence for its scope, and every guard refuses for missing
+  evidence — the opposite of what the path exists to do. Signing it also means
+  the maker approves the scope the limits will be measured over, not just the
+  order. This is what a maker actually signs at
   `flatten-request` time, and the only thing that can be signed then: a full
   `Intent` names a `DecisionPlan` that will not exist until a later tick, an
   `authority_id` the checker has not yet issued, and input/quote digests that
   belong to a tick that has not run. `reduction_intent_digest =
-  canonical_hash(ReductionIntent)` over exactly those six fields in that
-  order; it is what the single-use right names, what `authority_use` reserves,
-  and what the leg carries into `ActPermit.intent_digest`. Step (5) builds the
+  canonical_hash(ReductionIntent)` over exactly those seven fields in that
+  order. **It is a different hash of a different object from `intent_digest`,
+  and the two are never spelled the same way.** `reduction_intent_digest` is
+  what the maker signs, what the single-use right names, what `authority_use`
+  reserves, and what the flatten `client_ref` derives from; `intent_digest` is
+  the hash of the full `Intent` the leg builds at step (5). `ActPermit` binds
+  **both** — `intent_digest` always, and `reduction_right_digest` (the
+  `reduction_intent_digest` of the right being consumed, `None` for a model
+  leg) — because the verifier must recompute the first to prove the order is
+  the one planned and match the second to prove the right authorises it. Step (5) builds the
   full `Intent` from it plus this leg's plan and bindings, so the venue
   receives an order whose economic content — instrument, side, quantity, limit
   — is byte-identical to what was signed, while its tick-local bindings are
   this tick's. That identity is the property D12 needs, and it is checkable:
-  `test_leg.py` rebuilds the `ReductionIntent` from the constructed `Intent`
-  and asserts the digest is unchanged.
-  `ReductionPlan{release_hash, risk_state_digest, intents, intent_digests,
-  expires_ms}` (its `intents` are `ReductionIntent`s);
+  `test_leg.py` rebuilds the `ReductionIntent` using `release_hash`, `candidate`
+  and `proposal` **from the constructed `Intent`** and `request_id`, `index`,
+  `expires_ms` and `risk_state_digest` from `bindings.reduction.signed` — the
+  last four are not `Intent` fields and cannot be recovered from one — then
+  asserts `reduction_intent_digest` is unchanged. That pins **economic content
+  and scope**, which is the property claimed and the only one this check
+  establishes.
+  `ReductionIntent.risk_state_digest` is deliberately **not** re-verified at
+  execution: positions move legitimately as earlier legs of the same plan
+  fill, so requiring it to match would make every multi-intent plan fail after
+  its first leg. It records the state the maker inspected, and
+  `Accounting.classify` refusing anything that is not a proven reduction is
+  what defends the gap — stated here rather than left as an unexamined
+  binding.
+  `ReductionPlan{release_hash, risk_state_digest, intents,
+  reduction_intent_digests, expires_ms}` (its `intents` are `ReductionIntent`s);
   `ReductionAuthorization{authority_id, release_hash, request_id,
-  intent_digests, expires_ms}`;
+  reduction_intent_digests, expires_ms}`;
   `ActPermit{authority_id, decision_plan_digest, release_hash, intent_digest,
   client_ref, instrument, risk_effect, inputs_asof_ms, inputs_digest,
   coverage_digest, quote_asof_ms, quote_digest, evidence_asof_ms,
-  evidence_digest, authority_scope_digest, risk_version, risk_state_digest,
+  evidence_digest, authority_scope_digest, reduction_right_digest,
+  risk_version, risk_state_digest,
   readiness_digest, readiness_until_ms, lease_scope, fencing_token,
   safety_epoch_digest, valid_until_ms, checked_at_ms}`.
   `Permit` is a frozen dataclass base — deliberately NOT a seam ABC, so the
@@ -970,10 +999,12 @@ non-finite number.
   executor link/scope, health, breaker, rung, risk effect, authority, pending-control state and lease.
   Any change invalidates it. `valid_until_ms` is the nine-term minimum defined
   once in §5.13 step (6) and never restated here.
-- `intent_digest = canonical_hash(Intent minus client_ref, authority_id)` —
-  the exclusions matter: `client_ref` is derived *from* the digest on the
-  flatten path (D12), so including it would be circular, and `authority_id`
-  is assigned after the intent is built. `decision_plan_digest =
+- `intent_digest = canonical_hash(Intent minus client_ref)` — `client_ref` is
+  excluded because on the flatten path it derives from
+  `reduction_intent_digest` and on the model path from the release/tick/leg
+  tuple, so it is an identifier of the intent rather than part of it;
+  `authority_id` **is** included, since two intents authorised under different
+  arms must not hash alike. `decision_plan_digest =
   canonical_hash(DecisionPlan)` over its eighteen fields in declared order.
   Both sit here beside `requirement_digest` because §5.16 binds them and a
   digest without a stated recipe is not a binding.
@@ -1280,7 +1311,10 @@ deadline invalidates the local permit without waiting for nominal expiry.
   idempotent only when both `request_id` and payload digest match; reuse with a
   different payload refuses. If no serve process owns the
   lock, non-executing commands may acquire it and run the same `CommandProcessor`
-  synchronously. `execute-flatten` requires an active ready loop.
+  synchronously. `execute-flatten` requires an active ready loop, and is moved to `applied` when
+  its cycle is *queued*, not when it completes — otherwise the pending-control
+  gate of §5.8 would block the cycle's own first leg. The in-flight cycle's
+  durable marker is its `authority_use` reservations.
 - `halt` additionally creates the out-of-band `HALT` sentinel atomically
   before queueing its audit command. The loop and its independent control worker
   poll that sentinel at subsecond cadence; the worker only sets an in-process
@@ -1603,8 +1637,11 @@ knob because D13 fixes the answer: query, never resend.
   `gate`, `verify_release` (content/runtime hashes plus artifact age), `fetch`,
   `read_entry`, `coverage` (exact required keys, per-key source and oldest
   watermark), `evaluate`, `candidates`, `quotes`, `account`, and
-  `propose`. Proposals are sorted by stable candidate id and never
-  pre-authorized as a batch. For each proposal the tick constructs a `LegPipeline` (§5.13.1) and runs it;
+  `propose`. Model proposals are sorted by stable candidate id and never pre-authorized as a
+  batch. A reduction cycle is its own tick: it carries only the plan's legs, in
+  maker-approved `index` order, never interleaved with model legs — which is
+  what makes D12's "execution stops on the first refusal" mean the plan's own
+  order rather than a candidate-id sort. For each proposal the tick constructs a `LegPipeline` (§5.13.1) and runs it;
   the eight steps below are that class's methods, not prose inside the loop.
   Strictly sequentially:
   (1) run ordinary guards and any monotone amendment;
@@ -1672,7 +1709,9 @@ knob because D13 fixes the answer: query, never resend.
   `coverage(batch) -> tuple[FeedAge]` (refuses on any gap, and returns the
   per-key ages — `clock.now_ms()` minus each `EntryBatch.watermarks_by_key`
   entry — because `feed_age_ms` is a registered measure and nothing else
-  computes them) · `evaluate(batch) -> head_outputs` ·
+  computes them) · `evaluate(batch) -> (head_outputs, head_digest)` — the digest
+  is returned, not reconstructed, because `head_outputs` never leaves the tick
+  and `DecisionPlan.provenance_digests` requires it ·
   `candidates(head_outputs) -> tuple[Candidate]` ·
   `quotes(head_outputs) -> QuoteSet` ·
   `account(candidates, quotes, at_ms) -> (AccountState,
@@ -1781,14 +1820,18 @@ procedure inside the loop.
   `GuardChain.requirements` produced for the whole tick — the leg cannot
   recompute it, because that call needs every candidate and a leg holds one
   proposal, and step (2) cannot call `Accounting.snapshot` without it.
-  `reduction` is `None` for a model leg and otherwise carries the stored
-  `Intent`, its digest and the single-use right being consumed; it is what
+  `reduction` is `None` for a model leg and otherwise carries the signed
+  `ReductionIntent`, its `reduction_intent_digest` and the single-use right being
+  consumed; it is what
   makes "the digest the right names is the digest that reaches the venue"
-  checkable rather than aspirational: it holds `signed` (the
-  `ReductionIntent`), its digest, and the right being consumed.
-  **`execute-flatten`'s stored proposals join the candidate set** before
-  `Tick.account` runs, so their scope keys are in the requirement union and
-  their guards find the evidence they demand — without that a reduction leg
+  checkable rather than aspirational: it holds `signed` (the `ReductionIntent`,
+  including its signed `candidate`), its `reduction_intent_digest`, and the right
+  being consumed.
+  **`execute-flatten` contributes each stored `ReductionIntent.candidate` to
+  the tick's candidate set** before `Tick.account` runs, so their scope keys
+  are in the requirement union and their guards find the evidence they demand.
+  No proposer runs for a stored plan — the candidate is signed, not derived,
+  which is why it had to be a `ReductionIntent` field — without that a reduction leg
   refuses for missing evidence, which is the opposite of what the path is for.
   **A reduction leg's bindings are assembled by `execute-flatten`'s cycle, not
   by `propose`**: its proposal comes from the stored `ReductionPlan`, and its
@@ -1804,10 +1847,10 @@ procedure inside the loop.
   is a declared value, not a mode. Both origins construct their `Intent` at
   step (5) — a pre-signed full `Intent` is impossible, since half its fields
   name a plan and an authority that do not exist at signing time (§5.4). What
-  a reduction leg carries is the signed `ReductionIntent`, whose digest the
-  single-use right names; step (5) builds the full `Intent` around it and
-  `test_leg.py` asserts the rebuilt `ReductionIntent` digest still matches, so
-  the economic content that reaches the venue is the content that was signed.
+  a reduction leg carries is the signed `ReductionIntent`, whose
+  `reduction_intent_digest` the single-use right names; step (5) builds the
+  full `Intent` around it, and the §5.4 rebuild check pins that the economic
+  content and scope reaching the venue are what was signed.
   `run() -> LegResult` is **concrete and final** and walks `vocab.LEG_STEPS`, so
   "record before act" is enforced by the base rather than by convention inside
   eight methods. Each step returns what the next one and the records need,
@@ -1824,8 +1867,8 @@ procedure inside the loop.
   the original and final proposals, every finding, the gate results and the
   scope verdict, which is how all eighteen `DecisionPlan` fields are reachable) ·
   `intent(plan) -> Intent` (appends + barriers; for `origin == reduction` it
-  builds the `Intent` around `bindings.reduction.signed`, re-derives that
-  `ReductionIntent`'s digest and refuses if it moved) ·
+  builds the `Intent` around `bindings.reduction.signed` and refuses if the
+  rebuilt `reduction_intent_digest` does not match the right being consumed) ·
   `authorize(intent, plan) -> Permit` ·
   `act(intent, permit) -> Ack` ·
   `fold(intent, permit, ack, findings) -> LegResult{result, leg_id, plan_id,
@@ -1841,7 +1884,7 @@ procedure inside the loop.
   step names and three bucket names collide while meaning different spans.
 - `Authority(clock, calendar, arming, lease, health, executor, document,
   release, ledger, inbox)` — constructed only by `compose.py`, and it takes those
-  nine because `ActPermit` binds them: `valid_until_ms` is the minimum over
+  ten because `ActPermit` binds them: `valid_until_ms` is the minimum over
   **all nine terms §5.13 step (6) lists** — stated once there and never
   restated, because an authority that dropped proposal expiry, input
   staleness, quote age, evidence age or readiness validity would mint a permit
@@ -1865,8 +1908,10 @@ procedure inside the loop.
   is `reducing` (D10, D12) — which is a state the running loop enters, not a
   property of the document. So `Safety` carries an `AuthorityTable`, not one
   object: `authorities.for_origin(origin, breaker)` returns the
-  `SimulatedAuthority`/`LiveAuthority` for `model` and the `ReductionAuthority`
-  for `reduction`, and refuses a reduction outside `reducing` and any live
+  `SimulatedAuthority`/`LiveAuthority` for `model`; for `reduction` a
+  `SimulatedAuthority` at `shadow`/`paper` (D10 permits proven reductions there,
+  and no live permit exists to mint) and the `ReductionAuthority` at
+  `live_limited`/`live`, and refuses a reduction outside `reducing` and any live
   authority the rung does not permit. `compose.py` builds that table from the
   rung; the leg reads it by `origin`. A table lookup keyed by a declared value
   is not the branch D2 forbids — what D2 forbids is the loop asking what rung it
@@ -2097,8 +2142,8 @@ The spelling rule is enforced on the *package source*, not on this document:
 `test_producers.py` fails a module that reads a document key without going
 through the `ServeDocument` object. A shipped test must not depend on a
 proposal file in `docs/`, which would make this document a permanent build
-artifact of the package; `check_plan.py` (§9.3) applies the same rule to the
-prose, and it is an authoring tool, not a test.
+artifact of the package; `check_plan.py`, the authoring tool beside this document, applies the same rule
+to the prose, and it is an authoring tool, not a test.
 
 **`DecisionPlan` — all eighteen fields.**
 
@@ -2131,7 +2176,7 @@ prose, and it is an authoring tool, not a test.
 | `leg_latency_ms` | `run`, keyed by `LEG_LATENCY_BUCKETS` |
 | `client_ref` | `recording.id_source.client_ref(...)`, allocated at step 5 and kept on the result even when a guard refusal leaves `intent` `None` — §6's `decision.legs[]` requires it for every leg |
 
-**`ActPermit` — where the twenty-four bindings come from.** `authority_id` from
+**`ActPermit` — where the bindings that are not plain copies come from.** `authority_id` from
 the current `Arming` in `state_view`; `valid_until_ms` the nine-term minimum of
 §5.13 step (6); `checked_at_ms` from `schedule.clock`; `lease_scope`,
 `fencing_token` from `execution.lease`; `readiness_digest`,
@@ -2141,8 +2186,9 @@ the applied `Arming` scope (§5.6);
 watermarks, input/quote/evidence/risk versions, executor link/scope, health,
 breaker, rung, risk effect, authority and pending-control state — which is why
 the `Authority` constructor takes ten collaborators and not three.
-`intent_digest` is computed by the recipe in §5.4 over the `Intent` the leg
-just built; `decision_plan_digest` likewise over the `DecisionPlan` from step
+`intent_digest` is computed by the §5.4 recipe over the `Intent` the leg just
+built; `reduction_right_digest` is copied from `bindings.reduction.digest`
+(`None` for a model leg); `decision_plan_digest` likewise over the `DecisionPlan` from step
 (4) — both are digests the permit binds, not fields it copies, which is why
 they need recipes and not sources. `instrument` is
 `intent.proposal.instrument`, one level down rather than a direct copy. Those
@@ -2175,7 +2221,7 @@ guard while nothing produced one. The records a step *reads* are walked too:
 | `PolicyRequest` (8 fields) | assembled by the caller of `ActionPolicy.permits`: `operation` at the call site, `risk_effect` from `LegEvaluation`, `rung`/`origin` from `bindings`, `breaker`/`readiness` from `bindings.state.view`, `authority` from `bindings.state.view.arming` (model) or `bindings.reduction` (reduction), `health` from `observability.health` |
 | `LegEvaluation` (9 fields) | steps 1–3, threaded (`risk_effect` from step 2's `execution.accounting.classify`) |
 | `StateView` (14 fields) | `SeriesState.snapshot()` — every member is a projection of the fold and nothing else writes one |
-| `Proposal` | `Data.decider`'s `Proposer.proposals(head_outputs, candidates, state, provenance)`. The ten economic fields — `instrument`, `side`, `qty`/`notional`, `limit`, `tif`, `reference_price`, `exposure`, `confidence`, `prediction`, `baseline`, `expected_value`, `direction`, `expires_ms`, `extra` — are the proposer's own decision, read from the head outputs through its field map (`intent-rows`) or its target diff (`target-positions`); `id` is the `Candidate.id` it must preserve; the five provenance fields come from the `Provenance` the tick passes in, never stamped on afterwards |
+| `Proposal` | `Data.decider`'s `Proposer.proposals(head_outputs, candidates, state, provenance)`. The economic fields — `instrument`, `side`, `qty`/`notional`, `limit`, `tif`, `reference_price`, `exposure`, `confidence`, `prediction`, `baseline`, `expected_value`, `direction`, `expires_ms`, `extra` — are the proposer's own decision, read from the head outputs through its field map (`intent-rows`) or its target diff (`target-positions`); `id` is the `Candidate.id` it must preserve; the five provenance fields come from the `Provenance` the tick passes in, never stamped on afterwards |
 | `Provenance` (5 fields) | assembled by `Tick.run` from the `EntryBatch` (`read_entry`) and `QuoteSet` (`quotes`) |
 
 **The rule this table encodes.** A record field with no producer, a collaborator
@@ -2199,9 +2245,11 @@ rather than an attribute. Two assertions, and the second is what makes it bite:
   {f.name for f in dataclasses.fields(R)}`. A field added to a record without a
   producer fails; a producer naming a field that no longer exists fails.
 
-The completeness half is the half an earlier draft lacked, and it is why this
-test would have caught the four object-graph holes the fifth design review found
-by hand.
+The completeness half is the half an earlier draft lacked. It catches
+**record-field** holes — a field added without a producer, a producer naming a
+field that no longer exists. It does **not** reach constructor arity or a
+phase's return shape: those stay hand-reviewed, and two of them have been
+missed that way already.
 
 ## 6. Ledger records
 
@@ -2211,7 +2259,7 @@ fields never enter `payload_digest`. `IdSource` derives tick, decision, leg and
 model client ids from stable semantic inputs before append, independent of
 sequence or wall time. Flatten refs are
 `H("flatten-v1", release_hash, reduction_request_id, intent_index,
-intent_digest)`; replay injects `RecordedIdSource`. Content uses the existing
+reduction_intent_digest)`; replay injects `RecordedIdSource`. Content uses the existing
 sha256-canonical idiom.
 
 | kind | one per | body |
@@ -2226,7 +2274,7 @@ sha256-canonical idiom.
 | `control_request` | durable CLI request | `request_id`, `purpose`, canonical payload (full reduction intents when applicable), `release_hash`, derived principal/proof digest, expiry |
 | `control_approval` | maker-checker approval | `request_id`, `purpose`, checker principal/proof digest, verified payload digest |
 | `authority` | issue / disarm / revoke / expire | `authority_id`, `kind ∈ {ordinary, reduction}`, request/approval ids, release/rung, expiry, allowlist/overlay, reduction intent digests, reason |
-| `authority_use` | consume/reserve one reduction right (barrier before authorization) | unique `(authority_id, intent_digest)`, `client_ref`, `reserved_at_ms`; recovery may reference this reservation but no second intent may |
+| `authority_use` | consume/reserve one reduction right (barrier before authorization) | unique `(authority_id, reduction_intent_digest)`, `client_ref`, `reserved_at_ms`; recovery may reference this reservation but no second intent may |
 | `order_event` | executor/loop report | `client_ref`, `venue_ref`, `event ∈ {not_sent, ack, reject, fill, partial_fill, cancel, expire, replaced_by_venue, unknown, status}` — `replaced_by_venue` is observed only (D10); no executor verb initiates it, `status`, `venue_ts_ms`, `recv_at_ms`, `reason` |
 | `fill` | execution | the `Fill` record |
 | `outcome` | label arrival / mark / correction | `leg_id`, `kind ∈ {settled, marked, voided, partial, corrected}`, `effective_at_ms`, `known_at_ms`, `value`, `weight`, `terminal`, `supersedes`, `source` |
@@ -2297,7 +2345,8 @@ dskit/production/
 ├── release.py         ReleaseManifest; ReleaseReader (the capability handed to release_read nodes); class/code/adapter/
 │                      source/artifact/runtime fingerprints; release verification
 ├── records.py         Quote, Candidate, Proposal, Finding, InputWatermark, EntryBatch, TickStart, DecisionPlan, ReductionPlan,
-│                      ReductionAuthorization, EvidenceRequirement + MeasureEvidence, RiskVersion, AccountState,
+│                      ReductionIntent, ReductionAuthorization, EvidenceRequirement + MeasureEvidence, RiskVersion,
+│                      AccountState,
 │                      QuoteSet, GateResult, FeedResult, FeedAge, ScopeVerdict, PolicyRequest, Provenance;
 │                      LeasePermit is coordination.py's, not here; Permit (frozen dataclass base) + SimulatedPermit + ActPermit, TickResult, Intent,
 │                      execution/monitoring values
@@ -2442,7 +2491,8 @@ tests/production/
 │                          every rung and refuses a reduction outside reducing; paper cannot select LiveExecutor or
 │                          LiveAuthority; an incompatible combination refuses at construction; only this module reads a rung
 ├── test_leg.py            every LegStep returns what the next one and DecisionPlan need (all eighteen fields reachable);
-│                          a reduction leg carries its pre-signed Intent so the authorized digest is the submitted digest;
+│                          the §5.4 rebuild check: a reduction leg's constructed Intent re-derives the signed
+│                          reduction_intent_digest, so signed economic content and scope are what reach the venue;
 │                          each step barriers before its effect; a crash cut after every barrier; cumulative reservations
 │                          across legs; Authority polymorphism — shadow/paper mint without writing, live appends
 │                          authorization, reduction appends authority_use first; no rung or mode name appears in leg.py (AST)
