@@ -1531,7 +1531,7 @@ class Intent(_Record):
     decision_plan_id, decision_plan_digest : str
     proposal : Proposal
     created_ms : int
-    authority_id : str
+    authority_id : str or None
         Included in the digest: two intents authorised under different
         arms must not hash alike.
     release_hash : str
@@ -1561,7 +1561,7 @@ class Intent(_Record):
     decision_plan_digest: str
     proposal: Proposal
     created_ms: int
-    authority_id: str
+    authority_id: str | None
     release_hash: str
     inputs_asof_ms: int
     inputs_digest: str

@@ -67,16 +67,29 @@ depends on it):
   `authority_use:<authority_id>:<reduction_intent_digest>` (§6's stated
   uniqueness for that kind), `authorization:<client_ref>` and
   `order_event:<client_ref>`.
+* `records.Intent.authority_id` is annotated `str` and refuses `None`, but
+  §5.16 rules it `None` at shadow/paper where no ordinary arm exists — so no
+  simulated leg can build one. `str | None` is the fix.
+* §5.5's `check_authority_scope` has no scope object at shadow/paper for the
+  same reason. Pinned: the leg records the verdict and `ActionPolicy` decides
+  (its authority axis is inert below live), rather than branching on a rung.
+* A refusal AFTER the plan barrier — a step-(6) drift, a step-(7) mismatch —
+  terminates an intent that exists, so the outcome needs a record: pinned as
+  an `order_event` with `event`/`status` `not_sent` and a synthesized `Ack`,
+  which is why `not_sent` is in both §6's event set and `vocab.STATUSES`. A
+  refusal BEFORE it writes only the plan, whose `result` is the terminal fact.
 """
 
 import ast
 import dataclasses
 import hashlib
+import inspect
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
+from dskit.production import leg as leg_module
 from dskit.production import vocab
 from dskit.production.arming import Arming, ApprovalVerifier, ArmingState, VerifiedPrincipal
 from dskit.production.base import GENESIS_HASH, ProductionError, canonical_hash
@@ -94,7 +107,17 @@ from dskit.production.coordination import ProcessLease
 from dskit.production.document import ServeDocument
 from dskit.production.guards import GuardChain, Limit, RangeGuard
 from dskit.production.ids import ReleaseIdSource
-from dskit.production.policy import ActionPolicy
+from dskit.production.leg import (
+    Authority,
+    LegBindings,
+    LegEvaluation,
+    LegPipeline,
+    LegResult,
+    LiveAuthority,
+    ReductionAuthority,
+    ReductionBinding,
+    SimulatedAuthority,
+)
 from dskit.production.records import (
     AccountState,
     Ack,
@@ -114,19 +137,8 @@ from dskit.production.records import (
     RiskVersion,
     SimulatedPermit,
 )
+from dskit.production.policy import ActionPolicy
 from dskit.production.state import ReadinessProjection, SeriesState, TickState
-from dskit.production import leg as leg_module
-from dskit.production.leg import (
-    Authority,
-    LegBindings,
-    LegEvaluation,
-    LegPipeline,
-    LegResult,
-    LiveAuthority,
-    ReductionAuthority,
-    ReductionBinding,
-    SimulatedAuthority,
-)
 from tests.production.conftest import SERIES_ID
 from tests.production.test_document import live_capable_document
 from tests.production.test_purity import _branch_hits
@@ -2123,8 +2135,6 @@ def test_mint_takes_the_reduction_binding_because_state_view_cannot_supply_it():
     `expires_ms` are not `Intent` fields, so it cannot be recomputed either.
     Pinned as a fourth positional argument on all three subclasses, so no
     subclass strengthens a precondition of its base (§5.15)."""
-    import inspect
-
     names = tuple(inspect.signature(Authority.mint).parameters)
     assert names == ("self", "intent", "plan", "state_view", "reduction")
     for cls in (SimulatedAuthority, LiveAuthority, ReductionAuthority):
