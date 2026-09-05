@@ -4519,7 +4519,14 @@ raises `ValueError` if it is nonzero — an earlier child has been reaped and
 the counter is contaminated — then runs the one command at width 1 and returns
 the high-water mark after it. That trap is a property of the seam, pooled
 subprocesses against a process-global counter, not of any child, so the guard
-lives here. A caller keeps only its threshold and its choice of what to run.
+lives here. A caller keeps only its threshold and its choice of what to run,
+and owes one precondition: `measure_one` must be the first child this process
+reaps — a stage that calls it must have no spawning predecessor in the staged
+DAG. `measure_one` delegates to `run([argv], cwd, env)` under the instance's
+own cap, so it inherits the parent-side validation and the `spawn` hook.
+`spawn`'s default raises `RuntimeError` carrying the output tail on a nonzero
+exit, as `_run_walk` does today; that raise is what lets `run` cancel the
+unstarted folds.
 
 `commands` is a list of argv lists — the seam owns the spawn, so the cap is
 its mechanism and not something a caller re-implements. The seam is agnostic
@@ -4543,7 +4550,7 @@ in `driver.py`, exported alongside two renamed functions:
 FOLD_FIELDS = ("cutoff", "run_dir", "state", "score")   # every row
 FOLD_OPTIONAL_FIELDS = ("search", "error")               # when present
 def aggregate_folds(folds, select, weight_halflife_folds=0)
-def write_walkforward_summary(summary, document, asof, spec, state,
+def write_walkforward_summary(summary_dir, document, asof, spec, state,
                               folds, aggregate)
 ```
 
@@ -4584,8 +4591,8 @@ avoids a shell interpreter and its `$BASH_ENV`/quoting surface entirely, and
 — because the cap is validated in the parent below — it needs no sentinel
 exit code at all, where the shell form had to reserve one (`exit 111`) and
 keep it clear of the fold's own (the walkforward CLI uses 3 for a halt).
-`resource` is imported inside `run` and `spawn`, the two methods that touch
-it, so the module imports on any platform.
+`resource` is imported inside `run`, `spawn` and `measure_one`, the three
+methods that touch it, so the module imports on any platform.
 
 The cap is validated in the PARENT before anything spawns: children inherit
 the hard `RLIMIT_AS`, so `run` reads `resource.getrlimit` once and raises
