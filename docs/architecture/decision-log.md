@@ -4668,7 +4668,7 @@ tree also gains `stages.py`, which it omits today while the README lists it.
 
 **Status:** proposed (2026-09-05; the owner pre-authorized a cohort study
 in the Gate 3 rebuild brief and asked for this ADR before it is built;
-revised after one skeptic round)
+revised after two skeptic rounds)
 
 **Context.** Forty names landed as two immutable sources and nothing else:
 cohort D (`alpaca-sip-split-d`, twenty names chosen for industry breadth —
@@ -4725,11 +4725,15 @@ only the first.
    `embargo_days` 5, `train_days` 730; `start_ms` 2018-01-01 and RTH-only
    reads. A config test pins P12's scan parameters (less the fit list),
    its features parameters (less `cache_dir`) and its walk-forward section
-   equal to P11's, and `test_run_docs_do_not_restate_the_cohort` gains the
-   study's own universe branch (a `MODELABILITY_DOCS` mapping of document
-   to universe path and symbol count, with the two new sources admitted
-   beside the three P10 ones), so the pins that exist today admit P12
-   deliberately instead of refusing it.
+   equal to P11's. Two pins in `tests/test_configs.py` refuse the P12
+   document today and change to admit it deliberately:
+   `MODELABILITY_DOCS` becomes a mapping of document to universe path and
+   symbol count, which `test_run_docs_do_not_restate_the_cohort` reads for
+   the study's own universe branch, and `MODELABILITY_SOURCES` gains
+   `alpaca-sip-split-d` and `alpaca-sip-split-e` beside the three P10
+   sources, which
+   `test_every_run_reads_the_split_adjusted_store_from_the_study_start`
+   checks every bars node of a modelability document against.
 
 2. **The cohort is `scan.params.fit_symbols`** — graded, and the ONE place
    the document names it: ORCL … TMUS then MSTR … EOG, forty names in
