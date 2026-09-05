@@ -252,7 +252,7 @@ brackets.
   child `ApprovalVerifier`, whose code/trust-root reference is release-bound and
   which derives principal ids from proofs — no free-form `--by` identity.
   For ≥ `live_limited`, maker and checker must differ; expiry may not exceed the
-  graded `arming.max_duration_s`; an allowlist must be a subset and every limit
+  graded `document.arming.max_duration_s`; an allowlist must be a subset and every limit
   overlay must prove it is at least as strict as the document. The final arming
   record binds the release hash and both proof digests. Serving live additionally
   requires `--armed` and `DSKIT_PRODUCTION_ARM=<release hash>`; absent or
@@ -479,7 +479,7 @@ brackets.
   The immutable `ReleaseManifest` contains `doc_hash`, run/serving hashes,
   artifacts/timestamps, resolved classes/code/adapter, `FeedSpec`, source config,
   approval/lease fingerprints, `checklist_digest` and `runtime_fingerprint`.
-`plan` canonicalises the file at `readiness.checklist` into
+`plan` canonicalises the file at `document.readiness.checklist` into
 `checklist_digest`, and `ready` refuses a checklist whose digest differs —
 without it `doc_hash` covers the path and not the contents, so a GO could be
 re-earned against a quietly shortened checklist under a fixed release and a
@@ -704,7 +704,7 @@ digest_recipe}` is returned by the entry class's pure
 **no** universe: the method is pure, pipeline-side and takes no document, so it
 cannot know the required key set.
 
-The required key set is the serve document's `serving.required_universe` — an
+The required key set is the serve document's `document.serving.required_universe` — an
 inline sorted key list, or a path to a JSON list — which `plan` reads,
 canonicalises and binds into the `FeedSpec` inside the immutable
 `ReleaseManifest` as `required_keys` + `required_keys_digest`; absence refuses
@@ -789,7 +789,14 @@ entry output.
   mutable account state.
   Candidate, quote and proposal construction may not rerun a node.
 - `Proposer(ABC)`: `candidates(head_outputs) -> list[Candidate]`,
-  `proposals(head_outputs, candidates, state) -> list[Proposal]`,
+  `proposals(head_outputs, candidates, state, provenance) -> list[Proposal]`
+  where `provenance` is the frozen
+  `Provenance{inputs_asof_ms, inputs_digest, coverage_digest, quote_asof_ms,
+  quote_digest}` the tick built from the `EntryBatch` and `QuoteSet`. It is
+  passed in rather than stamped on afterwards for the same reason
+  `EvidenceRequirement` is born complete (§5.5): a child proposer that computed
+  its own `inputs_digest` would silently disagree with the frozen batch, and
+  D6 requires every proposal to bind that exact digest,
   `quotes(head_outputs) -> list[Quote]` is pure and state-independent (default:
   rows shaped like `dskit.pipeline.records.MarketRecord`, read through that
   module's accessors — not production's own `records.py`). `IntentRows` (`output`, `fields` map,
@@ -799,7 +806,7 @@ entry output.
   default is to replay full recorded gate/stat-test outputs; absent or summarised
   evidence refuses rather than recomputing a training-time verdict on live data.
 - Refusals at `plan`: entry node absent; window param not in `_PARAMS` or its
-  full path absent from the run document; `ServingContract` missing or `serving.required_universe` absent; entry not a source root or not dominating every dynamic path; any
+  full path absent from the run document; `ServingContract` missing or `document.serving.required_universe` absent; entry not a source root or not dominating every dynamic path; any
   non-entry mutable read; a `release_read` outside the manifest; a trainable
   without an artifact dir; an artifact older
   than `max_artifact_age`; a needed search node without a recorded winner; a
@@ -896,17 +903,17 @@ non-finite number.
   `PolicyRequest{operation, risk_effect, rung, breaker, health, readiness,
   authority, origin}` — what `Rule.veto` receives;
   `TickStart{tick_id, tick_at_ms, release_hash}`;
-  `TickResult{tick_id, status, data_asof_ms, observed_at_ms, feed_status,
-  coverage_digest, inputs_digest, decision_plan_ids, legs, findings,
-  latency_ms, leg_latency_ms, refusal_reason, error, feed{status, acq_id,
+  `TickResult{tick_id, status, data_asof_ms, coverage_digest, inputs_digest, decision_plan_ids, legs, findings,
+  observed_at_ms, latency_ms, leg_latency_ms, refusal_reason, error,
+  feed{status, acq_id,
   records_added, source_config_hash, required_keys_digest, watermarks_by_key,
   coverage_digest}}` — the `feed` block is a member because §6's `tick` record
   requires all seven and five of them live only in `FeedResult`/`EntryBatch`,
   which are phase-local; the loop never sees an `EntryBatch` and so could not
-  add them. What the phases
-  produce, so a phase never writes a record itself. The loop adds the fields
-  only it holds (`tick_at`, `calendar`, `overrun_absorbed[]`, `health`,
-  `breaker`, `rung`, and the structured `feed{…}` block) when it writes §6's
+  add them. Everything above is what the phases
+  produce, so a phase never writes a record itself. The loop adds only the
+  fields it alone holds — `tick_at`, `calendar`, `overrun_absorbed[]`,
+  `health`, `breaker`, `rung` — when it writes §6's
   terminal `tick` and `decision`;
   `LegEvaluation{original, final, findings, gate_results, scope_verdict,
   account, risk_effect, risk_version, risk_state_digest}` — the frozen
@@ -941,9 +948,8 @@ non-finite number.
   The safety epoch covers release/runtime, readiness, calendar, required-key
   coverage and watermark vector, input/quote/evidence/risk versions and digests,
   executor link/scope, health, breaker, rung, risk effect, authority, pending-control state and lease.
-  Any change invalidates it. `valid_until_ms` is the minimum of proposal expiry,
-  input/quote/accounting freshness deadlines, readiness validity, calendar close,
-  authority expiry and lease/local deadline.
+  Any change invalidates it. `valid_until_ms` is the nine-term minimum defined
+  once in §5.13 step (6) and never restated here.
 - `EvidenceRequirement{measure, window_kind, window_arg, scope_key,
   window_start_ms, window_end_ms, baseline_at_ms, include_working}` — what a
   `Measure` declares it needs before sizing, and the unit accounting snapshots
@@ -1041,7 +1047,7 @@ non-finite number.
   independent control worker at subsecond cadence (§5.8) and re-checked at every
   tick boundary;
   on entering `halted` the loop cancels working orders when
-  `execution.on_halt.cancel_open`
+  `document.execution.on_halt.cancel_open`
   and records the outcome vocabulary.
 - `ArmingState{authority_id, release_hash, rung, maker, checker, armed_at_ms,
   armed_until_ms, allowlist, limits_overlay, request_proof_digest,
@@ -1052,14 +1058,14 @@ non-finite number.
   the service.
   `ArmRequest{release_hash, rung, allowlist, limits_overlay, requested_until_ms,
   request_proof}` and `ArmApproval{request_digest, approval_proof}` are its
-  inputs. `Arming.check_conjunction(document, cli_armed, env_release_hash)` is
+  inputs. `Arming.check_conjunction(safety.invocation)` is
   the single place D11's live conjunction is evaluated — document rung,
   `--armed`, `DSKIT_PRODUCTION_ARM`, a current unexpired arm and the release
   hash must all agree; no caller re-derives it, and §5.13 step (3) calls it
   rather than restating its terms.
   `ApprovalVerifier(ABC).verify(canonical_bytes, proof, purpose) ->
   VerifiedPrincipal{id, proof_digest}`. It is resolved from the graded
-  `arming.approval {uses, params}` object; params may name trust-root env vars
+  `document.arming.approval {uses, params}` object; params may name trust-root env vars
   but never contain secret material. Trust roots are public, content-digested
   inputs in the release; only private-key/service credentials stay secret.
   `deny-all` is the core shadow/paper default;
@@ -1068,7 +1074,7 @@ non-finite number.
   fingerprint is release-bound. Maker and checker differ for ≥ `live_limited`;
   purposes are closed: `arm_request | arm_approval | reduce | flatten_request |
   flatten_approval | execute_flatten | resume | adopt`; role authorization is verifier-owned.
-  expiry is mandatory and bounded by `arming.max_duration_s`; allowlists may only
+  expiry is mandatory and bounded by `document.arming.max_duration_s`; allowlists may only
   narrow and overlays must be provably stricter. `Arming` binds the release and
   proofs. `current` reads `SeriesState` (§5.8.1); `arming.json` is only a head-bound cache.
   Immediately before submit, an `Authority` (§5.13.1) applies the current scope
@@ -1217,7 +1223,7 @@ deadline invalidates the local permit without waiting for nominal expiry.
   `hash = sha256(prev_hash + canonical(envelope − hash))`. Readers tolerate
   unknown fields and upcast `schema_version`.
 - `JsonlLedger`: one serialised line per single `write()` on `O_APPEND`; `fsync ∈
-  {every, batch:{n, ms}, none}` from `durability.fsync` (`none` legal only at
+  {every, batch:{n, ms}, none}` from `document.durability.fsync` (`none` legal only at
   `shadow`); `flock` for the
   process lifetime; torn-tail recovery and segment continuity; directory fsync
   on segment creation; never copytruncate. Rotation is
@@ -1301,14 +1307,17 @@ section names box 3.
   immutable read-only view; `head() -> (seq, hash)` reports what it has folded.
   It owns positions (through `PositionBook`), working orders, pending client
   refs, the breaker state, the current arming, the current readiness result,
-  held/paused guard state and monitor state. Nothing else folds the ledger:
+  held/paused guard state, monitor state, the pending-control set (which
+  commands are queued and unconsumed), and the **reduction projection** — the
+  current `ReductionAuthorization`, its per-digest rights, and which of them
+  `authority_use` has already reserved. Nothing else folds the ledger:
   `Breaker.current`, `Arming.current`, `Readiness.current`, `Accounting`,
   `Guard`, `Reconciler` and startup recovery all read this object, and the
   head-bound JSON files remain caches of *its* projection.
 - `StateView` is the frozen projection of the fold, and **only** of the fold:
   `positions`, `working`, `pending`, `balances`, `decision_history`, `breaker`,
-  `arming`, `readiness`, `guard_holds`, `risk_version`, `head_seq`,
-  `head_hash`. `Accounting.snapshot` and `Reconciler.run` take it as their
+  `arming`, `readiness`, `guard_holds`, `reduction`, `pending_control`,
+  `risk_version`, `head_seq`, `head_hash`. `Accounting.snapshot` and `Reconciler.run` take it as their
   first argument (both previously written as an untyped `ledger_state`).
 - `TickState{view, account, feed_status, feed_ages, calendar}` is what a
   `Guard` receives as `state` — one declared type, assembled by the tick. It
@@ -1358,11 +1367,11 @@ orders, balances and settlements; it compares fill-derived against venue
 positions only when `capabilities().positions == "venue"`, since against a
 `derived` executor that comparison is vacuous. Breaks are `timing | missing_in_ledger |
 missing_at_venue | quantity | price | fee | state | settlement`, with severity
-`info | warn | block`. `reconcile.on_mismatch` is the automatic policy and admits only
+`info | warn | block`. `document.reconcile.on_mismatch` is the automatic policy and admits only
 `halt | refuse`; unknown venue
 orders are `external`, never silently made ours. `lookback_ms` bounds how far back fills and settlements are queried, since an
 open-orders endpoint cannot distinguish missing from recently closed. It runs
-before `READY` when `reconcile.on_start`, every `reconcile.every_s`
+before `READY` when `document.reconcile.on_start`, every `document.reconcile.every_s`
 thereafter, and always appends a `recon` record without synthesising a
 venue action. Adoption is a separate authenticated operator command naming the
 break ids and release hash; after inspection it records the delta, crosses
@@ -1422,7 +1431,7 @@ break ids and release hash; after inspection it records the delta, crosses
   never constructor side effects.
 - `AlertRouter`: fingerprint dedup; `group_wait_s` [0, 600] default 30;
   `repeat_interval_s` [60, 86400] default 14400; per-severity routes; token-bucket
-  rate limit from `alerts.rate_limit{max_per_hour, burst}` (`critical` bypasses
+  rate limit from `document.alerts.rate_limit{max_per_hour, burst}` (`critical` bypasses
   the limit, not dedup); a bounded
   `queue.Queue` consumed by one worker thread; `put_nowait` overflow and every
   sink exception swallowed and counted (`alert_sink_failures_total`,
@@ -1449,7 +1458,7 @@ break ids and release hash; after inspection it records the delta, crosses
   above. The worker observes an
   atomic last-successful-tick monotonic stamp; when `dead_after_ms` elapses it
   transitions health to unhealthy and stops emitting, allowing the external
-  dead-man to page. It is sent in `ready`, and in `degraded` only when `heartbeat.in_degraded`.
+  dead-man to page. It is sent in `ready`, and in `degraded` only when `document.heartbeat.in_degraded`.
 - `flock(LOCK_EX | LOCK_NB)` prevents a second process on the same filesystem;
   the §5.7.2 fenced lease covers other hosts. Signals wake within 1 s;
   `ticking` finishes the phase and never stops between act and record-outcome;
@@ -1509,7 +1518,7 @@ reconcile}`; an ambiguous write never yields `retry`); `CircuitBreaker` (states
 `closed | open | half_open | forced_open | metrics_only`; `trip`/`reset`; one per
 scope; `min_calls`=5; `failure_rate`=0.5; `open_s`=30; business rejections not
 counted); `RateLimiter` (token buckets per scope from
-`resilience.limiter.{submit,cancel}{rate_per_s, burst, max_in_flight}`,
+`document.resilience.limiter.{submit,cancel}{rate_per_s, burst, max_in_flight}`,
 `max_in_flight` default 1 for writes, `reserved` (the cancel lane keeps its
 capacity even when the submit lane is exhausted), `observe(headers)` capped by
 `MAX_BACKOFF_S`). It has distinct submit
@@ -1543,8 +1552,12 @@ knob because D13 fixes the answer: query, never resend.
   positional arguments —
   `Schedule{clock, calendar, cadence, overrun}`, `Data{feed, decider}`,
   `Decision{guards, monitors}`,
-  `Safety{breaker, arming, authorities, readiness, action_policy,
-  transition_policy, submission_verifier}`, `Execution{executor, accounting, lease, resilience}`,
+  `Safety{breaker, arming, authorities, readiness, invocation, action_policy,
+  transition_policy, submission_verifier}` — `invocation` is the frozen
+  `Invocation{armed, env_release_hash, once, max_ticks}` that `__main__`
+  builds from `--armed`, `DSKIT_PRODUCTION_ARM`, `--once` and `--max-ticks`;
+  without it `Arming.check_conjunction` (§5.6) is specified to be evaluated by
+  an object that cannot see two of its three inputs,, `Execution{executor, accounting, lease, resilience}`,
   `Recording{ledger, state, inbox, reconciler, checkpoint, journal_hook,
   id_source}` — `state` is the `SeriesState` of §5.8.1, and it is a bundle
   member because six declared APIs take a `state_view` and nothing else could
@@ -1573,7 +1586,7 @@ knob because D13 fixes the answer: query, never resend.
   folded, and re-run hard guards and authority scope without amendment;
   (3) immediately re-evaluate release/runtime, readiness GO, calendar, source
   coverage and every key's watermark age, quote age/digest, accounting evidence
-  age/digest, venue skew against `schedule.max_venue_skew_ms`, link/scope,
+  age/digest, venue skew against `document.schedule.max_venue_skew_ms`, link/scope,
   health, breaker, document rung, mutually
   exclusive risk effect, authority scope and lease—without rereading decision nodes;
   (4) append a `decision_plan` containing entry/head/candidate provenance,
@@ -1592,11 +1605,11 @@ knob because D13 fixes the answer: query, never resend.
   `authorization`; `ReductionAuthority` appends the `authority_use` first and
   then the `authorization`. The bundle carries whichever one the rung selected
   at construction (D2), so `loop.py` contains no `rung ==` to spell differently. `valid_until_ms` is the minimum of proposal expiry,
-  oldest-input watermark + `schedule.max_staleness_ms`, oldest quote +
-  `schedule.max_quote_age_ms`, accounting as-of +
-  `accounting.max_valuation_age_ms`, readiness GO + `readiness.valid_for_s`,
+  oldest-input watermark + `document.schedule.max_staleness_ms`, oldest quote +
+  `document.schedule.max_quote_age_ms`, accounting as-of +
+  `document.accounting.max_valuation_age_ms`, readiness GO + `document.readiness.valid_for_s`,
   calendar close, authority expiry, lease expiry and
-  `execution.submit_timeout_ms`.
+  `document.execution.submit_timeout_ms`.
   Whatever an authority mints, it barriers its records before any submit I/O;
   a `SimulatedAuthority` has none to write;
   (7) after that final barrier, the live wrapper holds the act gate and
@@ -1635,7 +1648,7 @@ knob because D13 fixes the answer: query, never resend.
   `candidates(head_outputs) -> tuple[Candidate]` ·
   `quotes(head_outputs) -> QuoteSet` ·
   `account(candidates, quotes, at_ms) -> AccountState` ·
-  `propose(head_outputs, candidates, account) -> tuple[Proposal]`.
+  `propose(head_outputs, candidates, account, provenance) -> tuple[Proposal]`.
   `run` threads those values; a phase holds no scratch state between calls.
   After `account`, `run` assembles the `TickState` every guard receives —
   `view` from `recording.state.snapshot()`, `account` from the `account`
@@ -1696,7 +1709,7 @@ knob because D13 fixes the answer: query, never resend.
   The checklist is a JSON file (`item`, `required`, `evidence`,
   `waiver`) evaluated to GO / NO-GO; NO-GO exits 5. The evaluation is appended
   as a `readiness` record (§6) and barriered, so the GO is durable,
-  release-bound and expiring (`evaluated_at_ms + readiness.valid_for_s`)
+  release-bound and expiring (`evaluated_at_ms + document.readiness.valid_for_s`)
   rather than recomputed at submit time; the action matrix and `ActPermit`
   read that record. `ready` writes it the way §5.8 rules every control verb
   writes: queued through the durable inbox when a serve process holds the lock,
@@ -1729,10 +1742,23 @@ procedure inside the loop.
   not that the steps are abstract, and the tick must be able to construct it.
   `bindings` is the frozen
   `LegBindings{proposal, origin, entry_batch, head_digest, quotes, state,
-  release, rung, tick_id, leg_id, leg_index, readiness}` — `state` is the
-  `TickState` the tick assembled (which carries `account` and `calendar`, so
-  neither is a separate member), and step (2) rebuilds it with the refreshed
-  account before re-running the hard guards — `head_digest` is
+  requirements, reduction, release, rung, tick_id, leg_id, leg_index}` —
+  `state` is the `TickState` the tick assembled (which carries `account`,
+  `calendar` and the readiness GO, so none is a separate member), and step (2)
+  rebuilds it with the refreshed account before re-running the hard guards.
+  `requirements` is the deduplicated `EvidenceRequirement` tuple
+  `GuardChain.requirements` produced for the whole tick — the leg cannot
+  recompute it, because that call needs every candidate and a leg holds one
+  proposal, and step (2) cannot call `Accounting.snapshot` without it.
+  `reduction` is `None` for a model leg and otherwise carries the stored
+  `Intent`, its digest and the single-use right being consumed; it is what
+  makes "the digest the right names is the digest that reaches the venue"
+  checkable rather than aspirational.
+  **A reduction leg's bindings are assembled by `execute-flatten`'s cycle, not
+  by `propose`**: its proposal comes from the stored `ReductionPlan`, and its
+  `entry_batch`, `head_digest` and `quotes` are those of the tick the cycle
+  runs inside, since D12 sends stored intents through the same sequential
+  pre-submit gates as model intents — `head_digest` is
   the head-output provenance §6 requires in `provenance_digests`, which the
   leg cannot otherwise see because `head_outputs` never leaves the tick. The tick assembles these once and every
   step rebinds against. `release` and `rung` are members because step (3)
@@ -1762,7 +1788,7 @@ procedure inside the loop.
   `authorize(intent, plan) -> Permit` ·
   `act(intent, permit) -> Ack` ·
   `fold(intent, permit, ack, findings) -> LegResult{result, leg_id, plan_id,
-  plan_digest, final, intent, ack, findings, leg_latency_ms}`. `plan_id`,
+  plan_digest, final, client_ref, intent, ack, findings, leg_latency_ms}`. `plan_id`,
   `plan_digest` and `final` are members because a guard refusal terminalizes
   without an `Intent` (step (4)), and §6's `decision.legs[]` and
   `decision_plan_ids[]` still have to be written for that leg — which is the
@@ -1773,7 +1799,7 @@ procedure inside the loop.
   step (8) charged to the tick. The two tuples are separate because three
   step names and three bucket names collide while meaning different spans.
 - `Authority(clock, calendar, arming, lease, health, executor, document,
-  release, ledger)` — constructed only by `compose.py`, and it takes those
+  release, ledger, inbox)` — constructed only by `compose.py`, and it takes those
   nine because `ActPermit` binds them: `valid_until_ms` is the minimum over
   **all nine terms §5.13 step (6) lists** — stated once there and never
   restated, because an authority that dropped proposal expiry, input
@@ -1782,7 +1808,9 @@ procedure inside the loop.
   `Lease`; and `safety_epoch_digest` covers calendar, health, executor
   link/scope, rung and pending-control state. A permit cannot be minted from
   `(intent, plan, state_view)` alone, which is why the constructor is stated
-  rather than left implicit.
+  rather than left implicit. `inbox` is the tenth because the epoch also covers
+  pending-control state, which is an unconsumed file in `commands/inbox/` and
+  reaches no other collaborator.
   `Authority.mint(intent, plan, state_view) -> Permit` is the seam D2 needs.
   `SimulatedAuthority` writes nothing and returns a `SimulatedPermit`;
   `LiveAuthority` mints an `ActPermit` and appends/barriers `authorization`;
@@ -2002,10 +2030,10 @@ construction:
 | bundle | members |
 |---|---|
 | `Schedule` | `clock`, `calendar`, `cadence`, `overrun` |
-| `Data` | `feed`, `decider` |
+| `Data` | `feed`, `decider` (the `Decider` owns the configured `Proposer`, which is how `Tick.candidates`/`quotes`/`propose` reach it) |
 | `Decision` | `guards`, `monitors` |
-| `Safety` | `breaker`, `arming`, `authorities`, `readiness`, `action_policy`, `transition_policy`, `submission_verifier` |
-| `Execution` | `executor`, `accounting`, `lease`, `resilience` |
+| `Safety` | `breaker`, `arming`, `authorities`, `readiness`, `invocation`, `action_policy`, `transition_policy`, `submission_verifier` |
+| `Execution` | `executor`, `accounting`, `lease`, `resilience` (the `Retry`/`CircuitBreaker`/`RateLimiter`/`Transport` set of §5.12, held as one `ResiliencePolicies` value) |
 | `Recording` | `ledger`, `state`, `inbox`, `reconciler`, `checkpoint`, `journal_hook`, `id_source` |
 | `Observability` | `metrics`, `alerts`, `health`, `heartbeat` |
 
@@ -2016,13 +2044,19 @@ recording, observability, tick_id)`;
 `LegPipeline(document, release, bindings, schedule, decision, safety,
 execution, recording, observability)`.
 
-**A naming rule this table exists to enforce.** `schedule` and `execution` name
-both a bundle and a serve-document section, and that collision is what let a
-leg be specified to read `schedule.max_venue_skew_ms` while holding a
-`Schedule` bundle that has no such member. Throughout §5 a document read is
-always written `document.<section>.<key>` and a bundle read is always the bare
-member; `test_producers.py` rejects a bare `schedule.`/`execution.` followed by
-a key that is not a bundle member.
+**A naming rule this table exists to enforce.** Ten names are simultaneously a
+serve-document section and a bundle member — `accounting`, `alerts`, `arming`,
+`feed`, `guards`, `health`, `heartbeat`, `monitors`, `readiness`,
+`resilience` — plus `schedule` and `execution`, which name a bundle *type*.
+That collision is what let a leg be specified to read
+`schedule.max_venue_skew_ms` while holding a `Schedule` bundle with no such
+member. Throughout §5 a document read is always written
+`document.<section>.<key>` and a bundle read is always the bare member.
+`test_producers.py` enforces it by scanning **this document** — §5 through §7,
+the same fixture `test_vocab.py` already scans — and failing any
+`<colliding>.<key>` that is neither prefixed with `document.` nor a declared
+member of that bundle. The plan file is therefore a test fixture, and §8 lists
+it as one.
 
 **`DecisionPlan` — all eighteen fields.**
 
@@ -2031,7 +2065,7 @@ a key that is not a bundle member.
 | `plan_id` | `recording.id_source.plan_id(tick_id, leg_index)` |
 | `inputs_asof_ms`, `inputs_digest`, `coverage_digest` | `bindings.entry_batch` |
 | `quote_asof_ms`, `quote_digest` | `bindings.quotes` (`QuoteSet`) |
-| `evidence_asof_ms`, `evidence_digest` | `bindings.account` (`AccountState`) |
+| `evidence_asof_ms`, `evidence_digest` | `LegEvaluation.account` — the **refreshed** snapshot from step 2, never `bindings.state.account`, so the plan, intent and permit all bind one `AccountState` |
 | `provenance_digests` | `bindings.entry_batch` + `bindings.head_digest` + `bindings.proposal.id` |
 | `original` | `bindings.proposal` |
 | `final` | `LegEvaluation.final` (step 1) |
@@ -2053,21 +2087,27 @@ a key that is not a bundle member.
 | `ack` | step 7 |
 | `findings` | `LegEvaluation.findings` |
 | `leg_latency_ms` | `run`, keyed by `LEG_LATENCY_BUCKETS` |
+| `client_ref` | `recording.id_source.client_ref(...)`, allocated at step 5 and kept on the result even when a guard refusal leaves `intent` `None` — §6's `decision.legs[]` requires it for every leg |
 
 **`ActPermit` — where the twenty-four bindings come from.** `authority_id` from
 the current `Arming` in `state_view`; `valid_until_ms` the nine-term minimum of
 §5.13 step (6); `checked_at_ms` from `schedule.clock`; `lease_scope`,
 `fencing_token` from `execution.lease`; `readiness_digest`,
-`readiness_until_ms` from `state_view.readiness`; `authority_scope_digest` from
+`readiness_until_ms` from `bindings.state.view.readiness`; `authority_scope_digest` from
 the applied `Arming` scope (§5.6);
 `safety_epoch_digest` over release/runtime, readiness, calendar, coverage and
 watermarks, input/quote/evidence/risk versions, executor link/scope, health,
 breaker, rung, risk effect, authority and pending-control state — which is why
-the `Authority` constructor takes nine collaborators and not three. The
-remaining seventeen fields are copied from the `Intent` and the `DecisionPlan`
-it binds — those three were **not**, which is why they are named here.
+the `Authority` constructor takes ten collaborators and not three. The nine
+named above are the ones that come from neither the `Intent` nor the
+`DecisionPlan`; every remaining field is copied from one of those two, and
+`plan_id` is inherited from the `Permit` base. A count is deliberately not
+written here — `test_producers.py`'s completeness assertion is what keeps the
+row and `dataclasses.fields(ActPermit)` equal, and prose arithmetic in this
+section has been wrong three times.
 
-**`TickResult`.** `tick_id` from `recording.id_source`; `status`,
+**`TickResult`.** `tick_id` from `recording.id_source`; `observed_at_ms` from
+`schedule.clock`; `status`,
 `refusal_reason`, `error` from whichever phase refused; `data_asof_ms`,
 `coverage_digest`, `inputs_digest` and the seven-member `feed` block from
 `fetch`'s `FeedResult` and `read_entry`'s `EntryBatch`, which is why `feed` is
@@ -2084,10 +2124,13 @@ guard while nothing produced one. The records a step *reads* are walked too:
 | record | producer |
 |---|---|
 | `TickState{view, account, feed_status, feed_ages, calendar}` | assembled by `Tick.run` after the `account` phase (§5.13) and carried into each `LegBindings` |
-| `LegBindings` (12 fields) | assembled by `Tick.run` per proposal; `proposal`/`origin` from `propose`, `entry_batch`/`head_digest` from `read_entry`/`evaluate`, `quotes` from `quotes`, `state` the `TickState`, `release`/`rung` from the loop, ids from `recording.id_source` |
-| `Intent` (16 fields) | step 5; `client_ref` from `id_source`, `decision_plan_id`/`digest` from step 4, `authority_id` from `state.view.arming` (`None` at shadow/paper, since no ordinary arm exists there), the freshness bindings from `LegBindings`, `proposal` the `LegEvaluation.final` |
-| `PolicyRequest` (8 fields) | assembled by the caller of `ActionPolicy.permits`: `operation` at the call site, `risk_effect` from `LegEvaluation`, `rung` from `LegBindings`, `origin` from `LegBindings`, `breaker`/`readiness`/`authority` from `state.view`, `health` from `observability.health` |
+| `LegBindings` (13 fields) | assembled by `Tick.run` per proposal; `proposal`/`origin` from `propose`, `entry_batch`/`head_digest` from `read_entry`/`evaluate`, `quotes` from `quotes`, `state` the `TickState`, `release`/`rung` from the loop, ids from `recording.id_source` |
+| `Intent` (16 fields) | step 5; `client_ref` from `recording.id_source`, `created_ms` from `schedule.clock`, `release_hash` from `bindings.release`, `decision_plan_id`/`digest` from step 4, `proposal` the `LegEvaluation.final`, `authority_id` from `bindings.state.view.arming` for a model leg and from `bindings.reduction` for a reduction leg (`None` at shadow/paper, where no ordinary arm exists), `inputs_*`/`coverage_digest` from `bindings.entry_batch`, `quote_*` from `bindings.quotes`, and `evidence_*`/`risk_*` from `LegEvaluation.account` — the same one the plan binds |
+| `PolicyRequest` (8 fields) | assembled by the caller of `ActionPolicy.permits`: `operation` at the call site, `risk_effect` from `LegEvaluation`, `rung`/`origin` from `bindings`, `breaker`/`readiness` from `bindings.state.view`, `authority` from `bindings.state.view.arming` (model) or `bindings.reduction` (reduction), `health` from `observability.health` |
 | `LegEvaluation` (9 fields) | steps 1–3, threaded (`risk_effect` from step 2's `execution.accounting.classify`) |
+| `StateView` (14 fields) | `SeriesState.snapshot()` — every member is a projection of the fold and nothing else writes one |
+| `Proposal` | `Data.decider`'s `Proposer.proposals(head_outputs, candidates, state, provenance)`; the five provenance fields come from the `Provenance` the tick passes in, never stamped on afterwards |
+| `Provenance` (5 fields) | assembled by `Tick.run` from the `EntryBatch` (`read_entry`) and `QuoteSet` (`quotes`) |
 
 **The rule this table encodes.** A record field with no producer, a collaborator
 no bundle carries, or a call whose arguments no caller can supply, is a plan
@@ -2104,8 +2147,8 @@ rather than an attribute. Two assertions, and the second is what makes it bite:
 
 - **resolution** — every dotted path resolves by `getattr` chain against the
   built classes, so a renamed collaborator fails here;
-- **completeness** — for *every* dataclass in `records.py`, `leg.py` and
-  `loop.py`, `{field for (rec, field) in PRODUCERS if rec == R} ==
+- **completeness** — for *every* dataclass in `records.py`, `state.py`,
+  `bundles.py`, `leg.py` and `loop.py`, `{field for (rec, field) in PRODUCERS if rec == R} ==
   {f.name for f in dataclasses.fields(R)}`. A field added to a record without a
   producer fails; a producer naming a field that no longer exists fails.
 
@@ -2208,7 +2251,7 @@ dskit/production/
 │                      source/artifact/runtime fingerprints; release verification
 ├── records.py         Quote, Candidate, Proposal, Finding, InputWatermark, EntryBatch, TickStart, DecisionPlan, ReductionPlan,
 │                      ReductionAuthorization, EvidenceRequirement + MeasureEvidence, RiskVersion, AccountState,
-│                      QuoteSet, GateResult, FeedResult, FeedAge, ScopeVerdict, PolicyRequest, TickState;
+│                      QuoteSet, GateResult, FeedResult, FeedAge, ScopeVerdict, PolicyRequest, Provenance;
 │                      LeasePermit is coordination.py's, not here; Permit (frozen dataclass base) + SimulatedPermit + ActPermit, TickResult, Intent,
 │                      execution/monitoring values
 ├── clock.py           Clock ABC; ManualTime (the settable instant TestClock and ReplayClock each compose);
@@ -2320,7 +2363,8 @@ tests/production/
 ├── test_policy.py         completeness: every rung/breaker/health/readiness/operation/risk-effect combination is vetoed
 │                          by a named rule or explicitly allowed, none falls through; the generated golden table matches
 │                          the checked-in copy; disjoint classification; authority lifecycle; crash cuts
-├── test_executor.py       the full conformance battery run against Shadow, Paper and Recorded; paper determinism under seed;
+├── test_executor.py       the full conformance battery run against Shadow, Paper and Recorded (verifier behaviours belong
+│                          to test_verifier.py, not here); paper determinism under seed;
 │                          ioc/fok/gtd handling and day refused without session_end_ms; every fee kind against its closed form;
 │                          LSP: every SubmittingExecutor subclass returns an Ack and never raises for a permission fact;
 │                          permit-only live; no replace; frozen-input rehash/no reread;
@@ -2354,6 +2398,8 @@ tests/production/
 │                          each step barriers before its effect; a crash cut after every barrier; cumulative reservations
 │                          across legs; Authority polymorphism — shadow/paper mint without writing, live appends
 │                          authorization, reduction appends authority_use first; no rung or mode name appears in leg.py (AST)
+├── test_bundles.py        each bundle is frozen and validates presence and arity only — never types, since type validation
+│                          would import fourteen later modules and re-create the cycle bundles.py exists to break
 ├── test_ids.py            deterministic tick/leg/plan/client ids from stable semantic inputs; independent of wall time and
 │                          ledger sequence; RecordedIdSource replays the tape exactly
 ├── test_loop.py           per-key/quote/evidence deadlines; bound-state change at each barrier; cumulative risk; durable findings;
@@ -2517,7 +2563,7 @@ unmoved — specifically `tests/pipeline/test_driver.py` and
 returning source binding, explicit entity-key projection, event-time extraction,
 per-key digest recipe only — no universe, because the method is document-blind.
 The required universe comes from the serve document's
-`serving.required_universe`, which `plan` puts into the `FeedSpec` (§5.2); the
+`document.serving.required_universe`, which `plan` puts into the `FeedSpec` (§5.2); the
 pipeline stores no such artifact and this ADR does not add one. It is never inferred from dedupe `key_fields`, which
 may contain time. `ServingContract` is a frozen dataclass declared in `dskit/pipeline/node.py`
 beside `SERVING_EFFECTS`, for the same reason: pipeline may not import
@@ -2566,8 +2612,9 @@ follows dependencies: `vocab` → `base` → `redact` → `records` → `documen
 `release` → `clock` → `sessions` → `cadence` → `ledger` → `state` → `control` →
 `accounting` → `guards` → `breaker` → `arming` → `coordination` → `ids` →
 `bundles` → `policy` →
-`executor` → `resilience` → pipeline `SubgraphRunner` + `serving_contract` →
-`feed` → `decider` → `reconcile` → `readiness` → `verifier` → `monitors` → `metrics` →
+`resilience` → pipeline `SubgraphRunner` + `serving_contract` →
+`feed` → `decider` → `reconcile` → `readiness` → `verifier` → `executor` →
+`monitors` → `metrics` →
 `alerts` → `health` → `leg` → `compose` → `loop` → `__main__` → docs → examples
 → skeleton.
 
@@ -2576,7 +2623,10 @@ The order is acyclic, and two placements are the reason `policy.py` was split:
 sit early, but `SubmissionVerifier` rehashes the `EntryBatch` and refreshes
 quote, accounting, executor-scope and lease state — so it must follow `feed`,
 `accounting`, `coordination` and `readiness`, and it gets its own module rather
-than dragging two decision tables down the order behind it. `compose` sits between `leg` and `loop` because it can only build a bundle once
+than dragging two decision tables down the order behind it. `executor` then
+follows `verifier`, because `LiveExecutor.submit` delegates to
+`verify_and_call`; `test_executor.py` asserts the executor contract and leaves
+the verifier's own behaviours to `test_verifier.py`. `compose` sits between `leg` and `loop` because it can only build a bundle once
 every collaborator class exists, and `loop` receives bundles already built.
 `readiness`
 precedes `verifier` and `leg` because both take a GO as an input; `feed`
