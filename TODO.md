@@ -26,6 +26,11 @@
       A12579, the crash, exactly which outcomes were extracted from saved
       evidence, exactly which were rerun, the fix commit, and artifact paths.
       Never fabricate a pass/fail result or edit historical action rows.
+      For every legitimately reconstructed final result, append a separate
+      per-stock-and-horizon journal entry containing the reconstructed
+      pass/fail verdict, the source action/artifact paths, all required-draw
+      evidence, and the reconstruction method. Do not bundle individual
+      results into an undocumented aggregate entry.
 - [ ] **Build a Gate-3-only continuation for remaining work.** Its manifest
       must be generated from the original persisted Gate 1 selections and
       retain the original data cut, caches, horizons, and provenance. Exclude

@@ -31,7 +31,8 @@ no test suite was run because no source code changed.
 First reproduce and fix NRG h=1 seed-05 part-00's missing journal evidence
 with a focused test. Obtain independent major/critical review and resolve its
 findings before execution. Then append a provenance-rich recovery journal
-entry, create a Gate-3-only continuation from the original selections, run
+entry plus one separate, source-linked entry for each legitimately
+reconstructed stock-and-horizon verdict. Create the continuation, run
 the remaining work, write a result memo, wrap, commit, and push main.
 
 ## Prior wrap: Gate 3 rebuild built (2026-09-05, overnight, autonomous)
