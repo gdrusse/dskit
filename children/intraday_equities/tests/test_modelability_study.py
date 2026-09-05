@@ -960,6 +960,10 @@ def test_recovery_configs_preserve_the_source_computation_and_plan_offline():
     expected = continuation["stages"]["gate3_recovery"]["params"]["expected_rerun"]
     assert expected[0] == "NRG:1"
     assert len(expected) == 15
+    assert continuation["name"] == "p12-g3-recovery"
+    longest = f"{continuation['name']}-gate3-seed18-mstr-h10"
+    assert len(f"{longest} bounded walk-forward") <= 80
+    assert len(f"{longest}-part-19 walk-forward") <= 80
     assert plan_stages(
         load_document(str(CONFIGS / "run-p12-gate3-recovery-inventory.json"))
     ).order == ("inventory",)

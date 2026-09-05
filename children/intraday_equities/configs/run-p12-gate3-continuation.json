@@ -1,5 +1,5 @@
 {
-  "name": "p12-63-asset-modelability-gate3-continuation",
+  "name": "p12-g3-recovery",
   "notes": "P12 Gate-3-only continuation under ADR-0095: original data cut, pipeline, walk geometry, persisted Gate 1 rows and group caches; exclude only journal-backed 19-draw reconstructions and rerun every incomplete family under a new identity.",
   "pipeline": {
     "universe": {
