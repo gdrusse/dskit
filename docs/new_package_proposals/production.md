@@ -1482,6 +1482,45 @@ deadline invalidates the local permit without waiting for nominal expiry.
     └── process-<id>/base/  base-pass run dir (config/plan/resolved/nodes)
 ```
 
+### 5.8.2 `libs/sqlite.py` — `SqliteLedger` (phase 2)
+
+The second `Ledger`, and the reason the seam is an ABC. It is a pack because
+`sqlite3` is stdlib but the SCHEMA and its pragmas are a library-shaped choice,
+and because §8's tier rule puts a named library's plumbing in `libs/`.
+
+- `SqliteLedger(serve_root, process_id, release_hash, *, clock, fsync="every",
+  rotate=None, state=None, snapshot_every=None, lock=None)` — the SAME
+  constructor as `JsonlLedger`, so `compose.py` builds either from one site and
+  nothing downstream learns which it got.
+- `journal_mode=WAL` and `synchronous=FULL` are PINNED and not configurable. A
+  document's `document.durability.fsync` grades the BARRIER cadence — how often
+  the writer commits — and never the pragma, because a chain whose durability
+  can be lowered by a config key is not a chain. `fsync: "none"` therefore
+  still means "commit lazily", not "lose the write", and remains legal only at
+  `shadow` for the same reason it is in `JsonlLedger`.
+- One table `records(seq INTEGER PRIMARY KEY, kind, id UNIQUE, envelope TEXT
+  NOT NULL, hash, prev_hash)`, plus three triggers refusing `UPDATE` and
+  `DELETE` on it. Append-only is enforced by the STORE, not only by the code
+  that writes to it, which is the property JSONL gets from `O_APPEND` and a
+  sqlite file would otherwise lack.
+- `barrier()` is the `COMMIT`; `scan(kind, since_seq)` is one indexed query;
+  `head()`, `verify()`, `snapshot(payload)`, `latest_snapshot()` and `close()`
+  answer exactly §5.8's contract, and `verify()` returns the same
+  `first_bad_seq | None` walking in `seq` order.
+- `rotate` REFUSES: a sqlite chain is one file, and `document.placement.rotate`
+  names a JSONL segmentation policy. A document that selects `sqlite` while
+  declaring `rotate` refuses at `plan` rather than silently ignoring a knob its
+  author believed in.
+- `sqlite3` is named only inside methods, per §8's tier-2 rule.
+- **`LEDGER_KINDS = Registry("ledger", Ledger)` lives in `ledger.py`, beside
+  the ABC** — §4.3's rule that a family's registry sits with its seam — and
+  `ledger.py` registers `jsonl`. This pack registers `sqlite` on import; §8's
+  earlier note that `sqlite.py` "introduces" the registry meant that it is the
+  second implementation that gives the registry a purpose, not that the
+  registry moves into a pack. `document.durability.ledger` is the OPTIONAL
+  `{uses, params}` site, defaulting to `jsonl`, so every phase-1 document keeps
+  both its identity and its existing chain.
+
 ### 5.8.1 `state.py` — the fold
 
 R9's consensus decomposition has seven boxes, and box 3 (the state cache /
@@ -1609,8 +1648,8 @@ break ids and release hash; after inspection it records the delta, crosses
   into windows), `Threshold(ABC).breached(statistic, n_ref, n_cur) -> bool`.
   `Response` is a closed vocabulary (`RESPONSES`), not a strategy object.
   `Reference` (`leading(n)`, `rolling(window)`, `snapshot(path)` — a
-  saved `Profile`; phase 2 `run` over the run's predictions parquet via the
-  parquet pack); `Chunker` (`count(n)`, `period(iso)`, `sliding(n, step)`);
+  saved `Profile`; phase 2 adds `run` over the run's predictions parquet,
+  §5.10.2); `Chunker` (`count(n)`, `period(iso)`, `sliding(n, step)`);
   `Threshold` (`constant`, `reference_std(k)`, `alpha` — PSI benchmark
   `(1/n+1/m)·(B−1+z_α√(2(B−1)))` and the Kolmogorov series, both via
   `statistics.NormalDist`/`math`); `Response ∈ {log, warn, halt}` (phase 2:
@@ -1624,19 +1663,135 @@ break ids and release hash; after inspection it records the delta, crosses
   parameterised class because each reads a different record field, which is
   the only thing that varies — there is no shared numeric parameter to lift;
   `StreamMonitor` → `PageHinkley`, `TrackingSignal`; `DistributionMonitor` →
-  `PSI`, `KS` (bins from reference quantiles at `fit`). Phase 2: `DDM`, `ADWIN`,
-  `JensenShannon`, `LInf`; `OutcomeMonitor` → `Calibration` (ECE), `Brier`
-  (Murphy terms), `Skill` (BSS and Diebold–Mariano against the leg's stored
-  `baseline`, reusing `dskit.pipeline` metrics/stats), `PredictionBias`;
-  `ParityMonitor` — phase 2, defined with `replay` in §5.13's `report.py`
-  bullet: it observes the replay divergence classes rather than a data
-  statistic, which is why it is the one family with no phase-1 member.
+  `PSI`, `KS` (bins from reference quantiles at `fit`). Phase 2 adds `DDM` and
+  `ADWIN` to the stream family, `JensenShannon` and `LInf` to the distribution
+  family, and the two families phase 1 cannot populate — `OutcomeMonitor`
+  (`Calibration`, `Brier`, `Skill`, `PredictionBias`) and `ParityMonitor`,
+  which observes replay divergence classes rather than a data statistic and is
+  therefore the one family with no phase-1 member. Contracts in §5.10.1.
 - `Profile` value object (per-field count, missing, min, max, sum, sumsq,
   quantile bins, top-k) with `merge()`.
 - Rules pinned by tests: below `min_n` never `ok`; last partial chunk never `ok`;
   outcome verdicts `provisional` until `label_coverage`; a fixed anchor AND a
   rolling reference when both are declared; `alarm` with `response: halt` trips
   the breaker.
+
+### 5.10.1 `monitors.py` — the phase-2 families
+
+Four more members of the two phase-1 families, plus the two families phase 1
+declares and cannot populate. Every one of them is built through the existing
+`Monitor` seam: `cls(params, name=key)`, the four common knobs, a nested
+`window` / `threshold` / `reference` site resolved inside the monitor, one
+`statistic` per `verdict()`, and `state()` / `restore(state)` carried by the §6
+`snapshot`. Nothing here widens the seam.
+
+- `StreamMonitor` gains two change detectors, each a recursion in
+  `_stream_state()` exactly as `PageHinkley`'s is, and each reduced to a
+  DIMENSIONLESS statistic so the existing `Threshold` strategies bound it and
+  no detector carries a constant of its own:
+  - `DDM(params)` — Gama's drift detector over an error field in `[0, 1]`.
+    It tracks `p_t` (the running error rate) and `s_t = sqrt(p_t(1-p_t)/t)`,
+    remembers the pair minimising `p + s`, and reports
+    `statistic = (p_t + s_t - p_min - s_min) / s_min`, the number of sigmas
+    above the best the stream has been. The literature's warning at 2σ and
+    drift at 3σ are then two ordinary `constant` thresholds in the document,
+    not two numbers in the code. `min_n` gates the early stream where `s_t` is
+    meaningless, and an `alarm` resets the whole recursion on the next
+    observation as `PageHinkley`'s does.
+  - `ADWIN(params)` — adaptive windowing. It keeps its own window in the
+    stream state, cuts it at every split point, and reports
+    `statistic = max(|mean_left - mean_right| / eps_cut)` over the cuts, with
+    `eps_cut` the Hoeffding bound at `delta` (default `DEFAULT_ADWIN_DELTA`);
+    a `constant` threshold at `max: 1` is the classic test. On a breach it
+    drops the older sub-window, so the adaptive window shrinks itself. Params
+    add `delta` and `min_sub` (the smallest sub-window a cut may leave). The
+    declared `window` still gates `min_n` and labels the verdict, exactly as it
+    does for `PageHinkley` — the adaptive window is the statistic's, the
+    declared one is the verdict's.
+- `DistributionMonitor` gains two distances over the reference's own quantile
+  bins, so both share `PSI`'s binning and neither re-derives it:
+  - `JensenShannon(params)` — the base-2 Jensen–Shannon divergence, so
+    `statistic ∈ [0, 1]` and a document can reason about it without knowing the
+    sample size. `critical_value(alpha, n_ref, n_cur)` uses the same normal
+    approximation to `chi^2_{B-1}` the `PSI` benchmark already owns, divided by
+    `2 ln 2 * n_eff` with `n_eff = n_ref*n_cur/(n_ref+n_cur)` — imported from
+    that one owner, never restated, so loosening one benchmark cannot leave the
+    other behind.
+  - `LInf(params)` — the largest absolute bin-proportion gap, with
+    `critical_value(alpha, n_ref, n_cur) =
+    sqrt(-ln(alpha/(2B)) * (1/n_ref + 1/n_cur) / 2)`: the two-sided Hoeffding
+    bound with a Bonferroni factor over the `B` bins, because taking a maximum
+    over `B` comparisons and testing it at `alpha` without the correction is
+    how a drift monitor learns to cry wolf. It takes `bins` like `PSI`, and
+    refuses `bins < 2`.
+- `OutcomeMonitor(Monitor)` is the family §5.10 declares and phase 1 cannot
+  populate, because it needs a label. It observes BOTH record kinds through the
+  one `observe(record)` hook: a `decision` body parks each leg's
+  `(leg_id, forecast, baseline, weight)` in a bounded pending map
+  (`max_pending`, default `DEFAULT_MAX_PENDING`, oldest evicted — and an
+  eviction is counted as an unlabelled leg, never dropped silently); an
+  `outcome` body whose `outcome_kind` is one of the declared `outcome_kinds`
+  and whose `leg_id` is pending completes the pair into ONE observation, and an
+  `outcome` carrying `supersedes` REPLACES the observation it names instead of
+  adding a second. Params add `field` (the forecast field, e.g. `prediction`),
+  `outcome_kinds`, `label_coverage` (default `DEFAULT_LABEL_COVERAGE`) and
+  `max_pending`. `label_coverage()` is `paired / (paired + pending)` over the
+  current window, and `provisional()` returns `label_coverage() <
+  params["label_coverage"]` — the override of the base hook §5.10 reserved for
+  exactly this, so an outcome verdict says out loud that its labels are still
+  arriving. Members:
+  - `Calibration` — `statistic` is the expected calibration error over `bins`
+    equal-width bins of the forecast.
+  - `Brier` — `statistic` is the mean of `dskit.pipeline.metrics.brier`,
+    imported rather than restated. The Murphy decomposition is deliberately NOT
+    here: a `Verdict` carries one statistic, and the three terms only sum on
+    the exact stratification `report.py` computes (§5.13.3).
+  - `Skill` — `statistic` is the Brier skill score against the leg's stored
+    `baseline`, `1 - brier(forecast)/brier(baseline)`, so an ordinary
+    `constant` threshold at `min: 0` says "no worse than the benchmark".
+    Beside it, `dm_test() -> dict` returns
+    `dskit.pipeline.stats.diebold_mariano_test` over
+    `dskit.pipeline.stats.dm_loss_series` for the same window, which
+    `report.py` and `test_monitors.py` read. It is a method rather than the
+    statistic because `Threshold.breached(statistic, n_ref, n_cur)` sees one
+    number and cannot see a series, and because re-testing significance on
+    every arriving observation is a multiple-comparisons trap the report avoids
+    by testing once per period.
+  - `PredictionBias` — `statistic` is the mean signed error
+    `mean(forecast - label)`, bounded by a two-sided `constant` `{min, max}`,
+    since a bias monitor that took an absolute value could not say which way
+    the model leans.
+- `ParityMonitor(Monitor)` is the family with no phase-1 member because it
+  observes no data statistic. It takes `Divergence.to_obj()` bodies (§5.13.3),
+  filters to a declared `classes ⊆ DIVERGENCE_CLASSES`, and reports the
+  divergence COUNT in its window. **It is the one monitor the serve loop never
+  calls**: replay runs in a separate process against a scratch root and appends
+  nothing to the series, so `report.py` drives it and prints its verdict in the
+  parity section. Saying so here is the point — a monitor wired into
+  `Decision.monitors` by mistake would silently never observe anything.
+
+### 5.10.2 `libs/parquet.py` — `RunReference` (phase 2)
+
+The `run` member of `REFERENCE_KINDS` that §5.10 names and phase 1 defers: the
+reference population is the run's own scored predictions, so a drift monitor
+compares live decisions against exactly the distribution the model was
+validated on rather than against an operator's saved profile.
+
+`RunReference(params, *, field=None)`, a `Reference` registered as `run` by
+this pack. Params: `run_dir` (str, required), `column` (str, default the owning
+monitor's `field`), `max_rows` (int, default `DEFAULT_REFERENCE_MAX_ROWS`) and
+`notes`. `sample()` reads `<run_dir>/<node>/predictions.parquet` — the
+`dskit.pipeline.predictions` layout, whose `PREDICTIONS_FILE` constant is
+imported rather than spelled again — once, lazily, on first call, with
+`pyarrow` imported INSIDE the method per §8's tier-2 rule; a missing file,
+missing column or non-numeric column refuses there and not at construction,
+following `Snapshot`'s precedent that a reference performs no I/O when it is
+built. `add(value)` REFUSES: a run reference is a fixed anchor by definition,
+and silently accepting rolling values would make it drift with the thing it is
+supposed to be measuring drift against. The file's digest is reported by
+`fingerprint()` so `plan` can bind it into the release like any other artifact,
+which is what stops a re-scored run from moving a live alarm threshold under a
+fixed release hash.
 
 ### 5.11 `alerts.py` and `health.py`
 
@@ -1655,8 +1810,14 @@ break ids and release hash; after inspection it records the delta, crosses
   the limit, not dedup); a bounded
   `queue.Queue` consumed by one worker thread; `put_nowait` overflow and every
   sink exception swallowed and counted (`alert_sink_failures_total`,
-  `alerts_suppressed_total{why}`); `status: resolved` emitted on recovery. Phase
-  2: inhibition, silences, escalation, `ack`, sqlite state across restarts.
+  `alerts_suppressed_total{why ∈ ALERT_SUPPRESSIONS}`); `status: resolved`
+  emitted on recovery. **Only `AlertRouter.process(now_ms)` appends the §6
+  `alert` record, and only the loop thread calls it** — after `observe`,
+  outside every barrier, exactly where `Metrics.flush` sits; the worker thread
+  `start()` spawns delivers to sinks and appends nothing, and `start()` refuses
+  when a ledger is attached. D23's rule that no auxiliary thread writes is
+  therefore structural rather than a convention each sink must remember.
+  Phase 2 adds inhibition, silences, escalation and `ack` — §5.11.2.
 - `SEVERITIES = ("info", "warning", "error", "critical")` pinned to PagerDuty,
   OTel `SeverityNumber` (9/13/17/21), syslog (6/4/3/2), `logging` (20/30/40/50).
 - `Health`: `starting → {ready | degraded | unhealthy} → stopping`; `HealthProbe(ABC)`
@@ -1672,10 +1833,9 @@ break ids and release hash; after inspection it records the delta, crosses
   id. Emitters are `file` (atomic rewrite of `heartbeat.json`) and deadline-bound
   `url` (POST of `{process_id, sequence, at_ms, status}`; 2xx is success, any
   other result counts a failure and never blocks). `every_s` must be at least 1
-  and no greater than the cadence period. Phase 2 adds a `systemd` emitter
-  (`NOTIFY_SOCKET` datagrams: `READY=1`, `WATCHDOG=1`, `STATUS=`, `STOPPING=1`).
-  `HeartbeatEmitter(ABC).emit(payload)` is the hook; core ships the two kinds
-  above. The worker observes an
+  and no greater than the cadence period. `HeartbeatEmitter(ABC).emit(payload)`
+  is the hook; core ships the two kinds above, and phase 2 adds a `systemd`
+  emitter (§5.11.2). The worker observes an
   atomic last-successful-tick monotonic stamp; when `dead_after_ms` elapses it
   transitions health to unhealthy and stops emitting, allowing the external
   dead-man to page. It is sent in `ready`, and in `degraded` only when `document.heartbeat.in_degraded`.
@@ -1724,6 +1884,106 @@ place a count lives.
 - Phase 3 `prometheus`/`opentelemetry` packs subscribe to this registry;
   `metrics.py` imports neither and knows nothing about them.
 
+### 5.11.2 `alerts.py` and `health.py` — the phase-2 additions
+
+Phase 1's router dedups, groups, repeats and rate-limits. Phase 2 adds the four
+mechanisms an on-call rotation needs to live with it, and the systemd emitter.
+**None of them introduces a second store.** The owner's phase-2 line names
+"sqlite state across restarts"; the design here reads that as *the fold, in
+sqlite* — `libs/sqlite.py` (§5.8.2) puts the whole chain in sqlite and alert
+state rides in it like everything else — rather than as an alert database
+beside the ledger, which would be a second source of truth for the same fact
+and could disagree with the chain after a crash. That is the argument §5.12
+already used to refuse R3's `Idempotency` ledger, and it holds here unchanged.
+
+- **Inhibition.** `InhibitRule(params)` with `source`, `target` (label matchers)
+  and `equal` (the label names that must agree). While any alert matching
+  `source` is firing, an alert matching `target` whose `equal` labels agree is
+  suppressed with `why: "inhibited"` — the new `ALERT_SUPPRESSIONS` member — and
+  counted like every other suppression. Rules come from
+  `document.alerting.inhibit`, a list, and are evaluated in order at
+  `process(now_ms)` time; inhibition never deletes an alert, so the §6 `alert`
+  record is still appended and the evidence survives the suppression.
+- **Silences.** `Silence{silence_id, matchers, starts_at_ms, ends_at_ms,
+  created_by, comment, state}` with `state ∈ SILENCE_STATES = ("pending",
+  "active", "expired")` derived from the clock, never stored — a stored state
+  would be wrong the moment nothing wrote it. A silence is created by the
+  authenticated `silence` verb and appended as a §6 `silence` record whose body
+  is `Silence.to_obj()` plus `control_request_id`, `principal_digest` and
+  `proof_digest`; `SeriesState` folds it and exposes `silences()`, so a
+  restart cannot resurrect a silenced page. A matching alert is suppressed with
+  `why: "silenced"`. An unbounded silence refuses: `ends_at_ms` is required and
+  bounded by `document.alerting.max_silence_s`, because a silence with no end
+  is how a page is lost forever.
+- **Escalation.** `document.alerting.escalation` maps a level name in
+  `ESCALATION_LEVELS = ("primary", "secondary", "final")` to
+  `{after_s, sinks}`. An alert still firing and still unacknowledged
+  `after_s` after it first fired additionally routes to that level's sinks;
+  levels are climbed in order and never skipped, and reaching `final` twice
+  does not double-send because the repeat interval still applies. The level
+  names are closed for the same reason severities are: an operator cannot
+  invent a fourth rung whose delivery no test covers.
+- **Acknowledgement.** `AlertAck{fingerprint, acknowledged_until_ms, by,
+  reason}`, appended by the authenticated `ack` verb as a §6 `alert_ack`
+  record (body = `AlertAck.to_obj()` plus the control digests) and folded into
+  `SeriesState.alert_acks()`. An acknowledged fingerprint stops ESCALATING but
+  keeps firing and keeps being recorded: an ack means "a human owns this", not
+  "this is fixed", and the `resolved` transition remains the only thing that
+  ends an alert. The ack lapses at `acknowledged_until_ms` (from `--for`,
+  bounded by `document.alerting.max_ack_s`) or when the alert resolves.
+- `AlertRouter` gains `inhibits`, `silences` and `acks` as constructor
+  collaborators read from the fold, and `process(now_ms)` consults them in the
+  order silence → inhibition → dedup → group wait → rate limit, cheapest and
+  most explicit first. It remains the sole appender of the `alert` record and
+  is still called only from the loop thread.
+- **The systemd heartbeat emitter.** `SystemdEmitter(params)` is the third
+  `HEARTBEAT_KINDS` member. `emit(payload)` sends `WATCHDOG=1` and a one-line
+  `STATUS=` datagram to the `AF_UNIX` `SOCK_DGRAM` path in `NOTIFY_SOCKET` (a
+  leading `@` names an abstract socket and becomes a NUL). `HeartbeatEmitter`
+  gains two CONCRETE lifecycle hooks that do nothing by default —
+  `ready()` and `stopping()` — which the loop calls on the health machine's
+  first `ready` and on entering `stopping`; this emitter sends `READY=1` and
+  `STOPPING=1` from them, and the `file` and `url` emitters ignore them, so no
+  existing subclass changes. An unset `NOTIFY_SOCKET` REFUSES at construction:
+  a heartbeat that silently emits nothing is precisely the failure D18 exists
+  to prevent, and systemd's own watchdog would then be the thing that never
+  fires. `emit` never raises; a send failure is counted like any other
+  emitter's.
+- Both new verbs are authenticated control acts on §5.8's one path, with the
+  purposes `ack` and `silence` added to `APPROVAL_PURPOSES` (a page suppressed
+  by an unauthenticated caller is an outage with no evidence), and both journal
+  once per D22.
+
+### 5.11.3 `libs/prometheus.py` and `libs/opentelemetry.py` — metric sinks (phase 3)
+
+§5.11.1 rules that `metrics.py` imports neither library and knows nothing about
+them. Phase 3 keeps that literally true by adding one seam and two packs.
+
+- `MetricSink(ABC)` in `metrics.py`: `@abstractmethod publish(snapshot, at_ms)`
+  and a concrete `close()`. `Metrics.subscribe(sink)` registers one, and
+  `flush(at_ms, tick_id)` calls each subscriber inside the same swallow-and-count
+  rule a failing JSONL flush already gets — a new counter
+  `metric_sink_failures_total{sink}` — so a broken exporter can slow nothing and
+  fail no tick. `METRIC_SINK_KINDS = Registry("metric_sink", MetricSink)`, and
+  the §4.3 disjointness test grows to three sink registries:
+  `dskit.pipeline`'s tracking sinks, `ALERT_SINK_KINDS` and this one are
+  separate objects with separate names.
+- `PrometheusSink(params)` — `prometheus_client` inside the method. Params
+  `mode ∈ {pull, push}`, `addr`/`port` for the pull endpoint or
+  `gateway_url_env` for the push gateway (the env-var NAME, never the URL),
+  `job`. It mirrors the registry's own names and label sets, which are already
+  Prometheus-shaped and pinned by §5.11.1's naming test, so the exporter
+  translates nothing.
+- `OtelSink(params)` — `opentelemetry` inside the method. Params
+  `endpoint_env`, `protocol ∈ OTEL_PROTOCOLS = ("grpc", "http/protobuf")`,
+  `interval_s`, `resource` (a flat non-secret attribute map).
+- Metric sinks are declared in `document.placement.metric_sinks` — the
+  EXCLUDED section — not in `alerting`. §4.2 grades alert sinks because
+  emptying them silences a safety control; metrics are explicitly never an
+  input to a decision, a guard or a record (§5.11.1), so adding or removing an
+  exporter is a placement change and must not mint a new release. The rule is
+  the same one, applied to a different fact about the two kinds of sink.
+
 ### 5.12 `resilience.py`
 
 `Classifier(ABC)` (`classify(outcome) -> kind ∈ {ok, transient, throttled, fatal,
@@ -1763,6 +2023,42 @@ source of truth for the same fact and could disagree with the ledger after a
 crash. The venue-side half R3 also names — `dedupe ∈ {replays, rejects, window,
 none}` — survives as an executor capability (§5.7), and `on_ambiguous` is not a
 knob because D13 fixes the answer: query, never resend.
+
+### 5.12.1 `resilience.py` — `Signer` (phase 2)
+
+The one thing a live venue call needs that phase 1 leaves to the child: a
+request signature bound to a bounded clock skew. It lives here rather than in
+`arming.py` because it authenticates the process to the VENUE, while
+`ApprovalVerifier` authenticates a HUMAN to the process; the two share nothing
+but the word "sign", and merging them would put a venue API key on the same
+seam as an operator's proof.
+
+- `Signer(ABC)`: `@abstractmethod sign(method, url, headers, body, at_ms) ->
+  (headers, body)` returns a NEW header map and body and mutates neither
+  argument, so a retry signs the original request rather than one already
+  stamped; concrete `skew_ms()` returns the current estimate and
+  `probe(transport) -> int` performs one bounded request whose server-time
+  answer updates it. `SIGNER_KINDS = Registry("signer", Signer)`.
+- `HmacSigner(params)`: `key_env` (the env-var NAME holding the secret, never
+  the secret), `algorithm ∈ SIGNER_ALGORITHMS = ("sha256", "sha512")` (default
+  `DEFAULT_SIGNER_ALGORITHM`), `header` and `timestamp_header` (the header
+  names the venue expects), `max_skew_ms` (default `DEFAULT_MAX_SKEW_MS`),
+  `probe_every_ms`, and `prefix` (a venue-required literal string before the
+  payload). The key resolves once through `redact.resolve_secrets` and is
+  registered as a credential, so it can reach neither a log line nor a record;
+  the signature covers the canonical request line, the timestamp and the body,
+  and the digest — never the key — is what a `reason` may quote.
+- **`sign` REFUSES on skew**, in both directions: when the last successful
+  probe is older than `probe_every_ms`, or when `|skew_ms()| > max_skew_ms`.
+  This is the safety point of the object. A signature stamped outside the
+  venue's own window is rejected AFTER the request has been sent, which makes
+  the submit `unknown` and forces a reconciliation; refusing to sign makes it
+  `not_sent`, which costs nothing. Sending a request that is known to be
+  unacceptable is never the better branch.
+- It is declared at `document.execution.signer`, an OPTIONAL `{uses, params}`
+  key inside the already-graded `execution` section, so a document that does
+  not sign hashes exactly as it does today. A child's `LiveExecutor` calls it;
+  core never does, because core ships no venue.
 
 ### 5.13 `loop.py`, `outcomes.py`, `report.py`, `readiness.py`
 
@@ -1933,15 +2229,13 @@ knob because D13 fixes the answer: query, never resend.
   **this is a deliberate extension of the root convention, and §9.3 rewrites
   that line in both files rather than silently diverging from it.** `--once` runs one tick;
   `--max-ticks N` bounds completed ticks.
-- `outcomes.py` (phase 2): join settlements (`executor.settlements`) and derived
-  labels (strict forward as-of over the store via `scan_stream`) into `outcome`
-  records with `known_at_ms`; supersede chain; `current_outcome(leg)`; as-of cut.
-- `report.py` (phase 2): attribution per leg (surprise, implementation shortfall
-  split pinned to sum, fill rate, markouts, closing-value skill), calibration
-  (Brier + Murphy on exact stratification, ECE, BSS vs stored baseline),
-  cumulative value and drawdown; the replay parity diff with
-  `divergence ∈ {data, nondeterminism, version, guard, state, execution}`;
-  markdown and JSON emitters (the `runs.py` pipe-escape rule reused).
+- `outcomes.py` (phase 2): the bitemporal join — settlements and derived
+  labels into `outcome` records, the supersede chain, `current_outcome(leg)`
+  and the as-of cut. Contracts in §5.13.2.
+- `report.py` (phase 2): attribution per leg, calibration, cumulative value and
+  drawdown, and the replay parity diff with
+  `divergence ∈ DIVERGENCE_CLASSES`, plus the markdown and JSON emitters.
+  Contracts in §5.13.3.
 - `readiness.py` (phase 1): `Readiness(document, release)` with
   `evaluate(at_ms) -> ReadinessResult{verdict, items, readiness_digest,
   evaluated_at_ms, valid_until_ms}`, `record(result) -> seq`,
@@ -2122,6 +2416,188 @@ procedure inside the loop.
   cadence/overrun, control-inbox consumption, `Tick` construction, monitor
   `observe`, metrics flush, checkpoint, journal row and exit code. It does not
   contain the submission sequence.
+
+### 5.13.2 `outcomes.py` (phase 2)
+
+D21's bitemporal join, and the only producer of the `outcome` record §6 already
+defines. It answers one question — *what actually happened to this leg, as far
+as anyone knew at time T* — and answers it the same way twice, which is what
+makes an attribution number auditable rather than merely current.
+
+- `Outcome{leg_id, outcome_kind, effective_at_ms, known_at_ms, value, weight,
+  terminal, source, supersedes}` is a `records.py` value object and IS the §6
+  `outcome` body, the way `fill` IS a `Fill` — one schema, not two.
+  `outcome_kind ∈ OUTCOME_KINDS`, `source ∈ OUTCOME_SOURCES`, `value` and
+  `weight` are `Decimal`, `terminal` is a bool, and `supersedes` is the record
+  id this one replaces or `None`. `effective_at_ms > known_at_ms` refuses:
+  nothing is knowable before it is effective.
+- `DecidedLeg{leg_id, tick_id, instrument, decided_at_ms, final, client_ref,
+  qty, prediction, baseline, expected_value, reference_price}` is one entry of
+  §6's `decision.legs[]` joined to its tick's `observed_at_ms`.
+  `decided_at_ms` is that stamp — the wall instant at which the decision
+  existed — and deliberately NOT `data_asof_ms`: a tick's inputs are older than
+  the tick, so the later of the two is the conservative bound for a forward
+  join, and joining from the earlier one would admit a label the decision could
+  itself have seen.
+- `LedgerHistory` (§5.9) gains the two readers this needs —
+  `legs(since_ms) -> tuple[DecidedLeg]` and
+  `outcomes(since_ms) -> tuple[Outcome]` — rather than a second module learning
+  to scan the ledger; it is already the one reader `accounting.py` and
+  `reconcile.py` share, and `marks(since_ms)` is `outcomes` filtered to
+  `marked`.
+- `forward_asof(legs, events, key, at) -> tuple` is the ONE forward as-of rule
+  and a module function because both sources need exactly it: for each leg, the
+  FIRST event whose `key(event)` equals the leg's and whose `at(event)` is
+  **strictly greater** than that leg's `decided_at_ms`; events are consumed in
+  `at` order, a leg matches at most one event, and a leg with no such event is
+  dropped rather than matched to something earlier. The strict `>` is the whole
+  anti-leak property, and `test_outcomes.py` proves it with a hypothesis case
+  over `label_asof > decided_at`.
+- `OutcomeSource(ABC)`: `@abstractmethod poll(legs, at_ms) -> tuple[Outcome]`,
+  where `legs` are the not-yet-terminal `DecidedLeg`s the join supplies and
+  `at_ms` is the cut. A source reads no ledger and stamps no `known_at_ms` —
+  the join does both — so it cannot back-date what it found.
+  `OUTCOME_SOURCE_KINDS = Registry("outcome_source", OutcomeSource)`.
+  - `SettlementOutcomes(params, *, executor)` reads
+    `executor.settlements(since_ms)`; params `lookback_ms` (default
+    `DEFAULT_OUTCOME_LOOKBACK_MS`). A settlement joined to a leg yields
+    `settled` with `value = payout / qty` (the per-unit resolution, so legs of
+    different size are comparable) and `weight = qty`; a settled quantity below
+    the leg's is `partial`; a settlement whose `qty` is zero is `voided`; and a
+    settlement for a leg that already carries a terminal outcome with a
+    different value is `corrected` and names it in `supersedes`.
+  - `LabelOutcomes(params, *, root, registry)` reads a derived label stream
+    through `scan_stream` on the onboarding root the run was trained from —
+    D4's rule holds here too, so there is no second vendor fetch. Params
+    `source`, `stream`, `key_fields`, `time_field`, `value_field`,
+    `weight_field` (optional), `outcome_kind ∈ {settled, marked}` (default
+    `settled`; a non-terminal mark stream declares itself `marked` and sets
+    `terminal` false) and `lookback_ms`.
+  Between the two, every `OUTCOME_KINDS` member has a producer — the property
+  §5.16 exists to enforce, and the reason all five are enumerated here rather
+  than left to an implementer.
+- `OutcomeJoin(document, release, *, ledger, state, clock, sources)`, where
+  `sources` is the ordered name → `OutcomeSource` mapping `compose.py` built
+  from `document.outcomes.sources`:
+  - `collect(at_ms) -> tuple[Outcome]` asks every source for the open legs,
+    stamps each answer's `known_at_ms` with `at_ms` — the run's ONE instant,
+    read from the clock once by the caller and never per record, so a
+    crash-replayed collect produces byte-identical payloads and `Ledger.append`
+    dedups them instead of refusing a changed payload under a reused id (the
+    rule §6 states for `cash_flow.known_at_ms`, for the same reason) — drops
+    anything already standing unsuperseded in the fold, and orders by
+    `(known_at_ms, leg_id, source)`. It reads; it writes nothing.
+  - `record(outcomes) -> tuple[str]` appends each with
+    `id = f"outcome:{H('outcome-v1', release_hash, leg_id, source, effective_at_ms, known_at_ms)}"`
+    and one `barrier()` after the batch. It refuses a `supersedes` naming
+    anything that is not an `outcome` record of this series, or one that has
+    already been superseded — a chain link may be replaced once.
+  - `current_outcome(leg_id, at_ms=None) -> Outcome | None` walks the supersede
+    chain for one leg and returns its head at the `known_at_ms <= at_ms` cut;
+    `as_of(at_ms) -> Mapping` does the same for every leg. Re-asking at an
+    earlier `at_ms` reproduces exactly what was knowable then, which is the
+    vintage reproducibility D21 exists for and the reason `report.py` never
+    reads a settlement directly.
+- The `outcomes` verb MUTATES — it appends records — so it takes §5.8's one
+  path: queued to the durable inbox when a serve process holds the lock, or
+  synchronous under the lock when none does, with purpose `outcomes` and no
+  proof, since it records observed facts rather than an operator's claim. It
+  journals once, like every other mutating verb (D22).
+
+### 5.13.3 `report.py` (phase 2)
+
+Four answers over the recorded series — what each decision was worth, whether
+the forecasts were calibrated, what the value curve did, and whether a replay
+reproduces the tape — plus the two emitters that render them. It is last in
+§10's phase-2 order because it reads every other module.
+
+**Attribution, per leg.** `Attribution{leg_id, requested_qty, filled_qty,
+fill_rate, surprise, impact, opportunity, fees, shortfall, markouts,
+outcome_value, closing_value}`. `surprise = prediction - baseline`, the
+forecast's departure from the benchmark the leg itself stored, which is what
+makes it comparable across instruments. The implementation shortfall splits
+into `ATTRIBUTION_COMPONENTS = ("impact", "opportunity", "fees")` with
+`shortfall == impact + opportunity + fees` EXACTLY: every term is `Decimal`,
+the three are complementary by construction — the filled quantity priced
+against the decision price, the unfilled quantity valued at the outcome, and
+the fees the fills recorded — and `test_report.py` asserts the identity
+instead of deriving one term as the residual, which would make the assertion
+vacuous. There is deliberately **no `delay` term**: Perold's fourth component
+needs an arrival price at the instant of submission, and phase 1 records the
+decision's `reference_price` and the fills' prices but nothing between them —
+the `decision_plan` binds a `quote_digest`, not a quote. Recovering a price
+from a digest is impossible and adding one to the `intent` record would move
+`intent_digest`, which `ActPermit` binds, so the honest answer is three
+components and a stated gap. The `markouts` cover the ground a delay term
+would: `{horizon_ms: Decimal}` at each `document.reporting.markouts_ms`
+horizon, taken from the `marked` outcome nearest at or after
+`fill_ts + horizon` within `document.reporting.markout_tolerance_ms`, and
+`None` where no mark exists — a missing markout is recorded missing, never as
+zero. `fill_rate = filled_qty / requested_qty`, and `closing_value` is the
+leg's value at the report's cut, from `OutcomeJoin.current_outcome`.
+
+**Calibration.** `CalibrationReport{n, bins, ece, brier, reliability,
+resolution, uncertainty, baseline_brier, bss, dm}`. `brier` is the mean of
+`dskit.pipeline.metrics.brier` over the paired legs — imported, never
+restated. The Murphy terms are computed on the **exact** stratification (group
+by distinct forecast value, not by bin), because
+`brier = reliability - resolution + uncertainty` is an identity only there;
+binning turns the three into approximations that no longer sum, and
+`test_report.py` asserts the sum. `ece` is computed over
+`document.reporting.bins` equal-width bins, which is what ECE means: the two
+stratifications differ on purpose and the field names say which is which.
+`bss = 1 - brier / baseline_brier` against the leg's stored `baseline`, so a
+baseline scored against itself gives 0 — the pin `test_report.py` carries.
+`dm` is `dskit.pipeline.stats.diebold_mariano_test` over
+`dskit.pipeline.stats.dm_loss_series(y, yhat, mu=baseline)` at
+`dskit.pipeline.stats.dm_lags(n, h_steps)`, or `None` below two pairs.
+An unbounded-value series scores through `squared_error` instead of `brier`
+by the same functions; the choice is `document.reporting.scoring`, a
+registered `dskit.pipeline.metrics` name, so a child's own rule works with no
+new seam.
+
+**Value.** `ValuePoint{at_ms, realised, unrealised, external, nav, cumulative,
+drawdown}`, one per completed tick. `external` is the `cash_flow` total at that
+instant and keeps its own column: §6's `cash_flow` row already rules that an
+external flow changes what you have and never what you earned, so a curve that
+added deposits to profit would be the very defect that rule exists to prevent.
+`drawdown` is `cumulative` minus the running peak of `cumulative` over trading
+value alone.
+
+**Replay parity.** `replay` is D20's five-object swap and nothing more:
+`compose.bundles_for(document, release, registry, tape=tape)` — one new
+keyword — selects `ReplayClock`, `ReplayFeed`, `RecordedExecutor`,
+`RecordedAccounting` and `RecordedIdSource` together, so the rungs still differ
+only by which objects were injected and there is still no `ReplayTick`.
+`Tape.from_ledger(ledger)` rebuilds the recorded feed results, entry batches,
+acks, fills, accounting answers and ids from the original chain, and refuses a
+chain missing any of them rather than replaying a hole.
+`Replay(document, release, *, root, tape, registry).run() -> ParityReport` runs
+a `ServeLoop` to the end of the tape against a scratch serve root and never
+writes to the original series.
+`ParityDiff(tape_records, replay_records).compare() -> ParityReport` compares
+the SEMANTIC bodies of `decision`, `decision_plan` and `intent` field by field
+in `seq` order; envelopes, sequences, hashes and `recorded_at_ms` have their
+own deterministic chain assertions and never appear as divergences, because
+they are expected to differ.
+`Divergence{seq, record_id, field, divergence, tape, replay}` carries
+`divergence ∈ DIVERGENCE_CLASSES`, classified by a module-level table keyed on
+the field name — `data` for the input and coverage digests and `data_asof_ms`,
+`version` for the release/serving/run hashes and the runtime fingerprint,
+`guard` for findings, gate results and the final proposal, `state` for risk
+versions, risk digests and positions, `execution` for acks, fills and client
+refs — with `nondeterminism` as the DEFAULT on purpose: an unclassifiable
+difference is the most alarming kind and must never be absorbed into a named
+one. `ParityReport{compared, divergences, first_divergence_seq, clean}`.
+
+**Emitters.** `ReportEmitter(ABC).emit(report) -> str`, with `MarkdownReport`
+and `JsonReport`. It is a structural ABC rather than a registry family because
+`--format` picks one of exactly two and no document ever selects a report
+format. `MarkdownReport` renders every cell through the one owner of the
+pipe-escape rule — `dskit.pipeline.runs.render_cell`, made public by §9.1 for
+this, since production may not import a private pipeline name — because a
+table's format is taste and its escaping is correctness. The `report` verb is
+READ-ONLY: it appends nothing, takes no lock and does not journal.
 
 ### 5.14 `policy.py` — the cross-cutting invariant matrix
 
@@ -2498,24 +2974,25 @@ sha256-canonical idiom.
 |---|---|---|
 | `process` | start / stop / recovered | `event ∈ {start, stop, recovered}`, `series_id`, `release_hash`, `doc_hash`, `serving_hash`, `run_hash`, `artifact_digests`, `source_config_hash`, `runtime_fingerprint`, `rung`, `executor_kind`, `code_version`; stop adds `exit_code`. After its barrier, one journal row is written whose `notes` render the process id and final head in the D22 `production-v1` form |
 | `tick_start` | scheduled tick | `tick_id`, `tick_at_ms`, `release_hash` |
-| `tick` | terminal tick | `tick_id`, `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash, required_keys_digest, watermarks_by_key, coverage_digest}`, `inputs_digest`, `nav` (the marked portfolio value at this tick, single-currency only, `null` when a mark is missing or balances span currencies), `calendar`, `overrun_absorbed[]` (the tick instants this tick coalesced or skipped), `latency_ms{gate, verify_release, fetch, read_entry, coverage, evaluate, candidates, quotes, account, propose}` (one key per §5.13 `Tick` phase method, pinned by a test) and `leg_latency_ms` keyed by `vocab.LEG_LATENCY_BUCKETS` and summed over the tick's legs — `guard` spans §5.13.1 steps (1)–(3), `authorize` (4)–(6), `act` (7); step (8) records the outcome and is charged to the tick. These are spans over `LEG_STEPS`, not step names, which is why the two vocabularies are separate, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}` |
+| `tick` | terminal tick | `tick_id`, `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash, required_keys_digest, watermarks_by_key, coverage_digest}`, `inputs_digest`, `nav` (the marked portfolio value at this tick, single-currency only, `null` when a mark is missing or balances span currencies), `calendar`, `overrun_absorbed[]` (the tick instants this tick coalesced or skipped), `latency_ms{gate, verify_release, fetch, read_entry, coverage, evaluate, candidates, quotes, account, propose}` (one key per §5.13 `Tick` phase method, pinned by a test) and `leg_latency_ms` keyed by `vocab.LEG_LATENCY_BUCKETS` and summed over the tick's legs — `guard` spans §5.13.1 steps (1)–(3), `authorize` (4)–(6), `act` (7); step (8) records the outcome and is charged to the tick. These are spans over `LEG_STEPS`, not step names, which is why the two vocabularies are separate, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}`. A RECOVERED terminal tick is exempt from the seven-member `feed` block and from `calendar`/`health`/`rung`: it carries them as nulls, because recovery closes a tick whose fetch never completed and inventing a feed status for it would be a fabricated observation. Recovery appends the `decision` BEFORE the `tick`, matching the live order |
 | `decision` | tick (exactly one) | `tick_id`, `decision_plan_ids[]`, `decision_plan_digests[]`, `legs[]{leg_id, instrument, prediction, confidence, baseline, expected_value, reference_price, proposal, findings[], final, client_ref}` — `leg_id`, `findings[]`, `final` and `client_ref` are the leg's own; `proposal` carries the serialized final `Proposal`; every remaining field is copied from that `Proposal` (§5.4) under the same name — a no-op tick has `final: none` per leg or zero legs with `reason` |
 | `decision_plan` | proposal after complete pre-submit evaluation (barrier before proposal submit) | `plan_id`, entry/head/candidate provenance, original/final proposal, input/quote/evidence as-of+digests, `findings[]`, `gate_results[]`, scope verdict, `risk_effect`, `risk_version`, `risk_state_digest`, `result ∈ {submit, not_sent}` |
 | `intent` | proposal selected for possible submit | the canonical `records.Intent` value object; no second schema |
 | `authorization` | permitted live intent (barrier before submit) | serialized `ActPermit` plus `authority_use_id` (null on the ordinary path); no raw authority is executable |
 | `control_request` | durable CLI request | `request_id`, `purpose`, canonical payload (full reduction intents when applicable), `release_hash`, derived principal/proof digest, expiry |
-| `control_approval` | maker-checker approval | `request_id`, `purpose`, checker principal/proof digest, verified payload digest |
-| `authority` | issue / disarm / revoke / expire | `authority_id`, `kind ∈ {ordinary, reduction}`, request/approval ids, release/rung, expiry, allowlist/overlay, reduction intent digests, reason |
+| `control_approval` | maker-checker approval | `request_id`, `purpose ∈ CONTROL_PURPOSES`, checker `principal_digest`/`proof_digest`, `verified_payload_digest` (the digest the checker's proof actually covered, so "the checker approved THIS payload" is checkable rather than assumed) |
+| `authority` | issue / disarm / revoke / expire | `authority_id`, `event ∈ AUTHORITY_EVENTS`, `role ∈ AUTHORITY_ROLES` (spelled `role`, not `kind`, because the envelope already owns `kind`), request/approval ids, release/rung, expiry, allowlist/overlay, reduction intent digests, reason; an ordinary `issue` embeds the whole `ArmingState` under `arming`, which is what makes the maker/checker/proof digests recoverable from the fold alone |
 | `authority_use` | consume/reserve one reduction right (barrier before authorization) | unique `(authority_id, reduction_intent_digest)`, `client_ref`, `reserved_at_ms`; recovery may reference this reservation but no second intent may |
 | `order_event` | executor/loop report | `client_ref`, `venue_ref`, `event ∈ {not_sent, ack, reject, fill, partial_fill, cancel, expire, replaced_by_venue, unknown, status}` — `replaced_by_venue` is observed only (D10); no executor verb initiates it, `status`, `venue_ts_ms`, `recv_at_ms`, `reason` |
 | `fill` | execution | the `Fill` record |
-| `cash_flow` | money entering or leaving the account other than by trading | `effective_at_ms`, `known_at_ms`, `supersedes` (bitemporal per D21, since a flow found by reconciliation days later has effective ≠ known and a wrongly adopted amount must be correctable rather than merely offset), `currency`, `amount` (signed `Decimal`), `kind ∈ CASH_FLOW_KINDS`, `external` (true for a deposit or withdrawal, false for an interest or fee accrual the venue applied), `source` is always `venue` (the amount is the reconciler's computed delta, never an operator-supplied number); `kind` and `external` come from the operator's proof and never default to `external: true`, `evidence` (the balance delta and recon break it explains, or the operator's note), `id = H("cash-flow-v1", release_hash, control_request_id, break_id)` so a crash-replayed `adopt` cannot append the same money twice. It is appended **before** the `adoption` record and inside the same barrier, so a crash between them cannot leave a break marked resolved with no amount recorded — **without this record an external deposit is indistinguishable from trading profit for the rest of the series' life**. `SeriesState.apply(cash_flow)` adjusts `StateView.balances` and advances `economic_seq` — it is a balance update, which D14 already counts as economic — so the fold carries both the money and the reason it moved, and the re-reconcile after adoption clears the break instead of reproducing it. Nothing downstream can separate them later, so it is recorded when it happens or never. **Every economic measure partitions the fold on `external`**: `pnl`, `drawdown`, `consecutive_losses` and `error_vs_realised` read trading records only and never see an external flow, while `bankroll_fraction` and `exposure` read the capital base *including* it. An external flow changes what you have, never what you earned — without that partition an adopted deposit would inflate a `pnl` halt guard into headroom, and `document.reconcile.lookback_ms` guarantees that any fill older than the window is classified `cash` and adoptable, so this is a routine mis-classification rather than an attack. `test_guards.py` pins that a `cash_flow` cannot move a `pnl` bound |
-| `outcome` | label arrival / mark / correction | `leg_id`, `kind ∈ {settled, marked, voided, partial, corrected}`, `effective_at_ms`, `known_at_ms`, `value`, `weight`, `terminal`, `supersedes`, `source` |
-| `guard_state` | a guard hold or pause | `guard`, `scope_key`, `kind ∈ {hold, pause}`, `reason`, `held_until_ms`, `resume_at_ms`, `finding` — folded by `SeriesState` like breaker and arming, so a restart cannot resume a paused strategy early |
+| `cash_flow` | money entering or leaving the account other than by trading | `effective_at_ms`, `known_at_ms`, `supersedes` (bitemporal per D21, since a flow found by reconciliation days later has effective ≠ known and a wrongly adopted amount must be correctable rather than merely offset), `currency`, `amount` (signed `Decimal`), `flow_kind ∈ CASH_FLOW_KINDS` (spelled `flow_kind`, not `kind`), `external` (true for a deposit or withdrawal, false for an interest or fee accrual the venue applied), `source` is always `venue` (the amount is the reconciler's computed delta, never an operator-supplied number); `kind` and `external` come from the operator's proof and never default to `external: true`, `evidence` (the balance delta and recon break it explains, or the operator's note), `id = H("cash-flow-v1", release_hash, control_request_id, break_id)` so a crash-replayed `adopt` cannot append the same money twice. `supersedes` NETS rather than annotates: the fold keeps every flow's `(currency, amount, superseded_by)`, and a flow naming X subtracts X's amount before adding its own, so a corrected adoption can never double-bank; X may be superseded once and an unknown X refuses. `known_at_ms` is the CONSUMED COMMAND's `queued_at_ms`, never `clock.now_ms()` at the handler — a crash-replayed `adopt` must produce a byte-identical payload or `Ledger.append` refuses it as a changed payload under a reused id. It is appended **before** the `adoption` record and inside the same barrier, so a crash between them cannot leave a break marked resolved with no amount recorded — **without this record an external deposit is indistinguishable from trading profit for the rest of the series' life**. `SeriesState.apply(cash_flow)` adjusts `StateView.balances` and advances `economic_seq` — it is a balance update, which D14 already counts as economic — so the fold carries both the money and the reason it moved, and the re-reconcile after adoption clears the break instead of reproducing it. Nothing downstream can separate them later, so it is recorded when it happens or never. **Every economic measure partitions the fold on `external`**: `pnl`, `drawdown`, `consecutive_losses` and `error_vs_realised` read trading records only and never see an external flow, while `bankroll_fraction` and `exposure` read the capital base *including* it. An external flow changes what you have, never what you earned — without that partition an adopted deposit would inflate a `pnl` halt guard into headroom, and `document.reconcile.lookback_ms` guarantees that any fill older than the window is classified `cash` and adoptable, so this is a routine mis-classification rather than an attack. `test_guards.py` pins that a `cash_flow` cannot move a `pnl` bound |
+| `outcome` | label arrival / mark / correction | the `records.Outcome` value object (§5.13.2): `leg_id`, `outcome_kind ∈ OUTCOME_KINDS` (spelled `outcome_kind`, not `kind`), `effective_at_ms`, `known_at_ms`, `value`, `weight`, `terminal`, `supersedes`, `source ∈ OUTCOME_SOURCES`. Phase 1 defines it because `LedgerHistory.marks` and the `error_vs_realised` measure already read it; phase 2's `outcomes` verb is its producer. `supersedes` names the `outcome` record this one replaces (once — a second refuses), and a record with `effective_at_ms > known_at_ms` refuses: nothing is knowable before it is effective |
+| `guard_state` | a guard hold, pause or release | `guard`, `scope_key`, `state_kind ∈ GUARD_STATE_KINDS` (spelled `state_kind` for the same reason `authority.role` is), `reason`, `held_until_ms`, `resume_at_ms`, `finding` — folded by `SeriesState` like breaker and arming, so a restart cannot resume a paused strategy early. Phase 2 adds the third kind, `released`: the `approve-hold` verb (§5.5.1) clears one hold before its ttl, and the fold drops it |
 | `readiness` | a `ready` evaluation | `release_hash`, `verdict ∈ READINESS_VERDICTS`, `items[]{item, required, evidence, waiver, passed}`, `readiness_digest`, `evaluated_at_ms`, `valid_until_ms` — the durable GO the action matrix reads and `ActPermit` binds; `ready` is the only verb that writes it |
 | `recon` | reconciliation run | `scope`, `ours_digest`, `theirs_digest`, `breaks[]`, `status`, `action` |
-| `trip` | breaker transition, including reduce/reset/halt | `from`, `to`, `reason`, `actor`, `control_request_id`, proof/principal digest, acknowledged trip id, `cancel_outcome` |
-| `adoption` | authenticated venue-break adoption | `control_request_id`, principal/proof digest, named break ids, delta digest, before/after recon ids |
+| `trip` | breaker transition, including reduce/reset/halt | `from`, `to`, `reason ∈ TRIP_REASONS`, `actor`, `control_request_id`, `principal_digest`/`proof_digest`, `acknowledged_trip_id`. It carries NO cancel outcome: a halting `trip` is appended and barriered BEFORE any cancel I/O, so the ledger says "halted" before the process touches the venue, and what the cancel came to is a separate record |
+| `cancel_outcome` | one best-effort cancel sweep after a halting `trip` | `trip_id`, `outcome ∈ CANCEL_OUTCOMES`, `acks[]` (the serialized `Ack`s). Appended and barriered after the attempt; non-economic, and the fold reads nothing from it beyond the head. A halting `trip` with no later `cancel_outcome` is what recovery looks for: it re-issues `cancel_all` query-first rather than assuming either answer |
+| `adoption` | authenticated venue-break adoption | `control_request_id`, `principal_digest`/`proof_digest`, `break_ids[]`, `delta_digest`, `before_recon_id` — the `recon` record the adoption acted on. There is no `after_recon_id`: the follow-up reconciliation is its own `recon` record appended after this barrier, and a field naming a record that does not exist yet has no producer |
 | `command_result` | consumed inbox request | `request_id`, `status ∈ {applied, rejected}`, emitted record ids, reason |
 | `monitor` | verdict change / window close | `monitor`, `slice`, `window`, `statistic`, `threshold`, `status`, `provisional` |
 | `alert` | firing / resolved | the `Alert` record + per-sink outcomes |
@@ -2762,6 +3239,9 @@ class SubgraphRunner:
     def __init__(self, the_plan, needed, node_outputs, splits_info, prev, policy=None)
     def rerun(self, overrides, outputs, ctx, prev_bindings, *, guard_verdicts=False)
         -> (outputs, reran_keys, seconds)
+    def run_keys(self, keys, outputs, ctx, prev_bindings)
+        -> (outputs, ran_keys, seconds)
+def apply_param_override(params, node_key, path, value)   # was private
 
 # dskit/pipeline/policy.py  (new module)
 class ExecutionPolicy(ABC):
@@ -2811,6 +3291,20 @@ carries all three:
   seam must keep the declared-node check first (`driver.py:507-511` today):
   `Plan.role_of` indexes `resolved[key]`, so testing unsearchability before
   declaredness would raise `KeyError` where today it raises `ValueError`.
+- **`run_keys` is the base pass's verb, and `rerun` is search's.** Serving's
+  immutable base pass has no overrides at all — it executes the pure and
+  approved-`release_read` keys of `needed` that are neither the entry nor its
+  descendants — and `rerun`'s subgraph is `order ∩ needed ∩ dirty`, which is
+  empty without an override. Rather than pass a sham override to make the
+  subgraph non-empty, `run_keys(keys, outputs, ctx, prev_bindings)` walks the
+  given keys in plan order through the identical node lifecycle and returns the
+  identical triple; an undeclared key raises `ValueError` naming it, and a
+  deferred key with no seeded output raises rather than silently skipping.
+  `apply_param_override` becomes public for the same reason `SubgraphRunner`
+  does — `serving_document` applies search winners with it, and a second copy
+  of the existing-path-only rule is exactly the duplication root `CLAUDE.md`
+  forbids. Exactly one function definition survives the rename; the private
+  spelling stays as an alias only while a pipeline test imports it.
 - **`rerun` honours `policy.defer(key)`.** `_execute` computes `dirty` from the
   override targets plus their descendants, and serving's only override
   addresses the entry — so a naive extraction would re-run the entry and take a
@@ -2874,7 +3368,29 @@ registered class in `kinds_*.py` and `libs/*.py` stays `forbidden` by the
 fail-closed default until reviewed. That means a phase-1 serve document can
 only use nodes from the audited set, which is a real limitation and is stated
 in §2's scope. Widening the set is incremental and needs no ADR: each class
-gains an override and a registry-enumeration test line. Registry-enumeration tests in `tests/pipeline/` pin
+gains an override and a registry-enumeration test line.
+
+**Phase 2b — the widening procedure, per class, in this order.** (1) Read the
+class's LOAD path end to end and prove every read reaches the artifact through
+`Node.read_artifact_text` / `read_artifact` — no `open(`, no `os.`/`io.`, no
+socket, no library file API, in `run_load` or anything it calls; a library
+deserialiser that takes a PATH fails this step and the class stays
+`forbidden` until it takes bytes. (2) Set `serving_load_audited = True` on
+the class (a `TrainableNode`), or override `serving_effect` to `pure` /
+`release_read` (anything else). (3) Add its line to the registry-enumeration
+test in `tests/pipeline/test_serving_effect.py`, asserting the classification
+under LOAD evidence AND under no evidence, and add it to the AST no-direct-I/O
+list. (4) Re-run the whole pipeline suite and the 20 pinned sha256 literals;
+none may move, since a `serving_effect` override is a classmethod and touches
+no identity. The candidates, easiest evidence first: the remaining
+`fitted.py` fitted transforms; the pure row shapers in `kinds_table.py` and
+`kinds_flow.py`; `kinds_stats.py`'s tests; then the `libs/` trainables —
+`SklearnFit`, `SklearnPredict`, `SklearnSelect`, `TorchTrain`, `TorchPredict`
+and `DeclaredTrain` — which are LAST because each loads through its own
+library's deserialiser and step (1) has to reach into that call, which is why
+R16 leaves every one of them `forbidden` under load evidence until then.
+`kinds_report.py`, `kinds_search.py` and every writing node stay `forbidden`
+permanently: a node that writes is not servable at any width. Registry-enumeration tests in `tests/pipeline/` pin
 every classification and prove the classmethod performs no I/O. The derived
 serving document drops splits. The configured entry-window override must address
 an existing full param path; the standard override rule is unchanged.
