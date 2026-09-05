@@ -76,17 +76,36 @@ Agent orientation template — see README.md for what the child does.
   `tests/children/test_skeleton.py` — reshaping the SKELETON means
   updating that pin in the same commit (copies are unpinned).
 
+## Serving a run forward
+
+`dskit.production` owns the loop; a child owns the venue. `nodes.py` answers
+`serving_effect` (the source is `entry_read`, the transform is `pure`; the
+default is `forbidden`, so silence keeps a class out of a served graph) and
+publishes a `serving_contract` with no universe in it — the required key set
+is the serve document's, pinned into the release.
+
+`configs/serve-sample.json` serves `run-sample.json` at the **shadow** rung:
+it decides for real and sends nothing. `execution.py`, `accounting.py`,
+`approvals.py` and `coordination.py` are fail-closed templates; implement one
+only when its integration is real, and prove the executor with
+`executor_conformance_suite`. `tests/test_production.py` fails the moment a
+template becomes convenient enough to send an order.
+
 ## Layout
 
 ```
-yourproject/           # tier-3 code (connectors.py, nodes.py)
-configs/               # asset-model / source-sample / suite-sample / run-sample
+yourproject/           # tier-3 code: connectors.py, nodes.py, and the four
+                       #   production seams — execution / accounting /
+                       #   approvals / coordination, all fail-closed
+configs/               # asset-model / source-sample / suite-sample /
+                       #   run-sample / serve-sample
 journal.json           # dskit.journal marker
 docs/decisioning/      # actions.csv + path.csv; README generated
 docs/explanations/     # README points to record-explanation
 docs/memos/            # README points to memo
 docs/research/         # README points to record-research
-tests/                 # conftest bootstrap + configs/connectors/nodes tests
+tests/                 # conftest bootstrap + configs/connectors/nodes/
+                       #   execution/production tests
 pyproject.toml         # dependencies = ["dskit"]
 ```
 
