@@ -14,6 +14,12 @@ Three rulings shape these tests:
   (from-state, to-state, cause, proof) and that a veto stops it dead
   with nothing appended. The table itself belongs to `test_policy.py`
   and is deliberately not restated here.
+* **D13 — record before act, even for a cancel.** The halting `trip` is
+  appended and barriered *before* any cancel I/O, so a crash inside
+  `cancel_all` leaves a ledger that already folds `halted`. That is why
+  the trip body carries no outcome: the result of the best-effort cancel
+  is a separate `cancel_outcome` record, appended and barriered after
+  the attempt and bound to the trip it reports.
 * **D12 — halt never flattens, and resume never re-arms.** A halt
   refuses submissions and best-effort cancels working orders, recording
   one of `CANCEL_OUTCOMES`. Leaving `active` revokes the ordinary arm,
@@ -36,6 +42,7 @@ from decimal import Decimal
 
 import pytest
 
+from dskit.production import breaker as breaker_module
 from dskit.production import vocab
 from dskit.production.base import ProductionError, canonical_hash
 from dskit.production.breaker import Breaker
@@ -68,7 +75,9 @@ PROOF_DIGEST = "8" * 64
 COOLING_OFF_S = 900
 COOLING_OFF_MS = COOLING_OFF_S * 1000
 
-#: The nine keys §6's `trip` body carries.
+#: The eight keys §6's `trip` body carries. `cancel_outcome` is NOT one
+#: of them: a record that had to wait for the cancel result could not be
+#: barriered before the cancel I/O, which is what D13 requires.
 TRIP_BODY_KEYS = {
     "from",
     "to",
@@ -78,8 +87,10 @@ TRIP_BODY_KEYS = {
     "principal_digest",
     "proof_digest",
     "acknowledged_trip_id",
-    "cancel_outcome",
 }
+
+#: The `cancel_outcome` record that reports the best-effort cancel.
+CANCEL_OUTCOME_BODY_KEYS = {"trip_id", "outcome", "acks"}
 
 #: What a caller hands the ledger; the other nine are assigned (§6).
 CALLER_KEYS = ("kind", "id", "body")
@@ -207,16 +218,26 @@ class _Decision:
 
 
 class FakeExecutor:
-    """`cancel_all()` answers with acks, or raises when told to."""
+    """`cancel_all()` answers with acks, or raises when told to.
+
+    It records what the ledger looked like at the moment it was entered,
+    so "the halt is durable before any cancel I/O" is checkable from the
+    inside rather than inferred from the final record order. `ledger` is
+    attached by `make_breaker`, which is what builds the ledger.
+    """
 
     def __init__(self, acks=(), raises=False):
         self.acks = tuple(acks)
         self.raises = raises
+        self.ledger = None
         self.cancel_all_calls = 0
-        self.sentinel_seen = []
+        self.calls_at_entry = []
 
     def cancel_all(self):
         self.cancel_all_calls += 1
+        if self.ledger is not None:
+            self.calls_at_entry.append(list(self.ledger.calls))
+            self.ledger.calls.append(("cancel_all", None))
         if self.raises:
             raise RuntimeError("venue unreachable")
         return self.acks
@@ -350,6 +371,8 @@ def make_breaker(tmp_path, document=None, policy=None, executor=None, clock=None
     ledger = FoldingLedger(state, clock)
     policy = policy if policy is not None else RecordingPolicy()
     serve_root = ServeRoot(str(tmp_path / "serve"), SERIES_ID)
+    if executor is not None:
+        executor.ledger = ledger
     breaker = Breaker(
         doc,
         serve_root,
@@ -360,6 +383,17 @@ def make_breaker(tmp_path, document=None, policy=None, executor=None, clock=None
         executor=executor,
     )
     return breaker, ledger, state, clock, policy, serve_root
+
+
+def cancel_outcome_record(ledger):
+    """The single `cancel_outcome` envelope the halt produced."""
+    found = [env for env in ledger.records if env["kind"] == "cancel_outcome"]
+    assert len(found) == 1, ledger.kinds()
+    return found[0]
+
+
+def outcome_of(ledger):
+    return cancel_outcome_record(ledger)["body"]["outcome"]
 
 
 def open_a_working_order(ledger, client_ref="ref-1"):
@@ -436,7 +470,7 @@ def test_current_never_reads_the_breakers_own_memory(tmp_path):
 def test_a_trip_appends_one_trip_record_with_section_6s_body(tmp_path):
     breaker, ledger, _, _, _, _ = make_breaker(tmp_path, cancel_open=False)
     seq = halt(breaker, reason="feed_dead")
-    assert ledger.kinds() == ["trip"]
+    assert ledger.kinds() == ["trip", "cancel_outcome"]
     env = ledger.last_trip()
     assert env["seq"] == seq
     assert set(env["body"]) == TRIP_BODY_KEYS
@@ -609,7 +643,7 @@ def test_reduce_moves_active_to_reducing_and_records_no_cancel(tmp_path):
     assert state.snapshot().breaker == "reducing"
     body = ledger.last_trip()["body"]
     assert (body["from"], body["to"]) == ("active", "reducing")
-    assert body["cancel_outcome"] == "none"
+    assert ledger.kinds() == ["trip"]
 
 
 def test_flatten_moves_active_to_reducing(tmp_path):
@@ -791,11 +825,92 @@ def test_leaving_active_for_reducing_also_revokes_the_ordinary_arm(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_the_halt_is_durable_before_any_cancel_io_reaches_the_venue(tmp_path):
+    """D13: record before act. The trip is appended AND barriered first,
+    so a process that dies inside `cancel_all` still folds `halted`."""
+    executor = FakeExecutor(acks=(ack("pending_cancel"),))
+    breaker, ledger, _, _, _, _ = make_breaker(tmp_path, executor=executor)
+    open_a_working_order(ledger)
+    halt(breaker)
+    assert executor.calls_at_entry[0][-2:] == [("append", "trip"), ("barrier", None)]
+
+
+def test_a_crash_inside_cancel_all_leaves_the_halt_already_recorded(tmp_path):
+    executor = FakeExecutor(raises=True)
+    breaker, ledger, state, _, _, _ = make_breaker(tmp_path, executor=executor)
+    open_a_working_order(ledger)
+    halt(breaker)
+    assert executor.calls_at_entry[0][-2:] == [("append", "trip"), ("barrier", None)]
+    assert state.snapshot().breaker == "halted"
+    assert outcome_of(ledger) == "failed"
+
+
+def test_the_halt_sequence_is_trip_barrier_cancel_outcome_barrier(tmp_path):
+    executor = FakeExecutor(acks=(ack("pending_cancel"),))
+    breaker, ledger, _, _, _, _ = make_breaker(tmp_path, executor=executor)
+    open_a_working_order(ledger)
+    ledger.calls.clear()
+    halt(breaker)
+    assert ledger.calls == [
+        ("append", "trip"),
+        ("barrier", None),
+        ("cancel_all", None),
+        ("append", "cancel_outcome"),
+        ("barrier", None),
+    ]
+
+
+def test_a_halt_that_cancels_nothing_still_records_the_outcome(tmp_path):
+    """`none` is one of `CANCEL_OUTCOMES`, so it is a recorded fact —
+    without the record the ledger could not say whether a halt tried."""
+    executor = FakeExecutor(acks=())
+    breaker, ledger, _, _, _, _ = make_breaker(tmp_path, executor=executor)
+    ledger.calls.clear()
+    halt(breaker)
+    assert ledger.calls == [
+        ("append", "trip"),
+        ("barrier", None),
+        ("append", "cancel_outcome"),
+        ("barrier", None),
+    ]
+    assert outcome_of(ledger) == "none"
+    assert executor.cancel_all_calls == 0
+
+
+def test_the_cancel_outcome_record_is_bound_to_the_trip_it_reports(tmp_path):
+    executor = FakeExecutor(acks=(ack("pending_cancel"),))
+    breaker, ledger, _, _, _, _ = make_breaker(tmp_path, executor=executor)
+    open_a_working_order(ledger)
+    halt(breaker)
+    record = cancel_outcome_record(ledger)
+    assert set(record["body"]) == CANCEL_OUTCOME_BODY_KEYS
+    assert record["body"]["trip_id"] == ledger.last_trip()["id"]
+    assert ledger.last_trip()["id"] in record["id"]
+
+
+def test_the_cancel_outcome_record_carries_the_acks_it_read(tmp_path):
+    acks = (ack("pending_cancel"), ack("rejected", "ref-2"))
+    executor = FakeExecutor(acks=acks)
+    breaker, ledger, _, _, _, _ = make_breaker(tmp_path, executor=executor)
+    open_a_working_order(ledger)
+    open_a_working_order(ledger, "ref-2")
+    halt(breaker)
+    assert cancel_outcome_record(ledger)["body"]["acks"] == [a.to_obj() for a in acks]
+
+
+def test_a_cancel_that_never_answered_records_no_acks(tmp_path):
+    executor = FakeExecutor(raises=True)
+    breaker, ledger, _, _, _, _ = make_breaker(tmp_path, executor=executor)
+    open_a_working_order(ledger)
+    halt(breaker)
+    assert cancel_outcome_record(ledger)["body"]["acks"] == []
+
+
 def test_a_halt_with_nothing_working_records_none_and_calls_no_executor(tmp_path):
     executor = FakeExecutor(acks=())
     breaker, ledger, _, _, _, _ = make_breaker(tmp_path, executor=executor)
     halt(breaker)
-    assert ledger.last_trip()["body"]["cancel_outcome"] == "none"
+    assert outcome_of(ledger) == "none"
     assert executor.cancel_all_calls == 0
 
 
@@ -806,7 +921,7 @@ def test_a_halt_records_none_when_the_document_disables_cancel_open(tmp_path):
     )
     open_a_working_order(ledger)
     halt(breaker)
-    assert ledger.last_trip()["body"]["cancel_outcome"] == "none"
+    assert outcome_of(ledger) == "none"
     assert executor.cancel_all_calls == 0
 
 
@@ -816,7 +931,7 @@ def test_a_halt_cancels_working_orders_when_the_document_asks(tmp_path):
     open_a_working_order(ledger)
     halt(breaker)
     assert executor.cancel_all_calls == 1
-    assert ledger.last_trip()["body"]["cancel_outcome"] == "submitted"
+    assert outcome_of(ledger) == "submitted"
 
 
 def test_a_halt_records_failed_when_the_executor_raises(tmp_path):
@@ -824,7 +939,7 @@ def test_a_halt_records_failed_when_the_executor_raises(tmp_path):
     breaker, ledger, state, _, _, _ = make_breaker(tmp_path, executor=executor)
     open_a_working_order(ledger)
     halt(breaker)
-    assert ledger.last_trip()["body"]["cancel_outcome"] == "failed"
+    assert outcome_of(ledger) == "failed"
     assert state.snapshot().breaker == "halted"
 
 
@@ -834,7 +949,7 @@ def test_a_halt_records_failed_when_every_cancel_was_refused(tmp_path):
     open_a_working_order(ledger)
     open_a_working_order(ledger, "ref-2")
     halt(breaker)
-    assert ledger.last_trip()["body"]["cancel_outcome"] == "failed"
+    assert outcome_of(ledger) == "failed"
 
 
 def test_a_halt_records_partial_when_some_cancels_were_refused(tmp_path):
@@ -843,7 +958,7 @@ def test_a_halt_records_partial_when_some_cancels_were_refused(tmp_path):
     open_a_working_order(ledger)
     open_a_working_order(ledger, "ref-2")
     halt(breaker)
-    assert ledger.last_trip()["body"]["cancel_outcome"] == "partial"
+    assert outcome_of(ledger) == "partial"
 
 
 def test_a_halt_records_unknown_when_any_cancel_left_the_process_unresolved(tmp_path):
@@ -854,7 +969,7 @@ def test_a_halt_records_unknown_when_any_cancel_left_the_process_unresolved(tmp_
     open_a_working_order(ledger)
     open_a_working_order(ledger, "ref-2")
     halt(breaker)
-    assert ledger.last_trip()["body"]["cancel_outcome"] == "unknown"
+    assert outcome_of(ledger) == "unknown"
 
 
 def test_every_recorded_cancel_outcome_is_in_the_vocabulary(tmp_path):
@@ -866,7 +981,7 @@ def test_every_recorded_cancel_outcome_is_in_the_vocabulary(tmp_path):
                                                    executor=executor)
         open_a_working_order(ledger)
         halt(breaker)
-        assert ledger.last_trip()["body"]["cancel_outcome"] in vocab.CANCEL_OUTCOMES
+        assert outcome_of(ledger) in vocab.CANCEL_OUTCOMES
 
 
 def test_a_failed_cancel_never_stops_the_halt_from_being_recorded(tmp_path):
@@ -874,8 +989,27 @@ def test_a_failed_cancel_never_stops_the_halt_from_being_recorded(tmp_path):
     breaker, ledger, state, _, _, _ = make_breaker(tmp_path, executor=executor)
     open_a_working_order(ledger)
     halt(breaker)
-    assert ledger.kinds()[-1] == "trip"
+    assert ledger.kinds()[-2:] == ["trip", "cancel_outcome"]
     assert state.snapshot().breaker == "halted"
+
+
+@pytest.mark.parametrize("verb", ["reduce", "flatten"])
+def test_a_transition_that_does_not_enter_halted_reports_no_cancel(tmp_path, verb):
+    executor = FakeExecutor(acks=(ack("pending_cancel"),))
+    breaker, ledger, _, _, _, _ = make_breaker(tmp_path, executor=executor)
+    open_a_working_order(ledger)
+    {"reduce": reduce_to_reducing, "flatten": flatten}[verb](breaker)
+    assert ledger.kinds()[-1] == "trip"
+    assert executor.cancel_all_calls == 0
+
+
+def test_a_resume_reports_no_cancel(tmp_path):
+    executor = FakeExecutor(acks=())
+    breaker, ledger, _, clock, _, _ = make_breaker(tmp_path, executor=executor)
+    halt(breaker)
+    clock.advance(COOLING_OFF_MS)
+    resume(breaker, ledger)
+    assert ledger.kinds() == ["trip", "cancel_outcome", "trip"]
 
 
 # ---------------------------------------------------------------------------
@@ -1099,6 +1233,36 @@ def test_an_unreadable_cache_refuses_rather_than_defaulting_to_active(tmp_path, 
         handle.write(text)
     with pytest.raises(ProductionError):
         breaker.load_cache(ledger, state.snapshot())
+
+
+def test_the_head_check_is_ledgers_and_the_breaker_never_respells_it(
+    tmp_path, monkeypatch
+):
+    """One owner for "is this cache at, behind, or off the chain?":
+    `ledger.validate_cache_head`. A second copy in `breaker.py` would
+    drift the moment the ledger tightened the divergence rule."""
+    breaker, ledger, state, _, _, _ = make_breaker(tmp_path, cancel_open=False)
+    halt(breaker)
+    breaker.write_cache(state.snapshot())
+    calls = []
+
+    def recorded(head_seq, head_hash, led):
+        calls.append((head_seq, head_hash, led))
+        return "current"
+
+    monkeypatch.setattr(breaker_module, "validate_cache_head", recorded)
+    assert breaker.load_cache(ledger, state.snapshot()) == "halted"
+    assert calls == [(state.head()[0], state.head()[1], ledger)]
+
+
+def test_a_cache_the_head_check_calls_stale_is_rebuilt(tmp_path, monkeypatch):
+    breaker, ledger, state, _, _, serve_root = make_breaker(tmp_path, cancel_open=False)
+    breaker.write_cache(state.snapshot())
+    halt(breaker)
+    monkeypatch.setattr(breaker_module, "validate_cache_head",
+                        lambda head_seq, head_hash, led: "stale")
+    assert breaker.load_cache(ledger, state.snapshot()) == "halted"
+    assert read_cache(serve_root)["state"] == "halted"
 
 
 def test_the_cache_never_carries_a_state_outside_the_vocabulary(tmp_path):

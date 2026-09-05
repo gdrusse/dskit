@@ -38,6 +38,7 @@ from decimal import Decimal
 
 import pytest
 
+from dskit.production import arming as arming_module
 from dskit.production import vocab
 from dskit.production.arming import (
     APPROVAL_KINDS,
@@ -1639,6 +1640,36 @@ def test_an_absent_cache_is_rebuilt_from_the_fold(tmp_path, release, clock, veri
     assert not os.path.exists(arming.cache_path)
     assert arming.load_cache(led, led.view()) == state
     assert os.path.exists(arming.cache_path)
+
+
+def test_the_head_check_is_ledgers_and_arming_never_respells_it(
+    tmp_path, release, clock, verifier, monkeypatch
+):
+    """`ledger.validate_cache_head` is the one owner of the at/behind/
+    off-the-chain rule; `arming.json` and `breaker.json` both call it."""
+    arming = make_arming(tmp_path, release, clock, verifier)
+    led, state = folded(arming, release)
+    arming.write_cache(led.view())
+    calls = []
+
+    def recorded(head_seq, head_hash, ledger):
+        calls.append((head_seq, head_hash, ledger))
+        return "current"
+
+    monkeypatch.setattr(arming_module, "validate_cache_head", recorded)
+    assert arming.load_cache(led, led.view()) == state
+    assert calls == [(led.head()[0], led.head()[1], led)]
+
+
+def test_a_cache_the_head_check_calls_stale_is_rebuilt(tmp_path, release, clock,
+                                                       verifier, monkeypatch):
+    arming = make_arming(tmp_path, release, clock, verifier)
+    arming.write_cache(ledger_with().view())
+    led, state = folded(arming, release)
+    monkeypatch.setattr(arming_module, "validate_cache_head",
+                        lambda head_seq, head_hash, ledger: "stale")
+    assert arming.load_cache(led, led.view()) == state
+    assert cache_of(arming)["arming"] == state.to_obj()
 
 
 def test_a_cache_ahead_of_the_ledger_refuses(tmp_path, release, clock, verifier):
