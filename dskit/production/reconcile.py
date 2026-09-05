@@ -542,13 +542,13 @@ class _ScalarDomain(_Domain):
         self.break_class = break_class
 
     def check(self, problems, where, side):
-        """Every value must be a decimal amount."""
+        """Require every value to be a decimal amount."""
         for key, value in side.items():
             if _as_decimal(value) is None:
                 problems.append(f"{where}.{self.name}[{key!r}]: {value!r} is not a decimal amount")
 
     def compare(self, subject, ours, theirs):
-        """A size difference, signed ``theirs - ours``."""
+        """Return the size difference, signed ``theirs - ours``, or None when the sides agree."""
         a = _ZERO if ours is None else _as_decimal(ours)
         b = _ZERO if theirs is None else _as_decimal(theirs)
         if a == b:
@@ -570,7 +570,7 @@ class _RecordDomain(_Domain):
         self.timestamp = timestamp
 
     def check(self, problems, where, side):
-        """Every value must be a projection (a dict)."""
+        """Require every value to be a projection (a dict)."""
         for key, value in side.items():
             _check_dict(problems, f"{where}.{self.name}[{key!r}]", value)
 
@@ -964,7 +964,7 @@ class Reconciler:
         return self._action_for(report.status)
 
     def _action_for(self, status):
-        """The one rule behind the recorded ``action`` and ``apply_policy``."""
+        """Apply the one rule behind the recorded ``action`` and ``apply_policy``."""
         return self._on_mismatch if _POLICY_APPLIES[status] else _NO_ACTION
 
     @property
@@ -1055,11 +1055,11 @@ class Reconciler:
             getattr(self, _PENDING_RESOLUTIONS[answer.status])(ref, answer, ours, theirs)
 
     def _unsent_pending(self, ref, answer, ours, theirs):
-        """A pending ref the venue never received: ours holds the intent, theirs nothing."""
+        """Place a pending ref the venue never received: ours holds the intent, theirs nothing."""
         ours[_ORDERS][ref] = dict.fromkeys(ORDER_FIELDS) | {"status": _PENDING}
 
     def _resolved_pending(self, ref, answer, ours, theirs):
-        """A pending ref the venue holds: the one sanctioned answer resolves our ref (D13)."""
+        """Resolve a pending ref the venue holds through the one sanctioned answer (D13)."""
         resolved = _project(answer, ORDER_FIELDS)
         ours[_ORDERS][ref] = resolved
         theirs[_ORDERS].setdefault(ref, resolved)
@@ -1291,7 +1291,7 @@ class Reconciler:
         return tuple(found)
 
     def _cash_flow(self, brk, control_request_id, known_at_ms, flow_kind, external):
-        """The §6 ``cash_flow`` record for one adopted break: the amount as a value."""
+        """Build the §6 ``cash_flow`` record for one adopted break: the amount as a value."""
         currency = brk.subject[len(_BALANCES) + 1:]
         body = {
             "effective_at_ms": self._last.at_ms,
@@ -1314,7 +1314,7 @@ class Reconciler:
         return {"kind": _CASH_FLOW, "id": record_id, "body": body}
 
     def _adoption(self, flows, control_request_id, principal_digest, proof_digest, break_ids):
-        """The §6 ``adoption`` receipt naming the breaks, the delta digest and the run before."""
+        """Build the §6 ``adoption`` receipt naming the breaks, the delta digest and the run before."""
         delta_digest = canonical_hash(
             [
                 {
