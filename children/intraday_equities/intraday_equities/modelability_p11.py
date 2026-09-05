@@ -4,14 +4,18 @@ P10's immutable cache and journal-backed runner are reused, but its pooled
 estimand is not. Each derived walk filters feature records before fitting;
 each walk keeps only its own tape and the one its label declares as the
 residual reference. Gate 1 stops at the first failed ordered horizon, then
-flows directly to the whole-session refit audit in Gate 3.
+flows directly to the whole-session refit audit in Gate 3, which stops an
+asset at the first null that matches or beats its real result
+(ADR-0092): one such null already decides the strict beat-all limb, so
+the remaining seeds are never run, while a pass always carries the full
+19-draw calibration.
 """
 
 from __future__ import annotations
 
 import os
 
-from dskit.pipeline.attempts import AttemptRegistry, tier2_verdict
+from dskit.pipeline.attempts import AttemptRegistry, beat_all, tier2_verdict
 from dskit.pipeline.document import PipelineDocument
 from dskit.pipeline.runs import score_walk
 from dskit.pipeline.stages import Stage, reject_unknown_params
@@ -341,59 +345,139 @@ class Gate1Stage(Stage):
         return {"rows": rows, "cells": cells}
 
 
+def _observed_skill(cells):
+    """Index the Gate-1 cells by ``(asset, horizon)`` for the audit."""
+    return {(row["asset"], row["horizon"]): row["skill"] for row in cells}
+
+
+def _stopped_row(draw):
+    """Emit the ADR-0092 fields of an asset whose audit stopped early.
+
+    Parameters
+    ----------
+    draw : dict
+        The walks stage's ``{stopped, stop_seed, n_draws}`` record.
+
+    Returns
+    -------
+    dict
+        A failed Gate-3 verdict carrying ``stopped``, ``stop_seed``,
+        ``n_draws`` and the Besag–Clifford bound ``p_bound =
+        2 / (n_draws + 1)`` at the top level of the row. ``null_mean``
+        and ``null_sd`` are null and ``calibration`` reads
+        ``not_computed_early_stop`` because the family was never
+        completed; there is no ``gate3`` block because
+        :func:`~dskit.pipeline.attempts.tier2_verdict` never ran.
+
+    Raises
+    ------
+    ValueError
+        When ``n_draws`` is not a positive int.
+    """
+    n_draws = draw.get("n_draws")
+    if isinstance(n_draws, bool) or not isinstance(n_draws, int) or n_draws < 1:
+        raise ValueError(f"a stopped audit needs a positive n_draws, got {n_draws!r}")
+    return {
+        "gate3_status": "fail",
+        "gate3_passes": False,
+        "not_reached_reason": None,
+        "stopped": True,
+        "stop_seed": draw.get("stop_seed"),
+        "n_draws": n_draws,
+        "p_bound": 2 / (n_draws + 1),
+        "null_mean": None,
+        "null_sd": None,
+        "calibration": "not_computed_early_stop",
+    }
+
+
 class Gate3WalksStage(Stage):
-    """Refit each Gate-1 survivor against whole-session null draws.
+    """Refit each Gate-1 survivor against whole-session nulls, stopping early.
+
+    The frozen seeds run in order and an asset stops at the first
+    completed null whose ``r2oos`` matches or beats the real walk's,
+    i.e. when :func:`~dskit.pipeline.attempts.beat_all` is false for
+    that one draw (ADR-0092). A pass is never stopped: an asset that
+    beats every null runs all 19 and carries a full calibration family.
 
     Parameters
     ----------
     params : dict
-        ``seeds`` must be the frozen sequence 0 through 18.
+        ``seeds`` must be the frozen sequence 0 through 18; ``alpha`` is
+        passed unchanged to the walk scorer.
 
     Examples
     --------
-    Instantiate the null-refit stage::
+    Instantiate the fail-fast null-refit stage::
 
-        stage = Gate3WalksStage("gate3_walks", {"seeds": list(range(19))})
+        stage = Gate3WalksStage(
+            "gate3_walks", {"seeds": list(range(19)), "alpha": 0.05}
+        )
     """
 
-    outputs = ("walks", "survivors")
-    _PARAMS = ("seeds",)
+    outputs = ("walks", "survivors", "draws")
+    _PARAMS = ("seeds", "alpha")
 
     @classmethod
     def validate_params(cls, params):
-        """Require the frozen 19-session-permutation sequence."""
-        problems = _check_params(params, cls._PARAMS)
+        """Require the frozen 19-session-permutation sequence and a level."""
+        problems = _check_params(params, cls._PARAMS, alpha=True)
         if params.get("seeds") != list(range(19)):
             problems.append("seeds must be exactly [0, ..., 18]")
         return problems
 
     def validate_inputs(self, inputs):
-        """Require the ordered Gate-1 outcomes."""
-        return [] if set(inputs) == {"gate1"} else ["requires only gate1"]
+        """Require the ordered Gate-1 outcomes and their scored cells."""
+        needed = {"gate1", "gate1_cells"}
+        return [] if set(inputs) == needed else [f"requires {sorted(needed)}"]
 
     def run(self, ctx, inputs):
-        """Run all null refits for each selected asset-local horizon."""
+        """Audit each selected asset-local horizon, one null at a time."""
         gate1 = inputs["gate1"]
         if [row.get("asset") for row in gate1] != _ASSETS:
             raise ValueError("Gate 3 input is not the frozen ordered 25 assets")
+        observed = _observed_skill(inputs["gate1_cells"])
         survivors = [row for row in gate1 if row["gate1_passes"]]
         walks = {}
+        draws = {}
         for row in survivors:
             asset = row["asset"]
             horizon = row["gate1_h"]
-            for seed in self.params["seeds"]:
-                tag = f"p11-gate3-{asset.lower()}-h{horizon:02d}-seed{seed:02d}"
-                document = _derived_document(
-                    ctx, asset, horizon, tag=tag, scramble_seed=seed
-                )
-                walks[f"{asset}:{horizon}:{seed}"] = p10._run_bounded_walk(
-                    ctx, document, tag
-                )
-        return {"walks": walks, "survivors": [row["asset"] for row in survivors]}
+            draws[asset] = self._audit(
+                ctx, asset, horizon, observed[(asset, horizon)]["r2oos"], walks
+            )
+        return {
+            "walks": walks,
+            "survivors": [row["asset"] for row in survivors],
+            "draws": draws,
+        }
+
+    def _audit(self, ctx, asset, horizon, observed_r2, walks):
+        """Run the seeds in order; stop at the first null that is not beaten."""
+        n_draws = 0
+        for seed in self.params["seeds"]:
+            tag = f"p11-gate3-{asset.lower()}-h{horizon:02d}-seed{seed:02d}"
+            document = _derived_document(
+                ctx, asset, horizon, tag=tag, scramble_seed=seed
+            )
+            summary = p10._run_bounded_walk(ctx, document, tag)
+            walks[f"{asset}:{horizon}:{seed}"] = summary
+            n_draws += 1
+            null_r2 = _score_one(summary, asset, horizon, self.params["alpha"])
+            if not beat_all(observed_r2, [null_r2["r2oos"]]):
+                return {"stopped": True, "stop_seed": seed, "n_draws": n_draws}
+        return {"stopped": False, "stop_seed": None, "n_draws": n_draws}
 
 
 class Gate3ResultStage(Stage):
-    """Require every whole-session null refit to lose to the real result.
+    """Decide every asset: a stopped audit fails, a completed one is judged.
+
+    A stopped asset (ADR-0092) emits ``gate3_status`` ``fail`` with the
+    stop record and the bound ``2 / (n_draws + 1)`` at the top level of
+    its row, and no ``gate3`` block. A completed asset calls
+    :func:`~dskit.pipeline.attempts.tier2_verdict` over all 19 draws
+    exactly as before, so its beat-all and calibration limbs are
+    unchanged.
 
     Parameters
     ----------
@@ -422,8 +506,8 @@ class Gate3ResultStage(Stage):
         return problems
 
     def validate_inputs(self, inputs):
-        """Require observed Gate-1 rows/cells and their null refits."""
-        needed = {"gate1", "gate1_cells", "walks"}
+        """Require observed Gate-1 rows/cells, the null refits and the stops."""
+        needed = {"gate1", "gate1_cells", "walks", "draws"}
         return [] if set(inputs) == needed else [f"requires {sorted(needed)}"]
 
     def run(self, ctx, inputs):
@@ -432,38 +516,44 @@ class Gate3ResultStage(Stage):
         gate1 = inputs["gate1"]
         if [row.get("asset") for row in gate1] != self.params["assets"]:
             raise ValueError("Gate 3 result input is not the frozen ordered 25 assets")
-        observed = {
-            (row["asset"], row["horizon"]): row["skill"]
-            for row in inputs["gate1_cells"]
-        }
+        observed = _observed_skill(inputs["gate1_cells"])
         rows = []
         for base in gate1:
             final = {**base, "gate3_status": "not_reached", "gate3_passes": False}
             if not base["gate1_passes"]:
                 final["not_reached_reason"] = "gate1_failed_at_h1"
             else:
-                asset = base["asset"]
-                horizon = base["gate1_h"]
-                null_r2 = []
-                null_t = []
-                for seed in self.params["seeds"]:
-                    skill = _score_one(
-                        inputs["walks"][f"{asset}:{horizon}:{seed}"],
-                        asset,
-                        horizon,
-                        self.params["alpha"],
-                    )
-                    null_r2.append(skill["r2oos"])
-                    null_t.append(skill["t_pool"])
-                real = observed[(asset, horizon)]
-                verdict = tier2_verdict(real["r2oos"], null_r2, null_t)
-                final.update(
-                    {
-                        "gate3_status": "pass" if verdict["passes"] else "fail",
-                        "gate3_passes": verdict["passes"],
-                        "gate3": verdict,
-                        "not_reached_reason": None,
-                    }
-                )
+                final.update(self._decide(base, observed, inputs))
             rows.append(final)
         return {"rows": rows}
+
+    def _decide(self, base, observed, inputs):
+        """One survivor's verdict: the stop record, or the full family."""
+        asset = base["asset"]
+        horizon = base["gate1_h"]
+        draw = inputs["draws"][asset]
+        if draw["stopped"]:
+            return _stopped_row(draw)
+        if draw["n_draws"] != len(self.params["seeds"]):
+            raise ValueError(
+                f"{asset} did not stop but n_draws={draw['n_draws']!r} is not "
+                f"the {len(self.params['seeds'])} frozen seeds"
+            )
+        null_r2 = []
+        null_t = []
+        for seed in self.params["seeds"]:
+            skill = _score_one(
+                inputs["walks"][f"{asset}:{horizon}:{seed}"],
+                asset,
+                horizon,
+                self.params["alpha"],
+            )
+            null_r2.append(skill["r2oos"])
+            null_t.append(skill["t_pool"])
+        verdict = tier2_verdict(observed[(asset, horizon)]["r2oos"], null_r2, null_t)
+        return {
+            "gate3_status": "pass" if verdict["passes"] else "fail",
+            "gate3_passes": verdict["passes"],
+            "gate3": verdict,
+            "not_reached_reason": None,
+        }
