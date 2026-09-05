@@ -4512,7 +4512,19 @@ class BoundedFoldRunner:
 ```
 
 `commands` is a list of argv lists — the seam owns the spawn, so the cap is
-its mechanism and not something a caller re-implements. `cwd` and `env` are
+its mechanism and not something a caller re-implements. The seam is agnostic
+to what a command produces, so reading a fold's result is a separate public
+function beside `walk_fold_dirs` in `runs.py`, which already owns the
+`walkforward.json` format:
+
+```text
+def single_fold_row(summary_dir, cutoff)   # -> the one fold row
+```
+
+It refuses unless the summary's state is `ran`, its `folds` list has exactly
+one row, and that row's cutoff matches. That logic is generic and today
+hand-rolled in the child's `_one_bounded_fold`; leaving it there would repeat
+the violation this ADR remedies. `cwd` and `env` are
 batch-wide because a batch is one walk: children run UNINSTALLED and import
 dskit and themselves through the working directory (ADR-0021), so a child
 that could not pass `cwd` would have to override `spawn` wholesale and
@@ -4541,21 +4553,25 @@ not by a shell.** `preexec_fn` bars `posix_spawn`, so the child would fork from
 a pool-running parent and run Python before `exec` — the pattern CPython
 documents as unsafe with threads. The shim runs `setrlimit` after its OWN
 `exec`, so nothing Python happens between the parent's fork and exec. It is
-chosen over `/bin/sh -c 'ulimit -v'` for three reasons, none of which is
+chosen over `/bin/sh -c 'ulimit -v'` for two reasons, neither of which is
 silence: measured on dash, `ulimit` DOES fail loudly when the hard limit is
 genuinely constrained (exit 2, stderr, readback unchanged). Rather, the shim
-avoids a shell interpreter and its `$BASH_ENV`/quoting surface entirely; it
-raises a typed `ValueError` instead of a shell exit code that must be told
-apart from the fold's own (the walkforward CLI reserves exit 3 for a halted
-fold); and it needs no hand-picked sentinel exit code to signal a failed cap.
+avoids a shell interpreter and its `$BASH_ENV`/quoting surface entirely, and
+— because the cap is validated in the parent below — it needs no sentinel
+exit code at all, where the shell form had to reserve one (`exit 111`) and
+keep it clear of the fold's own (the walkforward CLI uses 3 for a halt).
+`resource` is imported inside `run` and `spawn`, the two methods that touch
+it, so the module imports on any platform.
 
 The cap is validated in the PARENT before anything spawns: children inherit
 the hard `RLIMIT_AS`, so `run` reads `resource.getrlimit` once and raises
-`ValueError` if `memory_limit_bytes` exceeds that hard limit. The shim's own
-`setrlimit` therefore cannot fail, and no cross-process signal is needed to
-turn a failed cap into a parent-side exception. A cap failure is
-configuration, not a fold result: it is raised before any fold starts and
-never wrapped into a `CompletedProcess`.
+`ValueError` when the hard limit is finite and `memory_limit_bytes` exceeds
+it. `RLIM_INFINITY` is `-1`, and every default machine reports it, so the
+comparison is guarded — `hard != RLIM_INFINITY and cap > hard` — or it would
+refuse everywhere. The shim's own `setrlimit` therefore cannot fail, and no
+cross-process signal is needed. A cap failure is configuration, not a fold
+result: it is raised before any fold starts and never wrapped into a
+`CompletedProcess`.
 
 **The width is read from the environment, never from a document.** Fold count
 is a property of the machine, not of what a run computes; a graded knob would
@@ -4581,9 +4597,10 @@ own `workers=1`, single-command call with `getrusage`, and makes the
 precondition a runtime refusal rather than an assumption: it reads
 `RUSAGE_CHILDREN.ru_maxrss` BEFORE spawning and refuses if it is not zero,
 because a nonzero value means an earlier child has already been reaped and
-the reading after the spawn would be contaminated. That is enforced in the
-stage, not by the staged document happening to list it first. The stage owns
-the child's memory contract and stays in the child.
+the reading after the spawn would be contaminated. The refusal is a
+`ValueError` — the one exception the `staged` CLI already reports cleanly —
+and it is enforced in the stage, not by the staged document happening to list
+it first. The stage owns the child's memory contract and stays in the child.
 
 Cancellation is bounded, not immediate: unstarted folds are dropped, a running
 fold's subprocess is not killed, and there is no timeout.
@@ -4595,16 +4612,24 @@ as they are. The driver pair is not: `_aggregate_folds` and
 `_write_walkforward_summary` take a fold-row shape built inline in
 `_run_folds` with no stated contract, and an underscore name never enters an
 `__all__` here. Documenting that shape in a docstring would only restate it —
-a value in two places with nothing pinning them. So the shape gets ONE owner:
-`driver.FOLD_FIELDS`, exported, names the fold-row keys; `_run_folds` builds
-every row from it; the renamed `aggregate_folds` refuses a row missing any of
-them at runtime; and a test round-trips a written summary through
-`walk_fold_dirs` and `aggregate_folds` to pin that the on-disk rows the child
-reads are the rows the driver writes. Only then are `aggregate_folds` and
-`write_walkforward_summary` added to `driver.__all__`.
+a value in two places with nothing pinning them. And the shape is not one
+key set: `_run_folds` always writes `cutoff`, `run_dir`, `state` and
+`score`, and adds `search` and `error` only when present — a clean fold row
+is pinned to exactly those four (`test_walkforward.py`), so an exhaustive
+required set would refuse every ordinary walk. The shape therefore gets ONE
+owner in two exported names: `driver.FOLD_FIELDS`, the four keys every row
+carries, and `driver.FOLD_OPTIONAL_FIELDS`, `("search", "error")`. `_run_folds`
+builds every row from them; the renamed `aggregate_folds` refuses a row
+missing any required key AND a row carrying any key outside the union, so
+the optional half is pinned by default-deny rather than left loose; and a
+test round-trips a written summary through `walk_fold_dirs`,
+`single_fold_row` and `aggregate_folds` to pin that the on-disk rows the
+child reads are the rows the driver writes. Only then are `aggregate_folds`
+and `write_walkforward_summary` added to `driver.__all__`.
 
-`BoundedFoldRunner` is NOT re-exported from `dskit/pipeline/__init__.py`:
-`resource` is POSIX-only, so it is imported inside `spawn`, and the class is
-reached by path. `dskit/pipeline/README.md` and `CLAUDE.md` gain
-`folds.py` in their directory trees, as CLAUDE.md requires when a file is
-added.
+`BoundedFoldRunner` is NOT re-exported from `dskit/pipeline/__init__.py`,
+which already omits `stages`, `attempts` and `predictions`; it is reached by
+path. A `spawn` override runs on a pool thread and must be thread-safe.
+`dskit/pipeline/README.md` and `CLAUDE.md` gain `folds.py` in their directory
+trees and an Extension-points bullet for the `spawn` hook; the `CLAUDE.md`
+tree also gains `stages.py`, which it omits today while the README lists it.
