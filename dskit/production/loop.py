@@ -49,6 +49,7 @@ from dskit.production.decider import DEFAULT_MAX_ARTIFACT_AGE
 from dskit.production.health import SignalHandler
 from dskit.production.leg import LegBindings, LegPipeline, ReductionBinding
 from dskit.production.ledger import Checkpoint
+from dskit.production.reconcile import enact
 from dskit.production.records import (
     FeedAge,
     PolicyRequest,
@@ -68,7 +69,6 @@ from dskit.production.vocab import (
     LEG_LATENCY_BUCKETS,
     LOOP_STATES,
     METRIC_LABEL_VALUES,
-    RECON_ACTIONS,
     TICK_PHASES,
     TICK_STATUSES,
     TRIP_REASONS,
@@ -107,21 +107,13 @@ _READY_HEALTH = pin_members("loop.py's acting health state", ("ready",), HEALTH_
 _HALTED_BREAKER = "halted"
 
 #: Why the loop trips: a monitor alarm whose declared response is `halt`,
-#: a reconciliation the document said to halt on, and the kill switch.
+#: a monitor alarm and the kill switch. The reconciliation trip reason is
+#: `reconcile.RECONCILE_TRIP_REASON`, beside the policy that names it.
 _MONITOR_TRIP = pin_members("loop.py's monitor trip", ("monitor_alarm",), TRIP_REASONS)[0]
-_RECONCILE_TRIP = pin_members("loop.py's reconcile trip", ("reconcile_mismatch",), TRIP_REASONS)[0]
 _OPERATOR_TRIP = pin_members("loop.py's operator trip", ("operator",), TRIP_REASONS)[0]
 
 #: `Breaker.trip`'s cause for the out-of-band kill switch (§5.6).
 _HALT_CAUSE = "halt"
-
-#: What `Reconciler.apply_policy` answers when the document says to halt,
-#: and when it found nothing that needs a decision at all. Pinned to the
-#: closed set so a renamed action refuses at import rather than silently
-#: never matching.
-_RECON_HALTS, _RECON_CLEAN = pin_members(
-    "loop.py's reconciliation actions", ("halt", "none"), RECON_ACTIONS
-)
 
 #: Why the writer revokes what a reduction cycle did not consume. D12:
 #: "completed rights stay consumed and the writer revokes all unused rights
@@ -1114,7 +1106,12 @@ class ServeLoop:
         self.recording.ledger.barrier()
 
     def _reconcile_if_due(self):
-        """Reconcile whenever the document's schedule says to; a mismatch halts (D13).
+        """Reconcile whenever the document's schedule says to; a mismatch halts or refuses (D13).
+
+        §5.9's ``document.reconcile.on_mismatch`` admits only ``halt`` and
+        ``refuse``: the first trips the breaker, the second stops submissions
+        at the gate until a later clean run clears it. A clean run is also
+        what re-enables the gate after an ``unknown`` (§5.14).
 
         §5.9 makes ``Reconciler.due(now_ms, last_run_ms)`` the ONE owner of
         ``reconcile.on_start`` and ``reconcile.every_s``, and "the loop asks
@@ -1131,14 +1128,15 @@ class ServeLoop:
             self.document.coordination.scope,
         )
         self._last_recon_ms = now
-        action = self.recording.reconciler.apply_policy(report)
-        if action == _RECON_HALTS:
-            self.safety.breaker.trip(_RECONCILE_TRIP, SERVE_VERB)
-        elif action == _RECON_CLEAN:
-            # D13/§5.14: reconciliation is what resolves an ambiguous client
-            # ref, so it is what clears the gate's disable — never a timer,
-            # and never the next tick on its own.
-            self.safety.submission_verifier.reset_after_reconcile()
+        # `reconcile.enact` owns what each action DOES, because the operator
+        # `reconcile` verb acts on the same answers: stating the mapping in
+        # both is how `refuse` came to be computed and dropped in both.
+        enact(
+            self.recording.reconciler.apply_policy(report),
+            breaker=self.safety.breaker,
+            verifier=self.safety.submission_verifier,
+            actor=SERVE_VERB,
+        )
 
     def _gate_readiness(self):
         """Refuse a live serve without a current release-bound GO (§5.13).

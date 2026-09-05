@@ -66,12 +66,12 @@ from dskit.production.records import (
     Intent,
     PolicyRequest,
     ReductionIntent,
+    SafetyEpoch,
     SimulatedPermit,
 )
 from dskit.production.redact import get_logger, redact
 from dskit.production.vocab import (
     AUTHORITY_ROLES,
-    CALENDAR_WINDOWS,
     LEG_LATENCY_BUCKETS,
     LEG_ORIGINS,
     LEG_STEPS,
@@ -128,9 +128,6 @@ LEG_GATES = (
 #: one never allocates a second attempt.
 DEFAULT_ATTEMPT = 0
 
-#: The calendar window whose close bounds a permit: the session under way.
-_CALENDAR_WINDOW = "session"
-
 #: The operation every leg asks the action policy about.
 _SUBMIT_OPERATION = "submit"
 
@@ -146,7 +143,6 @@ _NOT_ARMED = "not_armed"
 _SATISFIED = ""
 _AMEND_RANK = VERDICT_ORDER["amend"]
 
-pin_members("leg.py's calendar window", (_CALENDAR_WINDOW,), CALENDAR_WINDOWS)
 pin_members("leg.py's plan result for a terminalised leg", (_NOT_SENT,), STATUSES)
 pin_members("leg.py's unarmed scope reason", (_NOT_ARMED,), SCOPE_REASONS)
 
@@ -759,7 +755,7 @@ class Authority(ABC):
             "quote_age": intent.quote_asof_ms + document.schedule.max_quote_age_ms,
             "evidence_age": intent.evidence_asof_ms + document.accounting.max_valuation_age_ms,
             "readiness": None if readiness is None else readiness.valid_until_ms,
-            "calendar_close": self._calendar.window(_CALENDAR_WINDOW, checked_at_ms)[1],
+            "calendar_close": self._calendar.window(SafetyEpoch.WINDOW, checked_at_ms)[1],
             "authority_expiry": authority_expires_ms,
             "lease_expiry": None if lease_permit is None else lease_permit.expires_ms,
             "submit_timeout": checked_at_ms + document.execution.submit_timeout_ms,
@@ -769,8 +765,17 @@ class Authority(ABC):
             raise ProductionError(["a permit cannot be minted with no deadline to bind"])
         return min(bound)
 
-    def _safety_epoch_digest(self, intent, plan, state_view, binding, checked_at_ms):
-        """Return the digest over everything §5.4's safety epoch covers.
+    def _safety_epoch(self, intent, plan, state_view, binding, checked_at_ms):
+        """Return the ``SafetyEpoch`` this permit is minted under (§5.4).
+
+        The terms, their order and the digest tag belong to
+        :class:`~dskit.production.records.SafetyEpoch`, not to this method:
+        the gate rebuilds the same object from its own live values and
+        compares the two digests, so any change to release, readiness,
+        calendar, coverage and watermarks, input/quote/evidence/risk
+        versions, executor link and scope, health, breaker, rung, risk
+        effect, authority, pending-control state or lease invalidates the
+        permit.
 
         Parameters
         ----------
@@ -782,43 +787,34 @@ class Authority(ABC):
 
         Returns
         -------
-        str
-            Any change to release, readiness, calendar, coverage and
-            watermarks, input/quote/evidence/risk versions, executor link and
-            scope, health, breaker, rung, risk effect, authority,
-            pending-control state or lease invalidates it.
+        SafetyEpoch
         """
         readiness, lease_permit = state_view.readiness, self._lease_permit()
-        return canonical_hash(
-            [
-                "safety-epoch-v1",
-                {
-                    "release_hash": intent.release_hash,
-                    "readiness_digest": None if readiness is None else readiness.readiness_digest,
-                    "readiness_until_ms": None if readiness is None else readiness.valid_until_ms,
-                    "calendar_close_ms": self._calendar.window(_CALENDAR_WINDOW, checked_at_ms)[1],
-                    "coverage_digest": intent.coverage_digest,
-                    "inputs_digest": intent.inputs_digest,
-                    "inputs_asof_ms": intent.inputs_asof_ms,
-                    "quote_digest": intent.quote_digest,
-                    "quote_asof_ms": intent.quote_asof_ms,
-                    "evidence_digest": intent.evidence_digest,
-                    "evidence_asof_ms": intent.evidence_asof_ms,
-                    "risk_version": intent.risk_version.to_obj(),
-                    "risk_state_digest": intent.risk_state_digest,
-                    "executor_scope": self._executor.execution_scope().to_obj(),
-                    "health": self._health.state,
-                    "breaker": state_view.breaker,
-                    "rung": self._document.rung,
-                    "risk_effect": plan.risk_effect,
-                    "authority_id": binding.authority_id,
-                    "authority_scope_digest": binding.scope_digest,
-                    "pending_control": sorted(state_view.pending_control),
-                    "queued_control": len(self._inbox.pending()),
-                    "lease_scope": None if lease_permit is None else lease_permit.scope.to_obj(),
-                    "fencing_token": None if lease_permit is None else lease_permit.fencing_token,
-                },
-            ]
+        return SafetyEpoch(
+            release_hash=intent.release_hash,
+            readiness_digest=None if readiness is None else readiness.readiness_digest,
+            readiness_until_ms=None if readiness is None else readiness.valid_until_ms,
+            calendar_close_ms=self._calendar.window(SafetyEpoch.WINDOW, checked_at_ms)[1],
+            coverage_digest=intent.coverage_digest,
+            inputs_digest=intent.inputs_digest,
+            inputs_asof_ms=intent.inputs_asof_ms,
+            quote_digest=intent.quote_digest,
+            quote_asof_ms=intent.quote_asof_ms,
+            evidence_digest=intent.evidence_digest,
+            evidence_asof_ms=intent.evidence_asof_ms,
+            risk_version=intent.risk_version,
+            risk_state_digest=intent.risk_state_digest,
+            executor_scope=self._executor.execution_scope(),
+            health=self._health.state,
+            breaker=state_view.breaker,
+            rung=self._document.rung,
+            risk_effect=plan.risk_effect,
+            authority_id=binding.authority_id,
+            authority_scope_digest=binding.scope_digest,
+            pending_control=tuple(sorted(state_view.pending_control)),
+            queued_control=len(self._inbox.pending()),
+            lease_scope=None if lease_permit is None else lease_permit.scope,
+            fencing_token=None if lease_permit is None else lease_permit.fencing_token,
         )
 
     def _act_permit(self, intent, plan, state_view, binding):
@@ -877,9 +873,9 @@ class Authority(ABC):
             readiness_until_ms=readiness.valid_until_ms,
             lease_scope=lease_permit.scope,
             fencing_token=lease_permit.fencing_token,
-            safety_epoch_digest=self._safety_epoch_digest(
+            safety_epoch_digest=self._safety_epoch(
                 intent, plan, state_view, binding, checked_at_ms
-            ),
+            ).digest(),
             checked_at_ms=checked_at_ms,
         )
 

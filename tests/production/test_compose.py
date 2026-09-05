@@ -955,6 +955,46 @@ def test_the_reconcile_handler_applies_the_documents_mismatch_policy(
     assert breaker.named("trip"), "an on_mismatch halt must reach the breaker"
 
 
+def test_the_reconcile_handler_refuses_sends_on_refuse_without_halting(
+    shadow_document, shadow_bundles
+):
+    """§5.9: `on_mismatch` admits `halt | refuse`, and `refuse` is not a
+    spelling of `halt` — it stops submissions and leaves the series
+    active. The operator verb takes the same one path the loop does, or
+    `refuse` is computed and dropped here exactly as it was there."""
+    breaker, verifier = Owner(answer=lambda *a, **k: 1), Owner()
+    reconciler = Owner(answer=lambda name, *a, **k: "refuse" if name == "apply_policy" else None)
+    handlers = handlers_for(
+        shadow_document,
+        owner_bundles(
+            shadow_bundles, reconciler=reconciler, breaker=breaker, submission_verifier=verifier
+        ),
+    )
+    handlers["reconcile"](command("reconcile"), shadow_bundles[5].state.snapshot())
+    assert verifier.named("refuse_until_reconciled"), "on_mismatch refuse must stop sends"
+    assert not breaker.named("trip"), "refuse is not a halt"
+
+
+def test_the_reconcile_handler_re_enables_sends_when_the_run_is_clean(
+    shadow_document, shadow_bundles
+):
+    """D13/§5.14: reconciliation is what resolves an ambiguous reference,
+    so an operator `reconcile` that comes back clean is what re-enables a
+    gate an `unknown` disabled — the operator's whole reason for running
+    one by hand."""
+    breaker, verifier = Owner(answer=lambda *a, **k: 1), Owner()
+    reconciler = Owner(answer=lambda name, *a, **k: "none" if name == "apply_policy" else None)
+    handlers = handlers_for(
+        shadow_document,
+        owner_bundles(
+            shadow_bundles, reconciler=reconciler, breaker=breaker, submission_verifier=verifier
+        ),
+    )
+    handlers["reconcile"](command("reconcile"), shadow_bundles[5].state.snapshot())
+    assert verifier.named("reset_after_reconcile")
+    assert not breaker.named("trip")
+
+
 def test_the_ready_handler_evaluates_and_records_the_readiness_verdict(
     shadow_document, shadow_bundles
 ):

@@ -19,6 +19,10 @@ what it does, in this order and with no caller-visible gap:
   authority scope without adopting an amendment, and asks ``ActionPolicy``
   — the sole owner of the permission matrix, whose rule name is the reason
   when it refuses;
+* it rebuilds §5.4's ``SafetyEpoch`` from those live values LAST and requires
+  the digest the permit bound — the catch-all over everything the checks
+  above proved one at a time, and the only check that covers a term none of
+  them compares;
 * it then invokes ``native_call(intent, permit, timeout_ms)`` **once**,
   synchronously, with ``timeout_ms`` the lesser of the document's
   ``execution.submit_timeout_ms`` and the permit's remaining lifetime.
@@ -28,7 +32,10 @@ closed ``VERIFY_REASONS`` — and nothing leaves the process. A raise or
 timeout out of the native call is ``unknown``, because the request may
 already have left, and an ``unknown`` **disables** every later send until
 ``reset_after_reconcile()`` — reconciliation is what resolves the ambiguous
-reference (D13), never a resend. A wiring defect (a non-``Intent``, a
+reference (D13), never a resend. ``refuse_until_reconciled(reason)`` sets that
+same disable from the outside, which is how §5.9's
+``document.reconcile.on_mismatch: refuse`` stops submissions against a
+mismatching venue without halting. A wiring defect (a non-``Intent``, a
 non-``ActPermit``, a state without its batch, an uncallable callback) is a
 ``ProductionError`` and propagates: a defect must not be answered with a
 polite ``Ack`` that reads like a routine refusal. The gate never replans and
@@ -44,7 +51,7 @@ from dskit.production.coordination import scope_equal
 from dskit.production.decider import DEFAULT_MAX_ARTIFACT_AGE
 from dskit.production.executor import empty_ack
 from dskit.production.guards import max_verdict
-from dskit.production.records import ActPermit, EntryBatch, Intent, PolicyRequest
+from dskit.production.records import ActPermit, EntryBatch, Intent, PolicyRequest, SafetyEpoch
 from dskit.production.redact import get_logger
 from dskit.production.release import parse_iso_duration, verify_release
 from dskit.production.state import TickState
@@ -89,6 +96,7 @@ VERIFY_REASONS = (
     "release_hash",
     "risk_state_digest",
     "risk_version",
+    "safety_epoch",
     "scope",
     "source_config",
 )
@@ -120,6 +128,7 @@ VERIFY_REASONS = (
     _RELEASE_HASH,
     _RISK_STATE_DIGEST,
     _RISK_VERSION,
+    _SAFETY_EPOCH,
     _SCOPE,
     _SOURCE_CONFIG,
 ) = VERIFY_REASONS
@@ -149,6 +158,20 @@ class _NotArmed(_Refused):
 # ---------------------------------------------------------------------------
 # The authority axis is (origin) — a table, not a branch (§5.13.1)
 # ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class _Refreshed:
+    """Internal: what one refresh read from the live collaborators.
+
+    The scope and the lease permit are read once and threaded, so the epoch
+    recheck cannot see a second, later observation than the one the earlier
+    checks passed on.
+    """
+
+    authority: object
+    executor_scope: object
+    lease: object
 
 
 @dataclasses.dataclass(frozen=True)
@@ -308,8 +331,29 @@ class SubmissionVerifier:
 
     @property
     def disabled(self):
-        """Whether an ``unknown`` has stopped sends until reconciliation."""
+        """Whether an ``unknown`` or a mismatch has stopped sends until reconciliation."""
         return self._disabled
+
+    def refuse_until_reconciled(self, reason):
+        """Stop sends until a clean reconciliation — §5.9's ``on_mismatch: refuse``.
+
+        The same disable an ``unknown`` sets, because it is the same
+        semantics: something the process cannot resolve by itself is
+        outstanding, and only reconciliation resolves it. A second disable
+        beside it would be a second thing to forget to clear. It is not a
+        halt — that is what the other ``on_mismatch`` value does.
+
+        Parameters
+        ----------
+        reason : str
+            Why sends stopped, for the operator reading the log.
+
+        Returns
+        -------
+        None
+        """
+        self._disabled = True
+        _LOG.error("sends stop until reconciliation is clean: %s", reason)
 
     def reset_after_reconcile(self):
         """Re-enable sends: reconciliation resolved the ambiguous reference.
@@ -394,7 +438,14 @@ class SubmissionVerifier:
     # -- the checks, in the pinned order ----------------------------------
 
     def _checked(self, intent, permit, state, now):
-        """Run every check; return the bounded native timeout or raise ``_Refused``."""
+        """Run every check, in this order; return the bounded native timeout.
+
+        The batch rehash, the release, the bound members, the deadlines, the
+        refreshed scope/lease/tokens/authority, the hard guards and authority
+        scope, the action policy — and LAST the safety epoch, which is the
+        catch-all over everything the earlier checks proved individually and
+        over the terms none of them compares.
+        """
         if self._disabled:
             raise _Refused(_DISABLED)
         batch = state.entry_batch
@@ -403,9 +454,10 @@ class SubmissionVerifier:
         self._bindings(intent, permit, state)
         self._deadlines(intent, permit, batch, state, now)
         origin = _origin_of(permit)
-        authority = self._refresh(origin, intent, permit, state, now)
-        self._gates(origin, intent, permit, state, authority)
+        refreshed = self._refresh(origin, intent, permit, state, now)
+        self._gates(origin, intent, permit, state, refreshed.authority)
         self._policy_rules(origin, permit, state)
+        self._safety_epoch(intent, permit, batch, state, refreshed)
         return min(self._document.execution.submit_timeout_ms, permit.valid_until_ms - now)
 
     def _rehash(self, intent, permit, batch):
@@ -473,7 +525,7 @@ class SubmissionVerifier:
             raise _Refused(_CALENDAR_CLOSED)
 
     def _refresh(self, origin, intent, permit, state, now):
-        """Refresh scope, lease, fence, source tokens and authority; return the authority."""
+        """Refresh scope, lease, fence, source tokens and authority; return what was read."""
         scope = self._document.coordination.scope
         actual = self._executor.execution_scope()
         if not scope_equal(actual, scope, self._release.execution_scope, permit.lease_scope):
@@ -487,7 +539,11 @@ class SubmissionVerifier:
         bound = permit.risk_version
         if (executor_token, accounting_tokens) != (bound.executor_token, bound.accounting_tokens):
             raise _Refused(_RISK_VERSION)
-        return origin.authority(self._arming, intent, permit, state.view, now)
+        return _Refreshed(
+            authority=origin.authority(self._arming, intent, permit, state.view, now),
+            executor_scope=actual,
+            lease=held,
+        )
 
     def _source_tokens(self, now):
         """Return accounting's ``(executor_token, accounting_tokens)`` in comparable form."""
@@ -507,6 +563,52 @@ class SubmissionVerifier:
         verdict = self._guards.check_authority_scope(intent.proposal, state, origin.scope(authority, permit))
         if not verdict.allowed:
             raise _Refused(_AUTHORITY_SCOPE)
+
+    def _safety_epoch(self, intent, permit, batch, state, refreshed):
+        """Rebuild §5.4's safety epoch from live values and require the bound digest.
+
+        ``records.SafetyEpoch`` owns the terms, their order and the tag, so
+        this is the same object the ``Authority`` minted — the point of a
+        single owner. Every term is read from the source the individual
+        rechecks above compare against, never from ``permit``: recomputing an
+        epoch from the permit's own fields would agree by construction and
+        refuse nothing. The two exceptions are ``risk_effect``, which the
+        gate never holds a ``DecisionPlan`` to derive, and
+        ``authority_scope_digest``, whose recipe belongs to the minting
+        ``Authority``; both are the permit's, and everything around them is
+        not.
+        """
+        account, view = state.account, state.view
+        epoch = SafetyEpoch(
+            release_hash=self._release.release_hash,
+            readiness_digest=view.readiness.readiness_digest,
+            readiness_until_ms=view.readiness.valid_until_ms,
+            calendar_close_ms=self._calendar.window(
+                SafetyEpoch.WINDOW, permit.checked_at_ms
+            )[1],
+            coverage_digest=batch.coverage_digest,
+            inputs_digest=batch.inputs_digest,
+            inputs_asof_ms=batch.data_asof_ms,
+            quote_digest=intent.quote_digest,
+            quote_asof_ms=intent.quote_asof_ms,
+            evidence_digest=account.evidence_digest,
+            evidence_asof_ms=account.asof_ms,
+            risk_version=account.risk_version,
+            risk_state_digest=account.risk_digest(),
+            executor_scope=refreshed.executor_scope,
+            health=self._health.state,
+            breaker=view.breaker,
+            rung=self._document.rung,
+            risk_effect=permit.risk_effect,
+            authority_id=refreshed.authority.authority_id,
+            authority_scope_digest=permit.authority_scope_digest,
+            pending_control=tuple(sorted(view.pending_control)),
+            queued_control=len(self._inbox.pending()),
+            lease_scope=refreshed.lease.scope,
+            fencing_token=refreshed.lease.fencing_token,
+        )
+        if epoch.digest() != permit.safety_epoch_digest:
+            raise _Refused(_SAFETY_EPOCH)
 
     def _policy_rules(self, origin, permit, state):
         """Ask the action policy; its rule name is the reason when it refuses."""

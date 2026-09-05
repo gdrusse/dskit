@@ -1681,3 +1681,65 @@ def test_adoption_is_never_an_automatic_policy():
     reconciler, ledger, state, clock, executor, brk = a_cash_break_run()
     assert ledger.of_kind("cash_flow")[1:] == [], "the seed deposit only"
     assert ledger.of_kind("adoption") == []
+
+
+# ---------------------------------------------------------------------------
+# enact — the one owner of what each RECON_ACTIONS member DOES (§5.9, D13)
+# ---------------------------------------------------------------------------
+
+
+class _Calls:
+    """Records every call made on it, so a mapping can be asserted by name."""
+
+    def __init__(self):
+        self.names = []
+
+    def __getattr__(self, name):
+        def record(*args, **kwargs):
+            self.names.append(name)
+
+        return record
+
+
+def test_enact_trips_the_breaker_on_halt_and_never_disables():
+    """§5.9: `on_mismatch` admits `halt | refuse`. A halt is the breaker's,
+    and a halted series does not additionally need the gate disabled — the
+    breaker already refuses every submit."""
+    breaker, verifier = _Calls(), _Calls()
+    reconcile_module.enact("halt", breaker=breaker, verifier=verifier, actor="serve")
+    assert breaker.names == ["trip"]
+    assert verifier.names == []
+
+
+def test_enact_disables_the_gate_on_refuse_and_never_trips():
+    """§5.9's `refuse` stops submissions without halting — the distinction
+    that makes it a second value rather than a spelling of `halt`."""
+    breaker, verifier = _Calls(), _Calls()
+    reconcile_module.enact("refuse", breaker=breaker, verifier=verifier, actor="serve")
+    assert verifier.names == ["refuse_until_reconciled"]
+    assert breaker.names == [], "refuse is not a halt"
+
+
+def test_enact_clears_the_disable_when_the_run_came_back_clean():
+    """D13/§5.14: reconciliation is what resolves an ambiguous reference,
+    so a clean run is what re-enables sends — never a timer."""
+    breaker, verifier = _Calls(), _Calls()
+    reconcile_module.enact("none", breaker=breaker, verifier=verifier, actor="serve")
+    assert verifier.names == ["reset_after_reconcile"]
+    assert breaker.names == []
+
+
+def test_enact_refuses_an_action_outside_the_closed_set():
+    """A renamed action must fail loudly here rather than silently match
+    nothing — the defect a bare `if action == "halt"` chain hides."""
+    with pytest.raises(ProductionError):
+        reconcile_module.enact("nope", breaker=_Calls(), verifier=_Calls(), actor="serve")
+
+
+def test_enact_covers_every_recon_action():
+    """A member with no effect is an action the caller silently drops. The
+    assertion is written from the vocabulary, not from `enact`'s own table."""
+    for action in vocab.RECON_ACTIONS:
+        breaker, verifier = _Calls(), _Calls()
+        reconcile_module.enact(action, breaker=breaker, verifier=verifier, actor="serve")
+        assert breaker.names or verifier.names, f"{action!r} does nothing"

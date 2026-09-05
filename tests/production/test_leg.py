@@ -140,6 +140,7 @@ from dskit.production.records import (
     ReductionAuthorization,
     ReductionIntent,
     RiskVersion,
+    SafetyEpoch,
     SimulatedPermit,
 )
 from dskit.production.policy import ActionPolicy
@@ -2508,6 +2509,57 @@ def test_the_safety_epoch_digest_moves_when_any_member_it_covers_moves():
         scen.executor.submits[0][1].safety_epoch_digest for scen in (base, effect, fenced)
     }
     assert len(digests) == 3, digests
+
+
+def independent_epoch(scen, permit, intent):
+    """Rebuild the epoch from the scenario's own owners, not from the permit.
+
+    `risk_effect` and `authority_scope_digest` are the two terms whose only
+    reachable source here is the permit: the first is `DecisionPlan`'s, which
+    the mint consumed and did not return, and the second is minted by the
+    `Authority`'s own scope recipe. Every other term is read from the object
+    that owns it, so a leg that reordered, renamed or dropped one fails.
+    """
+    view = scen.view()
+    lease_permit = scen.lease.current(SCOPE)
+    return SafetyEpoch(
+        release_hash=intent.release_hash,
+        readiness_digest=view.readiness.readiness_digest,
+        readiness_until_ms=view.readiness.valid_until_ms,
+        calendar_close_ms=scen.calendar.close_ms,
+        coverage_digest=intent.coverage_digest,
+        inputs_digest=intent.inputs_digest,
+        inputs_asof_ms=intent.inputs_asof_ms,
+        quote_digest=intent.quote_digest,
+        quote_asof_ms=intent.quote_asof_ms,
+        evidence_digest=intent.evidence_digest,
+        evidence_asof_ms=intent.evidence_asof_ms,
+        risk_version=intent.risk_version,
+        risk_state_digest=intent.risk_state_digest,
+        executor_scope=scen.executor.execution_scope(),
+        health=scen.health.state,
+        breaker=view.breaker,
+        rung=scen.doc.rung,
+        risk_effect=permit.risk_effect,
+        authority_id=view.arming.authority_id,
+        authority_scope_digest=permit.authority_scope_digest,
+        pending_control=tuple(sorted(view.pending_control)),
+        queued_control=len(scen.inbox.pending()),
+        lease_scope=lease_permit.scope,
+        fencing_token=lease_permit.fencing_token,
+    )
+
+
+def test_the_minted_safety_epoch_is_the_shared_value_objects_digest(live_leg):
+    """§5.14: "a digest the permit binds must be recomputable by whatever
+    rechecks it" — so the epoch's term list, order and tag have ONE owner,
+    `records.SafetyEpoch`, and the mint is a construction of it. A second
+    recipe inside `leg.py` is what let the gate never recheck the field at
+    all: nothing else could compute the same number."""
+    result = run(live_leg)
+    _intent, permit, _state = live_leg.executor.submits[0]
+    epoch = independent_epoch(live_leg, permit, result.intent)
+    assert permit.safety_epoch_digest == epoch.digest()
 
 
 def test_the_safety_epoch_digest_is_deterministic_for_one_state():

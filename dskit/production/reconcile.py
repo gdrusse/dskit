@@ -62,6 +62,7 @@ from dskit.production.base import (
     _check_str,
     _check_unknown,
     canonical_hash,
+    pin_members,
 )
 from dskit.production.records import (
     Balance,
@@ -86,6 +87,7 @@ from dskit.production.vocab import (
     RECORD_KINDS,
     SIDES,
     STATUSES,
+    TRIP_REASONS,
 )
 
 __all__ = [
@@ -101,14 +103,97 @@ __all__ = [
     "ORDER_BREAK_CLASS",
     "ORDER_FIELDS",
     "RECON_DOMAINS",
+    "RECONCILE_TRIP_REASON",
     "RECON_ID_TAG",
     "ReconReport",
     "Reconciler",
     "SETTLEMENT_FIELDS",
     "classify_breaks",
+    "enact",
 ]
 
 _LOG = get_logger("reconcile")
+
+#: The breaker's reason for a reconciliation that could not be explained.
+#: One owner: both the loop's scheduled run and the operator ``reconcile``
+#: verb trip under this name, and neither spells it again (§5.9, §5.6).
+RECONCILE_TRIP_REASON = pin_members(
+    "reconcile.py's mismatch trip", ("reconcile_mismatch",), TRIP_REASONS
+)[0]
+
+_HALT, _REFUSE, _NONE = pin_members(
+    "reconcile.py's actions", ("halt", "refuse", "none"), RECON_ACTIONS, exact=True
+)
+
+
+def _enact_halt(breaker, verifier, actor, control_request_id, reason):
+    """Trip: a halted series already refuses every submit, so nothing else is owed."""
+    breaker.trip(RECONCILE_TRIP_REASON, actor, control_request_id=control_request_id)
+
+
+def _enact_refuse(breaker, verifier, actor, control_request_id, reason):
+    """Stop sends without halting — the whole difference between the two policies."""
+    verifier.refuse_until_reconciled(reason)
+
+
+def _enact_none(breaker, verifier, actor, control_request_id, reason):
+    """Clear the disable: a clean run is what resolves an ambiguous reference."""
+    verifier.reset_after_reconcile()
+
+
+#: What each ``RECON_ACTIONS`` member DOES. A table rather than a branch, so
+#: a member with no effect is a missing key and a test failure rather than a
+#: silent fall-through — the defect that let ``refuse`` be computed and
+#: dropped at two call sites.
+_ENACT = {_HALT: _enact_halt, _REFUSE: _enact_refuse, _NONE: _enact_none}
+
+
+def enact(action, *, breaker, verifier, actor, control_request_id=None, reason=None):
+    """Do what ``Reconciler.apply_policy`` named — the ONE owner of that mapping.
+
+    ``apply_policy`` names and never acts (D13), and two callers act on its
+    answer: the loop's scheduled run and the operator ``reconcile`` verb.
+    Stating the mapping in each of them is how ``refuse`` came to be computed
+    and dropped in both, so it is stated here once and imported.
+
+    Parameters
+    ----------
+    action : str
+        A ``vocab.RECON_ACTIONS`` member, as ``apply_policy`` returned it.
+    breaker : Breaker
+        Tripped on ``halt``, under ``RECONCILE_TRIP_REASON``.
+    verifier : SubmissionVerifier
+        Disabled on ``refuse``; re-enabled on ``none``.
+    actor : str
+        Who the trip is recorded as — the serve loop or the control verb.
+    control_request_id : str or None
+        The operator command this answers, when it is one.
+    reason : str or None
+        Why sends stopped, for the operator reading the log; defaults to a
+        line naming the action.
+
+    Returns
+    -------
+    str
+        The ``action`` it enacted, so a caller may record it.
+
+    Raises
+    ------
+    ProductionError
+        On an action outside ``vocab.RECON_ACTIONS``.
+    """
+    if action not in _ENACT:
+        raise ProductionError(
+            [f"enact takes a {list(RECON_ACTIONS)} action, got {action!r}"]
+        )
+    _ENACT[action](
+        breaker,
+        verifier,
+        actor,
+        control_request_id,
+        reason or f"reconciliation answered {action!r}",
+    )
+    return action
 
 #: The five compared domains, in the order a run walks them.
 RECON_DOMAINS = ("balances", "fills", "orders", "positions", "settlements")

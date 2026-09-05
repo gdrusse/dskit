@@ -340,6 +340,32 @@ TICK_RESULT = records.TickResult(
     feed=FEED_BLOCK,
 )
 
+SAFETY_EPOCH = records.SafetyEpoch(
+    release_hash=RELEASE,
+    readiness_digest=DIGEST_A,
+    readiness_until_ms=MS + 3_600_000,
+    calendar_close_ms=MS + 7_200_000,
+    coverage_digest=DIGEST_B,
+    inputs_digest=DIGEST_A,
+    inputs_asof_ms=MS,
+    quote_digest=DIGEST_C,
+    quote_asof_ms=MS,
+    evidence_digest=DIGEST_A,
+    evidence_asof_ms=MS,
+    risk_version=RISK_VERSION,
+    risk_state_digest=DIGEST_B,
+    executor_scope=SCOPE,
+    health="ready",
+    breaker="active",
+    rung="live_limited",
+    risk_effect="increase",
+    authority_id="auth-1",
+    authority_scope_digest=DIGEST_C,
+    pending_control=(),
+    queued_control=0,
+    lease_scope=SCOPE,
+    fencing_token=17,
+)
 #: Every §5.4 value object, with a valid instance. The generic tests below
 #: walk this table, so a record added without a sample is a record whose
 #: freezing, round trip and default-deny nobody checked.
@@ -371,6 +397,7 @@ SAMPLES = {
     "Permit": PERMIT,
     "SimulatedPermit": SIMULATED_PERMIT,
     "ActPermit": ACT_PERMIT,
+    "SafetyEpoch": SAFETY_EPOCH,
     "TickResult": TICK_RESULT,
     "Fill": records.Fill(
         fill_id="fill-1",

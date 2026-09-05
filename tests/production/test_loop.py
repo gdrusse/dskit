@@ -574,14 +574,21 @@ class FakeReconciler:
 
 
 class FakeVerifier:
-    """The act gate the loop holds only to clear its disable after a clean run."""
+    """The act gate the loop holds to set and clear its disable (§5.9, §5.14)."""
 
     def __init__(self, calls):
         self.calls = calls
+        self.disabled = False
 
     def reset_after_reconcile(self):
         """§5.14: reconciliation is what re-enables sends after an `unknown`."""
         self.calls.add("verifier.reset_after_reconcile")
+        self.disabled = False
+
+    def refuse_until_reconciled(self, reason):
+        """§5.9: `on_mismatch: refuse` stops submits until a clean run."""
+        self.calls.add("verifier.refuse_until_reconciled", reason)
+        self.disabled = True
 
 
 class FakeMonitor:
@@ -1937,6 +1944,51 @@ def test_a_reconciliation_that_found_a_mismatch_does_not_re_enable_the_gate(
     try:
         made.loop().run()
         assert calls.count("verifier.reset_after_reconcile") == 0
+    finally:
+        made.close()
+
+
+def test_a_reconcile_mismatch_that_says_refuse_disables_the_gate_without_halting(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """§5.9: `on_mismatch` "admits only `halt | refuse`", and `refuse` is the
+    half that had no mechanism — `apply_policy` computed it and the loop
+    dropped it, so a mismatching venue kept submitting. It stops submissions
+    until a later clean reconciliation, and it is NOT a halt: that is the
+    whole difference between the two values."""
+    verifier = FakeVerifier(calls)
+    made = make_harness(
+        tmp_path, serve_document, release_manifest, clock, calls,
+        reconciler=FakeReconciler(calls, due=True, action="refuse"),
+        submission_verifier=verifier,
+    )
+    try:
+        made.loop().run()
+        assert calls.count("verifier.refuse_until_reconciled") >= 1
+        assert verifier.disabled
+        assert calls.count("breaker.trip") == 0
+        assert calls.count("verifier.reset_after_reconcile") == 0
+    finally:
+        made.close()
+
+
+def test_a_later_clean_reconciliation_re_enables_a_gate_refused_for_a_mismatch(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """"Until a later clean reconciliation" is the other half: `refuse` uses
+    the same disable an `unknown` sets, so the same `reset_after_reconcile`
+    is what lifts it — one mechanism, not two."""
+    verifier = FakeVerifier(calls)
+    verifier.refuse_until_reconciled("a mismatching venue")
+    made = make_harness(
+        tmp_path, serve_document, release_manifest, clock, calls,
+        reconciler=FakeReconciler(calls, due=True, action="none"),
+        submission_verifier=verifier,
+    )
+    try:
+        made.loop().run()
+        assert calls.count("verifier.reset_after_reconcile") >= 1
+        assert not verifier.disabled
     finally:
         made.close()
 

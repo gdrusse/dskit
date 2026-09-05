@@ -103,7 +103,7 @@ from dskit.production.metrics import Metrics
 from dskit.production.monitors import MONITOR_KINDS
 from dskit.production.policy import ActionPolicy, TransitionPolicy
 from dskit.production.readiness import Readiness
-from dskit.production.reconcile import LedgerHistory, Reconciler
+from dskit.production.reconcile import LedgerHistory, Reconciler, enact
 from dskit.production.records import ReductionPlan
 from dskit.production.redact import get_logger, redact
 from dskit.production.resilience import resilience_from_document
@@ -141,9 +141,6 @@ _REDUCING = pin_members("compose.py's reduction state", ("reducing",), BREAKER_S
 #: The breaker's own vocabulary for an operator kill switch and for a
 #: reconciliation that could not be explained (§5.6, §5.9).
 _OPERATOR_REASON = pin_members("compose.py's operator trip", ("operator",), TRIP_REASONS)[0]
-_RECONCILE_REASON = pin_members(
-    "compose.py's reconcile trip", ("reconcile_mismatch",), TRIP_REASONS
-)[0]
 
 #: Who a control verb acts as, when the verb is an operator's.
 _OPERATOR_ACTOR = "operator"
@@ -154,10 +151,6 @@ _HALT_CAUSE = "halt"
 #: The recipe a reduction authority id derives from — one owner, so a
 #: replayed approval mints the same id and the ledger dedups it.
 _REDUCTION_AUTHORITY_TAG = "reduction-authority-v1"
-
-#: What ``Reconciler.apply_policy`` may answer, and what the loop and the
-#: reconcile handler do with each — the one owner of that mapping.
-_RECON_HALTS = "halt"
 
 _MS_PER_S = 1000
 
@@ -1261,12 +1254,14 @@ class _Reconcile(_Verb):
         report = self._w.recording.reconciler.run(
             view, self._w.execution.executor, self._w.document.coordination.scope
         )
-        action = self._w.recording.reconciler.apply_policy(report)
-        if action == _RECON_HALTS:
-            self._w.safety.breaker.trip(
-                _RECONCILE_REASON, self.PURPOSE, control_request_id=command["request_id"]
-            )
-        return self.applied(reason=str(action))
+        action = enact(
+            self._w.recording.reconciler.apply_policy(report),
+            breaker=self._w.safety.breaker,
+            verifier=self._w.safety.submission_verifier,
+            actor=self.PURPOSE,
+            control_request_id=command["request_id"],
+        )
+        return self.applied(reason=action)
 
 
 class _Ready(_Verb):

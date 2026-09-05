@@ -55,12 +55,14 @@ from dskit.production.base import (
     ProductionError,
     _check_unknown,
     canonical_hash,
+    pin_members,
     reject_money_floats,
 )
 from dskit.production.vocab import (
     ALERT_STATUSES,
     AUTHORITY_ROLES,
     BREAKER_STATES,
+    CALENDAR_WINDOWS,
     FEED_STATUSES,
     FILL_STATUSES,
     HEALTH_STATES,
@@ -115,6 +117,7 @@ __all__ = [
     "ReductionIntent",
     "ReductionPlan",
     "RiskVersion",
+    "SafetyEpoch",
     "ScopeVerdict",
     "Settlement",
     "SimulatedPermit",
@@ -1813,6 +1816,133 @@ class ActPermit(Permit):
     checked_at_ms: int
 
     _CLOSED = (("risk_effect", RISK_EFFECTS),)
+
+
+#: The version tag :meth:`SafetyEpoch.digest` prefixes, so a future recipe
+#: that adds or drops a term is a different number rather than a collision.
+_SAFETY_EPOCH_TAG = "safety-epoch-v1"
+
+
+@dataclass(frozen=True)
+class SafetyEpoch(_Record):
+    """Everything §5.4's safety epoch covers, as one value with one digest.
+
+    ``ActPermit.safety_epoch_digest`` is this object's :meth:`digest`. The
+    mint (``leg.py``'s ``Authority``) and the recheck (``verifier.py``'s
+    ``SubmissionVerifier``) both construct one and compare the two numbers,
+    which is only meaningful because the term list, the field ORDER and the
+    ``safety-epoch-v1`` tag live here and nowhere else: a second recipe
+    would be a digest nothing else could reproduce, and a field nothing
+    rechecks. The gate builds its own from the FRESHEST value it holds for
+    each term, so a term the individual rechecks do not cover is still
+    covered here.
+
+    Parameters
+    ----------
+    release_hash : str
+        The release the intent bound, re-earned from bytes at the gate.
+    readiness_digest : str or None
+        The GO's digest, and ``readiness_until_ms`` its validity; None where
+        the fold holds no readiness evaluation.
+    readiness_until_ms : int or None
+    calendar_close_ms : int
+        The close of the :attr:`WINDOW` window containing the permit's
+        ``checked_at_ms`` — a calendar reloaded with different data moves it.
+    coverage_digest, inputs_digest : str
+    inputs_asof_ms : int
+    quote_digest : str
+    quote_asof_ms : int
+    evidence_digest : str
+    evidence_asof_ms : int
+    risk_version : RiskVersion
+    risk_state_digest : str
+    executor_scope : ExecutionScope
+        The executor's authenticated scope, refreshed at both ends.
+    health : str
+        One of ``HEALTH_STATES``; ``Health.state`` is a property, not a call.
+    breaker : str
+        One of ``BREAKER_STATES``.
+    rung : str
+        One of ``RUNGS``.
+    risk_effect : str
+        One of ``RISK_EFFECTS``.
+    authority_id, authority_scope_digest : str
+    pending_control : tuple of str
+        The folded pending-control request ids, SORTED — a set's order is
+        not a fact about the epoch.
+    queued_control : int
+        How many commands the inbox holds unfolded; a queued-but-unfolded
+        command moves the epoch exactly like a folded one.
+    lease_scope : ExecutionScope or None
+    fencing_token : int or None
+
+    Examples
+    --------
+    ::
+
+        epoch = SafetyEpoch(
+            release_hash="d" * 64, readiness_digest="a" * 64,
+            readiness_until_ms=1_757_034_000_000, calendar_close_ms=1_757_060_000_000,
+            coverage_digest="b" * 64, inputs_digest="a" * 64,
+            inputs_asof_ms=1_757_030_400_000, quote_digest="c" * 64,
+            quote_asof_ms=1_757_030_400_000, evidence_digest="a" * 64,
+            evidence_asof_ms=1_757_030_400_000, risk_version=version,
+            risk_state_digest="b" * 64, executor_scope=scope, health="ready",
+            breaker="active", rung="live_limited", risk_effect="increase",
+            authority_id="auth-1", authority_scope_digest="c" * 64,
+            pending_control=(), queued_control=0, lease_scope=scope, fencing_token=17,
+        )
+        len(epoch.digest())  # 64
+    """
+
+    #: The ``vocab.CALENDAR_WINDOWS`` member whose close the epoch binds, so
+    #: the two sides cannot ask the calendar different questions.
+    WINDOW = "session"
+
+    release_hash: str
+    readiness_digest: str | None
+    readiness_until_ms: int | None
+    calendar_close_ms: int
+    coverage_digest: str
+    inputs_digest: str
+    inputs_asof_ms: int
+    quote_digest: str
+    quote_asof_ms: int
+    evidence_digest: str
+    evidence_asof_ms: int
+    risk_version: RiskVersion
+    risk_state_digest: str
+    executor_scope: ExecutionScope
+    health: str
+    breaker: str
+    rung: str
+    risk_effect: str
+    authority_id: str
+    authority_scope_digest: str
+    pending_control: tuple[str, ...]
+    queued_control: int
+    lease_scope: ExecutionScope | None
+    fencing_token: int | None
+
+    _CLOSED = (
+        ("health", HEALTH_STATES),
+        ("breaker", BREAKER_STATES),
+        ("rung", RUNGS),
+        ("risk_effect", RISK_EFFECTS),
+    )
+
+    def digest(self):
+        """Digest the whole epoch under its version tag.
+
+        Returns
+        -------
+        str
+            ``canonical_hash([_SAFETY_EPOCH_TAG, to_obj()])``.
+        """
+        return canonical_hash([_SAFETY_EPOCH_TAG, self.to_obj()])
+
+
+pin_members("records.py's safety-epoch window", (SafetyEpoch.WINDOW,), CALENDAR_WINDOWS)
 
 
 # ---------------------------------------------------------------------------

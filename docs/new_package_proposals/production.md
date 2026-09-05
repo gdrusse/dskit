@@ -1775,7 +1775,21 @@ positions only when `capabilities().positions == "venue"`, since against a
 `derived` executor that comparison is vacuous. Breaks are `timing | missing_in_ledger |
 missing_at_venue | quantity | price | fee | state | settlement | cash`, with severity
 `info | warn | block`. `document.reconcile.on_mismatch` is the automatic policy and admits only
-`halt | refuse`; unknown venue
+`halt | refuse`, and each has a mechanism: `halt` trips the breaker, while
+`refuse` stops SUBMISSIONS until a later reconciliation comes back clean —
+`SubmissionVerifier.refuse_until_reconciled(reason)` (§5.14), the same
+disable an ambiguous outcome sets and the same `reset_after_reconcile`
+clears, and it does not trip the breaker, which is the whole difference
+between the two values. `apply_policy` NAMES the action and never acts
+(D13), and the module function `enact(action, *, breaker, verifier, actor,
+control_request_id=None, reason=None)` is the ONE owner of what each action
+DOES, keyed by a table over `RECON_ACTIONS` rather than a branch. It has two
+callers — the loop's scheduled run and the operator `reconcile` verb — and
+stating the mapping in each of them is exactly how `refuse` came to be
+computed and then dropped in BOTH: a policy the document offers and the code
+does not implement. A member with no table entry refuses rather than falling
+through, so a new action cannot be added silently. `RECONCILE_TRIP_REASON`
+lives beside it for the same reason, rather than being pinned twice. Unknown venue
 orders are `external`, never silently made ours.
 A `cash` break is a balance delta no fill, settlement or fee explains — a
 deposit or withdrawal. It is the one break class with a resolution other than
@@ -2476,8 +2490,15 @@ procedure inside the loop.
   consumed; it is what
   makes "the digest the right names is the digest that reaches the venue"
   checkable rather than aspirational: it holds `signed` (the `ReductionIntent`,
-  including its signed `candidate`), its `reduction_intent_digest`, and the right
-  being consumed.
+  including its signed `candidate`), its `reduction_intent_digest`, and the
+  right being consumed. **`right` is looked up in the FOLD's own rights**
+  (`view.reduction.rights`) and is `str | None` — `None` when the authority in
+  force granted no such right, which step (5) then refuses. It is deliberately
+  not echoed from the signed intent: step (5) rebuilds the
+  `reduction_intent_digest` from the constructed `Intent` and requires it to
+  equal `right`, and a `right` copied off the same signed object would make
+  that comparison a tautology that no forged, expired or already-revoked
+  grant could fail.
   **`execute-flatten` contributes each stored `ReductionIntent.candidate`
   through `Tick(reduction_cycle=…)`** (§5.13), so they are in the candidate set
   before `Tick.account` runs, so their scope keys
@@ -2844,13 +2865,36 @@ runtime fingerprint immediately before submit; `action_policy` because the
 gate rechecks policy and a `PolicyRequest` needs breaker, health and
 readiness; `inbox` and `calendar` because `safety_epoch_digest` covers
 pending-control state and the calendar, and a digest the permit binds must be
-recomputable by whatever rechecks it — the same argument
-that justifies the `Authority`'s ten collaborators applies here and was not made
+recomputable by whatever rechecks it — which the gate DOES, as its final
+check. **The epoch has one owner**, `records.SafetyEpoch`: a frozen value
+carrying the epoch's terms whose `digest()` owns the version tag, the field
+order and the canonicalisation. The `Authority` constructs one to mint and
+the gate constructs one to recheck, so the term list exists in a single
+place; a second recipe inside `leg.py` was a digest nothing else could
+reproduce, and so a permit field nothing rechecked. The gate builds its own
+from the FRESHEST value it holds for each term — the calendar's close at the
+permit's `checked_at_ms` (the permit's instant, so an unchanged calendar
+gives an unchanged term), `Health.state`, the fold's breaker and
+pending-control set, the inbox's queue depth, the refreshed executor scope
+and lease, and every digest, version and as-of from the intent, batch,
+account and authority the earlier checks already proved equal — and never
+from the permit, which would agree by construction and refuse nothing. Only
+`risk_effect` and `authority_scope_digest` are the permit's: the gate holds
+no `DecisionPlan` and does not own the minting authority's scope recipe.
+Being a recheck of everything the earlier checks proved one at a time, it
+runs LAST, and it is the only check covering a term none of the others
+compares. That is the same argument
+that justifies the `Authority`'s ten collaborators, applied here and not made
 before: a gate that refreshes quote, accounting, authority, executor identity and
 lease, and rechecks deadlines, hard guards and policy, cannot do any of it from
 `(intent, permit, native_call)`. `compose.py` builds it and hands it to both
 `Safety` and the `LiveExecutor` wrapper, which is the one object held twice by
-design. These three are
+design. Its whole surface is four names: `verify_and_call`, the `disabled`
+flag, `reset_after_reconcile()` — which a CLEAN reconciliation calls — and
+`refuse_until_reconciled(reason)`, which the loop calls when
+`document.reconcile.on_mismatch` is `refuse` (§5.9). The last two are one
+mechanism with two callers, not two disables: an `unknown` outcome and a
+mismatching venue are both "only reconciliation resolves this". These three are
 the sole owners of the following rules; callers cannot
 duplicate or extend them by branching.
 
@@ -3150,7 +3194,7 @@ guard while nothing produced one. The records a step *reads* are walked too:
 | record | producer |
 |---|---|
 | `TickState{view, account, feed_status, feed_ages, calendar, entry_batch}` | assembled by `Tick.run` after the `account` phase (§5.13) and carried into each `LegBindings`; `entry_batch` is `read_entry`'s, the same object `bindings.entry_batch` holds, so the verifier rehashes what the plan bound |
-| `LegBindings` (13 fields) | assembled by `Tick.run` per proposal; `proposal`/`origin` from `propose` (or from `execute-flatten`'s stored plan when `origin == reduction`), `entry_batch`/`head_digest` from `read_entry`/`evaluate`, `quotes` from `quotes`, `state` the `TickState`, `requirements` the second return of `account`, `reduction` `None` for a model leg and otherwise the signed `ReductionIntent` + digest + right, `release`/`rung` from the loop, `tick_id`/`leg_id`/`leg_index` from `recording.id_source` |
+| `LegBindings` (13 fields) | assembled by `Tick.run` per proposal; `proposal`/`origin` from `propose` (or from `execute-flatten`'s stored plan when `origin == reduction`), `entry_batch`/`head_digest` from `read_entry`/`evaluate`, `quotes` from `quotes`, `state` the `TickState`, `requirements` the second return of `account`, `reduction` `None` for a model leg and otherwise the signed `ReductionIntent` + its digest + the right the FOLD granted (the rights on `state_view.reduction`, `None` when it granted none — §5.13.1), `release`/`rung` from the loop, `tick_id`/`leg_id`/`leg_index` from `recording.id_source` |
 | `Intent` (16 fields) | step 5; `client_ref` from `recording.id_source`, `created_ms` from `schedule.clock`, `release_hash` from `bindings.release`, `decision_plan_id` from step 4 and `decision_plan_digest` by the §5.4 recipe over that plan, `proposal` the `LegEvaluation.final`, `authority_id` from `bindings.state.view.arming` for a model leg and from `bindings.reduction` for a reduction leg (`None` at shadow/paper, where no ordinary arm exists), `inputs_*`/`coverage_digest` from `bindings.entry_batch`, `quote_*` from `bindings.quotes`, and `evidence_*`/`risk_*` from `LegEvaluation.account` — the same one the plan binds |
 | `PolicyRequest` (9 fields) | assembled by the caller of `ActionPolicy.permits`: `operation` at the call site, `risk_effect` from `LegEvaluation`, `rung`/`origin` from `bindings`, `breaker` from the **fresh** `recording.state.snapshot()` of steps (2)/(3)/(6) — never the tick-assembly view, or a trip raised inside this tick is invisible — `readiness` and `authority` from that same fresh view (`arming` for a model leg, `bindings.reduction` for a reduction leg), `health` from `observability.health`, `pending_control` from that same fresh view |
 | `LegEvaluation` (9 fields) | steps 1–3, threaded (`risk_effect` from step 2's `execution.accounting.classify`) |
@@ -3183,6 +3227,23 @@ defect and not an implementation detail to be settled later. `ServeRoot` is the
 one deliberate exception: it is a construction-time dependency of `Ledger`,
 `Breaker` and `ControlInbox` rather than a bundle member, and it is named here so
 the exception is explicit rather than an oversight.
+
+**Folded but unproduced in phase 1.** Two things the fold and the vocabulary
+carry have no phase-1 producer. They are named here so the hole is a
+recorded decision rather than something a later reader has to rediscover:
+
+- the `authority` event `expire`. `Arming.expire_if_due(view, at_ms)` builds
+  the body and is tested, but nothing calls it: an arm past `armed_until_ms`
+  is already inert, because `Arming.current(view, at_ms)` refuses it, so the
+  missing record is bookkeeping and not authority. A caller — a sweep at the
+  tick boundary — is phase-2 work; in phase 1 the only verb that ENDS an arm
+  with a record is the operator's `disarm`.
+- the `supersedes` member of §6's `cash_flow` record, which the fold nets on
+  and which every phase-1 producer writes as `null`. `adopt` is the only producer of a `cash_flow`
+  and it never names an earlier flow; the correcting producer would be an
+  `adopt` that supersedes a previously adopted break, which phase 1 does not
+  offer. The netting rule is defined now because a flow banked wrongly is
+  otherwise uncorrectable for the life of the series.
 
 **`test_producers.py` is a real check, not a restatement.** The table above lands
 in code as a module-level
@@ -3221,7 +3282,12 @@ fields never enter `payload_digest`. **A record `id` is unique across the
 SERIES, not within a kind** (the idempotency index is keyed by `id` alone),
 so every producer qualifies its id with the kind:
 `f"{kind}:{semantic_id}"` — `tick_start:<tick_id>` and `tick:<tick_id>` are
-two records of one tick and must not collide. `IdSource` derives tick, decision, leg and
+two records of one tick and must not collide. For the same reason an
+`authority` record's id is `authority:<authority_id>:<event>` (one owner,
+`arming.py`'s `authority_record`): an `issue` and the `disarm`, `revoke` or
+`expire` that ends it are several records of ONE authority, and an id
+qualified only by the authority would make the second an append of a changed
+payload under a reused id — a refusal, not a demotion. `IdSource` derives tick, decision, leg and
 model client ids from stable semantic inputs before append, independent of
 sequence or wall time. Flatten refs are
 `H("flatten-v1", release_hash, reduction_request_id, intent_index,
@@ -3257,7 +3323,7 @@ sha256-canonical idiom.
 | `silence` | [phase 2] one operator silence window | `Silence.to_obj()` — `silence_id`, `matchers`, `starts_at_ms`, `ends_at_ms`, `created_by`, `comment` — plus `control_request_id`, `principal_digest`, `proof_digest`. `ends_at_ms` is required and bounded, since an unbounded silence is how a page is lost forever. The record stores no state: `Silence.state_at(now_ms)` derives one of `SILENCE_STATES` from the two instants |
 | `alert_ack` | [phase 2] one operator acknowledgement | `AlertAck.to_obj()` — `fingerprint`, `acknowledged_until_ms`, `by`, `reason` — plus `control_request_id`, `principal_digest`, `proof_digest`. An ack stops ESCALATION and nothing else: the alert keeps firing and keeps being recorded, because an ack means a human owns it, not that it is fixed |
 | `health` | transition | `from`, `to`, `cause`, `probe_evidence` |
-| `snapshot` | every N records | `at_seq`, `state_digest`, `state` — **every `StateView` member** (positions, working orders, pending refs, balances, decision history, breaker, arming, readiness, guard holds, reduction projection, pending control, risk version) **plus monitor state**, which §5.10 requires the snapshot to carry and which is not a `StateView` member — dropping it would reset every drift window on restart, and a monitor below `min_n` cannot alarm until it refills. `risk_version`'s `executor_token`/`accounting_tokens` are live session tokens re-acquired on restart, not restored. Since `Recovery` replays `SeriesState.apply` from the last snapshot forward and cannot restore a member the snapshot never carried |
+| `snapshot` | every N records | `at_seq`, `state_digest`, `state` — **every `StateView` member** (positions, working orders, pending refs, balances, decision history, breaker, arming, readiness, guard holds, reduction projection, pending control, risk version) **plus monitor state**, which §5.10 requires the snapshot to carry and which is not a `StateView` member — dropping it would reset every drift window on restart, and a monitor below `min_n` cannot alarm until it refills. `risk_version`'s `executor_token`/`accounting_tokens` are live session tokens re-acquired on restart, not restored. Since `Recovery` replays `SeriesState.apply` from the last snapshot forward and cannot restore a member the snapshot never carried. The non-`StateView` projections §5.8.1 lists ride here for the same reason, and `last_trip` carries exactly `{id, seq, recorded_at_ms, from, to, reason, acknowledged_trip_id, cancelled}` — `cancelled` says whether a `cancel_outcome` naming that trip has been folded, which is what makes "a halting `trip` with no later `cancel_outcome`" answerable from the fold alone rather than by a second walk of the ledger. `restore` is default-deny over those keys, so a snapshot written before `cancelled` existed refuses by name (`missing key(s) ['cancelled']`) instead of restoring a trip recovery would then re-sweep; `schema_version` stays `1` because the branch is unreleased and no such snapshot exists outside a working tree |
 
 ## 7. CLI — `python -m dskit.production`
 
@@ -3378,7 +3444,8 @@ dskit/production/
 ├── state.py           SeriesState (the sole ledger fold, with the non-StateView accessors monitor_state/open_ticks/
 │                      undecided_ticks/tick_plans/last_trip); StateView; TickState; PositionBook (with its per-instrument
 │                      fill log); Recovery; [phase 2] silences()/alert_acks()
-├── reconcile.py       Reconciler; ReconReport; break classification; on_mismatch policy
+├── reconcile.py       Reconciler; ReconReport; break classification; on_mismatch policy; enact +
+│                      RECONCILE_TRIP_REASON (the one owner of what each RECON_ACTIONS member does)
 ├── monitors.py        Monitor ABC; Reference / Chunker / Threshold strategies (Response is a vocabulary); Operational,
 │                      Stream, Distribution families; MONITOR_KINDS, REFERENCE_KINDS, CHUNKER_KINDS, THRESHOLD_KINDS;
 │                      [phase 2] DDM, ADWIN, JensenShannon, LInf, OutcomeMonitor (Calibration, Brier, Skill,

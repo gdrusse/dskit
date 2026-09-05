@@ -73,6 +73,7 @@ from dskit.production.records import (
     Quote,
     QuoteSet,
     RiskVersion,
+    SafetyEpoch,
     ScopeVerdict,
     SimulatedPermit,
 )
@@ -99,6 +100,13 @@ FENCE = 7
 
 SCOPE = ExecutionScope(venue="paper", account="strategy-a")
 OTHER_SCOPE = ExecutionScope(venue="paper", account="strategy-b")
+
+#: The health the scenario is minted under; `_health_not_ready` refuses every
+#: other member, so a health MOVE is only isolable in this direction.
+HEALTH = "ready"
+
+#: When the session containing `checked_at_ms` closes, per the fake calendar.
+CLOSE_MS = NOW_MS + 3_600_000
 
 #: §4.1's three freshness budgets, as `example_document` declares them. They
 #: are read from the document in the tests too — these copies exist only so a
@@ -139,6 +147,7 @@ EXPECTED_REASONS = (
     "release_hash",
     "risk_state_digest",
     "risk_version",
+    "safety_epoch",
     "scope",
     "source_config",
 )
@@ -246,15 +255,21 @@ class FakeInbox:
 
 
 class FakeCalendar:
-    """Open unless a test closes it."""
+    """Open unless a test closes it, with the session close the epoch binds."""
 
-    def __init__(self, open_=True):
+    def __init__(self, open_=True, close_ms=CLOSE_MS):
         self.open = open_
+        self.close_ms = close_ms
         self.calls = []
+        self.windows = []
 
     def is_open(self, ms):
         self.calls.append(ms)
         return self.open
+
+    def window(self, kind, at_ms):
+        self.windows.append((kind, at_ms))
+        return (at_ms - 3_600_000, self.close_ms)
 
 
 class FakeHealth:
@@ -265,7 +280,7 @@ class FakeHealth:
     `health.state()` and raise `TypeError` against every real `Health`.
     """
 
-    def __init__(self, state="ready"):
+    def __init__(self, state=HEALTH):
         self._state = state
         self.calls = 0
 
@@ -343,6 +358,7 @@ class Scenario:
     permit: ActPermit
     arm: ArmingProjection
     lease_permit: LeasePermit
+    epoch: SafetyEpoch
 
 
 def entry_batch(source_config_hash, asof_ms=NOW_MS, outputs=None):
@@ -553,6 +569,35 @@ def build_scenario(
         fencing_token=fencing_token,
         expires_ms=now_ms + 30_000 if lease_expires_ms is None else lease_expires_ms,
     )
+    # The epoch the MINT would have computed over this scenario: every term
+    # read from the object that owns it, exactly as `leg.py` reads it, and
+    # the four collaborator terms from the defaults `build_verifier` wires.
+    epoch = SafetyEpoch(
+        release_hash=release_hash,
+        readiness_digest=readiness.readiness_digest,
+        readiness_until_ms=readiness.valid_until_ms,
+        calendar_close_ms=state.calendar.close_ms,
+        coverage_digest=batch.coverage_digest,
+        inputs_digest=batch.inputs_digest,
+        inputs_asof_ms=batch.data_asof_ms,
+        quote_digest=quotes.quote_digest,
+        quote_asof_ms=quotes.min_asof_ms,
+        evidence_digest=account.evidence_digest,
+        evidence_asof_ms=account.asof_ms,
+        risk_version=account.risk_version,
+        risk_state_digest=account.risk_digest(),
+        executor_scope=SCOPE,
+        health=HEALTH,
+        breaker=view.breaker,
+        rung=document.rung,
+        risk_effect="increase",
+        authority_id=arm.authority_id,
+        authority_scope_digest=canonical_hash(arm.to_obj()),
+        pending_control=tuple(sorted(view.pending_control)),
+        queued_control=0,
+        lease_scope=lease_permit.scope,
+        fencing_token=lease_permit.fencing_token,
+    )
     permit = ActPermit(
         plan_id=PLAN_ID,
         decision_plan_digest=intent.decision_plan_digest,
@@ -580,7 +625,7 @@ def build_scenario(
         readiness_until_ms=readiness.valid_until_ms,
         lease_scope=SCOPE,
         fencing_token=lease_permit.fencing_token,
-        safety_epoch_digest="9" * 64,
+        safety_epoch_digest=epoch.digest(),
         checked_at_ms=now_ms,
     )
     return Scenario(
@@ -597,6 +642,7 @@ def build_scenario(
         permit=permit,
         arm=arm,
         lease_permit=lease_permit,
+        epoch=epoch,
     )
 
 
@@ -687,7 +733,12 @@ def test_the_gate_exposes_only_its_contract(scenario):
     forbids."""
     verifier, _parts = build_verifier(scenario)
     public = {name for name in dir(verifier) if not name.startswith("_")}
-    assert public == {"verify_and_call", "reset_after_reconcile", "disabled"}
+    assert public == {
+        "verify_and_call",
+        "refuse_until_reconciled",
+        "reset_after_reconcile",
+        "disabled",
+    }
 
 
 def test_verify_reasons_is_a_sorted_closed_set_naming_every_bound_member():
@@ -1220,6 +1271,97 @@ def test_a_command_queued_but_not_yet_folded_also_refuses(release_manifest, run_
 
 
 # ---------------------------------------------------------------------------
+# The safety epoch — the catch-all over everything the earlier checks proved
+# ---------------------------------------------------------------------------
+
+
+def test_the_gate_recomputes_the_epoch_and_a_foreign_digest_refuses(gate):
+    """§5.14 justifies `inbox` and `calendar` with "a digest the permit binds
+    must be recomputable by whatever rechecks it". A minted-but-never-checked
+    digest is a field, not a binding: the gate rebuilds the epoch from its own
+    freshest values and requires the number the permit carries."""
+    ack, native = call(gate)
+    assert ack.status == "open" and len(native.calls) == 1
+
+    foreign, foreign_native = call(gate, safety_epoch_digest="9" * 64)
+    assert (foreign.status, foreign.reason) == ("not_sent", "safety_epoch")
+    assert foreign_native.calls == []
+
+
+def test_a_calendar_that_moved_since_the_mint_refuses_on_the_safety_epoch(gate):
+    """The epoch binds the close of the session containing the permit's
+    `checked_at_ms` — the permit's instant, not `now`, so an unchanged
+    calendar yields an unchanged term and a calendar reloaded with different
+    data is a difference. `is_open` is untouched here, so no deadline check
+    can be the one that fires."""
+    _verifier, parts, _scen = gate
+    parts["calendar"].close_ms = CLOSE_MS - 600_000
+    ack, native = call(gate)
+    assert (ack.status, ack.reason) == ("not_sent", "safety_epoch")
+    assert parts["calendar"].windows and parts["calendar"].windows[0][0] == SafetyEpoch.WINDOW
+    assert native.calls == []
+
+
+def test_a_control_queue_that_moved_since_the_mint_refuses_on_the_safety_epoch(
+    release_manifest, run_dir
+):
+    """A command queued between mint and submit refuses at the policy, one
+    check earlier (`test_a_command_queued_but_not_yet_folded_also_refuses`).
+    The epoch is what covers the other direction — a permit minted while the
+    spool held a command and submitted after it drained — which no other
+    check looks at."""
+    scen = build_scenario(release_manifest, run_dir)
+    minted = dataclasses.replace(scen.epoch, queued_control=1)
+    permit = dataclasses.replace(scen.permit, safety_epoch_digest=minted.digest())
+    verifier, parts = build_verifier(scen)
+    native = NativeCall()
+    ack = verifier.verify_and_call(scen.intent, permit, scen.state, native)
+    assert (ack.status, ack.reason) == ("not_sent", "safety_epoch")
+    assert parts["inbox"].pending() == ()
+    assert native.calls == []
+
+
+def test_health_that_moved_since_the_mint_refuses_on_the_safety_epoch(
+    release_manifest, run_dir
+):
+    """`Health.state` is a PROPERTY on both sides, and the epoch covers it.
+    A move TO an unready state refuses at the policy
+    (`test_unready_health_refuses`); a permit minted while degraded and
+    submitted once ready is the direction only the epoch sees."""
+    scen = build_scenario(release_manifest, run_dir)
+    minted = dataclasses.replace(scen.epoch, health="degraded")
+    permit = dataclasses.replace(scen.permit, safety_epoch_digest=minted.digest())
+    verifier, parts = build_verifier(scen)
+    native = NativeCall()
+    ack = verifier.verify_and_call(scen.intent, permit, scen.state, native)
+    assert (ack.status, ack.reason) == ("not_sent", "safety_epoch")
+    assert parts["health"].state == HEALTH
+    assert native.calls == []
+
+
+def test_a_readiness_validity_that_moved_refuses_on_the_safety_epoch(
+    release_manifest, run_dir
+):
+    """Recomputing the epoch from the permit's own fields would be a
+    tautology — every term would agree by construction and the check would
+    refuse nothing — so each term is read from the source the earlier checks
+    compare against. `readiness_until_ms` is the sharpest case: `_bindings`
+    compares only the readiness DIGEST and `_deadlines` only takes a minimum
+    over the two instants, so a readiness re-evaluated with a longer validity
+    passes every earlier check. The epoch is the only one that binds it."""
+    scen = build_scenario(release_manifest, run_dir)
+    later = readiness_projection(now_ms=NOW_MS, valid_until_ms=NOW_MS + 90_000_000)
+    view = state_view(scen.account, arm=scen.arm, readiness=later)
+    state = dataclasses.replace(scen.state, view=view)
+    verifier, _parts = build_verifier(scen)
+    native = NativeCall()
+    ack = verifier.verify_and_call(scen.intent, scen.permit, state, native)
+    assert later.readiness_digest == scen.permit.readiness_digest
+    assert (ack.status, ack.reason) == ("not_sent", "safety_epoch")
+    assert native.calls == []
+
+
+# ---------------------------------------------------------------------------
 # Release re-verification (D24)
 # ---------------------------------------------------------------------------
 
@@ -1321,6 +1463,35 @@ def test_a_gateway_that_reports_unknown_rather_than_raising_also_disables(gate):
     later = verifier.verify_and_call(scen.intent, scen.permit, scen.state, native)
     assert (later.status, later.reason) == ("not_sent", "disabled")
     assert native.calls == []
+
+
+def test_refuse_until_reconciled_disables_the_gate_without_any_io(gate):
+    """§5.9's `on_mismatch: refuse` had no mechanism: `apply_policy` computed
+    it and the loop dropped it, so a mismatching venue kept submitting. It is
+    the same "stop until reconciliation resolves it" the `unknown` path has,
+    so it sets the SAME disable rather than a second one — and it is not a
+    halt, which is the only difference between the two `on_mismatch` values."""
+    verifier, _parts, scen = gate
+    assert verifier.disabled is False
+    verifier.refuse_until_reconciled("reconciliation found a mismatch")
+    assert verifier.disabled is True
+    native = NativeCall()
+    ack = verifier.verify_and_call(scen.intent, scen.permit, scen.state, native)
+    assert (ack.status, ack.reason) == ("not_sent", "disabled")
+    assert native.calls == []
+
+
+def test_a_gate_refused_for_a_mismatch_is_re_enabled_by_the_same_reset(gate):
+    """One disable, one reset: `reset_after_reconcile` is what a later clean
+    reconciliation calls, and it must lift a `refuse` exactly as it lifts an
+    `unknown`, or `refuse` would be a permanent outage."""
+    verifier, _parts, scen = gate
+    verifier.refuse_until_reconciled("reconciliation found a mismatch")
+    verifier.reset_after_reconcile()
+    assert verifier.disabled is False
+    ack, native = call(gate)
+    assert ack.status == "open"
+    assert len(native.calls) == 1
 
 
 def test_reset_after_reconcile_re_enables_the_gate(gate):
