@@ -86,6 +86,7 @@ __all__ = [
     "Ledger",
     "SCHEMA_VERSION",
     "ServeRoot",
+    "validate_cache_head",
 ]
 
 #: The envelope schema this writer emits. A reader tolerates unknown
@@ -1159,8 +1160,72 @@ class JsonlLedger(Ledger):
 
 
 # ---------------------------------------------------------------------------
-# Checkpoint — the head-bound cache (§5.8, D15)
+# Head-bound caches (§5.8, D15) — one placement rule, one owner
 # ---------------------------------------------------------------------------
+
+
+def validate_cache_head(head_seq, head_hash, ledger):
+    """Place a cache's projected head in the ledger's chain.
+
+    The rule every head-bound cache (``checkpoint.json``, ``breaker.json``,
+    ``arming.json``) applies before trusting itself: the ledger fold is the
+    authority, a cache only ever projects it. Defined once here and
+    imported by each cache, so the three cannot drift.
+
+    Parameters
+    ----------
+    head_seq : int
+        The ledger ``seq`` the cache projects, ``>= 0``.
+    head_hash : str
+        That record's ``hash`` — ``GENESIS_HASH`` when ``head_seq`` is 0.
+    ledger : Ledger
+        The chain that is the authority.
+
+    Returns
+    -------
+    str
+        A member of ``vocab.CACHE_STATES``: ``"current"`` when the head
+        equals the ledger head, ``"stale"`` when ``(head_seq, head_hash)``
+        is a verified ancestor of it (the cache is discarded and rebuilt).
+
+    Raises
+    ------
+    ProductionError
+        When ``head_seq``/``head_hash`` are malformed, ``head_seq`` is
+        ahead of the ledger head, or ``head_hash`` is not the hash the
+        chain holds at ``head_seq`` — a cache written against a history
+        this ledger does not have.
+    """
+    problems = []
+    check_int_param(problems, "head_seq", head_seq, ge=0)
+    _check_str(problems, "head_hash", head_hash)
+    if problems:
+        raise ProductionError(problems)
+    seq, head = ledger.head()
+    if head_seq > seq:
+        raise ProductionError(
+            [f"cache head_seq {head_seq} is ahead of the ledger head {seq}"]
+        )
+    if head_seq == seq:
+        if head_hash == head:
+            return _CURRENT
+        raise ProductionError(
+            [f"cache head_hash {head_hash} diverges from the ledger hash {head} at seq {seq}"]
+        )
+    if _hash_at(ledger, head_seq) == head_hash:
+        return _STALE
+    raise ProductionError(
+        [f"cache head {head_seq}/{head_hash} is not an ancestor of the ledger head {seq}/{head}"]
+    )
+
+
+def _hash_at(ledger, seq):
+    """Return the chain's hash at ``seq`` (genesis at 0), or None when it holds none."""
+    if seq == 0:
+        return GENESIS_HASH
+    for envelope in ledger.scan(since_seq=seq - 1):
+        return envelope["hash"] if envelope["seq"] == seq else None
+    return None
 
 
 @dataclass(frozen=True)
@@ -1332,7 +1397,7 @@ class Checkpoint:
         return cls.from_obj(obj)
 
     def validate_against(self, ledger):
-        """Place this checkpoint in the ledger's chain.
+        """Place this checkpoint in the ledger's chain via :func:`validate_cache_head`.
 
         Parameters
         ----------
@@ -1351,36 +1416,7 @@ class Checkpoint:
             When the checkpoint is ahead of the ledger head, or its
             ``head_hash`` is not the hash the chain holds at ``head_seq``.
         """
-        seq, head = ledger.head()
-        if self.head_seq > seq:
-            raise ProductionError(
-                [f"checkpoint head_seq {self.head_seq} is ahead of the ledger head {seq}"]
-            )
-        if self.head_seq == seq:
-            if self.head_hash == head:
-                return _CURRENT
-            raise ProductionError(
-                [
-                    f"checkpoint head_hash {self.head_hash} diverges from the "
-                    f"ledger hash {head} at seq {seq}"
-                ]
-            )
-        if self._ancestor_hash(ledger) == self.head_hash:
-            return _STALE
-        raise ProductionError(
-            [
-                f"checkpoint head {self.head_seq}/{self.head_hash} is not an "
-                f"ancestor of the ledger head {seq}/{head}"
-            ]
-        )
-
-    def _ancestor_hash(self, ledger):
-        """Return the chain's hash at ``head_seq``, or None when no such record exists."""
-        if self.head_seq == 0:
-            return GENESIS_HASH
-        for envelope in ledger.scan(since_seq=self.head_seq - 1):
-            return envelope["hash"] if envelope["seq"] == self.head_seq else None
-        return None
+        return validate_cache_head(self.head_seq, self.head_hash, ledger)
 
 
 _CHECKPOINT_KEYS = tuple(field.name for field in fields(Checkpoint))
