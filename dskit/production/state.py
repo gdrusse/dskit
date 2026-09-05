@@ -610,7 +610,9 @@ class _LogEntry:
         _check_str(problems, f"{where}.fill_id", obj["fill_id"])
         if obj["side"] not in _SIGNS:
             problems.append(f"{where}.side must be one of {sorted(_SIGNS)}, got {obj['side']!r}")
-        money = {name: _money(problems, f"{where}.{name}", obj[name]) for name in ("qty", "price", "fee")}
+        money = {
+            name: _money(problems, f"{where}.{name}", obj[name]) for name in ("qty", "price", "fee")
+        }
         if problems:
             raise ProductionError(problems)
         return cls(obj["fill_id"], obj["side"], money["qty"], money["price"], money["fee"])
@@ -1084,7 +1086,9 @@ class SeriesState:
             updated_ms=body.get("created_ms"),
         )
         self._pending[order.client_ref] = order
-        self._match_plan(body.get("decision_plan_id"), body.get("decision_plan_digest"), order.client_ref)
+        self._match_plan(
+            body.get("decision_plan_id"), body.get("decision_plan_digest"), order.client_ref
+        )
 
     def _match_plan(self, plan_id, digest, client_ref):
         """Mark the plan an intent binds — by id AND digest — as having its intent."""
@@ -1210,13 +1214,18 @@ class SeriesState:
         """Reserve one granted, unreserved reduction right."""
         problems = []
         _check_str(problems, "authority_use.authority_id", body.get("authority_id"))
-        _check_str(problems, "authority_use.reduction_intent_digest", body.get("reduction_intent_digest"))
+        _check_str(
+            problems, "authority_use.reduction_intent_digest", body.get("reduction_intent_digest")
+        )
         if problems:
             raise ProductionError(problems)
         current = self._reduction
         if current is None or current.authority_id != body["authority_id"]:
             raise ProductionError(
-                [f"authority_use names {body['authority_id']!r}, which is not the current reduction authority"]
+                [
+                    f"authority_use names {body['authority_id']!r}, which is not the current "
+                    "reduction authority"
+                ]
             )
         self._reduction = current.reserve(body["reduction_intent_digest"])
 
@@ -1474,7 +1483,8 @@ class SeriesState:
                 problems.append(f"snapshot.state.{name} must be a list, got {state[name]!r}")
         if state["breaker"] not in BREAKER_STATES:
             problems.append(
-                f"snapshot.state.breaker must be one of {list(BREAKER_STATES)}, got {state['breaker']!r}"
+                f"snapshot.state.breaker must be one of {list(BREAKER_STATES)}, "
+                f"got {state['breaker']!r}"
             )
         _check_dict(problems, "snapshot.state.risk_version", state["risk_version"])
         if problems:
@@ -1506,7 +1516,9 @@ class SeriesState:
         if problems:
             raise ProductionError(problems)
         filled_notional = {
-            ref: _fraction(problems, f"snapshot.state.working.{ref}.filled_notional", entry["filled_notional"])
+            ref: _fraction(
+                problems, f"snapshot.state.working.{ref}.filled_notional", entry["filled_notional"]
+            )
             for ref, entry in state["working"].items()
         }
         if problems:
@@ -1546,7 +1558,8 @@ class SeriesState:
                 for start in (TickStart.from_obj(obj) for obj in state["open_ticks"])
             },
             "_tick_plans": {
-                tick_id: [dict(entry) for entry in plans] for tick_id, plans in state["tick_plans"].items()
+                tick_id: [dict(entry) for entry in plans]
+                for tick_id, plans in state["tick_plans"].items()
             },
         }
 
