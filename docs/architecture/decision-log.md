@@ -4401,3 +4401,94 @@ metadata for source binding, explicit entity keys, event time and digest recipe 
 serve-document field pinned by `plan`, not contract output. Dedupe keys are not
 treated as a universe. Pipeline never imports production. Release-bound child code remains a
 declared trusted boundary, backed by code fingerprints and no-direct-I/O tests.
+
+## ADR-0092 — Gate 3 stops at the first exceedance
+
+**Status:** proposed (2026-09-05; supersedes the fixed-19-seed portion of
+ADR-0089; awaiting owner approval)
+
+**Context.** ADR-0089 refits every Gate-1 survivor under all 19 whole-session
+permutations. The recorded P11 Gate-1 campaign ran 1,320 fold processes at
+3.40 s each (`docs/decisioning/actions.csv`), and a Gate-3 fold is a Gate-1
+fold with a permuted label, so `13 x 19 x 20 = 4,940` folds is about 4.7
+hours — for a cohort that is not final. But `tier2_verdict` passes an asset
+only when `observed_r2 > max(nulls)`: one exceedance already fails
+`beat_all`, and the remaining seeds cannot change it.
+
+**Decision.** Run the frozen seeds 0..18 in order and stop an asset at the
+first completed null with `R2oos >= observed`. That asset is a FAIL, recorded
+with the stopping seed and the draws taken. If all 19 lose, run the existing
+centre/spread check on that completed family. A pass is never stopped early,
+so a passing asset always carries a full 19-draw calibration.
+
+This is Besag–Clifford stopping at the first exceedance (`h = 1`,
+`B_max = 19`) — equivalent to today's pass/fail, not a looser test. Gandy
+sequential Monte Carlo does not apply: the rule is a rank decision, not a
+bounded-risk p-value against a moving alpha.
+
+**Calibration is not weakened.** Nineteen draws cannot precisely certify a
+narrow SD (a sample SD's relative standard error is
+`1/sqrt(2*18) = 16.7%`) but they detect a large break: P10's Gate-3 spreads
+of 0.608 and 0.667 give `18*s^2` of 6.65 and 8.01 against the 5% lower
+`chi2_18` critical value of 9.39 — p = 0.007 and 0.022. The per-asset band
+stays on every COMPLETED family. Calibration is simply not claimed on a
+stopped asset, which already failed the rank test.
+
+**Consequences.** The saving is expectation, not guarantee: `E[draws]` on a
+failure is `H_19 = 3.55`, so twelve failures and one passer cost about 62
+walks against 247, but a survivor-heavy cohort saves almost nothing.
+`Gate3WalksStage` becomes a sequential per-asset loop that scores as it
+draws, so scoring moves into the walks stage and the walks/result boundary
+shifts; the stop must CALL the beat-all rule, never restate it. A stopped
+asset never reaches `tier2_verdict`, so its refusal of fewer than two nulls
+is not hit; `Gate3ResultStage` emits `null_mean`/`null_sd` as null with an
+explicit reason for those rows, never zero and never absent, and reports the
+bound `p >= 2/(B+1)` rather than a point value. `B = 19` with zero
+exceedances remains `1/20 = 0.05`; a strict `p < 0.05` would need
+`B >= 20`. The staged document's identity moves and a fresh execution is
+required, at no cost: ADR-0089 already required one.
+
+## ADR-0093 — Bounded parallel fold execution graduates into dskit
+
+**Status:** proposed (2026-09-05; awaiting owner approval)
+
+**Context.** `intraday_equities` ran each walk's folds through a blocking
+`subprocess.run`, one at a time, and dskit has no parallel execution
+anywhere. Folds are independent by construction — each carries its own
+cutoff and its own single-fold document — so the serial loop is pure
+wall-clock waste. A `ThreadPoolExecutor` now sits in the child
+(`modelability.py`), which is the wrong tier: capped, resumable, parallel
+fold processes is generic pipeline capability, and CLAUDE.md puts capability
+in dskit with only the cohort left in the child.
+
+**Decision.** Graduate the mechanism into `dskit/pipeline` as a fold-runner
+seam the child calls, keeping in the child only what is domain: which
+document, which cohort, which tag. The seam owns three rules.
+
+**The address-space cap is per process and never divided.** `RLIMIT_AS`
+bounds address space, not RSS; the feature cache maps every symbol whatever
+a walk scores; and a divided cap both refuses mappings that measured RSS
+never sees and breaks resume, since a finished fold is accepted back only
+under the limit it ran at. Total memory therefore scales with the width,
+which the operator chooses.
+
+**The cap is applied by `ulimit -v` through `/bin/sh`, read back before
+`exec`.** `preexec_fn` bars `posix_spawn`, so the child would fork from a
+pool-running parent and execute Python before `exec` — the pattern CPython
+documents as unsafe with threads — and dash's `ulimit` exits 0 even when
+`setrlimit` fails, so the readback is what makes a failed cap loud.
+
+**The width is read from the environment, never from a document.** Fold
+count is a property of the machine, not of what a run computes; a graded knob
+would move the identity hash and orphan every prior run each time it was
+tuned. The width used is journalled.
+
+**Consequences.** The child keeps its cohort and loses the mechanism; the
+name and default of the environment variable become dskit's, and the child's
+README and CLAUDE.md follow. Concurrency is UNMEASURED and bounded: the pool
+sits inside one walk's folds while the caller still loops walks serially, so
+a width above the fold count buys nothing, and a per-fold estimator with
+`n_jobs = 8` requests `8 x width` threads. `dskit/pipeline` gains its first
+`concurrent.futures` import; `tests/pipeline/test_purity.py` must still pass,
+since `concurrent.futures` and `shlex` are stdlib. A width of 1 must remain
+the historical serial path byte for byte.
