@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import sys
 from datetime import date, timedelta
@@ -18,7 +19,12 @@ from datetime import date, timedelta
 from dskit.pipeline.attempts import AttemptRegistry, tier2_verdict
 from dskit.journal import append_action
 from dskit.pipeline.document import PipelineDocument
-from dskit.pipeline.driver import aggregate_folds, write_walkforward_summary
+from dskit.pipeline.driver import (
+    FOLD_OPTIONAL_FIELDS,
+    FOLD_FIELDS,
+    aggregate_folds,
+    write_walkforward_summary,
+)
 from dskit.pipeline.folds import BoundedFoldRunner
 from dskit.pipeline.runs import (
     resolve_run_root,
@@ -347,6 +353,76 @@ def _single_fold_document(document, cutoff, index):
     return PipelineDocument.from_obj(obj)
 
 
+def _fresh_fold_row(document, summary, cutoff, asof):
+    """Read a fresh fold only after its identity and ran row validate."""
+    record = os.path.join(summary, "walkforward.json")
+    try:
+        with open(record, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError) as error:
+        raise ValueError(f"{summary}: unreadable walkforward.json") from error
+    expected = {
+        "name": document.name,
+        "document_hash": document.hash,
+        "asof": asof,
+        "state": "ran",
+    }
+    mismatches = [
+        f"{key}={payload.get(key)!r}, expected {value!r}"
+        for key, value in expected.items()
+        if payload.get(key) != value
+    ]
+    if mismatches:
+        raise ValueError(
+            f"{summary}: fresh fold summary identity mismatch: "
+            + "; ".join(mismatches)
+        )
+    row = single_fold_row(summary, cutoff)
+    missing = [key for key in FOLD_FIELDS if key not in row]
+    allowed = set(FOLD_FIELDS) | set(FOLD_OPTIONAL_FIELDS)
+    extra = sorted(set(row) - allowed)
+    score = row.get("score")
+    bad_score = (
+        isinstance(score, bool)
+        or not isinstance(score, (int, float))
+        or not math.isfinite(score)
+    )
+    if missing or extra or row.get("state") != "ran" or "error" in row or bad_score:
+        raise ValueError(
+            f"{summary}: fresh fold row is not a complete ran row; "
+            f"missing={missing} extra={extra} state={row.get('state')!r} "
+            f"error={row.get('error')!r} score={score!r}"
+        )
+    run_dir = row.get("run_dir")
+    if not isinstance(run_dir, str) or not run_dir or not os.path.isdir(run_dir):
+        raise ValueError(
+            f"{summary}: fresh fold row run_dir is not a directory: {run_dir!r}"
+        )
+    return row
+
+
+def _journal_fresh_fold(ctx, document, summary, cutoff, child_root):
+    """Record a freshly spawned exit-zero fold after validating its summary."""
+    # The bounded runner returned successfully, but the child journal hook can
+    # still leave no row. Validate the persisted identity and complete ran row
+    # before the parent records what it directly observed.
+    # This path is never used for a pre-existing orphan: _prepare_walk refuses
+    # those before spawning, so recovery cannot relabel old artifacts.
+    _fresh_fold_row(document, summary, cutoff, ctx.asof)
+    append_action(
+        "execute",
+        f"{document.name} walk-forward",
+        inputs=document.name,
+        outputs=summary,
+        db_location=summary,
+        notes=(
+            f"state=ran folds=1 hash={document.hash[:8]} asof={ctx.asof}; "
+            "journaled_by=bounded-parent-after-exit-0"
+        ),
+        start=child_root,
+    )
+
+
 def _run_bounded_walk(ctx, document, tag, *, workers=None):
     """Run each fold of ``document`` in a capped process; journal one summary."""
     # Every declared cutoff becomes one single-fold document run in its own
@@ -379,9 +455,17 @@ def _run_bounded_walk(ctx, document, tag, *, workers=None):
     if pending:
         runner.run(pending, cwd=child_root)
     folds = []
-    for part, cutoff, (_argv, part_summary, _reused) in zip(parts, cutoffs, planned):
+    for part, cutoff, (argv, part_summary, reused) in zip(parts, cutoffs, planned):
         if not _journal_confirms_walk(part_summary, part, ctx.asof, child_root):
-            raise RuntimeError(f"fold walk {part.name} finished without journal evidence")
+            if reused or argv is None:
+                raise RuntimeError(
+                    f"fold walk {part.name} finished without journal evidence"
+                )
+            _journal_fresh_fold(ctx, part, part_summary, cutoff, child_root)
+            if not _journal_confirms_walk(part_summary, part, ctx.asof, child_root):
+                raise RuntimeError(
+                    f"fold walk {part.name} finished without journal evidence"
+                )
         folds.append(single_fold_row(part_summary, cutoff))
     spec = document.walkforward
     aggregate = aggregate_folds(folds, spec.select, spec.weight_halflife_folds)
