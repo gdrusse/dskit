@@ -4490,33 +4490,40 @@ cost: ADR-0089 already required one.
 **Status:** proposed (2026-09-05; awaiting owner approval)
 
 **Context.** `intraday_equities` ran each walk's folds through a blocking
-`subprocess.run`, one at a time, and dskit has no parallel execution anywhere
-(verified: no `concurrent.futures`, `multiprocessing` or `threading` under
-`dskit/`). Folds are independent by construction, each carrying its own cutoff
-and its own single-fold document, so the serial loop is pure wall-clock waste.
-A `ThreadPoolExecutor` now sits in the child (`modelability.py`), **built and
+`subprocess.run`, one at a time. Nothing in dskit spawns concurrent work
+(verified: no `concurrent.futures` or `multiprocessing` under `dskit/`;
+`journal/base.py` imports `threading` only for a lock's reentrancy key).
+Folds are independent by construction, each carrying its own cutoff and its
+own single-fold document, so the serial loop is pure wall-clock waste. A
+`ThreadPoolExecutor` now sits in the child (`modelability.py`), **built and
 shipped without the ADR CLAUDE.md requires first** — this entry records that
 violation rather than tidying it away, and the graduation is its remedy.
 
-**Decision.** Add `dskit/pipeline/folds.py`, `__all__ = ("BoundedFoldRunner",)`:
+**Decision.** Add `dskit/pipeline/folds.py`, `__all__ = ["BoundedFoldRunner"]`:
 
 ```text
 class BoundedFoldRunner:
     def __init__(self, memory_limit_bytes, workers=None,
                  env_var="DSKIT_FOLD_WORKERS")
-    def run(self, commands)        # -> list of CompletedProcess, input order
-    def spawn(self, index, argv)   # the hook; default caps argv and runs it
+    def run(self, commands, cwd=None, env=None)
+        # -> list of CompletedProcess, in input order
+    def spawn(self, index, argv, cwd, env)
+        # the hook; the default caps argv and runs it
 ```
 
 `commands` is a list of argv lists — the seam owns the spawn, so the cap is
-its mechanism and not something a caller re-implements. `spawn` is the
-subclass hook: override how one fold runs, never the pooling. The child keeps
-only what is domain — which document, which cohort, which tag — builds the
-argv, and calls `run`.
+its mechanism and not something a caller re-implements. `cwd` and `env` are
+batch-wide because a batch is one walk: children run UNINSTALLED and import
+dskit and themselves through the working directory (ADR-0021), so a child
+that could not pass `cwd` would have to override `spawn` wholesale and
+re-derive the cap in tier-3 code. `spawn` is the subclass hook: override how
+one fold runs, never the pooling. The child keeps only what is domain — which
+document, which cohort, which tag — builds the argv, and calls `run`.
 
 `workers` is an explicit override for callers and tests; `None` (the default)
 reads `env_var` from the process environment, where unset means 1 and empty is
-refused.
+refused. A caller must never source `workers` from a graded document — that
+would reopen exactly the identity instability below.
 
 **The cap is a caller-supplied parameter.** `memory_limit_bytes` is required
 and has NO dskit default: 17 GiB is a P10 study number and a tier-1 default
@@ -4538,9 +4545,12 @@ chosen over `/bin/sh -c 'ulimit -v'` for three reasons, none of which is
 silence: measured on dash, `ulimit` DOES fail loudly when the hard limit is
 genuinely constrained (exit 2, stderr, readback unchanged). Rather, the shim
 avoids a shell interpreter and its `$BASH_ENV`/quoting surface entirely; it
-raises a typed `ValueError` naming the limit instead of a shell exit code that
-must be told apart from the fold's own (dskit reserves exit 3 for a NO-GO
-gate); and it needs no hand-picked sentinel exit code to signal a failed cap.
+raises a typed `ValueError` instead of a shell exit code that must be told
+apart from the fold's own (the walkforward CLI reserves exit 3 for a halted
+fold); and it needs no hand-picked sentinel exit code to signal a failed cap.
+
+A cap failure is configuration, not a fold result: `run` cancels unstarted
+folds and re-raises it. It never wraps into a `CompletedProcess`.
 
 **The width is read from the environment, never from a document.** Fold count
 is a property of the machine, not of what a run computes; a graded knob would
@@ -4554,21 +4564,26 @@ passes `env_var="INTRADAY_EQUITIES_FOLD_WORKERS"` so its documented knob and
 any operator scripts keep working; its README and CLAUDE.md are unchanged.
 `dskit/pipeline` gains its first `concurrent.futures` import; `test_purity.py`
 still passes because `concurrent.futures` and `resource` are stdlib, though
-passing that gate is necessary and not sufficient for domain-neutrality. No
-`shlex` is needed — there is no shell. A width of 1 must remain the serial
-path.
+passing that gate is necessary and not sufficient for domain-neutrality. A
+width of 1 must remain the serial path.
 
-`peak_rss_bytes` is dropped, not carried over. `RUSAGE_CHILDREN.ru_maxrss` is
-process-global and monotone, so under a pool a fold persists whatever sibling
-peaked highest and never reports lower — a wrong number written to disk and
-read back on resume. The seam does not measure per-fold memory; a caller that
-needs it measures inside the fold process.
+The seam measures no memory. `RUSAGE_CHILDREN.ru_maxrss` is process-global and
+monotone, so under a pool a fold would persist whatever sibling peaked highest
+and never report lower; `peak_rss_bytes` therefore leaves the per-fold record.
+`MemoryPreflightStage` keeps its measurement by wrapping its own call —
+`workers=1`, one command — with `getrusage`, which is valid precisely because
+a single serial fold has no siblings. That stage owns the child's memory
+contract and stays in the child.
 
 Cancellation is bounded, not immediate: unstarted folds are dropped, a running
 fold's subprocess is not killed, and there is no timeout.
 
-`_aggregate_folds` and `_write_walkforward_summary` are added to
-`driver.__all__`, and `score_bar` and `walk_cells` to `runs.__all__`, as part
-of this ADR: the child imports all four today, breaching the `__all__`
-contract. They are already the public seam in practice; this makes the
-declaration match.
+The child imports four private names today, breaching the `__all__` contract.
+`score_bar` and `walk_cells` read the stable on-disk `walkforward.json`, carry
+full docstrings, and are promoted to `runs.__all__` as they are. The driver
+pair is not: `_aggregate_folds` and `_write_walkforward_summary` take a
+fold-row shape dictated by `_run_folds`'s internals with no stated contract,
+and an underscore name never enters an `__all__` here. They are RENAMED to
+`aggregate_folds` and `write_walkforward_summary`, given docstrings that state
+the fold-row fields they require, and only then added to `driver.__all__`.
+Promoting them unrenamed would ratify the breach rather than fix it.
