@@ -4509,7 +4509,17 @@ class BoundedFoldRunner:
         # -> list of CompletedProcess, in input order
     def spawn(self, index, argv, cwd, env)
         # the hook; the default caps argv and runs it
+    def measure_one(self, argv, cwd=None, env=None)
+        # -> (CompletedProcess, peak_rss_bytes) for ONE serial spawn
 ```
+
+`measure_one` is the only way the seam reports memory, and it reports it for
+exactly one child: it reads `RUSAGE_CHILDREN.ru_maxrss` before spawning and
+raises `ValueError` if it is nonzero — an earlier child has been reaped and
+the counter is contaminated — then runs the one command at width 1 and returns
+the high-water mark after it. That trap is a property of the seam, pooled
+subprocesses against a process-global counter, not of any child, so the guard
+lives here. A caller keeps only its threshold and its choice of what to run.
 
 `commands` is a list of argv lists — the seam owns the spawn, so the cap is
 its mechanism and not something a caller re-implements. The seam is agnostic
@@ -4521,10 +4531,24 @@ function beside `walk_fold_dirs` in `runs.py`, which already owns the
 def single_fold_row(summary_dir, cutoff)   # -> the one fold row
 ```
 
-It refuses unless the summary's state is `ran`, its `folds` list has exactly
-one row, and that row's cutoff matches. That logic is generic and today
-hand-rolled in the child's `_one_bounded_fold`; leaving it there would repeat
-the violation this ADR remedies. `cwd` and `env` are
+It raises `ValueError` unless the summary's state is `ran`, its `folds` list
+has exactly one row, and that row's cutoff matches. That logic is generic and
+today hand-rolled in the child's `_one_bounded_fold`; leaving it there would
+repeat the violation this ADR remedies.
+
+The fold-row shape the driver writes and these readers consume gets one owner
+in `driver.py`, exported alongside two renamed functions:
+
+```text
+FOLD_FIELDS = ("cutoff", "run_dir", "state", "score")   # every row
+FOLD_OPTIONAL_FIELDS = ("search", "error")               # when present
+def aggregate_folds(folds, select, weight_halflife_folds=0)
+def write_walkforward_summary(summary, document, asof, spec, state,
+                              folds, aggregate)
+```
+
+`aggregate_folds` raises `ValueError` on a row missing a required key or
+carrying a key outside the union. `cwd` and `env` are
 batch-wide because a batch is one walk: children run UNINSTALLED and import
 dskit and themselves through the working directory (ADR-0021), so a child
 that could not pass `cwd` would have to override `spawn` wholesale and
@@ -4588,19 +4612,16 @@ still passes because `concurrent.futures` and `resource` are stdlib, though
 passing that gate is necessary and not sufficient for domain-neutrality. A
 width of 1 must remain the serial path.
 
-The seam measures no memory. `RUSAGE_CHILDREN.ru_maxrss` is process-global and
+`run` measures no memory. `RUSAGE_CHILDREN.ru_maxrss` is process-global and
 monotone — the high-water mark over EVERY child this process has ever reaped,
 so `max(before, after)` is always just `after` — and under a pool a fold would
 persist whatever sibling peaked highest. `peak_rss_bytes` therefore leaves the
-per-fold record. `MemoryPreflightStage` keeps its measurement by wrapping its
-own `workers=1`, single-command call with `getrusage`, and makes the
-precondition a runtime refusal rather than an assumption: it reads
-`RUSAGE_CHILDREN.ru_maxrss` BEFORE spawning and refuses if it is not zero,
-because a nonzero value means an earlier child has already been reaped and
-the reading after the spawn would be contaminated. The refusal is a
-`ValueError` — the one exception the `staged` CLI already reports cleanly —
-and it is enforced in the stage, not by the staged document happening to list
-it first. The stage owns the child's memory contract and stays in the child.
+per-fold record. `MemoryPreflightStage` calls `measure_one` instead of
+hand-rolling the same reading, keeps only its 17 GiB threshold and its choice
+of asset, and stays in the child as the owner of that contract. The
+contamination refusal is `measure_one`'s, a `ValueError` — the one exception
+the `staged` CLI already reports cleanly — enforced in the seam rather than by
+the staged document happening to list the stage first.
 
 Cancellation is bounded, not immediate: unstarted folds are dropped, a running
 fold's subprocess is not killed, and there is no timeout.
