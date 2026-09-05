@@ -22,6 +22,7 @@ engine. So `dskit` is four packages:
 | **Package 1 — Data Asset Platform** | authoritative **system of record**: registries + lineage; immutable, versioned; **observes** execution, never manages it | `dskit/assets/` | ✅ built |
 | **Package 2 — Data Acquisition & Onboarding** | governed **entry point**: acquire → snapshot → validate → certify → publish | `dskit/onboarding/` | ✅ built |
 | **Child action journal** | per-child ledger of acquire / research / execute / production; CSV store; generated markdown; owner path-to-production | `dskit/journal/` | ✅ built (ADR-0056) |
+| **Production layer** | serves an immutable release forward on a cadence: guards, executor seam, authenticated arming, hash-chained ledger, monitors, alerts, health | `dskit/production/` | ✅ built (ADR-0090, ADR-0091) |
 
 Package homes are proposals — see [ADR-0006](decision-log.md#adr-0006--package-homes-and-names).
 The full ownership map and end-to-end data flow are in

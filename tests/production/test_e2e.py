@@ -279,18 +279,15 @@ def proofs(tmp_path):
 
 
 def served(doc_path, journal, ticks, *, armed=False):
-    """Plan, record a GO, then serve for `ticks` ticks; return the exit code.
+    """Plan, then serve for `ticks` ticks; return the exit code.
 
-    §10 records a readiness GO only in the `live_limited` case, and §7 marks
-    the GO "(required for live rungs)" — but `LegPipeline._gate_readiness`
-    refuses at EVERY rung when the fold holds no current GO, so a simulated
-    serve decides nothing without one. The `ready` step is therefore here
-    rather than in the live case alone; the contradiction is reported, not
-    papered over, and every assertion below is the one §10 asks for.
+    No `ready` step: §10 records a readiness GO only in the `live_limited`
+    case and §7 marks it "(required for live rungs)", so a simulated serve
+    must decide with nothing folded (R29 — `ActionPolicy` is the one owner of
+    "no GO refuses a LIVE submit"). These cases run the way an operator would
+    run them, which is what makes the shadow ticks below evidence.
     """
     assert cli.main(["plan", doc_path], journal_hook=journal) == STOPPED
-    assert cli.main(["ready", doc_path, "--request-id", str(uuid.uuid4())],
-                    journal_hook=journal) == STOPPED
     argv = ["serve", doc_path, "--max-ticks", str(ticks)]
     return cli.main(argv + (["--armed"] if armed else []), journal_hook=journal)
 

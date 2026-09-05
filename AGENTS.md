@@ -133,6 +133,10 @@ dskit/
 │   ├── onboarding/            # Acquisition & Onboarding (spec Package 2):
 │   │   └── libs/              #   connectors/snapshots/validation/publication;
 │   │                          #   own README + AGENTS.md; libs/ = connector packs
+│   ├── production/            # the production layer (ADR-0090/0091): serve a
+│   │   └── libs/              #   release forward on a cadence — guards, executor,
+│   │                          #   hash-chained ledger, monitors, alerts, health;
+│   │                          #   own README + AGENTS.md; libs/ = phase-2 packs
 │   └── journal/               # child action ledger (ADR-0056); CSV + generated md
 ├── children/                  # child projects (ADR-0021): incubated at repo root,
 │   ├── README.md              #   never imported by dskit; the guide
@@ -147,6 +151,8 @@ dskit/
     ├── assets/                # assets engine: purity, hash-parity, e2e ingest + sync
     ├── assets_libs/           # tier-2 store packs (sqlite, parquet)
     ├── onboarding/            # onboarding: purity, model pin, conformance, CLI e2e
+    ├── production/            # production: purity, oop + producer closure, every
+    │                          #   module, and a shadow/paper/live_limited e2e
     ├── journal/               # action ledger: purity, CSV, locate, CLI e2e
     └── children/              # skeleton pin + per-child subprocess runs
 ```
@@ -323,10 +329,17 @@ python -m dskit.pipeline validate <doc.json>     # shape + identity hash
 python -m dskit.assets     init|validate-model|register|get|list|state|transition|lineage|ingest-run|sync-published
 python -m dskit.onboarding init|register-source|acquire|validate|certify|publish|verify
 python -m dskit.journal    init|record|research|promote|render|exec
+python -m dskit.production validate|plan|serve|ready|status|verify|reconcile|adopt
+python -m dskit.production arm-request|approve-arm|disarm|halt|reduce|resume
+python -m dskit.production flatten-request|approve-flatten|execute-flatten
 ```
 
-Exit codes: **0** ran · **3** halted at a NO-GO gate / `validate` gated `block`
-(a halt is a result) · **1** error.
+Exit codes: **0** ran · **1** error · **3** halted (a NO-GO gate, a `validate`
+gated `block`, or a tripped serve breaker — a halt is a result) · **4** already
+running · **5** refused (a readiness NO-GO, or a control verb the series state
+forbids). 4 and 5 are `dskit.production`'s deliberate extension: a halted series
+needs an operator, while a readiness NO-GO only means the checklist is not yet
+satisfied.
 
 ## Design work
 

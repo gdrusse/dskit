@@ -189,6 +189,15 @@ READINESS_DIGEST = "e5" * 32
 SOURCE_CONFIG_HASH = "f6" * 32
 RISK_STATE_DIGEST_SIGNED = "07" * 32
 
+#: The verdict `Readiness.verdict_for` answers when no current GO is folded —
+#: what a serve reports before `ready` has ever run (§5.13).
+NO_GO_VERDICT = "no_go"
+
+#: The `ActionPolicy` rule that owns "a live submit needs a current GO" (D10).
+#: Named here so the test asserts the POLICY refused, not merely that the leg
+#: did (R29): below live the same fold must decide normally.
+LIVE_GO_RULE = "live_submit_requires_go"
+
 #: Step (3)'s gate names, restated INDEPENDENTLY of `leg.py` — a vocabulary
 #: read from its subject asserts nothing (CLAUDE.md, "deliberate independent
 #: restatement"). One name per member §5.13 step (3) lists, in that order.
@@ -952,10 +961,12 @@ def build(*, origin="model", rung="live_limited", breaker=None, reduction=None,
         )
         binding = ReductionBinding(signed=signed, digest=digest, right=digest)
         prop = signed.proposal
+    # `readiness=None` seeds NO readiness record at all — the state a serve is
+    # in before `ready` has ever run, where `verdict_for` answers `no_go`.
     state, clock, ledger = seed_state(
         breaker=breaker or ("reducing" if origin == "reduction" else "active"),
         arm=arm,
-        ready=readiness_projection(verdict=readiness),
+        ready=None if readiness is None else readiness_projection(verdict=readiness),
         reduction=grant,
     )
     ledger.cut_after_barrier = cut_after_barrier
@@ -1021,7 +1032,7 @@ def build(*, origin="model", rung="live_limited", breaker=None, reduction=None,
         guards=chain,
         health=FakeHealth(health),
         inbox=FakeInbox(),
-        readiness=FakeReadiness(readiness),
+        readiness=FakeReadiness(readiness or NO_GO_VERDICT),
         arming=arming,
         authorities=authorities or default_authorities(),
         id_source=id_source,
@@ -1722,13 +1733,27 @@ def test_a_rung_that_disagrees_with_the_document_refuses_naming_rung():
     assert gate["gate"] == "rung"
 
 
-def test_a_readiness_no_go_refuses_naming_readiness():
-    """D11/§5.13: every live rung requires a current GO record bound to the
-    exact release before arming or submit."""
-    scen = build(readiness="no_go")
-    wire_authorities(scen)
-    gate = failing_gate(scen)
-    assert gate["gate"] == "readiness"
+def test_a_shadow_leg_decides_with_no_readiness_record_at_all():
+    """R29: the readiness gate RECORDS its verdict and passes — §7 marks the GO
+    "required for live rungs" and D10's `live_submit_requires_go` is live-only,
+    so a shadow serve that decided nothing until `ready` had run would
+    contradict the matrix. Nothing is folded here: `verdict_for` answers
+    `no_go` and the leg still reaches a decision."""
+    scen = build(rung="shadow", readiness=None)
+    wire_authorities(scen, model=SimulatedAuthority, reduction=SimulatedAuthority)
+    result = run(scen)
+    assert scen.view().readiness is None
+    gate = readiness_gate(scen)
+    assert gate["passed"] is True
+    assert NO_GO_VERDICT in gate["reason"]
+    assert result.result == "open"
+    assert len(scen.executor.submits) == 1
+
+
+def readiness_gate(scen):
+    """Return the recorded `GateResult` for step (3)'s readiness gate."""
+    body = scen.ledger.one("decision_plan")
+    return next(g for g in body["gate_results"] if g["gate"] == "readiness")
 
 
 def test_a_closed_calendar_refuses_naming_calendar():
@@ -2425,15 +2450,18 @@ def test_the_authority_scope_digest_moves_with_the_arm():
 
 
 class WatchingPolicy(ActionPolicy):
-    """The real rules, with the request recorded — never a stub verdict."""
+    """The real rules, with the request and its verdict recorded — never a stub verdict."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.requests = []
+        self.decisions = []
 
     def permits(self, request):
         self.requests.append(request)
-        return super().permits(request)
+        decision = super().permits(request)
+        self.decisions.append(decision)
+        return decision
 
 
 def test_the_policy_request_is_built_from_the_fresh_view_not_the_tick_one():
@@ -2455,6 +2483,28 @@ def test_the_policy_request_is_built_from_the_fresh_view_not_the_tick_one():
     assert request.readiness == "go"
     assert request.authority == "ordinary"
     assert request.pending_control is False
+
+
+def test_a_live_leg_without_a_go_is_refused_by_the_policy_rule_not_by_the_gate():
+    """D11 at a LIVE rung: the GO is still required, and `ActionPolicy` is its
+    one owner (R29, R27's precedent for the sibling `authority_scope` gate).
+    The gate records `no_go` and passes; the refusal comes back named
+    `live_submit_requires_go`, which is the rule the checked-in golden table
+    holds for this cell — so the matrix, not a second copy of it in `leg.py`,
+    is what stops the submit."""
+    scen = build(readiness=NO_GO_VERDICT)
+    wire_authorities(scen)
+    scen.action_policy = WatchingPolicy()
+    result = run(scen)
+    gate = readiness_gate(scen)
+    assert gate["passed"] is True
+    assert NO_GO_VERDICT in gate["reason"]
+    assert [decision.reason for decision in scen.action_policy.decisions] == [LIVE_GO_RULE]
+    assert scen.action_policy.requests[-1].readiness == NO_GO_VERDICT
+    assert result.result == "not_sent"
+    assert result.intent is None
+    assert scen.ledger.one("decision_plan")["result"] == "not_sent"
+    assert scen.executor.submits == []
 
 
 def test_a_pending_control_command_blocks_the_submit():

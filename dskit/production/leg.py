@@ -140,9 +140,6 @@ _READY_HEALTH = "ready"
 #: The breaker state that refuses every submit (D12).
 _HALTED_BREAKER = "halted"
 
-#: The readiness verdict every live rung requires (D11).
-_GO_VERDICT = "go"
-
 _SUBMIT, _NOT_SENT = PLAN_RESULTS
 _ZERO = Decimal(0)
 _NOT_ARMED = "not_armed"
@@ -1253,11 +1250,9 @@ class LegPipeline:
         return True, _SATISFIED
 
     def _gate_readiness(self, at_ms, view, account):
-        """Re-check the durable readiness GO — the one owner of "expired means no_go"."""
+        """Record the durable readiness verdict and pass; the matrix owns the live GO (R29)."""
         verdict = self.safety.readiness.verdict_for(view, at_ms)
-        if verdict != _GO_VERDICT:
-            return False, f"readiness is {verdict}, not {_GO_VERDICT}"
-        return True, _SATISFIED
+        return True, f"readiness is {verdict}"
 
     def _gate_calendar(self, at_ms, view, account):
         """Re-check the session: one that closed since the fetch stops this leg, not the next tick."""

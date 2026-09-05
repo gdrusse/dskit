@@ -1107,19 +1107,24 @@ decides the shape, so settle it before writing code.**
 
 ## Long-term goal — a generic SERVING LOOP in dskit
 
-**Plan approved and logged; implementation not started.** The original sketch is
-superseded by `docs/new_package_proposals/production.md`, whose merge records
-owner approval. ADR-0090 and ADR-0091 are in `docs/architecture/decision-log.md`
-as `proposed`, per the "ADR before code" rule.
+**Phase 1 is BUILT** (`dskit/production/`, ADR-0090 + ADR-0091). The original
+sketch is superseded by `docs/new_package_proposals/production.md`, whose merge
+recorded owner approval.
 
 - [x] Replace the original sketch with a reviewed, invariant-driven package plan.
 - [x] Survive ten methodology/OOP skeptic reviews to a SAFETY-CLEAN verdict.
 - [x] Log ADR-0090 and ADR-0091 in the decision log.
-- [ ] Implement `dskit.production` phase 1 in a separate code change, TDD per
-      §10's module order, and flip both ADRs to `accepted` when it lands.
-- [ ] Phase 2 (`outcomes`, `report`, `replay`, outcome/parity monitors, sqlite
-      and parquet packs) and phase 2b (widen the `serving_effect` audit beyond
-      the ~13 classes phase 1 classifies).
+- [x] Implement `dskit.production` phase 1, TDD per §10's module order — every
+      §8 module, the ADR-0091 pipeline seam, the 17 CLI verbs and a
+      shadow/paper/live_limited end-to-end run.
+- [x] Specify phases 2, 2b and 3 to the phase-1 standard (Stage 0), so the next
+      change builds from contracts rather than inventing them.
+- [ ] Phase 2 (`outcomes`, `report`, `replay`, outcome/parity monitors, alert
+      inhibition/silences/ack, systemd heartbeat, sqlite and parquet packs,
+      `Signer`, the `approve` verb) — specified in §5, not yet built.
+- [ ] Phase 2b (widen the `serving_effect` audit beyond the classes phase 1
+      classifies) and phase 3 (`exchange_calendars`, prometheus/otel sinks, the
+      stream seam, migrating the onboarding packs onto `resilience.py`).
 
 **Two things the plan deliberately leaves open, recorded so they are met as
 decisions rather than surprises.**
