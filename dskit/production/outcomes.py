@@ -742,7 +742,14 @@ class OutcomeJoin:
         never read to stamp a record: that instant is the caller's.
     sources : Mapping
         Ordered ``name -> OutcomeSource``, as built from
-        ``document.outcomes.sources``.
+        ``document.outcomes.sources`` — exactly those names, or NONE at
+        all. An empty map builds a READER: :meth:`collect` asks nobody and
+        finds nothing, while :meth:`current_outcome` and :meth:`as_of`
+        answer as they always do, which is what a read-only verb needs and
+        why ``report.py`` never builds a source it would not poll. A
+        PARTIAL map still refuses: serving some of what a document declares
+        and silently dropping the rest is the failure this check exists
+        for.
 
     Raises
     ------
@@ -766,7 +773,7 @@ class OutcomeJoin:
         sources = dict(sources or {})
         declared = _declared_sources(document)
         problems = []
-        if set(declared) != set(sources):
+        if sources and set(declared) != set(sources):
             problems.append(
                 f"outcomes.sources declares {sorted(declared)} and compose built "
                 f"{sorted(sources)}: the join serves exactly what the document declares"

@@ -83,16 +83,17 @@ from dskit.production.bundles import (
     Execution,
     Observability,
     Recording,
+    ReplayTape,
     Safety,
     Schedule,
 )
 from dskit.production.cadence import CADENCE_KINDS, Overrun
-from dskit.production.clock import CLOCK_KINDS
+from dskit.production.clock import CLOCK_KINDS, ManualTime, ReplayClock
 from dskit.production.control import ControlInbox
 from dskit.production.coordination import LEASE_KINDS
 from dskit.production.decider import PROPOSER_KINDS, Decider
 from dskit.production.executor import EXECUTOR_KINDS, LiveExecutor
-from dskit.production.feed import FEED_KINDS
+from dskit.production.feed import FEED_KINDS, ReplayFeed
 from dskit.production.guards import GUARD_KINDS, GuardChain
 from dskit.production.document import MIN_HEARTBEAT_EVERY_S
 from dskit.production.health import (
@@ -102,11 +103,11 @@ from dskit.production.health import (
     Health,
     Heartbeat,
 )
-from dskit.production.ids import ReleaseIdSource
+from dskit.production.ids import RecordedIdSource, ReleaseIdSource
 from dskit.production.ledger import Checkpoint, ledger_class
 from dskit.production.leg import LiveAuthority, ReductionAuthority, SimulatedAuthority
 from dskit.production.metrics import Metrics
-from dskit.production.monitors import MONITOR_KINDS
+from dskit.production.monitors import MONITOR_KINDS, ParityMonitor
 from dskit.production.outcomes import OUTCOME_SOURCE_KINDS, OutcomeJoin
 from dskit.production.policy import ActionPolicy, TransitionPolicy
 from dskit.production.readiness import Readiness
@@ -132,8 +133,11 @@ __all__ = [
     "DEFAULT_JITTER_SEED",
     "RUNG_TABLE",
     "bundles_for",
+    "clock_for",
     "handlers_for",
     "outcome_join",
+    "parity_monitors",
+    "reading_join",
 ]
 
 _LOG = get_logger("compose")
@@ -264,6 +268,12 @@ class _Rung:
     ----------
     executor, accounting, approval, coordination : str or None
         The one admissible core kind, or ``None`` for "a child class only".
+    replayable : bool
+        Whether a recorded series of this rung can be replayed from the
+        chain alone. §6 records every venue answer as a DIGEST, never as
+        the answer, so a rung whose executor and accounting read a real
+        venue has no tape and a replay of it would re-ask the venue —
+        which a read-only verb must never do.
     authority : dict
         ``origin -> Authority`` subclass, one entry per ``LEG_ORIGINS``
         member, because the authority axis is ``(rung, origin)``.
@@ -277,6 +287,7 @@ class _Rung:
         row = RUNG_TABLE["paper"]
         row.executor                  # 'paper'
         row.authority["reduction"]    # SimulatedAuthority
+        row.replayable                # True
     """
 
     executor: str | None
@@ -285,6 +296,7 @@ class _Rung:
     approval: str | None
     coordination: str | None
     build: _Build
+    replayable: bool
 
 
 def _simulated(executor):
@@ -298,6 +310,7 @@ def _simulated(executor):
         approval="deny-all",
         coordination="process",
         build=_SimulatedBuild(),
+        replayable=True,
     )
 
 
@@ -310,6 +323,7 @@ def _live():
         approval=None,
         coordination=None,
         build=_LiveBuild(),
+        replayable=False,
     )
 
 
@@ -332,6 +346,93 @@ RUNG_TABLE = pin_members(
 
 for _row in RUNG_TABLE.values():
     pin_members("compose.py's authority origins", _row.authority, LEG_ORIGINS, exact=True)
+
+
+# ---------------------------------------------------------------------------
+# Which objects supply time, rows and ids (D20's swap)
+# ---------------------------------------------------------------------------
+
+
+class _Injection(ABC):
+    """Where a composition gets its clock, its feed and its id source.
+
+    D20's replay "is the five-object swap and nothing more", so the swap
+    is an OBJECT the composition root selects rather than three ``if
+    tape``s inside :func:`bundles_for`. There are two: the ordinary one,
+    which builds what the document names, and the tape's, which builds
+    what the recording did.
+    """
+
+    @abstractmethod
+    def clock(self, document):
+        """Return the clock this composition runs on."""
+
+    @abstractmethod
+    def feed(self, document, decider, root, clock):
+        """Return the feed this composition pulls through."""
+
+    @abstractmethod
+    def id_source(self, release):
+        """Return the id source this composition allocates from."""
+
+
+class _DocumentInjection(_Injection):
+    """The ordinary one: the document names all three."""
+
+    def clock(self, document):
+        """Return the clock ``schedule.clock`` names, through its one owner."""
+        return clock_for(document)
+
+    def feed(self, document, decider, root, clock):
+        """Build the feed ``feed.uses`` names, bound to the release's contract and spec."""
+        return FEED_KINDS.resolve(document.feed.uses)(
+            _selector(document.feed),
+            root=root,
+            registry=root.registry(),
+            contract=decider.contract,
+            spec=decider.feed_spec,
+            clock=clock,
+            max_staleness_ms=document.schedule.max_staleness_ms,
+            dead_after_ms=document.schedule.dead_after_ms,
+        )
+
+    def id_source(self, release):
+        """Derive ids from the release, tick, leg and attempt (D20)."""
+        return ReleaseIdSource(release.release_hash)
+
+
+class _TapeInjection(_Injection):
+    """The replay's: the recording supplies time, the pulls and every id.
+
+    The three are selected TOGETHER — one object, one decision — so a
+    replay cannot end up with a recorded feed and a live clock, which is
+    the failure that would make a parity report meaningless while looking
+    fine. The clock and the feed share one :class:`ManualTime`: the clock
+    never advances itself and each recorded pull moves it to the instant
+    that pull was taken at.
+    """
+
+    def __init__(self, tape):
+        self._tape = tape
+        self._time = ManualTime(tape.start_ms())
+
+    def clock(self, document):
+        """Return the replay clock over the shared instant."""
+        return ReplayClock(manual_time=self._time)
+
+    def feed(self, document, decider, root, clock):
+        """Return the recorded pulls; the rows come from the store, through ``read_entry``."""
+        return ReplayFeed({}, tape=self._tape.feed_results(), time=self._time)
+
+    def id_source(self, release):
+        """Return the recorded allocations, which refuse any call the recording did not make."""
+        return RecordedIdSource(self._tape.id_allocations())
+
+
+#: The ordinary injection is stateless, so one instance serves every
+#: composition that is not a replay.
+_DOCUMENT_INJECTION = _DocumentInjection()
+
 
 
 # ---------------------------------------------------------------------------
@@ -723,6 +824,72 @@ def _monitors(document):
     }
 
 
+def parity_monitors(document):
+    """Build only the parity monitors a document declares (§5.10.1).
+
+    ``ParityMonitor`` is the one monitor the serve loop never calls:
+    replay runs in a separate process against a scratch serve root and
+    appends nothing to the series, so ``report.py`` drives it and prints
+    its verdict in the parity section. It is built HERE because the
+    composition root is the one place that may resolve a family member by
+    name (§5.15), and because a document that wired a parity monitor into
+    its ``monitors`` would otherwise have built an object nothing ever
+    observed.
+
+    Parameters
+    ----------
+    document : ServeDocument
+        Read for ``monitors``.
+
+    Returns
+    -------
+    dict
+        ``name -> ParityMonitor``, empty when the document declares none.
+
+    Examples
+    --------
+    ::
+
+        parity_monitors(document)
+        # -> {'parity': <ParityMonitor>}
+    """
+    return {
+        name: monitor
+        for name, monitor in _monitors(document).items()
+        if isinstance(monitor, ParityMonitor)
+    }
+
+
+def clock_for(document):
+    """Build the clock ``schedule.clock`` names.
+
+    The ONE owner of "how a document becomes a clock": clocks take
+    keyword arguments rather than a params dict, and three modules
+    needed to know that. ``bundles_for`` reaches it through
+    :class:`_DocumentInjection`; ``__main__``'s read-only verbs, which
+    open a ledger without composing anything, call it directly.
+
+    Parameters
+    ----------
+    document : ServeDocument
+
+    Returns
+    -------
+    Clock
+        A ``CLOCK_KINDS`` member built from ``schedule.clock``.
+
+    Examples
+    --------
+    ::
+
+        clock_for(document).now_ms()
+        # -> 1767268800000
+    """
+    return CLOCK_KINDS.resolve(document.schedule.clock.uses)(
+        **_selector(document.schedule.clock)
+    )
+
+
 def _guards(document):
     """Build the document's named guards as one ordered chain."""
     return GuardChain(
@@ -745,6 +912,7 @@ def bundles_for(
     clock=None,
     lock=None,
     journal_hook=None,
+    tape=None,
 ):
     """Build the seven collaborator bundles this document and release select.
 
@@ -778,6 +946,14 @@ def bundles_for(
     journal_hook : callable, optional
         D22's injected seam; defaults to ``dskit.journal.hooks.record_production``,
         imported at function depth so the package stays importable without it.
+    tape : bundles.ReplayTape, optional
+        D20's replay. Given one, the clock, the feed and the id source are
+        the RECORDING's — selected together, so the rungs still differ only
+        by which objects were injected and there is no ``ReplayTick``. A
+        rung whose row is not ``replayable`` refuses: §6 records every
+        venue answer as a digest rather than as the answer, so replaying a
+        live series would have to re-ask the venue, which a read-only verb
+        must never do.
 
     Returns
     -------
@@ -795,11 +971,20 @@ def bundles_for(
     row = RUNG_TABLE[document.rung]
     problems = []
     resolved = _resolved_families(problems, document, row)
+    if tape is not None:
+        if not isinstance(tape, ReplayTape):
+            problems.append(f"tape must be a bundles.ReplayTape, got {tape!r}")
+        elif not row.replayable:
+            problems.append(
+                f"{document.rung} cannot be replayed: §6 records a venue answer as a digest, "
+                "never as the answer, so replaying this series would have to re-ask the venue"
+            )
     if problems:
         raise ProductionError(problems)
 
+    injection = _DOCUMENT_INJECTION if tape is None else _TapeInjection(tape)
     sections = document.to_obj()
-    clock = clock if clock is not None else _clock_of(document)
+    clock = clock if clock is not None else injection.clock(document)
     schedule = _schedule(document, sections, clock)
     resilience = resilience_from_document(
         sections["resilience"],
@@ -952,16 +1137,7 @@ def bundles_for(
     )
     decider.prepare(utc_iso(clock.now_ms())[:10], document.serving.run_dir)
     onboarding_root = OnboardingRoot(decider.contract.source_binding["root"])
-    feed = FEED_KINDS.resolve(document.feed.uses)(
-        _selector(document.feed),
-        root=onboarding_root,
-        registry=onboarding_root.registry(),
-        contract=decider.contract,
-        spec=decider.feed_spec,
-        clock=clock,
-        max_staleness_ms=document.schedule.max_staleness_ms,
-        dead_after_ms=document.schedule.dead_after_ms,
-    )
+    feed = injection.feed(document, decider, onboarding_root, clock)
 
     head_seq, head_hash = ledger.head()
     recording = Recording(
@@ -980,7 +1156,7 @@ def bundles_for(
             head_hash=head_hash,
         ),
         journal_hook=journal_hook if journal_hook is not None else _journal_hook(),
-        id_source=ReleaseIdSource(release.release_hash),
+        id_source=injection.id_source(release),
     )
     _LOG.info("composed %s at rung %s as process %s", document.series_id, document.rung, process_id)
     return (
@@ -1029,11 +1205,6 @@ def _sleeper(clock):
         return clock.sleep_until(clock.now_ms() + int(seconds * _MS_PER_S), _never)
 
     return sleep
-
-
-def _clock_of(document):
-    """Build the clock the document names; clocks take keywords, not a params dict."""
-    return CLOCK_KINDS.resolve(document.schedule.clock.uses)(**_selector(document.schedule.clock))
 
 
 def _journal_hook():
@@ -1802,6 +1973,44 @@ def outcome_join(document, release, bundles):
         state=wiring.recording.state,
         clock=wiring.schedule.clock,
         sources=_outcome_sources(document, wiring),
+    )
+
+
+def reading_join(document, release, *, ledger, state, clock):
+    """Build the bitemporal join a READ-ONLY verb answers through (§5.13.3).
+
+    ``report`` takes no lock, composes no bundles and polls nothing, so
+    the join it reads outcomes through holds NO sources: it answers
+    ``current_outcome`` and ``as_of`` at any cut, and collects nothing
+    because there is nobody to ask. Building it here rather than in
+    ``report.py`` keeps the composition root the one place that assembles
+    a composite.
+
+    Parameters
+    ----------
+    document : ServeDocument
+    release : ReleaseManifest
+    ledger : Ledger
+        Read; a reading join never appends.
+    state : SeriesState
+        The fold the join checks itself against before it would write.
+    clock : Clock
+
+    Returns
+    -------
+    OutcomeJoin
+        Answering only.
+
+    Examples
+    --------
+    ::
+
+        join = reading_join(document, release, ledger=ledger, state=state, clock=clock)
+        join.as_of(1_767_268_800_000)
+        # -> a read-only leg_id -> Outcome mapping
+    """
+    return OutcomeJoin(
+        document, release, ledger=ledger, state=state, clock=clock, sources={}
     )
 
 

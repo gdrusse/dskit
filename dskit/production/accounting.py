@@ -74,7 +74,16 @@ from dskit.production.vocab import (
     WINDOW_KINDS,
 )
 
-__all__ = ["ACCOUNTING_KINDS", "Accounting", "PaperAccounting", "RecordedAccounting"]
+__all__ = [
+    "ACCOUNTING_KINDS",
+    "Accounting",
+    "PaperAccounting",
+    "RecordedAccounting",
+    "WindowBook",
+    "decimal_of",
+    "effective_bodies",
+    "effective_fills",
+]
 
 _NOTES = ("notes",)
 _ZERO = Decimal(0)
@@ -105,8 +114,24 @@ _FILLS, _CASH_FLOWS, _MARKS = "fills", "cash_flows", "marks"
 _ID, _EFFECTIVE, _KNOWN, _SUPERSEDES = "id", "effective_at_ms", "known_at_ms", "supersedes"
 
 
-def _decimal(exact):
-    """Render an exact ``Fraction`` as a Decimal once, at the boundary."""
+def decimal_of(exact):
+    """Render an exact ``Fraction`` as a ``Decimal``, once, at the boundary.
+
+    The fold works in ``Fraction`` so an averaged cost cannot drift; every
+    number that LEAVES it — an evidence value, a §5.13.3 value point —
+    crosses here, so the rounding happens in one place rather than once
+    per caller.
+
+    Parameters
+    ----------
+    exact : fractions.Fraction
+        The folded value.
+
+    Returns
+    -------
+    Decimal
+        Under the ambient decimal context.
+    """
     return Decimal(exact.numerator) / Decimal(exact.denominator)
 
 
@@ -415,8 +440,123 @@ class _Folded:
     digests: dict
 
 
-class _WindowBook:
-    """The window's trades folded from a flat baseline: realised per closing fill, open qty at cost."""
+def effective_fills(reported, at_ms):
+    """Return the applied, un-reversed fills known by ``at_ms``.
+
+    The ONE reading of "which fills count": a reversal undoes its
+    ``fill_id`` however often it is repeated, and a fill stamped after the
+    cut had not happened. §5.13.3's attribution and value curve ask the
+    same question of the same history, so the rule lives here rather than
+    once per caller.
+
+    Parameters
+    ----------
+    reported : iterable
+        ``Fill`` records or their §6 bodies, as ``LedgerHistory.fills``
+        answers them.
+    at_ms : int
+        The cut; a fill with ``ts_ms > at_ms`` is dropped.
+
+    Returns
+    -------
+    tuple of Fill
+        In ``(ts_ms, fill_id)`` order.
+
+    Raises
+    ------
+    ProductionError
+        If an item is neither a ``Fill`` nor a fill body.
+    """
+    applied, reversed_ids = {}, set()
+    for item in reported:
+        fill = _fill_of(item)
+        if not isinstance(fill, Fill):
+            raise ProductionError([f"history.fills yielded {fill!r}, not a Fill or its body"])
+        if fill.ts_ms > at_ms:
+            continue
+        if _APPLIES[fill.status]:
+            applied[fill.fill_id] = fill
+        else:
+            reversed_ids.add(fill.fill_id)
+    effective = [fill for fill_id, fill in applied.items() if fill_id not in reversed_ids]
+    effective.sort(key=lambda fill: (fill.ts_ms, fill.fill_id))
+    return tuple(effective)
+
+
+def effective_bodies(reported, at_ms, what):
+    """Return the bitemporal bodies known by ``at_ms``, minus those superseded.
+
+    D21's reading of a ``cash_flow`` or an ``outcome`` chain: a record is
+    counted when it was KNOWN by the cut, and a record another effective
+    record supersedes is replaced rather than annotated — so a corrected
+    adoption can never double-bank.
+
+    Parameters
+    ----------
+    reported : iterable of dict
+        §6 bodies carrying their envelope ``id``, as
+        ``LedgerHistory.cash_flows`` and ``.marks`` answer them.
+    at_ms : int
+        The ``known_at_ms <= at_ms`` cut.
+    what : str
+        What to call the source in a refusal.
+
+    Returns
+    -------
+    tuple of dict
+        In ``(effective_at_ms, id)`` order.
+
+    Raises
+    ------
+    ProductionError
+        On a body that is not a mapping, or that is missing its id or
+        either instant.
+    """
+    problems, known = [], []
+    for position, body in enumerate(reported):
+        where = f"{what}[{position}]"
+        if not isinstance(body, dict):
+            problems.append(f"{where} must be a record body dict, got {body!r}")
+            continue
+        _check_str(problems, f"{where}.{_ID}", body.get(_ID))
+        _check_instant(problems, f"{where}.{_EFFECTIVE}", body.get(_EFFECTIVE))
+        _check_instant(problems, f"{where}.{_KNOWN}", body.get(_KNOWN))
+        if body.get(_SUPERSEDES) is not None:
+            _check_str(problems, f"{where}.{_SUPERSEDES}", body.get(_SUPERSEDES))
+        if not problems and body[_KNOWN] <= at_ms:
+            known.append(dict(body))
+    if problems:
+        raise ProductionError(problems)
+    superseded = {body[_SUPERSEDES] for body in known if body.get(_SUPERSEDES) is not None}
+    effective = [body for body in known if body[_ID] not in superseded]
+    effective.sort(key=lambda body: (body[_EFFECTIVE], body[_ID]))
+    return tuple(effective)
+
+
+class WindowBook:
+    """The window's trades folded from a flat baseline (§5.7.1).
+
+    Realised per CLOSING fill against an averaged cost, open quantity
+    carried at that cost, and the cumulative path kept so a drawdown can
+    be read off it. It is the one owner of "what did the trading come
+    to": ``PaperAccounting``'s ``pnl``, ``drawdown`` and
+    ``consecutive_losses`` measures fold through it, and §5.13.3's value
+    curve reads the same fold rather than a second one — which is what
+    makes the curve and the guard that halts on it agree by construction.
+
+    Every number is a ``fractions.Fraction``, so an averaged cost is
+    exact and a long window cannot drift.
+
+    Examples
+    --------
+    A round trip that realised a loss::
+
+        book = WindowBook()
+        book.apply(bought_at_50)
+        book.apply(sold_at_40)
+        book.realised
+        # -> Fraction(-1, 1)
+    """
 
     def __init__(self):
         self._open = {}
@@ -452,13 +592,35 @@ class _WindowBook:
         self._realised += realised
         self._path.append(self._realised)
 
+    def unrealised(self, mark_of):
+        """Return the open quantity against its mark: ``Σ qty × (mark − cost)``.
+
+        An instrument ``mark_of`` answers ``None`` for contributes NOTHING,
+        which is the conservative reading §5.13.3's value curve needs:
+        unmarked open risk is not profit. The measures pass a ``mark_of``
+        that refuses instead, because an evidence value computed over a
+        position nobody could mark would be a number with a hole in it.
+
+        Parameters
+        ----------
+        mark_of : callable
+            ``mark_of(instrument)`` -> a number, or ``None`` for unmarked.
+
+        Returns
+        -------
+        fractions.Fraction
+            Exact.
+        """
+        total = Fraction(0)
+        for instrument, (held, cost) in self._open.items():
+            mark = mark_of(instrument)
+            if mark is not None:
+                total += held * (Fraction(mark) - cost)
+        return total
+
     def pnl(self, mark_of):
         """Return realised plus the open quantity marked: ``cash + Σ qty × mark``."""
-        unrealised = sum(
-            (held * (mark_of(instrument) - cost) for instrument, (held, cost) in self._open.items()),
-            Fraction(0),
-        )
-        return self._realised + unrealised
+        return self._realised + self.unrealised(mark_of)
 
     def drawdown(self, mark_of):
         """Return the peak-to-trough decline of the cumulative path, baseline 0 included."""
@@ -481,6 +643,17 @@ class _WindowBook:
     def closes(self):
         """How many fills realised an outcome (closed quantity) in this window."""
         return len(self._closes)
+
+    @property
+    def realised(self):
+        """The window's closed P&L, fees included.
+
+        Returns
+        -------
+        fractions.Fraction
+            Exact; ``pnl`` adds the marked open quantity to it.
+        """
+        return self._realised
 
 
 class PaperAccounting(Accounting):
@@ -810,9 +983,9 @@ class PaperAccounting(Accounting):
             fills, cash_flows, marks = (), (), ()
         else:
             since_ms = min(requirement.window_start_ms for requirement in anchored.values())
-            fills = self._effective_fills(self._history.fills(since_ms), at_ms)
-            cash_flows = self._effective_bodies(self._history.cash_flows(since_ms), at_ms, _CASH_FLOWS)
-            marks = self._effective_bodies(self._history.marks(since_ms), at_ms, _MARKS)
+            fills = effective_fills(self._history.fills(since_ms), at_ms)
+            cash_flows = effective_bodies(self._history.cash_flows(since_ms), at_ms, _CASH_FLOWS)
+            marks = effective_bodies(self._history.marks(since_ms), at_ms, _MARKS)
         return _Folded(
             fills=fills,
             cash_flows=cash_flows,
@@ -823,47 +996,6 @@ class PaperAccounting(Accounting):
                 _MARKS: canonical_hash(list(marks)),
             },
         )
-
-    @staticmethod
-    def _effective_fills(reported, at_ms):
-        """Return the applied, un-reversed fills known by ``at_ms``, in ``(ts_ms, fill_id)`` order."""
-        applied, reversed_ids = {}, set()
-        for item in reported:
-            fill = _fill_of(item)
-            if not isinstance(fill, Fill):
-                raise ProductionError([f"history.fills yielded {fill!r}, not a Fill or its body"])
-            if fill.ts_ms > at_ms:
-                continue
-            if _APPLIES[fill.status]:
-                applied[fill.fill_id] = fill
-            else:
-                reversed_ids.add(fill.fill_id)
-        effective = [fill for fill_id, fill in applied.items() if fill_id not in reversed_ids]
-        effective.sort(key=lambda fill: (fill.ts_ms, fill.fill_id))
-        return tuple(effective)
-
-    @staticmethod
-    def _effective_bodies(reported, at_ms, what):
-        """Return the bodies known by ``at_ms`` minus those superseded, in ``(effective_at_ms, id)`` order."""
-        problems, known = [], []
-        for position, body in enumerate(reported):
-            where = f"{what}[{position}]"
-            if not isinstance(body, dict):
-                problems.append(f"{where} must be a record body dict, got {body!r}")
-                continue
-            _check_str(problems, f"{where}.{_ID}", body.get(_ID))
-            _check_instant(problems, f"{where}.{_EFFECTIVE}", body.get(_EFFECTIVE))
-            _check_instant(problems, f"{where}.{_KNOWN}", body.get(_KNOWN))
-            if body.get(_SUPERSEDES) is not None:
-                _check_str(problems, f"{where}.{_SUPERSEDES}", body.get(_SUPERSEDES))
-            if not problems and body[_KNOWN] <= at_ms:
-                known.append(dict(body))
-        if problems:
-            raise ProductionError(problems)
-        superseded = {body[_SUPERSEDES] for body in known if body.get(_SUPERSEDES) is not None}
-        effective = [body for body in known if body[_ID] not in superseded]
-        effective.sort(key=lambda body: (body[_EFFECTIVE], body[_ID]))
-        return tuple(effective)
 
     # -- evidence -------------------------------------------------------------------
 
@@ -887,13 +1019,13 @@ class PaperAccounting(Accounting):
     def _pnl(self, requirement, folded, state_view, marks, at_ms):
         """Realised plus marked trading profit of the window's fills."""
         book, fills = self._book(requirement, folded, at_ms)
-        value = _decimal(book.pnl(self._marker(marks, at_ms)))
+        value = decimal_of(book.pnl(self._marker(marks, at_ms)))
         return value, len(fills), {_FILLS: folded.digests[_FILLS]}
 
     def _drawdown(self, requirement, folded, state_view, marks, at_ms):
         """Peak-to-trough decline of the window's cumulative trading pnl."""
         book, fills = self._book(requirement, folded, at_ms)
-        value = _decimal(book.drawdown(self._marker(marks, at_ms)))
+        value = decimal_of(book.drawdown(self._marker(marks, at_ms)))
         return value, len(fills), {_FILLS: folded.digests[_FILLS]}
 
     def _consecutive_losses(self, requirement, folded, state_view, marks, at_ms):
@@ -961,14 +1093,14 @@ class PaperAccounting(Accounting):
         return legs
 
     def _book(self, requirement, folded, at_ms):
-        """Fold the window's in-scope fills into a ``_WindowBook``; return it with the fills."""
+        """Fold the window's in-scope fills into a ``WindowBook``; return it with the fills."""
         fills = [
             fill
             for fill in folded.fills
             if self._in_scope(requirement, fill.instrument) and self._in_window(requirement, fill.ts_ms, at_ms)
         ]
         fills = getattr(self, self._SELECT[requirement.window_kind])(fills, requirement)
-        book = _WindowBook()
+        book = WindowBook()
         for fill in fills:
             book.apply(fill)
         return book, fills

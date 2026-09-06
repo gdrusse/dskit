@@ -45,7 +45,8 @@ ruff clean; five purity gates green; the 20 pinned sha256 literals byte-identica
    `safety_epoch_digest` recipe needs one owner and the gate must recompute it; `on_mismatch: refuse`
    has no mechanism; §5.13.1's `right` prose) and three bookkeeping (§6's `authority` id recipe, the
    two events with no phase-1 producer, the snapshot's added `last_trip` key).
-2. **Phase 2 - evidence**: `outcomes.py` (§5.13.2) - `report.py` + the `replay` verb (§5.13.3) -
+2. **Phase 2 - evidence** (units 1-7 landed; only the docs pass remains):
+   `outcomes.py` (§5.13.2) - `report.py` + the `replay` verb (§5.13.3) -
    outcome-readiness evidence (§5.13.4) - the Outcome and Parity monitor families and
    DDM/ADWIN/JensenShannon/LInf (§5.10.1) - alert inhibition, silences, escalation and `ack`
    (§5.11.2) - the systemd heartbeat - `libs/sqlite.py` (§5.8.2) - `libs/parquet.py` (§5.10.2) -

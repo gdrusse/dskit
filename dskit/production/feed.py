@@ -58,6 +58,7 @@ from dskit.production.base import (
     canonical_hash,
     reject_unknown_params,
 )
+from dskit.production.clock import ManualTime
 from dskit.production.records import EntryBatch, FeedResult, InputWatermark
 from dskit.production.redact import get_logger
 from dskit.production.release import FEED_SPEC_KEYS
@@ -857,49 +858,66 @@ class EntrySourceFeed(Feed):
 
 
 class ReplayFeed(Feed):
-    """Replay recorded ``(FeedResult, EntryBatch)`` pairs; touches neither store nor connector.
+    """Replay recorded pulls, in order, advancing the instant they were taken at.
+
+    D20's feed: it touches neither store nor connector, and it is what
+    makes ``ReplayClock`` work. That clock never advances itself — "the
+    feed will" — because a replayed tick must be evaluated at the instant
+    the recording evaluated it, and the feed is the first phase of a tick
+    that knows which instant that was. Without the advance every replayed
+    tick would evaluate at the process's start instant and every
+    ``evidence_asof_ms`` would diverge for a reason that has nothing to do
+    with the decision.
+
+    The tape carries results ONLY. An ``EntryBatch`` is not on it because
+    the rows are not the feed's to hold: §5.13 gives ``read_entry`` to the
+    decider, which re-executes the entry against the same immutable
+    onboarding root, and the recorded ``inputs_digest`` is what PROVES the
+    re-read matched — a stronger claim than replaying a blob, which can
+    only prove that the blob was replayed.
 
     Parameters
     ----------
     params : dict, optional
         No knobs; ``notes`` only.
-    tape : iterable of tuple
-        ``(FeedResult, EntryBatch)`` pairs in tick order; a malformed
-        entry refuses at construction.
+    tape : iterable of FeedResult
+        The recorded pulls in tick order; a malformed entry refuses at
+        construction.
+    time : ManualTime or None, keyword-only
+        The instant a :class:`~dskit.production.clock.ReplayClock` shares.
+        Each pull sets it to that result's ``at_ms``. ``None`` replays the
+        results without moving time, which is what a unit test wants.
 
     Examples
     --------
     ::
 
-        feed = ReplayFeed({}, tape=[(result, batch)])
-        feed.pull(result.at_ms) == result  # True
-        feed.batch() == batch              # True
+        feed = ReplayFeed({}, tape=[result], time=clock.time)
+        feed.pull(result.at_ms) is result   # True
+        clock.now_ms() == result.at_ms      # True
     """
 
-    def __init__(self, params=None, *, tape):
+    def __init__(self, params=None, *, tape, time=None):
         super().__init__(params)
         try:
             entries = list(tape)
         except TypeError as exc:
-            raise ProductionError([f"tape must be an iterable of (FeedResult, EntryBatch) pairs: {exc}"]) from exc
+            raise ProductionError([f"tape must be an iterable of FeedResults: {exc}"]) from exc
         problems = [
-            f"tape[{index}] must be a (FeedResult, EntryBatch) pair, got {entry!r}"
+            f"tape[{index}] must be a FeedResult, got {entry!r}"
             for index, entry in enumerate(entries)
-            if not (
-                isinstance(entry, (tuple, list))
-                and len(entry) == 2
-                and isinstance(entry[0], FeedResult)
-                and isinstance(entry[1], EntryBatch)
-            )
+            if not isinstance(entry, FeedResult)
         ]
+        if time is not None and not isinstance(time, ManualTime):
+            problems.append(f"time must be a ManualTime, got {time!r}")
         if problems:
             raise ProductionError(problems)
-        self._tape = tuple((result, batch) for result, batch in entries)
+        self._tape = tuple(entries)
+        self._time = time
         self._cursor = 0
-        self._batch = None
 
     def pull(self, tick_at_ms):
-        """Return the next recorded result; the tick's instant is not consulted.
+        """Return the next recorded result, moving the shared instant to its own.
 
         Parameters
         ----------
@@ -909,35 +927,21 @@ class ReplayFeed(Feed):
         Returns
         -------
         FeedResult
-            The next entry's result.
+            The next entry.
 
         Raises
         ------
         ProductionError
-            When the tape is exhausted.
+            When the tape is exhausted — the replay asked for a tick the
+            recording never took, which is a divergence, not an end.
         """
         if self._cursor >= len(self._tape):
             raise ProductionError([f"replay tape exhausted after {len(self._tape)} pull(s)"])
-        result, batch = self._tape[self._cursor]
+        result = self._tape[self._cursor]
         self._cursor += 1
-        self._batch = batch
+        if self._time is not None:
+            self._time.set(result.at_ms)
         return result
-
-    def batch(self):
-        """Return the batch recorded with the pull just replayed.
-
-        Returns
-        -------
-        EntryBatch
-
-        Raises
-        ------
-        ProductionError
-            Before any pull.
-        """
-        if self._batch is None:
-            raise ProductionError(["no pull has been replayed yet — call pull() first"])
-        return self._batch
 
 
 #: The feed family's open doorway (§4.3): a registered name or a

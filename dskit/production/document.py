@@ -100,6 +100,7 @@ __all__ = [
     "MAX_OUTCOME_COVERAGE",
     "MAX_SILENCE_S_BOUNDS",
     "MIN_HEARTBEAT_EVERY_S",
+    "MIN_REPORT_BINS",
     "MIN_VALID_FOR_S",
     "OVERRUN_KEYS",
     "PAPER_ACCOUNTING_KIND",
@@ -143,6 +144,11 @@ MAX_ACK_S_BOUNDS = (60, 604800)
 MIN_HEARTBEAT_EVERY_S = 1
 #: ``readiness.valid_for_s``: a GO that expires immediately is no GO.
 MIN_VALID_FOR_S = 1
+#: ``reporting.bins`` (§5.13.3): the equal-width partition ECE is taken
+#: over. One bin is no partition at all — every forecast lands in it and
+#: the error is identically zero — so two is the smallest that measures
+#: anything.
+MIN_REPORT_BINS = 2
 #: ``readiness.min_outcome_coverage`` (§5.13.4): a FRACTION of the decided
 #: legs in the window, so 1 is "every one" and there is nothing above it.
 MAX_OUTCOME_COVERAGE = 1
@@ -623,6 +629,21 @@ _READINESS = _Fixed(
 #: against phase 1 keeps its identity, while a document that declares one
 #: changes numbers someone acts on and therefore changes identity.
 _OUTCOMES = _Fixed({"sources": _Named(_SELECTOR)}, required=("sources",))
+#: [phase 2, §5.13.3] The report's four knobs, every one OPTIONAL and
+#: each defaulted by ONE named constant in ``report.py`` — §4.1's "code
+#: holds no threshold" applies to a report exactly as it does to a guard.
+#: ``scoring`` is a registered ``dskit.pipeline.metrics`` NAME rather than
+#: a closed choice: the registry is open by design (a child registers its
+#: own rule), so the grammar takes a string and ``report.py`` resolves it
+#: through the same lookup unit 3 gave the two scored monitors.
+_REPORTING = _Fixed(
+    {
+        "bins": _Int(ge=MIN_REPORT_BINS),
+        "markouts_ms": _ListOf(_POSITIVE_INT),
+        "markout_tolerance_ms": _COUNT,
+        "scoring": _STR,
+    }
+)
 _HEARTBEAT = _Fixed(
     {
         "every_s": _Int(ge=MIN_HEARTBEAT_EVERY_S),
@@ -700,6 +721,7 @@ _GRAMMAR = _Fixed(
         "lifecycle": _LIFECYCLE,
         "readiness": _READINESS,
         "outcomes": _OUTCOMES,
+        "reporting": _REPORTING,
         "alerting": _ALERTING,
         "alert_endpoints": _Named(_ENDPOINT),
         "heartbeat": _HEARTBEAT,
@@ -732,7 +754,7 @@ _GRAMMAR = _Fixed(
 
 #: The graded sections (§4.2): the grammar minus the four excluded
 #: sections, ``name`` (graded, but not a section) and ``notes``. Eighteen
-#: in phase 1, plus phase 2's OPTIONAL ``outcomes``.
+#: in phase 1, plus phase 2's OPTIONAL ``outcomes`` and ``reporting``.
 GRADED_SECTIONS = tuple(
     key for key in _GRAMMAR.keys if key not in PRODUCTION_NON_IDENTITY_SECTIONS + ("name",)
 )

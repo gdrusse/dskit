@@ -305,6 +305,34 @@ class _ManualClock(Clock):
         """
         return self.time.monotonic()
 
+    def sleep_until(self, epoch_ms, wake):
+        """Jump the instant to ``epoch_ms`` unless ``wake()`` is already true.
+
+        The shared mechanism of both fakes: nothing here waits on a wall,
+        and a manual clock that stayed put would never reach the grid
+        instant the scheduler is waiting for — a replay driven by such a
+        clock refuses at the overrun gate before its first tick, having
+        computed a due instant its own "now" says is still in the future.
+
+        Parameters
+        ----------
+        epoch_ms : int
+            The instant to jump to; one already past leaves time unchanged.
+        wake : callable
+            Checked once; true means no jump.
+
+        Returns
+        -------
+        bool
+            ``True`` when the instant is now at or past ``epoch_ms``,
+            ``False`` when ``wake()`` was true.
+        """
+        if wake():
+            return False
+        if epoch_ms > self.time.now_ms():
+            self.time.set(epoch_ms)
+        return True
+
 
 class TestClock(_ManualClock):
     """A hand-driven clock for tests: reads the same instant until moved.
@@ -369,36 +397,16 @@ class TestClock(_ManualClock):
         """
         self.time.advance(ms)
 
-    def sleep_until(self, epoch_ms, wake):
-        """Jump the instant to ``epoch_ms`` unless ``wake()`` is already true.
-
-        Parameters
-        ----------
-        epoch_ms : int
-            The instant to jump to; one already past leaves time unchanged.
-        wake : callable
-            Checked once; true means no jump.
-
-        Returns
-        -------
-        bool
-            ``True`` when the instant is now at or past ``epoch_ms``,
-            ``False`` when ``wake()`` was true.
-        """
-        if wake():
-            return False
-        if epoch_ms > self.time.now_ms():
-            self.time.set(epoch_ms)
-        return True
-
 
 class ReplayClock(_ManualClock):
-    """A clock the replay feed drives; it never advances itself.
+    """A clock the schedule and the replay feed drive between them.
 
-    Shares a :class:`ManualTime` with whatever replays the tape, so time
-    moves exactly when the recorded events say it did. ``sleep_until``
-    neither blocks nor moves time — the feed will — and reports whether the
-    wait was abandoned.
+    Shares a :class:`ManualTime` with the :class:`ReplayFeed` replaying the
+    tape, so time moves exactly when the recorded events say it did. The
+    scheduler's ``sleep_until`` reaches the next grid instant — a replay
+    that could not would refuse at the overrun gate before its first tick —
+    and each recorded pull then sets the instant to the one that pull was
+    taken at, so a tick is evaluated where the recording evaluated it.
 
     Parameters
     ----------
@@ -425,23 +433,6 @@ class ReplayClock(_ManualClock):
 
     def __init__(self, manual_time=None):
         super().__init__(ManualTime() if manual_time is None else manual_time)
-
-    def sleep_until(self, epoch_ms, wake):
-        """Return at once; the replay feed, not the clock, advances time.
-
-        Parameters
-        ----------
-        epoch_ms : int
-            Ignored beyond the contract; the feed decides when it arrives.
-        wake : callable
-            Checked once.
-
-        Returns
-        -------
-        bool
-            ``False`` when ``wake()`` is true, else ``True``.
-        """
-        return not wake()
 
 
 CLOCK_KINDS = Registry("clock", Clock)

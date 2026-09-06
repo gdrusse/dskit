@@ -103,10 +103,25 @@ def members(cls, **overrides):
 # ---------------------------------------------------------------------------
 
 
-def test_the_public_surface_is_the_seven_bundles_plus_invocation():
+def test_the_public_surface_is_the_seven_bundles_the_invocation_and_the_tape_seam():
+    """`ReplayTape` joined them in phase 2 for the reason the bundles are
+    here at all: `report.py` builds a tape and `compose.py` consumes one, so
+    a declaration in either would make §10's build order cyclic (§5.13.3)."""
     assert set(bundles_module.__all__) == {cls.__name__ for cls in BUNDLES} | {
-        "Invocation"
+        "Invocation",
+        "ReplayTape",
     }
+
+
+def test_the_tape_seam_is_abstract_and_declares_the_three_answers_compose_reads():
+    """A tape supplies DATA and never an object, which is what keeps "the
+    rungs differ only by which objects were injected" (§5.15) a fact about
+    `compose.py` rather than about whoever produced the tape."""
+    assert bundles_module.ReplayTape.__abstractmethods__ == frozenset(
+        {"start_ms", "feed_results", "id_allocations"}
+    )
+    with pytest.raises(TypeError, match="abstract"):
+        bundles_module.ReplayTape()
 
 
 @pytest.mark.parametrize(("cls", "expected"), PARAMS, ids=IDS)

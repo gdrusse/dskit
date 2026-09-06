@@ -63,6 +63,7 @@ from dskit.production.vocab import (
     AUTHORITY_ROLES,
     BREAKER_STATES,
     CALENDAR_WINDOWS,
+    DIVERGENCE_CLASSES,
     FEED_STATUSES,
     FILL_STATUSES,
     HEALTH_STATES,
@@ -95,10 +96,13 @@ __all__ = [
     "ActPermit",
     "Alert",
     "AlertAck",
+    "Attribution",
     "Balance",
+    "CalibrationReport",
     "Candidate",
     "DecidedLeg",
     "DecisionPlan",
+    "Divergence",
     "EntryBatch",
     "EvidenceRequirement",
     "ExecutionScope",
@@ -112,6 +116,7 @@ __all__ = [
     "MeasureEvidence",
     "OrderState",
     "Outcome",
+    "ParityReport",
     "Permit",
     "PolicyRequest",
     "Position",
@@ -130,6 +135,7 @@ __all__ = [
     "SimulatedPermit",
     "TickResult",
     "TickStart",
+    "ValuePoint",
     "Verdict",
     "alert_labels",
     "label_match",
@@ -2439,3 +2445,281 @@ class AlertAck(_Record):
             True until ``acknowledged_until_ms``, exclusive.
         """
         return now_ms < self.acknowledged_until_ms
+
+
+# ---------------------------------------------------------------------------
+# Report values (§5.13.3) — what a recorded series came to
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Attribution(_Record):
+    """What one decided leg was worth, split into the three components (§5.13.3).
+
+    The implementation shortfall splits into ``impact + opportunity +
+    fees`` and nothing else. With ``Q`` the requested quantity, ``q`` the
+    filled, ``P_d`` the decision's ``reference_price``, ``P_f`` the
+    fill-weighted average price and ``P_o`` the outcome value, all signed
+    by side: ``impact = q(P_f − P_d)``,
+    ``opportunity = (Q − q)(P_o − P_d)``, ``fees`` as the fills recorded
+    them, and ``shortfall = Q(P_o − P_d) − [q(P_o − P_f) − fees]``, which
+    expands to exactly those three. There is deliberately no ``delay``
+    term: phase 1 records the decision's ``reference_price`` and the
+    fills' prices but nothing between them, and a price cannot be
+    recovered from a ``quote_digest``.
+
+    Parameters
+    ----------
+    leg_id : str
+        The ``decision.legs[]`` entry this attributes.
+    requested_qty, filled_qty : Decimal
+        Unsigned sizes; the side is applied inside the algebra.
+    fill_rate : float or None
+        ``filled_qty / requested_qty``; dimensionless, so a float, and
+        ``None`` where nothing was requested to divide by — a notional-sized
+        proposal or a no-op leg. Zero there would read as "nothing filled",
+        which is a claim about execution rather than about the absence of a
+        denominator.
+    surprise : float
+        ``prediction − baseline`` — the forecast's departure from the
+        benchmark the leg itself stored, which is what makes it comparable
+        across instruments.
+    impact, opportunity, fees, shortfall : Decimal
+        The three components and their sum, each computed independently so
+        the identity is an assertion rather than a definition.
+    markouts : dict of str to Decimal or None
+        Keyed by the horizon in milliseconds, rendered as a decimal string
+        because a JSON object's keys are strings. ``None`` is a MISSING
+        markout — never zero, which would claim the price did not move.
+    outcome_value : Decimal or None
+        ``P_o`` — the value the algebra used, or ``None`` when no outcome
+        stood at the cut.
+    closing_value : Decimal or None
+        The leg's value at the report's cut, from
+        ``OutcomeJoin.current_outcome``.
+
+    Examples
+    --------
+    A leg filled short of its request, into a market that then moved::
+
+        found = Attribution(
+            leg_id="leg-1", requested_qty=Decimal("10"), filled_qty=Decimal("6"),
+            fill_rate=0.6, surprise=0.1, impact=Decimal("0.30"),
+            opportunity=Decimal("1.20"), fees=Decimal("0.03"),
+            shortfall=Decimal("1.53"), markouts={"60000": None},
+            outcome_value=Decimal("0.70"), closing_value=Decimal("0.70"),
+        )
+        found.shortfall == found.impact + found.opportunity + found.fees  # True
+    """
+
+    leg_id: str
+    requested_qty: Decimal
+    filled_qty: Decimal
+    fill_rate: float | None
+    surprise: float
+    impact: Decimal
+    opportunity: Decimal
+    fees: Decimal
+    shortfall: Decimal
+    markouts: dict[str, Decimal | None]
+    outcome_value: Decimal | None
+    closing_value: Decimal | None
+
+
+@dataclass(frozen=True)
+class CalibrationReport(_Record):
+    """Whether the forecasts were calibrated, on two deliberate stratifications.
+
+    The Murphy terms are computed on the EXACT stratification — grouped by
+    distinct forecast VALUE — because
+    ``brier = reliability − resolution + uncertainty`` is an identity only
+    there; binning turns the three into approximations that no longer sum.
+    ``ece`` is computed over ``bins`` equal-width bins, which is what ECE
+    means. The two differ on purpose and the field names say which is
+    which.
+
+    Parameters
+    ----------
+    n : int
+        How many legs were paired with a label at the cut.
+    bins : int
+        The equal-width partition ``ece`` was taken over.
+    ece, brier, reliability, resolution, uncertainty : float or None
+        ``None`` when nothing was paired — a zero would read as a perfect
+        score.
+    baseline_brier : float or None
+        The same rule scored on each leg's stored ``baseline``.
+    bss : float or None
+        ``1 − brier / baseline_brier``; ``None`` when the benchmark itself
+        scored a perfect zero, which leaves the ratio undefined.
+    dm : dict or None
+        ``dskit.pipeline.stats.diebold_mariano_test``'s answer, or ``None``
+        below two pairs.
+
+    Examples
+    --------
+    ::
+
+        found = CalibrationReport(
+            n=2, bins=10, ece=0.1, brier=0.13, reliability=0.05, resolution=0.17,
+            uncertainty=0.25, baseline_brier=0.25, bss=0.48, dm=None,
+        )
+        found.bss  # 0.48
+    """
+
+    n: int
+    bins: int
+    ece: float | None
+    brier: float | None
+    reliability: float | None
+    resolution: float | None
+    uncertainty: float | None
+    baseline_brier: float | None
+    bss: float | None
+    dm: dict | None
+
+
+@dataclass(frozen=True)
+class ValuePoint(_Record):
+    """One completed tick's place on the value curve (§5.13.3).
+
+    ``external`` keeps its own column: §6's ``cash_flow`` row rules that
+    an external flow changes what you have and never what you earned, so
+    ``cumulative`` is ``realised + unrealised`` and a deposit cannot enter
+    it. ``drawdown`` is ``cumulative`` minus the running peak of
+    ``cumulative`` over trading value alone, so it is never positive.
+
+    Parameters
+    ----------
+    at_ms : int
+        The tick's ``observed_at_ms`` — when the value was observed.
+    realised, unrealised : Decimal
+        The trading halves: closed P&L, and open quantity against its
+        standing mark.
+    external : Decimal
+        The netted ``cash_flow`` total whose ``external`` is true.
+    nav : Decimal or None
+        The tick's RECORDED ``nav``; ``None`` where §6 recorded none.
+    cumulative : Decimal
+        ``realised + unrealised``.
+    drawdown : Decimal
+        ``cumulative`` minus the running peak; zero or negative.
+
+    Examples
+    --------
+    ::
+
+        point = ValuePoint(
+            at_ms=1_767_268_800_000, realised=Decimal("-1"), unrealised=Decimal("0"),
+            external=Decimal("5000"), nav=Decimal("1200"), cumulative=Decimal("-1"),
+            drawdown=Decimal("-1"),
+        )
+        point.cumulative == point.realised + point.unrealised  # True
+    """
+
+    at_ms: int
+    realised: Decimal
+    unrealised: Decimal
+    external: Decimal
+    nav: Decimal | None
+    cumulative: Decimal
+    drawdown: Decimal
+
+    def _check(self, problems):
+        if self.cumulative != self.realised + self.unrealised:
+            problems.append(
+                f"ValuePoint.cumulative {self.cumulative} is not realised + unrealised "
+                f"({self.realised} + {self.unrealised}): an external flow never enters profit (§6)"
+            )
+
+
+@dataclass(frozen=True)
+class Divergence(_Record):
+    """One field on which a replay did not reproduce the tape (§5.13.3).
+
+    ``divergence`` is a ``vocab.DIVERGENCE_CLASSES`` member, chosen by
+    ``report.py``'s module-level table keyed on the FIELD name, with
+    ``nondeterminism`` as the default on purpose: an unclassifiable
+    difference is the most alarming kind and must never be absorbed into a
+    named one.
+
+    Parameters
+    ----------
+    seq : int
+        The tape record's own sequence, so divergences order.
+    record_id : str
+        The §6 record id both sides carry.
+    field : str
+        The body field that differed.
+    divergence : str
+        One of ``DIVERGENCE_CLASSES``.
+    tape, replay : object
+        The two values, as JSON.
+
+    Examples
+    --------
+    ::
+
+        found = Divergence(
+            seq=7, record_id="decision:tick-1", field="inputs_digest",
+            divergence="data", tape="a" * 64, replay="b" * 64,
+        )
+        found.to_obj()["divergence"]  # 'data'
+    """
+
+    seq: int
+    record_id: str
+    field: str
+    divergence: str
+    tape: object
+    replay: object
+
+    _CLOSED = (("divergence", DIVERGENCE_CLASSES),)
+
+
+@dataclass(frozen=True)
+class ParityReport(_Record):
+    """What a whole replay came to (§5.13.3).
+
+    ``clean`` and ``divergences`` are two spellings of one fact, so the
+    record refuses a pair that disagrees rather than shipping a report
+    that could lie about itself.
+
+    Parameters
+    ----------
+    compared : int
+        How many records the diff walked.
+    divergences : tuple of Divergence
+        In ``seq`` order.
+    first_divergence_seq : int or None
+        The first sequence that went wrong.
+    clean : bool
+        Whether there were none.
+
+    Examples
+    --------
+    ::
+
+        found = ParityReport(
+            compared=12, divergences=(), first_divergence_seq=None, clean=True
+        )
+        found.clean  # True
+    """
+
+    compared: int
+    divergences: tuple[Divergence, ...]
+    first_divergence_seq: int | None
+    clean: bool
+
+    def _check(self, problems):
+        if self.clean != (not self.divergences):
+            problems.append(
+                f"ParityReport.clean is {self.clean} with {len(self.divergences)} "
+                "divergence(s): the two say the same thing and must agree"
+            )
+        expected = None if not self.divergences else min(d.seq for d in self.divergences)
+        if self.first_divergence_seq != expected:
+            problems.append(
+                f"ParityReport.first_divergence_seq {self.first_divergence_seq} is not the "
+                f"lowest divergent seq {expected}"
+            )

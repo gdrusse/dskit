@@ -143,6 +143,10 @@ __all__ = [
     "THRESHOLD_KINDS",
     "Threshold",
     "TrackingSignal",
+    "check_scoring",
+    "dm_test",
+    "expected_calibration_error",
+    "mean_score",
 ]
 
 #: The fewest observations a window — and values a reference — needs
@@ -468,8 +472,63 @@ def _pairs(window):
 # arithmetic, so loosening a rule there moves the monitor with it. The
 # lookup is at REDUCE time, through the registry §5.13.3 names, so a
 # metric registered by a child is available here with no new seam.
-def _mean_score(pairs, scoring):
-    """Return the mean of the ``dskit.pipeline.metrics`` rule ``scoring`` over ``(forecast, label)`` pairs."""
+def check_scoring(problems, scoring, where="scoring"):
+    """Refuse a scoring rule the pipeline's own registry does not know.
+
+    Default-deny over an OPEN registry: a child registers its own rule and
+    it works with no new seam, but a typo is an error rather than a silent
+    fall-back to the default. The scored monitors and §5.13.3's report ask
+    the same question of the same registry through this one function.
+
+    Parameters
+    ----------
+    problems : list of str
+        The accumulator. Appended to in place.
+    scoring : object
+        The declared name.
+    where : str, optional
+        What to call the site in the message.
+
+    Returns
+    -------
+    None
+        The list is the answer.
+    """
+    if scoring not in pipeline_metrics.METRICS:
+        problems.append(
+            f"{where} must be a registered dskit.pipeline.metrics name, one of "
+            f"{sorted(pipeline_metrics.METRICS)}, got {scoring!r}"
+        )
+
+
+def mean_score(pairs, scoring):
+    """Return the mean of a registered pipeline metric over paired observations.
+
+    The ONE composition of ``dskit.pipeline.metrics``'s per-pair rules into
+    a window statistic. ``report.py`` scores the same series the same way
+    (§5.13.3), so the rule lives here rather than in each caller: the
+    refusals ``brier`` makes about its own domain reach both, and loosening
+    them there moves both together.
+
+    Parameters
+    ----------
+    pairs : sequence of tuple
+        ``(forecast, label)`` pairs.
+    scoring : str
+        A registered ``dskit.pipeline.metrics`` name.
+
+    Returns
+    -------
+    float
+        The mean of the rule over the pairs.
+
+    Raises
+    ------
+    ProductionError
+        When the rule refuses a pair — a forecast outside ``[0, 1]`` or a
+        label outside ``{0, 1}`` for ``brier``, and whatever a child's own
+        registered rule refuses.
+    """
     rule = pipeline_metrics.METRICS[scoring]
     try:
         return statistics.fmean(rule(forecast, label) for forecast, label in pairs)
@@ -477,8 +536,63 @@ def _mean_score(pairs, scoring):
         raise ProductionError([str(exc)]) from exc
 
 
-def _ece(pairs, bins):
-    """Return the expected calibration error over ``bins`` equal-width bins of ``[0, 1]``."""
+def dm_test(labels, forecasts, baselines):
+    """Return the Diebold-Mariano test of forecasts against their benchmark.
+
+    All three halves are ``dskit.pipeline.stats``'s: ``dm_loss_series``
+    builds the loss gap, ``dm_lags`` sizes the HAC window at a one-step
+    horizon and ``diebold_mariano_test`` runs the t. ``Skill.dm_test`` and
+    §5.13.3's report both answer through it rather than each composing the
+    three, so the one reading the plan leaves open — the horizon — is made
+    once.
+
+    ``dm_loss_series`` takes ONE scalar benchmark while each leg stores its
+    own, so the test runs against the window's MEAN baseline. §5.10.1 names
+    that gap and §5.13.3 inherits it; the per-leg baselines are what the
+    skill STATISTIC uses, and this is the test beside it.
+
+    Parameters
+    ----------
+    labels, forecasts, baselines : sequence of float
+        Aligned; ``baselines`` supplies the scalar benchmark by its mean.
+
+    Returns
+    -------
+    dict or None
+        ``diebold_mariano_test``'s answer, or ``None`` below two pairs,
+        which is the shortest series that function accepts.
+    """
+    if len(labels) < _DM_MIN_PAIRS:
+        return None
+    gaps = pipeline_stats.dm_loss_series(
+        list(labels), list(forecasts), mu=statistics.fmean(baselines)
+    )
+    return pipeline_stats.diebold_mariano_test(
+        gaps, lags=pipeline_stats.dm_lags(len(gaps), _DM_HORIZON), h_steps=_DM_HORIZON
+    )
+
+
+def expected_calibration_error(pairs, bins):
+    """Return the expected calibration error over equal-width bins of ``[0, 1]``.
+
+    Equal-width, not the reference quantiles the distribution family cuts
+    on: that fixed partition is what ECE MEANS, and §5.13.3's report keeps
+    the same split, which is why the rule has one home rather than one per
+    caller.
+
+    Parameters
+    ----------
+    pairs : sequence of tuple
+        ``(forecast, label)`` pairs; the forecast indexes the bin.
+    bins : int
+        How many equal-width bins of ``[0, 1]`` to cut.
+
+    Returns
+    -------
+    float
+        The size-weighted mean gap between each bin's mean forecast and its
+        mean label.
+    """
     buckets = {}
     for forecast, label in pairs:
         index = min(max(int(forecast * bins), 0), bins - 1)
@@ -622,6 +736,28 @@ class Reference(_Configured, ABC):
             Every value the reference currently stands for; empty before
             it has been primed.
         """
+
+    def fingerprint(self):
+        """Return the digest of the CONTENT this reference stands on, or None.
+
+        The hook belongs to the seam rather than to one member because
+        ``plan`` binds every reference's content into the release the same
+        way, and asking whether a method exists is a branch on the object's
+        type where polymorphism is the answer. ``None`` is a real answer,
+        not an omission: a ``leading`` window or a ``snapshot`` profile
+        stands on values the document itself carries, so the document hash
+        already pins them and there is no second artifact to bind.
+        ``libs/parquet.py``'s ``run`` reference overrides it, because a
+        re-scored run must not be able to move a live alarm threshold under
+        an unchanged release hash.
+
+        Returns
+        -------
+        str or None
+            64 hex characters where the reference stands on files, else
+            ``None``.
+        """
+        return None
 
     def state(self):
         """Return the population as a JSON-able dict for the §6 snapshot.
@@ -3737,7 +3873,7 @@ class Calibration(OutcomeMonitor):
 
     def _reduce(self, paired):
         """Return the expected calibration error of the window's pairs."""
-        return _ece(_pairs(paired), self._bins)
+        return expected_calibration_error(_pairs(paired), self._bins)
 
 
 class _ScoredMonitor(OutcomeMonitor):
@@ -3782,12 +3918,7 @@ class _ScoredMonitor(OutcomeMonitor):
     def _check(cls, problems, params):
         """Require a scoring rule the pipeline's own registry knows."""
         super()._check(problems, params)
-        scoring = params.get("scoring", DEFAULT_SCORING)
-        if scoring not in pipeline_metrics.METRICS:
-            problems.append(
-                "scoring must be a registered dskit.pipeline.metrics name, one of "
-                f"{sorted(pipeline_metrics.METRICS)}, got {scoring!r}"
-            )
+        check_scoring(problems, params.get("scoring", DEFAULT_SCORING))
 
     def _configure(self, params):
         """Take the scoring rule's name; the rule itself is looked up per reduction."""
@@ -3796,7 +3927,7 @@ class _ScoredMonitor(OutcomeMonitor):
 
     def _mean(self, pairs):
         """Return the mean of the declared rule over ``(forecast, label)`` pairs."""
-        return _mean_score(pairs, self._scoring)
+        return mean_score(pairs, self._scoring)
 
 
 class Brier(_ScoredMonitor):
@@ -3897,17 +4028,10 @@ class Skill(_ScoredMonitor):
             which is the shortest series that function accepts.
         """
         window = self._window()[0]
-        if len(window) < _DM_MIN_PAIRS:
-            return None
-        gaps = pipeline_stats.dm_loss_series(
-            [observation[_TARGET] for observation in window],
+        return dm_test(
+            self._labels(window),
             [observation[_VALUE] for observation in window],
-            mu=statistics.fmean(self._benchmarks(window)),
-        )
-        return pipeline_stats.diebold_mariano_test(
-            gaps,
-            lags=pipeline_stats.dm_lags(len(gaps), _DM_HORIZON),
-            h_steps=_DM_HORIZON,
+            self._benchmarks(window),
         )
 
     def _reduce(self, paired):

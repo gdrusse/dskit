@@ -110,6 +110,12 @@ __all__ = [
 #: fields and upcasts an older version (§5.8); the genesis carries it too.
 SCHEMA_VERSION = 1
 
+#: The process id a READING open records under. It never reaches a
+#: record — a reading ledger refuses every write — but the envelope
+#: field is required at construction, and a name is clearer than a
+#: fresh uuid nobody can trace.
+_READER = "reader"
+
 #: ``durability.fsync`` when none is given: the safest grade.
 DEFAULT_FSYNC = "every"
 
@@ -851,6 +857,9 @@ class ChainLedger(Ledger):
     snapshot_every : int or None
         Append a ``snapshot`` of ``state.to_snapshot_obj()`` after this
         many records since the last one; ``None`` never does.
+    readonly : bool, optional
+        Open for READING: take no writer lock, repair nothing and refuse
+        every write (§7). :meth:`reading` is the constructor for it.
     lock : health.InstanceLock or None
         A HELD instance lock on this series' ``serve.lock`` (R18: one
         lock). ``None`` makes the ledger take and release it itself.
@@ -899,6 +908,7 @@ class ChainLedger(Ledger):
         state=None,
         snapshot_every=DEFAULT_SNAPSHOT_EVERY,
         lock=None,
+        readonly=False,
     ):
         problems = []
         if not isinstance(serve_root, ServeRoot):
@@ -935,7 +945,10 @@ class ChainLedger(Ledger):
         self._latest_snapshot_seq = None
         self._since_snapshot = 0
         self._closed = False
-        self._lock_fd = None if lock is not None else self._acquire_lock()
+        self._readonly = bool(readonly)
+        self._lock_fd = (
+            None if lock is not None or self._readonly else self._acquire_lock()
+        )
         try:
             self._open()
         except BaseException:
@@ -975,9 +988,47 @@ class ChainLedger(Ledger):
             os.close(fd)
 
     def _open_check(self):
-        """Refuse any write after ``close()``."""
+        """Refuse any write after ``close()``, and every write on a reading open."""
+        if self._readonly:
+            raise ProductionError(
+                ["this ledger was opened for reading and never appends"]
+            )
         if self._closed:
             raise ProductionError(["the ledger is closed"])
+
+    @classmethod
+    def reading(cls, serve_root, *, clock):
+        """Open this store's chain for READING, taking no writer lock (§7).
+
+        §7: "Read-only verbs never take the writer lock." An ordinary open
+        takes ``serve.lock`` exclusively for the object's lifetime and
+        repairs a torn tail, so a report or a replay that opened one would
+        refuse exactly while a serve process was running — and would write
+        to the series it claims not to touch. A reading open takes no lock,
+        repairs nothing, and refuses every write by name.
+
+        Parameters
+        ----------
+        serve_root : ServeRoot
+            The series to read.
+        clock : Clock
+            Held, never read: nothing is stamped by a read.
+
+        Returns
+        -------
+        ChainLedger
+            Answering ``scan``, ``head`` and ``verify``; ``append``,
+            ``barrier`` and ``snapshot`` refuse.
+
+        Examples
+        --------
+        ::
+
+            ledger = JsonlLedger.reading(serve_root, clock=clock)
+            ledger.head()
+            # -> (42, '9f3c…')
+        """
+        return cls(serve_root, _READER, GENESIS_HASH, clock=clock, readonly=True)
 
     def close(self):
         """Make the head durable, release every handle and the writer lock if this ledger took it.
@@ -1275,7 +1326,7 @@ class JsonlLedger(ChainLedger):
                 self._note_kind(envelope["kind"], self._seq)
                 last_ms = envelope["recorded_at_ms"]
                 complete += len(raw)
-            if is_tail:
+            if is_tail and not self._readonly:
                 self._cursor = self._reopen(index, path, complete, last_ms)
 
     def _reopen(self, index, path, complete, last_ms):

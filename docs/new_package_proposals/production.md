@@ -760,6 +760,18 @@ than only as a line in §8.
 
 ### 5.1 `clock.py`, `sessions.py`, `cadence.py`
 
+**One `sleep_until` for both fakes.** `TestClock` and `ReplayClock` compose
+one `ManualTime` and share the JUMPING `sleep_until` on `_ManualClock`: it
+moves the instant to the target and reports arrival, and nothing waits on a
+wall. An earlier draft gave `ReplayClock` a `sleep_until` that returned at
+once and moved nothing, on the reading that "the feed will" advance time —
+which is unimplementable as a whole: `ServeLoop._due` waits for the next grid
+instant and then ticks at it, so a clock that stayed put leaves every due
+instant in its own future and `Overrun.resolve` refuses before the first
+replayed tick ever runs. The feed's advance is the other half, not the whole:
+each recorded pull sets the shared instant to the one that pull was taken at,
+which is what makes a replayed `evidence_asof_ms` reproduce.
+
 - `Clock(ABC)`: `now_ms()`, `monotonic()`, `sleep_until(epoch_ms, wake)` (returns
   early when `wake()` is true). `WallClock` (≤ 1 s sleep slices so a stop flag is
   honoured), `TestClock(set, advance)`, `ReplayClock` — both are `Clock`
@@ -812,6 +824,18 @@ silently changing a trading day under a fixed release and a live arm. A code
 fingerprint alone would not catch it: the code is identical, the DATA moved.
 
 ### 5.2 `feed.py`
+
+**`ReplayFeed`'s tape is `FeedResult`s, and it takes the shared instant.**
+`ReplayFeed(params, *, tape, time=None)`. An earlier draft made the tape
+`(FeedResult, EntryBatch)` pairs with a `batch()` accessor; nothing calls it —
+`read_entry` is the DECIDER's phase (§5.3), not the feed's — and an
+`EntryBatch` cannot be rebuilt from the chain anyway, since §6 records
+`inputs_digest` and `coverage_digest` but never `outputs` and never a
+watermark's `source_digest`. The rows are not the feed's to hold: replay
+re-executes the entry against the same immutable onboarding root and the
+recorded digest proves the re-read matched (§5.13.3). `time` is the
+`ManualTime` a `ReplayClock` shares; each pull sets it to that result's
+`at_ms`.
 
 `ServingContract{source_binding, entity_key_fields, event_time_field,
 digest_recipe}` is returned by the entry class's pure
@@ -1576,6 +1600,20 @@ other permit **by type** — refuses meaning it returns
 
 ### 5.7.1 `accounting.py`
 
+**Four rules here have a second reader in phase 2, so four names are public.**
+`WindowBook` (the window's trades folded from a flat baseline — realised per
+closing fill, open quantity at cost, and the cumulative path), `effective_fills`
+(which fills count: reversals undone, nothing after the cut), `effective_bodies`
+(D21's reading of a `cash_flow` or `outcome` chain: known by the cut, minus what
+is superseded) and `decimal_of` (the one `Fraction` -> `Decimal` boundary).
+§5.13.3's value curve reads exactly these, so the curve and the guard that halts
+on it agree by construction rather than by coincidence. `WindowBook.unrealised(
+mark_of)` is new beside `pnl`: an instrument `mark_of` answers `None` for
+contributes NOTHING, which is the conservative reading the curve needs
+(unmarked open risk is not profit), while the evidence measures keep the
+`mark_of` that REFUSES, because a measure computed over a position nobody could
+mark would be a number with a hole in it.
+
 `Accounting(ABC)` has two abstract hooks.
 `value(state_view, quotes, at_ms) -> Decimal | None` returns the marked
 portfolio value that becomes `tick.nav` — `None` when a required mark is
@@ -1640,6 +1678,15 @@ runs in a supervised worker with a bounded call timeout; the document requires
 deadline invalidates the local permit without waiting for nominal expiry.
 
 ### 5.8 `ledger.py` and `control.py`
+
+**A reading open.** `ChainLedger.reading(serve_root, *, clock)` opens the chain
+for READING: it takes no `serve.lock`, repairs no torn tail, and refuses every
+write by name. §7 says read-only verbs never take the writer lock, and an
+ordinary open takes it exclusively for the object's lifetime — so `report`,
+`replay` and `verify` would each refuse exactly while a series was being
+served, and would repair a tail on a series they claim not to touch. The
+`readonly` flag reaches the store's `_open` hook, because a store's own open is
+where the repair lives.
 
 - `Ledger(ABC)`: `append(record) -> seq`, `append_many`, `barrier()`,
   `scan(kind=None, since_seq=0)` (`since_seq` is EXCLUSIVE, so a snapshot's
@@ -1964,6 +2011,14 @@ and report a module-level import clean.
 
 ### 5.9 `reconcile.py`
 
+**`LedgerHistory` gains `ticks(since_ms)` in phase 2**, beside `fills`,
+`cash_flows`, `marks`, `outcomes` and `legs`: §5.13.3's value curve places one
+point per completed tick, and §5.8 rules that only the fold's named readers
+scan the chain — so the reader lives here rather than in a second module that
+learned to scan. A body with no `observed_at_ms` is dropped, because §6 exempts
+a RECOVERED tick from most of its block and a point at an invented instant is
+worse than no point.
+
 `Reconciler.run(state_view, executor, scope) -> ReconReport{breaks[], status,
 ours_digest, theirs_digest}` (only the reconciler holds both sides)
 resolves every pending ref through `executor.order(ref)` and compares open
@@ -2005,6 +2060,15 @@ break ids and release hash; after inspection it records the delta, crosses
 `ledger.barrier()`, updates the fold, and immediately reconciles again.
 
 ### 5.10 `monitors.py`
+
+**`fingerprint()` belongs to the `Reference` SEAM, not to one member.** The
+base answers `None` and `libs/parquet.py`'s `run` reference overrides it.
+`plan` binds every reference's content into the release the same way, and
+asking whether a method EXISTS is a branch on an object's type where
+polymorphism is the answer. `None` is a real answer rather than an omission: a
+`leading` window or a `snapshot` profile stands on values the document itself
+carries, so the doc hash already pins them and there is no second artifact to
+bind.
 
 - `Monitor(ABC)`: `_PARAMS`; `fit(reference)`; `@abstractmethod observe(record)`;
   `@abstractmethod verdict() -> Verdict`; `state()`/`restore(state)` (JSON-able,
@@ -2192,7 +2256,9 @@ declares and cannot populate. Every one of them is built through the existing
   - `Brier` — `statistic` is the mean of a registered `dskit.pipeline.metrics`
     rule, imported rather than restated and resolved at reduce time. The rule
     is `scoring`, default `DEFAULT_SCORING` (`brier`) — the same choice
-    §5.13.3 gives the report, for the same reason: `brier` refuses a forecast
+    §5.13.3 gives the report, resolved by the same module-level
+    `check_scoring`, whose answer both take rather than each writing the
+    lookup, and for the same reason: `brier` refuses a forecast
     outside `[0, 1]` and a label outside `{0, 1}`, so an unbounded-value series
     declares `squared_error` and a child's own registered rule works with no
     new seam. One param, not a seam. The Murphy decomposition is deliberately
@@ -2862,9 +2928,13 @@ seam as an operator's proof.
   requires has no caller, and an implementer inventing the route is where the
   scope-key guarantee would be lost; it is constructed once per tick and owns
   no state between ticks, and core needs no subclass of it. There is deliberately
-  **no** `ReplayTick`: replay is already the five-object swap D2 and D20 rest
-  on (`ReplayClock`, `ReplayFeed`, `RecordedExecutor`, `RecordedAccounting`,
-  `RecordedIdSource`), and a replay subclass would be a second mechanism for a
+  **no** `ReplayTick`: replay is already the object swap D2 and D20 rest
+  on (`ReplayClock`, `RecordedExecutor`, `RecordedIdSource` — three, as D20
+  names them, not five: §6 records an account and a venue answer as a DIGEST,
+  so there is no `RecordedAccounting` to swap in, and rows are re-read through
+  `read_entry` against the same immutable onboarding root with the recorded
+  `inputs_digest` PROVING the re-read matched, rather than replayed from a
+  copy the chain never held), and a replay subclass would be a second mechanism for a
   variation the injected seams already express — and would contradict §5.15's
   ruling that the rungs differ only by which objects were injected.
   `ServeLoop` composes a `Tick`; nothing subclasses `ServeLoop` itself. Query,
@@ -3234,6 +3304,15 @@ directly. `attribution(at_ms) -> tuple[Attribution]`,
 `value_curve(at_ms) -> tuple[ValuePoint]` and
 `render(emitter, at_ms) -> str`. Every one takes the cut explicitly: a report
 with an implicit "now" cannot be reproduced, which is the whole point of D21.
+Two of the six constructor arguments needed a job before they were honest.
+`history` is the chain's one sanctioned reader (§5.8), so `ledger` may not be
+a second one: it is asked for its HEAD and nothing else, and the view names
+that `(seq, hash)` — a report is reproducible only against a stated chain
+state, and naming it is what makes "the same cut gives the same answer"
+checkable. `LedgerHistory` accordingly gains `ticks(since_ms)` (§5.9) for the
+value curve. `clock` answers `now_ms()` for a caller with no cut of its own,
+so the report and the join it reads through share ONE clock rather than each
+building one; it is never read to CHOOSE a cut.
 
 **Attribution, per leg.** `Attribution{leg_id, requested_qty, filled_qty,
 fill_rate, surprise, impact, opportunity, fees, shortfall, markouts,
@@ -3264,6 +3343,40 @@ horizon, taken from the `marked` outcome nearest at or after
 zero. `fill_rate = filled_qty / requested_qty`, and `closing_value` is the
 leg's value at the report's cut, from `OutcomeJoin.current_outcome`.
 
+Three readings the algebra above leaves open, each of which an implementer
+must settle:
+
+- **`P_o` when nothing has resolved.** The TERMINAL outcome's value where one
+  stands (`outcome_value`), else the standing head's, else the decision's own
+  `reference_price` — which makes `opportunity` exactly zero. That is the
+  honest answer: with no information about what the unfilled remainder would
+  have been worth, it cost nothing knowable.
+- **The arithmetic runs on the fills' NOTIONAL, never on `P_f`.** The
+  fill-weighted average is a division, `Decimal` division is inexact, and the
+  three components would then fail to cancel in the last digits of an identity
+  the section calls EXACT. `q·P_f` is `Σ qty×price`, which is exact, so
+  `impact = notional − q·P_d` and
+  `shortfall = Q(P_o − P_d) − [q·P_o − notional − fees]`.
+- **`fill_rate` has no denominator to divide by** on a no-op leg or a
+  notional-sized proposal, and answers `None` there. Zero would read as
+  "nothing filled", which is a claim about execution rather than about the
+  absence of a denominator.
+- **A markout's value and its origin.** The signed per-unit `mark − P_f`
+  (achieved price), and the horizon runs from the leg's LAST fill: the
+  execution is over then, and a markout measured from the first fill of a
+  slowly worked order would overlap the execution it is judging. `markouts` is
+  keyed by the horizon rendered as a STRING, because a JSON object's keys are
+  strings and the record round-trips through `to_obj`/`from_obj`.
+
+`Attribution`, `CalibrationReport`, `ValuePoint`, `Divergence` and
+`ParityReport` are `records.py` value objects, as `Outcome` and `DecidedLeg`
+are: that is where the `Decimal` discipline, the closed-set check on
+`divergence` and the `to_obj`/`from_obj` round trip already live, and a second
+set of them in `report.py` would be the duplication this repository forbids.
+`ValuePoint` and `ParityReport` each refuse a self-contradiction —
+`cumulative != realised + unrealised`, and a `clean` that disagrees with the
+divergences it carries.
+
 **Calibration.** `CalibrationReport{n, bins, ece, brier, reliability,
 resolution, uncertainty, baseline_brier, bss, dm}`. `brier` is the mean of
 `dskit.pipeline.metrics.brier` over the paired legs — imported, never
@@ -3275,14 +3388,34 @@ binning turns the three into approximations that no longer sum, and
 `document.reporting.bins` equal-width bins, which is what ECE means: the two
 stratifications differ on purpose and the field names say which is which.
 `bss = 1 - brier / baseline_brier` against the leg's stored `baseline`, so a
-baseline scored against itself gives 0 — the pin `test_report.py` carries.
+baseline scored against itself gives 0 — the pin `test_report.py` carries —
+and `None` where the benchmark itself scored a perfect zero, which leaves the
+ratio undefined, the answer `Skill` already gives for the same reason. The
+Murphy identity is the MEAN SQUARED ERROR's: it holds for `brier` and
+`squared_error`, the two rules this section names, and not for a registered
+rule of another shape, whose score the report still carries beside the
+decomposition. `murphy_terms(pairs, group=None)` takes the stratification as an
+argument for one reason only — so `test_report.py` can show that the SAME data
+binned does not sum, which is the property, demonstrated, rather than an option
+anyone should take.
 `dm` is `dskit.pipeline.stats.diebold_mariano_test` over
-`dskit.pipeline.stats.dm_loss_series(y, yhat, mu=baseline)` at
-`dskit.pipeline.stats.dm_lags(n, h_steps)`, or `None` below two pairs.
+`dskit.pipeline.stats.dm_loss_series(y, yhat, mu=…)` at
+`dskit.pipeline.stats.dm_lags(n, h_steps)`, or `None` below two pairs — through
+`monitors.dm_test(labels, forecasts, baselines)`, the one owner `Skill.dm_test`
+also answers from. `mu=baseline` as this section first wrote it cannot be
+implemented: `dm_loss_series` takes ONE scalar benchmark while each leg stores
+its own, which §5.10.1 flags and predicts. The owner resolves it once — the
+window's MEAN baseline for the TEST, each leg's own for the `bss` statistic —
+so the two cannot drift.
 An unbounded-value series scores through `squared_error` instead of `brier`
 by the same functions; the choice is `document.reporting.scoring`, a
 registered `dskit.pipeline.metrics` name, so a child's own rule works with no
-new seam.
+new seam. Four rules this section needs already had owners in `monitors.py`
+and were PRIVATE, which made "imported, never restated" unhonourable against
+them: they are now `check_scoring` (the default-deny lookup unit 3 gave the two
+scored monitors), `mean_score`, `expected_calibration_error` (the equal-width
+ECE `Calibration` computes — §5.10.1 already says the report "keeps the same
+split", which can only be true if it is the same function) and `dm_test`.
 
 **Value.** `ValuePoint{at_ms, realised, unrealised, external, nav, cumulative,
 drawdown}`, one per completed tick. `external` is the `cash_flow` total at that
@@ -3290,19 +3423,79 @@ instant and keeps its own column: §6's `cash_flow` row already rules that an
 external flow changes what you have and never what you earned, so a curve that
 added deposits to profit would be the very defect that rule exists to prevent.
 `drawdown` is `cumulative` minus the running peak of `cumulative` over trading
-value alone.
+value alone — so it is zero or negative, never a positive "maximum decline",
+which is a different quantity that `accounting`'s own `drawdown` measure
+already answers. `realised` and `unrealised` are `accounting.WindowBook`'s,
+folded over `effective_fills` at each tick's `observed_at_ms`: the curve and
+the `pnl`/`drawdown` guards that halt on it read the SAME fold, so they agree
+by construction rather than by coincidence. An open position nothing marks
+contributes NOTHING to `unrealised` (`WindowBook.unrealised` answers on a
+`mark_of` that may say `None`), because unmarked open risk is not profit;
+`cumulative` is `realised + unrealised` and `ValuePoint` REFUSES a triple
+where it is not. `nav` is the tick's RECORDED value — §6 calls it
+unrecoverable after the fact, so the curve reports it rather than recomputing
+one, and carries `None` where §6 recorded none.
 
-**Replay parity.** `replay` is D20's five-object swap and nothing more:
+**Replay parity.** `replay` is D20's object swap and nothing more:
 `compose.bundles_for(document, release, registry, tape=tape)` — one new
-keyword — selects `ReplayClock`, `ReplayFeed`, `RecordedExecutor`,
-`RecordedAccounting` and `RecordedIdSource` together, so the rungs still differ
-only by which objects were injected and there is still no `ReplayTick`.
-`Tape.from_ledger(ledger)` rebuilds the recorded feed results, entry batches,
-acks, fills, accounting answers and ids from the original chain, and refuses a
-chain missing any of them rather than replaying a hole.
+keyword — selects `ReplayClock`, `ReplayFeed` and `RecordedIdSource` together
+through one strategy object (`_Injection`), so the rungs still differ only by
+which objects were injected and there is still no `ReplayTick`.
+
+**Three objects, not five, and the reason is §6.** An earlier draft of this
+paragraph named `RecordedExecutor` and `RecordedAccounting` too, and said
+`Tape.from_ledger(ledger)` "rebuilds the recorded feed results, entry batches,
+acks, fills, accounting answers and ids from the original chain". It cannot:
+§6 records a venue answer, an account and a row set as a DIGEST rather than as
+the answer, deliberately and everywhere. The `tick` block carries
+`inputs_digest` and `coverage_digest`, never `EntryBatch.outputs` and never a
+watermark's `source_digest`; the `decision_plan` carries `evidence_digest`,
+never the `AccountState` `RecordedAccounting.snapshot` would have to answer;
+the `recon` record carries `ours_digest`/`theirs_digest`, never the positions
+and balances the reconciler asked the venue for. A tape rebuilt from the chain
+therefore holds exactly three things — the recorded instants, the feed's own
+results, and the ids the recording allocated — and everything else is
+RE-DERIVED rather than replayed:
+
+- the ROWS come from the same immutable onboarding root through the same
+  `read_entry`, and the recorded `inputs_digest`/`coverage_digest` are what
+  PROVE the re-read matched. That is a stronger claim than replaying a recorded
+  blob, which can only prove that the blob was replayed, and it is what makes
+  a store that has since moved a reported `data` divergence rather than a
+  silent one.
+- the ACCOUNT and the VENUE come from the rung's own simulated objects, which
+  are pure functions of the replayed fold and the replayed quotes. Injecting a
+  tape there would replace a determinism CHECK with an assumption.
+- a LIVE rung has neither, because its account and venue are external. §6
+  records no answer a replay could use, so `_Rung` gains `replayable` and
+  `bundles_for` REFUSES a tape at a rung whose row is false — a read-only verb
+  must never re-ask a venue. That refusal is where "rather than replaying a
+  hole" actually lives.
+
+`Tape.from_ledger(ledger)` refuses a `tick_start` with no terminal `tick`, a
+`tick` with no `decision`, a RECOVERED tick whose `feed` block §6 nulls, a
+decision whose plan ids do not match its legs, and a chain with no tick at all.
+`Tape` implements `bundles.ReplayTape`, an ABC of exactly `start_ms()`,
+`feed_results()` and `id_allocations()`: a tape supplies DATA and never an
+object, which is what keeps "the rungs differ only by which objects were
+injected" a fact about `compose.py`. It lives in `bundles.py` for the reason
+the bundles do — `report.py` builds a tape and `compose.py` consumes one, so a
+declaration in either would make §10's order cyclic.
+
+`id_allocations()` is the order the loop asks in — per tick `next_tick_id`,
+then for each leg its `leg_id`, its `client_ref` and its `plan_id` — because
+`RecordedIdSource` refuses any call that is not the recorded one. That
+strictness is the point: a replay that decided a different number of legs, or
+asked in a different order, cannot complete. A recorded REDUCTION cycle takes
+`flatten_client_ref`, which consumes no tape entry, so a chain holding one
+refuses at the first mismatch rather than replaying quietly — loud, and the
+known limit.
+
 `Replay(document, release, *, root, tape, registry).run() -> ParityReport` runs
 a `ServeLoop` to the end of the tape against a scratch serve root and never
-writes to the original series.
+writes to the original series; `Replay.over(series_path, *, root)` recovers the
+document and the release from the series' own release directory rather than
+from an operator's copy, because a replay must run what the recording ran.
 `ParityDiff(tape_records, replay_records).compare() -> ParityReport` compares
 the SEMANTIC bodies of `decision`, `decision_plan` and `intent` field by field
 in `seq` order; envelopes, sequences, hashes and `recorded_at_ms` have their
@@ -3321,11 +3514,28 @@ one. `ParityReport{compared, divergences, first_divergence_seq, clean}`.
 **Emitters.** `ReportEmitter(ABC).emit(report) -> str`, with `MarkdownReport`
 and `JsonReport`. It is a structural ABC rather than a registry family because
 `--format` picks one of exactly two and no document ever selects a report
-format. `MarkdownReport` renders every cell through the one owner of the
+format. What an emitter takes is a `ReportView` — the frozen value of ONE
+cut's answers (`at_ms`, `series_id`, `release_hash`, `head`, the three
+sections, and a `parity` section on a replay) — because a `Report` without a
+cut has no sections to render and passing both would let an emitter mix
+vintages. `Report.render(emitter, at_ms)` is the one path that builds one.
+`head` is the ledger's `(seq, hash)`: a report is reproducible only against a
+stated chain state, and naming it is what makes "the same cut gives the same
+answer" checkable rather than hoped for. §5.10.1's `ParityMonitor` is driven
+here, through `compose.parity_monitors(document)` — the composition root is the
+only module that may resolve a family member by name (§5.15), so `report.py`
+asks it rather than building one. `MarkdownReport` renders every cell through the one owner of the
 pipe-escape rule — `dskit.pipeline.runs.render_cell`, made public by §9.1 for
 this, since production may not import a private pipeline name — because a
 table's format is taste and its escaping is correctness. The `report` verb is
-READ-ONLY: it appends nothing, takes no lock and does not journal.
+READ-ONLY: it appends nothing, takes no lock and does not journal. Taking
+no lock needs a mechanism: an ordinary `ChainLedger` open takes `serve.lock`
+exclusively for the object's lifetime AND repairs a torn tail, so a report
+that opened one would refuse exactly while a series was being served — which
+is when an operator wants it — and would write to the series it claims not to
+touch. `ChainLedger.reading(serve_root, *, clock)` is that mechanism: no
+flock, no tail repair, and every write refused by name. `verify`'s phase-1
+open has the same defect and now has the same remedy available to it.
 
 ### 5.13.4 `readiness.py` — outcome evidence (phase 2)
 
@@ -3685,6 +3895,35 @@ the node it replaces. Children never subclass `ServeLoop`, `GuardChain` or any
 policy — the extension points are the ABCs above plus `Proposer` and `Measure`,
 and `test_purity.py` fails a child that imports a private production name.
 
+### 5.15.1 `compose.py`'s phase-2 additions
+
+Three module functions, each for one reason: the composition root is the only
+module that may resolve a family member by name, and phase 2 gave three
+callers outside it something to build.
+
+- `clock_for(document)` — the ONE owner of "how a document becomes a clock".
+  `compose._clock_of` and `__main__._clock` were two copies of it; the
+  read-only verbs, which open a ledger without composing anything, call it
+  directly and `bundles_for` reaches it through `_DocumentInjection`.
+- `parity_monitors(document)` — §5.10.1's `ParityMonitor` is the one monitor
+  the serve loop never calls, so `report.py` drives it; building it here is
+  what keeps `report.py` from resolving `MONITOR_KINDS` by name.
+- `reading_join(document, release, *, ledger, state, clock)` — the bitemporal
+  join a READ-ONLY verb answers through. `outcome_join` takes the seven
+  bundles, and `report` composes none. `OutcomeJoin` accordingly accepts
+  EXACTLY the sources the document declares **or none at all**: an empty map
+  builds a reader, which answers `current_outcome`/`as_of` and collects
+  nothing because there is nobody to ask. A PARTIAL map still refuses —
+  serving some of what a document declares and silently dropping the rest is
+  the failure that check exists for.
+
+`_Injection` is the fourth: D20's swap is an OBJECT the composition root
+selects (`_DocumentInjection` or `_TapeInjection`) rather than three `if tape`
+branches inside `bundles_for`, so a replay cannot end up with a recorded feed
+and a live clock — the failure that would make a parity report meaningless
+while looking fine. `_Rung` gains `replayable`, and `bundles_for` refuses a
+tape at a rung whose row is false (§5.13.3).
+
 ### 5.16 Producers — every field back to the object that fills it
 
 Four rounds of design review found the same class of defect four times: a
@@ -3967,7 +4206,7 @@ sha256-canonical idiom.
 | `status <doc>` | rung, breaker, health, last tick, pending refs, control inbox/results, head hash | 0 / 1 |
 | `verify <doc>` | walk the ledger chain; compare the head to the journal anchor | 0 / 1 |
 | `reconcile <doc>` / `adopt <doc> --break ID… --proof FILE` | queue reconciliation, or queue authenticated adoption of named breaks | 0 / 1 / 5 |
-| `replay <serve-dir> [--strict] [--format markdown\|json]` | [phase 2] re-run the tape through the recorded five objects and diff it (§5.13.3); read-only, writes only under its own scratch root | 0 / 1 |
+| `replay <serve-dir> [--strict] [--format markdown\|json] [--out FILE] [--root DIR]` | [phase 2] re-run the tape through the recorded objects and diff it (§5.13.3); read-only, writes only under its own scratch root (a temporary directory unless `--root` names one). Its positional is a recorded SERIES root, not a document: a replay runs the document the recording ran, which is stored beside the release, so `Verb.POSITIONAL` is a per-verb pair rather than a shared `document` | 0 / 1 |
 | `outcomes <doc> [--asof TS]` | [phase 2] collect and record outcomes up to the cut (§5.13.2); mutating, so queued or synchronous under the lock, and journaled | 0 / 1 / 5 |
 | `report <doc> [--asof T] [--format markdown\|json] [--out FILE]` | [phase 2] attribution, calibration, value and parity at the cut; read-only, no lock, no journal row | 0 / 1 |
 | `approve-hold <doc> --guard NAME --scope KEY --proof FILE` | [phase 2] authenticated early release of one guard hold (§5.5.1) | 0 / 1 / 5 |
@@ -4122,9 +4361,12 @@ dskit/production/
 │                      evidence reads too); OutcomeSource ABC
 │                      + SettlementOutcomes + LabelOutcomes + OUTCOME_SOURCE_KINDS; OutcomeJoin (collect/record/
 │                      current_outcome/as_of) — §5.13.2
-├── report.py          [phase 2] Report (attribution/calibration/value_curve/render, each taking the as-of cut);
-│                      Attribution, CalibrationReport, ValuePoint; Tape + Replay + ParityDiff + Divergence +
-│                      ParityReport; ReportEmitter ABC + MarkdownReport + JsonReport — §5.13.3
+├── report.py          [phase 2] Report (attribution/calibration/value_curve/view/render/now_ms, each
+│                      section taking the as-of cut); murphy_terms; classify_field + DIVERGENCE_FIELDS
+│                      (a table keyed on field name, not a branch); Tape (a bundles.ReplayTape) + Replay
+│                      + ParityDiff; ReportView; ReportEmitter ABC + MarkdownReport + JsonReport;
+│                      parity_view — §5.13.3. The five VALUE OBJECTS (Attribution, CalibrationReport,
+│                      ValuePoint, Divergence, ParityReport) live in records.py with every other one
 ├── readiness.py       Readiness(document, release); ReadinessResult; readiness_digest; release-bound checklist →
 │                      GO / NO-GO; required for live; [phase 2] Evidence ABC + EVIDENCE_RULES (the module-level
 │                      table §5.13.4 resolves an evidence name against, keyed exactly by vocab.READINESS_EVIDENCE)
@@ -4245,10 +4487,13 @@ tests/production/
 │                          reproducibility — as_of(T) is byte-identical when re-asked after later arrivals; supersede chain,
 │                          and a second supersession of one record refuses; known_at_ms comes from the run's one instant, so a
 │                          replayed collect dedups instead of refusing; every OUTCOME_KINDS member has a producing source
-├── test_report.py         [phase 2] IS components sum to shortfall exactly in Decimal; Murphy terms sum to Brier on the exact
-│                          stratification and NOT on bins; BSS of a baseline against itself = 0; a missing markout is None, never 0;
-│                          external cash flows never enter cumulative; every DIVERGENCE_CLASSES member is reachable and an
-│                          unclassified field falls to nondeterminism; the markdown emitter escapes a pipe in every cell
+├── test_report.py         [phase 2] IS components sum to shortfall exactly in Decimal (asserted, never back-derived); Murphy
+│                          terms sum to Brier on the exact stratification and the SAME data binned does not; BSS of a baseline
+│                          against itself = 0; a missing markout is None, never 0; external cash flows never enter cumulative;
+│                          every DIVERGENCE_CLASSES member is reachable and an unclassified field falls to nondeterminism; the
+│                          markdown emitter escapes a pipe in every cell; Tape.from_ledger refuses each incomplete tick; a REAL
+│                          recorded two-tick serve replays clean, leaves the original head unmoved, and `report` answers while a
+│                          serve process holds the writer lock
 └── test_readiness.py      release binding; unwaivable foundation items; live refuses without GO; NO-GO exits 5; waivers;
                            [phase 2] a provisional calibration verdict is not evidence, and neither is an insufficient one;
                            a fake name added to EVIDENCE_RULES resolves (the TABLE drives it, not a branch); coverage and

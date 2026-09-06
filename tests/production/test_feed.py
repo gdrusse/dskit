@@ -42,6 +42,7 @@ import pytest
 import dskit.onboarding.acquire as acquire_mod
 import dskit.onboarding.observations as observations_mod
 from dskit.production.base import ProductionError, canonical_hash
+from dskit.production.clock import ReplayClock, TestClock
 from dskit.production.feed import (
     DEFAULT_PULL_MODE,
     FEED_KINDS,
@@ -800,39 +801,47 @@ class TestFreshnessLadder:
 # --------------------------------------------------------------------------
 
 
-def taped(training_run, serving_contract, statuses=("live", "stale")):
-    """A tape of (FeedResult, EntryBatch) pairs over the synthetic run."""
-    spec = spec_for(serving_contract)
-    batch = snapshot_entry(serving_contract, spec, entry_outputs_of(training_run), "s" * 64)
+def taped(training_run=None, serving_contract=None, statuses=("live", "stale")):
+    """A tape of recorded `FeedResult`s — the whole of what a replay feed holds."""
     return [
-        (
-            FeedResult(status=status, acq_id=f"acq-{i}", records_added=i,
-                       source_config_hash="s" * 64, at_ms=NOW_MS + i),
-            batch,
-        )
+        FeedResult(status=status, acq_id=f"acq-{i}", records_added=i,
+                   source_config_hash="s" * 64, at_ms=NOW_MS + i)
         for i, status in enumerate(statuses)
     ]
 
 
 class TestReplayFeed:
     def test_it_replays_the_recorded_results_in_order(self, training_run, serving_contract):
-        tape = taped(training_run, serving_contract)
+        tape = taped()
         feed = ReplayFeed({}, tape=tape)
-        assert [feed.pull(NOW_MS + i) for i in range(len(tape))] == [r for r, _ in tape]
+        assert [feed.pull(NOW_MS + i) for i in range(len(tape))] == tape
 
-    def test_the_batch_belongs_to_the_pull_just_returned(self, training_run, serving_contract):
-        tape = taped(training_run, serving_contract)
-        feed = ReplayFeed({}, tape=tape)
+    def test_a_pull_moves_the_instant_the_replay_clock_shares(self):
+        """D20: `ReplayClock` "never advances itself — the feed will", so a
+        replayed tick is evaluated at the instant the recording evaluated it
+        rather than at the replay process's start."""
+        clock = TestClock(start_ms=NOW_MS)
+        replay_clock = ReplayClock(manual_time=clock.time)
+        feed = ReplayFeed({}, tape=taped(statuses=("live", "live")), time=clock.time)
         feed.pull(NOW_MS)
-        assert feed.batch() == tape[0][1]
+        assert replay_clock.now_ms() == NOW_MS
+        feed.pull(NOW_MS)
+        assert replay_clock.now_ms() == NOW_MS + 1
 
-    def test_asking_for_a_batch_before_a_pull_refuses(self, training_run, serving_contract):
-        feed = ReplayFeed({}, tape=taped(training_run, serving_contract))
+    def test_a_tape_carrying_anything_but_a_feed_result_refuses(self):
+        """The rows are NOT on the tape: §5.13 gives `read_entry` to the
+        decider, which re-executes the entry against the same immutable
+        onboarding root, and the recorded `inputs_digest` proves the re-read
+        matched — a stronger claim than replaying a recorded blob."""
         with pytest.raises(ProductionError):
-            feed.batch()
+            ReplayFeed({}, tape=[(taped()[0], object())])
+
+    def test_a_time_that_is_not_a_manual_time_refuses(self):
+        with pytest.raises(ProductionError):
+            ReplayFeed({}, tape=taped(), time="now")
 
     def test_an_exhausted_tape_refuses(self, training_run, serving_contract):
-        tape = taped(training_run, serving_contract, statuses=("live",))
+        tape = taped(statuses=("live",))
         feed = ReplayFeed({}, tape=tape)
         feed.pull(NOW_MS)
         with pytest.raises(ProductionError):
@@ -843,7 +852,7 @@ class TestReplayFeed:
     ):
         monkeypatch.setattr(acquire_mod, "run_acquisition", boom)
         monkeypatch.setattr(observations_mod, "scan_stream", boom)
-        feed = ReplayFeed({}, tape=taped(training_run, serving_contract))
+        feed = ReplayFeed({}, tape=taped())
         assert feed.pull(NOW_MS).status == "live"
 
     def test_an_unknown_param_refuses(self, training_run, serving_contract):

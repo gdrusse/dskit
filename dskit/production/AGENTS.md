@@ -72,6 +72,11 @@ points one way; the pipeline receives a `ReleaseReader` through
    flows. Get this wrong and an adopted deposit turns a trading loss into
    headroom under a `halt` guard.
 6. **An unknown outcome is resolved by querying, never by resending.**
+7. **A read-only verb never takes the writer lock.** `report` and `replay`
+   open the chain through `ChainLedger.reading(...)`: no flock, no torn-tail
+   repair, every write refused by name. An ordinary open would refuse exactly
+   while the series was being served, and would write to the series it claims
+   not to touch.
 
 ## Where things live
 
@@ -97,6 +102,14 @@ signer subclasses `HmacSigner` and supplies `probe_request()` — the one
 venue fact core cannot hold. `readiness.Evidence` is the one seam with a plain
 TABLE rather than a registry (§5.13.4): a checklist evidence name the series
 can prove is an `EVIDENCE_RULES` entry, and there is no `uses` site for one.
+`report.ReportEmitter` is the other (§5.13.3): `--format` picks one of exactly
+two and no document ever selects a report format, so a registry would add a
+§4.3 family nothing selects. `report.DIVERGENCE_FIELDS` is a third TABLE, keyed
+on the §6 body FIELD name, with `nondeterminism` as the deliberate default —
+an unclassifiable difference must never be absorbed into a named class.
+`bundles.ReplayTape` is the seam a replay hands the composition root: DATA
+(instants, feed results, id allocations) and never an object, so which objects
+a replay runs stays `compose.py`'s decision.
 
 ## Testing
 

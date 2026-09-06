@@ -940,6 +940,43 @@ class LedgerHistory:
             body for body in self._outcome_bodies(since_ms) if body[_OUTCOME_KIND] == _MARKED
         )
 
+    def ticks(self, since_ms):
+        """Return every terminal ``tick`` body with ``observed_at_ms >= since_ms``.
+
+        The value curve of §5.13.3 walks one point per completed tick, and
+        §5.8 rules that only the fold's named readers scan the chain — so
+        the reader lives here beside the four this class already owns
+        rather than in a second module that learned to scan.
+
+        Parameters
+        ----------
+        since_ms : int
+            Epoch-ms lower bound on ``observed_at_ms``, inclusive; ``0``
+            for all time.
+
+        Returns
+        -------
+        tuple of dict
+            §6 ``tick`` bodies in ``observed_at_ms`` order. A body with no
+            ``observed_at_ms`` is dropped: §6 exempts a RECOVERED tick from
+            most of its block, and a point placed at an invented instant is
+            worse than no point.
+
+        Raises
+        ------
+        ProductionError
+            If ``since_ms`` is not a non-negative int.
+        """
+        _check_since(since_ms)
+        found = [
+            envelope["body"]
+            for envelope in self._ledger.scan(kind=_TICK)
+            if isinstance(envelope["body"].get(_OBSERVED_AT), int)
+            and not isinstance(envelope["body"].get(_OBSERVED_AT), bool)
+            and envelope["body"][_OBSERVED_AT] >= since_ms
+        ]
+        return tuple(sorted(found, key=lambda body: body[_OBSERVED_AT]))
+
     def legs(self, since_ms):
         """Return every decided leg with ``decided_at_ms >= since_ms``, in ledger order.
 

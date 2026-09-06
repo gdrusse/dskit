@@ -148,7 +148,7 @@ external dead-man heartbeat; a metrics registry with closed label sets.
 ```
 dskit/production/
 ├── __init__.py        public surface (curated re-exports)
-├── __main__.py        the 17 CLI verbs
+├── __main__.py        the 23 CLI verbs
 ├── base.py            ProductionError; Registry; canonical bytes/hash; record hashing
 ├── vocab.py           every closed vocabulary, one module
 ├── redact.py          secrets resolution; redact() on logs, alerts and reasons
@@ -193,6 +193,9 @@ dskit/production/
 │                      the names the series proves for itself (coverage, freshness,
 │                      calibration)
 ├── outcomes.py        forward_asof; OutcomeSource + registry; OutcomeJoin (D21)
+├── report.py          Report (attribution / calibration / value, each at an explicit
+│                      cut); ReportView + ReportEmitter ABC + Markdown/Json; Tape +
+│                      Replay + ParityDiff — D20's parity, run against a scratch root
 ├── libs/              tier-2 packs — a library behind a seam this package owns
 │   ├── parquet.py     RunReference over a run's predictions, registered as `run`
 │   │                  in REFERENCE_KINDS; pyarrow inside the method

@@ -28,6 +28,7 @@ all three of its inputs. Its knobs are stdlib-typed, so it does check
 them.
 """
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
 
 from dskit.production.base import ProductionError
@@ -39,9 +40,75 @@ __all__ = [
     "Invocation",
     "Observability",
     "Recording",
+    "ReplayTape",
     "Safety",
     "Schedule",
 ]
+
+
+class ReplayTape(ABC):
+    """What a replay hands the composition root, so it can select D20's objects.
+
+    ``compose.bundles_for(..., tape=tape)`` builds the replay collaborators
+    from these three answers; the tape supplies DATA and never an object,
+    which is what keeps "the rungs differ only by which objects were
+    injected" (§5.15) a fact about ``compose.py`` rather than about
+    whoever produced the tape. The ABC lives here, beside the bundles, for
+    the same reason they do: ``report.py`` builds tapes and ``compose.py``
+    consumes them, and a declaration in either would make §10's build order
+    cyclic.
+
+    Examples
+    --------
+    A tape that replays one tick of one leg::
+
+        class OneTick(ReplayTape):
+            def start_ms(self):
+                return 1_767_268_800_000
+
+            def feed_results(self):
+                return (result,)
+
+            def id_allocations(self):
+                return (("next_tick_id", (1_767_268_800_000,), "tick-1"),)
+
+        OneTick().start_ms()
+        # -> 1767268800000
+    """
+
+    @abstractmethod
+    def start_ms(self):
+        """Return the instant the replay clock starts at.
+
+        Returns
+        -------
+        int
+            Epoch milliseconds — the recording's own first instant, so the
+            cadence grid the replay walks is the grid it walked.
+        """
+
+    @abstractmethod
+    def feed_results(self):
+        """Return the recorded pulls, in tick order.
+
+        Returns
+        -------
+        tuple of FeedResult
+            One per recorded tick.
+        """
+
+    @abstractmethod
+    def id_allocations(self):
+        """Return the recorded id allocations, in the order they were asked.
+
+        Returns
+        -------
+        tuple of tuple
+            ``(method, args, id)`` triples, as ``RecordedIdSource`` takes
+            them — and it refuses any call that is not the recorded one,
+            which is what makes a replay that decided differently a
+            refusal rather than a quiet re-derivation.
+        """
 
 
 class _Bundle:

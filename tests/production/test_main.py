@@ -88,11 +88,12 @@ PHASE_ONE_VERBS = (
     "ready",
 )
 
-#: The six verbs §7 marks [phase 2]. `outcomes` is the one §5.13.2's join
-#: now honours, so it is registered; the other five are not, and offering
-#: one would advertise a control nothing would take.
+#: The six verbs §7 marks [phase 2]. All six have their owners now — the
+#: last two, `report` and `replay`, arrived with §5.13.3 — so all six are
+#: registered; the list stays as the pin that a verb the CLI offers is a
+#: verb something honours.
 PHASE_TWO_VERBS = ("replay", "outcomes", "report", "approve-hold", "ack", "silence")
-LANDED_PHASE_TWO_VERBS = ("outcomes", "ack", "silence", "approve-hold")
+LANDED_PHASE_TWO_VERBS = PHASE_TWO_VERBS
 UNLANDED_PHASE_TWO_VERBS = tuple(
     verb for verb in PHASE_TWO_VERBS if verb not in LANDED_PHASE_TWO_VERBS
 )

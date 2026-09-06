@@ -175,12 +175,33 @@ def test_one_manual_time_shared_by_both_clocks_is_visible_from_either():
     assert clock.now_ms() == START_MS + 9_000
 
 
-def test_replay_clock_sleep_until_neither_blocks_nor_advances_time():
+def test_replay_clock_sleep_until_reaches_the_instant_without_waiting():
+    """The scheduler waits for the next grid instant before it ticks, so a
+    manual clock that stayed put would leave every due instant in its own
+    future and `Overrun.resolve` would refuse before the first replayed
+    tick. Both fakes therefore share ONE `sleep_until` on `_ManualClock`:
+    it jumps, and nothing waits on a wall."""
     replay = ReplayClock(manual_time=ManualTime(now_ms=START_MS))
     assert replay.sleep_until(START_MS + 86_400_000, lambda: False) is True
-    assert replay.now_ms() == START_MS
-    assert replay.sleep_until(START_MS + 86_400_000, lambda: True) is False
-    assert replay.now_ms() == START_MS
+    assert replay.now_ms() == START_MS + 86_400_000
+    assert replay.sleep_until(START_MS + 2 * 86_400_000, lambda: True) is False
+    assert replay.now_ms() == START_MS + 86_400_000
+
+
+def test_a_replay_feed_then_sets_the_instant_the_recorded_pull_was_taken_at():
+    """The other half: the grid instant is where the tick STARTS, and the
+    recorded pull is what says where the recording's own clock stood while
+    the tick ran (§5.13.3)."""
+    from dskit.production.feed import ReplayFeed
+    from dskit.production.records import FeedResult
+
+    manual = ManualTime(now_ms=START_MS)
+    replay = ReplayClock(manual_time=manual)
+    feed = ReplayFeed({}, tape=[FeedResult(status="live", acq_id=None, records_added=0,
+                                           source_config_hash=None, at_ms=START_MS + 17)],
+                      time=manual)
+    feed.pull(START_MS)
+    assert replay.now_ms() == START_MS + 17
 
 
 # ---------------------------------------------------------------------------

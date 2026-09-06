@@ -43,6 +43,7 @@ __all__ = [
     "param_at",
     "read_curve_records",
     "read_skill_series",
+    "render_cell",
     "resolve_run_root",
     "scan_runs",
     "score_bar",
@@ -499,7 +500,7 @@ def _escape_pipe(text):
     return text.replace("|", r"\|")
 
 
-def _render_cell(value):
+def render_cell(value):
     """One cell as trustworthy text: absent reads as the dash, booleans as a verdict, floats to 6 s.f., containers as their size; ``|`` is escaped and line breaks flatten to ``⏎`` so a value cannot open a phantom column or row."""
     if value is None:
         return _MISSING
@@ -523,15 +524,22 @@ def _render_cell(value):
     return _escape_pipe(text)
 
 
+#: The private spelling this module shipped under, kept as an alias so the
+#: pipeline suites that import it are unmoved (ADR-0091 §9.1: the name
+#: became public because ``dskit.production.report`` is its third caller
+#: and lives in another package, which may not reach a private one).
+_render_cell = render_cell
+
+
 def _render_table(columns, rows):
-    """Header, separator, one line per row — order preserved, every cell through :func:`_render_cell`."""
-    header = [_render_cell(column) for column in columns]
+    """Header, separator, one line per row — order preserved, every cell through :func:`render_cell`."""
+    header = [render_cell(column) for column in columns]
     lines = [
         "| " + " | ".join(header) + " |",
         "|" + "---|" * len(header),
     ]
     lines += [
-        "| " + " | ".join(_render_cell(value) for value in row) + " |" for row in rows
+        "| " + " | ".join(render_cell(value) for value in row) + " |" for row in rows
     ]
     return lines
 

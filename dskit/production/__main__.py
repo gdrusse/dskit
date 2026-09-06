@@ -43,11 +43,14 @@ actually reached.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 import uuid
 from abc import ABC, abstractmethod
 
@@ -68,8 +71,12 @@ from dskit.production.base import (
 )
 from dskit.production.breaker import Breaker
 from dskit.production.bundles import Invocation
-from dskit.production.clock import CLOCK_KINDS
-from dskit.production.compose import bundles_for, handlers_for
+from dskit.production.compose import (
+    bundles_for,
+    clock_for,
+    handlers_for,
+    reading_join,
+)
 from dskit.production.control import EXECUTING_PURPOSES, CommandProcessor, ControlInbox
 from dskit.production.coordination import LEASE_KINDS
 from dskit.production.decider import (
@@ -87,8 +94,15 @@ from dskit.production.loop import JOURNAL_NOTES, JOURNAL_STEP, ServeLoop
 from dskit.production.policy import TransitionPolicy
 from dskit.production.readiness import checklist_digest
 from dskit.production.records import ReductionPlan
-from dskit.production.state import Recovery
+from dskit.production.reconcile import LedgerHistory
 from dskit.production.redact import get_logger, redact, resolve_secrets
+from dskit.production.report import (
+    JsonReport,
+    MarkdownReport,
+    Replay,
+    Report,
+    parity_view,
+)
 from dskit.production.release import (
     RELEASE_FILENAME,
     ReleaseManifest,
@@ -98,6 +112,7 @@ from dskit.production.release import (
     parse_iso_duration,
     write_release,
 )
+from dskit.production.state import Recovery, SeriesState
 from dskit.production.vocab import (
     CASH_FLOW_KINDS,
     EXIT_CODES,
@@ -138,10 +153,6 @@ if not _ANCHOR.search(JOURNAL_NOTES.format(process_id="p", seq=1, head_hash="0" 
 # ---------------------------------------------------------------------------
 
 
-def _clock(document):
-    """Build the clock the document names; clocks take keywords, not a params dict."""
-    site = document.schedule.clock
-    return CLOCK_KINDS.resolve(site.uses)(**(dict(site.params) if site.params else {}))
 
 
 def _serve_root(document):
@@ -335,6 +346,12 @@ class Verb(ABC):
     #: Whether D22 counts this verb as mutating and therefore journalled.
     MUTATING = False
 
+    #: The one positional argument this verb takes, as ``(name, help)``.
+    #: Every verb but ``replay`` names a serve document; ``replay`` names a
+    #: recorded SERIES root, because a replay runs the document the
+    #: recording ran and that document is stored beside its release.
+    POSITIONAL = ("document", "the serve document (§4.1)")
+
     def __init__(self, args):
         self.args = args
         self.outputs = ""
@@ -495,7 +512,7 @@ class Plan(DocumentVerb):
         ignored at the first tick.
         """
         ledger_class(document)
-        clock = _clock(document)
+        clock = clock_for(document)
         serve_root = _serve_root(document)
         self.db_location = serve_root.series_path
         run_dir = document.serving.run_dir
@@ -670,7 +687,7 @@ class Serve(SeriesVerb):
                 secrets=resolve_secrets(document.env),
                 invocation=self._invocation(),
                 process_id=process_id,
-                clock=_clock(document),
+                clock=clock_for(document),
                 lock=lock,
                 journal_hook=self.journal_hook,
             )
@@ -743,7 +760,7 @@ class ControlVerb(SeriesVerb):
         self.outputs = request_id
         self.before_queue(document, serve_root)
         payload = self.payload(document, release)
-        inbox = ControlInbox(serve_root, _clock(document))
+        inbox = ControlInbox(serve_root, clock_for(document))
         inbox.queue(
             {
                 "request_id": request_id,
@@ -796,7 +813,7 @@ class ControlVerb(SeriesVerb):
             return None
         ledger = None
         try:
-            clock = _clock(document)
+            clock = clock_for(document)
             bundles = bundles_for(
                 document,
                 release,
@@ -951,7 +968,7 @@ class Halt(ControlVerb):
     def before_queue(self, document, serve_root):
         """Turn the kill switch on through its one owner, touching no ledger."""
         created = Breaker(
-            document, serve_root, ledger=None, state=None, clock=_clock(document),
+            document, serve_root, ledger=None, state=None, clock=clock_for(document),
             transition_policy=TransitionPolicy(),
         ).create_halt_sentinel()
         _LOG.warning("HALT sentinel %s", "created" if created else "was already present")
@@ -1232,7 +1249,7 @@ class Ready(ControlVerb):
 def _stored_command(document, request_id):
     """Return a queued or terminal command from the series' spool, by request id."""
     serve_root = _serve_root(document)
-    inbox = ControlInbox(serve_root, _clock(document))
+    inbox = ControlInbox(serve_root, clock_for(document))
     receipt = inbox.receipt(request_id)
     if receipt is not None:
         return receipt
@@ -1272,7 +1289,7 @@ class Status(DocumentVerb):
         """Print §7's status report, taking no lock and opening no ledger."""
         serve_root = _serve_root(document)
         checkpoint = Checkpoint.load(serve_root.checkpoint_cache)
-        inbox = ControlInbox(serve_root, _clock(document))
+        inbox = ControlInbox(serve_root, clock_for(document))
         print(json.dumps(
             {
                 "series_id": document.series_id,
@@ -1365,7 +1382,7 @@ class Verify(SeriesVerb):
     def over(self, document, serve_root, release):
         """Walk the chain, place the anchor on it and list the receiptless commands."""
         ledger = ledger_class(document)(serve_root, _process_id(), release.release_hash,
-                                        clock=_clock(document))
+                                        clock=clock_for(document))
         try:
             first_bad = ledger.verify()
             head_seq, head_hash = ledger.head()
@@ -1374,7 +1391,7 @@ class Verify(SeriesVerb):
             ledger.close()
         gaps = [
             command["request_id"]
-            for command in ControlInbox(serve_root, _clock(document)).pending()
+            for command in ControlInbox(serve_root, clock_for(document)).pending()
         ]
         print(json.dumps(
             {
@@ -1413,6 +1430,153 @@ class Verify(SeriesVerb):
         return rows[-1].notes if rows else None
 
 
+
+# ---------------------------------------------------------------------------
+# report and replay — read-only (§5.13.3, §7)
+# ---------------------------------------------------------------------------
+
+
+#: The two renderings ``--format`` picks between. A structural pair, not a
+#: registry family: no document ever selects a report format (§5.13.3).
+_FORMATS = {"markdown": MarkdownReport, "json": JsonReport}
+
+
+class ReportVerb(SeriesVerb):
+    """`report`: attribution, calibration and value at an explicit cut (§5.13.3).
+
+    READ-ONLY, and the refusals are what say so: it appends nothing, takes
+    no lock and writes no journal row. Every section takes the cut it is
+    given, so two runs at the same ``--asof`` render the same answer —
+    which is the reproducibility D21 exists for.
+
+    Examples
+    --------
+    ::
+
+        main(["report", "configs/serve-paper.json", "--asof", "2026-01-06T00:00:00Z"])
+        # -> 0, having printed the three sections as markdown
+    """
+
+    NAME = "report"
+    HELP = "print attribution, calibration and the value curve at a cut"
+
+    @classmethod
+    def add_arguments(cls, parser):
+        """Declare the cut, the rendering and where to put it."""
+        parser.add_argument("--asof", default=None,
+                            help="UTC instant to report as of, e.g. 2026-01-06T04:00:00Z; "
+                                 "defaults to the document clock's now")
+        parser.add_argument("--format", default="markdown", choices=sorted(_FORMATS),
+                            help="how to render the report")
+        parser.add_argument("--out", default=None,
+                            help="write the report here instead of to stdout")
+
+    def over(self, document, serve_root, release):
+        """Open the chain for reading, render at the cut, and write nothing to the series."""
+        clock = clock_for(document)
+        ledger = ledger_class(document).reading(serve_root, clock=clock)
+        try:
+            state = SeriesState(document.series_id)
+            report = Report(
+                document,
+                release,
+                ledger=ledger,
+                history=LedgerHistory(ledger),
+                join=reading_join(
+                    document, release, ledger=ledger, state=state, clock=clock
+                ),
+                clock=clock,
+            )
+            at_ms = (
+                report.now_ms()
+                if self.args.asof is None
+                else parse_utc_ms(self.args.asof)
+            )
+            text = report.render(_FORMATS[self.args.format](), at_ms)
+        finally:
+            ledger.close()
+        _emit(text, self.args.out)
+        return EXIT_CODES["stopped"]
+
+
+class ReplayVerb(Verb):
+    """`replay`: re-run a recorded series through the recorded objects and diff it.
+
+    Read-only against the original series — the tape is read once and the
+    loop runs against a scratch root of its own. ``--strict`` exits 1 on a
+    non-empty diff while plain ``replay`` exits 0 and reports, because a
+    divergence under ``--strict`` is an error and a divergence without it
+    is a finding; no new exit code is minted for it.
+
+    Examples
+    --------
+    ::
+
+        main(["replay", "./serve/018f0f4e-7b21-7d3a-9c31-6d8f36d806a1"])
+        # -> 0, having printed the parity section
+    """
+
+    NAME = "replay"
+    HELP = "re-run a recorded series through the recorded objects and diff it"
+
+    #: The positional this verb takes: a recorded SERIES root, not a
+    #: document — a replay runs what the recording ran, and the document it
+    #: ran is stored beside the release.
+    POSITIONAL = ("series", "the recorded serve-series root (<ledger_root>/<series_id>)")
+
+    @classmethod
+    def add_arguments(cls, parser):
+        """Declare the strictness, the rendering and where the scratch root goes."""
+        parser.add_argument("--strict", action="store_true",
+                            help="exit 1 when the diff is non-empty")
+        parser.add_argument("--format", default="markdown", choices=sorted(_FORMATS),
+                            help="how to render the parity report")
+        parser.add_argument("--out", default=None,
+                            help="write the report here instead of to stdout")
+        parser.add_argument("--root", default=None,
+                            help="the scratch serve root; a temporary directory by default")
+
+    def run(self):
+        """Replay the tape against a scratch root and report what diverged."""
+        with _scratch(self.args.root) as root:
+            replay = Replay.over(self.args.series, root=root)
+            parity = replay.run()
+            document = replay.document()
+            view = parity_view(
+                document,
+                parity,
+                at_ms=replay.tape().start_ms(),
+                series_id=document.series_id,
+                release_hash=replay.tape().records()[-1]["release_hash"],
+            )
+            _emit(_FORMATS[self.args.format]().emit(view), self.args.out)
+        if self.args.strict and not parity.clean:
+            return EXIT_CODES["error"]
+        return EXIT_CODES["stopped"]
+
+
+@contextlib.contextmanager
+def _scratch(root):
+    """Yield the scratch root a replay writes under, cleaning up one it made itself."""
+    if root is not None:
+        yield root
+        return
+    made = tempfile.mkdtemp(prefix="dskit-replay-")
+    try:
+        yield made
+    finally:
+        shutil.rmtree(made, ignore_errors=True)
+
+
+def _emit(text, out):
+    """Print a rendered report, or write it where the operator asked."""
+    if out is None:
+        print(text)
+        return
+    with open(out, "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
 # ---------------------------------------------------------------------------
 # Wiring
 # ---------------------------------------------------------------------------
@@ -1446,6 +1610,8 @@ VERBS = {
         Silence,
         ApproveHold,
         Ready,
+        ReportVerb,
+        ReplayVerb,
     )
 }
 
@@ -1466,7 +1632,7 @@ def build_parser():
     subcommands = top.add_subparsers(dest="verb", required=True)
     for name, verb in VERBS.items():
         parser = subcommands.add_parser(name, help=verb.HELP)
-        parser.add_argument("document", help="the serve document (§4.1)")
+        parser.add_argument(verb.POSITIONAL[0], help=verb.POSITIONAL[1])
         verb.add_arguments(parser)
         parser.set_defaults(verb=name)
     return top
