@@ -22,7 +22,7 @@ README displays the complete human-owner-only Path and latest 10 Actions;
 CSV history is never deleted. Each Path record has an ID, label, purpose,
 relevant files, and `LOCKED` (`Y`/`N`); Current Work is human-owner-only.
 Pipeline/onboarding commands record themselves; research uses
-`python -m dskit.journal research`.
+`python -m dskit.journal research --topic T --name N`.
 
 ```
 intraday_poc/
@@ -47,7 +47,7 @@ intraday_poc/
 ├── docs/decisioning/         # generated process + action ledger
 ├── docs/explanations/        # durable explanations; use record-explanation
 ├── docs/memos/               # decision memos; use memo
-├── docs/research/            # research markdown (journal research CLI)
+├── docs/research/            # topic folders; <date>-synthesis.md + dated notes
 └── tests/
     ├── conftest.py            # sys.path bootstrap — in-repo and after graduation
     ├── test_connectors.py     # four-verb contract + acquire→validate e2e (stubbed)

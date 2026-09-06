@@ -103,7 +103,7 @@ Every run, acquisition and research note lands in `docs/decisioning/`
 the full human-owner-only Path and latest 10 Actions; never delete CSV
 history. Path rows carry an ID, label, purpose, relevant files, and `LOCKED`
 (`Y`/`N`); Current Work is also human-owner-only. Pipeline runs and onboarding
-verbs record themselves; research uses `python -m dskit.journal research`.
+verbs record themselves; research uses `python -m dskit.journal research --topic T --name N`.
 
 ## Layout
 
@@ -126,7 +126,7 @@ notebooks/               01-ladder-e2e.ipynb — the document, cell by cell
 docs/decisioning/        actions.csv + path.csv; README generated
 docs/explanations/       durable explanations; use record-explanation
 docs/memos/              decision memos; use memo
-docs/research/           research notes; use journal research CLI
+docs/research/           topic folders; <date>-synthesis.md + dated notes
 tests/                   conftest bootstrap; one file per module + test_configs + test_e2e
 journal.json             dskit.journal marker
 pyproject.toml           dependencies: dskit, numpy, torch, pyomo, highspy, pyarrow

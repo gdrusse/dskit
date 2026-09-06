@@ -1,5 +1,7 @@
 # Explanations
 
-Use the `record-explanation` skill to create durable explanations here.
-Keep them concise, evidence-backed, and linked to the relevant decisioning
-record when one exists.
+Use the `record-explanation` skill for a standalone child-specific
+tutorial, worked example, or plain-language walkthrough.
+
+Write a short kebab-case Markdown file here. Explanations are not research
+findings or journal actions.
