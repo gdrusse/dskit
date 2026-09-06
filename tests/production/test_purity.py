@@ -384,6 +384,35 @@ def test_no_underscore_name_is_exported():
     assert not offenders, offenders
 
 
+def test_no_private_name_is_imported_from_another_package():
+    """The `_` prefix is the API contract in BOTH directions.
+
+    §9.1 states twice that production may not import a private pipeline
+    name, and made `runs.render_cell` public rather than reach for
+    `_render_cell` — but nothing enforced it, and `decider.py` was
+    importing `driver._is_summary` and `driver._winner_names` the whole
+    time. A rule the plan claims and no test keeps is how that happens.
+    Reaching past another package's public surface couples this one to
+    an internal that may be renamed without notice; the fix is always to
+    give the rule a public name and ONE owner, never a second copy.
+    """
+    offenders = []
+    for path in _all_files():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            text = line.strip()
+            if not text.startswith("from dskit."):
+                continue
+            if text.startswith(f"from {PACKAGE}"):
+                continue
+            head, _sep, names = text.partition(" import ")
+            if not _sep:
+                continue
+            for name in names.split("#")[0].split(","):
+                if name.strip().split(" as ")[0].startswith("_"):
+                    offenders.append(f"{path.name}: {text}")
+    assert not offenders, offenders
+
+
 # ---------------------------------------------------------------------------
 # Venue neutrality
 # ---------------------------------------------------------------------------
