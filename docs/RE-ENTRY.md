@@ -1,5 +1,23 @@
 # Re-entry
 
+## Current state: P15 temporal-fusion zoo complete (2026-09-06)
+
+The three-candidate P15 run completed 20/20 paired outer folds per model under
+benchmark `5e88726b…`. Mean path scores were Ridge 0.001346, Transformer
+0.000835, and TCN 0.000409. No pairwise test rejected equal performance at
+the 0.016667 adjusted threshold; all three positive means depended on the
+same 2023-05-19 fold and became approximately zero or negative without it.
+Ridge is the simplest P15 frontier, but no model was promoted or refit.
+
+The nine-model P13/P14/P15 reference leaves P13 pooled native LightGBM as the
+practical development frontier. Cross-zoo values are descriptive, not paired
+tests. Memo:
+`children/intraday_equities/docs/memos/p15-temporal-fusion-model-zoo-results.md`.
+
+**Next:** treat the temporal zoo as a completed negative complexity ablation.
+Only spend on another sequence family after a sharper representation or loss
+hypothesis; keep promotion/final refit as a separate owner-approved action.
+
 ## Current state: cross-benchmark model selector landed (2026-09-06)
 
 `BenchmarkSelect` (ADR-0106, accepted) joins completed benchmark zoos' pinned

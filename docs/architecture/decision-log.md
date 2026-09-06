@@ -5472,6 +5472,14 @@ The linear row supplies a cheap complexity floor, while TCN and Transformer
 answer whether sequence structure helps beyond that floor. The run remains
 inventory-gated, report-only, not locked, and cannot read the lockbox.
 
+**Result (2026-09-06).** All three candidates completed 20 paired folds. Ridge
+ranked first (0.001346 mean), ahead of Transformer (0.000835) and TCN
+(0.000409), but none of the three pairwise tests rejected equal performance at
+the adjusted threshold. Each mean was dominated by the same 2023-05-19 fold;
+no candidate was promoted or refit. The result closes the ablation without
+locking it and leaves P13 pooled LightGBM as the practical development
+frontier.
+
 ## ADR-0106 — A generic cross-benchmark model selector graduates into dskit.pipeline
 
 **Status:** Accepted (2026-09-06; owner approved implementation)

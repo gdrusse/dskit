@@ -152,6 +152,13 @@ flattened causal window, a dilated causal TCN, and a small causal Transformer.
 All own separate purged inner searches and remain exploratory, inventory-gated,
 not locked, and ineligible for automatic promotion.
 
+The completed P15 comparison ranked Ridge 0.001346, Transformer 0.000835, and
+TCN 0.000409 by mean path score. No pairwise difference was detected after
+Bonferroni adjustment, and all means were dominated by one common fold. No
+candidate was promoted or refit; see
+`docs/memos/p15-temporal-fusion-model-zoo-results.md` for the full nine-model
+P13/P14/P15 reference.
+
 ## Layout
 
 ```
