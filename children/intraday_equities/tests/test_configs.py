@@ -47,6 +47,7 @@ MODELABILITY_DOCS = {
     "run-p10-modelability.json": ("configs/universe-p10.json", 25),
     "run-p11-modelability.json": ("configs/universe-p10.json", 25),
     "run-p12-modelability.json": ("configs/universe-p12.json", 65),
+    "run-p13-pooled-model-zoo.json": ("configs/universe-p13-pooled.json", 26),
 }
 MODELABILITY_SOURCES = {
     "alpaca-sip-split",
@@ -814,9 +815,7 @@ def test_p13_expands_every_enabled_family_over_gate3_passers():
         if template["id"] != "lgbm-gate3-incumbent":
             assert model["hpo_trials"] > 0
             assert isinstance(model["hpo_space"], dict) and model["hpo_space"]
-    assert raw["stages"]["plan"]["inputs"]["candidates"] == (
-        "$materialize.candidates"
-    )
+    assert raw["stages"]["plan"]["inputs"]["candidates"] == ("$materialize.candidates")
     assert raw["stages"]["approval"]["inputs"] == {
         "inventory_sha256": "$plan.inventory_sha256"
     }
@@ -828,6 +827,7 @@ def test_p13_expands_every_enabled_family_over_gate3_passers():
     }
     plan = raw["stages"]["plan"]["params"]
     assert "pipeline.scan_h01.params.common_lead_stop" in plan["contract_paths"]
+    assert "pipeline.scan_h01.params.common_origin_policy" in plan["contract_paths"]
     assert "pipeline.path.params.horizon_weights" in plan["contract_paths"]
     assert plan["protocol"]["path_evidence"] == "path.records"
     assert raw["stages"]["compare"]["uses"].endswith(":PathBenchmarkCompare")
@@ -868,3 +868,32 @@ def test_the_p1_cell_differs_from_its_baseline_in_two_knobs_only():
             cell["pipeline"]["scan"]["params"][knob]
             == base["pipeline"]["scan"]["params"][knob]
         ), knob
+
+
+def test_p13_pooled_zoo_has_two_family_specific_inner_searches():
+    raw = _raw("run-p13-pooled-model-zoo.json")
+    materialize = raw["stages"]["materialize"]
+    assert materialize["inputs"] == {
+        "preflight": "$memory.passed",
+        "caches": "$memory.groups",
+    }
+    templates = materialize["params"]["templates"]
+    assert [row["family"] for row in templates] == [
+        "pooled-lightgbm",
+        "pooled-torch-mlp",
+    ]
+    assert templates[0]["model"]["estimator"] == "lightgbm.LGBMRegressor"
+    assert templates[1]["model"]["estimator"].endswith(
+        "CategoricalEmbeddingMLPRegressor"
+    )
+    assert templates[0]["model"]["hpo_trials"] == 12
+    assert templates[1]["model"]["hpo_trials"] == 8
+    assert set(templates[0]["model"]["hpo_space"]) != set(
+        templates[1]["model"]["hpo_space"]
+    )
+    assert raw["stages"]["approval"]["params"]["approved_inventory_sha256"] == (
+        "2e76e23482b4caa2328d2ebb1c48cabd97a64b50094558c1bffe5c9a59d19779"
+    )
+    universe = _raw("universe-p13-pooled.json")
+    assert len(universe["tradable"]) == 25
+    assert set(universe["symbols"]) == set(universe["tradable"]) | {"SPY"}

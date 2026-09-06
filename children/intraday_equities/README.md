@@ -118,14 +118,15 @@ INTRADAY_EQUITIES_FOLD_WORKERS=4 python -m dskit.pipeline staged \
 To inspect the official model-zoo DAG without running it:
 
 ```bash
-python -m dskit.pipeline plan configs/run-p13-model-zoo.json \
+python -m dskit.pipeline plan configs/run-p13-pooled-model-zoo.json \
   --adapter intraday_equities
 ```
 
-P13 expands 13 enabled model families across the exact 25 Gate-3-approved
-asset/horizon pairs. Its first `staged` invocation only materializes and hashes
-the inventory: no candidate fits until that hash and a reviewer identity replace
-the pending approval values in the JSON.
+The original 325-candidate asset-local P13 is stopped and preserved.
+`configs/run-p13-pooled-model-zoo.json` replaces it with pooled LightGBM and a
+Torch MLP with a learned symbol embedding. Each owns purged train-only HPO; the
+run verifies and reuses the four immutable P12 group caches before joining the
+selected 25 names by reference. Candidate fitting remains inventory-gated.
 
 ## Layout
 

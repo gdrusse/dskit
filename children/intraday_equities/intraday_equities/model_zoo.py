@@ -19,6 +19,8 @@ __all__ = [
     "DirectPathScore",
     "EmpiricalSelectRegressor",
     "Gate3ZooCandidates",
+    "PooledDirectPathScore",
+    "PooledGate3ZooCandidates",
     "SequenceOnlyZooEstimator",
     "StandardizedSelectRegressor",
 ]
@@ -215,7 +217,9 @@ class SequenceOnlyZooEstimator:
         available.sort()
         length = int(self.context_length)
         selected = [row for row in available if row[0] < length]
-        if len(selected) != length or [row[0] for row in selected] != list(range(length)):
+        if len(selected) != length or [row[0] for row in selected] != list(
+            range(length)
+        ):
             raise ValueError(
                 f"context_length={length} requires contiguous ret_lag_0..{length - 1}"
             )
@@ -274,7 +278,9 @@ def _gate3_rows(artifact):
         seen.add(key)
         eligible.append({"asset": row["asset"], "horizon": horizon})
     if len(eligible) != 25:
-        raise ValueError(f"locked Gate-3 result must contain 25 passers, got {len(eligible)}")
+        raise ValueError(
+            f"locked Gate-3 result must contain 25 passers, got {len(eligible)}"
+        )
     return sorted(eligible, key=lambda row: (row["asset"], row["horizon"]))
 
 
@@ -366,6 +372,7 @@ def _document(source, template, asset, horizon, cache, candidate_id, weights):
         scan["lead_step"] = lead
         scan["lead_stop"] = lead
         scan["common_lead_stop"] = horizon
+        scan["common_origin_policy"] = "all_head_labels_finite"
         for field in _MODEL_FIELDS:
             if field in template["model"]:
                 scan[field] = copy.deepcopy(template["model"][field])
@@ -438,17 +445,16 @@ class DirectPathScore(Node):
         weights = params.get("horizon_weights")
         if not isinstance(weights, list) or not weights:
             problems.append("horizon_weights must be a non-empty list")
-        elif (
-            any(
-                not isinstance(value, (int, float))
-                or isinstance(value, bool)
-                or not math.isfinite(value)
-                or value < 0.0
-                for value in weights
+        elif any(
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+            or value < 0.0
+            for value in weights
+        ) or not math.isclose(sum(weights), 1.0, rel_tol=1e-12, abs_tol=1e-12):
+            problems.append(
+                "horizon_weights must be finite, non-negative, and sum to one"
             )
-            or not math.isclose(sum(weights), 1.0, rel_tol=1e-12, abs_tol=1e-12)
-        ):
-            problems.append("horizon_weights must be finite, non-negative, and sum to one")
         elif isinstance(horizon, int) and len(weights) != horizon:
             problems.append("horizon_weights length must equal max_horizon")
         if params.get("score") != "train_scaled_improvement":
@@ -481,7 +487,8 @@ class DirectPathScore(Node):
             if not isinstance(records, list):
                 raise ValueError(f"lead {lead} records must be a list")
             matched = [
-                row for row in records
+                row
+                for row in records
                 if row.get("symbol") == asset and row.get("lead") == lead
             ]
             if len(matched) != 1:
@@ -521,7 +528,9 @@ class DirectPathScore(Node):
             raise ValueError(
                 "all path heads must score identical common validation origins"
             )
-        path_score = sum(row["weight"] * row["train_scaled_improvement"] for row in rows)
+        path_score = sum(
+            row["weight"] * row["train_scaled_improvement"] for row in rows
+        )
         return {
             "records": rows,
             "metrics": {
@@ -534,6 +543,440 @@ class DirectPathScore(Node):
                 ),
                 "n_leads": float(len(rows)),
                 "n_common_origins": float(next(iter(counts))),
+            },
+        }
+
+
+class PooledDirectPathScore(Node):
+    """Aggregate pooled direct heads with equal stock/path weighting.
+
+    Each stock contributes one twenty-fifth of the score and divides that
+    weight equally across its certified direct leads. Origins must match across
+    every head belonging to the same stock; stocks need not share row counts.
+
+    Parameters
+    ----------
+    params : dict
+        ``asset_horizons``, ``horizon_weighting``, ``split``, and ``score``.
+
+    Examples
+    --------
+    Build a scorer for one one-lead and one two-lead stock::
+
+        node = PooledDirectPathScore("path", {
+            "split": "val",
+            "asset_horizons": [{"asset": "A", "horizon": 1},
+                               {"asset": "B", "horizon": 2}],
+            "horizon_weighting": "equal_asset_equal_within_asset",
+            "score": "train_scaled_improvement",
+        })
+    """
+
+    role = "score"
+    outputs = ("records", "metrics")
+    _PARAMS = ("split", "asset_horizons", "horizon_weighting", "score")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return every malformed pooled-path parameter."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        if params.get("split") != "val":
+            problems.append("split must be val")
+        rows = params.get("asset_horizons")
+        if not isinstance(rows, list) or not rows:
+            problems.append("asset_horizons must be a non-empty list")
+        else:
+            assets = []
+            for index, row in enumerate(rows):
+                if not isinstance(row, dict) or set(row) != {"asset", "horizon"}:
+                    problems.append(
+                        f"asset_horizons[{index}] must contain exactly asset and horizon"
+                    )
+                    continue
+                if not _string(row["asset"]):
+                    problems.append(f"asset_horizons[{index}].asset is invalid")
+                horizon = row["horizon"]
+                if (
+                    not isinstance(horizon, int)
+                    or isinstance(horizon, bool)
+                    or horizon < 1
+                ):
+                    problems.append(f"asset_horizons[{index}].horizon is invalid")
+                assets.append(row["asset"])
+            if len(assets) != len(set(assets)):
+                problems.append("asset_horizons assets must be unique")
+        if params.get("horizon_weighting") != "equal_asset_equal_within_asset":
+            problems.append("horizon_weighting must be equal_asset_equal_within_asset")
+        if params.get("score") != "train_scaled_improvement":
+            problems.append("score must be train_scaled_improvement")
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require one records/metrics pair for every direct lead."""
+        rows = self.params.get("asset_horizons") or []
+        horizon = max((row.get("horizon", 0) for row in rows), default=0)
+        wanted = {
+            f"{kind}_h{lead:02d}"
+            for lead in range(1, horizon + 1)
+            for kind in ("records", "metrics")
+        }
+        return (
+            []
+            if isinstance(inputs, dict) and set(inputs) == wanted
+            else [f"inputs must contain exactly {sorted(wanted)}"]
+        )
+
+    def run(self, ctx, inputs):
+        """Aggregate complete stock paths into one outer-fold score."""
+        del ctx
+        asset_horizons = self.params["asset_horizons"]
+        n_assets = len(asset_horizons)
+        output = []
+        origins = {row["asset"]: set() for row in asset_horizons}
+        counts = {row["asset"]: set() for row in asset_horizons}
+        head_weights = {}
+        for item in asset_horizons:
+            asset = item["asset"]
+            horizon = item["horizon"]
+            weight = 1.0 / n_assets / horizon
+            for lead in range(1, horizon + 1):
+                matched = [
+                    row
+                    for row in inputs[f"records_h{lead:02d}"]
+                    if row.get("symbol") == asset and row.get("lead") == lead
+                ]
+                if len(matched) != 1:
+                    raise ValueError(
+                        f"lead {lead} must contain exactly one row for {asset}"
+                    )
+                row = copy.deepcopy(matched[0])
+                score = row.get("train_scaled_improvement")
+                count = row.get("n")
+                origin = row.get("origin_sha256")
+                if (
+                    not isinstance(score, (int, float))
+                    or isinstance(score, bool)
+                    or not math.isfinite(score)
+                    or not isinstance(count, (int, float))
+                    or isinstance(count, bool)
+                    or count < 1
+                    or not _string(origin)
+                    or len(origin) != 64
+                ):
+                    raise ValueError(
+                        f"{asset} lead {lead} has incomplete path evidence"
+                    )
+                origins[asset].add(origin)
+                counts[asset].add(int(count))
+                row["weight"] = weight
+                output.append(row)
+                head_weights[lead] = head_weights.get(lead, 0.0) + weight
+        mismatched = [
+            asset
+            for asset in origins
+            if len(origins[asset]) != 1 or len(counts[asset]) != 1
+        ]
+        if mismatched:
+            raise ValueError(
+                f"stocks have non-common validation origins across heads: {mismatched}"
+            )
+        path_score = sum(
+            row["weight"] * row["train_scaled_improvement"] for row in output
+        )
+        mean_val_ic = sum(
+            head_weights[lead]
+            * float(inputs[f"metrics_h{lead:02d}"].get("val_ic", 0.0))
+            for lead in head_weights
+        )
+        return {
+            "records": output,
+            "metrics": {
+                "path_score": float(path_score),
+                "worst_asset_horizon_score": float(
+                    min(row["train_scaled_improvement"] for row in output)
+                ),
+                "mean_val_ic": float(mean_val_ic),
+                "n_asset_paths": float(n_assets),
+                "n_asset_heads": float(len(output)),
+                "min_common_origins": float(
+                    min(next(iter(values)) for values in counts.values())
+                ),
+            },
+        }
+
+
+def _pooled_horizon_weights(eligible):
+    """Collapse equal-stock/equal-within-stock weights onto direct leads."""
+    n_assets = len(eligible)
+    horizon = max(row["horizon"] for row in eligible)
+    return [
+        sum(
+            1.0 / n_assets / row["horizon"]
+            for row in eligible
+            if row["horizon"] >= lead
+        )
+        for lead in range(1, horizon + 1)
+    ]
+
+
+def _pooled_document(source, template, eligible, caches, candidate_id):
+    """Materialize one pooled candidate over verified group feature caches."""
+    obj = source.to_obj()
+    obj.pop("stages", None)
+    base = copy.deepcopy(obj["pipeline"]["scan"])
+    assets = [row["asset"] for row in eligible]
+    horizon = max(row["horizon"] for row in eligible)
+    residual = base["params"].get("label_residual")
+    pipeline = {
+        "universe": copy.deepcopy(obj["pipeline"]["universe"]),
+    }
+    feature_inputs = {}
+    tape_inputs = {}
+    for index, (group, cache) in enumerate(caches.items()):
+        group_assets = [asset for asset in assets if asset in cache["symbols"]]
+        feature_key = f"features_{group}"
+        selected_key = f"pooled_features_{group}"
+        tape_key = f"pooled_tape_{group}"
+        pipeline[feature_key] = {
+            "uses": "intraday_equities-session-feature-cache",
+            "params": {
+                "path": cache["cache"],
+                "manifest_sha256": cache["manifest_sha256"],
+            },
+        }
+        pipeline[selected_key] = {
+            "uses": "filter",
+            "inputs": {"records": f"${feature_key}.records"},
+            "params": {
+                "where": [{"field": "symbol", "op": "in", "value": group_assets}]
+            },
+        }
+        tape_symbols = list(group_assets)
+        if index == 0 and residual not in tape_symbols:
+            tape_symbols.append(residual)
+        pipeline[tape_key] = {
+            "uses": "filter",
+            "inputs": {"records": f"${feature_key}.tape"},
+            "params": {
+                "where": [{"field": "symbol", "op": "in", "value": tape_symbols}]
+            },
+        }
+        feature_inputs[group] = f"${selected_key}.records"
+        tape_inputs[group] = f"${tape_key}.records"
+    concat_params = {
+        "shape": "records",
+        "provenance_waiver": (
+            "Immutable cache rows retain symbol identity; selected group symbol "
+            "namespaces are disjoint."
+        ),
+        "key": "symbol",
+        "consume_inputs": True,
+    }
+    pipeline["pooled_features"] = {
+        "uses": "concat",
+        "inputs": feature_inputs,
+        "params": copy.deepcopy(concat_params),
+    }
+    pipeline["reference_tape"] = {
+        "uses": "concat",
+        "inputs": tape_inputs,
+        "params": copy.deepcopy(concat_params),
+    }
+    path_inputs = {}
+    for lead in range(1, horizon + 1):
+        key = f"scan_h{lead:02d}"
+        node = copy.deepcopy(base)
+        node["inputs"] = {
+            "records": "$pooled_features.merged",
+            "bars": "$reference_tape.merged",
+            "spec": "$universe.spec",
+        }
+        params = node["params"]
+        params["fit_symbols"] = list(assets)
+        params["score_symbols"] = [
+            row["asset"] for row in eligible if row["horizon"] >= lead
+        ]
+        params["lead_start"] = lead
+        params["lead_step"] = lead
+        params["lead_stop"] = lead
+        params["common_lead_stop"] = horizon
+        params["common_origin_policy"] = "all_head_labels_finite"
+        for field in _MODEL_FIELDS:
+            if field in template["model"]:
+                params[field] = copy.deepcopy(template["model"][field])
+            else:
+                params.pop(field, None)
+        pipeline[key] = node
+        path_inputs[f"records_h{lead:02d}"] = f"${key}.records"
+        path_inputs[f"metrics_h{lead:02d}"] = f"${key}.metrics"
+    pipeline["path"] = {
+        "uses": "intraday_equities.model_zoo:PooledDirectPathScore",
+        "inputs": path_inputs,
+        "params": {
+            "split": "val",
+            "asset_horizons": copy.deepcopy(eligible),
+            "horizon_weighting": "equal_asset_equal_within_asset",
+            "score": "train_scaled_improvement",
+        },
+    }
+    obj["pipeline"] = pipeline
+    obj["walkforward"]["objective"] = "$path.metrics.path_score"
+    obj["walkforward"]["select"] = "max"
+    obj["name"] = candidate_id
+    obj["notes"] = (
+        "ADR-0101: one pooled fit per direct lead over all 25 Gate-3 passers; "
+        "score only names whose certified H_i includes that lead."
+    )
+    return PipelineDocument.from_obj(obj)
+
+
+_POOLED_PARAMS = (
+    "gate3_artifact",
+    "gate3_sha256",
+    "cache_groups",
+    "templates",
+    "path_protocol",
+)
+
+
+class PooledGate3ZooCandidates(Stage):
+    """Materialize pooled candidates over verified group caches.
+
+    Parameters
+    ----------
+    params : dict
+        Pinned Gate-3 artifact, ordered cache groups, templates, and protocol.
+
+    Examples
+    --------
+    Construct from a complete config-owned parameter block::
+
+        params = document.stages["materialize"].params
+        stage = PooledGate3ZooCandidates("materialize", params)
+    """
+
+    outputs = ("candidates", "eligibility", "provenance")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return every malformed provenance, template, and protocol field."""
+        problems = []
+        reject_unknown_params(problems, params, _POOLED_PARAMS)
+        for field in ("gate3_artifact", "gate3_sha256"):
+            if not _string(params.get(field)):
+                problems.append(f"{field} must be a non-empty string")
+        groups = params.get("cache_groups")
+        if (
+            not isinstance(groups, list)
+            or not groups
+            or any(not _string(group) for group in groups)
+            or len(set(groups)) != len(groups)
+        ):
+            problems.append("cache_groups must be a non-empty list of unique strings")
+        digest = params.get("gate3_sha256")
+        if _string(digest) and (
+            len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest)
+        ):
+            problems.append("gate3_sha256 must be a lowercase SHA-256")
+        templates = params.get("templates")
+        if not isinstance(templates, list) or not templates:
+            problems.append("templates must be a non-empty list")
+        else:
+            ids = []
+            for index, template in enumerate(templates):
+                problems.extend(_template_problems(template, index))
+                if isinstance(template, dict) and _string(template.get("id")):
+                    ids.append(template["id"])
+            if len(ids) != len(set(ids)):
+                problems.append("template ids must be unique")
+        if params.get("path_protocol") != {
+            "forecast_strategy": "direct_per_lead",
+            "horizon_weighting": "equal_asset_equal_within_asset",
+            "fit_universe": "all_gate3_passers_each_lead",
+            "score_universe": "certified_horizon_includes_lead",
+        }:
+            problems.append("path_protocol must declare the supported pooled path")
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require the passed memory gate and its verified caches."""
+        if not isinstance(inputs, dict) or set(inputs) != {"preflight", "caches"}:
+            return ["inputs must contain exactly preflight and caches"]
+        if inputs["preflight"] is not True:
+            return ["preflight must pass before candidate materialization"]
+        if not isinstance(inputs["caches"], dict):
+            return ["caches must materialize as an object"]
+        return []
+
+    def run(self, ctx, inputs):
+        """Pin eligibility and write one candidate document per template."""
+        gate3_path, gate3 = _read_pinned_json(
+            ctx.source_path,
+            self.params["gate3_artifact"],
+            self.params["gate3_sha256"],
+            "Gate-3 artifact",
+        )
+        eligible = _gate3_rows(gate3)
+        groups = self.params["cache_groups"]
+        caches = {}
+        for group in groups:
+            cache = inputs["caches"].get(group)
+            if not isinstance(cache, dict):
+                raise ValueError(f"pooled cache group {group!r} is absent")
+            for field in ("cache", "manifest_sha256", "universe", "symbols"):
+                if field not in cache:
+                    raise ValueError(f"pooled cache group {group!r} has no {field}")
+            caches[group] = cache
+        residual = ctx.document.pipeline["scan"].params.get("label_residual")
+        assets = {row["asset"] for row in eligible}
+        for asset in assets:
+            membership = [
+                group for group, cache in caches.items() if asset in cache["symbols"]
+            ]
+            if len(membership) != 1:
+                raise ValueError(
+                    f"pooled asset {asset!r} belongs to {len(membership)} selected caches"
+                )
+        if residual not in caches[groups[0]]["symbols"]:
+            raise ValueError("the first pooled cache does not contain the residual reference")
+        horizon = max(row["horizon"] for row in eligible)
+        weights = _pooled_horizon_weights(eligible)
+        candidates = []
+        root = os.path.join(ctx.artifact_dir, "candidate-documents")
+        for template in self.params["templates"]:
+            candidate_id = f"{template['id']}-pooled-h{horizon:02d}"
+            metadata = _metadata(
+                template, candidate_id, "pooled-gate3", horizon, weights
+            )
+            if not template["enabled"]:
+                candidates.append(
+                    {**metadata, "prerequisite": template["prerequisite"]}
+                )
+                continue
+            document = _pooled_document(
+                ctx.document, template, eligible, caches, candidate_id
+            )
+            path = os.path.join(root, candidate_id + ".json")
+            _write(path, document)
+            candidates.append({**metadata, "path": path})
+        return {
+            "candidates": candidates,
+            "eligibility": eligible,
+            "provenance": {
+                "gate3_artifact": gate3_path,
+                "gate3_sha256": self.params["gate3_sha256"],
+                "caches": [
+                    {
+                        "group": group,
+                        "cache": cache["cache"],
+                        "manifest_sha256": cache["manifest_sha256"],
+                        "universe_sha256": cache["universe_sha256"],
+                    }
+                    for group, cache in caches.items()
+                ],
+                "eligible_count": len(eligible),
+                "candidate_count": len(candidates),
             },
         }
 
@@ -557,7 +1000,9 @@ class Gate3ZooCandidates(Stage):
             "primary_metric": "train_scaled_improvement",
             "common_origins": True,
         }:
-            problems.append("path_protocol must declare the supported direct equal-weight path")
+            problems.append(
+                "path_protocol must declare the supported direct equal-weight path"
+            )
         templates = params.get("templates")
         if not isinstance(templates, list) or not templates:
             problems.append("templates must be a non-empty list")
@@ -583,10 +1028,16 @@ class Gate3ZooCandidates(Stage):
                 f"source document hash changed: {self.params['source_document_sha256']} -> {source.hash}"
             )
         gate3_path, gate3 = _read_pinned_json(
-            ctx.source_path, self.params["gate3_artifact"], self.params["gate3_sha256"], "Gate-3 artifact"
+            ctx.source_path,
+            self.params["gate3_artifact"],
+            self.params["gate3_sha256"],
+            "Gate-3 artifact",
         )
         memory_path, memory = _read_pinned_json(
-            ctx.source_path, self.params["memory_artifact"], self.params["memory_sha256"], "memory artifact"
+            ctx.source_path,
+            self.params["memory_artifact"],
+            self.params["memory_sha256"],
+            "memory artifact",
         )
         eligible = _gate3_rows(gate3)
         groups = _groups(memory)
@@ -599,11 +1050,11 @@ class Gate3ZooCandidates(Stage):
             weights = [1.0 / horizon] * horizon
             for template in self.params["templates"]:
                 candidate_id = f"{template['id']}-{asset.lower()}-h{horizon:02d}"
-                metadata = _metadata(
-                    template, candidate_id, group, horizon, weights
-                )
+                metadata = _metadata(template, candidate_id, group, horizon, weights)
                 if not template["enabled"]:
-                    candidates.append({**metadata, "prerequisite": template["prerequisite"]})
+                    candidates.append(
+                        {**metadata, "prerequisite": template["prerequisite"]}
+                    )
                     continue
                 document = _document(
                     source, template, asset, horizon, cache, candidate_id, weights
@@ -622,7 +1073,9 @@ class Gate3ZooCandidates(Stage):
                 "memory_artifact": memory_path,
                 "memory_sha256": self.params["memory_sha256"],
                 "eligible_count": len(eligible),
-                "enabled_template_count": sum(1 for row in self.params["templates"] if row["enabled"]),
+                "enabled_template_count": sum(
+                    1 for row in self.params["templates"] if row["enabled"]
+                ),
                 "candidate_count": len(candidates),
             },
         }

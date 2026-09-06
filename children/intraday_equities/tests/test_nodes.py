@@ -2052,6 +2052,7 @@ def test_direct_heads_share_max_horizon_origins_and_emit_scale_calibration():
         "val_start_ms": _ms(51),
         "val_end_ms": _ms(79),
         "common_lead_stop": 3,
+        "common_origin_policy": "all_head_labels_finite",
         "estimator": "sklearn.linear_model.Ridge",
         "estimator_params": {"alpha": 1.0},
     }
@@ -2070,6 +2071,65 @@ def test_direct_heads_share_max_horizon_origins_and_emit_scale_calibration():
         assert row["train_scale"] > 0.0
         assert math.isfinite(row["train_scaled_improvement"])
         assert math.isfinite(result["metrics"]["val_calibration_slope"])
+
+
+def test_direct_heads_share_origins_when_a_reference_bar_is_missing():
+    spec = _mini_spec()
+    spec["features"] = ["ret_lag_0"]
+    spec["period_ms"] = 60_000
+    spec["horizon"] = {
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 3,
+        "anchors": [1],
+        "top_k": 1,
+        "se_mult": 2.0,
+        "band_leads": 1,
+    }
+    bars, rows = [], []
+    own_price = ref_price = 100.0
+    for index in range(80):
+        own_ret = 0.001 * ((index % 9) - 4)
+        ref_ret = 0.0005 * ((index % 7) - 3)
+        own_price *= math.exp(own_ret)
+        ref_price *= math.exp(ref_ret)
+        bars.append({"symbol": "JPM", "asof_ms": _ms(index), "close": own_price})
+        if index != 72:
+            bars.append({"symbol": "SPY", "asof_ms": _ms(index), "close": ref_price})
+        rows.append(
+            {
+                "symbol": "JPM",
+                "asof_ms": _ms(index),
+                "ret_lag_0": own_ret,
+                "close": own_price,
+            }
+        )
+    inputs = {"records": rows, "bars": bars, "spec": spec}
+    base = {
+        "split": "val",
+        "train_end_ms": _ms(49),
+        "val_start_ms": _ms(51),
+        "val_end_ms": _ms(79),
+        "common_lead_stop": 3,
+        "common_origin_policy": "all_head_labels_finite",
+        "label_residual": "SPY",
+        "label_residual_self": "raw",
+        "beta_window_minutes": 5,
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {"alpha": 1.0},
+    }
+    heads = []
+    for lead in (1, 2, 3):
+        params = {
+            **base,
+            "lead_start": lead,
+            "lead_step": lead,
+            "lead_stop": lead,
+        }
+        heads.append(NoInformationScan(f"h{lead}", params).run(None, inputs))
+    scored = [head["records"][0] for head in heads]
+    assert len({row["n"] for row in scored}) == 1
+    assert len({row["origin_sha256"] for row in scored}) == 1
 
 
 def test_common_lead_stop_fails_closed_when_shorter_than_head():

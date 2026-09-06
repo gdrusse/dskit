@@ -5259,3 +5259,31 @@ Bonferroni superior-set implementation, and tie-break order are judgemental.
 **Consequences.** A stock approved at H_i=5 emits h=1,2,3,4,5; a stock approved
 at H_i=10 emits h=1,...,10. Stocks do not share one global terminal horizon.
 No zoo execution is authorized by this decision.
+
+## ADR-0101 -- Replace the individualized zoo with two pooled challengers
+
+**Status:** Accepted, not locked (2026-09-05; owner approved)
+
+**Context.** The approved P13 inventory expands 13 families over 25 stocks,
+creating 325 path candidates and impractical runtime. The owner stopped that
+run and directed a pooled comparison of LightGBM and a Torch MLP.
+
+**Decision.** Preserve the stopped P13 artifacts and create a separate pooled
+zoo over the same 25 Gate-3 passers and locked outer calendar. Reuse the four
+immutable P12 group caches, verify their exact manifests, filter the selected
+names, and join their memory-mapped rows by reference. At each direct lead
+h=1,...,10, fit one model across all 25 names and score names whose certified
+H_i includes h. Weight stocks equally and leads equally within each stock.
+
+LightGBM receives the symbol code as a native categorical feature. The Torch
+MLP receives a learned symbol embedding plus standardized continuous features.
+Each family has its own discrete HPO space, selected only on a purged inner
+training holdout; outer validation remains unread until scoring. The usual
+inventory-hash approval barrier remains, and execution starts with one worker.
+
+**Consequences.** The zoo has two pooled candidates rather than 325 asset-local
+candidates. It still trains one direct head per lead and outer fold, but shares
+statistical strength across stocks. The cache build that exceeded WSL memory is
+removed; maximum-window smokes measured 4.71 GB for LightGBM and 5.33 GB for the
+float32 Torch path under a stricter 12 GiB cap. Execution remains separately
+inventory-gated.

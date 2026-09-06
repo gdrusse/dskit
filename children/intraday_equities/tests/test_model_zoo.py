@@ -12,6 +12,8 @@ from dskit.pipeline.document import load_document
 from intraday_equities.model_zoo import (
     DirectPathScore,
     EmpiricalSelectRegressor,
+    PooledDirectPathScore,
+    PooledGate3ZooCandidates,
     SequenceOnlyZooEstimator,
     _cache_for,
     _document,
@@ -122,7 +124,6 @@ def test_sequence_estimator_uses_only_contiguous_return_history(monkeypatch):
     assert captured["predict_x"].shape == (3, 2)
 
 
-
 def test_direct_path_score_aggregates_complete_common_origin_heads():
     node = DirectPathScore(
         "path",
@@ -181,9 +182,9 @@ def test_candidate_document_emits_every_lead_through_stock_h_i():
         source, template, "JPM", 5, cache, "ridge-jpm-h05", [0.2] * 5
     ).to_obj()
     assert "scan" not in document["pipeline"]
-    assert [
-        key for key in document["pipeline"] if key.startswith("scan_h")
-    ] == [f"scan_h{lead:02d}" for lead in range(1, 6)]
+    assert [key for key in document["pipeline"] if key.startswith("scan_h")] == [
+        f"scan_h{lead:02d}" for lead in range(1, 6)
+    ]
     for lead in range(1, 6):
         params = document["pipeline"][f"scan_h{lead:02d}"]["params"]
         assert (params["lead_start"], params["lead_step"], params["lead_stop"]) == (
@@ -192,5 +193,93 @@ def test_candidate_document_emits_every_lead_through_stock_h_i():
             lead,
         )
         assert params["common_lead_stop"] == 5
+        assert params["common_origin_policy"] == "all_head_labels_finite"
     assert document["pipeline"]["path"]["params"]["max_horizon"] == 5
     assert document["walkforward"]["objective"] == "$path.metrics.path_score"
+
+
+def test_pooled_path_score_weights_assets_then_their_heads_equally():
+    eligible = [{"asset": "AAA", "horizon": 1}, {"asset": "BBB", "horizon": 2}]
+    node = PooledDirectPathScore(
+        "path",
+        {
+            "split": "val",
+            "asset_horizons": eligible,
+            "horizon_weighting": "equal_asset_equal_within_asset",
+            "score": "train_scaled_improvement",
+        },
+    )
+    inputs = {
+        "records_h01": [
+            {
+                "symbol": "AAA",
+                "lead": 1,
+                "n": 10,
+                "origin_sha256": "a" * 64,
+                "train_scaled_improvement": 0.4,
+            },
+            {
+                "symbol": "BBB",
+                "lead": 1,
+                "n": 12,
+                "origin_sha256": "b" * 64,
+                "train_scaled_improvement": 0.2,
+            },
+        ],
+        "metrics_h01": {"val_ic": 0.1},
+        "records_h02": [
+            {
+                "symbol": "BBB",
+                "lead": 2,
+                "n": 12,
+                "origin_sha256": "b" * 64,
+                "train_scaled_improvement": -0.2,
+            },
+        ],
+        "metrics_h02": {"val_ic": 0.0},
+    }
+    result = node.run(None, inputs)
+    assert result["metrics"]["path_score"] == pytest.approx(0.2)
+    assert sum(row["weight"] for row in result["records"]) == pytest.approx(1.0)
+    assert result["metrics"]["n_asset_paths"] == 2.0
+
+
+def test_pooled_materializer_emits_two_valid_shared_fit_documents(tmp_path):
+    from types import SimpleNamespace
+
+    from dskit.pipeline.planner import plan
+
+    root = Path(__file__).parents[1]
+    source_path = root / "configs" / "run-p13-pooled-model-zoo.json"
+    source = load_document(str(source_path))
+    params = source.to_obj()["stages"]["materialize"]["params"]
+    stage = PooledGate3ZooCandidates("materialize", params)
+    memory_path = (
+        root
+        / "pipeline_runs"
+        / "p12-63-asset-modelability-staged-2026-02-28-2d203f5c"
+        / "stages"
+        / "memory.json"
+    )
+    with open(memory_path) as handle:
+        caches = __import__("json").load(handle)["outputs"]["groups"]
+    ctx = SimpleNamespace(
+        source_path=str(source_path), document=source,
+        artifact_dir=str(tmp_path / "materialize"),
+    )
+    result = stage.run(ctx, {"preflight": True, "caches": caches})
+    assert [row["family"] for row in result["candidates"]] == [
+        "pooled-lightgbm", "pooled-torch-mlp"
+    ]
+    for candidate in result["candidates"]:
+        document = load_document(candidate["path"])
+        plan(document)
+        first = document.pipeline["scan_h01"].params
+        assert len(first["fit_symbols"]) == 25
+        assert len(first["score_symbols"]) == 25
+        assert document.pipeline["scan_h10"].params["score_symbols"] == [
+            "LRCX", "MSTR"
+        ]
+        assert document.pipeline["pooled_features"].uses == "concat"
+        assert set(document.pipeline["pooled_features"].inputs) == {"a", "c", "d", "e"}
+        assert document.pipeline["reference_tape"].uses == "concat"

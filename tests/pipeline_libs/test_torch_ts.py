@@ -25,6 +25,7 @@ torch = pytest.importorskip("torch")
 
 from dskit.pipeline.libs.torch_ts import (  # noqa: E402
     ARCHS,
+    CategoricalEmbeddingMLPRegressor,
     NODE_KINDS,
     TimeSeriesPredict,
     TimeSeriesTrain,
@@ -505,3 +506,77 @@ def test_zoo_estimator_serves_every_named_arch():
             arch=arch, epochs=1, batch_size=128, seed=0,
         ).fit(x, y, feature_names=names).predict(x)
         assert hat.shape == (300,) and np.isfinite(hat).all(), arch
+
+
+def test_categorical_embedding_mlp_fits_one_declared_category_column():
+    import numpy as np
+
+    x = np.asarray(
+        [
+            [0.0, 10.0, 0.0],
+            [1.0, 9.0, 0.0],
+            [0.0, 8.0, 1.0],
+            [1.0, 7.0, 1.0],
+        ]
+    )
+    model = CategoricalEmbeddingMLPRegressor(
+        hidden_size=4,
+        embedding_dim=2,
+        epochs=1,
+        batch_size=2,
+        dropout=0.0,
+        seed=0,
+        device="cpu",
+    )
+    model.fit(
+        x,
+        np.asarray([0.0, 1.0, 1.0, 2.0]),
+        categorical_feature=[2],
+        feature_names=["x", "z", "symbol_code"],
+    )
+    prediction = model.predict(x)
+    assert prediction.shape == (4,)
+    assert np.all(np.isfinite(prediction))
+    with pytest.raises(ValueError, match="unseen category"):
+        model.predict(np.asarray([[0.0, 1.0, 2.0]]))
+
+
+def test_categorical_embedding_mlp_does_not_promote_pooled_input_to_float64():
+    import numpy as np
+
+    class Float32Only:
+        def __init__(self, values):
+            self.values = np.asarray(values, dtype=np.float32)
+
+        def __array__(self, dtype=None, copy=None):
+            if dtype is not None and np.dtype(dtype) == np.dtype(np.float64):
+                raise AssertionError("pooled feature matrix was promoted to float64")
+            return np.array(self.values, dtype=dtype, copy=copy)
+
+    x = Float32Only([[0.0, 1.0, 0.0], [1.0, 0.0, 1.0]])
+    model = CategoricalEmbeddingMLPRegressor(
+        hidden_size=2,
+        embedding_dim=2,
+        epochs=1,
+        batch_size=2,
+        seed=0,
+        device="cpu",
+    )
+    model.fit(
+        x,
+        np.asarray([0.0, 1.0], dtype=np.float32),
+        categorical_feature=[2],
+    )
+    assert model._center.dtype == np.float32
+    assert model._scale.dtype == np.float32
+
+
+def test_categorical_embedding_mlp_chunked_standardizer_matches_numpy():
+    import numpy as np
+
+    values = np.random.default_rng(4).normal(size=(19, 5)).astype(np.float32)
+    center, scale = CategoricalEmbeddingMLPRegressor._standardizer(
+        values, block_rows=3
+    )
+    np.testing.assert_allclose(center, values.mean(axis=0), rtol=1e-6)
+    np.testing.assert_allclose(scale, values.std(axis=0), rtol=1e-6)

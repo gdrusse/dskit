@@ -4343,6 +4343,33 @@ def _scan_fold_stamped(
                 ),
             )
         finite = np.isfinite(y)
+        if common_lead_stop is not None:
+            # A path is scored on one shared set of origins. Checking only
+            # the terminal future bounds is insufficient for transformed
+            # labels: a missing reference bar can invalidate one intermediate
+            # head while leaving the others finite. Require every direct
+            # head through the declared stop to be observable at each origin.
+            buckets = (
+                (
+                    f"train|{train_start}|{train_end}",
+                    train_all,
+                    train_start,
+                    train_end,
+                ),
+                (f"val|{val_start}|{val_end}", val_all, val_start, val_end),
+            )
+            for common_head in range(1, common_lead + 1):
+                if common_head == lead:
+                    continue
+                head_future = loc_ok + common_head
+                head_y = (
+                    label.values(item[0], loc_ok, head_future)
+                    if label is not None
+                    else _raw_lead_return(t_px, loc_ok, head_future)
+                )
+                if scramble is not None:
+                    head_y = scramble.apply(every_stamp, head_y, buckets)
+                finite &= np.isfinite(head_y)
         if not np.any(finite):
             continue
         stamp = every_stamp[finite]
@@ -4896,6 +4923,7 @@ class NoInformationScan(Node):
             "score_symbols",
             "fit_symbols",
             "common_lead_stop",
+            "common_origin_policy",
         )
         + LABEL_PARAMS
         + LEAD_PARAMS
@@ -5036,6 +5064,13 @@ class NoInformationScan(Node):
                 and common < stop
             ):
                 problems.append("common_lead_stop must be >= lead_stop")
+            if params.get("common_origin_policy") != "all_head_labels_finite":
+                problems.append(
+                    "common_origin_policy must be all_head_labels_finite when "
+                    "common_lead_stop is declared"
+                )
+        elif params.get("common_origin_policy") is not None:
+            problems.append("common_origin_policy requires common_lead_stop")
         if params.get("label_scramble_seed") is not None:
             check_int_param(
                 problems,
