@@ -575,6 +575,8 @@ dskit/pipeline/
 │                      run_walk_forward (one derived run per fold + summary)
 ├── stages.py          journal-backed staged DAG execution and resume
 ├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)
+├── conquest.py        per-(unit,horizon) quality gate: contiguous horizon cap
+│                      over config-declared checks + slice stability (ADR-0107)
 ├── folds.py           BoundedFoldRunner: a walk's folds as capped child processes at
 │                      the width the ENVIRONMENT declares; measure_one (ADR-0093)
 ├── runs.py            reads run dirs back: scan_runs / format_runs (the `runs` verb)

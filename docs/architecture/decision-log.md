@@ -5446,3 +5446,84 @@ training rows only. Each family owns four purged inner-HPO trials.
 final refit. It adds a version-3 content-verified sequence cache without
 altering P13 artifacts. Candidate execution remains inventory-gated and begins
 with one fold worker because each process retains the full memory allowance.
+
+## ADR-0107 — A per-(stock,horizon) prediction-quality gate that caps the horizon
+
+**Status:** Accepted (2026-09-06; owner approved implementation)
+
+> Numbering note: ADR-0105 (P15) and ADR-0106 (cross-benchmark selector) are
+> in flight on `feat/p15-temporal-zoo`; this ADR takes 0107 to avoid the
+> collision and waits for the owner to reconcile the two branches.
+
+**Context.** ADR-0098 gives the decisioning route (frontier → finalist HPO →
+refit → confirm → backtest) and the periods, but nothing covers the final
+predictive model itself: which horizons each stock actually serves, and how we
+prove each (stock, horizon) forecast is good rather than trusting Gate 3's
+terminal `(i, H_i)`. Gate 3 certifies the terminal pair only; a stock can pass
+at `H_i=10` while its `h=5` head is weak (good at long, bad at short). The model
+zoo (ADR-0097/0100) already persists per-lead direct-head evidence and computes
+uniform/average SPA, but those are selection tiebreaks, not a per-pair
+production gate.
+
+**Decision.** Graduate a generic, config-driven **horizon-cap gate** into
+`dskit.pipeline` that, for each prediction unit, walks its direct heads
+`h=1..H` in order and **caps the horizon at the furthest contiguous `h` whose
+prediction passes every declared check**. The gate is a `Node` (score/transform
+role over the per-lead evidence a scan already emits — the same
+`train_scaled_improvement` / `r2oos` / `beats_mean` rows the zoo persists), not
+a one-off child function. Its checks are config-selected and each is generic:
+
+1. **Beats the no-information mean.** The unit's per-horizon forecast must
+   improve on the train-only mean by the declared rule — the repo's
+   `no_information_test` (Clark–West, ADR-0057) is the single owner; the gate
+   reads its result, it does not re-derive it.
+
+2. **Contiguity (conquest).** Stopping on the first failing horizon, exactly
+   `max_informative_horizon`'s sequential rule but configurable to a stronger
+   condition than "reject at fixed α": e.g. `beats_mean` strictly, or
+   `p_value <= alpha` per check. The cap is monotone down the ladder.
+
+3. **Over/underfit.** A predeclared, empirical train-vs-validation gap bound
+   (e.g. `mean(train_ic) - mean(val_ic)` within a tolerance, or an OOS R²
+   floor) declared in config, never a hidden literal. Refusing when the model
+   fits one split far better than the other.
+
+4. **Regime stability.** The same per-horizon loss is split over a
+   config-declared slicing dimension (weekday, month, season, session
+   segment); the unit passes only if every slice's evidence is at least as
+   good as a declared floor (e.g. slice mean improvement > 0, or within one
+   slice-SE of the overall). This is the new generic capability — "good at
+   10am, useless at 3pm" must not ship.
+
+The output is a per-unit verdict: the capped `h`, the first failing horizon,
+the passing checks, and the slice evidence, written to the run dir as a
+durable, provenance-linked artifact. Checks that fail cap the horizon; they do
+not (at this stage) alter the model, and the gate never re-fits, re-searches,
+or promotes.
+
+**Config is the interface.** The gate lists the checks it allows and
+default-denies the rest; thresholds, the slice dimension, and the α are config
+values, so a second project points the same node at its own evidence and
+declares its own floors — never edits the package.
+
+**Tiering.** Tier 1 (core, stdlib-only) mechanics — the conquest walk, the
+gap/slice checks over finite per-horizon evidence — live in
+`dskit/pipeline/`; the evidence *input* is whatever the child's scan already
+emits (the child wires it, nothing domain-specific enters core). Any check
+needing a heavy library computes inside `run()`.
+
+**Consequences.** A stock that would serve a weak intermediate horizon serves
+that capped horizon instead, and the cap is reproducible from the artifact.
+The gate does NOT choose the final model (ADR-0107 leaves selection to the
+existing zoo), does NOT feed MIO yet (MIO horizon semantics stay as-is until
+ADR-0100's utility question is frozen), and adds no new fold/run — it is a
+read-only gate over already-persisted per-lead evidence. On approval, build
+under TDD + skeptic loop; execution (running it over the final model's
+evidence) is a separate owner action.
+
+**Research basis.** See `docs/research/horizon-cap-gates/2026-09-06-synthesis.md`
+(journaled): uniform SPA (Hansen 2005; multi-horizon uSPA/aSPA), the
+Breitung–Knuppel sequential h* already in `max_informative_horizon`, per-horizon
+DM + MCS confirmation (arXiv 2504.19623), and the existing repo owners
+(`no_information_test`, `max_informative_horizon`, `cluster_bootstrap_t`,
+`beat_all`/`tier2_verdict`).
