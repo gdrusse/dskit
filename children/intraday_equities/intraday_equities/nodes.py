@@ -1708,6 +1708,71 @@ def _kline_frame(
     }
 
 
+def _minute_sequence_frame(
+    symbol,
+    ms,
+    opn,
+    high,
+    low,
+    close,
+    volume,
+    kept_ms,
+    lookback,
+    origin_period_ms,
+    offset_ms,
+):
+    """Build complete session-local one-minute OHLCV windows at score origins."""
+    import numpy as np
+
+    names = [
+        f"ohlcv_t{step:03d}_{field}"
+        for step in range(lookback)
+        for field in DEFAULT_OHLCV_FIELDS
+    ]
+    origins = kept_ms[((kept_ms - offset_ms) % origin_period_ms) == 0]
+    locations = np.searchsorted(ms, origins)
+    exact = locations < len(ms)
+    exact[exact] &= ms[locations[exact]] == origins[exact]
+    starts = locations - lookback + 1
+    valid = exact & (starts >= 0)
+    gaps = np.concatenate(
+        ([0], (np.diff(ms) != 60_000).astype(np.int64, copy=False))
+    )
+    invalid = ~np.isfinite(np.column_stack([opn, high, low, close, volume])).all(
+        axis=1
+    )
+    invalid |= (opn <= 0.0) | (high <= 0.0) | (low <= 0.0) | (close <= 0.0)
+    invalid |= volume < 0.0
+    gap_count = np.cumsum(gaps)
+    invalid_count = np.cumsum(invalid.astype(np.int64, copy=False))
+    candidate = np.flatnonzero(valid)
+    if candidate.size:
+        end = locations[candidate]
+        start = starts[candidate]
+        before = np.where(start > 0, invalid_count[start - 1], 0)
+        complete = invalid_count[end] - before == 0
+        continuous = gap_count[end] - gap_count[start] == 0
+        candidate = candidate[complete & continuous]
+    locations = locations[candidate]
+    origins = origins[candidate]
+    values = np.column_stack([opn, high, low, close, volume]).astype(
+        np.float32, copy=False
+    )
+    if locations.size:
+        windows = np.lib.stride_tricks.sliding_window_view(
+            values, (lookback, values.shape[1])
+        )[:, 0, :, :]
+        matrix = windows[locations - lookback + 1].reshape(len(locations), -1).copy()
+    else:
+        matrix = np.empty((0, len(names)), dtype=np.float32)
+    return {
+        "symbol": symbol,
+        "asof_ms": np.asarray(origins, dtype=np.int64),
+        "names": names,
+        "X": matrix,
+    }
+
+
 class SessionFeatureRows(Node):
     """Wide RTH feature rows: tape-local lags plus named session fields.
 
@@ -1746,7 +1811,7 @@ class SessionFeatureRows(Node):
     """
 
     role = "transform"
-    outputs = ("records", "tape", "klines")
+    outputs = ("records", "tape", "klines", "sequences")
     _PARAMS = (
         "lookback",
         "layout",
@@ -1755,6 +1820,8 @@ class SessionFeatureRows(Node):
         "dtype",
         "cache_dir",
         "include_klines",
+        "sequence_lookback",
+        "sequence_period_ms",
     )
 
     @classmethod
@@ -1809,6 +1876,18 @@ class SessionFeatureRows(Node):
         include = params.get("include_klines")
         if include is not None and not isinstance(include, bool):
             problems.append("include_klines must be boolean")
+        sequence_lookback = params.get("sequence_lookback")
+        sequence_period = params.get("sequence_period_ms")
+        if (sequence_lookback is None) != (sequence_period is None):
+            problems.append(
+                "sequence_lookback and sequence_period_ms must be declared together"
+            )
+        for name, value in (
+            ("sequence_lookback", sequence_lookback),
+            ("sequence_period_ms", sequence_period),
+        ):
+            if value is not None:
+                check_int_param(problems, name, value, ge=1)
         return problems
 
     def validate_inputs(self, inputs):
@@ -1851,6 +1930,14 @@ class SessionFeatureRows(Node):
                         )
             if BLOCK_CROSS in normalise_blocks(self.params.get("feature_blocks")):
                 problems.extend(_cross_wiring_problems(spec))
+            sequence_period = self.params.get("sequence_period_ms")
+            period = spec.get("period_ms")
+            if (
+                isinstance(sequence_period, int)
+                and isinstance(period, int)
+                and sequence_period % period
+            ):
+                problems.append("sequence_period_ms must be a multiple of spec.period_ms")
         return problems
 
     #: Last input signature and its build. A walk-forward runs this node
@@ -1915,6 +2002,7 @@ class SessionFeatureRows(Node):
                 "records": list(cached["records"]),
                 "tape": cached["tape"],
                 "klines": cached["klines"],
+                "sequences": cached["sequences"],
             }
         lookback = (
             int(self.params["lookback"])
@@ -2013,6 +2101,7 @@ class SessionFeatureRows(Node):
         records = []
         tape = []
         klines = []
+        sequences = []
         n_rows = 0
         for symbol in order:
             rows = grouped.pop(symbol)
@@ -2086,6 +2175,22 @@ class SessionFeatureRows(Node):
                         session,
                     )
                 )
+            if self.params.get("sequence_lookback") is not None:
+                sequences.append(
+                    _minute_sequence_frame(
+                        symbol,
+                        ms,
+                        opn,
+                        high,
+                        low,
+                        close,
+                        volume,
+                        kept_ms,
+                        int(self.params["sequence_lookback"]),
+                        int(self.params["sequence_period_ms"]),
+                        offset_ms,
+                    )
+                )
             del opn, high, low, volume, market_ret, sector_ret
             n = int(kept_ms.size)
             own = col_kept.get("ret_lag_0")
@@ -2155,7 +2260,12 @@ class SessionFeatureRows(Node):
             len(tape),
             layout,
         )
-        out = {"records": records, "tape": tape, "klines": klines}
+        out = {
+            "records": records,
+            "tape": tape,
+            "klines": klines,
+            "sequences": sequences,
+        }
         cache_dir = self.params.get("cache_dir")
         if cache_dir is not None:
             from .feature_cache import write_feature_cache
@@ -2181,7 +2291,12 @@ class SessionFeatureRows(Node):
         cls._cached_key = _sig
         cls._cached_out = out
         cls._cached_rows = n_rows
-        return {"records": list(records), "tape": tape, "klines": klines}
+        return {
+            "records": list(records),
+            "tape": tape,
+            "klines": klines,
+            "sequences": sequences,
+        }
 
 
 class FoldFeatureStats(Node):

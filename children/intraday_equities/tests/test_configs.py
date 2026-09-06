@@ -905,3 +905,26 @@ def test_p13_pooled_zoo_has_four_family_specific_inner_searches():
     universe = _raw("universe-p13-pooled.json")
     assert len(universe["tradable"]) == 25
     assert set(universe["symbols"]) == set(universe["tradable"]) | {"SPY"}
+
+
+def test_p14_recurrent_zoo_has_two_one_minute_late_fusion_searches():
+    raw = _raw("run-p14-recurrent-fusion-zoo.json")
+    features = raw["pipeline"]["features"]["params"]
+    assert features["sequence_lookback"] == 120
+    assert features["sequence_period_ms"] == 1_800_000
+    templates = raw["stages"]["materialize"]["params"]["templates"]
+    assert [row["family"] for row in templates] == [
+        "pooled-ohlcv-lstm-fusion",
+        "pooled-ohlcv-gru-fusion",
+    ]
+    assert [row["model"]["estimator_params"]["arch"] for row in templates] == [
+        "lstm", "gru"
+    ]
+    for template in templates:
+        assert template["feature_source"] == "sequence"
+        assert template["model"]["hpo_trials"] == 4
+        assert template["model"]["hpo_space"]["context_length"] == [30, 60, 120]
+        assert "batch_size" in template["model"]["hpo_space"]
+    approval = raw["stages"]["approval"]["params"]
+    assert approval["approved_inventory_sha256"] == "PENDING-PLAN-REVIEW"
+    assert approval["approved_by"] == "PENDING-PLAN-REVIEW"

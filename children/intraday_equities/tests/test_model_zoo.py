@@ -15,6 +15,7 @@ from intraday_equities.model_zoo import (
     KronosFusionRows,
     PooledDirectPathScore,
     PooledGate3ZooCandidates,
+    SequenceFusionRows,
     SequenceOnlyZooEstimator,
     _cache_for,
     _document,
@@ -317,5 +318,33 @@ def test_kronos_fusion_inner_aligns_and_allows_only_declared_side_features():
     out = node.run(None, {"features": features, "embeddings": embeddings})
     frame = out["records"][0]
     assert frame["names"] == ["kronos_000", "kronos_001", "tod_sin"]
+    np.testing.assert_allclose(frame["X"][:, -1], [0.1, 0.3])
+    np.testing.assert_allclose(frame["close"], [10.0, 12.0])
+
+
+def test_sequence_fusion_inner_aligns_and_allows_only_declared_side_features():
+    features = [
+        {
+            "symbol": "AAA",
+            "asof_ms": np.array([1, 2, 3]),
+            "close": np.array([10.0, 11.0, 12.0]),
+            "names": ["ret_lag_0", "tod_sin"],
+            "X": np.array([[9.0, 0.1], [8.0, 0.2], [7.0, 0.3]]),
+        }
+    ]
+    sequences = [
+        {
+            "symbol": "AAA",
+            "asof_ms": np.array([1, 3]),
+            "names": ["ohlcv_t000_open", "ohlcv_t000_close"],
+            "X": np.array([[1.0, 2.0], [3.0, 4.0]]),
+        }
+    ]
+    node = SequenceFusionRows("fusion", {"feature_names": ["tod_sin"]})
+    out = node.run(None, {"features": features, "sequences": sequences})
+    frame = out["records"][0]
+    assert frame["names"] == [
+        "ohlcv_t000_open", "ohlcv_t000_close", "tod_sin"
+    ]
     np.testing.assert_allclose(frame["X"][:, -1], [0.1, 0.3])
     np.testing.assert_allclose(frame["close"], [10.0, 12.0])

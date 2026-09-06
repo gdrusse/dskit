@@ -56,6 +56,9 @@ Agent orientation — see README.md for operator commands.
   `configs/run-p13-model-zoo.json`. ADR-0102's active replacement is
   `configs/run-p13-pooled-model-zoo.json`: pooled LightGBM and embedding Torch
   MLP with separate inner HPO and the same inventory approval barrier.
+- P14's exploratory extension is `configs/run-p14-recurrent-fusion-zoo.json`:
+  paired pooled LSTM/GRU late fusion over session-local one-minute OHLCV and an
+  explicit side-feature projection. It is not locked or automatically promoted.
 
 ## Machine knobs
 

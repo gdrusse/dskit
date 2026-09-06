@@ -22,6 +22,7 @@ __all__ = [
     "PooledDirectPathScore",
     "PooledGate3ZooCandidates",
     "KronosFusionRows",
+    "SequenceFusionRows",
     "SequenceOnlyZooEstimator",
     "StandardizedSelectRegressor",
 ]
@@ -44,6 +45,7 @@ _TEMPLATE_FIELDS = frozenset(
         "feature_policy",
         "feature_source",
         "kronos",
+        "sequence",
         "seed_policy",
         "compute_class",
         "compute_rank",
@@ -320,7 +322,9 @@ def _template_problems(template, index):
     unknown = sorted(set(template) - _TEMPLATE_FIELDS)
     if unknown:
         problems.append(f"{where} has unknown field(s) {unknown}")
-    required = _TEMPLATE_FIELDS - {"prerequisite", "kronos", "feature_source"}
+    required = _TEMPLATE_FIELDS - {
+        "prerequisite", "kronos", "sequence", "feature_source"
+    }
     for field in sorted(required):
         if field not in template:
             problems.append(f"{where}.{field} is required")
@@ -329,8 +333,10 @@ def _template_problems(template, index):
             problems.append(f"{where}.{field} must be a non-empty string")
     if not isinstance(template.get("enabled"), bool):
         problems.append(f"{where}.enabled must be boolean")
-    if template.get("feature_source", "tabular") not in ("tabular", "kronos"):
-        problems.append(f"{where}.feature_source must be tabular or kronos")
+    if template.get("feature_source", "tabular") not in (
+        "tabular", "kronos", "sequence"
+    ):
+        problems.append(f"{where}.feature_source must be tabular, kronos, or sequence")
     kronos = template.get("kronos")
     if template.get("feature_source") == "kronos":
         if not isinstance(kronos, dict) or set(kronos) != _KRONOS_FIELDS:
@@ -359,6 +365,25 @@ def _template_problems(template, index):
                 )
     elif kronos is not None:
         problems.append(f"{where}.kronos is only valid for feature_source=kronos")
+    sequence = template.get("sequence")
+    if template.get("feature_source") == "sequence":
+        if not isinstance(sequence, dict) or set(sequence) != _SEQUENCE_FIELDS:
+            problems.append(
+                f"{where}.sequence must contain exactly {sorted(_SEQUENCE_FIELDS)}"
+            )
+        else:
+            names = sequence["feature_names"]
+            if (
+                not isinstance(names, list)
+                or not names
+                or any(not _string(name) for name in names)
+                or len(names) != len(set(names))
+            ):
+                problems.append(
+                    f"{where}.sequence.feature_names must be unique strings"
+                )
+    elif sequence is not None:
+        problems.append(f"{where}.sequence is only valid for feature_source=sequence")
     rank = template.get("compute_rank")
     if not isinstance(rank, int) or isinstance(rank, bool) or rank < 1:
         problems.append(f"{where}.compute_rank must be a positive integer")
@@ -869,6 +894,105 @@ class KronosFusionRows(Node):
         return {"records": list(records)}
 
 
+class SequenceFusionRows(Node):
+    """Align one-minute OHLCV windows with an explicit side-feature allowlist."""
+
+    role = "transform"
+    outputs = ("records",)
+    _PARAMS = ("feature_names",)
+    _cached_key = None
+    _cached_records = None
+
+    @classmethod
+    def validate_params(cls, params):
+        """Require one non-empty, unique side-feature allowlist."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        names = params.get("feature_names")
+        if (
+            not isinstance(names, list)
+            or not names
+            or any(not _string(name) for name in names)
+            or len(names) != len(set(names))
+        ):
+            problems.append("feature_names must be unique non-empty strings")
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require columnar feature and one-minute sequence frame lists."""
+        if not isinstance(inputs, dict) or set(inputs) != {"features", "sequences"}:
+            return ["inputs must contain exactly features and sequences"]
+        return [
+            f"{key} must be a list"
+            for key in ("features", "sequences")
+            if not isinstance(inputs[key], list)
+        ]
+
+    @staticmethod
+    def _signature(frames):
+        return tuple(
+            (
+                frame.get("symbol"),
+                tuple(getattr(frame.get("X"), "shape", ())),
+                getattr(frame.get("X"), "filename", None),
+            )
+            for frame in frames
+        )
+
+    def run(self, ctx, inputs):
+        """Inner-align sequence origins and return fused columnar frames."""
+        import numpy as np
+
+        del ctx
+        key = (
+            tuple(self.params["feature_names"]),
+            self._signature(inputs["features"]),
+            self._signature(inputs["sequences"]),
+        )
+        cls = type(self)
+        if cls._cached_key == key:
+            return {"records": list(cls._cached_records)}
+        features = {frame["symbol"]: frame for frame in inputs["features"]}
+        sequences = {frame["symbol"]: frame for frame in inputs["sequences"]}
+        if set(features) != set(sequences):
+            raise ValueError("feature and sequence caches name different symbols")
+        side_names = list(self.params["feature_names"])
+        records = []
+        for symbol in features:
+            feature = features[symbol]
+            sequence = sequences[symbol]
+            name_to_index = {
+                name: index for index, name in enumerate(feature["names"])
+            }
+            missing = [name for name in side_names if name not in name_to_index]
+            if missing:
+                raise ValueError(f"{symbol} is missing side features {missing}")
+            feature_ms = np.asarray(feature["asof_ms"], dtype=np.int64)
+            sequence_ms = np.asarray(sequence["asof_ms"], dtype=np.int64)
+            at = np.searchsorted(feature_ms, sequence_ms)
+            if np.any(at >= len(feature_ms)) or not np.array_equal(
+                feature_ms[at], sequence_ms
+            ):
+                raise ValueError(f"{symbol} sequence origins do not align to features")
+            side = np.asarray(feature["X"])[
+                np.ix_(at, [name_to_index[name] for name in side_names])
+            ]
+            records.append(
+                {
+                    "symbol": symbol,
+                    "asof_ms": sequence_ms,
+                    "close": np.asarray(feature["close"])[at],
+                    "names": list(sequence["names"]) + side_names,
+                    "X": np.column_stack([np.asarray(sequence["X"]), side]).astype(
+                        np.float32, copy=False
+                    ),
+                }
+            )
+        cls._cached_key = key
+        cls._cached_records = records
+        return {"records": list(records)}
+
+
 def _pooled_document(source, template, eligible, caches, candidate_id):
     """Materialize one pooled candidate over verified group feature caches."""
     obj = source.to_obj()
@@ -883,7 +1007,10 @@ def _pooled_document(source, template, eligible, caches, candidate_id):
     feature_inputs = {}
     tape_inputs = {}
     kline_inputs = {}
-    use_kronos = template.get("feature_source", "tabular") == "kronos"
+    sequence_inputs = {}
+    feature_source = template.get("feature_source", "tabular")
+    use_kronos = feature_source == "kronos"
+    use_sequence = feature_source == "sequence"
     for index, (group, cache) in enumerate(caches.items()):
         group_assets = [asset for asset in assets if asset in cache["symbols"]]
         feature_key = f"features_{group}"
@@ -927,6 +1054,18 @@ def _pooled_document(source, template, eligible, caches, candidate_id):
                 },
             }
             kline_inputs[group] = f"${kline_key}.records"
+        if use_sequence:
+            sequence_key = f"pooled_sequences_{group}"
+            pipeline[sequence_key] = {
+                "uses": "filter",
+                "inputs": {"records": f"${feature_key}.sequences"},
+                "params": {
+                    "where": [
+                        {"field": "symbol", "op": "in", "value": group_assets}
+                    ]
+                },
+            }
+            sequence_inputs[group] = f"${sequence_key}.records"
     concat_params = {
         "shape": "records",
         "provenance_waiver": (
@@ -968,6 +1107,22 @@ def _pooled_document(source, template, eligible, caches, candidate_id):
             "inputs": {
                 "features": "$pooled_features.merged",
                 "embeddings": "$kronos.records",
+            },
+            "params": {"feature_names": side_names},
+        }
+        scan_records = "$fusion_features.records"
+    if use_sequence:
+        pipeline["pooled_sequences"] = {
+            "uses": "concat",
+            "inputs": sequence_inputs,
+            "params": copy.deepcopy(concat_params),
+        }
+        side_names = copy.deepcopy(template["sequence"]["feature_names"])
+        pipeline["fusion_features"] = {
+            "uses": "intraday_equities.model_zoo:SequenceFusionRows",
+            "inputs": {
+                "features": "$pooled_features.merged",
+                "sequences": "$pooled_sequences.merged",
             },
             "params": {"feature_names": side_names},
         }
@@ -1014,9 +1169,14 @@ def _pooled_document(source, template, eligible, caches, candidate_id):
     obj["walkforward"]["select"] = "max"
     obj["name"] = candidate_id
     obj["notes"] = (
-        "ADR-0101/0102: one pooled fit per direct lead over all 25 Gate-3 "
-        "passers; optional frozen Kronos states are fused only with the "
-        "declared side-feature allowlist."
+        "ADR-0104: session-local one-minute OHLCV enters a recurrent tower and "
+        "the declared side-feature allowlist enters a separate projection."
+        if use_sequence
+        else (
+            "ADR-0101/0102: one pooled fit per direct lead over all 25 Gate-3 "
+            "passers; optional frozen Kronos states are fused only with the "
+            "declared side-feature allowlist."
+        )
     )
     return PipelineDocument.from_obj(obj)
 
@@ -1046,6 +1206,8 @@ _KRONOS_FIELDS = frozenset(
         "feature_names",
     }
 )
+
+_SEQUENCE_FIELDS = frozenset({"feature_names"})
 
 
 class PooledGate3ZooCandidates(Stage):

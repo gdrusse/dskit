@@ -46,6 +46,7 @@ def write_feature_cache(path, outputs, metadata):
     os.makedirs(temporary)
     frames = outputs["records"]
     klines = {row["symbol"]: row for row in outputs.get("klines", [])}
+    sequences = {row["symbol"]: row for row in outputs.get("sequences", [])}
     tapes = {row["symbol"]: row for row in outputs["tape"]}
     symbols = []
     files = {}
@@ -77,6 +78,14 @@ def write_feature_cache(path, outputs, metadata):
                     ("klines", "X"): kline["X"],
                 }
             )
+        sequence = sequences.get(symbol)
+        if sequence is not None:
+            arrays.update(
+                {
+                    ("sequences", "asof_ms"): sequence["asof_ms"],
+                    ("sequences", "X"): sequence["X"],
+                }
+            )
         for (group, field), array in arrays.items():
             filename = _array_name(symbol, group, field)
             target = os.path.join(temporary, filename)
@@ -86,17 +95,27 @@ def write_feature_cache(path, outputs, metadata):
         raise ValueError("feature-cache tapes and frames name different symbols")
     if klines and set(symbols) != set(klines):
         raise ValueError("feature-cache K-lines and frames name different symbols")
+    if sequences and set(symbols) != set(sequences):
+        raise ValueError("feature-cache sequences and frames name different symbols")
     if klines and any(
         list(frame["names"]) != list(next(iter(klines.values()))["names"])
         for frame in klines.values()
     ):
         raise ValueError("feature-cache K-lines disagree on column names")
+    if sequences and any(
+        list(frame["names"]) != list(next(iter(sequences.values()))["names"])
+        for frame in sequences.values()
+    ):
+        raise ValueError("feature-cache sequences disagree on column names")
     manifest = {
-        "version": 2 if klines else 1,
+        "version": 3 if sequences else (2 if klines else 1),
         "symbols": symbols,
         "names": names or [],
         "kline_names": (
             list(next(iter(klines.values()))["names"]) if klines else []
+        ),
+        "sequence_names": (
+            list(next(iter(sequences.values()))["names"]) if sequences else []
         ),
         "price_fields": {symbol: tapes[symbol]["price_field"] for symbol in symbols},
         "files": files,
@@ -114,7 +133,7 @@ class SessionFeatureCache(Node):
     """Load a content-verified feature snapshot as read-only numpy memmaps."""
 
     role = "data"
-    outputs = ("records", "tape", "klines")
+    outputs = ("records", "tape", "klines", "sequences")
     _PARAMS = ("path", "manifest_sha256")
 
     @classmethod
@@ -146,7 +165,7 @@ class SessionFeatureCache(Node):
             )
         with open(manifest_file, encoding="utf-8") as handle:
             manifest = json.load(handle)
-        if manifest.get("version") not in (1, 2):
+        if manifest.get("version") not in (1, 2, 3):
             raise ValueError("feature-cache manifest version is not supported")
         if verify_files:
             for filename, expected in sorted((manifest.get("files") or {}).items()):
@@ -175,7 +194,9 @@ class SessionFeatureCache(Node):
         tape = []
         names = list(manifest["names"])
         kline_names = list(manifest.get("kline_names") or [])
+        sequence_names = list(manifest.get("sequence_names") or [])
         klines = []
+        sequences = []
         for symbol in manifest["symbols"]:
 
             def load(group, field):
@@ -212,12 +233,26 @@ class SessionFeatureCache(Node):
                         "X": load("klines", "X"),
                     }
                 )
+            if sequence_names:
+                sequences.append(
+                    {
+                        "symbol": symbol,
+                        "asof_ms": load("sequences", "asof_ms"),
+                        "names": sequence_names,
+                        "X": load("sequences", "X"),
+                    }
+                )
         self.log.info(
             "loaded feature cache: %d symbol(s), %d file(s)",
             len(records),
             len(manifest["files"]),
         )
-        return {"records": records, "tape": tape, "klines": klines}
+        return {
+            "records": records,
+            "tape": tape,
+            "klines": klines,
+            "sequences": sequences,
+        }
 
 
 register_node_kind("intraday_equities-session-feature-cache", SessionFeatureCache)

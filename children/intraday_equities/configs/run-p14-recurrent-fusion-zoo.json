@@ -1,0 +1,623 @@
+{
+  "name": "p14-recurrent-fusion-zoo",
+  "notes": "P14 paired pooled late-fusion zoo: session-local one-minute OHLCV enters either an LSTM or GRU tower; explicit origin-time side features enter one linear projection with a learned symbol embedding; the towers concatenate only at the final linear head. Each family owns train-only HPO.",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe-p13-pooled.json"
+      }
+    },
+    "source_a": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      },
+      "notes": "alpaca-sip-split holds eleven P10 names and SPY; SPY is the reference every group build reads from this source under its own group universe bound."
+    },
+    "source_c": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-c",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      }
+    },
+    "source_d": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-d",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      }
+    },
+    "source_e": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-e",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      }
+    },
+    "pooled": {
+      "uses": "concat",
+      "inputs": {
+        "a": "$source_a.records",
+        "c": "$source_c.records",
+        "d": "$source_d.records",
+        "e": "$source_e.records"
+      },
+      "params": {
+        "shape": "records",
+        "provenance_waiver": "Each immutable MarketRecord already carries its source; the five symbol namespaces are disjoint and checked below.",
+        "key": "symbol",
+        "consume_inputs": true
+      },
+      "notes": "Only source groups containing the 25 selected names are read; their symbol namespaces are disjoint and source_a also supplies SPY."
+    },
+    "features": {
+      "uses": "intraday_equities-session-features",
+      "inputs": {
+        "records": "$pooled.merged",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "lookback": 20,
+        "layout": "columns",
+        "dtype": "float32",
+        "cache_dir": "./pipeline_cache/p14-features-f32-ohlcv1m-v1",
+        "momentum_horizons": [
+          {
+            "width": 3,
+            "tag": "3m",
+            "cross_session": false
+          },
+          {
+            "width": 120,
+            "tag": "2h",
+            "cross_session": true
+          },
+          {
+            "width": 180,
+            "tag": "3h",
+            "cross_session": true
+          },
+          {
+            "width": 780,
+            "tag": "2s",
+            "cross_session": true
+          },
+          {
+            "width": 1950,
+            "tag": "1w",
+            "cross_session": true
+          }
+        ],
+        "sequence_lookback": 120,
+        "sequence_period_ms": 1800000
+      }
+    },
+    "scan": {
+      "uses": "intraday_equities-no-information-scan",
+      "inputs": {
+        "records": "$features.records",
+        "bars": "$features.tape",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
+        "val_start_ms": "$splits.val_start_ms",
+        "val_end_ms": "$splits.val_end_ms",
+        "label_scale": "vol",
+        "label_residual": "SPY",
+        "label_residual_self": "raw",
+        "fit_symbols": [
+          "LLY",
+          "QQQ",
+          "XLF",
+          "XLE",
+          "XLK",
+          "BAC",
+          "SMH",
+          "IWM",
+          "XBI",
+          "FCX",
+          "DAL",
+          "NRG",
+          "MET",
+          "MSTR",
+          "NOW",
+          "LULU",
+          "PANW",
+          "INTC",
+          "CIEN",
+          "LRCX",
+          "TER",
+          "BIDU",
+          "LITE",
+          "ADBE",
+          "ANET"
+        ],
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 1,
+        "score_period_ms": 1800000,
+        "estimator": "lightgbm.LGBMRegressor",
+        "estimator_params": {
+          "n_estimators": 800,
+          "learning_rate": 0.005,
+          "num_leaves": 4,
+          "max_depth": 2,
+          "min_child_samples": 2000,
+          "reg_lambda": 100,
+          "reg_alpha": 0.1,
+          "subsample": 0.5,
+          "subsample_freq": 1,
+          "colsample_bytree": 0.3,
+          "n_jobs": 8,
+          "random_state": 0,
+          "verbosity": -1
+        },
+        "score_symbols": [
+          "LLY",
+          "QQQ",
+          "XLF",
+          "XLE",
+          "XLK",
+          "BAC",
+          "SMH",
+          "IWM",
+          "XBI",
+          "FCX",
+          "DAL",
+          "NRG",
+          "MET",
+          "MSTR",
+          "NOW",
+          "LULU",
+          "PANW",
+          "INTC",
+          "CIEN",
+          "LRCX",
+          "TER",
+          "BIDU",
+          "LITE",
+          "ADBE",
+          "ANET"
+        ]
+      }
+    }
+  },
+  "walkforward": {
+    "objective": "$scan.metrics.val_ic",
+    "select": "max",
+    "first": "2022-05-06",
+    "step_days": 63,
+    "count": 20,
+    "val_days": 63,
+    "embargo_days": 5,
+    "train_days": 730
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        },
+        "notes": "Local sqlite beside the invoking cwd."
+      }
+    ],
+    "notes": "Excluded from identity - where metrics land is not what it computes."
+  },
+  "outputs": {
+    "run_root": "./pipeline_runs"
+  },
+  "stages": {
+    "calendar": {
+      "uses": "dskit.pipeline.program_calendar:ProgramCalendar",
+      "params": {
+        "path": "program-calendar-p13-model-zoo.json",
+        "phase": "model_zoo"
+      }
+    },
+    "memory": {
+      "uses": "intraday_equities.modelability_study:MemoryPreflightStage",
+      "params": {
+        "memory_limit_bytes": 18253611008,
+        "groups": {
+          "a": {
+            "universe": "configs/universe-p12-a.json",
+            "sources": [
+              "source_a"
+            ]
+          },
+          "c": {
+            "universe": "configs/universe-p12-c.json",
+            "sources": [
+              "source_a",
+              "source_c"
+            ]
+          },
+          "d": {
+            "universe": "configs/universe-p13-d-selected.json",
+            "sources": [
+              "source_a",
+              "source_d"
+            ]
+          },
+          "e": {
+            "universe": "configs/universe-p13-e-selected.json",
+            "sources": [
+              "source_a",
+              "source_e"
+            ]
+          }
+        }
+      },
+      "notes": "Build four bounded P14 group caches containing the frozen P12 feature matrix, full-resolution label tape, and complete session-local 120-minute OHLCV windows at the 30-minute score origins. Groups D and E remain bounded to the approved cohort plus SPY."
+    },
+    "materialize": {
+      "uses": "intraday_equities.model_zoo:PooledGate3ZooCandidates",
+      "inputs": {
+        "preflight": "$memory.passed",
+        "caches": "$memory.groups"
+      },
+      "params": {
+        "gate3_artifact": "../pipeline_runs/p12-g3-recovery-staged-2026-02-28-a1f293a2/stages/gate3_recovery.json",
+        "gate3_sha256": "098b21eaef6ee0260753d4f981ca2337bccae406b9efd394284d9b180ba03bd0",
+        "cache_groups": [
+          "a",
+          "c",
+          "d",
+          "e"
+        ],
+        "templates": [
+          {
+            "id": "lstm",
+            "family": "pooled-ohlcv-lstm-fusion",
+            "representation": "causal-1m-ohlcv-lstm-plus-side-projection-and-symbol-embedding",
+            "feature_policy": "latest 30/60/120 session-local one-minute OHLCV bars plus explicit origin-time calendar, overnight, and SPY side features",
+            "feature_source": "sequence",
+            "sequence": {
+              "feature_names": [
+                "minutes_from_open",
+                "minutes_to_close",
+                "tod_sin",
+                "tod_cos",
+                "dow_sin",
+                "dow_cos",
+                "month_sin",
+                "month_cos",
+                "is_first_rth",
+                "is_last_rth",
+                "overnight_gap",
+                "session_gap_days",
+                "after_holiday",
+                "ref_ret_SPY"
+              ]
+            },
+            "seed_policy": "fixed seed 0 with purged inner HPO",
+            "compute_class": "gpu-medium",
+            "compute_rank": 1,
+            "enabled": true,
+            "model": {
+              "estimator": "dskit.pipeline.libs.torch_ts.CategoricalRecurrentFusionRegressor",
+              "estimator_params": {
+                "arch": "lstm",
+                "context_length": 60,
+                "hidden_size": 32,
+                "num_layers": 1,
+                "static_projection_dim": 16,
+                "embedding_dim": 8,
+                "epochs": 6,
+                "lr": 0.001,
+                "weight_decay": 0.0001,
+                "batch_size": 2048,
+                "dropout": 0.1,
+                "seed": 0,
+                "device": "cuda",
+                "standardize": true
+              },
+              "hpo_trials": 4,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "context_length": [
+                  30,
+                  60,
+                  120
+                ],
+                "hidden_size": [
+                  16,
+                  32,
+                  64
+                ],
+                "num_layers": [
+                  1,
+                  2
+                ],
+                "static_projection_dim": [
+                  8,
+                  16,
+                  32
+                ],
+                "embedding_dim": [
+                  4,
+                  8
+                ],
+                "epochs": [
+                  4,
+                  6,
+                  8
+                ],
+                "lr": [
+                  0.0003,
+                  0.001,
+                  0.003
+                ],
+                "weight_decay": [
+                  0.00001,
+                  0.0001,
+                  0.001
+                ],
+                "batch_size": [
+                  1024,
+                  2048,
+                  4096
+                ],
+                "dropout": [
+                  0,
+                  0.1,
+                  0.2
+                ]
+              }
+            }
+          },
+          {
+            "id": "gru",
+            "family": "pooled-ohlcv-gru-fusion",
+            "representation": "causal-1m-ohlcv-gru-plus-side-projection-and-symbol-embedding",
+            "feature_policy": "latest 30/60/120 session-local one-minute OHLCV bars plus explicit origin-time calendar, overnight, and SPY side features",
+            "feature_source": "sequence",
+            "sequence": {
+              "feature_names": [
+                "minutes_from_open",
+                "minutes_to_close",
+                "tod_sin",
+                "tod_cos",
+                "dow_sin",
+                "dow_cos",
+                "month_sin",
+                "month_cos",
+                "is_first_rth",
+                "is_last_rth",
+                "overnight_gap",
+                "session_gap_days",
+                "after_holiday",
+                "ref_ret_SPY"
+              ]
+            },
+            "seed_policy": "fixed seed 0 with purged inner HPO",
+            "compute_class": "gpu-medium",
+            "compute_rank": 2,
+            "enabled": true,
+            "model": {
+              "estimator": "dskit.pipeline.libs.torch_ts.CategoricalRecurrentFusionRegressor",
+              "estimator_params": {
+                "arch": "gru",
+                "context_length": 60,
+                "hidden_size": 32,
+                "num_layers": 1,
+                "static_projection_dim": 16,
+                "embedding_dim": 8,
+                "epochs": 6,
+                "lr": 0.001,
+                "weight_decay": 0.0001,
+                "batch_size": 2048,
+                "dropout": 0.1,
+                "seed": 0,
+                "device": "cuda",
+                "standardize": true
+              },
+              "hpo_trials": 4,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "context_length": [
+                  30,
+                  60,
+                  120
+                ],
+                "hidden_size": [
+                  16,
+                  32,
+                  64
+                ],
+                "num_layers": [
+                  1,
+                  2
+                ],
+                "static_projection_dim": [
+                  8,
+                  16,
+                  32
+                ],
+                "embedding_dim": [
+                  4,
+                  8
+                ],
+                "epochs": [
+                  4,
+                  6,
+                  8
+                ],
+                "lr": [
+                  0.0003,
+                  0.001,
+                  0.003
+                ],
+                "weight_decay": [
+                  0.00001,
+                  0.0001,
+                  0.001
+                ],
+                "batch_size": [
+                  1024,
+                  2048,
+                  4096
+                ],
+                "dropout": [
+                  0,
+                  0.1,
+                  0.2
+                ]
+              }
+            }
+          }
+        ],
+        "path_protocol": {
+          "forecast_strategy": "direct_per_lead",
+          "horizon_weighting": "equal_asset_equal_within_asset",
+          "fit_universe": "all_gate3_passers_each_lead",
+          "score_universe": "certified_horizon_includes_lead"
+        }
+      }
+    },
+    "plan": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkPlan",
+      "inputs": {
+        "phase": "$calendar.phase",
+        "calendar_sha256": "$calendar.calendar_sha256",
+        "candidates": "$materialize.candidates"
+      },
+      "params": {
+        "protocol": {
+          "attempt_family": "intraday-equities-p14-recurrent-fusion-zoo",
+          "primary_score": "equal-stock and equal-within-stock mean train-scaled squared-error improvement over each stock's train-only mean",
+          "null_baseline": "per-stock train-only no-information mean",
+          "cost_model": "one pooled direct fit per lead and fold; declared compute ranks",
+          "lockbox": "no candidate may read at or after 2026-03-01",
+          "decision_rule": "compare paired outer-fold path scores; report only, never auto-promote",
+          "alpha": 0.05,
+          "comparison_hac_lags": 1,
+          "multiplicity_method": "bonferroni_all_pairwise",
+          "indifference_method": "paired_fold_newey_west_no_detectable_difference"
+        },
+        "contract_paths": [
+          "pipeline.universe",
+          "pipeline.features_a",
+          "pipeline.features_c",
+          "pipeline.features_d",
+          "pipeline.features_e",
+          "pipeline.pooled_features_a",
+          "pipeline.pooled_features_c",
+          "pipeline.pooled_features_d",
+          "pipeline.pooled_features_e",
+          "pipeline.pooled_tape_a",
+          "pipeline.pooled_tape_c",
+          "pipeline.pooled_tape_d",
+          "pipeline.pooled_tape_e",
+          "pipeline.pooled_features",
+          "pipeline.reference_tape",
+          "pipeline.scan_h01.uses",
+          "pipeline.scan_h01.inputs.bars",
+          "pipeline.scan_h01.inputs.spec",
+          "pipeline.scan_h01.params.split",
+          "pipeline.scan_h01.params.label_scale",
+          "pipeline.scan_h01.params.label_residual",
+          "pipeline.scan_h01.params.label_residual_self",
+          "pipeline.scan_h01.params.fit_symbols",
+          "pipeline.scan_h01.params.score_symbols",
+          "pipeline.scan_h01.params.lead_start",
+          "pipeline.scan_h01.params.lead_step",
+          "pipeline.scan_h01.params.lead_stop",
+          "pipeline.scan_h01.params.score_period_ms",
+          "pipeline.scan_h01.params.common_lead_stop",
+          "pipeline.scan_h01.params.common_origin_policy",
+          "pipeline.path.uses",
+          "pipeline.path.params.split",
+          "pipeline.path.params.asset_horizons",
+          "pipeline.path.params.horizon_weighting",
+          "pipeline.path.params.score",
+          "walkforward.objective",
+          "walkforward.select",
+          "walkforward.first",
+          "walkforward.step_days",
+          "walkforward.count",
+          "walkforward.val_days",
+          "walkforward.embargo_days",
+          "walkforward.train_days"
+        ]
+      }
+    },
+    "approval": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkApproval",
+      "inputs": {
+        "inventory_sha256": "$plan.inventory_sha256"
+      },
+      "params": {
+        "approved_inventory_sha256": "PENDING-PLAN-REVIEW",
+        "approved_by": "PENDING-PLAN-REVIEW",
+        "approval_note": "Awaiting owner review of the exact two-candidate P14 inventory: pooled one-minute OHLCV LSTM fusion and pooled one-minute OHLCV GRU fusion, each with four purged train-only HPO trials."
+      }
+    },
+    "run": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkRun",
+      "inputs": {
+        "candidates": "$plan.candidates",
+        "approval": "$approval.approval"
+      }
+    },
+    "compare": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkCompare",
+      "inputs": {
+        "runs": "$run.runs",
+        "protocol": "$plan.protocol",
+        "contracts": "$plan.contracts",
+        "approval": "$approval.approval"
+      }
+    }
+  }
+}

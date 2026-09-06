@@ -5417,3 +5417,29 @@ why Appendix C made it a phase of its own — plus obstacle 3's production
 suite. `MAX_BACKOFF_S` stays exactly where it is; nothing about
 acquisition identity, source config hashes or stored rows changes under
 either option.
+
+---
+
+## ADR-0104 -- Compare two pooled one-minute recurrent late-fusion models
+
+**Status:** Accepted, not locked (2026-09-06; owner approved implementation)
+
+**Context.** P13 found no incremental value from frozen Kronos embeddings, but
+its five-minute representation can blur the one- through ten-minute targets.
+The owner requested two simpler sequence models that keep OHLCV dynamics
+separate from origin-time side information until the prediction head.
+
+**Decision.** Add pooled LSTM and GRU candidates over the same 25 Gate-3
+passers, direct leads, outer folds, and equal-stock path score. At each
+30-minute scoring origin, cache the preceding 120 complete, contiguous,
+session-local one-minute OHLCV bars. HPO may select the latest 30, 60, or 120
+minutes. The recurrent tower receives only OHLCV; a single linear projection
+receives an explicit calendar/overnight/SPY allowlist; a learned symbol
+embedding joins both at one final linear head. Prices become causal log ratios
+to the origin close, volume is log-scaled, and remaining moments fit on
+training rows only. Each family owns four purged inner-HPO trials.
+
+**Consequences.** This is a paired development ablation, not a promotion or
+final refit. It adds a version-3 content-verified sequence cache without
+altering P13 artifacts. Candidate execution remains inventory-gated and begins
+with one fold worker because each process retains the full memory allowance.

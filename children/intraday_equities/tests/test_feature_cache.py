@@ -79,3 +79,24 @@ def test_cache_v2_round_trips_kline_frames(tmp_path):
     assert [row["symbol"] for row in out["klines"]] == ["AAA", "BBB"]
     assert isinstance(out["klines"][0]["X"], np.memmap)
     assert out["klines"][0]["names"][-1] == "amount"
+
+
+def test_cache_v3_round_trips_one_minute_sequence_frames(tmp_path):
+    outputs = _outputs()
+    outputs["sequences"] = [
+        {
+            "symbol": symbol,
+            "asof_ms": np.array([2], dtype=np.int64),
+            "names": ["ohlcv_t000_open", "ohlcv_t000_close"],
+            "X": np.array([[10.0, 10.5]], dtype=np.float32),
+        }
+        for symbol in ("AAA", "BBB")
+    ]
+    path = tmp_path / "features"
+    digest = write_feature_cache(str(path), outputs, {"study": "recurrent"})
+    out = SessionFeatureCache(
+        "cached", {"path": str(path), "manifest_sha256": digest}
+    ).run(None, {})
+    assert [row["symbol"] for row in out["sequences"]] == ["AAA", "BBB"]
+    assert isinstance(out["sequences"][0]["X"], np.memmap)
+    assert out["sequences"][0]["names"][-1] == "ohlcv_t000_close"
