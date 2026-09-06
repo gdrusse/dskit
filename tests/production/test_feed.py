@@ -36,6 +36,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import inspect
+import time
 
 import pytest
 
@@ -45,17 +46,21 @@ from dskit.production.base import ProductionError, canonical_hash
 from dskit.production.clock import ReplayClock, TestClock
 from dskit.production.feed import (
     DEFAULT_PULL_MODE,
+    DEFAULT_QUEUE_MAX,
     FEED_KINDS,
     EntrySourceFeed,
     Feed,
     FeedSpec,
     ReplayFeed,
+    StreamFeed,
+    StreamTransport,
     active_source_identity,
     snapshot_entry,
 )
+from dskit.production.resilience import MAX_BACKOFF_S
 from dskit.production.records import EntryBatch, FeedResult, InputWatermark
 from dskit.production.release import FEED_SPEC_KEYS
-from dskit.production.vocab import FEED_STATUSES, PULL_MODES
+from dskit.production.vocab import FEED_STATUSES, LINK_STATES, PULL_MODES
 from tests.production.conftest import (
     DAY_MS,
     LAST_ROW_MS,
@@ -147,15 +152,19 @@ class TestFeedSeam:
 
         assert isinstance(Fixed(), Feed)
 
-    def test_both_core_kinds_are_feeds(self):
+    def test_every_core_kind_is_a_feed(self):
         assert issubclass(EntrySourceFeed, Feed)
         assert issubclass(ReplayFeed, Feed)
+        assert issubclass(StreamFeed, Feed)
 
-    def test_the_registry_carries_exactly_the_two_core_kinds(self):
-        assert FEED_KINDS.kinds() == ("entry-source", "replay")
+    def test_the_registry_carries_exactly_the_three_core_kinds(self):
+        # Phase 3 adds `websocket` (§5.2.1) and nothing else: the stream is
+        # one more `Feed` subclass, not a family of its own (§4.3).
+        assert FEED_KINDS.kinds() == ("entry-source", "replay", "websocket")
         assert FEED_KINDS.family == "feed"
         assert FEED_KINDS.resolve("entry-source") is EntrySourceFeed
         assert FEED_KINDS.resolve("replay") is ReplayFeed
+        assert FEED_KINDS.resolve("websocket") is StreamFeed
 
     def test_pull_returns_a_status_only_result(self, fresh_root, serving_contract, clock):
         registry = fresh_root.registry()
@@ -862,3 +871,427 @@ class TestReplayFeed:
     def test_a_malformed_tape_entry_refuses(self, training_run, serving_contract):
         with pytest.raises(ProductionError):
             ReplayFeed({}, tape=[("live", None)])
+
+
+# --------------------------------------------------------------------------
+# StreamFeed — the push source (§5.2.1, phase 3)
+# --------------------------------------------------------------------------
+#
+# The stream is "one more `Feed` subclass with the same `pull(tick_at_ms)`
+# and the same `EntryBatch` downstream", so what these tests pin is what it
+# ADDS and nothing the store pull already owns:
+#
+# * **The worker does not hold the rows.** Frames it receives are handed to
+#   the transport's own connector spool and landed by the SAME
+#   `run_acquisition` a `watch` process runs, so the entry still reads the
+#   store it was trained from (D4) and the queue is empty afterwards. A
+#   private in-process buffer would be a second source of truth.
+# * **A full queue drops the OLDEST and counts it**, because a stream that
+#   blocks the writer to keep an old row is a stream that stops the loop.
+# * **The reconnect policy is a `Retry` from `resilience.py`**, not a second
+#   backoff — that is why §10 places this after both `feed` and
+#   `resilience`.
+# * **The link floors the status.** A dropped connection is `recovering`
+#   and the feed is at best `stale`; an exhausted budget is `dead`; a
+#   reconnect since the last pull is `degraded` — the phase-1 status §5.2
+#   says has no producer until this class exists. The ladder still wins
+#   when it is worse: the link can only floor, never lift.
+
+
+class ScriptedTransport(StreamTransport):
+    """A transport whose script says what each connect and receive does."""
+
+    _PARAMS = ("venue",)
+
+    def __init__(self, params=None):
+        super().__init__(params)
+        self.connects = []
+        self.delivered = []
+        self.frames = []
+        self.closed = 0
+        self.connect_failures = 0
+        self.drop_after = None
+
+    def connect(self, url, subscribe):
+        """Record the connect; fail while the script says to."""
+        if self.connect_failures:
+            self.connect_failures -= 1
+            raise OSError("the socket refused")
+        self.connects.append((url, subscribe))
+
+    def receive(self):
+        """Hand back the next scripted frame, or None when the socket is quiet."""
+        if self.drop_after is not None:
+            if self.drop_after == 0:
+                self.drop_after = None
+                raise OSError("the connection dropped")
+            self.drop_after -= 1
+        return self.frames.pop(0) if self.frames else None
+
+    def deliver(self, frames):
+        """Record what the worker handed over for the connector to read."""
+        self.delivered.append(list(frames))
+
+    def close(self):
+        """Count the close."""
+        self.closed += 1
+
+
+SCRIPTED = f"{__name__}:ScriptedTransport"
+
+STREAM_PARAMS = {
+    "url_env": "DSKIT_TEST_STREAM_URL",
+    "subscribe": {"channel": "bars"},
+    "transport": {"uses": SCRIPTED, "params": {"venue": "test"}},
+}
+
+
+def stream_feed(root, contract, clock, sleeps=None, **over):
+    """A `StreamFeed` over `root`, with the ladder wide open unless overridden."""
+    registry = root.registry()
+    spec = bound_spec(contract, acquire_mod.find_active_source(registry, SOURCE))
+    params = {**STREAM_PARAMS, **over.pop("params", {})}
+    kwargs = {
+        "root": root,
+        "registry": registry,
+        "contract": contract,
+        "spec": spec,
+        "clock": clock,
+        "max_staleness_ms": DAY_MS,
+        "dead_after_ms": 7 * DAY_MS,
+        "sleeper": (sleeps if sleeps is None else sleeps.append),
+    }
+    kwargs.update(over)
+    return StreamFeed(params, **kwargs)
+
+
+@pytest.fixture
+def stream_url(monkeypatch):
+    """The env var the document names, holding the socket URL."""
+    monkeypatch.setenv("DSKIT_TEST_STREAM_URL", "wss://stream.example/v1")
+    return "wss://stream.example/v1"
+
+
+class TestStreamParams:
+    def test_it_is_registered_as_websocket_and_is_a_store_pull(self):
+        assert FEED_KINDS.resolve("websocket") is StreamFeed
+        assert issubclass(StreamFeed, EntrySourceFeed)
+
+    def test_the_url_is_an_env_var_name_never_a_url(self, fresh_root, serving_contract, clock):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        with pytest.raises(ProductionError, match="url_env"):
+            stream_feed(fresh_root, contract, clock,
+                        params={"url_env": "wss://stream.example/v1"})
+
+    def test_the_pull_mode_is_not_a_knob_because_the_worker_is_the_writer(
+        self, fresh_root, serving_contract, clock
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        with pytest.raises(ProductionError, match="pull"):
+            stream_feed(fresh_root, contract, clock, params={"pull": "acquire"})
+
+    def test_a_transport_named_by_bare_name_refuses_because_no_registry_owns_one(
+        self, fresh_root, serving_contract, clock
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        with pytest.raises(ProductionError, match="transport"):
+            stream_feed(fresh_root, contract, clock,
+                        params={"transport": {"uses": "websocket"}})
+
+    def test_a_transport_that_is_not_a_stream_transport_refuses(
+        self, fresh_root, serving_contract, clock
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        with pytest.raises(ProductionError, match="transport"):
+            stream_feed(fresh_root, contract, clock,
+                        params={"transport": {"uses": f"{__name__}:VERSION"}})
+
+    def test_a_missing_transport_refuses(self, fresh_root, serving_contract, clock):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        params = {key: value for key, value in STREAM_PARAMS.items() if key != "transport"}
+        with pytest.raises(ProductionError, match="transport"):
+            StreamFeed(
+                params, root=fresh_root, registry=fresh_root.registry(),
+                contract=contract,
+                spec=bound_spec(contract, acquire_mod.find_active_source(
+                    fresh_root.registry(), SOURCE)),
+                clock=clock, max_staleness_ms=DAY_MS, dead_after_ms=7 * DAY_MS,
+            )
+
+    def test_the_transport_params_reach_the_transport(
+        self, fresh_root, serving_contract, clock, stream_url
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        feed = stream_feed(fresh_root, contract, clock)
+        assert isinstance(feed.transport, ScriptedTransport)
+        with pytest.raises(ProductionError):
+            stream_feed(fresh_root, contract, clock,
+                        params={"transport": {"uses": SCRIPTED, "params": {"nope": 1}}})
+
+    def test_the_queue_bound_is_a_named_default_and_must_be_positive(
+        self, fresh_root, serving_contract, clock
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        assert stream_feed(fresh_root, contract, clock).queue_max == DEFAULT_QUEUE_MAX
+        assert stream_feed(fresh_root, contract, clock,
+                           params={"queue_max": 4}).queue_max == 4
+        with pytest.raises(ProductionError, match="queue_max"):
+            stream_feed(fresh_root, contract, clock, params={"queue_max": 0})
+
+    def test_the_reconnect_block_is_the_resilience_retry_and_not_a_second_backoff(
+        self, fresh_root, serving_contract, clock
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        assert stream_feed(fresh_root, contract, clock,
+                           params={"reconnect": {"max_attempts": 5, "jitter": "none"}})
+        with pytest.raises(ProductionError, match="backoff_seconds|unknown"):
+            stream_feed(fresh_root, contract, clock,
+                        params={"reconnect": {"backoff_seconds": 2}})
+        # `cap_s` is bounded by resilience's own ceiling, which is the one
+        # owner of "how long a backoff may ever be".
+        with pytest.raises(ProductionError, match="cap_s"):
+            stream_feed(fresh_root, contract, clock,
+                        params={"reconnect": {"cap_s": MAX_BACKOFF_S + 1}})
+
+
+class TestTheWorker:
+    def feed(self, root, contract, clock, sleeps=None, **over):
+        return stream_feed(root, contract, clock, sleeps=sleeps, **over)
+
+    def test_the_first_turn_connects_with_the_url_the_environment_holds(
+        self, fresh_root, serving_contract, clock, stream_url
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        feed = self.feed(fresh_root, contract, clock)
+        feed.pump()
+        assert feed.transport.connects == [(stream_url, {"channel": "bars"})]
+        assert feed.link_state == "connected"
+
+    def test_a_missing_url_variable_leaves_the_link_recovering_and_never_raises(
+        self, fresh_root, serving_contract, clock
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        feed = self.feed(fresh_root, contract, clock, sleeps=[])
+        feed.pump()
+        assert feed.transport.connects == []
+        assert feed.link_state == "recovering"
+
+    def test_frames_are_delivered_to_the_connector_and_landed_by_an_acquisition(
+        self, fresh_root, serving_contract, clock, stream_url, recorder, monkeypatch
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        monkeypatch.setattr(
+            acquire_mod, "run_acquisition",
+            recorder.hook("run_acquisition", acquire_mod.run_acquisition),
+        )
+        feed = self.feed(fresh_root, contract, clock)
+        feed.transport.frames = [{"row": 1}, {"row": 2}]
+        feed.pump()
+        assert feed.transport.delivered == [[{"row": 1}, {"row": 2}]]
+        seen = locators(recorder.named("run_acquisition")[0])
+        assert SOURCE in seen and STREAM in seen
+        assert feed.queued == 0, "the worker does not hold the rows"
+
+    def test_a_turn_with_no_frame_lands_nothing(
+        self, fresh_root, serving_contract, clock, stream_url, monkeypatch
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        monkeypatch.setattr(acquire_mod, "run_acquisition", boom)
+        feed = self.feed(fresh_root, contract, clock)
+        assert feed.pump() is False
+        assert feed.transport.delivered == []
+
+    def test_a_full_queue_drops_the_oldest_row_and_counts_it(
+        self, fresh_root, serving_contract, clock, stream_url, monkeypatch
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        monkeypatch.setattr(acquire_mod, "run_acquisition", lambda *a, **k: {"records": 0})
+        feed = self.feed(fresh_root, contract, clock, params={"queue_max": 2})
+        feed.transport.frames = [{"row": n} for n in range(4)]
+        feed.pump()
+        assert feed.dropped == 2
+        assert feed.transport.delivered == [[{"row": 2}, {"row": 3}]]
+
+    def test_a_landing_failure_is_counted_and_never_escapes_the_worker(
+        self, fresh_root, serving_contract, clock, stream_url, monkeypatch
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        monkeypatch.setattr(acquire_mod, "run_acquisition", boom)
+        feed = self.feed(fresh_root, contract, clock)
+        feed.transport.frames = [{"row": 1}]
+        feed.pump()
+        assert feed.land_failures == 1
+        assert feed.queued == 0
+
+    def test_a_dropped_connection_waits_the_retrys_own_backoff(
+        self, fresh_root, serving_contract, clock, stream_url
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        sleeps = []
+        feed = self.feed(fresh_root, contract, clock, sleeps=sleeps,
+                         params={"reconnect": {"jitter": "none", "base_s": 0.5}})
+        feed.transport.drop_after = 0
+        feed.pump()
+        assert feed.link_state == "recovering"
+        assert sleeps == [0.5], "the wait is the Retry's, not a second backoff"
+
+    def test_an_exhausted_reconnect_budget_is_a_disconnected_link(
+        self, fresh_root, serving_contract, clock, stream_url
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        feed = self.feed(fresh_root, contract, clock, sleeps=[],
+                         params={"reconnect": {"max_attempts": 2, "jitter": "none"}})
+        feed.transport.connect_failures = 5
+        for _ in range(3):
+            feed.pump()
+        assert feed.link_state == "disconnected"
+
+    def test_a_recovered_link_is_connected_again_and_counts_the_reconnect(
+        self, fresh_root, serving_contract, clock, stream_url
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        feed = self.feed(fresh_root, contract, clock, sleeps=[])
+        feed.transport.connect_failures = 1
+        feed.pump()
+        assert feed.link_state == "recovering"
+        feed.pump()
+        assert feed.link_state == "connected"
+        assert feed.reconnects == 1
+
+    def test_every_link_state_it_reports_is_in_the_vocabulary(
+        self, fresh_root, serving_contract, clock, stream_url
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        feed = self.feed(fresh_root, contract, clock, sleeps=[],
+                         params={"reconnect": {"max_attempts": 1}})
+        seen = {feed.link_state}
+        feed.transport.connect_failures = 3
+        feed.pump()
+        seen.add(feed.link_state)
+        feed.pump()
+        seen.add(feed.link_state)
+        assert seen <= set(LINK_STATES)
+        assert "disconnected" in seen
+
+
+class TestTheLinkFloorsTheStatus:
+    def feed(self, root, contract, clock, **over):
+        return stream_feed(root, contract, clock, sleeps=[], **over)
+
+    def test_a_connected_link_leaves_the_ladder_alone(
+        self, fresh_root, serving_contract, clock, stream_url
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        feed = self.feed(fresh_root, contract, clock)
+        feed.pump()
+        assert feed.pull(LAST_ROW_MS).status == "live"
+
+    def test_a_recovering_link_is_at_best_stale(
+        self, fresh_root, serving_contract, clock, stream_url
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        feed = self.feed(fresh_root, contract, clock)
+        feed.transport.connect_failures = 1
+        feed.pump()
+        assert feed.pull(LAST_ROW_MS).status == "stale"
+
+    def test_a_disconnected_link_is_dead_however_fresh_the_store_is(
+        self, fresh_root, serving_contract, clock, stream_url
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        feed = self.feed(fresh_root, contract, clock,
+                         params={"reconnect": {"max_attempts": 1}})
+        feed.transport.connect_failures = 2
+        feed.pump()
+        feed.pump()
+        assert feed.pull(LAST_ROW_MS).status == "dead"
+
+    def test_a_reconnect_since_the_last_pull_is_degraded(
+        self, fresh_root, serving_contract, clock, stream_url
+    ):
+        # §5.2: `degraded` — "rows arriving but a link that keeps dropping"
+        # — is the one FEED_STATUSES member phase 1 leaves without a
+        # producer, and this is its producer.
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        feed = self.feed(fresh_root, contract, clock)
+        feed.transport.connect_failures = 1
+        feed.pump()
+        feed.pump()
+        assert feed.link_state == "connected"
+        assert feed.pull(LAST_ROW_MS).status == "degraded"
+
+    def test_the_next_pull_is_live_again_because_the_count_is_per_tick(
+        self, fresh_root, serving_contract, clock, stream_url
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        feed = self.feed(fresh_root, contract, clock)
+        feed.transport.connect_failures = 1
+        feed.pump()
+        feed.pump()
+        assert feed.pull(LAST_ROW_MS).status == "degraded"
+        assert feed.pull(LAST_ROW_MS).status == "live"
+
+    def test_the_link_can_only_floor_the_status_never_lift_it(
+        self, fresh_root, serving_contract, clock, stream_url
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        feed = self.feed(fresh_root, contract, clock)
+        feed.transport.connect_failures = 1
+        feed.pump()
+        feed.pump()
+        # The ladder says dead; a `degraded` link floor must not improve it.
+        assert feed.pull(LAST_ROW_MS + 30 * DAY_MS).status == "dead"
+
+    def test_every_status_it_reports_is_in_the_vocabulary(
+        self, fresh_root, serving_contract, clock, stream_url
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        feed = self.feed(fresh_root, contract, clock)
+        feed.pump()
+        seen = {feed.pull(LAST_ROW_MS + age).status for age in (0, 2 * DAY_MS, 30 * DAY_MS)}
+        assert seen <= set(FEED_STATUSES)
+
+
+class TestTheSupervisedWorker:
+    def test_start_runs_the_pump_on_a_daemon_thread_and_close_stops_it(
+        self, fresh_root, serving_contract, clock, stream_url
+    ):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        feed = stream_feed(fresh_root, contract, clock, sleeps=[])
+        feed.start()
+        try:
+            deadline = time.monotonic() + 2.0
+            while not feed.transport.connects and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert feed.transport.connects, "the worker never connected"
+        finally:
+            feed.close()
+        assert feed.transport.closed == 1
+
+    def test_the_loop_thread_never_touches_the_socket(
+        self, fresh_root, serving_contract, clock, stream_url
+    ):
+        # D23: "one supervised daemon worker owns the socket; the loop
+        # never touches it". `pull` reads the store's watermarks and
+        # nothing else.
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        feed = stream_feed(fresh_root, contract, clock, sleeps=[])
+        feed.pull(LAST_ROW_MS)
+        assert feed.transport.connects == [] and feed.transport.delivered == []
+
+    def test_starting_twice_refuses(self, fresh_root, serving_contract, clock, stream_url):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        feed = stream_feed(fresh_root, contract, clock, sleeps=[])
+        feed.start()
+        try:
+            with pytest.raises(ProductionError):
+                feed.start()
+        finally:
+            feed.close()
+
+    def test_close_is_idempotent(self, fresh_root, serving_contract, clock, stream_url):
+        contract = drop_in_contract(serving_contract, fresh_root.root)
+        feed = stream_feed(fresh_root, contract, clock, sleeps=[])
+        feed.close()
+        feed.close()
+        assert feed.transport.closed == 1

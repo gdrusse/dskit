@@ -34,7 +34,7 @@ import sys
 import pytest
 
 import dskit.pipeline  # noqa: F401 — importing REGISTERS the toolkit kinds
-from dskit.pipeline import fitted, kinds_stats, synthetic_nodes
+from dskit.pipeline import fitted, kinds_banking, kinds_stats, synthetic_nodes
 from dskit.pipeline import libs
 from dskit.pipeline import node as node_module
 from dskit.pipeline.base import import_ref
@@ -75,8 +75,8 @@ KIND_EFFECTS = {
     "banking-report": ("forbidden", "forbidden"),
     "concat": ("pure", "pure"),
     "derive": ("pure", "pure"),
-    "eligibility": ("forbidden", "forbidden"),
-    "event-bank": ("forbidden", "forbidden"),
+    "eligibility": ("pure", "pure"),
+    "event-bank": ("pure", "pure"),
     "event-grid": ("pure", "pure"),
     "filter": ("pure", "pure"),
     "groupby": ("pure", "pure"),
@@ -128,10 +128,17 @@ RELEASE_READ_CLASSES = (
     TORCH_IMPORTANCE,
 )
 
-#: The classes phase 2b audited as ``pure``: :meth:`run` never touches
-#: ``ctx`` and names no I/O primitive, so the answer is a function of the
-#: wired inputs and the declared params alone.
-PURE_AUDITED_CLASSES = (kinds_stats.StatTest,)
+#: The classes audited as ``pure``: :meth:`run` never touches ``ctx`` and
+#: names no I/O primitive, so the answer is a function of the wired inputs
+#: and the declared params alone. The two banking kinds are the phase-3
+#: carry-over — the real-kind twins of ``SynthBank`` / ``SynthEligibility``,
+#: which phase 1 had already classified ``pure``; only ``BankingReport``
+#: touches ``ctx``, to write, and it stays permanently ``forbidden``.
+PURE_AUDITED_CLASSES = (
+    kinds_stats.StatTest,
+    kinds_banking.EventBank,
+    kinds_banking.Eligibility,
+)
 
 #: The pack trainables that are still UNAUDITED, by class ref: each
 #: answers ``forbidden`` even under a pinned load (R16). Every one of them

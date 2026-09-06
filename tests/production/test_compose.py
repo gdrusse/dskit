@@ -81,7 +81,7 @@ from dskit.production.health import Health, Heartbeat, InstanceLock
 from dskit.production.ids import ReleaseIdSource
 from dskit.production.ledger import Checkpoint, JsonlLedger, ServeRoot
 from dskit.production.leg import LiveAuthority, ReductionAuthority, SimulatedAuthority
-from dskit.production.metrics import Metrics
+from dskit.production.metrics import Metrics, MetricSink
 from dskit.production.outcomes import OutcomeJoin, OutcomeSource, SettlementOutcomes
 from dskit.production.policy import ActionPolicy, TransitionPolicy
 from dskit.production.readiness import Readiness
@@ -336,6 +336,21 @@ def document_obj(serve_document, rung, tmp_path, overrides=None):
             cursor = cursor[key]
         cursor[keys[-1]] = value
     return obj
+
+
+class RecordingMetricSink(MetricSink):
+    """A metric exporter a document can name by path; it records every publish."""
+
+    published = []
+
+    def publish(self, snapshot, at_ms):
+        """Remember the flush instead of exporting it."""
+        RecordingMetricSink.published.append(at_ms)
+
+
+#: The `pkg.module:Class` reference a document uses to select the sink
+#: above — a child exporter reaches composition exactly this way.
+RECORDING_SINK = f"{__name__}:RecordingMetricSink"
 
 
 def document_at(serve_document, rung, tmp_path, overrides=None):
@@ -601,6 +616,30 @@ def test_the_observability_bundle_carries_metrics_alerts_health_and_the_heartbea
     assert isinstance(observability.alerts, AlertRouter)
     assert isinstance(observability.health, Health)
     assert isinstance(observability.heartbeat, Heartbeat)
+
+
+def test_a_declared_metric_sink_is_built_and_subscribed_to_the_registry(
+    serve_document, tmp_path, composer
+):
+    """§5.11.3: `placement.metric_sinks` is where an exporter is declared,
+    and composition is what subscribes it — nothing else may, because
+    `Metrics.flush` publishing to a sink nobody registered would be a
+    second wiring path."""
+    document = document_at(
+        serve_document,
+        "shadow",
+        tmp_path,
+        {"placement.metric_sinks": {"scrape": {"uses": RECORDING_SINK, "params": {}}}},
+    )
+    metrics = composer.build(document)[6].metrics
+    metrics.flush(1, "tick-1")
+    assert RecordingMetricSink.published, "the composed sink was never subscribed"
+
+
+def test_a_document_declaring_no_metric_sink_subscribes_none(shadow_bundles):
+    RecordingMetricSink.published.clear()
+    shadow_bundles[6].metrics.flush(1, "tick-1")
+    assert not RecordingMetricSink.published
 
 
 def test_the_alert_router_is_wired_to_the_ledger_so_only_it_appends_alert_records(shadow_bundles):

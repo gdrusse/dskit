@@ -127,6 +127,12 @@ CLOSED_SET_NAMES = (
     # this test exists to catch.
     "UNWAIVABLE_ITEMS",
     "READINESS_EVIDENCE",
+    # Phase 3 (§8, §5.11.3): the OTLP wire protocols a metric exporter may
+    # name, and the three families a declared metric exports as — both are
+    # spelled by the tier-2 packs, which is exactly why neither may live
+    # in one.
+    "OTEL_PROTOCOLS",
+    "METRIC_FAMILIES",
 )
 
 #: The names whose value is a MAP, not a tuple — checked by their own tests.
@@ -156,6 +162,12 @@ EXPECTED_MEMBERS = {
     "OUTCOME_KINDS": ("settled", "marked", "voided", "partial", "corrected"),
     "OUTCOME_SOURCES": ("settlement", "label", "operator"),
     "SIGNER_ALGORITHMS": ("sha256", "sha512"),
+    # §5.11.3 writes the second member `http/protobuf`, the library's own
+    # spelling; a vocabulary member is a snake_case token here (the one
+    # exception is `TICK_STATUSES`), so the wire spelling is produced
+    # inside the pack's method and the vocabulary stays a vocabulary.
+    "OTEL_PROTOCOLS": ("grpc", "http_protobuf"),
+    "METRIC_FAMILIES": ("counter", "gauge", "histogram"),
     "SILENCE_STATES": ("pending", "active", "expired"),
     "ESCALATION_LEVELS": ("primary", "secondary", "final"),
     # §5.11.2 adds the two mechanisms that withhold a page an operator asked

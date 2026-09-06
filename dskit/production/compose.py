@@ -106,7 +106,7 @@ from dskit.production.health import (
 from dskit.production.ids import RecordedIdSource, ReleaseIdSource
 from dskit.production.ledger import Checkpoint, ledger_class
 from dskit.production.leg import LiveAuthority, ReductionAuthority, SimulatedAuthority
-from dskit.production.metrics import Metrics
+from dskit.production.metrics import METRIC_SINK_KINDS, Metrics
 from dskit.production.monitors import MONITOR_KINDS, ParityMonitor
 from dskit.production.outcomes import OUTCOME_SOURCE_KINDS, OutcomeJoin
 from dskit.production.policy import ActionPolicy, TransitionPolicy
@@ -743,6 +743,18 @@ def _sinks(document, sections, resilience, clock, secrets):
     return built
 
 
+def _subscribed(metrics, document):
+    """Subscribe every exporter ``placement.metric_sinks`` declares (§5.11.3).
+
+    Composition is the only thing that subscribes: a sink built anywhere
+    else would be a second wiring path into a registry whose whole
+    contract is that a failing exporter can slow nothing.
+    """
+    for site in (document.placement.metric_sinks or {}).values():
+        metrics.subscribe(METRIC_SINK_KINDS.resolve(site.uses)(_selector(site)))
+    return metrics
+
+
 def _inhibits(document):
     """Build the inhibition rules the document declares, in declared order.
 
@@ -1032,7 +1044,7 @@ def bundles_for(
     )
     inbox = ControlInbox(serve_root, clock)
 
-    metrics = Metrics(log_dir=document.placement.log_dir)
+    metrics = _subscribed(Metrics(log_dir=document.placement.log_dir), document)
     alerts = AlertRouter(
         document.alerting,
         _sinks(document, sections, resilience, clock, secrets),

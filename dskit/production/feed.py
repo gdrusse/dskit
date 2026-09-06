@@ -21,26 +21,40 @@ OLDEST required key's watermark, a key the store does not carry is dead,
 and a connector or link failure is dead immediately — zero new rows is
 ``live`` only while every key is fresh (D6).
 
+Phase 3 adds :class:`StreamFeed` (§5.2.1), a push source expressed as one
+more subclass: a supervised daemon worker owns the socket through the
+child's :class:`StreamTransport`, hands what it receives to that source's
+own connector and lands it with the SAME ``run_acquisition`` a ``watch``
+process runs — so the rows still arrive through the store, and the only
+thing the stream adds downstream is a link state that FLOORS the freshness
+ladder.
+
 ``run_acquisition`` and ``scan_stream`` are called as MODULE attributes of
 their onboarding modules, which is what lets a test seam them without a
 network or a store.
 
 Import cost: stdlib, ``dskit.onboarding`` (acquire, observations, the
-root), ``dskit.pipeline.node``/``libs.observations`` (the contract type and
-the entry class's spellings) and the production base, records, redact,
-release and vocab modules.
+root), ``dskit.pipeline.base``/``node``/``libs.observations`` (the class
+reference resolver, the contract type and the entry class's spellings) and
+the production base, clock, records, redact, release, resilience and vocab
+modules.
 """
 
 from __future__ import annotations
 
 import copy
+import os
+import random
+import threading
 from abc import ABC, abstractmethod
+from collections import deque
 from dataclasses import dataclass, fields
 
 import dskit.onboarding.acquire as acquire
 import dskit.onboarding.observations as observations
 from dskit.onboarding.base import AssetError
 from dskit.onboarding.layout import OnboardingRoot
+from dskit.pipeline.base import import_ref, is_class_ref
 from dskit.pipeline.libs.observations import (
     DEFAULT_TS_UNIT,
     DIGEST_RECIPE_KIND,
@@ -56,23 +70,30 @@ from dskit.production.base import (
     _check_unknown,
     canonical_bytes,
     canonical_hash,
+    pin_members,
     reject_unknown_params,
 )
 from dskit.production.clock import ManualTime
 from dskit.production.records import EntryBatch, FeedResult, InputWatermark
 from dskit.production.redact import get_logger
 from dskit.production.release import FEED_SPEC_KEYS
-from dskit.production.vocab import PULL_MODES
+from dskit.production.resilience import Retry
+from dskit.production.vocab import FEED_STATUSES, LINK_STATES, PULL_MODES
 
 __all__ = [
     "ACQUISITION_MODE",
     "DEFAULT_PULL_MODE",
+    "DEFAULT_QUEUE_MAX",
     "FEED_KINDS",
+    "IDLE_POLL_S",
     "SOURCE_CONFIG_KIND",
+    "STREAM_PULL_MODE",
     "EntrySourceFeed",
     "Feed",
     "FeedSpec",
     "ReplayFeed",
+    "StreamFeed",
+    "StreamTransport",
     "active_source_identity",
     "snapshot_entry",
 ]
@@ -944,8 +965,577 @@ class ReplayFeed(Feed):
         return result
 
 
+# ---------------------------------------------------------------------------
+# StreamFeed — a push source, expressed as one more store pull (§5.2.1)
+# ---------------------------------------------------------------------------
+
+
+class StreamTransport(ABC):
+    """The socket seam a stream feed owns (§5.2.1): connect, receive, hand over.
+
+    A websocket client is a library and this package may import none, so
+    the socket itself is a child class named by ``pkg.module:Class`` in the
+    feed's ``transport`` params — the way §4.3 says a child supplies a
+    class, and the reason the stream pack adds no registry.
+
+    The transport owns BOTH ends of the wire and nothing between them: the
+    socket frames arrive on, and the spool its source's onboarding
+    connector reads them back from. What happens in between — the bounded
+    queue, the reconnect policy and the acquisition that actually lands
+    the rows — is :class:`StreamFeed`'s, so a child writes venue plumbing
+    and never a write path.
+
+    Parameters
+    ----------
+    params : dict, optional
+        The ``transport.params`` block; default-deny over the subclass's
+        ``_PARAMS`` plus ``notes``.
+
+    Examples
+    --------
+    A transport over a client library, with the library named inside the
+    methods like every other tier-3 import::
+
+        class VenueSocket(StreamTransport):
+            _PARAMS = ("venue",)
+
+            def connect(self, url, subscribe):
+                import websockets.sync.client as client
+                self._socket = client.connect(url)
+                self._socket.send(json.dumps(subscribe))
+
+            def receive(self):
+                return json.loads(self._socket.recv(timeout=1))
+
+            def deliver(self, frames):
+                self._spool.write(frames)   # where its connector reads
+
+        VenueSocket({"venue": "example"})
+    """
+
+    _PARAMS = ()
+
+    def __init__(self, params=None):
+        params = dict(params or {})
+        problems = self.validate_params(params)
+        if problems:
+            raise ProductionError(problems)
+        self._configure(params)
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return every problem with ``params``; empty when it is acceptable.
+
+        Parameters
+        ----------
+        params : dict
+            The params block as written in the document.
+
+        Returns
+        -------
+        list of str
+            One problem per unknown key; subclasses extend the list.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS + _NOTES)
+        return problems
+
+    def _configure(self, params):
+        """Read validated params; the base has none to read."""
+
+    @abstractmethod
+    def connect(self, url, subscribe):
+        """Open the socket and send the subscription payload.
+
+        Parameters
+        ----------
+        url : str
+            What the ``url_env`` variable held; never logged by the feed.
+        subscribe : dict
+            The document's subscription payload, verbatim.
+
+        Returns
+        -------
+        None
+            The answer is the open socket; a failure RAISES, and the feed
+            treats it as one more transient reconnect attempt.
+        """
+
+    @abstractmethod
+    def receive(self):
+        """Return the next frame, ``None`` when the socket is merely quiet.
+
+        Returns
+        -------
+        object or None
+            One frame, or ``None`` when nothing arrived within the
+            transport's own read deadline. A transport that returns
+            ``None`` instantly rather than blocking turns the worker into
+            a spin.
+
+        Raises
+        ------
+        Exception
+            Whatever the client raises when the connection is GONE — that
+            is how a drop is reported, and the feed answers it with the
+            reconnect policy rather than with a second backoff.
+        """
+
+    @abstractmethod
+    def deliver(self, frames):
+        """Hand received frames to wherever this source's connector reads them.
+
+        Parameters
+        ----------
+        frames : list
+            What arrived since the last delivery, oldest first.
+
+        Returns
+        -------
+        None
+            The rows are landed by the acquisition the feed runs next, not
+            by this call: the store stays the one source of truth (D4).
+        """
+
+    def close(self):
+        """Close the socket; concrete because a transport may hold nothing.
+
+        Returns
+        -------
+        None
+            Best-effort: :meth:`StreamFeed.close` swallows what it raises,
+            since a socket that cannot let go must not stop a shutdown.
+        """
+
+
+#: The pull mode a stream runs as: its worker is the writer, so the tick
+#: fetches nothing and reads the watermarks a landed acquisition left.
+STREAM_PULL_MODE = "store"
+
+#: How many frames the worker may hold between landings. A bound is the
+#: point: a burst that outruns the acquisition drops its OLDEST rows and
+#: is counted, because a stream that blocks the writer to keep an old row
+#: is a stream that stops the loop (§5.2.1).
+DEFAULT_QUEUE_MAX = 10_000
+
+#: How long a started worker waits after a turn that landed nothing. It
+#: exists so a transport whose ``receive`` does not block cannot spin a
+#: core; a transport that blocks properly never reaches it.
+IDLE_POLL_S = 0.05
+
+#: Link state -> the BEST feed status it allows. A link can only floor the
+#: freshness ladder, never lift it. Keyed by the whole vocabulary and
+#: pinned exactly: a state with no floor would silently report ``live``.
+_LINK_FLOOR = pin_members(
+    "feed.py's link floors",
+    {"connected": "live", "recovering": "stale", "disconnected": "dead"},
+    LINK_STATES,
+    exact=True,
+)
+
+#: What a link that dropped and came back since the last pull floors the
+#: status at — §5.2's ``degraded``: "rows arriving but a link that keeps
+#: dropping", the one status phase 1 leaves without a producer.
+RECONNECTED_FLOOR = "degraded"
+
+#: The outcome a failed connect or a dropped socket is classified as. A
+#: link fault is transient by construction: a fatal one would mean the
+#: venue said never to come back, which a socket cannot say.
+_LINK_OUTCOME = "transient"
+
+
+def _worst(*statuses):
+    """Return the worst of some feed statuses, by the vocabulary's own order."""
+    return max(statuses, key=FEED_STATUSES.index)
+
+
+class StreamFeed(EntrySourceFeed):
+    """A push source: one supervised worker owns the socket, the tick reads the store.
+
+    Registered as ``websocket`` in :data:`FEED_KINDS`. Everything after the
+    feed is unchanged — the same ``pull(tick_at_ms) -> FeedResult`` and the
+    same :class:`~dskit.production.records.EntryBatch` downstream — because
+    the worker does not hold the rows. It hands each frame to the
+    transport's own connector spool and lands them with the SAME
+    ``run_acquisition`` a ``watch`` process runs, so the entry node still
+    reads the store it was trained from (D4), the watermarks still come
+    from ``scan_stream``, and there is no second source of truth beside the
+    store.
+
+    :meth:`pull` is therefore ``EntrySourceFeed``'s ``store`` pull with one
+    addition: the LINK floors the status. A dropped connection is
+    ``recovering`` and the feed is at best ``stale``; an exhausted
+    reconnect budget is ``disconnected`` and the feed is ``dead``; a link
+    that dropped and came back since the last pull is ``degraded``. The
+    floor can only make the ladder's answer worse, never better.
+
+    Parameters
+    ----------
+    params : dict, optional
+        ``url_env`` (the NAME of the environment variable holding the
+        socket URL, required — never the URL); ``subscribe`` (the payload
+        the transport sends on connect, default ``{}``); ``queue_max``
+        (int >= 1, default :data:`DEFAULT_QUEUE_MAX`); ``reconnect`` (a
+        ``document.resilience.retry``-shaped block, built by
+        :class:`~dskit.production.resilience.Retry` rather than a second
+        backoff); ``transport`` (``{"uses": "pkg.module:Class", "params":
+        {...}}`` naming a :class:`StreamTransport` subclass — a NAME
+        refuses, because no registry owns stream transports and core ships
+        none). ``pull`` is NOT a knob: a stream's worker is its writer.
+    root, registry, contract, spec, clock, max_staleness_ms, dead_after_ms
+        As :class:`EntrySourceFeed`.
+    transport : StreamTransport or None, keyword-only
+        The socket, injected. ``None`` builds the one ``params.transport``
+        names — which is how ``compose.py`` builds this feed at all, since
+        it hands every feed one fixed set of collaborators.
+    sleeper : callable or None, keyword-only
+        ``sleeper(seconds)``, what the reconnect backoff waits through;
+        ``None`` uses the worker's own stop event, so a shutdown
+        interrupts a wait instead of outlasting it.
+    rng : object or None, keyword-only
+        Provides ``uniform(a, b)`` for the backoff jitter; ``None`` builds
+        a :class:`random.Random`.
+
+    Examples
+    --------
+    A stream over a child's transport, driven one turn at a time::
+
+        feed = StreamFeed(
+            {"url_env": "VENUE_WS_URL", "subscribe": {"channel": "bars"},
+             "transport": {"uses": "yourproject.venue:Socket"}},
+            root=root, registry=root.registry(), contract=contract, spec=spec,
+            clock=clock, max_staleness_ms=120_000, dead_after_ms=600_000,
+        )
+        feed.start()                      # the worker takes the socket
+        feed.pull(1_767_000_000_000).status   # 'live' | 'degraded' | 'stale' | 'dead'
+        feed.close()
+    """
+
+    _PARAMS = ("url_env", "subscribe", "queue_max", "reconnect", "transport")
+
+    def __init__(self, params=None, *, transport=None, sleeper=None, rng=None, **collaborators):
+        self._transport = transport
+        super().__init__(params, **collaborators)
+        problems = []
+        if not isinstance(self._transport, StreamTransport):
+            problems.append(
+                f"transport must be a StreamTransport, got {self._transport!r}"
+            )
+        if sleeper is not None and not callable(sleeper):
+            problems.append(f"sleeper must be callable as sleeper(seconds), got {sleeper!r}")
+        if problems:
+            raise ProductionError(problems)
+        self._stop = threading.Event()
+        self._thread = None
+        self._closed = False
+        self._retry = Retry(
+            self._reconnect_params,
+            clock=collaborators["clock"],
+            sleeper=self._stop.wait if sleeper is None else sleeper,
+            rng=random.Random() if rng is None else rng,
+        )
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return every problem with ``params``; empty when it is acceptable.
+
+        The transport class is imported here — it is a child's class, not a
+        library — but never constructed, and the environment is not read:
+        a document must refuse identically wherever it is validated.
+
+        Parameters
+        ----------
+        params : dict
+            The params block as written in the document.
+
+        Returns
+        -------
+        list of str
+            Accumulated problems, each naming the offending key.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS + _NOTES)
+        url_env = params.get("url_env")
+        _check_str(problems, "url_env", url_env)
+        if isinstance(url_env, str) and "://" in url_env:
+            problems.append(
+                "url_env is the NAME of an environment variable holding the socket "
+                f"URL, not the URL itself, got {url_env!r}"
+            )
+        if "subscribe" in params:
+            _check_dict(problems, "subscribe", params["subscribe"])
+        check_int_param(problems, "queue_max", params.get("queue_max", DEFAULT_QUEUE_MAX), ge=1)
+        problems.extend(
+            f"reconnect: {problem}"
+            for problem in Retry.validate_params(params.get("reconnect") or {})
+        )
+        cls._check_transport(problems, params.get("transport"))
+        return problems
+
+    @classmethod
+    def _check_transport(cls, problems, site):
+        """Append every problem with the transport site; return the class, or None."""
+        if not isinstance(site, dict):
+            problems.append(
+                "transport is required: {'uses': 'pkg.module:Class', 'params': {...}} "
+                "naming a StreamTransport — core ships none"
+            )
+            return None
+        _check_unknown(problems, site, ("uses", "params") + _NOTES, "transport")
+        uses = site.get("uses")
+        if not is_class_ref(uses):
+            problems.append(
+                f"transport.uses must be a 'pkg.module:Class' reference, got {uses!r} — "
+                "no registry owns stream transports, so a bare name resolves to nothing"
+            )
+            return None
+        try:
+            cls_ = import_ref(uses)
+        except ValueError as exc:
+            problems.append(f"transport.uses: {exc}")
+            return None
+        if not (isinstance(cls_, type) and issubclass(cls_, StreamTransport)):
+            problems.append(f"transport.uses {uses!r} is not a StreamTransport subclass")
+            return None
+        problems.extend(
+            f"transport.params: {problem}"
+            for problem in cls_.validate_params(dict(site.get("params") or {}))
+        )
+        return cls_
+
+    def _configure(self, params):
+        """Bind the store pull, the queue, the knobs and — when none was injected — the transport."""
+        self._puller = _PULLS[STREAM_PULL_MODE]
+        self._url_env = params["url_env"]
+        self._subscribe = dict(params.get("subscribe") or {})
+        self._queue_max = int(params.get("queue_max", DEFAULT_QUEUE_MAX))
+        self._reconnect_params = dict(params.get("reconnect") or {})
+        self._frames = deque(maxlen=self._queue_max)
+        self._link = "connected"
+        self._attempt = 0
+        self._reconnects = 0
+        self._dropped = 0
+        self._land_failures = 0
+        self._opened = False
+        if self._transport is None:
+            site = params["transport"]
+            self._transport = self._check_transport([], site)(dict(site.get("params") or {}))
+
+    # -- what the worker holds ---------------------------------------------
+
+    @property
+    def transport(self):
+        """Return the socket this feed's worker owns."""
+        return self._transport
+
+    @property
+    def queue_max(self):
+        """Return how many frames the worker may hold between landings."""
+        return self._queue_max
+
+    @property
+    def queued(self):
+        """Return how many frames are waiting to be landed."""
+        return len(self._frames)
+
+    @property
+    def dropped(self):
+        """Return how many frames a full queue dropped, oldest first."""
+        return self._dropped
+
+    @property
+    def land_failures(self):
+        """Return how many landings failed — counted, logged and swallowed."""
+        return self._land_failures
+
+    @property
+    def reconnects(self):
+        """Return how many times the link came back since the last :meth:`pull`."""
+        return self._reconnects
+
+    @property
+    def link_state(self):
+        """Return the socket's state: a :data:`~dskit.production.vocab.LINK_STATES` member."""
+        return self._link
+
+    # -- the tick side (the loop thread) -----------------------------------
+
+    def pull(self, tick_at_ms):
+        """Grade the store as ``EntrySourceFeed`` does, then reset the per-tick link count.
+
+        Parameters
+        ----------
+        tick_at_ms : int
+            The tick's instant, epoch ms.
+
+        Returns
+        -------
+        FeedResult
+            The ladder's answer, floored by the link (see :meth:`_status`).
+
+        Raises
+        ------
+        ProductionError
+            As :meth:`EntrySourceFeed.pull` — the source identity is
+            re-checked before anything else, socket or not.
+        """
+        result = super().pull(tick_at_ms)
+        self._reconnects = 0
+        return result
+
+    def _status(self, latest, tick_at_ms):
+        """Return the ladder's answer, floored by what the link has been doing."""
+        return _worst(super()._status(latest, tick_at_ms), self._floor())
+
+    def _floor(self):
+        """Return the best status the link allows this tick."""
+        floors = [_LINK_FLOOR[self._link]]
+        if self._reconnects:
+            floors.append(RECONNECTED_FLOOR)
+        return _worst(*floors)
+
+    # -- the socket side (the worker thread, or a test) --------------------
+
+    def pump(self):
+        """Run one turn of the worker: connect if needed, take what arrived, land it.
+
+        The loop never calls this — D23's rule is that one supervised
+        daemon worker owns the socket — but a test drives it directly,
+        which is why it is a method rather than an inline loop body.
+
+        Returns
+        -------
+        bool
+            ``True`` when rows were landed; ``False`` when the link was not
+            up, nothing had arrived, or the landing failed.
+        """
+        if not self._connected():
+            return False
+        self._drain()
+        return self._land()
+
+    def start(self):
+        """Run :meth:`pump` on one daemon thread until :meth:`close`.
+
+        Returns
+        -------
+        None
+            The thread is a daemon: a stuck socket costs one thread and
+            never delays shutdown.
+
+        Raises
+        ------
+        ProductionError
+            If the worker is already started, or the feed is closed.
+        """
+        if self._closed or self._thread is not None:
+            raise ProductionError(["the stream worker is already started or closed"])
+        self._thread = threading.Thread(
+            target=self._work, name="dskit-production-stream", daemon=True
+        )
+        self._thread.start()
+
+    def close(self):
+        """Stop the worker and close the socket; idempotent.
+
+        Returns
+        -------
+        None
+            Returns even while the transport is still stuck in a read: its
+            daemon thread is abandoned, never waited on beyond the bound.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(IDLE_POLL_S * 2)
+        try:
+            self._transport.close()
+        except Exception as exc:  # noqa: BLE001 — a socket's close is as untrusted as its read
+            _log.warning("stream transport failed to close: %s", exc)
+
+    def _work(self):
+        """Pump until stopped, resting only after a turn that landed nothing."""
+        while not self._stop.is_set():
+            if not self.pump():
+                self._stop.wait(IDLE_POLL_S)
+
+    def _connected(self):
+        """Return whether the socket is up, opening it through the reconnect policy."""
+        if self._opened:
+            return True
+        try:
+            self._transport.connect(self._url(), dict(self._subscribe))
+        except Exception as exc:  # noqa: BLE001 — a client may raise anything
+            self._link_fault(exc)
+            return False
+        self._opened = True
+        self._link = "connected"
+        if self._attempt:
+            self._reconnects += 1
+        self._attempt = 0
+        self._retry.refund()
+        return True
+
+    def _url(self):
+        """Return the socket URL the environment holds, or refuse naming the variable."""
+        url = os.environ.get(self._url_env)
+        if not url:
+            raise ProductionError(
+                [f"the environment holds no {self._url_env}, so there is no socket to open"]
+            )
+        return url
+
+    def _link_fault(self, exc):
+        """Answer a failed connect or a dropped socket with the reconnect policy."""
+        self._opened = False
+        self._attempt += 1
+        decision = self._retry.decide(self._attempt, _LINK_OUTCOME, False)
+        self._link = "recovering" if decision == "retry" else "disconnected"
+        _log.warning(
+            "stream link %s after attempt %d: %s", self._link, self._attempt, exc
+        )
+        if decision == "retry":
+            self._retry.wait(self._attempt, _LINK_OUTCOME)
+
+    def _drain(self):
+        """Take every frame the socket has ready; a full queue drops its OLDEST."""
+        while True:
+            try:
+                frame = self._transport.receive()
+            except Exception as exc:  # noqa: BLE001 — a client may raise anything
+                self._link_fault(exc)
+                return
+            if frame is None:
+                return
+            if len(self._frames) == self._queue_max:
+                self._dropped += 1
+            self._frames.append(frame)
+
+    def _land(self):
+        """Hand what is queued to the connector and land it through one acquisition."""
+        frames = list(self._frames)
+        self._frames.clear()
+        if not frames:
+            return False
+        try:
+            self._transport.deliver(frames)
+            self._puller_land()
+        except Exception as exc:  # noqa: BLE001 — neither half may kill the worker
+            self._land_failures += 1
+            _log.warning("stream landing failed (%d so far): %s", self._land_failures, exc)
+            return False
+        return True
+
+    def _puller_land(self):
+        """Run the ONE acquisition a landing performs — a ``watch``'s own write path."""
+        _AcquirePull.fetch(self._root, self._registry, self._contract.source_binding)
+
+
 #: The feed family's open doorway (§4.3): a registered name or a
 #: ``pkg.module:Class`` reference, both subclasses of :class:`Feed`.
 FEED_KINDS = Registry("feed", Feed)
 FEED_KINDS.register("entry-source", EntrySourceFeed)
 FEED_KINDS.register("replay", ReplayFeed)
+FEED_KINDS.register("websocket", StreamFeed)

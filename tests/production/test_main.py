@@ -42,6 +42,11 @@ from dskit.production.feed import FEED_KINDS
 from dskit.production.guards import GUARD_KINDS, MEASURE_KINDS
 from dskit.production.health import HEARTBEAT_KINDS, PROBE_KINDS, InstanceLock
 from dskit.production.ledger import LEDGER_KINDS, ServeRoot
+# Importing a pack is how a kind reaches its registry (§4.3), and a pack
+# never imports its library at module level — so this costs nothing and is
+# what makes `prometheus` resolvable in the closure tests below.
+from dskit.production.libs import prometheus as _prometheus_pack  # noqa: F401
+from dskit.production.metrics import METRIC_SINK_KINDS
 from dskit.production.monitors import (
     CHUNKER_KINDS,
     MONITOR_KINDS,
@@ -1408,6 +1413,7 @@ REGISTRIES = {
     "OUTCOME_SOURCE_KINDS": OUTCOME_SOURCE_KINDS,
     "LEDGER_KINDS": LEDGER_KINDS,
     "SIGNER_KINDS": SIGNER_KINDS,
+    "METRIC_SINK_KINDS": METRIC_SINK_KINDS,
 }
 
 #: Every `uses` / `kind` / `measure` site §4.1's grammar spells, with the
@@ -1445,6 +1451,12 @@ GRAMMAR_SELECTORS = (
     ("outcomes.sources.settle.uses", "settlement", "OUTCOME_SOURCE_KINDS"),
     ("durability.ledger.uses", "jsonl", "LEDGER_KINDS"),
     ("execution.signer.uses", "hmac", "SIGNER_KINDS"),
+    # [phase 3, §5.11.3] the exporter family, whose one grammar site is
+    # under the EXCLUDED `placement` section: a metric is never an input
+    # to a decision, so adding one must not mint a release. Core registers
+    # nothing into it, so the pack is imported below — import IS
+    # registration (§4.3), and importing a pack costs no library.
+    ("placement.metric_sinks.scrape.uses", "prometheus", "METRIC_SINK_KINDS"),
 )
 
 

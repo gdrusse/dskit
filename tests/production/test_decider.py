@@ -165,6 +165,36 @@ def gated_document(training_document):
 
 GATE_OUTPUTS = {"instruments": list(UNIVERSE), "verdict": "GO"}
 
+#: The key the writing node takes in `written_document` below.
+WRITER_NODE = "ledger"
+
+
+def written_document(training_document):
+    """The training document with a WRITING node between the base pass and the head.
+
+    `banking-report` writes its ledger through `write_artifact`, so §9.1
+    classifies it `forbidden` permanently — which is what a refusal test
+    wants under it: a subject no later widening can take away.
+    """
+    head = training_document.pipeline[HEAD]
+    return variant(
+        training_document,
+        changes={
+            WRITER_NODE: NodeSpec(
+                uses="banking-report",
+                inputs={
+                    "banked": f"${BASE_PASS_NODE}.table",
+                    "family": f"${BASE_PASS_NODE}.table",
+                },
+                params={"min_events": 1},
+            ),
+            HEAD: dataclasses.replace(
+                head,
+                inputs={"records": "$scored.records", "weight": f"${WRITER_NODE}.summary"},
+            ),
+        },
+    )
+
 
 # --------------------------------------------------------------------------
 # serving_document — one case per §5.3 derivation rule
@@ -784,13 +814,17 @@ class TestPrepareRefusals:
     def test_a_needed_forbidden_node_refuses(
         self, serve_document, release_manifest, clock, training_document, tmp_path
     ):
-        doc = gated_document(training_document)
-        run = fake_run_dir(tmp_path, doc, artifacts=[TRAINABLE_NODE],
-                           carry={"family": dict(GATE_OUTPUTS)})
+        # The forbidden node is a WRITER (§9.1: "every writing node stays
+        # `forbidden` permanently"), not merely an unaudited one. Phase 3's
+        # carry-over audit made `eligibility` — this test's first choice —
+        # `pure`, and a refusal test whose subject can be audited away is a
+        # test with a shelf life.
+        doc = written_document(training_document)
+        run = fake_run_dir(tmp_path, doc, artifacts=[TRAINABLE_NODE])
         text = self.refuses(
             self.reserved(serve_document, run_dir=run), release_manifest, clock, run
         )
-        assert "family" in text and "forbidden" in text
+        assert WRITER_NODE in text and "forbidden" in text
 
     def test_a_release_read_outside_the_manifest_refuses(
         self, serve_document, clock, run_dir, source_config_hash, feed_spec_obj, tmp_path

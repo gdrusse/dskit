@@ -34,11 +34,12 @@ import json
 import math
 import os
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
 
 from dskit.pipeline.node import check_int_param, class_ref, reject_unknown_params
 from dskit.production import vocab
-from dskit.production.base import ProductionError, Registry
+from dskit.production.base import ProductionError, Registry, pin_members
 from dskit.production.redact import get_logger
 
 __all__ = [
@@ -54,6 +55,12 @@ __all__ = [
     "MetricSink",
     "Metrics",
     "RESERVED_LABEL_VALUE",
+    "Reading",
+    "SERIES_JOIN",
+    "SERIES_PAIR",
+    "readings",
+    "series_key",
+    "series_labels",
 ]
 
 #: The suffix that makes a name a counter — and a counter the only thing
@@ -66,6 +73,11 @@ RESERVED_LABEL_VALUE = "other"
 METRICS_FILENAME = "metrics.jsonl"
 #: The histogram's closing bucket, which every observation falls into.
 INF_BUCKET = "+Inf"
+#: What joins a label name to its value inside a series key, and what
+#: joins the pairs. Named here because :func:`series_key` and
+#: :func:`series_labels` are one recipe read from both ends.
+SERIES_PAIR = "="
+SERIES_JOIN = ","
 #: Prometheus's default latency buckets, in seconds (the base unit).
 DEFAULT_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
 #: The bound on a metric's series count: the product over its labels of
@@ -73,6 +85,14 @@ DEFAULT_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0
 #: phase-1 table, small enough that a label bound to a free-text field
 #: could never be declared.
 DEFAULT_LABELS_MAX_CARDINALITY = 1000
+
+#: The three families of :data:`~dskit.production.vocab.METRIC_FAMILIES`,
+#: spelled here because :func:`readings` decides between them — pinned to
+#: the vocabulary, and EXACTLY, since a family the rule cannot name is a
+#: metric no exporter could carry.
+_COUNTER, _GAUGE, _HISTOGRAM = pin_members(
+    "metrics.py's families", vocab.METRIC_FAMILIES, vocab.METRIC_FAMILIES, exact=True
+)
 
 #: The registry's own counter (§5.11.1), declared for itself at construction.
 _DROPPED = "metrics_label_cardinality_dropped_total"
@@ -90,6 +110,115 @@ _NOTES = ("notes",)
 _OWN_CEILING = DEFAULT_LABELS_MAX_CARDINALITY
 
 _log = get_logger("metrics")
+
+
+@dataclass(frozen=True)
+class Reading:
+    """One series of one metric, as an exporter needs to see it (§5.11.3).
+
+    :func:`readings` is the only thing that builds one, so the rule that
+    decides ``family`` has a single owner: an exporter that re-derived it
+    from the name would be the second copy of the declaration rule, and
+    the first one to change would export a counter as a gauge.
+
+    Parameters
+    ----------
+    family : str
+        A :data:`~dskit.production.vocab.METRIC_FAMILIES` member.
+    name : str
+        The declared metric name, unchanged.
+    labels : dict
+        ``{label name: value}``, as :func:`series_labels` reads them.
+    value : int or float or dict
+        The reading; a histogram's is its ``{count, sum, buckets}``.
+
+    Examples
+    --------
+    ::
+
+        reading = Reading("counter", "ticks_total", {"status": "decided"}, 3)
+        reading.family   # 'counter'
+    """
+
+    family: str
+    name: str
+    labels: dict
+    value: object
+
+
+def _family_of(name, value):
+    """Return the family a series belongs to, by the rule that declared it."""
+    if isinstance(value, dict):
+        return _HISTOGRAM
+    return _COUNTER if name.endswith(COUNTER_SUFFIX) else _GAUGE
+
+
+def readings(snapshot):
+    """Return one :class:`Reading` per recorded series of a snapshot.
+
+    Every exporter needs the same decomposition — which metric, which
+    labels, which family, which value — so it lives here rather than once
+    per pack.
+
+    Parameters
+    ----------
+    snapshot : dict
+        A :meth:`Metrics.snapshot` result.
+
+    Returns
+    -------
+    tuple of Reading
+        Sorted by metric name then series key. A declared metric with no
+        recorded series contributes nothing: there is no reading to
+        export.
+    """
+    return tuple(
+        Reading(_family_of(name, value), name, series_labels(key), value)
+        for name, series in sorted(snapshot.items())
+        for key, value in sorted(series.items())
+    )
+
+
+def series_key(labels):
+    """Return the series key a metric's label values select.
+
+    The recipe has ONE owner because an exporter must read it back
+    (§5.11.3): a pack that parsed ``status=decided`` with its own split
+    would be the second copy of a rule, and the first one to change would
+    silently export the wrong label. Label values come from closed tables
+    or from :data:`RESERVED_LABEL_VALUE`, so neither separator can appear
+    inside one.
+
+    Parameters
+    ----------
+    labels : dict
+        ``{label name: value}``; empty for an unlabelled metric.
+
+    Returns
+    -------
+    str
+        ``name=value`` pairs sorted by name and joined by ``,`` — ``""``
+        when there are no labels.
+    """
+    return SERIES_JOIN.join(f"{name}{SERIES_PAIR}{labels[name]}" for name in sorted(labels))
+
+
+def series_labels(key):
+    """Return the labels a series key holds — the inverse of :func:`series_key`.
+
+    Parameters
+    ----------
+    key : str
+        A key as :meth:`Metrics.snapshot` reports it.
+
+    Returns
+    -------
+    dict
+        ``{label name: value}``; empty for an unlabelled metric's ``""``.
+    """
+    if not key:
+        return {}
+    return dict(pair.split(SERIES_PAIR, 1) for pair in key.split(SERIES_JOIN))
 
 
 def _is_number(value):
@@ -219,14 +348,14 @@ class _Metric(ABC):
             raise ProductionError(
                 [f"{self._name}: labels are exactly {list(self._labels)}; unknown {unknown}, missing {missing}"]
             )
-        parts = []
+        admitted = {}
         for label in self._labels:
             value = labels[label]
             if not (isinstance(value, str) and value in self._allowed[label]):
                 value = RESERVED_LABEL_VALUE
                 self._registry._count_drop()
-            parts.append(f"{label}={value}")
-        key = ",".join(parts)
+            admitted[label] = value
+        key = series_key(admitted)
         if key not in self._series:
             self._series[key] = self._zero()
         return key

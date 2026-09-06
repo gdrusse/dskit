@@ -111,7 +111,10 @@ plus phase 2's `OutcomeSource`, `Ledger` (`LEDGER_KINDS`) and `Signer`
 (`SIGNER_KINDS`)), and `Proposer` and `Measure`. A child implements the
 venue executor, its accounting, its
 approval verifier and its fenced lease, and references them by
-`pkg.module:Class`. Children never subclass `ServeLoop`, `GuardChain` or a
+`pkg.module:Class` — and, for a push source, the `StreamTransport`
+`feed.py` declares, which is the one seam resolved by class reference
+alone: no registry owns stream transports, core ships none, and a bare
+name refuses saying so (§5.2.1). Children never subclass `ServeLoop`, `GuardChain` or a
 policy. A second STORE subclasses `ChainLedger`, not `Ledger`: the envelope,
 the digest, the idempotency index, the durability grade and the writer lock
 are one implementation, and the five hooks (`_open`, `_store`, `_sync`,
@@ -131,8 +134,8 @@ a replay runs stays `compose.py`'s decision.
 
 ## Testing
 
-`tests/production/` mirrors the modules and `tests/production_libs/` the two
-packs. `conftest.py` builds a real synthetic training run over a temp
+`tests/production/` mirrors the modules and `tests/production_libs/` the
+five packs. `conftest.py` builds a real synthetic training run over a temp
 onboarding root — use it rather than inventing a fixture. No network, no
 wall-clock sleeps, `TestClock` everywhere. A test that restates its own literal
 is worse than none: assert the refusals. A pack test skips when its library is
@@ -159,7 +162,9 @@ dskit/production/
 ├── monitors.py metrics.py alerts.py health.py   what watches, counts, pages, probes
 ├── ids.py bundles.py compose.py leg.py loop.py  ids; the bundles; the root; steps; ticks
 ├── readiness.py outcomes.py report.py  GO/NO-GO; what happened; what it was worth
-├── libs/ (parquet.py sqlite.py)        tier-2 packs: RunReference; SqliteLedger
+├── libs/ (parquet.py sqlite.py         tier-2 packs: RunReference; SqliteLedger;
+│        exchange_calendars.py         ExchangeCalendar; PrometheusSink; OtelSink
+│        prometheus.py opentelemetry.py)
 └── README.md CLAUDE.md AGENTS.md
 ```
 

@@ -696,7 +696,20 @@ _ALERTING = _Fixed(
 )
 _ENDPOINT = _Fixed({"url_env": _STR, "template": _STR, "timeout_s": _POSITIVE}, required=("url_env",))
 _ROTATE = _Fixed({"by": _Choice(ROTATE_BY), "max_bytes": _POSITIVE_INT})
-_PLACEMENT = _Fixed({"ledger_root": _STR, "rotate": _ROTATE, "log_dir": _STR}, required=("ledger_root",))
+#: [phase 3] Metric exporters live HERE, not in ``alerting`` (§5.11.3):
+#: §4.2 grades alert sinks because emptying them silences a safety
+#: control, and a metric is explicitly never an input to a decision, a
+#: guard or a record (§5.11.1) — so adding or removing an exporter is a
+#: placement change and must not mint a new release.
+_PLACEMENT = _Fixed(
+    {
+        "ledger_root": _STR,
+        "rotate": _ROTATE,
+        "log_dir": _STR,
+        "metric_sinks": _Named(_SELECTOR),
+    },
+    required=("ledger_root",),
+)
 _ENV = _Fixed({"env_file": _STR, "require": _KEY_LIST})
 
 #: The document: every top-level key of §4.1, in plan order.

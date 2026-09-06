@@ -1263,6 +1263,34 @@ def test_the_sink_kind_is_policy_while_its_endpoint_is_placement():
     assert rerouted.doc_hash != base.doc_hash
 
 
+def test_a_metric_sink_is_a_selector_under_placement_and_never_moves_identity():
+    # §5.11.3: metric sinks are declared in `placement.metric_sinks` — the
+    # EXCLUDED section — because a metric is never an input to a decision,
+    # a guard or a record (§5.11.1). §4.2 grades ALERT sinks by the
+    # opposite argument: emptying those silences a safety control.
+    base = ServeDocument.from_obj(example_document())
+    obj = set_path(
+        example_document(),
+        ("placement", "metric_sinks"),
+        {"scrape": {"uses": "prometheus", "params": {"mode": "pull", "port": 9400}}},
+    )
+    doc = ServeDocument.from_obj(obj)
+    assert doc.placement.metric_sinks["scrape"].uses == "prometheus"
+    assert doc.placement.metric_sinks["scrape"].params == {"mode": "pull", "port": 9400}
+    assert doc.doc_hash == base.doc_hash
+
+
+def test_a_document_that_declares_no_metric_sink_reads_none():
+    assert ServeDocument.from_obj(minimal_document()).placement.metric_sinks is None
+
+
+def test_a_metric_sink_that_is_not_a_selector_refuses():
+    with pytest.raises(ProductionError):
+        ServeDocument.from_obj(
+            set_path(example_document(), ("placement", "metric_sinks"), {"scrape": "prometheus"})
+        )
+
+
 def test_key_order_never_changes_identity():
     obj = example_document()
     reordered = {k: obj[k] for k in sorted(obj, reverse=True)}

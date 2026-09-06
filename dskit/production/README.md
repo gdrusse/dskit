@@ -186,6 +186,7 @@ The toolkit never learns a venue. A child ships tier-3 code and JSON:
 | `OutcomeSource` | `poll(legs, at_ms, standing)` for a world only you can read | where your truth settles |
 | `Signer` (subclass `HmacSigner`) | `probe_request()` — the venue's clock endpoint | the venue's own dialect |
 | `Ledger` (subclass `ChainLedger`) | `_open`, `_store`, `_sync`, `_walk`, `_shutdown`, `scan` | your durable store |
+| `StreamTransport` (for a `websocket` feed) | `connect`, `receive`, `deliver` — the socket, and the spool your connector reads back from | the venue's own wire |
 
 Every one is resolved by `uses` — a registered kind name or a
 `pkg.module:Class` reference — so a child registers nothing and references its
@@ -233,6 +234,25 @@ silences, acks and an escalation ladder; a health state machine with probes
 and an external dead-man heartbeat (file, url or systemd); a metrics registry
 with closed label sets.
 
+**Packs** (`libs/`, each naming its library only inside a method, so a
+document that declares none pays for none) — `exchange` materialises a
+published exchange schedule into the weekly session list and binds its data
+digest into the release; `prometheus` and `opentelemetry` export the metrics
+registry by scrape, by push gateway or over OTLP, declared under
+`placement.metric_sinks` (placement, not policy: a metric is never an input
+to a decision) and subscribed by the composition root; `run` and `sqlite` are
+phase 2's reference and ledger. A failing exporter is swallowed and counted,
+like every other sink.
+
+**Push sources** — `websocket` is the same `Feed` seam with the rows still
+arriving through your connector: one supervised daemon worker owns the socket,
+hands what it receives to your `StreamTransport` and lands it with the same
+acquisition a `watch` process runs, so the entry still reads the store it was
+trained from. Its reconnect policy is the `resilience` `Retry`, and the link
+FLOORS the freshness ladder — recovering is at best `stale`, an exhausted
+reconnect budget is `dead`, and a link that dropped and came back this tick is
+`degraded`.
+
 **Scoring itself** — `outcomes` joins what happened onto each leg through the
 declared sources and appends it as a supersede chain; `report` prints
 attribution, calibration and the value curve at an explicit cut; `replay`
@@ -257,7 +277,9 @@ dskit/production/
 ├── sessions.py        Calendar ABC; AlwaysOpen, WeeklySessions, EventWindow, Composite
 ├── cadence.py         Cadence ABC; FixedInterval, AlignedBar, AtTimes, OnData; Overrun
 ├── control.py         ControlInbox; CommandProcessor
-├── feed.py            Feed ABC; ServingContract + FeedSpec; EntrySourceFeed; ReplayFeed
+├── feed.py            Feed ABC; ServingContract + FeedSpec; EntrySourceFeed; ReplayFeed;
+│                      StreamTransport ABC + StreamFeed (`websocket`), the push source whose
+│                      worker writes through the source's own connector
 ├── decider.py         serving_document(); Decider; ServingExecutionPolicy; proposers
 ├── guards.py          Guard ABC; GuardChain (+ new_holds, the holds a leg must record, and
 │                      approve_hold, the early release of one); Limit; RangeGuard; Measure + registry
@@ -296,9 +318,18 @@ dskit/production/
 ├── libs/              tier-2 packs — a library behind a seam this package owns
 │   ├── parquet.py     RunReference over a run's predictions, registered as `run`
 │   │                  in REFERENCE_KINDS; pyarrow inside the method
-│   └── sqlite.py      SqliteLedger — the chain in one file, WAL + synchronous=FULL
-│                      pinned, append-only enforced by three triggers, rotate refused;
-│                      registered as `sqlite` in LEDGER_KINDS; sqlite3 inside the method
+│   ├── sqlite.py      SqliteLedger — the chain in one file, WAL + synchronous=FULL
+│   │                  pinned, append-only enforced by three triggers, rotate refused;
+│   │                  registered as `sqlite` in LEDGER_KINDS; sqlite3 inside the method
+│   ├── exchange_calendars.py  ExchangeCalendar — a published schedule materialised once
+│   │                  into the WeeklySessions session list, with a data_fingerprint the
+│   │                  release binds; registered as `exchange` in CALENDAR_KINDS
+│   ├── prometheus.py  PrometheusSink over metrics.py's MetricSink seam — pull (a scrape
+│   │                  endpoint) or push (a gateway named by env var); registered as
+│   │                  `prometheus` in METRIC_SINK_KINDS
+│   └── opentelemetry.py  OtelSink over the same seam — observable instruments over OTLP;
+│                      a histogram is carried as its count and sum; registered as
+│                      `opentelemetry` in METRIC_SINK_KINDS
 ├── README.md          this file
 ├── CLAUDE.md          agent orientation
 └── AGENTS.md          agent orientation (same content, Codex-facing)

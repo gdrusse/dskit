@@ -55,6 +55,9 @@ from dskit.production.metrics import (
     RESERVED_LABEL_VALUE,
     MetricSink,
     Metrics,
+    readings,
+    series_key,
+    series_labels,
 )
 
 #: The registry's own counter — §5.11.1 names it, and it is the one metric
@@ -789,3 +792,83 @@ class TestAFailingExporterCanBreakNothing:
         registry.subscribe(Rude())
         registry.close()
         assert registry.snapshot()["metric_sink_failures_total"] == {"sink=other": 1}
+
+
+# ---------------------------------------------------------------------------
+# What an exporter reads — the decomposition the packs share (§5.11.3)
+# ---------------------------------------------------------------------------
+
+
+class TestTheSeriesKeyRecipe:
+    def test_the_key_is_the_pairs_sorted_by_name(self):
+        assert series_key({"risk_effect": "increase", "rung": "paper"}) == (
+            "risk_effect=increase,rung=paper"
+        )
+        assert series_key({}) == ""
+
+    def test_the_two_halves_are_one_recipe_read_from_both_ends(self):
+        # The recipe has ONE owner because an exporter must read a key
+        # back; a pack parsing it with its own split is the second copy
+        # that diverges (CLAUDE.md).
+        labels = {"rung": "paper", "risk_effect": "increase", "outcome": "filled"}
+        assert series_labels(series_key(labels)) == labels
+        assert series_labels("") == {}
+
+    def test_the_registry_writes_the_keys_this_recipe_reads(self):
+        registry = Metrics()
+        registry.counter("submits_total", labels=("rung", "risk_effect", "outcome")).inc(
+            rung="paper", risk_effect="increase", outcome="filled"
+        )
+        key, = registry.snapshot()["submits_total"]
+        assert series_labels(key) == {
+            "outcome": "filled",
+            "risk_effect": "increase",
+            "rung": "paper",
+        }
+
+
+class TestReadings:
+    def test_each_reading_carries_its_family_name_labels_and_value(self):
+        registry = Metrics()
+        registry.counter("ticks_total", labels=("status",)).inc(2, status="decided")
+        found = [r for r in readings(registry.snapshot()) if r.name == "ticks_total"]
+        assert len(found) == 1
+        assert (found[0].family, found[0].labels, found[0].value) == (
+            "counter",
+            {"status": "decided"},
+            2,
+        )
+
+    def test_the_family_is_the_rule_that_declared_the_metric(self):
+        # A `_total` name is a counter because that is what made it one at
+        # declaration; a series holding buckets is a histogram. An
+        # exporter re-deriving either would be the second copy of the
+        # rule, so it lives here.
+        registry = Metrics()
+        registry.counter("refusals_total", labels=("reason",)).inc(reason="refused")
+        registry.gauge("ledger_append_seconds").set(1.0)
+        registry.histogram("tick_seconds", labels=("phase",)).observe(0.1, phase="evaluate")
+        families = {r.name: r.family for r in readings(registry.snapshot())}
+        assert families["refusals_total"] == "counter"
+        assert families["ledger_append_seconds"] == "gauge"
+        assert families["tick_seconds"] == "histogram"
+
+    def test_every_family_is_a_member_of_the_closed_vocabulary(self):
+        registry = Metrics()
+        registry.gauge("ledger_append_seconds").set(1.0)
+        assert {r.family for r in readings(registry.snapshot())} <= set(
+            vocab.METRIC_FAMILIES
+        )
+
+    def test_a_declared_metric_with_no_series_contributes_no_reading(self):
+        registry = Metrics()
+        registry.counter("ticks_total", labels=("status",))
+        assert not [r for r in readings(registry.snapshot()) if r.name == "ticks_total"]
+
+    def test_the_readings_are_ordered_by_name_then_series(self):
+        registry = Metrics()
+        counter = registry.counter("ticks_total", labels=("status",))
+        counter.inc(status="failed")
+        counter.inc(status="decided")
+        names = [(r.name, series_key(r.labels)) for r in readings(registry.snapshot())]
+        assert names == sorted(names)

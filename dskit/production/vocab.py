@@ -64,6 +64,7 @@ __all__ = [
     "LINK_STATES",
     "LIQUIDITY",
     "LOOP_STATES",
+    "METRIC_FAMILIES",
     "METRIC_LABEL_VALUES",
     "METRIC_NAMES",
     "MONEY_FIELDS",
@@ -73,6 +74,7 @@ __all__ = [
     "ON_MISMATCH",
     "OPERATIONS",
     "ORDER_EVENTS",
+    "OTEL_PROTOCOLS",
     "OUTCOME_KINDS",
     "OUTCOME_SOURCES",
     "OVERRUN_POLICIES",
@@ -531,6 +533,12 @@ RETRY_WRITE_MODES = ("never", "idempotent_only")
 #: whose only effect is to make a signature easier to forge.
 SIGNER_ALGORITHMS = ("sha256", "sha512")
 
+#: [phase 3] The OTLP wire protocols a metric exporter may name (§5.11.3).
+#: Snake_case like every other vocabulary — the library's own
+#: ``http/protobuf`` spelling is a fact about the library and lives where
+#: the library is named, inside ``libs/opentelemetry.py``'s method.
+OTEL_PROTOCOLS = ("grpc", "http_protobuf")
+
 #: A health probe's scope.
 PROBE_SCOPES = ("local", "dependency")
 
@@ -608,6 +616,13 @@ ESCALATION_LEVELS = ("primary", "secondary", "final")
 #: names: a child class referenced by path falls to the reserved value by
 #: the normal cardinality rule. A later group pins each tuple equal to its
 #: registry's ``kinds()``, as §4.3 does for ``FEE_KIND_NAMES``.
+#: The three shapes a declared metric can take, which are the three
+#: handle classes ``metrics.py`` hands out seen from an exporter's side:
+#: a ``_total`` name is a counter, a series holding buckets is a
+#: histogram, anything else is a gauge. Named here so the packs that
+#: export do not each carry their own list of them.
+METRIC_FAMILIES = ("counter", "gauge", "histogram")
+
 METRIC_LABEL_VALUES = {
     "ticks_total": {"status": TICK_STATUSES},
     "tick_seconds": {"phase": TICK_PHASES},

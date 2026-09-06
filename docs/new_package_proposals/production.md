@@ -621,7 +621,10 @@ live arm. Same hole as `required_universe`, same fix.
                               "final": {"after_s": 3600, "sinks": ["pager"]}}, // delays must increase down the ladder
                "max_silence_s": 86400, "max_ack_s": 14400},   // [60, 604800]; absent takes the named default
   "alert_endpoints": {"ops": {"url_env": "OPS_WEBHOOK_URL", "template": "slack", "timeout_s": 5}},  // EXCLUDED: where it goes
-  "placement": {"ledger_root": "./serve", "rotate": {"by": "day", "max_bytes": 268435456}, "log_dir": "./serve/logs"},
+  "placement": {"ledger_root": "./serve", "rotate": {"by": "day", "max_bytes": 268435456}, "log_dir": "./serve/logs",
+                // [phase 3, §5.11.3] metric EXPORTERS live in the excluded section: a metric is never
+                // an input to a decision, a guard or a record, so adding one must not mint a release.
+                "metric_sinks": {"scrape": {"uses": "prometheus", "params": {"mode": "pull", "port": 9400}}}},
   "env": {"env_file": ".env", "require": ["OPS_WEBHOOK_URL"]}
 }
 ```
@@ -921,6 +924,37 @@ produces the `EntryBatch`. A private in-process buffer would make the stream a
 second source of truth beside the store, which is the drift D4 exists to
 forbid; this design makes `StreamFeed` a *writer into* the existing path rather
 than an alternative to it, and that is the whole reason it can be one subclass.
+
+**How it was built (phase 3), and the four places this section was thin.**
+`StreamFeed` SUBCLASSES `EntrySourceFeed` with the pull mode fixed to
+`store`, so the D4 identity check, the watermark read and the ladder are
+inherited rather than restated. (1) The `transport` constructor argument has
+no producer: `compose.py` hands every feed one fixed collaborator set
+(§5.16), so a document naming `websocket` could never be built through it.
+It stays keyword-only for a child and a test, and when it is absent the feed
+builds the one its own `transport` params key names —
+`{"uses": "pkg.module:Class", "params": {...}}`, resolved by class REFERENCE
+only, with a bare name refused naming why. That keeps §4.3's "phase 3 adds
+one registry" literally true: no registry owns stream transports and core
+ships none. (2) `StreamTransport` therefore owns BOTH ends of the wire — the
+socket, and the spool its source's connector reads back from — because
+onboarding's only write path is `run_acquisition`, which drives the
+CONNECTOR's own `read()` and accepts no externally-received frames; the
+worker owns what lies between (the bounded queue, the reconnect policy, and
+the acquisition that lands the rows). (3) `FeedResult` gains NO link field:
+§5.2 gives `FEED_STATUSES` to the feed and `LINK_STATES` to the executor, so
+the link FLOORS the status through the vocabulary's own order
+(`live` < `degraded` < `stale` < `dead`) — which is how `degraded` finally
+gets its producer, and the floor can only make the ladder's answer worse.
+(4) Two more injected collaborators, `sleeper` and `rng`, because §5.12
+injects all three everywhere and the reconnect IS a `Retry`; the default
+sleeper is the worker's own stop event, so a shutdown interrupts a wait
+instead of outlasting it and nothing here reaches `time`. `pump()` — one
+turn of the worker — is public on the `AlertRouter.process()` / `start()`
+precedent, so the mechanism is testable without a thread. A landing that
+fails loses its frames and counts it: re-delivering could duplicate rows,
+ordering and dedupe are the connector's, and the watermark ladder is what
+makes the loss visible.
 
 `pull(tick_at_ms)` therefore does what `EntrySourceFeed`'s `store` mode does —
 grade the oldest required key's watermark against the ladder — and adds only
@@ -2642,6 +2676,31 @@ them. Phase 3 keeps that literally true by adding one seam and two packs.
 - `OtelSink(params)` — `opentelemetry` inside the method. Params
   `endpoint_env`, `protocol ∈ OTEL_PROTOCOLS = ("grpc", "http/protobuf")`,
   `interval_s`, `resource` (a flat non-secret attribute map).
+- **Built (phase 3), with five corrections.** (a) `OTEL_PROTOCOLS`'
+  second member is `http_protobuf`, not `http/protobuf`: §5.0 makes every
+  vocabulary member a snake_case token and `test_vocab.py` enforces it
+  (`TICK_STATUSES` is the one colon-qualified exception), so the library's
+  own wire spelling lives inside the pack's method, keyed by the same table
+  that picks the exporter class. (b) `metrics.py` gains the two things both
+  packs would otherwise each re-derive: `series_key`/`series_labels` (the
+  series key is a JOINED string whose recipe lived only inside a private
+  method — an exporter parsing it with its own split is the second copy)
+  and `readings(snapshot) -> tuple of Reading`, which applies the
+  DECLARATION rule (a `_total` name is a counter, a series holding buckets
+  is a histogram) once. `vocab.METRIC_FAMILIES` is the closed set both
+  dispatch tables pin to. (c) `PrometheusSink`'s `mode` is REQUIRED, and
+  `addr` defaults to the loopback: a default mode would bind a socket in a
+  process whose operator asked for neither, and an exporter reachable from
+  the network by default publishes a serve process's internals. A knob the
+  chosen mode cannot read refuses, like a typo. (d) `OtelSink` cannot carry
+  a histogram's buckets — OTLP has no asynchronous instrument for a
+  pre-aggregated bucket set — so it exports `<name>_count` and `<name>_sum`
+  and NAMES the omission; "translates nothing" holds for Prometheus and
+  cannot for OTLP. Its `resource` map refuses a value `redact` would mask,
+  since every exported point carries it. (e) `document.placement` had no
+  `metric_sinks` key in §4.1 at all; phase 3 adds it, `compose.py`
+  subscribes what it declares, and §4.3's family list plus `test_main.py`'s
+  two closure tests gain `METRIC_SINK_KINDS` with that one grammar site.
 - Metric sinks are declared in `document.placement.metric_sinks` — the
   EXCLUDED section — not in `alerting`. §4.2 grades alert sinks because
   emptying them silences a safety control; metrics are explicitly never an
@@ -4804,7 +4863,13 @@ new verbs to the commands block, and `pyarrow` to the extras `libs/parquet.py`
 needs — already an extra the assets packs declare, so the entry is a marker,
 not a new dependency; `sqlite3` is stdlib and adds nothing. Phase 3 adds the
 `exchange-calendars`, `prometheus-client` and `opentelemetry-sdk` extras, and
-its own ADR for the onboarding backoff migration (Appendix C).
+its own ADR for the onboarding backoff migration (Appendix C). Two
+corrections from the build: the OTLP EXPORTERS are separate distributions
+from the SDK, so the extra names `opentelemetry-exporter-otlp` too — a sink
+with no exporter exports nothing — and all three library names join
+`dskit/pipeline/conformance.py`'s `DEFAULT_BLOCKED_IMPORTS`, without which
+the purity gate's behavioural half checks the three new packs only
+statically (the tuple is a list of names to BLOCK, never a dependency).
 
 ## 10. Test plan (TDD)
 
@@ -4877,6 +4942,41 @@ that module's session list); `metrics`'s `MetricSink` seam, then
 register into a registry that does not exist; `feed`'s `StreamFeed` after both
 `feed` and `resilience`, because its reconnect policy is a `Retry`.
 
+**What the phase-3 round actually found (2026-09-06).** The per-item
+corrections are in §5.11.3 and §5.2.1; three findings are about the ORDER
+and the scope rather than a single seam.
+
+- **A pack is not reachable until its document key exists.** The metric
+  exporters registered into a family no document could name, because
+  §4.1's `placement` had no `metric_sinks` key. The grammar entry,
+  `compose.py`'s subscription and §4.3's family list belong in the SAME
+  unit as the packs — a registered kind with no selector site is a pack
+  nobody can switch on.
+- **The migration item is not the same size as the other three.**
+  Appendix C's option (a) — graduate the policy into `dskit/onboarding/`
+  and re-export — meets three obstacles its draft does not name: the
+  onboarding purity gate forbids `dskit.pipeline`, from which `Retry`
+  takes its default-deny and int checkers; five closed vocabularies would
+  leave `vocab.py`, whose §5.0 home rule is asserted by a test that also
+  forbids `vocab.py` importing anything but stdlib; and the classes raise
+  `ProductionError`, which an onboarding module cannot, so the draft's
+  "no production test moves" is false. Its ADR is written and PROPOSED
+  (ADR-0095 — 0092 through 0094 were taken by the child's decisions while
+  phase 3 waited), and the migration waits for the owner, per root
+  `CLAUDE.md`: a proposal is not an approval. A narrower first step is
+  offered in the ADR — one `backoff` and one `retry_after` owned by
+  `dskit/onboarding/connector.py`, beside the `MAX_BACKOFF_S` it already
+  owns, which deletes the six copies with every gate green.
+- **A refusal test whose subject can be audited away has a shelf life.**
+  Phase 2b's carry-over (`kinds_banking.py`'s `Eligibility` and
+  `EventBank`, now `pure`: neither `run` touches `ctx`, every field read
+  goes through `kinds_flow._field`, and `BankingReport` is the module's
+  only `ctx` reader — a write — so it stays permanently `forbidden`) broke
+  `test_a_needed_forbidden_node_refuses`, which had used `eligibility` as
+  its forbidden subject. It now uses a WRITING node, which §9.1 forbids
+  permanently. Widening the audited set is exactly the kind of change that
+  finds tests resting on the fail-closed default.
+
 Invariants every phase must keep green: the four existing purity gates
 (`tests/{assets,journal,onboarding,pipeline}/test_purity.py`) and the new one; every pinned identity hash unmoved (the 20 sha256 literals pinned
 across `tests/`); the full
@@ -4901,7 +5001,7 @@ their own deterministic chain assertions.
 | 1 — foundation | every module in §8 not marked phase 2, including the full authority stack (`arming.py`, `coordination.py`, `readiness.py`, `LiveExecutor`, `LiveAuthority`, `ReductionAuthority`) and all four rungs; ADR-0091, every §7 verb not marked phase 2, README/AGENTS/CLAUDE, examples, skeleton, doc updates | tests: Opus · code: Fable · review: Opus |
 | 2 — evidence | `outcomes.py` (§5.13.2) · `report.py` and the `replay` verb (§5.13.3) · outcome-readiness evidence (§5.13.4) · the Outcome and Parity monitor families and DDM/ADWIN/JensenShannon/LInf (§5.10.1) · alert inhibition, silences, escalation and `ack` (§5.11.2) · the systemd heartbeat (§5.11.2) · `libs/sqlite.py` (§5.8.2) · `libs/parquet.py` (§5.10.2) · `Signer` (§5.12.1) · `approve-hold` (§5.5.1) · the six §7 verbs and the two optional §4.1 sections | tests: Opus · code: Opus · review: Opus |
 | 2b — audit | classify the remaining registered `kinds_*.py` / `libs/*.py` classes for `serving_effect` by the four-step procedure in §9.1, widening what a serve document may reference; touches only overrides and `tests/pipeline`, so it can run at any time after phase 1 | Opus |
-| 3 — packs | `libs/exchange_calendars.py` (§5.1.1) · the `MetricSink` seam and `libs/prometheus.py` / `libs/opentelemetry.py` (§5.11.3) · the `websocket` stream seam (§5.2.1) · migrating the onboarding packs onto `resilience.py`, under its own ADR (Appendix C) | Opus |
+| 3 — packs | `libs/exchange_calendars.py` (§5.1.1) · the `MetricSink` seam and `libs/prometheus.py` / `libs/opentelemetry.py` (§5.11.3), with the `placement.metric_sinks` grammar key they are selected by · the `websocket` stream seam (§5.2.1) · phase 2b's `kinds_banking.py` carry-over · the onboarding backoff migration, written as ADR-0095 and left PROPOSED rather than implemented (see §10) | Opus |
 
 Per the owner: no Fable after the initial plan and build.
 
@@ -5115,6 +5215,13 @@ declared trusted boundary, backed by code fingerprints and no-direct-I/O tests.
 The owner's ruling is that this migration carries its own ADR. This is the
 draft text; it is proposed only when phase 3 starts, and its number is
 whatever is next free in the log at that time.
+
+**Landed as ADR-0095** (2026-09-06): 0092 through 0094 went to the child's
+decisions while phase 3 waited. The entry in the log is this draft plus the
+three obstacles the build found — the pipeline firewall, the vocabulary
+home and the error type (see §10) — and it is `proposed`, so the packs
+still carry their copies. The draft's "no production test moves" is the one
+sentence the log entry contradicts outright.
 
 ````
 ## ADR-00XX — The onboarding connector packs retry through `dskit.production.resilience`
