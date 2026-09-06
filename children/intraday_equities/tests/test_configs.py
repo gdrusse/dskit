@@ -912,6 +912,8 @@ def test_p14_recurrent_zoo_has_two_one_minute_late_fusion_searches():
     features = raw["pipeline"]["features"]["params"]
     assert features["sequence_lookback"] == 120
     assert features["sequence_period_ms"] == 1_800_000
+    assert features["sequence_gap_policy"] == "carry_close_zero_volume"
+    assert features["sequence_max_gap_minutes"] == 5
     templates = raw["stages"]["materialize"]["params"]["templates"]
     assert [row["family"] for row in templates] == [
         "pooled-ohlcv-lstm-fusion",
@@ -927,6 +929,6 @@ def test_p14_recurrent_zoo_has_two_one_minute_late_fusion_searches():
         assert "batch_size" in template["model"]["hpo_space"]
     approval = raw["stages"]["approval"]["params"]
     assert approval["approved_inventory_sha256"] == (
-        "0e526b27396ffc83d22b4605b17fa111e6428f2a2bd5e820ab1520c4e7b25dd9"
+        "85e1fb8cbacba2d1c3524a2decc3cb95b1d6af732d009b337728538078f9bcfc"
     )
     assert approval["approved_by"] == "owner"

@@ -1720,8 +1720,10 @@ def _minute_sequence_frame(
     lookback,
     origin_period_ms,
     offset_ms,
+    gap_policy="strict",
+    max_gap_minutes=None,
 ):
-    """Build complete session-local one-minute OHLCV windows at score origins."""
+    """Build session-local one-minute OHLCV windows at score origins."""
     import numpy as np
 
     names = [
@@ -1745,26 +1747,62 @@ def _minute_sequence_frame(
     invalid |= volume < 0.0
     gap_count = np.cumsum(gaps)
     invalid_count = np.cumsum(invalid.astype(np.int64, copy=False))
-    candidate = np.flatnonzero(valid)
-    if candidate.size:
-        end = locations[candidate]
-        start = starts[candidate]
-        before = np.where(start > 0, invalid_count[start - 1], 0)
-        complete = invalid_count[end] - before == 0
-        continuous = gap_count[end] - gap_count[start] == 0
-        candidate = candidate[complete & continuous]
-    locations = locations[candidate]
-    origins = origins[candidate]
     values = np.column_stack([opn, high, low, close, volume]).astype(
         np.float32, copy=False
     )
-    if locations.size:
-        windows = np.lib.stride_tricks.sliding_window_view(
-            values, (lookback, values.shape[1])
-        )[:, 0, :, :]
-        matrix = windows[locations - lookback + 1].reshape(len(locations), -1).copy()
+    candidate = np.flatnonzero(valid)
+    if gap_policy == "strict":
+        if candidate.size:
+            end = locations[candidate]
+            start = starts[candidate]
+            before = np.where(start > 0, invalid_count[start - 1], 0)
+            complete = invalid_count[end] - before == 0
+            continuous = gap_count[end] - gap_count[start] == 0
+            candidate = candidate[complete & continuous]
+        locations = locations[candidate]
+        origins = origins[candidate]
+        if locations.size:
+            windows = np.lib.stride_tricks.sliding_window_view(
+                values, (lookback, values.shape[1])
+            )[:, 0, :, :]
+            matrix = windows[locations - lookback + 1].reshape(
+                len(locations), -1
+            ).copy()
+        else:
+            matrix = np.empty((0, len(names)), dtype=np.float32)
     else:
-        matrix = np.empty((0, len(names)), dtype=np.float32)
+        max_gap_ms = int(max_gap_minutes) * 60_000
+        start_ms = origins - (lookback - 1) * 60_000
+        first = np.searchsorted(ms, start_ms, side="right") - 1
+        candidate = np.flatnonzero(exact & (first >= 0))
+        if candidate.size:
+            end = locations[candidate]
+            start = first[candidate]
+            bounded_gaps = np.concatenate(
+                ([0], (np.diff(ms) > max_gap_ms).astype(np.int64, copy=False))
+            )
+            bounded_gap_count = np.cumsum(bounded_gaps)
+            before = np.where(start > 0, invalid_count[start - 1], 0)
+            complete = invalid_count[end] - before == 0
+            bounded = bounded_gap_count[end] - bounded_gap_count[start] == 0
+            candidate = candidate[complete & bounded]
+        locations = locations[candidate]
+        origins = origins[candidate]
+        if locations.size:
+            offsets = np.arange(lookback - 1, -1, -1, dtype=np.int64) * 60_000
+            target_ms = origins[:, None] - offsets[None, :]
+            source = np.searchsorted(ms, target_ms, side="right") - 1
+            matrix3 = values[source].copy()
+            carried = ms[source] != target_ms
+            if carried.any():
+                prior_close = close[source]
+                matrix3[carried, :4] = np.repeat(
+                    prior_close[carried, None], 4, axis=1
+                )
+                matrix3[carried, 4] = 0.0
+            matrix = matrix3.reshape(len(locations), -1)
+        else:
+            matrix = np.empty((0, len(names)), dtype=np.float32)
     return {
         "symbol": symbol,
         "asof_ms": np.asarray(origins, dtype=np.int64),
@@ -1822,6 +1860,8 @@ class SessionFeatureRows(Node):
         "include_klines",
         "sequence_lookback",
         "sequence_period_ms",
+        "sequence_gap_policy",
+        "sequence_max_gap_minutes",
     )
 
     @classmethod
@@ -1888,6 +1928,25 @@ class SessionFeatureRows(Node):
         ):
             if value is not None:
                 check_int_param(problems, name, value, ge=1)
+        gap_policy = params.get("sequence_gap_policy", "strict")
+        if gap_policy not in ("strict", "carry_close_zero_volume"):
+            problems.append(
+                "sequence_gap_policy must be 'strict' or "
+                "'carry_close_zero_volume'"
+            )
+        max_gap = params.get("sequence_max_gap_minutes")
+        if max_gap is not None:
+            check_int_param(problems, "sequence_max_gap_minutes", max_gap, ge=1)
+        if gap_policy == "carry_close_zero_volume" and max_gap is None:
+            problems.append(
+                "sequence_max_gap_minutes is required when sequence_gap_policy "
+                "is 'carry_close_zero_volume'"
+            )
+        if gap_policy == "strict" and max_gap is not None:
+            problems.append(
+                "sequence_max_gap_minutes requires sequence_gap_policy "
+                "'carry_close_zero_volume'"
+            )
         return problems
 
     def validate_inputs(self, inputs):
@@ -2189,6 +2248,8 @@ class SessionFeatureRows(Node):
                         int(self.params["sequence_lookback"]),
                         int(self.params["sequence_period_ms"]),
                         offset_ms,
+                        self.params.get("sequence_gap_policy", "strict"),
+                        self.params.get("sequence_max_gap_minutes"),
                     )
                 )
             del opn, high, low, volume, market_ret, sector_ret

@@ -669,6 +669,72 @@ def test_session_features_emit_complete_one_minute_ohlcv_windows():
     np.testing.assert_allclose(frame["X"][-1, :5], [108.0, 109.0, 107.0, 108.5, 18.0])
 
 
+def test_session_features_causally_fill_bounded_one_minute_gaps():
+    import numpy as np
+
+    spec = _mini_spec(period_ms=300_000)
+    bars = [
+        {
+            "symbol": symbol,
+            "asof_ms": _ms(i),
+            "open": 100.0 + i,
+            "high": 101.0 + i,
+            "low": 99.0 + i,
+            "close": 100.5 + i,
+            "volume": 10.0 + i,
+        }
+        for symbol in ("AAPL", "SPY")
+        for i in range(11)
+        if i != 9
+    ]
+    out = SessionFeatureRows(
+        "features",
+        {
+            "lookback": 0,
+            "layout": "columns",
+            "sequence_lookback": 3,
+            "sequence_period_ms": 300_000,
+            "sequence_gap_policy": "carry_close_zero_volume",
+            "sequence_max_gap_minutes": 2,
+        },
+    ).run(None, {"records": bars, "spec": spec})
+    frame = next(row for row in out["sequences"] if row["symbol"] == "AAPL")
+    # Minute nine is absent: use only minute-eight close and zero volume.
+    np.testing.assert_allclose(
+        frame["X"][-1, 5:10], [108.5, 108.5, 108.5, 108.5, 0.0]
+    )
+
+
+def test_session_features_refuse_unbounded_sequence_gap():
+    spec = _mini_spec(period_ms=300_000)
+    bars = [
+        {
+            "symbol": symbol,
+            "asof_ms": _ms(i),
+            "open": 100.0 + i,
+            "high": 101.0 + i,
+            "low": 99.0 + i,
+            "close": 100.5 + i,
+            "volume": 10.0 + i,
+        }
+        for symbol in ("AAPL", "SPY")
+        for i in (0, 1, 5, 6)
+    ]
+    out = SessionFeatureRows(
+        "features",
+        {
+            "lookback": 0,
+            "layout": "columns",
+            "sequence_lookback": 3,
+            "sequence_period_ms": 300_000,
+            "sequence_gap_policy": "carry_close_zero_volume",
+            "sequence_max_gap_minutes": 2,
+        },
+    ).run(None, {"records": bars, "spec": spec})
+    frame = next(row for row in out["sequences"] if row["symbol"] == "AAPL")
+    assert frame["X"].shape == (0, 15)
+
+
 def test_session_features_momentum_horizons_skip_lags():
     spec = _mini_spec()
     spec["industry"] = {"AAPL": "tech"}

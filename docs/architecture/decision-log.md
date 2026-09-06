@@ -5431,8 +5431,11 @@ separate from origin-time side information until the prediction head.
 
 **Decision.** Add pooled LSTM and GRU candidates over the same 25 Gate-3
 passers, direct leads, outer folds, and equal-stock path score. At each
-30-minute scoring origin, cache the preceding 120 complete, contiguous,
-session-local one-minute OHLCV bars. HPO may select the latest 30, 60, or 120
+30-minute scoring origin, cache the preceding 120 session-local one-minute
+OHLCV slots. Because the minute aggregate omits no-trade minutes, bounded gaps
+of at most five minutes carry the last observed close into OHLC and set volume
+to zero; longer gaps and session boundaries remain ineligible. HPO may select
+the latest 30, 60, or 120
 minutes. The recurrent tower receives only OHLCV; a single linear projection
 receives an explicit calendar/overnight/SPY allowlist; a learned symbol
 embedding joins both at one final linear head. Prices become causal log ratios
