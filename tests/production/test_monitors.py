@@ -46,9 +46,35 @@ as a plan gap; each is the reading this module's neighbours imply):
   by the `threshold` strategy (one bound mechanism, not two), and a full
   reset — accumulator AND running mean — on alarm, so the observation after
   an alarm scores exactly 0 instead of re-alarming forever.
+
+Readings taken where §5.10.1 is silent about the phase-2 stream detectors
+(each reported to the orchestrator as a plan gap):
+
+* DDM's `s_min` can be ZERO — a stream with no errors has `p = s = 0` — and
+  §5.10.1's `(p + s − p_min − s_min)/s_min` is then undefined. The pair
+  minimising `p + s` is therefore only REMEMBERED when its sigma is real
+  (and once the stream is `min_n` long, which is what §5.10.1 means by
+  "`min_n` gates the early stream where `s_t` is meaningless"); until such a
+  pair exists the statistic is `None` and the verdict is `insufficient`,
+  which is D16's answer for a question that cannot yet be asked. It also
+  makes the statistic finite always, so no alarm can rest on a division by
+  a sigma of zero.
+* ADWIN's `eps_cut` is named but not spelled out; it is the classic
+  Bifet-Gavaldà bound `sqrt(ln(4n/δ) / 2m)` over the harmonic mean `m` of
+  the two sides, restated in `hoeffding_cut` below.
+* ADWIN shrinks INSIDE the fold, not on the observation after an alarm as
+  `PageHinkley` does, and it reports the statistic it measured BEFORE the
+  drop. The adaptive window is the statistic's own (§5.10.1), so it must not
+  depend on the document's `response` — a `log` monitor adapts exactly as a
+  `halt` one does — and a detector that shrank before reporting could never
+  show the breach that made it shrink.
+* `min_sub` has no default in §5.10.1 the way `delta` does; `DEFAULT_MIN_SUB`
+  is one here, and this file asserts a monitor that omits both reads them.
 """
 
+import ast
 import dataclasses
+import inspect
 import json
 import math
 import statistics
@@ -58,8 +84,12 @@ import pytest
 import dskit.production.monitors as monitors
 from dskit.production.base import ProductionError
 from dskit.production.monitors import (
+    ADWIN,
     CHUNKER_KINDS,
+    DDM,
+    DEFAULT_ADWIN_DELTA,
     DEFAULT_MIN_N,
+    DEFAULT_MIN_SUB,
     MONITOR_KINDS,
     REFERENCE_KINDS,
     THRESHOLD_KINDS,
@@ -72,6 +102,8 @@ from dskit.production.monitors import (
     Coverage,
     DecisionRate,
     DistributionMonitor,
+    JensenShannon,
+    LInf,
     LatencyPercentiles,
     Leading,
     Monitor,
@@ -104,6 +136,22 @@ KINDS = (
     "staleness",
     "tracking_signal",
 )
+
+#: §5.10.1's four additions to the two phase-1 families — two change
+#: detectors on the stream family, two distances on the distribution one.
+#: The outcome and parity families are the rest of phase 2 and are NOT here.
+PHASE_TWO_KINDS = (
+    "adwin",
+    "ddm",
+    "jensen_shannon",
+    "linf",
+)
+
+#: Every registered monitor after §5.10.1. The generic rules below are
+#: parametrised over ALL of them: a phase-2 member that broke `min_n`, the
+#: partial-chunk rule or the state round-trip would be a monitor the loop
+#: cannot trust, exactly like a phase-1 one.
+ALL_KINDS = tuple(sorted(KINDS + PHASE_TWO_KINDS))
 
 #: §6's `monitor` record body. `monitor` is the owner's name for the
 #: instance; every other field comes off the `Verdict`.
@@ -226,8 +274,12 @@ def kind_params(kind, **overrides):
     }
     extra = {
         "psi": {"field": "prediction", "bins": 2, "reference": leading(2)},
+        "jensen_shannon": {"field": "prediction", "bins": 2, "reference": leading(2)},
+        "linf": {"field": "prediction", "bins": 2, "reference": leading(2)},
         "ks": {"field": "prediction", "reference": leading(2)},
         "page_hinkley": {"field": "prediction"},
+        "ddm": {"field": "error"},
+        "adwin": {"field": "prediction", "min_sub": 1},
         "tracking_signal": {"field": "prediction", "target_field": "realised"},
     }
     params.update(extra.get(kind, {}))
@@ -237,8 +289,10 @@ def kind_params(kind, **overrides):
 
 def kind_record(kind, i):
     """One record the given kind counts as an observation, varying with `i`."""
-    if kind in ("psi", "ks", "page_hinkley"):
+    if kind in ("psi", "ks", "page_hinkley", "adwin", "jensen_shannon", "linf"):
         return prediction_record(float(i))
+    if kind == "ddm":
+        return flat_record(error=float(i % 2))
     if kind == "tracking_signal":
         return prediction_record(float(i), realised=float(i) + 1.0)
     if kind == "coverage":
@@ -331,8 +385,11 @@ def test_response_is_a_closed_vocabulary_not_a_strategy_object():
     assert RESPONSES == ("log", "warn", "halt")
 
 
-def test_the_registry_lists_exactly_the_nine_phase_one_monitor_kinds():
-    assert MONITOR_KINDS.kinds() == KINDS
+def test_the_registry_lists_the_nine_phase_one_kinds_and_no_more():
+    """§5.10's nine members are all still there and still resolve to their own
+    classes; §5.10.1's four are pinned separately, so a phase-2 member that
+    displaced a phase-1 one fails here rather than in a serve document."""
+    assert set(KINDS) <= set(MONITOR_KINDS.kinds())
     assert MONITOR_KINDS.family == "monitor"
     for name, cls in (
         ("staleness", Staleness),
@@ -348,15 +405,42 @@ def test_the_registry_lists_exactly_the_nine_phase_one_monitor_kinds():
         assert MONITOR_KINDS.resolve(name) is cls
 
 
-def test_the_phase_two_families_are_not_registered_yet():
-    for name in ("calibration", "brier", "skill", "prediction_bias", "ddm", "adwin"):
+def test_the_registry_lists_exactly_the_thirteen_kinds_of_the_two_families():
+    """§5.10.1 adds four members to the two existing families and nothing
+    else: the registry is EXACTLY the nine plus the four until the outcome
+    and parity families land."""
+    assert MONITOR_KINDS.kinds() == ALL_KINDS
+    for name, cls in (
+        ("ddm", DDM),
+        ("adwin", ADWIN),
+        ("jensen_shannon", JensenShannon),
+        ("linf", LInf),
+    ):
+        assert MONITOR_KINDS.resolve(name) is cls
+
+
+def test_the_outcome_and_parity_families_are_not_registered_yet():
+    """§5.10.1's other two families need a label and a replay tape; neither
+    has a producer until `outcomes` and `report` land."""
+    for name in ("calibration", "brier", "skill", "prediction_bias", "parity"):
         assert name not in MONITOR_KINDS
         with pytest.raises(ProductionError):
             MONITOR_KINDS.resolve(name)
 
 
 def test_the_three_strategy_registries_name_their_kinds():
-    assert REFERENCE_KINDS.kinds() == ("leading", "rolling", "snapshot")
+    # `REFERENCE_KINDS` is the one family a tier-2 pack registers into
+    # (§4.3, §5.10.2: `libs/parquet.py` adds `run` when it is imported), and
+    # a registry is process-global — so what is pinned here is what
+    # `monitors.py` ITSELF contributes: the three core kinds, and nothing
+    # else of this module's making. An extra kind may only come from a pack.
+    assert set(("leading", "rolling", "snapshot")) <= set(REFERENCE_KINDS.kinds())
+    from_this_module = {
+        name
+        for name in REFERENCE_KINDS.kinds()
+        if REFERENCE_KINDS.resolve(name).__module__ == monitors.__name__
+    }
+    assert from_this_module == {"leading", "rolling", "snapshot"}
     assert CHUNKER_KINDS.kinds() == ("count", "period", "sliding")
     assert THRESHOLD_KINDS.kinds() == ("alpha", "constant", "reference_std")
     assert REFERENCE_KINDS.family == "reference"
@@ -375,7 +459,7 @@ def test_the_three_strategy_registries_name_their_kinds():
 
 def test_the_strategy_registries_refuse_an_unregistered_name():
     for registry, name in (
-        (REFERENCE_KINDS, "run"),
+        (REFERENCE_KINDS, "warehouse"),
         (CHUNKER_KINDS, "cron"),
         (THRESHOLD_KINDS, "quantile"),
     ):
@@ -388,9 +472,9 @@ def test_the_families_are_is_a_hierarchies_under_monitor():
         assert issubclass(family, Monitor)
     for cls in (Staleness, DecisionRate, Coverage, LatencyPercentiles, RefusalCount):
         assert issubclass(cls, OperationalMonitor)
-    for cls in (PageHinkley, TrackingSignal):
+    for cls in (PageHinkley, TrackingSignal, DDM, ADWIN):
         assert issubclass(cls, StreamMonitor)
-    for cls in (PSI, KS):
+    for cls in (PSI, KS, JensenShannon, LInf):
         assert issubclass(cls, DistributionMonitor)
     assert not issubclass(StreamMonitor, OperationalMonitor)
     assert not issubclass(DistributionMonitor, StreamMonitor)
@@ -401,20 +485,20 @@ def test_the_families_are_is_a_hierarchies_under_monitor():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("kind", ALL_KINDS)
 def test_every_monitor_accepts_the_four_common_knobs(kind):
     monitor = build(kind, window=count(3), threshold=at_most(5.0), response="halt", min_n=3)
     assert isinstance(monitor, Monitor)
 
 
-@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("kind", ALL_KINDS)
 def test_an_unknown_top_level_param_refuses_naming_it(kind):
     with pytest.raises(ProductionError) as exc:
         build(kind, treshold=at_most(1.0))
     assert "treshold" in str(exc.value)
 
 
-@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("kind", ALL_KINDS)
 def test_notes_are_allowed_beside_a_monitors_knobs(kind):
     build(kind, notes="why this monitor exists and what to change")
 
@@ -992,6 +1076,330 @@ def test_a_stream_monitor_skips_a_record_missing_either_of_its_fields():
 
 
 # ---------------------------------------------------------------------------
+# StreamMonitor phase 2 — DDM and ADWIN (§5.10.1)
+# ---------------------------------------------------------------------------
+#
+# Both are reduced to a DIMENSIONLESS statistic so the document's ordinary
+# `constant` threshold carries the literature's rule and the code carries no
+# constant of its own: DDM reports SIGMAS above the best the stream has been
+# (so 2σ warning / 3σ drift are `{"max": 2}` and `{"max": 3}`), ADWIN reports
+# a mean gap in units of ITS OWN Hoeffding bound (so the classic test is
+# `{"max": 1}`). Every expected number below is walked here from §5.10.1's
+# formulas, never read back out of the monitor.
+
+
+def ddm(**overrides):
+    """A DDM over an error field, with a sliding window so it is always full."""
+    params = {
+        "field": "error",
+        "window": sliding(30),
+        "threshold": at_most(3.0),
+        "min_n": 30,
+        "response": "halt",
+    }
+    params.update(overrides)
+    return MONITOR_KINDS.resolve("ddm")(params, name="err")
+
+
+def sigma_of(rate, count):
+    """§5.10.1's `s_t = sqrt(p_t(1 − p_t)/t)`."""
+    return math.sqrt(rate * (1.0 - rate) / count)
+
+
+def ddm_sigmas(values, min_n):
+    """§5.10.1's DDM statistic per observation, walked independently here.
+
+    `(p_t + s_t − p_min − s_min) / s_min`, where the remembered pair is the
+    one minimising `p + s` — considered only once the stream has `min_n`
+    observations and its sigma is real, since a sigma of zero measures
+    nothing. `None` while no such pair exists.
+    """
+    count, rate, best = 0, 0.0, None
+    out = []
+    for value in values:
+        count += 1
+        rate += (value - rate) / count
+        sigma = sigma_of(rate, count)
+        if count >= min_n and sigma > 0.0 and (best is None or rate + sigma <= sum(best)):
+            best = (rate, sigma)
+        out.append(None if best is None else ((rate + sigma) - sum(best)) / best[1])
+    return out
+
+
+#: Thirty clean observations, then four errors — a stream whose sigma is
+#: meaningless while it is clean and which then crosses two and three sigmas
+#: one observation apart.
+DDM_STREAM = [0.0] * 30 + [1.0] * 4
+
+
+def errors(monitor, values):
+    """Observe an error stream."""
+    for value in values:
+        monitor.observe(flat_record(error=value))
+    return monitor
+
+
+def test_ddm_reports_the_sigmas_above_the_best_the_stream_has_been():
+    monitor = errors(ddm(threshold=at_most(NEVER)), DDM_STREAM)
+    best_rate = 1 / 31
+    best_sigma = sigma_of(best_rate, 31)
+    rate = 4 / 34
+    expected = ((rate + sigma_of(rate, 34)) - (best_rate + best_sigma)) / best_sigma
+    assert monitor.verdict().statistic == pytest.approx(expected)
+    assert expected == pytest.approx(ddm_sigmas(DDM_STREAM, 30)[-1])
+
+
+def test_ddm_walks_the_whole_stream_exactly_as_the_recursion_does():
+    monitor = ddm(threshold=at_most(NEVER))
+    for index, (value, want) in enumerate(zip(DDM_STREAM, ddm_sigmas(DDM_STREAM, 30))):
+        monitor.observe(flat_record(error=value))
+        if index < 29:  # the sliding window is not full yet
+            continue
+        got = monitor.verdict().statistic
+        assert got is None if want is None else got == pytest.approx(want)
+
+
+def test_ddm_holds_no_constant_of_its_own_so_the_document_carries_the_rule():
+    """§5.10.1: "The literature's warning at 2σ and drift at 3σ are then two
+    ordinary `constant` thresholds in the document, not two numbers in the
+    code." A 2 or a 3 in DDM's body would be that rule leaking back in."""
+    tree = ast.parse(inspect.getsource(monitors.DDM))
+    literals = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, (int, float))
+        and not isinstance(node.value, bool)
+    }
+    assert literals <= {0, 1, 0.0, 1.0}, literals
+    assert set(DDM._PARAMS) == set(StreamMonitor._PARAMS)
+
+
+def test_ddm_expresses_the_two_and_three_sigma_rules_as_ordinary_thresholds():
+    warning = errors(ddm(threshold=at_most(2.0), response="warn"), DDM_STREAM[:33])
+    drift = errors(ddm(threshold=at_most(3.0), response="halt"), DDM_STREAM[:33])
+    assert 2.0 < warning.verdict().statistic <= 3.0
+    assert warning.verdict().status == "warn"
+    assert drift.verdict().status == "ok"
+    assert drift.should_trip() is False
+
+    errors(drift, DDM_STREAM[33:])
+    assert drift.verdict().statistic > 3.0
+    assert drift.verdict().status == "alarm"
+    assert drift.should_trip() is True
+
+
+def test_ddm_resets_its_whole_recursion_on_the_observation_after_an_alarm():
+    monitor = errors(ddm(threshold=at_most(3.0)), DDM_STREAM)
+    assert monitor.verdict().status == "alarm"
+
+    monitor.observe(flat_record(error=1.0))
+    stream = monitor.state()["stream"]
+    assert stream["count"] == 1
+    assert stream["error_rate"] == 1.0
+    assert stream["best_rate"] is None
+    assert stream["best_sigma"] is None
+    assert monitor.verdict().statistic is None
+    assert monitor.verdict().status == "insufficient"
+
+
+def test_min_n_gates_the_early_stream_where_ddms_sigma_is_meaningless():
+    """The pair minimising `p + s` is only remembered once the stream is
+    `min_n` long: a sigma from three observations is noise, and anchoring the
+    detector to it would make every later observation look like drift."""
+    monitor = ddm(window=sliding(10), min_n=10, threshold=at_most(NEVER))
+    errors(monitor, [float(i % 2) for i in range(9)])
+    assert monitor.state()["stream"]["best_rate"] is None
+    assert monitor.verdict().status == "insufficient"
+
+    monitor.observe(flat_record(error=1.0))
+    assert monitor.state()["stream"]["best_rate"] == pytest.approx(0.5)
+    assert monitor.verdict().statistic == 0.0
+    assert monitor.verdict().status == "ok"
+
+
+def test_a_clean_stream_never_anchors_ddm_because_a_zero_sigma_measures_nothing():
+    monitor = errors(ddm(threshold=at_most(NEVER)), [0.0] * 40)
+    assert monitor.state()["stream"]["best_sigma"] is None
+    assert monitor.verdict().statistic is None
+    assert monitor.verdict().status == "insufficient"
+
+
+def test_ddm_refuses_an_error_value_outside_the_unit_interval():
+    monitor = ddm()
+    with pytest.raises(ProductionError) as exc:
+        monitor.observe(flat_record(error=1.5))
+    assert "error" in str(exc.value)
+
+
+def test_ddm_state_round_trips_through_json():
+    live = errors(ddm(threshold=at_most(NEVER)), DDM_STREAM)
+    restored = ddm(threshold=at_most(NEVER))
+    restored.restore(json.loads(json.dumps(live.state())))
+    assert json.loads(json.dumps(live.state())) == json.loads(
+        json.dumps(restored.state())
+    )
+    live.observe(flat_record(error=1.0))
+    restored.observe(flat_record(error=1.0))
+    assert live.verdict() == restored.verdict()
+    assert live.verdict().statistic is not None
+
+
+def adwin(**overrides):
+    """An ADWIN whose declared window is one observation, so the verdict is
+    always answerable and the ADAPTIVE window is the only thing moving."""
+    params = {
+        "field": "prediction",
+        "window": sliding(1),
+        "threshold": at_most(1.0),
+        "min_n": 1,
+        "response": "halt",
+    }
+    params.update(overrides)
+    return MONITOR_KINDS.resolve("adwin")(params, name="shift")
+
+
+def hoeffding_cut(n_left, n_right, n, delta):
+    """§5.10.1's `eps_cut`: the Hoeffding bound at `delta` over one cut,
+    `sqrt(ln(4n/delta) / 2m)` with `m` the harmonic mean of the two sides."""
+    m = 1.0 / (1.0 / n_left + 1.0 / n_right)
+    return math.sqrt(math.log(4.0 * n / delta) / (2.0 * m))
+
+
+def adwin_cuts(window, delta, min_sub):
+    """Every legal cut's `|mean_left − mean_right| / eps_cut`, with its index."""
+    n = len(window)
+    out = []
+    for cut in range(min_sub, n - min_sub + 1):
+        left, right = window[:cut], window[cut:]
+        gap = abs(statistics.fmean(left) - statistics.fmean(right))
+        out.append((gap / hoeffding_cut(len(left), len(right), n, delta), cut))
+    return out
+
+
+def adwin_walk(values, delta, min_sub):
+    """The statistic per observation and the surviving adaptive window."""
+    window, seen = [], []
+    for value in values:
+        window.append(value)
+        cuts = adwin_cuts(window, delta, min_sub)
+        seen.append(max(cuts, key=lambda pair: pair[0])[0] if cuts else None)
+        while cuts:
+            worst, at = max(cuts, key=lambda pair: pair[0])
+            if worst <= 1.0:
+                break
+            window = window[at:]
+            cuts = adwin_cuts(window, delta, min_sub)
+    return seen, window
+
+
+#: Twenty observations at one level, then twenty at another.
+ADWIN_STREAM = [0.0] * 20 + [1.0] * 20
+
+
+def test_adwin_reports_the_largest_mean_gap_in_units_of_its_own_bound():
+    expected, survivors = adwin_walk(ADWIN_STREAM, DEFAULT_ADWIN_DELTA, DEFAULT_MIN_SUB)
+    monitor = adwin(threshold=at_most(NEVER))
+    for value, want in zip(ADWIN_STREAM, expected):
+        monitor.observe(prediction_record(value))
+        got = monitor.verdict().statistic
+        assert got is None if want is None else got == pytest.approx(want)
+    assert monitor.state()["stream"]["window"] == pytest.approx(survivors)
+
+
+def test_a_constant_threshold_at_one_is_the_classic_adwin_test():
+    expected, _ = adwin_walk(ADWIN_STREAM, DEFAULT_ADWIN_DELTA, DEFAULT_MIN_SUB)
+    monitor = adwin(threshold=at_most(1.0))
+    seen = []
+    for value in ADWIN_STREAM:
+        monitor.observe(prediction_record(value))
+        seen.append(monitor.verdict().status == "alarm")
+    assert seen == [want is not None and want > 1.0 for want in expected]
+    assert any(seen)
+
+
+def test_adwin_drops_the_older_sub_window_on_a_breach_so_it_shrinks_itself():
+    monitor = adwin(threshold=at_most(NEVER))
+    lengths = []
+    for value in ADWIN_STREAM:
+        monitor.observe(prediction_record(value))
+        lengths.append(len(monitor.state()["stream"]["window"]))
+    assert any(after < before for before, after in zip(lengths, lengths[1:]))
+    # what survives is the NEWER sub-window: the level the stream moved TO.
+    assert set(monitor.state()["stream"]["window"]) == {1.0}
+    assert len(monitor.state()["stream"]["window"]) < len(ADWIN_STREAM)
+
+
+def test_the_declared_window_labels_the_verdict_while_the_adaptive_one_is_the_statistics():
+    """§5.10.1: "the adaptive window is the statistic's, the declared one is
+    the verdict's". Two different lengths, and only one of them reaches the
+    §6 monitor record."""
+    monitor = adwin(window=count(10), min_n=10, threshold=at_most(NEVER))
+    for value in ADWIN_STREAM[:20]:
+        monitor.observe(prediction_record(value))
+    verdict = monitor.verdict()
+    assert verdict.window == "count:10"
+    assert verdict.n_cur == 10
+    assert len(monitor.state()["stream"]["window"]) == 20
+
+
+def test_the_declared_window_gates_min_n_even_when_the_statistic_is_ready():
+    monitor = adwin(window=count(20), min_n=20, threshold=at_most(NEVER))
+    for value in ADWIN_STREAM[:15]:
+        monitor.observe(prediction_record(value))
+    assert monitor.state()["stream"]["statistic"] is not None
+    assert monitor.verdict().status == "insufficient"
+    assert monitor.verdict().n_cur == 15
+
+
+def test_adwin_takes_delta_and_min_sub_and_nothing_else():
+    assert set(ADWIN._PARAMS) == set(StreamMonitor._PARAMS) | {"delta", "min_sub"}
+    with pytest.raises(ProductionError) as exc:
+        adwin(lam=1.0)
+    assert "lam" in str(exc.value)
+
+
+def test_the_adwin_defaults_are_named_constants_the_monitor_reads():
+    assert 0.0 < DEFAULT_ADWIN_DELTA < 1.0
+    assert isinstance(DEFAULT_MIN_SUB, int) and DEFAULT_MIN_SUB >= 1
+    bare = adwin(threshold=at_most(NEVER))
+    spelled = adwin(threshold=at_most(NEVER), delta=DEFAULT_ADWIN_DELTA, min_sub=DEFAULT_MIN_SUB)
+    for value in ADWIN_STREAM:
+        bare.observe(prediction_record(value))
+        spelled.observe(prediction_record(value))
+    assert bare.verdict() == spelled.verdict()
+
+
+def test_adwin_refuses_a_delta_outside_the_open_unit_interval_and_a_zero_sub_window():
+    for overrides in ({"delta": 0.0}, {"delta": 1.0}, {"min_sub": 0}):
+        with pytest.raises(ProductionError):
+            adwin(**overrides)
+
+
+def test_a_wider_min_sub_leaves_a_short_window_with_no_cut_to_take():
+    monitor = adwin(min_sub=5, threshold=at_most(NEVER))
+    for value in ADWIN_STREAM[:9]:
+        monitor.observe(prediction_record(value))
+    assert monitor.state()["stream"]["statistic"] is None
+    assert monitor.verdict().status == "insufficient"
+
+
+def test_adwin_state_round_trips_through_json():
+    live = adwin(threshold=at_most(NEVER))
+    for value in ADWIN_STREAM:
+        live.observe(prediction_record(value))
+    restored = adwin(threshold=at_most(NEVER))
+    restored.restore(json.loads(json.dumps(live.state())))
+    assert json.loads(json.dumps(live.state())) == json.loads(
+        json.dumps(restored.state())
+    )
+    live.observe(prediction_record(0.0))
+    restored.observe(prediction_record(0.0))
+    assert live.verdict() == restored.verdict()
+    assert live.state()["stream"]["window"] == restored.state()["stream"]["window"]
+
+
+# ---------------------------------------------------------------------------
 # DistributionMonitor — PSI and KS
 # ---------------------------------------------------------------------------
 
@@ -1198,12 +1606,207 @@ def test_fit_on_a_monitor_with_no_reference_is_harmless():
 
 
 # ---------------------------------------------------------------------------
+# DistributionMonitor phase 2 — Jensen-Shannon and L-infinity (§5.10.1)
+# ---------------------------------------------------------------------------
+#
+# Both distances are taken over the REFERENCE's own quantile bins, so all
+# three binned monitors cut the same way and none re-derives the binning.
+# Both statistics are proportions, so they are bounded in [0, 1] and a
+# document can reason about them without knowing the sample size.
+
+
+def entropy(distribution):
+    """Base-2 Shannon entropy, with the `0 log 0 = 0` convention."""
+    return -sum(x * math.log2(x) for x in distribution if x > 0)
+
+
+def js_of(ref_counts, cur_counts):
+    """Base-2 Jensen-Shannon divergence `H(M) − (H(P) + H(Q))/2`."""
+    n_ref, n_cur = sum(ref_counts), sum(cur_counts)
+    p = [count / n_ref for count in ref_counts]
+    q = [count / n_cur for count in cur_counts]
+    mid = [(a + b) / 2.0 for a, b in zip(p, q)]
+    return entropy(mid) - (entropy(p) + entropy(q)) / 2.0
+
+
+def linf_of(ref_counts, cur_counts):
+    """The largest absolute bin-proportion gap."""
+    n_ref, n_cur = sum(ref_counts), sum(cur_counts)
+    return max(abs(cur / n_cur - ref / n_ref) for ref, cur in zip(ref_counts, cur_counts))
+
+
+def js_benchmark(alpha, bins, n_ref, n_cur):
+    """§5.10.1: PSI's own χ² benchmark divided by `2 ln 2`."""
+    return psi_benchmark(alpha, bins, n_ref, n_cur) / (2.0 * math.log(2.0))
+
+
+def linf_benchmark(alpha, bins, n_ref, n_cur):
+    """§5.10.1's two-sided Hoeffding bound with the Bonferroni factor over B
+    bins: `sqrt(−ln(alpha/(2B)) · (1/n_ref + 1/n_cur) / 2)`."""
+    return math.sqrt(-math.log(alpha / (2.0 * bins)) * (1.0 / n_ref + 1.0 / n_cur) / 2.0)
+
+
+def binned(kind, **overrides):
+    """A binned distribution monitor over two bins, like `psi_monitor`."""
+    params = {
+        "field": "prediction",
+        "bins": 2,
+        "reference": leading(10),
+        "window": count(10),
+        "threshold": at_most(NEVER),
+        "min_n": 10,
+        "response": "warn",
+    }
+    params.update(overrides)
+    return MONITOR_KINDS.resolve(kind)(params, name=kind)
+
+
+#: A window entirely above the anchor's median: p = (1/2, 1/2), q = (0, 1).
+SHIFTED = [prediction_record(float(v)) for v in range(11, 21)]
+
+#: An anchor with no spread at all, and a window that shares none of its
+#: bins: p = (0, 1), q = (1, 0) — the only way two quantile-binned samples
+#: can be disjoint, and the case that pins the top of the [0, 1] range.
+DISJOINT_ANCHOR = [prediction_record(1.0) for _ in range(10)]
+DISJOINT_WINDOW = [prediction_record(0.0) for _ in range(10)]
+
+
+def test_jensen_shannon_is_exactly_zero_on_identical_samples():
+    monitor = binned("jensen_shannon")
+    monitor.fit(ANCHOR)
+    feed(monitor, ANCHOR)
+    assert monitor.verdict().statistic == 0.0
+
+
+def test_jensen_shannon_is_the_base_two_divergence_over_the_references_bins():
+    monitor = binned("jensen_shannon")
+    monitor.fit(ANCHOR)
+    feed(monitor, SHIFTED)
+    assert monitor.verdict().statistic == pytest.approx(js_of([5, 5], [0, 10]))
+    assert monitor.verdict().statistic == pytest.approx(0.31127812445913283)
+
+
+def test_jensen_shannon_is_bounded_by_one_and_reaches_it_on_disjoint_bins():
+    monitor = binned("jensen_shannon")
+    monitor.fit(DISJOINT_ANCHOR)
+    feed(monitor, DISJOINT_WINDOW)
+    assert monitor.verdict().statistic == pytest.approx(1.0)
+    assert monitor.verdict().statistic == pytest.approx(js_of([0, 10], [10, 0]))
+
+
+@pytest.mark.parametrize(
+    "window",
+    [ANCHOR, SHIFTED, DISJOINT_WINDOW, [prediction_record(5.5) for _ in range(10)]],
+)
+def test_the_jensen_shannon_statistic_never_leaves_the_unit_interval(window):
+    monitor = binned("jensen_shannon")
+    monitor.fit(ANCHOR)
+    feed(monitor, window)
+    assert 0.0 <= monitor.verdict().statistic <= 1.0
+
+
+def test_the_jensen_shannon_benchmark_is_the_chi_square_one_over_two_ln_two():
+    monitor = binned("jensen_shannon", bins=4)
+    assert monitor.critical_value(0.05, 500, 300) == pytest.approx(
+        js_benchmark(0.05, 4, 500, 300)
+    )
+    assert monitor.critical_value(0.01, 40, 40) == pytest.approx(
+        js_benchmark(0.01, 4, 40, 40)
+    )
+
+
+def test_both_chi_square_benchmarks_come_from_one_owner(monkeypatch):
+    """§5.10.1: the Jensen-Shannon benchmark is "imported from that one
+    owner, never restated, so loosening one benchmark cannot leave the other
+    behind". Moving the owner must move BOTH."""
+    monkeypatch.setattr(monitors, "_chi2_benchmark", lambda *args: 8.0)
+    assert binned("psi").critical_value(0.05, 500, 300) == 8.0
+    assert binned("jensen_shannon").critical_value(0.05, 500, 300) == pytest.approx(
+        8.0 / (2.0 * math.log(2.0))
+    )
+
+
+def test_an_alpha_threshold_on_jensen_shannon_reports_that_benchmark():
+    monitor = binned(
+        "jensen_shannon", threshold={"kind": "alpha", "alpha": 0.05}, response="warn"
+    )
+    monitor.fit(ANCHOR)
+    feed(monitor, SHIFTED)
+    verdict = monitor.verdict()
+    assert verdict.threshold == pytest.approx(js_benchmark(0.05, 2, 10, 10))
+    assert verdict.status == ("warn" if verdict.statistic > verdict.threshold else "ok")
+
+
+def test_linf_is_the_largest_bin_proportion_gap():
+    monitor = binned("linf")
+    monitor.fit(ANCHOR)
+    feed(monitor, SHIFTED)
+    assert monitor.verdict().statistic == pytest.approx(linf_of([5, 5], [0, 10]))
+    assert monitor.verdict().statistic == pytest.approx(0.5)
+
+
+def test_linf_is_zero_on_identical_samples_and_one_on_disjoint_bins():
+    same = binned("linf")
+    same.fit(ANCHOR)
+    feed(same, ANCHOR)
+    assert same.verdict().statistic == 0.0
+
+    apart = binned("linf")
+    apart.fit(DISJOINT_ANCHOR)
+    feed(apart, DISJOINT_WINDOW)
+    assert apart.verdict().statistic == pytest.approx(1.0)
+
+
+def test_linf_refuses_fewer_than_two_bins():
+    for bins in (1, 0, -3):
+        with pytest.raises(ProductionError) as exc:
+            binned("linf", bins=bins)
+        assert "bins" in str(exc.value)
+
+
+def test_the_linf_critical_value_carries_the_bonferroni_factor_over_the_bins():
+    """§5.10.1: "taking a maximum over B comparisons and testing it at alpha
+    without the correction is how a drift monitor learns to cry wolf". The
+    corrected bound is strictly the wider one, and it widens with B."""
+    monitor = binned("linf", bins=10)
+    assert monitor.critical_value(0.05, 500, 300) == pytest.approx(
+        linf_benchmark(0.05, 10, 500, 300)
+    )
+    uncorrected = math.sqrt(-math.log(0.05 / 2.0) * (1 / 500 + 1 / 300) / 2.0)
+    assert monitor.critical_value(0.05, 500, 300) > uncorrected
+    assert binned("linf", bins=20).critical_value(0.05, 500, 300) > monitor.critical_value(
+        0.05, 500, 300
+    )
+
+
+def test_the_three_binned_monitors_share_one_bins_knob_and_one_binning():
+    """§5.10.1: both new distances are taken "over the reference's own
+    quantile bins, so both share PSI's binning and neither re-derives it".
+    One reference, one window, three statistics over the SAME bin counts."""
+    # two of the window's ten values fall below the anchor's median, so every
+    # bin is populated and PSI's epsilon floor cannot mask a binning difference
+    window = [prediction_record(float(v)) for v in (1, 2, 11, 12, 13, 14, 15, 16, 17, 18)]
+    reference_counts, window_counts = [5, 5], [2, 8]
+    expected = {
+        "psi": psi_of(reference_counts, window_counts),
+        "jensen_shannon": js_of(reference_counts, window_counts),
+        "linf": linf_of(reference_counts, window_counts),
+    }
+    for kind, want in expected.items():
+        monitor = binned(kind)
+        monitor.fit(ANCHOR)
+        feed(monitor, window)
+        assert monitor.verdict().statistic == pytest.approx(want), kind
+        assert "bins" in type(monitor)._PARAMS
+
+
+# ---------------------------------------------------------------------------
 # The rules §5.10 pins by test
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("kind", KINDS)
-def test_every_phase_one_kind_answers_ok_and_is_never_provisional(kind):
+@pytest.mark.parametrize("kind", ALL_KINDS)
+def test_every_registered_kind_answers_ok_and_is_never_provisional(kind):
     monitor = feed(build(kind), [kind_record(kind, i) for i in range(4)])
     verdict = monitor.verdict()
     assert verdict.status in MONITOR_STATUSES
@@ -1214,7 +1817,7 @@ def test_every_phase_one_kind_answers_ok_and_is_never_provisional(kind):
     assert verdict.n_cur == 2
 
 
-@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("kind", ALL_KINDS)
 def test_below_min_n_the_verdict_is_insufficient_and_never_ok(kind):
     monitor = feed(build(kind, min_n=5), [kind_record(kind, i) for i in range(4)])
     verdict = monitor.verdict()
@@ -1222,7 +1825,7 @@ def test_below_min_n_the_verdict_is_insufficient_and_never_ok(kind):
     assert monitor.should_trip() is False
 
 
-@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("kind", ALL_KINDS)
 def test_a_monitor_that_has_seen_nothing_is_insufficient(kind):
     verdict = build(kind).verdict()
     assert verdict.status == "insufficient"
@@ -1343,7 +1946,7 @@ def test_a_restored_stream_monitor_keeps_the_accumulator_that_detects_drift():
     assert live.verdict().status == "alarm"
 
 
-@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("kind", ALL_KINDS)
 def test_every_kind_round_trips_its_state(kind):
     live = feed(build(kind), [kind_record(kind, i) for i in range(4)])
     restored = build(kind)
@@ -1356,7 +1959,7 @@ def test_every_kind_round_trips_its_state(kind):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("kind", ALL_KINDS)
 def test_the_same_record_sequence_produces_identical_verdicts(kind):
     records = [kind_record(kind, i) for i in range(6)]
     first = feed(build(kind), records)

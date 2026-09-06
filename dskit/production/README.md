@@ -179,7 +179,9 @@ dskit/production/
 ├── loop.py            ServeLoop (the scheduler); Tick (the ten phases)
 ├── readiness.py       release-bound checklist → GO / NO-GO
 ├── outcomes.py        forward_asof; OutcomeSource + registry; OutcomeJoin (D21)
-├── libs/              [phase 2] sqlite ledger, parquet run reference
+├── libs/              tier-2 packs — a library behind a seam this package owns
+│   └── parquet.py     RunReference over a run's predictions, registered as `run`
+│                      in REFERENCE_KINDS; pyarrow inside the method
 ├── README.md          this file
 ├── CLAUDE.md          agent orientation
 └── AGENTS.md          agent orientation (same content, Codex-facing)

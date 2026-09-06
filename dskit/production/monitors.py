@@ -63,6 +63,7 @@ from dskit.production.release import parse_iso_duration
 from dskit.production.vocab import MONITOR_STATUSES, RESPONSES, SIDES, TICK_STATUSES
 
 __all__ = [
+    "ADWIN",
     "ALL_SLICE",
     "Alpha",
     "CHUNKER_KINDS",
@@ -70,16 +71,21 @@ __all__ = [
     "Constant",
     "Count",
     "Coverage",
+    "DDM",
+    "DEFAULT_ADWIN_DELTA",
     "DEFAULT_BINS",
     "DEFAULT_DELTA",
     "DEFAULT_MIN_N",
+    "DEFAULT_MIN_SUB",
     "DEFAULT_PERCENTILE",
     "DEFAULT_RESPONSE",
     "DEFAULT_STEP",
     "DEFAULT_TIME_FIELD",
     "DecisionRate",
     "DistributionMonitor",
+    "JensenShannon",
     "KS",
+    "LInf",
     "LatencyPercentiles",
     "Leading",
     "MONITOR_KINDS",
@@ -122,6 +128,16 @@ DEFAULT_BINS = 10
 #: ``page_hinkley``'s default tolerance δ — the magnitude of change the
 #: recursion ignores.
 DEFAULT_DELTA = 0.005
+
+#: ``adwin``'s default confidence δ — the error probability its cut bound
+#: is derived at, and the literature's own default. It is a CONFIDENCE, not
+#: an alarm level: the alarm level is the document's ``threshold``.
+DEFAULT_ADWIN_DELTA = 0.002
+
+#: ``adwin``'s default smallest sub-window a cut may leave on either side.
+#: A cut that leaves one observation on a side compares a mean to a single
+#: sample, which the Hoeffding bound prices but which says nothing.
+DEFAULT_MIN_SUB = 5
 
 #: ``sliding``'s default step and ``period``'s default time field (the
 #: §6 tick record's data instant).
@@ -281,6 +297,40 @@ def _psi(reference_counts, window_counts):
         q = max(cur / n_cur, PSI_EPSILON)
         total += (q - p) * math.log(q / p)
     return total
+
+
+# The normal approximation to a χ² quantile has ONE owner here. ``PSI``
+# published it first and ``JensenShannon`` needs the same benchmark scaled
+# by ``2 ln 2`` (§5.10.1); a second copy would let one of the two be
+# loosened while the other silently kept the old bound.
+def _chi2_benchmark(alpha, n_ref, n_cur, degrees):
+    """Return ``(1/n + 1/m)·(d + z_α·√(2d))``, the two-sample χ²_d benchmark at ``alpha``."""
+    z = statistics.NormalDist().inv_cdf(1.0 - alpha)
+    return (1.0 / n_ref + 1.0 / n_cur) * (degrees + z * math.sqrt(2 * degrees))
+
+
+def _proportions(counts):
+    """Return bin counts as proportions of their total."""
+    total = sum(counts)
+    return [count / total for count in counts]
+
+
+def _entropy(distribution):
+    """Return the base-2 Shannon entropy of a distribution, with ``0·log 0 = 0``."""
+    return -math.fsum(p * math.log2(p) for p in distribution if p > 0)
+
+
+def _js(reference_counts, window_counts):
+    """Return the base-2 Jensen–Shannon divergence ``H(M) − (H(P) + H(Q))/2``."""
+    p, q = _proportions(reference_counts), _proportions(window_counts)
+    mid = [(one + other) / 2.0 for one, other in zip(p, q)]
+    return _entropy(mid) - (_entropy(p) + _entropy(q)) / 2.0
+
+
+def _linf(reference_counts, window_counts):
+    """Return the largest absolute gap between two binnings' proportions."""
+    p, q = _proportions(reference_counts), _proportions(window_counts)
+    return max(abs(other - one) for one, other in zip(p, q))
 
 
 def _ks(reference, window):
@@ -2490,6 +2540,295 @@ class TrackingSignal(StreamMonitor):
         return {_VALUE: _number(value, self._field), _TARGET: _number(target, self._target_field)}
 
 
+class DDM(StreamMonitor):
+    """Gama's drift detector, reported as sigmas above the stream's best.
+
+    It tracks the running error rate ``p_t`` of a field in ``[0, 1]`` and
+    that rate's own standard error ``s_t = sqrt(p_t(1 − p_t)/t)``,
+    remembers the pair minimising ``p + s``, and reports
+    ``(p_t + s_t − p_min − s_min) / s_min`` — how many sigmas above the best
+    the stream has been. The statistic is therefore DIMENSIONLESS, which is
+    the point: the literature's warning at two sigmas and drift at three are
+    two ordinary ``constant`` thresholds in the document, and no number in
+    this class decides an alarm.
+
+    Two readings §5.10.1 leaves open, both forced by ``s_min`` appearing in
+    a denominator. The best pair is remembered only once the stream is
+    ``min_n`` long — §5.10.1's "``min_n`` gates the early stream where
+    ``s_t`` is meaningless" — and only when its sigma is REAL: a stream with
+    no errors has ``p = s = 0``, and anchoring to a sigma of zero would make
+    the first error infinitely many sigmas of drift. Until such a pair
+    exists the statistic is ``None`` and the verdict is ``insufficient``,
+    which is D16's answer for a question that cannot yet be asked.
+
+    An ``alarm`` resets the whole recursion on the next observation, as
+    ``PageHinkley``'s does, so a detected change is reported once rather
+    than for ever.
+
+    Parameters
+    ----------
+    params : dict
+        The ``StreamMonitor`` knobs; ``field`` names the error field, whose
+        every value must lie in ``[0, 1]``. DDM adds no knob of its own —
+        the sigma multiple that alarms is the ``threshold``'s.
+    name : str or None, keyword-only
+        The owner's name for this instance.
+
+    Examples
+    --------
+    Thirty clean observations, then errors: the third error is past two
+    sigmas and the fourth past three::
+
+        monitor = DDM(
+            {"field": "error", "window": {"kind": "sliding", "n": 30},
+             "threshold": {"kind": "constant", "max": 3.0}, "min_n": 30,
+             "response": "halt"}
+        )
+        for value in [0.0] * 30 + [1.0] * 4:
+            monitor.observe({"kind": "outcome", "error": value})
+        monitor.verdict().status
+        # -> 'alarm'
+    """
+
+    _STREAM_KEYS = ("count", "error_rate", "best_rate", "best_sigma")
+
+    def _configure(self, params):
+        """Start the recursion at rest."""
+        super()._configure(params)
+        self._reset()
+
+    def verdict(self):
+        """Report the sigmas above the best pair once the window can carry a verdict.
+
+        Returns
+        -------
+        Verdict
+            ``statistic`` is the sigma count, or ``None`` while no pair with
+            a real sigma has been remembered; ``n_ref`` is always 0.
+        """
+        window, complete = self._window()
+        statistic = self._sigmas() if window else None
+        return self._judge(statistic, 0, len(window), complete)
+
+    def _reset(self):
+        """Forget the error rate, the count and the remembered best pair."""
+        self._count = 0
+        self._rate = 0.0
+        self._best_rate = None
+        self._best_sigma = None
+
+    def _fold(self, observation):
+        """Reset after an alarm, walk the rate one step, then re-anchor if this is the best."""
+        if self.verdict().status == _ALARM:
+            self._reset()
+        self._count += 1
+        self._rate += (observation[_VALUE] - self._rate) / self._count
+        sigma = self._sigma()
+        if self._count >= self._min_n and sigma > 0.0 and self._is_best(sigma):
+            self._best_rate, self._best_sigma = self._rate, sigma
+
+    def _is_best(self, sigma):
+        """Say whether the current pair is at least as good as the remembered one."""
+        return (
+            self._best_sigma is None
+            or self._rate + sigma <= self._best_rate + self._best_sigma
+        )
+
+    def _sigma(self):
+        """Return the current rate's standard error."""
+        return math.sqrt(self._rate * (1.0 - self._rate) / self._count)
+
+    def _sigmas(self):
+        """Return the sigmas above the remembered best pair, or None while there is none."""
+        if self._best_sigma is None:
+            return None
+        best = self._best_rate + self._best_sigma
+        return ((self._rate + self._sigma()) - best) / self._best_sigma
+
+    def _observation(self, candidate):
+        """Return ``{"value": e}`` for an error inside the unit interval; refuse outside it."""
+        observation = super()._observation(candidate)
+        if observation is not None and not 0.0 <= observation[_VALUE] <= 1.0:
+            raise ProductionError(
+                [
+                    f"{self._field}: a ddm error rate must lie in [0, 1], got "
+                    f"{observation[_VALUE]!r}"
+                ]
+            )
+        return observation
+
+    def _stream_state(self):
+        """Return the recursion state."""
+        return {
+            "count": self._count,
+            "error_rate": self._rate,
+            "best_rate": self._best_rate,
+            "best_sigma": self._best_sigma,
+        }
+
+    def _restore_stream(self, state):
+        """Take the recursion state back; the best pair is set or unset as a pair."""
+        problems = []
+        _check_unknown(problems, state, self._STREAM_KEYS, where="monitor state.stream")
+        check_int_param(problems, "monitor state.stream.count", state.get("count"), ge=0)
+        _check_number(problems, "monitor state.stream.error_rate", state.get("error_rate"))
+        for key in ("best_rate", "best_sigma"):
+            if state.get(key) is not None:
+                _check_number(problems, f"monitor state.stream.{key}", state.get(key))
+        if (state.get("best_rate") is None) != (state.get("best_sigma") is None):
+            problems.append(
+                "monitor state.stream: best_rate and best_sigma are remembered together"
+            )
+        if problems:
+            raise ProductionError(problems)
+        self._count = int(state["count"])
+        self._rate = float(state["error_rate"])
+        self._best_rate = state["best_rate"]
+        self._best_sigma = state["best_sigma"]
+
+
+class ADWIN(StreamMonitor):
+    """Adaptive windowing: the largest mean gap, in units of its own bound.
+
+    The detector keeps a window of its own, cuts it at every split point
+    that leaves ``min_sub`` observations on each side, and reports
+    ``max |mean_left − mean_right| / eps_cut``. ``eps_cut`` is the
+    Bifet–Gavaldà Hoeffding bound at ``delta``,
+    ``sqrt(ln(4n/δ) / 2m)`` over the harmonic mean ``m`` of the two sides,
+    so the ratio is DIMENSIONLESS and the classic test is the ordinary
+    ``constant`` threshold ``{"max": 1}``. A cut whose gap exceeds its own
+    bound drops the OLDER sub-window, so the adaptive window shrinks itself
+    to the level the stream moved to.
+
+    The shrink happens inside the fold and the statistic reported is the one
+    measured BEFORE it, for two reasons: the adaptive window is the
+    statistic's own (§5.10.1), so it must not depend on the document's
+    ``response`` the way ``PageHinkley``'s reset does, and a detector that
+    shrank before reporting could never show the breach that made it shrink.
+
+    The DECLARED ``window`` is a different object: it gates ``min_n`` and
+    labels the verdict, exactly as it does for every other stream monitor.
+    The two lengths differ, and only the declared one reaches the §6 record.
+
+    Notes
+    -----
+    Every split point is examined on every observation, so a fold costs
+    ``O(n²)`` in the adaptive window's length, and that length is bounded
+    only by how long the stream stays stationary — §5.10.1 asks for the
+    exact form rather than the bucketed approximation the literature uses to
+    bound both. A long stationary series is therefore the case to watch.
+
+    Parameters
+    ----------
+    params : dict
+        The ``StreamMonitor`` knobs plus ``delta`` (finite number strictly
+        between 0 and 1, default ``DEFAULT_ADWIN_DELTA``): the confidence
+        the cut bound is derived at; and ``min_sub`` (int >= 1, default
+        ``DEFAULT_MIN_SUB``): the smallest sub-window a cut may leave.
+    name : str or None, keyword-only
+        The owner's name for this instance.
+
+    Examples
+    --------
+    Twenty observations at one level and twenty at another: the window
+    shrinks to the newer level once a cut breaches::
+
+        monitor = ADWIN(
+            {"field": "prediction", "window": {"kind": "sliding", "n": 1},
+             "threshold": {"kind": "constant", "max": 1.0}, "min_n": 1,
+             "response": "halt"}
+        )
+        for value in [0.0] * 20 + [1.0] * 20:
+            monitor.observe({"kind": "decision", "legs": [{"prediction": value}]})
+        set(monitor.state()["stream"]["window"])
+        # -> {1.0}
+    """
+
+    _PARAMS = StreamMonitor._PARAMS + ("delta", "min_sub")
+    _STREAM_KEYS = ("window", "statistic")
+
+    @classmethod
+    def _check(cls, problems, params):
+        """Require a confidence inside the open unit interval and a positive sub-window."""
+        super()._check(problems, params)
+        _check_number(problems, "delta", params.get("delta", DEFAULT_ADWIN_DELTA), gt=0, lt=1)
+        check_int_param(problems, "min_sub", params.get("min_sub", DEFAULT_MIN_SUB), ge=1)
+
+    def _configure(self, params):
+        """Take the confidence and the sub-window floor, and start with an empty window."""
+        super()._configure(params)
+        self._delta = params.get("delta", DEFAULT_ADWIN_DELTA)
+        self._min_sub = int(params.get("min_sub", DEFAULT_MIN_SUB))
+        self._adaptive = []
+        self._statistic = None
+
+    def verdict(self):
+        """Report the last measured cut ratio once the declared window can carry a verdict.
+
+        Returns
+        -------
+        Verdict
+            ``statistic`` is the largest gap over its own bound, or ``None``
+            while the adaptive window is too short to cut; ``n_ref`` is
+            always 0 and ``n_cur`` is the DECLARED window's size.
+        """
+        window, complete = self._window()
+        statistic = self._statistic if window else None
+        return self._judge(statistic, 0, len(window), complete)
+
+    def _fold(self, observation):
+        """Take the value into the adaptive window, measure it, then shrink on a breach."""
+        self._adaptive.append(observation[_VALUE])
+        cuts = self._cuts()
+        self._statistic = self._worst(cuts)[0] if cuts else None
+        while cuts:
+            ratio, at = self._worst(cuts)
+            if ratio <= 1.0:  # the ratio's unit: the gap is inside its own bound
+                break
+            del self._adaptive[:at]
+            cuts = self._cuts()
+
+    def _worst(self, cuts):
+        """Return the ``(ratio, index)`` of the cut with the largest ratio."""
+        return max(cuts, key=lambda cut: cut[0])
+
+    def _cuts(self):
+        """Return every legal cut as ``(gap / eps_cut, index)``, oldest first."""
+        total = len(self._adaptive)
+        out = []
+        for at in range(self._min_sub, total - self._min_sub + 1):
+            left, right = self._adaptive[:at], self._adaptive[at:]
+            gap = abs(statistics.fmean(left) - statistics.fmean(right))
+            out.append((gap / self._eps_cut(len(left), len(right), total), at))
+        return out
+
+    def _eps_cut(self, n_left, n_right, total):
+        """Return the Hoeffding bound at ``delta`` for one cut of a window of ``total``."""
+        harmonic = 1.0 / (1.0 / n_left + 1.0 / n_right)
+        return math.sqrt(math.log(4.0 * total / self._delta) / (2.0 * harmonic))
+
+    def _stream_state(self):
+        """Return the adaptive window and the ratio last measured over it."""
+        return {"window": list(self._adaptive), "statistic": self._statistic}
+
+    def _restore_stream(self, state):
+        """Take the adaptive window and its last ratio back."""
+        problems = []
+        _check_unknown(problems, state, self._STREAM_KEYS, where="monitor state.stream")
+        window = state.get("window")
+        if not isinstance(window, list):
+            problems.append("monitor state.stream: window must be a list")
+        else:
+            for index, value in enumerate(window):
+                _check_number(problems, f"monitor state.stream.window[{index}]", value)
+        if state.get("statistic") is not None:
+            _check_number(problems, "monitor state.stream.statistic", state.get("statistic"))
+        if problems:
+            raise ProductionError(problems)
+        self._adaptive = [float(value) for value in state["window"]]
+        self._statistic = state["statistic"]
+
+
 # ---------------------------------------------------------------------------
 # DistributionMonitor — a window against a reference population
 # ---------------------------------------------------------------------------
@@ -2612,7 +2951,60 @@ class DistributionMonitor(Monitor):
         """Return the distance between a reference sample and the window's values."""
 
 
-class PSI(DistributionMonitor):
+class _BinnedMonitor(DistributionMonitor):
+    """A distribution monitor whose distance is taken over quantile bins.
+
+    One ``bins`` knob, one binning: the bins are cut at the REFERENCE's own
+    quantiles and the window is counted into them, so every distance in this
+    family compares the same two histograms and none re-derives the cutting
+    (§5.10.1).
+
+    Parameters
+    ----------
+    params : dict
+        The ``DistributionMonitor`` knobs plus ``bins`` (int >= 2, default
+        ``DEFAULT_BINS``).
+    name : str or None, keyword-only
+        The owner's name for this instance.
+
+    Examples
+    --------
+    Abstract: a concrete member supplies the distance. Every one of them
+    bins the same way::
+
+        monitor = LInf(
+            {"field": "prediction", "bins": 2,
+             "reference": {"uses": "leading", "params": {"n": 4}},
+             "window": {"kind": "count", "n": 4},
+             "threshold": {"kind": "constant", "max": 0.4}, "min_n": 4}
+        )
+        monitor.fit([{"legs": [{"prediction": float(v)}]} for v in (1, 2, 3, 4)])
+        for value in (5, 6, 7, 8):
+            monitor.observe({"kind": "decision", "legs": [{"prediction": float(value)}]})
+        monitor.verdict().statistic
+        # -> 0.5
+    """
+
+    _PARAMS = DistributionMonitor._PARAMS + ("bins",)
+
+    @classmethod
+    def _check(cls, problems, params):
+        """Require at least two bins: one bin has no shape to compare."""
+        super()._check(problems, params)
+        check_int_param(problems, "bins", params.get("bins", DEFAULT_BINS), ge=2)
+
+    def _configure(self, params):
+        """Take the bin count."""
+        super()._configure(params)
+        self._bins = int(params.get("bins", DEFAULT_BINS))
+
+    def _counts(self, reference, window):
+        """Return both samples' bin counts over the reference's own quantile cuts."""
+        interior = _quantile_edges(reference, self._bins)
+        return _bin_counts(reference, interior), _bin_counts(window, interior)
+
+
+class PSI(_BinnedMonitor):
     """The population stability index over bins cut at the reference's quantiles.
 
     ``Σ (q_b − p_b)·ln(q_b / p_b)`` with ``p`` the reference proportions and
@@ -2646,19 +3038,6 @@ class PSI(DistributionMonitor):
         monitor.verdict().statistic  # 0.0
     """
 
-    _PARAMS = DistributionMonitor._PARAMS + ("bins",)
-
-    @classmethod
-    def _check(cls, problems, params):
-        """Require at least two bins."""
-        super()._check(problems, params)
-        check_int_param(problems, "bins", params.get("bins", DEFAULT_BINS), ge=2)
-
-    def _configure(self, params):
-        """Take the bin count."""
-        super()._configure(params)
-        self._bins = int(params.get("bins", DEFAULT_BINS))
-
     def critical_value(self, alpha, n_ref, n_cur):
         """Return the χ² benchmark for PSI at these sizes.
 
@@ -2672,16 +3051,14 @@ class PSI(DistributionMonitor):
         Returns
         -------
         float
-            ``(1/n_ref + 1/n_cur)·(B − 1 + z_α·√(2(B − 1)))``.
+            ``(1/n_ref + 1/n_cur)·(B − 1 + z_α·√(2(B − 1)))``, from the one
+            owner of that approximation.
         """
-        z = statistics.NormalDist().inv_cdf(1.0 - alpha)
-        degrees = self._bins - 1
-        return (1.0 / n_ref + 1.0 / n_cur) * (degrees + z * math.sqrt(2 * degrees))
+        return _chi2_benchmark(alpha, n_ref, n_cur, self._bins - 1)
 
     def _statistic(self, reference, window):
         """Return the PSI of the window against bins cut at this reference's quantiles."""
-        interior = _quantile_edges(reference, self._bins)
-        return _psi(_bin_counts(reference, interior), _bin_counts(window, interior))
+        return _psi(*self._counts(reference, window))
 
 
 class KS(DistributionMonitor):
@@ -2735,6 +3112,128 @@ class KS(DistributionMonitor):
         return _ks(reference, window)
 
 
+class JensenShannon(_BinnedMonitor):
+    """The base-2 Jensen–Shannon divergence over the reference's quantile bins.
+
+    ``H(M) − (H(P) + H(Q))/2`` with ``M`` the mixture and every entropy in
+    bits, so the statistic is bounded in ``[0, 1]``: 0 on identical
+    binnings, 1 when the two share no bin. A document can therefore reason
+    about the number without knowing the sample size — which PSI, being
+    unbounded, cannot offer.
+
+    The ``alpha`` benchmark is the SAME normal approximation to χ²_{B−1}
+    the PSI benchmark uses, divided by ``2 ln 2`` (the divergence is in
+    bits, and ``2·n_eff·ln 2`` of it is the χ² statistic); it is taken from
+    that one owner rather than restated, so loosening one benchmark cannot
+    leave the other behind.
+
+    Parameters
+    ----------
+    params : dict
+        The ``_BinnedMonitor`` knobs — the ``DistributionMonitor`` ones plus
+        ``bins`` (int >= 2, default ``DEFAULT_BINS``).
+    name : str or None, keyword-only
+        The owner's name for this instance.
+
+    Examples
+    --------
+    A window that has moved entirely above the anchor's median::
+
+        monitor = JensenShannon(
+            {"field": "prediction", "bins": 2,
+             "reference": {"uses": "leading", "params": {"n": 10}},
+             "window": {"kind": "count", "n": 10},
+             "threshold": {"kind": "constant", "max": 0.2}, "min_n": 10}
+        )
+        monitor.fit([{"legs": [{"prediction": float(v)}]} for v in range(1, 11)])
+        for value in range(11, 21):
+            monitor.observe({"kind": "decision", "legs": [{"prediction": float(value)}]})
+        round(monitor.verdict().statistic, 4)
+        # -> 0.3113
+    """
+
+    def critical_value(self, alpha, n_ref, n_cur):
+        """Return the χ² benchmark in bits at these sizes.
+
+        Parameters
+        ----------
+        alpha : float
+            The significance level.
+        n_ref, n_cur : int
+            The reference and window sizes.
+
+        Returns
+        -------
+        float
+            PSI's own χ²_{B−1} benchmark divided by ``2 ln 2``.
+        """
+        return _chi2_benchmark(alpha, n_ref, n_cur, self._bins - 1) / (2.0 * math.log(2.0))
+
+    def _statistic(self, reference, window):
+        """Return the base-2 divergence between this reference's bins and the window's."""
+        return _js(*self._counts(reference, window))
+
+
+class LInf(_BinnedMonitor):
+    """The largest absolute bin-proportion gap, bounded by a Bonferroni-corrected bound.
+
+    The statistic is a proportion gap, so it lives in ``[0, 1]`` and a
+    ``constant`` threshold reads directly. Its critical value is the
+    two-sided Hoeffding bound with a Bonferroni factor over the ``B`` bins,
+    ``sqrt(−ln(α/(2B))·(1/n_ref + 1/n_cur)/2)``: the statistic is a MAXIMUM
+    over B comparisons, and testing a maximum at ``alpha`` without
+    correcting for how many comparisons produced it is how a drift monitor
+    learns to cry wolf — with ten bins the uncorrected bound is breached
+    by chance far more often than ``alpha`` claims.
+
+    Parameters
+    ----------
+    params : dict
+        The ``_BinnedMonitor`` knobs — the ``DistributionMonitor`` ones plus
+        ``bins`` (int >= 2, default ``DEFAULT_BINS``), refused below two.
+    name : str or None, keyword-only
+        The owner's name for this instance.
+
+    Examples
+    --------
+    Half the reference's mass moves out of its lower bin::
+
+        monitor = LInf(
+            {"field": "prediction", "bins": 2,
+             "reference": {"uses": "leading", "params": {"n": 10}},
+             "window": {"kind": "count", "n": 10},
+             "threshold": {"kind": "alpha", "alpha": 0.05}, "min_n": 10}
+        )
+        monitor.fit([{"legs": [{"prediction": float(v)}]} for v in range(1, 11)])
+        for value in range(11, 21):
+            monitor.observe({"kind": "decision", "legs": [{"prediction": float(value)}]})
+        monitor.verdict().statistic
+        # -> 0.5
+    """
+
+    def critical_value(self, alpha, n_ref, n_cur):
+        """Return the Bonferroni-corrected two-sided Hoeffding bound at these sizes.
+
+        Parameters
+        ----------
+        alpha : float
+            The significance level, spent over all ``B`` bins.
+        n_ref, n_cur : int
+            The reference and window sizes.
+
+        Returns
+        -------
+        float
+            ``sqrt(−ln(α/(2B))·(1/n_ref + 1/n_cur)/2)``.
+        """
+        spent = alpha / (2.0 * self._bins)
+        return math.sqrt(-math.log(spent) * (1.0 / n_ref + 1.0 / n_cur) / 2.0)
+
+    def _statistic(self, reference, window):
+        """Return the largest proportion gap between this reference's bins and the window's."""
+        return _linf(*self._counts(reference, window))
+
+
 # ---------------------------------------------------------------------------
 # Registries — import is registration (§4.3)
 # ---------------------------------------------------------------------------
@@ -2749,6 +3248,10 @@ MONITOR_KINDS.register("page_hinkley", PageHinkley)
 MONITOR_KINDS.register("tracking_signal", TrackingSignal)
 MONITOR_KINDS.register("psi", PSI)
 MONITOR_KINDS.register("ks", KS)
+MONITOR_KINDS.register("ddm", DDM)
+MONITOR_KINDS.register("adwin", ADWIN)
+MONITOR_KINDS.register("jensen_shannon", JensenShannon)
+MONITOR_KINDS.register("linf", LInf)
 
 REFERENCE_KINDS = Registry("reference", Reference)
 REFERENCE_KINDS.register("leading", Leading)
