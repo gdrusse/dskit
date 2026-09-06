@@ -65,6 +65,9 @@ on it without breaking its rulings.
   Chronos- or TimesFM-shaped forecaster is a subclass supplying the hooks.
   Loads are `output_loading_info=True` + `use_safetensors=True`: a
   non-empty `missing_keys` refuses, unused weights are only logged.
+- **Kronos** — `libs/kronos.py` is the non-Transformers-model counterpart:
+  a clean source revision and two verified WORM snapshots produce frozen,
+  causal session hidden states in one shared content-verified cache (ADR-0102).
 - **Reading an acquired stream** — the `observations` kind
   (`libs/observations.py`, ADR-0077) fronts `dskit.onboarding`'s
   `scan_stream`: children subclass `ObservationRows`, narrow `_PARAMS` to
@@ -481,7 +484,8 @@ dskit/pipeline/
 ├── registry.py        venue-backend registry (no venues ship)
 ├── libs/              numpy, sklearn, torch + torch_ts (ADR-0041 zoo),
 │                      transformers (+ the pretrained encode/classify/forecast
-│                      trio over an acquired snapshot, ADR-0083), optuna,
+│                      trio over an acquired snapshot, ADR-0083), kronos
+│                      (frozen causal session states, ADR-0102), optuna,
 │                      pyomo, sb3, matplotlib,
 │                      mlflow (tracking SINK pack, no nodes),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077)

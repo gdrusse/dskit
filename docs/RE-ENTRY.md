@@ -1,5 +1,32 @@
 # Re-entry
 
+## Current state: P13 pooled/Kronos model zoo complete (2026-09-06)
+
+The four owner-approved candidates completed 20 outer folds each under
+benchmark identity `b017ea1b…` and approved inventory `8731619d…`. Mean path
+scores ranked pooled LightGBM 0.006401, pooled Torch MLP 0.005322, frozen
+Kronos+LightGBM 0.001175, and frozen Kronos+MLP -0.003852. LightGBM and the
+tabular MLP were not detectably different (`p=0.382351`); both Kronos variants
+were detectably worse than both tabular baselines after all-pairs Bonferroni.
+The comparison selected the simpler native LightGBM frontier but made no
+automatic promotion.
+
+ADR-0102 and its implementation add the generic verified local Kronos hidden
+state node/cache to dskit, expose the optional runtime through pmquant, add
+causal OHLCVA cache rows and P13 fusion, and allow Torch MLP width/depth HPO.
+The pmquant ladder model itself is unchanged. Final Bugbot review is clear;
+the real pinned 128-session GPU smoke passes. P13 D/E cache membership was
+narrowed to approved cohort names plus SPY after one WSL OOM on unused P12
+breadth names. The final run took about 7h25m; journal evidence is A18704-
+A18709. Memo:
+`children/intraday_equities/docs/memos/p13-pooled-kronos-model-zoo-results.md`.
+
+**Next:** treat pooled native LightGBM as the current simplest development
+frontier. If Kronos receives another exploratory attempt, first test an
+approved additive ablation against the full nonduplicative P12 feature set;
+do not fine-tune or promote while the cheaper frozen representation shows no
+incremental value and pretraining-contamination certainty remains low.
+
 ## Current state: P12 Gate 3 recovery complete (2026-09-05)
 
 Branch: `main`; `571884a` is pushed to `origin/main`. Focused recovery,

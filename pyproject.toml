@@ -47,6 +47,16 @@ polymarket = ["huggingface_hub>=0.20", "pyarrow>=15"]
 # hub client token=False for "anonymous" — earlier releases read False as
 # a token value rather than as "send nothing".
 huggingface = ["huggingface_hub>=0.23"]
+# Frozen Kronos encoders loaded from verified local snapshots.  The upstream
+# package is source-pinned separately; this extra supplies only its runtime.
+kronos = [
+    "torch>=2.0",
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "huggingface_hub>=0.33.1",
+    "safetensors>=0.6.2",
+    "einops>=0.8.1",
+]
 # Everything the library packs can use, for running the full libs test suite.
 all = [
     "numpy>=1.26",
@@ -62,6 +72,9 @@ all = [
     "pyarrow>=15",
     "alpaca-py>=0.44",
     "huggingface_hub>=0.23",
+    "pandas>=2.0",
+    "safetensors>=0.6.2",
+    "einops>=0.8.1",
 ]
 dev = [
     "pytest>=7.4",

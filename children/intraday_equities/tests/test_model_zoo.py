@@ -12,6 +12,7 @@ from dskit.pipeline.document import load_document
 from intraday_equities.model_zoo import (
     DirectPathScore,
     EmpiricalSelectRegressor,
+    KronosFusionRows,
     PooledDirectPathScore,
     PooledGate3ZooCandidates,
     SequenceOnlyZooEstimator,
@@ -244,7 +245,7 @@ def test_pooled_path_score_weights_assets_then_their_heads_equally():
     assert result["metrics"]["n_asset_paths"] == 2.0
 
 
-def test_pooled_materializer_emits_two_valid_shared_fit_documents(tmp_path):
+def test_pooled_materializer_emits_four_valid_shared_fit_documents(tmp_path):
     from types import SimpleNamespace
 
     from dskit.pipeline.planner import plan
@@ -269,7 +270,10 @@ def test_pooled_materializer_emits_two_valid_shared_fit_documents(tmp_path):
     )
     result = stage.run(ctx, {"preflight": True, "caches": caches})
     assert [row["family"] for row in result["candidates"]] == [
-        "pooled-lightgbm", "pooled-torch-mlp"
+        "pooled-lightgbm",
+        "pooled-torch-mlp",
+        "pooled-kronos-lightgbm",
+        "pooled-kronos-torch-mlp",
     ]
     for candidate in result["candidates"]:
         document = load_document(candidate["path"])
@@ -283,3 +287,35 @@ def test_pooled_materializer_emits_two_valid_shared_fit_documents(tmp_path):
         assert document.pipeline["pooled_features"].uses == "concat"
         assert set(document.pipeline["pooled_features"].inputs) == {"a", "c", "d", "e"}
         assert document.pipeline["reference_tape"].uses == "concat"
+    for candidate in result["candidates"][2:]:
+        document = load_document(candidate["path"])
+        assert document.pipeline["kronos"].params["input_identity"]
+        assert document.pipeline["scan_h01"].inputs["records"] == (
+            "$fusion_features.records"
+        )
+
+
+def test_kronos_fusion_inner_aligns_and_allows_only_declared_side_features():
+    features = [
+        {
+            "symbol": "AAA",
+            "asof_ms": np.array([1, 2, 3]),
+            "close": np.array([10.0, 11.0, 12.0]),
+            "names": ["ret_lag_0", "tod_sin"],
+            "X": np.array([[9.0, 0.1], [8.0, 0.2], [7.0, 0.3]]),
+        }
+    ]
+    embeddings = [
+        {
+            "symbol": "AAA",
+            "asof_ms": np.array([1, 3]),
+            "names": ["kronos_000", "kronos_001"],
+            "X": np.array([[1.0, 2.0], [3.0, 4.0]]),
+        }
+    ]
+    node = KronosFusionRows("fusion", {"feature_names": ["tod_sin"]})
+    out = node.run(None, {"features": features, "embeddings": embeddings})
+    frame = out["records"][0]
+    assert frame["names"] == ["kronos_000", "kronos_001", "tod_sin"]
+    np.testing.assert_allclose(frame["X"][:, -1], [0.1, 0.3])
+    np.testing.assert_allclose(frame["close"], [10.0, 12.0])

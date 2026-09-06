@@ -859,7 +859,9 @@ class CategoricalEmbeddingMLPRegressor:
     Parameters
     ----------
     hidden_size : int
-        Width of the hidden layer.
+        Width of every hidden layer.
+    hidden_depth : int
+        Number of hidden layers.
     embedding_dim : int
         Width of the learned categorical embedding.
     epochs, lr, weight_decay, batch_size, dropout, seed : numeric
@@ -881,6 +883,7 @@ class CategoricalEmbeddingMLPRegressor:
     def __init__(
         self,
         hidden_size=64,
+        hidden_depth=1,
         embedding_dim=8,
         epochs=15,
         lr=1e-3,
@@ -892,6 +895,7 @@ class CategoricalEmbeddingMLPRegressor:
         standardize=True,
     ):
         self.hidden_size = hidden_size
+        self.hidden_depth = hidden_depth
         self.embedding_dim = embedding_dim
         self.epochs = epochs
         self.lr = lr
@@ -973,10 +977,13 @@ class CategoricalEmbeddingMLPRegressor:
         import torch
 
         hidden = int(self.hidden_size)
+        depth = int(self.hidden_depth)
         embedding = int(self.embedding_dim)
         dropout = float(self.dropout)
-        if hidden < 1 or embedding < 1:
-            raise ValueError("hidden_size and embedding_dim must be positive")
+        if hidden < 1 or depth < 1 or embedding < 1:
+            raise ValueError(
+                "hidden_size, hidden_depth, and embedding_dim must be positive"
+            )
         if not 0.0 <= dropout < 1.0:
             raise ValueError("dropout must lie in [0, 1)")
 
@@ -984,12 +991,19 @@ class CategoricalEmbeddingMLPRegressor:
             def __init__(self):
                 super().__init__()
                 self.embedding = torch.nn.Embedding(n_categories, embedding)
-                self.net = torch.nn.Sequential(
-                    torch.nn.Linear(n_continuous + embedding, hidden),
-                    torch.nn.ReLU(),
-                    torch.nn.Dropout(dropout),
-                    torch.nn.Linear(hidden, 1),
-                )
+                layers = []
+                width = n_continuous + embedding
+                for _ in range(depth):
+                    layers.extend(
+                        [
+                            torch.nn.Linear(width, hidden),
+                            torch.nn.ReLU(),
+                            torch.nn.Dropout(dropout),
+                        ]
+                    )
+                    width = hidden
+                layers.append(torch.nn.Linear(width, 1))
+                self.net = torch.nn.Sequential(*layers)
 
             def forward(self, continuous, category):
                 joined = torch.cat([continuous, self.embedding(category)], dim=1)

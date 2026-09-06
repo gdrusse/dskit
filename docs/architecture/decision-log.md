@@ -5287,3 +5287,41 @@ statistical strength across stocks. The cache build that exceeded WSL memory is
 removed; maximum-window smokes measured 4.71 GB for LightGBM and 5.33 GB for the
 float32 Torch path under a stricter 12 GiB cap. Execution remains separately
 inventory-gated.
+
+## ADR-0102 -- Add two frozen-Kronos pooled fusion challengers
+
+**Status:** Accepted, not locked (2026-09-05; owner approved implementation)
+
+**Context.** OHLCV sequence structure may be better represented by the
+pretrained Kronos-small predictor than by widening a pooled tabular model. The
+linked Tokenizer-base alone has no temporal predictor, and fold-by-fold Kronos
+fine-tuning would multiply an already large P13 workload.
+
+**Decision.** Acquire Tokenizer-base and Kronos-small as separate verified WORM
+snapshots and pin the official Kronos source revision. Build session-local
+five-minute OHLCVA paths (at most 78 RTH bars); derive amount from price and
+volume as the upstream predictor does; and reproduce upstream preprocessing by
+normalizing each already-causal prefix with that prefix's mean and standard
+deviation. Batch the declared 30-minute prefixes across sessions, retaining
+only each prefix's final 512-wide hidden state. No prefix crosses an overnight
+boundary. The backbone stays frozen for this experiment.
+
+Append two ordered candidates after pooled LightGBM and pooled Torch MLP:
+Kronos hidden state plus exogenous/calendar/category columns into native
+LightGBM, and the same matrix into the categorical-embedding Torch MLP. Each
+fusion head owns train-only inner HPO; both reuse one content-verified embedding
+cache. Outer dates, labels, eligible names, direct leads, scoring, approval, and
+one-worker execution remain those of ADR-0101.
+
+**Consequences.** The four candidates isolate backbone value from fusion-head
+value without duplicate Kronos inference or validation leakage. Kronos models
+train on the 30-minute lattice because only those origins have embeddings, so
+sample-frequency differences are explicit. Pretraining dates are undisclosed;
+Kronos evidence is exploratory and cannot promote a production model. The
+generic encoder/runtime is also exposed to pmquant, but its current ladder model
+is unchanged because a ladder is not OHLCV. A later
+ADR may add walk-forward fine-tuning only if frozen embeddings improve OOF
+results. Implementation adds a pinned upstream source dependency, one generic
+Kronos library pack, columnar K-line/feature-cache support, focused tests, and
+the two templates. The owner authorized implementation and the resulting
+four-candidate run in the same session.

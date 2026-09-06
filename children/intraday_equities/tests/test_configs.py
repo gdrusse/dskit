@@ -870,7 +870,7 @@ def test_the_p1_cell_differs_from_its_baseline_in_two_knobs_only():
         ), knob
 
 
-def test_p13_pooled_zoo_has_two_family_specific_inner_searches():
+def test_p13_pooled_zoo_has_four_family_specific_inner_searches():
     raw = _raw("run-p13-pooled-model-zoo.json")
     materialize = raw["stages"]["materialize"]
     assert materialize["inputs"] == {
@@ -881,18 +881,26 @@ def test_p13_pooled_zoo_has_two_family_specific_inner_searches():
     assert [row["family"] for row in templates] == [
         "pooled-lightgbm",
         "pooled-torch-mlp",
+        "pooled-kronos-lightgbm",
+        "pooled-kronos-torch-mlp",
     ]
     assert templates[0]["model"]["estimator"] == "lightgbm.LGBMRegressor"
     assert templates[1]["model"]["estimator"].endswith(
         "CategoricalEmbeddingMLPRegressor"
     )
-    assert templates[0]["model"]["hpo_trials"] == 12
-    assert templates[1]["model"]["hpo_trials"] == 8
+    assert templates[2]["model"]["estimator"] == "lightgbm.LGBMRegressor"
+    assert templates[3]["model"]["estimator"].endswith(
+        "CategoricalEmbeddingMLPRegressor"
+    )
+    assert templates[2]["kronos"] == templates[3]["kronos"]
+    assert [row["model"]["hpo_trials"] for row in templates] == [4, 4, 4, 4]
+    assert "hidden_depth" in templates[1]["model"]["hpo_space"]
+    assert "hidden_depth" in templates[3]["model"]["hpo_space"]
     assert set(templates[0]["model"]["hpo_space"]) != set(
         templates[1]["model"]["hpo_space"]
     )
     assert raw["stages"]["approval"]["params"]["approved_inventory_sha256"] == (
-        "2e76e23482b4caa2328d2ebb1c48cabd97a64b50094558c1bffe5c9a59d19779"
+        "8731619d0eabb93246ebf72b6993f4a2e858c05bb775eb4a0ef5f6c589b33605"
     )
     universe = _raw("universe-p13-pooled.json")
     assert len(universe["tradable"]) == 25

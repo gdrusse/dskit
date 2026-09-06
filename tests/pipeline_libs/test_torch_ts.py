@@ -521,6 +521,7 @@ def test_categorical_embedding_mlp_fits_one_declared_category_column():
     )
     model = CategoricalEmbeddingMLPRegressor(
         hidden_size=4,
+        hidden_depth=3,
         embedding_dim=2,
         epochs=1,
         batch_size=2,
@@ -537,6 +538,12 @@ def test_categorical_embedding_mlp_fits_one_declared_category_column():
     prediction = model.predict(x)
     assert prediction.shape == (4,)
     assert np.all(np.isfinite(prediction))
+    linear = [
+        layer
+        for layer in model._module.net
+        if layer.__class__.__name__ == "Linear"
+    ]
+    assert len(linear) == 4
     with pytest.raises(ValueError, match="unseen category"):
         model.predict(np.asarray([[0.0, 1.0, 2.0]]))
 

@@ -1,6 +1,6 @@
 {
   "name": "p13-pooled-model-zoo",
-  "notes": "ADR-0101 pooled replacement for the stopped 325-candidate P13 attempt. Four verified P12 group caches are filtered and joined by reference for pooled LightGBM and embedding Torch MLP; each family owns train-only HPO and no candidate fits before inventory approval.",
+  "notes": "ADR-0101/0102 four-way pooled zoo: native LightGBM and Torch MLP run first, followed by frozen Kronos-small hidden states fused with explicit side features into LightGBM and Torch MLP. Each family owns train-only HPO; the two Kronos heads share one verified embedding cache.",
   "pipeline": {
     "universe": {
       "uses": "intraday_equities-universe",
@@ -99,7 +99,8 @@
         "lookback": 20,
         "layout": "columns",
         "dtype": "float32",
-        "cache_dir": "./pipeline_cache/p12-features-f32-v5",
+        "include_klines": true,
+        "cache_dir": "./pipeline_cache/p13-features-f32-kronos-v1",
         "momentum_horizons": [
           {
             "width": 3,
@@ -270,16 +271,16 @@
             "sources": ["source_a", "source_c"]
           },
           "d": {
-            "universe": "configs/universe-p12-d.json",
+            "universe": "configs/universe-p13-d-selected.json",
             "sources": ["source_a", "source_d"]
           },
           "e": {
-            "universe": "configs/universe-p12-e.json",
+            "universe": "configs/universe-p13-e-selected.json",
             "sources": ["source_a", "source_e"]
           }
         }
       },
-      "notes": "Reuse and verify the immutable P12 group caches. If any digest or feature contract moved, rebuild only that bounded group rather than a 25-name cache."
+      "notes": "Build four bounded P13 group caches containing the frozen P12 feature matrix, label tape, and causal five-minute OHLCVA bars. The P12 caches remain untouched because write-once cache identity changes when K-lines are added. Groups D and E use P13 cohort-only universes plus SPY so unused P12 breadth candidates cannot inflate peak memory."
     },
     "materialize": {
       "uses": "intraday_equities.model_zoo:PooledGate3ZooCandidates",
@@ -297,6 +298,7 @@
             "family": "pooled-lightgbm",
             "representation": "pooled-tabular-native-category",
             "feature_policy": "all frozen P12 features; symbol_code is native categorical",
+            "feature_source": "tabular",
             "seed_policy": "fixed seed 0 with purged inner HPO",
             "compute_class": "cpu-medium",
             "compute_rank": 1,
@@ -318,7 +320,7 @@
                 "random_state": 0,
                 "verbosity": -1
               },
-              "hpo_trials": 12,
+              "hpo_trials": 4,
               "hpo_seed": 0,
               "hpo_val_days": 63,
               "hpo_embargo_days": 5,
@@ -362,6 +364,7 @@
             "family": "pooled-torch-mlp",
             "representation": "standardized-tabular-plus-symbol-embedding",
             "feature_policy": "all frozen P12 continuous features plus learned symbol embedding",
+            "feature_source": "tabular",
             "seed_policy": "fixed seed 0 with purged inner HPO",
             "compute_class": "gpu-medium",
             "compute_rank": 2,
@@ -370,8 +373,9 @@
               "estimator": "dskit.pipeline.libs.torch_ts.CategoricalEmbeddingMLPRegressor",
               "estimator_params": {
                 "hidden_size": 64,
+                "hidden_depth": 2,
                 "embedding_dim": 8,
-                "epochs": 15,
+                "epochs": 8,
                 "lr": 0.001,
                 "weight_decay": 0.0001,
                 "batch_size": 4096,
@@ -379,7 +383,7 @@
                 "seed": 0,
                 "standardize": true
               },
-              "hpo_trials": 8,
+              "hpo_trials": 4,
               "hpo_seed": 0,
               "hpo_val_days": 63,
               "hpo_embargo_days": 5,
@@ -390,14 +394,19 @@
                   64,
                   128
                 ],
+                "hidden_depth": [
+                  1,
+                  2,
+                  3
+                ],
                 "embedding_dim": [
                   4,
                   8,
                   16
                 ],
                 "epochs": [
-                  10,
-                  20
+                  5,
+                  10
                 ],
                 "lr": [
                   0.0003,
@@ -414,6 +423,146 @@
                   0.1,
                   0.2
                 ]
+              }
+            }
+          },
+          {
+            "id": "kronos-lgbm",
+            "family": "pooled-kronos-lightgbm",
+            "representation": "frozen-kronos-small-hidden-plus-side-features",
+            "feature_policy": "512 causal session-local Kronos hidden columns plus calendar, SPY return, and native symbol category",
+            "feature_source": "kronos",
+            "seed_policy": "fixed seed 0 with purged inner HPO",
+            "compute_class": "gpu-embed-cpu-medium",
+            "compute_rank": 3,
+            "enabled": true,
+            "kronos": {
+              "source_root": "../../third_party/Kronos",
+              "source_revision": "67b630e67f6a18c9e9be918d9b4337c960db1e9a",
+              "onboarding_root": "./ob",
+              "tokenizer_snapshot": "c101158cfee9ab7424a21acbf92963f714a7d32ca3e0f34721fe514ebf67ed87",
+              "model_snapshot": "bb1bb0b2cede75c5bf72c9411d30eb3d55e762314b5513cea07b3a1b6d400b55",
+              "cache_dir": "./pipeline_cache/p13-kronos-small-prefix-v2",
+              "score_period_ms": 1800000,
+              "batch_size": 128,
+              "device": "cuda",
+              "dtype": "float16",
+              "timezone": "America/New_York",
+              "encoder_contract": "upstream-prefix-mean-std-final-hidden-v1",
+              "feature_names": [
+                "minutes_from_open",
+                "minutes_to_close",
+                "tod_sin",
+                "tod_cos",
+                "dow_sin",
+                "dow_cos",
+                "month_sin",
+                "month_cos",
+                "is_first_rth",
+                "is_last_rth",
+                "session_gap_days",
+                "after_holiday",
+                "ref_ret_SPY"
+              ]
+            },
+            "model": {
+              "estimator": "lightgbm.LGBMRegressor",
+              "estimator_params": {
+                "n_estimators": 500,
+                "learning_rate": 0.01,
+                "num_leaves": 8,
+                "max_depth": 3,
+                "min_child_samples": 500,
+                "reg_lambda": 100.0,
+                "reg_alpha": 0.1,
+                "subsample": 0.7,
+                "subsample_freq": 1,
+                "colsample_bytree": 0.35,
+                "n_jobs": 8,
+                "random_state": 0,
+                "verbosity": -1
+              },
+              "hpo_trials": 4,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "num_leaves": [4, 8, 16, 31],
+                "max_depth": [2, 3, 4, 5],
+                "min_child_samples": [250, 500, 1000],
+                "reg_lambda": [10.0, 100.0, 1000.0],
+                "reg_alpha": [0.0, 0.1, 1.0],
+                "colsample_bytree": [0.2, 0.35, 0.5]
+              }
+            }
+          },
+          {
+            "id": "kronos-torch-mlp",
+            "family": "pooled-kronos-torch-mlp",
+            "representation": "frozen-kronos-small-hidden-plus-side-features",
+            "feature_policy": "512 causal session-local Kronos hidden columns plus calendar, SPY return, and learned symbol embedding",
+            "feature_source": "kronos",
+            "seed_policy": "fixed seed 0 with purged inner HPO",
+            "compute_class": "gpu-medium",
+            "compute_rank": 4,
+            "enabled": true,
+            "kronos": {
+              "source_root": "../../third_party/Kronos",
+              "source_revision": "67b630e67f6a18c9e9be918d9b4337c960db1e9a",
+              "onboarding_root": "./ob",
+              "tokenizer_snapshot": "c101158cfee9ab7424a21acbf92963f714a7d32ca3e0f34721fe514ebf67ed87",
+              "model_snapshot": "bb1bb0b2cede75c5bf72c9411d30eb3d55e762314b5513cea07b3a1b6d400b55",
+              "cache_dir": "./pipeline_cache/p13-kronos-small-prefix-v2",
+              "score_period_ms": 1800000,
+              "batch_size": 128,
+              "device": "cuda",
+              "dtype": "float16",
+              "timezone": "America/New_York",
+              "encoder_contract": "upstream-prefix-mean-std-final-hidden-v1",
+              "feature_names": [
+                "minutes_from_open",
+                "minutes_to_close",
+                "tod_sin",
+                "tod_cos",
+                "dow_sin",
+                "dow_cos",
+                "month_sin",
+                "month_cos",
+                "is_first_rth",
+                "is_last_rth",
+                "session_gap_days",
+                "after_holiday",
+                "ref_ret_SPY"
+              ]
+            },
+            "model": {
+              "estimator": "dskit.pipeline.libs.torch_ts.CategoricalEmbeddingMLPRegressor",
+              "estimator_params": {
+                "hidden_size": 128,
+                "hidden_depth": 2,
+                "embedding_dim": 8,
+                "epochs": 8,
+                "lr": 0.001,
+                "weight_decay": 0.0001,
+                "batch_size": 4096,
+                "dropout": 0.1,
+                "seed": 0,
+                "standardize": true
+              },
+              "hpo_trials": 4,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "hidden_size": [64, 128, 256],
+                "hidden_depth": [1, 2, 3],
+                "embedding_dim": [4, 8, 16],
+                "epochs": [5, 10],
+                "lr": [0.0003, 0.001, 0.003],
+                "weight_decay": [1e-05, 0.0001, 0.001],
+                "dropout": [0.0, 0.1, 0.2]
               }
             }
           }
@@ -463,7 +612,6 @@
           "pipeline.pooled_features",
           "pipeline.reference_tape",
           "pipeline.scan_h01.uses",
-          "pipeline.scan_h01.inputs.records",
           "pipeline.scan_h01.inputs.bars",
           "pipeline.scan_h01.inputs.spec",
           "pipeline.scan_h01.params.split",
@@ -500,9 +648,9 @@
         "inventory_sha256": "$plan.inventory_sha256"
       },
       "params": {
-        "approved_inventory_sha256": "2e76e23482b4caa2328d2ebb1c48cabd97a64b50094558c1bffe5c9a59d19779",
+        "approved_inventory_sha256": "8731619d0eabb93246ebf72b6993f4a2e858c05bb775eb4a0ef5f6c589b33605",
         "approved_by": "owner",
-        "approval_note": "Owner authorized the revised two-candidate pooled run after verified P12 cache reuse and strict-cap maximum-window memory smokes."
+        "approval_note": "Owner authorized this exact four-candidate pooled inventory: native LightGBM, Torch MLP, frozen Kronos hidden plus LightGBM, and frozen Kronos hidden plus Torch MLP. Each candidate uses four inner HPO trials as a low-budget exploratory screen, not an exhaustive optimized ceiling."
       }
     },
     "run": {

@@ -1667,6 +1667,47 @@ def _grid_columns(
     return kept_ms, kept_close, col_kept
 
 
+def _kline_frame(
+    symbol, ms, opn, high, low, close, volume, kept_ms, period_ms, session
+):
+    """Aggregate causal OHLCVA bars at the feature grid for one symbol.
+
+    Each bar contains only one-minute observations in ``(t-period, t]``.
+    Session ordinals are New-York trading dates and let a downstream encoder
+    batch a whole RTH session without ever carrying context overnight.
+    """
+    import numpy as np
+
+    names = ["open", "high", "low", "close", "volume", "amount"]
+    matrix = np.full((len(kept_ms), len(names)), np.nan, dtype=np.float32)
+    sessions = np.zeros(len(kept_ms), dtype=np.int32)
+    zone = ZoneInfo(session["tz"])
+    for out_i, stamp in enumerate(kept_ms):
+        stop = int(np.searchsorted(ms, stamp, side="right"))
+        start = int(np.searchsorted(ms, int(stamp) - period_ms, side="right"))
+        if stop <= start:
+            continue
+        first = start
+        o = float(opn[first])
+        h = float(np.max(high[start:stop]))
+        lo = float(np.min(low[start:stop]))
+        c = float(close[stop - 1])
+        v = float(np.sum(volume[start:stop], dtype=np.float64))
+        if min(o, h, lo, c) <= 0.0 or not np.isfinite([o, h, lo, c, v]).all():
+            continue
+        matrix[out_i] = (o, h, lo, c, v, 0.25 * (o + h + lo + c) * v)
+        sessions[out_i] = datetime.fromtimestamp(
+            int(stamp) / 1000.0, tz=timezone.utc
+        ).astimezone(zone).date().toordinal()
+    return {
+        "symbol": symbol,
+        "asof_ms": np.asarray(kept_ms, dtype=np.int64),
+        "session": sessions,
+        "names": names,
+        "X": matrix,
+    }
+
+
 class SessionFeatureRows(Node):
     """Wide RTH feature rows: tape-local lags plus named session fields.
 
@@ -1701,11 +1742,11 @@ class SessionFeatureRows(Node):
     Wire the universe object, then run::
 
         node = SessionFeatureRows("features", {})
-        node.outputs  # ('records', 'tape')
+        node.outputs  # ('records', 'tape', 'klines')
     """
 
     role = "transform"
-    outputs = ("records", "tape")
+    outputs = ("records", "tape", "klines")
     _PARAMS = (
         "lookback",
         "layout",
@@ -1713,6 +1754,7 @@ class SessionFeatureRows(Node):
         "feature_blocks",
         "dtype",
         "cache_dir",
+        "include_klines",
     )
 
     @classmethod
@@ -1761,10 +1803,13 @@ class SessionFeatureRows(Node):
             )
         ):
             problems.append(f"dtype must be 'float32' or 'float64', got {dtype!r}")
-        return problems
         cache_dir = params.get("cache_dir")
         if cache_dir is not None and (not isinstance(cache_dir, str) or not cache_dir):
             problems.append("cache_dir must be a non-empty path string")
+        include = params.get("include_klines")
+        if include is not None and not isinstance(include, bool):
+            problems.append("include_klines must be boolean")
+        return problems
 
     def validate_inputs(self, inputs):
         """Require records and a universe spec.
@@ -1869,6 +1914,7 @@ class SessionFeatureRows(Node):
             return {
                 "records": list(cached["records"]),
                 "tape": cached["tape"],
+                "klines": cached["klines"],
             }
         lookback = (
             int(self.params["lookback"])
@@ -1966,6 +2012,7 @@ class SessionFeatureRows(Node):
         order.extend(symbol for symbol in grouped if symbol not in seen)
         records = []
         tape = []
+        klines = []
         n_rows = 0
         for symbol in order:
             rows = grouped.pop(symbol)
@@ -2024,6 +2071,21 @@ class SessionFeatureRows(Node):
                 market_ret=market_ret,
                 sector_ret=sector_ret,
             )
+            if self.params.get("include_klines", False):
+                klines.append(
+                    _kline_frame(
+                        symbol,
+                        ms,
+                        opn,
+                        high,
+                        low,
+                        close,
+                        volume,
+                        kept_ms,
+                        period_ms,
+                        session,
+                    )
+                )
             del opn, high, low, volume, market_ret, sector_ret
             n = int(kept_ms.size)
             own = col_kept.get("ret_lag_0")
@@ -2093,7 +2155,7 @@ class SessionFeatureRows(Node):
             len(tape),
             layout,
         )
-        out = {"records": records, "tape": tape}
+        out = {"records": records, "tape": tape, "klines": klines}
         cache_dir = self.params.get("cache_dir")
         if cache_dir is not None:
             from .feature_cache import write_feature_cache
@@ -2119,7 +2181,7 @@ class SessionFeatureRows(Node):
         cls._cached_key = _sig
         cls._cached_out = out
         cls._cached_rows = n_rows
-        return {"records": list(records), "tape": tape}
+        return {"records": list(records), "tape": tape, "klines": klines}
 
 
 class FoldFeatureStats(Node):

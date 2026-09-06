@@ -599,6 +599,38 @@ def test_session_features_lookback_zero_is_valid():
     assert SessionFeatureRows.validate_params({"lookback": 0}) == []
 
 
+def test_session_features_emit_causal_grid_ohlcva_when_declared():
+    import numpy as np
+
+    spec = _mini_spec(period_ms=300_000)
+    bars = []
+    for symbol in ("AAPL", "SPY"):
+        for i in range(11):
+            bars.append(
+                {
+                    "symbol": symbol,
+                    "asof_ms": _ms(i),
+                    "open": 100.0 + i,
+                    "high": 101.0 + i,
+                    "low": 99.0 + i,
+                    "close": 100.5 + i,
+                    "volume": 10.0,
+                }
+            )
+    out = SessionFeatureRows(
+        "features",
+        {"lookback": 0, "layout": "columns", "include_klines": True},
+    ).run(None, {"records": bars, "spec": spec})
+    frame = next(row for row in out["klines"] if row["symbol"] == "AAPL")
+    assert frame["names"] == [
+        "open", "high", "low", "close", "volume", "amount"
+    ]
+    assert np.isfinite(frame["X"]).all()
+    assert np.all(frame["session"] > 0)
+    # The bar ending at minute ten reads minutes six through ten, never later.
+    np.testing.assert_allclose(frame["X"][-1, :5], [106.0, 111.0, 105.0, 110.5, 50.0])
+
+
 def test_session_features_momentum_horizons_skip_lags():
     spec = _mini_spec()
     spec["industry"] = {"AAPL": "tech"}

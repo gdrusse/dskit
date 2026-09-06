@@ -21,6 +21,7 @@ __all__ = [
     "Gate3ZooCandidates",
     "PooledDirectPathScore",
     "PooledGate3ZooCandidates",
+    "KronosFusionRows",
     "SequenceOnlyZooEstimator",
     "StandardizedSelectRegressor",
 ]
@@ -41,6 +42,8 @@ _TEMPLATE_FIELDS = frozenset(
         "family",
         "representation",
         "feature_policy",
+        "feature_source",
+        "kronos",
         "seed_policy",
         "compute_class",
         "compute_rank",
@@ -311,7 +314,7 @@ def _template_problems(template, index):
     unknown = sorted(set(template) - _TEMPLATE_FIELDS)
     if unknown:
         problems.append(f"{where} has unknown field(s) {unknown}")
-    required = _TEMPLATE_FIELDS - {"prerequisite"}
+    required = _TEMPLATE_FIELDS - {"prerequisite", "kronos", "feature_source"}
     for field in sorted(required):
         if field not in template:
             problems.append(f"{where}.{field} is required")
@@ -320,6 +323,36 @@ def _template_problems(template, index):
             problems.append(f"{where}.{field} must be a non-empty string")
     if not isinstance(template.get("enabled"), bool):
         problems.append(f"{where}.enabled must be boolean")
+    if template.get("feature_source", "tabular") not in ("tabular", "kronos"):
+        problems.append(f"{where}.feature_source must be tabular or kronos")
+    kronos = template.get("kronos")
+    if template.get("feature_source") == "kronos":
+        if not isinstance(kronos, dict) or set(kronos) != _KRONOS_FIELDS:
+            problems.append(
+                f"{where}.kronos must contain exactly {sorted(_KRONOS_FIELDS)}"
+            )
+        else:
+            for field in _KRONOS_FIELDS - {
+                "score_period_ms", "batch_size", "feature_names"
+            }:
+                if not _string(kronos[field]):
+                    problems.append(f"{where}.kronos.{field} must be a string")
+            for field in ("score_period_ms", "batch_size"):
+                value = kronos[field]
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    problems.append(f"{where}.kronos.{field} must be positive")
+            names = kronos["feature_names"]
+            if (
+                not isinstance(names, list)
+                or not names
+                or any(not _string(name) for name in names)
+                or len(names) != len(set(names))
+            ):
+                problems.append(
+                    f"{where}.kronos.feature_names must be unique strings"
+                )
+    elif kronos is not None:
+        problems.append(f"{where}.kronos is only valid for feature_source=kronos")
     rank = template.get("compute_rank")
     if not isinstance(rank, int) or isinstance(rank, bool) or rank < 1:
         problems.append(f"{where}.compute_rank must be a positive integer")
@@ -720,6 +753,113 @@ def _pooled_horizon_weights(eligible):
     ]
 
 
+class KronosFusionRows(Node):
+    """Align Kronos states with explicitly allowed non-OHLCV side features.
+
+    Parameters
+    ----------
+    params : dict
+        ``feature_names`` is the exact ordered side-feature allowlist.  The
+        downstream scan adds ``symbol_code`` from its governed universe.
+    """
+
+    role = "transform"
+    outputs = ("records",)
+    _PARAMS = ("feature_names",)
+    _cached_key = None
+    _cached_records = None
+
+    @classmethod
+    def validate_params(cls, params):
+        """Require one non-empty, unique string allowlist."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        names = params.get("feature_names")
+        if (
+            not isinstance(names, list)
+            or not names
+            or any(not _string(name) for name in names)
+            or len(set(names)) != len(names)
+        ):
+            problems.append("feature_names must be unique non-empty strings")
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require columnar feature and embedding frame lists."""
+        if not isinstance(inputs, dict) or set(inputs) != {"features", "embeddings"}:
+            return ["inputs must contain exactly features and embeddings"]
+        return [
+            f"{key} must be a list"
+            for key in ("features", "embeddings")
+            if not isinstance(inputs[key], list)
+        ]
+
+    @staticmethod
+    def _signature(frames):
+        return tuple(
+            (
+                frame.get("symbol"),
+                tuple(getattr(frame.get("X"), "shape", ())),
+                getattr(frame.get("X"), "filename", None),
+            )
+            for frame in frames
+        )
+
+    def run(self, ctx, inputs):
+        """Inner-align each symbol and return one fused columnar frame."""
+        import numpy as np
+
+        del ctx
+        key = (
+            tuple(self.params["feature_names"]),
+            self._signature(inputs["features"]),
+            self._signature(inputs["embeddings"]),
+        )
+        cls = type(self)
+        if cls._cached_key == key:
+            return {"records": list(cls._cached_records)}
+        features = {frame["symbol"]: frame for frame in inputs["features"]}
+        embeddings = {frame["symbol"]: frame for frame in inputs["embeddings"]}
+        if set(features) != set(embeddings):
+            raise ValueError("feature and Kronos caches name different symbols")
+        side_names = list(self.params["feature_names"])
+        records = []
+        for symbol in features:
+            feature = features[symbol]
+            embedding = embeddings[symbol]
+            name_to_index = {
+                name: index for index, name in enumerate(feature["names"])
+            }
+            missing = [name for name in side_names if name not in name_to_index]
+            if missing:
+                raise ValueError(f"{symbol} is missing side features {missing}")
+            feature_ms = np.asarray(feature["asof_ms"], dtype=np.int64)
+            embedding_ms = np.asarray(embedding["asof_ms"], dtype=np.int64)
+            at = np.searchsorted(feature_ms, embedding_ms)
+            if np.any(at >= len(feature_ms)) or not np.array_equal(
+                feature_ms[at], embedding_ms
+            ):
+                raise ValueError(f"{symbol} Kronos origins do not align to features")
+            side = np.asarray(feature["X"])[
+                np.ix_(at, [name_to_index[name] for name in side_names])
+            ]
+            hidden = np.asarray(embedding["X"])
+            records.append(
+                {
+                    "symbol": symbol,
+                    "asof_ms": embedding_ms,
+                    "close": np.asarray(feature["close"])[at],
+                    "names": list(embedding["names"]) + side_names,
+                    "X": np.column_stack([hidden, side]).astype(
+                        np.float32, copy=False
+                    ),
+                }
+            )
+        cls._cached_key = key
+        cls._cached_records = records
+        return {"records": list(records)}
+
+
 def _pooled_document(source, template, eligible, caches, candidate_id):
     """Materialize one pooled candidate over verified group feature caches."""
     obj = source.to_obj()
@@ -733,6 +873,8 @@ def _pooled_document(source, template, eligible, caches, candidate_id):
     }
     feature_inputs = {}
     tape_inputs = {}
+    kline_inputs = {}
+    use_kronos = template.get("feature_source", "tabular") == "kronos"
     for index, (group, cache) in enumerate(caches.items()):
         group_assets = [asset for asset in assets if asset in cache["symbols"]]
         feature_key = f"features_{group}"
@@ -764,6 +906,18 @@ def _pooled_document(source, template, eligible, caches, candidate_id):
         }
         feature_inputs[group] = f"${selected_key}.records"
         tape_inputs[group] = f"${tape_key}.records"
+        if use_kronos:
+            kline_key = f"pooled_klines_{group}"
+            pipeline[kline_key] = {
+                "uses": "filter",
+                "inputs": {"records": f"${feature_key}.klines"},
+                "params": {
+                    "where": [
+                        {"field": "symbol", "op": "in", "value": group_assets}
+                    ]
+                },
+            }
+            kline_inputs[group] = f"${kline_key}.records"
     concat_params = {
         "shape": "records",
         "provenance_waiver": (
@@ -783,12 +937,38 @@ def _pooled_document(source, template, eligible, caches, candidate_id):
         "inputs": tape_inputs,
         "params": copy.deepcopy(concat_params),
     }
+    scan_records = "$pooled_features.merged"
+    if use_kronos:
+        pipeline["pooled_klines"] = {
+            "uses": "concat",
+            "inputs": kline_inputs,
+            "params": copy.deepcopy(concat_params),
+        }
+        kronos = copy.deepcopy(template["kronos"])
+        side_names = kronos.pop("feature_names")
+        kronos["input_identity"] = [
+            caches[group]["manifest_sha256"] for group in caches
+        ]
+        pipeline["kronos"] = {
+            "uses": "dskit.pipeline.libs.kronos:KronosHiddenState",
+            "inputs": {"records": "$pooled_klines.merged"},
+            "params": kronos,
+        }
+        pipeline["fusion_features"] = {
+            "uses": "intraday_equities.model_zoo:KronosFusionRows",
+            "inputs": {
+                "features": "$pooled_features.merged",
+                "embeddings": "$kronos.records",
+            },
+            "params": {"feature_names": side_names},
+        }
+        scan_records = "$fusion_features.records"
     path_inputs = {}
     for lead in range(1, horizon + 1):
         key = f"scan_h{lead:02d}"
         node = copy.deepcopy(base)
         node["inputs"] = {
-            "records": "$pooled_features.merged",
+            "records": scan_records,
             "bars": "$reference_tape.merged",
             "spec": "$universe.spec",
         }
@@ -825,8 +1005,9 @@ def _pooled_document(source, template, eligible, caches, candidate_id):
     obj["walkforward"]["select"] = "max"
     obj["name"] = candidate_id
     obj["notes"] = (
-        "ADR-0101: one pooled fit per direct lead over all 25 Gate-3 passers; "
-        "score only names whose certified H_i includes that lead."
+        "ADR-0101/0102: one pooled fit per direct lead over all 25 Gate-3 "
+        "passers; optional frozen Kronos states are fused only with the "
+        "declared side-feature allowlist."
     )
     return PipelineDocument.from_obj(obj)
 
@@ -837,6 +1018,24 @@ _POOLED_PARAMS = (
     "cache_groups",
     "templates",
     "path_protocol",
+)
+
+_KRONOS_FIELDS = frozenset(
+    {
+        "source_root",
+        "source_revision",
+        "onboarding_root",
+        "tokenizer_snapshot",
+        "model_snapshot",
+        "cache_dir",
+        "score_period_ms",
+        "batch_size",
+        "device",
+        "dtype",
+        "timezone",
+        "encoder_contract",
+        "feature_names",
+    }
 )
 
 

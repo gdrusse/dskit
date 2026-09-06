@@ -57,3 +57,25 @@ def test_cache_refuses_manifest_drift(tmp_path):
         assert "manifest digest changed" in str(exc)
     else:
         raise AssertionError("manifest drift was accepted")
+
+
+def test_cache_v2_round_trips_kline_frames(tmp_path):
+    outputs = _outputs()
+    outputs["klines"] = [
+        {
+            "symbol": symbol,
+            "asof_ms": np.array([1, 2], dtype=np.int64),
+            "session": np.array([10, 10], dtype=np.int32),
+            "names": ["open", "high", "low", "close", "volume", "amount"],
+            "X": np.ones((2, 6), dtype=np.float32),
+        }
+        for symbol in ("AAA", "BBB")
+    ]
+    path = tmp_path / "features"
+    digest = write_feature_cache(str(path), outputs, {"study": "kronos"})
+    out = SessionFeatureCache(
+        "cached", {"path": str(path), "manifest_sha256": digest}
+    ).run(None, {})
+    assert [row["symbol"] for row in out["klines"]] == ["AAA", "BBB"]
+    assert isinstance(out["klines"][0]["X"], np.memmap)
+    assert out["klines"][0]["names"][-1] == "amount"
