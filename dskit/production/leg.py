@@ -57,7 +57,7 @@ from decimal import Decimal
 from dskit.production.arming import SCOPE_REASONS, ReductionRights
 from dskit.production.base import ProductionError, canonical_hash, check_digest, pin_members
 from dskit.production.coordination import scope_equal
-from dskit.production.guards import max_verdict
+from dskit.production.guards import guard_state_id, max_verdict
 from dskit.production.records import (
     Ack,
     ActPermit,
@@ -72,6 +72,7 @@ from dskit.production.records import (
 from dskit.production.redact import get_logger, redact
 from dskit.production.vocab import (
     AUTHORITY_ROLES,
+    RECORD_KINDS,
     LEG_LATENCY_BUCKETS,
     LEG_ORIGINS,
     LEG_STEPS,
@@ -138,6 +139,10 @@ _READY_HEALTH = "ready"
 _HALTED_BREAKER = "halted"
 
 _SUBMIT, _NOT_SENT = PLAN_RESULTS
+
+#: The record kind step (4) writes for a hold (§5.5, §6) — the leg is the
+#: producer §5.5 promised and phase 1 never wired.
+_GUARD_STATE = pin_members("leg.py's hold record kind", ("guard_state",), RECORD_KINDS)[0]
 _ZERO = Decimal(0)
 _NOT_ARMED = "not_armed"
 _SATISFIED = ""
@@ -1378,6 +1383,16 @@ class LegPipeline:
     def plan(self, evaluation):
         """Record the whole pre-submit evaluation and barrier it (§5.13 step (4), D9).
 
+        It also writes the §6 ``guard_state`` of every NEW hold among those
+        findings (§5.5) — ``GuardChain.new_holds`` decides which, at step
+        (2)'s refreshed account instant, the same "now" the guard judged
+        against. This step is the one place that can: it is the leg's first
+        append, it already barriers, and it holds the findings a hold comes
+        from. The hold goes in FIRST, on §6's
+        ``cash_flow``-before-``adoption`` rule — a crash between them may
+        lose the audit record of a real hold, but must never leave a plan
+        that says "held" over a fold that holds nothing.
+
         Parameters
         ----------
         evaluation : LegEvaluation
@@ -1417,6 +1432,7 @@ class LegPipeline:
             risk_state_digest=evaluation.risk_state_digest,
             result=_SUBMIT if decision.allowed else _NOT_SENT,
         )
+        self._record_holds(evaluation)
         self.recording.ledger.append(
             {"kind": "decision_plan", "id": f"decision_plan:{plan.plan_id}", "body": plan.to_obj()}
         )
@@ -1424,6 +1440,23 @@ class LegPipeline:
         if not decision.allowed:
             stage.refuse(decision.reason)
         return plan
+
+    def _record_holds(self, evaluation):
+        """Append the §6 ``guard_state`` of every hold the chain calls new."""
+        release_hash = self.bindings.release.release_hash
+        for body in self.decision.guards.new_holds(
+            evaluation.findings,
+            self.recording.state.snapshot(),
+            evaluation.account.asof_ms,
+            self.schedule.calendar,
+        ):
+            self.recording.ledger.append(
+                {
+                    "kind": _GUARD_STATE,
+                    "id": f"{_GUARD_STATE}:{guard_state_id(release_hash, body)}",
+                    "body": body,
+                }
+            )
 
     def _permits(self, evaluation):
         """Ask the action policy whether this evaluation may submit — the one matrix owner."""

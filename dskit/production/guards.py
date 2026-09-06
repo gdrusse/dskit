@@ -64,6 +64,7 @@ from dskit.production.base import (
     _check_dict,
     _check_str,
     _check_unknown,
+    canonical_hash,
     check_credentials,
     reject_unknown_params,
 )
@@ -85,6 +86,7 @@ from dskit.production.vocab import (
 __all__ = [
     "AGGREGATE_SCOPE_KEY",
     "BREACH_VERDICTS",
+    "GUARD_STATE_ID_TAG",
     "BankrollFraction",
     "Bound",
     "Confidence",
@@ -115,6 +117,7 @@ __all__ = [
     "RangeGuard",
     "Scope",
     "Window",
+    "guard_state_id",
     "max_verdict",
 ]
 
@@ -149,6 +152,11 @@ _BREACHING = frozenset(BREACH_VERDICTS.values())
 #: The one breach response that reduces instead of stopping.
 _AMEND = BREACH_VERDICTS["amend"]
 
+#: The verdict that leaves a ``guard_state`` behind (§5.5): both ``hold``
+#: and ``pause`` compose to it, which is why the record's ``state_kind``
+#: is the breach RESPONSE and this is the verdict.
+_HOLD = BREACH_VERDICTS["hold"]
+
 #: The breach responses that leave a ``guard_state`` record behind, with
 #: the params key that shapes each. Their names ARE the record's
 #: ``state_kind`` (§6), which the check below pins.
@@ -164,6 +172,13 @@ if _RELEASED not in GUARD_STATE_KINDS:
 
 #: How the release verb spells itself in a refusal (§7's ``approve-hold``).
 _APPROVE_HOLD = "approve_hold"
+
+#: The first term of the ``guard_state`` id derivation (the ``ids.py``
+#: tagged-tuple idiom, so two recipes cannot collide).
+GUARD_STATE_ID_TAG = "guard-state-v1"
+
+#: What a hold's id is derived from, in this order: which hold it IS.
+_HOLD_ID_FIELDS = ("guard", "scope_key", "state_kind", "held_until_ms")
 
 #: ``notes`` is documentation on every config object and never a knob.
 _NOTES = ("notes",)
@@ -1673,6 +1688,47 @@ def _stands_at(hold, at_ms):
     return hold is not None and hold["held_until_ms"] > at_ms
 
 
+def guard_state_id(release_hash, body):
+    """Return the §6 ``guard_state`` id for one hold — per HOLD, not per append.
+
+    A hold is named by what it IS: the release, the guard, the scope key it
+    binds, its kind and the instant it runs to. Two legs that reach the same
+    hold in the same tick therefore write one record and the second append
+    DEDUPS on the ledger's idempotency index; a per-append id (a leg id, a
+    sequence) would append a second record for one refusal, and a
+    crash-replayed append would refuse as a changed payload under a reused
+    id. The ``released`` record of §5.5.1 is deliberately NOT this recipe:
+    it is one operator act, keyed by its control request.
+
+    Parameters
+    ----------
+    release_hash : str
+        The release the series is serving.
+    body : dict
+        A ``guard_state`` body as :meth:`Limit.guard_state_body` built it.
+
+    Returns
+    -------
+    str
+        The 64-hex semantic id; the caller qualifies it with the kind (R9).
+
+    Raises
+    ------
+    ProductionError
+        If the body lacks one of the four fields the id is derived from.
+    """
+    problems = []
+    _check_dict(problems, "guard_state body", body)
+    if problems:
+        raise ProductionError(problems)
+    missing = [name for name in _HOLD_ID_FIELDS if name not in body]
+    if missing:
+        raise ProductionError([f"guard_state body: missing key(s) {missing}"])
+    return canonical_hash(
+        (GUARD_STATE_ID_TAG, release_hash, *(body[name] for name in _HOLD_ID_FIELDS))
+    )
+
+
 def _hold_problems(params):
     """Return the problems with a ``hold: {ttl}`` block."""
     problems = []
@@ -2440,6 +2496,54 @@ class GuardChain:
                     allowed=False, scope_key=instrument, reason=f"{guard_name}: {finding.reason}"
                 )
         return ScopeVerdict(allowed=True, scope_key=instrument, reason="")
+
+    def new_holds(self, findings, state_view, at_ms, calendar):
+        """Return the §6 ``guard_state`` bodies this leg's findings newly reach (§5.5).
+
+        A hold is a guard's refusal to keep acting on a scope, and §5.5
+        makes it durable: the record is what survives a restart. This is
+        the chain's half — WHICH holds are new — because the same
+        "does it still stand" rule answers it and :meth:`approve_hold`,
+        and because the leg's job is appending, not deciding what a hold
+        is.
+
+        A hold is new when the fold does not already stand one on that
+        ``(guard, scope_key)`` at ``at_ms``. Everything else is a repeat:
+        a chain judges the original and re-runs its hard guards on the
+        final, so one holding guard reports twice in one leg, and a
+        standing hold makes every later guard call a ``refuse`` — which
+        is what keeps this ONE record per hold rather than one per tick.
+
+        Parameters
+        ----------
+        findings : iterable of Finding
+            Every finding the leg accumulated, in order.
+        state_view : StateView
+            The fold at the instant the leg is recording.
+        at_ms : int
+            The instant the hold starts and its ttl runs from — the
+            leg's refreshed account instant, the same "now"
+            :meth:`Limit.check` judged against.
+        calendar : Calendar
+            For a calendar pause, where the next window starts.
+
+        Returns
+        -------
+        tuple of dict
+            One body per new hold, in finding order; empty when nothing
+            held.
+        """
+        bodies, seen = [], set()
+        for finding in findings:
+            key = (finding.guard, finding.scope_key)
+            guard = self._guards.get(finding.guard)
+            if finding.verdict != _HOLD or guard is None or key in seen:
+                continue
+            if _stands_at(state_view.guard_holds.get(key), at_ms):
+                continue
+            seen.add(key)
+            bodies.append(guard.guard_state_body(finding, at_ms, calendar))
+        return tuple(bodies)
 
     def approve_hold(self, state_view, guard, scope_key, credentials, at_ms):
         """Clear one standing hold before its ttl, as an authenticated act (§5.5.1).

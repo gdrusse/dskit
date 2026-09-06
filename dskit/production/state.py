@@ -1385,13 +1385,11 @@ class SeriesState:
 
     @staticmethod
     def _release_scope(holds, key, body):
-        """§5.5.1: a release DROPS the pair it names, so a restart cannot resurrect it.
-
-        Releasing a pair that holds nothing folds to nothing rather than
-        refusing: ``GuardChain.approve_hold`` is the gate, and a fold that
-        raised here would make a legitimately recorded chain unreplayable
-        after the fact.
-        """
+        """Drop the pair a release names, so a restart cannot resurrect it (§5.5.1)."""
+        # Releasing a pair that holds nothing folds to NOTHING rather than
+        # refusing: `GuardChain.approve_hold` is the gate, and a fold that
+        # raised here would make a legitimately recorded chain unreplayable
+        # after the fact.
         holds.pop(key, None)
 
     def _fold_readiness(self, body, envelope):

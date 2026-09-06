@@ -1267,17 +1267,44 @@ non-finite number.
   `check_all`, `check_authority_scope`, `approve_hold` and `guards` — and a
   test pins exactly that, since a sixth would be a seam nobody decided to
   offer.
-  **The `guard_state` record has no phase-1 PRODUCER, and this bullet is where
-  the hole shows.** `Limit.guard_state_body` builds it, `SeriesState` folds it
-  and `Limit.check` reads it, but nothing appends it: a `hold` verdict refuses
-  the leg and the ttl exists only in the finding's text, so today a hold does
-  NOT survive a restart — the exact amnesia the sentence above says the fold
-  prevents. The missing caller is `LegPipeline` step (8), which already
-  terminalises a refused leg and is the one place that holds the finding, the
-  calendar and the tick instant `guard_state_body` needs; it is named in
-  §5.16's "folded but unproduced" list until it lands. Phase 2's
-  `approve-hold` is unaffected — it releases whatever the fold holds — but a
-  reader must not take §5.5 as describing a producer that exists.
+  **The producer is `LegPipeline` step (4), and the split is
+  chain-decides / leg-appends.** Phase 1 shipped `guard_state_body`, the fold
+  and the read with NO caller between them, so a hold lasted exactly as long
+  as the process did — the amnesia the sentence above says the fold prevents.
+  `GuardChain.new_holds(findings, state_view, at_ms, calendar) -> tuple[dict]`
+  answers WHICH holds are new (the chain owns the "does it still stand" rule
+  and uses the same one `approve_hold` does), and step (4) appends what it
+  returns. Four properties, each pinned:
+  - **Same barrier, and FIRST.** Step (4) is the leg's first append and it
+    already barriers; the hold goes in before the `decision_plan`, on §6's
+    `cash_flow`-before-`adoption` rule. A crash between them may lose the
+    audit record of a real hold, but can never leave a plan that says "held"
+    over a fold that holds nothing. No new barrier and no new step: `LEG_STEPS`
+    and the §6 latency keys are pinned, so a ninth step was never available.
+  - **Once per HOLD, not per evaluation.** A chain judges the original and
+    re-runs its hard guards on the final, so one holding guard reports twice
+    in one leg; and while a hold stands every later `Limit.check` returns
+    `refuse`, not `hold`. `new_holds` drops both repeats — by `(guard,
+    scope_key)` within the leg, and against the fold across legs and ticks —
+    so a guard that holds for an hour writes one record, not one per tick.
+  - **The instant is step (2)'s refreshed account**, the same "now"
+    `Limit.check` judged the hold against and the one the `decision_plan`
+    binds as `evidence_asof_ms`, so the ttl a record shows is the ttl the
+    guard applied.
+  - **The id names the hold, not the append.**
+    `guard_state_id(release_hash, body)`, in `guards.py`, is
+    `H("guard-state-v1", release_hash, guard, scope_key, state_kind,
+    held_until_ms)`, so a crash-replayed append DEDUPS on the idempotency
+    index instead of refusing as a changed payload under a reused id (§6's
+    rule for every other record), and two legs that reach the same hold write
+    one record. A per-append id — a leg id, a sequence — could do neither.
+  **The expiry half was already enforced and stays where it is.** §5.5's "a
+  `hold` expires as `refuse` at its `ttl`" is `Limit.check`'s two lines: while
+  the hold stands the finding is a `refuse` naming it, and past
+  `held_until_ms` the hold no longer stands and the measure runs again. Both
+  read `state.account.asof_ms` through the one owner above, so a hold restored
+  from the fold with an instant that has already passed cannot keep refusing —
+  the mirror image of the missing-producer defect, and it does not exist.
 - `Limit(Guard)`: `measure` (registered name or class ref), `window` ∈ `{}` |
   `{duration}` | `{count}` | `{calendar: session|day|event}`, `bound` (`max`
   and/or `min`, decimal strings or ints, inclusive), `warn_at ∈ (0,1)`, `scope`
@@ -2989,7 +3016,13 @@ procedure inside the loop.
   version/digest) ·
   `plan(evaluation) -> DecisionPlan` (appends + barriers; `evaluation` carries
   the original and final proposals, every finding, the gate results and the
-  scope verdict, which is how all eighteen `DecisionPlan` fields are reachable) ·
+  scope verdict, which is how all eighteen `DecisionPlan` fields are reachable.
+  It also appends the §6 `guard_state` of every NEW hold among those findings —
+  `GuardChain.new_holds` decides which, the step appends them BEFORE the
+  `decision_plan` and inside its barrier, and §5.5 carries the four properties
+  that fixes. It is the only place that can: the leg's first append, in the
+  step that records the findings a hold comes from, and `LEG_STEPS` admits no
+  ninth step) ·
   `intent(plan) -> Intent` (appends + barriers; for `origin == reduction` it
   builds the `Intent` around `bindings.reduction.signed` and refuses if the
   rebuilt `reduction_intent_digest` does not match the right being consumed) ·
@@ -3809,7 +3842,13 @@ the exception is explicit rather than an oversight.
 
 **Folded but unproduced in phase 1.** Two things the fold and the vocabulary
 carry have no phase-1 producer. They are named here so the hole is a
-recorded decision rather than something a later reader has to rediscover:
+recorded decision rather than something a later reader has to rediscover.
+A THIRD was on this list and is now closed: §6's `guard_state` had no
+producer at all — `Limit.guard_state_body`, the fold and `Limit.check` were
+wired to each other and to nothing — so a hold survived exactly as long as
+the process did. `LegPipeline` step (4) is the producer (§5.5), and the
+entry is deleted rather than kept with a note, because a list of holes that
+keeps closed ones stops being read:
 
 - the `authority` event `expire`. `Arming.expire_if_due(view, at_ms)` builds
   the body and is tested, but nothing calls it: an arm past `armed_until_ms`
@@ -3817,16 +3856,6 @@ recorded decision rather than something a later reader has to rediscover:
   missing record is bookkeeping and not authority. A caller — a sweep at the
   tick boundary — is phase-2 work; in phase 1 the only verb that ENDS an arm
   with a record is the operator's `disarm`.
-- the §6 `guard_state` record itself, in BOTH its phase-1 kinds. `Limit.on_breach`
-  may be `hold` or `pause`, `Limit.guard_state_body` builds the record,
-  `SeriesState` folds it and `Limit.check` refuses while it stands — but nothing
-  calls `guard_state_body`, so no hold ever reaches the chain and none survives a
-  restart. §5.5's "so `resume_at`/`held_until` survive a restart" therefore
-  describes a mechanism whose producer is missing, which is the one kind of
-  sentence this table exists to stop. The caller belongs in `LegPipeline` step
-  (8), which already terminalises the refused leg and is the only place holding
-  the finding, the calendar and the tick instant the body needs. Phase 2's
-  `approve-hold` releases whatever the fold holds and is unaffected by the hole.
 - the `supersedes` member of §6's `cash_flow` record, which the fold nets on
   and which every phase-1 producer writes as `null`. `adopt` is the only producer of a `cash_flow`
   and it never names an earlier flow; the correcting producer would be an
@@ -3908,7 +3937,7 @@ sha256-canonical idiom.
 | `fill` | execution | the `Fill` record |
 | `cash_flow` | money entering or leaving the account other than by trading | `effective_at_ms`, `known_at_ms`, `supersedes` (bitemporal per D21, since a flow found by reconciliation days later has effective ≠ known and a wrongly adopted amount must be correctable rather than merely offset), `currency`, `amount` (signed `Decimal`), `flow_kind ∈ CASH_FLOW_KINDS` (spelled `flow_kind`, not `kind`), `external` (true for a deposit or withdrawal, false for an interest or fee accrual the venue applied), `source` is always `venue` (the amount is the reconciler's computed delta, never an operator-supplied number); `kind` and `external` come from the operator's proof and never default to `external: true`, `evidence` (the balance delta and recon break it explains, or the operator's note), `id = H("cash-flow-v1", release_hash, control_request_id, break_id)` so a crash-replayed `adopt` cannot append the same money twice. `supersedes` NETS rather than annotates: the fold keeps every flow's `(currency, amount, superseded_by)`, and a flow naming X subtracts X's amount before adding its own, so a corrected adoption can never double-bank; X may be superseded once and an unknown X refuses. `known_at_ms` is the CONSUMED COMMAND's `queued_at_ms`, never `clock.now_ms()` at the handler — a crash-replayed `adopt` must produce a byte-identical payload or `Ledger.append` refuses it as a changed payload under a reused id. It is appended **before** the `adoption` record and inside the same barrier, so a crash between them cannot leave a break marked resolved with no amount recorded — **without this record an external deposit is indistinguishable from trading profit for the rest of the series' life**. `SeriesState.apply(cash_flow)` adjusts `StateView.balances` and advances `economic_seq` — it is a balance update, which D14 already counts as economic — so the fold carries both the money and the reason it moved, and the re-reconcile after adoption clears the break instead of reproducing it. Nothing downstream can separate them later, so it is recorded when it happens or never. **Every economic measure partitions the fold on `external`**: `pnl`, `drawdown`, `consecutive_losses` and `error_vs_realised` read trading records only and never see an external flow, while `bankroll_fraction` and `exposure` read the capital base *including* it. An external flow changes what you have, never what you earned — without that partition an adopted deposit would inflate a `pnl` halt guard into headroom, and `document.reconcile.lookback_ms` guarantees that any fill older than the window is classified `cash` and adoptable, so this is a routine mis-classification rather than an attack. `test_guards.py` pins that a `cash_flow` cannot move a `pnl` bound |
 | `outcome` | label arrival / mark / correction | the `records.Outcome` value object (§5.13.2): `leg_id`, `outcome_kind ∈ OUTCOME_KINDS` (spelled `outcome_kind`, not `kind`), `effective_at_ms`, `known_at_ms`, `value`, `weight`, `terminal`, `supersedes`, `source ∈ OUTCOME_SOURCES`. Phase 1 defines it because `LedgerHistory.marks` and the `error_vs_realised` measure already read it; phase 2's `outcomes` verb is its producer. `supersedes` names the `outcome` record this one replaces (once — a second refuses), and a record with `effective_at_ms > known_at_ms` refuses: nothing is knowable before it is effective |
-| `guard_state` | a guard hold, pause or release | `guard`, `scope_key`, `state_kind ∈ GUARD_STATE_KINDS` (spelled `state_kind` for the same reason `authority.role` is), `reason`, `held_until_ms`, `resume_at_ms`, `finding` — folded by `SeriesState` like breaker and arming, so a restart cannot resume a paused strategy early. Phase 2 adds the third kind, `released`: the `approve-hold` verb (§5.5.1) clears one hold before its ttl, and the fold drops it. A `released` body carries the seven fields of the hold it clears — `held_until_ms` is that hold's, so the record says what was cut short, and `finding` is that hold's, so it names the verdict overridden — PLUS `control_request_id`, `principal_digest` and `proof_digest`, and `resume_at_ms` is the act's own instant, since a release frees the scope now. Its id is `guard_state:<control_request_id>`, so a crash-replayed command re-appends one release rather than a second. The fold drops the pair a `released` names and folds a release of a pair holding nothing to NOTHING rather than refusing: `GuardChain.approve_hold` is the gate, and a fold that raised here would make a legitimately recorded chain unreplayable after the fact. **No phase-1 producer appends a `hold` or `pause`** — see §5.16 |
+| `guard_state` | a guard hold, pause or release | `guard`, `scope_key`, `state_kind ∈ GUARD_STATE_KINDS` (spelled `state_kind` for the same reason `authority.role` is), `reason`, `held_until_ms`, `resume_at_ms`, `finding` — folded by `SeriesState` like breaker and arming, so a restart cannot resume a paused strategy early. Phase 2 adds the third kind, `released`: the `approve-hold` verb (§5.5.1) clears one hold before its ttl, and the fold drops it. A `released` body carries the seven fields of the hold it clears — `held_until_ms` is that hold's, so the record says what was cut short, and `finding` is that hold's, so it names the verdict overridden — PLUS `control_request_id`, `principal_digest` and `proof_digest`, and `resume_at_ms` is the act's own instant, since a release frees the scope now. The two kinds take two id recipes, for the same reason `authority` does: a HOLD is one hold, so `guard_state_id` (in `guards.py`) derives `guard_state:H("guard-state-v1", release_hash, guard, scope_key, state_kind, held_until_ms)` and two legs reaching it write one record; a RELEASE is one operator act, so its id is `guard_state:<control_request_id>`. Both make a crash-replayed append dedup rather than refuse as a changed payload under a reused id. The hold's producer is `LegPipeline` step (4) (§5.5), which appends it before the `decision_plan` and inside that step's barrier. The fold drops the pair a `released` names and folds a release of a pair holding nothing to NOTHING rather than refusing: `GuardChain.approve_hold` is the gate, and a fold that raised here would make a legitimately recorded chain unreplayable after the fact |
 | `readiness` | a `ready` evaluation | `release_hash`, `verdict ∈ READINESS_VERDICTS`, `items[]{item, required, evidence, waiver, passed}`, `readiness_digest`, `evaluated_at_ms`, `valid_until_ms` — the durable GO the action matrix reads and `ActPermit` binds; `ready` is the only verb that writes it |
 | `recon` | reconciliation run | `scope`, `ours_digest`, `theirs_digest`, `breaks[]`, `status`, `action` |
 | `trip` | breaker transition, including reduce/reset/halt | `from`, `to`, `reason ∈ TRIP_REASONS`, `actor`, `control_request_id`, `principal_digest`/`proof_digest`, `acknowledged_trip_id`. It carries NO cancel outcome: a halting `trip` is appended and barriered BEFORE any cancel I/O, so the ledger says "halted" before the process touches the venue, and what the cancel came to is a separate record |
@@ -4026,8 +4055,9 @@ dskit/production/
 ├── decider.py         serving_document(); Decider (base pass + per-tick rerun via SubgraphRunner); ServingExecutionPolicy
 │                      (implements pipeline ExecutionPolicy); Proposer ABC; IntentRows,
 │                      TargetPositions; RecordedOutputs (replayed gate / stat_test); PROPOSER_KINDS
-├── guards.py          Guard ABC; Finding lattice; GuardChain; Limit; RangeGuard; Measure ABC + MEASURE_KINDS; windows; GUARD_KINDS;
-│                      [phase 2] GuardChain.approve_hold (§5.5.1)
+├── guards.py          Guard ABC; Finding lattice; GuardChain (+ new_holds, which decides WHICH holds a leg must
+│                      record, and guard_state_id, the per-hold id recipe); Limit; RangeGuard; Measure ABC +
+│                      MEASURE_KINDS; windows; GUARD_KINDS; [phase 2] GuardChain.approve_hold (§5.5.1)
 ├── breaker.py         Breaker (active | reducing | halted), persisted; trips; kill-switch file; cooling-off
 ├── arming.py          authenticated proofs; ApprovalVerifier ABC + APPROVAL_KINDS; Arming value object + fold;
 │                      scope application (minting lives in leg.py); NotArmed (internal)
@@ -4077,7 +4107,8 @@ dskit/production/
 │                      ten overridable phase methods); lifecycle states; exit codes
 ├── ids.py             IdSource ABC + ReleaseIdSource + RecordedIdSource — its own module because Recording holds an
 │                      id_source, so compose.py would otherwise have to import loop.py while loop.py imports compose.py
-├── leg.py             LegPipeline (concrete; final run() walking LEG_STEPS, eight step methods); LegBindings;
+├── leg.py             LegPipeline (concrete; final run() walking LEG_STEPS, eight step methods; step (4) is the
+│                      §6 guard_state producer §5.5 promised); LegBindings;
 │                      LegEvaluation; LegResult; Authority ABC + SimulatedAuthority + LiveAuthority +
 │                      ReductionAuthority (closed to core, no registry); ActPermit minting
 ├── bundles.py         the seven frozen collaborator dataclasses (Schedule, Data, Decision, Safety, Execution,
@@ -4198,7 +4229,11 @@ tests/production/
 │                          each step barriers before its effect; a crash cut after every barrier; cumulative reservations
 │                          across legs; Authority polymorphism — shadow/paper mint without writing, live appends
 │                          authorization, reduction appends authority_use first; no `rung ==` or `mode ==` branch in leg.py (AST) — the name
-│                          appears, since LegBindings carries a rung; branching on it is what is forbidden
+│                          appears, since LegBindings carries a rung; branching on it is what is forbidden;
+│                          §5.5's producer: a holding guard appends ONE guard_state, before the decision_plan and inside
+│                          its barrier; the id names the HOLD, so a replayed append dedups in a real store; a second leg
+│                          re-appends nothing; a restart still holds and an expired hold stops refusing; and
+│                          approve-hold releases a hold a REAL guard produced, which a restart does not resurrect
 ├── test_bundles.py        each bundle is frozen and validates presence and arity only — never types, since type validation
 │                          would import fourteen later modules and re-create the cycle bundles.py exists to break
 ├── test_ids.py            deterministic tick/leg/plan/client ids from stable semantic inputs; independent of wall time and

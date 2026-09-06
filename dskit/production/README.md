@@ -131,8 +131,9 @@ the action and transition matrices, the final verify-and-call gate, fenced
 leases, readiness GO/NO-GO. A checklist item may cite what the SERIES can
 prove — `outcome_coverage`, `outcome_freshness`, `calibration_current` — so a
 live series is required by its own checklist to show its decisions have been
-scored; a hold ends early only through the authenticated `approve-hold`, which
-grants nothing beyond ending it.
+scored. A guard's `hold` is a §6 record appended by the leg inside step (4)'s
+barrier, so the refusal survives a restart; it ends early only through the
+authenticated `approve-hold`, which grants nothing beyond ending it.
 
 **Recording** — the JSONL hash-chained ledger with barriers, segments and
 torn-tail recovery; `SeriesState`, the sole fold; checkpoints; the durable
@@ -161,8 +162,8 @@ dskit/production/
 ├── control.py         ControlInbox; CommandProcessor
 ├── feed.py            Feed ABC; ServingContract + FeedSpec; EntrySourceFeed; ReplayFeed
 ├── decider.py         serving_document(); Decider; ServingExecutionPolicy; proposers
-├── guards.py          Guard ABC; GuardChain (+ approve_hold, the early release of a hold);
-│                      Limit; RangeGuard; Measure + registry
+├── guards.py          Guard ABC; GuardChain (+ new_holds, the holds a leg must record, and
+│                      approve_hold, the early release of one); Limit; RangeGuard; Measure + registry
 ├── breaker.py         the breaker, its trips, the kill switch, cooling-off
 ├── arming.py          ApprovalVerifier ABC; maker-checker proofs; the arming fold
 ├── executor.py        Executor / SubmittingExecutor; Shadow, Paper, Recorded, Live
@@ -184,7 +185,8 @@ dskit/production/
 │                      ready()/stopping() lifecycle hooks); instance lock; signals
 ├── ids.py             IdSource ABC; ReleaseIdSource; RecordedIdSource
 ├── bundles.py         the seven frozen collaborator bundles
-├── leg.py             LegPipeline (the eight submission steps); the Authority family
+├── leg.py             LegPipeline (the eight submission steps; step (4) records a guard's hold);
+│                      the Authority family
 ├── compose.py         bundles_for(); the AuthorityTable; the one rung reader
 ├── loop.py            ServeLoop (the scheduler); Tick (the ten phases)
 ├── readiness.py       release-bound checklist → GO / NO-GO; Evidence + EVIDENCE_RULES,

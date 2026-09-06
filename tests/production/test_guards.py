@@ -1581,14 +1581,17 @@ def test_an_empty_chain_allows_and_asks_for_nothing():
     assert chain.requirements((candidate(),), AT_MS, CAL) == ()
 
 
-def test_the_chains_public_surface_is_exactly_five_names():
-    # Four in phase 1; §5.5.1 adds `approve_hold`, the one verb that reads
-    # the fold's holds instead of judging a proposal. Anything else on the
-    # chain would be a seam nobody decided to offer.
+def test_the_chains_public_surface_is_exactly_six_names():
+    # Four in phase 1; §5.5's producer adds `new_holds` (WHICH holds are new
+    # is the chain's answer, appending them is the leg's) and §5.5.1 adds
+    # `approve_hold`, the one verb that reads the fold's holds instead of
+    # judging a proposal. Anything else would be a seam nobody decided to
+    # offer.
     chain = chain_of(a_limit(name="size"))
     public = {name for name in dir(chain) if not name.startswith("_")}
     assert public == {
-        "requirements", "check_all", "check_authority_scope", "approve_hold", "guards",
+        "requirements", "check_all", "check_authority_scope", "new_holds",
+        "approve_hold", "guards",
     }
 
 
@@ -1596,7 +1599,8 @@ def test_no_chain_verb_accepts_an_operation_or_a_cancel():
     # D9: cancels bypass proposal guards entirely. There is no seam for one —
     # not a parameter, not a verb — so a cancel cannot be routed here by
     # mistake.
-    for name in ("requirements", "check_all", "check_authority_scope", "approve_hold"):
+    for name in ("requirements", "check_all", "check_authority_scope", "new_holds",
+                 "approve_hold"):
         parameters = set(inspect.signature(getattr(GuardChain, name)).parameters)
         assert not parameters & {"operation", "cancel", "ack", "client_ref", "venue_ref"}
 

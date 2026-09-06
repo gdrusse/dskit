@@ -2984,3 +2984,253 @@ def test_the_authority_is_selected_by_a_table_lookup_not_a_comparison(live_leg):
     calls `for_origin` exactly once, with declared values."""
     run(live_leg)
     assert live_leg.authorities.calls == [("model", "active")]
+
+
+# ---------------------------------------------------------------------------
+# The `guard_state` producer — a hold is durable or it is not a hold (§5.5)
+# ---------------------------------------------------------------------------
+#
+# §5.5 says a `hold` "appends a `guard_state` record (§6) that `SeriesState`
+# folds, so `resume_at`/`held_until` survive a restart — R9 names restart
+# amnesia as the anti-pattern the fold exists to prevent". Nothing appended
+# one until this step existed, so the refusal a guard reached lasted exactly
+# as long as the process did. Step (4) is where it lands: it is the leg's
+# first append and it already barriers, so the hold crosses the SAME barrier
+# as the `decision_plan` that records the finding justifying it — and it is
+# appended FIRST, because a crash between them may lose the audit record of a
+# real hold but must never leave a plan citing a hold the fold does not hold.
+
+HOLD_TTL_MS = 600_000
+
+#: The scope key an `aggregate` limit measures under (§5.5).
+AGGREGATE = "*"
+
+
+def holding_chain(ttl_ms=HOLD_TTL_MS, size_max="100"):
+    """The §4.1 `size` guard with `hold` as its breach response."""
+    return GuardChain(
+        {
+            "size": Limit(
+                {
+                    "measure": "quantity",
+                    "bound": {"max": size_max},
+                    "on_breach": "hold",
+                    "hold": {"ttl": ttl_ms},
+                },
+                name="size",
+            )
+        }
+    )
+
+
+def a_holding_leg(**over):
+    """A leg whose `size` guard holds on the proposal it is given."""
+    return build(guards=holding_chain(), prop=proposal(qty=Decimal("500")), **over)
+
+
+def test_a_hold_verdict_appends_exactly_one_guard_state_record():
+    """The producer §5.5 promised. One record, not one per finding: the
+    chain judges the original AND re-runs the hard guards on the final, so a
+    holding guard reports twice in one leg and the hold is still one hold."""
+    leg = a_holding_leg()
+    result = run(leg)
+    assert result.result == "not_sent"
+    assert leg.ledger.kinds().count("guard_state") == 1
+
+
+def test_the_hold_crosses_the_same_barrier_as_the_plan_and_is_appended_first():
+    """§6's `cash_flow`-before-`adoption` idiom: the consequence lands before
+    the record that justifies it, inside ONE barrier, so a crash can never
+    leave a plan that says "held" over a fold that holds nothing."""
+    leg = a_holding_leg()
+    run(leg)
+    assert leg.ledger.calls[:3] == [
+        ("append", "guard_state"),
+        ("append", "decision_plan"),
+        ("barrier", None),
+    ]
+
+
+def test_the_hold_body_is_the_guards_own_and_runs_from_the_refreshed_account():
+    """`Limit.guard_state_body` builds it — the leg supplies the instant and
+    the calendar and nothing else. The instant is step (2)'s REFRESHED
+    account, the same "now" `Limit.check` judged the hold against and the one
+    the `decision_plan` binds as `evidence_asof_ms`."""
+    leg = a_holding_leg()
+    run(leg)
+    body = leg.ledger.one("guard_state")
+    plan = leg.ledger.one("decision_plan")
+    assert set(body) == {"guard", "scope_key", "state_kind", "reason",
+                         "held_until_ms", "resume_at_ms", "finding"}
+    assert (body["guard"], body["scope_key"]) == ("size", AGGREGATE)
+    assert body["state_kind"] == "hold"
+    assert body["held_until_ms"] == plan["evidence_asof_ms"] + HOLD_TTL_MS
+    assert body["resume_at_ms"] is None
+    assert body["finding"]["guard"] == "size"
+    assert body["finding"]["verdict"] == "hold"
+
+
+def test_the_hold_record_id_names_the_hold_and_not_the_append():
+    """R9 + §6: the id is derived from WHICH hold this is — the release, the
+    guard, the scope key, the kind and the instant it runs to — so a
+    crash-replayed append of the same hold DEDUPS rather than refusing as a
+    changed payload under a reused id. A per-append id (a leg id, a
+    sequence) could not do that."""
+    leg = a_holding_leg()
+    run(leg)
+    body = leg.ledger.one("guard_state")
+    expected = canonical_hash(
+        ("guard-state-v1", RELEASE_HASH, "size", AGGREGATE, "hold", body["held_until_ms"])
+    )
+    assert leg.ledger.ids("guard_state") == [f"guard_state:{expected}"]
+
+
+def test_the_hold_reaches_the_fold_that_the_next_leg_reads():
+    """The point of the record: `StateView.guard_holds` carries it, so the
+    next proposal on that scope is refused by the standing hold rather than
+    re-measured."""
+    leg = a_holding_leg()
+    run(leg)
+    holds = leg.state.snapshot().guard_holds
+    assert sorted(holds) == [("size", AGGREGATE)]
+    assert holds[("size", AGGREGATE)]["state_kind"] == "hold"
+
+
+def test_a_leg_that_does_not_hold_appends_no_guard_state():
+    """A `guard_state` is the record of a REFUSAL, so a leg that submits
+    leaves none: the same chain, under a proposal inside its bound."""
+    leg = build(guards=holding_chain(), prop=proposal(qty=Decimal("1")))
+    wire_authorities(leg)
+    assert run(leg).result == "open"
+    assert "guard_state" not in leg.ledger.kinds()
+
+
+def test_a_second_leg_in_the_same_tick_does_not_re_append_a_standing_hold():
+    """Once per HOLD, not once per evaluation: a guard that holds for an hour
+    must not put a record on the chain every tick. The second leg's own
+    findings still carry the refusal — it is the RECORD that is not
+    repeated."""
+    first = a_holding_leg()
+    run(first)
+    second = dataclasses.replace(
+        first.bindings,
+        proposal=proposal(qty=Decimal("400"), pid="cand-2"),
+        leg_index=1,
+        leg_id=first.id_source.leg_id(TICK_ID, 1),
+    )
+    first.bindings = second
+    first.ledger.mark()
+    run(first)
+    assert "guard_state" not in first.ledger.kinds()
+    assert first.ledger.kinds()[:1] == ["decision_plan"]
+
+
+def test_an_expired_hold_is_re_held_rather_than_left_standing():
+    """The mirror of the test above: once the ttl has passed the hold no
+    longer stands, the guard measures again, and a fresh breach is a NEW
+    hold with its own instant and therefore its own id."""
+    leg = a_holding_leg()
+    run(leg)
+    first_id = leg.ledger.ids("guard_state")[0]
+    leg.clock.advance(HOLD_TTL_MS + 1)
+    leg.bindings = dataclasses.replace(
+        leg.bindings, leg_index=1, leg_id=leg.id_source.leg_id(TICK_ID, 1)
+    )
+    leg.ledger.mark()
+    run(leg)
+    assert leg.ledger.kinds().count("guard_state") == 1
+    assert leg.ledger.ids("guard_state")[0] != first_id
+
+
+def replayed(ledger, series_id=SERIES_ID):
+    """A fresh fold with the chain replayed into it — what a restart does."""
+    restarted = SeriesState(series_id)
+    for envelope in ledger.records:
+        restarted.apply(envelope)
+    return restarted
+
+
+def test_a_restart_that_replays_the_chain_still_holds_the_scope():
+    """R9's restart amnesia, closed: the hold is a §6 record, so a second
+    process reading the chain refuses exactly what the first one did."""
+    leg = a_holding_leg()
+    run(leg)
+    restarted = replayed(leg.ledger)
+    assert sorted(restarted.snapshot().guard_holds) == [("size", AGGREGATE)]
+
+
+def test_the_restored_hold_refuses_the_scope_and_expires_at_its_ttl():
+    """§5.5: a hold "expires as `refuse` at its `ttl`". Both halves are on
+    the READ path, against `state.account.asof_ms`, so a hold restored from
+    the fold with an instant that has already passed cannot keep refusing —
+    the mirror image of the missing-producer defect."""
+    leg = a_holding_leg()
+    run(leg)
+    view = replayed(leg.ledger).snapshot()
+    limit = holding_chain().guards["size"]
+    held_until_ms = view.guard_holds[("size", AGGREGATE)]["held_until_ms"]
+    small = proposal(qty=Decimal("1"))
+    accounting = FakeAccounting()
+
+    def at(instant):
+        """The leg's own account snapshot, taken at one instant."""
+        return tick_state(
+            view, accounting.snapshot(view, None, quote_set(), instant, (), FakeCalendar())
+        )
+
+    while_held = limit.check(small, at(held_until_ms - 1))
+    assert while_held.verdict == "refuse"
+    assert while_held.value is None and "held" in while_held.reason
+    assert limit.check(small, at(held_until_ms)).verdict == "allow"
+
+
+def test_approve_hold_releases_a_hold_a_real_guard_produced_and_a_restart_agrees():
+    """The unit end to end (§5.5 → §5.5.1): a real `Limit` holds through a
+    real `LegPipeline`, the record lands on the chain, an operator releases
+    it under proof, and a restart that replays the whole chain does not
+    resurrect what was released."""
+    leg = a_holding_leg()
+    run(leg)
+    chain = leg.guards
+    held = replayed(leg.ledger).snapshot()
+    assert sorted(held.guard_holds) == [("size", AGGREGATE)]
+
+    released = chain.approve_hold(
+        held,
+        "size",
+        AGGREGATE,
+        {"control_request_id": "req-1", "principal_digest": "7" * 64,
+         "proof_digest": "8" * 64},
+        NOW_MS,
+    )
+    assert released["state_kind"] == "released"
+    assert released["held_until_ms"] == held.guard_holds[("size", AGGREGATE)]["held_until_ms"]
+    assert released["finding"] == leg.ledger.one("guard_state")["finding"]
+    leg.ledger.append({"kind": "guard_state", "id": "guard_state:req-1", "body": released})
+
+    assert leg.state.snapshot().guard_holds == {}
+    assert replayed(leg.ledger).snapshot().guard_holds == {}
+
+
+def test_the_same_hold_appended_twice_dedups_in_a_real_store(tmp_path):
+    """§6: "replay after a crash is idempotent only when both `request_id`
+    and payload digest match". The per-HOLD id is what makes that true here
+    — the same hold appended again returns the prior seq instead of
+    refusing as a changed payload under a reused id."""
+    from dskit.production.ledger import JsonlLedger, ServeRoot
+
+    leg = a_holding_leg()
+    run(leg)
+    envelope = [e for e in leg.ledger.records if e["kind"] == "guard_state"][0]
+    record = {"kind": "guard_state", "id": envelope["id"], "body": envelope["body"]}
+
+    serve = ServeRoot(str(tmp_path / "serve"), SERIES_ID)
+    state = SeriesState(SERIES_ID)
+    ledger = JsonlLedger(serve, PROCESS_ID, RELEASE_HASH, clock=leg.clock, state=state)
+    try:
+        first = ledger.append(record)
+        assert ledger.append(record) == first
+        assert len(tuple(ledger.scan(kind="guard_state"))) == 1
+    finally:
+        ledger.close()
+    assert sorted(state.snapshot().guard_holds) == [("size", AGGREGATE)]
