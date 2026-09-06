@@ -25,6 +25,13 @@ table's CONTENT; this file pins the registry's BEHAVIOUR over it.
 
 No clock is injected because `flush(at_ms, tick_id)` is told the instant by the
 loop; nothing in this module reads time.
+
+Phase 3 adds the `MetricSink` seam (§5.11.3) at the end of this file. Its
+tests care about one thing above the rest: a broken exporter can slow
+nothing and fail no tick, so every failure it can raise — on `publish` and
+on `close` alike — is swallowed and counted under
+`metric_sink_failures_total{sink}`, and the JSONL half of `flush` neither
+depends on it nor is skipped by it.
 """
 
 import json
@@ -37,18 +44,26 @@ import pytest
 from dskit.production import metrics as metrics_module
 from dskit.production import vocab
 from dskit.production.base import ProductionError
+from dskit.pipeline import base as pipeline_base
+from dskit.production.alerts import ALERT_SINK_KINDS
 from dskit.production.metrics import (
     DEFAULT_BUCKETS,
     DEFAULT_LABELS_MAX_CARDINALITY,
     INF_BUCKET,
+    METRIC_SINK_KINDS,
     METRICS_FILENAME,
     RESERVED_LABEL_VALUE,
+    MetricSink,
     Metrics,
 )
 
 #: The registry's own counter — §5.11.1 names it, and it is the one metric
 #: `Metrics` declares for itself so a drop is visible without setup.
 DROPPED = "metrics_label_cardinality_dropped_total"
+
+#: The exporter counter (§5.11.3) — the registry's other self-declaration,
+#: for the same reason: a swallowed publish leaves no other evidence.
+SINK_FAILURES = "metric_sink_failures_total"
 
 #: Prometheus naming: snake_case, lowercase, starting with a letter.
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -505,7 +520,19 @@ def test_a_snapshot_lists_every_declared_metric_and_nothing_else():
     registry = Metrics()
     registry.counter("ticks_total", labels=("status",))
     registry.histogram("ledger_append_seconds")
-    assert set(registry.snapshot()) == {"ticks_total", "ledger_append_seconds", DROPPED}
+    assert set(registry.snapshot()) == {
+        "ticks_total", "ledger_append_seconds", DROPPED, SINK_FAILURES,
+    }
+
+
+def test_the_registrys_own_counters_are_declared_under_the_default_bound():
+    # Both are declared for the registry, from the closed table, so their
+    # cardinality is fixed there and cannot grow. An operator's tight
+    # `labels_max_cardinality` is about the metrics the LOOP declares — it
+    # must never make the registry itself unconstructable, least of all by
+    # refusing the counter that reports a swallowed failure.
+    registry = Metrics(labels_max_cardinality=1)
+    assert set(registry.snapshot()) == {DROPPED, SINK_FAILURES}
 
 
 def test_a_snapshot_is_a_copy_the_caller_cannot_mutate_back_in():
@@ -573,3 +600,192 @@ def test_the_flush_file_is_the_named_constant_under_the_log_dir(tmp_path):
     registry = Metrics(log_dir=tmp_path)
     registry.flush(1, "tick-1")
     assert [p.name for p in tmp_path.iterdir()] == [METRICS_FILENAME]
+
+
+# ---------------------------------------------------------------------------
+# `MetricSink` — the exporter seam (§5.11.3)
+# ---------------------------------------------------------------------------
+
+
+class CountingSink(MetricSink):
+    """A sink that remembers what it was handed."""
+
+    KIND = "counting"
+
+    def __init__(self, params=None, *, fail=False):
+        super().__init__(params)
+        self.published = []
+        self.closed = 0
+        self._fail = fail
+
+    def publish(self, snapshot, at_ms):
+        if self._fail:
+            raise RuntimeError("the exporter is down")
+        self.published.append((snapshot, at_ms))
+
+    def close(self):
+        self.closed += 1
+
+
+class TestTheSinkSeam:
+    def test_publish_is_abstract_so_an_incomplete_exporter_cannot_construct(self):
+        assert "publish" in MetricSink.__abstractmethods__
+        with pytest.raises(TypeError, match="abstract"):
+            MetricSink()
+
+    def test_close_is_concrete_because_most_exporters_have_nothing_to_close(self):
+        class Bare(MetricSink):
+            def publish(self, snapshot, at_ms):
+                return None
+
+        assert Bare().close() is None
+
+    def test_the_registry_is_its_own_family_and_not_the_alert_sinks(self):
+        # §5.11.3: three sink registries, three separate objects. Two
+        # families sharing one would let a document select an alert sink
+        # as a metric exporter.
+        assert METRIC_SINK_KINDS.family == "metric_sink"
+        assert METRIC_SINK_KINDS.abc is MetricSink
+        assert METRIC_SINK_KINDS is not ALERT_SINK_KINDS
+        assert METRIC_SINK_KINDS is not pipeline_base.SINK_KINDS
+        assert METRIC_SINK_KINDS.family != ALERT_SINK_KINDS.family
+
+    def test_a_sink_declares_its_kind_like_an_alert_sink_does(self):
+        # The `metric_sink_failures_total{sink}` label value is the KIND,
+        # so the registry key and the sink's own answer are one fact.
+        assert CountingSink().kind == "counting"
+
+        class Custom(MetricSink):
+            def publish(self, snapshot, at_ms):
+                return None
+
+        assert ":" in Custom().kind, "a child sink reports its class reference"
+
+    def test_a_sink_is_default_deny_over_its_own_params(self):
+        class Knobbed(MetricSink):
+            _PARAMS = ("interval_s",)
+
+            def publish(self, snapshot, at_ms):
+                return None
+
+        assert Knobbed({"interval_s": 5, "notes": "why"})
+        with pytest.raises(ProductionError):
+            Knobbed({"interval": 5})
+
+
+class TestSubscription:
+    def test_a_subscriber_is_published_to_on_every_flush(self, tmp_path):
+        registry = Metrics(log_dir=tmp_path)
+        sink = CountingSink()
+        registry.subscribe(sink)
+        registry.counter("ticks_total", labels=("status",)).inc(status="decided")
+        registry.flush(1_767_225_600_000, "tick-1")
+        assert len(sink.published) == 1
+        snapshot, at_ms = sink.published[0]
+        assert at_ms == 1_767_225_600_000
+        assert snapshot["ticks_total"] == {"status=decided": 1}
+
+    def test_the_snapshot_a_sink_receives_is_its_own_copy(self, tmp_path):
+        registry = Metrics(log_dir=tmp_path)
+        sink = CountingSink()
+        registry.subscribe(sink)
+        registry.counter("ticks_total", labels=("status",)).inc(status="decided")
+        registry.flush(1, "tick-1")
+        sink.published[0][0]["ticks_total"]["status=decided"] = 99
+        assert registry.snapshot()["ticks_total"] == {"status=decided": 1}
+
+    def test_sinks_are_published_to_even_when_nothing_writes_the_jsonl(self):
+        # The two halves of `flush` are independent: metric sinks are
+        # declared in `placement.metric_sinks` and a `log_dir` is a
+        # separate placement knob, so a document may have exporters and no
+        # flush file. Returning early would silence every exporter.
+        registry = Metrics()
+        sink = CountingSink()
+        registry.subscribe(sink)
+        assert registry.flush(7, "tick-1") is False
+        assert len(sink.published) == 1
+
+    def test_subscribing_the_same_sink_twice_refuses(self):
+        registry = Metrics()
+        sink = CountingSink()
+        registry.subscribe(sink)
+        with pytest.raises(ProductionError):
+            registry.subscribe(sink)
+
+    def test_subscribing_something_that_is_not_a_sink_refuses(self):
+        with pytest.raises(ProductionError):
+            Metrics().subscribe(object())
+
+    def test_every_subscriber_is_published_to_in_subscription_order(self):
+        registry = Metrics()
+        order = []
+
+        class Ordered(CountingSink):
+            def __init__(self, name):
+                super().__init__()
+                self._name = name
+
+            def publish(self, snapshot, at_ms):
+                order.append(self._name)
+
+        registry.subscribe(Ordered("first"))
+        registry.subscribe(Ordered("second"))
+        registry.flush(1, "tick-1")
+        assert order == ["first", "second"]
+
+
+class TestAFailingExporterCanBreakNothing:
+    def test_a_raising_sink_is_swallowed_and_counted(self):
+        # §5.11.3: the same swallow-and-count rule a failing JSONL flush
+        # gets. A broken exporter can slow nothing and fail no tick.
+        registry = Metrics()
+        registry.subscribe(CountingSink(fail=True))
+        assert registry.flush(1, "tick-1") is False
+        assert registry.snapshot()["metric_sink_failures_total"] == {"sink=other": 1}
+
+    def test_a_registered_kinds_failure_lands_under_its_own_label(self):
+        registry = Metrics()
+
+        class Prometheus(CountingSink):
+            KIND = "prometheus"
+
+        registry.subscribe(Prometheus(fail=True))
+        registry.flush(1, "tick-1")
+        assert registry.snapshot()["metric_sink_failures_total"] == {"sink=prometheus": 1}
+
+    def test_one_failing_sink_does_not_stop_the_others(self):
+        registry = Metrics()
+        broken, working = CountingSink(fail=True), CountingSink()
+        registry.subscribe(broken)
+        registry.subscribe(working)
+        registry.flush(1, "tick-1")
+        assert len(working.published) == 1
+
+    def test_a_failing_sink_does_not_stop_the_jsonl_flush(self, tmp_path):
+        registry = Metrics(log_dir=tmp_path)
+        registry.subscribe(CountingSink(fail=True))
+        assert registry.flush(1, "tick-1") is True
+        assert (tmp_path / METRICS_FILENAME).is_file()
+
+    def test_the_counter_is_declared_for_itself_so_a_failure_is_visible_with_no_setup(self):
+        # `metrics_label_cardinality_dropped_total`'s precedent: a count
+        # nobody had to declare is the only evidence a swallowed failure
+        # leaves.
+        assert "metric_sink_failures_total" in Metrics().snapshot()
+
+    def test_closing_the_registry_closes_every_sink_once(self):
+        registry = Metrics()
+        sink = CountingSink()
+        registry.subscribe(sink)
+        registry.close()
+        assert sink.closed == 1
+
+    def test_a_sink_that_raises_on_close_is_swallowed_and_counted(self):
+        class Rude(CountingSink):
+            def close(self):
+                raise RuntimeError("the exporter is down")
+
+        registry = Metrics()
+        registry.subscribe(Rude())
+        registry.close()
+        assert registry.snapshot()["metric_sink_failures_total"] == {"sink=other": 1}

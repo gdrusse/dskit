@@ -104,6 +104,7 @@ from dskit.production.report import (
     parity_view,
 )
 from dskit.production.release import (
+    CALENDAR_CLASS_KEY,
     RELEASE_FILENAME,
     ReleaseManifest,
     RuntimeFingerprint,
@@ -112,6 +113,7 @@ from dskit.production.release import (
     parse_iso_duration,
     write_release,
 )
+from dskit.production.sessions import CALENDAR_KINDS
 from dskit.production.state import Recovery, SeriesState
 from dskit.production.vocab import (
     CASH_FLOW_KINDS,
@@ -531,7 +533,7 @@ class Plan(DocumentVerb):
             run_hash=run.hash,
             serving_hash=served.hash,
             artifacts=artifacts,
-            classes=self._classes(the_plan),
+            classes=self._classes(the_plan, document),
             adapter=_adapter_entry(document.serving.adapter),
             feed_spec=FeedSpec.from_contract(
                 contract, _universe(document), digest, version
@@ -595,15 +597,33 @@ class Plan(DocumentVerb):
         return artifacts
 
     @staticmethod
-    def _classes(the_plan):
-        """Bind every resolved node class to its reference and its code (D24)."""
-        return {
+    def _classes(the_plan, document):
+        """Bind every resolved node class to its reference and its code (D24).
+
+        The schedule's calendar joins them when — and only when — it
+        answers a ``data_fingerprint()``: a calendar that materialises a
+        published schedule stands on DATA no code digest describes, since
+        the code is identical across the library upgrade that moved the
+        holiday (§5.1.1). One that stands on its own params adds no entry,
+        so every release planned before the hook existed hashes the same.
+        """
+        bound = {
             key: {
                 "ref": class_ref(the_plan.resolved[key].cls),
                 "code_digest": fingerprint_class(the_plan.resolved[key].cls),
             }
             for key in the_plan.order
         }
+        site = document.schedule.calendar
+        calendar_cls = CALENDAR_KINDS.resolve(site.uses)
+        digest = calendar_cls(dict(site.params or {})).data_fingerprint()
+        if digest is not None:
+            bound[CALENDAR_CLASS_KEY] = {
+                "ref": class_ref(calendar_cls),
+                "code_digest": fingerprint_class(calendar_cls),
+                "data_digest": digest,
+            }
+        return bound
 
     @staticmethod
     def _contract(document, the_plan, artifacts):

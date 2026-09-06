@@ -111,6 +111,7 @@ from dskit.production.monitors import MONITOR_KINDS, ParityMonitor
 from dskit.production.outcomes import OUTCOME_SOURCE_KINDS, OutcomeJoin
 from dskit.production.policy import ActionPolicy, TransitionPolicy
 from dskit.production.readiness import Readiness
+from dskit.production.release import CALENDAR_CLASS_KEY
 from dskit.production.reconcile import LedgerHistory, Reconciler, enact
 from dskit.production.records import AlertAck, ReductionPlan, Silence
 from dskit.production.redact import get_logger, redact
@@ -690,16 +691,41 @@ def _resolved_families(problems, document, row):
     return resolved
 
 
-def _schedule(document, sections, clock):
+def _schedule(document, sections, clock, release):
     """Build the ``Schedule`` bundle from the document's four selectors."""
     calendar = CALENDAR_KINDS.resolve(document.schedule.calendar.uses)(
         _selector(document.schedule.calendar)
     )
+    _check_calendar_data(calendar, release)
     cadence = CADENCE_KINDS.resolve(document.schedule.cadence.uses)(
         _selector(document.schedule.cadence)
     )
     overrun = Overrun(sections["schedule"].get("overrun") or {})
     return Schedule(clock=clock, calendar=calendar, cadence=cadence, overrun=overrun)
+
+
+def _check_calendar_data(calendar, release):
+    """Refuse when the calendar's DATA is not the data the release bound (§5.1.1).
+
+    A calendar that materialises a published schedule answers a
+    ``data_fingerprint()``; ``plan`` binds it into the release's
+    ``classes`` and composition is where it is re-earned. The code digest
+    cannot stand in for it: after a library upgrade that moves a holiday
+    the code is byte-identical and the trading days are not, so without
+    this the loop would trade a day the armed release never bound.
+    """
+    bound = (release.classes.get(CALENDAR_CLASS_KEY) or {}).get("data_digest")
+    found = calendar.data_fingerprint()
+    if bound == found:
+        return
+    raise ProductionError(
+        [
+            f"schedule.calendar: the release binds the schedule data "
+            f"{bound!r} and this calendar materialises {found!r} — a "
+            "calendar's data is release state, so re-plan rather than "
+            "serve a schedule the release never bound"
+        ]
+    )
 
 
 def _sinks(document, sections, resilience, clock, secrets):
@@ -985,7 +1011,7 @@ def bundles_for(
     injection = _DOCUMENT_INJECTION if tape is None else _TapeInjection(tape)
     sections = document.to_obj()
     clock = clock if clock is not None else injection.clock(document)
-    schedule = _schedule(document, sections, clock)
+    schedule = _schedule(document, sections, clock, release)
     resilience = resilience_from_document(
         sections["resilience"],
         clock=clock,

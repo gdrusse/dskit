@@ -60,6 +60,7 @@ __all__ = [
     "ARTIFACT_EXPIRED",
     "ARTIFACT_FUTURE_DATED",
     "ARTIFACT_MISSING",
+    "CALENDAR_CLASS_KEY",
     "DOCUMENT_FILENAME",
     "Distribution",
     "FEED_SPEC_KEYS",
@@ -542,9 +543,22 @@ def _check_epoch_ms(problems, name, value):
     check_int_param(problems, name, value, ge=0)
 
 
+#: The ``classes`` key a document-selected calendar binds under (§5.1.1).
+#: Node keys are the rest of that mapping and a dot cannot appear in one —
+#: ``$node.output`` references are what a dot means in a pipeline document —
+#: so the two key spaces cannot collide. ONE name, read by ``plan`` when it
+#: writes the entry and by ``compose.py`` when it refuses a schedule that
+#: has moved under a fixed release.
+CALENDAR_CLASS_KEY = "schedule.calendar"
+
 #: The closed shape of each sub-mapping: key -> checker(problems, name, value).
 _ARTIFACT_ENTRY = {"digest": _check_str, "timestamp_ms": _check_epoch_ms}
 _CLASS_ENTRY = {"ref": _check_str, "code_digest": _check_str}
+#: What a ``classes`` entry may carry BESIDE the two above, and only when
+#: the class had it to give (§5.1.1). A calendar that materialises a
+#: published schedule digests that schedule; every other class answers
+#: ``None`` and the key is absent, so no phase-1 release hash moves.
+_CLASS_ENTRY_OPTIONAL = {"data_digest": _check_str}
 _ADAPTER = {"name": _check_str, "digest": _check_str}
 _SOURCE_CONFIG = {"hash": _check_str, "version": _check_str}
 _FEED_SPEC = {
@@ -559,25 +573,29 @@ _FEED_SPEC = {
 }
 
 
-def _check_fixed(problems, where, value, spec):
-    """Default-deny mapping check: every key of ``spec`` required, nothing else allowed."""
+def _check_fixed(problems, where, value, spec, optional=None):
+    """Default-deny mapping check: every key of ``spec`` required, ``optional`` allowed."""
+    optional = optional or {}
     if not isinstance(value, dict):
         problems.append(f"{where} must be a dict with keys {sorted(spec)}, got {value!r}")
         return
-    _check_unknown(problems, value, spec, where=where)
+    _check_unknown(problems, value, {**spec, **optional}, where=where)
     for key, check in spec.items():
         if key not in value:
             problems.append(f"{where}.{key} is required")
         else:
             check(problems, f"{where}.{key}", value[key])
+    for key, check in optional.items():
+        if key in value:
+            check(problems, f"{where}.{key}", value[key])
 
 
-def _check_named(problems, where, value, spec):
+def _check_named(problems, where, value, spec, optional=None):
     """Check a mapping of user-chosen names to ``spec``-shaped entries."""
     _check_dict(problems, where, value)
     if isinstance(value, dict):
         for name, entry in value.items():
-            _check_fixed(problems, f"{where}.{name}", entry, spec)
+            _check_fixed(problems, f"{where}.{name}", entry, spec, optional)
 
 
 @dataclass(frozen=True)
@@ -677,7 +695,7 @@ class ReleaseManifest:
         ):
             _check_str(problems, name, getattr(self, name))
         _check_named(problems, "artifacts", self.artifacts, _ARTIFACT_ENTRY)
-        _check_named(problems, "classes", self.classes, _CLASS_ENTRY)
+        _check_named(problems, "classes", self.classes, _CLASS_ENTRY, _CLASS_ENTRY_OPTIONAL)
         _check_fixed(problems, "adapter", self.adapter, _ADAPTER)
         _check_fixed(problems, "feed_spec", self.feed_spec, _FEED_SPEC)
         _check_fixed(problems, "source_config", self.source_config, _SOURCE_CONFIG)

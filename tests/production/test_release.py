@@ -756,3 +756,63 @@ def test_write_release_refuses_a_differing_manifest_under_the_same_hash(tmp_path
     with pytest.raises(ProductionError) as exc:
         write_release(root, made, doc)
     assert "release.json" in str(exc.value) or made.release_hash in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# `data_digest` — the fact a code fingerprint cannot carry (§5.1.1)
+# ---------------------------------------------------------------------------
+
+
+def test_a_class_entry_may_carry_a_data_digest(tmp_path):
+    # §5.1.1: a calendar that materialises a published schedule has DATA
+    # its code digest cannot describe — the code is identical across the
+    # library upgrade that moved the holiday. The entry carries it beside
+    # the code digest rather than in a section of its own.
+    obj = manifest(artifact_root(tmp_path)).to_obj()
+    obj["classes"]["schedule.calendar"] = {
+        "ref": "dskit.production.libs.exchange_calendars:ExchangeCalendar",
+        "code_digest": "02" * 32,
+        "data_digest": "03" * 32,
+    }
+    assert ReleaseManifest.from_obj(obj).classes["schedule.calendar"]["data_digest"] == (
+        "03" * 32
+    )
+
+
+def test_a_class_entry_without_a_data_digest_still_verifies(tmp_path):
+    # It is OPTIONAL for the reason every optional key here is: emitted
+    # only when present, so every phase-1 release hash is unmoved.
+    obj = manifest(artifact_root(tmp_path)).to_obj()
+    assert "data_digest" not in obj["classes"]["bars"]
+    assert ReleaseManifest.from_obj(obj).classes["bars"] == obj["classes"]["bars"]
+
+
+def test_a_class_entry_still_refuses_a_key_nobody_declared(tmp_path):
+    obj = manifest(artifact_root(tmp_path)).to_obj()
+    obj["classes"]["bars"] = {"ref": "a:B", "code_digest": "01" * 32, "data": "x"}
+    with pytest.raises(ProductionError) as exc:
+        ReleaseManifest.from_obj(obj)
+    assert "data" in str(exc.value)
+
+
+def test_a_data_digest_that_is_not_a_string_refuses(tmp_path):
+    obj = manifest(artifact_root(tmp_path)).to_obj()
+    obj["classes"]["bars"] = {"ref": "a:B", "code_digest": "01" * 32, "data_digest": 7}
+    with pytest.raises(ProductionError) as exc:
+        ReleaseManifest.from_obj(obj)
+    assert "data_digest" in str(exc.value)
+
+
+def test_a_moved_data_digest_moves_the_release_hash(tmp_path):
+    # The digest is release state, so a schedule that moved under a fixed
+    # document is a different release — which is what makes the refusal at
+    # composition a refusal about the RELEASE rather than a warning.
+    base = manifest(artifact_root(tmp_path))
+    entry = {"ref": "a:B", "code_digest": "01" * 32, "data_digest": "02" * 32}
+    bound = dataclasses.replace(base, classes={**base.classes, "schedule.calendar": entry})
+    moved = dataclasses.replace(
+        base,
+        classes={**base.classes, "schedule.calendar": {**entry, "data_digest": "03" * 32}},
+    )
+    assert bound.release_hash != moved.release_hash
+    assert bound.release_hash != base.release_hash

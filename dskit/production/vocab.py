@@ -618,6 +618,11 @@ METRIC_LABEL_VALUES = {
     # tick — ``failed`` carries an ``error`` instead) plus the guard verdicts.
     "refusals_total": {"reason": _SKIPPED + ("refused",) + VERDICTS},
     "alert_sink_failures_total": {"sink": ("log", "memory", "email", "webhook")},
+    # The metric EXPORTERS of §5.11.3, whose kinds ship as tier-2 packs:
+    # the value set is the two pack kind names for the same reason the
+    # alert sinks' is the four core ones — a child exporter referenced by
+    # path falls to the reserved value by the normal cardinality rule.
+    "metric_sink_failures_total": {"sink": ("prometheus", "opentelemetry")},
     "alerts_suppressed_total": {"why": ALERT_SUPPRESSIONS},
     "monitor_verdicts_total": {
         "monitor": (

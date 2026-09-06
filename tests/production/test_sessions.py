@@ -65,7 +65,18 @@ def test_calendar_hooks_are_abstract_so_an_incomplete_calendar_cannot_construct(
 
 
 def test_registry_lists_exactly_the_four_calendar_kinds():
-    assert CALENDAR_KINDS.kinds() == (
+    # `CALENDAR_KINDS` is a family a tier-2 pack registers into (§4.3,
+    # §5.1.1: `libs/exchange_calendars.py` adds `exchange` when it is
+    # imported), and a registry is process-global — so what is pinned here
+    # is what `sessions.py` ITSELF contributes, the idiom
+    # `test_monitors.py` already uses for `REFERENCE_KINDS`. An extra kind
+    # may only come from a pack.
+    from_this_module = tuple(
+        name
+        for name in CALENDAR_KINDS.kinds()
+        if CALENDAR_KINDS.resolve(name).__module__ == WeeklySessions.__module__
+    )
+    assert from_this_module == (
         "always-open", "composite", "event-window", "weekly-sessions",
     )
     assert CALENDAR_KINDS.family == "calendar"

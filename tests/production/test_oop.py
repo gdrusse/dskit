@@ -71,6 +71,7 @@ from dskit.production.ids import IdSource
 from dskit.production.ledger import ChainLedger, Ledger
 from dskit.production.leg import Authority, LegPipeline
 from dskit.production.loop import ServeLoop, Tick
+from dskit.production.metrics import MetricSink
 from dskit.production.monitors import Chunker, Monitor, Reference, Threshold
 from dskit.production.outcomes import OutcomeSource
 from dskit.production.policy import ActionPolicy, TransitionPolicy
@@ -124,6 +125,7 @@ SEAM_ABCS = (
     ("OutcomeSource", "outcomes", "OUTCOME_SOURCE_KINDS"),
     ("Ledger", "ledger", "LEDGER_KINDS"),
     ("Signer", "resilience", "SIGNER_KINDS"),
+    ("MetricSink", "metrics", "METRIC_SINK_KINDS"),
 )
 
 #: The ABCs §5.15 calls structural rather than registry-resolved, named so
@@ -158,7 +160,7 @@ ABC_BY_NAME = {
         Clock, Calendar, Cadence, Feed, Proposer, Guard, Measure, Executor,
         Accounting, Lease, Monitor, Reference, Chunker, Threshold, AlertSink,
         HealthProbe, Transport, ApprovalVerifier, Fee, HeartbeatEmitter,
-        OutcomeSource, Ledger, Signer,
+        OutcomeSource, Ledger, Signer, MetricSink,
     )
 }
 

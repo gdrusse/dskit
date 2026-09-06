@@ -36,9 +36,9 @@ import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from dskit.pipeline.node import check_int_param
+from dskit.pipeline.node import check_int_param, class_ref, reject_unknown_params
 from dskit.production import vocab
-from dskit.production.base import ProductionError
+from dskit.production.base import ProductionError, Registry
 from dskit.production.redact import get_logger
 
 __all__ = [
@@ -50,6 +50,8 @@ __all__ = [
     "Histogram",
     "INF_BUCKET",
     "METRICS_FILENAME",
+    "METRIC_SINK_KINDS",
+    "MetricSink",
     "Metrics",
     "RESERVED_LABEL_VALUE",
 ]
@@ -74,6 +76,18 @@ DEFAULT_LABELS_MAX_CARDINALITY = 1000
 
 #: The registry's own counter (§5.11.1), declared for itself at construction.
 _DROPPED = "metrics_label_cardinality_dropped_total"
+#: The exporter counter (§5.11.3), declared for itself for the same reason:
+#: a swallowed publish leaves no other evidence.
+_SINK_FAILURES = "metric_sink_failures_total"
+#: The one params key every seam site may carry beside its knobs.
+_NOTES = ("notes",)
+#: The bound the registry's OWN two counters are declared under. They come
+#: from the closed table, so their cardinality is fixed by that table and
+#: cannot grow; an operator's ``labels_max_cardinality`` is about the
+#: metrics the LOOP declares, and a tight one must not make the registry
+#: itself unconstructable — least of all by refusing the counter that
+#: reports a swallowed failure.
+_OWN_CEILING = DEFAULT_LABELS_MAX_CARDINALITY
 
 _log = get_logger("metrics")
 
@@ -355,6 +369,116 @@ class Histogram(_Metric):
         counts[INF_BUCKET] += 1
 
 
+class MetricSink(ABC):
+    """The exporter seam (§5.11.3): ``publish(snapshot, at_ms)``, and nothing else.
+
+    An exporter is told what the registry holds and hands it on. It is
+    never asked a question, never consulted on the hot path, and never
+    allowed to fail a tick: :meth:`Metrics.flush` swallows whatever
+    ``publish`` raises and counts it under
+    ``metric_sink_failures_total{sink}``, the same rule a JSONL flush that
+    cannot write already gets. That is what lets a pack reach a network
+    from inside a serve process at all.
+
+    ``cls(params)`` construction, default-deny over the subclass's
+    ``_PARAMS`` plus ``notes``. Subclasses live in ``libs/`` and name
+    their library only inside a method, so importing one costs nothing.
+
+    Parameters
+    ----------
+    params : dict, optional
+        The ``placement.metric_sinks.<name>.params`` block; ``None`` means
+        ``{}``.
+
+    Attributes
+    ----------
+    KIND : str or None
+        The registry name a core kind reports; ``None`` on the ABC, so a
+        child exporter reports its class reference and its failures fall
+        to the reserved label value by the ordinary cardinality rule.
+
+    Examples
+    --------
+    An exporter that keeps the last reading in memory::
+
+        class LastReading(MetricSink):
+            def publish(self, snapshot, at_ms):
+                self.last = (snapshot, at_ms)
+
+        sink = LastReading({})
+        sink.publish({"ticks_total": {"status=decided": 1}}, 1_767_225_600_000)
+        sink.kind   # 'tests...:LastReading' — its class reference
+    """
+
+    _PARAMS = ()
+    KIND = None
+
+    def __init__(self, params=None):
+        params = dict(params or {})
+        problems = self.validate_params(params)
+        if problems:
+            raise ProductionError(problems)
+        self._configure(params)
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return every problem with ``params``; empty when it is acceptable.
+
+        Parameters
+        ----------
+        params : dict
+            The params block as written in the document.
+
+        Returns
+        -------
+        list of str
+            One problem per unknown key; subclasses extend the list.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS + _NOTES)
+        return problems
+
+    def _configure(self, params):
+        """Read validated params; the base has none to read."""
+
+    @property
+    def kind(self):
+        """Return the registry name of a core kind, else the class reference."""
+        return self.KIND if self.KIND is not None else class_ref(type(self))
+
+    @abstractmethod
+    def publish(self, snapshot, at_ms):
+        """Hand one flush's readings to whatever this exporter exports to.
+
+        Parameters
+        ----------
+        snapshot : dict
+            ``{name: {series key: value}}`` — the caller's own copy, free
+            to keep.
+        at_ms : int
+            The instant the loop told the registry to flush at; never read
+            from a clock here.
+
+        Returns
+        -------
+        None
+            The answer is the export; a failure is raised and swallowed.
+        """
+
+    def close(self):
+        """Release whatever this exporter holds open.
+
+        Concrete because most exporters hold nothing: a pull endpoint and
+        a stateless push both have nothing to close, and a hook that
+        raised would make them all write an empty override.
+
+        Returns
+        -------
+        None
+            Nothing is held by default.
+        """
+
+
 class Metrics:
     """The registry: declare from the closed table, record, snapshot, flush.
 
@@ -396,7 +520,11 @@ class Metrics:
         self._max_cardinality = int(labels_max_cardinality)
         self._metrics = {}
         self._flush_failures = 0
-        self._dropped = self.counter(_DROPPED)
+        self._sinks = []
+        self._dropped = self._declare(Counter, _DROPPED, (), None, _OWN_CEILING)
+        self._sink_failures = self._declare(
+            Counter, _SINK_FAILURES, ("sink",), None, _OWN_CEILING
+        )
 
     @property
     def flush_failures(self):
@@ -475,10 +603,13 @@ class Metrics:
         """
         return self._declare(Histogram, name, labels, DEFAULT_BUCKETS if buckets is None else buckets)
 
-    def _declare(self, handle_cls, name, labels, buckets):
+    def _declare(self, handle_cls, name, labels, buckets, ceiling=None):
         """Validate against the table, then create or hand back the one handle."""
         problems = []
-        labels = _declared_labels(problems, handle_cls, name, labels, self._max_cardinality)
+        labels = _declared_labels(
+            problems, handle_cls, name, labels,
+            self._max_cardinality if ceiling is None else ceiling,
+        )
         if buckets is not None:
             buckets = _declared_buckets(problems, name, buckets)
         if problems:
@@ -507,12 +638,72 @@ class Metrics:
         """
         return {name: handle.series() for name, handle in self._metrics.items()}
 
+    def subscribe(self, sink):
+        """Register an exporter to be published to on every flush (§5.11.3).
+
+        Parameters
+        ----------
+        sink : MetricSink
+            The exporter; ``compose.py`` builds one per
+            ``placement.metric_sinks`` entry.
+
+        Returns
+        -------
+        MetricSink
+            The sink, so a caller may keep the handle it just registered.
+
+        Raises
+        ------
+        ProductionError
+            If ``sink`` is not a :class:`MetricSink`, or is already
+            subscribed — publishing to one exporter twice per flush would
+            double every counter it exports.
+        """
+        if not isinstance(sink, MetricSink):
+            raise ProductionError([f"a metric sink must be a MetricSink, got {sink!r}"])
+        if any(known is sink for known in self._sinks):
+            raise ProductionError([f"{sink.kind} is already subscribed"])
+        self._sinks.append(sink)
+        return sink
+
+    def close(self):
+        """Close every subscriber, swallowing and counting what each raises.
+
+        Returns
+        -------
+        None
+            A close is best-effort by the same argument a publish is: an
+            exporter that cannot let go must not stop a process from
+            shutting down.
+        """
+        for sink in self._sinks:
+            self._attempt(sink, sink.close)
+
+    def _publish(self, at_ms):
+        """Hand a fresh snapshot to every subscriber, swallowing each failure."""
+        for sink in self._sinks:
+            self._attempt(sink, lambda sink=sink: sink.publish(self.snapshot(), at_ms))
+
+    def _attempt(self, sink, call):
+        """Run one exporter call; count and log whatever it raises."""
+        try:
+            call()
+        except Exception as error:  # noqa: BLE001 — an exporter may raise anything
+            self._sink_failures.inc(sink=sink.kind)
+            _log.warning("metric sink %s failed: %s", sink.kind, error)
+
     def flush(self, at_ms, tick_id):
-        """Append one ``{at_ms, tick_id, metrics}`` line to the flush file.
+        """Publish to every subscriber, then append one line to the flush file.
 
         Counters are cumulative: a flush is a reading, not a reset. A
         failure to write is counted in ``flush_failures``, logged and
-        swallowed — it can never fail a tick.
+        swallowed — it can never fail a tick — and so is a failure to
+        publish, counted under ``metric_sink_failures_total{sink}``. The
+        two halves are independent: a document may declare exporters and
+        no ``log_dir``, or a ``log_dir`` and no exporters, and neither
+        half may silence the other. Publishing happens FIRST so a sink
+        failure appears in the same line it happened on rather than a tick
+        later.
 
         Parameters
         ----------
@@ -525,8 +716,10 @@ class Metrics:
         -------
         bool
             ``True`` if the line was written; ``False`` with no ``log_dir``
-            or when the write failed.
+            or when the write failed. What the exporters did is in their
+            own counter, not in this answer.
         """
+        self._publish(at_ms)
         if self._log_dir is None:
             return False
         record = {"at_ms": at_ms, "tick_id": tick_id, "metrics": self.snapshot()}
@@ -540,3 +733,15 @@ class Metrics:
             _log.warning("metrics flush failed (%d so far): %s", self._flush_failures, error)
             return False
         return True
+
+
+#: The metric-exporter family's open doorway (§4.3, §5.11.3): a registered
+#: name or a ``pkg.module:Class`` reference, both subclasses of
+#: :class:`MetricSink`. Core registers NOTHING into it — an exporter is a
+#: library, and this package may import none — so every member arrives with
+#: a tier-2 pack (``libs/prometheus.py``, ``libs/opentelemetry.py``) or a
+#: child's own class. It is a third sink registry, separate from the
+#: pipeline's tracking sinks and from ``ALERT_SINK_KINDS``, because a
+#: document that could select an alert sink as an exporter would deliver
+#: pages to a metrics endpoint.
+METRIC_SINK_KINDS = Registry("metric_sink", MetricSink)

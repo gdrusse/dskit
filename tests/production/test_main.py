@@ -51,12 +51,14 @@ from dskit.production.monitors import (
 from dskit.production.outcomes import OUTCOME_SOURCE_KINDS
 from dskit.production.readiness import UNWAIVABLE_ITEMS, checklist_digest
 from dskit.production.release import (
+    CALENDAR_CLASS_KEY,
     DOCUMENT_FILENAME,
     RELEASE_FILENAME,
     ReleaseManifest,
+    fingerprint_class,
 )
 from dskit.production.resilience import SIGNER_KINDS, TRANSPORT_KINDS
-from dskit.production.sessions import CALENDAR_KINDS
+from dskit.production.sessions import CALENDAR_KINDS, AlwaysOpen
 from dskit.production.vocab import CONTROL_PURPOSES, TRIP_REASONS
 from tests.production.conftest import DAY_MS, NOW_MS, SERIES_ID, UNIVERSE
 
@@ -1494,12 +1496,27 @@ def test_a_document_naming_an_unregistered_kind_refuses_when_it_is_resolved(
     §10 keeps document validation to "shape, default-deny and identity only"
     — a document may name a child class this host has never imported — so
     the refusal lands where the name is RESOLVED: composition."""
-    obj = document_obj(serve_document, tmp_path,
-                       **{"schedule.calendar": {"uses": "lunar-sessions"}})
+    obj = document_obj(serve_document, tmp_path, **{
+        "monitors": {"drift": {"uses": "haruspicy", "params": {}}},
+    })
     path = write_document(tmp_path, obj)
     assert cli.main(["validate", path], journal_hook=journal) == STOPPED
     assert cli.main(["plan", path], journal_hook=journal) == STOPPED
     assert cli.main(["serve", path, "--once"], journal_hook=journal) == ERROR
+
+
+def test_a_document_naming_an_unresolvable_calendar_refuses_at_plan(
+    serve_document, tmp_path, journal
+):
+    """The calendar is the one selector `plan` itself resolves, because
+    §5.1.1 makes it bind the calendar's DATA into the release — so an
+    unknown calendar kind refuses one verb EARLIER than the rest, at the
+    point the release would otherwise be minted around it."""
+    obj = document_obj(serve_document, tmp_path,
+                       **{"schedule.calendar": {"uses": "lunar-sessions"}})
+    path = write_document(tmp_path, obj)
+    assert cli.main(["validate", path], journal_hook=journal) == STOPPED
+    assert cli.main(["plan", path], journal_hook=journal) == ERROR
 
 
 # ---------------------------------------------------------------------------
@@ -1686,3 +1703,68 @@ def test_approve_hold_refuses_a_release_the_series_cannot_honour(
     assert report["status"] == "rejected"
     assert "size" in report["reason"]
     assert envelopes(doc_path, kind="guard_state") == []
+
+
+# ==========================================================================
+# plan — a calendar's DATA, bound like its code (§5.1.1)
+# ==========================================================================
+
+
+class StampedCalendar(AlwaysOpen):
+    """A calendar whose answers stand on data, named by path from a document."""
+
+    _PARAMS = ("digest",)
+
+    def _configure(self, params):
+        self._digest = params.get("digest", "aa" * 32)
+
+    def data_fingerprint(self):
+        return self._digest
+
+
+def test_plan_binds_a_calendars_data_digest_beside_its_code(serve_document, tmp_path, journal):
+    """§5.1.1: a materialised schedule is DATA the code digest cannot
+    describe — the code is identical across the library upgrade that moved
+    the holiday — so `plan` writes it into the calendar's `classes` entry.
+    """
+    obj = document_obj(serve_document, tmp_path, **{
+        "schedule.calendar": {
+            "uses": "tests.production.test_main:StampedCalendar",
+            "params": {"digest": "bb" * 32},
+        },
+    })
+    manifest = planned(write_document(tmp_path, obj), journal)
+    entry = manifest.classes[CALENDAR_CLASS_KEY]
+    assert entry["data_digest"] == "bb" * 32
+    assert entry["ref"] == "tests.production.test_main:StampedCalendar"
+    assert entry["code_digest"] == fingerprint_class(StampedCalendar)
+
+
+def test_plan_writes_no_entry_for_a_calendar_that_stands_on_no_data(doc_path, journal):
+    """The key is emitted ONLY when it is not None, so every phase-1
+    release hash is unmoved by the hook existing."""
+    manifest = planned(doc_path, journal)
+    assert CALENDAR_CLASS_KEY not in manifest.classes
+
+
+def test_a_moved_schedule_makes_a_different_release(
+    serve_document, tmp_path, capsys, journal
+):
+    """The whole point: the same document over a schedule that moved is a
+    DIFFERENT release, so the hash an operator armed no longer matches."""
+    planned_hashes = []
+    documents = set()
+    for index, digest in enumerate(("bb" * 32, "cc" * 32)):
+        obj = document_obj(serve_document, tmp_path, **{
+            "placement": {"ledger_root": str(tmp_path / f"serve-{index}")},
+            "schedule.calendar": {
+                "uses": "tests.production.test_main:StampedCalendar",
+                "params": {"digest": digest},
+            },
+        })
+        path = write_document(tmp_path, obj, name=f"serve-{index}.json")
+        documents.add(ServeDocument.load(path).doc_hash)
+        assert cli.main(["plan", path], journal_hook=journal) == STOPPED
+        planned_hashes.append(json.loads(capsys.readouterr().out)["release_hash"])
+    assert len(documents) == 2, "the digest is a param, so the document moved too"
+    assert planned_hashes[0] != planned_hashes[1]

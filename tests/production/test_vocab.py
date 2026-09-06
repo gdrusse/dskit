@@ -331,6 +331,7 @@ EXPECTED_METRIC_LABELS = {
     "submits_total": ("rung", "risk_effect", "outcome"),
     "refusals_total": ("reason",),
     "alert_sink_failures_total": ("sink",),
+    "metric_sink_failures_total": ("sink",),
     "alerts_suppressed_total": ("why",),
     "monitor_verdicts_total": ("monitor", "status"),
     "recon_breaks_total": ("class",),

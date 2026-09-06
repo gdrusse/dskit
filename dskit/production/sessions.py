@@ -323,6 +323,25 @@ class Calendar(ABC):
             )
         return bounds
 
+    def data_fingerprint(self):
+        """Return a digest of the DATA this calendar's answers stand on, or ``None``.
+
+        A calendar written out in a document carries no data of its own —
+        the document IS the data, and the release already binds the
+        document's hash. One that materialises a published schedule does:
+        the code is identical across a library upgrade that moves a
+        holiday, so a code fingerprint alone would not see the change.
+        ``plan`` binds a non-``None`` answer into the release and
+        composition refuses when it has moved (§5.1.1).
+
+        Returns
+        -------
+        str or None
+            The digest of the materialised schedule, or ``None`` when the
+            calendar reads no data outside its own params.
+        """
+        return None
+
     def _window_day(self, at_ms):
         """Return the local day of ``at_ms`` in ``tz_name`` as ``[midnight, midnight)``."""
         zone = ZoneInfo(self.tz_name)

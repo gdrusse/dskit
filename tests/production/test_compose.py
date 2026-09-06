@@ -42,6 +42,7 @@ from dskit.production.arming import (
     authority_record,
 )
 from dskit.production.base import ProductionError, canonical_hash
+from dskit.production.release import CALENDAR_CLASS_KEY
 from dskit.production.breaker import Breaker
 from dskit.production.bundles import (
     Data,
@@ -54,6 +55,7 @@ from dskit.production.bundles import (
     Schedule,
 )
 from dskit.production.cadence import FixedInterval, Overrun
+from dskit.production.sessions import AlwaysOpen
 from dskit.production.clock import TestClock
 from dskit.production.compose import (
     AuthorityTable,
@@ -85,7 +87,6 @@ from dskit.production.policy import ActionPolicy, TransitionPolicy
 from dskit.production.readiness import Readiness
 from dskit.production.reconcile import Reconciler
 from dskit.production.records import Alert, ExecutionScope, Outcome, Silence
-from dskit.production.sessions import AlwaysOpen
 from dskit.production.state import SeriesState
 from dskit.production.verifier import SubmissionVerifier
 from dskit.production.vocab import BREAKER_STATES, CONTROL_PURPOSES, LEG_ORIGINS, RUNGS
@@ -1946,3 +1947,96 @@ def test_the_released_record_folds_the_hold_away(guarded, release_manifest):
     for record in records:
         recording.ledger.append(record)
     assert recording.state.snapshot().guard_holds == {}
+
+
+# ---------------------------------------------------------------------------
+# A calendar's data is release state, and composition re-earns it (§5.1.1)
+# ---------------------------------------------------------------------------
+
+
+class StampedCalendar(AlwaysOpen):
+    """A calendar whose answers stand on data, named by path from a document."""
+
+    _PARAMS = ("digest",)
+
+    def _configure(self, params):
+        self._digest = params.get("digest", "aa" * 32)
+
+    def data_fingerprint(self):
+        return self._digest
+
+
+def stamped(digest):
+    """The `{uses, params}` site selecting the calendar above."""
+    return {
+        "uses": "tests.production.test_compose:StampedCalendar",
+        "params": {"digest": digest},
+    }
+
+
+class TestTheCalendarsDataIsReEarned:
+    def bound(self, release, digest):
+        """The release, with the calendar's data digest bound into it."""
+        entry = {
+            "ref": "tests.production.test_compose:StampedCalendar",
+            "code_digest": "01" * 32,
+            "data_digest": digest,
+        }
+        return dataclasses.replace(
+            release, classes={**release.classes, CALENDAR_CLASS_KEY: entry}
+        )
+
+    def test_a_schedule_that_still_matches_composes(
+        self, composer, serve_document, tmp_path
+    ):
+        composer.release = self.bound(composer.release, "bb" * 32)
+        document = document_at(
+            serve_document, "shadow", tmp_path,
+            {"schedule.calendar": stamped("bb" * 32)},
+        )
+        assert composer.build(document)[0].calendar.data_fingerprint() == "bb" * 32
+
+    def test_a_schedule_that_moved_under_a_fixed_release_refuses(
+        self, composer, serve_document, tmp_path
+    ):
+        # The whole reason the hook exists: after a library upgrade that
+        # moves a holiday the CODE is identical, so a code fingerprint
+        # cannot see it. Composition is where the release is re-earned, so
+        # it is where the loop refuses to trade a day the release never
+        # bound.
+        composer.release = self.bound(composer.release, "bb" * 32)
+        document = document_at(
+            serve_document, "shadow", tmp_path,
+            {"schedule.calendar": stamped("cc" * 32)},
+        )
+        with pytest.raises(ProductionError) as caught:
+            composer.build(document)
+        joined = " ".join(caught.value.problems)
+        assert "bb" * 32 in joined and "cc" * 32 in joined
+
+    def test_a_calendar_that_gained_data_the_release_never_bound_refuses(
+        self, composer, serve_document, tmp_path
+    ):
+        document = document_at(
+            serve_document, "shadow", tmp_path,
+            {"schedule.calendar": stamped("bb" * 32)},
+        )
+        with pytest.raises(ProductionError) as caught:
+            composer.build(document)
+        assert any("data" in problem for problem in caught.value.problems)
+
+    def test_a_calendar_that_lost_the_data_the_release_bound_refuses(
+        self, composer, shadow_document
+    ):
+        composer.release = self.bound(composer.release, "bb" * 32)
+        with pytest.raises(ProductionError) as caught:
+            composer.build(shadow_document)
+        assert any("data" in problem for problem in caught.value.problems)
+
+    def test_a_calendar_that_stands_on_no_data_composes_as_it_always_did(
+        self, composer, shadow_document
+    ):
+        # Every phase-1 document takes this path: no entry, no digest, no
+        # new refusal.
+        assert CALENDAR_CLASS_KEY not in composer.release.classes
+        assert composer.build(shadow_document)[0].calendar.data_fingerprint() is None
