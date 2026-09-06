@@ -80,22 +80,24 @@ Readings taken where §5.10.1 is silent about the outcome and parity families
   "replaces the observation standing for this outcome's `leg_id`", and that
   is what is pinned here. A correction corrects the LABEL; the forecast and
   baseline came from the decision and cannot change.
-* An eviction is counted as an unlabelled leg for the monitor's LIFE. An
-  evicted leg's forecast is gone, so its label can never pair — a coverage
-  that forgot it would claim labels it does not have. The consequence is
-  pinned: coverage does not recover when labels resume, and the remedy is a
-  larger `max_pending`.
+* An eviction enters the window as an UNLABELLED observation, so it is
+  counted like everything else and ages out with the window: §5.10.1 says
+  coverage is "over the current window", and a monotone count would leave
+  one burst of evictions provisional for the life of the process — a
+  permanent NO-GO earned by a transient. Coverage recovers once the burst
+  leaves the window; an eviction is still never silent while it is in one.
 * `label_coverage()` over an EMPTY denominator (nothing paired, nothing
   pending) is 1.0, not 0.0: no leg is waiting, so nothing is provisional.
   Such a verdict is `insufficient` on its own account.
-* §5.10.1 parks `weight` off the `decision` body, but §6's `decision.legs[]`
-  carries no `weight` — the §6 `outcome` body does. The pair therefore takes
-  the leg's weight when it has one and the outcome's otherwise, and no
-  phase-2 statistic is weighted.
-* `Brier`/`Skill` score with `dskit.pipeline.metrics.brier`, which refuses a
-  forecast outside [0, 1] and a label outside {0, 1}. §5.10.1 gives the
-  monitors no `scoring` knob the way §5.13.3 gives the report one, so an
-  unbounded-value series is refused rather than silently mis-scored.
+* No `weight` is parked. §5.10.1 names one, but §6's `decision.legs[]`
+  carries none and no phase-2 statistic is weighted, so parking it would be
+  state riding in every §6 snapshot that no verdict reads. A weighted
+  statistic would reintroduce it.
+* `Brier` and `Skill` take a `scoring` knob — a registered
+  `dskit.pipeline.metrics` name, exactly as §5.13.3 gives the report — so
+  the same series the report scores can be scored by the monitor. It
+  defaults to `brier`, which refuses a forecast outside [0, 1] and a label
+  outside {0, 1}; an unbounded series declares `squared_error`.
 * `Skill.dm_test()` is `diebold_mariano_test(dm_loss_series(...), lags=...)`;
   §5.10.1 names neither `lags` nor `h_steps`, so the sibling rule §5.13.3
   states is used — `dm_lags(n, h_steps)` at a one-step horizon — and the
@@ -136,6 +138,7 @@ from dskit.production.monitors import (
     DEFAULT_LABEL_COVERAGE,
     DEFAULT_MAX_PENDING,
     DEFAULT_MIN_N,
+    DEFAULT_SCORING,
     DEFAULT_MIN_SUB,
     MONITOR_KINDS,
     REFERENCE_KINDS,
@@ -2123,10 +2126,41 @@ def test_an_evicted_pending_leg_is_counted_unlabelled_rather_than_vanishing():
     monitor.observe(outcome_record("l-1", "1"))
     monitor.observe(outcome_record("l-2", "1"))
 
-    # two paired, none pending, one evicted: a monitor that forgot the
-    # eviction would say 2/2 here.
+    # two paired and one eviction, all three inside a window of four: a
+    # monitor that forgot the eviction would say 2/2 here.
     assert monitor.verdict().n_cur == 2
     assert monitor.label_coverage() == pytest.approx(2.0 / 3.0)
+
+
+def test_coverage_recovers_once_an_eviction_burst_leaves_the_window():
+    """§5.10.1 says coverage is "over the current window", so an eviction is
+    counted while it is IN one and not after. A count that only grew would
+    leave one transient burst provisional for the life of the process — and
+    §5.13.4's outcome evidence would then be a permanent NO-GO earned by a
+    minute of late labels."""
+    monitor = outcome_monitor("brier", window=count(2), min_n=1, max_pending=1)
+    monitor.observe(
+        decided([decided_leg("l-0", 0.6), decided_leg("l-1", 0.6), decided_leg("l-2", 0.6)])
+    )
+    # l-0 and l-1 were evicted; only l-2 is still parked
+    assert monitor.label_coverage() == 0.0
+    assert monitor.provisional() is True
+
+    monitor.observe(outcome_record("l-2", "1"))
+    assert monitor.label_coverage() == 1.0
+    assert monitor.provisional() is False
+    assert monitor.verdict().n_cur == 1
+
+
+def test_an_eviction_still_counts_while_it_is_in_the_window():
+    """The recovery above must not have been bought by dropping the eviction
+    silently: while the burst is IN the window it is counted unlabelled."""
+    monitor = outcome_monitor("brier", window=count(4), min_n=1, max_pending=1)
+    monitor.observe(decided([decided_leg("l-0", 0.6), decided_leg("l-1", 0.6)]))
+    monitor.observe(outcome_record("l-1", "1"))
+    # one paired observation and one eviction, both inside a window of four
+    assert monitor.label_coverage() == pytest.approx(0.5)
+    assert monitor.verdict().n_cur == 1
 
 
 def test_the_label_of_an_evicted_leg_can_no_longer_pair():
@@ -2271,6 +2305,19 @@ def test_the_pending_map_is_bounded_by_the_declared_maximum():
     assert len(json.loads(json.dumps(monitor.state()))["pending"]) == 3
 
 
+def test_no_weight_rides_in_the_parked_leg_or_in_an_observation():
+    """§5.10.1 names a `weight` in the parked tuple, but §6's
+    `decision.legs[]` carries none and no statistic here is weighted, so
+    parking one would be state in every §6 snapshot that no verdict reads.
+    A weighted statistic would reintroduce it."""
+    monitor = outcome_monitor("brier", window=count(4), min_n=1)
+    monitor.observe(decided([decided_leg("l-0", 0.6), decided_leg("l-1", 0.6)]))
+    monitor.observe(outcome_record("l-0", "1", weight="7"))
+    state = json.loads(json.dumps(monitor.state()))
+    assert "weight" not in json.dumps(state)
+    assert monitor.verdict().statistic == pytest.approx(0.16)
+
+
 def test_the_outcome_family_takes_its_own_four_knobs_and_nothing_else():
     for kind in OUTCOME_FAMILY_KINDS:
         declared = set(MONITOR_KINDS.resolve(kind)._PARAMS)
@@ -2345,7 +2392,8 @@ def test_a_tick_body_is_neither_parked_nor_paired():
 def test_the_outcome_family_state_round_trips_its_pending_map_and_its_evictions():
     """§6's `snapshot` carries monitor state; a restart that forgot the
     pending map would re-pair nothing and report full coverage over the legs
-    it happened to keep."""
+    it happened to keep. The evictions ride in `observations` with
+    everything else, which is what makes them age out with the window."""
     live = outcome_monitor("brier", window=count(4), min_n=1, max_pending=2)
     live.observe(decided([decided_leg("l-%d" % i, 0.6) for i in range(3)]))
     live.observe(outcome_record("l-1", "1"))
@@ -2365,10 +2413,11 @@ def test_the_outcome_family_state_round_trips_its_pending_map_and_its_evictions(
 def test_the_outcome_state_refuses_an_unknown_or_malformed_member():
     monitor = outcome_monitor("brier")
     state = json.loads(json.dumps(monitor.state()))
+    assert set(state) == {"observations", "references", "threshold", "pending"}
     with pytest.raises(ProductionError):
         monitor.restore({**state, "pending": {}})
     with pytest.raises(ProductionError):
-        monitor.restore({**state, "unlabelled": -1})
+        monitor.restore({**state, "pending": [{"value": 0.5}]})
     with pytest.raises(ProductionError):
         monitor.restore({**state, "surprise": 1})
 
@@ -2410,18 +2459,62 @@ def test_brier_is_the_mean_of_the_pipelines_own_brier():
     assert monitor.verdict().statistic == pytest.approx(0.16)
 
 
-def test_moving_the_pipelines_brier_moves_the_monitors_statistic(monkeypatch):
+def test_moving_the_pipelines_own_rule_moves_the_monitors_statistic(monkeypatch):
     """§5.10.1: "the mean of `dskit.pipeline.metrics.brier`, imported rather
-    than restated". A restated copy would keep answering 0.16 here, which is
-    exactly the drift this repo's duplication rule exists to catch."""
+    than restated", and §5.13.3's `scoring` is "a registered
+    `dskit.pipeline.metrics` name". The monitor therefore resolves through
+    that registry at reduce time; a restated copy would keep answering 0.16
+    here, which is exactly the drift this repo's duplication rule catches."""
     monitor = outcome_monitor("brier", window=count(2), min_n=2)
     scored(monitor, ((0.6, 1.0), (0.4, 0.0)))
     assert monitor.verdict().statistic == pytest.approx(0.16)
 
-    monkeypatch.setattr(pipeline_metrics, "brier", lambda q, y: 5.0)
+    monkeypatch.setitem(pipeline_metrics.METRICS, "brier", lambda q, y: 5.0)
     moved = outcome_monitor("brier", window=count(2), min_n=2)
     scored(moved, ((0.6, 1.0), (0.4, 0.0)))
     assert moved.verdict().statistic == pytest.approx(5.0)
+
+
+def test_the_default_scoring_rule_is_a_named_constant_the_pipeline_registers():
+    assert DEFAULT_SCORING == "brier"
+    assert DEFAULT_SCORING in pipeline_metrics.METRICS
+
+
+def test_an_unbounded_series_scores_through_the_metric_the_document_declares():
+    """§5.13.3 gives the report exactly this choice — "an unbounded-value
+    series scores through `squared_error` instead of `brier` by the same
+    functions" — and there is no reason the same series scored by the report
+    cannot be scored by the monitor. One param, not a new seam."""
+    monitor = outcome_monitor("brier", window=count(2), min_n=2, scoring="squared_error")
+    scored(monitor, ((12.0, 10.0), (8.0, 10.0)))
+    assert monitor.verdict().statistic == pytest.approx(4.0)
+
+
+def test_the_skill_member_takes_the_same_scoring_knob():
+    monitor = outcome_monitor("skill", window=count(2), min_n=2, scoring="squared_error")
+    scored(monitor, ((12.0, 10.0), (8.0, 10.0)), baseline=10.0)
+    # forecast squared error 4.0 against a benchmark that sat on the label
+    assert monitor.verdict().statistic is None
+    assert monitor.verdict().status == "insufficient"
+
+
+@pytest.mark.parametrize("kind", ("brier", "skill"))
+def test_an_unregistered_scoring_name_refuses_naming_the_registry(kind):
+    with pytest.raises(ProductionError) as exc:
+        outcome_monitor(kind, scoring="sharpe")
+    assert "scoring" in str(exc.value)
+    assert "sharpe" in str(exc.value)
+
+
+def test_only_the_two_scored_members_take_a_scoring_knob():
+    """`Calibration`'s ECE is not a scoring rule and `PredictionBias`'s mean
+    signed error has no rule to choose, so neither takes the knob."""
+    for kind in ("brier", "skill"):
+        assert "scoring" in MONITOR_KINDS.resolve(kind)._PARAMS
+    for kind in ("calibration", "prediction_bias"):
+        assert "scoring" not in MONITOR_KINDS.resolve(kind)._PARAMS
+        with pytest.raises(ProductionError):
+            outcome_monitor(kind, scoring="brier")
 
 
 def test_brier_refuses_a_forecast_or_label_the_scoring_rule_does_not_accept():

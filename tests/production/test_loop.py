@@ -53,7 +53,10 @@ from dskit.production.health import InstanceLock
 from dskit.production.ids import ReleaseIdSource
 from dskit.production.ledger import Checkpoint, JsonlLedger, ServeRoot
 from dskit.production.leg import LegResult
+from dskit.production.document import ServeDocument
 from dskit.production.loop import ServeLoop, Tick
+from dskit.production.monitors import MONITOR_KINDS
+from dskit.production.outcomes import OutcomeSource
 from dskit.production.policy import ActionPolicy, TransitionPolicy
 from dskit.production.records import (
     AccountState,
@@ -64,6 +67,7 @@ from dskit.production.records import (
     FeedResult,
     Finding,
     InputWatermark,
+    Outcome,
     Proposal,
     Quote,
     QuoteSet,
@@ -663,6 +667,69 @@ class FakeLeg:
 
 
 FakeLeg.answers = {}
+
+
+class SettlingSource(OutcomeSource):
+    """A source that settles every decided leg it is handed, at value 1.
+
+    Real enough for the feed to be a real feed: the join polls it, stamps
+    what it answers, records it through the ledger, and the DROP rule then
+    makes a second poll of the same legs answer nothing new.
+    """
+
+    def poll(self, legs, at_ms, standing):
+        """Settle every leg the join hands over."""
+        return tuple(
+            Outcome(
+                leg_id=leg.leg_id,
+                outcome_kind="settled",
+                effective_at_ms=leg.decided_at_ms,
+                known_at_ms=leg.decided_at_ms,
+                value=Decimal("1"),
+                weight=Decimal("1"),
+                terminal=True,
+                source="settlement",
+                supersedes=None,
+            )
+            for leg in legs
+        )
+
+
+#: The settling source as a document names one — a `pkg.module:Class` path.
+SETTLING_SOURCE = "tests.production.test_loop:SettlingSource"
+
+
+def with_outcome_source(document):
+    """The same document, declaring one `outcomes.sources` entry."""
+    obj = document.to_obj()
+    obj["outcomes"] = {"sources": {"settle": {"uses": SETTLING_SOURCE}}}
+    return ServeDocument.from_obj(obj)
+
+
+def outcomes_command(release_hash, request_id="00000000-0000-0000-0000-00000000000a"):
+    """One queued `outcomes` request, in `ControlInbox`'s caller shape."""
+    return {
+        "request_id": request_id,
+        "purpose": "outcomes",
+        "payload": {},
+        "payload_digest": canonical_hash({}),
+        "release_hash": release_hash,
+        "proof": b"outcomes-records-observed-facts",
+    }
+
+
+def brier_monitor():
+    """A real `Brier` over a window wide enough to hold one tick's legs."""
+    return MONITOR_KINDS.resolve("brier")(
+        {
+            "field": "prediction",
+            "outcome_kinds": ["settled"],
+            "window": {"kind": "count", "n": len(UNIVERSE)},
+            "threshold": {"kind": "constant", "max": 1.0},
+            "min_n": 1,
+        },
+        name="score",
+    )
 
 
 # ==========================================================================
@@ -2371,6 +2438,79 @@ def test_the_checkpoint_names_the_release_and_the_last_tick(harness):
     assert checkpoint.last_completed_tick_at == NOW_MS
 
 
+def test_the_loop_feeds_its_monitors_the_bodies_its_control_verbs_recorded(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """§5.10.1's outcome family observes BOTH record kinds, and the `outcome`
+    bodies never pass through `_bodies`: the `outcomes` verb is applied by
+    this loop's own `CommandProcessor`, so the loop is already the process
+    that recorded them. It drains what the handlers report and feeds it,
+    which keeps monitors the LOOP's to drive (§5.10) and adds no second
+    reader of the ledger."""
+    monitor = brier_monitor()
+    made = make_harness(
+        tmp_path,
+        with_outcome_source(serve_document),
+        release_manifest,
+        clock,
+        calls,
+        monitors={"score": monitor},
+    )
+    try:
+        made.loop().run()
+        # the first tick parked the legs it decided and paired nothing
+        assert monitor.verdict().n_cur == 0
+        assert monitor.provisional() is True
+
+        clock.advance(60_000)
+        made.inbox.queue(outcomes_command(release_manifest.release_hash))
+        made.loop().run()
+
+        assert made.records("outcome")
+        assert monitor.verdict().n_cur == len(UNIVERSE)
+        assert monitor.provisional() is False
+        assert monitor.verdict().status == "ok"
+    finally:
+        made.close()
+
+
+def test_a_replayed_outcomes_command_feeds_the_monitors_nothing_a_second_time(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """Exactly-once, because an observation counted twice moves every
+    statistic. `OutcomeJoin.collect` drops anything standing unsuperseded,
+    so the operator's second attempt collects nothing and there is nothing
+    to feed — no watermark, and no second reader of the ledger."""
+    monitor = brier_monitor()
+    made = make_harness(
+        tmp_path,
+        with_outcome_source(serve_document),
+        release_manifest,
+        clock,
+        calls,
+        monitors={"score": monitor},
+    )
+    try:
+        made.loop().run()
+        clock.advance(60_000)
+        made.inbox.queue(outcomes_command(release_manifest.release_hash))
+        made.loop().run()
+        paired = monitor.verdict().n_cur
+        assert paired == len(UNIVERSE)
+
+        clock.advance(60_000)
+        made.inbox.queue(
+            outcomes_command(
+                release_manifest.release_hash, "00000000-0000-0000-0000-00000000000b"
+            )
+        )
+        made.loop().run()
+        assert len(made.records("outcome")) == len(UNIVERSE)
+        assert monitor.verdict().n_cur == paired
+    finally:
+        made.close()
+
+
 def test_the_snapshot_payload_carries_every_monitors_own_state(
     tmp_path, serve_document, release_manifest, clock, calls
 ):
@@ -2612,3 +2752,4 @@ def test_the_loop_writes_json_serialisable_bodies_only(harness):
     harness.loop().run()
     for envelope in harness.records():
         json.dumps(envelope["body"])
+

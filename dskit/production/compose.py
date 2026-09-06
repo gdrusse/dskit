@@ -1034,6 +1034,26 @@ class _Verb(ABC):
     def run(self, command, view):
         """Return ``(records, status, reason)`` for one consumed command."""
 
+    def observable(self):
+        """Return and CLEAR the §6 bodies this verb recorded for a monitor to observe.
+
+        A verb that appends through an OWNER — the join, the breaker, the
+        reconciler — never passes those bodies through the loop's own
+        ``_bodies``, so a monitor would never see them. The verb reports
+        them here and the LOOP feeds them (§5.10 keeps the driving there),
+        which adds no second reader of the ledger. It is a hook on every
+        verb rather than on one because ``adopt``'s ``cash_flow`` is the
+        next body a monitor could want; the base records none.
+
+        Returns
+        -------
+        tuple of dict
+            Empty for every verb whose records no monitor observes. It is
+            DRAINED rather than read: an observation counted twice moves
+            every statistic.
+        """
+        return ()
+
     @staticmethod
     def applied(records=(), reason=""):
         """Answer the processor for a verb that took effect."""
@@ -1304,9 +1324,26 @@ class _Reconcile(_Verb):
 
 
 class _Outcomes(_Verb):
-    """`outcomes`: collect what resolved and record it (§5.13.2)."""
+    """`outcomes`: collect what resolved and record it (§5.13.2).
+
+    It is the one verb whose records a monitor observes — §5.10.1's outcome
+    family needs a label — so it is also the one that reports them. The
+    report is EXACTLY-ONCE without a watermark, because
+    ``OutcomeJoin.collect`` already drops anything standing unsuperseded in
+    the fold: what it returns is new by construction, so a replayed command
+    collects nothing and therefore reports nothing.
+    """
 
     PURPOSE = "outcomes"
+
+    def __init__(self, wiring):
+        super().__init__(wiring)
+        self._observable = []
+
+    def observable(self):
+        """Return and clear the ``outcome`` bodies this verb has recorded since the last drain."""
+        drained, self._observable = tuple(self._observable), []
+        return drained
 
     def run(self, command, view):
         """Collect at the cut and record what is new; the join appends and barriers.
@@ -1331,7 +1368,9 @@ class _Outcomes(_Verb):
             return self.rejected(
                 f"outcomes asof_ms must be a non-negative epoch-ms int, got {at_ms!r}"
             )
-        recorded = self._w.join.record(self._w.join.collect(at_ms))
+        collected = self._w.join.collect(at_ms)
+        recorded = self._w.join.record(collected)
+        self._observable.extend(outcome.to_obj() for outcome in collected)
         return self.applied(reason=f"recorded {len(recorded)} outcome(s)")
 
 

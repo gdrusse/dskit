@@ -994,11 +994,12 @@ class ServeLoop:
         self._permit = None
         self._cycles = []
         self._after = None
+        self._handlers = handlers_for(document, self.bundles, release=release)
         self._processor = CommandProcessor(
             recording.inbox,
             recording.ledger,
             recording.state,
-            handlers_for(document, self.bundles),
+            self._handlers,
             schedule.clock,
         )
         self._metrics = _LoopMetrics(observability.metrics)
@@ -1351,16 +1352,36 @@ class ServeLoop:
         self._metrics.tick(result)
 
     def _observe(self, result, decision_body, tick_body):
-        """Feed both appended bodies to every monitor and record what changed (§5.10)."""
+        """Feed every appended body to every monitor and record what changed (§5.10)."""
+        bodies = (*self._recorded_bodies(), decision_body, tick_body)
         for name, monitor in (self.decision.monitors or {}).items():
-            monitor.observe(decision_body)
-            monitor.observe(tick_body)
+            for body in bodies:
+                monitor.observe(body)
             verdict = monitor.verdict()
             body = {"monitor": name, **verdict.to_obj()}
             self._append("monitor", f"{name}:{result.tick_id}", body)
             self._metrics.monitor(name, verdict.status)
             if monitor.should_trip():
                 self.safety.breaker.trip(_MONITOR_TRIP, f"monitors.{name}")
+
+    def _recorded_bodies(self):
+        """Return the §6 bodies this tick's consumed commands recorded, oldest first.
+
+        §5.10.1's outcome family observes ``decision`` AND ``outcome``
+        bodies, and an ``outcome`` never passes through ``_bodies``: the
+        ``outcomes`` verb is applied by this loop's own
+        ``CommandProcessor``, so the loop is already the process that
+        recorded it. Draining the handlers here keeps monitors the loop's
+        to drive (§5.10) and adds no second reader of the ledger —
+        ``LedgerHistory`` stays the one. It is exactly-once without a
+        watermark: ``OutcomeJoin.collect`` drops anything already standing
+        unsuperseded in the fold, so a replayed ``outcomes`` command
+        collects, records and reports nothing a second time. The bodies
+        come FIRST because they were recorded before this tick decided.
+        """
+        return tuple(
+            body for handler in self._handlers.values() for body in handler.observable()
+        )
 
     def _checkpoint(self, result):
         """Snapshot the fold with every monitor's own state, then write the cache LAST.

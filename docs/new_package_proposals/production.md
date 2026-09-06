@@ -1932,48 +1932,118 @@ declares and cannot populate. Every one of them is built through the existing
 - `OutcomeMonitor(Monitor)` is the family §5.10 declares and phase 1 cannot
   populate, because it needs a label. It observes BOTH record kinds through the
   one `observe(record)` hook: a `decision` body parks each leg's
-  `(leg_id, forecast, baseline, weight)` in a bounded pending map
-  (`max_pending`, default `DEFAULT_MAX_PENDING`, oldest evicted — and an
-  eviction is counted as an unlabelled leg, never dropped silently); an
-  `outcome` body whose `outcome_kind` is one of the declared `outcome_kinds`
-  and whose `leg_id` is pending completes the pair into ONE observation, and an
-  `outcome` carrying `supersedes` REPLACES the observation it names instead of
-  adding a second. Params add `field` (the forecast field, e.g. `prediction`),
-  `outcome_kinds`, `label_coverage` (default `DEFAULT_LABEL_COVERAGE`) and
-  `max_pending`. `label_coverage()` is `paired / (paired + pending)` over the
-  current window, and `provisional()` returns `label_coverage() <
+  `(leg_id, forecast, baseline)` in a bounded pending map (`max_pending`,
+  default `DEFAULT_MAX_PENDING`, oldest evicted — and an eviction is never
+  dropped silently); an `outcome` body whose `outcome_kind` is one of the
+  declared `outcome_kinds` and whose `leg_id` is pending completes the pair
+  into ONE observation, and an `outcome` carrying `supersedes` REPLACES the
+  observation standing for that `leg_id` instead of adding a second. Params
+  add `field` (the forecast field, e.g. `prediction`), `outcome_kinds`,
+  `label_coverage` (default `DEFAULT_LABEL_COVERAGE`, 0.9 — `provisional` is
+  the CAUTIOUS state, so the default errs towards saying the labels are still
+  arriving) and `max_pending` (default `DEFAULT_MAX_PENDING`, 500 — the map
+  rides in every §6 `snapshot`, the same budget that caps
+  `DEFAULT_ADWIN_MAX_WINDOW`, and 500 spans a multi-day settlement lag at a
+  hundred legs a day). `label_coverage()` is `paired / (paired + pending)` over
+  the current window, and `provisional()` returns `label_coverage() <
   params["label_coverage"]` — the override of the base hook §5.10 reserved for
   exactly this, so an outcome verdict says out loud that its labels are still
-  arriving. Members:
+  arriving. Six readings the paragraph above does not settle, each of which
+  bit an implementer:
+  - **`supersedes` names a RECORD ID and a monitor never sees one.** §6 nests
+    a record's content under `body` and the loop hands a monitor bodies, never
+    envelopes, so "replaces the observation it names" can only mean "replaces
+    the observation standing for this outcome's `leg_id`". A correction revises
+    the LABEL; the forecast and benchmark came from the decision and cannot be
+    revised by something that happened after it.
+  - **An eviction enters the WINDOW as an unlabelled observation**, not a
+    counter: coverage is "over the current window", so an eviction is counted
+    unlabelled while it is in one and ages out with it. A count that only grew
+    would leave one transient burst provisional for the life of the process,
+    and §5.13.4's outcome evidence would then be a permanent NO-GO earned by a
+    minute of late labels. Nothing may supersede a mark — its forecast went
+    with the pending entry.
+  - **No `weight` is parked.** An earlier draft of this bullet named one, but
+    §6's `decision.legs[]` carries no `weight` and no statistic below is
+    weighted, so parking it would be state in every `snapshot` that no verdict
+    reads. A weighted statistic would reintroduce it; the omission is
+    deliberate.
+  - **A fresh monitor's coverage is 1.0**, not 0: with nothing paired and
+    nothing pending no leg is waiting, so nothing is provisional, and such a
+    verdict is `insufficient` on its own account.
+  - **The label arrives as a decimal STRING.** `Outcome.value` is a `Decimal`
+    and the §6 body is `to_obj()`, so the family widens a decimal string where
+    the rest of `monitors.py` takes only a number.
+  - **The serve loop feeds it.** The `outcomes` verb is applied by the loop's
+    own `CommandProcessor` (§5.8), so the loop is already the process that
+    recorded the labels — but they never pass through the tick's own bodies.
+    Every control verb therefore reports what it recorded through one hook on
+    the handler base, and the LOOP drains it and feeds the monitors alongside
+    the `decision` and `tick` bodies. Monitors stay the loop's to drive (§5.10)
+    and `LedgerHistory` stays the one reader of the chain. The feed is
+    EXACTLY-ONCE without a watermark, because `OutcomeJoin.collect` already
+    drops anything standing unsuperseded in the fold: what it returns is new by
+    construction, so a replayed `outcomes` command collects, records and
+    reports nothing a second time. The report is DRAINED rather than read — an
+    observation counted twice moves every statistic — and the bodies are fed
+    before the tick's own, being older.
+
+  Members:
   - `Calibration` — `statistic` is the expected calibration error over `bins`
-    equal-width bins of the forecast.
-  - `Brier` — `statistic` is the mean of `dskit.pipeline.metrics.brier`,
-    imported rather than restated. The Murphy decomposition is deliberately NOT
-    here: a `Verdict` carries one statistic, and the three terms only sum on
-    the exact stratification `report.py` computes (§5.13.3).
-  - `Skill` — `statistic` is the Brier skill score against the leg's stored
-    `baseline`, `1 - brier(forecast)/brier(baseline)`, so an ordinary
-    `constant` threshold at `min: 0` says "no worse than the benchmark".
-    Beside it, `dm_test() -> dict` returns
+    equal-width bins of the forecast. Equal-width, not the reference quantiles
+    the distribution family cuts on: that fixed partition is what ECE means,
+    and §5.13.3 keeps the same split.
+  - `Brier` — `statistic` is the mean of a registered `dskit.pipeline.metrics`
+    rule, imported rather than restated and resolved at reduce time. The rule
+    is `scoring`, default `DEFAULT_SCORING` (`brier`) — the same choice
+    §5.13.3 gives the report, for the same reason: `brier` refuses a forecast
+    outside `[0, 1]` and a label outside `{0, 1}`, so an unbounded-value series
+    declares `squared_error` and a child's own registered rule works with no
+    new seam. One param, not a seam. The Murphy decomposition is deliberately
+    NOT here: a `Verdict` carries one statistic, and the three terms only sum
+    on the exact stratification `report.py` computes (§5.13.3).
+  - `Skill` — `statistic` is the skill score against the leg's stored
+    `baseline`, `1 - score(forecast)/score(baseline)` under the same `scoring`
+    knob, so an ordinary `constant` threshold at `min: 0` says "no worse than
+    the benchmark". A window whose benchmark scored a perfect 0 has no skill to
+    measure: the statistic is `None` and the verdict `insufficient`, the answer
+    `DDM` gives a stream with no sigma, rather than a division by zero.
+    Beside it, `dm_test()` returns
     `dskit.pipeline.stats.diebold_mariano_test` over
     `dskit.pipeline.stats.dm_loss_series` for the same window, which
     `report.py` and `test_monitors.py` read. It is a method rather than the
     statistic because `Threshold.breached(statistic, n_ref, n_cur)` sees one
     number and cannot see a series, and because re-testing significance on
     every arriving observation is a multiple-comparisons trap the report avoids
-    by testing once per period.
+    by testing once per period. Three readings: it answers a mapping OR `None`,
+    since `diebold_mariano_test` refuses a series shorter than two pairs and
+    §5.13.3 states the same rule for the report; it runs at
+    `dm_lags(n, h_steps)` with a ONE-step horizon, which §5.10.1 leaves unsaid
+    and §5.13.3's sibling rule supplies; and `dm_loss_series(y, yhat, mu)`
+    takes ONE scalar benchmark while each leg stores its own, so the TEST runs
+    against the window's mean benchmark while the `statistic` uses each leg's.
+    §5.13.3 carries that same defect in `dm_loss_series(y, yhat, mu=baseline)`
+    — whoever builds the report should see it coming.
   - `PredictionBias` — `statistic` is the mean signed error
     `mean(forecast - label)`, bounded by a two-sided `constant` `{min, max}`,
     since a bias monitor that took an absolute value could not say which way
-    the model leans.
+    the model leans. It is the one member with no probability frame, and so the
+    one that reads an unbounded value with no `scoring` knob to choose.
 - `ParityMonitor(Monitor)` is the family with no phase-1 member because it
   observes no data statistic. It takes `Divergence.to_obj()` bodies (§5.13.3),
-  filters to a declared `classes ⊆ DIVERGENCE_CLASSES`, and reports the
-  divergence COUNT in its window. **It is the one monitor the serve loop never
-  calls**: replay runs in a separate process against a scratch root and appends
-  nothing to the series, so `report.py` drives it and prints its verdict in the
-  parity section. Saying so here is the point — a monitor wired into
-  `Decision.monitors` by mistake would silently never observe anything.
+  declares a `classes ⊆ DIVERGENCE_CLASSES`, and reports the COUNT of those
+  classes in its window. **It is the one monitor the serve loop never calls**:
+  replay runs in a separate process against a scratch root and appends nothing
+  to the series, so `report.py` drives it and prints its verdict in the parity
+  section. Saying so here is the point — a monitor wired into a document's
+  `monitors` by mistake would silently never observe anything. Two readings:
+  EVERY divergence is an observation whatever its class, and the statistic
+  counts the declared ones, because filtering before the window would make the
+  statistic identically the window size and `min_n` would then mean "answer
+  nothing until thirty divergences have arrived"; and a CLEAN replay produces
+  no bodies at all, so it reads `insufficient` rather than `ok` — the count is
+  a breach detector, a parity document writes `min_n: 1`, and `report.py`
+  would have to feed every COMPARED record for a clean replay to read `ok`.
 
 ### 5.10.2 `libs/parquet.py` — `RunReference` (phase 2)
 
@@ -2767,7 +2837,10 @@ makes an attribution number auditable rather than merely current.
   path: queued to the durable inbox when a serve process holds the lock, or
   synchronous under the lock when none does, with purpose `outcomes` and no
   proof, since it records observed facts rather than an operator's claim. It
-  journals once, like every other mutating verb (D22).
+  journals once, like every other mutating verb (D22). It is also the one verb
+  whose records a MONITOR observes, so it reports what it recorded and the loop
+  feeds it — §5.10.1's last outcome-family reading has the mechanism and why it
+  is exactly-once.
 
 ### 5.13.3 `report.py` (phase 2)
 

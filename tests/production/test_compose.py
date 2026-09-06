@@ -80,11 +80,11 @@ from dskit.production.ids import ReleaseIdSource
 from dskit.production.ledger import Checkpoint, JsonlLedger, ServeRoot
 from dskit.production.leg import LiveAuthority, ReductionAuthority, SimulatedAuthority
 from dskit.production.metrics import Metrics
-from dskit.production.outcomes import OutcomeJoin, SettlementOutcomes
+from dskit.production.outcomes import OutcomeJoin, OutcomeSource, SettlementOutcomes
 from dskit.production.policy import ActionPolicy, TransitionPolicy
 from dskit.production.readiness import Readiness
 from dskit.production.reconcile import Reconciler
-from dskit.production.records import ExecutionScope
+from dskit.production.records import ExecutionScope, Outcome
 from dskit.production.sessions import AlwaysOpen
 from dskit.production.state import SeriesState
 from dskit.production.verifier import SubmissionVerifier
@@ -144,6 +144,35 @@ class RecordingSource(SettlementOutcomes):
 #: How the recording source is named by a document — a `pkg.module:Class`
 #: reference, which is the whole point of the registry doorway (§4.3).
 RECORDING_SOURCE = "tests.production.test_compose:RecordingSource"
+
+
+class AnsweringSource(OutcomeSource):
+    """A source that answers one settlement, so the join really records one.
+
+    The join's own DROP rule then does the rest: an answer that repeats what
+    already stands is dropped, so the second consumption of the same command
+    collects nothing and the handler reports nothing.
+    """
+
+    def poll(self, legs, at_ms, standing):
+        """Answer the same settlement every time; the join decides what is new."""
+        return (
+            Outcome(
+                leg_id="leg-1",
+                outcome_kind="settled",
+                effective_at_ms=NOW_MS - 60_000,
+                known_at_ms=NOW_MS - 60_000,
+                value=Decimal("1"),
+                weight=Decimal("1"),
+                terminal=True,
+                source="settlement",
+                supersedes=None,
+            ),
+        )
+
+
+#: The answering source, named the way a child names its own.
+ANSWERING_SOURCE = "tests.production.test_compose:AnsweringSource"
 
 
 class ChildLease(Lease):
@@ -912,6 +941,74 @@ def test_the_outcomes_handler_records_through_the_join(
     records, status, reason = handlers["outcomes"](command("outcomes"), bundles[5].state.snapshot())
     assert (records, status) == ((), "applied")
     assert "outcome" in reason
+
+
+def test_the_outcomes_handler_reports_the_bodies_it_recorded(
+    shadow_document, composer, release_manifest
+):
+    """§5.10.1's outcome family needs the `outcome` bodies this verb appends,
+    and they never pass through the loop's own `_bodies`. The handler reports
+    what it recorded and the LOOP feeds it, so monitors stay the loop's to
+    drive (§5.10) and no second reader of the ledger is added."""
+    document = with_outcome_sources(shadow_document, {"settle": {"uses": ANSWERING_SOURCE}})
+    bundles = composer.build(document)
+    handlers = handlers_for(document, bundles, release=release_manifest)
+    assert handlers["outcomes"].observable() == ()
+
+    _records, status, reason = handlers["outcomes"](
+        command("outcomes"), bundles[5].state.snapshot()
+    )
+    assert status == "applied"
+    assert "recorded 1 outcome(s)" == reason
+    (body,) = handlers["outcomes"].observable()
+    assert body["leg_id"] == "leg-1"
+    assert body["outcome_kind"] == "settled"
+    assert body == next(iter(bundles[5].ledger.scan(kind="outcome")))["body"]
+
+
+def test_reading_the_reported_bodies_clears_them_so_none_is_observed_twice(
+    shadow_document, composer, release_manifest
+):
+    """An observation counted twice moves every statistic, so the report is
+    drained, not read."""
+    document = with_outcome_sources(shadow_document, {"settle": {"uses": ANSWERING_SOURCE}})
+    bundles = composer.build(document)
+    handlers = handlers_for(document, bundles, release=release_manifest)
+    handlers["outcomes"](command("outcomes"), bundles[5].state.snapshot())
+    assert len(handlers["outcomes"].observable()) == 1
+    assert handlers["outcomes"].observable() == ()
+
+
+def test_a_replayed_outcomes_command_reports_nothing_a_second_time(
+    shadow_document, composer, release_manifest
+):
+    """Exactly-once WITHOUT a watermark: `OutcomeJoin.collect` already drops
+    anything standing unsuperseded in the fold, so what it returns is new by
+    construction and a replayed command collects — and reports — nothing.
+    The ledger dedups the append; this is what stops the re-FEED."""
+    document = with_outcome_sources(shadow_document, {"settle": {"uses": ANSWERING_SOURCE}})
+    bundles = composer.build(document)
+    handlers = handlers_for(document, bundles, release=release_manifest)
+    replayed = command("outcomes")
+
+    handlers["outcomes"](replayed, bundles[5].state.snapshot())
+    assert len(handlers["outcomes"].observable()) == 1
+
+    _records, status, reason = handlers["outcomes"](replayed, bundles[5].state.snapshot())
+    assert status == "applied"
+    assert "recorded 0 outcome(s)" == reason
+    assert handlers["outcomes"].observable() == ()
+
+
+def test_a_verb_whose_records_no_monitor_observes_reports_no_body(
+    shadow_document, shadow_bundles
+):
+    """The report is a hook on every verb because `adopt`'s `cash_flow` is
+    the next body a monitor could want. Every other verb answers nothing."""
+    handlers = handlers_for(shadow_document, shadow_bundles)
+    assert {purpose: handler.observable() for purpose, handler in handlers.items()} == {
+        purpose: () for purpose in handlers
+    }
 
 
 def test_the_outcomes_handler_reads_the_cut_from_the_consumed_command(
