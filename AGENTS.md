@@ -153,6 +153,7 @@ dskit/
     ├── onboarding/            # onboarding: purity, model pin, conformance, CLI e2e
     ├── production/            # production: purity, oop + producer closure, every
     │                          #   module, and a shadow/paper/live_limited e2e
+    ├── production_libs/       # tier-2 packs (sqlite ledger, parquet reference)
     ├── journal/               # action ledger: purity, CSV, locate, CLI e2e
     └── children/              # skeleton pin + per-child subprocess runs
 ```
@@ -332,7 +333,8 @@ python -m dskit.journal    init|record|research|promote|render|exec
 python -m dskit.production validate|plan|serve|ready|status|verify|reconcile|adopt
 python -m dskit.production arm-request|approve-arm|disarm|halt|reduce|resume
 python -m dskit.production flatten-request|approve-flatten|execute-flatten
-python -m dskit.production outcomes                # phase 2: record what happened to each leg
+python -m dskit.production outcomes|report|replay     # score the decisions; read-only, no writer lock
+python -m dskit.production ack|silence|approve-hold   # authenticated, each grants only what it names
 ```
 
 Exit codes: **0** ran · **1** error · **3** halted (a NO-GO gate, a `validate`

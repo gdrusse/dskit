@@ -1046,10 +1046,14 @@ class SklearnSelect(FeatureSelector):
         # -> out["features"] == ["ret_lag_0", "spread"]
     """
 
-    #: ADR-0091: no pack class serves in phase 1. The base is audited, so
-    #: this says NO explicitly rather than inheriting a licence granted to
-    #: someone else's load path.
-    serving_load_audited = False
+    #: ADR-0091 phase 2b: audited and licensed, and stated HERE rather
+    #: than inherited — a subclass that ever overrode the load path would
+    #: keep the base's licence silently. This class overrides only fit-path
+    #: members, so its restore is ``FittedTransform.run_load`` ->
+    #: ``_sidecar`` -> ``Node.read_artifact``: the fitted state is a JSON
+    #: column list, never a pickled model, so no deserialiser takes a path
+    #: and the library is named on the FIT path alone.
+    serving_load_audited = True
 
     _PARAMS = FeatureSelector._PARAMS + (
         "estimator",

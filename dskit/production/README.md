@@ -29,6 +29,24 @@ python -m dskit.production status   examples/production/serve-shadow.json
 python -m dskit.production verify   examples/production/serve-shadow.json
 ```
 
+Then score what it decided, and prove it would decide the same again:
+
+```bash
+python -m dskit.production outcomes examples/production/serve-scored.json --asof 2026-01-02T00:00:00Z
+python -m dskit.production report   examples/production/serve-scored.json --format markdown
+python -m dskit.production replay   ./serve/<series-id> --strict
+python -m dskit.production ack      <doc> --fingerprint <fp> --proof ack.json
+python -m dskit.production silence  <doc> --matcher severity=warning --until 2026-01-02T00:00:00Z --proof s.json
+python -m dskit.production approve-hold <doc> --guard day_loss --scope aggregate --proof h.json
+```
+
+`report` and `replay` are read-only: they open the chain through
+`ChainLedger.reading(...)`, so they take no writer lock and are safe to run
+against a series being served. The other four queue through the durable control
+inbox and the loop applies them — `outcomes` unauthenticated (it only asks the
+declared sources what they found), `ack`, `silence` and `approve-hold`
+authenticated, each granting exactly the one thing it names.
+
 `plan` writes the immutable release — run, artifacts, resolved classes and code,
 adapter, feed spec, source config, approval and lease fingerprints, the
 readiness checklist digest and the complete runtime fingerprint — and
@@ -83,13 +101,75 @@ a document knob — the code holds only named defaults.
 }
 ```
 
-Eighteen sections are **graded** — they are the document's identity. Four are
+Twenty sections are **graded** — they are the document's identity. Four are
 excluded (`alert_endpoints`, `heartbeat`, `placement`, `env`), because where a
 notification goes and where files land say nothing about what the process
 decides. `validate` refuses a top-level key in neither list, so the partition
 cannot drift. Note that alerting is split deliberately: the *routes and sink
 kinds* are graded (emptying them silences paging as effectively as deleting
 them), only the endpoint values are excluded.
+
+### Scoring, reporting and signing — the optional sections
+
+Every key below is **optional**: absent, it is absent from the hash material, so
+a document written before them keeps its identity. Present, it changes a number
+someone acts on — or what leaves the process — so it is graded.
+`examples/production/serve-scored.json` declares all of them at once.
+
+**`outcomes.sources`** — an ordered map of your names to `OUTCOME_SOURCE_KINDS`
+selectors; without it `outcomes` has nothing to ask and `report`'s calibration
+is empty. `settlement` reads the executor's own settlements (`lookback_ms`, how
+far back to ask); `label` reads a derived stream back through the onboarding
+observations seam (`source`, `stream`, `key_fields`, `time_field`,
+`value_field`, required; `weight_field`, `outcome_kind` — `settled` or `marked`
+— and `lookback_ms`). Every declared source is polled at each cut; an answer
+that repeats what already stands is dropped, and one that disagrees is appended
+as a correction linked to what it replaces — never an overwrite. Declare two
+when the venue settles late and a mark is what you can score today.
+
+**`reporting`** — four knobs on `report`, each defaulted by one named constant:
+`scoring` (a registered `dskit.pipeline.metrics` name, default `brier`) picks
+the calibration rule, `bins` (>= 2, default 10) its resolution, `markouts_ms`
+(a list, default none) the horizons attribution marks each fill out to, and
+`markout_tolerance_ms` (default 60000) how far from a horizon a quote may be
+and still count. Widen the tolerance for a thin book; empty `markouts_ms` when
+you have no post-trade quotes to mark against.
+
+**`durability.ledger`** — a `LEDGER_KINDS` selector beside `fsync`. Absent, the
+chain stays `jsonl` — a segment per rotation, human-greppable. `sqlite` puts it
+in one file with WAL and `synchronous=FULL` pinned and append-only enforced by
+triggers; it has no torn tail (a commit is atomic) but cannot rotate, so choose
+it when the host is what you distrust and `jsonl` when you want the tape
+readable without a client. `fsync` is unchanged by either and still says how
+often the writer commits.
+
+**`execution.signer`** — a `SIGNER_KINDS` selector; `hmac` covers the signature
+most venues ask for. `key_env` names the *environment variable*, never the
+value; `header` and `timestamp_header` are what the venue expects, `algorithm`
+and `prefix` are its dialect, and `max_skew_ms` with `probe_every_ms` (required)
+bound how stale the clock estimate may be before a `sign` refuses. Core never
+calls it — a child's `LiveExecutor` does, because core ships no venue. Point
+`time_url` at the venue's clock endpoint and a new venue is a new config.
+
+**`alerting.inhibit` / `escalation` / `max_silence_s` / `max_ack_s`** —
+`inhibit` is a list of `{source, target, equal}` label matchers: while a
+`source` alert fires, a matching `target` is not *paged* (the `alert` record is
+still appended, so evidence survives). Use it when one failure fans out into a
+dozen symptoms. `escalation` is a `primary` / `secondary` / `final` ladder of
+`{after_s, sinks}`: an alert nobody has acked or silenced climbs one rung per
+pass, in order and never skipping. `max_silence_s` and
+`max_ack_s` (default 86400 each, bounded 60 … 604800) cap how long a `silence`
+or an `ack` may run unreviewed; a bound always applies, because an unbounded
+silence is how a page is lost forever.
+
+**`readiness`'s four new knobs** — the thresholds behind the evidence names a
+series can prove about itself. `outcome_window` (a duration) and
+`min_outcome_coverage` (0 < x <= 1) feed `outcome_coverage`; `max_outcome_age`
+feeds `outcome_freshness`; `calibration_monitor` names the monitor
+`calibration_current` reads. Each is required only when a checklist item cites
+the evidence that reads it — `ready` refuses by name when one is missing, rather
+than defaulting a threshold the code has no business choosing. Citing them is
+how a live checklist requires the series to show its decisions have been scored.
 
 ## Extending it — the seams a child implements
 
@@ -103,6 +183,9 @@ The toolkit never learns a venue. A child ships tier-3 code and JSON:
 | `Lease` | a fenced, cross-host lease with a monotonic token | your coordination service |
 | `Proposer` | `candidates`/`proposals` for a bespoke head shape | your model's output |
 | `Measure` | an exposure or risk formula | your risk definition |
+| `OutcomeSource` | `poll(legs, at_ms, standing)` for a world only you can read | where your truth settles |
+| `Signer` (subclass `HmacSigner`) | `probe_request()` — the venue's clock endpoint | the venue's own dialect |
+| `Ledger` (subclass `ChainLedger`) | `_open`, `_store`, `_sync`, `_walk`, `_shutdown`, `scan` | your durable store |
 
 Every one is resolved by `uses` — a registered kind name or a
 `pkg.module:Class` reference — so a child registers nothing and references its
@@ -136,12 +219,26 @@ barrier, so the refusal survives a restart; it ends early only through the
 authenticated `approve-hold`, which grants nothing beyond ending it.
 
 **Recording** — the JSONL hash-chained ledger with barriers, segments and
-torn-tail recovery; `SeriesState`, the sole fold; checkpoints; the durable
-control inbox; reconciliation and authenticated adoption.
+torn-tail recovery, or the same chain in one `sqlite` file; `SeriesState`, the
+sole fold; checkpoints; the durable control inbox; reconciliation and
+authenticated adoption.
 
-**Observation** — operational, stream, distribution, outcome and parity
-monitors; alert sinks and a router; a health state machine with probes and an
-external dead-man heartbeat; a metrics registry with closed label sets.
+**Observation** — eighteen monitors: operational (`staleness`,
+`decision_rate`, `coverage`, `latency`, `refusals`), stream
+(`page_hinkley`, `tracking_signal`, `ddm`, `adwin`), distribution (`psi`,
+`ks`, `jensen_shannon`, `linf`), outcome (`calibration`, `brier`, `skill`,
+`prediction_bias`) and `parity`, over reference populations `leading` /
+`rolling` / `snapshot` / `run`; alert sinks, a router with inhibition,
+silences, acks and an escalation ladder; a health state machine with probes
+and an external dead-man heartbeat (file, url or systemd); a metrics registry
+with closed label sets.
+
+**Scoring itself** — `outcomes` joins what happened onto each leg through the
+declared sources and appends it as a supersede chain; `report` prints
+attribution, calibration and the value curve at an explicit cut; `replay`
+re-runs a recorded series through recorded objects and diffs every field,
+classifying each difference or leaving it `nondeterminism`. All three are
+read-only and take no writer lock.
 
 ## Directory
 

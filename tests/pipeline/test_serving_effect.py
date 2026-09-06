@@ -34,7 +34,7 @@ import sys
 import pytest
 
 import dskit.pipeline  # noqa: F401 — importing REGISTERS the toolkit kinds
-from dskit.pipeline import fitted, synthetic_nodes
+from dskit.pipeline import fitted, kinds_stats, synthetic_nodes
 from dskit.pipeline import libs
 from dskit.pipeline import node as node_module
 from dskit.pipeline.base import import_ref
@@ -56,11 +56,18 @@ OBS_PARAMS = {
 }
 FITTED_PARAMS = {"fit_split": "train", "features": ["ret_lag_0"]}
 
+#: The two pack members phase 2b audited (plan §9.1). Resolved by ref
+#: rather than imported by name for the reason every pack test does it:
+#: the module must import with no library installed, and ``import_ref``
+#: is the doorway that proves it.
+SKLEARN_SELECT = import_ref("dskit.pipeline.libs.sklearn:SklearnSelect")
+TORCH_IMPORTANCE = import_ref("dskit.pipeline.libs.torch:TorchImportance")
+
 
 # ---------------------------------------------------------------------------
-# The phase-1 audit table (SEAM-DESIGN §5) — kind name -> the effect the
-# class answers with NO run evidence, and the effect it answers under a
-# manifest-pinned load.
+# The audit table (SEAM-DESIGN §5, widened by plan §9.1's phase 2b) — kind
+# name -> the effect the class answers with NO run evidence, and the effect
+# it answers under a manifest-pinned load.
 # ---------------------------------------------------------------------------
 
 KIND_EFFECTS = {
@@ -78,7 +85,7 @@ KIND_EFFECTS = {
     "records-write": ("forbidden", "forbidden"),
     "run-report": ("forbidden", "forbidden"),
     "standardize": ("forbidden", "release_read"),
-    "stat_test": ("forbidden", "forbidden"),
+    "stat_test": ("pure", "pure"),
     "table-file": ("forbidden", "forbidden"),
     "table-write": ("forbidden", "forbidden"),
     "top-trials": ("forbidden", "forbidden"),
@@ -86,11 +93,13 @@ KIND_EFFECTS = {
 }
 
 #: The audited classes that no toolkit registry claims a name for:
-#: ``observations`` and ``FeatureSelector`` are wired by import path, and
-#: the synthetic set registers only into private/demo registries.
+#: ``observations`` and the ``FeatureSelector`` family are wired by import
+#: path, and the synthetic set registers only into private/demo registries.
 CLASS_EFFECTS = {
     ObservationRows: ("entry_read", "entry_read"),
     fitted.FeatureSelector: ("forbidden", "release_read"),
+    SKLEARN_SELECT: ("forbidden", "release_read"),
+    TORCH_IMPORTANCE: ("forbidden", "release_read"),
     synthetic_nodes.SynthBank: ("pure", "pure"),
     synthetic_nodes.SynthCapital: ("forbidden", "forbidden"),
     synthetic_nodes.SynthClip: ("pure", "pure"),
@@ -105,28 +114,39 @@ CLASS_EFFECTS = {
     synthetic_nodes.SynthTrain: ("forbidden", "release_read"),
 }
 
-#: The classes SEAM-DESIGN §5 audits as ``release_read``: their artifact
-#: reads go through the base's services, never a bare ``open``. These are
-#: exactly the classes that may carry ``serving_load_audited = True``.
+#: The classes audited as ``release_read``: their artifact reads go
+#: through the base's services, never a bare ``open``. These are exactly
+#: the classes that may carry ``serving_load_audited = True``. The last
+#: two are phase 2b's: each overrides only FIT-path members, so its
+#: restore IS ``FittedTransform.run_load`` — a JSON column list read
+#: through ``read_artifact``, with no deserialiser taking a path.
 RELEASE_READ_CLASSES = (
     fitted.Standardize,
     fitted.FeatureSelector,
     synthetic_nodes.SynthTrain,
+    SKLEARN_SELECT,
+    TORCH_IMPORTANCE,
 )
 
-#: Every trainable a library pack ships, by class ref. NONE of them is
-#: audited, so all of them answer ``forbidden`` even under a pinned load
-#: (R16). The two ``FeatureSelector`` subclasses are the ones that matter
-#: most: they inherit from an AUDITED class, so an inherited flag would
-#: hand a pack's load path a serving licence nobody reviewed.
+#: The classes phase 2b audited as ``pure``: :meth:`run` never touches
+#: ``ctx`` and names no I/O primitive, so the answer is a function of the
+#: wired inputs and the declared params alone.
+PURE_AUDITED_CLASSES = (kinds_stats.StatTest,)
+
+#: The pack trainables that are still UNAUDITED, by class ref: each
+#: answers ``forbidden`` even under a pinned load (R16). Every one of them
+#: restores through a library deserialiser that takes a PATH —
+#: ``joblib.load(artifact)`` in ``sklearn._load_artifact``,
+#: ``torch.load(state_path, ...)`` in ``_TorchModel._load_artifact``,
+#: each reached past a bare ``open()`` of the sidecar — which is exactly
+#: what plan §9.1's step (1) refuses, so widening them needs a load path
+#: that takes BYTES, not one more line here.
 LIBS_TRAINABLE_REFS = (
     "dskit.pipeline.libs.sklearn:SklearnFit",
     "dskit.pipeline.libs.sklearn:SklearnPredict",
-    "dskit.pipeline.libs.sklearn:SklearnSelect",
     "dskit.pipeline.libs.torch:TorchTrain",
     "dskit.pipeline.libs.torch:TorchPredict",
     "dskit.pipeline.libs.torch:DeclaredTrain",
-    "dskit.pipeline.libs.torch:TorchImportance",
 )
 
 #: Names that would mean a class reached the filesystem or the network on
@@ -413,7 +433,7 @@ class TestAudit:
         assert cls.serving_effect(params, LOAD_EVIDENCE) == pinned
 
     @pytest.mark.parametrize("ref", LIBS_TRAINABLE_REFS)
-    def test_no_library_packs_trainable_may_serve(self, ref):
+    def test_an_unaudited_library_packs_trainable_may_not_serve(self, ref):
         # The packs import stdlib-only at module level (test_purity.py),
         # so this needs no library installed — and their load paths are
         # unaudited, so a pinned load is still `forbidden` (R16).
@@ -423,7 +443,7 @@ class TestAudit:
         assert cls.serving_effect(params_for(cls), {}) == "forbidden"
         assert cls.serving_effect(params_for(cls), LOAD_EVIDENCE) == "forbidden"
 
-    def test_only_the_audited_three_carry_the_flag_anywhere_in_the_toolkit(self):
+    def test_only_the_audited_classes_carry_the_flag_anywhere_in_the_toolkit(self):
         # The flag is INHERITED, so a subclass of an audited class would
         # be licensed silently. Walking every trainable the toolkit and
         # its packs define is what makes widening a deliberate line.
@@ -507,23 +527,43 @@ def owner_of(cls, name):
     return None
 
 
-def load_sources(cls):
-    """``run_load`` plus the class's OWN helpers it calls, as source text.
+def hook_sources(cls, hook):
+    """``hook`` plus every one of the class's OWN methods reachable from it.
 
-    ``Node``'s own artifact services are excluded on purpose: they ARE
-    the sanctioned doorway, and reading through them is what the audit
-    asks for.
+    Transitive, to a fixpoint: a helper that calls a second helper puts
+    that second one in the audit too, so a bare ``open`` cannot hide one
+    call deeper than the walk goes. ``Node``'s own artifact services are
+    excluded on purpose: they ARE the sanctioned doorway, and reading
+    through them is what the audit asks for.
     """
-    sources = {"run_load": textwrap.dedent(inspect.getsource(cls.run_load))}
-    for name in sorted(self_attrs(sources["run_load"])):
-        owner = owner_of(cls, name)
-        if owner is None or owner is Node:
-            continue
-        member = vars(owner)[name]
-        if not inspect.isfunction(member):
-            continue
-        sources[name] = textwrap.dedent(inspect.getsource(member))
+    sources = {hook: textwrap.dedent(inspect.getsource(getattr(cls, hook)))}
+    pending = [sources[hook]]
+    while pending:
+        for name in sorted(self_attrs(pending.pop())):
+            if name in sources:
+                continue
+            owner = owner_of(cls, name)
+            if owner is None or owner is Node:
+                continue
+            # Unwrap staticmethod/classmethod: `vars()` hands back the
+            # DESCRIPTOR, which `isfunction` rejects — and a helper
+            # spelled `@staticmethod` would otherwise leave the walk.
+            member = getattr(vars(owner)[name], "__func__", vars(owner)[name])
+            if not inspect.isfunction(member):
+                continue
+            sources[name] = textwrap.dedent(inspect.getsource(member))
+            pending.append(sources[name])
     return sources
+
+
+def io_offenders(cls, hook):
+    """Every I/O primitive named anywhere on ``cls``'s ``hook`` path."""
+    return [
+        f"{cls.__qualname__}.{where}: {name}"
+        for where, source in hook_sources(cls, hook).items()
+        for name in IO_NAMES
+        if name in source
+    ]
 
 
 class TestNoDirectIoOnTheLoadPath:
@@ -531,13 +571,33 @@ class TestNoDirectIoOnTheLoadPath:
         "cls", RELEASE_READ_CLASSES, ids=lambda c: c.__qualname__
     )
     def test_run_load_and_its_own_helpers_name_no_io_primitive(self, cls):
-        offenders = []
-        for where, source in load_sources(cls).items():
-            offenders.extend(
-                f"{cls.__qualname__}.{where}: {name}"
-                for name in IO_NAMES
-                if name in source
-            )
+        assert io_offenders(cls, "run_load") == []
+
+    @pytest.mark.parametrize(
+        "cls", PURE_AUDITED_CLASSES, ids=lambda c: c.__qualname__
+    )
+    def test_a_pure_classs_run_and_its_own_helpers_name_no_io_primitive(self, cls):
+        # A `pure` class has no load path: `run` IS the whole path, and it
+        # must reach neither the filesystem nor the network.
+        assert io_offenders(cls, "run") == []
+
+    @pytest.mark.parametrize(
+        "cls", PURE_AUDITED_CLASSES, ids=lambda c: c.__qualname__
+    )
+    def test_a_pure_classs_run_reads_no_context_field(self, cls):
+        # `pure` MEANS "reads only its inputs and params" (node.py's
+        # vocabulary). A `ctx` read is how a node's answer comes to
+        # depend on something the serving derivation dropped — the
+        # splits section is dropped, so a node branching on `ctx.splits`
+        # would silently ignore the split its params still declare.
+        offenders = [
+            f"{cls.__qualname__}.{where}: ctx.{n.attr}"
+            for where, source in hook_sources(cls, "run").items()
+            for n in ast.walk(ast.parse(source))
+            if isinstance(n, ast.Attribute)
+            and isinstance(n.value, ast.Name)
+            and n.value.id == "ctx"
+        ]
         assert offenders == []
 
 

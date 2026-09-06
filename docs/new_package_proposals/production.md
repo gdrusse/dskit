@@ -4687,6 +4687,47 @@ every classification and prove the classmethod performs no I/O. The derived
 serving document drops splits. The configured entry-window override must address
 an existing full param path; the standard override rule is unchanged.
 
+**What the phase-2b round actually found (2026-09-06), because four of the
+candidates above were named on an assumption the code does not bear out.**
+
+- **The first two candidates are empty sets.** `fitted.py` holds exactly three
+  concrete classes and phase 1 classified all three (`ApplyTransform` `pure`,
+  `Standardize` and `FeatureSelector` `release_read`); `FittedTransform` is the
+  abstract base and stays unaudited by R16's own argument. `kinds_flow.py`'s six
+  row shapers are ALREADY `pure`. `kinds_table.py` has no pure row shaper at
+  all: `TableFile` reads with a bare `open(path, "rb")` and the `FileWrite`
+  family writes. Nothing remained to widen in either.
+- **`kinds_stats.py` splits.** `StatTest.run` never touches `ctx` and its call
+  graph (`stats.py`: `hashlib`, `math`, `random`) names no I/O primitive, so it
+  is now `pure`. `Validate` is NOT, and the reason is not I/O: `run` branches on
+  `ctx.splits`, which is neither an input nor a param — and the serving
+  derivation DROPS the splits section, so a served `Validate` would silently
+  score every record while its params still declare a `split`. That is the exact
+  train/serve divergence this seam exists to prevent, so it stays `forbidden`.
+  **Step (1) is therefore necessary but not sufficient for a `pure`
+  classification: a class that reads any `ctx` field the derivation drops is
+  `forbidden` however clean its I/O.** The registry-enumeration test now asserts
+  this directly (`test_a_pure_classs_run_reads_no_context_field`).
+- **The `libs/` claim is wrong for the two `FeatureSelector` members.**
+  `SklearnFit`, `SklearnPredict`, `TorchTrain`, `TorchPredict` and
+  `DeclaredTrain` do load through a path-taking deserialiser
+  (`joblib.load(artifact)`, `torch.load(state_path, ...)`, each behind a bare
+  `open()` of the sidecar) and stay `forbidden`. `SklearnSelect` and
+  `TorchImportance` do NOT: they override only FIT-path members, so their
+  restore IS `FittedTransform.run_load` -> `_sidecar` -> `Node.read_artifact`,
+  and the state is a JSON column list, never a pickled model. Both are now
+  audited `release_read` — with the flag stated on each class, never inherited,
+  so a member that ever overrides the load path loses the licence by default.
+  (`TorchImportance` is not in the list above; it is `SklearnSelect`'s twin and
+  the deciding read is the same source text.)
+- **`kinds_banking.py` is missing from the candidate list and should be its
+  next entry.** Its module names no I/O primitive and no `ctx` access at all,
+  and its `Eligibility` (`gate`) / `EventBank` (`accrual`) are the real-kind
+  twins of `SynthEligibility` / `SynthBank`, which phase 1 classified `pure`.
+  They were left `forbidden` only because the serving e2e did not need them
+  (SEAM-DESIGN §5's "only if the e2e needs them"). `BankingReport` writes and
+  stays permanently `forbidden` with the other report nodes.
+
 The immutable base pass constructs only `pure` nodes and approved
 `release_read` fingerprints. Such nodes receive a `ReleaseReader` capability
 that can return only manifest-named digest-checked values; direct filesystem or

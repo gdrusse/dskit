@@ -1119,12 +1119,25 @@ recorded owner approval.
       shadow/paper/live_limited end-to-end run.
 - [x] Specify phases 2, 2b and 3 to the phase-1 standard (Stage 0), so the next
       change builds from contracts rather than inventing them.
-- [ ] Phase 2 (`outcomes`, `report`, `replay`, outcome/parity monitors, alert
-      inhibition/silences/ack, systemd heartbeat, sqlite and parquet packs,
-      `Signer`, the `approve` verb) — specified in §5, not yet built.
-- [ ] Phase 2b (widen the `serving_effect` audit beyond the classes phase 1
-      classifies) and phase 3 (`exchange_calendars`, prometheus/otel sinks, the
-      stream seam, migrating the onboarding packs onto `resilience.py`).
+- [x] Phase 2 (`outcomes`, `report`, `replay`, four statistical monitors, the
+      outcome and parity families, alert inhibition/silences/escalation/ack,
+      the systemd heartbeat, readiness outcome evidence, durable guard holds,
+      sqlite and parquet packs, `Signer`, and the six new CLI verbs).
+- [ ] Phase 2b — widen the `serving_effect` audit beyond phase 1's classes.
+      First round done (2026-09-06): `StatTest` is `pure`; `SklearnSelect` and
+      `TorchImportance` are `release_read` (they override only fit-path
+      members, so their restore is the audited `FittedTransform.run_load`).
+      Left `forbidden` with the read that decided it: `Validate` (its `run`
+      branches on `ctx.splits`, which the serving derivation drops, so a
+      served node would ignore the `split` it declares); `SklearnFit`,
+      `SklearnPredict`, `TorchTrain`, `TorchPredict`, `DeclaredTrain` (each
+      restores through `joblib.load(path)` / `torch.load(path)` behind a bare
+      `open()` — §9.1 step (1) refuses a path-taking deserialiser); every
+      `kinds_table.py` and `kinds_report.py`/`kinds_search.py` node
+      (permanent — a node that writes is not servable). Next: `kinds_banking`'s
+      `Eligibility` and `EventBank`, whose module names no I/O and no `ctx`.
+- [ ] Phase 3 (`exchange_calendars`, prometheus/otel sinks, the stream seam,
+      migrating the onboarding packs onto `resilience.py`).
 
 **Two things the plan deliberately leaves open, recorded so they are met as
 decisions rather than surprises.**
@@ -1135,11 +1148,10 @@ decisions rather than surprises.**
   nothing in the repo produces any of them. `dskit.production`'s `accounting`
   seam is *venue* accounting — positions, balances, fills, exposure — which is a
   different thing. It wants its own ADR.
-- **`alerts` is excluded from `doc_hash` wholesale**, so `alerts.routes` can be
-  emptied under a live arm, silencing the paging path D17 treats as a safety
-  control. Splitting the section (graded routes and severity map, excluded
-  endpoint values) is the fix; it moves an identity boundary, so it belongs in
-  its own change rather than in the founding ADR.
+- **The alerting split LANDED with the package**: `alerting` (sink kinds,
+  routes, severities) is graded and only `alert_endpoints` is excluded, so
+  emptying the paging path changes the document's identity. Recorded here
+  because the founding ADR deferred it as its own change.
 
 **The goal.** dskit runs documents in batch; it has no seam for running a
 fitted model FORWARD on a cadence. `children/intraday_poc/intraday_poc/live.py`

@@ -93,6 +93,9 @@ python -m dskit.production serve    serve.json --once     # one tick at the docu
 python -m dskit.production status   serve.json            # rung, breaker, health, last tick, pending refs
 python -m dskit.production verify   serve.json            # walk the hash chain; compare the head to the journal
 python -m dskit.production halt     serve.json --reason "spread blew out"
+python -m dskit.production outcomes serve.json            # join what happened onto every leg
+python -m dskit.production report   serve.json            # attribution, calibration, the value curve
+python -m dskit.production replay   ./serve/<series-id>   # re-run the tape; diff every field
 ```
 
 The decision is a re-execution of the *same* nodes the backtest scored, from
@@ -103,7 +106,11 @@ proposal passes a declared guard chain before anything is sent. The four rungs
 injected, and reaching a live venue additionally needs a recorded, expiring,
 independently authenticated maker-checker arm bound to the release hash. A
 child ships the venue executor, its accounting, its approval verifier and its
-fenced lease; dskit ships everything else. See
+fenced lease; dskit ships everything else. The series also scores itself:
+declared outcome sources join what happened onto each leg, `report` prints
+attribution and calibration at an explicit cut, `replay` re-runs the recorded
+tape through recorded objects and diffs every field, and a readiness checklist
+may require all of that before a live arm. See
 [production](dskit/production/README.md).
 
 **Journal** — every child action labeled; CSV store; generated markdown:

@@ -50,6 +50,24 @@ points one way; the pipeline receives a `ReleaseReader` through
 - **Docstrings**: NumPy sections, an `Examples` block that instantiates the
   class (`::` blocks, `# ->` for expected values, never `>>>`), types in the
   docstring text, no type hints in signatures. `ruff` runs `D` here.
+- **A new document key is OPTIONAL or it moves every identity.** Phase 2's
+  `outcomes`, `reporting`, `durability.ledger`, `execution.signer`, the four
+  `alerting` keys and the four `readiness` knobs are all optional and all
+  graded: absent, they are absent from the hash material, so a phase-1
+  document keeps its hash; present, they change a number someone acts on.
+  A REQUIRED addition orphans every prior run — see the root `CLAUDE.md`.
+- **A knob's default has ONE name.** `report.py`'s `_knob(section, name,
+  DEFAULT_X)` is the shape: never `getattr(..., x, <literal>)` in both the
+  validator and the user. `alerts.DEFAULT_MAX_SILENCE_S`,
+  `outcomes.DEFAULT_OUTCOME_LOOKBACK_MS`, `monitors.DEFAULT_BINS` and
+  `monitors.DEFAULT_SCORING` are the others phase 2 added.
+- **A module that spells a vocabulary member owes `pin_members`.** It refuses
+  at IMPORT when the spelling strays; `exact=True` when a dispatch table is
+  keyed by the whole set, so a new member cannot land unhandled.
+- **Nothing is overwritten.** An outcome that disagrees with what stands is a
+  new record linked to what it supersedes; a suppressed alert is still
+  appended with the suppression NAMED in its body. The evidence must survive
+  the correction and the suppression alike.
 
 ## The safety spine — change these only with the plan open
 
@@ -113,10 +131,12 @@ a replay runs stays `compose.py`'s decision.
 
 ## Testing
 
-`tests/production/` mirrors the modules. `conftest.py` builds a real synthetic
-training run over a temp onboarding root — use it rather than inventing a
-fixture. No network, no wall-clock sleeps, `TestClock` everywhere. A test that
-restates its own literal is worse than none: assert the refusals.
+`tests/production/` mirrors the modules and `tests/production_libs/` the two
+packs. `conftest.py` builds a real synthetic training run over a temp
+onboarding root — use it rather than inventing a fixture. No network, no
+wall-clock sleeps, `TestClock` everywhere. A test that restates its own literal
+is worse than none: assert the refusals. A pack test skips when its library is
+absent; core's must never need one.
 
 Gates that must stay green: `test_purity.py` (the import rule and the AST bans),
 `test_oop.py` (§5.15), `test_producers.py` (§5.16's closure), and the four
@@ -125,4 +145,23 @@ move.
 
 ## Directory
 
-See the tree in `README.md` — keep both current when files are added or removed.
+```
+dskit/production/
+├── __init__.py __main__.py            public surface; the 23 CLI verbs
+├── base.py vocab.py redact.py         errors + Registry + hashing; closed sets; secrets
+├── document.py release.py records.py  the serve document; the release; every value object
+├── clock.py sessions.py cadence.py    when a tick may happen
+├── feed.py decider.py                 what enters the graph; the re-execution
+├── guards.py breaker.py arming.py     what may pass; what stops it; who may arm it
+├── executor.py accounting.py verifier.py coordination.py   the act and its gates
+├── policy.py control.py resilience.py  the matrices; the inbox; retry/limits/Signer
+├── ledger.py state.py reconcile.py     the chain; the sole fold; the venue truth
+├── monitors.py metrics.py alerts.py health.py   what watches, counts, pages, probes
+├── ids.py bundles.py compose.py leg.py loop.py  ids; the bundles; the root; steps; ticks
+├── readiness.py outcomes.py report.py  GO/NO-GO; what happened; what it was worth
+├── libs/ (parquet.py sqlite.py)        tier-2 packs: RunReference; SqliteLedger
+└── README.md CLAUDE.md AGENTS.md
+```
+
+`README.md` carries the same tree one file per line, with what each holds —
+keep both current when files are added or removed.

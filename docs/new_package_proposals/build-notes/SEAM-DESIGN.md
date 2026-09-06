@@ -121,6 +121,10 @@ would otherwise inherit a licence for a load path nobody read. Widening in phase
 one line per class: audit the load path, set the flag.
 The test proves `serving_effect` performs no I/O for every registered class and `serving_contract`
 returns `None` for every class except `ObservationRows`.
+**Superseded in part (2026-09-06):** phase 2b read those two load paths and found them clean —
+`SklearnSelect` and `TorchImportance` override only FIT-path members, so their restore IS the
+audited `FittedTransform.run_load`, and both now carry the flag (stated per class, never
+inherited). `StatTest` is `pure`. Plan §9.1's phase-2b paragraph carries the full round.
 
 ## 6. Production side (G12, `decider.py`) — for orientation only
 `Decider.prepare`: `plan(serving_doc, registry)` (planner.plan already resolves classes/edges
