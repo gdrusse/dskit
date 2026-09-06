@@ -8,28 +8,38 @@ predictions — so a drift monitor asks the only question that matters
 about a model in production: does what it is being asked to score still
 look like what it was validated on?
 
-The population is read from ``<run_dir>/artifacts/<node>/predictions.parquet``,
-the ``dskit.pipeline.predictions`` layout, whose ``PREDICTIONS_FILE`` and
-``find_predictions`` are imported rather than spelled again here — the
-layout has one owner, and a serving path that restated it would drift the
-day a run directory changed shape. Every node that saved rows contributes
-them, in node order, because the reference population is "the run's scored
-predictions" and the params carry no node selector to choose between two.
+The layout of a run's saved predictions has ONE owner,
+``dskit.pipeline.predictions``, and this pack reaches it through that
+module's ``find_predictions`` and ``PREDICTIONS_FILE`` rather than spelling
+a path of its own — a serving path that restated the layout would drift the
+day a run directory changed shape.
 
-Three rules are refusals, and they are the point of the module:
+Three rules carry the module, and each is a refusal or a deliberate
+silence:
 
 * **Nothing is read at construction.** A document is validated on machines
   that hold no run directory; a reference that read when it was built
   would make ``validate`` need the artifact. The read happens once, lazily,
   on the first ``sample()`` — ``Snapshot``'s precedent, which reads at
   ``fit`` for the same reason.
-* **``add()`` refuses.** A run reference is a fixed anchor by definition.
-  Quietly absorbing the values that leave a monitor's window would make it
-  drift with the very thing it is there to measure drift against.
-* **``fingerprint()`` is the file's digest**, so ``plan`` binds the
-  predictions into the release like any other artifact. That is what stops
-  a re-scored run from moving a live alarm threshold under a release hash
-  that never changed.
+* **``add()`` ignores.** A run reference is a fixed anchor, and the
+  guarantee is that nothing the loop observes can move it. Ignoring is what
+  delivers that guarantee: ``Monitor`` retires every observation LEAVING the
+  window into every reference unconditionally, so a refusal on that path
+  would crash the serve loop on the first window roll instead of protecting
+  anything. Declining to incorporate is not accepting — it is exactly
+  ``Snapshot``'s contract for a fixed population.
+* **An ambiguous run refuses.** ``node`` says which scoring node's
+  predictions are the population. Without it, a run holding one prediction
+  file is read and a run holding several refuses, naming every node it
+  found: concatenating two nodes' rows would silently mix distributions
+  that may not predict the same thing, and a drift statistic over that
+  mixture is meaningless in a way nothing would report.
+
+``fingerprint()`` reports the digest of exactly the files ``sample()``
+would read, so ``plan`` binds them into the release like any other
+artifact. That is what stops a re-scored run from moving a live alarm
+threshold under a release hash that never changed.
 
 ``pyarrow`` is named only inside the read, per §8's tier-2 rule: importing
 this pack must not import parquet, and a serve process that declares no
@@ -62,8 +72,10 @@ class RunReference(Reference):
 
     Registered as ``run`` in ``REFERENCE_KINDS`` (§4.3: import is
     registration). The file is read once, lazily, on the first ``sample()``;
-    a missing file, a missing column or a column that is not numeric refuses
-    THERE rather than at construction, and ``add()`` refuses always.
+    a missing file, a missing column, a column that is not numeric and a run
+    whose scoring node is ambiguous all refuse THERE rather than at
+    construction. ``add()`` never refuses and never takes: the anchor is
+    fixed, and the loop's retirement path is unconditional.
 
     When the run holds more rows than ``max_rows``, the sample is spread
     evenly across the file rather than taken from its head: predictions are
@@ -74,10 +86,12 @@ class RunReference(Reference):
     ----------
     params : dict
         ``run_dir`` (str, required): the run directory whose predictions are
-        the population; ``column`` (str, default the owning monitor's
-        ``field``): which prediction column to read; ``max_rows`` (int >= 1,
-        default ``DEFAULT_REFERENCE_MAX_ROWS``): the largest population to
-        keep. ``notes`` is allowed, as everywhere.
+        the population; ``node`` (str, optional): which scoring node's
+        predictions to read, needed only when the run holds more than one;
+        ``column`` (str, default the owning monitor's ``field``): which
+        prediction column to read; ``max_rows`` (int >= 1, default
+        ``DEFAULT_REFERENCE_MAX_ROWS``): the largest population to keep.
+        ``notes`` is allowed, as everywhere.
     field : str or None, keyword-only
         The owning monitor's field, supplied by the monitor; it is the
         default ``column``, and a reference with neither refuses.
@@ -92,14 +106,15 @@ class RunReference(Reference):
         reference.fingerprint()  # the digest `plan` binds into the release
     """
 
-    _PARAMS = ("run_dir", "column", "max_rows")
+    _PARAMS = ("run_dir", "node", "column", "max_rows")
 
     @classmethod
     def _check(cls, problems, params):
-        """Require a run directory; the column may come from the monitor's field."""
+        """Require a run directory; node and column are names when they are given."""
         _check_str(problems, "run_dir", params.get("run_dir"))
-        if "column" in params:
-            _check_str(problems, "column", params["column"])
+        for optional in ("node", "column"):
+            if optional in params:
+                _check_str(problems, optional, params[optional])
         check_int_param(
             problems, "max_rows", params.get("max_rows", DEFAULT_REFERENCE_MAX_ROWS), ge=1
         )
@@ -107,6 +122,7 @@ class RunReference(Reference):
     def _configure(self, params):
         """Take the run directory, the column and the cap; touch no file."""
         self._run_dir = params["run_dir"]
+        self._node = params.get("node")
         self._column = params.get("column", self._field)
         self._max_rows = int(params.get("max_rows", DEFAULT_REFERENCE_MAX_ROWS))
         self._loaded = False
@@ -119,7 +135,15 @@ class RunReference(Reference):
             )
 
     def add(self, value):
-        """Refuse: a run reference is a fixed anchor and never grows.
+        """Do nothing, deliberately: the anchor is the run, and it never moves.
+
+        A reference that absorbed the values leaving a monitor's window would
+        drift with the very thing it is there to measure drift against, so
+        this hook declines to incorporate them — ``Snapshot``'s contract for
+        a fixed population. Refusing was considered and rejected: ``Monitor``
+        retires departed observations into every reference unconditionally,
+        so a raise here would crash the serve loop on the first window roll
+        without making the anchor any more fixed than ignoring does.
 
         Parameters
         ----------
@@ -129,20 +153,8 @@ class RunReference(Reference):
         Returns
         -------
         None
-            Nothing is ever added.
-
-        Raises
-        ------
-        ProductionError
-            Always.
+            Nothing changes, ever.
         """
-        raise ProductionError(
-            [
-                f"run reference: {self._run_dir} is a fixed anchor — add() is refused, "
-                "because a reference that absorbed the values leaving a monitor's "
-                "window would drift with the thing it measures drift against"
-            ]
-        )
 
     def fit(self, values):
         """Ignore the training values: the run's rows are the population.
@@ -172,7 +184,8 @@ class RunReference(Reference):
         Raises
         ------
         ProductionError
-            If the run saved no predictions, or the column is missing or not
+            If the run saved no predictions, if it was scored by several
+            nodes and names none, or if the column is missing or not
             numeric. The read happens here, never at construction.
         """
         if not self._loaded:
@@ -187,14 +200,15 @@ class RunReference(Reference):
         -------
         str
             The canonical hash of ``{path relative to the run: sha256}``
-            over every predictions file the run holds — what ``plan`` binds
-            into the release, so a re-scored run cannot move a live alarm
-            threshold under an unchanged release hash.
+            over exactly the predictions ``sample()`` would read — what
+            ``plan`` binds into the release, so a re-scored run cannot move a
+            live alarm threshold under an unchanged release hash.
 
         Raises
         ------
         ProductionError
-            If the run saved no predictions.
+            If the run saved no predictions, or is ambiguous about which
+            node's predictions this reference stands on.
         """
         root = Path(self._run_dir)
         return canonical_hash(
@@ -228,7 +242,7 @@ class RunReference(Reference):
         self._loaded = True
 
     def _paths(self):
-        """Return the run's predictions files; refuse when it saved none."""
+        """Return the one node's predictions file; refuse on none, or on an ambiguous run."""
         paths = find_predictions(self._run_dir)
         if not paths:
             raise ProductionError(
@@ -237,10 +251,29 @@ class RunReference(Reference):
                     "the run saved no predictions to compare a live window against"
                 ]
             )
-        return paths
+        found = {Path(path).parent.name: path for path in paths}
+        if self._node is None:
+            if len(found) > 1:
+                raise ProductionError(
+                    [
+                        f"run reference: {self._run_dir} was scored by "
+                        f"{sorted(found)} and names no node — concatenating them "
+                        "would mix distributions that may not predict the same "
+                        "thing, so name one in params.node"
+                    ]
+                )
+            return list(found.values())
+        if self._node not in found:
+            raise ProductionError(
+                [
+                    f"run reference: {self._run_dir} has no predictions for node "
+                    f"{self._node!r} — it was scored by {sorted(found)}"
+                ]
+            )
+        return [found[self._node]]
 
     def _read(self):
-        """Return the column's values across every predictions file the run holds."""
+        """Return the column's values from the predictions this reference reads."""
         import pyarrow.parquet as pq
         import pyarrow.types as types
 

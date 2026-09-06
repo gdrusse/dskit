@@ -73,6 +73,7 @@ __all__ = [
     "Coverage",
     "DDM",
     "DEFAULT_ADWIN_DELTA",
+    "DEFAULT_ADWIN_MAX_WINDOW",
     "DEFAULT_BINS",
     "DEFAULT_DELTA",
     "DEFAULT_MIN_N",
@@ -138,6 +139,16 @@ DEFAULT_ADWIN_DELTA = 0.002
 #: A cut that leaves one observation on a side compares a mean to a single
 #: sample, which the Hoeffding bound prices but which says nothing.
 DEFAULT_MIN_SUB = 5
+
+#: The longest adaptive window ``adwin`` keeps. Cutting at every split point
+#: is O(n²) in the window's length AND the window rides in every §6
+#: ``snapshot``, so on a stationary stream an uncapped window would take a
+#: growing slice of every tick and write itself into the ledger for ever.
+#: 500 keeps a fold's scan in the low hundreds of thousands of operations and
+#: the window inside ~10 KB of snapshot, while still leaving the middle cut
+#: 250 observations a side — enough to detect a shift of about a quarter of a
+#: bounded field's range at ``DEFAULT_ADWIN_DELTA``.
+DEFAULT_ADWIN_MAX_WINDOW = 500
 
 #: ``sliding``'s default step and ``period``'s default time field (the
 #: §6 tick record's data instant).
@@ -2710,21 +2721,25 @@ class ADWIN(StreamMonitor):
     labels the verdict, exactly as it does for every other stream monitor.
     The two lengths differ, and only the declared one reaches the §6 record.
 
-    Notes
-    -----
     Every split point is examined on every observation, so a fold costs
-    ``O(n²)`` in the adaptive window's length, and that length is bounded
-    only by how long the stream stays stationary — §5.10.1 asks for the
-    exact form rather than the bucketed approximation the literature uses to
-    bound both. A long stationary series is therefore the case to watch.
+    ``O(n²)`` in the adaptive window's length, and the window rides in every
+    §6 ``snapshot``; a breach is the only thing that shortens it, so a
+    stationary stream would grow both without bound. ``max_window`` is the
+    cap, and it drops OLDEST first — the window is the statistic's memory,
+    and the oldest observation is the one whose level the detector is least
+    interested in defending.
 
     Parameters
     ----------
     params : dict
         The ``StreamMonitor`` knobs plus ``delta`` (finite number strictly
         between 0 and 1, default ``DEFAULT_ADWIN_DELTA``): the confidence
-        the cut bound is derived at; and ``min_sub`` (int >= 1, default
-        ``DEFAULT_MIN_SUB``): the smallest sub-window a cut may leave.
+        the cut bound is derived at; ``min_sub`` (int >= 1, default
+        ``DEFAULT_MIN_SUB``): the smallest sub-window a cut may leave; and
+        ``max_window`` (int >= 1, default ``DEFAULT_ADWIN_MAX_WINDOW``): the
+        longest adaptive window kept. A ``max_window`` below twice
+        ``min_sub`` admits no cut at all and refuses, rather than building a
+        monitor that could never answer.
     name : str or None, keyword-only
         The owner's name for this instance.
 
@@ -2744,21 +2759,30 @@ class ADWIN(StreamMonitor):
         # -> {1.0}
     """
 
-    _PARAMS = StreamMonitor._PARAMS + ("delta", "min_sub")
+    _PARAMS = StreamMonitor._PARAMS + ("delta", "min_sub", "max_window")
     _STREAM_KEYS = ("window", "statistic")
 
     @classmethod
     def _check(cls, problems, params):
-        """Require a confidence inside the open unit interval and a positive sub-window."""
+        """Require a confidence in the open unit interval and a cap that admits a cut."""
         super()._check(problems, params)
         _check_number(problems, "delta", params.get("delta", DEFAULT_ADWIN_DELTA), gt=0, lt=1)
-        check_int_param(problems, "min_sub", params.get("min_sub", DEFAULT_MIN_SUB), ge=1)
+        floor = params.get("min_sub", DEFAULT_MIN_SUB)
+        cap = params.get("max_window", DEFAULT_ADWIN_MAX_WINDOW)
+        check_int_param(problems, "min_sub", floor, ge=1)
+        check_int_param(problems, "max_window", cap, ge=1)
+        if number_ok(floor) and number_ok(cap) and cap < 2 * floor:
+            problems.append(
+                f"max_window {cap!r} admits no cut leaving min_sub {floor!r} a side: "
+                "it must be at least twice min_sub, or the monitor can never answer"
+            )
 
     def _configure(self, params):
-        """Take the confidence and the sub-window floor, and start with an empty window."""
+        """Take the confidence, the sub-window floor and the cap; start with no window."""
         super()._configure(params)
         self._delta = params.get("delta", DEFAULT_ADWIN_DELTA)
         self._min_sub = int(params.get("min_sub", DEFAULT_MIN_SUB))
+        self._max_window = int(params.get("max_window", DEFAULT_ADWIN_MAX_WINDOW))
         self._adaptive = []
         self._statistic = None
 
@@ -2777,8 +2801,9 @@ class ADWIN(StreamMonitor):
         return self._judge(statistic, 0, len(window), complete)
 
     def _fold(self, observation):
-        """Take the value into the adaptive window, measure it, then shrink on a breach."""
+        """Take the value in, drop past the cap, measure, then shrink on a breach."""
         self._adaptive.append(observation[_VALUE])
+        del self._adaptive[: -self._max_window]
         cuts = self._cuts()
         self._statistic = self._worst(cuts)[0] if cuts else None
         while cuts:

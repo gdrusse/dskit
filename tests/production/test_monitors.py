@@ -88,6 +88,7 @@ from dskit.production.monitors import (
     CHUNKER_KINDS,
     DDM,
     DEFAULT_ADWIN_DELTA,
+    DEFAULT_ADWIN_MAX_WINDOW,
     DEFAULT_MIN_N,
     DEFAULT_MIN_SUB,
     MONITOR_KINDS,
@@ -1352,8 +1353,12 @@ def test_the_declared_window_gates_min_n_even_when_the_statistic_is_ready():
     assert monitor.verdict().n_cur == 15
 
 
-def test_adwin_takes_delta_and_min_sub_and_nothing_else():
-    assert set(ADWIN._PARAMS) == set(StreamMonitor._PARAMS) | {"delta", "min_sub"}
+def test_adwin_takes_delta_min_sub_and_max_window_and_nothing_else():
+    assert set(ADWIN._PARAMS) == set(StreamMonitor._PARAMS) | {
+        "delta",
+        "min_sub",
+        "max_window",
+    }
     with pytest.raises(ProductionError) as exc:
         adwin(lam=1.0)
     assert "lam" in str(exc.value)
@@ -1362,12 +1367,58 @@ def test_adwin_takes_delta_and_min_sub_and_nothing_else():
 def test_the_adwin_defaults_are_named_constants_the_monitor_reads():
     assert 0.0 < DEFAULT_ADWIN_DELTA < 1.0
     assert isinstance(DEFAULT_MIN_SUB, int) and DEFAULT_MIN_SUB >= 1
+    assert isinstance(DEFAULT_ADWIN_MAX_WINDOW, int)
+    assert DEFAULT_ADWIN_MAX_WINDOW >= 2 * DEFAULT_MIN_SUB
     bare = adwin(threshold=at_most(NEVER))
-    spelled = adwin(threshold=at_most(NEVER), delta=DEFAULT_ADWIN_DELTA, min_sub=DEFAULT_MIN_SUB)
+    spelled = adwin(
+        threshold=at_most(NEVER),
+        delta=DEFAULT_ADWIN_DELTA,
+        min_sub=DEFAULT_MIN_SUB,
+        max_window=DEFAULT_ADWIN_MAX_WINDOW,
+    )
     for value in ADWIN_STREAM:
         bare.observe(prediction_record(value))
         spelled.observe(prediction_record(value))
     assert bare.verdict() == spelled.verdict()
+
+
+def test_the_adaptive_window_is_capped_and_drops_the_oldest_first():
+    """The window is the statistic's memory, not a log: past ``max_window``
+    the OLDEST observation leaves, so a stationary stream cannot make a fold
+    cost more every tick. The stream cycles through four values, so its tail
+    is not its head and keeping the wrong end would show."""
+    monitor = adwin(threshold=at_most(NEVER), max_window=12, min_sub=5)
+    for value in range(42):
+        monitor.observe(prediction_record(float(value % 4)))
+    window = monitor.state()["stream"]["window"]
+    assert window == [float(value % 4) for value in range(30, 42)]
+    assert len(window) == 12
+
+
+def test_a_long_stationary_stream_leaves_the_snapshot_bounded():
+    """The §6 ``snapshot`` carries this state on every checkpoint, so its
+    size must not depend on how long the series has been running."""
+    monitor = adwin(threshold=at_most(NEVER), max_window=20, min_sub=5)
+    lengths, serialised = [], []
+    for index in range(400):
+        monitor.observe(prediction_record(float(index % 2)))
+        lengths.append(len(monitor.state()["stream"]["window"]))
+        if index in (199, 399):
+            serialised.append(json.dumps(monitor.state()["stream"]["window"]))
+    assert max(lengths) == 20
+    assert serialised[0] == serialised[1]
+
+
+def test_a_cap_that_admits_no_cut_refuses_rather_than_never_answering():
+    with pytest.raises(ProductionError) as exc:
+        adwin(max_window=9, min_sub=5)
+    assert "max_window" in str(exc.value)
+
+
+def test_adwin_refuses_a_non_positive_cap():
+    with pytest.raises(ProductionError) as exc:
+        adwin(max_window=0)
+    assert "max_window" in str(exc.value)
 
 
 def test_adwin_refuses_a_delta_outside_the_open_unit_interval_and_a_zero_sub_window():

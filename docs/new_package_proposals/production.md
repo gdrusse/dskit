@@ -1876,17 +1876,43 @@ declares and cannot populate. Every one of them is built through the existing
     drift at 3σ are then two ordinary `constant` thresholds in the document,
     not two numbers in the code. `min_n` gates the early stream where `s_t` is
     meaningless, and an `alarm` resets the whole recursion on the next
-    observation as `PageHinkley`'s does.
+    observation as `PageHinkley`'s does. `s_min` can be ZERO — a stream with
+    no errors has `p = s = 0`, and so does one with nothing but errors — which
+    leaves the ratio undefined, so the best pair is REMEMBERED only once the
+    stream is `min_n` long AND its sigma is real; until such a pair exists the
+    statistic is `None` and the verdict `insufficient`. The consequence is
+    plain and someone will hit it: a monitor over an error field that has been
+    PERFECT reports `insufficient` rather than `ok`, and the first errors after
+    a perfect stretch anchor the detector instead of alarming.
   - `ADWIN(params)` — adaptive windowing. It keeps its own window in the
-    stream state, cuts it at every split point, and reports
+    stream state, cuts it at every split point that leaves `min_sub`
+    observations a side, and reports
     `statistic = max(|mean_left - mean_right| / eps_cut)` over the cuts, with
-    `eps_cut` the Hoeffding bound at `delta` (default `DEFAULT_ADWIN_DELTA`);
+    `eps_cut` the Bifet-Gavaldà bound at `delta` — `sqrt(ln(4n/delta) / 2m)`
+    over the harmonic mean `m` of the two sides, `n` the window's length;
     a `constant` threshold at `max: 1` is the classic test. On a breach it
-    drops the older sub-window, so the adaptive window shrinks itself. Params
-    add `delta` and `min_sub` (the smallest sub-window a cut may leave). The
-    declared `window` still gates `min_n` and labels the verdict, exactly as it
-    does for `PageHinkley` — the adaptive window is the statistic's, the
-    declared one is the verdict's.
+    drops the older sub-window, so the adaptive window shrinks itself. The
+    shrink happens INSIDE the fold and the statistic reported is the one
+    measured BEFORE it, for two reasons: the adaptive window is the
+    statistic's own, so it must not depend on the document's `response` the
+    way `PageHinkley`'s reset does, and a detector that shrank before
+    reporting could never show the breach that made it shrink. Params add
+    `delta` (default `DEFAULT_ADWIN_DELTA`, 0.002 — the literature's),
+    `min_sub` (the smallest sub-window a cut may leave, default
+    `DEFAULT_MIN_SUB`, 5) and `max_window` (default
+    `DEFAULT_ADWIN_MAX_WINDOW`, 500), which caps the adaptive window and drops
+    oldest first. That cap is not comfort: cutting at every split point is
+    quadratic in the window's length, the window rides in every §6 `snapshot`,
+    and only a breach shortens it — so on a stationary stream an uncapped
+    window would take a growing slice of every tick and write itself into the
+    ledger for ever. 500 keeps a fold's scan in the low hundreds of thousands
+    of operations and the window inside ~10 KB of snapshot, while leaving the
+    middle cut 250 observations a side — enough to detect a shift of about a
+    quarter of a bounded field's range at that `delta`. A `max_window` below
+    twice `min_sub` admits no cut at all and refuses, rather than building a
+    monitor that can never answer. The declared `window` still gates `min_n`
+    and labels the verdict, exactly as it does for `PageHinkley` — the
+    adaptive window is the statistic's, the declared one is the verdict's.
 - `DistributionMonitor` gains two distances over the reference's own quantile
   bins, so both share `PSI`'s binning and neither re-derives it:
   - `JensenShannon(params)` — the base-2 Jensen–Shannon divergence, so
@@ -1957,20 +1983,31 @@ compares live decisions against exactly the distribution the model was
 validated on rather than against an operator's saved profile.
 
 `RunReference(params, *, field=None)`, a `Reference` registered as `run` by
-this pack. Params: `run_dir` (str, required), `column` (str, default the owning
-monitor's `field`), `max_rows` (int, default `DEFAULT_REFERENCE_MAX_ROWS`) and
-`notes`. `sample()` reads `<run_dir>/<node>/predictions.parquet` — the
-`dskit.pipeline.predictions` layout, whose `PREDICTIONS_FILE` constant is
-imported rather than spelled again — once, lazily, on first call, with
-`pyarrow` imported INSIDE the method per §8's tier-2 rule; a missing file,
-missing column or non-numeric column refuses there and not at construction,
-following `Snapshot`'s precedent that a reference performs no I/O when it is
-built. `add(value)` REFUSES: a run reference is a fixed anchor by definition,
-and silently accepting rolling values would make it drift with the thing it is
-supposed to be measuring drift against. The file's digest is reported by
-`fingerprint()` so `plan` can bind it into the release like any other artifact,
-which is what stops a re-scored run from moving a live alarm threshold under a
-fixed release hash.
+this pack. Params: `run_dir` (str, required), `node` (str, optional), `column`
+(str, default the owning monitor's `field`), `max_rows` (int, default
+`DEFAULT_REFERENCE_MAX_ROWS`) and `notes`. `sample()` reads the run's saved
+predictions once, lazily, on first call, with `pyarrow` imported INSIDE the
+method per §8's tier-2 rule. The LAYOUT of those predictions has one owner,
+`dskit.pipeline.predictions`, and the pack reaches it through that module's
+`find_predictions` and `PREDICTIONS_FILE` rather than spelling a path of its
+own — here or in the code — so a run directory that changes shape changes in
+one place. `node` says which scoring node's predictions are the population:
+without it a run holding exactly one prediction file is read, and a run holding
+several REFUSES at `sample()` naming every node it found, because concatenating
+two nodes' rows would silently mix distributions that may not predict the same
+thing and a drift statistic over that mixture is meaningless in a way nothing
+would report. A missing file, missing column or non-numeric column refuses
+there too, and not at construction, following `Snapshot`'s precedent that a
+reference performs no I/O when it is built. `add(value)` IGNORES the value, as
+`Snapshot`'s does: a run reference is a fixed anchor, and what has to be
+guaranteed is that nothing the loop observes can move it. Ignoring is what
+delivers that — declining to incorporate is not accepting — while REFUSING
+would not, since `Monitor` retires every observation leaving the window into
+every reference unconditionally, and a raise on that path crashes the serve
+loop on the first window roll. The digest of exactly the predictions `sample()`
+would read is reported by `fingerprint()` so `plan` can bind them into the
+release like any other artifact, which is what stops a re-scored run from
+moving a live alarm threshold under a fixed release hash.
 
 ### 5.11 `alerts.py` and `health.py`
 
@@ -3631,7 +3668,8 @@ tests/production_libs/     [phase 2/3] the tier-2 packs, beside tests/pipeline_l
 ├── test_sqlite.py         [phase 2] the §5.8 chain contract run against SqliteLedger — same envelope, same first_bad_seq, same
 │                          idempotency; WAL + synchronous=FULL cannot be lowered by a document; UPDATE and DELETE refuse at the
 │                          store; a document declaring rotate refuses at plan
-├── test_parquet.py        [phase 2] RunReference reads once and lazily, add() refuses, a missing column refuses at sample()
+├── test_parquet.py        [phase 2] RunReference reads once and lazily, add() ignores and a window roll never moves the
+│                          anchor, a missing column and a run scored by several nodes both refuse at sample()
 ├── test_exchange_calendars.py  [phase 3] the materialised schedule answers identically to an equivalent WeeklySessions; a moved
 │                          holiday changes data_digest and therefore refuses under a fixed release
 └── test_prometheus.py / test_opentelemetry.py  [phase 3] a raising sink is counted and never fails a flush
