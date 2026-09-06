@@ -1,6 +1,6 @@
 {
   "name": "intraday-equities-p13-gate3-model-zoo",
-  "notes": "ADR-0097/0099 official post-Gate-3 model zoo. It expands inline model-family templates across the 25 A18622-approved asset-horizon pairs, pins P12 cache and Gate-3 artifacts, compares identical outer folds per pair, and checkpoints after every candidate. Building or validating this JSON does not train anything. Pretrained foundation models are outside this run until a frozen, no-overlap snapshot exists; they are not counted as attempted candidates.",
+  "notes": "ADR-0097/0099/0100 official post-Gate-3 model zoo. Each stock i keeps its certified H_i and every candidate emits honest direct forecasts for h=1..H_i on common max-H_i origins. Models are selected as full paths with training-scale-normalized benchmark-relative loss and session-cluster uncertainty sets. The 25 targets, P12 caches, calendar, and artifacts remain pinned. Building or validating this JSON does not train anything.",
   "pipeline": {
     "universe": {
       "uses": "intraday_equities-universe",
@@ -653,7 +653,13 @@
               }
             }
           }
-        ]
+        ],
+        "path_protocol": {
+          "forecast_strategy": "direct_per_lead",
+          "horizon_weighting": "equal",
+          "primary_metric": "train_scaled_improvement",
+          "common_origins": true
+        }
       }
     },
     "plan": {
@@ -666,15 +672,21 @@
       "params": {
         "protocol": {
           "attempt_family": "intraday-equities-p13-gate3-model-zoo",
-          "primary_score": "paired outer-fold validation IC per Gate-3-approved asset-horizon pair",
+          "primary_score": "equal-weight mean across h=1..H_i of outer-validation squared-error improvement versus the train-only no-information mean, normalized by each lead training variance",
           "null_baseline": "Gate-3 LightGBM incumbent plus canonical train-only-selected ridge control",
-          "cost_model": "equal Gate-3 asset-horizon weight; fixed compute-class tables and declared compute frontier",
+          "cost_model": "equal weight within each stock path and equal stock-H_i group weight; fixed compute-class tables and declared compute frontier",
           "lockbox": "no candidate may read at or after 2026-03-01",
-          "decision_rule": "per pair choose the lowest-compute candidate whose deficit from the observed best is not family-wise detectable; this is a heuristic, not an equivalence claim; aggregate families by equal pair weight; never auto-promote",
+          "decision_rule": "retain conservative session-cluster bootstrap superior sets at each horizon and for the full path; report average and uniform SPA evidence; tie-break path-set members by fold stability, worst-horizon regret, then compute rank; never auto-promote",
           "alpha": 0.05,
           "comparison_hac_lags": 1,
           "multiplicity_method": "bonferroni_all_pairwise",
-          "indifference_method": "paired_fold_newey_west_no_detectable_difference"
+          "indifference_method": "paired_fold_newey_west_no_detectable_difference",
+          "path_evidence": "path.records",
+          "path_loss": "training-scale-normalized squared-error improvement versus no-information",
+          "path_resampling": "whole UTC trading sessions shared across candidates and horizons",
+          "horizon_diagnostic": "Bonferroni session-cluster bootstrap-t horizon confidence sets",
+          "path_selection": "Bonferroni session-cluster bootstrap-t model confidence set with average and uniform SPA evidence",
+          "tie_break": "fold stability, worst-horizon regret, compute rank, id"
         },
         "contract_paths": [
           "pipeline.universe.uses",
@@ -688,20 +700,20 @@
           "pipeline.reference_tape.uses",
           "pipeline.reference_tape.inputs.records",
           "pipeline.reference_tape.params.where",
-          "pipeline.scan.uses",
-          "pipeline.scan.inputs.records",
-          "pipeline.scan.inputs.bars",
-          "pipeline.scan.inputs.spec",
-          "pipeline.scan.params.split",
-          "pipeline.scan.params.label_scale",
-          "pipeline.scan.params.label_residual",
-          "pipeline.scan.params.label_residual_self",
-          "pipeline.scan.params.fit_symbols",
-          "pipeline.scan.params.score_symbols",
-          "pipeline.scan.params.lead_start",
-          "pipeline.scan.params.lead_step",
-          "pipeline.scan.params.lead_stop",
-          "pipeline.scan.params.score_period_ms",
+          "pipeline.scan_h01.uses",
+          "pipeline.scan_h01.inputs.records",
+          "pipeline.scan_h01.inputs.bars",
+          "pipeline.scan_h01.inputs.spec",
+          "pipeline.scan_h01.params.split",
+          "pipeline.scan_h01.params.label_scale",
+          "pipeline.scan_h01.params.label_residual",
+          "pipeline.scan_h01.params.label_residual_self",
+          "pipeline.scan_h01.params.fit_symbols",
+          "pipeline.scan_h01.params.score_symbols",
+          "pipeline.scan_h01.params.lead_start",
+          "pipeline.scan_h01.params.lead_step",
+          "pipeline.scan_h01.params.lead_stop",
+          "pipeline.scan_h01.params.score_period_ms",
           "walkforward.objective",
           "walkforward.select",
           "walkforward.first",
@@ -709,7 +721,14 @@
           "walkforward.count",
           "walkforward.val_days",
           "walkforward.embargo_days",
-          "walkforward.train_days"
+          "walkforward.train_days",
+          "pipeline.scan_h01.params.common_lead_stop",
+          "pipeline.path.uses",
+          "pipeline.path.params.split",
+          "pipeline.path.params.asset",
+          "pipeline.path.params.max_horizon",
+          "pipeline.path.params.horizon_weights",
+          "pipeline.path.params.score"
         ]
       }
     },
@@ -732,12 +751,16 @@
       }
     },
     "compare": {
-      "uses": "dskit.pipeline.benchmarks:BenchmarkCompare",
+      "uses": "dskit.pipeline.benchmarks:PathBenchmarkCompare",
       "inputs": {
         "runs": "$run.runs",
         "protocol": "$plan.protocol",
         "contracts": "$plan.contracts",
         "approval": "$approval.approval"
+      },
+      "params": {
+        "bootstrap_draws": 9999,
+        "bootstrap_seed": 0
       }
     }
   }

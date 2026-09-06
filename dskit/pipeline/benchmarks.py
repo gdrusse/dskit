@@ -12,18 +12,21 @@ import hashlib
 import json
 import math
 import os
+import random
 
 from dskit.pipeline.document import load_document
 from dskit.pipeline.driver import run_walk_forward
 from dskit.pipeline.planner import plan as plan_document
+from dskit.pipeline.predictions import read_prediction_series
 from dskit.pipeline.program_calendar import ProgramCalendar
 from dskit.pipeline.stages import Stage, reject_unknown_params
-from dskit.pipeline.stats import bonferroni, newey_west_mean
+from dskit.pipeline.stats import bonferroni, cluster_bootstrap_t, newey_west_mean
 
 __all__ = [
     "BenchmarkApproval",
     "BenchmarkCompare",
     "BenchmarkPlan",
+    "PathBenchmarkCompare",
     "BenchmarkRun",
     "ProgramCalendar",
 ]
@@ -41,8 +44,15 @@ _CANDIDATE_FIELDS = frozenset(
         "compute_rank",
         "enabled",
         "prerequisite",
+        "forecast_strategy",
+        "max_horizon",
+        "leads",
+        "horizon_weights",
     }
 )
+_PATH_CANDIDATE_FIELDS = {
+    "forecast_strategy", "max_horizon", "leads", "horizon_weights"
+}
 _PROTOCOL_FIELDS = frozenset(
     {
         "alpha",
@@ -57,7 +67,19 @@ _PROTOCOL_FIELDS = frozenset(
         "multiplicity_method",
     }
 )
-_PROTOCOL_STRING_FIELDS = _PROTOCOL_FIELDS - {"alpha", "comparison_hac_lags"}
+_PATH_PROTOCOL_FIELDS = frozenset(
+    {
+        "path_evidence",
+        "path_loss",
+        "path_resampling",
+        "horizon_diagnostic",
+        "path_selection",
+        "tie_break",
+    }
+)
+_PROTOCOL_STRING_FIELDS = (
+    _PROTOCOL_FIELDS | _PATH_PROTOCOL_FIELDS
+) - {"alpha", "comparison_hac_lags"}
 
 
 def _string(value):
@@ -103,6 +125,35 @@ def _candidate_problems(candidate, index):
         problems.append(f"{where}.path must be a non-empty string")
     if "prerequisite" in candidate and not _string(candidate["prerequisite"]):
         problems.append(f"{where}.prerequisite must be a non-empty string")
+    declared_path = _PATH_CANDIDATE_FIELDS & set(candidate)
+    if declared_path and declared_path != _PATH_CANDIDATE_FIELDS:
+        problems.append(f"{where} must declare every path metadata field together")
+    if declared_path == _PATH_CANDIDATE_FIELDS:
+        horizon = candidate["max_horizon"]
+        leads = candidate["leads"]
+        weights = candidate["horizon_weights"]
+        if candidate["forecast_strategy"] != "direct_per_lead":
+            problems.append(f"{where}.forecast_strategy must be direct_per_lead")
+        if not isinstance(horizon, int) or isinstance(horizon, bool) or horizon < 1:
+            problems.append(f"{where}.max_horizon must be a positive integer")
+        if not isinstance(leads, list) or (
+            isinstance(horizon, int) and leads != list(range(1, horizon + 1))
+        ):
+            problems.append(f"{where}.leads must equal 1..max_horizon")
+        if not isinstance(weights, list) or (
+            isinstance(horizon, int) and len(weights) != horizon
+        ) or any(
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+            or value < 0.0
+            for value in (weights if isinstance(weights, list) else [])
+        ) or (
+            isinstance(weights, list)
+            and weights
+            and not math.isclose(sum(weights), 1.0, rel_tol=1e-12, abs_tol=1e-12)
+        ):
+            problems.append(f"{where}.horizon_weights must be finite and sum to one")
     return problems
 
 
@@ -110,7 +161,7 @@ def _protocol_problems(protocol):
     if not isinstance(protocol, dict):
         return ["protocol must be an object"]
     problems = []
-    unknown = sorted(set(protocol) - _PROTOCOL_FIELDS)
+    unknown = sorted(set(protocol) - _PROTOCOL_FIELDS - _PATH_PROTOCOL_FIELDS)
     if unknown:
         problems.append(f"protocol has unknown field(s) {unknown}")
     missing = sorted(_PROTOCOL_FIELDS - set(protocol))
@@ -182,7 +233,12 @@ def _candidate_metadata(candidate):
             "seed_policy",
             "compute_class",
             "compute_rank",
+            "forecast_strategy",
+            "max_horizon",
+            "leads",
+            "horizon_weights",
         )
+        if key in candidate
     }
 
 
@@ -328,9 +384,21 @@ class BenchmarkPlan(Stage):
                     f"{searches}; their fold validation is reported evidence, "
                     "so use an inner-training search instead"
                 )
+            contract_paths = list(self.params["contract_paths"])
+            if _PATH_CANDIDATE_FIELDS <= set(candidate):
+                templates = [
+                    path
+                    for path in contract_paths
+                    if path.startswith("pipeline.scan_h01.")
+                ]
+                for lead in candidate["leads"][1:]:
+                    contract_paths.extend(
+                        path.replace("pipeline.scan_h01.", f"pipeline.scan_h{lead:02d}.")
+                        for path in templates
+                    )
             values = {
                 path: _at_path(document.to_obj(), path)
-                for path in self.params["contract_paths"]
+                for path in contract_paths
             }
             group = candidate["group"]
             if group not in contracts:
@@ -338,8 +406,8 @@ class BenchmarkPlan(Stage):
             elif values != contracts[group]:
                 changed = [
                     path
-                    for path in self.params["contract_paths"]
-                    if values[path] != contracts[group][path]
+                    for path in sorted(set(values) | set(contracts[group]))
+                    if values.get(path) != contracts[group].get(path)
                 ]
                 raise ValueError(
                     f"candidate {candidate_id!r} changes shared contract "
@@ -1021,3 +1089,450 @@ class BenchmarkCompare(Stage):
                 ),
             },
         }
+
+
+
+def _carry_path(run_dir, dotted):
+    path = os.path.join(run_dir, "carry.json")
+    with open(path, encoding="utf-8") as handle:
+        value = json.load(handle)
+    for segment in dotted.split("."):
+        if not isinstance(value, dict) or segment not in value:
+            raise ValueError(f"path evidence {dotted!r} is absent from {path}")
+        value = value[segment]
+    return value
+
+
+class _LossTensorWriter:
+    """Stream comparison loss rows to one compressed parquet artifact."""
+
+    def __init__(self, path):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        self.path = path
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self._tmp = f"{path}.tmp-{os.getpid()}"
+        self._schema = pa.schema(
+            [
+                ("group", pa.string()), ("candidate", pa.string()),
+                ("family", pa.string()), ("cutoff", pa.string()),
+                ("fold", pa.int16()), ("ts", pa.int64()), ("lead", pa.int16()),
+                ("y", pa.float64()), ("yhat", pa.float64()), ("mu", pa.float64()),
+                ("train_scale", pa.float64()), ("model_loss", pa.float64()),
+                ("benchmark_loss", pa.float64()),
+                ("normalized_improvement", pa.float64()), ("weight", pa.float64()),
+            ],
+            metadata={"schema_version": "1"},
+        )
+        self._writer = pq.ParquetWriter(self._tmp, self._schema, compression="zstd")
+        self.rows = 0
+
+    def append(self, rows):
+        import pyarrow as pa
+
+        if rows:
+            self._writer.write_table(pa.Table.from_pylist(rows, schema=self._schema))
+            self.rows += len(rows)
+
+    def close(self):
+        self._writer.close()
+        os.replace(self._tmp, self.path)
+        digest = hashlib.sha256()
+        with open(self.path, "rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        return {
+            "path": self.path,
+            "sha256": digest.hexdigest(),
+            "rows": self.rows,
+            "schema_version": "1",
+        }
+
+
+def _bootstrap_row(clusters, draws, seed, label, alpha):
+    result = cluster_bootstrap_t(
+        clusters, n_boot=draws, seed=seed, label=label, alpha=alpha
+    )
+    return {key: value for key, value in result.items()}
+
+
+def _pooled_cluster_mean_se(totals, sizes):
+    n = len(totals)
+    total_size = sum(sizes)
+    mean = sum(totals) / total_size
+    if n < 2:
+        raise ValueError("session-cluster inference needs at least two sessions")
+    residual_ss = sum(
+        (total - mean * size) ** 2
+        for total, size in zip(totals, sizes)
+    )
+    se = math.sqrt(n / (n - 1) * residual_ss) / total_size
+    return mean, se
+
+
+def _family_spa(by_candidate, draws, seed, label):
+    """Shared recentered session-cluster max-t evidence for a model family."""
+    ids = sorted(by_candidate)
+    if not ids:
+        raise ValueError(f"{label} has no candidates")
+    keys = sorted(by_candidate[ids[0]])
+    samples = {}
+    observed = {}
+    for candidate in ids:
+        if sorted(by_candidate[candidate]) != keys:
+            raise ValueError(f"{label} candidates do not share session clusters")
+        totals = [float(sum(by_candidate[candidate][key])) for key in keys]
+        sizes = [len(by_candidate[candidate][key]) for key in keys]
+        if any(size < 1 for size in sizes):
+            raise ValueError(f"{label} contains an empty session cluster")
+        mean, se = _pooled_cluster_mean_se(totals, sizes)
+        centered = [
+            total - max(mean, 0.0) * size
+            for total, size in zip(totals, sizes)
+        ]
+        samples[candidate] = (centered, sizes)
+        observed[candidate] = {
+            "mean": mean,
+            "se": se,
+            "t": (
+                mean / se
+                if se > 0.0
+                else (math.inf if mean > 0.0 else 0.0)
+            ),
+            "n_clusters": len(keys),
+        }
+    digest = hashlib.sha256(f"{seed}|{label}".encode()).digest()
+    rng = random.Random(int.from_bytes(digest[:8], "big"))
+    exceed = {candidate: 0 for candidate in ids}
+    n_clusters = len(keys)
+    for _ in range(draws):
+        picked = [rng.randrange(n_clusters) for _ in range(n_clusters)]
+        maximum = -math.inf
+        for candidate in ids:
+            centered, sizes = samples[candidate]
+            totals_star = [centered[index] for index in picked]
+            sizes_star = [sizes[index] for index in picked]
+            mean_star, se_star = _pooled_cluster_mean_se(totals_star, sizes_star)
+            statistic = mean_star / se_star if se_star > 0.0 else 0.0
+            maximum = max(maximum, statistic)
+        for candidate in ids:
+            if maximum >= observed[candidate]["t"]:
+                exceed[candidate] += 1
+    return {
+        candidate: {
+            **observed[candidate],
+            "p_value": (1 + exceed[candidate]) / (draws + 1),
+            "method": "shared recentered whole-session family max-t",
+        }
+        for candidate in ids
+    }
+
+
+def _superior_set(by_candidate, draws, seed, alpha, label):
+    means = {
+        candidate: sum(map(sum, clusters.values()))
+        / sum(len(values) for values in clusters.values())
+        for candidate, clusters in by_candidate.items()
+    }
+    best = max(means, key=lambda candidate: (means[candidate], candidate))
+    members = [best]
+    tests = []
+    comparisons = max(len(by_candidate) - 1, 1)
+    for candidate in sorted(by_candidate):
+        if candidate == best:
+            continue
+        keys = sorted(by_candidate[best])
+        if keys != sorted(by_candidate[candidate]):
+            raise ValueError(f"{label} candidates do not share session clusters")
+        differences = {
+            key: [
+                left - right
+                for left, right in zip(
+                    by_candidate[candidate][key], by_candidate[best][key]
+                )
+            ]
+            for key in keys
+        }
+        test = _bootstrap_row(
+            differences, draws, seed, f"{label}:{candidate}:{best}",
+            alpha / comparisons,
+        )
+        test.update({"candidate": candidate, "best": best})
+        tests.append(test)
+        if test["ci_high"] is None or test["ci_high"] >= 0.0:
+            members.append(candidate)
+    return {
+        "best_mean": best,
+        "members": sorted(members),
+        "eliminated": sorted(set(by_candidate) - set(members)),
+        "tests": tests,
+        "method": "session-cluster bootstrap-t; Bonferroni superior set",
+    }
+
+
+class PathBenchmarkCompare(BenchmarkCompare):
+    """Add per-lead loss evidence and path-level uncertainty sets.
+
+    This comparator never trains or promotes. It reads completed outer
+    folds, persists the per-origin/per-lead normalized loss tensor, uses
+    whole UTC sessions as bootstrap clusters, and returns conservative
+    horizon and path superior sets plus average and uniform SPA evidence.
+    """
+
+    outputs = BenchmarkCompare.outputs + (
+        "loss_evidence",
+        "horizon_ranking",
+        "horizon_confidence_sets",
+        "model_confidence_sets",
+        "superior_predictive_ability",
+        "selection",
+    )
+    _PARAMS = ("bootstrap_draws", "bootstrap_seed")
+
+    @classmethod
+    def validate_params(cls, params):
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        draws = params.get("bootstrap_draws")
+        seed = params.get("bootstrap_seed")
+        if not isinstance(draws, int) or isinstance(draws, bool) or draws < 99:
+            problems.append("bootstrap_draws must be an integer >= 99")
+        if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
+            problems.append("bootstrap_seed must be a non-negative integer")
+        return problems
+
+    def run(self, ctx, inputs):
+        result = super().run(ctx, inputs)
+        extras = {
+            "loss_evidence": {},
+            "horizon_ranking": [],
+            "horizon_confidence_sets": [],
+            "model_confidence_sets": [],
+            "superior_predictive_ability": [],
+            "selection": [],
+        }
+        if inputs["approval"].get("approved") is not True:
+            result.update(extras)
+            return result
+        missing = _PATH_PROTOCOL_FIELDS - set(inputs["protocol"])
+        if missing:
+            raise ValueError(f"path protocol is missing field(s) {sorted(missing)}")
+        draws = self.params["bootstrap_draws"]
+        seed = self.params["bootstrap_seed"]
+        alpha = inputs["protocol"]["alpha"]
+        writer = _LossTensorWriter(
+            os.path.join(ctx.artifact_dir, "path-loss-tensor.parquet")
+        )
+        horizon_scores = {}
+        path_scores = {}
+        expected_evidence = {}
+        try:
+            for candidate in inputs["runs"]:
+                if candidate.get("state") != "ran":
+                    continue
+                if not _PATH_CANDIDATE_FIELDS <= set(candidate):
+                    raise ValueError(f"candidate {candidate.get('id')!r} lacks path metadata")
+                summary = _load_summary(candidate)
+                horizon = candidate["max_horizon"]
+                weights = candidate["horizon_weights"]
+                for fold_index, fold in enumerate(summary["folds"]):
+                    cutoff = fold["cutoff"]
+                    run_dir = fold["run_dir"]
+                    records = _carry_path(
+                        run_dir, inputs["protocol"]["path_evidence"]
+                    )
+                    scales = {
+                        int(row["lead"]): float(row["train_scale"])
+                        for row in records
+                    }
+                    units = read_prediction_series(run_dir)
+                    if {unit["lead"] for unit in units} != set(range(1, horizon + 1)):
+                        raise ValueError(
+                            f"{candidate['id']} fold {cutoff} lacks the complete 1..H_i path"
+                        )
+                    path_by_stamp = {}
+                    fold_rows = []
+                    common = None
+                    for unit in units:
+                        lead = unit["lead"]
+                        stamps = tuple(unit["stamps"])
+                        common = stamps if common is None else common
+                        if stamps != common:
+                            raise ValueError(
+                                f"{candidate['id']} fold {cutoff} heads do not share origins"
+                            )
+                        scale = scales.get(lead, 0.0)
+                        if not math.isfinite(scale) or scale <= 0.0:
+                            raise ValueError(
+                                f"{candidate['id']} fold {cutoff} lead {lead} has no train scale"
+                            )
+                        evidence_key = (candidate["group"], cutoff, lead)
+                        evidence = (
+                            stamps,
+                            tuple(unit["y"]),
+                            float(unit["mu"]),
+                            scale,
+                        )
+                        prior = expected_evidence.setdefault(evidence_key, evidence)
+                        if prior != evidence:
+                            raise ValueError(
+                                f"group {candidate['group']} fold {cutoff} lead {lead} "
+                                "is not paired on origins, outcomes, benchmark, and scale"
+                            )
+                        weight = float(weights[lead - 1])
+                        clusters = horizon_scores.setdefault(
+                            (candidate["group"], lead), {}
+                        ).setdefault(candidate["id"], {})
+                        for ts, y, yhat, mu in zip(
+                            unit["stamps"], unit["y"], unit["yhat"], [unit["mu"]] * len(unit["y"])
+                        ):
+                            benchmark_loss = (y - mu) ** 2 / scale
+                            model_loss = (y - yhat) ** 2 / scale
+                            improvement = benchmark_loss - model_loss
+                            cluster = f"{cutoff}:{int(ts) // 86400000}"
+                            clusters.setdefault(cluster, []).append(improvement)
+                            path_by_stamp[ts] = path_by_stamp.get(ts, 0.0) + weight * improvement
+                            fold_rows.append(
+                                {
+                                    "group": candidate["group"],
+                                    "candidate": candidate["id"],
+                                    "family": candidate["family"],
+                                    "cutoff": cutoff,
+                                    "fold": fold_index,
+                                    "ts": ts,
+                                    "lead": lead,
+                                    "y": y,
+                                    "yhat": yhat,
+                                    "mu": mu,
+                                    "train_scale": scale,
+                                    "model_loss": model_loss,
+                                    "benchmark_loss": benchmark_loss,
+                                    "normalized_improvement": improvement,
+                                    "weight": weight,
+                                }
+                            )
+                    path_clusters = path_scores.setdefault(
+                        candidate["group"], {}
+                    ).setdefault(candidate["id"], {})
+                    for ts, score in path_by_stamp.items():
+                        cluster = f"{cutoff}:{int(ts) // 86400000}"
+                        path_clusters.setdefault(cluster, []).append(score)
+                    writer.append(fold_rows)
+        except Exception:
+            writer._writer.close()
+            if os.path.exists(writer._tmp):
+                os.remove(writer._tmp)
+            raise
+        extras["loss_evidence"] = writer.close()
+
+        horizons_per_group = {}
+        for group, lead in horizon_scores:
+            horizons_per_group.setdefault(group, set()).add(lead)
+        for (group, lead), candidates in sorted(horizon_scores.items()):
+            superior = _superior_set(
+                candidates, draws, seed, alpha / len(horizons_per_group[group]),
+                f"horizon:{group}:{lead}",
+            )
+            extras["horizon_confidence_sets"].append(
+                {"group": group, "lead": lead, **superior}
+            )
+            means = {
+                candidate: sum(map(sum, clusters.values()))
+                / sum(len(values) for values in clusters.values())
+                for candidate, clusters in candidates.items()
+            }
+            for rank, (candidate, mean) in enumerate(
+                sorted(means.items(), key=lambda item: (-item[1], item[0])), start=1
+            ):
+                extras["horizon_ranking"].append(
+                    {
+                        "group": group,
+                        "lead": lead,
+                        "candidate": candidate,
+                        "mean_normalized_improvement": mean,
+                        "rank": rank,
+                        "in_confidence_set": candidate in superior["members"],
+                    }
+                )
+
+        ranking = {row["id"]: row for row in result["ranking"]}
+        for group, candidates in sorted(path_scores.items()):
+            model_set = _superior_set(
+                candidates, draws, seed, alpha, f"path:{group}"
+            )
+            extras["model_confidence_sets"].append({"group": group, **model_set})
+            horizon_means = {}
+            for (one_group, lead), by_candidate in horizon_scores.items():
+                if one_group != group:
+                    continue
+                horizon_means[lead] = {
+                    candidate: sum(map(sum, clusters.values()))
+                    / sum(len(values) for values in clusters.values())
+                    for candidate, clusters in by_candidate.items()
+                }
+            best_by_h = {
+                lead: max(values.values()) for lead, values in horizon_means.items()
+            }
+            average_spa = _family_spa(
+                candidates, draws, seed, f"average-spa:{group}"
+            )
+            horizon_spa = {
+                lead: _family_spa(
+                    horizon_scores[(group, lead)],
+                    draws,
+                    seed,
+                    f"horizon-spa:{group}:{lead}",
+                )
+                for lead in sorted(horizon_means)
+            }
+            tie_rows = []
+            for candidate in sorted(candidates):
+                per_h = {
+                    str(lead): horizon_spa[lead][candidate]
+                    for lead in sorted(horizon_spa)
+                }
+                uniform_p = max(row["p_value"] for row in per_h.values())
+                extras["superior_predictive_ability"].append(
+                    {
+                        "group": group,
+                        "candidate": candidate,
+                        "average": average_spa[candidate],
+                        "per_horizon": per_h,
+                        "uniform_p_value": uniform_p,
+                        "uniform_pass": uniform_p <= alpha
+                        and all(row["mean"] > 0.0 for row in per_h.values()),
+                        "selection_adjustment": (
+                            "shared recentered candidate-family max-t; "
+                            "uniform result is intersection-union across horizons"
+                        ),
+                    }
+                )
+                if candidate not in model_set["members"]:
+                    continue
+                worst_regret = max(
+                    best_by_h[lead] - horizon_means[lead][candidate]
+                    for lead in horizon_means
+                )
+                std = ranking[candidate].get("std")
+                stability = float(std) if isinstance(std, (int, float)) else math.inf
+                tie_rows.append(
+                    (
+                        stability,
+                        worst_regret,
+                        ranking[candidate]["compute_rank"],
+                        candidate,
+                    )
+                )
+            chosen = min(tie_rows)[3]
+            extras["selection"].append(
+                {
+                    "group": group,
+                    "candidate": chosen,
+                    "superior_set": model_set["members"],
+                    "tie_break": "fold stability, worst-horizon regret, compute rank, id",
+                    "auto_promote": False,
+                }
+            )
+        result.update(extras)
+        return result

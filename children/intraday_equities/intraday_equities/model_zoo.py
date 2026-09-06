@@ -5,15 +5,18 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import os
 
 from dskit.pipeline.document import PipelineDocument, load_document
+from dskit.pipeline.node import Node
 from dskit.pipeline.stages import Stage, reject_unknown_params
 from dskit.pipeline.libs.torch_ts import ZooEstimator
 
 from intraday_equities.modelability_study import asset_walk_document
 
 __all__ = [
+    "DirectPathScore",
     "EmpiricalSelectRegressor",
     "Gate3ZooCandidates",
     "SequenceOnlyZooEstimator",
@@ -28,6 +31,7 @@ _PARAMS = (
     "memory_artifact",
     "memory_sha256",
     "templates",
+    "path_protocol",
 )
 _TEMPLATE_FIELDS = frozenset(
     {
@@ -324,7 +328,7 @@ def _template_problems(template, index):
     return problems
 
 
-def _metadata(template, candidate_id, group):
+def _metadata(template, candidate_id, group, horizon, weights):
     return {
         "id": candidate_id,
         "group": group,
@@ -335,10 +339,14 @@ def _metadata(template, candidate_id, group):
         "compute_class": template["compute_class"],
         "compute_rank": template["compute_rank"],
         "enabled": template["enabled"],
+        "forecast_strategy": "direct_per_lead",
+        "max_horizon": horizon,
+        "leads": list(range(1, horizon + 1)),
+        "horizon_weights": list(weights),
     }
 
 
-def _document(source, template, asset, horizon, cache, candidate_id):
+def _document(source, template, asset, horizon, cache, candidate_id, weights):
     obj = asset_walk_document(
         source,
         "p13-model-zoo",
@@ -347,15 +355,42 @@ def _document(source, template, asset, horizon, cache, candidate_id):
         cache,
         tag=template["id"],
     ).to_obj()
-    scan = obj["pipeline"]["scan"]["params"]
-    for field in _MODEL_FIELDS:
-        if field in template["model"]:
-            scan[field] = copy.deepcopy(template["model"][field])
-        else:
-            scan.pop(field, None)
+    pipeline = obj["pipeline"]
+    base = pipeline.pop("scan")
+    path_inputs = {}
+    for lead in range(1, horizon + 1):
+        key = f"scan_h{lead:02d}"
+        node = copy.deepcopy(base)
+        scan = node["params"]
+        scan["lead_start"] = lead
+        scan["lead_step"] = lead
+        scan["lead_stop"] = lead
+        scan["common_lead_stop"] = horizon
+        for field in _MODEL_FIELDS:
+            if field in template["model"]:
+                scan[field] = copy.deepcopy(template["model"][field])
+            else:
+                scan.pop(field, None)
+        pipeline[key] = node
+        path_inputs[f"records_h{lead:02d}"] = "$" + f"{key}.records"
+        path_inputs[f"metrics_h{lead:02d}"] = "$" + f"{key}.metrics"
+    pipeline["path"] = {
+        "uses": "intraday_equities.model_zoo:DirectPathScore",
+        "inputs": path_inputs,
+        "params": {
+            "split": "val",
+            "asset": asset,
+            "max_horizon": horizon,
+            "horizon_weights": list(weights),
+            "score": "train_scaled_improvement",
+        },
+    }
+    obj["walkforward"]["objective"] = "$path.metrics.path_score"
+    obj["walkforward"]["select"] = "max"
     obj["name"] = candidate_id
     obj["notes"] = (
-        "ADR-0099: pinned P12 target/cache plus an inline P13 model template."
+        "ADR-0099/0100: pinned P12 target/cache; one honest direct head "
+        "per lead 1..H_i, common max-H origins, and a path-level score."
     )
     return PipelineDocument.from_obj(obj)
 
@@ -371,6 +406,138 @@ def _write(path, document):
     os.replace(tmp, path)
 
 
+class DirectPathScore(Node):
+    """Aggregate one stock's direct heads into a predeclared path score.
+
+    Every input pair is produced by a separate honest lead-specific fit.
+    The upstream scans enforce the common H_i outcome boundary; this
+    node refuses mismatched row counts and computes an equal-origin,
+    training-scale-normalized path score without reading the lockbox.
+
+    Parameters
+    ----------
+    params : dict
+        asset, max_horizon, explicit horizon_weights, and the score name.
+    """
+
+    role = "score"
+    outputs = ("records", "metrics")
+    _PARAMS = ("split", "asset", "max_horizon", "horizon_weights", "score")
+
+    @classmethod
+    def validate_params(cls, params):
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        if params.get("split") != "val":
+            problems.append("split must be val")
+        if not _string(params.get("asset")):
+            problems.append("asset must be a non-empty string")
+        horizon = params.get("max_horizon")
+        if not isinstance(horizon, int) or isinstance(horizon, bool) or horizon < 1:
+            problems.append("max_horizon must be a positive integer")
+        weights = params.get("horizon_weights")
+        if not isinstance(weights, list) or not weights:
+            problems.append("horizon_weights must be a non-empty list")
+        elif (
+            any(
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or value < 0.0
+                for value in weights
+            )
+            or not math.isclose(sum(weights), 1.0, rel_tol=1e-12, abs_tol=1e-12)
+        ):
+            problems.append("horizon_weights must be finite, non-negative, and sum to one")
+        elif isinstance(horizon, int) and len(weights) != horizon:
+            problems.append("horizon_weights length must equal max_horizon")
+        if params.get("score") != "train_scaled_improvement":
+            problems.append("score must be train_scaled_improvement")
+        return problems
+
+    def validate_inputs(self, inputs):
+        horizon = self.params.get("max_horizon")
+        if not isinstance(horizon, int) or horizon < 1:
+            return []
+        wanted = {
+            f"{kind}_h{lead:02d}"
+            for lead in range(1, horizon + 1)
+            for kind in ("records", "metrics")
+        }
+        if not isinstance(inputs, dict) or set(inputs) != wanted:
+            return [f"inputs must contain exactly {sorted(wanted)}"]
+        return []
+
+    def run(self, ctx, inputs):
+        del ctx
+        asset = self.params["asset"]
+        weights = self.params["horizon_weights"]
+        rows = []
+        counts = set()
+        origins = set()
+        for lead, weight in enumerate(weights, start=1):
+            records = inputs[f"records_h{lead:02d}"]
+            metrics = inputs[f"metrics_h{lead:02d}"]
+            if not isinstance(records, list):
+                raise ValueError(f"lead {lead} records must be a list")
+            matched = [
+                row for row in records
+                if row.get("symbol") == asset and row.get("lead") == lead
+            ]
+            if len(matched) != 1:
+                raise ValueError(f"lead {lead} must contain exactly one {asset} row")
+            row = copy.deepcopy(matched[0])
+            score = row.get("train_scaled_improvement")
+            count = row.get("n")
+            if (
+                not isinstance(score, (int, float))
+                or isinstance(score, bool)
+                or not math.isfinite(score)
+                or not isinstance(count, (int, float))
+                or isinstance(count, bool)
+                or count < 1
+            ):
+                raise ValueError(f"lead {lead} has incomplete path evidence")
+            origin = row.get("origin_sha256")
+            if not _string(origin) or len(origin) != 64:
+                raise ValueError(f"lead {lead} has no validation-origin digest")
+            counts.add(int(count))
+            origins.add(origin)
+            row.update(
+                {
+                    "weight": float(weight),
+                    "train_ic": float(metrics.get("train_ic", 0.0)),
+                    "val_ic": float(metrics.get("val_ic", 0.0)),
+                    "train_calibration_slope": float(
+                        metrics.get("train_calibration_slope", 0.0)
+                    ),
+                    "val_calibration_slope": float(
+                        metrics.get("val_calibration_slope", 0.0)
+                    ),
+                }
+            )
+            rows.append(row)
+        if len(counts) != 1 or len(origins) != 1:
+            raise ValueError(
+                "all path heads must score identical common validation origins"
+            )
+        path_score = sum(row["weight"] * row["train_scaled_improvement"] for row in rows)
+        return {
+            "records": rows,
+            "metrics": {
+                "path_score": float(path_score),
+                "worst_horizon_score": float(
+                    min(row["train_scaled_improvement"] for row in rows)
+                ),
+                "mean_val_ic": float(
+                    sum(row["weight"] * row["val_ic"] for row in rows)
+                ),
+                "n_leads": float(len(rows)),
+                "n_common_origins": float(next(iter(counts))),
+            },
+        }
+
+
 class Gate3ZooCandidates(Stage):
     """Expand inline model templates across the 25 pinned Gate-3 passers."""
 
@@ -380,9 +547,17 @@ class Gate3ZooCandidates(Stage):
     def validate_params(cls, params):
         problems = []
         reject_unknown_params(problems, params, _PARAMS)
-        for field in _PARAMS[:-1]:
+        for field in _PARAMS[:6]:
             if not _string(params.get(field)):
                 problems.append(f"{field} must be a non-empty string")
+        protocol = params.get("path_protocol")
+        if protocol != {
+            "forecast_strategy": "direct_per_lead",
+            "horizon_weighting": "equal",
+            "primary_metric": "train_scaled_improvement",
+            "common_origins": True,
+        }:
+            problems.append("path_protocol must declare the supported direct equal-weight path")
         templates = params.get("templates")
         if not isinstance(templates, list) or not templates:
             problems.append("templates must be a non-empty list")
@@ -421,13 +596,18 @@ class Gate3ZooCandidates(Stage):
             asset, horizon = item["asset"], item["horizon"]
             group = f"{asset}:h{horizon:02d}"
             cache = _cache_for(asset, groups)
+            weights = [1.0 / horizon] * horizon
             for template in self.params["templates"]:
                 candidate_id = f"{template['id']}-{asset.lower()}-h{horizon:02d}"
-                metadata = _metadata(template, candidate_id, group)
+                metadata = _metadata(
+                    template, candidate_id, group, horizon, weights
+                )
                 if not template["enabled"]:
                     candidates.append({**metadata, "prerequisite": template["prerequisite"]})
                     continue
-                document = _document(source, template, asset, horizon, cache, candidate_id)
+                document = _document(
+                    source, template, asset, horizon, cache, candidate_id, weights
+                )
                 path = os.path.join(root, candidate_id + ".json")
                 _write(path, document)
                 candidates.append({**metadata, "path": path})

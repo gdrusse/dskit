@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +12,7 @@ from dskit.pipeline.benchmarks import (
     BenchmarkApproval,
     BenchmarkCompare,
     BenchmarkPlan,
+    PathBenchmarkCompare,
     BenchmarkRun,
 )
 from dskit.pipeline.stages import StageContext
@@ -350,3 +352,117 @@ def test_run_recovers_a_complete_summary_after_checkpoint_window(
     assert called == []
     assert result["runs"][0]["state"] == "ran"
     assert result["runs"][0]["recovered_after_interruption"] is True
+
+
+
+def test_path_compare_persists_loss_tensor_and_uncertainty_sets(tmp_path):
+    pytest.importorskip("pyarrow")
+    from dskit.pipeline.predictions import PredictionWriter
+
+    runs = []
+    for candidate_id, yhat in (("strong", 0.8), ("weak", 0.1)):
+        document_hash = ("a" if candidate_id == "strong" else "c") * 64
+        summary_dir = tmp_path / f"{candidate_id}-summary"
+        cutoffs = _summary(summary_dir, document_hash, [0.4, 0.3])
+        payload = json.loads((summary_dir / "walkforward.json").read_text())
+        for fold_index, fold in enumerate(payload["folds"]):
+            run_dir = tmp_path / f"{candidate_id}-fold-{fold_index}"
+            stamps = [
+                (10 + fold_index * 10 + day) * 86_400_000 + 60_000
+                for day in range(4)
+            ]
+            realized = [1.0, -1.0, 1.0, -1.0]
+            for lead in (1, 2):
+                with PredictionWriter(
+                    str(run_dir / "artifacts" / f"scan_h{lead:02d}"),
+                    ["JPM"],
+                    fold=fold_index,
+                    period_minutes=1,
+                ) as writer:
+                    writer.append(
+                        "JPM", lead, stamps, realized,
+                        [yhat if value > 0 else -yhat for value in realized], 0.0,
+                    )
+            (run_dir / "carry.json").write_text(
+                json.dumps(
+                    {
+                        "path": {
+                            "records": [
+                                {"lead": 1, "train_scale": 1.0},
+                                {"lead": 2, "train_scale": 1.0},
+                            ]
+                        }
+                    }
+                )
+            )
+            fold["run_dir"] = str(run_dir)
+        (summary_dir / "walkforward.json").write_text(json.dumps(payload))
+        row = _run_row(
+            candidate_id,
+            document_hash,
+            summary_dir,
+            cutoffs,
+            compute_class="cpu-small" if candidate_id == "strong" else "cpu-large",
+            compute_rank=1 if candidate_id == "strong" else 3,
+        )
+        row.update(
+            {
+                "forecast_strategy": "direct_per_lead",
+                "max_horizon": 2,
+                "leads": [1, 2],
+                "horizon_weights": [0.5, 0.5],
+            }
+        )
+        runs.append(row)
+    protocol = _protocol()
+    protocol.update(
+        {
+            "path_evidence": "path.records",
+            "path_loss": "training-scale-normalized squared-error improvement",
+            "path_resampling": "whole UTC trading sessions",
+            "horizon_diagnostic": "bootstrap horizon confidence sets",
+            "path_selection": "bootstrap model confidence set and SPA",
+            "tie_break": "fold stability, worst-horizon regret, compute rank, id",
+        }
+    )
+    result = PathBenchmarkCompare(
+        "compare", {"bootstrap_draws": 99, "bootstrap_seed": 0}
+    ).run(
+        _context(tmp_path),
+        {
+            "runs": runs,
+            "protocol": protocol,
+            "contracts": {},
+            "approval": _approval(),
+        },
+    )
+    assert result["loss_evidence"]["rows"] == 32
+    assert Path(result["loss_evidence"]["path"]).is_file()
+    assert {row["lead"] for row in result["horizon_confidence_sets"]} == {1, 2}
+    assert result["model_confidence_sets"][0]["best_mean"] == "strong"
+    assert result["selection"][0]["candidate"] == "strong"
+    assert result["selection"][0]["auto_promote"] is False
+    assert len(result["superior_predictive_ability"]) == 2
+    assert all(
+        row["average"]["method"]
+        == "shared recentered whole-session family max-t"
+        for row in result["superior_predictive_ability"]
+    )
+
+
+def test_path_compare_is_no_launch_while_approval_is_pending(tmp_path):
+    protocol = _protocol()
+    result = PathBenchmarkCompare(
+        "compare", {"bootstrap_draws": 99, "bootstrap_seed": 0}
+    ).run(
+        _context(tmp_path),
+        {
+            "runs": [{**_metadata("ridge"), "state": "awaiting_approval"}],
+            "protocol": protocol,
+            "contracts": {},
+            "approval": _approval(False),
+        },
+    )
+    assert result["loss_evidence"] == {}
+    assert result["selection"] == []
+    assert result["provenance"]["no_launch"] is True

@@ -820,6 +820,18 @@ def test_p13_expands_every_enabled_family_over_gate3_passers():
     assert raw["stages"]["approval"]["inputs"] == {
         "inventory_sha256": "$plan.inventory_sha256"
     }
+    assert materialize["path_protocol"] == {
+        "forecast_strategy": "direct_per_lead",
+        "horizon_weighting": "equal",
+        "primary_metric": "train_scaled_improvement",
+        "common_origins": True,
+    }
+    plan = raw["stages"]["plan"]["params"]
+    assert "pipeline.scan_h01.params.common_lead_stop" in plan["contract_paths"]
+    assert "pipeline.path.params.horizon_weights" in plan["contract_paths"]
+    assert plan["protocol"]["path_evidence"] == "path.records"
+    assert raw["stages"]["compare"]["uses"].endswith(":PathBenchmarkCompare")
+    assert raw["stages"]["compare"]["params"]["bootstrap_draws"] == 9999
 
 
 def test_the_p1_cell_differs_from_its_baseline_in_two_knobs_only():

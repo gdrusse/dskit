@@ -2015,3 +2015,75 @@ def test_one_design_matrix_is_built_once_per_name(tmp_path):
     coded = prepared[0][2]
     assert coded[:, :-1].tolist() == matrix.tolist()
     assert coded[:, -1].tolist() == [7.0] * 4
+
+
+
+def test_direct_heads_share_max_horizon_origins_and_emit_scale_calibration():
+    spec = _mini_spec()
+    spec["features"] = ["ret_lag_0"]
+    spec["period_ms"] = 60_000
+    spec["horizon"] = {
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 3,
+        "anchors": [1],
+        "top_k": 1,
+        "se_mult": 2.0,
+        "band_leads": 1,
+    }
+    bars, rows = [], []
+    price = 100.0
+    for index in range(80):
+        ret = 0.001 * ((index % 9) - 4)
+        price *= math.exp(ret)
+        bars.append({"symbol": "JPM", "asof_ms": _ms(index), "close": price})
+        rows.append(
+            {
+                "symbol": "JPM",
+                "asof_ms": _ms(index),
+                "ret_lag_0": ret,
+                "close": price,
+            }
+        )
+    inputs = {"records": rows, "bars": bars, "spec": spec}
+    base = {
+        "split": "val",
+        "train_end_ms": _ms(49),
+        "val_start_ms": _ms(51),
+        "val_end_ms": _ms(79),
+        "common_lead_stop": 3,
+        "estimator": "sklearn.linear_model.Ridge",
+        "estimator_params": {"alpha": 1.0},
+    }
+    results = []
+    for lead in (1, 3):
+        params = {
+            **base,
+            "lead_start": lead,
+            "lead_step": lead,
+            "lead_stop": lead,
+        }
+        results.append(NoInformationScan(f"h{lead}", params).run(None, inputs))
+    assert results[0]["records"][0]["n"] == results[1]["records"][0]["n"]
+    for result in results:
+        row = result["records"][0]
+        assert row["train_scale"] > 0.0
+        assert math.isfinite(row["train_scaled_improvement"])
+        assert math.isfinite(result["metrics"]["val_calibration_slope"])
+
+
+def test_common_lead_stop_fails_closed_when_shorter_than_head():
+    base = {
+        "split": "val",
+        "train_end_ms": 1,
+        "val_start_ms": 2,
+        "val_end_ms": 3,
+        "lead_start": 3,
+        "lead_step": 3,
+        "lead_stop": 3,
+        "common_lead_stop": 2,
+    }
+    assert any(
+        "common_lead_stop" in problem
+        for problem in NoInformationScan.validate_params(base)
+    )

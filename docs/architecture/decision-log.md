@@ -5206,3 +5206,56 @@ accidentally begin training during inventory review. The exact family list,
 equal pair weights, HPO grids, ordinal compute ranks, HAC lag, and Bonferroni
 policy are judgemental predeclared choices. No pipeline or test execution is
 authorized by this decision.
+
+## ADR-0100 -- P13 selects a stock-specific full forecast path
+
+**Status:** Accepted, not locked (2026-09-05; owner directed implementation)
+
+**Context.** Gate 3 certifies a terminal horizon H_i separately for each stock
+i. The subsequent research synthesis found that scoring only the terminal
+forecast discards information the MIO may need at h=1,...,H_i and permits model
+selection to hide poor intermediate-horizon behavior.
+
+**Decision.** Each enabled P13 candidate is one stock-specific path system. For
+stock i it fits an honest direct head at every integer lead h=1,...,H_i. Each
+head refits its own train-only feature selection and family-specific inner HPO
+inside every outer fold. All heads use the locked ADR-0098 outer dates and the
+maximum H_i outcome-availability boundary, so their outer-validation origins
+are identical. Generic multi-output support in ADR-0049 remains available, but
+P13 uses direct heads because its current label construction is lead-specific.
+
+The primary outer-fold score is the explicit equal-weight mean across leads of
+squared-error improvement over the train-only no-information mean, divided by
+that lead's training variance. Equal horizon weights are judgemental and may be
+amended before lock when MIO horizon utility is frozen. Per-lead IC and
+calibration slope remain diagnostics. Every per-origin/per-lead model loss,
+benchmark loss, training scale, forecast, realization, weight, fold, and
+timestamp is persisted as a loss tensor.
+
+Comparison resamples whole UTC trading sessions shared across candidates and
+horizons. It reports conservative Bonferroni session-cluster bootstrap-t
+superior sets per horizon and for the full path, average SPA evidence, and an
+intersection-union uniform SPA result requiring every horizon to beat the
+benchmark. This is a conservative implementation of the research-backed
+Horizon Confidence Set / Model Confidence Set objective; the exact Bonferroni
+construction is judgemental. Among path-set members, the frozen tie-break is
+lower outer-fold score variability, lower worst-horizon regret, lower declared
+compute rank, then identifier. The comparator reports a recommendation but
+never promotes a model.
+
+Gate-3 status applies only to the certified terminal pair (i,H_i). The shorter
+P13 forecasts are new zoo evidence, not retroactive Gate-3 passes. The model-zoo
+approval remains pending; this ADR and its weights/statistical implementation
+remain not locked until plan review.
+
+**Research basis.** Direct multi-horizon forecasting and horizon-aware
+evaluation follow the sources journaled under A18624 in
+children/intraday_equities/docs/research/post-gate3-predictor-output/2026-09-05-multi-horizon-selection.md.
+The common-origin rule, proper loss aggregation, session-block resampling,
+Horizon Confidence Sets, Model Confidence Sets, SPA/uSPA evidence, and nested
+selection rules are research-backed there. Equal weights, the conservative
+Bonferroni superior-set implementation, and tie-break order are judgemental.
+
+**Consequences.** A stock approved at H_i=5 emits h=1,2,3,4,5; a stock approved
+at H_i=10 emits h=1,...,10. Stocks do not share one global terminal horizon.
+No zoo execution is authorized by this decision.
