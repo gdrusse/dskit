@@ -27,6 +27,7 @@ from dskit.pipeline.libs.torch_ts import (  # noqa: E402
     ARCHS,
     CategoricalEmbeddingMLPRegressor,
     CategoricalRecurrentFusionRegressor,
+    CategoricalTemporalFusionRegressor,
     NODE_KINDS,
     TimeSeriesPredict,
     TimeSeriesTrain,
@@ -629,5 +630,47 @@ def test_categorical_recurrent_fusion_keeps_static_features_outside_time(arch):
     assert prediction.shape == (len(x),)
     assert np.isfinite(prediction).all()
     assert model._module.recurrent.input_size == 5
+    assert model._module.static[0].in_features == 2
+    assert model._module.head.in_features == 4 + 3 + 2
+
+
+@pytest.mark.parametrize("arch", ["tcn", "transformer"])
+def test_categorical_temporal_fusion_keeps_static_features_outside_time(arch):
+    import numpy as np
+
+    names = [
+        f"ohlcv_t{step:03d}_{field}"
+        for step in range(4)
+        for field in ("open", "high", "low", "close", "volume")
+    ] + ["tod_sin", "ref_ret_SPY", "symbol_code"]
+    rows = []
+    for index in range(8):
+        path = []
+        for step in range(4):
+            price = 100.0 + index + step
+            path.extend([price, price + 1.0, price - 1.0, price + 0.5, 10 + step])
+        rows.append(path + [index / 8.0, -index / 100.0, index % 2])
+    x = np.asarray(rows, dtype=np.float32)
+    model = CategoricalTemporalFusionRegressor(
+        arch=arch,
+        context_length=3,
+        hidden_size=4,
+        num_layers=1,
+        static_projection_dim=3,
+        embedding_dim=2,
+        epochs=1,
+        batch_size=4,
+        dropout=0.0,
+        nhead=2,
+        device="cpu",
+    ).fit(
+        x,
+        np.linspace(-0.1, 0.1, len(x)),
+        categorical_feature=[len(names) - 1],
+        feature_names=names,
+    )
+    prediction = model.predict(x)
+    assert prediction.shape == (len(x),)
+    assert np.isfinite(prediction).all()
     assert model._module.static[0].in_features == 2
     assert model._module.head.in_features == 4 + 3 + 2

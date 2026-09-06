@@ -932,3 +932,32 @@ def test_p14_recurrent_zoo_has_two_one_minute_late_fusion_searches():
         "85e1fb8cbacba2d1c3524a2decc3cb95b1d6af732d009b337728538078f9bcfc"
     )
     assert approval["approved_by"] == "owner"
+
+
+def test_p15_temporal_zoo_has_three_paired_sequence_searches():
+    raw = _raw("run-p15-temporal-fusion-zoo.json")
+    features = raw["pipeline"]["features"]["params"]
+    assert features["cache_dir"] == "./pipeline_cache/p14-features-f32-ohlcv1m-v2"
+    assert features["sequence_lookback"] == 120
+    templates = raw["stages"]["materialize"]["params"]["templates"]
+    assert [row["family"] for row in templates] == [
+        "pooled-ohlcv-ridge-fusion",
+        "pooled-ohlcv-tcn-fusion",
+        "pooled-ohlcv-small-transformer-fusion",
+    ]
+    assert [row["feature_source"] for row in templates] == [
+        "sequence", "sequence", "sequence"
+    ]
+    assert [row["model"]["hpo_trials"] for row in templates] == [4, 4, 4]
+    assert templates[0]["model"]["estimator"].endswith(
+        "CategoricalSequenceRidgeRegressor"
+    )
+    assert templates[1]["model"]["estimator_params"]["arch"] == "tcn"
+    assert templates[2]["model"]["estimator_params"]["arch"] == "transformer"
+    for template in templates:
+        assert template["model"]["hpo_space"]["context_length"] == [30, 60, 120]
+    approval = raw["stages"]["approval"]["params"]
+    assert approval["approved_inventory_sha256"] == (
+        "65bbbfa44752b21f1a817e6b47d7e02984e56fbe8a5392a830a478cd977e6058"
+    )
+    assert approval["approved_by"] == "owner"

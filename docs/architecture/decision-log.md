@@ -5446,3 +5446,28 @@ training rows only. Each family owns four purged inner-HPO trials.
 final refit. It adds a version-3 content-verified sequence cache without
 altering P13 artifacts. Candidate execution remains inventory-gated and begins
 with one fold worker because each process retains the full memory allowance.
+
+---
+
+## ADR-0105 -- Compare linear, convolutional, and attention sequence biases
+
+**Status:** Accepted, not locked (2026-09-06; owner approved implementation)
+
+**Context.** Across P13 and P14, pooled LightGBM remains the strongest mean
+result, the tabular MLP is close, frozen Kronos features do not help, and the
+LSTM/GRU study is weak and unstable. That does not distinguish a generally
+unhelpful one-minute path from a poor recurrent inductive bias.
+
+**Decision.** Add exactly three P15 candidates on P14's identical eligible
+origins, OHLCV transformations, side-feature allowlist, folds, scoring, and
+25-name cohort. Ridge flattens the causal OHLCV window, keeps side features,
+and one-hot encodes symbol without ordinal leakage. A dilated causal TCN tests
+local motifs; a small causally masked Transformer with learned positions tests
+non-local interactions. Each tunes the 30/60/120-minute context and its own
+capacity/regularization knobs in four purged train-only trials. Reuse the
+content-verified P14-v2 caches and start with one fold worker.
+
+**Consequences.** P15 is a paired diagnostic, not a promotion or final refit.
+The linear row supplies a cheap complexity floor, while TCN and Transformer
+answer whether sequence structure helps beyond that floor. The run remains
+inventory-gated, report-only, not locked, and cannot read the lockbox.

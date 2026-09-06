@@ -140,6 +140,18 @@ projection for the declared origin-time side features, a learned symbol
 embedding, and a final linear fusion head. LSTM and GRU own separate purged
 inner searches; execution remains inventory-gated.
 
+P15 keeps those rows fixed and changes the temporal inductive bias:
+
+```bash
+python -m dskit.pipeline plan configs/run-p15-temporal-fusion-zoo.json \
+  --adapter intraday_equities
+```
+
+The three new candidates are a deterministic one-hot Ridge baseline over the
+flattened causal window, a dilated causal TCN, and a small causal Transformer.
+All own separate purged inner searches and remain exploratory, inventory-gated,
+not locked, and ineligible for automatic promotion.
+
 ## Layout
 
 ```
