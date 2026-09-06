@@ -24,6 +24,7 @@ __all__ = [
     "StageKindRegistry",
     "StagedPlan",
     "StagedRunResult",
+    "is_sha256hex",
     "plan_stages",
     "register_stage_kind",
     "run_staged",
@@ -39,6 +40,11 @@ def reject_unknown_params(problems, params, allowed):
     unknown = sorted(set(params) - set(allowed))
     if unknown:
         problems.append(f"unknown param(s) {unknown} — allowed: {sorted(allowed)}")
+
+
+def is_sha256hex(value):
+    """Return True when ``value`` is a lowercase SHA-256 hex string."""
+    return isinstance(value, str) and bool(_DIGEST_OK.match(value))
 
 
 @dataclass(frozen=True)

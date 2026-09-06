@@ -1,6 +1,6 @@
 {
-  "name": "p14-recurrent-fusion-zoo",
-  "notes": "P14 paired pooled late-fusion zoo: session-local one-minute OHLCV enters either an LSTM or GRU tower; explicit origin-time side features enter one linear projection with a learned symbol embedding; the towers concatenate only at the final linear head. Each family owns train-only HPO.",
+  "name": "p15-temporal-fusion-zoo",
+  "notes": "P15 paired pooled temporal zoo: the same session-local one-minute OHLCV windows and explicit origin-time side features feed a one-hot Ridge baseline, causal temporal CNN, or small causal Transformer. The neural towers retain a learned symbol embedding and final late-fusion head. Each family owns train-only HPO.",
   "pipeline": {
     "universe": {
       "uses": "intraday_equities-universe",
@@ -294,7 +294,7 @@
           }
         }
       },
-      "notes": "Build four bounded P14 group caches containing the frozen P12 feature matrix, full-resolution label tape, and complete session-local 120-minute OHLCV windows at the 30-minute score origins. Groups D and E remain bounded to the approved cohort plus SPY."
+      "notes": "Verify and reuse the four bounded P14-v2 group caches containing the frozen P12 feature matrix, full-resolution label tape, and complete session-local 120-minute OHLCV windows at the 30-minute score origins. Groups D and E remain bounded to the approved cohort plus SPY."
     },
     "materialize": {
       "uses": "intraday_equities.model_zoo:PooledGate3ZooCandidates",
@@ -313,49 +313,31 @@
         ],
         "templates": [
           {
-            "id": "lstm",
-            "family": "pooled-ohlcv-lstm-fusion",
-            "representation": "causal-1m-ohlcv-lstm-plus-side-projection-and-symbol-embedding",
+            "id": "ridge",
+            "family": "pooled-ohlcv-ridge-fusion",
+            "representation": "flattened-causal-1m-ohlcv-plus-side-features-and-one-hot-symbol",
             "feature_policy": "latest 30/60/120 session-local one-minute OHLCV bars plus explicit origin-time calendar, overnight, and SPY side features",
             "feature_source": "sequence",
             "sequence": {
               "feature_names": [
-                "minutes_from_open",
-                "minutes_to_close",
-                "tod_sin",
-                "tod_cos",
-                "dow_sin",
-                "dow_cos",
-                "month_sin",
-                "month_cos",
-                "is_first_rth",
-                "is_last_rth",
-                "overnight_gap",
-                "session_gap_days",
-                "after_holiday",
-                "ref_ret_SPY"
+                "minutes_from_open", "minutes_to_close", "tod_sin", "tod_cos",
+                "dow_sin", "dow_cos", "month_sin", "month_cos",
+                "is_first_rth", "is_last_rth", "overnight_gap",
+                "session_gap_days", "after_holiday", "ref_ret_SPY"
               ]
             },
-            "seed_policy": "fixed seed 0 with purged inner HPO",
-            "compute_class": "gpu-medium",
+            "seed_policy": "deterministic LSQR with purged inner HPO",
+            "compute_class": "cpu-low",
             "compute_rank": 1,
             "enabled": true,
             "model": {
-              "estimator": "dskit.pipeline.libs.torch_ts.CategoricalRecurrentFusionRegressor",
+              "estimator": "dskit.pipeline.libs.sklearn_ts.CategoricalSequenceRidgeRegressor",
               "estimator_params": {
-                "arch": "lstm",
                 "context_length": 60,
-                "hidden_size": 32,
-                "num_layers": 1,
-                "static_projection_dim": 16,
-                "embedding_dim": 8,
-                "epochs": 6,
-                "lr": 0.001,
-                "weight_decay": 0.0001,
-                "batch_size": 2048,
-                "dropout": 0.1,
-                "seed": 0,
-                "device": "cuda",
+                "alpha": 1.0,
+                "fit_intercept": true,
+                "max_iter": 2000,
+                "tol": 0.0001,
                 "standardize": true
               },
               "hpo_trials": 4,
@@ -364,79 +346,23 @@
               "hpo_embargo_days": 5,
               "hpo_objective": "ic",
               "hpo_space": {
-                "context_length": [
-                  30,
-                  60,
-                  120
-                ],
-                "hidden_size": [
-                  16,
-                  32,
-                  64
-                ],
-                "num_layers": [
-                  1,
-                  2
-                ],
-                "static_projection_dim": [
-                  8,
-                  16,
-                  32
-                ],
-                "embedding_dim": [
-                  4,
-                  8
-                ],
-                "epochs": [
-                  4,
-                  6,
-                  8
-                ],
-                "lr": [
-                  0.0003,
-                  0.001,
-                  0.003
-                ],
-                "weight_decay": [
-                  0.00001,
-                  0.0001,
-                  0.001
-                ],
-                "batch_size": [
-                  1024,
-                  2048,
-                  4096
-                ],
-                "dropout": [
-                  0,
-                  0.1,
-                  0.2
-                ]
+                "context_length": [30, 60, 120],
+                "alpha": [0.01, 0.1, 1.0, 10.0, 100.0]
               }
             }
           },
           {
-            "id": "gru",
-            "family": "pooled-ohlcv-gru-fusion",
-            "representation": "causal-1m-ohlcv-gru-plus-side-projection-and-symbol-embedding",
+            "id": "tcn",
+            "family": "pooled-ohlcv-tcn-fusion",
+            "representation": "causal-dilated-1m-ohlcv-convolutions-plus-side-projection-and-symbol-embedding",
             "feature_policy": "latest 30/60/120 session-local one-minute OHLCV bars plus explicit origin-time calendar, overnight, and SPY side features",
             "feature_source": "sequence",
             "sequence": {
               "feature_names": [
-                "minutes_from_open",
-                "minutes_to_close",
-                "tod_sin",
-                "tod_cos",
-                "dow_sin",
-                "dow_cos",
-                "month_sin",
-                "month_cos",
-                "is_first_rth",
-                "is_last_rth",
-                "overnight_gap",
-                "session_gap_days",
-                "after_holiday",
-                "ref_ret_SPY"
+                "minutes_from_open", "minutes_to_close", "tod_sin", "tod_cos",
+                "dow_sin", "dow_cos", "month_sin", "month_cos",
+                "is_first_rth", "is_last_rth", "overnight_gap",
+                "session_gap_days", "after_holiday", "ref_ret_SPY"
               ]
             },
             "seed_policy": "fixed seed 0 with purged inner HPO",
@@ -444,22 +370,14 @@
             "compute_rank": 2,
             "enabled": true,
             "model": {
-              "estimator": "dskit.pipeline.libs.torch_ts.CategoricalRecurrentFusionRegressor",
+              "estimator": "dskit.pipeline.libs.torch_ts.CategoricalTemporalFusionRegressor",
               "estimator_params": {
-                "arch": "gru",
-                "context_length": 60,
-                "hidden_size": 32,
-                "num_layers": 1,
-                "static_projection_dim": 16,
-                "embedding_dim": 8,
-                "epochs": 6,
-                "lr": 0.001,
-                "weight_decay": 0.0001,
-                "batch_size": 2048,
-                "dropout": 0.1,
-                "seed": 0,
-                "device": "cuda",
-                "standardize": true
+                "arch": "tcn", "context_length": 60, "hidden_size": 32,
+                "num_layers": 2, "kernel_size": 3,
+                "static_projection_dim": 16, "embedding_dim": 8,
+                "epochs": 6, "lr": 0.001, "weight_decay": 0.0001,
+                "batch_size": 2048, "dropout": 0.1, "seed": 0,
+                "device": "cuda", "standardize": true
               },
               "hpo_trials": 4,
               "hpo_seed": 0,
@@ -467,54 +385,67 @@
               "hpo_embargo_days": 5,
               "hpo_objective": "ic",
               "hpo_space": {
-                "context_length": [
-                  30,
-                  60,
-                  120
-                ],
-                "hidden_size": [
-                  16,
-                  32,
-                  64
-                ],
-                "num_layers": [
-                  1,
-                  2
-                ],
-                "static_projection_dim": [
-                  8,
-                  16,
-                  32
-                ],
-                "embedding_dim": [
-                  4,
-                  8
-                ],
-                "epochs": [
-                  4,
-                  6,
-                  8
-                ],
-                "lr": [
-                  0.0003,
-                  0.001,
-                  0.003
-                ],
-                "weight_decay": [
-                  0.00001,
-                  0.0001,
-                  0.001
-                ],
-                "batch_size": [
-                  1024,
-                  2048,
-                  4096
-                ],
-                "dropout": [
-                  0,
-                  0.1,
-                  0.2
-                ]
+                "context_length": [30, 60, 120],
+                "hidden_size": [16, 32, 64],
+                "num_layers": [1, 2, 3],
+                "kernel_size": [3, 5, 7],
+                "static_projection_dim": [8, 16, 32],
+                "embedding_dim": [4, 8],
+                "epochs": [4, 6, 8],
+                "lr": [0.0003, 0.001, 0.003],
+                "weight_decay": [0.00001, 0.0001, 0.001],
+                "batch_size": [1024, 2048, 4096],
+                "dropout": [0, 0.1, 0.2]
+              }
+            }
+          },
+          {
+            "id": "transformer",
+            "family": "pooled-ohlcv-small-transformer-fusion",
+            "representation": "small-causal-1m-ohlcv-transformer-plus-side-projection-and-symbol-embedding",
+            "feature_policy": "latest 30/60/120 session-local one-minute OHLCV bars plus explicit origin-time calendar, overnight, and SPY side features",
+            "feature_source": "sequence",
+            "sequence": {
+              "feature_names": [
+                "minutes_from_open", "minutes_to_close", "tod_sin", "tod_cos",
+                "dow_sin", "dow_cos", "month_sin", "month_cos",
+                "is_first_rth", "is_last_rth", "overnight_gap",
+                "session_gap_days", "after_holiday", "ref_ret_SPY"
+              ]
+            },
+            "seed_policy": "fixed seed 0 with purged inner HPO",
+            "compute_class": "gpu-medium",
+            "compute_rank": 3,
+            "enabled": true,
+            "model": {
+              "estimator": "dskit.pipeline.libs.torch_ts.CategoricalTemporalFusionRegressor",
+              "estimator_params": {
+                "arch": "transformer", "context_length": 60,
+                "hidden_size": 32, "num_layers": 1, "nhead": 4,
+                "feedforward_multiplier": 2,
+                "static_projection_dim": 16, "embedding_dim": 8,
+                "epochs": 6, "lr": 0.001, "weight_decay": 0.0001,
+                "batch_size": 2048, "dropout": 0.1, "seed": 0,
+                "device": "cuda", "standardize": true
+              },
+              "hpo_trials": 4,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "context_length": [30, 60, 120],
+                "hidden_size": [16, 32, 64],
+                "num_layers": [1, 2],
+                "nhead": [1, 2, 4],
+                "feedforward_multiplier": [2, 4],
+                "static_projection_dim": [8, 16, 32],
+                "embedding_dim": [4, 8],
+                "epochs": [4, 6, 8],
+                "lr": [0.0003, 0.001, 0.003],
+                "weight_decay": [0.00001, 0.0001, 0.001],
+                "batch_size": [1024, 2048, 4096],
+                "dropout": [0, 0.1, 0.2]
               }
             }
           }
@@ -536,7 +467,7 @@
       },
       "params": {
         "protocol": {
-          "attempt_family": "intraday-equities-p14-recurrent-fusion-zoo",
+          "attempt_family": "intraday-equities-p15-temporal-fusion-zoo",
           "primary_score": "equal-stock and equal-within-stock mean train-scaled squared-error improvement over each stock's train-only mean",
           "null_baseline": "per-stock train-only no-information mean",
           "cost_model": "one pooled direct fit per lead and fold; declared compute ranks",
@@ -600,9 +531,9 @@
         "inventory_sha256": "$plan.inventory_sha256"
       },
       "params": {
-        "approved_inventory_sha256": "85e1fb8cbacba2d1c3524a2decc3cb95b1d6af732d009b337728538078f9bcfc",
+        "approved_inventory_sha256": "65bbbfa44752b21f1a817e6b47d7e02984e56fbe8a5392a830a478cd977e6058",
         "approved_by": "owner",
-        "approval_note": "Owner approved P14 execution on 2026-09-06 and authorized correcting and restarting failures. This exact two-candidate inventory adds the documented bounded causal no-trade-minute fill; model families and four purged train-only HPO trials are unchanged."
+        "approval_note": "Owner requested and approved execution of three additional P15 candidates on 2026-09-06, delegating family and tuning-range selection. Staging verified this exact Ridge, TCN, and Transformer inventory before launch."
       }
     },
     "run": {

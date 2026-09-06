@@ -1,5 +1,59 @@
 # Re-entry
 
+## Current state: P15 temporal-fusion zoo complete (2026-09-06)
+
+The three-candidate P15 run completed 20/20 paired outer folds per model under
+benchmark `5e88726b…`. Mean path scores were Ridge 0.001346, Transformer
+0.000835, and TCN 0.000409. No pairwise test rejected equal performance at
+the 0.016667 adjusted threshold; all three positive means depended on the
+same 2023-05-19 fold and became approximately zero or negative without it.
+Ridge is the simplest P15 frontier, but no model was promoted or refit.
+
+The nine-model P13/P14/P15 reference leaves P13 pooled native LightGBM as the
+practical development frontier. Cross-zoo values are descriptive, not paired
+tests. Memo:
+`children/intraday_equities/docs/memos/p15-temporal-fusion-model-zoo-results.md`.
+
+**Next:** treat the temporal zoo as a completed negative complexity ablation.
+Only spend on another sequence family after a sharper representation or loss
+hypothesis; keep promotion/final refit as a separate owner-approved action.
+
+## Current state: cross-benchmark model selector landed (2026-09-06)
+
+`BenchmarkSelect` (ADR-0106, accepted) joins completed benchmark zoos' pinned
+`compare.json` artifacts and names one winner by a config-declared
+`decision_metric` + `select` direction — never promotes (`auto_promote` False).
+Shipped in `dskit/pipeline/benchmarks.py` with `is_sha256hex` (single owner of
+the lowercase-64 SHA-256 rule, `dskit/pipeline/stages.py`); 27 tests, ruff clean,
+skeptic loop closed with a clean round-3 pass. Child config
+`configs/run-model-select.json` now chains P13+P14+P15, ranks all nine
+candidates, and selects `lgbm-pooled-h10`. The completed selector artifact is
+`pipeline_runs/model-select-staged-2026-02-28-ef2e8f37/stages/select.json`
+(SHA-256 `df474f64…`). This is descriptive ranking only, not a cross-zoo
+significance claim, final refit, or promotion.
+
+## Current state: P14 recurrent-fusion model zoo complete (2026-09-06)
+
+The corrected two-candidate P14 run completed 20 paired outer folds per model
+under benchmark identity `70b5a399…` and approved inventory `85e1fb8c…`.
+Mean path scores were LSTM 0.001174 and GRU -0.000417. GRU minus LSTM was
+-0.001591 (`p=0.109186`), so the comparison selected the simpler LSTM frontier
+without detecting a reliable difference. LSTM's mean excluding its best fold
+was -0.000498; neither model was promoted or refit.
+
+The initial run exposed sparse no-trade minutes: strict 120-minute continuity
+left MSTR without fold-four path evidence. ADR-0104 and the config now state a
+causal bounded fill—carry the last close into OHLC and zero volume for gaps up
+to five minutes, while refusing longer gaps and session boundaries. Corrected
+MSTR fold-four coverage is 198 origins and both models finished 20/20 folds.
+Scoped verification passed (253 tests, 21 skips), Ruff/config validation and
+the diff check are clean, and final Major/Critical review is clear. Memo:
+`children/intraday_equities/docs/memos/p14-recurrent-fusion-model-zoo-results.md`.
+
+**Next:** retain pooled native LightGBM from P13 as the practical development
+frontier. Do not spend on a joint six-candidate rerun or promote a recurrent
+model unless a sharper sequence hypothesis is approved first.
+
 ## Current state: P13 pooled/Kronos model zoo complete (2026-09-06)
 
 The four owner-approved candidates completed 20 outer folds each under
