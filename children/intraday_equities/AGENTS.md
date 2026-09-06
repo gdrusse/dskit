@@ -53,7 +53,7 @@ Agent orientation — see README.md for operator commands.
   (`intraday_equities`). HPO maximizes `$select.metrics.rank_ic`.
   Fill rate / delay decay wait on a fill model.
 - The stopped asset-local P13 remains reproducible in
-  `configs/run-p13-model-zoo.json`. ADR-0101's active replacement is
+  `configs/run-p13-model-zoo.json`. ADR-0102's active replacement is
   `configs/run-p13-pooled-model-zoo.json`: pooled LightGBM and embedding Torch
   MLP with separate inner HPO and the same inventory approval barrier.
 

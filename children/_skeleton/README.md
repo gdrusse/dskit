@@ -98,6 +98,37 @@ trades paper.
 > from it. They are listed in the repo's `TODO.md`. Copy its *structure*;
 > check `TODO.md` before copying any of its *code*.
 
+## Serving it forward
+
+A run that scored well is not yet a process. `configs/serve-sample.json`
+declares one: which run to serve, where live rows enter it, which node keys
+are the decision heads, and what must be true before anything is sent.
+
+```bash
+python -m dskit.pipeline run configs/run-sample.json --asof 2026-01-01 --adapter yourproject
+# point serve-sample.json's serving.run_dir at the directory that wrote, then:
+python -m dskit.production validate configs/serve-sample.json
+python -m dskit.production plan     configs/serve-sample.json
+python -m dskit.production serve    configs/serve-sample.json --once
+```
+
+The sample serves at **shadow**: it decides for real and sends nothing. That
+is where every child starts, and promotion is a change to `rung` plus the
+tier-3 seams the higher rungs require — never a flag.
+
+Four templates are shipped fail-closed, and `tests/test_production.py` proves
+they stay that way: `execution.py` (the venue), `accounting.py` (its books),
+`approvals.py` (the trust root behind a maker-checker arm) and
+`coordination.py` (a fenced lease). Each refuses until you implement it, so
+copying this skeleton can never move money by accident.
+
+`nodes.py` also shows the serving side of the node contract: `serving_effect`
+answers the closed API the serving policy classifies every node with — the
+source says `entry_read` because it is the one mutable read a tick may take,
+the transform says `pure` — and `serving_contract` describes the source so a
+tick can freeze and digest its rows. The default is `forbidden`, so a class
+that stays silent can never appear in a served graph.
+
 ## Layout
 
 ```
@@ -107,12 +138,17 @@ _skeleton/
 ├── yourproject/           # tier-3 code; import = registration
 │   ├── __init__.py        # curated re-exports
 │   ├── connectors.py      # onboarding seam: the vendor pull (four verbs)
-│   └── nodes.py           # pipeline seam: node kinds, default-deny params
+│   ├── nodes.py           # pipeline seam: node kinds, default-deny params
+│   ├── execution.py       # production seam: the venue executor (fail-closed)
+│   ├── accounting.py      # production seam: live books (fail-closed)
+│   ├── approvals.py       # production seam: the trust root (fail-closed)
+│   └── coordination.py    # production seam: a fenced lease (fail-closed)
 ├── configs/               # the domain, as self-documenting JSON
 │   ├── asset-model.json   # the child's catalog kinds
 │   ├── source-sample.json # a connector config object
 │   ├── suite-sample.json  # a validation suite
-│   └── run-sample.json    # a pipeline document
+│   ├── run-sample.json    # a pipeline document
+│   └── serve-sample.json  # a serve document — the run, served forward
 ├── docs/decisioning/      # generated grid (CSV store; ADR-0056)
 │   ├── README.md          # GENERATED — do not edit
 │   ├── actions.csv
@@ -130,7 +166,9 @@ _skeleton/
     ├── conftest.py        # sys.path bootstrap (position-independent)
     ├── test_configs.py    # every config validates against its engine
     ├── test_connectors.py # four-verb contract + acquire→validate e2e
-    └── test_nodes.py      # conformance suite + a document e2e
+    ├── test_execution.py  # the venue executor's shape; the battery, one line away
+    ├── test_nodes.py      # conformance suite + a document e2e
+    └── test_production.py # the serve document validates; every template fail-closed
 ```
 
 Graduation is a directory move — nothing here references its incubation

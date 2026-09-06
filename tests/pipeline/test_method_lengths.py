@@ -74,7 +74,6 @@ GRANDFATHERED_ANNOTATIONS = frozenset(
         ("driver.py", "_Trackers.log_metrics"),
         ("driver.py", "_Trackers.close"),
         ("driver.py", "_canonical_hash"),
-        ("driver.py", "_apply_param_override"),
         ("driver.py", "_SearchSeam.__call__"),
         ("driver.py", "_node_metrics"),
         ("driver.py", "DocumentRunResult.exit_code"),

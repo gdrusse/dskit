@@ -1,13 +1,21 @@
 # `dskit.production` — the production layer (proposal for ADR-0090 / ADR-0091)
 
 **Status:** implementation-ready plan, revised 2026-09-04 after a whole-plan
-invariant audit and two independent reviews. Its merge records owner approval;
+invariant audit and two independent reviews, and again on 2026-09-05: phases
+2, 2b and 3 are now specified to the same standard as phase 1 (a §5 subsection
+per module with class, constructor, method signatures, return types, refusals
+and closed vocabularies; §5.16 producer rows for every new record; §8 tree and
+`vocab.py` entries; §10 placements with their dependency reasons), and the
+rulings the phase-1 build produced are folded into §5–§9. Its merge records owner approval;
 implementation remains a separate change—no file under `dskit/production/` exists.
 
 **What the owner is asked to approve.** (1) The file-by-file structure in §8.
 (2) The design decisions D1–D24 in §3. (3) The pipeline change in §9.1 (a public
 subgraph-rerun seam, ADR-0091). (4) The build phases and model assignment in §11.
-(5) The resolved choices in §12. (6) The OOP ruling in §5.15 — the seam ABCs,
+(5) The resolved choices in §12. (6) The phase-2, 2b and 3 contracts in
+§5.1.1, §5.2.1, §5.5.1, §5.8.2, §5.10.1, §5.10.2, §5.11.2, §5.11.3, §5.12.1,
+§5.13.2, §5.13.3 and §5.13.4, and the two OPTIONAL graded document sections
+they add (§4.2). (7) The OOP ruling in §5.15 — the seam ABCs,
 the composition-over-inheritance rule for `ServeLoop`, and the Liskov-clean
 `Executor` / `SubmittingExecutor` / `Permit` split. Everything else is the
 reasoning behind those.
@@ -77,11 +85,18 @@ its authenticated-approval verifier, every threshold and limit *value*, the
 fenced deployment lease, calendar contents, readiness evidence, credentials (env-var
 names in config, values in the environment).
 
-**Deferred (named, not built, not documented as available):** a streaming
-(`websocket`) seam; a `prometheus`/`opentelemetry` metrics pack; an
-`exchange_calendars` pack; migrating the onboarding packs' hand-rolled backoff
-onto `resilience.py` (its own ADR); a `sqlite` ledger pack and a `parquet`
-run-reference pack are phase 2 (§11).
+**Deferred (named, specified, not built in phase 1):** phase 2 adds outcomes,
+reporting and replay parity (§5.13.2–§5.13.3), the outcome and parity monitor
+families and four more drift detectors (§5.10.1), alert inhibition, silences,
+escalation and `ack` plus the systemd heartbeat (§5.11.2), the `sqlite` ledger
+and `parquet` run-reference packs (§5.8.2, §5.10.2), the `Signer` (§5.12.1) and
+the `approve-hold` verb (§5.5.1); phase 2b widens the audited `serving_effect`
+set (§9.1); phase 3 adds an `exchange_calendars` pack (§5.1.1), the
+`prometheus`/`opentelemetry` metric sinks (§5.11.3), the streaming
+(`websocket`) feed (§5.2.1) and the migration of the onboarding packs'
+hand-rolled backoff onto `resilience.py`, which carries its own ADR
+(Appendix C). Every one of them is specified to the same standard as phase 1
+and none of them is available until it is built (§11).
 
 **Explicitly NOT closed by this proposal — the capital/report seam.** The owner's
 constraint (4) names a half-built seam: `dskit/pipeline/kinds_report.py` expects a `capital` block carrying `twr`,
@@ -457,8 +472,9 @@ brackets.
   `plan` (it writes an immutable release, so it is a mutating verb),
   `ready` (it appends a `readiness` record),
   `arm-request`, `approve-arm`, `disarm`, `halt`, `reduce`, `flatten-request`,
-  `approve-flatten`, `execute-flatten`, `resume`, `reconcile` and `adopt`;
-  read-only verbs do not journal. SIGKILL/power loss can leave a durable inbox
+  `approve-flatten`, `execute-flatten`, `resume`, `reconcile` and `adopt`, plus
+  phase 2's `outcomes`, `approve-hold`, `ack` and `silence`;
+  read-only verbs — including phase 2's `report` and `replay` — do not journal. SIGKILL/power loss can leave a durable inbox
   command without a CLI journal row because the stores have no shared transaction;
   `verify` reports that gap. The ledger/inbox is authoritative, and the plan
   makes no impossible exactly-once claim across independent stores.
@@ -584,13 +600,31 @@ live arm. Same hole as `required_universe`, same fix.
                              "cancel": {"rate_per_s": 10, "burst": 10, "reserved": true}},
                  "transport": {"uses": "urllib", "params": {"connect_s": 2.0, "read_s": 5.0}}},
   "lifecycle": {"cooling_off_s": 900, "shutdown_grace_s": 30},
-  "readiness": {"checklist": "configs/readiness.json", "waivers": [], "valid_for_s": 86400},
+  "readiness": {"checklist": "configs/readiness.json", "waivers": [], "valid_for_s": 86400,
+                // [phase 2, §5.13.4] all four OPTIONAL and GRADED, and each REQUIRED only when a
+                // checklist item cites the evidence name that reads it; the hook takes a NAME and
+                // no params, so a threshold can only come from here (§4.1: code holds none).
+                "outcome_window": "P7D",           // what `outcome_coverage` measures over
+                "min_outcome_coverage": 0.8,       // the fraction of that window that must be scored
+                "max_outcome_age": "PT6H",         // how stale the newest label may be
+                "calibration_monitor": "calib"},   // WHICH `monitors` key `calibration_current` reads
+  "outcomes": {"sources": {"settle": {"uses": "settlement", "params": {"lookback_ms": 604800000}}}},  // [phase 2] OPTIONAL and graded
+  "reporting": {"bins": 10, "markouts_ms": [60000, 300000], "markout_tolerance_ms": 5000, "scoring": "brier"},  // [phase 2] OPTIONAL and graded
   "heartbeat": {"every_s": 60, "in_degraded": false, "emitters": {"file": {"uses": "file"}}},
   "alerting": {"sinks": {"ops": {"uses": "webhook"}},                 // GRADED: which sinks exist and HOW they deliver
                "routes": [{"severity": "critical", "sinks": ["ops"]}, {"severity": "warning", "sinks": ["ops"]}],
-               "group_wait_s": 30, "repeat_interval_s": 14400, "rate_limit": {"max_per_hour": 20, "burst": 5}},
+               "group_wait_s": 30, "repeat_interval_s": 14400, "rate_limit": {"max_per_hour": 20, "burst": 5},
+               // [phase 2, §5.11.2] all four OPTIONAL and GRADED: a phase-1 document keeps its identity
+               "inhibit": [{"source": {"severity": "critical"}, "target": {"severity": "warning"},
+                            "equal": ["instrument"]}],       // matcher = label NAME -> the value it must equal
+               "escalation": {"primary": {"after_s": 300, "sinks": ["ops"]},   // keys closed to ESCALATION_LEVELS
+                              "final": {"after_s": 3600, "sinks": ["pager"]}}, // delays must increase down the ladder
+               "max_silence_s": 86400, "max_ack_s": 14400},   // [60, 604800]; absent takes the named default
   "alert_endpoints": {"ops": {"url_env": "OPS_WEBHOOK_URL", "template": "slack", "timeout_s": 5}},  // EXCLUDED: where it goes
-  "placement": {"ledger_root": "./serve", "rotate": {"by": "day", "max_bytes": 268435456}, "log_dir": "./serve/logs"},
+  "placement": {"ledger_root": "./serve", "rotate": {"by": "day", "max_bytes": 268435456}, "log_dir": "./serve/logs",
+                // [phase 3, §5.11.3] metric EXPORTERS live in the excluded section: a metric is never
+                // an input to a decision, a guard or a record, so adding one must not mint a release.
+                "metric_sinks": {"scrape": {"uses": "prometheus", "params": {"mode": "pull", "port": 9400}}}},
   "env": {"env_file": ".env", "require": ["OPS_WEBHOOK_URL"]}
 }
 ```
@@ -628,8 +662,21 @@ partitioned to suit it — this is the reason `durability`, `resilience`,
 `serving`, `feed`, `schedule`, `guards`, `execution`, `accounting`, `arming`,
 `coordination`, `reconcile`, `monitors`, `health`, `durability`, `resilience`,
 `lifecycle`, `readiness` and `alerting`. Eighteen graded sections plus four excluded plus
-`name` and `notes` account for every key in §4.1; `validate` refuses a top-level
+`name` and `notes` account for every key in §4.1 at phase 1 (nineteen once
+`outcomes` lands, twenty with `reporting`, and `test_document.py` counts them); `validate` refuses a top-level
 key that is in neither list, so the partition cannot silently drift.
+
+Phase 2 adds two more GRADED sections, `outcomes` and `reporting`, and both are
+OPTIONAL: an absent key is absent from the hash material, so every document
+written against phase 1 keeps its identity, its release and its running chain.
+They are graded rather than excluded because both change numbers someone acts
+on — an `outcome` feeds the `error_vs_realised` measure and the outcome
+monitors, which can trip the breaker, and an attribution figure computed under
+two different markout horizons must not claim one release. The alternative
+considered and rejected was putting `reporting` in
+`PRODUCTION_NON_IDENTITY_SECTIONS` on the grounds that no guard reads it; that
+would leave two reports disagreeing under one release hash, which is the thing
+identity exists to prevent.
 
 The stable root is `<placement.ledger_root>/<series_id>/`; `series.json` must
 match before the ledger opens, and immutable release metadata lives under
@@ -650,7 +697,11 @@ exactly one of them: `CLOCK_KINDS`, `CALENDAR_KINDS`, `CADENCE_KINDS`,
 `PROBE_KINDS`, `ALERT_SINK_KINDS`, `HEARTBEAT_KINDS`, `TRANSPORT_KINDS`,
 `FEE_KINDS`.
 Registering a name twice refuses. A child registers nothing and references its
-classes by path.
+classes by path. Phase 2 adds three more families — `LEDGER_KINDS` (§5.8.2),
+`OUTCOME_SOURCE_KINDS` (§5.13.2) and `SIGNER_KINDS` (§5.12.1) — and phase 3
+one, `METRIC_SINK_KINDS` (§5.11.3); each new pack registers into an existing
+family instead wherever one fits, which is why the phase-3 calendar and stream
+packs add no registry at all.
 
 `ALERT_SINK_KINDS` is deliberately not called `SINK_KINDS`: that name is already
 taken by `dskit/pipeline/base.py`'s tracking-sink registry, and both would carry
@@ -712,6 +763,18 @@ than only as a line in §8.
 
 ### 5.1 `clock.py`, `sessions.py`, `cadence.py`
 
+**One `sleep_until` for both fakes.** `TestClock` and `ReplayClock` compose
+one `ManualTime` and share the JUMPING `sleep_until` on `_ManualClock`: it
+moves the instant to the target and reports arrival, and nothing waits on a
+wall. An earlier draft gave `ReplayClock` a `sleep_until` that returned at
+once and moved nothing, on the reading that "the feed will" advance time —
+which is unimplementable as a whole: `ServeLoop._due` waits for the next grid
+instant and then ticks at it, so a clock that stayed put leaves every due
+instant in its own future and `Overrun.resolve` refuses before the first
+replayed tick ever runs. The feed's advance is the other half, not the whole:
+each recorded pull sets the shared instant to the one that pull was taken at,
+which is what makes a replayed `evidence_asof_ms` reproduce.
+
 - `Clock(ABC)`: `now_ms()`, `monotonic()`, `sleep_until(epoch_ms, wake)` (returns
   early when `wake()` is true). `WallClock` (≤ 1 s sleep slices so a stop flag is
   honoured), `TestClock(set, advance)`, `ReplayClock` — both are `Clock`
@@ -733,7 +796,49 @@ than only as a line in §8.
   `Overrun(policy ∈ {skip, coalesce, queue}, max_lag_ms)`; default `coalesce`;
   the tick record names absorbed ticks.
 
+### 5.1.1 `libs/exchange_calendars.py` (phase 3)
+
+`WeeklySessions` makes a document restate an exchange's schedule by hand, which
+is correct for a venue nobody has published and wasteful for one everybody has.
+This pack reads the published one without letting a library upgrade quietly
+change when the loop trades.
+
+`ExchangeCalendar(params)`, a `Calendar` registered as `exchange` in
+`CALENDAR_KINDS`. Params: `exchange` (the library's calendar code, required),
+`bounds` (`{from, until}`, ISO dates, REQUIRED — an unbounded library query is
+not reproducible and would answer differently as the library's own horizon
+moves), `tz` (an override; default the library's), `after_open_s`,
+`before_close_s`, `blackouts` and `notes`.
+
+At construction it materialises the schedule ONCE, inside `_materialise`, into
+exactly the session list `WeeklySessions` already consumes, and every question —
+`is_open`, `next_open`, `next_close`, `window(kind, at_ms)`, `tz_name` — is
+answered by that phase-1 owner. Buffers, half-open `[open, close)` bounds, the
+DST-gap refusal and the `CALENDAR_WINDOWS` dispatch are therefore not
+re-derived here; the pack's whole job is turning a library into a session list.
+`exchange_calendars` is imported inside `_materialise` and nowhere else.
+
+`Calendar` gains a concrete `data_fingerprint()` hook returning `None`, which
+this pack overrides with the digest of the materialised schedule. `plan` writes
+it into the calendar's existing `classes` entry in the manifest as
+`data_digest`, and ONLY when it is not `None`, so every phase-1 release hash is
+unmoved while a library upgrade that moves a holiday now refuses instead of
+silently changing a trading day under a fixed release and a live arm. A code
+fingerprint alone would not catch it: the code is identical, the DATA moved.
+
 ### 5.2 `feed.py`
+
+**`ReplayFeed`'s tape is `FeedResult`s, and it takes the shared instant.**
+`ReplayFeed(params, *, tape, time=None)`. An earlier draft made the tape
+`(FeedResult, EntryBatch)` pairs with a `batch()` accessor; nothing calls it —
+`read_entry` is the DECIDER's phase (§5.3), not the feed's — and an
+`EntryBatch` cannot be rebuilt from the chain anyway, since §6 records
+`inputs_digest` and `coverage_digest` but never `outputs` and never a
+watermark's `source_digest`. The rows are not the feed's to hold: replay
+re-executes the entry against the same immutable onboarding root and the
+recorded digest proves the re-read matched (§5.13.3). `time` is the
+`ManualTime` a `ReplayClock` shares; each pull sets it to that result's
+`at_ms`.
 
 `ServingContract{source_binding, entity_key_fields, event_time_field,
 digest_recipe}` is returned by the entry class's pure
@@ -760,14 +865,27 @@ returns acquisition/link status only. Core ships one implementation,
 calls `run_acquisition(..., mode="live")` through the onboarding root and
 registry, `store` reads what a separate `watch` process fills and derives
 staleness through `scan_stream` — rather than two near-identical classes. After the pull, the deferred entry executes
-once and the same contract's `snapshot(entry_outputs)` produces
+once and `snapshot_entry(contract, spec, entry_outputs, source_config_hash)`
+produces
 `EntryBatch{outputs, watermarks_by_key, required_keys_digest, coverage_digest,
-data_asof_ms, inputs_digest, source_config_hash}`. Thus rows, key projection,
+data_asof_ms, inputs_digest, source_config_hash}`. It is a MODULE function of
+`feed.py`, not a `ServingContract` method: the contract is a frozen pipeline-side
+declaration (§9.1) with no methods at all, and a snapshot needs the
+release-bound `FeedSpec` the contract cannot see. Thus rows, key projection,
 event time and per-key digests describe exactly the frozen snapshot descendants
 receive, rather than a second feed read.
+`active_source_identity(registry, source) -> (source_config_hash,
+source_config_version)` is the ONE owner of "what does the ACTIVE alias resolve
+to" — `plan` binds its answer into the `FeedSpec` and every pull re-asks it —
+where `source_config_hash` is the active alias's version id and
+`source_config_version` is the count of registered versions rendered as a
+string, a monotone label rather than a second hash.
 `FeedSpec{source_binding, entity_key_fields, event_time_field, digest_recipe,
 required_keys, required_keys_digest, source_config_hash, source_config_version}`
-is release-bound. The serve document may select `pull: acquire | store` but
+is release-bound; `digest_recipe` is a DICT (the entry class's per-key digest
+recipe verbatim), not a name, so the pack that produced it stays declarative.
+`FeedSpec.from_contract(contract, required_keys, source_config_hash,
+source_config_version)` is the one builder. The serve document may select `pull: acquire | store` but
 cannot restate locator or coverage. Missing/duplicate/extra keys, malformed event
 time, normalized-binding disagreement or source alias/hash/version drift refuses.
 Zero new rows is valid only while every key is fresh; stale/dead derives from the
@@ -775,9 +893,76 @@ oldest watermark, while connector/link/identity failure is immediately dead.
 `FEED_STATUSES = ("live", "degraded", "stale", "dead", "closed")` and
 `LINK_STATES = ("connected", "recovering", "disconnected")`; the feed reports
 the first, the executor the second, and D10's matrix reads both.
+`EntrySourceFeed` produces four of the five: the ladder gives `live`, `stale`
+and `dead`, and the calendar gives `closed`. **`degraded` has no phase-1
+producer** and is named here rather than quietly unused, because the state it
+describes — rows arriving but a link that keeps dropping — is a stream fact,
+and §5.2.1's `StreamFeed` is what fills it in phase 3.
 `ReplayFeed` uses the recorded contract and EntryBatch. Tests prove acquisition
 and entry use one normalized binding and that snapshot metadata hashes the exact
 entry output.
+
+### 5.2.1 `feed.py` — the stream seam (phase 3)
+
+A push source, expressed as one more `Feed` subclass with the same
+`pull(tick_at_ms) -> FeedResult` and the same `EntryBatch` downstream, so
+nothing after the feed learns that rows arrived differently.
+
+`StreamFeed(params, *, root, registry, contract, spec, clock, transport,
+max_staleness_ms, dead_after_ms)`, registered as `websocket` in `FEED_KINDS`.
+Params: `url_env` (the env-var NAME), `subscribe` (the subscription payload the
+connector sends on connect), `queue_max`, and `reconnect` (a
+`document.resilience`-shaped `Retry` block, built by `resilience.py` rather
+than a second backoff).
+
+One supervised daemon worker owns the socket; the loop never touches it, per
+D23. **The worker does not hold the rows.** It writes what it receives through
+the source's own onboarding connector — the same write path a `watch` process
+uses — so the entry node still reads the store it was trained from (D4), the
+per-key watermarks still come from `scan_stream`, and `snapshot_entry` still
+produces the `EntryBatch`. A private in-process buffer would make the stream a
+second source of truth beside the store, which is the drift D4 exists to
+forbid; this design makes `StreamFeed` a *writer into* the existing path rather
+than an alternative to it, and that is the whole reason it can be one subclass.
+
+**How it was built (phase 3), and the four places this section was thin.**
+`StreamFeed` SUBCLASSES `EntrySourceFeed` with the pull mode fixed to
+`store`, so the D4 identity check, the watermark read and the ladder are
+inherited rather than restated. (1) The `transport` constructor argument has
+no producer: `compose.py` hands every feed one fixed collaborator set
+(§5.16), so a document naming `websocket` could never be built through it.
+It stays keyword-only for a child and a test, and when it is absent the feed
+builds the one its own `transport` params key names —
+`{"uses": "pkg.module:Class", "params": {...}}`, resolved by class REFERENCE
+only, with a bare name refused naming why. That keeps §4.3's "phase 3 adds
+one registry" literally true: no registry owns stream transports and core
+ships none. (2) `StreamTransport` therefore owns BOTH ends of the wire — the
+socket, and the spool its source's connector reads back from — because
+onboarding's only write path is `run_acquisition`, which drives the
+CONNECTOR's own `read()` and accepts no externally-received frames; the
+worker owns what lies between (the bounded queue, the reconnect policy, and
+the acquisition that lands the rows). (3) `FeedResult` gains NO link field:
+§5.2 gives `FEED_STATUSES` to the feed and `LINK_STATES` to the executor, so
+the link FLOORS the status through the vocabulary's own order
+(`live` < `degraded` < `stale` < `dead`) — which is how `degraded` finally
+gets its producer, and the floor can only make the ladder's answer worse.
+(4) Two more injected collaborators, `sleeper` and `rng`, because §5.12
+injects all three everywhere and the reconnect IS a `Retry`; the default
+sleeper is the worker's own stop event, so a shutdown interrupts a wait
+instead of outlasting it and nothing here reaches `time`. `pump()` — one
+turn of the worker — is public on the `AlertRouter.process()` / `start()`
+precedent, so the mechanism is testable without a thread. A landing that
+fails loses its frames and counts it: re-delivering could duplicate rows,
+ordering and dedupe are the connector's, and the watermark ladder is what
+makes the loss visible.
+
+`pull(tick_at_ms)` therefore does what `EntrySourceFeed`'s `store` mode does —
+grade the oldest required key's watermark against the ladder — and adds only
+the link state: a dropped connection is `LINK_STATES` `recovering` and the feed
+is at best `stale`; an exhausted reconnect budget is `dead`; a full queue drops
+the OLDEST row and counts it, because a stream that blocks the writer to keep
+an old row is a stream that stops the loop. Ordering and duplicate suppression
+stay the connector's, which already owns them.
 
 ### 5.3 `decider.py` (+ the pipeline seam, §9.1)
 
@@ -786,15 +971,28 @@ entry output.
   ADR-0039 forbids a template pin): every node in `TRAINABLE_ROLES` with
   effective mode `train` becomes `mode: "load"` with `artifact:
   "<run_dir>/artifacts/<key>"`; search winners (from `nodes/NN-<key>.json`
-  `winner`) are applied with the driver's own `_apply_param_override` rule and
-  the search nodes are dropped; nodes of role `gate` / `stat_test` named in
-  `serving.replay` are replaced by a `RecordedOutputs` node (§5.3 note) emitting
-  the run's recorded outputs (refusing a summarised record); the document is cut
+  `winner`) are applied with the driver's public `apply_param_override` rule and
+  the search nodes are dropped — a needed search node without a recorded winner
+  refuses, fail-closed; nodes of role `gate` / `stat_test` named in
+  `document.serving.replay` are replaced by a `RecordedOutputs` node (§5.3 note)
+  emitting the run's recorded outputs, which are read from the run's
+  `carry.json` and NOT from `nodes/NN-<key>.json` — `driver._release_spent`
+  summarises every node record (ADR-0048), so the node files hold a summary
+  while `carry.json` holds the run-over-run state that survives; a node absent
+  from `carry.json` refuses rather than recomputing a training-time verdict; the document is cut
   to `ancestors(heads) ∪ heads`; `foreach` and `splits` are dropped (serving
   neither fits nor scores); a needed node carrying `$prev` refuses;
   `env`/`tracking`/`outputs` are dropped. The derived document's hash is
   recorded beside the run's hash on every `process` record.
-- `Decider.prepare(release, registry, asof, base_run_dir)` re-verifies the release.
+- `Decider(document, release, *, registry, adapter, proposer, clock)` — the
+  release and the document arrive at construction because every later call
+  re-verifies them, and the adapter is imported before any `uses` is resolved so
+  a child's classes are registered when the serving document is planned. It owns
+  the configured `Proposer`, which is how `Data.decider` reaches it (§5.16).
+  `prepare(asof, base_run_dir) -> dict` re-verifies the release and returns the
+  per-key classification `classify_plan` produced; it refuses when the release's
+  `serving_hash`, `run_hash` or `doc_hash` is not the one the derived documents
+  hash to (D24: startup re-verifies all hashes).
   A new structural planning pass resolves class metadata and graph edges without
   constructing/fingerprinting sources. `ServingExecutionPolicy` runs there,
   identifies and defers the sole `entry_read` before ordinary RESOLVE, and
@@ -843,6 +1041,11 @@ entry output.
 - `RecordedOutputs` must satisfy the replaced role's planner rules. The resolved
   default is to replay full recorded gate/stat-test outputs; absent or summarised
   evidence refuses rather than recomputing a training-time verdict on live data.
+  It has a `stat_test`-role sibling, `RecordedStatTest`, because the planner's
+  role rules differ; the decider registers both into the SERVING copy of the
+  registry it plans with, as TOOLKIT-owned kinds — `dskit.production` is part
+  of dskit, not a child, so `recorded-gate` and `recorded-stat-test` are core
+  names rather than adapter classes referenced by path.
 - Refusals at `plan`: entry node absent; window param not in `_PARAMS` or its
   full path absent from the run document; `ServingContract` missing or `document.serving.required_universe` absent; entry not a source root or not dominating every dynamic path; any
   non-entry mutable read; a `release_read` outside the manifest; a trainable
@@ -859,10 +1062,16 @@ it classified `release_read`. That is the single cross-package touch point,
 and §9.1 lists it as a `node.py` change. It is
 the only capability a `release_read` node receives, and
 the one API the pipeline planner and production must agree on:
-`get(name) -> value` returns the manifest-named artifact for `name`,
+`ReleaseReader(manifest, allowed_names, root, prefix="")`:
+`get(name) -> bytes` returns the manifest-named artifact for `name`,
 verifying its recorded digest before returning and raising
 `ProductionError` when `name` is not in the manifest or the digest differs;
-`names() -> tuple` lists what this node is permitted to read. There is no
+`names() -> tuple` lists what this node is permitted to read. The reader is
+PER NODE and scoped: `ExecutionPolicy.reader(key)` hands out a reader whose
+`prefix` is `artifacts/<key>/`, so `names()` and `get(name)` speak the node's
+own relative filenames and one node's reader can never name another's
+artifact. It returns bytes, not text, because a manifest digest is over bytes
+and decoding is the caller's business. There is no
 path, no handle and no write verb, so a release read cannot reach the
 filesystem or a mutable store. It is constructed per node from the
 manifest, holds no open file, and is handed over by
@@ -901,10 +1110,15 @@ non-finite number.
 - `Quote{instrument, bid, ask, mid, asof_ms}`;
   `QuoteSet{quotes, quote_digest, min_asof_ms}`.
 - `Candidate{id, instrument, scope_keys}`.
-- `Proposal{id, instrument, side ∈ {buy, sell, none}, qty | notional, limit | None,
-  tif ∈ TIFS, expires_ms, reference_price, exposure, direction, confidence,
+- `Proposal{id, instrument, side ∈ SIDES, qty, notional, limit, tif ∈ TIFS,
+  expires_ms, reference_price, exposure, direction, confidence,
   prediction, baseline, expected_value, inputs_asof_ms, inputs_digest,
-  coverage_digest, quote_asof_ms, quote_digest, extra}`.
+  coverage_digest, quote_asof_ms, quote_digest, extra}`. **`qty` is the order
+  size and is REQUIRED whenever `side != "none"`**; `notional` is
+  informational and derived. The earlier `qty | notional` spelling read as a
+  choice of two, which would leave a submitted order with no size and every
+  scalable measure with nothing to reduce — an abstention (`side: "none"`) is
+  the only proposal that may carry a null `qty`.
 - `Finding{guard, measure, value, bound, window, scope_key, verdict, reason}`.
 - `Intent{client_ref, decision_plan_id, decision_plan_digest, proposal,
   created_ms, authority_id, release_hash, inputs_asof_ms, inputs_digest,
@@ -929,6 +1143,23 @@ non-finite number.
 - `Alert{fingerprint, severity ∈ SEVERITIES, status ∈ {firing, resolved}, summary,
   source, tick_id, at_ms, labels}`; `Verdict{status ∈ {ok, warn, alarm, insufficient},
   statistic, threshold, n_ref, n_cur, window, slice, provisional}`.
+- **[phase 2]** `Silence{silence_id, matchers, starts_at_ms, ends_at_ms, created_by,
+  comment}` with `state_at(now_ms) -> SILENCE_STATES`, `active_at(now_ms)` (the ONE
+  owner of what `active` means, so the router asks rather than comparing a string)
+  and `matches(alert)`; and `AlertAck{fingerprint, acknowledged_until_ms, by, reason}`
+  with `holds_at(now_ms)` (the one owner of the lapse). Both refuse a window that
+  ends before it begins, and a `Silence` refuses an EMPTY `matchers`: a silence
+  matching everything is a global mute and nothing on the record would say it was
+  meant to be one. `created_by`/`by` are the PRINCIPAL DIGEST `_principal_and_proof`
+  derives — §6 keeps principals on the chain as digests, never as names.
+  Beside them, the two module rules a `Silence` and an `alerts.InhibitRule` must
+  share, since a second copy is the bug: `alert_labels(alert)` is the matchable
+  space — the alert's own `labels` plus `fingerprint`/`severity`/`source`, the
+  closed FIELDS winning over a declared label of the same name, or an alert could
+  lie about its own severity to a silence written against it — and
+  `label_match(matchers, labels)` is exact equality over every named label (a regex
+  here would be a second grammar with its own escaping and no test could enumerate
+  what it matches).
 - `InputWatermark{key, latest_asof_ms, source_digest}`;
   `EntryBatch{outputs, watermarks_by_key, required_keys_digest, coverage_digest,
   data_asof_ms, inputs_digest, source_config_hash}` where `data_asof_ms` is the
@@ -1074,15 +1305,64 @@ non-finite number.
   receives, and the chain is its only producer. `check_all` then evaluates
   every guard against the original proposal and
   records every finding. Verdicts use
-  `allow < warn < amend < refuse < hold < halt`; amendments can only reduce one
-  declared scalable field, compose by the strictest monotone reduction, and
-  conflict by refusing. The final candidate is re-run through every hard guard
+  `allow < warn < amend < refuse < hold < halt`; amendments are produced by
+  `Limit.amend(proposal, state, value) -> Proposal | None`, can only reduce one
+  declared scalable field, round toward zero, compose by the strictest monotone
+  reduction, and conflict by refusing; an amendment that cannot reach the bound
+  at all (a `min`-only bound, or a reduction that would cross zero) is a
+  `refuse`, never a silently unamended proposal. The final candidate is re-run through every hard guard
   with amendment disabled; any remaining breach refuses or halts. `hold` and `pause` append a
   `guard_state` record (§6) that `SeriesState` folds, so `resume_at`/`held_until`
   survive a restart — R9 names restart amnesia as the anti-pattern the fold
   exists to prevent, and a pause held only in a strategy object would be
-  exactly that. A `hold` expires as `refuse` at its `ttl` (phase 2 adds an
-  `approve` verb); `halt` trips the breaker.
+  exactly that. A `hold` expires as `refuse` at its `ttl`; phase 2 adds the authenticated
+  `approve-hold` verb that ends one early (§5.5.1). `halt` trips the breaker.
+  **Whether a hold still binds has ONE owner** — `held_until_ms > at_ms`,
+  inclusive at the instant — read by `Limit.check` against
+  `state.account.asof_ms` and by `GuardChain.approve_hold` against the act's
+  instant, so a hold can never be expired for the guard and releasable for the
+  operator. **`GuardChain`'s public surface is five names** — `requirements`,
+  `check_all`, `check_authority_scope`, `approve_hold` and `guards` — and a
+  test pins exactly that, since a sixth would be a seam nobody decided to
+  offer.
+  **The producer is `LegPipeline` step (4), and the split is
+  chain-decides / leg-appends.** Phase 1 shipped `guard_state_body`, the fold
+  and the read with NO caller between them, so a hold lasted exactly as long
+  as the process did — the amnesia the sentence above says the fold prevents.
+  `GuardChain.new_holds(findings, state_view, at_ms, calendar) -> tuple[dict]`
+  answers WHICH holds are new (the chain owns the "does it still stand" rule
+  and uses the same one `approve_hold` does), and step (4) appends what it
+  returns. Four properties, each pinned:
+  - **Same barrier, and FIRST.** Step (4) is the leg's first append and it
+    already barriers; the hold goes in before the `decision_plan`, on §6's
+    `cash_flow`-before-`adoption` rule. A crash between them may lose the
+    audit record of a real hold, but can never leave a plan that says "held"
+    over a fold that holds nothing. No new barrier and no new step: `LEG_STEPS`
+    and the §6 latency keys are pinned, so a ninth step was never available.
+  - **Once per HOLD, not per evaluation.** A chain judges the original and
+    re-runs its hard guards on the final, so one holding guard reports twice
+    in one leg; and while a hold stands every later `Limit.check` returns
+    `refuse`, not `hold`. `new_holds` drops both repeats — by `(guard,
+    scope_key)` within the leg, and against the fold across legs and ticks —
+    so a guard that holds for an hour writes one record, not one per tick.
+  - **The instant is step (2)'s refreshed account**, the same "now"
+    `Limit.check` judged the hold against and the one the `decision_plan`
+    binds as `evidence_asof_ms`, so the ttl a record shows is the ttl the
+    guard applied.
+  - **The id names the hold, not the append.**
+    `guard_state_id(release_hash, body)`, in `guards.py`, is
+    `H("guard-state-v1", release_hash, guard, scope_key, state_kind,
+    held_until_ms)`, so a crash-replayed append DEDUPS on the idempotency
+    index instead of refusing as a changed payload under a reused id (§6's
+    rule for every other record), and two legs that reach the same hold write
+    one record. A per-append id — a leg id, a sequence — could do neither.
+  **The expiry half was already enforced and stays where it is.** §5.5's "a
+  `hold` expires as `refuse` at its `ttl`" is `Limit.check`'s two lines: while
+  the hold stands the finding is a `refuse` naming it, and past
+  `held_until_ms` the hold no longer stands and the measure runs again. Both
+  read `state.account.asof_ms` through the one owner above, so a hold restored
+  from the fold with an instant that has already passed cannot keep refusing —
+  the mirror image of the missing-producer defect, and it does not exist.
 - `Limit(Guard)`: `measure` (registered name or class ref), `window` ∈ `{}` |
   `{duration}` | `{count}` | `{calendar: session|day|event}`, `bound` (`max`
   and/or `min`, decimal strings or ints, inclusive), `warn_at ∈ (0,1)`, `scope`
@@ -1093,7 +1373,12 @@ non-finite number.
 - `Measure(ABC)`: deterministic
   `requirements(candidate, window, scope_key, at_ms, calendar, include_working)
   -> tuple[EvidenceRequirement]` plus
-  `value(proposal, state, window, scope_key) -> Decimal | float`.
+  `value(proposal, state, window, scope_key, include_working) -> Decimal |
+  float` — `include_working` reaches `value` as well as `requirements`,
+  because the same `Limit` knob decides both which evidence is fetched and
+  whether a working reservation counts toward the number judged, and a
+  measure that read it from only one of the two would answer a question its
+  own evidence never asked.
   `at_ms` and `calendar` are what let the measure resolve a `{calendar}`
   window to the `[start, end)` bounds its own `requirement_digest` is computed
   over; without them the digest could not be formed and two measures asking
@@ -1123,9 +1408,75 @@ non-finite number.
   rather than one.
 - `RangeGuard(Guard)`: `field`, `min`, `max`, `nan ∈ {refuse, allow}`.
 - Cancels never pass through the chain (a structural rule pinned by a test).
-- After ordinary guards, `GuardChain.check_authority_scope` re-runs the active
+- Below `live_limited` the leg still CALLS `check_authority_scope` and RECORDS
+  its verdict — `not_armed`, since no ordinary arm exists at shadow or paper —
+  and `ActionPolicy` decides what that means, because the authority axis is
+  inert below live. The chain never skips a step by rung; the matrix reads the
+  result. After ordinary guards, `GuardChain.check_authority_scope(proposal,
+  state, scope) -> ScopeVerdict` re-runs the active
   ordinary-arm or reduction-authorization allowlist and overlay against the exact
-  final proposal immediately before permit.
+  final proposal immediately before permit; `scope` is the applied scope
+  `Arming` returned, so the chain judges what the authority actually granted
+  rather than re-deriving it.
+
+### 5.5.1 `guards.py` — releasing a hold (phase 2)
+
+§5.5 rules that a `hold` expires as `refuse` at its `ttl` and names the phase-2
+verb that ends one early. It is `approve-hold`, spelled like the two approve
+verbs already in §7 rather than as a bare `approve`, which beside
+`approve-arm` and `approve-flatten` would not say what it approves.
+
+`GuardChain.approve_hold(state_view, guard, scope_key, credentials, at_ms) ->
+dict` returns the §6 `guard_state` body with `state_kind: "released"` — the
+third `GUARD_STATE_KINDS` member — naming the hold it clears and the
+`control_request_id`, `principal_digest` and `proof_digest` of the act.
+`SeriesState` folds it by dropping that `(guard, scope_key)` hold, so the
+release is durable and a restart cannot resurrect the hold it cleared. It
+refuses a `(guard, scope_key)` pair that holds nothing, a guard the document
+does not declare, and a hold whose `held_until_ms` has already passed (there is
+nothing left to release, and pretending otherwise would record an act that did
+nothing).
+
+It is an AUTHENTICATED control act with purpose `approve_hold` in
+`APPROVAL_PURPOSES`, on §5.8's one path, and it journals like every other
+mutating verb. A hold is a guard's refusal to keep acting on a scope; ending
+one early is an operator overriding a safety verdict, which is exactly the
+class of act D11 requires a verifier for. It grants no submit authority: the
+next proposal on that scope is evaluated by the whole chain again.
+
+Five readings the paragraph above leaves open, each of which decides code:
+
+- **The released BODY is the hold's seven fields plus the three credentials**,
+  not a fourth shape. `held_until_ms` is the CLEARED hold's — what the release
+  cut short — `resume_at_ms` is the act's own instant (a release is not a
+  pause: the scope is free from the moment the act is recorded), and `finding`
+  is the cleared hold's, so the record names the safety verdict being
+  overridden without a second lookup. §6's `guard_state` row states the three
+  extra fields, because a body with no schema is a body every producer spells
+  differently.
+- **`at_ms` is the CONSUMED COMMAND's `queued_at_ms`**, never the handler's
+  clock — the rule §6 already states for `cash_flow.known_at_ms` and §5.16 for
+  `Silence.starts_at_ms`. Without it a crash-replayed command rebuilds a
+  different body under the same id and `Ledger.append` refuses it as a changed
+  payload rather than deduplicating it.
+- **The record's `id` is `guard_state:<control_request_id>`** (R9's
+  kind-qualified id), for the same reason `silence` and `alert_ack` take
+  theirs: it is what makes the replay above idempotent rather than a second
+  release.
+- **`credentials` is the three-field mapping, and its rule has ONE owner.**
+  `base.check_credentials` (over `base.CREDENTIAL_CHECKS`) is that owner:
+  `control_request_id` is a string and the two digests are 64-hex, because a
+  record stores DIGESTS and a raw proof handed in where a digest belongs must
+  refuse rather than be written to the chain. Phase 1 had shipped the rule
+  twice — `breaker.py` checked 64-hex, `reconcile.adopt` checked only "is a
+  string" and carried an unused `_CREDENTIAL_NAMES` constant beside the
+  restatement — which is the "duplication that diverges" defect exactly: two
+  copies, and the second one looser. All three callers now import the owner.
+- **`GuardChain` holds no ledger.** `approve_hold` answers the body and writes
+  nothing; the `compose.py` handler wraps it as a record and
+  `CommandProcessor` appends it inside the same barrier as the
+  `control_request`, which is the shape every verb whose owner cannot append
+  already takes.
 
 ### 5.6 `breaker.py` and `arming.py`
 
@@ -1167,6 +1518,12 @@ non-finite number.
   so the check itself decides that, rather than a caller testing the rung and
   skipping it, which D2 forbids outside `compose.py`. At `shadow`/`paper` it
   returns satisfied — no live permit exists to gate.
+  `Arming.approve` is where D10's "ordinary arming is issued only while
+  active/ready with a release-bound GO and HALT absent" is ENFORCED rather
+  than merely asserted: it refuses unless the fold's breaker is `active`, the
+  `HALT` sentinel is absent, and — at `live_limited` and `live` — the
+  readiness verdict is `go`. The verdict is passed in from
+  `Readiness.verdict_for`, its one owner, rather than re-derived here.
   `ApprovalVerifier(ABC).verify(canonical_bytes, proof, purpose) ->
   VerifiedPrincipal{id, proof_digest}`. It is resolved from the graded
   `document.arming.approval {uses, params}` object; params may name trust-root env vars
@@ -1209,11 +1566,13 @@ other permit **by type** — refuses meaning it returns
 `Ack(not_sent, reason="permit_type")`, never raises. No subclass strengthens a precondition of its base.
 
 - `Executor(ABC)`: `spec()` (default-deny knobs; secret knobs name env vars),
-  `capabilities()` (`tifs`, `market_orders`, `notional`, `positions ∈ {venue,
-  derived}`, `settlements`, `stream`, `dedupe ∈ {replays, rejects, window, none}`,
-  `units {qty, price, cash}`,
-  `position_model ∈ {netting, hedging}`,
-  `fencing ∈ {none, submit_token}`); `@abstractmethod check(config)`,
+  `capabilities() -> Capabilities`, a FROZEN value object declared in
+  `executor.py` and read by ATTRIBUTE — `tifs`, `market_orders`, `notional`,
+  `positions ∈ POSITION_SOURCES`, `settlements`, `stream`,
+  `dedupe ∈ DEDUPE_MODES`, `units` (`qty`, `price`, `cash`),
+  `position_model ∈ POSITION_MODELS`, `fencing ∈ FENCING_MODES` — rather than a
+  dict, so a caller that asks for a capability the seam does not declare fails
+  where it is written instead of reading `None` from a `get`; `@abstractmethod check(config)`,
   `execution_scope() -> ExecutionScope`,
   `cancel(ref) -> Ack`, `order(ref) -> OrderState`,
   `open_orders()`, `fills(since_ms, cursor=None)`, `balances()`; concrete
@@ -1275,6 +1634,20 @@ other permit **by type** — refuses meaning it returns
 
 ### 5.7.1 `accounting.py`
 
+**Four rules here have a second reader in phase 2, so four names are public.**
+`WindowBook` (the window's trades folded from a flat baseline — realised per
+closing fill, open quantity at cost, and the cumulative path), `effective_fills`
+(which fills count: reversals undone, nothing after the cut), `effective_bodies`
+(D21's reading of a `cash_flow` or `outcome` chain: known by the cut, minus what
+is superseded) and `decimal_of` (the one `Fraction` -> `Decimal` boundary).
+§5.13.3's value curve reads exactly these, so the curve and the guard that halts
+on it agree by construction rather than by coincidence. `WindowBook.unrealised(
+mark_of)` is new beside `pnl`: an instrument `mark_of` answers `None` for
+contributes NOTHING, which is the conservative reading the curve needs
+(unmarked open risk is not profit), while the evidence measures keep the
+`mark_of` that REFUSES, because a measure computed over a position nobody could
+mark would be a number with a hole in it.
+
 `Accounting(ABC)` has two abstract hooks.
 `value(state_view, quotes, at_ms) -> Decimal | None` returns the marked
 portfolio value that becomes `tick.nav` — `None` when a required mark is
@@ -1289,7 +1662,21 @@ increase absolute exposure" — without it `DecisionPlan.risk_effect`,
 `ActPermit.risk_effect` and `PolicyRequest.risk_effect` have no producer and a
 child writing live accounting would never learn it must implement this.
 `snapshot(state_view, executor, quotes, at_ms, requirements,
-calendar) -> AccountState` (`state_view` is §5.8.1's frozen `StateView`) is independent of execution. `requirements` is the
+calendar) -> AccountState` (`state_view` is §5.8.1's frozen `StateView`) is
+independent of execution. It RE-ANCHORS every requirement it is handed at its
+own `at_ms` — resolving each `window_kind`/`window_arg` pair to fresh
+`[start, end)` bounds through the calendar — keys `measure_evidence` by the
+re-anchored `requirement_digest`, and returns `AccountState.asof_ms == at_ms`;
+guards rebuild the same digest from `state.account.asof_ms`, so step (2)'s
+later snapshot still finds the evidence step (1) asked for. The history a
+snapshot folds arrives through one protocol, not by scanning the ledger:
+`fills(since_ms)`, `cash_flows(since_ms)` and `marks(since_ms)`, supplied by
+`LedgerHistory` (§5.9) and asked once per snapshot from the earliest window
+start. Live source tokens arrive through the concrete
+`source_tokens(executor, at_ms) -> (executor_token, accounting_tokens)` hook —
+`(None, None)` in the base, overridden by a live child — while the BASE
+enforces D14's rule that absence, regression or reuse with changed economics
+refuses, so no child can weaken it. `requirements` is the
 deduplicated canonical union returned by every configured measure for every
 candidate × window × scope, including all duration/count/session/day/event
 boundaries, expanded over every candidate `scope_key`. Each required pair has one fresh
@@ -1326,24 +1713,43 @@ deadline invalidates the local permit without waiting for nominal expiry.
 
 ### 5.8 `ledger.py` and `control.py`
 
+**A reading open.** `ChainLedger.reading(serve_root, *, clock)` opens the chain
+for READING: it takes no `serve.lock`, repairs no torn tail, and refuses every
+write by name. §7 says read-only verbs never take the writer lock, and an
+ordinary open takes it exclusively for the object's lifetime — so `report`,
+`replay` and `verify` would each refuse exactly while a series was being
+served, and would repair a tail on a series they claim not to touch. The
+`readonly` flag reaches the store's `_open` hook, because a store's own open is
+where the repair lives.
+
 - `Ledger(ABC)`: `append(record) -> seq`, `append_many`, `barrier()`,
-  `scan(kind=None, since_seq=0)`, `head() -> (seq, hash)`, `verify()`,
-  `snapshot(state)`, `latest_snapshot()`. Before assigning ledger fields,
+  `scan(kind=None, since_seq=0)` (`since_seq` is EXCLUSIVE, so a snapshot's
+  `at_seq` replays forward without repeating itself), `head() -> (seq, hash)`,
+  `verify()`, `snapshot(payload)` (the JSON-able payload, which for the
+  auto-snapshot is `SeriesState.to_snapshot_obj()`), `latest_snapshot()` and
+  `close()` — after `close()` reads still work and an append refuses, so a
+  stopped process cannot extend a chain it no longer owns. Before assigning ledger fields,
   append computes `payload_digest` over caller-controlled canonical content,
   looks up the stable caller `id`, and returns the prior sequence only when that
   digest matches; a different payload refuses. It then assigns dense `seq`,
   `recorded_at_ms`, and `prev_hash`, and computes
   `hash = sha256(prev_hash + canonical(envelope − hash))`. Readers tolerate
   unknown fields and upcast `schema_version`.
-- `JsonlLedger`: one serialised line per single `write()` on `O_APPEND`; `fsync ∈
-  {every, batch:{n, ms}, none}` from `document.durability.fsync` (`none` legal only at
-  `shadow`); `flock` for the
+- `JsonlLedger`: one serialised line per single `write()` on `O_APPEND`;
+  `document.durability.fsync` is `"every"`, `"none"` (legal only at `shadow`) or
+  the object `{"batch": {"n": <int>, "ms": <int>}}` — an object rather than a
+  `batch:n:ms` string so the two bounds are separately typed and default-denied;
+  `flock` for the
   process lifetime; torn-tail recovery and segment continuity; directory fsync
   on segment creation; never copytruncate. Rotation is
-  `placement.rotate.by ∈ {size, day, process}` (with `max_bytes` for `size`)
-  into `ledger.NNNN.jsonl`; a new segment carries the prior segment's final
+  `document.placement.rotate.by ∈ ROTATE_BY` into `ledger.NNNN.jsonl`;
+  `max_bytes` is OPTIONAL in every mode and REQUIRED for `size` (a `size`
+  rotation without a bound refuses when the ledger opens, not silently at
+  `validate`); a new segment carries the prior segment's final
   `seq` and `prev_hash` so the chain is continuous across files, and
-  `verify()` returns `first_bad_seq | None`. The genesis `prev_hash` is 64
+  `verify()` returns `first_bad_seq | None` — the seq the walk EXPECTED at the
+  first failing position, so a deletion is located at the hole rather than at
+  the record after it. The genesis `prev_hash` is 64
   zeros. No money field is ever a float in a record. `barrier()` flushes through fsync.
   Every `tick_start` before work, decision plan and intent before submit, and
   arming, breaker, authorization/use, reduction/reset or adoption transition crosses it regardless
@@ -1385,9 +1791,12 @@ deadline invalidates the local permit without waiting for nominal expiry.
   directory shape — no other module builds a serve path by concatenation.
 - `Checkpoint` is an atomic cache of `release_hash, last_tick_at,
   last_completed_tick_at, pending[], positions_snapshot_at, schema_version`.
-  Every cache also names its projected `head_seq/head_hash`: a verified
-  ledger-ancestor cache is stale and rebuilt; an unknown/ahead/divergent head
-  refuses. Crash between ledger barrier and cache replacement is therefore normal.
+  Every cache also names its projected `head_seq/head_hash`, and
+  `ledger.validate_cache_head(head_seq, head_hash, ledger) -> CACHE_STATES` is
+  the ONE owner of what that means: a verified ledger-ancestor cache is `stale`
+  and rebuilt, and an unknown, ahead or divergent head refuses. `Checkpoint`,
+  `Breaker` and `Arming` import it rather than each deciding for itself what
+  "behind" means. Crash between ledger barrier and cache replacement is therefore normal.
 - Serve root layout:
 
 ```
@@ -1426,18 +1835,45 @@ section names box 3.
   refs, the breaker state, the current arming, the current readiness result,
   held/paused guard state, monitor state, the pending-control set (which
   commands are queued and unconsumed), and the **reduction projection** — the
-  current `ReductionAuthorization`, its per-digest rights, and which of them
-  `authority_use` has already reserved. Nothing else folds the ledger:
-  `Breaker.current`, `Arming.current`, `Readiness.current`, `Accounting`,
+  current `ReductionAuthorization`, its `release_hash`, its per-digest rights,
+  and which of them `authority_use` has already reserved. The projection
+  carries the release because a right must not survive a re-plan: the
+  conjunction refuses when it differs from the invocation's release. Nothing else folds the ledger:
+  `Breaker.current`, `Arming.current`, `Readiness.verdict_for`, `Accounting`,
   `Guard`, `Reconciler` and startup recovery all read this object, and the
   head-bound JSON files remain caches of *its* projection.
+  Beside `snapshot()` it exposes the projections that are not `StateView`
+  members because nothing in a tick reads them: `monitor_state()`,
+  `open_ticks()`, `undecided_ticks()`, `tick_plans(tick_id)`, `last_trip()`
+  and — phase 2 — `silences()` and `alert_acks()`. Every one of them rides in
+  the §6 `snapshot` payload, because `Recovery` replays forward from the last
+  snapshot and cannot restore a member the snapshot never carried. Phase 2 adds
+  both to `_SNAPSHOT_KEYS`, and `restore` stays default-deny over them: a payload
+  written before §5.11.2 refuses BY NAME rather than restoring a fold whose
+  silences are gone and whose pages would then resurrect — the `cancelled`
+  precedent, and `schema_version` stays `1` for the same reason (the branch is
+  unreleased and no such snapshot exists outside a working tree). Phase 2 also
+  gives the `alert` kind a fold of its own: a `resolved` alert drops that
+  fingerprint's entry from `alert_acks()`, which is §5.11.2's second lapse and
+  the only place it can live (an `AlertAck` carries no creation instant, so
+  nothing else can tell this episode's ack from the last one's).
+  **`economic_seq` advances on economic events only.** A `fill`, a terminal
+  `order_event`, a `cash_flow` (a balance update, D14) and a position
+  correction advance it; an `authority_use` (a rights reservation), an
+  `intent` (a pending order, not yet a reservation), an `outcome` and an
+  `adoption` receipt do not — the first two because §5.13 step (7) rechecks
+  the exact version step (2) bound, the last two because neither moves money.
 - `StateView` is the frozen projection of the fold, and **only** of the fold:
   `positions`, `working`, `pending`, `balances`, `decision_history`, `breaker`,
   `arming`, `readiness`, `guard_holds`, `reduction`, `pending_control`,
   `risk_version`, `head_seq`, `head_hash`. `Accounting.snapshot` and `Reconciler.run` take it as their
   first argument (both previously written as an untyped `ledger_state`).
-- `TickState{view, account, feed_status, feed_ages, calendar}` is what a
-  `Guard` receives as `state` — one declared type. The tick assembles the
+- `TickState{view, account, feed_status, feed_ages, calendar, entry_batch}` is
+  what a `Guard` receives as `state` — one declared type. `entry_batch` is the
+  sixth member because the final verifier rehashes the FROZEN batch after the
+  last barrier (D14) and receives only `(intent, permit, state)`; without it
+  the batch is unreachable at exactly the step that must prove it has not
+  moved. The tick assembles the
   first one; **each leg rebuilds it at step (2) from a fresh
   `SeriesState.snapshot()`**, because an earlier leg of the same tick can trip
   the breaker, take a hold, or add a working reservation, and a guard judging
@@ -1469,6 +1905,12 @@ section names box 3.
   derives ours from folded fills, so `Reconciler` has exactly two sides to
   compare and it is unambiguous which is which. `Accounting` values that fold
   against quotes; it does not maintain a second one.
+  It keeps a per-instrument log of the fills applied since the position was
+  last flat (`fill_id`, `side`, `qty`, `price`, `fee`), so `reverse(fill_id)`
+  recomputes the position exactly from the log minus that fill rather than
+  subtracting an average it can no longer justify; an unknown or already
+  realised `fill_id` refuses, and the log is part of the snapshot payload, so
+  a busted fill is still reversible after a restart.
 - `Recovery(ledger, state, id_source, executor)` lives here, not in `leg.py`
   (the `executor` is what `order(ref)` is called on — recovery cannot resolve
   an ambiguous client ref without it): it replays
@@ -1479,7 +1921,137 @@ section names box 3.
   restart amnesia is structurally impossible rather than a rule each subsystem
   remembers.
 
+### 5.8.2 `libs/sqlite.py` — `SqliteLedger` (phase 2)
+
+The second `Ledger`, and the reason the seam is an ABC. It is a pack because
+`sqlite3` is stdlib but the SCHEMA and its pragmas are a library-shaped choice,
+and because §8's tier rule puts a named library's plumbing in `libs/`. The rule
+is about what importing the production layer COSTS, not about who publishes the
+library, so `sqlite3` is named only inside a method exactly as `pyarrow` is —
+and `tests/production/test_purity.py` matches a pack to the library its own
+FILENAME names, because the stdlib check would otherwise wave `sqlite3` through
+and report a module-level import clean.
+
+- `SqliteLedger(serve_root, process_id, release_hash, *, clock, fsync="every",
+  rotate=None, state=None, snapshot_every=None, lock=None)` — the SAME
+  constructor as `JsonlLedger`, so `compose.py` builds either from one site and
+  nothing downstream learns which it got.
+- **`ChainLedger` is what makes "the SAME constructor" buildable.** Written as
+  first drafted, the second store would have had to restate the twelve-field
+  envelope, the caller-content `payload_digest` and the idempotency it buys,
+  the dense `seq`, the `prev_hash` link, the graded barrier, the `serve.lock`
+  writer lock, the snapshot cadence and the walk `verify` performs — and it
+  could not have IMPORTED any of it, because those live behind `ledger.py`'s
+  `_`-prefixed names and `__all__` plus the `_` prefix is the API contract. Two
+  implementations of one hash chain are two chains, so the shared half is
+  extracted into a public `ChainLedger(Ledger)` in `ledger.py` and both stores
+  subclass it. A store supplies five hooks and nothing else: `_open` (recover
+  the head, the index and the snapshot cadence), `_store` (land one record,
+  given its envelope and its canonical bytes UNFRAMED — the newline is JSONL's
+  framing, not the chain's), `_sync` (make what is landed durable), `_walk`
+  (yield envelopes in storage order, `None` for one it cannot decode) and
+  `_shutdown`; `scan` stays the subclass's, because how a store answers a
+  filtered range IS the reason to have chosen it. `verify()` is therefore
+  written once, over `_walk`, which is what makes "the same `first_bad_seq`"
+  a fact rather than a promise. `Ledger` itself stays the ABC the registry
+  resolves; `ChainLedger` is a concrete half beneath it, and a child free to
+  implement `Ledger` directly still may.
+- `journal_mode=WAL` and `synchronous=FULL` are PINNED and not configurable. A
+  document's `document.durability.fsync` grades the BARRIER cadence — how often
+  the writer commits — and never the pragma, because a chain whose durability
+  can be lowered by a config key is not a chain. `fsync: "none"` therefore
+  still means "commit lazily", not "lose the write", and remains legal only at
+  `shadow` for the same reason it is in `JsonlLedger`.
+- One table `records(seq INTEGER PRIMARY KEY, kind, id UNIQUE, envelope TEXT
+  NOT NULL, hash, prev_hash)`, plus an index on `(kind, seq)` so `scan` is one
+  indexed query in both its shapes, plus **three triggers**. Append-only is
+  enforced by the STORE, not only by the code that writes to it, which is the
+  property JSONL gets from `O_APPEND` and a sqlite file would otherwise lack.
+  Two of the three refuse `UPDATE` and `DELETE`; the third is append-only's
+  other half and is what the first draft's "three triggers refusing UPDATE and
+  DELETE" left unsaid: **an `INSERT` must land at the tail and continue the
+  chain** — `NEW.seq = MAX(seq) + 1` and `NEW.prev_hash` = the current head's
+  hash (the genesis 64 zeros when the table is empty). Without it a row could
+  be spliced into the middle, or a fork started at the end, by anything holding
+  a connection; with it the file refuses, so the guarantee belongs to the store
+  rather than to the good manners of whoever opened it.
+- One consequence worth stating: the store-enforced `seq` makes an
+  out-of-order insert impossible THROUGH the store, so the deletion and
+  insertion cases `verify()` locates can only be produced by dropping the
+  triggers first. The tests do exactly that and say so; a suite that quietly
+  could not reach those cases would be claiming coverage it lacks.
+- `barrier()` is the `COMMIT`; `scan(kind, since_seq)` is one indexed query;
+  `head()`, `verify()`, `snapshot(payload)`, `latest_snapshot()` and `close()`
+  answer exactly §5.8's contract, and `verify()` returns the same
+  `first_bad_seq | None` walking in `seq` order.
+- **Reads borrow the writer's connection while it is open**, and open one of
+  their own after `close()`. §5.8 says reads still work after `close()`, which
+  is free for JSONL and is not free here: the write connection has to go, so a
+  later read reopens. Borrowing while open is not an optimisation — it is what
+  makes the two stores agree: under a lazy grade a JSONL reader sees lines that
+  are written but not yet fsynced, and only a reader on the writer's own
+  connection sees rows that are inserted but not yet committed. A separate
+  connection would silently miss the newest records mid-tick.
+- **A torn write has no sqlite analogue**, because a commit is atomic. The two
+  honest equivalents are asserted instead: a process killed mid-transaction
+  loses WHOLE uncommitted records, so the chain comes back shorter and
+  `verify()` answers `None`; and a corrupted `envelope` is located at exactly
+  the `seq` JSONL reports for the same damage. A graceful `close()` commits
+  what a lazy grade was holding, so only a real crash can lose a record — the
+  test uses a subprocess that `os._exit`s, since a test that closed the ledger
+  would be asserting the opposite of what it claims.
+- `rotate` REFUSES: a sqlite chain is one file, and `document.placement.rotate`
+  names a JSONL segmentation policy. A document that selects `sqlite` while
+  declaring `rotate` refuses at `plan` rather than silently ignoring a knob its
+  author believed in. **Where that refusal lives** is not obvious and matters:
+  `plan` builds no ledger, and `document.py` is written before the registries
+  exist (§10) and deliberately resolves none, so the rule cannot sit in the
+  grammar and `validate` — which §7 keeps to shape and identity — cannot ask
+  it. It is `Ledger.check_placement(problems, rotate)`, a concrete classmethod
+  hook on the ABC that a segmenting store inherits (accept) and a one-file
+  store overrides (refuse), with ONE owner asking it: `ledger.ledger_class(
+  document)`, called by `compose.py`, which then builds one, and by the `plan`
+  verb, which builds nothing. The constructor asks the same hook, so a caller
+  building a store directly cannot slip past.
+- **`document.durability.ledger` carries no `params`.** §4.3 gives every
+  selector the `{uses, params}` shape, but this family's constructor is pinned
+  by the first bullet and has nowhere to put a params block. A non-empty one
+  therefore REFUSES rather than being dropped — the same rule as `rotate`, for
+  the same reason: a knob its author believed in must not be silently ignored.
+  The knobs that do exist are `document.durability.fsync` and
+  `document.placement.rotate`.
+- `ServeRoot` owns the path. §5.8's tree only spells `ledger.NNNN.jsonl`, but
+  "no other module builds a serve path by concatenation" is a rule, so a chain
+  that is ONE file needs a name in the layout: `ServeRoot.database_path` →
+  `ledger/ledger.db`. The extension is deliberately not the library's — core
+  naming a file `ledger.sqlite3` would put a library's name in tier-1 code for
+  no gain, and the layout's job is to say what the file HOLDS.
+- There is deliberately **no** `LEDGER_KIND_NAMES` tuple in `vocab.py`.
+  `FEE_KIND_NAMES` exists only because a fee is selected by a nested `kind`
+  inside a guard's params and §4.3 pins the tuple and the registry equal; a
+  ledger is selected by a top-level `uses`, like every other family, so the
+  registry is the whole vocabulary and a second list would be the duplication
+  §5.0 forbids.
+- **`LEDGER_KINDS = Registry("ledger", Ledger)` lives in `ledger.py`, beside
+  the ABC** — §4.3's rule that a family's registry sits with its seam — and
+  `ledger.py` registers `jsonl`. This pack registers `sqlite` on import; §8's
+  earlier note that `sqlite.py` "introduces" the registry meant that it is the
+  second implementation that gives the registry a purpose, not that the
+  registry moves into a pack. `document.durability.ledger` is the OPTIONAL
+  `{uses, params}` site, defaulting to `jsonl`, so every phase-1 document keeps
+  both its identity and its existing chain. `Ledger` therefore LEAVES §5.15's
+  structural list and joins the registry-resolved seams; `ChainLedger` takes
+  its place there, since no `uses` selects it.
+
 ### 5.9 `reconcile.py`
+
+**`LedgerHistory` gains `ticks(since_ms)` in phase 2**, beside `fills`,
+`cash_flows`, `marks`, `outcomes` and `legs`: §5.13.3's value curve places one
+point per completed tick, and §5.8 rules that only the fold's named readers
+scan the chain — so the reader lives here rather than in a second module that
+learned to scan. A body with no `observed_at_ms` is dropped, because §6 exempts
+a RECOVERED tick from most of its block and a point at an invented instant is
+worse than no point.
 
 `Reconciler.run(state_view, executor, scope) -> ReconReport{breaks[], status,
 ours_digest, theirs_digest}` (only the reconciler holds both sides)
@@ -1489,7 +2061,21 @@ positions only when `capabilities().positions == "venue"`, since against a
 `derived` executor that comparison is vacuous. Breaks are `timing | missing_in_ledger |
 missing_at_venue | quantity | price | fee | state | settlement | cash`, with severity
 `info | warn | block`. `document.reconcile.on_mismatch` is the automatic policy and admits only
-`halt | refuse`; unknown venue
+`halt | refuse`, and each has a mechanism: `halt` trips the breaker, while
+`refuse` stops SUBMISSIONS until a later reconciliation comes back clean —
+`SubmissionVerifier.refuse_until_reconciled(reason)` (§5.14), the same
+disable an ambiguous outcome sets and the same `reset_after_reconcile`
+clears, and it does not trip the breaker, which is the whole difference
+between the two values. `apply_policy` NAMES the action and never acts
+(D13), and the module function `enact(action, *, breaker, verifier, actor,
+control_request_id=None, reason=None)` is the ONE owner of what each action
+DOES, keyed by a table over `RECON_ACTIONS` rather than a branch. It has two
+callers — the loop's scheduled run and the operator `reconcile` verb — and
+stating the mapping in each of them is exactly how `refuse` came to be
+computed and then dropped in BOTH: a policy the document offers and the code
+does not implement. A member with no table entry refuses rather than falling
+through, so a new action cannot be added silently. `RECONCILE_TRIP_REASON`
+lives beside it for the same reason, rather than being pinned twice. Unknown venue
 orders are `external`, never silently made ours.
 A `cash` break is a balance delta no fill, settlement or fee explains — a
 deposit or withdrawal. It is the one break class with a resolution other than
@@ -1498,14 +2084,25 @@ carrying the **amount and timestamp as values**, not merely the delta digest
 every other adoption records. That asymmetry is deliberate — a digest is
 enough to prove what was adopted, but returns cannot be computed from a hash,
 and this is the only moment the amount is knowable. `lookback_ms` bounds how far back fills and settlements are queried, since an
-open-orders endpoint cannot distinguish missing from recently closed. It runs
-before `READY` when `document.reconcile.on_start`, every `document.reconcile.every_s`
-thereafter, and always appends a `recon` record without synthesising a
-venue action. Adoption is a separate authenticated operator command naming the
+open-orders endpoint cannot distinguish missing from recently closed. `Reconciler.due(now_ms, last_run_ms=None) -> bool` is the ONE owner of
+`document.reconcile.on_start` and `document.reconcile.every_s`; the loop asks
+it rather than restating the schedule, and `run` appends a `recon` record
+without synthesising a venue action. `run` refuses a `state_view` whose
+`economic_seq` is not the fold's, so a stale view can never be reconciled
+against a live venue. Adoption is a separate authenticated operator command naming the
 break ids and release hash; after inspection it records the delta, crosses
 `ledger.barrier()`, updates the fold, and immediately reconciles again.
 
 ### 5.10 `monitors.py`
+
+**`fingerprint()` belongs to the `Reference` SEAM, not to one member.** The
+base answers `None` and `libs/parquet.py`'s `run` reference overrides it.
+`plan` binds every reference's content into the release the same way, and
+asking whether a method EXISTS is a branch on an object's type where
+polymorphism is the answer. `None` is a real answer rather than an omission: a
+`leading` window or a `snapshot` profile stands on values the document itself
+carries, so the doc hash already pins them and there is no second artifact to
+bind.
 
 - `Monitor(ABC)`: `_PARAMS`; `fit(reference)`; `@abstractmethod observe(record)`;
   `@abstractmethod verdict() -> Verdict`; `state()`/`restore(state)` (JSON-able,
@@ -1517,12 +2114,19 @@ break ids and release hash; after inspection it records the delta, crosses
   into windows), `Threshold(ABC).breached(statistic, n_ref, n_cur) -> bool`.
   `Response` is a closed vocabulary (`RESPONSES`), not a strategy object.
   `Reference` (`leading(n)`, `rolling(window)`, `snapshot(path)` — a
-  saved `Profile`; phase 2 `run` over the run's predictions parquet via the
-  parquet pack); `Chunker` (`count(n)`, `period(iso)`, `sliding(n, step)`);
+  saved `Profile`; phase 2 adds `run` over the run's predictions parquet,
+  §5.10.2); `Chunker` (`count(n)`, `period(iso)`, `sliding(n, step)`);
   `Threshold` (`constant`, `reference_std(k)`, `alpha` — PSI benchmark
   `(1/n+1/m)·(B−1+z_α√(2(B−1)))` and the Kolmogorov series, both via
-  `statistics.NormalDist`/`math`); `Response ∈ {log, warn, halt}` (phase 2:
-  `fallback`, `rollback` as operator acts).
+  `statistics.NormalDist`/`math`); `Response ∈ RESPONSES = (log, warn, halt)`.
+  An earlier draft promised `fallback` and `rollback` in phase 2; they are
+  WITHDRAWN. Neither is a monitor response — both are operator acts on a
+  release, and the package already has the mechanism for an operator act
+  (a verified control verb through §5.8's one path). Adding them to a monitor's
+  closed response set would mean a drift statistic silently swapping a release,
+  which is the opposite of D11's rule that changing what runs is an
+  authenticated human act, and documenting them here without building them is
+  exactly the escape hatch root `CLAUDE.md` forbids. `RESPONSES` stays three.
 - Families (phase 1): `OperationalMonitor` → `Staleness`, `DecisionRate`,
   `Coverage` (the abstaining fraction), `LatencyPercentiles`, `RefusalCount` —
   each a subclass whose `observe(record)` reads named fields of the decision
@@ -1532,19 +2136,244 @@ break ids and release hash; after inspection it records the delta, crosses
   parameterised class because each reads a different record field, which is
   the only thing that varies — there is no shared numeric parameter to lift;
   `StreamMonitor` → `PageHinkley`, `TrackingSignal`; `DistributionMonitor` →
-  `PSI`, `KS` (bins from reference quantiles at `fit`). Phase 2: `DDM`, `ADWIN`,
-  `JensenShannon`, `LInf`; `OutcomeMonitor` → `Calibration` (ECE), `Brier`
-  (Murphy terms), `Skill` (BSS and Diebold–Mariano against the leg's stored
-  `baseline`, reusing `dskit.pipeline` metrics/stats), `PredictionBias`;
-  `ParityMonitor` — phase 2, defined with `replay` in §5.13's `report.py`
-  bullet: it observes the replay divergence classes rather than a data
-  statistic, which is why it is the one family with no phase-1 member.
+  `PSI`, `KS` (bins from reference quantiles at `fit`). Phase 2 adds `DDM` and
+  `ADWIN` to the stream family, `JensenShannon` and `LInf` to the distribution
+  family, and the two families phase 1 cannot populate — `OutcomeMonitor`
+  (`Calibration`, `Brier`, `Skill`, `PredictionBias`) and `ParityMonitor`,
+  which observes replay divergence classes rather than a data statistic and is
+  therefore the one family with no phase-1 member. Contracts in §5.10.1.
 - `Profile` value object (per-field count, missing, min, max, sum, sumsq,
   quantile bins, top-k) with `merge()`.
 - Rules pinned by tests: below `min_n` never `ok`; last partial chunk never `ok`;
   outcome verdicts `provisional` until `label_coverage`; a fixed anchor AND a
   rolling reference when both are declared; `alarm` with `response: halt` trips
   the breaker.
+
+### 5.10.1 `monitors.py` — the phase-2 families
+
+Four more members of the two phase-1 families, plus the two families phase 1
+declares and cannot populate. Every one of them is built through the existing
+`Monitor` seam: `cls(params, name=key)`, the four common knobs, a nested
+`window` / `threshold` / `reference` site resolved inside the monitor, one
+`statistic` per `verdict()`, and `state()` / `restore(state)` carried by the §6
+`snapshot`. Nothing here widens the seam.
+
+- `StreamMonitor` gains two change detectors, each a recursion in
+  `_stream_state()` exactly as `PageHinkley`'s is, and each reduced to a
+  DIMENSIONLESS statistic so the existing `Threshold` strategies bound it and
+  no detector carries a constant of its own:
+  - `DDM(params)` — Gama's drift detector over an error field in `[0, 1]`.
+    It tracks `p_t` (the running error rate) and `s_t = sqrt(p_t(1-p_t)/t)`,
+    remembers the pair minimising `p + s`, and reports
+    `statistic = (p_t + s_t - p_min - s_min) / s_min`, the number of sigmas
+    above the best the stream has been. The literature's warning at 2σ and
+    drift at 3σ are then two ordinary `constant` thresholds in the document,
+    not two numbers in the code. `min_n` gates the early stream where `s_t` is
+    meaningless, and an `alarm` resets the whole recursion on the next
+    observation as `PageHinkley`'s does. `s_min` can be ZERO — a stream with
+    no errors has `p = s = 0`, and so does one with nothing but errors — which
+    leaves the ratio undefined, so the best pair is REMEMBERED only once the
+    stream is `min_n` long AND its sigma is real; until such a pair exists the
+    statistic is `None` and the verdict `insufficient`. The consequence is
+    plain and someone will hit it: a monitor over an error field that has been
+    PERFECT reports `insufficient` rather than `ok`, and the first errors after
+    a perfect stretch anchor the detector instead of alarming.
+  - `ADWIN(params)` — adaptive windowing. It keeps its own window in the
+    stream state, cuts it at every split point that leaves `min_sub`
+    observations a side, and reports
+    `statistic = max(|mean_left - mean_right| / eps_cut)` over the cuts, with
+    `eps_cut` the Bifet-Gavaldà bound at `delta` — `sqrt(ln(4n/delta) / 2m)`
+    over the harmonic mean `m` of the two sides, `n` the window's length;
+    a `constant` threshold at `max: 1` is the classic test. On a breach it
+    drops the older sub-window, so the adaptive window shrinks itself. The
+    shrink happens INSIDE the fold and the statistic reported is the one
+    measured BEFORE it, for two reasons: the adaptive window is the
+    statistic's own, so it must not depend on the document's `response` the
+    way `PageHinkley`'s reset does, and a detector that shrank before
+    reporting could never show the breach that made it shrink. Params add
+    `delta` (default `DEFAULT_ADWIN_DELTA`, 0.002 — the literature's),
+    `min_sub` (the smallest sub-window a cut may leave, default
+    `DEFAULT_MIN_SUB`, 5) and `max_window` (default
+    `DEFAULT_ADWIN_MAX_WINDOW`, 500), which caps the adaptive window and drops
+    oldest first. That cap is not comfort: cutting at every split point is
+    quadratic in the window's length, the window rides in every §6 `snapshot`,
+    and only a breach shortens it — so on a stationary stream an uncapped
+    window would take a growing slice of every tick and write itself into the
+    ledger for ever. 500 keeps a fold's scan in the low hundreds of thousands
+    of operations and the window inside ~10 KB of snapshot, while leaving the
+    middle cut 250 observations a side — enough to detect a shift of about a
+    quarter of a bounded field's range at that `delta`. A `max_window` below
+    twice `min_sub` admits no cut at all and refuses, rather than building a
+    monitor that can never answer. The declared `window` still gates `min_n`
+    and labels the verdict, exactly as it does for `PageHinkley` — the
+    adaptive window is the statistic's, the declared one is the verdict's.
+- `DistributionMonitor` gains two distances over the reference's own quantile
+  bins, so both share `PSI`'s binning and neither re-derives it:
+  - `JensenShannon(params)` — the base-2 Jensen–Shannon divergence, so
+    `statistic ∈ [0, 1]` and a document can reason about it without knowing the
+    sample size. `critical_value(alpha, n_ref, n_cur)` uses the same normal
+    approximation to `chi^2_{B-1}` the `PSI` benchmark already owns, divided by
+    `2 ln 2 * n_eff` with `n_eff = n_ref*n_cur/(n_ref+n_cur)` — imported from
+    that one owner, never restated, so loosening one benchmark cannot leave the
+    other behind.
+  - `LInf(params)` — the largest absolute bin-proportion gap, with
+    `critical_value(alpha, n_ref, n_cur) =
+    sqrt(-ln(alpha/(2B)) * (1/n_ref + 1/n_cur) / 2)`: the two-sided Hoeffding
+    bound with a Bonferroni factor over the `B` bins, because taking a maximum
+    over `B` comparisons and testing it at `alpha` without the correction is
+    how a drift monitor learns to cry wolf. It takes `bins` like `PSI`, and
+    refuses `bins < 2`.
+- `OutcomeMonitor(Monitor)` is the family §5.10 declares and phase 1 cannot
+  populate, because it needs a label. It observes BOTH record kinds through the
+  one `observe(record)` hook: a `decision` body parks each leg's
+  `(leg_id, forecast, baseline)` in a bounded pending map (`max_pending`,
+  default `DEFAULT_MAX_PENDING`, oldest evicted — and an eviction is never
+  dropped silently); an `outcome` body whose `outcome_kind` is one of the
+  declared `outcome_kinds` and whose `leg_id` is pending completes the pair
+  into ONE observation, and an `outcome` carrying `supersedes` REPLACES the
+  observation standing for that `leg_id` instead of adding a second. Params
+  add `field` (the forecast field, e.g. `prediction`), `outcome_kinds`,
+  `label_coverage` (default `DEFAULT_LABEL_COVERAGE`, 0.9 — `provisional` is
+  the CAUTIOUS state, so the default errs towards saying the labels are still
+  arriving) and `max_pending` (default `DEFAULT_MAX_PENDING`, 500 — the map
+  rides in every §6 `snapshot`, the same budget that caps
+  `DEFAULT_ADWIN_MAX_WINDOW`, and 500 spans a multi-day settlement lag at a
+  hundred legs a day). `label_coverage()` is `paired / (paired + pending)` over
+  the current window, and `provisional()` returns `label_coverage() <
+  params["label_coverage"]` — the override of the base hook §5.10 reserved for
+  exactly this, so an outcome verdict says out loud that its labels are still
+  arriving. Six readings the paragraph above does not settle, each of which
+  bit an implementer:
+  - **`supersedes` names a RECORD ID and a monitor never sees one.** §6 nests
+    a record's content under `body` and the loop hands a monitor bodies, never
+    envelopes, so "replaces the observation it names" can only mean "replaces
+    the observation standing for this outcome's `leg_id`". A correction revises
+    the LABEL; the forecast and benchmark came from the decision and cannot be
+    revised by something that happened after it.
+  - **An eviction enters the WINDOW as an unlabelled observation**, not a
+    counter: coverage is "over the current window", so an eviction is counted
+    unlabelled while it is in one and ages out with it. A count that only grew
+    would leave one transient burst provisional for the life of the process,
+    and §5.13.4's outcome evidence would then be a permanent NO-GO earned by a
+    minute of late labels. Nothing may supersede a mark — its forecast went
+    with the pending entry.
+  - **No `weight` is parked.** An earlier draft of this bullet named one, but
+    §6's `decision.legs[]` carries no `weight` and no statistic below is
+    weighted, so parking it would be state in every `snapshot` that no verdict
+    reads. A weighted statistic would reintroduce it; the omission is
+    deliberate.
+  - **A fresh monitor's coverage is 1.0**, not 0: with nothing paired and
+    nothing pending no leg is waiting, so nothing is provisional, and such a
+    verdict is `insufficient` on its own account.
+  - **The label arrives as a decimal STRING.** `Outcome.value` is a `Decimal`
+    and the §6 body is `to_obj()`, so the family widens a decimal string where
+    the rest of `monitors.py` takes only a number.
+  - **The serve loop feeds it.** The `outcomes` verb is applied by the loop's
+    own `CommandProcessor` (§5.8), so the loop is already the process that
+    recorded the labels — but they never pass through the tick's own bodies.
+    Every control verb therefore reports what it recorded through one hook on
+    the handler base, and the LOOP drains it and feeds the monitors alongside
+    the `decision` and `tick` bodies. Monitors stay the loop's to drive (§5.10)
+    and `LedgerHistory` stays the one reader of the chain. The feed is
+    EXACTLY-ONCE without a watermark, because `OutcomeJoin.collect` already
+    drops anything standing unsuperseded in the fold: what it returns is new by
+    construction, so a replayed `outcomes` command collects, records and
+    reports nothing a second time. The report is DRAINED rather than read — an
+    observation counted twice moves every statistic — and the bodies are fed
+    before the tick's own, being older.
+
+  Members:
+  - `Calibration` — `statistic` is the expected calibration error over `bins`
+    equal-width bins of the forecast. Equal-width, not the reference quantiles
+    the distribution family cuts on: that fixed partition is what ECE means,
+    and §5.13.3 keeps the same split.
+  - `Brier` — `statistic` is the mean of a registered `dskit.pipeline.metrics`
+    rule, imported rather than restated and resolved at reduce time. The rule
+    is `scoring`, default `DEFAULT_SCORING` (`brier`) — the same choice
+    §5.13.3 gives the report, resolved by the same module-level
+    `check_scoring`, whose answer both take rather than each writing the
+    lookup, and for the same reason: `brier` refuses a forecast
+    outside `[0, 1]` and a label outside `{0, 1}`, so an unbounded-value series
+    declares `squared_error` and a child's own registered rule works with no
+    new seam. One param, not a seam. The Murphy decomposition is deliberately
+    NOT here: a `Verdict` carries one statistic, and the three terms only sum
+    on the exact stratification `report.py` computes (§5.13.3).
+  - `Skill` — `statistic` is the skill score against the leg's stored
+    `baseline`, `1 - score(forecast)/score(baseline)` under the same `scoring`
+    knob, so an ordinary `constant` threshold at `min: 0` says "no worse than
+    the benchmark". A window whose benchmark scored a perfect 0 has no skill to
+    measure: the statistic is `None` and the verdict `insufficient`, the answer
+    `DDM` gives a stream with no sigma, rather than a division by zero.
+    Beside it, `dm_test()` returns
+    `dskit.pipeline.stats.diebold_mariano_test` over
+    `dskit.pipeline.stats.dm_loss_series` for the same window, which
+    `report.py` and `test_monitors.py` read. It is a method rather than the
+    statistic because `Threshold.breached(statistic, n_ref, n_cur)` sees one
+    number and cannot see a series, and because re-testing significance on
+    every arriving observation is a multiple-comparisons trap the report avoids
+    by testing once per period. Three readings: it answers a mapping OR `None`,
+    since `diebold_mariano_test` refuses a series shorter than two pairs and
+    §5.13.3 states the same rule for the report; it runs at
+    `dm_lags(n, h_steps)` with a ONE-step horizon, which §5.10.1 leaves unsaid
+    and §5.13.3's sibling rule supplies; and `dm_loss_series(y, yhat, mu)`
+    takes ONE scalar benchmark while each leg stores its own, so the TEST runs
+    against the window's mean benchmark while the `statistic` uses each leg's.
+    §5.13.3 carries that same defect in `dm_loss_series(y, yhat, mu=baseline)`
+    — whoever builds the report should see it coming.
+  - `PredictionBias` — `statistic` is the mean signed error
+    `mean(forecast - label)`, bounded by a two-sided `constant` `{min, max}`,
+    since a bias monitor that took an absolute value could not say which way
+    the model leans. It is the one member with no probability frame, and so the
+    one that reads an unbounded value with no `scoring` knob to choose.
+- `ParityMonitor(Monitor)` is the family with no phase-1 member because it
+  observes no data statistic. It takes `Divergence.to_obj()` bodies (§5.13.3),
+  declares a `classes ⊆ DIVERGENCE_CLASSES`, and reports the COUNT of those
+  classes in its window. **It is the one monitor the serve loop never calls**:
+  replay runs in a separate process against a scratch root and appends nothing
+  to the series, so `report.py` drives it and prints its verdict in the parity
+  section. Saying so here is the point — a monitor wired into a document's
+  `monitors` by mistake would silently never observe anything. Two readings:
+  EVERY divergence is an observation whatever its class, and the statistic
+  counts the declared ones, because filtering before the window would make the
+  statistic identically the window size and `min_n` would then mean "answer
+  nothing until thirty divergences have arrived"; and a CLEAN replay produces
+  no bodies at all, so it reads `insufficient` rather than `ok` — the count is
+  a breach detector, a parity document writes `min_n: 1`, and `report.py`
+  would have to feed every COMPARED record for a clean replay to read `ok`.
+
+### 5.10.2 `libs/parquet.py` — `RunReference` (phase 2)
+
+The `run` member of `REFERENCE_KINDS` that §5.10 names and phase 1 defers: the
+reference population is the run's own scored predictions, so a drift monitor
+compares live decisions against exactly the distribution the model was
+validated on rather than against an operator's saved profile.
+
+`RunReference(params, *, field=None)`, a `Reference` registered as `run` by
+this pack. Params: `run_dir` (str, required), `node` (str, optional), `column`
+(str, default the owning monitor's `field`), `max_rows` (int, default
+`DEFAULT_REFERENCE_MAX_ROWS`) and `notes`. `sample()` reads the run's saved
+predictions once, lazily, on first call, with `pyarrow` imported INSIDE the
+method per §8's tier-2 rule. The LAYOUT of those predictions has one owner,
+`dskit.pipeline.predictions`, and the pack reaches it through that module's
+`find_predictions` and `PREDICTIONS_FILE` rather than spelling a path of its
+own — here or in the code — so a run directory that changes shape changes in
+one place. `node` says which scoring node's predictions are the population:
+without it a run holding exactly one prediction file is read, and a run holding
+several REFUSES at `sample()` naming every node it found, because concatenating
+two nodes' rows would silently mix distributions that may not predict the same
+thing and a drift statistic over that mixture is meaningless in a way nothing
+would report. A missing file, missing column or non-numeric column refuses
+there too, and not at construction, following `Snapshot`'s precedent that a
+reference performs no I/O when it is built. `add(value)` IGNORES the value, as
+`Snapshot`'s does: a run reference is a fixed anchor, and what has to be
+guaranteed is that nothing the loop observes can move it. Ignoring is what
+delivers that — declining to incorporate is not accepting — while REFUSING
+would not, since `Monitor` retires every observation leaving the window into
+every reference unconditionally, and a raise on that path crashes the serve
+loop on the first window roll. The digest of exactly the predictions `sample()`
+would read is reported by `fingerprint()` so `plan` can bind them into the
+release like any other artifact, which is what stops a re-scored run from
+moving a live alarm threshold under a fixed release hash.
 
 ### 5.11 `alerts.py` and `health.py`
 
@@ -1563,8 +2392,14 @@ break ids and release hash; after inspection it records the delta, crosses
   the limit, not dedup); a bounded
   `queue.Queue` consumed by one worker thread; `put_nowait` overflow and every
   sink exception swallowed and counted (`alert_sink_failures_total`,
-  `alerts_suppressed_total{why}`); `status: resolved` emitted on recovery. Phase
-  2: inhibition, silences, escalation, `ack`, sqlite state across restarts.
+  `alerts_suppressed_total{why ∈ ALERT_SUPPRESSIONS}`); `status: resolved`
+  emitted on recovery. **Only `AlertRouter.process(now_ms)` appends the §6
+  `alert` record, and only the loop thread calls it** — after `observe`,
+  outside every barrier, exactly where `Metrics.flush` sits; the worker thread
+  `start()` spawns delivers to sinks and appends nothing, and `start()` refuses
+  when a ledger is attached. D23's rule that no auxiliary thread writes is
+  therefore structural rather than a convention each sink must remember.
+  Phase 2 adds inhibition, silences, escalation and `ack` — §5.11.2.
 - `SEVERITIES = ("info", "warning", "error", "critical")` pinned to PagerDuty,
   OTel `SeverityNumber` (9/13/17/21), syslog (6/4/3/2), `logging` (20/30/40/50).
 - `Health`: `starting → {ready | degraded | unhealthy} → stopping`; `HealthProbe(ABC)`
@@ -1580,10 +2415,9 @@ break ids and release hash; after inspection it records the delta, crosses
   id. Emitters are `file` (atomic rewrite of `heartbeat.json`) and deadline-bound
   `url` (POST of `{process_id, sequence, at_ms, status}`; 2xx is success, any
   other result counts a failure and never blocks). `every_s` must be at least 1
-  and no greater than the cadence period. Phase 2 adds a `systemd` emitter
-  (`NOTIFY_SOCKET` datagrams: `READY=1`, `WATCHDOG=1`, `STATUS=`, `STOPPING=1`).
-  `HeartbeatEmitter(ABC).emit(payload)` is the hook; core ships the two kinds
-  above. The worker observes an
+  and no greater than the cadence period. `HeartbeatEmitter(ABC).emit(payload)`
+  is the hook; core ships the two kinds above, and phase 2 adds a `systemd`
+  emitter (§5.11.2). The worker observes an
   atomic last-successful-tick monotonic stamp; when `dead_after_ms` elapses it
   transitions health to unhealthy and stops emitting, allowing the external
   dead-man to page. It is sent in `ready`, and in `degraded` only when `document.heartbeat.in_degraded`.
@@ -1629,8 +2463,250 @@ place a count lives.
   `monitor_verdicts_total{monitor, status}`, `recon_breaks_total{class}`,
   `ledger_append_seconds`, `metrics_label_cardinality_dropped_total`.
   §5.11's two counter names resolve here and nowhere else.
-- Phase 3 `prometheus`/`opentelemetry` packs subscribe to this registry;
-  `metrics.py` imports neither and knows nothing about them.
+- Phase 3 `prometheus`/`opentelemetry` packs subscribe to this registry through
+  a `MetricSink` seam; `metrics.py` imports neither library and knows nothing
+  about them — §5.11.3.
+
+### 5.11.2 `alerts.py` and `health.py` — the phase-2 additions
+
+Phase 1's router dedups, groups, repeats and rate-limits. Phase 2 adds the four
+mechanisms an on-call rotation needs to live with it, and the systemd emitter.
+**None of them introduces a second store.** The owner's phase-2 line names
+"sqlite state across restarts"; the design here reads that as *the fold, in
+sqlite* — `libs/sqlite.py` (§5.8.2) puts the whole chain in sqlite and alert
+state rides in it like everything else — rather than as an alert database
+beside the ledger, which would be a second source of truth for the same fact
+and could disagree with the chain after a crash. That is the argument §5.12
+already used to refuse R3's `Idempotency` ledger, and it holds here unchanged.
+
+- **Inhibition.** `InhibitRule(params)` with `source`, `target` (label matchers)
+  and `equal` (the label names that must agree). While any alert matching
+  `source` is firing, an alert matching `target` whose `equal` labels agree is
+  suppressed with `why: "inhibited"` — the new `ALERT_SUPPRESSIONS` member — and
+  counted like every other suppression. Rules come from
+  `document.alerting.inhibit`, a list, and are evaluated in order at
+  `process(now_ms)` time; inhibition never deletes an alert, so the §6 `alert`
+  record is still appended and the evidence survives the suppression.
+  Four readings the first sentence does not settle. **"Firing" is the router's
+  own `firing` set** — a fingerprint notified and not yet resolved — so an alert
+  still inside its `group_wait` inhibits nothing: it has paged no one, and
+  suppressing behind it would withhold the target with no louder alert delivered.
+  **An empty `source` or `target` refuses**, for the `Silence` reason above: a
+  matcher set that matches every alert is not a rule. **A firing alert never
+  inhibits its OWN fingerprint** — a rule whose two matcher sets overlap
+  (`critical` → `critical`) would otherwise take that fingerprint's repeats out of
+  the dedup pipeline the repeat interval owns and file them under `inhibited`.
+  And **"in order" is unobservable while every rule yields one reason**: what a
+  test can assert is that EVERY declared rule is consulted, so a rule the document
+  writes second still inhibits. The rules are resolved by the composition root
+  (`InhibitRule.from_section`, the class owning the shape of its own three knobs)
+  and handed to the router exactly as the sinks are — the router never reads a
+  document section for its own collaborators (§5.16's spelling rule).
+- **Silences.** `Silence{silence_id, matchers, starts_at_ms, ends_at_ms,
+  created_by, comment}` — six fields, and **no `state` among them**:
+  `state_at(now_ms) -> SILENCE_STATES` (`pending | active | expired`) is
+  DERIVED from the two instants, because a stored state would be wrong from
+  the moment nothing wrote it and no process is scheduled to. A silence is
+  created by the
+  authenticated `silence` verb and appended as a §6 `silence` record whose body
+  is `Silence.to_obj()` plus `control_request_id`, `principal_digest` and
+  `proof_digest`; `SeriesState` folds it and exposes `silences()`, so a
+  restart cannot resurrect a silenced page. A matching alert is suppressed with
+  `why: "silenced"`. An unbounded silence refuses: `ends_at_ms` is required and
+  bounded by `document.alerting.max_silence_s`, because a silence with no end
+  is how a page is lost forever. **The bound is never absent**: a document that
+  declares no `max_silence_s` takes `alerts.DEFAULT_MAX_SILENCE_S` (86400 — one
+  day outlives one shift and no more), and `document.MAX_SILENCE_S_BOUNDS` is
+  `[60, 604800]`; a knob that could be omitted would make "bounded" advisory,
+  which is the failure the sentence above forbids. `max_ack_s` has the same
+  default and bounds for the same reason: an unbounded acknowledgement is how an
+  escalation never happens.
+- **Escalation.** `document.alerting.escalation` maps a level name in
+  `ESCALATION_LEVELS = ("primary", "secondary", "final")` to
+  `{after_s, sinks}`. An alert still firing and still unacknowledged
+  `after_s` after it first fired additionally routes to that level's sinks;
+  levels are climbed in order and never skipped, and reaching `final` twice
+  does not double-send because the repeat interval still applies. The level
+  names are closed for the same reason severities are: an operator cannot
+  invent a fourth rung whose delivery no test covers. (Their VARIABLE may not be
+  called `rung`: D2's AST ban is on that spelling, and an escalation level is
+  not the permission rung.) The climb, spelled out, because "never skipped" and
+  "twice" leave it open: `process` advances a firing group by **at most one
+  level per call**, from an index that only increases, measured from when this
+  EPISODE first fired — so a loop that has not run for an hour sends the next
+  level rather than all three at once, and `final` cannot be reached twice at
+  all. What the repeat interval then buys is the sentence's real content: once
+  the top is reached the ladder is spent, and further pages for that fingerprint
+  come only from the ordinary repeat. A `resolved` transition ends the episode,
+  so a fingerprint that fires again starts at the bottom. An escalation delivery
+  is a NOTIFICATION like any other and appends its own §6 `alert` record, whose
+  `sinks` map names the level's sinks — that record is the only evidence a level
+  was climbed. Two refusals at construction: a level naming a sink the document
+  does not declare (the closure `alerting.routes` already has — a level that
+  pages an undeclared sink pages nobody), and a ladder whose `after_s` values do
+  not increase, since a level due before the one above it can only ever fire
+  immediately after it and reading the document would not say so.
+- **Acknowledgement.** `AlertAck{fingerprint, acknowledged_until_ms, by,
+  reason}`, appended by the authenticated `ack` verb as a §6 `alert_ack`
+  record (body = `AlertAck.to_obj()` plus the control digests) and folded into
+  `SeriesState.alert_acks()`. An acknowledged fingerprint stops ESCALATING but
+  keeps firing and keeps being recorded: an ack means "a human owns this", not
+  "this is fixed", and the `resolved` transition remains the only thing that
+  ends an alert. The ack lapses at `acknowledged_until_ms` (from `--for`,
+  bounded by `document.alerting.max_ack_s`) or when the alert resolves.
+  **That second lapse has to live in the FOLD**, not in the router: `AlertAck`
+  has four fields and no creation instant, so a router cannot tell an ack raised
+  for the episode that just resolved from one raised for the episode now firing,
+  and after a restart it would re-honour the old one. `SeriesState.apply`
+  therefore folds the `alert` record — a `resolved` status drops that
+  fingerprint's ack, a `firing` one leaves it — which is why the fold's `alert`
+  entry is no longer `_fold_nothing`. A silence is never dropped this way: it is
+  a window over MANY alerts, and one of them resolving says nothing about the
+  window. `--for` is an ISO-8601 duration through `parse_iso_duration` (the one
+  owner), carried as `for_ms` so the handler adds it to the CONSUMED command's
+  `queued_at_ms`; an absent `--for` takes the document's own bound, the only
+  default that is not a second threshold with no name.
+- `AlertRouter` gains `inhibits`, `silences` and `acks` as constructor
+  collaborators read from the fold, and `process(now_ms)` consults them in the
+  order silence → inhibition → dedup → group wait → rate limit, cheapest and
+  most explicit first. It remains the sole appender of the `alert` record and
+  is still called only from the loop thread. `silences` and `acks` are the
+  fold's own ACCESSORS (`SeriesState.silences`, `SeriesState.alert_acks`),
+  CALLED at each `process` rather than snapshotted at construction — otherwise a
+  window created between two ticks would need the router rebuilt, and a
+  restart's replay would be invisible to it. The order is data
+  (`_PRIOR_SUPPRESSIONS`), not the shape of an `if` chain, so a test can read it;
+  what makes it TESTABLE is the pairwise conflicts, since a reason is only
+  observable when two mechanisms would both withhold: silenced beats inhibited
+  (an operator's own window is the most specific statement anyone has made),
+  inhibited beats `repeat_interval`, and both admission reasons beat
+  `rate_limit`, which is only ever asked at flush. **An ack or an active silence
+  also withholds an ESCALATION** — §5.11.2 says it of the ack, and it must hold
+  of the silence too, or a ladder climbs straight through the window and pages
+  exactly the alert the operator silenced. A withheld escalation is NOT counted:
+  the phase-1 conservation invariant is over ENQUEUED alerts ("delivered exactly
+  once or counted exactly once"), and an escalation is an additional route for an
+  alert already delivered and already counted.
+- **The systemd heartbeat emitter.** `SystemdEmitter(params)` is the third
+  `HEARTBEAT_KINDS` member. `emit(payload)` sends `WATCHDOG=1` and a one-line
+  `STATUS=` datagram to the `AF_UNIX` `SOCK_DGRAM` path in `NOTIFY_SOCKET` (a
+  leading `@` names an abstract socket and becomes a NUL). `HeartbeatEmitter`
+  gains two CONCRETE lifecycle hooks that do nothing by default —
+  `ready()` and `stopping()` — which the loop calls on the health machine's
+  first `ready` and on entering `stopping`; this emitter sends `READY=1` and
+  `STOPPING=1` from them, and the `file` and `url` emitters ignore them, so no
+  existing subclass changes. An unset `NOTIFY_SOCKET` REFUSES at construction:
+  a heartbeat that silently emits nothing is precisely the failure D18 exists
+  to prevent, and systemd's own watchdog would then be the thing that never
+  fires. `emit` never raises; a send failure is counted like any other
+  emitter's.
+  Four readings that last sentence needs. **The two clauses reconcile one way
+  only**: `Heartbeat.failures` is the only counter there is, and §5.11 pins that
+  an emitter reports a failure by RAISING, so a `SystemdEmitter.emit` that
+  returned normally on a failed send would be counted nowhere and be exactly the
+  silent emitter this paragraph forbids. So `emit` raises `ProductionError` —
+  the package's own failure, never the socket's bare `OSError` — and the
+  heartbeat swallows and counts it; "never raises" holds at the boundary the
+  loop sees. `ready()`/`stopping()` DO swallow entirely, because the loop calls
+  them outside that count and a raise there would fault a process that is merely
+  shutting down. **`Heartbeat` gains the two matching verbs**: the loop reaches
+  the emitters only through it, so `Heartbeat.ready()`/`stopping()` fan out to
+  every emitter, count a failure like a failed beat, and are IDEMPOTENT — the
+  heartbeat owns "first", so the loop keeps no flag of its own and simply tells
+  it whenever evaluating the health machine answers `ready`. That is the first tick boundary
+  in practice, since nothing before it has evaluated a probe; a unit whose
+  `TimeoutStartSec` is shorter than one cadence period must raise it.
+  `stopping()` is sent between `Health.stop()` and `Heartbeat.close()`, while the
+  emitters still work: after `close()` a supervisor waiting on the signal would
+  time the process out instead of letting it finish. **`NOTIFY_SOCKET` is read
+  through the `secrets` collaborator**, the package's one door to the process
+  environment; it needs no `env.require` entry, since `resolve_secrets` carries
+  the whole environment and systemd SETS the variable rather than an operator
+  declaring it. Construction also refuses an address that is neither absolute
+  nor abstract — sd_notify's own rule, and the same refusal as the unset one,
+  since a relative path can never be connected to. **The status line is one line
+  by construction**: whitespace in the rendered payload is collapsed, because a
+  datagram is `KEY=value` lines and a newline in a value would forge a second
+  assignment systemd would then act on.
+- Both new verbs are authenticated control acts on §5.8's one path, with the
+  purposes `ack` and `silence` added to `APPROVAL_PURPOSES` (a page suppressed
+  by an unauthenticated caller is an outage with no evidence), and both journal
+  once per D22. They authenticate the way `adopt` does — the CLI requires
+  `--proof`, the bytes travel in the inbox file, and `_principal_and_proof` binds
+  the principal and proof digests onto the record — rather than calling
+  `ApprovalVerifier.verify`, which stays `Arming`'s: routing two more purposes
+  through that seam would give every child verifier two new purposes to implement
+  before it could suppress a page. Adding the purposes forces the cascade unit 1
+  hit with `outcomes`: a handler in `compose.py` (`_Ack` and `_Silence`, sharing
+  a `_SuppressionVerb` base that owns the "window bounded from the command's
+  queued instant" rule once) and a §7 verb in `__main__.py`; a purpose with no
+  handler is silently rejected into a receipt, and a verb with no CLI row is a
+  control an operator cannot take.
+- **A suppressed alert is recorded, and the record says so.** §5.11.2 asks for
+  the `alert` record to survive an inhibition; the §6 body therefore gains
+  `suppressed` (an `ALERT_SUPPRESSIONS` member, or null when delivered). Without
+  it the record is byte-indistinguishable from an alert whose severity no route
+  covers — both carry `sinks: {}` — and "the evidence survives the suppression"
+  would not be true. A SILENCED alert is recorded on the same argument: a
+  silence or an inhibition can withhold the FIRST and only notification of a
+  symptom, so the record is the only evidence it occurred, while the phase-1
+  five withhold a REPEAT of something the chain already carries and append
+  nothing.
+
+### 5.11.3 `libs/prometheus.py` and `libs/opentelemetry.py` — metric sinks (phase 3)
+
+§5.11.1 rules that `metrics.py` imports neither library and knows nothing about
+them. Phase 3 keeps that literally true by adding one seam and two packs.
+
+- `MetricSink(ABC)` in `metrics.py`: `@abstractmethod publish(snapshot, at_ms)`
+  and a concrete `close()`. `Metrics.subscribe(sink)` registers one, and
+  `flush(at_ms, tick_id)` calls each subscriber inside the same swallow-and-count
+  rule a failing JSONL flush already gets — a new counter
+  `metric_sink_failures_total{sink}` — so a broken exporter can slow nothing and
+  fail no tick. `METRIC_SINK_KINDS = Registry("metric_sink", MetricSink)`, and
+  the §4.3 disjointness test grows to three sink registries:
+  `dskit.pipeline`'s tracking sinks, `ALERT_SINK_KINDS` and this one are
+  separate objects with separate names.
+- `PrometheusSink(params)` — `prometheus_client` inside the method. Params
+  `mode ∈ {pull, push}`, `addr`/`port` for the pull endpoint or
+  `gateway_url_env` for the push gateway (the env-var NAME, never the URL),
+  `job`. It mirrors the registry's own names and label sets, which are already
+  Prometheus-shaped and pinned by §5.11.1's naming test, so the exporter
+  translates nothing.
+- `OtelSink(params)` — `opentelemetry` inside the method. Params
+  `endpoint_env`, `protocol ∈ OTEL_PROTOCOLS = ("grpc", "http/protobuf")`,
+  `interval_s`, `resource` (a flat non-secret attribute map).
+- **Built (phase 3), with five corrections.** (a) `OTEL_PROTOCOLS`'
+  second member is `http_protobuf`, not `http/protobuf`: §5.0 makes every
+  vocabulary member a snake_case token and `test_vocab.py` enforces it
+  (`TICK_STATUSES` is the one colon-qualified exception), so the library's
+  own wire spelling lives inside the pack's method, keyed by the same table
+  that picks the exporter class. (b) `metrics.py` gains the two things both
+  packs would otherwise each re-derive: `series_key`/`series_labels` (the
+  series key is a JOINED string whose recipe lived only inside a private
+  method — an exporter parsing it with its own split is the second copy)
+  and `readings(snapshot) -> tuple of Reading`, which applies the
+  DECLARATION rule (a `_total` name is a counter, a series holding buckets
+  is a histogram) once. `vocab.METRIC_FAMILIES` is the closed set both
+  dispatch tables pin to. (c) `PrometheusSink`'s `mode` is REQUIRED, and
+  `addr` defaults to the loopback: a default mode would bind a socket in a
+  process whose operator asked for neither, and an exporter reachable from
+  the network by default publishes a serve process's internals. A knob the
+  chosen mode cannot read refuses, like a typo. (d) `OtelSink` cannot carry
+  a histogram's buckets — OTLP has no asynchronous instrument for a
+  pre-aggregated bucket set — so it exports `<name>_count` and `<name>_sum`
+  and NAMES the omission; "translates nothing" holds for Prometheus and
+  cannot for OTLP. Its `resource` map refuses a value `redact` would mask,
+  since every exported point carries it. (e) `document.placement` had no
+  `metric_sinks` key in §4.1 at all; phase 3 adds it, `compose.py`
+  subscribes what it declares, and §4.3's family list plus `test_main.py`'s
+  two closure tests gain `METRIC_SINK_KINDS` with that one grammar site.
+- Metric sinks are declared in `document.placement.metric_sinks` — the
+  EXCLUDED section — not in `alerting`. §4.2 grades alert sinks because
+  emptying them silences a safety control; metrics are explicitly never an
+  input to a decision, a guard or a record (§5.11.1), so adding or removing an
+  exporter is a placement change and must not mint a new release. The rule is
+  the same one, applied to a different fact about the two kinds of sink.
 
 ### 5.12 `resilience.py`
 
@@ -1658,8 +2734,8 @@ unhealthy rather than flooding the venue. `Transport(ABC)`
 (`send(method, url, headers, body, timeout{connect_s, read_s}) -> (status, headers,
 body)`; `UrllibTransport`; `None` timeout refused). All take injected `clock`,
 `sleeper`, `rng`. Every knob above is read from the graded `resilience` section
-of §4.1 — none is a code constant. Phase 2: `Signer(ABC)` with `HmacSigner`,
-skew window, time probe.
+of §4.1 — none is a code constant. Phase 2 adds `Signer(ABC)` with
+`HmacSigner`, its skew window and its time probe — §5.12.1.
 
 R3's separate `Idempotency` write-ahead ledger is **deliberately not built**: its
 job — a durable record written before I/O, keyed by a deterministic client
@@ -1671,6 +2747,97 @@ source of truth for the same fact and could disagree with the ledger after a
 crash. The venue-side half R3 also names — `dedupe ∈ {replays, rejects, window,
 none}` — survives as an executor capability (§5.7), and `on_ambiguous` is not a
 knob because D13 fixes the answer: query, never resend.
+
+### 5.12.1 `resilience.py` — `Signer` (phase 2)
+
+The one thing a live venue call needs that phase 1 leaves to the child: a
+request signature bound to a bounded clock skew. It lives here rather than in
+`arming.py` because it authenticates the process to the VENUE, while
+`ApprovalVerifier` authenticates a HUMAN to the process; the two share nothing
+but the word "sign", and merging them would put a venue API key on the same
+seam as an operator's proof.
+
+- `Signer(ABC)`: `@abstractmethod sign(method, url, headers, body, at_ms) ->
+  (headers, body)` returns a NEW header map and body and mutates neither
+  argument, so a retry signs the original request rather than one already
+  stamped; concrete `skew_ms()` returns the current estimate and
+  `probe(transport) -> int` performs one bounded request whose server-time
+  answer updates it. `SIGNER_KINDS = Registry("signer", Signer)`.
+- **The clock is injected**, as everywhere else in this package: skew is
+  (server − local) and staleness is (now − last successful probe), so neither
+  is computable without one, and nothing outside `clock.py` reads the wall
+  clock. `Signer(params, *, clock)`, following `CircuitBreaker(params, *,
+  clock)` rather than the bare `HmacSigner(params)` this section first wrote.
+- `HmacSigner(params)`: `key_env` (the env-var NAME holding the secret, never
+  the secret), `algorithm ∈ SIGNER_ALGORITHMS = ("sha256", "sha512")` (default
+  `DEFAULT_SIGNER_ALGORITHM`), `header` and `timestamp_header` (the header
+  names the venue expects), `max_skew_ms` (default `DEFAULT_MAX_SKEW_MS`),
+  `probe_every_ms`, and `prefix` (a venue-required literal string before the
+  payload). The key resolves once through `redact.resolve_secrets` and is
+  registered as a credential, so it can reach neither a log line nor a record;
+  the signature covers the canonical request line, the timestamp and the body,
+  and the digest — never the key — is what a `reason` may quote. `max_skew_ms`
+  and `probe_every_ms` sit on `Signer` rather than on `HmacSigner`: they are
+  the skew window, which every signer has, and only the HMAC knobs are the
+  subclass's.
+- **The probe target is CONFIGURATION.** `Signer` also takes `time_url` (the
+  venue's clock endpoint) and `probe_timeout` (`{connect_s, read_s}`, defaulting
+  to the transport's own deadlines and validated by the same checker), and the
+  concrete `probe_request()` builds a plain bounded `GET` from them. An earlier
+  draft left the endpoint to a subclass on the grounds that core ships no
+  venue; that gets the toolkit's doctrine backwards. Behaviour is supplied by
+  JSON at run time, and using a package against a new venue means writing a new
+  document — a server-time URL is a config value in exactly the way a
+  connector's endpoint is, not domain logic. Left as a subclass hook, the
+  registered `hmac` kind was selectable from a document and could never sign.
+  `probe_request()` SURVIVES as the overridable hook, because a venue whose
+  probe must be a `POST`, be signed, or carry a header is real; it simply stops
+  being the only way to get a working signer, and a signer given neither the
+  knob nor the hook refuses in `probe` naming both ways out. The hook wins when
+  both are present: one answer, not two.
+- **`probe_every_ms` is REQUIRED, not defaulted.** A staleness rule with no
+  period never fires, which is the same reason `fsync: {"batch": …}` requires
+  both its bounds and a `size` rotation requires `max_bytes`.
+- **A skew bound finer than the time source can resolve REFUSES at
+  construction.** The generic `server_ms(status, headers, body)` reads the HTTP
+  `Date` header — the one server-time field every compliant response carries —
+  and an HTTP-date is a whole number of SECONDS, so an estimate taken from it
+  is good to a second and no better. A document setting `max_skew_ms` below
+  that would refuse to sign for ever: a live venue that can never be reached,
+  discovered when someone arms it. So the resolution is a class declaration,
+  `Signer.TIME_RESOLUTION_MS` (= `DATE_HEADER_RESOLUTION_MS`), for the same
+  reason `Lease.LIVE_CAPABLE` is one — the fact belongs to the implementation
+  and the check must read it without building anything — and
+  `max_skew_ms < TIME_RESOLUTION_MS` refuses where the document is planned,
+  naming both the bound and the source that set the floor. A subclass whose
+  `server_ms` reads a millisecond field declares a smaller
+  `TIME_RESOLUTION_MS` and may then set a finer bound honestly. `DEFAULT_MAX_
+  SKEW_MS` is set knowing the floor, and a venue in perfect agreement reads as
+  up to a second BEHIND, since an HTTP-date truncates.
+- **`sign` REFUSES on skew**, in both directions: when the last successful
+  probe is older than `probe_every_ms`, or when `|skew_ms()| > max_skew_ms`.
+  This is the safety point of the object. A signature stamped outside the
+  venue's own window is rejected AFTER the request has been sent, which makes
+  the submit `unknown` and forces a reconciliation; refusing to sign makes it
+  `not_sent`, which costs nothing. Sending a request that is known to be
+  unacceptable is never the better branch. Both halves fail CLOSED: an estimate
+  that was never taken is infinitely old, and a failed probe leaves the
+  previous estimate and its age untouched so it ages out rather than being
+  trusted. The refusal is `check_skew()`, concrete on `Signer` so every
+  subclass's `sign` owes it before computing anything.
+- It is declared at `document.execution.signer`, an OPTIONAL `{uses, params}`
+  key inside the already-graded `execution` section, so a document that does
+  not sign hashes exactly as it does today. A child's `LiveExecutor` calls it;
+  core never does, because core ships no venue.
+- **Only a live rung builds one, and that is a security property.** Building a
+  signer RESOLVES the venue key into the process and registers it as a
+  credential, so a shadow or paper run of a live document would be holding a
+  credential it can never use — and would refuse to start on a machine that
+  rightly lacks it. Construction is therefore a hook on `compose.py`'s rung
+  family (beside `executor`, whose arity already differs by rung), answering
+  `None` for a simulated venue; the built signer is then offered to the child
+  executor only when its own `__init__` declares one, the rule `_offered`
+  already applies to probes, emitters and outcome sources.
 
 ### 5.13 `loop.py`, `outcomes.py`, `report.py`, `readiness.py`
 
@@ -1763,7 +2930,12 @@ knob because D13 fixes the answer: query, never resend.
   with the full permit and bounded timeout. Any mismatch is `not_sent`; possible
   post-I/O timeout is `unknown`. External venue changes after the last snapshot
   are an acknowledged non-atomic boundary handled by reconciliation;
-  (8) record/fold the outcome before considering the next proposal.
+  (8) record/fold the outcome before considering the next proposal. A refusal
+  BEFORE the plan barrier writes only the `decision_plan` with
+  `result: not_sent`; a refusal AFTER it terminalises through the same step (8)
+  by appending an `order_event` whose `event` and `status` are `not_sent` with
+  a synthesized `Ack`, so a leg that reached step (5) always has an outcome
+  record and recovery never has to guess whether an intent was answered.
   Before the decision-plan barrier, changed state may be fully re-evaluated and
   recorded. After it, any bound input, quote, evidence or risk version/digest
   change refuses the attempt. A refusal terminates that intent as
@@ -1815,9 +2987,13 @@ knob because D13 fixes the answer: query, never resend.
   requires has no caller, and an implementer inventing the route is where the
   scope-key guarantee would be lost; it is constructed once per tick and owns
   no state between ticks, and core needs no subclass of it. There is deliberately
-  **no** `ReplayTick`: replay is already the five-object swap D2 and D20 rest
-  on (`ReplayClock`, `ReplayFeed`, `RecordedExecutor`, `RecordedAccounting`,
-  `RecordedIdSource`), and a replay subclass would be a second mechanism for a
+  **no** `ReplayTick`: replay is already the object swap D2 and D20 rest
+  on (`ReplayClock`, `RecordedExecutor`, `RecordedIdSource` — three, as D20
+  names them, not five: §6 records an account and a venue answer as a DIGEST,
+  so there is no `RecordedAccounting` to swap in, and rows are re-read through
+  `read_entry` against the same immutable onboarding root with the recorded
+  `inputs_digest` PROVING the re-read matched, rather than replayed from a
+  copy the chain never held), and a replay subclass would be a second mechanism for a
   variation the injected seams already express — and would contradict §5.15's
   ruling that the rungs differ only by which objects were injected.
   `ServeLoop` composes a `Tick`; nothing subclasses `ServeLoop` itself. Query,
@@ -1841,21 +3017,24 @@ knob because D13 fixes the answer: query, never resend.
   **this is a deliberate extension of the root convention, and §9.3 rewrites
   that line in both files rather than silently diverging from it.** `--once` runs one tick;
   `--max-ticks N` bounds completed ticks.
-- `outcomes.py` (phase 2): join settlements (`executor.settlements`) and derived
-  labels (strict forward as-of over the store via `scan_stream`) into `outcome`
-  records with `known_at_ms`; supersede chain; `current_outcome(leg)`; as-of cut.
-- `report.py` (phase 2): attribution per leg (surprise, implementation shortfall
-  split pinned to sum, fill rate, markouts, closing-value skill), calibration
-  (Brier + Murphy on exact stratification, ECE, BSS vs stored baseline),
-  cumulative value and drawdown; the replay parity diff with
-  `divergence ∈ {data, nondeterminism, version, guard, state, execution}`;
-  markdown and JSON emitters (the `runs.py` pipe-escape rule reused).
+- `outcomes.py` (phase 2): the bitemporal join — settlements and derived
+  labels into `outcome` records, the supersede chain, `current_outcome(leg)`
+  and the as-of cut. Contracts in §5.13.2.
+- `report.py` (phase 2): attribution per leg, calibration, cumulative value and
+  drawdown, and the replay parity diff with
+  `divergence ∈ DIVERGENCE_CLASSES`, plus the markdown and JSON emitters.
+  Contracts in §5.13.3.
 - `readiness.py` (phase 1): `Readiness(document, release)` with
   `evaluate(at_ms) -> ReadinessResult{verdict, items, readiness_digest,
-  evaluated_at_ms, valid_until_ms}` and `current(state_view, at_ms) -> ReadinessResult |
+  evaluated_at_ms, valid_until_ms}`, `record(result) -> seq`,
+  `current(state_view, at_ms) -> ReadinessResult |
   None` — read from `StateView.readiness` (§5.8.1), never by folding the
   ledger again, and unexpired at `at_ms`, which the loop supplies from its
-  injected clock as every other freshness check does. `Breaker.current` and
+  injected clock as every other freshness check does — and
+  `verdict_for(state_view, at_ms) -> READINESS_VERDICTS`, the ONE owner of
+  "an expired GO is a `no_go`", so no caller re-derives expiry from
+  `valid_until_ms` and gets the inclusive bound wrong.
+  `Breaker.current` and
   `Arming.current` take the same `(state_view)` shape for the same reason. `readiness_digest = canonical_hash(release_hash, items)` where `items` is
   sorted by `item` and each contributes exactly
   `(item, required, evidence, waiver, passed)` in that order — the same
@@ -1871,10 +3050,18 @@ knob because D13 fixes the answer: query, never resend.
   or, when none does, by taking the lock itself and running the same
   `CommandProcessor` synchronously — the serving process remains the sole
   ledger writer either way. It journals like every other mutating verb. Every live rung requires a
-  current GO record bound to the exact release before arming or submit. Unwaivable
-  foundation items include release/runtime verification, executor conformance,
+  current GO record bound to the exact release before arming or submit. The six
+  unwaivable
+  foundation items are release/runtime verification, executor conformance,
   authenticated execution-scope equality, clean startup reconciliation, fenced
-  lease capability and required safety controls. Outcome evidence extends it in phase 2.
+  lease capability and required safety controls; `vocab.UNWAIVABLE_ITEMS` names
+  them (§8 places every closed set there; phase 1 had left this one in
+  `readiness.py`, and phase 2 moved it) and a waiver against any of them
+  refuses. Outcome evidence extends the
+  checklist in phase 2 — §5.13.4 — and gives `Readiness` one more collaborator
+  it builds for itself: a `LedgerHistory` over the ledger it already holds,
+  the way `OutcomeJoin` does, since the evidence names read recorded history
+  and the bundle carries no reader.
 
 ### 5.13.1 `leg.py` — the submission pipeline
 
@@ -1910,8 +3097,15 @@ procedure inside the loop.
   consumed; it is what
   makes "the digest the right names is the digest that reaches the venue"
   checkable rather than aspirational: it holds `signed` (the `ReductionIntent`,
-  including its signed `candidate`), its `reduction_intent_digest`, and the right
-  being consumed.
+  including its signed `candidate`), its `reduction_intent_digest`, and the
+  right being consumed. **`right` is looked up in the FOLD's own rights**
+  (`view.reduction.rights`) and is `str | None` — `None` when the authority in
+  force granted no such right, which step (5) then refuses. It is deliberately
+  not echoed from the signed intent: step (5) rebuilds the
+  `reduction_intent_digest` from the constructed `Intent` and requires it to
+  equal `right`, and a `right` copied off the same signed object would make
+  that comparison a tautology that no forged, expired or already-revoked
+  grant could fail.
   **`execute-flatten` contributes each stored `ReductionIntent.candidate`
   through `Tick(reduction_cycle=…)`** (§5.13), so they are in the candidate set
   before `Tick.account` runs, so their scope keys
@@ -1951,7 +3145,13 @@ procedure inside the loop.
   version/digest) ·
   `plan(evaluation) -> DecisionPlan` (appends + barriers; `evaluation` carries
   the original and final proposals, every finding, the gate results and the
-  scope verdict, which is how all eighteen `DecisionPlan` fields are reachable) ·
+  scope verdict, which is how all eighteen `DecisionPlan` fields are reachable.
+  It also appends the §6 `guard_state` of every NEW hold among those findings —
+  `GuardChain.new_holds` decides which, the step appends them BEFORE the
+  `decision_plan` and inside its barrier, and §5.5 carries the four properties
+  that fixes. It is the only place that can: the leg's first append, in the
+  step that records the findings a hold comes from, and `LEG_STEPS` admits no
+  ninth step) ·
   `intent(plan) -> Intent` (appends + barriers; for `origin == reduction` it
   builds the `Intent` around `bindings.reduction.signed` and refuses if the
   rebuilt `reduction_intent_digest` does not match the right being consumed) ·
@@ -1987,7 +3187,11 @@ procedure inside the loop.
   a permit is minted. §5.8's rule that a pending mutating command blocks the
   next pre-submit gate is enforced by `ActionPolicy`, which reads
   `PolicyRequest.pending_control`.
-  `Authority.mint(intent, plan, state_view) -> Permit` is the seam D2 needs.
+  `Authority.mint(intent, plan, state_view, reduction) -> Permit` is the seam
+  D2 needs — ONE signature on all three subclasses, `reduction` being the
+  leg's `ReductionBinding` or `None`, since a `ReductionAuthority` cannot find
+  the right it is consuming from `(intent, plan, view)` and giving it a wider
+  signature than its siblings would break the polymorphism the seam exists for.
   `SimulatedAuthority` writes nothing and returns a `SimulatedPermit`;
   `LiveAuthority` mints an `ActPermit` and appends/barriers `authorization`;
   `ReductionAuthority` appends/barriers its single-use `authority_use` first,
@@ -2026,15 +3230,508 @@ procedure inside the loop.
   `observe`, metrics flush, checkpoint, journal row and exit code. It does not
   contain the submission sequence.
 
+### 5.13.2 `outcomes.py` (phase 2)
+
+D21's bitemporal join, and the only producer of the `outcome` record §6 already
+defines. It answers one question — *what actually happened to this leg, as far
+as anyone knew at time T* — and answers it the same way twice, which is what
+makes an attribution number auditable rather than merely current.
+
+- `Outcome{leg_id, outcome_kind, effective_at_ms, known_at_ms, value, weight,
+  terminal, source, supersedes}` is a `records.py` value object and IS the §6
+  `outcome` body, the way `fill` IS a `Fill` — one schema, not two.
+  `outcome_kind ∈ OUTCOME_KINDS`, `source ∈ OUTCOME_SOURCES`, `value` and
+  `weight` are `Decimal`, `terminal` is a bool, and `supersedes` is the record
+  id this one replaces or `None`. `effective_at_ms > known_at_ms` refuses:
+  nothing is knowable before it is effective.
+- `DecidedLeg{leg_id, tick_id, instrument, decided_at_ms, final, client_ref,
+  qty, prediction, baseline, expected_value, reference_price}` is one entry of
+  §6's `decision.legs[]` joined to its tick's `observed_at_ms`.
+  `decided_at_ms` is that stamp — the wall instant at which the decision
+  existed — and deliberately NOT `data_asof_ms`: a tick's inputs are older than
+  the tick, so the later of the two is the conservative bound for a forward
+  join, and joining from the earlier one would admit a label the decision could
+  itself have seen.
+- `LedgerHistory` (§5.9) gains the two readers this needs —
+  `legs(since_ms) -> tuple[DecidedLeg]` and
+  `outcomes(since_ms) -> tuple[(record_id, Outcome)]` — rather than a second
+  module learning to scan the ledger; it is already the one reader
+  `accounting.py` and `reconcile.py` share, and `marks(since_ms)` is
+  `outcomes` filtered to `marked`. **`outcomes` carries the ENVELOPE's id**,
+  as `cash_flows` and `marks` already do, because `supersedes` names a
+  record: `release_hash` is a term of the id recipe below, a serve series
+  outlives the release it was started under, and a reader that re-derived
+  the id would compute a different one for every record written before the
+  last deployment and lose the chain there without saying so.
+- `forward_asof(legs, events, key, at) -> tuple` is the ONE forward as-of rule
+  and a module function because both sources need exactly it: for each leg, the
+  FIRST event whose `key(event)` equals the leg's and whose `at(event)` is
+  **strictly greater** than that leg's `decided_at_ms`; events are consumed in
+  `at` order, a leg matches at most one event, and a leg with no such event is
+  dropped rather than matched to something earlier. `key` is ONE callable
+  applied to a leg and to an event alike — the join is symmetric, so a
+  second key function would be two spellings of one rule — and legs claim
+  events in `(decided_at_ms, leg_id)` order, so the earlier decision takes
+  the earlier event and the tie is broken by a stable name rather than by
+  whatever order the caller happened to build its list in. The strict `>` is the whole
+  anti-leak property, and `test_outcomes.py` proves it with a hypothesis case
+  over `label_asof > decided_at`.
+- `OutcomeSource(ABC)`: `@abstractmethod poll(legs, at_ms, standing) ->
+  tuple[Outcome]`, where `legs` are the `DecidedLeg`s decided at or before
+  the cut, `at_ms` is the cut, and `standing` is the read-only
+  `leg_id -> Outcome` head the join already knows. A source reads no ledger
+  and stamps no `known_at_ms` — the join does both — so it cannot back-date
+  what it found, and it is handed the head OUTCOME only, never the record id,
+  which is the join's business. An earlier draft said `poll(legs, at_ms)`
+  over "the not-yet-terminal legs", which cannot be implemented as written:
+  a source that never sees a resolved leg can never notice that a settlement
+  disagrees with it, and the same bullet requires `SettlementOutcomes` to
+  produce `corrected`. Supplying every decided leg and letting `collect`'s
+  DROP rule discard an answer that merely repeats what already stands is
+  what keeps a resolved leg free. `supersedes` is likewise the JOIN's to
+  fill, for the same reason it fills `known_at_ms`: it is a record id, and a
+  source holds none. A source names the kind `corrected`; the join links it.
+  `OUTCOME_SOURCE_KINDS = Registry("outcome_source", OutcomeSource)`.
+  - `SettlementOutcomes(params, *, executor)` reads
+    `executor.settlements(since_ms)`; params `lookback_ms` (default
+    `DEFAULT_OUTCOME_LOOKBACK_MS`). A settlement joined to a leg yields
+    `settled` with `value = payout / qty` (the per-unit resolution, so legs of
+    different size are comparable) and `weight = qty`; a settled quantity below
+    the leg's is `partial`; a settlement whose `qty` is zero is `voided`, and carries
+    `value = weight = 0` because a per-unit resolution is undefined with no
+    units and `accounting`'s realised rule already says a `voided` leg
+    realises nothing; and a
+    settlement for a leg that already carries a terminal outcome with a
+    different value is `corrected` and names it in `supersedes`.
+  - `LabelOutcomes(params, *, root, registry)` reads a derived label stream
+    through `scan_stream` on the onboarding root the run was trained from —
+    D4's rule holds here too, so there is no second vendor fetch. Params
+    `source`, `stream`, `key_fields`, `time_field`, `value_field`,
+    `weight_field` (optional), `outcome_kind ∈ {settled, marked}` (default
+    `settled`; a non-terminal mark stream declares itself `marked` and sets
+    `terminal` false) and `lookback_ms`.
+  Between the two, every `OUTCOME_KINDS` member has a producer — the property
+  §5.16 exists to enforce, and the reason all five are enumerated here rather
+  than left to an implementer.
+- `OutcomeJoin(document, release, *, ledger, state, clock, sources)`, where
+  `sources` is the ordered name → `OutcomeSource` mapping `compose.py` built
+  from `document.outcomes.sources`:
+  - `collect(at_ms) -> tuple[Outcome]` asks every source for the open legs,
+    stamps each answer's `known_at_ms` with `at_ms` — the run's ONE instant,
+    read from the clock once by the caller and never per record, so a
+    crash-replayed collect produces byte-identical payloads and `Ledger.append`
+    dedups them instead of refusing a changed payload under a reused id (the
+    rule §6 states for `cash_flow.known_at_ms`, for the same reason) — drops
+    anything already standing unsuperseded in the fold, and orders by
+    `(known_at_ms, leg_id, source)`. It reads; it writes nothing.
+  - `record(outcomes) -> tuple[str]` refuses to extend a chain the fold has
+    not seen the whole of — the fold's head must be the ledger's, or an
+    outcome would be recorded against a series that has already moved — then
+    appends each with
+    `id = f"outcome:{H('outcome-v1', release_hash, leg_id, source, effective_at_ms, known_at_ms)}"`
+    and one `barrier()` after the batch. It refuses a `supersedes` naming
+    anything that is not an `outcome` record of this series, or one that has
+    already been superseded — a chain link may be replaced once.
+  - `current_outcome(leg_id, at_ms=None) -> Outcome | None` walks the supersede
+    chain for one leg and returns its head at the `known_at_ms <= at_ms` cut;
+    `as_of(at_ms) -> Mapping` does the same for every leg. Re-asking at an
+    earlier `at_ms` reproduces exactly what was knowable then, which is the
+    vintage reproducibility D21 exists for and the reason `report.py` never
+    reads a settlement directly.
+- The `outcomes` verb MUTATES — it appends records — so it takes §5.8's one
+  path: queued to the durable inbox when a serve process holds the lock, or
+  synchronous under the lock when none does, with purpose `outcomes` and no
+  proof, since it records observed facts rather than an operator's claim. It
+  journals once, like every other mutating verb (D22). It is also the one verb
+  whose records a MONITOR observes, so it reports what it recorded and the loop
+  feeds it — §5.10.1's last outcome-family reading has the mechanism and why it
+  is exactly-once.
+
+### 5.13.3 `report.py` (phase 2)
+
+Four answers over the recorded series — what each decision was worth, whether
+the forecasts were calibrated, what the value curve did, and whether a replay
+reproduces the tape — plus the two emitters that render them. It is last in
+§10's phase-2 order because it reads every other module.
+
+`Report(document, release, *, ledger, history, join, clock)` is the composite
+that holds the three read-only sections; `history` is the `LedgerHistory` of
+§5.9 and `join` the `OutcomeJoin` of §5.13.2, so the report reads outcomes
+through the same as-of cut that recorded them and never reaches a settlement
+directly. `attribution(at_ms) -> tuple[Attribution]`,
+`calibration(at_ms) -> CalibrationReport`,
+`value_curve(at_ms) -> tuple[ValuePoint]` and
+`render(emitter, at_ms) -> str`. Every one takes the cut explicitly: a report
+with an implicit "now" cannot be reproduced, which is the whole point of D21.
+Two of the six constructor arguments needed a job before they were honest.
+`history` is the chain's one sanctioned reader (§5.8), so `ledger` may not be
+a second one: it is asked for its HEAD and nothing else, and the view names
+that `(seq, hash)` — a report is reproducible only against a stated chain
+state, and naming it is what makes "the same cut gives the same answer"
+checkable. `LedgerHistory` accordingly gains `ticks(since_ms)` (§5.9) for the
+value curve. `clock` answers `now_ms()` for a caller with no cut of its own,
+so the report and the join it reads through share ONE clock rather than each
+building one; it is never read to CHOOSE a cut.
+
+**Attribution, per leg.** `Attribution{leg_id, requested_qty, filled_qty,
+fill_rate, surprise, impact, opportunity, fees, shortfall, markouts,
+outcome_value, closing_value}`. `surprise = prediction - baseline`, the
+forecast's departure from the benchmark the leg itself stored, which is what
+makes it comparable across instruments. The implementation shortfall splits
+into `ATTRIBUTION_COMPONENTS = ("impact", "opportunity", "fees")` with
+`shortfall == impact + opportunity + fees` EXACTLY: every term is `Decimal`,
+the three are complementary by construction, and the algebra is stated here so
+an implementer cannot invent a fourth spelling of it. With `Q` the requested
+quantity, `q` the filled, `P_d` the decision `reference_price`, `P_f` the
+fill-weighted average price and `P_o` the outcome value, all signed by side:
+`impact = q(P_f - P_d)`, `opportunity = (Q - q)(P_o - P_d)`, `fees` as the
+fills recorded them, and `shortfall = Q(P_o - P_d) - [q(P_o - P_f) - fees]` —
+which expands to exactly those three and nothing else. `test_report.py`
+asserts the identity instead of deriving one term as the residual, which would
+make the assertion vacuous. There is deliberately **no `delay` term**: Perold's fourth component
+needs an arrival price at the instant of submission, and phase 1 records the
+decision's `reference_price` and the fills' prices but nothing between them —
+the `decision_plan` binds a `quote_digest`, not a quote. Recovering a price
+from a digest is impossible and adding one to the `intent` record would move
+`intent_digest`, which `ActPermit` binds, so the honest answer is three
+components and a stated gap. The `markouts` cover the ground a delay term
+would: `{horizon_ms: Decimal}` at each `document.reporting.markouts_ms`
+horizon, taken from the `marked` outcome nearest at or after
+`fill_ts + horizon` within `document.reporting.markout_tolerance_ms`, and
+`None` where no mark exists — a missing markout is recorded missing, never as
+zero. `fill_rate = filled_qty / requested_qty`, and `closing_value` is the
+leg's value at the report's cut, from `OutcomeJoin.current_outcome`.
+
+Three readings the algebra above leaves open, each of which an implementer
+must settle:
+
+- **`P_o` when nothing has resolved.** The TERMINAL outcome's value where one
+  stands (`outcome_value`), else the standing head's, else the decision's own
+  `reference_price` — which makes `opportunity` exactly zero. That is the
+  honest answer: with no information about what the unfilled remainder would
+  have been worth, it cost nothing knowable.
+- **The arithmetic runs on the fills' NOTIONAL, never on `P_f`.** The
+  fill-weighted average is a division, `Decimal` division is inexact, and the
+  three components would then fail to cancel in the last digits of an identity
+  the section calls EXACT. `q·P_f` is `Σ qty×price`, which is exact, so
+  `impact = notional − q·P_d` and
+  `shortfall = Q(P_o − P_d) − [q·P_o − notional − fees]`.
+- **`fill_rate` has no denominator to divide by** on a no-op leg or a
+  notional-sized proposal, and answers `None` there. Zero would read as
+  "nothing filled", which is a claim about execution rather than about the
+  absence of a denominator.
+- **A markout's value and its origin.** The signed per-unit `mark − P_f`
+  (achieved price), and the horizon runs from the leg's LAST fill: the
+  execution is over then, and a markout measured from the first fill of a
+  slowly worked order would overlap the execution it is judging. `markouts` is
+  keyed by the horizon rendered as a STRING, because a JSON object's keys are
+  strings and the record round-trips through `to_obj`/`from_obj`.
+
+`Attribution`, `CalibrationReport`, `ValuePoint`, `Divergence` and
+`ParityReport` are `records.py` value objects, as `Outcome` and `DecidedLeg`
+are: that is where the `Decimal` discipline, the closed-set check on
+`divergence` and the `to_obj`/`from_obj` round trip already live, and a second
+set of them in `report.py` would be the duplication this repository forbids.
+`ValuePoint` and `ParityReport` each refuse a self-contradiction —
+`cumulative != realised + unrealised`, and a `clean` that disagrees with the
+divergences it carries.
+
+**Calibration.** `CalibrationReport{n, bins, ece, brier, reliability,
+resolution, uncertainty, baseline_brier, bss, dm}`. `brier` is the mean of
+`dskit.pipeline.metrics.brier` over the paired legs — imported, never
+restated. The Murphy terms are computed on the **exact** stratification (group
+by distinct forecast value, not by bin), because
+`brier = reliability - resolution + uncertainty` is an identity only there;
+binning turns the three into approximations that no longer sum, and
+`test_report.py` asserts the sum. `ece` is computed over
+`document.reporting.bins` equal-width bins, which is what ECE means: the two
+stratifications differ on purpose and the field names say which is which.
+`bss = 1 - brier / baseline_brier` against the leg's stored `baseline`, so a
+baseline scored against itself gives 0 — the pin `test_report.py` carries —
+and `None` where the benchmark itself scored a perfect zero, which leaves the
+ratio undefined, the answer `Skill` already gives for the same reason. The
+Murphy identity is the MEAN SQUARED ERROR's: it holds for `brier` and
+`squared_error`, the two rules this section names, and not for a registered
+rule of another shape, whose score the report still carries beside the
+decomposition. `murphy_terms(pairs, group=None)` takes the stratification as an
+argument for one reason only — so `test_report.py` can show that the SAME data
+binned does not sum, which is the property, demonstrated, rather than an option
+anyone should take.
+`dm` is `dskit.pipeline.stats.diebold_mariano_test` over
+`dskit.pipeline.stats.dm_loss_series(y, yhat, mu=…)` at
+`dskit.pipeline.stats.dm_lags(n, h_steps)`, or `None` below two pairs — through
+`monitors.dm_test(labels, forecasts, baselines)`, the one owner `Skill.dm_test`
+also answers from. `mu=baseline` as this section first wrote it cannot be
+implemented: `dm_loss_series` takes ONE scalar benchmark while each leg stores
+its own, which §5.10.1 flags and predicts. The owner resolves it once — the
+window's MEAN baseline for the TEST, each leg's own for the `bss` statistic —
+so the two cannot drift.
+An unbounded-value series scores through `squared_error` instead of `brier`
+by the same functions; the choice is `document.reporting.scoring`, a
+registered `dskit.pipeline.metrics` name, so a child's own rule works with no
+new seam. Four rules this section needs already had owners in `monitors.py`
+and were PRIVATE, which made "imported, never restated" unhonourable against
+them: they are now `check_scoring` (the default-deny lookup unit 3 gave the two
+scored monitors), `mean_score`, `expected_calibration_error` (the equal-width
+ECE `Calibration` computes — §5.10.1 already says the report "keeps the same
+split", which can only be true if it is the same function) and `dm_test`.
+
+**Value.** `ValuePoint{at_ms, realised, unrealised, external, nav, cumulative,
+drawdown}`, one per completed tick. `external` is the `cash_flow` total at that
+instant and keeps its own column: §6's `cash_flow` row already rules that an
+external flow changes what you have and never what you earned, so a curve that
+added deposits to profit would be the very defect that rule exists to prevent.
+`drawdown` is `cumulative` minus the running peak of `cumulative` over trading
+value alone — so it is zero or negative, never a positive "maximum decline",
+which is a different quantity that `accounting`'s own `drawdown` measure
+already answers. `realised` and `unrealised` are `accounting.WindowBook`'s,
+folded over `effective_fills` at each tick's `observed_at_ms`: the curve and
+the `pnl`/`drawdown` guards that halt on it read the SAME fold, so they agree
+by construction rather than by coincidence. An open position nothing marks
+contributes NOTHING to `unrealised` (`WindowBook.unrealised` answers on a
+`mark_of` that may say `None`), because unmarked open risk is not profit;
+`cumulative` is `realised + unrealised` and `ValuePoint` REFUSES a triple
+where it is not. `nav` is the tick's RECORDED value — §6 calls it
+unrecoverable after the fact, so the curve reports it rather than recomputing
+one, and carries `None` where §6 recorded none.
+
+**Replay parity.** `replay` is D20's object swap and nothing more:
+`compose.bundles_for(document, release, registry, tape=tape)` — one new
+keyword — selects `ReplayClock`, `ReplayFeed` and `RecordedIdSource` together
+through one strategy object (`_Injection`), so the rungs still differ only by
+which objects were injected and there is still no `ReplayTick`.
+
+**Three objects, not five, and the reason is §6.** An earlier draft of this
+paragraph named `RecordedExecutor` and `RecordedAccounting` too, and said
+`Tape.from_ledger(ledger)` "rebuilds the recorded feed results, entry batches,
+acks, fills, accounting answers and ids from the original chain". It cannot:
+§6 records a venue answer, an account and a row set as a DIGEST rather than as
+the answer, deliberately and everywhere. The `tick` block carries
+`inputs_digest` and `coverage_digest`, never `EntryBatch.outputs` and never a
+watermark's `source_digest`; the `decision_plan` carries `evidence_digest`,
+never the `AccountState` `RecordedAccounting.snapshot` would have to answer;
+the `recon` record carries `ours_digest`/`theirs_digest`, never the positions
+and balances the reconciler asked the venue for. A tape rebuilt from the chain
+therefore holds exactly three things — the recorded instants, the feed's own
+results, and the ids the recording allocated — and everything else is
+RE-DERIVED rather than replayed:
+
+- the ROWS come from the same immutable onboarding root through the same
+  `read_entry`, and the recorded `inputs_digest`/`coverage_digest` are what
+  PROVE the re-read matched. That is a stronger claim than replaying a recorded
+  blob, which can only prove that the blob was replayed, and it is what makes
+  a store that has since moved a reported `data` divergence rather than a
+  silent one.
+- the ACCOUNT and the VENUE come from the rung's own simulated objects, which
+  are pure functions of the replayed fold and the replayed quotes. Injecting a
+  tape there would replace a determinism CHECK with an assumption.
+- a LIVE rung has neither, because its account and venue are external. §6
+  records no answer a replay could use, so `_Rung` gains `replayable` and
+  `bundles_for` REFUSES a tape at a rung whose row is false — a read-only verb
+  must never re-ask a venue. That refusal is where "rather than replaying a
+  hole" actually lives.
+
+`Tape.from_ledger(ledger)` refuses a `tick_start` with no terminal `tick`, a
+`tick` with no `decision`, a RECOVERED tick whose `feed` block §6 nulls, a
+decision whose plan ids do not match its legs, and a chain with no tick at all.
+`Tape` implements `bundles.ReplayTape`, an ABC of exactly `start_ms()`,
+`feed_results()` and `id_allocations()`: a tape supplies DATA and never an
+object, which is what keeps "the rungs differ only by which objects were
+injected" a fact about `compose.py`. It lives in `bundles.py` for the reason
+the bundles do — `report.py` builds a tape and `compose.py` consumes one, so a
+declaration in either would make §10's order cyclic.
+
+`id_allocations()` is the order the loop asks in — per tick `next_tick_id`,
+then for each leg its `leg_id`, its `client_ref` and its `plan_id` — because
+`RecordedIdSource` refuses any call that is not the recorded one. That
+strictness is the point: a replay that decided a different number of legs, or
+asked in a different order, cannot complete. A recorded REDUCTION cycle takes
+`flatten_client_ref`, which consumes no tape entry, so a chain holding one
+refuses at the first mismatch rather than replaying quietly — loud, and the
+known limit.
+
+`Replay(document, release, *, root, tape, registry).run() -> ParityReport` runs
+a `ServeLoop` to the end of the tape against a scratch serve root and never
+writes to the original series; `Replay.over(series_path, *, root)` recovers the
+document and the release from the series' own release directory rather than
+from an operator's copy, because a replay must run what the recording ran.
+`ParityDiff(tape_records, replay_records).compare() -> ParityReport` compares
+the SEMANTIC bodies of `decision`, `decision_plan` and `intent` field by field
+in `seq` order; envelopes, sequences, hashes and `recorded_at_ms` have their
+own deterministic chain assertions and never appear as divergences, because
+they are expected to differ.
+`Divergence{seq, record_id, field, divergence, tape, replay}` carries
+`divergence ∈ DIVERGENCE_CLASSES`, classified by a module-level table keyed on
+the field name — `data` for the input and coverage digests and `data_asof_ms`,
+`version` for the release/serving/run hashes and the runtime fingerprint,
+`guard` for findings, gate results and the final proposal, `state` for risk
+versions, risk digests and positions, `execution` for acks, fills and client
+refs — with `nondeterminism` as the DEFAULT on purpose: an unclassifiable
+difference is the most alarming kind and must never be absorbed into a named
+one. `ParityReport{compared, divergences, first_divergence_seq, clean}`.
+
+**Emitters.** `ReportEmitter(ABC).emit(report) -> str`, with `MarkdownReport`
+and `JsonReport`. It is a structural ABC rather than a registry family because
+`--format` picks one of exactly two and no document ever selects a report
+format. What an emitter takes is a `ReportView` — the frozen value of ONE
+cut's answers (`at_ms`, `series_id`, `release_hash`, `head`, the three
+sections, and a `parity` section on a replay) — because a `Report` without a
+cut has no sections to render and passing both would let an emitter mix
+vintages. `Report.render(emitter, at_ms)` is the one path that builds one.
+`head` is the ledger's `(seq, hash)`: a report is reproducible only against a
+stated chain state, and naming it is what makes "the same cut gives the same
+answer" checkable rather than hoped for. §5.10.1's `ParityMonitor` is driven
+here, through `compose.parity_monitors(document)` — the composition root is the
+only module that may resolve a family member by name (§5.15), so `report.py`
+asks it rather than building one. `MarkdownReport` renders every cell through the one owner of the
+pipe-escape rule — `dskit.pipeline.runs.render_cell`, made public by §9.1 for
+this, since production may not import a private pipeline name — because a
+table's format is taste and its escaping is correctness. The `report` verb is
+READ-ONLY: it appends nothing, takes no lock and does not journal. Taking
+no lock needs a mechanism: an ordinary `ChainLedger` open takes `serve.lock`
+exclusively for the object's lifetime AND repairs a torn tail, so a report
+that opened one would refuse exactly while a series was being served — which
+is when an operator wants it — and would write to the series it claims not to
+touch. `ChainLedger.reading(serve_root, *, clock)` is that mechanism: no
+flock, no tail repair, and every write refused by name. `verify`'s phase-1
+open has the same defect and now has the same remedy available to it.
+
+### 5.13.4 `readiness.py` — outcome evidence (phase 2)
+
+§5.13's readiness bullet ends "Outcome evidence extends it in phase 2." This is
+what that means, and it is deliberately small: the checklist mechanism does not
+change, only the kinds of evidence an item may cite.
+
+Phase 1 evaluates each checklist item's `evidence` as an operator-supplied
+assertion plus the unwaivable foundation checks the code performs itself.
+Phase 2 adds a third kind — evidence the SERIES itself can prove — through one
+concrete hook, `Readiness.evidence_for(name, view, at_ms) -> (bool, detail)`,
+resolved against a module-level table of evidence names rather than by a
+branch, so a new evidence name is a table entry and a test line. The names
+phase 2 adds, all backed by the `outcome` fold of §5.13.2:
+
+- `outcome_coverage` — the fraction of decided legs in the last
+  `document.readiness.outcome_window` that carry a terminal `outcome`, against
+  a declared minimum. A series whose labels never arrive cannot be shown to be
+  working, and a GO earned without that is the checklist agreeing with itself.
+- `outcome_freshness` — the age of the newest `known_at_ms`, against a declared
+  maximum. It catches the stopped label feed that `outcome_coverage` alone
+  would not, because a long window keeps its average up for a while after the
+  arrivals stop.
+- `calibration_current` — the phase-2 `Calibration` monitor's latest verdict is
+  not `alarm`, and not `provisional`. A provisional verdict is explicitly NOT
+  evidence: §5.10.1 makes an outcome monitor say out loud that its labels are
+  still arriving, and treating "not yet known" as "fine" is the failure that
+  hook exists to prevent.
+
+These are ordinary WAIVABLE items — a shadow series has no outcomes yet, and a
+new release legitimately starts with none — so they do not join
+`UNWAIVABLE_ITEMS`, which stays the six foundation items §5.13 lists. What
+changes is that a live series can now be REQUIRED by its own checklist to prove
+its decisions have been scored, which is the one readiness question phase 1 has
+no way to ask.
+
+**The names are a closed set, and the table is pinned to it.**
+`vocab.READINESS_EVIDENCE` holds the three names — closed sets live only there
+(§8) — and `readiness.EVIDENCE_RULES` is keyed EXACTLY by it, so a name with no
+rule, or a rule under a name the vocabulary does not carry, refuses at import.
+`UNWAIVABLE_ITEMS` moves to `vocab.py` beside it in the same round: §8 always
+placed it there and phase 1 left it in `readiness.py`, which is the second home
+this package refuses.
+
+**Where the thresholds live, and why they can only live there.** The hook takes
+a NAME, a view and an instant — no params — so a threshold cannot come from the
+checklist item, and §4.1 rules that the code holds none. They are four OPTIONAL
+GRADED `document.readiness` knobs (§4.1): `outcome_window` and `max_outcome_age`
+(ISO-8601 durations, through `release.parse_iso_duration`, the one owner of that
+spelling), `min_outcome_coverage` (a fraction in `(0, 1]`) and
+`calibration_monitor` — the `monitors` KEY whose verdict is read, because §6
+identifies a folded verdict by document key alone and "the Calibration monitor"
+does not name one when a document declares two. A `calibration_monitor` naming
+an undeclared monitor refuses at `validate`, the same cross-section rule
+`alerting.routes` already answers to. Each knob is required only when an item
+CITES the name that reads it, and a citing checklist whose knob is absent
+REFUSES by name: a missing threshold is a misconfiguration, not a failed proof,
+and recording it as a NO-GO would hide the one thing an operator has to fix.
+
+Seven readings the three bullets do not settle, each of which decides code:
+
+- **The vacuous case FAILS, and that is why these items are waivable.** A
+  window with no decided leg, or a series with no outcome at all, has proven
+  nothing — so it is a NO-GO that a waiver clears. The sentence above ("a
+  shadow series has no outcomes yet ... so they do not join
+  `UNWAIVABLE_ITEMS`") is only true if emptiness fails; if it passed, no waiver
+  would ever be needed and the item would be free until the first label. It
+  deliberately differs from §5.10.1's monitor, whose empty window is
+  `insufficient` and whose fresh coverage is 1.0: a monitor has a third answer
+  and readiness has two, so readiness fails closed.
+- **`insufficient` is not evidence either.** §5.13.4 names `alarm` and
+  `provisional`; `insufficient` is the monitor saying it has too few
+  observations to answer, which is the same "not yet known" the provisional
+  rule exists to refuse. A series with three labelled legs must not earn a
+  calibration GO because its monitor could not speak. The rule is therefore
+  "the status is one of `ok`/`warn` AND the verdict is not provisional" — a
+  pinned subset of `MONITOR_STATUSES`, not a list of the two that fail.
+- **Every SLICE must be evidence.** The fold keys verdicts by
+  `(monitor, slice)`, so a monitor sliced per instrument would otherwise pass
+  on its best slice while one instrument alarms.
+- **The verdict is read from the FOLD, not from a live monitor.** `ready` may
+  run with no serve process in the room (§5.8's synchronous path), where a
+  freshly built monitor has observed nothing and would answer `insufficient`
+  for ever. `SeriesState.monitor_state()` is what carries the latest verdict
+  across a restart — and it is deliberately NOT a `StateView` member (§6 puts
+  it in the snapshot beside one), which is why `evidence_for` hands a rule the
+  view AND the `Readiness` that owns the collaborators: a rule takes what it
+  needs, and the view is there for the evidence names that judge current state.
+- **Both bounds are INCLUSIVE**, as every `guards.Bound` maximum and
+  minimum is: coverage exactly at `min_outcome_coverage` passes, and a
+  newest label exactly `max_outcome_age` old passes. An age bound here that
+  failed AT its bound would be the one maximum in the package meaning
+  something else.
+- **Freshness reads `known_at_ms` and cannot be windowed by
+  `effective_at_ms`.** `LedgerHistory.outcomes(since_ms)` bounds on the
+  EFFECTIVE instant, and a late label is precisely one whose effective instant
+  is old and whose arrival is now — so bounding the freshness scan that way
+  would drop the freshest arrival there is. It scans from 0 and takes the
+  newest `known_at_ms` at or before the cut.
+- **Coverage counts every decided leg, `final: none` included.** §5.13.2's
+  `DecidedLeg` — one `decision.legs[]` entry — is what a decided leg IS, and a
+  second definition here would be the copy that diverges; a label stream can
+  score a decision that never traded, which a filter on `final` would silently
+  exclude. The consequence is real and someone will hit it: a proposer that
+  mostly declines drags its own coverage down, and the answer is a lower
+  declared `min_outcome_coverage` or a label source that scores declines — a
+  document choice, not a code one.
+
+`outcome_coverage` reads the standing HEAD of each leg's supersede chain at the
+`known_at_ms <= at_ms` cut — a `marked` outcome corrected into a terminal
+`settled` one IS coverage — through `outcomes.standing_outcomes`, the one
+owner, extracted from `OutcomeJoin._standing` in this round since
+`readiness.py` cannot import another module's private name (§5.15's
+encapsulation scan) and a second walk of the chain would be the copy that
+diverges the first time a link grows a rule. `outcome_freshness` deliberately
+does NOT go through the heads: a superseded arrival is still an arrival, and
+what it measures is whether the FEED is alive rather than what stands.
+`Readiness` gains a `LedgerHistory` over the ledger it already holds, exactly
+as `OutcomeJoin` does; no new collaborator reaches the bundle.
+
+The three names cost nothing when unused: a document that declares no knobs and
+a checklist that cites no name evaluate exactly as they did in phase 1, and the
+`readiness` record's five item fields are unchanged — `evidence` stays the NAME
+the operator declared and `passed` carries what the series proved, so
+`readiness_digest`, and therefore `ActPermit`, moves when a checklist stops
+being proven. The rule's `detail` is logged rather than recorded, because
+`ITEM_FIELDS` is what §5.13 pins and a sixth field would move every digest.
+
 ### 5.14 `policy.py` — the cross-cutting invariant matrix
 
 `ActionPolicy.permits(request: PolicyRequest) -> PolicyDecision{allowed, reason}`
-(one argument, so the eight-field request and the call cannot drift apart),
+(one argument, so the nine-field request and the call cannot drift apart),
 `TransitionPolicy.permits(from_state, to_state, cause, proof) ->
 PolicyDecision{allowed, reason}` (named so it cannot be confused with the
 `Decision` collaborator bundle in `loop.py`) and
 `SubmissionVerifier(executor, accounting, lease, arming, guards, action_policy,
-release, inbox, calendar, document, clock)` with
+release, inbox, calendar, document, clock, *, health)` with
 `verify_and_call(intent, permit, state, native_call) -> Ack`, where `state` is
 the leg's step-(2) `TickState` — `LiveExecutor` receives it alongside the
 permit, since `SubmittingExecutor.submit(intent, permit, state)` is the only
@@ -2043,13 +3740,36 @@ runtime fingerprint immediately before submit; `action_policy` because the
 gate rechecks policy and a `PolicyRequest` needs breaker, health and
 readiness; `inbox` and `calendar` because `safety_epoch_digest` covers
 pending-control state and the calendar, and a digest the permit binds must be
-recomputable by whatever rechecks it — the same argument
-that justifies the `Authority`'s ten collaborators applies here and was not made
+recomputable by whatever rechecks it — which the gate DOES, as its final
+check. **The epoch has one owner**, `records.SafetyEpoch`: a frozen value
+carrying the epoch's terms whose `digest()` owns the version tag, the field
+order and the canonicalisation. The `Authority` constructs one to mint and
+the gate constructs one to recheck, so the term list exists in a single
+place; a second recipe inside `leg.py` was a digest nothing else could
+reproduce, and so a permit field nothing rechecked. The gate builds its own
+from the FRESHEST value it holds for each term — the calendar's close at the
+permit's `checked_at_ms` (the permit's instant, so an unchanged calendar
+gives an unchanged term), `Health.state`, the fold's breaker and
+pending-control set, the inbox's queue depth, the refreshed executor scope
+and lease, and every digest, version and as-of from the intent, batch,
+account and authority the earlier checks already proved equal — and never
+from the permit, which would agree by construction and refuse nothing. Only
+`risk_effect` and `authority_scope_digest` are the permit's: the gate holds
+no `DecisionPlan` and does not own the minting authority's scope recipe.
+Being a recheck of everything the earlier checks proved one at a time, it
+runs LAST, and it is the only check covering a term none of the others
+compares. That is the same argument
+that justifies the `Authority`'s ten collaborators, applied here and not made
 before: a gate that refreshes quote, accounting, authority, executor identity and
 lease, and rechecks deadlines, hard guards and policy, cannot do any of it from
 `(intent, permit, native_call)`. `compose.py` builds it and hands it to both
 `Safety` and the `LiveExecutor` wrapper, which is the one object held twice by
-design. These three are
+design. Its whole surface is four names: `verify_and_call`, the `disabled`
+flag, `reset_after_reconcile()` — which a CLEAN reconciliation calls — and
+`refuse_until_reconciled(reason)`, which the loop calls when
+`document.reconcile.on_mismatch` is `refuse` (§5.9). The last two are one
+mechanism with two callers, not two disables: an `unknown` outcome and a
+mismatching venue are both "only reconciliation resolves this". These three are
 the sole owners of the following rules; callers cannot
 duplicate or extend them by branching.
 
@@ -2058,7 +3778,14 @@ duplicate or extend them by branching.
 × 2 origins × authority — several thousand combinations — so it is *not* enumerated cell by
 cell. It is an ordered tuple of named `Rule` objects, each of which may veto
 with a reason (`Rule.veto(request: PolicyRequest) -> str | None`, §5.4), which is what R5 §2.4
-actually recommends: keep the axes orthogonal and compose them. Two tests
+actually recommends: keep the axes orthogonal and compose them. **The rung
+axis is a module-level LANE TABLE keyed by `request.rung`, not an
+`if rung ==` chain**: each rung names the rules that apply to it, `permits`
+looks the lane up once, and D2's ban then holds inside `policy.py` as it does
+everywhere else — a table lookup on a declared value is not a branch on a
+mode. A request that falls through every rule of its lane is REFUSED with a
+non-rule reason, so an unclassified combination is a refusal and a test
+failure rather than a default allow. Two tests
 give the audit value a hand-written matrix was reaching for without the
 tautology of asserting the rules against themselves:
 
@@ -2116,9 +3843,26 @@ Seven further ABCs are structural rather than registry-resolved, named here so
 the count is not mistaken for the whole surface: `SubmittingExecutor` and the abstract
 `LiveExecutor` wrapper (§5.7),
 `Ledger` and `Classifier` (phase 1 ships one implementation each, so neither
-has a `uses` site until `libs/sqlite.py` lands and adds `LEDGER_KINDS`),
+has a `uses` site until `libs/sqlite.py` gives `Ledger` a second member),
 `IdSource` (§5.13), `Authority` (§5.13.1 — closed to core, so deliberately
-unregistered) and pipeline-side `ExecutionPolicy` (§9.1). `Tick` and
+unregistered) and pipeline-side `ExecutionPolicy` (§9.1).
+**The twenty is a phase-1 count, and the test grows with the package.** Phase 2
+adds three registry-resolved families — `Ledger` (`LEDGER_KINDS`, §5.8.2),
+`OutcomeSource` (`OUTCOME_SOURCE_KINDS`, §5.13.2) and `Signer`
+(`SIGNER_KINDS`, §5.12.1) — so `Ledger` MOVES out of the structural list and
+`ChainLedger` (§5.8.2, the concrete half both stores inherit) takes its place
+there, since no `uses` selects it; and two more structural ABCs —
+`ReportEmitter` (§5.13.3), which stays unregistered because `--format` chooses
+between exactly two and no document selects a report format, and `Evidence`
+(§5.13.4), which stays unregistered because a checklist item cites an evidence
+NAME rather than a `uses` selector: its family is resolved by a module-level
+table keyed to `vocab.READINESS_EVIDENCE`, and a `Registry` here would put a
+twenty-fourth family in §4.3 that no document key selects. Phase 3 adds one registry-resolved
+family, `MetricSink` (`METRIC_SINK_KINDS`, §5.11.3), and no packs of its own
+beyond it: `ExchangeCalendar` registers into `CALENDAR_KINDS` and `StreamFeed`
+into `FEED_KINDS`, because each is another member of a family that already
+exists. Twenty at phase 1, twenty-three at phase 2, twenty-four at phase 3 —
+and the pin is against §4.3's list, not against the number. `Tick` and
 `LegPipeline` are concrete classes with final `run` methods, not ABCs: the
 invariant each carries is the fixed order `run` walks, and making their steps
 abstract would buy nothing while forcing a subclass that has no second
@@ -2209,6 +3953,35 @@ a gate/stat_test node by satisfying that role's planner rules, not by subclassin
 the node it replaces. Children never subclass `ServeLoop`, `GuardChain` or any
 policy — the extension points are the ABCs above plus `Proposer` and `Measure`,
 and `test_purity.py` fails a child that imports a private production name.
+
+### 5.15.1 `compose.py`'s phase-2 additions
+
+Three module functions, each for one reason: the composition root is the only
+module that may resolve a family member by name, and phase 2 gave three
+callers outside it something to build.
+
+- `clock_for(document)` — the ONE owner of "how a document becomes a clock".
+  `compose._clock_of` and `__main__._clock` were two copies of it; the
+  read-only verbs, which open a ledger without composing anything, call it
+  directly and `bundles_for` reaches it through `_DocumentInjection`.
+- `parity_monitors(document)` — §5.10.1's `ParityMonitor` is the one monitor
+  the serve loop never calls, so `report.py` drives it; building it here is
+  what keeps `report.py` from resolving `MONITOR_KINDS` by name.
+- `reading_join(document, release, *, ledger, state, clock)` — the bitemporal
+  join a READ-ONLY verb answers through. `outcome_join` takes the seven
+  bundles, and `report` composes none. `OutcomeJoin` accordingly accepts
+  EXACTLY the sources the document declares **or none at all**: an empty map
+  builds a reader, which answers `current_outcome`/`as_of` and collects
+  nothing because there is nobody to ask. A PARTIAL map still refuses —
+  serving some of what a document declares and silently dropping the rest is
+  the failure that check exists for.
+
+`_Injection` is the fourth: D20's swap is an OBJECT the composition root
+selects (`_DocumentInjection` or `_TapeInjection`) rather than three `if tape`
+branches inside `bundles_for`, so a replay cannot end up with a recorded feed
+and a live clock — the failure that would make a parity report meaningless
+while looking fine. `_Rung` gains `replayable`, and `bundles_for` refuses a
+tape at a rung whose row is false (§5.13.3).
 
 ### 5.16 Producers — every field back to the object that fills it
 
@@ -2330,14 +4103,33 @@ guard while nothing produced one. The records a step *reads* are walked too:
 
 | record | producer |
 |---|---|
-| `TickState{view, account, feed_status, feed_ages, calendar}` | assembled by `Tick.run` after the `account` phase (§5.13) and carried into each `LegBindings` |
-| `LegBindings` (13 fields) | assembled by `Tick.run` per proposal; `proposal`/`origin` from `propose` (or from `execute-flatten`'s stored plan when `origin == reduction`), `entry_batch`/`head_digest` from `read_entry`/`evaluate`, `quotes` from `quotes`, `state` the `TickState`, `requirements` the second return of `account`, `reduction` `None` for a model leg and otherwise the signed `ReductionIntent` + digest + right, `release`/`rung` from the loop, `tick_id`/`leg_id`/`leg_index` from `recording.id_source` |
+| `TickState{view, account, feed_status, feed_ages, calendar, entry_batch}` | assembled by `Tick.run` after the `account` phase (§5.13) and carried into each `LegBindings`; `entry_batch` is `read_entry`'s, the same object `bindings.entry_batch` holds, so the verifier rehashes what the plan bound |
+| `LegBindings` (13 fields) | assembled by `Tick.run` per proposal; `proposal`/`origin` from `propose` (or from `execute-flatten`'s stored plan when `origin == reduction`), `entry_batch`/`head_digest` from `read_entry`/`evaluate`, `quotes` from `quotes`, `state` the `TickState`, `requirements` the second return of `account`, `reduction` `None` for a model leg and otherwise the signed `ReductionIntent` + its digest + the right the FOLD granted (the rights on `state_view.reduction`, `None` when it granted none — §5.13.1), `release`/`rung` from the loop, `tick_id`/`leg_id`/`leg_index` from `recording.id_source` |
 | `Intent` (16 fields) | step 5; `client_ref` from `recording.id_source`, `created_ms` from `schedule.clock`, `release_hash` from `bindings.release`, `decision_plan_id` from step 4 and `decision_plan_digest` by the §5.4 recipe over that plan, `proposal` the `LegEvaluation.final`, `authority_id` from `bindings.state.view.arming` for a model leg and from `bindings.reduction` for a reduction leg (`None` at shadow/paper, where no ordinary arm exists), `inputs_*`/`coverage_digest` from `bindings.entry_batch`, `quote_*` from `bindings.quotes`, and `evidence_*`/`risk_*` from `LegEvaluation.account` — the same one the plan binds |
 | `PolicyRequest` (9 fields) | assembled by the caller of `ActionPolicy.permits`: `operation` at the call site, `risk_effect` from `LegEvaluation`, `rung`/`origin` from `bindings`, `breaker` from the **fresh** `recording.state.snapshot()` of steps (2)/(3)/(6) — never the tick-assembly view, or a trip raised inside this tick is invisible — `readiness` and `authority` from that same fresh view (`arming` for a model leg, `bindings.reduction` for a reduction leg), `health` from `observability.health`, `pending_control` from that same fresh view |
 | `LegEvaluation` (9 fields) | steps 1–3, threaded (`risk_effect` from step 2's `execution.accounting.classify`) |
 | `StateView` (14 fields) | `SeriesState.snapshot()` — every member is a projection of the fold and nothing else writes one |
 | `Proposal` | `Data.decider`'s `Proposer.proposals(head_outputs, candidates, state, provenance)`. The economic fields — `instrument`, `side`, `qty`/`notional`, `limit`, `tif`, `reference_price`, `exposure`, `confidence`, `prediction`, `baseline`, `expected_value`, `direction`, `expires_ms`, `extra` — are the proposer's own decision, read from the head outputs through its field map (`intent-rows`) or its target diff (`target-positions`); `id` is the `Candidate.id` it must preserve; the five provenance fields come from the `Provenance` the tick passes in, never stamped on afterwards |
 | `Provenance` (5 fields) | assembled by `Tick.run` from the `EntryBatch` (`read_entry`) and `QuoteSet` (`quotes`) |
+
+**Phase-2 records — the same walk, for everything phases 2 and 3 add.** Every
+record below is walked by `test_producers.py` on the same two assertions, which
+is why they are here rather than only in §5.13.2/§5.13.3/§5.11.2. Phase 2's
+producers are not bundle members: `OutcomeJoin`, `Report` and `AlertRouter` are
+composites `compose.py` builds, so the rows name the object and the step rather
+than a dotted bundle path.
+
+| record | producer |
+|---|---|
+| `Outcome` (9 fields) | one `OutcomeSource.poll`; `leg_id` from the `DecidedLeg` it joined, `outcome_kind` and `terminal` and `source` from the source itself (`settled`/`partial`/`voided`/`corrected` from `SettlementOutcomes`, `settled`/`marked` from `LabelOutcomes`), `effective_at_ms` and `value` and `weight` from the settlement or label row, `supersedes` from the outcome this one replaces (`None` for a first arrival), and `known_at_ms` stamped by `OutcomeJoin.collect` from the run's ONE `at_ms` — never by the source, which is what stops a back-dated arrival |
+| `DecidedLeg` (11 fields) | `LedgerHistory.legs`; `leg_id`, `instrument`, `final`, `client_ref`, `prediction`, `baseline`, `expected_value` and `reference_price` are §6 `decision.legs[]` members, `qty` is the `qty` of that entry's serialized `Proposal`, `tick_id` is the `decision` body's, and `decided_at_ms` is the paired `tick` record's `observed_at_ms` — the leg's own body carries no instant, which is why the join is against the tick |
+| `Attribution` (12 fields) | `Report.attribution`; `leg_id`, `requested_qty` (the leg's `qty`) and `surprise` (`prediction - baseline`) from the `DecidedLeg`; `filled_qty`, `fees` and `impact` from that leg's `fill` records; `fill_rate` and `opportunity` from the two quantities against the `Outcome`; `outcome_value` and `closing_value` from `OutcomeJoin.current_outcome` at the cut; `markouts` from the `marked` outcomes at each declared horizon; `shortfall` is the sum of the three `ATTRIBUTION_COMPONENTS` and is asserted equal, not derived |
+| `CalibrationReport` (10 fields) | `Report.calibration` over the paired legs; `n` and `bins` from the pairing and the document; `brier` and `baseline_brier` from the pipeline's `metrics` module; `reliability`, `resolution` and `uncertainty` from the exact stratification; `ece` from the binned one; `bss` from the two Brier scores; `dm` from the pipeline's `stats` module (`None` below two pairs) |
+| `ValuePoint` (7 fields) | `Report.value_curve`, one per completed tick; `at_ms` and `nav` from that §6 `tick` record; `realised` from its legs' `Outcome`s and `unrealised` from the open ones; `external` from the `cash_flow` records at that instant; `cumulative` and `drawdown` are running functions of `realised + unrealised` alone, never of `external` |
+| `Divergence` (6 fields) | `ParityDiff.compare`; `seq` and `record_id` from the tape record being compared, `field` from the body member that differed, `tape` and `replay` its two values, and `divergence` from the module-level field table (`nondeterminism` by default) |
+| `ParityReport` (4 fields) | `ParityDiff.compare`; `compared` is the number of semantic records walked, `divergences` the tuple above, `first_divergence_seq` the smallest `seq` among them or `None`, and `clean` is `not divergences` |
+| `Silence` (6 fields) | the `silence` verb's handler; `silence_id` is the command's `request_id`, `matchers`, `ends_at_ms` and `comment` come from the verified payload, `created_by` from the verifier's principal, and `starts_at_ms` from the consumed command's `queued_at_ms` — never the handler's clock, so a replayed command is byte-identical and the ledger dedups it |
+| `AlertAck` (4 fields) | the `ack` verb's handler; `fingerprint` and `reason` from the verified payload, `by` from the verifier's principal, and `acknowledged_until_ms` from `--for` bounded by the document, or the alert's resolution, whichever comes first |
 
 **The rule this table encodes.** A record field with no producer, a collaborator
 no bundle carries, or a call whose arguments no caller can supply, is a plan
@@ -2346,17 +4138,48 @@ one deliberate exception: it is a construction-time dependency of `Ledger`,
 `Breaker` and `ControlInbox` rather than a bundle member, and it is named here so
 the exception is explicit rather than an oversight.
 
+**Folded but unproduced in phase 1.** Two things the fold and the vocabulary
+carry have no phase-1 producer. They are named here so the hole is a
+recorded decision rather than something a later reader has to rediscover.
+A THIRD was on this list and is now closed: §6's `guard_state` had no
+producer at all — `Limit.guard_state_body`, the fold and `Limit.check` were
+wired to each other and to nothing — so a hold survived exactly as long as
+the process did. `LegPipeline` step (4) is the producer (§5.5), and the
+entry is deleted rather than kept with a note, because a list of holes that
+keeps closed ones stops being read:
+
+- the `authority` event `expire`. `Arming.expire_if_due(view, at_ms)` builds
+  the body and is tested, but nothing calls it: an arm past `armed_until_ms`
+  is already inert, because `Arming.current(view, at_ms)` refuses it, so the
+  missing record is bookkeeping and not authority. A caller — a sweep at the
+  tick boundary — is phase-2 work; in phase 1 the only verb that ENDS an arm
+  with a record is the operator's `disarm`.
+- the `supersedes` member of §6's `cash_flow` record, which the fold nets on
+  and which every phase-1 producer writes as `null`. `adopt` is the only producer of a `cash_flow`
+  and it never names an earlier flow; the correcting producer would be an
+  `adopt` that supersedes a previously adopted break, which phase 1 does not
+  offer. The netting rule is defined now because a flow banked wrongly is
+  otherwise uncorrectable for the life of the series.
+
 **`test_producers.py` is a real check, not a restatement.** The table above lands
 in code as a module-level
 `PRODUCERS: dict[tuple[str, str], str]` mapping `(record, field)` to a dotted
 producer path, with a sentinel for the handful whose producer is a step verdict
-rather than an attribute. Two assertions, and the second is what makes it bite:
+rather than an attribute — and, from phase 2, a SECOND sentinel `<command>` for
+`Silence` and `AlertAck`. Every field of both is filled from the consumed
+control command (its `request_id`, its `queued_at_ms`, the payload the maker
+signed, the principal digest derived from it), and a command is a dict on the
+wire rather than a class any `getattr` walk can resolve against; attributing
+those fields to `<step>` would claim they are a step's own verdict, which they
+are not — they are an operator's, and that difference is what an authenticated
+act means. The completeness half still bites: a field added to either record
+without a row fails. Two assertions, and the second is what makes it bite:
 
 - **resolution** — every dotted path resolves by `getattr` chain against the
   built classes, so a renamed collaborator fails here;
-- **completeness** — for every record **this table walks** (the twelve above;
-  extending the table extends the test, and that is the intended way to add
-  one), `{field for (rec, field) in PRODUCERS if rec == R} ==
+- **completeness** — for every record **this table walks** (a count is
+  deliberately not written here either: extending the table extends the test,
+  and that is the intended way to add one), `{field for (rec, field) in PRODUCERS if rec == R} ==
   {f.name for f in dataclasses.fields(R)}`. A field added to a record without a
   producer fails; a producer naming a field that no longer exists fails.
 
@@ -2369,8 +4192,26 @@ missed that way already.
 ## 6. Ledger records
 
 Envelope on every record: `kind, id, payload_digest, seq, series_id, process_id,
-release_hash, recorded_at_ms, schema_version, prev_hash, hash`. Ledger-assigned
-fields never enter `payload_digest`. `IdSource` derives tick, decision, leg and
+release_hash, recorded_at_ms, schema_version, prev_hash, hash` — twelve fields
+with the record's own content NESTED under `body`, never merged flat. The
+caller passes exactly `{kind, id, body}` and any other top-level key refuses;
+`payload_digest = canonical_hash({kind, id, body})`; `hash = record_hash(
+prev_hash, envelope − hash)`; the no-float-money walk (`vocab.MONEY_FIELDS`)
+runs over `body`. Nesting is what lets a body carry its own `kind`,
+`release_hash` or `series_id` without colliding with the envelope's — a
+recovering process's envelope release legitimately differs from the tick's —
+so every body below is self-describing and the field names in it are the
+body's own. Ledger-assigned
+fields never enter `payload_digest`. **A record `id` is unique across the
+SERIES, not within a kind** (the idempotency index is keyed by `id` alone),
+so every producer qualifies its id with the kind:
+`f"{kind}:{semantic_id}"` — `tick_start:<tick_id>` and `tick:<tick_id>` are
+two records of one tick and must not collide. For the same reason an
+`authority` record's id is `authority:<authority_id>:<event>` (one owner,
+`arming.py`'s `authority_record`): an `issue` and the `disarm`, `revoke` or
+`expire` that ends it are several records of ONE authority, and an id
+qualified only by the authority would make the second an append of a changed
+payload under a reused id — a refusal, not a demotion. `IdSource` derives tick, decision, leg and
 model client ids from stable semantic inputs before append, independent of
 sequence or wall time. Flatten refs are
 `H("flatten-v1", release_hash, reduction_request_id, intent_index,
@@ -2381,29 +4222,32 @@ sha256-canonical idiom.
 |---|---|---|
 | `process` | start / stop / recovered | `event ∈ {start, stop, recovered}`, `series_id`, `release_hash`, `doc_hash`, `serving_hash`, `run_hash`, `artifact_digests`, `source_config_hash`, `runtime_fingerprint`, `rung`, `executor_kind`, `code_version`; stop adds `exit_code`. After its barrier, one journal row is written whose `notes` render the process id and final head in the D22 `production-v1` form |
 | `tick_start` | scheduled tick | `tick_id`, `tick_at_ms`, `release_hash` |
-| `tick` | terminal tick | `tick_id`, `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash, required_keys_digest, watermarks_by_key, coverage_digest}`, `inputs_digest`, `nav` (the marked portfolio value at this tick, single-currency only, `null` when a mark is missing or balances span currencies), `calendar`, `overrun_absorbed[]` (the tick instants this tick coalesced or skipped), `latency_ms{gate, verify_release, fetch, read_entry, coverage, evaluate, candidates, quotes, account, propose}` (one key per §5.13 `Tick` phase method, pinned by a test) and `leg_latency_ms` keyed by `vocab.LEG_LATENCY_BUCKETS` and summed over the tick's legs — `guard` spans §5.13.1 steps (1)–(3), `authorize` (4)–(6), `act` (7); step (8) records the outcome and is charged to the tick. These are spans over `LEG_STEPS`, not step names, which is why the two vocabularies are separate, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}` |
+| `tick` | terminal tick | `tick_id`, `tick_at`, `data_asof_ms`, `observed_at_ms`, `status`, `feed{status, acq_id, records_added, source_config_hash, required_keys_digest, watermarks_by_key, coverage_digest}`, `inputs_digest`, `nav` (the marked portfolio value at this tick, single-currency only, `null` when a mark is missing or balances span currencies), `calendar`, `overrun_absorbed[]` (the tick instants this tick coalesced or skipped), `latency_ms{gate, verify_release, fetch, read_entry, coverage, evaluate, candidates, quotes, account, propose}` (one key per §5.13 `Tick` phase method, pinned by a test) and `leg_latency_ms` keyed by `vocab.LEG_LATENCY_BUCKETS` and summed over the tick's legs — `guard` spans §5.13.1 steps (1)–(3), `authorize` (4)–(6), `act` (7); step (8) records the outcome and is charged to the tick. These are spans over `LEG_STEPS`, not step names, which is why the two vocabularies are separate, `health`, `breaker`, `rung`, `refusal_reason`, `error{class, text}`. A RECOVERED terminal tick is exempt from the seven-member `feed` block and from `calendar`/`health`/`rung`: it carries them as nulls, because recovery closes a tick whose fetch never completed and inventing a feed status for it would be a fabricated observation. Recovery appends the `decision` BEFORE the `tick`, matching the live order |
 | `decision` | tick (exactly one) | `tick_id`, `decision_plan_ids[]`, `decision_plan_digests[]`, `legs[]{leg_id, instrument, prediction, confidence, baseline, expected_value, reference_price, proposal, findings[], final, client_ref}` — `leg_id`, `findings[]`, `final` and `client_ref` are the leg's own; `proposal` carries the serialized final `Proposal`; every remaining field is copied from that `Proposal` (§5.4) under the same name — a no-op tick has `final: none` per leg or zero legs with `reason` |
 | `decision_plan` | proposal after complete pre-submit evaluation (barrier before proposal submit) | `plan_id`, entry/head/candidate provenance, original/final proposal, input/quote/evidence as-of+digests, `findings[]`, `gate_results[]`, scope verdict, `risk_effect`, `risk_version`, `risk_state_digest`, `result ∈ {submit, not_sent}` |
 | `intent` | proposal selected for possible submit | the canonical `records.Intent` value object; no second schema |
 | `authorization` | permitted live intent (barrier before submit) | serialized `ActPermit` plus `authority_use_id` (null on the ordinary path); no raw authority is executable |
 | `control_request` | durable CLI request | `request_id`, `purpose`, canonical payload (full reduction intents when applicable), `release_hash`, derived principal/proof digest, expiry |
-| `control_approval` | maker-checker approval | `request_id`, `purpose`, checker principal/proof digest, verified payload digest |
-| `authority` | issue / disarm / revoke / expire | `authority_id`, `kind ∈ {ordinary, reduction}`, request/approval ids, release/rung, expiry, allowlist/overlay, reduction intent digests, reason |
+| `control_approval` | maker-checker approval | `request_id`, `purpose ∈ CONTROL_PURPOSES`, checker `principal_digest`/`proof_digest`, `verified_payload_digest` (the digest the checker's proof actually covered, so "the checker approved THIS payload" is checkable rather than assumed) |
+| `authority` | issue / disarm / revoke / expire | `authority_id`, `event ∈ AUTHORITY_EVENTS`, `role ∈ AUTHORITY_ROLES` (spelled `role`, not `kind`, because the envelope already owns `kind`), request/approval ids, release/rung, expiry, allowlist/overlay, reduction intent digests, reason; an ordinary `issue` embeds the whole `ArmingState` under `arming`, which is what makes the maker/checker/proof digests recoverable from the fold alone |
 | `authority_use` | consume/reserve one reduction right (barrier before authorization) | unique `(authority_id, reduction_intent_digest)`, `client_ref`, `reserved_at_ms`; recovery may reference this reservation but no second intent may |
 | `order_event` | executor/loop report | `client_ref`, `venue_ref`, `event ∈ {not_sent, ack, reject, fill, partial_fill, cancel, expire, replaced_by_venue, unknown, status}` — `replaced_by_venue` is observed only (D10); no executor verb initiates it, `status`, `venue_ts_ms`, `recv_at_ms`, `reason` |
 | `fill` | execution | the `Fill` record |
-| `cash_flow` | money entering or leaving the account other than by trading | `effective_at_ms`, `known_at_ms`, `supersedes` (bitemporal per D21, since a flow found by reconciliation days later has effective ≠ known and a wrongly adopted amount must be correctable rather than merely offset), `currency`, `amount` (signed `Decimal`), `kind ∈ CASH_FLOW_KINDS`, `external` (true for a deposit or withdrawal, false for an interest or fee accrual the venue applied), `source` is always `venue` (the amount is the reconciler's computed delta, never an operator-supplied number); `kind` and `external` come from the operator's proof and never default to `external: true`, `evidence` (the balance delta and recon break it explains, or the operator's note), `id = H("cash-flow-v1", release_hash, control_request_id, break_id)` so a crash-replayed `adopt` cannot append the same money twice. It is appended **before** the `adoption` record and inside the same barrier, so a crash between them cannot leave a break marked resolved with no amount recorded — **without this record an external deposit is indistinguishable from trading profit for the rest of the series' life**. `SeriesState.apply(cash_flow)` adjusts `StateView.balances` and advances `economic_seq` — it is a balance update, which D14 already counts as economic — so the fold carries both the money and the reason it moved, and the re-reconcile after adoption clears the break instead of reproducing it. Nothing downstream can separate them later, so it is recorded when it happens or never. **Every economic measure partitions the fold on `external`**: `pnl`, `drawdown`, `consecutive_losses` and `error_vs_realised` read trading records only and never see an external flow, while `bankroll_fraction` and `exposure` read the capital base *including* it. An external flow changes what you have, never what you earned — without that partition an adopted deposit would inflate a `pnl` halt guard into headroom, and `document.reconcile.lookback_ms` guarantees that any fill older than the window is classified `cash` and adoptable, so this is a routine mis-classification rather than an attack. `test_guards.py` pins that a `cash_flow` cannot move a `pnl` bound |
-| `outcome` | label arrival / mark / correction | `leg_id`, `kind ∈ {settled, marked, voided, partial, corrected}`, `effective_at_ms`, `known_at_ms`, `value`, `weight`, `terminal`, `supersedes`, `source` |
-| `guard_state` | a guard hold or pause | `guard`, `scope_key`, `kind ∈ {hold, pause}`, `reason`, `held_until_ms`, `resume_at_ms`, `finding` — folded by `SeriesState` like breaker and arming, so a restart cannot resume a paused strategy early |
+| `cash_flow` | money entering or leaving the account other than by trading | `effective_at_ms`, `known_at_ms`, `supersedes` (bitemporal per D21, since a flow found by reconciliation days later has effective ≠ known and a wrongly adopted amount must be correctable rather than merely offset), `currency`, `amount` (signed `Decimal`), `flow_kind ∈ CASH_FLOW_KINDS` (spelled `flow_kind`, not `kind`), `external` (true for a deposit or withdrawal, false for an interest or fee accrual the venue applied), `source` is always `venue` (the amount is the reconciler's computed delta, never an operator-supplied number); `kind` and `external` come from the operator's proof and never default to `external: true`, `evidence` (the balance delta and recon break it explains, or the operator's note), `id = H("cash-flow-v1", release_hash, control_request_id, break_id)` so a crash-replayed `adopt` cannot append the same money twice. `supersedes` NETS rather than annotates: the fold keeps every flow's `(currency, amount, superseded_by)`, and a flow naming X subtracts X's amount before adding its own, so a corrected adoption can never double-bank; X may be superseded once and an unknown X refuses. `known_at_ms` is the CONSUMED COMMAND's `queued_at_ms`, never `clock.now_ms()` at the handler — a crash-replayed `adopt` must produce a byte-identical payload or `Ledger.append` refuses it as a changed payload under a reused id. It is appended **before** the `adoption` record and inside the same barrier, so a crash between them cannot leave a break marked resolved with no amount recorded — **without this record an external deposit is indistinguishable from trading profit for the rest of the series' life**. `SeriesState.apply(cash_flow)` adjusts `StateView.balances` and advances `economic_seq` — it is a balance update, which D14 already counts as economic — so the fold carries both the money and the reason it moved, and the re-reconcile after adoption clears the break instead of reproducing it. Nothing downstream can separate them later, so it is recorded when it happens or never. **Every economic measure partitions the fold on `external`**: `pnl`, `drawdown`, `consecutive_losses` and `error_vs_realised` read trading records only and never see an external flow, while `bankroll_fraction` and `exposure` read the capital base *including* it. An external flow changes what you have, never what you earned — without that partition an adopted deposit would inflate a `pnl` halt guard into headroom, and `document.reconcile.lookback_ms` guarantees that any fill older than the window is classified `cash` and adoptable, so this is a routine mis-classification rather than an attack. `test_guards.py` pins that a `cash_flow` cannot move a `pnl` bound |
+| `outcome` | label arrival / mark / correction | the `records.Outcome` value object (§5.13.2): `leg_id`, `outcome_kind ∈ OUTCOME_KINDS` (spelled `outcome_kind`, not `kind`), `effective_at_ms`, `known_at_ms`, `value`, `weight`, `terminal`, `supersedes`, `source ∈ OUTCOME_SOURCES`. Phase 1 defines it because `LedgerHistory.marks` and the `error_vs_realised` measure already read it; phase 2's `outcomes` verb is its producer. `supersedes` names the `outcome` record this one replaces (once — a second refuses), and a record with `effective_at_ms > known_at_ms` refuses: nothing is knowable before it is effective |
+| `guard_state` | a guard hold, pause or release | `guard`, `scope_key`, `state_kind ∈ GUARD_STATE_KINDS` (spelled `state_kind` for the same reason `authority.role` is), `reason`, `held_until_ms`, `resume_at_ms`, `finding` — folded by `SeriesState` like breaker and arming, so a restart cannot resume a paused strategy early. Phase 2 adds the third kind, `released`: the `approve-hold` verb (§5.5.1) clears one hold before its ttl, and the fold drops it. A `released` body carries the seven fields of the hold it clears — `held_until_ms` is that hold's, so the record says what was cut short, and `finding` is that hold's, so it names the verdict overridden — PLUS `control_request_id`, `principal_digest` and `proof_digest`, and `resume_at_ms` is the act's own instant, since a release frees the scope now. The two kinds take two id recipes, for the same reason `authority` does: a HOLD is one hold, so `guard_state_id` (in `guards.py`) derives `guard_state:H("guard-state-v1", release_hash, guard, scope_key, state_kind, held_until_ms)` and two legs reaching it write one record; a RELEASE is one operator act, so its id is `guard_state:<control_request_id>`. Both make a crash-replayed append dedup rather than refuse as a changed payload under a reused id. The hold's producer is `LegPipeline` step (4) (§5.5), which appends it before the `decision_plan` and inside that step's barrier. The fold drops the pair a `released` names and folds a release of a pair holding nothing to NOTHING rather than refusing: `GuardChain.approve_hold` is the gate, and a fold that raised here would make a legitimately recorded chain unreplayable after the fact |
 | `readiness` | a `ready` evaluation | `release_hash`, `verdict ∈ READINESS_VERDICTS`, `items[]{item, required, evidence, waiver, passed}`, `readiness_digest`, `evaluated_at_ms`, `valid_until_ms` — the durable GO the action matrix reads and `ActPermit` binds; `ready` is the only verb that writes it |
 | `recon` | reconciliation run | `scope`, `ours_digest`, `theirs_digest`, `breaks[]`, `status`, `action` |
-| `trip` | breaker transition, including reduce/reset/halt | `from`, `to`, `reason`, `actor`, `control_request_id`, proof/principal digest, acknowledged trip id, `cancel_outcome` |
-| `adoption` | authenticated venue-break adoption | `control_request_id`, principal/proof digest, named break ids, delta digest, before/after recon ids |
+| `trip` | breaker transition, including reduce/reset/halt | `from`, `to`, `reason ∈ TRIP_REASONS`, `actor`, `control_request_id`, `principal_digest`/`proof_digest`, `acknowledged_trip_id`. It carries NO cancel outcome: a halting `trip` is appended and barriered BEFORE any cancel I/O, so the ledger says "halted" before the process touches the venue, and what the cancel came to is a separate record |
+| `cancel_outcome` | one best-effort cancel sweep after a halting `trip` | `trip_id`, `outcome ∈ CANCEL_OUTCOMES`, `acks[]` (the serialized `Ack`s). Appended and barriered after the attempt; non-economic, and the fold reads nothing from it beyond the head. A halting `trip` with no later `cancel_outcome` is what recovery looks for: it re-issues `cancel_all` query-first rather than assuming either answer |
+| `adoption` | authenticated venue-break adoption | `control_request_id`, `principal_digest`/`proof_digest`, `break_ids[]`, `delta_digest`, `before_recon_id` — the `recon` record the adoption acted on. There is no `after_recon_id`: the follow-up reconciliation is its own `recon` record appended after this barrier, and a field naming a record that does not exist yet has no producer |
 | `command_result` | consumed inbox request | `request_id`, `status ∈ {applied, rejected}`, emitted record ids, reason |
 | `monitor` | verdict change / window close | `monitor`, `slice`, `window`, `statistic`, `threshold`, `status`, `provisional` |
-| `alert` | firing / resolved | the `Alert` record + per-sink outcomes |
+| `alert` | firing / resolved / withheld | the `Alert` record + per-sink outcomes + **[phase 2]** `suppressed` (an `ALERT_SUPPRESSIONS` member, or null when delivered). Appended only by `AlertRouter.process`, only from the loop thread (§5.11) — for every notification INCLUDING an escalation's, whose `sinks` map names the level's sinks, and for every alert §5.11.2 silenced or inhibited, whose `sinks` map is empty. `suppressed` is what tells those two apart from an alert whose severity no route covers; without it "the evidence survives the suppression" would not be true. Phase 2 also folds it: a `resolved` alert lapses that fingerprint's `alert_ack` (§5.11.2) |
+| `silence` | [phase 2] one operator silence window | `Silence.to_obj()` — `silence_id`, `matchers`, `starts_at_ms`, `ends_at_ms`, `created_by`, `comment` — plus `control_request_id`, `principal_digest`, `proof_digest`. `ends_at_ms` is required and bounded, since an unbounded silence is how a page is lost forever. The record stores no state: `Silence.state_at(now_ms)` derives one of `SILENCE_STATES` from the two instants. `id = silence:<control_request_id>` (R9's kind-qualified id), which is what makes a crash-replayed command idempotent rather than a changed payload under a reused id |
+| `alert_ack` | [phase 2] one operator acknowledgement | `AlertAck.to_obj()` — `fingerprint`, `acknowledged_until_ms`, `by`, `reason` — plus `control_request_id`, `principal_digest`, `proof_digest`. An ack stops ESCALATION and nothing else: the alert keeps firing and keeps being recorded, because an ack means a human owns it, not that it is fixed. `id = alert_ack:<control_request_id>`, for the same reason |
 | `health` | transition | `from`, `to`, `cause`, `probe_evidence` |
-| `snapshot` | every N records | `at_seq`, `state_digest`, `state` — **every `StateView` member** (positions, working orders, pending refs, balances, decision history, breaker, arming, readiness, guard holds, reduction projection, pending control, risk version) **plus monitor state**, which §5.10 requires the snapshot to carry and which is not a `StateView` member — dropping it would reset every drift window on restart, and a monitor below `min_n` cannot alarm until it refills. `risk_version`'s `executor_token`/`accounting_tokens` are live session tokens re-acquired on restart, not restored. Since `Recovery` replays `SeriesState.apply` from the last snapshot forward and cannot restore a member the snapshot never carried |
+| `snapshot` | every N records | `at_seq`, `state_digest`, `state` — **every `StateView` member** (positions, working orders, pending refs, balances, decision history, breaker, arming, readiness, guard holds, reduction projection, pending control, risk version) **plus monitor state**, which §5.10 requires the snapshot to carry and which is not a `StateView` member — dropping it would reset every drift window on restart, and a monitor below `min_n` cannot alarm until it refills. `risk_version`'s `executor_token`/`accounting_tokens` are live session tokens re-acquired on restart, not restored. Since `Recovery` replays `SeriesState.apply` from the last snapshot forward and cannot restore a member the snapshot never carried. The non-`StateView` projections §5.8.1 lists ride here for the same reason, and `last_trip` carries exactly `{id, seq, recorded_at_ms, from, to, reason, acknowledged_trip_id, cancelled}` — `cancelled` says whether a `cancel_outcome` naming that trip has been folded, which is what makes "a halting `trip` with no later `cancel_outcome`" answerable from the fold alone rather than by a second walk of the ledger. `restore` is default-deny over those keys, so a snapshot written before `cancelled` existed refuses by name (`missing key(s) ['cancelled']`) instead of restoring a trip recovery would then re-sweep; `schema_version` stays `1` because the branch is unreleased and no such snapshot exists outside a working tree |
 
 ## 7. CLI — `python -m dskit.production`
 
@@ -2421,9 +4265,16 @@ sha256-canonical idiom.
 | `status <doc>` | rung, breaker, health, last tick, pending refs, control inbox/results, head hash | 0 / 1 |
 | `verify <doc>` | walk the ledger chain; compare the head to the journal anchor | 0 / 1 |
 | `reconcile <doc>` / `adopt <doc> --break ID… --proof FILE` | queue reconciliation, or queue authenticated adoption of named breaks | 0 / 1 / 5 |
-| `replay <serve-dir>` | phase 2: parity report | 0 / 1 |
-| `outcomes <doc>` / `report <doc> [--asof T]` | phase 2 | 0 / 1 |
+| `replay <serve-dir> [--strict] [--format markdown\|json] [--out FILE] [--root DIR]` | [phase 2] re-run the tape through the recorded objects and diff it (§5.13.3); read-only, writes only under its own scratch root (a temporary directory unless `--root` names one). Its positional is a recorded SERIES root, not a document: a replay runs the document the recording ran, which is stored beside the release, so `Verb.POSITIONAL` is a per-verb pair rather than a shared `document` | 0 / 1 |
+| `outcomes <doc> [--asof TS]` | [phase 2] collect and record outcomes up to the cut (§5.13.2); mutating, so queued or synchronous under the lock, and journaled | 0 / 1 / 5 |
+| `report <doc> [--asof T] [--format markdown\|json] [--out FILE]` | [phase 2] attribution, calibration, value and parity at the cut; read-only, no lock, no journal row | 0 / 1 |
+| `approve-hold <doc> --guard NAME --scope KEY --proof FILE` | [phase 2] authenticated early release of one guard hold (§5.5.1) | 0 / 1 / 5 |
+| `ack <doc> --fingerprint F --proof FILE [--for D] [--reason TEXT]` / `silence <doc> --matcher K=V… --until TS --proof FILE [--comment TEXT]` | [phase 2] authenticated alert acknowledgement, or an operator silence window (§5.11.2). `--for` is an ISO-8601 duration (`PT2H`); `--reason` and `--comment` are here because §5.16 gives both records that field and a field with no producer is a plan defect. A `--matcher` that is not `K=V` refuses, and `silence` requires at least one | 0 / 1 / 5 |
 | `ready <doc>` | release-bound readiness GO / NO-GO (required for live rungs) | 0 / 1 / 5 |
+
+`replay --strict` exits 1 when the diff is non-empty, and plain `replay` exits
+0 and reports; no new exit code is minted, because a divergence under
+`--strict` is an error and a divergence without it is a finding.
 
 Only operational flags live on `serve` (`--once`, `--max-ticks`, `--armed`).
 Adapter selection and every semantic knob live in the document. Authenticated
@@ -2437,8 +4288,12 @@ shows its terminal receipt. Read-only verbs never take the writer lock.
 ```
 dskit/production/
 ├── __init__.py        public surface (curated re-exports only, no logic)
-├── __main__.py        CLI: validate | plan | serve | arm-request | approve-arm | disarm | halt | reduce | flatten-request | approve-flatten | execute-flatten | resume | status | verify | reconcile | adopt | replay | outcomes | report | ready
-├── base.py            ProductionError; checkers re-exported from dskit.assets.base; ms/utc helpers; canonical record hashing
+├── __main__.py        CLI: validate | plan | serve | arm-request | approve-arm | disarm | halt | reduce | flatten-request | approve-flatten | execute-flatten | resume | status | verify | reconcile | adopt | ready
+│                      [phase 2] replay | outcomes | report | approve-hold | ack | silence
+├── base.py            ProductionError; checkers re-exported from dskit.assets.base; ms/utc helpers; canonical record hashing;
+│                      check_credentials + CREDENTIAL_CHECKS — the ONE owner of what an authenticated control
+│                      act's three ids are and how each is checked (breaker, reconcile.adopt and
+│                      GuardChain.approve_hold import it; two of them had shipped divergent copies)
 ├── vocab.py           EVERY closed vocabulary, one module: RUNGS, VERDICTS (lattice), STATUSES + TERMINAL, TIFS, SIDES, FILL_STATUSES,
 │                      SEVERITIES (+ the pinned level map), HEALTH_STATES, BREAKER_STATES, LOOP_STATES, TICK_STATUSES, RECORD_KINDS,
 │                      BREAK_CLASSES, BREAK_SEVERITIES, DIVERGENCE_CLASSES, MONITOR_STATUSES, RESPONSES, FEED_STATUSES, LINK_STATES,
@@ -2456,8 +4311,24 @@ dskit/production/
 │                      CASH_FLOW_KINDS (deposit|withdrawal|adjustment — the only kinds `adopt` can emit; `interest` and `fee` would need a venue-reported cash-flow producer this ADR does not add),
 │                      READINESS_VERDICTS (go|no_go), METRIC_NAMES + METRIC_LABEL_VALUES (§5.11.1's tables live here,
 │                      not in metrics.py), BREAK_ORIGINS (ours|external),
-│                      AT_TIMES_RELATIVE, CALENDAR_WINDOWS, ON_MISMATCH, RECON_ACTIONS, TRIP_REASONS,
-│                      CIRCUIT_STATES (closed|open|half_open|forced_open|metrics_only — distinct from BREAKER_STATES)
+│                      AT_TIMES_RELATIVE, ON_MISMATCH, RECON_ACTIONS, TRIP_REASONS,
+│                      CIRCUIT_STATES (closed|open|half_open|forced_open|metrics_only — distinct from BREAKER_STATES),
+│                      MONEY_FIELDS (the names under which a float is never legal at any depth of a record body —
+│                      ratios such as confidence are floats and are NOT named here), CACHE_STATES (current|stale),
+│                      AUTHORITY_EVENTS (issue|disarm|revoke|expire), TRANSITION_CAUSES (reduce|flatten_request|trip|halt|resume),
+│                      ALERT_SUPPRESSIONS (dedup|group_wait|repeat_interval|rate_limit|queue_full, + phase 2 inhibited|silenced),
+│                      CONTROL_PURPOSES (APPROVAL_PURPOSES + halt|disarm|reconcile|ready, + phase 2 outcomes),
+│                      EXECUTING_PURPOSES (the purposes that own a sequential cycle against model ticks),
+│                      UNWAIVABLE_ITEMS (the six readiness foundation items), CONJUNCTION_REASONS and SCOPE_REASONS
+│                      (why Arming.check_conjunction / apply_scope refused);
+│                      EXIT_CODES is a MAP (name -> code), not a tuple — the one place 0/1/3/4/5 are named;
+│                      [phase 2] OUTCOME_SOURCES (settlement|label|operator), ATTRIBUTION_COMPONENTS (impact|opportunity|fees),
+│                      SILENCE_STATES (pending|active|expired), ESCALATION_LEVELS (primary|secondary|final),
+│                      SIGNER_ALGORITHMS (sha256|sha512); [phase 3] OTEL_PROTOCOLS (grpc|http/protobuf).
+│                      RECORD_KINDS gains cancel_outcome (phase 1) and silence, alert_ack (phase 2);
+│                      GUARD_STATE_KINDS gains released (phase 2); APPROVAL_PURPOSES gains approve_hold, ack, silence (phase 2);
+│                      UNWAIVABLE_ITEMS moved here from readiness.py in phase 2 (§8 always placed it here), beside
+│                      [phase 2] READINESS_EVIDENCE (outcome_coverage|outcome_freshness|calibration_current, §5.13.4)
 ├── document.py        ServeDocument with required series/rung, Accounting, Arming, Coordination; default-deny; identity paths
 ├── release.py         ReleaseManifest; ReleaseReader (the capability handed to release_read nodes); class/code/adapter/
 │                      source/artifact/runtime fingerprints; release verification
@@ -2466,7 +4337,10 @@ dskit/production/
 │                      AccountState,
 │                      QuoteSet, GateResult, FeedResult, FeedAge, ScopeVerdict, PolicyRequest, Provenance;
 │                      LeasePermit is coordination.py's, not here; Permit (frozen dataclass base) + SimulatedPermit + ActPermit, TickResult, Intent,
-│                      execution/monitoring values
+│                      execution/monitoring values; [phase 2] Outcome (which IS the §6 outcome body), DecidedLeg,
+│                      Silence, AlertAck + the two matcher rules they share with alerts.InhibitRule
+│                      (alert_labels, label_match — one owner, since a second copy would let a silence and
+│                      an inhibit rule suppress different alerts for the same written matcher)
 ├── clock.py           Clock ABC; ManualTime (the settable instant TestClock and ReplayClock each compose);
 │                      WallClock, TestClock, ReplayClock; CLOCK_KINDS
 ├── sessions.py        Calendar ABC; AlwaysOpen, WeeklySessions, EventWindow, Composite; CALENDAR_KINDS
@@ -2474,11 +4348,14 @@ dskit/production/
 ├── control.py         ControlInbox (the atomic request/result spool, testable alone); CommandProcessor, which owns no
 │                      verb logic and dispatches to handlers injected by compose.py — which is why the spool can be
 │                      built at its place in the §10 order while breaker/arming/reconcile/readiness come later
-├── feed.py            Feed ABC; ServingContract + FeedSpec; EntrySourceFeed; snapshot coverage/digests; ReplayFeed; FEED_KINDS
+├── feed.py            Feed ABC; FeedSpec (ServingContract is pipeline-side, §9.1); EntrySourceFeed; snapshot_entry() and
+│                      active_source_identity() as module functions; ReplayFeed; FEED_KINDS; [phase 3] StreamFeed (websocket)
 ├── decider.py         serving_document(); Decider (base pass + per-tick rerun via SubgraphRunner); ServingExecutionPolicy
 │                      (implements pipeline ExecutionPolicy); Proposer ABC; IntentRows,
 │                      TargetPositions; RecordedOutputs (replayed gate / stat_test); PROPOSER_KINDS
-├── guards.py          Guard ABC; Finding lattice; GuardChain; Limit; RangeGuard; Measure ABC + MEASURE_KINDS; windows; GUARD_KINDS
+├── guards.py          Guard ABC; Finding lattice; GuardChain (+ new_holds, which decides WHICH holds a leg must
+│                      record, and guard_state_id, the per-hold id recipe); Limit; RangeGuard; Measure ABC +
+│                      MEASURE_KINDS; windows; GUARD_KINDS; [phase 2] GuardChain.approve_hold (§5.5.1)
 ├── breaker.py         Breaker (active | reducing | halted), persisted; trips; kill-switch file; cooling-off
 ├── arming.py          authenticated proofs; ApprovalVerifier ABC + APPROVAL_KINDS; Arming value object + fold;
 │                      scope application (minting lives in leg.py); NotArmed (internal)
@@ -2492,45 +4369,79 @@ dskit/production/
 ├── verifier.py        SubmissionVerifier (the final verify-and-call gate) — separate from policy.py because it performs
 │                      I/O against feed/quote/accounting/lease state, while the policies are pure over closed vocabularies
 ├── resilience.py      Classifier ABC + HttpClassifier; Retry (+ budget); CircuitBreaker; RateLimiter;
-│                      Transport ABC + UrllibTransport + TRANSPORT_KINDS
-├── ledger.py          Ledger ABC + barrier; JsonlLedger; Checkpoint caches; ServeRoot + series genesis; envelope + chain + verify
-├── state.py           SeriesState (the sole ledger fold); StateView; TickState; PositionBook; Recovery
-├── reconcile.py       Reconciler; ReconReport; break classification; on_mismatch policy
+│                      Transport ABC + UrllibTransport + TRANSPORT_KINDS; [phase 2] Signer ABC (injected clock, the
+│                      skew window, the configured time probe and its TIME_RESOLUTION_MS floor) + HmacSigner +
+│                      SIGNER_KINDS — §5.12.1
+├── ledger.py          Ledger ABC + barrier + check_placement; ChainLedger (the chain itself: envelope, digest,
+│                      idempotency, prev_hash, graded barrier, writer lock, snapshot cadence, verify — both stores
+│                      inherit it, §5.8.2); JsonlLedger; LEDGER_KINDS (the registry lives with its seam, §4.3;
+│                      libs/sqlite.py is what gives it a second member) + ledger_class(document), the one resolver
+│                      compose and plan both ask; Checkpoint caches; ServeRoot + series genesis (+ database_path);
+│                      envelope + chain + verify
+├── state.py           SeriesState (the sole ledger fold, with the non-StateView accessors monitor_state/open_ticks/
+│                      undecided_ticks/tick_plans/last_trip); StateView; TickState; PositionBook (with its per-instrument
+│                      fill log); Recovery; [phase 2] silences()/alert_acks()
+├── reconcile.py       Reconciler; ReconReport; break classification; on_mismatch policy; enact +
+│                      RECONCILE_TRIP_REASON (the one owner of what each RECON_ACTIONS member does)
 ├── monitors.py        Monitor ABC; Reference / Chunker / Threshold strategies (Response is a vocabulary); Operational,
-│                      Stream, Distribution
-│                      families (phase 2 adds Outcome and Parity); MONITOR_KINDS, REFERENCE_KINDS, CHUNKER_KINDS,
-│                      THRESHOLD_KINDS
-├── alerts.py          AlertSink ABC; LogSink, MemorySink, EmailSink, WebhookSink; AlertRouter; ALERT_SINK_KINDS
-├── health.py          Health state machine; HealthProbe ABC + ProbeResult + PROBE_KINDS; HeartbeatEmitter ABC +
-│                      emitters + HEARTBEAT_KINDS;
-│                      single-instance lock; signal handling
+│                      Stream, Distribution families; MONITOR_KINDS, REFERENCE_KINDS, CHUNKER_KINDS, THRESHOLD_KINDS;
+│                      [phase 2] DDM, ADWIN, JensenShannon, LInf, OutcomeMonitor (Calibration, Brier, Skill,
+│                      PredictionBias) and ParityMonitor — §5.10.1
+├── alerts.py          AlertSink ABC; LogSink, MemorySink, EmailSink, WebhookSink; AlertRouter (the sole appender of the
+│                      alert record, called only from the loop thread); ALERT_SINK_KINDS; [phase 2] InhibitRule, Silence
+│                      and AlertAck handling, escalation — §5.11.2
+├── health.py          Health state machine; HealthProbe ABC + ProbeResult + PROBE_KINDS; HeartbeatEmitter ABC (emit, plus
+│                      the concrete ready()/stopping() lifecycle hooks) + emitters + HEARTBEAT_KINDS;
+│                      InstanceLock — ONE flock on serve.lock, held before the ledger opens and handed to it;
+│                      signal handling; [phase 2] SystemdEmitter
 ├── metrics.py         Registry (counter/gauge/histogram); Prometheus naming + base units; closed label sets — an undeclared
 │                      label VALUE drops to the reserved `other` and is counted, never raised on the hot path, while an
 │                      undeclared label NAME refuses at declaration; JSONL flush per tick. Owns every `*_total` name §5.11 emits.
-│                      Phase 3 prometheus/otel packs subscribe to it; nothing here imports either.
+│                      [phase 3] MetricSink ABC + Metrics.subscribe() + METRIC_SINK_KINDS, which the prometheus/otel packs
+│                      register into; nothing here imports either library.
 ├── redact.py          Secrets resolution via dskit.pipeline.env.load_env; redact(text) applied to every log line, alert body
 │                      and recorded `reason`; webhook URLs and proofs are credentials. No secret ever reaches a ledger record.
 ├── loop.py            ServeLoop (the scheduler; NOT the composition root); Tick (concrete, final run() walking TICK_PHASES,
 │                      ten overridable phase methods); lifecycle states; exit codes
 ├── ids.py             IdSource ABC + ReleaseIdSource + RecordedIdSource — its own module because Recording holds an
 │                      id_source, so compose.py would otherwise have to import loop.py while loop.py imports compose.py
-├── leg.py             LegPipeline (concrete; final run() walking LEG_STEPS, eight step methods); LegBindings;
+├── leg.py             LegPipeline (concrete; final run() walking LEG_STEPS, eight step methods; step (4) is the
+│                      §6 guard_state producer §5.5 promised); LegBindings;
 │                      LegEvaluation; LegResult; Authority ABC + SimulatedAuthority + LiveAuthority +
 │                      ReductionAuthority (closed to core, no registry); ActPermit minting
 ├── bundles.py         the seven frozen collaborator dataclasses (Schedule, Data, Decision, Safety, Execution,
 │                      Recording, Observability) — their own module because LegPipeline takes six of them as
-│                      constructor arguments and is built before compose
+│                      constructor arguments and is built before compose — plus Invocation{armed, env_release_hash,
+│                      once, max_ticks}, which Safety carries and __main__ builds from the flags and the environment
 ├── compose.py         AuthorityTable; bundles_for(): the closed rung → collaborator table; the one module
 │                      that may read a rung
-├── outcomes.py        [phase 2] outcome join (settlements, strict forward as-of), supersede chain, as-of cut
-├── report.py          [phase 2] attribution, calibration, drawdown, replay parity diff, markdown/JSON emitters
+├── outcomes.py        [phase 2] Outcome + DecidedLeg join; forward_asof() (the one strict-forward rule);
+│                      standing_outcomes() (the one supersede-chain-head rule, which readiness.py's outcome
+│                      evidence reads too); OutcomeSource ABC
+│                      + SettlementOutcomes + LabelOutcomes + OUTCOME_SOURCE_KINDS; OutcomeJoin (collect/record/
+│                      current_outcome/as_of) — §5.13.2
+├── report.py          [phase 2] Report (attribution/calibration/value_curve/view/render/now_ms, each
+│                      section taking the as-of cut); murphy_terms; classify_field + DIVERGENCE_FIELDS
+│                      (a table keyed on field name, not a branch); Tape (a bundles.ReplayTape) + Replay
+│                      + ParityDiff; ReportView; ReportEmitter ABC + MarkdownReport + JsonReport;
+│                      parity_view — §5.13.3. The five VALUE OBJECTS (Attribution, CalibrationReport,
+│                      ValuePoint, Divergence, ParityReport) live in records.py with every other one
 ├── readiness.py       Readiness(document, release); ReadinessResult; readiness_digest; release-bound checklist →
-│                      GO / NO-GO; required for live
+│                      GO / NO-GO; required for live; [phase 2] Evidence ABC + EVIDENCE_RULES (the module-level
+│                      table §5.13.4 resolves an evidence name against, keyed exactly by vocab.READINESS_EVIDENCE)
+│                      + EVIDENCE_KNOBS + OutcomeCoverage / OutcomeFreshness / CalibrationCurrent — §5.13.4
 ├── libs/
 │   ├── __init__.py
-│   ├── sqlite.py      [phase 2] SqliteLedger (WAL + synchronous=FULL pinned; append-only triggers)
-│   └── parquet.py     [phase 2] RunReference over the run's predictions parquet (pyarrow inside the method)
-│                      (sqlite.py also introduces LEDGER_KINDS, the registry `Ledger` has no need of until then)
+│   ├── sqlite.py      [phase 2] SqliteLedger over ChainLedger — WAL + synchronous=FULL PINNED (durability.fsync
+│   │                  grades the barrier cadence, never the pragma), three append-only triggers (no UPDATE, no
+│   │                  DELETE, and an INSERT only at the tail chained to the head), rotate refused, params refused;
+│   │                  registers `sqlite` into ledger.py's LEDGER_KINDS — §5.8.2
+│   ├── parquet.py     [phase 2] RunReference over the run's predictions parquet, registered as `run` in
+│   │                  REFERENCE_KINDS; pyarrow inside the method — §5.10.2
+│   ├── exchange_calendars.py  [phase 3] ExchangeCalendar — the published schedule materialised once into the
+│   │                  WeeklySessions session list, with a data_digest bound into the release — §5.1.1
+│   ├── prometheus.py  [phase 3] PrometheusSink over metrics.py's MetricSink seam — §5.11.3
+│   └── opentelemetry.py  [phase 3] OtelSink over the same seam — §5.11.3
 ├── README.md          what it does, how to write a serve document, how to build an executor / proposer / measure / guard / monitor / sink; tree
 ├── AGENTS.md          package-scoped design, safety and testing instructions; tree
 └── CLAUDE.md          conventions, extension points, gotchas; tree
@@ -2553,8 +4464,10 @@ tests/production/
 │                          both subclasses a seam and reaches a private name of another module
 ├── test_base.py           ProductionError accumulates every problem into one raise; canonical_bytes/record_hash pinned against
 │                          the §6 envelope recipe; ms/UTC helpers reject naive datetimes
-├── test_vocab.py          every vocabulary closed; the severity level map pinned; lattice order pinned; a completeness test scans
-│                          §5–§7 for `∈ {…}` literals and fails if any closed set is not defined in vocab.py
+├── test_vocab.py          every vocabulary closed; the severity level map pinned; lattice order pinned; a completeness test
+│                          carries its own restated list of §8's closed-set names and fails if any is not defined in
+│                          vocab.py (the prose scan of §5–§7 for `∈ {…}` literals lives in check_plan.py, since a shipped
+│                          test must not read this document — §5.16)
 ├── test_document.py       default-deny; required series UUID/rung/execution scope; arm rung equality; golden identity; non-identity exclusion; round trip
 ├── test_release.py        all release inputs and expected execution scope bound; mutation/source/runtime/distribution drift refuses; exact non-identity paths
 ├── test_records.py        Decimal/non-finite; ExecutionScope; canonical Intent/ActPermit; readiness/input/quote/evidence/risk values; quantity invariant
@@ -2569,7 +4482,8 @@ tests/production/
 │                          registry classification; entry dominance; ReleaseReader/no-direct-I/O; frozen binding; evaluate → candidates/quotes/account/propose
 ├── test_guards.py         one refusal per knob; lattice composite = max; every finding carries value/bound/reason; include_working; calendar
 │                          windows; amend never exceeds bound; hypothesis: day_loss halts before the period loss exceeds bound − max single loss;
-│                          cancels bypass the chain
+│                          cancels bypass the chain; [phase 2] approve_hold answers the released body, refuses a pair holding nothing /
+│                          an undeclared guard / an expired hold, and GRANTS NOTHING — the next proposal on that scope runs the whole chain
 ├── test_breaker.py        persisted trips with request/proof ids; authenticated/barriered reduce/reset; resume requires a fresh arm; halt cancel outcomes
 ├── test_arming.py         maker-checker; verifier construction/fingerprint; exact-intent scope application; reduction rights/use replay; tighten-only; expiry
 ├── test_verifier.py       frozen-input rehash with no reread; every bound version/digest mismatch returns not_sent;
@@ -2587,7 +4501,10 @@ tests/production/
 │                          every duration/count/calendar × scope-key evidenced; monotonic source tokens; risk versions/digests; corrections; freshness; reducing proof
 ├── test_coordination.py   expected/authenticated/lease/gateway scope equality; cross-release contention; fencing; stale renewal disables submit
 ├── test_control.py        caller UUID retry vs repeat; sole writer; HALT; normal-exit journal rows; SIGKILL gap reported; flatten recovery
-├── test_resilience.py     ambiguous writes; retry cap; reserved cancel lane; bounded cancel_all 429/timeout/query/reconcile behavior
+├── test_resilience.py     ambiguous writes; retry cap; reserved cancel lane; bounded cancel_all 429/timeout/query/reconcile behavior;
+│                          [phase 2] sign returns new objects and mutates neither argument; refuses on a stale probe and on excess
+│                          skew in BOTH directions; a bound finer than the time source refuses at construction; the key never
+│                          reaches a header, a message or a log line; `hmac` plus a time_url signs with no subclass
 ├── test_ledger.py         chain/idempotency; genesis prev_hash of 64 zeros; torn tail recovered; an edit/delete/insert/reorder
 │                          located by verify() -> first_bad_seq; rotation continuity across segments for each rotate.by;
 │                          checkpoint atomicity under a crash subprocess mid-batch; no float in any money field;
@@ -2613,7 +4530,11 @@ tests/production/
 │                          each step barriers before its effect; a crash cut after every barrier; cumulative reservations
 │                          across legs; Authority polymorphism — shadow/paper mint without writing, live appends
 │                          authorization, reduction appends authority_use first; no `rung ==` or `mode ==` branch in leg.py (AST) — the name
-│                          appears, since LegBindings carries a rung; branching on it is what is forbidden
+│                          appears, since LegBindings carries a rung; branching on it is what is forbidden;
+│                          §5.5's producer: a holding guard appends ONE guard_state, before the decision_plan and inside
+│                          its barrier; the id names the HOLD, so a replayed append dedups in a real store; a second leg
+│                          re-appends nothing; a restart still holds and an expired hold stops refusing; and
+│                          approve-hold releases a hold a REAL guard produced, which a restart does not resurrect
 ├── test_bundles.py        each bundle is frozen and validates presence and arity only — never types, since type validation
 │                          would import fourteen later modules and re-create the cycle bundles.py exists to break
 ├── test_ids.py            deterministic tick/leg/plan/client ids from stable semantic inputs; independent of wall time and
@@ -2621,9 +4542,35 @@ tests/production/
 ├── test_loop.py           per-key/quote/evidence deadlines; bound-state change at each barrier; cumulative risk; durable findings;
 │                          final verify/call refusal, acknowledged external race, crash cuts; one action/client ref
 ├── test_main.py           release, control proofs, normal-exit mutating-verb journal rows, hard-kill gap reporting, queued receipts, recovery verbs, no semantic overrides
-├── test_outcomes.py       [phase 2] forward join strictness (hypothesis: label asof > decided_at); vintage reproducibility; supersede chain
-├── test_report.py         [phase 2] IS components sum; Murphy terms sum to Brier; BSS of baseline vs itself = 0; parity diff classes
-└── test_readiness.py      release binding; unwaivable foundation items; live refuses without GO; NO-GO exits 5; waivers
+├── test_outcomes.py       [phase 2] forward join strictness (hypothesis: label asof > decided_at, never >=); vintage
+│                          reproducibility — as_of(T) is byte-identical when re-asked after later arrivals; supersede chain,
+│                          and a second supersession of one record refuses; known_at_ms comes from the run's one instant, so a
+│                          replayed collect dedups instead of refusing; every OUTCOME_KINDS member has a producing source
+├── test_report.py         [phase 2] IS components sum to shortfall exactly in Decimal (asserted, never back-derived); Murphy
+│                          terms sum to Brier on the exact stratification and the SAME data binned does not; BSS of a baseline
+│                          against itself = 0; a missing markout is None, never 0; external cash flows never enter cumulative;
+│                          every DIVERGENCE_CLASSES member is reachable and an unclassified field falls to nondeterminism; the
+│                          markdown emitter escapes a pipe in every cell; Tape.from_ledger refuses each incomplete tick; a REAL
+│                          recorded two-tick serve replays clean, leaves the original head unmoved, and `report` answers while a
+│                          serve process holds the writer lock
+└── test_readiness.py      release binding; unwaivable foundation items; live refuses without GO; NO-GO exits 5; waivers;
+                           [phase 2] a provisional calibration verdict is not evidence, and neither is an insufficient one;
+                           a fake name added to EVIDENCE_RULES resolves (the TABLE drives it, not a branch); coverage and
+                           freshness each catch what the other misses (a stopped feed with a long window passes coverage
+                           and fails freshness); an empty window proves nothing; a cited name whose document knob is
+                           absent REFUSES rather than recording a NO-GO
+
+tests/production_libs/     [phase 2/3] the tier-2 packs, beside tests/pipeline_libs and tests/assets_libs
+├── test_sqlite.py         [phase 2] the §5.8 chain contract run against SqliteLedger as a CONFORMANCE battery — the same
+│                          records folded through both stores give the same seqs, envelopes, hashes, scan results and
+│                          first_bad_seq; WAL + synchronous=FULL cannot be lowered by any document key; UPDATE, DELETE and a
+│                          non-tail INSERT refuse at the STORE, asserted through a connection the package never opened; a
+│                          document declaring rotate, or a non-empty durability.ledger.params, refuses at plan
+├── test_parquet.py        [phase 2] RunReference reads once and lazily, add() ignores and a window roll never moves the
+│                          anchor, a missing column and a run scored by several nodes both refuse at sample()
+├── test_exchange_calendars.py  [phase 3] the materialised schedule answers identically to an equivalent WeeklySessions; a moved
+│                          holiday changes data_digest and therefore refuses under a fixed release
+└── test_prometheus.py / test_opentelemetry.py  [phase 3] a raising sink is counted and never fails a flush
 
 examples/production/
 ├── serve-shadow.json      the synthetic run served at shadow — the 60-second path
@@ -2643,6 +4590,9 @@ class SubgraphRunner:
     def __init__(self, the_plan, needed, node_outputs, splits_info, prev, policy=None)
     def rerun(self, overrides, outputs, ctx, prev_bindings, *, guard_verdicts=False)
         -> (outputs, reran_keys, seconds)
+    def run_keys(self, keys, outputs, ctx, prev_bindings)
+        -> (outputs, ran_keys, seconds)
+def apply_param_override(params, node_key, path, value)   # was private
 
 # dskit/pipeline/policy.py  (new module)
 class ExecutionPolicy(ABC):
@@ -2692,6 +4642,20 @@ carries all three:
   seam must keep the declared-node check first (`driver.py:507-511` today):
   `Plan.role_of` indexes `resolved[key]`, so testing unsearchability before
   declaredness would raise `KeyError` where today it raises `ValueError`.
+- **`run_keys` is the base pass's verb, and `rerun` is search's.** Serving's
+  immutable base pass has no overrides at all — it executes the pure and
+  approved-`release_read` keys of `needed` that are neither the entry nor its
+  descendants — and `rerun`'s subgraph is `order ∩ needed ∩ dirty`, which is
+  empty without an override. Rather than pass a sham override to make the
+  subgraph non-empty, `run_keys(keys, outputs, ctx, prev_bindings)` walks the
+  given keys in plan order through the identical node lifecycle and returns the
+  identical triple; an undeclared key raises `ValueError` naming it, and a
+  deferred key with no seeded output raises rather than silently skipping.
+  `apply_param_override` becomes public for the same reason `SubgraphRunner`
+  does — `serving_document` applies search winners with it, and a second copy
+  of the existing-path-only rule is exactly the duplication root `CLAUDE.md`
+  forbids. Exactly one function definition survives the rename; the private
+  spelling stays as an alias only while a pipeline test imports it.
 - **`rerun` honours `policy.defer(key)`.** `_execute` computes `dirty` from the
   override targets plus their descendants, and serving's only override
   addresses the entry — so a naive extraction would re-run the entry and take a
@@ -2742,7 +4706,9 @@ and declares
 beside it — the vocabulary lives pipeline-side because pipeline may not
 import production, and production reads it from there rather than restating
 it in its own `vocab.py`. `TrainableNode` returns `release_read` only for a
-manifest-pinned load; `libs/observations.py:ObservationRows` returns
+manifest-pinned load on a class that declares `serving_load_audited = True`
+(the family default is `False`, so an unaudited trainable stays `forbidden`
+even under a pinned load); `libs/observations.py:ObservationRows` returns
 `entry_read`; every audited deterministic built-in used by the serving e2e
 explicitly returns `release_read` or `pure`. `RecordedOutputs` is production-owned
 (§8) and is classified by the same closed API when the decider substitutes it,
@@ -2753,10 +4719,73 @@ registered class in `kinds_*.py` and `libs/*.py` stays `forbidden` by the
 fail-closed default until reviewed. That means a phase-1 serve document can
 only use nodes from the audited set, which is a real limitation and is stated
 in §2's scope. Widening the set is incremental and needs no ADR: each class
-gains an override and a registry-enumeration test line. Registry-enumeration tests in `tests/pipeline/` pin
+gains an override and a registry-enumeration test line.
+
+**Phase 2b — the widening procedure, per class, in this order.** (1) Read the
+class's LOAD path end to end and prove every read reaches the artifact through
+`Node.read_artifact_text` / `read_artifact` — no `open(`, no `os.`/`io.`, no
+socket, no library file API, in `run_load` or anything it calls; a library
+deserialiser that takes a PATH fails this step and the class stays
+`forbidden` until it takes bytes. (2) Set `serving_load_audited = True` on
+the class (a `TrainableNode`), or override `serving_effect` to `pure` /
+`release_read` (anything else). (3) Add its line to the registry-enumeration
+test in `tests/pipeline/test_serving_effect.py`, asserting the classification
+under LOAD evidence AND under no evidence, and add it to the AST no-direct-I/O
+list. (4) Re-run the whole pipeline suite and the 20 pinned sha256 literals;
+none may move, since a `serving_effect` override is a classmethod and touches
+no identity. The candidates, easiest evidence first: the remaining
+`fitted.py` fitted transforms; the pure row shapers in `kinds_table.py` and
+`kinds_flow.py`; `kinds_stats.py`'s tests; then the `libs/` trainables —
+`SklearnFit`, `SklearnPredict`, `SklearnSelect`, `TorchTrain`, `TorchPredict`
+and `DeclaredTrain` — which are LAST because each loads through its own
+library's deserialiser and step (1) has to reach into that call, which is why
+R16 leaves every one of them `forbidden` under load evidence until then.
+`kinds_report.py`, `kinds_search.py` and every writing node stay `forbidden`
+permanently: a node that writes is not servable at any width. Registry-enumeration tests in `tests/pipeline/` pin
 every classification and prove the classmethod performs no I/O. The derived
 serving document drops splits. The configured entry-window override must address
 an existing full param path; the standard override rule is unchanged.
+
+**What the phase-2b round actually found (2026-09-06), because four of the
+candidates above were named on an assumption the code does not bear out.**
+
+- **The first two candidates are empty sets.** `fitted.py` holds exactly three
+  concrete classes and phase 1 classified all three (`ApplyTransform` `pure`,
+  `Standardize` and `FeatureSelector` `release_read`); `FittedTransform` is the
+  abstract base and stays unaudited by R16's own argument. `kinds_flow.py`'s six
+  row shapers are ALREADY `pure`. `kinds_table.py` has no pure row shaper at
+  all: `TableFile` reads with a bare `open(path, "rb")` and the `FileWrite`
+  family writes. Nothing remained to widen in either.
+- **`kinds_stats.py` splits.** `StatTest.run` never touches `ctx` and its call
+  graph (`stats.py`: `hashlib`, `math`, `random`) names no I/O primitive, so it
+  is now `pure`. `Validate` is NOT, and the reason is not I/O: `run` branches on
+  `ctx.splits`, which is neither an input nor a param — and the serving
+  derivation DROPS the splits section, so a served `Validate` would silently
+  score every record while its params still declare a `split`. That is the exact
+  train/serve divergence this seam exists to prevent, so it stays `forbidden`.
+  **Step (1) is therefore necessary but not sufficient for a `pure`
+  classification: a class that reads any `ctx` field the derivation drops is
+  `forbidden` however clean its I/O.** The registry-enumeration test now asserts
+  this directly (`test_a_pure_classs_run_reads_no_context_field`).
+- **The `libs/` claim is wrong for the two `FeatureSelector` members.**
+  `SklearnFit`, `SklearnPredict`, `TorchTrain`, `TorchPredict` and
+  `DeclaredTrain` do load through a path-taking deserialiser
+  (`joblib.load(artifact)`, `torch.load(state_path, ...)`, each behind a bare
+  `open()` of the sidecar) and stay `forbidden`. `SklearnSelect` and
+  `TorchImportance` do NOT: they override only FIT-path members, so their
+  restore IS `FittedTransform.run_load` -> `_sidecar` -> `Node.read_artifact`,
+  and the state is a JSON column list, never a pickled model. Both are now
+  audited `release_read` — with the flag stated on each class, never inherited,
+  so a member that ever overrides the load path loses the licence by default.
+  (`TorchImportance` is not in the list above; it is `SklearnSelect`'s twin and
+  the deciding read is the same source text.)
+- **`kinds_banking.py` is missing from the candidate list and should be its
+  next entry.** Its module names no I/O primitive and no `ctx` access at all,
+  and its `Eligibility` (`gate`) / `EventBank` (`accrual`) are the real-kind
+  twins of `SynthEligibility` / `SynthBank`, which phase 1 classified `pure`.
+  They were left `forbidden` only because the serving e2e did not need them
+  (SEAM-DESIGN §5's "only if the e2e needs them"). `BankingReport` writes and
+  stays permanently `forbidden` with the other report nodes.
 
 The immutable base pass constructs only `pure` nodes and approved
 `release_read` fingerprints. Such nodes receive a `ReleaseReader` capability
@@ -2773,6 +4802,15 @@ behavior-neutral, and existing search suites and all pinned identities must stay
 unmoved — specifically `tests/pipeline/test_driver.py` and
 `tests/pipeline/test_kinds_search.py` must pass untouched, and this ADR adds
 **no new params and no grammar change** to the pipeline document.
+
+`dskit/pipeline/runs.py`: give the markdown cell renderer a public name.
+`_render_cell` / `_escape_pipe` already carry the rule that a raw `|` ends a
+cell, and `driver._md_cell` already takes it from there rather than restating
+it; `report.py` (§5.13.3) is the third caller and lives in another package, so
+it needs `render_cell` public. Behaviour is unchanged and the private spelling
+stays as an alias — production may not import a private pipeline name
+(`tests/production/test_purity.py` fails it), and a fourth copy of an escaping
+rule is exactly the duplication root `CLAUDE.md` forbids.
 
 `dskit/pipeline/libs/observations.py`: replace the locator-only proposal with
 `ObservationRows.serving_contract(params, verified_run_evidence)`, a pure method
@@ -2819,6 +4857,20 @@ superseded by ADR-0090 with its constraints listed as satisfied), `pyproject.tom
 `per-file-ignores` entries), `docs/architecture/decision-log.md` (ADR-0090,
 ADR-0091).
 
+Phase 2 adds `tests/production_libs/` to the layout tree in root `CLAUDE.md`
+and `AGENTS.md` (beside `tests/pipeline_libs` and `tests/assets_libs`), the six
+new verbs to the commands block, and `pyarrow` to the extras `libs/parquet.py`
+needs — already an extra the assets packs declare, so the entry is a marker,
+not a new dependency; `sqlite3` is stdlib and adds nothing. Phase 3 adds the
+`exchange-calendars`, `prometheus-client` and `opentelemetry-sdk` extras, and
+its own ADR for the onboarding backoff migration (Appendix C). Two
+corrections from the build: the OTLP EXPORTERS are separate distributions
+from the SDK, so the extra names `opentelemetry-exporter-otlp` too — a sink
+with no exporter exports nothing — and all three library names join
+`dskit/pipeline/conformance.py`'s `DEFAULT_BLOCKED_IMPORTS`, without which
+the purity gate's behavioural half checks the three new packs only
+statically (the tuple is a list of names to BLOCK, never a dependency).
+
 ## 10. Test plan (TDD)
 
 Order per module: the Opus test author writes `tests/production/test_<module>.py`
@@ -2852,6 +4904,79 @@ the "every selector names a registry" assertion of §4.3 belongs to
 `test_main.py`, which runs after them — `test_document.py` asserts shape,
 default-deny and identity only.
 
+**Phase 2 continues the same order, and each placement has a reason.**
+`outcomes` first, because it follows `reconcile` (whose `LedgerHistory` it
+extends with `legs`/`outcomes` rather than learning to scan the ledger itself)
+and `records` (which gains `Outcome` and `DecidedLeg`), and because three later
+modules read it. → `libs/parquet`, after `monitors`, whose `Reference` seam it
+registers `run` into and which must exist before a member of its family can.
+→ the phase-2 `monitors` families, after `outcomes`, since `OutcomeMonitor`
+pairs `decision` legs with `outcome` bodies and cannot be written against a
+record kind that has no producer. → `libs/sqlite`, after `ledger` (the ABC and
+`LEDGER_KINDS` it implements) and after `state`, because its conformance run
+folds the same records through the same `apply`. → `resilience`'s `Signer`,
+which adds no dependency and only has to precede `executor`, its one caller.
+→ `alerts` / `health` phase 2, after `state`, which gains the
+`silences()`/`alert_acks()` accessors the router reads, and after `control`,
+which carries the three new authenticated purposes. → §5.13.4's outcome-readiness evidence and §5.5.1's `approve-hold`, which the
+first draft of this order left unplaced. The evidence follows BOTH `outcomes`
+(it reads the same standing-head rule over the same `LedgerHistory`) and the
+phase-2 `monitors` (it reads a `Calibration` verdict out of the fold), and it
+inverts phase 1's `readiness` → ... → `monitors` order, which is legal because
+the dependency is new in phase 2 and acyclic: nothing in `outcomes` or
+`monitors` reads `readiness`. `approve-hold` follows `state` (the fold gains
+the `released` kind) and `control` (which carries the new authenticated
+purpose), and both force their handler in `compose` and their verb in
+`__main__` in the same unit — a purpose with no handler is an operator act
+that vanishes into a receipt.
+→ `report` LAST, because
+it reads `outcomes`, the phase-2 monitors, `compose` and `loop` — its parity
+diff runs a whole recorded loop, so nothing it depends on may still be moving.
+→ then `__main__`'s six phase-2 verbs, then docs.
+Phase 2b touches only `tests/pipeline` and the audited classes'
+`serving_effect` overrides, so it has no place in this order at all; it is a
+per-class procedure (§9.1) that can run at any time after phase 1.
+**Phase 3:** `libs/exchange_calendars` after `sessions` (it materialises into
+that module's session list); `metrics`'s `MetricSink` seam, then
+`libs/prometheus` and `libs/opentelemetry` after it, since a pack cannot
+register into a registry that does not exist; `feed`'s `StreamFeed` after both
+`feed` and `resilience`, because its reconnect policy is a `Retry`.
+
+**What the phase-3 round actually found (2026-09-06).** The per-item
+corrections are in §5.11.3 and §5.2.1; three findings are about the ORDER
+and the scope rather than a single seam.
+
+- **A pack is not reachable until its document key exists.** The metric
+  exporters registered into a family no document could name, because
+  §4.1's `placement` had no `metric_sinks` key. The grammar entry,
+  `compose.py`'s subscription and §4.3's family list belong in the SAME
+  unit as the packs — a registered kind with no selector site is a pack
+  nobody can switch on.
+- **The migration item is not the same size as the other three.**
+  Appendix C's option (a) — graduate the policy into `dskit/onboarding/`
+  and re-export — meets three obstacles its draft does not name: the
+  onboarding purity gate forbids `dskit.pipeline`, from which `Retry`
+  takes its default-deny and int checkers; five closed vocabularies would
+  leave `vocab.py`, whose §5.0 home rule is asserted by a test that also
+  forbids `vocab.py` importing anything but stdlib; and the classes raise
+  `ProductionError`, which an onboarding module cannot, so the draft's
+  "no production test moves" is false. Its ADR is written and PROPOSED
+  (ADR-0101 — 0092 through 0100 were taken by the child's decisions while
+  phase 3 waited), and the migration waits for the owner, per root
+  `CLAUDE.md`: a proposal is not an approval. A narrower first step is
+  offered in the ADR — one `backoff` and one `retry_after` owned by
+  `dskit/onboarding/connector.py`, beside the `MAX_BACKOFF_S` it already
+  owns, which deletes the six copies with every gate green.
+- **A refusal test whose subject can be audited away has a shelf life.**
+  Phase 2b's carry-over (`kinds_banking.py`'s `Eligibility` and
+  `EventBank`, now `pure`: neither `run` touches `ctx`, every field read
+  goes through `kinds_flow._field`, and `BankingReport` is the module's
+  only `ctx` reader — a write — so it stays permanently `forbidden`) broke
+  `test_a_needed_forbidden_node_refuses`, which had used `eligibility` as
+  its forbidden subject. It now uses a WRITING node, which §9.1 forbids
+  permanently. Widening the audited set is exactly the kind of change that
+  finds tests resting on the fail-closed default.
+
 Invariants every phase must keep green: the four existing purity gates
 (`tests/{assets,journal,onboarding,pipeline}/test_purity.py`) and the new one; every pinned identity hash unmoved (the 20 sha256 literals pinned
 across `tests/`); the full
@@ -2874,9 +4999,9 @@ their own deterministic chain assertions.
 | phase | lands | model |
 |---|---|---|
 | 1 — foundation | every module in §8 not marked phase 2, including the full authority stack (`arming.py`, `coordination.py`, `readiness.py`, `LiveExecutor`, `LiveAuthority`, `ReductionAuthority`) and all four rungs; ADR-0091, every §7 verb not marked phase 2, README/AGENTS/CLAUDE, examples, skeleton, doc updates | tests: Opus · code: Fable · review: Opus |
-| 2 — evidence | `outcomes`, `report`, `replay` verb, outcome-readiness evidence, Outcome + Parity monitor families, DDM/ADWIN/JS/Linf, alert inhibition/silences/escalation/ack + sqlite state, systemd heartbeat, `libs/sqlite.py`, `libs/parquet.py`, `Signer`, the `approve` verb for `hold` | tests: Opus · code: Opus · review: Opus |
-| 2b — audit | classify the remaining registered `kinds_*.py` / `libs/*.py` classes for `serving_effect`, widening what a serve document may reference | Opus |
-| 3 — packs | `exchange_calendars`, `prometheus`/`opentelemetry` sinks, the stream seam, migrating onboarding packs onto `resilience.py` (own ADR) | Opus |
+| 2 — evidence | `outcomes.py` (§5.13.2) · `report.py` and the `replay` verb (§5.13.3) · outcome-readiness evidence (§5.13.4) · the Outcome and Parity monitor families and DDM/ADWIN/JensenShannon/LInf (§5.10.1) · alert inhibition, silences, escalation and `ack` (§5.11.2) · the systemd heartbeat (§5.11.2) · `libs/sqlite.py` (§5.8.2) · `libs/parquet.py` (§5.10.2) · `Signer` (§5.12.1) · `approve-hold` (§5.5.1) · the six §7 verbs and the two optional §4.1 sections | tests: Opus · code: Opus · review: Opus |
+| 2b — audit | classify the remaining registered `kinds_*.py` / `libs/*.py` classes for `serving_effect` by the four-step procedure in §9.1, widening what a serve document may reference; touches only overrides and `tests/pipeline`, so it can run at any time after phase 1 | Opus |
+| 3 — packs | `libs/exchange_calendars.py` (§5.1.1) · the `MetricSink` seam and `libs/prometheus.py` / `libs/opentelemetry.py` (§5.11.3), with the `placement.metric_sinks` grammar key they are selected by · the `websocket` stream seam (§5.2.1) · phase 2b's `kinds_banking.py` carry-over · the onboarding backoff migration, written as ADR-0101 and left PROPOSED rather than implemented (see §10) | Opus |
 
 Per the owner: no Fable after the initial plan and build.
 
@@ -3026,12 +5151,26 @@ dskit/production/
   outcomes.py       [phase 2] bitemporal outcome join, supersede chain, as-of cut
   report.py         [phase 2] attribution, calibration, drawdown, replay parity diff
   libs/__init__.py  pack namespace
-  libs/sqlite.py    [phase 2] SqliteLedger
+  libs/sqlite.py    [phase 2] SqliteLedger; registers `sqlite` into ledger.py's LEDGER_KINDS
   libs/parquet.py   [phase 2] RunReference over the run's predictions parquet
+  libs/exchange_calendars.py  [phase 3] ExchangeCalendar into CALENDAR_KINDS
+  libs/prometheus.py          [phase 3] PrometheusSink into METRIC_SINK_KINDS
+  libs/opentelemetry.py       [phase 3] OtelSink into the same registry
   README.md / AGENTS.md / CLAUDE.md
 tests/production/   purity + oop + every module above + a shadow/paper/live_limited e2e
+tests/production_libs/  [phase 2/3] the tier-2 packs
 examples/production/ serve-shadow.json, serve-paper.json, calendar-weekly.json
 ```
+
+**Phases.** Phase 1 lands every module above not marked `[phase 2]` /
+`[phase 3]`, all four rungs and the whole authority stack. Phase 2 adds
+outcomes, reporting and replay parity, the outcome and parity monitor families,
+alert inhibition/silences/escalation/`ack`, the systemd heartbeat, the sqlite
+and parquet packs, the `Signer` and the `approve-hold` verb; phase 2b widens
+the audited `serving_effect` set; phase 3 adds the calendar and metric-sink
+packs and the streaming feed. Phases 2 and 3 are specified to the same
+buildable standard as phase 1 in the proposal's §5, so no phase begins by
+inventing contracts.
 
 **Consequences.** Children stop owning loops: a child ships an executor subclass,
 accounting, approval and fenced-lease implementations, optionally a
@@ -3069,4 +5208,80 @@ metadata for source binding, explicit entity keys, event time and digest recipe 
 serve-document field pinned by `plan`, not contract output. Dedupe keys are not
 treated as a universe. Pipeline never imports production. Release-bound child code remains a
 declared trusted boundary, backed by code fingerprints and no-direct-I/O tests.
+````
+
+## Appendix C — ADR-0092 draft (phase 3): the onboarding packs' backoff moves onto `resilience.py`
+
+The owner's ruling is that this migration carries its own ADR. This is the
+draft text; it is proposed only when phase 3 starts, and its number is
+whatever is next free in the log at that time.
+
+**Landed as ADR-0101** (2026-09-06): 0092 through 0100 went to the child's
+decisions while phase 3 waited. The entry in the log is this draft plus the
+three obstacles the build found — the pipeline firewall, the vocabulary
+home and the error type (see §10) — and it is `proposed`, so the packs
+still carry their copies. The draft's "no production test moves" is the one
+sentence the log entry contradicts outright.
+
+````
+## ADR-00XX — The onboarding connector packs retry through `dskit.production.resilience`
+
+**Status:** proposed (phase 3 of ADR-0090)
+
+**Context.** Six connector packs under `dskit/onboarding/libs/` each hand-roll
+the same retry: an attempt counter, an exponential delay, a cap read from
+`connector.MAX_BACKOFF_S`, and — in three of them — a numeric `Retry-After`.
+`kalshi.py` has a private `_backoff(attempt)` and `_retry_after(headers,
+fallback)`; `restapi.py` inlines `time.sleep(min(_BACKOFF * 2 ** (attempt - 1),
+MAX_BACKOFF_S))` at its one call site. The cap has one owner, which is why
+`resilience.py` imports it rather than declaring a second ceiling, but the
+POLICY around it is copied. Root `CLAUDE.md`'s rule is explicit: a function is
+never repeated across modules, and the second copy is the bug. The copies have
+already diverged on jitter (none of them jitters), on which outcomes retry, and
+on whether an ambiguous write may be retried at all — which for an acquisition
+is harmless and for a submit is not, and a shared policy object is how the two
+stop being different in the first place.
+
+`dskit.production.resilience` already owns the whole policy as pure stdlib
+objects with an injected clock, sleeper and rng: `Classifier` (`ok |
+transient | throttled | fatal | ambiguous`), `Retry` (full-jitter, a capped
+`Retry-After`, a token budget, and `decide(attempt, kind, is_write) ∈ {retry,
+give_up, reconcile}`), `CircuitBreaker` per scope, `RateLimiter` with reserved
+lanes, and `Transport`.
+
+**Decision.** The packs call it. `Retry` and `HttpClassifier` move from
+`dskit/production/resilience.py` to a place both packages may import, and the
+packs delete their private backoff helpers.
+
+The direction of the dependency is the whole decision, and there are exactly
+two ways to have it:
+
+- **(a) Graduate the policy into `dskit/onboarding/`** — a new
+  `dskit/onboarding/resilience.py` owning `Classifier`, `Retry`,
+  `CircuitBreaker`, `RateLimiter` and `Transport`, which
+  `dskit/production/resilience.py` then re-exports. Production may import
+  onboarding (its purity gate allows it); onboarding may not import
+  production. This is the only direction the existing gates permit, and it
+  matches where `MAX_BACKOFF_S` already lives.
+- **(b) Leave it in production and let onboarding import it** — refused: it
+  inverts the package layering, breaks
+  `tests/onboarding/test_purity.py`, and would make a connector pack depend on
+  the serving layer to fetch a file.
+
+So (a). `dskit/production/resilience.py` keeps its module docstring, its
+document-shaped `resilience_from_document`, and re-exports the five classes, so
+every §5.12 contract and every production import site is unchanged and no
+production test moves.
+
+**Consequences.** One retry policy, one jitter rule, one `Retry-After`
+handling, one ceiling. Each pack's retry knobs (`retries`, `pace_s`) become the
+`Retry` params they already describe in prose, so a connector's documented
+behaviour and its code stop being two statements. The ambiguous-write rule
+reaches acquisition, where it is a no-op today and correct tomorrow if a
+connector ever writes. Existing onboarding tests that assert a wait sequence
+must be rewritten against the injected sleeper rather than a monkeypatched
+`time.sleep`, which is the migration's real cost and the reason it is a phase
+of its own rather than a cleanup. `MAX_BACKOFF_S` stays exactly where it is;
+nothing about acquisition identity, source config hashes or stored rows
+changes.
 ````

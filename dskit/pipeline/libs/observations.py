@@ -26,6 +26,7 @@ import math
 from dskit.pipeline.node import (
     DEFAULT_NODE_KINDS,
     Node,
+    ServingContract,
     check_int_param,
     reject_unknown_params,
 )
@@ -34,7 +35,9 @@ from dskit.pipeline.records import ASOF_FIELD
 __all__ = [
     "DEFAULT_TS_OUT",
     "DEFAULT_TS_UNIT",
+    "DIGEST_RECIPE_KIND",
     "NODE_KINDS",
+    "SOURCE_BINDING_KIND",
     "TS_UNITS",
     "ObservationRows",
     "register",
@@ -52,6 +55,13 @@ TS_UNITS = ("iso", "ms")
 #: so what this kind writes is what the split policies cut on.
 DEFAULT_TS_UNIT = "iso"
 DEFAULT_TS_OUT = ASOF_FIELD
+
+#: The two ``kind`` spellings the kind's serving contract carries
+#: (ADR-0091): what its ``source_binding`` binds — an onboarding stream —
+#: and the recipe a served snapshot is digested by. Named once, here, so
+#: the serving side imports the spelling rather than restating it.
+SOURCE_BINDING_KIND = "onboarding-stream"
+DIGEST_RECIPE_KIND = "stream-digest"
 
 
 def _ok_name(value):
@@ -83,7 +93,9 @@ class ObservationRows(Node):
         carrying it refuses, under either unit); ``shared_fields``
         (list of str, default ``[]``) — heavily repeated values to intern;
         ``since_ms`` (int >= 0, optional) — keep only rows at or after
-        this instant (needs ``ts_field``).
+        this instant (needs ``ts_field``). A document that will be SERVED
+        declares it as ``null``: the serving window is an override, and an
+        override may only address a param that already exists (ADR-0091).
 
     Examples
     --------
@@ -172,6 +184,99 @@ class ObservationRows(Node):
             if not params.get("ts_field") and "ts_field" in cls._PARAMS:
                 problems.append("since_ms needs a ts_field to compare against")
         return problems
+
+    # -- the serving classification (ADR-0091) ------------------------------
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: it IS the tick's one mutable read.
+
+        Parameters
+        ----------
+        params : dict
+            The declared params; unused — every observation read is the
+            entry's, whatever it declares.
+        verified_run_evidence : dict
+            The release's evidence; unused — no evidence makes a stream
+            read pure.
+
+        Returns
+        -------
+        str
+            ``"entry_read"``, always.
+        """
+        return "entry_read"
+
+    @classmethod
+    def serving_contract(cls, params, verified_run_evidence):
+        """Declare how a serving loop snapshots this stream — pure, document-blind.
+
+        Four facts, all read from the declared params and nothing else:
+        the source binding (``root``/``source``/``stream``), the ENTITY
+        projection (``key_fields`` with ``ts_field`` projected out — the
+        dedupe key may contain time, and an entity may not), the
+        event-time field rows carry (``ts_out``) and the digest recipe
+        (``key_fields``/``ts_field``/``ts_unit``, verbatim). No universe:
+        the serve document owns that, and a classmethod could only have
+        guessed it from the dedupe key.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params, as the document states them.
+        verified_run_evidence : dict
+            Unused — the contract is a fact about the declared stream.
+
+        Returns
+        -------
+        ServingContract
+            The declaration a serving loop snapshots and digests by.
+
+        Raises
+        ------
+        ValueError
+            When the source binding is not fully declared, when
+            ``ts_field`` is absent — no instant, no watermark, cannot
+            serve — or when projecting it out leaves no entity key.
+        """
+        binding = {name: params.get(name) for name in ("root", "source", "stream")}
+        blank = sorted(name for name, value in binding.items() if not _ok_name(value))
+        if blank:
+            # A subclass that PINS one of these narrows it out of `_PARAMS`
+            # and answers from its own hook, which a classmethod cannot
+            # reach: it owes the serving loop its own `serving_contract`
+            # rather than a binding with a hole in it.
+            raise ValueError(
+                f"observations: serving needs {blank} declared in params — the "
+                "contract binds the stream a tick reads, and a subclass that "
+                "pins one of them must supply its own serving_contract"
+            )
+        ts_field = params.get("ts_field")
+        if not _ok_name(ts_field):
+            raise ValueError(
+                "observations: serving needs a ts_field — without an event "
+                "instant no watermark can be drawn, so the stream cannot be "
+                f"the entry (got {ts_field!r})"
+            )
+        key_fields = list(params.get("key_fields") or ())
+        entity = tuple(f for f in key_fields if f != ts_field)
+        if not entity:
+            raise ValueError(
+                f"observations: key_fields {key_fields!r} name nothing but the "
+                "instant — projecting the time field out leaves no entity key, "
+                "and a served snapshot must identify entities across ticks"
+            )
+        return ServingContract(
+            source_binding={"kind": SOURCE_BINDING_KIND, **binding},
+            entity_key_fields=entity,
+            event_time_field=params.get("ts_out", DEFAULT_TS_OUT),
+            digest_recipe={
+                "kind": DIGEST_RECIPE_KIND,
+                "key_fields": key_fields,
+                "ts_field": ts_field,
+                "ts_unit": params.get("ts_unit", DEFAULT_TS_UNIT),
+            },
+        )
 
     # -- the vocabulary hooks a subclass fixes -----------------------------
 

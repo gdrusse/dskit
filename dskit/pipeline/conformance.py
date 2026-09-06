@@ -84,14 +84,22 @@ __all__ = [
 #: The purity gate's behavioural half blocks exactly this tuple while it
 #: imports every tier-2 pack, so a pack whose library is MISSING here is
 #: checked only statically — which is why ``mlflow`` is listed even though
-#: it backs a tracking sink rather than a node.
+#: it backs a tracking sink rather than a node, and why the three phase-3
+#: production packs' libraries (``exchange_calendars``,
+#: ``prometheus_client``, ``opentelemetry``) are listed too. The tuple is a
+#: list of library NAMES to block, never a dependency: nothing here imports
+#: them, and every purity gate in the repo reads this one list rather than
+#: keeping a second.
 DEFAULT_BLOCKED_IMPORTS = (
+    "exchange_calendars",
     "highspy",
     "matplotlib",
     "mlflow",
     "numpy",
+    "opentelemetry",
     "optuna",
     "pandas",
+    "prometheus_client",
     "pyarrow",
     "pyomo",
     "scipy",

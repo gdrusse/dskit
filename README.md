@@ -44,10 +44,12 @@ python -m dskit.pipeline run examples/pipeline/nodemap-minimal.json --asof 2026-
 python -m dskit.pipeline plan <doc.json>                          # resolved DAG, no execution
 ```
 
-Exit codes: **0** ran · **3** halted at a NO-GO gate (a halt is a result) ·
-**1** error. Identity = sha256 of the canonical JSON (`notes` stripped
-everywhere; `env`/`outputs`/`schedule`/`tracking` excluded — documentation and
-placement, never computation). Same hash, same experiment.
+Exit codes: **0** ran · **1** error · **3** halted (a NO-GO gate, a `validate`
+gated `block`, or a tripped serve breaker — a halt is a result) · **4** already
+running · **5** refused (a readiness NO-GO, or a control verb the series state
+forbids). Identity = sha256 of the canonical JSON (`notes` stripped everywhere;
+`env`/`outputs`/`schedule`/`tracking` excluded — documentation and placement,
+never computation). Same hash, same experiment.
 
 **Store** — a catalog governed by a model you declare:
 
@@ -80,6 +82,36 @@ python -m dskit.assets sync-published ./ob/published --store ./asset_store   # i
 
 Every record carries `(effective_date, acquired_at)` — what the data describes
 vs when you got it — and a declared `backfill`/`live` mode with its own cursor.
+
+**Serve** — run a fitted run forward on a cadence, and make moving money loud:
+
+```bash
+python -m dskit.production validate serve.json            # shape + the serve document's identity hash
+python -m dskit.production plan     serve.json            # the immutable release: run, artifacts, code, runtime
+python -m dskit.production ready    serve.json            # release-bound readiness GO / NO-GO (exit 5 = NO-GO)
+python -m dskit.production serve    serve.json --once     # one tick at the document's rung
+python -m dskit.production status   serve.json            # rung, breaker, health, last tick, pending refs
+python -m dskit.production verify   serve.json            # walk the hash chain; compare the head to the journal
+python -m dskit.production halt     serve.json --reason "spread blew out"
+python -m dskit.production outcomes serve.json            # join what happened onto every leg
+python -m dskit.production report   serve.json            # attribution, calibration, the value curve
+python -m dskit.production replay   ./serve/<series-id>   # re-run the tape; diff every field
+```
+
+The decision is a re-execution of the *same* nodes the backtest scored, from
+the run's own document — the loop reads configs, never restates them. Every
+tick writes one decision into a hash-chained append-only ledger; every
+proposal passes a declared guard chain before anything is sent. The four rungs
+— `shadow`, `paper`, `live_limited`, `live` — differ only by which objects were
+injected, and reaching a live venue additionally needs a recorded, expiring,
+independently authenticated maker-checker arm bound to the release hash. A
+child ships the venue executor, its accounting, its approval verifier and its
+fenced lease; dskit ships everything else. The series also scores itself:
+declared outcome sources join what happened onto each leg, `report` prints
+attribution and calibration at an explicit cut, `replay` re-runs the recorded
+tape through recorded objects and diffs every field, and a readiness checklist
+may require all of that before a live arm. See
+[production](dskit/production/README.md).
 
 **Journal** — every child action labeled; CSV store; generated markdown:
 

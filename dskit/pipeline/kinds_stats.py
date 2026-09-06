@@ -279,6 +279,31 @@ class StatTest(Node):
             if isinstance(inst, str) and inst not in weights:
                 problems.append(f"no weight for instrument {inst!r}")
 
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: ``"pure"`` — the bootstrap reads its scores and its knobs, nothing else (ADR-0091, phase 2b).
+
+        :meth:`run` never touches ``ctx``: the resampling is seeded from
+        ``(seed, instrument)`` and the family correction reads only the
+        p-values it just computed, so the verdict is a function of the
+        wired ``scores`` and this node's params. A served document that
+        would rather replay the training verdict than recompute one
+        declares ``serving.replay.stat_test`` instead.
+
+        Parameters
+        ----------
+        params : dict
+            The declared params; unused — the answer holds for every document.
+        verified_run_evidence : dict
+            The release's evidence; unused — a pure node needs none.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
+
     def run(self, ctx, inputs):
         alpha = self.params.get("alpha", 0.05)
         n_boot = self.params.get("n_boot", 10_000)

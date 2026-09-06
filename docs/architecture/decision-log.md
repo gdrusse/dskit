@@ -4264,7 +4264,7 @@ HFDR is a later MIO capital constraint. It does not replace Gate 3, and P11 does
 
 ## ADR-0090 — `dskit.production`: the production layer (serve, guard, act, record, monitor)
 
-**Status:** proposed (2026-09-04; Opus-reviewed; awaiting owner approval)
+**Status:** accepted (2026-09-06; built in full — phases 1, 2, 2b and 3, under TDD with a skeptic review per module and a consolidated pass over the whole package)
 
 **Context.** dskit runs documents in batch and has no seam for running a fitted
 model forward on a cadence. Two hand-rolled tier-3 forward loops exist:
@@ -4379,7 +4379,8 @@ defaults for this resubmission.
 
 ## ADR-0091 — The driver's subgraph re-execution is a public seam with a policy object
 
-**Status:** proposed (2026-09-04)
+**Status:** accepted (2026-09-06; built, with the pinned driver and search
+suites passing untouched)
 
 **Context.** `_SearchSeam._execute` already re-executes `needed ∩ dirty` under
 `"node.param.path"` overrides with the full node lifecycle, but it is private,
@@ -5260,7 +5261,7 @@ Bonferroni superior-set implementation, and tie-break order are judgemental.
 at H_i=10 emits h=1,...,10. Stocks do not share one global terminal horizon.
 No zoo execution is authorized by this decision.
 
-## ADR-0101 -- Replace the individualized zoo with two pooled challengers
+## ADR-0102 -- Replace the individualized zoo with two pooled challengers
 
 **Status:** Accepted, not locked (2026-09-05; owner approved)
 
@@ -5288,7 +5289,7 @@ removed; maximum-window smokes measured 4.71 GB for LightGBM and 5.33 GB for the
 float32 Torch path under a stricter 12 GiB cap. Execution remains separately
 inventory-gated.
 
-## ADR-0102 -- Add two frozen-Kronos pooled fusion challengers
+## ADR-0103 -- Add two frozen-Kronos pooled fusion challengers
 
 **Status:** Accepted, not locked (2026-09-05; owner approved implementation)
 
@@ -5311,7 +5312,7 @@ Kronos hidden state plus exogenous/calendar/category columns into native
 LightGBM, and the same matrix into the categorical-embedding Torch MLP. Each
 fusion head owns train-only inner HPO; both reuse one content-verified embedding
 cache. Outer dates, labels, eligible names, direct leads, scoring, approval, and
-one-worker execution remain those of ADR-0101.
+one-worker execution remain those of ADR-0102.
 
 **Consequences.** The four candidates isolate backbone value from fusion-head
 value without duplicate Kronos inference or validation leakage. Kronos models
@@ -5324,4 +5325,95 @@ ADR may add walk-forward fine-tuning only if frozen embeddings improve OOF
 results. Implementation adds a pinned upstream source dependency, one generic
 Kronos library pack, columnar K-line/feature-cache support, focused tests, and
 the two templates. The owner authorized implementation and the resulting
-four-candidate run in the same session.
+four-candidate run in the same session. Completed pre-merge run configs and
+immutable artifacts retain their original ADR-0101/0102 reference strings;
+this integration-time renumbering does not alter their approved identities.
+
+---
+
+## ADR-0101 — The onboarding connector packs' retry policy has one owner
+
+**Status:** proposed (2026-09-06; phase 3 of ADR-0090; Appendix C of
+`docs/new_package_proposals/production.md` is the draft this replaces —
+0092 and 0095 were both taken by the child's own decisions while phase 3
+waited, so this is 0101)
+
+**Context.** Six connector packs under `dskit/onboarding/libs/` each
+hand-roll the same retry: an attempt counter, an exponential delay, a cap
+read from `connector.MAX_BACKOFF_S`, and — in three of them — a numeric
+`Retry-After`. `kalshi.py` has a private `_backoff(attempt)` and
+`_retry_after(headers, fallback)`; `predexon.py` has its own pair;
+`polymarket.py` a third; `restapi.py` and `schwab.py` inline
+`time.sleep(min(_BACKOFF * 2 ** (attempt - 1), MAX_BACKOFF_S))` at their
+one call site; `alpaca_quotes.py` runs a fourth loop. The CAP has one
+owner, which is why `dskit/production/resilience.py` imports it rather
+than declaring a second ceiling — but the POLICY around it is copied, and
+the copies have already diverged on jitter (none of them jitters), on
+which outcomes retry, and on whether an ambiguous write may be retried at
+all. Root `CLAUDE.md` is explicit: a function is never repeated across
+modules, and the second copy is the bug.
+
+`dskit.production.resilience` owns that whole policy as pure stdlib
+objects with an injected clock, sleeper and rng: `Classifier`, `Retry`
+(full-jitter, a capped `Retry-After`, a token budget, and
+`decide(attempt, kind, is_write)`), `CircuitBreaker`, `RateLimiter` and
+`Transport`.
+
+**Decision.** The packs stop carrying their own. The direction of the
+dependency is the whole decision and there are exactly two ways to have
+it:
+
+- **(a) Graduate the policy into `dskit/onboarding/`**, which
+  `dskit/production/resilience.py` then re-exports. Production may import
+  onboarding; onboarding may not import production. This is the only
+  direction the existing gates permit, and it is where `MAX_BACKOFF_S`
+  already lives.
+- **(b) Leave it in production and let onboarding import it** — refused:
+  it inverts the package layering and breaks
+  `tests/onboarding/test_purity.py`, which asserts module-level imports
+  are stdlib + `dskit.assets` + itself.
+
+So (a) — **and this ADR is deliberately not implemented with it.** Three
+obstacles the Appendix C draft did not see make (a) a larger change than
+"the packs delete their private helpers", and each needs the owner's
+ruling before code:
+
+1. **The pipeline firewall.** `resilience.py` reaches
+   `dskit.pipeline.node` for `check_int_param` and (through
+   `production.base`) `reject_unknown_params`, and
+   `tests/onboarding/test_purity.py::test_static_never_the_pipeline`
+   forbids onboarding either. The moved classes must be rewritten against
+   onboarding's own `_check_unknown`/`AssetError` primitives.
+2. **The vocabulary home.** `JITTER_MODES`, `RETRY_AFTER_MODES`,
+   `RETRY_WRITE_MODES`, `RESILIENCE_OUTCOMES` and `RETRY_DECISIONS` are
+   closed sets, and §5.0 gives `dskit/production/vocab.py` as their one
+   home while `tests/production/test_vocab.py` asserts that module imports
+   nothing but stdlib. A policy living in onboarding therefore either
+   leaves vocab.py — breaking §5.0 — or is a second copy pinned by an
+   equality test, which is the house rule for unavoidable duplication but
+   is still two owners for one set.
+3. **The error type.** The draft's "no production test moves" is wrong:
+   these classes raise `ProductionError`, an onboarding module raises
+   `AssetError`, and `pytest.raises(ProductionError)` does not catch one.
+   Every §5.12 refusal assertion moves with the classes.
+
+A narrower first step exists and is offered as the alternative: give the
+onboarding-side rule ONE home in `dskit/onboarding/connector.py`, beside
+the `MAX_BACKOFF_S` it already owns — one `backoff` and one `retry_after`
+the six packs import — which deletes the six copies, keeps every gate
+green, needs no cross-package move, and is what would later grow into the
+`dskit/onboarding/resilience.py` of (a).
+
+**Consequences.** Until this is ratified the packs keep their copies, and
+phase 3's other three items (the calendar pack, the two metric sinks and
+the stream feed) do not depend on it. Under (a): one retry policy, one
+jitter rule, one `Retry-After` handling, one ceiling; each pack's
+documented `retries`/`pace_s` prose becomes the `Retry` params it already
+describes; the ambiguous-write rule reaches acquisition, where it is a
+no-op today and correct tomorrow. The migration's real cost is the
+onboarding tests that assert a wait sequence through a monkeypatched
+`time.sleep` and must be rewritten against the injected sleeper — which is
+why Appendix C made it a phase of its own — plus obstacle 3's production
+suite. `MAX_BACKOFF_S` stays exactly where it is; nothing about
+acquisition identity, source config hashes or stored rows changes under
+either option.

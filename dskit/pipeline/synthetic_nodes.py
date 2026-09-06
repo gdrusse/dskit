@@ -28,7 +28,6 @@ Import cost: stdlib only.
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 from types import SimpleNamespace
 
@@ -176,6 +175,24 @@ class SynthClip(Node):
     outputs = ("events",)
 
     @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: ``"pure"`` — a clip reads each event's own mid and its two bounds (ADR-0091).
+
+        Parameters
+        ----------
+        params : dict
+            The declared params; unused — the answer holds for every document.
+        verified_run_evidence : dict
+            The release's evidence; unused — a pure node needs none.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
+
+    @classmethod
     def validate_params(cls, params):
         lo, hi = params.get("lo", 0.03), params.get("hi", 0.97)
         for name, v in (("lo", lo), ("hi", hi)):
@@ -198,6 +215,24 @@ class SynthBank(Node):
     role = "accrual"
     outputs = ("counts",)
 
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: ``"pure"`` — a count reads only the events wired in (ADR-0091).
+
+        Parameters
+        ----------
+        params : dict
+            The declared params; unused — the answer holds for every document.
+        verified_run_evidence : dict
+            The release's evidence; unused — a pure node needs none.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
+
     def run(self, ctx, inputs):
         counts = {}
         for e in inputs["events"]:
@@ -212,6 +247,24 @@ class SynthEligibility(Node):
 
     role = "gate"
     outputs = ("instruments", "verdict")
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: ``"pure"`` — the bar is arithmetic on the wired counts (ADR-0091).
+
+        Parameters
+        ----------
+        params : dict
+            The declared params; unused — the answer holds for every document.
+        verified_run_evidence : dict
+            The release's evidence; unused — a pure node needs none.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
 
     @classmethod
     def validate_params(cls, params):
@@ -236,6 +289,24 @@ class SynthMarketSignal(Node):
     role = "signal"
     outputs = ("signal",)
 
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: ``"pure"`` — the market's own mid is read straight off each event (ADR-0091).
+
+        Parameters
+        ----------
+        params : dict
+            The declared params; unused — the answer holds for every document.
+        verified_run_evidence : dict
+            The release's evidence; unused — a pure node needs none.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
+
     def run(self, ctx, inputs):
         return {"signal": {e["contract"]: e["mid"] for e in inputs["events"]}}
 
@@ -248,6 +319,15 @@ class SynthTrain(TrainableNode):
 
     role = "train"
     outputs = ("signal", "artifact")
+
+    #: ADR-0091: ``run_load`` reads the pinned model through
+    #: ``read_artifact`` and touches nothing else, so a served tick may
+    #: run it. Audited by ``tests/pipeline/test_serving_effect.py``.
+    serving_load_audited = True
+
+    #: The model artifact's name — written by both modes, read back under
+    #: load. One name, so the writer and the reader cannot drift apart.
+    _MODEL_FILE = "model.json"
 
     @classmethod
     def validate_params(cls, params):
@@ -265,23 +345,42 @@ class SynthTrain(TrainableNode):
                 f"min_train={floor} but only {len(train_events)} training "
                 "event(s) in the train split"
             )
-        return self._served(ctx, inputs, {"learn": LEARN, "n_train": len(train_events)})
+        model = {"learn": LEARN, "n_train": len(train_events)}
+        return self._served(inputs, model, self.write_artifact(ctx, self._MODEL_FILE, model))
 
     def run_load(self, ctx, inputs):
-        with open(self.artifact, encoding="utf-8") as fh:
-            model = json.load(fh)
-        self.log.info("loaded pinned artifact %s", self.artifact)
-        return self._served(ctx, inputs, model)
+        """Restore the pinned model through the base's read service; never refit.
 
-    def _served(self, ctx, inputs, model):
-        """The tail both modes share: persist the model, then price every
-        event with it. Fitted or restored, a run answers the same way."""
-        path = self.write_artifact(ctx, "model.json", model)
+        The load path READS and nothing else (ADR-0091): the artifact it
+        answers with is the one it was pinned to, not a fresh copy. A
+        served tick runs this hook under a release reader and must touch
+        the filesystem through no other door — writing the restored model
+        back would be exactly that, and no reader can intercept a write.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The run frame. Under a release reader the model text is the
+            reader's; otherwise the pinned ``artifact`` is read.
+        inputs : dict
+            ``events``, the stream to price.
+
+        Returns
+        -------
+        dict
+            ``signal`` and ``artifact``, exactly as a fit answers.
+        """
+        model = self.read_artifact(ctx, self._MODEL_FILE)
+        self.log.info("loaded pinned artifact %s", self.artifact)
+        return self._served(inputs, model, self.artifact)
+
+    def _served(self, inputs, model, artifact):
+        """The tail both modes share: price every event with the model."""
         signal = {
             e["contract"]: e["mid"] + model["learn"] * (e["p_true"] - e["mid"])
             for e in inputs["events"]
         }
-        return {"signal": signal, "artifact": path}
+        return {"signal": signal, "artifact": artifact}
 
 
 class SynthScore(Node):

@@ -88,6 +88,7 @@ class EmpiricalSelectRegressor:
         self._model = None
 
     def fit(self, x, y, feature_names=None):
+        """Fit feature selection and the declared regressor on training rows."""
         import importlib
 
         from sklearn.feature_selection import SelectKBest, f_regression
@@ -126,6 +127,7 @@ class EmpiricalSelectRegressor:
         return self
 
     def predict(self, x):
+        """Predict with the fitted selected-feature pipeline."""
         if self._model is None:
             raise RuntimeError("regressor is not fitted")
         prediction = self._model.predict(x[:, self._indices])
@@ -155,6 +157,7 @@ class StandardizedSelectRegressor:
         self._model = None
 
     def fit(self, x, y):
+        """Fit the standardized selector and configured sklearn regressor."""
         from sklearn.feature_selection import SelectKBest, f_regression
         from sklearn.linear_model import ElasticNet, Ridge
         from sklearn.neural_network import MLPRegressor
@@ -194,6 +197,7 @@ class StandardizedSelectRegressor:
         return self
 
     def predict(self, x):
+        """Predict with the fitted standardized pipeline."""
         if self._model is None:
             raise RuntimeError("regressor is not fitted")
         return self._model.predict(x)
@@ -211,6 +215,7 @@ class SequenceOnlyZooEstimator:
         self._model = None
 
     def fit(self, x, y, feature_names=None):
+        """Fit the sequence model on contiguous return-lag features only."""
         if not isinstance(feature_names, list) or not feature_names:
             raise ValueError("SequenceOnlyZooEstimator requires feature_names")
         available = []
@@ -233,6 +238,7 @@ class SequenceOnlyZooEstimator:
         return self
 
     def predict(self, x):
+        """Predict from the fitted sequence model using its retained lags."""
         if self._model is None:
             raise RuntimeError("sequence estimator is not fitted")
         return self._model.predict(x[:, self._indices])
@@ -466,6 +472,7 @@ class DirectPathScore(Node):
 
     @classmethod
     def validate_params(cls, params):
+        """Validate the declared direct-path scoring protocol."""
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
         if params.get("split") != "val":
@@ -495,6 +502,7 @@ class DirectPathScore(Node):
         return problems
 
     def validate_inputs(self, inputs):
+        """Require one records/metrics pair for every direct lead."""
         horizon = self.params.get("max_horizon")
         if not isinstance(horizon, int) or horizon < 1:
             return []
@@ -508,6 +516,7 @@ class DirectPathScore(Node):
         return []
 
     def run(self, ctx, inputs):
+        """Aggregate lead-specific validation records into a path score."""
         del ctx
         asset = self.params["asset"]
         weights = self.params["horizon_weights"]
@@ -1187,6 +1196,7 @@ class Gate3ZooCandidates(Stage):
 
     @classmethod
     def validate_params(cls, params):
+        """Validate the pinned sources, protocol, and model templates."""
         problems = []
         reject_unknown_params(problems, params, _PARAMS)
         for field in _PARAMS[:6]:
@@ -1216,9 +1226,11 @@ class Gate3ZooCandidates(Stage):
         return problems
 
     def validate_inputs(self, inputs):
+        """Reject inputs because this stage reads only pinned declarations."""
         return [] if inputs == {} else ["Gate3ZooCandidates takes no inputs"]
 
     def run(self, ctx, inputs):
+        """Materialize candidates for the verified Gate-3 eligible set."""
         del inputs
         source_path = _resolve(ctx.source_path, self.params["source_document"])
         source = load_document(source_path)

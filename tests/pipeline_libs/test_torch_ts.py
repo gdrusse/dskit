@@ -37,9 +37,10 @@ TORCH_PY = (
     pathlib.Path(__file__).parents[2] / "dskit" / "pipeline" / "libs" / "torch.py"
 )
 #: Content pin of ``libs/torch.py``. Recompute on a deliberate engine-pack
-#: change (ADR-0045 moved it for batched eval); accidental edits fail here.
+#: change (ADR-0045 moved it for batched eval; ADR-0091 added the audited
+#: serving-load declaration); accidental edits fail here.
 TORCH_PY_SHA256 = (
-    "83cb4a211bf4702a16031a781dcd88470eff568ec732c49ae413c1cad3f10c14"
+    "3cdfc7a089f1a3009a0dca15a791aecc3bc7eb50484456ad85f20ea45757e556"
 )
 
 SHIPPED = (

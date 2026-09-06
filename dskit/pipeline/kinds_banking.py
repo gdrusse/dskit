@@ -202,6 +202,31 @@ class EventBank(Node):
             )
         return problems
 
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: ``"pure"`` — counting is arithmetic on the wired events (ADR-0091).
+
+        ``run`` reads its inputs, its params and its logger; it never
+        touches ``ctx``, so nothing it answers can depend on a section the
+        serving derivation drops, and every field read goes through
+        :func:`~dskit.pipeline.kinds_flow._field`, a dict/attribute
+        accessor that reaches no file and no socket.
+
+        Parameters
+        ----------
+        params : dict
+            The declared params; unused — the answer holds for every
+            document.
+        verified_run_evidence : dict
+            The release's evidence; unused — a pure node needs none.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
+
     def validate_inputs(self, inputs):
         """Problems with the materialized inputs, empty when none.
 
@@ -363,6 +388,31 @@ class Eligibility(Node):
         _reject_unknown(problems, params, cls._PARAMS)
         _require_min_events(problems, params)
         return problems
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: ``"pure"`` — the bar is arithmetic on the wired counts (ADR-0091).
+
+        The same audit as :meth:`EventBank.serving_effect`, and the same
+        deciding read: ``run`` reads ``params["min_events"]`` and
+        ``inputs["banked"]`` and nothing else. ``BankingReport`` is the one
+        kind in this module that touches ``ctx`` — to WRITE — and stays
+        ``forbidden`` permanently.
+
+        Parameters
+        ----------
+        params : dict
+            The declared params; unused — the answer holds for every
+            document.
+        verified_run_evidence : dict
+            The release's evidence; unused — a pure node needs none.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
 
     def validate_inputs(self, inputs):
         """Problems with the materialized inputs, empty when none.

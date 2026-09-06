@@ -234,6 +234,24 @@ class Filter(Node):
     _PARAMS = ("require_usable", "where")
 
     @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: ``"pure"`` — a filter reads its stream and its clauses, nothing else (ADR-0091).
+
+        Parameters
+        ----------
+        params : dict
+            The declared params; unused — the answer holds for every document.
+        verified_run_evidence : dict
+            The release's evidence; unused — a pure node needs none.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
+
+    @classmethod
     def validate_params(cls, params):
         """Problems with this node's declared knobs, empty when none.
 
@@ -364,6 +382,24 @@ class EventGrid(Node):
     role = "transform"
     outputs = ("records",)
     _PARAMS = ("period_ms", "offset_ms")
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: ``"pure"`` — grid membership is arithmetic on each record's instant (ADR-0091).
+
+        Parameters
+        ----------
+        params : dict
+            The declared params; unused — the answer holds for every document.
+        verified_run_evidence : dict
+            The release's evidence; unused — a pure node needs none.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
 
     @classmethod
     def validate_params(cls, params):
@@ -724,6 +760,24 @@ class Concat(Node):
         "shape",
         "tables",
     )
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: ``"pure"`` — a union reads the wired streams and nothing else (ADR-0091).
+
+        Parameters
+        ----------
+        params : dict
+            The declared params; unused — the answer holds for every document.
+        verified_run_evidence : dict
+            The release's evidence; unused — a pure node needs none.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
 
     @classmethod
     def validate_params(cls, params):
@@ -1141,6 +1195,24 @@ class Join(Node):
     _PARAMS = ("allow_fanout", "how", "key", "tables", "unmatched_fill")
 
     @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: ``"pure"`` — a join reads the wired stream and side tables, nothing else (ADR-0091).
+
+        Parameters
+        ----------
+        params : dict
+            The declared params; unused — the answer holds for every document.
+        verified_run_evidence : dict
+            The release's evidence; unused — a pure node needs none.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
+
+    @classmethod
     def validate_params(cls, params):
         """Problems with this node's declared knobs, empty when none.
 
@@ -1476,6 +1548,24 @@ class Derive(Node):
 
     #: The class's own knobs — anything else is refused by name.
     _PARAMS = ("cases", "field", "overwrite")
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: ``"pure"`` — a derived field is a function of each record's own fields (ADR-0091).
+
+        Parameters
+        ----------
+        params : dict
+            The declared params; unused — the answer holds for every document.
+        verified_run_evidence : dict
+            The release's evidence; unused — a pure node needs none.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
 
     @classmethod
     def validate_params(cls, params):
@@ -1849,6 +1939,24 @@ class GroupBy(Node):
 
     #: The class's own knobs — anything else is refused by name.
     _PARAMS = ("aggregates", "keys", "order_field")
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify the kind for serving: ``"pure"`` — a reduction reads the wired stream and its declared aggregates (ADR-0091).
+
+        Parameters
+        ----------
+        params : dict
+            The declared params; unused — the answer holds for every document.
+        verified_run_evidence : dict
+            The release's evidence; unused — a pure node needs none.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
 
     @classmethod
     def validate_params(cls, params):

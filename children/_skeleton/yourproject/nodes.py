@@ -28,6 +28,7 @@ import math
 
 from dskit.pipeline.node import (
     Node,
+    ServingContract,
     register_node_kind,
     reject_unknown_params,
 )
@@ -105,6 +106,66 @@ class SampleRecords(Node):
         self.log.info("emitting %d record(s)", len(records))
         return {"records": records}
 
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Answer ``entry_read`` — this is where live rows enter (ADR-0091).
+
+        The serving policy classifies every node BEFORE anything is
+        constructed, and the default is ``forbidden``: a class that does
+        not answer here can never appear in a served graph. A source is
+        the one mutable read a tick may take, so it says so.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params; unread here, but a class whose
+            effect depends on a knob reads it rather than guessing.
+        verified_run_evidence : dict
+            Release evidence (mode, artifact pinning); unread by a source.
+
+        Returns
+        -------
+        str
+            ``"entry_read"`` — a member of
+            :data:`~dskit.pipeline.node.SERVING_EFFECTS`.
+        """
+        return "entry_read"
+
+    @classmethod
+    def serving_contract(cls, params, verified_run_evidence):
+        """Describe the source so a tick can freeze and digest its rows.
+
+        Pure and document-blind: it names the binding, the fields that
+        identify an entity, the field carrying event time, and the recipe
+        that digests a key's rows. It deliberately carries NO universe —
+        the required key set is the serve document's, pinned into the
+        release, because a source cannot know which keys an operator
+        requires this tick.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+        verified_run_evidence : dict
+            Release evidence; unread here.
+
+        Returns
+        -------
+        ServingContract
+            Source binding, entity keys, event-time field, digest recipe.
+
+        Raises
+        ------
+        ConfigError
+            When the projection would be empty.
+        """
+        return ServingContract(
+            source_binding={"kind": "yourproject-sample"},
+            entity_key_fields=("id",),
+            event_time_field="day",
+            digest_recipe={"kind": "canonical-rows", "key_fields": ["id"]},
+        )
+
 
 class EnrichRecords(Node):
     """Derive a field per record from a required numeric param (role
@@ -170,6 +231,29 @@ class EnrichRecords(Node):
             "enriched %d/%d record(s)", len(kept), len(inputs["records"])
         )
         return {"records": kept}
+
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Answer ``pure`` — this transform reads nothing but its inputs.
+
+        A served tick runs pure descendants of the entry from the frozen
+        snapshot. Anything that touches a file, a socket or a store must
+        NOT answer ``pure``; the fail-closed default is there so silence
+        is always the safe answer.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+        verified_run_evidence : dict
+            Release evidence; unread by a pure transform.
+
+        Returns
+        -------
+        str
+            ``"pure"``.
+        """
+        return "pure"
 
 
 #: kind name -> class: what the registry, the conformance suite, and a

@@ -1,0 +1,491 @@
+{
+  "name": "example-serve-scored",
+  "series_id": "018f4a12-3c55-7b90-8e41-2a7d5c1b9f60",
+  "rung": "live_limited",
+  "notes": "What phase 2 adds, in one document: the series scores its own decisions and is required by its own checklist to have done so before it may act. Every section below beyond the phase-1 set is OPTIONAL and GRADED \u2014 absent it is absent from the hash, so adding one to an existing document is a deliberate new identity, not an accident. live_limited is the rung that makes execution.signer real: the simulated rungs never build one. Start from serve-paper.json, add these, then: validate -> plan -> ready.",
+  "serving": {
+    "run_dir": "pipeline_runs/train-2026-01-01-abcd1234",
+    "adapter": "yourproject",
+    "entry": {
+      "node": "bars",
+      "param": "since_ms",
+      "window_ms": 14400000
+    },
+    "heads": [
+      "select"
+    ],
+    "required_universe": "configs/universe-serve.json",
+    "proposer": {
+      "uses": "intent-rows",
+      "params": {
+        "output": "picks",
+        "fields": {
+          "instrument": "symbol",
+          "side": "side",
+          "qty": "qty"
+        }
+      }
+    },
+    "replay": {
+      "gate": "recorded",
+      "stat_test": "recorded"
+    },
+    "max_artifact_age": "P30D"
+  },
+  "feed": {
+    "uses": "entry-source",
+    "params": {
+      "pull": "acquire"
+    }
+  },
+  "schedule": {
+    "clock": {
+      "uses": "wall"
+    },
+    "calendar": {
+      "uses": "weekly-sessions",
+      "params": {
+        "tz": "America/New_York",
+        "sessions": [
+          {
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "open": "09:30",
+            "close": "16:00"
+          }
+        ],
+        "holidays": [
+          "2026-11-26"
+        ],
+        "after_open_s": 60,
+        "before_close_s": 120
+      }
+    },
+    "cadence": {
+      "uses": "aligned-bar",
+      "params": {
+        "bar_ms": 60000,
+        "publish_delay_ms": 5000
+      }
+    },
+    "overrun": {
+      "policy": "coalesce",
+      "max_lag_ms": 30000
+    },
+    "dead_after_ms": 600000,
+    "max_staleness_ms": 120000,
+    "max_quote_age_ms": 30000,
+    "max_venue_skew_ms": 1000
+  },
+  "guards": {
+    "size": {
+      "uses": "limit",
+      "params": {
+        "measure": "quantity",
+        "bound": {
+          "max": "100"
+        },
+        "on_breach": "refuse"
+      }
+    },
+    "exposure": {
+      "uses": "limit",
+      "params": {
+        "measure": "exposure_after",
+        "scope": "aggregate",
+        "include_working": true,
+        "bound": {
+          "max": "20000"
+        },
+        "warn_at": 0.8,
+        "on_breach": "refuse"
+      }
+    },
+    "day_loss": {
+      "uses": "limit",
+      "params": {
+        "measure": "pnl",
+        "window": {
+          "calendar": "session"
+        },
+        "bound": {
+          "min": "-500"
+        },
+        "on_breach": "halt"
+      },
+      "notes": "on_breach halt trips the breaker: the series stops deciding and needs an operator. `pnl` reads trading records only \u2014 an external deposit can never buy headroom under this bound."
+    },
+    "stale": {
+      "uses": "limit",
+      "params": {
+        "measure": "input_age_ms",
+        "bound": {
+          "max": 30000
+        },
+        "on_breach": "refuse"
+      }
+    },
+    "sane": {
+      "uses": "range",
+      "params": {
+        "field": "confidence",
+        "min": 0,
+        "max": 1,
+        "nan": "refuse"
+      }
+    }
+  },
+  "execution": {
+    "uses": "yourproject.execution:LiveVenue",
+    "params": {},
+    "submit_timeout_ms": 5000,
+    "on_halt": {
+      "cancel_open": true
+    },
+    "signer": {
+      "uses": "hmac",
+      "params": {
+        "key_env": "VENUE_API_SECRET",
+        "header": "X-Signature",
+        "timestamp_header": "X-Timestamp",
+        "algorithm": "sha256",
+        "time_url": "https://venue.example/time",
+        "max_skew_ms": 2000,
+        "probe_every_ms": 60000,
+        "probe_timeout": {
+          "connect_s": 2.0,
+          "read_s": 5.0
+        }
+      },
+      "notes": "The document names the ENV VAR, never the key: it resolves once as a credential and can reach neither a log line nor a record. probe_every_ms is required because a staleness rule with no period never fires \u2014 raise max_skew_ms only if the venue tolerates it; a sign() past it refuses."
+    },
+    "notes": "Only a live family builds the signer, and it is offered only to a venue whose own __init__ declares it: core ships no venue and never calls sign()."
+  },
+  "accounting": {
+    "uses": "yourproject.accounting:LiveBooks",
+    "params": {},
+    "max_valuation_age_ms": 60000,
+    "notes": "A live rung values against the venue's own books, so the guards read real headroom rather than a simulation's."
+  },
+  "arming": {
+    "max_duration_s": 14400,
+    "approval": {
+      "uses": "yourproject.approvals:SignedApprovals",
+      "params": {}
+    },
+    "notes": "Reaching the venue needs a recorded, expiring, independently authenticated maker-checker arm bound to the release hash \u2014 deny-all would refuse every one."
+  },
+  "coordination": {
+    "scope": {
+      "venue": "paper",
+      "account": "strategy-a"
+    },
+    "lease": {
+      "uses": "yourproject.coordination:FencedLease",
+      "params": {}
+    },
+    "ttl_ms": 30000,
+    "renew_every_ms": 10000,
+    "renew_timeout_ms": 2000,
+    "notes": "A live submit needs a fenced, cross-host lease with a monotonic token: `process` is a single-host lock and cannot prove another host has stopped writing."
+  },
+  "reconcile": {
+    "on_start": true,
+    "every_s": 300,
+    "on_mismatch": "halt",
+    "lookback_ms": 86400000
+  },
+  "monitors": {
+    "pred_shift": {
+      "uses": "psi",
+      "params": {
+        "field": "prediction",
+        "bins": 10,
+        "reference": {
+          "uses": "run",
+          "params": {
+            "run_dir": "pipeline_runs/train-2026-01-01-abcd1234",
+            "max_rows": 20000
+          },
+          "notes": "The run's OWN scored predictions as the anchor, read from its parquet once and sampled evenly across the file \u2014 the head of a file is one series and would make the anchor stand for one instrument. Needs the `parquet` extra; `leading` needs nothing but is anchored on live data."
+        },
+        "window": {
+          "kind": "count",
+          "n": 300
+        },
+        "threshold": {
+          "kind": "alpha",
+          "alpha": 0.01
+        },
+        "response": "warn"
+      },
+      "notes": "Drift of today's predictions against what the backtest actually scored."
+    },
+    "coverage": {
+      "uses": "coverage",
+      "params": {
+        "window": {
+          "kind": "count",
+          "n": 50
+        },
+        "threshold": {
+          "kind": "constant",
+          "min": 0.5
+        },
+        "response": "warn"
+      }
+    },
+    "calibration": {
+      "uses": "calibration",
+      "params": {
+        "field": "prediction",
+        "bins": 10,
+        "window": {
+          "kind": "count",
+          "n": 200
+        },
+        "threshold": {
+          "kind": "constant",
+          "max": 0.1
+        },
+        "response": "warn"
+      },
+      "notes": "Scores predictions against the outcomes joined above; this is the monitor readiness.calibration_monitor names, so an unscored series cannot pass its own checklist."
+    },
+    "replay_parity": {
+      "uses": "parity",
+      "params": {
+        "window": {
+          "kind": "count",
+          "n": 50
+        },
+        "threshold": {
+          "kind": "constant",
+          "max": 0
+        },
+        "response": "halt"
+      },
+      "notes": "A decision that does not reproduce is not a decision. `max: 0` and `halt` because a divergence here means the served number and the recorded one disagree; loosen it only for a knowingly non-deterministic venue."
+    }
+  },
+  "health": {
+    "failure_threshold": 3,
+    "success_threshold": 1,
+    "timeout_s": 1.0,
+    "probes": {
+      "disk": {
+        "uses": "ledger-writable"
+      },
+      "venue": {
+        "uses": "executor-check",
+        "scope": "dependency"
+      }
+    }
+  },
+  "durability": {
+    "fsync": "every",
+    "ledger": {
+      "uses": "sqlite",
+      "params": {},
+      "notes": "The chain in one file: WAL and synchronous=FULL pinned, append-only enforced by triggers, and no torn tail because a commit is atomic. It cannot rotate \u2014 keep the default `jsonl` when you want segments, or a tape any text tool can read."
+    },
+    "notes": "`fsync` is the BARRIER cadence and is unchanged by the store choice; `ledger` only says where the chain lives."
+  },
+  "resilience": {
+    "retry": {
+      "max_attempts": 3,
+      "base_s": 0.05,
+      "throttle_base_s": 1.0,
+      "cap_s": 20.0,
+      "jitter": "full",
+      "retry_after": "honor",
+      "retry_writes": "idempotent_only",
+      "budget": {
+        "capacity": 500,
+        "transient_cost": 14,
+        "throttle_cost": 5,
+        "refund": 1
+      }
+    },
+    "breaker": {
+      "min_calls": 5,
+      "failure_rate": 0.5,
+      "open_s": 30
+    },
+    "limiter": {
+      "submit": {
+        "rate_per_s": 5,
+        "burst": 5,
+        "max_in_flight": 1
+      },
+      "cancel": {
+        "rate_per_s": 10,
+        "burst": 10,
+        "reserved": true
+      }
+    },
+    "transport": {
+      "uses": "urllib",
+      "params": {
+        "connect_s": 2.0,
+        "read_s": 5.0
+      }
+    }
+  },
+  "lifecycle": {
+    "cooling_off_s": 900,
+    "shutdown_grace_s": 30
+  },
+  "readiness": {
+    "checklist": "configs/readiness.json",
+    "waivers": [],
+    "valid_for_s": 86400,
+    "outcome_window": "P7D",
+    "min_outcome_coverage": 0.9,
+    "max_outcome_age": "PT12H",
+    "calibration_monitor": "calibration",
+    "notes": "The thresholds behind the evidence names a checklist item may CITE: outcome_coverage reads the first two, outcome_freshness the third, calibration_current the fourth. Each is required only when an item cites it \u2014 `ready` refuses BY NAME when one is missing, rather than defaulting a threshold the code has no business choosing. Citing them is how a live checklist requires the series to show its decisions have been scored."
+  },
+  "outcomes": {
+    "sources": {
+      "settle": {
+        "uses": "settlement",
+        "params": {
+          "lookback_ms": 604800000
+        },
+        "notes": "The venue's own settlements, per unit (payout / qty) so a ten-lot and a one-lot at the same price score alike. Widen lookback_ms when the venue settles later than a week; it only bounds how far back it is ASKED."
+      },
+      "mark": {
+        "uses": "label",
+        "params": {
+          "source": "vendor",
+          "stream": "resolutions",
+          "key_fields": [
+            "instrument",
+            "asof"
+          ],
+          "time_field": "asof",
+          "value_field": "value",
+          "outcome_kind": "marked"
+        },
+        "notes": "Read back through the onboarding observations seam \u2014 the same root the run trained from, so there is no second vendor fetch and no path by which serving sees data training never did. `marked` says these are running marks, not resolutions, so they never terminate a leg; drop it to `settled` only when the stream really is final."
+      }
+    },
+    "notes": "Both sources are polled at every cut. An answer that repeats what already stands is dropped; one that disagrees is appended as a correction LINKED to what it supersedes. Declare the mark as well as the settlement when the venue settles later than you need to score."
+  },
+  "reporting": {
+    "scoring": "brier",
+    "bins": 10,
+    "markouts_ms": [
+      60000,
+      300000
+    ],
+    "markout_tolerance_ms": 60000,
+    "notes": "`scoring` is a registered dskit.pipeline.metrics name, so a child scores with its own rule by registering one rather than by patching report.py. Raise markout_tolerance_ms for a thin book, where the nearest quote to a horizon is further away; empty markouts_ms when there are no post-trade quotes to mark against, and attribution reports shortfall alone."
+  },
+  "alerting": {
+    "sinks": {
+      "ops": {
+        "uses": "webhook"
+      }
+    },
+    "routes": [
+      {
+        "severity": "critical",
+        "sinks": [
+          "ops"
+        ]
+      },
+      {
+        "severity": "warning",
+        "sinks": [
+          "ops"
+        ]
+      }
+    ],
+    "group_wait_s": 30,
+    "repeat_interval_s": 14400,
+    "rate_limit": {
+      "max_per_hour": 20,
+      "burst": 5
+    },
+    "inhibit": [
+      {
+        "source": {
+          "severity": "critical",
+          "component": "venue"
+        },
+        "target": {
+          "severity": "warning"
+        },
+        "equal": [
+          "instrument"
+        ],
+        "notes": "When the venue link drops, every quote and staleness alert behind it fires too and buries the one an operator can act on. The alert record is still appended with the suppression named \u2014 the evidence survives the silence."
+      }
+    ],
+    "escalation": {
+      "primary": {
+        "after_s": 300,
+        "sinks": [
+          "ops"
+        ]
+      },
+      "secondary": {
+        "after_s": 900,
+        "sinks": [
+          "ops"
+        ]
+      },
+      "final": {
+        "after_s": 3600,
+        "sinks": [
+          "ops"
+        ]
+      }
+    },
+    "max_silence_s": 14400,
+    "max_ack_s": 3600,
+    "notes": "An alert nobody acked or silenced climbs ONE rung per pass, in order and never skipping, so a process an hour late pages the next rung rather than all three. The two caps bound how long a human may own an alert without review: an unbounded silence is how a page is lost forever, an unbounded ack is how an escalation never happens. Shorten max_ack_s to force a faster hand-back; point a later rung at a second sink to widen who hears it."
+  },
+  "alert_endpoints": {
+    "ops": {
+      "url_env": "OPS_WEBHOOK_URL",
+      "template": "slack",
+      "timeout_s": 5
+    }
+  },
+  "heartbeat": {
+    "every_s": 30,
+    "in_degraded": true,
+    "emitters": {
+      "watchdog": {
+        "uses": "systemd",
+        "params": {},
+        "notes": "sd_notify on NOTIFY_SOCKET: WATCHDOG=1 per beat, READY=1 and STOPPING=1 on the lifecycle transitions, so the supervisor restarts a wedged process. It has no knobs \u2014 the address is systemd's to set \u2014 and REFUSES at construction when NOTIFY_SOCKET is unset, because a heartbeat that silently emits nothing is the exact failure it exists to prevent. Use `file` off a supervisor, `url` for a dead-man service."
+      }
+    },
+    "notes": "Excluded from the hash: where the beat goes says nothing about what the process decides. in_degraded true keeps beating while degraded \u2014 the process is alive and should not be killed for being cautious."
+  },
+  "placement": {
+    "ledger_root": "./serve",
+    "rotate": {
+      "by": "day",
+      "max_bytes": 268435456
+    },
+    "log_dir": "./serve/logs"
+  },
+  "env": {
+    "env_file": ".env",
+    "require": [
+      "OPS_WEBHOOK_URL",
+      "VENUE_API_SECRET"
+    ],
+    "notes": "Excluded from the hash \u2014 the NAMES a document needs present, never values. The signer's key_env belongs here so a missing credential refuses at startup rather than at the first live submit."
+  }
+}

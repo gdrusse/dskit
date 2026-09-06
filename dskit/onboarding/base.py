@@ -60,6 +60,7 @@ __all__ = [
     "durable_write_json",
     "dir_digest",
     "file_digest",
+    "fsync_dir",
     "parse_utc",
     "utc_now",
 ]
@@ -142,10 +143,27 @@ def parse_utc(value):
 # ---------------------------------------------------------------------------
 
 
-def _fsync_dir(directory):
-    """fsync a directory so a rename into it is durable. Best-effort on
-    platforms whose filesystems refuse directory fds — the rename itself
-    is still atomic there."""
+def fsync_dir(directory):
+    """Make a directory entry durable, so a rename or a create survives power loss.
+
+    Best-effort: a platform whose filesystem refuses a directory fd is
+    left alone, since the rename itself is still atomic there. Public
+    because it is the barrier a WRITER needs, not an internal step of
+    :func:`durable_write_bytes` — ``dskit.production.ledger`` fsyncs the
+    ledger directory after creating a segment, which is a create, not a
+    rename, and must not copy this walk.
+
+    Parameters
+    ----------
+    directory : str
+        The directory to fsync; a path that cannot be opened is a no-op.
+
+    Returns
+    -------
+    None
+        Returns once the directory entry is durable, where the platform
+        supports it.
+    """
     try:
         fd = os.open(directory, os.O_RDONLY)
     except OSError:
@@ -156,6 +174,11 @@ def _fsync_dir(directory):
         pass
     finally:
         os.close(fd)
+
+
+#: The private spelling this module's own writers were built on; the same
+#: object, kept so no internal caller has to change.
+_fsync_dir = fsync_dir
 
 
 def durable_write_bytes(path, data) -> None:

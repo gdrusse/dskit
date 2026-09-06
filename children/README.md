@@ -107,6 +107,14 @@ _skeleton/
   longhand — N filter + N train + N score nodes per document. Before hand-
   expanding a fan-out, check `TODO.md`: the generic `foreach` gap is open,
   and hand-expansion is the interim, not the answer.
+- **A child ships the venue, never the loop.** Running forward is
+  `dskit.production`'s job: the cadence, the guards, the hash-chained ledger,
+  the authority stack and the monitors are all generic and already built. What
+  is irreducibly yours is the venue executor, its accounting, the trust root
+  behind a maker-checker arm, and a fenced lease — the four templates the
+  skeleton ships fail-closed. If you find yourself writing a `live.py` with a
+  tick loop in it, that loop is capability sitting in tier 3; read
+  `dskit/production/README.md` first.
 - **Position-independent.** Nothing inside a child may reference its incubation
   path (no `..` imports, no dskit-repo paths); the only coupling is
   `import dskit`. That is what makes graduation a plain `cp -r`.
