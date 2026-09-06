@@ -86,15 +86,18 @@ from dskit.production.base import (
     canonical_hash,
 )
 from dskit.production.records import (
+    AlertAck,
     Fill,
     OrderState,
     Position,
     ReductionAuthorization,
     RiskVersion,
+    Silence,
     TickStart,
 )
 from dskit.production.redact import get_logger, redact
 from dskit.production.vocab import (
+    ALERT_STATUSES,
     AUTHORITY_EVENTS,
     AUTHORITY_ROLES,
     BREAKER_STATES,
@@ -877,7 +880,9 @@ _FOLDS = {
     "adoption": ("_fold_nothing", False),
     "command_result": ("_fold_command_result", False),
     "monitor": ("_fold_monitor", False),
-    "alert": ("_fold_nothing", False),
+    "alert": ("_fold_alert", False),
+    "silence": ("_fold_silence", False),
+    "alert_ack": ("_fold_alert_ack", False),
     "health": ("_fold_nothing", False),
     _SNAPSHOT: ("_fold_nothing", False),
 }
@@ -889,6 +894,15 @@ _AUTHORITY_ISSUES = {"ordinary": "_issue_arming", "reduction": "_issue_rights"}
 _AUTHORITY_CLEARS = {"ordinary": "_clear_arming", "reduction": "_clear_rights"}
 if set(_AUTHORITY_ISSUES) != set(AUTHORITY_ROLES) or set(_AUTHORITY_CLEARS) != set(AUTHORITY_ROLES):
     raise ProductionError(["state.py: the authority tables do not cover AUTHORITY_ROLES"])
+
+#: ``alert`` status -> what the fold does with the acknowledgement the
+#: fingerprint may carry. §5.11.2: an ack lapses at its own instant "or
+#: when the alert resolves", and the fold is where that second lapse must
+#: live — a router that latched the ack in memory would re-honour it for
+#: the NEXT firing of the same fingerprint after a restart.
+_ALERT_FOLDS = {"firing": "_keep_ack", "resolved": "_lapse_ack"}
+if set(_ALERT_FOLDS) != set(ALERT_STATUSES):
+    raise ProductionError(["state.py: the alert table does not cover ALERT_STATUSES"])
 
 #: ``fill`` status -> the book verb; ``reversed`` undoes, the others apply.
 _FILL_FOLDS = {"pending": "_apply_fill", "final": "_apply_fill", "reversed": "_reverse_fill"}
@@ -904,6 +918,8 @@ _SNAPSHOT_KEYS = tuple(f.name for f in dataclasses.fields(StateView)) + (
     "tick_plans",
     "last_trip",
     "cash_flows",
+    "silences",
+    "alert_acks",
 )
 
 
@@ -983,6 +999,8 @@ class SeriesState:
         self._reduction = None
         self._pending_control = {}
         self._monitor_state = {}
+        self._silences = {}
+        self._alert_acks = {}
         self._open_ticks = {}
         self._tick_plans = {}
         self._folds = {
@@ -995,6 +1013,7 @@ class SeriesState:
             for event in AUTHORITY_EVENTS:
                 self._authority_folds.setdefault((role, event), getattr(self, name))
         self._fill_folds = {status: getattr(self, name) for status, name in _FILL_FOLDS.items()}
+        self._alert_folds = {status: getattr(self, name) for status, name in _ALERT_FOLDS.items()}
 
     @property
     def series_id(self):
@@ -1385,6 +1404,29 @@ class SeriesState:
             raise ProductionError(problems)
         self._monitor_state.setdefault(body["monitor"], {})[body["slice"]] = dict(body)
 
+    def _fold_alert(self, body, envelope):
+        """Let a resolving alert lapse the acknowledgement its fingerprint carries."""
+        fold = self._alert_folds.get(body.get("status"))
+        if fold is not None:
+            fold(body)
+
+    def _keep_ack(self, body):
+        """Leave the acknowledgement alone: an ack means owned, not fixed."""
+
+    def _lapse_ack(self, body):
+        """Drop the acknowledgement the resolved fingerprint carried, if any."""
+        self._alert_acks.pop(body.get("fingerprint"), None)
+
+    def _fold_silence(self, body, envelope):
+        """Replace the operator silence window this record's id names."""
+        silence = _record_from_body(Silence, body)
+        self._silences[silence.silence_id] = silence
+
+    def _fold_alert_ack(self, body, envelope):
+        """Replace the acknowledgement standing over this fingerprint."""
+        ack = _record_from_body(AlertAck, body)
+        self._alert_acks[ack.fingerprint] = ack
+
     # -- the projections ----------------------------------------------------
 
     def head(self):
@@ -1438,6 +1480,37 @@ class SeriesState:
         return MappingProxyType(
             {monitor: MappingProxyType(dict(slices)) for monitor, slices in self._monitor_state.items()}
         )
+
+    def silences(self):
+        """Return the operator silence windows the fold holds, by id.
+
+        The router reads them at ``process`` time and asks each whether it
+        is active, so a window created between two ticks takes effect at
+        the next one and a restart cannot resurrect a silenced page
+        (§5.11.2). Nothing here is a second store: the windows are folded
+        from the §6 ``silence`` records of whatever ledger the document
+        declared.
+
+        Returns
+        -------
+        mapping
+            Read-only ``silence_id -> records.Silence``.
+        """
+        return MappingProxyType(dict(self._silences))
+
+    def alert_acks(self):
+        """Return the acknowledgement standing over each fingerprint.
+
+        One per fingerprint — a later ack replaces an earlier one — and
+        the entry is dropped when a ``resolved`` ``alert`` for that
+        fingerprint folds, which is §5.11.2's second lapse.
+
+        Returns
+        -------
+        mapping
+            Read-only ``fingerprint -> records.AlertAck``.
+        """
+        return MappingProxyType(dict(self._alert_acks))
 
     def last_trip(self):
         """Return the latest breaker transition the fold holds.
@@ -1506,7 +1579,8 @@ class SeriesState:
         -------
         dict
             Every ``StateView`` member plus ``monitor_state``,
-            ``open_ticks``, ``tick_plans``, ``last_trip`` and
+            ``open_ticks``, ``tick_plans``, ``last_trip``,
+            ``silences``, ``alert_acks`` and
             ``cash_flows`` (the booked amount a later correction nets
             against, one :data:`_CASH_FLOW_KEYS` entry per record id).
             ``positions`` is :meth:`PositionBook.to_obj` (the fill logs);
@@ -1542,6 +1616,8 @@ class SeriesState:
             "open_ticks": [start.to_obj() for start in self._open_ticks.values()],
             "tick_plans": _jsonable(self._tick_plans),
             "last_trip": None if self._last_trip is None else dict(self._last_trip),
+            "silences": [silence.to_obj() for silence in self._silences.values()],
+            "alert_acks": [ack.to_obj() for ack in self._alert_acks.values()],
             "cash_flows": {
                 record_id: dict(zip(_CASH_FLOW_KEYS, _jsonable(booked)))
                 for record_id, booked in self._cash_flows.items()
@@ -1607,7 +1683,8 @@ class SeriesState:
         for name in ("working", "pending_control", "monitor_state", "tick_plans",
                      "balances", "cash_flows"):
             _check_dict(problems, f"snapshot.state.{name}", state[name])
-        for name in ("pending", "decision_history", "guard_holds", "open_ticks"):
+        for name in ("pending", "decision_history", "guard_holds", "open_ticks",
+                     "silences", "alert_acks"):
             if not isinstance(state[name], list):
                 problems.append(f"snapshot.state.{name} must be a list, got {state[name]!r}")
         if state["breaker"] not in BREAKER_STATES:
@@ -1701,6 +1778,14 @@ class SeriesState:
                 for tick_id, plans in state["tick_plans"].items()
             },
             "_last_trip": None if state["last_trip"] is None else dict(state["last_trip"]),
+            "_silences": {
+                silence.silence_id: silence
+                for silence in (Silence.from_obj(obj) for obj in state["silences"])
+            },
+            "_alert_acks": {
+                ack.fingerprint: ack
+                for ack in (AlertAck.from_obj(obj) for obj in state["alert_acks"])
+            },
             "_cash_flows": cash_flows,
         }
 

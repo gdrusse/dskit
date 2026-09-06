@@ -40,10 +40,12 @@ import json
 import os
 from types import SimpleNamespace
 import signal
+import socket
 import subprocess
 import sys
 import threading
 import time
+import uuid
 
 import pytest
 
@@ -68,8 +70,10 @@ from dskit.production.health import (
     LedgerWritableProbe,
     ProbeResult,
     SignalHandler,
+    SystemdEmitter,
     UrlEmitter,
 )
+from dskit.pipeline.env import Secrets
 from dskit.production.ledger import ServeRoot
 from dskit.production.metrics import Metrics
 from dskit.production.records import Alert, FeedAge
@@ -215,6 +219,31 @@ class HangingProbe(HealthProbe):
         self.entered.set()
         self.released.wait(10)
         return ProbeResult(ok=True, at_ms=NOW_MS, detail="late")
+
+
+class LifecycleEmitter(HeartbeatEmitter):
+    """An emitter that records which lifecycle verbs it was told about."""
+
+    def __init__(self, params=None, *, error=None, **kw):
+        super().__init__(params, **kw)
+        self.error = error
+        self.lifecycle = []
+
+    def emit(self, payload):
+        """Nothing; this emitter's subject is the two hooks."""
+
+    def ready(self):
+        """Record the transition, raising if the test asked for a failure."""
+        self._note("ready")
+
+    def stopping(self):
+        """Record the transition, raising if the test asked for a failure."""
+        self._note("stopping")
+
+    def _note(self, verb):
+        self.lifecycle.append(verb)
+        if self.error is not None:
+            raise self.error
 
 
 class RecordingEmitter(HeartbeatEmitter):
@@ -1003,9 +1032,9 @@ def test_construction_starts_no_worker(clock):
 # --------------------------------------------------------------------------
 
 
-def test_the_emitter_registry_carries_exactly_the_two_kinds():
+def test_the_emitter_registry_carries_exactly_the_three_kinds():
     assert HEARTBEAT_KINDS.family == "heartbeat_emitter"
-    assert HEARTBEAT_KINDS.kinds() == ("file", "url")
+    assert HEARTBEAT_KINDS.kinds() == ("file", "systemd", "url")
     for name in HEARTBEAT_KINDS.kinds():
         assert issubclass(HEARTBEAT_KINDS.resolve(name), HeartbeatEmitter)
 
@@ -1279,3 +1308,230 @@ def test_a_waiting_process_notices_a_signal_within_one_second():
     # sleep slicing, whose bound is a named constant — pinned here so a
     # change to it is a change to this promise.
     assert MAX_SLEEP_SLICE_S <= 1.0
+
+
+# --------------------------------------------------------------------------
+# §5.11.2 — the lifecycle hooks and the systemd emitter
+# --------------------------------------------------------------------------
+
+
+class Listener:
+    """A real `AF_UNIX` `SOCK_DGRAM` socket, bound where the test says.
+
+    No network: an abstract or filesystem unix socket is a local kernel
+    object, which is what makes the `@`-to-NUL translation testable at all
+    rather than by reading the implementation back to itself.
+    """
+
+    def __init__(self, address):
+        self.address = address
+        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.socket.bind(address)
+        self.socket.settimeout(2.0)
+
+    def datagrams(self, expected=1):
+        """Read `expected` datagrams as text, failing the test on a timeout."""
+        return [self.socket.recv(4096).decode("utf-8") for _ in range(expected)]
+
+    def close(self):
+        self.socket.close()
+
+
+@pytest.fixture
+def abstract_socket():
+    """A listener on a Linux abstract socket, named the way systemd does."""
+    address = "\0dskit-production-test-" + uuid.uuid4().hex
+    listener = Listener(address)
+    yield listener, "@" + address[1:]
+    listener.close()
+
+
+@pytest.fixture
+def path_socket(tmp_path):
+    """A listener on a filesystem socket path."""
+    address = str(tmp_path / "notify.sock")
+    listener = Listener(address)
+    yield listener, address
+    listener.close()
+
+
+def systemd(notify_socket, params=None):
+    """A `SystemdEmitter` whose `NOTIFY_SOCKET` the test dictates."""
+    values = {} if notify_socket is None else {"NOTIFY_SOCKET": notify_socket}
+    return SystemdEmitter(params, secrets=Secrets(values))
+
+
+def test_the_two_lifecycle_hooks_are_concrete_and_do_nothing_by_default():
+    """§5.11.2: "two CONCRETE lifecycle hooks that do nothing by default",
+    so no existing subclass changes — an ABC hook would have broken every
+    child emitter written against phase 1."""
+
+    class Bare(HeartbeatEmitter):
+        def emit(self, payload):
+            pass
+
+    emitter = Bare(None)
+    assert emitter.ready() is None
+    assert emitter.stopping() is None
+    assert "ready" not in HeartbeatEmitter.__abstractmethods__
+    assert "stopping" not in HeartbeatEmitter.__abstractmethods__
+
+
+def test_the_file_and_url_emitters_ignore_both_hooks(serve, clock):
+    """The two phase-1 emitters have no lifecycle to report, and calling a
+    hook on one must not write, POST or raise."""
+    emitter = FileEmitter(None, path=serve.heartbeat_path)
+    assert emitter.ready() is None and emitter.stopping() is None
+    assert not os.path.exists(serve.heartbeat_path)
+    transport = FakeTransport()
+    url = UrlEmitter({"url_env": URL_ENV}, transport=transport, secrets=Env())
+    assert url.ready() is None and url.stopping() is None
+    assert transport.calls == []
+
+
+def test_the_systemd_emitter_refuses_an_unset_notify_socket():
+    """§5.11.2: "a heartbeat that silently emits nothing is precisely the
+    failure D18 exists to prevent, and systemd's own watchdog would then be
+    the thing that never fires"."""
+    with pytest.raises(ProductionError) as excinfo:
+        systemd(None)
+    assert "NOTIFY_SOCKET" in str(excinfo.value)
+    with pytest.raises(ProductionError):
+        systemd("")
+
+
+def test_the_systemd_emitter_refuses_an_address_systemd_could_never_use():
+    """sd_notify's own rule: an absolute path or an abstract `@` name. A
+    relative path can never be connected to, so refusing it at
+    construction is the same refusal as refusing an unset variable."""
+    with pytest.raises(ProductionError) as excinfo:
+        systemd("notify.sock")
+    assert "notify.sock" in str(excinfo.value)
+
+
+def test_the_systemd_emitter_needs_the_secrets_collaborator():
+    with pytest.raises(ProductionError):
+        SystemdEmitter(None)
+
+
+def test_the_systemd_emitter_is_default_deny_over_its_params():
+    with pytest.raises(ProductionError):
+        systemd("/run/systemd/notify", params={"nonsuch": 1})
+
+
+def test_construction_opens_no_socket(path_socket):
+    """Construction validates configuration only (§5.11): a socket opened
+    at construction would make an emitter's health a constructor side
+    effect."""
+    listener, address = path_socket
+    systemd(address)
+    listener.socket.settimeout(0.05)
+    with pytest.raises(OSError):
+        listener.socket.recv(4096)
+
+
+def test_emit_sends_watchdog_and_a_one_line_status(path_socket):
+    listener, address = path_socket
+    emitter = systemd(address)
+    emitter.emit(HeartbeatPayload(process_id="proc-a", sequence=3, at_ms=NOW_MS,
+                                  status="ready"))
+    (datagram,) = listener.datagrams()
+    lines = datagram.split("\n")
+    assert lines[0] == "WATCHDOG=1"
+    assert len(lines) == 2 and lines[1].startswith("STATUS=")
+    for field in ("proc-a", "3", "ready", str(NOW_MS)):
+        assert field in lines[1]
+
+
+def test_a_leading_at_names_an_abstract_socket_and_becomes_a_nul(abstract_socket):
+    """§5.11.2's one piece of protocol detail, and the reason it is stated:
+    an emitter that sent to the literal `@name` would reach nothing, and
+    nothing would say so."""
+    listener, notify_socket = abstract_socket
+    assert notify_socket.startswith("@")
+    systemd(notify_socket).emit(
+        HeartbeatPayload(process_id="proc-a", sequence=1, at_ms=NOW_MS, status="ready")
+    )
+    (datagram,) = listener.datagrams()
+    assert datagram.startswith("WATCHDOG=1")
+
+
+def test_the_status_line_never_carries_a_newline(path_socket):
+    """A datagram is KEY=value lines, so a status carrying a newline would
+    forge a second assignment systemd would then act on."""
+    listener, address = path_socket
+    systemd(address).emit(
+        HeartbeatPayload(process_id="proc\na", sequence=1, at_ms=NOW_MS, status="ready")
+    )
+    (datagram,) = listener.datagrams()
+    assert len(datagram.split("\n")) == 2
+
+
+def test_ready_and_stopping_send_the_two_systemd_notifications(path_socket):
+    listener, address = path_socket
+    emitter = systemd(address)
+    emitter.ready()
+    emitter.stopping()
+    assert listener.datagrams(2) == ["READY=1", "STOPPING=1"]
+
+
+def test_a_send_failure_never_raises_an_os_error_and_is_counted(tmp_path, clock):
+    """§5.11.2: "`emit` never raises; a send failure is counted like any
+    other emitter's". `Heartbeat.failures` is the only counter there is,
+    and it counts an emitter that RAISES — so the failure arrives as the
+    `ProductionError` every emitter reports a failure with, never as the
+    bare `OSError` the socket produced."""
+    emitter = systemd(str(tmp_path / "nothing-listens.sock"))
+    payload = HeartbeatPayload(process_id="proc-a", sequence=1, at_ms=NOW_MS, status="ready")
+    with pytest.raises(ProductionError):
+        emitter.emit(payload)
+    beat = a_heartbeat({"sd": emitter}, clock, ready_health(clock))
+    assert beat.beat(NOW_MS) is not None
+    assert beat.failures == 1
+
+
+def test_neither_lifecycle_hook_raises_when_the_socket_is_gone(tmp_path):
+    """The loop calls these two OUTSIDE the heartbeat's own swallow, so a
+    raise here would fault a serve that is merely shutting down."""
+    emitter = systemd(str(tmp_path / "nothing-listens.sock"))
+    assert emitter.ready() is None
+    assert emitter.stopping() is None
+
+
+# -- the heartbeat's own fan-out -------------------------------------------
+
+
+def test_the_heartbeat_reports_ready_once_however_often_it_is_told(clock):
+    """The loop asks at every tick whose health is ready; the heartbeat
+    owns "first", so the loop keeps no state of its own."""
+    emitter = LifecycleEmitter(None)
+    beat = a_heartbeat({"sd": emitter}, clock, ready_health(clock))
+    beat.ready()
+    beat.ready()
+    assert emitter.lifecycle == ["ready"]
+
+
+def test_the_heartbeat_reports_stopping_once(clock):
+    emitter = LifecycleEmitter(None)
+    beat = a_heartbeat({"sd": emitter}, clock, ready_health(clock))
+    beat.stopping()
+    beat.stopping()
+    assert emitter.lifecycle == ["stopping"]
+
+
+def test_the_heartbeat_fans_a_lifecycle_verb_out_to_every_emitter(clock):
+    emitters = {"a": LifecycleEmitter(None), "b": LifecycleEmitter(None)}
+    beat = a_heartbeat(emitters, clock, ready_health(clock))
+    beat.ready()
+    assert [e.lifecycle for e in emitters.values()] == [["ready"], ["ready"]]
+
+
+def test_a_failing_lifecycle_hook_is_counted_and_never_raised(clock):
+    """Same rule as `emit`: the loop calls these, and a stop that raised
+    would leave the process without its `process` stop record."""
+    failing = LifecycleEmitter(None, error=RuntimeError("no socket"))
+    healthy = LifecycleEmitter(None)
+    beat = a_heartbeat({"bad": failing, "good": healthy}, clock, ready_health(clock))
+    beat.ready()
+    assert beat.failures == 1
+    assert healthy.lifecycle == ["ready"]

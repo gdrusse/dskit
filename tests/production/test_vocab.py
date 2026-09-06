@@ -117,6 +117,10 @@ CLOSED_SET_NAMES = (
     "ALERT_SUPPRESSIONS",
     # Phase 2 (§8): the two hash algorithms a `Signer` may name (§5.12.1).
     "SIGNER_ALGORITHMS",
+    # Phase 2 (§5.11.2): the silence lifecycle a `Silence` DERIVES from its
+    # two instants, and the escalation ladder a document may climb.
+    "SILENCE_STATES",
+    "ESCALATION_LEVELS",
 )
 
 #: The names whose value is a MAP, not a tuple — checked by their own tests.
@@ -146,6 +150,19 @@ EXPECTED_MEMBERS = {
     "OUTCOME_KINDS": ("settled", "marked", "voided", "partial", "corrected"),
     "OUTCOME_SOURCES": ("settlement", "label", "operator"),
     "SIGNER_ALGORITHMS": ("sha256", "sha512"),
+    "SILENCE_STATES": ("pending", "active", "expired"),
+    "ESCALATION_LEVELS": ("primary", "secondary", "final"),
+    # §5.11.2 adds the two mechanisms that withhold a page an operator asked
+    # to be withheld; each still counts, like every other suppression.
+    "ALERT_SUPPRESSIONS": (
+        "dedup",
+        "group_wait",
+        "repeat_interval",
+        "rate_limit",
+        "queue_full",
+        "inhibited",
+        "silenced",
+    ),
     "RISK_EFFECTS": ("increase", "neutral", "reduce"),
     "OPERATIONS": ("submit", "cancel", "query", "reconcile"),
     "APPROVAL_PURPOSES": (
@@ -157,6 +174,10 @@ EXPECTED_MEMBERS = {
         "execute_flatten",
         "resume",
         "adopt",
+        # Phase 2 (§5.11.2): a page suppressed by an unauthenticated caller
+        # is an outage with no evidence, so both alert verbs are approvals.
+        "ack",
+        "silence",
     ),
     "ORDER_EVENTS": (
         "not_sent",
@@ -258,6 +279,10 @@ EXPECTED_MEMBERS = {
         # Phase 2 (§5.13.2): `outcomes` MUTATES — it appends `outcome`
         # records — so it takes §5.8's one path and carries no proof.
         "outcomes",
+        # Phase 2 (§5.11.2): both alert verbs are APPROVAL_PURPOSES members,
+        # so they arrive here through that tuple rather than beside it.
+        "ack",
+        "silence",
     ),
     "TICK_STATUSES": (
         "decided",
@@ -389,6 +414,21 @@ def test_rungs_are_exactly_four_in_ladder_order():
     assert "backtest" not in vocab.RUNGS
 
 
+def test_escalation_levels_are_three_rungs_in_climbing_order():
+    """§5.11.2: "levels are climbed in order and never skipped", so the
+    ORDER is the content — `primary` before `secondary` before `final`.
+    The names are closed for the same reason severities are: an operator
+    cannot invent a fourth rung whose delivery no test covers."""
+    assert vocab.ESCALATION_LEVELS == ("primary", "secondary", "final")
+
+
+def test_silence_states_run_from_pending_through_active_to_expired():
+    """§5.11.2: the three states `Silence.state_at` DERIVES from the two
+    instants. The order is chronological, which is what makes "the state
+    a stored field would have been wrong about" readable in one line."""
+    assert vocab.SILENCE_STATES == ("pending", "active", "expired")
+
+
 def test_verdict_order_is_the_allow_to_halt_lattice():
     assert vocab.VERDICTS == ("allow", "warn", "amend", "refuse", "hold", "halt")
     assert vocab.VERDICT_ORDER == {
@@ -490,10 +530,13 @@ def test_loop_states_carry_the_lifecycle_plus_halted_and_faulted():
     assert vocab.LOOP_STATES[0] == "init"
 
 
-def test_record_kinds_are_the_twenty_six_ledger_kinds_of_the_record_table():
+def test_record_kinds_are_the_twenty_eight_ledger_kinds_of_the_record_table():
     """§6's table names twenty-five; ruling R6 added `cancel_outcome`, so
     that a halting `trip` can be barriered BEFORE the cancel I/O and what
-    the cancel came to is still recorded."""
+    the cancel came to is still recorded. Phase 2 (§5.11.2) adds `silence`
+    and `alert_ack`: alert state rides in the fold, in whatever ledger the
+    document declared, never in an alert database beside it that could
+    disagree with the chain after a crash."""
     assert set(vocab.RECORD_KINDS) == {
         "process",
         "tick_start",
@@ -521,6 +564,8 @@ def test_record_kinds_are_the_twenty_six_ledger_kinds_of_the_record_table():
         "alert",
         "health",
         "snapshot",
+        "silence",
+        "alert_ack",
     }
 
 

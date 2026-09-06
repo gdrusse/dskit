@@ -149,7 +149,8 @@ dskit/production/
 ├── redact.py          secrets resolution; redact() on logs, alerts and reasons
 ├── document.py        ServeDocument; default-deny; the graded/excluded partition
 ├── release.py         ReleaseManifest; ReleaseReader; class/code/runtime fingerprints
-├── records.py         every value object: proposals, intents, permits, evidence
+├── records.py         every value object: proposals, intents, permits, evidence,
+│                      Silence/AlertAck + the matcher rules alerts.py shares
 ├── clock.py           Clock ABC; WallClock, TestClock, ReplayClock
 ├── sessions.py        Calendar ABC; AlwaysOpen, WeeklySessions, EventWindow, Composite
 ├── cadence.py         Cadence ABC; FixedInterval, AlignedBar, AtTimes, OnData; Overrun
@@ -167,12 +168,15 @@ dskit/production/
 ├── resilience.py      Classifier; Retry; CircuitBreaker; RateLimiter; Transport; Signer + HmacSigner
 ├── ledger.py          Ledger ABC + LEDGER_KINDS; ChainLedger (the chain itself); JsonlLedger;
 │                      Checkpoint; ServeRoot; chain + verify
-├── state.py           SeriesState (the sole fold); StateView; PositionBook; Recovery
+├── state.py           SeriesState (the sole fold, silences/alert_acks included);
+│                      StateView; PositionBook; Recovery
 ├── reconcile.py       Reconciler; breaks; adoption; LedgerHistory
 ├── monitors.py        Monitor ABC; reference/chunker/threshold strategies; families
 ├── metrics.py         counter/gauge/histogram registry; closed labels; JSONL flush
-├── alerts.py          AlertSink ABC; Log/Memory/Email/Webhook; AlertRouter
-├── health.py          health state machine; probes; heartbeat; instance lock; signals
+├── alerts.py          AlertSink ABC; Log/Memory/Email/Webhook; AlertRouter; InhibitRule
+│                      (silences and acks are read from the fold, never a second store)
+├── health.py          health state machine; probes; heartbeat (file/url/systemd, plus the
+│                      ready()/stopping() lifecycle hooks); instance lock; signals
 ├── ids.py             IdSource ABC; ReleaseIdSource; RecordedIdSource
 ├── bundles.py         the seven frozen collaborator bundles
 ├── leg.py             LegPipeline (the eight submission steps); the Authority family

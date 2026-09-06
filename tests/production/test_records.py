@@ -32,6 +32,7 @@ from dskit.production.vocab import (
     FILL_STATUSES,
     OUTCOME_KINDS,
     OUTCOME_SOURCES,
+    SILENCE_STATES,
     LEG_LATENCY_BUCKETS,
     MONEY_FIELDS,
     SIDES,
@@ -478,6 +479,20 @@ SAMPLES = {
         source="settlement",
         supersedes=None,
     ),
+    "Silence": records.Silence(
+        silence_id="018f0f4e-7b21-7d3a-9c31-6d8f36d806a1",
+        matchers={"source": "feed"},
+        starts_at_ms=MS,
+        ends_at_ms=MS + 3_600_000,
+        created_by=DIGEST_A,
+        comment="vendor maintenance window",
+    ),
+    "AlertAck": records.AlertAck(
+        fingerprint="feed-stale",
+        acknowledged_until_ms=MS + 3_600_000,
+        by=DIGEST_A,
+        reason="paging the vendor",
+    ),
     "DecidedLeg": records.DecidedLeg(
         leg_id="leg-1",
         tick_id="tick-1",
@@ -494,6 +509,12 @@ SAMPLES = {
 }
 
 RECORD_NAMES = tuple(sorted(SAMPLES))
+
+#: The public names of `records.py` that are not records: §5.11.2's two
+#: matcher rules, module functions because a `Silence` and an
+#: `alerts.InhibitRule` that matched differently would suppress different
+#: alerts for the same written matcher — and a second copy is the bug.
+PUBLIC_RULES = ("alert_labels", "label_match")
 
 
 def _decimal_field(sample):
@@ -1229,9 +1250,22 @@ def test_every_public_record_has_a_sample():
     """The sample table is what the eight generic contract tests walk, so
     a record added to `__all__` without one is a record whose frozenness,
     round trip, default-deny and money rule nobody checked — a pinning
-    test that omits a knob is worse than none (CLAUDE.md)."""
-    unsampled = [name for name in records.__all__ if name not in SAMPLES]
+    test that omits a knob is worse than none (CLAUDE.md).
+
+    §5.11.2 gave the module its first public names that are NOT records —
+    the two matcher rules a `Silence` and an `alerts.InhibitRule` must
+    share — so they are listed here rather than exempted by shape: an
+    unlisted non-record would otherwise slip past the walk that this test
+    exists to force."""
+    unsampled = [
+        name for name in records.__all__ if name not in SAMPLES and name not in PUBLIC_RULES
+    ]
     assert not unsampled, f"no sample for: {unsampled}"
+    for name in PUBLIC_RULES:
+        rule = getattr(records, name)
+        assert callable(rule) and not dataclasses.is_dataclass(rule), name
+    for name in SAMPLES:
+        assert dataclasses.is_dataclass(getattr(records, name)), name
 
 
 def test_records_exports_no_private_name():
@@ -1385,3 +1419,167 @@ def test_a_decided_leg_may_carry_no_quantity_and_never_a_float_one():
     with pytest.raises(ProductionError) as excinfo:
         a_decided_leg(qty=10.0)
     assert "float" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# `Silence` and `AlertAck` — §5.11.2's two operator value objects
+# ---------------------------------------------------------------------------
+
+
+def an_alert_record(**overrides):
+    """One `records.Alert`, with the fields a matcher test cares about named."""
+    fields = dict(
+        fingerprint="feed-stale",
+        severity="warning",
+        status="firing",
+        summary="feed degraded",
+        source="feed",
+        tick_id="tick-1",
+        at_ms=MS,
+        labels={"scope": "INS1"},
+    )
+    fields.update(overrides)
+    return records.Alert(**fields)
+
+
+def a_silence(**overrides):
+    """The sampled `Silence`, with overrides."""
+    fields = dict(
+        silence_id="req-1",
+        matchers={"source": "feed"},
+        starts_at_ms=MS,
+        ends_at_ms=MS + 3_600_000,
+        created_by=DIGEST_A,
+        comment="feed vendor maintenance window",
+    )
+    fields.update(overrides)
+    return records.Silence(**fields)
+
+
+def an_ack(**overrides):
+    """The sampled `AlertAck`, with overrides."""
+    fields = dict(
+        fingerprint="feed-stale",
+        acknowledged_until_ms=MS + 3_600_000,
+        by=DIGEST_A,
+        reason="paging the vendor",
+    )
+    fields.update(overrides)
+    return records.AlertAck(**fields)
+
+
+def test_a_silence_carries_the_six_fields_section_5_16_walks_and_no_state():
+    """§5.11.2: "six fields, and no `state` among them" — a stored state
+    would be wrong from the moment nothing wrote it and no process is
+    scheduled to."""
+    assert [f.name for f in dataclasses.fields(records.Silence)] == [
+        "silence_id",
+        "matchers",
+        "starts_at_ms",
+        "ends_at_ms",
+        "created_by",
+        "comment",
+    ]
+    assert "state" not in {f.name for f in dataclasses.fields(records.Silence)}
+    assert "state" not in a_silence().to_obj()
+
+
+def test_state_at_derives_all_three_states_from_the_two_instants_alone():
+    """The whole argument for deriving rather than storing: one object,
+    three answers, and which one you get depends only on WHEN you ask."""
+    silence = a_silence(starts_at_ms=MS, ends_at_ms=MS + 1_000)
+    assert silence.state_at(MS - 1) == "pending"
+    assert silence.state_at(MS) == "active"
+    assert silence.state_at(MS + 999) == "active"
+    assert silence.state_at(MS + 1_000) == "expired"
+    assert silence.state_at(MS + 10_000) == "expired"
+    assert set(SILENCE_STATES) == {silence.state_at(t) for t in (MS - 1, MS, MS + 1_000)}
+
+
+def test_active_at_is_the_one_owner_of_what_active_means():
+    """The router asks a question rather than comparing a string, so the
+    `active` spelling lives in exactly one place."""
+    silence = a_silence(starts_at_ms=MS, ends_at_ms=MS + 1_000)
+    for at_ms in (MS - 1, MS, MS + 999, MS + 1_000):
+        assert silence.active_at(at_ms) is (silence.state_at(at_ms) == "active")
+
+
+def test_a_silence_that_ends_before_it_begins_refuses():
+    with pytest.raises(ProductionError):
+        a_silence(starts_at_ms=MS, ends_at_ms=MS)
+    with pytest.raises(ProductionError):
+        a_silence(starts_at_ms=MS, ends_at_ms=MS - 1)
+
+
+def test_a_silence_with_no_matcher_refuses():
+    """A silence matching everything is a global mute, and nothing on the
+    record would say it was meant to be one."""
+    with pytest.raises(ProductionError):
+        a_silence(matchers={})
+
+
+def test_a_silence_round_trips_and_is_default_deny():
+    silence = a_silence()
+    assert records.Silence.from_obj(silence.to_obj()) == silence
+    with pytest.raises(ProductionError):
+        records.Silence.from_obj({**silence.to_obj(), "state": "active"})
+
+
+def test_a_silence_matches_on_the_alert_labels_and_its_closed_fields():
+    silence = a_silence(matchers={"source": "feed", "scope": "INS1"})
+    assert silence.matches(an_alert_record(labels={"scope": "INS1"})) is True
+    assert silence.matches(an_alert_record(labels={"scope": "INS2"})) is False
+    assert silence.matches(an_alert_record(source="monitor", labels={"scope": "INS1"})) is False
+
+
+def test_an_alerts_matchable_labels_are_its_own_plus_three_closed_fields():
+    """§5.11.2 matches on "label matchers", and an alert's identity lives
+    half in `labels` and half in the closed fields beside it. One derived
+    space, one owner, so a silence and an inhibit rule cannot disagree."""
+    alert = an_alert_record(labels={"scope": "INS1"})
+    assert records.alert_labels(alert) == {
+        "scope": "INS1",
+        "fingerprint": alert.fingerprint,
+        "severity": alert.severity,
+        "source": alert.source,
+    }
+
+
+def test_a_declared_label_never_shadows_the_closed_field_of_the_same_name():
+    """The fields are the closed truth; a label that spells one of their
+    names would otherwise let an alert lie about its own severity."""
+    alert = an_alert_record(severity="critical", labels={"severity": "info"})
+    assert records.alert_labels(alert)["severity"] == "critical"
+
+
+def test_label_match_is_exact_equality_over_every_named_label():
+    assert records.label_match({"a": "1"}, {"a": "1", "b": "2"}) is True
+    assert records.label_match({"a": "1", "b": "2"}, {"a": "1"}) is False
+    assert records.label_match({"a": "1"}, {"a": "2"}) is False
+    assert records.label_match({}, {"a": "1"}) is True
+
+
+def test_an_alert_ack_carries_the_four_fields_section_5_16_walks():
+    assert [f.name for f in dataclasses.fields(records.AlertAck)] == [
+        "fingerprint",
+        "acknowledged_until_ms",
+        "by",
+        "reason",
+    ]
+
+
+def test_an_ack_holds_until_its_instant_and_not_after():
+    """§5.11.2: "the ack lapses at `acknowledged_until_ms`". The rule has
+    one owner, so the router never compares the instant itself."""
+    ack = an_ack(acknowledged_until_ms=MS + 1_000)
+    assert ack.holds_at(MS) is True
+    assert ack.holds_at(MS + 999) is True
+    assert ack.holds_at(MS + 1_000) is False
+    assert ack.holds_at(MS + 1) is True
+
+
+def test_an_ack_round_trips_and_is_default_deny():
+    ack = an_ack()
+    assert records.AlertAck.from_obj(ack.to_obj()) == ack
+    with pytest.raises(ProductionError):
+        records.AlertAck.from_obj({**ack.to_obj(), "until": 1})

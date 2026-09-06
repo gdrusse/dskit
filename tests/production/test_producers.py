@@ -70,6 +70,8 @@ from dskit.production.outcomes import OutcomeJoin, OutcomeSource
 from dskit.production.readiness import Readiness
 from dskit.production.reconcile import LedgerHistory
 from dskit.production.records import (
+    AlertAck,
+    Silence,
     AccountState,
     ActPermit,
     Candidate,
@@ -103,6 +105,16 @@ from dskit.production.state import (
 #: "whichever phase refused". Resolution skips these; completeness does not,
 #: so the field still has to be accounted for.
 STEP = "<step>"
+
+#: The second sentinel, and §5.11.2 is why it exists. Both operator records
+#: are filled from the CONSUMED CONTROL COMMAND — its `request_id`, its
+#: `queued_at_ms`, the payload the maker signed and the principal digest
+#: derived from it — and a command is a dict on the wire, not a class any
+#: `getattr` walk can resolve against. Attributing those fields to `<step>`
+#: would say they were a step's own verdict, which they are not: they are
+#: an operator's, and the difference is exactly what an authenticated act
+#: means.
+COMMAND = "<command>"
 
 #: The first segment of every path: the seven bundles of §5.16, the leg's
 #: bindings, the two values every constructor takes, and the records the table
@@ -395,6 +407,17 @@ PRODUCERS = {
             "expected_value", "reference_price", "qty", "tick_id", "decided_at_ms",
         )
     },
+    # --- Silence and AlertAck — the consumed control command, entire ------
+    **{
+        ("Silence", name): COMMAND
+        for name in (
+            "silence_id", "matchers", "starts_at_ms", "ends_at_ms", "created_by", "comment",
+        )
+    },
+    **{
+        ("AlertAck", name): COMMAND
+        for name in ("fingerprint", "acknowledged_until_ms", "by", "reason")
+    },
     # --- Provenance — from the EntryBatch and the QuoteSet -----------------
     ("Provenance", "inputs_asof_ms"): "EntryBatch.data_asof_ms",
     ("Provenance", "inputs_digest"): "EntryBatch.inputs_digest",
@@ -405,12 +428,14 @@ PRODUCERS = {
 
 #: The records §5.16 walks. Extending the table extends the test, which is
 #: the intended way to add one — twelve in phase 1, plus §5.13.2's `Outcome`
-#: and `DecidedLeg`; the remaining phase-2 rows (`Attribution`,
-#: `CalibrationReport`, `ValuePoint`, `ParityDiff`, the alert-state records)
-#: join this tuple when the classes they name exist.
+#: and `DecidedLeg` and §5.11.2's `Silence` and `AlertAck`; the remaining
+#: phase-2 rows (`Attribution`, `CalibrationReport`, `ValuePoint`,
+#: `ParityDiff`) join this tuple when the classes they name exist.
 WALKED = (
     Outcome,
     DecidedLeg,
+    Silence,
+    AlertAck,
     DecisionPlan,
     LegResult,
     ActPermit,
@@ -495,7 +520,7 @@ def resolve(path):
 
 @pytest.mark.parametrize(
     "record,field",
-    sorted(key for key, path in PRODUCERS.items() if path != STEP),
+    sorted(key for key, path in PRODUCERS.items() if path not in (STEP, COMMAND)),
     ids=lambda value: value,
 )
 def test_every_producer_path_resolves_against_the_built_classes(record, field):
@@ -546,6 +571,20 @@ def test_the_table_walks_exactly_the_records_it_declares():
     """No row may name a record the walk does not cover: a record with a
     partial table would look complete while proving nothing."""
     assert {rec for rec, _field in PRODUCERS} == {cls.__name__ for cls in WALKED}
+
+
+def test_the_command_sentinel_is_used_only_for_the_two_operator_records():
+    """§5.11.2's `silence` and `ack` are the only verbs whose whole record
+    is the operator's own act, so they are the only rows the second
+    sentinel may carry. A field of any other record claiming to come from
+    a command would be a producer nobody can point at."""
+    assert {rec for (rec, _f), path in PRODUCERS.items() if path == COMMAND} == {
+        "Silence",
+        "AlertAck",
+    }
+    for record in (Silence, AlertAck):
+        named = {f for (rec, f) in PRODUCERS if rec == record.__name__}
+        assert named == {f.name for f in dataclasses.fields(record)}
 
 
 def test_the_sentinel_is_used_only_where_the_table_names_a_step():

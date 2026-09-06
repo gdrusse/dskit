@@ -46,6 +46,7 @@ import fcntl
 import json
 import os
 import signal
+import socket
 import tempfile
 import threading
 from abc import ABC, abstractmethod
@@ -72,6 +73,7 @@ from dskit.production.redact import get_logger, redact
 
 __all__ = [
     "DEAD_CAUSE",
+    "ABSTRACT_PREFIX",
     "DEFAULT_EMIT_TIMEOUT_S",
     "DEFAULT_IN_DEGRADED",
     "DEFAULT_PROBE_TIMEOUT_S",
@@ -86,9 +88,11 @@ __all__ = [
     "HeartbeatPayload",
     "InstanceLock",
     "LedgerWritableProbe",
+    "NOTIFY_SOCKET_ENV",
     "PROBE_KINDS",
     "ProbeResult",
     "SignalHandler",
+    "SystemdEmitter",
     "UrlEmitter",
 ]
 
@@ -101,11 +105,26 @@ DEFAULT_PROBE_TIMEOUT_S = 1.0
 DEFAULT_EMIT_TIMEOUT_S = 5.0
 #: The cause the heartbeat's dead-man check latches health with.
 DEAD_CAUSE = "tick_dead"
+#: The environment variable systemd sets to the notification socket, and
+#: the only place a ``systemd`` emitter looks for it (§5.11.2).
+NOTIFY_SOCKET_ENV = "NOTIFY_SOCKET"
+#: systemd's spelling for an abstract (unnamed-in-the-filesystem) socket:
+#: a leading ``@`` that the address must carry as a leading NUL.
+ABSTRACT_PREFIX = "@"
 
 _NOTES = ("notes",)
 _MS_PER_S = 1000
 _JSON_HEADERS = {"Content-Type": "application/json"}
 _STARTING, _READY, _DEGRADED, _UNHEALTHY, _STOPPING = vocab.HEALTH_STATES
+#: The two lifecycle transitions the loop reports to the emitters — health
+#: states both, which is what pins their spelling to ``HEALTH_STATES``
+#: rather than to a tuple of literals here.
+_LIFECYCLE_VERBS = (_READY, _STOPPING)
+#: The two systemd assignments those verbs send, and the watchdog ping.
+_SD_LIFECYCLE = {_READY: "READY=1", _STOPPING: "STOPPING=1"}
+_SD_WATCHDOG = "WATCHDOG=1"
+_SD_STATUS = "STATUS="
+_SD_SEPARATOR = "\n"
 #: The states nothing but a restart leaves.
 _LATCHED = (_UNHEALTHY, _STOPPING)
 #: What a failing probe of each scope makes the process (D18).
@@ -820,6 +839,30 @@ class HeartbeatEmitter(_Configured):
             Raise to report a failure; the heartbeat swallows and counts it.
         """
 
+    def ready(self):
+        """Report that the process has become ready; nothing by default.
+
+        Called by the loop through :meth:`Heartbeat.ready` on the health
+        machine's FIRST ``ready``. Concrete rather than abstract so no
+        emitter written against phase 1 changes (§5.11.2).
+
+        Returns
+        -------
+        None
+        """
+
+    def stopping(self):
+        """Report that the process is stopping; nothing by default.
+
+        Called by the loop through :meth:`Heartbeat.stopping` on entering
+        ``stopping``, outside the heartbeat's own swallow — so an emitter
+        that overrides this must not let a failure escape.
+
+        Returns
+        -------
+        None
+        """
+
 
 class FileEmitter(HeartbeatEmitter):
     """``file``: rewrite ``heartbeat.json`` atomically and durably on every beat.
@@ -926,6 +969,115 @@ class UrlEmitter(HeartbeatEmitter):
             raise ProductionError([f"heartbeat url answered HTTP {status}"])
 
 
+class SystemdEmitter(HeartbeatEmitter):
+    """``systemd``: ``sd_notify`` on the ``NOTIFY_SOCKET`` datagram socket (§5.11.2).
+
+    One datagram per beat carrying ``WATCHDOG=1`` and a one-line
+    ``STATUS=``, and one per lifecycle transition carrying ``READY=1`` or
+    ``STOPPING=1``. The address comes from ``NOTIFY_SOCKET``, which systemd
+    sets for a unit with ``NotifyAccess``; a leading ``@`` names an
+    abstract socket and becomes a NUL.
+
+    An UNSET or unusable ``NOTIFY_SOCKET`` refuses at construction. A
+    heartbeat that silently emits nothing is precisely the failure D18
+    exists to prevent, and systemd's own watchdog would then be the thing
+    that never fires — so the process refuses to start rather than run
+    unwatched. Nothing is opened at construction (§5.11): the socket is
+    created per send, exactly as ``sd_notify`` does.
+
+    A send failure is reported the way every emitter reports one — as a
+    ``ProductionError``, which :class:`Heartbeat` swallows and counts — so
+    the socket's own ``OSError`` never escapes. The two lifecycle hooks
+    swallow instead, because the loop calls them outside that count.
+
+    Parameters
+    ----------
+    params : dict or None
+        No knobs; ``notes`` only. The address is systemd's to set, not the
+        document's to declare.
+    secrets : dskit.pipeline.env.Secrets
+        Required; the one door to the process environment.
+
+    Examples
+    --------
+    ::
+
+        emitter = SystemdEmitter(None, secrets=resolve_secrets(document.env))
+        emitter.ready()                                        # READY=1
+        emitter.emit(HeartbeatPayload("proc-a", 1, 0, "ready"))  # WATCHDOG=1 + STATUS=
+    """
+
+    def __init__(self, params, *, secrets=None):
+        super().__init__(params)
+        problems = []
+        address = None if secrets is None else secrets.get(NOTIFY_SOCKET_ENV)
+        if secrets is None:
+            problems.append("a systemd emitter requires the secrets collaborator")
+        elif not address:
+            problems.append(
+                f"{NOTIFY_SOCKET_ENV} is unset: a systemd heartbeat with nowhere to send "
+                "emits nothing, and systemd's own watchdog would never fire (D18)"
+            )
+        elif not address.startswith((os.sep, ABSTRACT_PREFIX)):
+            problems.append(
+                f"{NOTIFY_SOCKET_ENV} {address!r} is neither an absolute path nor an "
+                f"abstract {ABSTRACT_PREFIX!r} name: systemd could never be reached at it"
+            )
+        if problems:
+            raise ProductionError(problems)
+        self._address = self._resolved(address)
+
+    @staticmethod
+    def _resolved(address):
+        """Return the socket address, an abstract name's ``@`` turned into its NUL."""
+        if address.startswith(ABSTRACT_PREFIX):
+            return "\0" + address[len(ABSTRACT_PREFIX):]
+        return address
+
+    def emit(self, payload):
+        """Send ``WATCHDOG=1`` and the status line; see :meth:`HeartbeatEmitter.emit`.
+
+        Raises
+        ------
+        ProductionError
+            When the datagram could not be sent — counted by
+            :class:`Heartbeat` like any other emitter's failure.
+        """
+        message = _SD_SEPARATOR.join((_SD_WATCHDOG, _SD_STATUS + self._status(payload)))
+        try:
+            self._send(message)
+        except OSError as exc:
+            raise ProductionError(
+                [redact(f"the systemd notify socket refused the beat: {type(exc).__name__}: {exc}")]
+            ) from exc
+
+    def ready(self):
+        """Send ``READY=1``; a failure is swallowed (the loop calls this)."""
+        self._send_quietly(_SD_LIFECYCLE[_READY])
+
+    def stopping(self):
+        """Send ``STOPPING=1``; a failure is swallowed (the loop calls this)."""
+        self._send_quietly(_SD_LIFECYCLE[_STOPPING])
+
+    def _status(self, payload):
+        """Render the masked payload as ONE line: a newline would forge a second assignment."""
+        body = self.body(payload)
+        return " ".join(" ".join(f"{key}={value}".split()) for key, value in body.items())
+
+    def _send(self, message):
+        """Send one datagram to the notify socket, opened and closed here."""
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.sendto(message.encode("utf-8"), self._address)
+
+    def _send_quietly(self, message):
+        """Send one datagram, counting nothing and raising nothing."""
+        try:
+            self._send(message)
+        except OSError as exc:
+            _log.warning("systemd notification not sent: %s",
+                         redact(f"{type(exc).__name__}: {exc}"))
+
+
 class Heartbeat:
     """Emit ``{process_id, sequence, at_ms, status}`` at ``every_s``; stop when the loop is dead.
 
@@ -996,6 +1148,7 @@ class Heartbeat:
         self._last_beat_ms = None
         self._sequence = 0
         self._failures = 0
+        self._reported = set()
         self._stop = threading.Event()
         self._thread = None
 
@@ -1066,6 +1219,43 @@ class Heartbeat:
                 )
         self._last_beat_ms = now_ms
         return payload
+
+    def ready(self):
+        """Tell every emitter, once, that the process has become ready.
+
+        The loop calls this at every tick whose health is ready and the
+        heartbeat owns "first", so the loop keeps no state of its own.
+
+        Returns
+        -------
+        None
+            A failing emitter is counted in :attr:`failures` and never
+            raised: the loop calls this outside its own error handling.
+        """
+        self._lifecycle(_READY)
+
+    def stopping(self):
+        """Tell every emitter, once, that the process is stopping.
+
+        Returns
+        -------
+        None
+            As :meth:`ready`.
+        """
+        self._lifecycle(_STOPPING)
+
+    def _lifecycle(self, verb):
+        """Fan one lifecycle verb out to every emitter, at most once per process."""
+        if verb in self._reported:
+            return
+        self._reported.add(verb)
+        for name, emitter in self._emitters.items():
+            try:
+                getattr(emitter, verb)()
+            except Exception as exc:  # an emitter's fault is counted, never raised
+                self._failures += 1
+                _log.warning("heartbeat %s not reported by %s: %s", verb, name,
+                             redact(f"{type(exc).__name__}: {exc}"))
 
     def start(self):
         """Run ``beat`` on one daemon worker every ``every_s`` seconds.
@@ -1282,4 +1472,5 @@ PROBE_KINDS.register("ledger-writable", LedgerWritableProbe)
 
 HEARTBEAT_KINDS = Registry("heartbeat_emitter", HeartbeatEmitter)
 HEARTBEAT_KINDS.register("file", FileEmitter)
+HEARTBEAT_KINDS.register("systemd", SystemdEmitter)
 HEARTBEAT_KINDS.register("url", UrlEmitter)

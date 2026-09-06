@@ -33,7 +33,7 @@ from decimal import Decimal
 import pytest
 
 from dskit.production.accounting import Accounting, PaperAccounting
-from dskit.production.alerts import AlertRouter
+from dskit.production.alerts import DEFAULT_MAX_SILENCE_S, AlertRouter
 from dskit.production.arming import (
     ApprovalVerifier,
     Arming,
@@ -84,7 +84,7 @@ from dskit.production.outcomes import OutcomeJoin, OutcomeSource, SettlementOutc
 from dskit.production.policy import ActionPolicy, TransitionPolicy
 from dskit.production.readiness import Readiness
 from dskit.production.reconcile import Reconciler
-from dskit.production.records import ExecutionScope, Outcome
+from dskit.production.records import Alert, ExecutionScope, Outcome, Silence
 from dskit.production.sessions import AlwaysOpen
 from dskit.production.state import SeriesState
 from dskit.production.verifier import SubmissionVerifier
@@ -103,6 +103,10 @@ SIMULATED_RUNGS = ("shadow", "paper")
 #: A 64-hex release hash for a synthetic command — the inbox refuses
 #: anything that is not a sha256 digest.
 COMMAND_RELEASE = canonical_hash("compose-command-release")
+
+#: `Silence`'s own six fields, so a test can lift them back out of a §6
+#: body that also carries the three control keys.
+SILENCE_FIELDS = tuple(f.name for f in dataclasses.fields(Silence))
 
 #: The core executor kind each simulated rung selects, and the class it
 #: must resolve to. Restated, for the same reason.
@@ -1571,3 +1575,231 @@ def test_the_signer_is_a_rung_family_hook_not_a_branch(serve_document, tmp_path)
     live = RUNG_TABLE["live"].build
     assert simulated.signer(document, None) is None
     assert type(live).signer is not type(simulated).signer
+
+
+# ==========================================================================
+# The two alert verbs, and the router's fold collaborators (§5.11.2)
+# ==========================================================================
+
+
+def with_alerting(document, **knobs):
+    """The same document with `alerting` knobs set (or removed when None)."""
+    obj = document.to_obj()
+    for key, value in knobs.items():
+        if value is None:
+            obj["alerting"].pop(key, None)
+        else:
+            obj["alerting"][key] = value
+    return ServeDocument.from_obj(obj)
+
+
+def silence_command(matchers=None, until_ms=None, comment="vendor window", **kw):
+    """One consumed `silence` command."""
+    payload = {
+        "matchers": dict(matchers if matchers is not None else {"source": "feed"}),
+        "ends_at_ms": NOW_MS + 3_600_000 if until_ms is None else until_ms,
+        "comment": comment,
+    }
+    return command("silence", payload, **kw)
+
+
+def ack_command(fingerprint="feed-stale", for_ms=None, reason="paging the vendor", **kw):
+    """One consumed `ack` command."""
+    payload = {"fingerprint": fingerprint, "reason": reason}
+    if for_ms is not None:
+        payload["for_ms"] = for_ms
+    return command("ack", payload, **kw)
+
+
+def test_the_silence_handler_returns_the_record_the_processor_appends(
+    shadow_document, shadow_bundles, release_manifest
+):
+    """§5.16: `silence_id` is the command's `request_id`, `starts_at_ms` is
+    the CONSUMED COMMAND's `queued_at_ms` — never the handler's clock, so a
+    crash-replayed command is byte-identical and the ledger dedups it."""
+    handlers = handlers_for(shadow_document, shadow_bundles, release=release_manifest)
+    consumed = silence_command()
+    records, status, _reason = handlers["silence"](consumed, shadow_bundles[5].state.snapshot())
+    assert status == "applied"
+    (record,) = records
+    assert record["kind"] == "silence"
+    assert record["id"] == f"silence:{consumed['request_id']}"
+    body = record["body"]
+    assert body["silence_id"] == consumed["request_id"]
+    assert body["starts_at_ms"] == consumed["queued_at_ms"]
+    assert body["ends_at_ms"] == NOW_MS + 3_600_000
+    assert body["matchers"] == {"source": "feed"}
+    assert body["comment"] == "vendor window"
+    assert body["control_request_id"] == consumed["request_id"]
+    assert len(body["proof_digest"]) == 64 and len(body["principal_digest"]) == 64
+    assert body["created_by"] == body["principal_digest"]
+    assert Silence.from_obj({k: v for k, v in body.items() if k in SILENCE_FIELDS})
+
+
+def test_a_replayed_silence_command_produces_a_byte_identical_body(
+    shadow_document, shadow_bundles, release_manifest
+):
+    handlers = handlers_for(shadow_document, shadow_bundles, release=release_manifest)
+    consumed = silence_command()
+    view = shadow_bundles[5].state.snapshot()
+    first, _s, _r = handlers["silence"](consumed, view)
+    second, _s, _r = handlers["silence"](consumed, view)
+    assert first == second
+
+
+def test_the_silence_handler_refuses_a_window_with_no_end(
+    shadow_document, shadow_bundles, release_manifest
+):
+    """§5.11.2: "an unbounded silence refuses ... because a silence with no
+    end is how a page is lost forever"."""
+    handlers = handlers_for(shadow_document, shadow_bundles, release=release_manifest)
+    consumed = silence_command()
+    consumed["payload"].pop("ends_at_ms")
+    records, status, reason = handlers["silence"](consumed, shadow_bundles[5].state.snapshot())
+    assert (records, status) == ((), "rejected")
+    assert "ends_at_ms" in reason
+
+
+def test_the_silence_handler_refuses_a_window_longer_than_the_document_allows(
+    shadow_document, release_manifest, composer
+):
+    document = with_alerting(shadow_document, max_silence_s=3600)
+    bundles = composer.build(document)
+    handlers = handlers_for(document, bundles, release=release_manifest)
+    consumed = silence_command(until_ms=NOW_MS + 7_200_000)
+    records, status, reason = handlers["silence"](consumed, bundles[5].state.snapshot())
+    assert (records, status) == ((), "rejected")
+    assert "max_silence_s" in reason
+
+
+def test_the_silence_bound_has_a_named_default_when_the_document_is_silent(
+    shadow_document, shadow_bundles, release_manifest
+):
+    """Every default is one named constant (§4.1). An undeclared bound is
+    still a bound: `ends_at_ms` is required and bounded either way."""
+    handlers = handlers_for(shadow_document, shadow_bundles, release=release_manifest)
+    view = shadow_bundles[5].state.snapshot()
+    inside = silence_command(until_ms=NOW_MS + DEFAULT_MAX_SILENCE_S * 1000 - 10_000)
+    assert handlers["silence"](inside, view)[1] == "applied"
+    outside = silence_command(until_ms=NOW_MS + DEFAULT_MAX_SILENCE_S * 1000 + 10_000)
+    assert handlers["silence"](outside, view)[1] == "rejected"
+
+
+def test_the_silence_handler_refuses_an_empty_matcher_set(
+    shadow_document, shadow_bundles, release_manifest
+):
+    handlers = handlers_for(shadow_document, shadow_bundles, release=release_manifest)
+    records, status, reason = handlers["silence"](
+        silence_command(matchers={}), shadow_bundles[5].state.snapshot()
+    )
+    assert (records, status) == ((), "rejected")
+    assert "matchers" in reason
+
+
+def test_the_ack_handler_returns_the_record_the_processor_appends(
+    shadow_document, shadow_bundles, release_manifest
+):
+    handlers = handlers_for(shadow_document, shadow_bundles, release=release_manifest)
+    consumed = ack_command(for_ms=3_600_000)
+    records, status, _reason = handlers["ack"](consumed, shadow_bundles[5].state.snapshot())
+    assert status == "applied"
+    (record,) = records
+    assert record["kind"] == "alert_ack"
+    assert record["id"] == f"alert_ack:{consumed['request_id']}"
+    body = record["body"]
+    assert body["fingerprint"] == "feed-stale"
+    assert body["acknowledged_until_ms"] == consumed["queued_at_ms"] + 3_600_000
+    assert body["by"] == body["principal_digest"]
+    assert body["reason"] == "paging the vendor"
+    assert body["control_request_id"] == consumed["request_id"]
+
+
+def test_an_ack_with_no_for_lasts_exactly_the_documents_bound(
+    shadow_document, release_manifest, composer
+):
+    """`--for` is optional in §7, and the only defensible default is the
+    longest the document already permits — anything else would be a second
+    threshold with no name."""
+    document = with_alerting(shadow_document, max_ack_s=1800)
+    bundles = composer.build(document)
+    handlers = handlers_for(document, bundles, release=release_manifest)
+    consumed = ack_command()
+    (record,), status, _reason = handlers["ack"](consumed, bundles[5].state.snapshot())
+    assert status == "applied"
+    assert record["body"]["acknowledged_until_ms"] == consumed["queued_at_ms"] + 1_800_000
+
+
+def test_the_ack_handler_refuses_a_window_longer_than_the_document_allows(
+    shadow_document, release_manifest, composer
+):
+    document = with_alerting(shadow_document, max_ack_s=1800)
+    bundles = composer.build(document)
+    handlers = handlers_for(document, bundles, release=release_manifest)
+    records, status, reason = handlers["ack"](
+        ack_command(for_ms=3_600_000), bundles[5].state.snapshot()
+    )
+    assert (records, status) == ((), "rejected")
+    assert "max_ack_s" in reason
+
+
+def test_the_ack_handler_refuses_a_command_that_names_no_fingerprint(
+    shadow_document, shadow_bundles, release_manifest
+):
+    handlers = handlers_for(shadow_document, shadow_bundles, release=release_manifest)
+    consumed = ack_command()
+    consumed["payload"].pop("fingerprint")
+    records, status, reason = handlers["ack"](consumed, shadow_bundles[5].state.snapshot())
+    assert (records, status) == ((), "rejected")
+    assert "fingerprint" in reason
+
+
+def test_both_alert_records_fold_and_reach_the_router_through_the_fold(
+    shadow_document, shadow_bundles, release_manifest
+):
+    """The end of the whole chain: a handler's record, appended by the
+    processor, folded by `SeriesState`, read by the router at the next
+    `process`. Nothing between them is a second store."""
+    recording, observability = shadow_bundles[5], shadow_bundles[6]
+    handlers = handlers_for(shadow_document, shadow_bundles, release=release_manifest)
+    (record,), _status, _reason = handlers["silence"](
+        silence_command(matchers={"source": "feed"}), recording.state.snapshot()
+    )
+    recording.ledger.append(record)
+    assert set(recording.state.silences()) == {record["body"]["silence_id"]}
+    router = observability.alerts
+    router.raise_alert(
+        Alert(fingerprint="feed-stale", severity="warning", status="firing",
+              summary="feed degraded", source="feed", tick_id=None, at_ms=NOW_MS, labels={})
+    )
+    assert router.process(NOW_MS) == ()
+
+
+def test_the_router_is_built_with_the_documents_inhibit_rules(
+    shadow_document, composer
+):
+    """The rules are resolved by the composition root exactly as the sinks
+    are — the router never reads the document for its own collaborators."""
+    document = with_alerting(
+        shadow_document,
+        inhibit=[{"source": {"severity": "critical"}, "target": {"severity": "warning"}}],
+    )
+    bundles = composer.build(document)
+    router = bundles[6].alerts
+    ledger = bundles[5].ledger
+    router.raise_alert(
+        Alert(fingerprint="venue-down", severity="critical", status="firing",
+              summary="link lost", source="executor", tick_id=None, at_ms=NOW_MS, labels={})
+    )
+    # The document names no `group_wait_s`, so the first alert fires one
+    # default group wait later; nothing can inhibit before that.
+    assert len(router.process(NOW_MS + 60_000)) == 1
+    router.raise_alert(
+        Alert(fingerprint="quote-wide", severity="warning", status="firing",
+              summary="spread", source="feed", tick_id=None, at_ms=NOW_MS, labels={})
+    )
+    assert router.process(NOW_MS + 60_000) == ()
+    suppressed = [
+        record for record in ledger.scan(kind="alert")
+        if record["body"]["suppressed"] == "inhibited"
+    ]
+    assert len(suppressed) == 1

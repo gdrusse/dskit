@@ -53,7 +53,13 @@ from types import MappingProxyType
 
 from dskit.onboarding import OnboardingRoot
 from dskit.production.accounting import ACCOUNTING_KINDS
-from dskit.production.alerts import ALERT_SINK_KINDS, AlertRouter
+from dskit.production.alerts import (
+    ALERT_SINK_KINDS,
+    DEFAULT_MAX_ACK_S,
+    DEFAULT_MAX_SILENCE_S,
+    AlertRouter,
+    InhibitRule,
+)
 from dskit.production.arming import (
     APPROVAL_KINDS,
     ArmApproval,
@@ -105,7 +111,7 @@ from dskit.production.outcomes import OUTCOME_SOURCE_KINDS, OutcomeJoin
 from dskit.production.policy import ActionPolicy, TransitionPolicy
 from dskit.production.readiness import Readiness
 from dskit.production.reconcile import LedgerHistory, Reconciler, enact
-from dskit.production.records import ReductionPlan
+from dskit.production.records import AlertAck, ReductionPlan, Silence
 from dskit.production.redact import get_logger, redact
 from dskit.production.resilience import SIGNER_KINDS, resilience_from_document
 from dskit.production.sessions import CALENDAR_KINDS
@@ -606,6 +612,18 @@ def _sinks(document, sections, resilience, clock, secrets):
     return built
 
 
+def _inhibits(document):
+    """Build the inhibition rules the document declares, in declared order.
+
+    The composition root resolves them exactly as it resolves the sinks:
+    the router is handed objects, never a document section to read for
+    itself (§5.16's spelling rule).
+    """
+    return tuple(
+        InhibitRule.from_section(entry) for entry in (document.alerting.inhibit or ())
+    )
+
+
 def _accepted(cls):
     """Return the keyword-only collaborator names a class's ``__init__`` chain declares."""
     names = set()
@@ -806,6 +824,9 @@ def bundles_for(
         clock=clock,
         metrics=metrics,
         ledger=ledger,
+        inhibits=_inhibits(document),
+        silences=state.silences,
+        acks=state.alert_acks,
     )
 
     lease = resolved["coordination.lease.uses"](_selector(document.coordination.lease), clock=clock)
@@ -1465,6 +1486,166 @@ class _Adopt(_Verb):
         return self.applied(reason=f"adopted {len(tuple(ids))} record(s)")
 
 
+class _SuppressionVerb(_Verb):
+    """The half ``ack`` and ``silence`` share: a window the document bounds.
+
+    Both are authenticated acts whose whole effect is to WITHHOLD a page,
+    and §5.11.2 bounds both for the same reason — an unbounded silence is
+    how a page is lost forever, and an unbounded acknowledgement is how an
+    escalation never happens. The bound is one rule, so it lives once.
+    """
+
+    #: The ``document.alerting`` knob that bounds this verb's window.
+    BOUND = None
+    #: Its named default when the document declares none.
+    DEFAULT_BOUND_S = None
+
+    def bound_ms(self):
+        """Return the longest window this document allows, in milliseconds.
+
+        Returns
+        -------
+        int
+            ``document.alerting.<BOUND>`` in ms, or the verb's named
+            default — never absent, because "bounded" is the contract.
+        """
+        declared = getattr(self._w.document.alerting, self.BOUND)
+        return (self.DEFAULT_BOUND_S if declared is None else declared) * _MS_PER_S
+
+    def over_bound(self, from_ms, until_ms):
+        """Return why the window exceeds the document's bound, or None.
+
+        Parameters
+        ----------
+        from_ms, until_ms : int
+            The window, in epoch ms.
+
+        Returns
+        -------
+        str or None
+            The rejection reason, naming the knob so an operator can see
+            which one to change.
+        """
+        bound = self.bound_ms()
+        if until_ms - from_ms > bound:
+            return (
+                f"{self.PURPOSE} would run {(until_ms - from_ms) // _MS_PER_S} s, longer "
+                f"than document.alerting.{self.BOUND} allows ({bound // _MS_PER_S} s)"
+            )
+        return None
+
+    def suppression(self, command, body):
+        """Return the one record this verb appends, with its control digests.
+
+        Parameters
+        ----------
+        command : dict
+            The consumed command.
+        body : dict
+            The value object's ``to_obj()``.
+
+        Returns
+        -------
+        tuple
+            The processor's ``(records, status, reason)`` answer.
+        """
+        principal, proof = _principal_and_proof(self._w, command)
+        return self.applied(
+            [
+                self.record(
+                    self.KIND,
+                    command["request_id"],
+                    {
+                        **body,
+                        "control_request_id": command["request_id"],
+                        "principal_digest": principal,
+                        "proof_digest": proof,
+                    },
+                )
+            ]
+        )
+
+
+class _Silence(_SuppressionVerb):
+    """`silence`: an operator window in which a matching alert is not paged (§5.11.2)."""
+
+    PURPOSE = "silence"
+    KIND = "silence"
+    BOUND = "max_silence_s"
+    DEFAULT_BOUND_S = DEFAULT_MAX_SILENCE_S
+
+    def run(self, command, view):
+        """Open the window the operator signed for, from when the command was QUEUED.
+
+        §5.16: ``starts_at_ms`` is the consumed command's ``queued_at_ms``
+        and never the handler's clock, so a crash-replayed command
+        produces a byte-identical payload and the ledger dedups it instead
+        of refusing a changed payload under a reused id.
+        """
+        payload = command["payload"]
+        starts_at_ms, ends_at_ms = command["queued_at_ms"], payload.get("ends_at_ms")
+        if not isinstance(ends_at_ms, int) or isinstance(ends_at_ms, bool):
+            return self.rejected(
+                "silence requires ends_at_ms, an epoch-ms int: a silence with no end is "
+                "how a page is lost forever (§5.11.2)"
+            )
+        over = self.over_bound(starts_at_ms, ends_at_ms)
+        if over is not None:
+            return self.rejected(over)
+        principal, _proof = _principal_and_proof(self._w, command)
+        try:
+            silence = Silence(
+                silence_id=command["request_id"],
+                matchers=dict(payload.get("matchers") or {}),
+                starts_at_ms=starts_at_ms,
+                ends_at_ms=ends_at_ms,
+                created_by=principal,
+                comment=payload.get("comment") or "",
+            )
+        except ProductionError as exc:
+            return self.rejected(redact(str(exc)))
+        return self.suppression(command, silence.to_obj())
+
+
+class _Ack(_SuppressionVerb):
+    """`ack`: a human owns this page — it stops ESCALATING and nothing else (§5.11.2)."""
+
+    PURPOSE = "ack"
+    KIND = "alert_ack"
+    BOUND = "max_ack_s"
+    DEFAULT_BOUND_S = DEFAULT_MAX_ACK_S
+
+    def run(self, command, view):
+        """Acknowledge one fingerprint until ``--for`` elapses, from the QUEUED instant.
+
+        An absent ``--for`` takes the document's own bound: it is the only
+        default that is not a second threshold with no name.
+        """
+        payload = command["payload"]
+        fingerprint = payload.get("fingerprint")
+        if not isinstance(fingerprint, str) or not fingerprint:
+            return self.rejected(
+                "ack requires fingerprint: the dedup key the acknowledgement covers"
+            )
+        for_ms = payload.get("for_ms")
+        if for_ms is None:
+            for_ms = self.bound_ms()
+        elif not isinstance(for_ms, int) or isinstance(for_ms, bool) or for_ms <= 0:
+            return self.rejected(f"ack --for must be a positive duration, got {for_ms!r}")
+        queued_at_ms = command["queued_at_ms"]
+        over = self.over_bound(queued_at_ms, queued_at_ms + for_ms)
+        if over is not None:
+            return self.rejected(over)
+        principal, _proof = _principal_and_proof(self._w, command)
+        ack = AlertAck(
+            fingerprint=fingerprint,
+            acknowledged_until_ms=queued_at_ms + for_ms,
+            by=principal,
+            reason=payload.get("reason") or "",
+        )
+        return self.suppression(command, ack.to_obj())
+
+
 #: One handler class per ``CONTROL_PURPOSES`` member, pinned exact: a
 #: purpose with no handler is silently rejected by ``CommandProcessor``,
 #: so a missing entry is an operator act that vanishes into a receipt.
@@ -1486,6 +1667,8 @@ _VERBS = pin_members(
             _Reconcile,
             _Ready,
             _Outcomes,
+            _Ack,
+            _Silence,
         )
     },
     CONTROL_PURPOSES,

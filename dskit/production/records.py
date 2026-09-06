@@ -80,6 +80,7 @@ from dskit.production.vocab import (
     RUNGS,
     SEVERITIES,
     SIDES,
+    SILENCE_STATES,
     STATUSES,
     TICK_PHASES,
     TICK_STATUSES,
@@ -93,6 +94,7 @@ __all__ = [
     "AccountState",
     "ActPermit",
     "Alert",
+    "AlertAck",
     "Balance",
     "Candidate",
     "DecidedLeg",
@@ -124,10 +126,13 @@ __all__ = [
     "SafetyEpoch",
     "ScopeVerdict",
     "Settlement",
+    "Silence",
     "SimulatedPermit",
     "TickResult",
     "TickStart",
     "Verdict",
+    "alert_labels",
+    "label_match",
 ]
 
 _NONE = type(None)
@@ -2207,3 +2212,230 @@ class PolicyRequest(_Record):
         ("authority", AUTHORITY_ROLES),
         ("origin", LEG_ORIGINS),
     )
+
+
+# ---------------------------------------------------------------------------
+# Alert suppression state — the two operator value objects (§5.11.2)
+# ---------------------------------------------------------------------------
+
+#: The three closed :class:`Alert` fields a matcher may name beside the
+#: alert's own labels. They are the alert's non-secret identity, and they
+#: WIN over a label of the same name: the fields are the closed truth, and
+#: a label spelling ``severity`` would otherwise let an alert lie about its
+#: own severity to a silence written against it.
+_MATCHABLE_FIELDS = ("fingerprint", "severity", "source")
+
+#: The ``SILENCE_STATES`` member each side of the two instants; read here so
+#: nothing else spells one.
+_PENDING, _ACTIVE, _EXPIRED = SILENCE_STATES
+
+
+def alert_labels(alert):
+    """Return the label space a silence or an inhibit rule matches against.
+
+    Parameters
+    ----------
+    alert : Alert
+        The alert being matched.
+
+    Returns
+    -------
+    dict
+        ``alert.labels`` plus ``fingerprint``, ``severity`` and ``source``,
+        the closed fields winning over a declared label of the same name.
+    """
+    labels = dict(alert.labels)
+    labels.update({name: getattr(alert, name) for name in _MATCHABLE_FIELDS})
+    return labels
+
+
+def label_match(matchers, labels):
+    """Say whether every matcher agrees with the label of the same name.
+
+    One owner, imported by :class:`Silence` and by ``alerts.InhibitRule``,
+    because a silence and an inhibit rule that matched differently would
+    suppress different alerts for the same written matcher.
+
+    Parameters
+    ----------
+    matchers : dict of str to str
+        Label name -> the value it must equal. Empty matches everything,
+        which is why every producer of a matcher set refuses an empty one.
+    labels : dict of str to str
+        The space to match against — :func:`alert_labels` of an alert.
+
+    Returns
+    -------
+    bool
+        True when every named label is present and exactly equal.
+    """
+    return all(labels.get(name) == value for name, value in matchers.items())
+
+
+@dataclass(frozen=True)
+class Silence(_Record):
+    """One operator window in which a matching alert is not paged (§5.11.2).
+
+    Six fields, and **no ``state`` among them**: :meth:`state_at` derives
+    one of ``vocab.SILENCE_STATES`` from the two instants, because a
+    stored state would be wrong from the moment nothing wrote it and no
+    process is scheduled to. ``ends_at_ms`` is required and the ``silence``
+    verb bounds it by ``document.alerting.max_silence_s``, because a
+    silence with no end is how a page is lost forever.
+
+    Parameters
+    ----------
+    silence_id : str
+        The control request's id — one silence per authenticated act.
+    matchers : dict of str to str
+        Label name -> required value, matched by :func:`label_match`
+        against :func:`alert_labels`. At least one; a silence matching
+        everything is a global mute and nothing on the record would say
+        it was meant to be one.
+    starts_at_ms, ends_at_ms : int
+        Epoch ms; ``ends_at_ms`` must be after ``starts_at_ms``.
+    created_by : str
+        The principal digest of the operator who signed the request; §6
+        keeps principals on the chain as digests, never as names.
+    comment : str
+        Why, in the operator's words. May be empty.
+
+    Examples
+    --------
+    A one-hour window over the feed's alerts, silent from the moment the
+    command was queued::
+
+        silence = Silence(
+            silence_id="018f0f4e-7b21-7d3a-9c31-6d8f36d806a1",
+            matchers={"source": "feed"}, starts_at_ms=1_767_225_600_000,
+            ends_at_ms=1_767_229_200_000, created_by="a" * 64,
+            comment="vendor maintenance window",
+        )
+        silence.state_at(1_767_225_600_000)   # 'active'
+        silence.state_at(1_767_229_200_000)   # 'expired'
+    """
+
+    silence_id: str
+    matchers: dict[str, str]
+    starts_at_ms: int
+    ends_at_ms: int
+    created_by: str
+    comment: str
+
+    def _check(self, problems):
+        if not self.matchers:
+            problems.append(
+                "Silence.matchers must name at least one label: a silence that matches "
+                "everything is a global mute with nothing on the record to say it was meant"
+            )
+        if self.ends_at_ms <= self.starts_at_ms:
+            problems.append(
+                f"Silence.ends_at_ms {self.ends_at_ms} is not after starts_at_ms "
+                f"{self.starts_at_ms}: a silence that ends before it begins silences nothing"
+            )
+
+    def state_at(self, now_ms):
+        """Return the ``vocab.SILENCE_STATES`` member the two instants imply.
+
+        Parameters
+        ----------
+        now_ms : int
+            The instant, told by the caller.
+
+        Returns
+        -------
+        str
+            ``"pending"`` before ``starts_at_ms``, ``"active"`` in
+            ``[starts_at_ms, ends_at_ms)``, ``"expired"`` from
+            ``ends_at_ms``.
+        """
+        if now_ms < self.starts_at_ms:
+            return _PENDING
+        return _ACTIVE if now_ms < self.ends_at_ms else _EXPIRED
+
+    def active_at(self, now_ms):
+        """Say whether this silence suppresses at ``now_ms``.
+
+        Parameters
+        ----------
+        now_ms : int
+            The instant.
+
+        Returns
+        -------
+        bool
+            ``state_at(now_ms) == "active"`` — the one owner of what
+            ``active`` means, so the router asks rather than comparing.
+        """
+        return self.state_at(now_ms) == _ACTIVE
+
+    def matches(self, alert):
+        """Say whether this silence's matchers name ``alert``.
+
+        Parameters
+        ----------
+        alert : Alert
+            The alert being considered.
+
+        Returns
+        -------
+        bool
+            :func:`label_match` of the matchers against
+            :func:`alert_labels`.
+        """
+        return label_match(self.matchers, alert_labels(alert))
+
+
+@dataclass(frozen=True)
+class AlertAck(_Record):
+    """One operator's "I own this" over a firing fingerprint (§5.11.2).
+
+    An ack stops ESCALATION and nothing else: the alert keeps firing and
+    keeps being recorded, because an ack means a human owns it, not that
+    it is fixed — the ``resolved`` transition remains the only thing that
+    ends an alert. It lapses at ``acknowledged_until_ms``, or when the
+    alert resolves (the fold drops it on the resolving ``alert`` record).
+
+    Parameters
+    ----------
+    fingerprint : str
+        The dedup key this ack covers.
+    acknowledged_until_ms : int
+        Epoch ms; the ``ack`` verb derives it from ``--for``, bounded by
+        ``document.alerting.max_ack_s``.
+    by : str
+        The principal digest of the operator who signed the request.
+    reason : str
+        Why, in the operator's words. May be empty.
+
+    Examples
+    --------
+    ::
+
+        ack = AlertAck(
+            fingerprint="feed-stale", acknowledged_until_ms=1_767_229_200_000,
+            by="a" * 64, reason="paging the vendor",
+        )
+        ack.holds_at(1_767_225_600_000)   # True
+        ack.holds_at(1_767_229_200_000)   # False
+    """
+
+    fingerprint: str
+    acknowledged_until_ms: int
+    by: str
+    reason: str
+
+    def holds_at(self, now_ms):
+        """Say whether the ack has not yet lapsed at ``now_ms``.
+
+        Parameters
+        ----------
+        now_ms : int
+            The instant.
+
+        Returns
+        -------
+        bool
+            True until ``acknowledged_until_ms``, exclusive.
+        """
+        return now_ms < self.acknowledged_until_ms

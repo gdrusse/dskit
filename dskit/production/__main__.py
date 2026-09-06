@@ -95,6 +95,7 @@ from dskit.production.release import (
     RuntimeFingerprint,
     artifact_digest,
     fingerprint_class,
+    parse_iso_duration,
     write_release,
 )
 from dskit.production.vocab import (
@@ -1111,6 +1112,79 @@ class Outcomes(ControlVerb):
         return {"asof_ms": parse_utc_ms(self.args.asof)}
 
 
+class Ack(ControlVerb):
+    """`ack`: a human owns one firing alert; it stops ESCALATING (§5.11.2)."""
+
+    NAME = "ack"
+    HELP = "queue an authenticated acknowledgement of one firing alert"
+    PURPOSE = "ack"
+
+    @classmethod
+    def add_act_arguments(cls, parser):
+        """Name the fingerprint, and optionally how long the ack holds."""
+        parser.add_argument("--fingerprint", required=True,
+                            help="the alert fingerprint the acknowledgement covers")
+        parser.add_argument("--for", dest="window", default=None,
+                            help="how long the ack holds, ISO-8601 (PT2H); defaults to "
+                                 "document.alerting.max_ack_s")
+        parser.add_argument("--reason", default="",
+                            help="why, in your words; recorded with the acknowledgement")
+
+    def payload(self, document, release):
+        """Carry the fingerprint, the operator's reason and the window when named.
+
+        The window is a DURATION, not an instant: the handler adds it to
+        the consumed command's own ``queued_at_ms``, so a crash-replayed
+        command produces a byte-identical record (§5.16).
+        """
+        payload = {"fingerprint": self.args.fingerprint, "reason": self.args.reason}
+        if self.args.window is not None:
+            payload["for_ms"] = parse_iso_duration(self.args.window)
+        return payload
+
+
+class Silence(ControlVerb):
+    """`silence`: an operator window in which a matching alert is not paged (§5.11.2)."""
+
+    NAME = "silence"
+    HELP = "queue an authenticated silence window over matching alerts"
+    PURPOSE = "silence"
+
+    @classmethod
+    def add_act_arguments(cls, parser):
+        """Name the matchers, the end of the window and the operator's comment."""
+        parser.add_argument("--matcher", dest="matchers", action="append", required=True,
+                            default=[], metavar="K=V",
+                            help="a label that must equal this value; repeat for each")
+        parser.add_argument("--until", required=True,
+                            help="UTC instant the window ends, e.g. 2026-01-06T04:00:00Z; "
+                                 "an unbounded silence is how a page is lost forever")
+        parser.add_argument("--comment", default="",
+                            help="why, in your words; recorded with the silence")
+
+    def payload(self, document, release):
+        """Carry the matchers and the end instant; the start is the queue's."""
+        return {
+            "matchers": _matchers(self.args.matchers),
+            "ends_at_ms": parse_utc_ms(self.args.until),
+            "comment": self.args.comment,
+        }
+
+
+def _matchers(pairs):
+    """Return the ``K=V`` matcher arguments as one label map, or refuse."""
+    matchers = {}
+    for pair in pairs:
+        name, sep, value = pair.partition("=")
+        if not sep or not name:
+            raise ProductionError(
+                [f"--matcher {pair!r} is not a K=V pair: a matcher names one label and "
+                 "the value it must equal"]
+            )
+        matchers[name] = value
+    return matchers
+
+
 class Ready(ControlVerb):
     """`ready`: the release-bound GO / NO-GO the action matrix reads (§5.13).
 
@@ -1324,10 +1398,10 @@ class Verify(SeriesVerb):
 # ---------------------------------------------------------------------------
 
 #: §7's table, in the order it lists the verbs. The phase-2 rows still
-#: absent (`replay`, `report`, `approve-hold`, `ack`, `silence`) are
-#: deliberately so: a verb the CLI offers and nothing honours is a control
-#: an operator would believe they had taken. `outcomes` is here because
-#: §5.13.2's join now honours it.
+#: absent (`replay`, `report`, `approve-hold`) are deliberately so: a verb
+#: the CLI offers and nothing honours is a control an operator would
+#: believe they had taken. `outcomes` is here because §5.13.2's join now
+#: honours it, and `ack`/`silence` because §5.11.2's router does.
 VERBS = {
     verb.NAME: verb
     for verb in (
@@ -1348,6 +1422,8 @@ VERBS = {
         Reconcile,
         Adopt,
         Outcomes,
+        Ack,
+        Silence,
         Ready,
     )
 }

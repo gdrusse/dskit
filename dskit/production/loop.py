@@ -1282,7 +1282,7 @@ class ServeLoop:
 
     def _before_tick(self, tick_at_ms):
         """Consume the control inbox, re-check the kill switch, evaluate health, reconcile."""
-        self.observability.health.evaluate(self.schedule.clock.now_ms())
+        self._evaluate_health()
         self._check_sentinel()
         pending = {command["request_id"]: command for command in self.recording.inbox.pending()}
         for receipt in self._processor.process_pending(self.recording.state.snapshot()):
@@ -1294,6 +1294,17 @@ class ServeLoop:
             ):
                 self._queue_cycle(command)
         self._reconcile_if_due()
+
+    def _evaluate_health(self):
+        """Evaluate health, and tell the heartbeat the first time it is ready.
+
+        §5.11.2's ``ready()`` hook fires on the health machine's FIRST
+        ``ready``, which is this tick boundary: nothing before it has
+        evaluated a probe, so nothing before it knows the process works.
+        The heartbeat owns "first", so the loop keeps no flag of its own.
+        """
+        if self.observability.health.evaluate(self.schedule.clock.now_ms()) == _READY_HEALTH:
+            self.observability.heartbeat.ready()
 
     def _check_sentinel(self):
         """§5.6: the HALT sentinel is re-checked at every tick boundary."""
@@ -1432,6 +1443,10 @@ class ServeLoop:
         ``health`` record D23 keeps off the worker thread. Writing the cache
         before that would leave every cleanly stopped series' checkpoint one
         record behind its own head — "checkpoint last" (D13) means last.
+        ``Heartbeat.stopping`` sits between the two: §5.11.2's hook must go
+        out while the emitters still work, since a supervisor waiting on
+        the signal would otherwise time the process out instead of letting
+        it finish.
         """
         self._state = _STOPPING
         self._release_lease()
@@ -1441,6 +1456,7 @@ class ServeLoop:
         except Exception as exc:  # noqa: BLE001 - a chain we cannot extend is still a stop
             _LOG.error("could not record the process stop: %s", redact(str(exc)))
         self.observability.health.stop()
+        self.observability.heartbeat.stopping()
         self.observability.heartbeat.close()
         self.observability.alerts.close()
         try:

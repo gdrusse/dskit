@@ -24,6 +24,7 @@ import copy
 import dataclasses
 import hashlib
 import inspect
+import json
 import pathlib
 import types
 from decimal import Decimal
@@ -33,7 +34,7 @@ import pytest
 from dskit.production import state as state_module
 from dskit.production import vocab
 from dskit.production.base import ProductionError, canonical_bytes, canonical_hash
-from dskit.production.records import DecisionPlan, Fill
+from dskit.production.records import AlertAck, DecisionPlan, Fill, Silence
 from dskit.production.state import (
     DEFAULT_MAX_HISTORY,
     PositionBook,
@@ -511,6 +512,52 @@ def real_decision_plan(plan_id="plan-1", result="submit"):
     })
 
 
+def silence_body(silence_id="req-9", matchers=None, starts_at_ms=None, ends_at_ms=None):
+    """The §6 `silence` body: `Silence.to_obj()` plus the three control keys."""
+    return {
+        "silence_id": silence_id,
+        "matchers": dict(matchers if matchers is not None else {"source": "feed"}),
+        "starts_at_ms": BASE_MS if starts_at_ms is None else starts_at_ms,
+        "ends_at_ms": BASE_MS + 3_600_000 if ends_at_ms is None else ends_at_ms,
+        "created_by": DIGEST_RISK,
+        "comment": "vendor maintenance",
+        "control_request_id": silence_id,
+        "principal_digest": DIGEST_RISK,
+        "proof_digest": DIGEST_PLAN,
+    }
+
+
+def alert_ack_body(fingerprint="feed-stale", acknowledged_until_ms=None, request_id="req-8"):
+    """The §6 `alert_ack` body: `AlertAck.to_obj()` plus the three control keys."""
+    return {
+        "fingerprint": fingerprint,
+        "acknowledged_until_ms": (
+            BASE_MS + 3_600_000 if acknowledged_until_ms is None else acknowledged_until_ms
+        ),
+        "by": DIGEST_RISK,
+        "reason": "paging the vendor",
+        "control_request_id": request_id,
+        "principal_digest": DIGEST_RISK,
+        "proof_digest": DIGEST_PLAN,
+    }
+
+
+def alert_body(fingerprint="feed-stale", status="firing"):
+    """One §6 `alert` body, as `AlertRouter.process` appends it."""
+    return {
+        "fingerprint": fingerprint,
+        "severity": "warning",
+        "status": status,
+        "summary": "feed degraded",
+        "source": "feed",
+        "tick_id": "T1",
+        "at_ms": BASE_MS,
+        "labels": {},
+        "sinks": {},
+        "suppressed": None,
+    }
+
+
 def full_sequence():
     """Every §6 record kind, in an order the fold accepts.
 
@@ -567,6 +614,8 @@ def full_sequence():
         ("authority", authority_body(role="reduction", authority_id="auth-2",
                                      rights=(RIGHT_A, RIGHT_B))),
         ("authority_use", authority_use_body()),
+        ("silence", silence_body()),
+        ("alert_ack", alert_ack_body()),
         ("snapshot", None),
         ("outcome", {"leg_id": "leg-1", "outcome_kind": "settled",
                      "effective_at_ms": BASE_MS, "known_at_ms": BASE_MS + 60,
@@ -2201,3 +2250,150 @@ def test_no_other_module_owns_the_folded_attributes():
             for attr, line in self_assignments(tree, FOLDED_ATTRS)
         )
     assert offenders == []
+
+
+# ---------------------------------------------------------------------------
+# Alert state rides in the fold — §5.11.2, and NOT in a second store
+# ---------------------------------------------------------------------------
+
+
+def test_a_silence_record_folds_into_the_silences_projection():
+    """§5.11.2: `SeriesState` folds the `silence` record and exposes
+    `silences()`, "so a restart cannot resurrect a silenced page". The
+    projection is `Silence` value objects, not raw bodies, because the
+    router asks each one whether it is active."""
+    st, chain = new_state()
+    assert st.silences() == {}
+    fold(st, chain, "silence", silence_body(silence_id="s-1"))
+    silences = st.silences()
+    assert set(silences) == {"s-1"}
+    assert isinstance(silences["s-1"], Silence)
+    assert silences["s-1"].matchers == {"source": "feed"}
+    assert silences["s-1"].state_at(BASE_MS) == "active"
+
+
+def test_the_silences_projection_is_read_only():
+    st, chain = new_state()
+    fold(st, chain, "silence", silence_body(silence_id="s-1"))
+    with pytest.raises(TypeError):
+        st.silences()["s-2"] = None
+
+
+def test_a_second_silence_under_one_id_replaces_the_first():
+    # The id is the control request's, so a replayed command re-folds the
+    # same window rather than stacking a second one.
+    st, chain = new_state()
+    fold(st, chain, "silence", silence_body(silence_id="s-1"))
+    fold(st, chain, "silence",
+         silence_body(silence_id="s-1", ends_at_ms=BASE_MS + 60_000))
+    assert st.silences()["s-1"].ends_at_ms == BASE_MS + 60_000
+
+
+def test_the_fold_refuses_a_silence_body_that_is_not_a_silence():
+    st, chain = new_state()
+    body = silence_body()
+    body["ends_at_ms"] = body["starts_at_ms"]
+    with pytest.raises(ProductionError):
+        fold(st, chain, "silence", body)
+    assert st.head() == (0, GENESIS_HASH)
+    assert st.silences() == {}
+
+
+def test_an_alert_ack_folds_into_the_alert_acks_projection():
+    st, chain = new_state()
+    assert st.alert_acks() == {}
+    fold(st, chain, "alert_ack", alert_ack_body(fingerprint="feed-stale"))
+    acks = st.alert_acks()
+    assert set(acks) == {"feed-stale"}
+    assert isinstance(acks["feed-stale"], AlertAck)
+    assert acks["feed-stale"].holds_at(BASE_MS) is True
+
+
+def test_a_later_ack_of_one_fingerprint_replaces_the_earlier_one():
+    st, chain = new_state()
+    fold(st, chain, "alert_ack", alert_ack_body(acknowledged_until_ms=BASE_MS + 1_000))
+    fold(st, chain, "alert_ack",
+         alert_ack_body(acknowledged_until_ms=BASE_MS + 9_000, request_id="req-9"))
+    assert st.alert_acks()["feed-stale"].acknowledged_until_ms == BASE_MS + 9_000
+
+
+def test_a_resolving_alert_drops_the_ack_the_fold_holds():
+    """§5.11.2: "the ack lapses at `acknowledged_until_ms` ... or when the
+    alert resolves". The fold is where that second lapse lives, because it
+    is the only thing that survives a restart: a router that latched the
+    ack in memory would re-honour it for the NEXT firing of the same
+    fingerprint after a crash."""
+    st, chain = new_state()
+    fold(st, chain, "alert_ack", alert_ack_body(fingerprint="feed-stale"))
+    fold(st, chain, "alert", alert_body(fingerprint="feed-stale", status="firing"))
+    assert set(st.alert_acks()) == {"feed-stale"}
+    fold(st, chain, "alert", alert_body(fingerprint="feed-stale", status="resolved"))
+    assert st.alert_acks() == {}
+
+
+def test_a_resolving_alert_leaves_another_fingerprints_ack_alone():
+    st, chain = new_state()
+    fold(st, chain, "alert_ack", alert_ack_body(fingerprint="feed-stale"))
+    fold(st, chain, "alert_ack",
+         alert_ack_body(fingerprint="venue-down", request_id="req-7"))
+    fold(st, chain, "alert", alert_body(fingerprint="feed-stale", status="resolved"))
+    assert set(st.alert_acks()) == {"venue-down"}
+
+
+def test_a_resolving_alert_never_drops_a_silence():
+    # A silence is a window over MANY alerts; one of them resolving says
+    # nothing about the window, which ends only at its own instant.
+    st, chain = new_state()
+    fold(st, chain, "silence", silence_body(silence_id="s-1"))
+    fold(st, chain, "alert", alert_body(status="resolved"))
+    assert set(st.silences()) == {"s-1"}
+
+
+def test_the_snapshot_payload_carries_the_silences_and_the_acks():
+    """§5.8.1: every non-`StateView` projection "rides in the §6 `snapshot`
+    payload, because `Recovery` replays forward from the last snapshot and
+    cannot restore a member the snapshot never carried"."""
+    st, chain = new_state()
+    fold(st, chain, "silence", silence_body(silence_id="s-1"))
+    fold(st, chain, "alert_ack", alert_ack_body())
+    payload = st.to_snapshot_obj()
+    assert payload["silences"] == [st.silences()["s-1"].to_obj()]
+    assert payload["alert_acks"] == [st.alert_acks()["feed-stale"].to_obj()]
+    json.dumps(payload)
+
+
+def test_restore_rebuilds_the_silences_and_the_acks():
+    st, chain = new_state()
+    fold(st, chain, "silence", silence_body(silence_id="s-1"))
+    fold(st, chain, "alert_ack", alert_ack_body())
+    env = chain.env("snapshot", {"at_seq": st.head()[0], "state": st.to_snapshot_obj(),
+                                 "state_digest": DIGEST_PLAN})
+    restored = SeriesState(SERIES_ID)
+    restored.restore(env)
+    assert restored.silences() == st.silences()
+    assert restored.alert_acks() == st.alert_acks()
+
+
+def test_restore_refuses_a_snapshot_written_before_the_two_members_existed():
+    """`restore` is default-deny over the payload keys (§6), so a payload
+    from before §5.11.2 refuses BY NAME rather than restoring a fold whose
+    silences would then be gone and whose pages would resurrect."""
+    st, chain = new_state()
+    fold(st, chain, "silence", silence_body(silence_id="s-1"))
+    payload = st.to_snapshot_obj()
+    del payload["silences"]
+    env = chain.env("snapshot", {"at_seq": st.head()[0], "state": payload,
+                                 "state_digest": DIGEST_PLAN})
+    with pytest.raises(ProductionError) as excinfo:
+        SeriesState(SERIES_ID).restore(env)
+    assert "silences" in str(excinfo.value)
+
+
+def test_neither_alert_projection_advances_the_economic_sequence():
+    # D14: an operator suppressing a page moves no money.
+    st, chain = new_state()
+    before = st.snapshot().risk_version.economic_seq
+    fold(st, chain, "silence", silence_body())
+    fold(st, chain, "alert_ack", alert_ack_body())
+    fold(st, chain, "alert", alert_body(status="resolved"))
+    assert st.snapshot().risk_version.economic_seq == before

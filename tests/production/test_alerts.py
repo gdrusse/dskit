@@ -48,6 +48,7 @@ from dskit.production import alerts as alerts_module
 from dskit.production import vocab
 from dskit.production.alerts import (
     ALERT_SINK_KINDS,
+    InhibitRule,
     DEFAULT_GROUP_WAIT_S,
     DEFAULT_QUEUE_MAXSIZE,
     DEFAULT_REPEAT_INTERVAL_S,
@@ -68,8 +69,10 @@ from dskit.production.document import (
     REPEAT_INTERVAL_S_BOUNDS,
     ServeDocument,
 )
+from dskit.production.ledger import JsonlLedger, ServeRoot
 from dskit.production.metrics import Metrics
-from dskit.production.records import Alert
+from dskit.production.records import Alert, AlertAck, Silence
+from dskit.production.state import SeriesState
 from dskit.production.redact import REDACTED, register_secret
 from tests.production.test_document import example_document, minimal_document
 
@@ -312,6 +315,9 @@ def a_router(
     metrics=None,
     ledger=None,
     maxsize=None,
+    silences=None,
+    acks=None,
+    inhibits=None,
     **alerting,
 ):
     """An `AlertRouter` over the document's `alerting` block and the given sinks."""
@@ -322,6 +328,12 @@ def a_router(
             **alerting,
         )
     kwargs = {} if maxsize is None else {"maxsize": maxsize}
+    if silences is not None:
+        kwargs["silences"] = silences
+    if acks is not None:
+        kwargs["acks"] = acks
+    if inhibits is not None:
+        kwargs["inhibits"] = inhibits
     return AlertRouter(
         doc.alerting,
         sinks,
@@ -1374,3 +1386,640 @@ def test_drain_processes_at_the_routers_own_clock(clock, metrics):
     clock.set(NOW_MS + 30_000)
     assert len(router.drain()) == 1
     assert len(ops.sent) == 1
+
+
+# --------------------------------------------------------------------------
+# §5.11.2 — inhibition, silences, escalation and acknowledgement
+# --------------------------------------------------------------------------
+
+
+def a_silence(
+    silence_id="s-1",
+    matchers=None,
+    starts_at_ms=NOW_MS,
+    ends_at_ms=NOW_MS + 3_600_000,
+    comment="vendor maintenance",
+):
+    """One `records.Silence`, with the fields a router test cares about named."""
+    return Silence(
+        silence_id=silence_id,
+        matchers=dict(matchers if matchers is not None else {"source": "feed"}),
+        starts_at_ms=starts_at_ms,
+        ends_at_ms=ends_at_ms,
+        created_by="a" * 64,
+        comment=comment,
+    )
+
+
+def an_ack(fingerprint="feed-stale", acknowledged_until_ms=NOW_MS + 3_600_000):
+    """One `records.AlertAck`."""
+    return AlertAck(
+        fingerprint=fingerprint,
+        acknowledged_until_ms=acknowledged_until_ms,
+        by="a" * 64,
+        reason="paging the vendor",
+    )
+
+
+class Fold:
+    """The two `SeriesState` projections the router reads, settable by a test.
+
+    The router takes the bound METHODS, so it reads what the fold holds at
+    `process` time — which is what makes a silence created between two
+    ticks take effect at the next one.
+    """
+
+    def __init__(self, silences=(), acks=()):
+        self.by_id = {s.silence_id: s for s in silences}
+        self.by_fingerprint = {a.fingerprint: a for a in acks}
+
+    def silences(self):
+        return dict(self.by_id)
+
+    def alert_acks(self):
+        return dict(self.by_fingerprint)
+
+
+def escalating_doc(escalation, sinks=("ops", "pager"), inhibit=None, **alerting):
+    """A document whose `alerting` declares an escalation ladder over `sinks`."""
+    return serve_doc(
+        sinks={name: {"uses": "memory"} for name in sinks},
+        routes=[{"severity": s, "sinks": ["ops"]} for s in vocab.SEVERITIES],
+        escalation=escalation,
+        inhibit=inhibit,
+        **alerting,
+    )
+
+
+# -- InhibitRule -----------------------------------------------------------
+
+
+def test_an_inhibit_rule_is_default_deny_over_its_three_knobs():
+    rule = InhibitRule({"source": {"severity": "critical"}, "target": {"severity": "warning"}})
+    assert rule.equal == ()
+    with pytest.raises(ProductionError):
+        InhibitRule({"source": {"a": "1"}, "target": {"b": "2"}, "nonsuch": 1})
+
+
+def test_an_inhibit_rule_needs_a_source_and_a_target_that_match_something():
+    for missing in ("source", "target"):
+        params = {"source": {"a": "1"}, "target": {"b": "2"}}
+        params.pop(missing)
+        with pytest.raises(ProductionError):
+            InhibitRule(params)
+    for empty in ("source", "target"):
+        params = {"source": {"a": "1"}, "target": {"b": "2"}}
+        params[empty] = {}
+        with pytest.raises(ProductionError):
+            InhibitRule(params)
+
+
+def test_an_inhibit_rule_inhibits_only_when_the_equal_labels_agree():
+    rule = InhibitRule(
+        {
+            "source": {"severity": "critical"},
+            "target": {"severity": "warning"},
+            "equal": ["instrument"],
+        }
+    )
+    firing = an_alert(fingerprint="venue-down", severity="critical",
+                      labels={"instrument": "INS1"})
+    same = an_alert(fingerprint="quote-wide", severity="warning",
+                    labels={"instrument": "INS1"})
+    other = an_alert(fingerprint="quote-wide", severity="warning",
+                     labels={"instrument": "INS2"})
+    missing = an_alert(fingerprint="quote-wide", severity="warning", labels={})
+    assert rule.inhibits(firing, same) is True
+    assert rule.inhibits(firing, other) is False
+    assert rule.inhibits(firing, missing) is False
+
+
+def test_an_inhibit_rule_never_lets_an_alert_inhibit_its_own_fingerprint():
+    """A rule whose source and target both match one alert would otherwise
+    suppress that alert's own repeats as `inhibited`, taking them out of
+    the dedup pipeline the repeat interval owns."""
+    rule = InhibitRule({"source": {"severity": "critical"}, "target": {"severity": "critical"}})
+    alert = an_alert(fingerprint="venue-down", severity="critical")
+    assert rule.inhibits(alert, alert) is False
+    assert rule.inhibits(alert, an_alert(fingerprint="other", severity="critical")) is True
+
+
+# -- inhibition through the router -----------------------------------------
+
+
+def inhibiting_router(clock, metrics, ledger=None, equal=("instrument",)):
+    """A router with one rule: a firing `critical` inhibits a `warning`."""
+    doc = serve_doc(
+        sinks={"ops": {"uses": "memory"}},
+        routes=[{"severity": s, "sinks": ["ops"]} for s in vocab.SEVERITIES],
+        group_wait_s=0,
+        inhibit=[
+            {
+                "source": {"severity": "critical"},
+                "target": {"severity": "warning"},
+                "equal": list(equal),
+            }
+        ],
+    )
+    return a_router({"ops": MemorySink(None)}, doc=doc, clock=clock, metrics=metrics,
+                    ledger=ledger, inhibits=rules_of(doc))
+
+
+def rules_of(doc):
+    """The `InhibitRule`s a document declares, as `compose.py` builds them."""
+    return tuple(InhibitRule.from_section(entry) for entry in doc.alerting.inhibit or ())
+
+
+def test_a_firing_source_inhibits_a_matching_target(clock, metrics):
+    router = inhibiting_router(clock, metrics)
+    router.raise_alert(an_alert(fingerprint="venue-down", severity="critical",
+                                labels={"instrument": "INS1"}))
+    assert len(router.process(NOW_MS)) == 1
+    router.raise_alert(an_alert(fingerprint="quote-wide", severity="warning",
+                                labels={"instrument": "INS1"}))
+    assert router.process(NOW_MS) == ()
+    assert counts(metrics, SUPPRESSED) == {"inhibited": 1}
+
+
+def test_nothing_is_inhibited_while_no_source_is_firing(clock, metrics):
+    router = inhibiting_router(clock, metrics)
+    router.raise_alert(an_alert(fingerprint="quote-wide", severity="warning",
+                                labels={"instrument": "INS1"}))
+    assert len(router.process(NOW_MS)) == 1
+    assert counts(metrics, SUPPRESSED) == {}
+
+
+def test_a_resolved_source_stops_inhibiting(clock, metrics):
+    router = inhibiting_router(clock, metrics)
+    router.raise_alert(an_alert(fingerprint="venue-down", severity="critical",
+                                labels={"instrument": "INS1"}))
+    router.process(NOW_MS)
+    router.resolve("venue-down")
+    router.process(NOW_MS)
+    router.raise_alert(an_alert(fingerprint="quote-wide", severity="warning",
+                                labels={"instrument": "INS1"}))
+    assert len(router.process(NOW_MS)) == 1
+    assert counts(metrics, SUPPRESSED) == {}
+
+
+def test_an_inhibited_alert_is_still_appended_as_a_record(clock, metrics):
+    """§5.11.2: "inhibition never deletes an alert, so the §6 `alert` record
+    is still appended and the evidence survives the suppression". The body
+    NAMES the suppression, because a record with no sinks is otherwise
+    indistinguishable from an alert whose severity no route covers."""
+    ledger = FakeLedger()
+    router = inhibiting_router(clock, metrics, ledger=ledger)
+    router.raise_alert(an_alert(fingerprint="venue-down", severity="critical",
+                                labels={"instrument": "INS1"}))
+    router.process(NOW_MS)
+    router.raise_alert(an_alert(fingerprint="quote-wide", severity="warning",
+                                labels={"instrument": "INS1"}))
+    router.process(NOW_MS)
+    records = ledger.of_kind("alert")
+    assert [r["body"]["fingerprint"] for r in records] == ["venue-down", "quote-wide"]
+    assert records[0]["body"]["suppressed"] is None
+    assert records[1]["body"]["suppressed"] == "inhibited"
+    assert records[1]["body"]["sinks"] == {}
+
+
+def test_a_rule_the_document_declares_second_still_inhibits(clock, metrics):
+    doc = serve_doc(
+        sinks={"ops": {"uses": "memory"}},
+        routes=[{"severity": s, "sinks": ["ops"]} for s in vocab.SEVERITIES],
+        group_wait_s=0,
+        inhibit=[
+            {"source": {"severity": "error"}, "target": {"severity": "info"}},
+            {"source": {"severity": "critical"}, "target": {"severity": "warning"}},
+        ],
+    )
+    router = a_router({"ops": MemorySink(None)}, doc=doc, clock=clock, metrics=metrics,
+                      inhibits=rules_of(doc))
+    router.raise_alert(an_alert(fingerprint="venue-down", severity="critical"))
+    router.process(NOW_MS)
+    router.raise_alert(an_alert(fingerprint="quote-wide", severity="warning"))
+    assert router.process(NOW_MS) == ()
+    assert counts(metrics, SUPPRESSED) == {"inhibited": 1}
+
+
+# -- silences --------------------------------------------------------------
+
+
+def silencing_router(clock, metrics, fold, ledger=None, **alerting):
+    """A router whose silences and acks come from `fold`, read at process time."""
+    return a_router(
+        {"ops": MemorySink(None)},
+        clock=clock,
+        metrics=metrics,
+        ledger=ledger,
+        silences=fold.silences,
+        acks=fold.alert_acks,
+        group_wait_s=0,
+        **alerting,
+    )
+
+
+def test_an_active_silence_suppresses_a_matching_alert(clock, metrics):
+    fold = Fold(silences=[a_silence(matchers={"source": "feed"})])
+    router = silencing_router(clock, metrics, fold)
+    router.raise_alert(an_alert(source="feed"))
+    assert router.process(NOW_MS) == ()
+    assert counts(metrics, SUPPRESSED) == {"silenced": 1}
+
+
+def test_a_silence_that_does_not_match_suppresses_nothing(clock, metrics):
+    fold = Fold(silences=[a_silence(matchers={"source": "monitor"})])
+    router = silencing_router(clock, metrics, fold)
+    router.raise_alert(an_alert(source="feed"))
+    assert len(router.process(NOW_MS)) == 1
+    assert counts(metrics, SUPPRESSED) == {}
+
+
+@pytest.mark.parametrize("at_ms", (NOW_MS - 1, NOW_MS + 3_600_000))
+def test_a_pending_or_expired_silence_suppresses_nothing(clock, metrics, at_ms):
+    fold = Fold(silences=[a_silence()])
+    router = silencing_router(clock, metrics, fold)
+    clock.set(at_ms)
+    router.raise_alert(an_alert(source="feed", at_ms=at_ms))
+    assert len(router.process(at_ms)) == 1
+
+
+def test_a_silence_is_read_from_the_fold_at_process_time(clock, metrics):
+    """The router holds the fold's accessor, not a snapshot of it, so a
+    window created between two ticks takes effect at the next one."""
+    fold = Fold()
+    router = silencing_router(clock, metrics, fold)
+    router.raise_alert(an_alert(source="feed"))
+    assert len(router.process(NOW_MS)) == 1
+    fold.by_id["s-1"] = a_silence()
+    router.raise_alert(an_alert(source="feed", fingerprint="feed-late"))
+    assert router.process(NOW_MS) == ()
+    assert counts(metrics, SUPPRESSED) == {"silenced": 1}
+
+
+def test_a_silenced_alert_is_still_appended_as_a_record(clock, metrics):
+    ledger = FakeLedger()
+    fold = Fold(silences=[a_silence()])
+    router = silencing_router(clock, metrics, fold, ledger=ledger)
+    router.raise_alert(an_alert(source="feed"))
+    router.process(NOW_MS)
+    (record,) = ledger.of_kind("alert")
+    assert record["body"]["suppressed"] == "silenced"
+    assert record["body"]["sinks"] == {}
+
+
+def test_a_silence_matches_on_a_closed_field_as_well_as_a_label(clock, metrics):
+    fold = Fold(silences=[a_silence(matchers={"fingerprint": "feed-stale"})])
+    router = silencing_router(clock, metrics, fold)
+    router.raise_alert(an_alert(fingerprint="feed-stale"))
+    assert router.process(NOW_MS) == ()
+    router.raise_alert(an_alert(fingerprint="venue-down"))
+    assert len(router.process(NOW_MS)) == 1
+
+
+# -- the order the suppressions are consulted in ---------------------------
+
+
+def test_a_silence_wins_over_an_inhibition(clock, metrics):
+    """§5.11.2 puts silence FIRST: an operator's explicit window is the
+    most specific statement about an alert, and reversing this pair would
+    file the operator's own suppression under a mechanism they did not
+    ask for."""
+    fold = Fold(silences=[a_silence(matchers={"severity": "warning"})])
+    doc = serve_doc(
+        sinks={"ops": {"uses": "memory"}},
+        routes=[{"severity": s, "sinks": ["ops"]} for s in vocab.SEVERITIES],
+        group_wait_s=0,
+        inhibit=[{"source": {"severity": "critical"}, "target": {"severity": "warning"}}],
+    )
+    router = a_router({"ops": MemorySink(None)}, doc=doc, clock=clock, metrics=metrics,
+                      silences=fold.silences, acks=fold.alert_acks, inhibits=rules_of(doc))
+    router.raise_alert(an_alert(fingerprint="venue-down", severity="critical"))
+    router.process(NOW_MS)
+    router.raise_alert(an_alert(fingerprint="quote-wide", severity="warning"))
+    assert router.process(NOW_MS) == ()
+    assert counts(metrics, SUPPRESSED) == {"silenced": 1}
+
+
+def test_an_inhibition_wins_over_the_repeat_interval(clock, metrics):
+    """Inhibition is consulted before dedup, so a repeat that is BOTH
+    inhibited and inside the repeat interval is counted as inhibited —
+    the reason an operator can act on, not the one they cannot."""
+    router = inhibiting_router(clock, metrics, equal=())
+    router.raise_alert(an_alert(fingerprint="quote-wide", severity="warning"))
+    router.process(NOW_MS)
+    router.raise_alert(an_alert(fingerprint="venue-down", severity="critical"))
+    router.process(NOW_MS)
+    router.raise_alert(an_alert(fingerprint="quote-wide", severity="warning"))
+    assert router.process(NOW_MS) == ()
+    assert counts(metrics, SUPPRESSED) == {"inhibited": 1}
+
+
+def test_the_repeat_interval_wins_over_the_rate_limit(clock, metrics):
+    """Dedup is consulted before the token bucket, so a repeat inside the
+    interval never spends a token and never reports the bucket as the
+    reason it was withheld."""
+    router = a_router(
+        {"ops": MemorySink(None)},
+        clock=clock,
+        metrics=metrics,
+        group_wait_s=0,
+        repeat_interval_s=86400,
+        rate_limit={"max_per_hour": 1, "burst": 1},
+    )
+    router.raise_alert(an_alert())
+    assert len(router.process(NOW_MS)) == 1
+    router.raise_alert(an_alert())
+    assert router.process(NOW_MS) == ()
+    assert counts(metrics, SUPPRESSED) == {"repeat_interval": 1}
+
+
+def test_the_group_wait_wins_over_the_rate_limit(clock, metrics):
+    """A superseded alert is counted at ADMISSION, before the bucket is
+    ever asked — so an exhausted bucket cannot claim a withholding that
+    the grouping had already made."""
+    router = a_router(
+        {"ops": MemorySink(None)},
+        clock=clock,
+        metrics=metrics,
+        group_wait_s=600,
+        rate_limit={"max_per_hour": 1, "burst": 1},
+    )
+    router.raise_alert(an_alert(summary="first"))
+    router.raise_alert(an_alert(summary="second"))
+    assert router.process(NOW_MS) == ()
+    assert counts(metrics, SUPPRESSED) == {"group_wait": 1}
+
+
+# -- escalation ------------------------------------------------------------
+
+
+def escalating_router(clock, metrics, ledger=None, fold=None, **kw):
+    """A router with the three-rung ladder and a sink per rung."""
+    doc = escalating_doc(
+        {
+            "primary": {"after_s": 60, "sinks": ["ops"]},
+            "secondary": {"after_s": 300, "sinks": ["pager"]},
+            "final": {"after_s": 900, "sinks": ["ops", "pager"]},
+        },
+        group_wait_s=0,
+        repeat_interval_s=86400,
+        **kw,
+    )
+    fold = Fold() if fold is None else fold
+    sinks = {"ops": MemorySink(None), "pager": MemorySink(None)}
+    return sinks, a_router(
+        sinks, doc=doc, clock=clock, metrics=metrics, ledger=ledger,
+        silences=fold.silences, acks=fold.alert_acks,
+    )
+
+
+def test_escalation_climbs_the_ladder_in_order_and_never_skips(clock, metrics):
+    sinks, router = escalating_router(clock, metrics)
+    router.raise_alert(an_alert())
+    router.process(NOW_MS)
+    assert [a.severity for a in sinks["ops"].sent] == ["warning"]
+    assert sinks["pager"].sent == []
+    # 20 minutes on: every rung is due, but only the first is climbed.
+    router.process(NOW_MS + 1_200_000)
+    assert len(sinks["ops"].sent) == 2 and sinks["pager"].sent == []
+    router.process(NOW_MS + 1_200_001)
+    assert len(sinks["pager"].sent) == 1
+    router.process(NOW_MS + 1_200_002)
+    assert len(sinks["ops"].sent) == 3 and len(sinks["pager"].sent) == 2
+
+
+def test_a_rung_is_not_climbed_before_its_delay(clock, metrics):
+    sinks, router = escalating_router(clock, metrics)
+    router.raise_alert(an_alert())
+    router.process(NOW_MS)
+    router.process(NOW_MS + 59_999)
+    assert len(sinks["ops"].sent) == 1
+    router.process(NOW_MS + 60_000)
+    assert len(sinks["ops"].sent) == 2
+
+
+def test_reaching_final_twice_does_not_double_send(clock, metrics):
+    sinks, router = escalating_router(clock, metrics)
+    router.raise_alert(an_alert())
+    for offset in (0, 60_000, 300_000, 900_000):
+        router.process(NOW_MS + offset)
+    delivered = (len(sinks["ops"].sent), len(sinks["pager"].sent))
+    for offset in (900_001, 900_002, 1_000_000):
+        router.process(NOW_MS + offset)
+    assert (len(sinks["ops"].sent), len(sinks["pager"].sent)) == delivered
+
+
+def test_a_resolved_alert_stops_escalating_and_starts_again_when_it_refires(clock, metrics):
+    sinks, router = escalating_router(clock, metrics)
+    router.raise_alert(an_alert())
+    router.process(NOW_MS)
+    router.process(NOW_MS + 60_000)
+    assert len(sinks["ops"].sent) == 2
+    router.resolve("feed-stale")
+    router.process(NOW_MS + 60_001)
+    router.process(NOW_MS + 900_000)
+    assert len(sinks["ops"].sent) == 3  # the resolution, and no further rung
+    router.raise_alert(an_alert(at_ms=NOW_MS + 900_000))
+    router.process(NOW_MS + 900_000)
+    router.process(NOW_MS + 900_001)
+    assert len(sinks["ops"].sent) == 4  # firing again; the ladder restarts at 0
+
+
+def test_an_escalation_is_recorded_like_any_other_delivery(clock, metrics):
+    ledger = FakeLedger()
+    sinks, router = escalating_router(clock, metrics, ledger=ledger)
+    router.raise_alert(an_alert())
+    router.process(NOW_MS)
+    router.process(NOW_MS + 60_000)
+    records = ledger.of_kind("alert")
+    assert len(records) == 2
+    assert [r["body"]["suppressed"] for r in records] == [None, None]
+    assert set(records[1]["body"]["sinks"]) == {"ops"}
+    assert len(set(r["id"] for r in records)) == 2
+
+
+def test_a_document_with_no_escalation_never_escalates(clock, metrics):
+    ops = MemorySink(None)
+    router = a_router({"ops": ops}, clock=clock, metrics=metrics, group_wait_s=0,
+                      repeat_interval_s=86400)
+    router.raise_alert(an_alert())
+    router.process(NOW_MS)
+    router.process(NOW_MS + 86_400_000)
+    assert len(ops.sent) == 1
+
+
+def test_the_router_refuses_an_escalation_naming_a_sink_it_was_not_given(clock, metrics):
+    doc = escalating_doc({"primary": {"after_s": 60, "sinks": ["pager"]}})
+    with pytest.raises(ProductionError) as excinfo:
+        AlertRouter(doc.alerting, {"ops": MemorySink(None)}, clock=clock, metrics=metrics)
+    assert "pager" in str(excinfo.value)
+
+
+def test_the_router_refuses_a_ladder_whose_delays_do_not_increase(clock, metrics):
+    """A rung due before the one above it can only ever fire immediately
+    after it, which is not a ladder — and reading the document would not
+    tell an operator that."""
+    doc = escalating_doc(
+        {
+            "primary": {"after_s": 300, "sinks": ["ops"]},
+            "secondary": {"after_s": 60, "sinks": ["pager"]},
+        }
+    )
+    with pytest.raises(ProductionError) as excinfo:
+        AlertRouter(doc.alerting, {"ops": MemorySink(None), "pager": MemorySink(None)},
+                    clock=clock, metrics=metrics)
+    assert "secondary" in str(excinfo.value)
+
+
+def test_a_ladder_may_declare_one_rung_and_climbs_only_it(clock, metrics):
+    doc = escalating_doc({"final": {"after_s": 60, "sinks": ["pager"]}},
+                         group_wait_s=0, repeat_interval_s=86400)
+    sinks = {"ops": MemorySink(None), "pager": MemorySink(None)}
+    router = a_router(sinks, doc=doc, clock=clock, metrics=metrics)
+    router.raise_alert(an_alert())
+    router.process(NOW_MS)
+    router.process(NOW_MS + 60_000)
+    router.process(NOW_MS + 120_000)
+    assert len(sinks["pager"].sent) == 1
+
+
+# -- acknowledgement -------------------------------------------------------
+
+
+def test_an_acknowledged_alert_stops_escalating_but_keeps_firing(clock, metrics):
+    """§5.11.2: "an ack means a human owns this, not this is fixed" — the
+    alert keeps firing and keeps being recorded, and only the ESCALATION
+    stops."""
+    ledger = FakeLedger()
+    fold = Fold(acks=[an_ack()])
+    sinks, router = escalating_router(clock, metrics, ledger=ledger, fold=fold)
+    router.raise_alert(an_alert())
+    router.process(NOW_MS)
+    router.process(NOW_MS + 60_000)
+    router.process(NOW_MS + 900_000)
+    assert len(sinks["ops"].sent) == 1 and sinks["pager"].sent == []
+    assert router.firing == ("feed-stale",)
+    assert len(ledger.of_kind("alert")) == 1
+
+
+def test_an_acknowledged_alert_still_re_notifies_on_the_repeat_interval(clock, metrics):
+    fold = Fold(acks=[an_ack(acknowledged_until_ms=NOW_MS + 86_400_000)])
+    ops = MemorySink(None)
+    router = a_router({"ops": ops}, clock=clock, metrics=metrics, group_wait_s=0,
+                      repeat_interval_s=60, silences=fold.silences, acks=fold.alert_acks)
+    router.raise_alert(an_alert())
+    router.process(NOW_MS)
+    clock.set(NOW_MS + 60_000)
+    router.raise_alert(an_alert(at_ms=NOW_MS + 60_000))
+    router.process(NOW_MS + 60_000)
+    assert len(ops.sent) == 2
+
+
+def test_an_ack_lapses_at_its_instant_and_escalation_resumes(clock, metrics):
+    fold = Fold(acks=[an_ack(acknowledged_until_ms=NOW_MS + 120_000)])
+    sinks, router = escalating_router(clock, metrics, fold=fold)
+    router.raise_alert(an_alert())
+    router.process(NOW_MS)
+    router.process(NOW_MS + 60_000)
+    assert len(sinks["ops"].sent) == 1
+    router.process(NOW_MS + 120_000)
+    assert len(sinks["ops"].sent) == 2
+
+
+def test_an_ack_of_another_fingerprint_stops_nothing(clock, metrics):
+    fold = Fold(acks=[an_ack(fingerprint="venue-down")])
+    sinks, router = escalating_router(clock, metrics, fold=fold)
+    router.raise_alert(an_alert())
+    router.process(NOW_MS)
+    router.process(NOW_MS + 60_000)
+    assert len(sinks["ops"].sent) == 2
+
+
+def test_an_active_silence_also_withholds_an_escalation(clock, metrics):
+    """A silence says "do not page me about this"; a ladder that climbed
+    through it would page exactly the alert the operator silenced."""
+    fold = Fold(silences=[a_silence(matchers={"fingerprint": "feed-stale"},
+                                    starts_at_ms=NOW_MS + 1)])
+    sinks, router = escalating_router(clock, metrics, fold=fold)
+    router.raise_alert(an_alert())
+    router.process(NOW_MS)
+    assert len(sinks["ops"].sent) == 1
+    router.process(NOW_MS + 60_000)
+    assert len(sinks["ops"].sent) == 1
+
+
+# -- the fold behind it all ------------------------------------------------
+
+
+def test_a_restart_replays_the_fold_and_does_not_resurrect_a_silenced_page(
+    tmp_path, clock, metrics
+):
+    """§5.11.2's whole argument for putting alert state in the fold: the
+    silence is a §6 record in the series' own ledger, so a second process
+    reading that chain suppresses exactly what the first one did. Nothing
+    here is mocked — a real `JsonlLedger`, a real `SeriesState`, a real
+    replay."""
+    series = "018f0f4e-7b21-7d3a-9c31-6d8f36d806a1"
+    serve = ServeRoot(str(tmp_path / "serve"), series)
+    first_fold = SeriesState(series)
+    ledger = JsonlLedger(serve, "proc-a", "a" * 64, clock=clock, state=first_fold)
+    try:
+        silence = a_silence(matchers={"source": "feed"})
+        ledger.append(
+            {
+                "kind": "silence",
+                "id": f"silence:{silence.silence_id}",
+                "body": {**silence.to_obj(), "control_request_id": silence.silence_id,
+                         "principal_digest": "b" * 64, "proof_digest": "c" * 64},
+            }
+        )
+        ledger.barrier()
+    finally:
+        ledger.close()
+
+    restarted = SeriesState(series)
+    reopened = JsonlLedger(serve, "proc-b", "a" * 64, clock=clock, state=restarted)
+    try:
+        for envelope in reopened.scan():
+            restarted.apply(envelope)
+        assert set(restarted.silences()) == {silence.silence_id}
+        router = a_router(
+            {"ops": MemorySink(None)}, clock=clock, metrics=metrics,
+            silences=restarted.silences, acks=restarted.alert_acks, group_wait_s=0,
+        )
+        router.raise_alert(an_alert(source="feed"))
+        assert router.process(NOW_MS) == ()
+        assert counts(metrics, SUPPRESSED) == {"silenced": 1}
+    finally:
+        reopened.close()
+
+
+def test_the_three_collaborators_default_to_absent(clock, metrics):
+    """Phase 1's behaviour is unchanged when a document declares none of
+    them: `validate` and `plan` build a router long before a fold exists."""
+    ops = MemorySink(None)
+    router = a_router({"ops": ops}, clock=clock, metrics=metrics, group_wait_s=0)
+    router.raise_alert(an_alert())
+    assert len(router.process(NOW_MS)) == 1
+
+
+def test_the_router_refuses_a_silences_or_acks_source_that_is_not_callable(clock, metrics):
+    doc = serve_doc()
+    for bad in ({"silences": {}}, {"acks": {}}):
+        with pytest.raises(ProductionError):
+            AlertRouter(doc.alerting, {"ops": MemorySink(None)}, clock=clock,
+                        metrics=metrics, **bad)
+
+
+def test_every_suppression_reason_the_router_can_report_is_in_the_vocabulary(clock, metrics):
+    """The phase-1 conservation test names five; §5.11.2's two join them,
+    and nothing else may."""
+    fold = Fold(silences=[a_silence(matchers={"severity": "info"})])
+    router = inhibiting_router(clock, metrics, equal=())
+    router.raise_alert(an_alert(fingerprint="venue-down", severity="critical"))
+    router.process(NOW_MS)
+    router.raise_alert(an_alert(fingerprint="quote-wide", severity="warning"))
+    router.process(NOW_MS)
+    assert set(counts(metrics, SUPPRESSED)) <= set(vocab.ALERT_SUPPRESSIONS)
+    assert "inhibited" in counts(metrics, SUPPRESSED)
+    assert fold.silences() != {}

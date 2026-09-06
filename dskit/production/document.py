@@ -74,6 +74,7 @@ from dskit.production.base import (
 from dskit.production.records import ExecutionScope
 from dskit.production.release import parse_iso_duration
 from dskit.production.vocab import (
+    ESCALATION_LEVELS,
     FSYNC_MODES,
     JITTER_MODES,
     ON_MISMATCH,
@@ -95,6 +96,8 @@ __all__ = [
     "GROUP_WAIT_S_BOUNDS",
     "LIMITER_LANE_KEYS",
     "LOSS_MEASURE",
+    "MAX_ACK_S_BOUNDS",
+    "MAX_SILENCE_S_BOUNDS",
     "MIN_HEARTBEAT_EVERY_S",
     "MIN_VALID_FOR_S",
     "OVERRUN_KEYS",
@@ -127,6 +130,14 @@ SHUTDOWN_GRACE_S_BOUNDS = (1, 300)
 GROUP_WAIT_S_BOUNDS = (0, 600)
 #: ``alerting.repeat_interval_s``.
 REPEAT_INTERVAL_S_BOUNDS = (60, 86400)
+#: ``alerting.max_silence_s`` and ``alerting.max_ack_s`` (§5.11.2): the
+#: longest suppression an operator may ask for. A minute is the shortest
+#: window worth writing down; a week is the longest an unattended
+#: suppression may outlive the shift that created it, and an UNBOUNDED one
+#: is how a page is lost forever, which is why neither knob may be absent
+#: from the code even when it is absent from the document.
+MAX_SILENCE_S_BOUNDS = (60, 604800)
+MAX_ACK_S_BOUNDS = (60, 604800)
 #: ``heartbeat.every_s``: at least one second.
 MIN_HEARTBEAT_EVERY_S = 1
 #: ``readiness.valid_for_s``: a GO that expires immediately is no GO.
@@ -605,6 +616,27 @@ _ROUTE = _Fixed(
 _RATE_LIMIT = _Fixed(
     {"max_per_hour": _POSITIVE_INT, "burst": _POSITIVE_INT}, required=("max_per_hour", "burst")
 )
+#: [phase 2] §5.11.2's label matchers: label NAME -> the value it must
+#: equal. A map rather than a list of expressions, because exact equality
+#: is the whole matcher language — a regex here would be a second grammar
+#: with its own escaping rules and no test could enumerate what it matches.
+_MATCHERS = _Named(_STR)
+#: [phase 2] One ``alerting.inhibit`` rule. ``equal`` is optional: a rule
+#: with no shared label inhibits on the matchers alone.
+_INHIBIT = _Fixed(
+    {"source": _MATCHERS, "target": _MATCHERS, "equal": _KEY_LIST},
+    required=("source", "target"),
+)
+#: [phase 2] One rung of ``alerting.escalation``.
+_ESCALATION_LEVEL = _Fixed(
+    {"after_s": _POSITIVE_INT, "sinks": _ListOf(_STR, min_len=1)},
+    required=("after_s", "sinks"),
+)
+#: [phase 2] The ladder, keyed by ``ESCALATION_LEVELS`` and default-deny
+#: over it, so an operator cannot invent a fourth rung whose delivery no
+#: test covers (§5.11.2). Every level is optional; a document may declare
+#: one rung or all three.
+_ESCALATION = _Fixed({level: _ESCALATION_LEVEL for level in ESCALATION_LEVELS})
 _ALERTING = _Fixed(
     {
         "sinks": _Named(_SELECTOR),
@@ -612,6 +644,10 @@ _ALERTING = _Fixed(
         "group_wait_s": _Int(*GROUP_WAIT_S_BOUNDS),
         "repeat_interval_s": _Int(*REPEAT_INTERVAL_S_BOUNDS),
         "rate_limit": _RATE_LIMIT,
+        "inhibit": _ListOf(_INHIBIT),
+        "escalation": _ESCALATION,
+        "max_silence_s": _Int(*MAX_SILENCE_S_BOUNDS),
+        "max_ack_s": _Int(*MAX_ACK_S_BOUNDS),
     },
     required=("sinks", "routes"),
 )
@@ -867,6 +903,21 @@ def _check_routes(problems, view):
                 )
 
 
+def _check_escalation(problems, view):
+    """Every escalation level names only declared sinks (§5.11.2)."""
+    alerting = view.alerting
+    if alerting is None or alerting.sinks is None or alerting.escalation is None:
+        return
+    for level in ESCALATION_LEVELS:
+        declared = getattr(alerting.escalation, level)
+        for sink in declared.sinks if declared is not None and declared.sinks is not None else ():
+            if sink not in alerting.sinks:
+                problems.append(
+                    f"alerting.escalation.{level}.sinks names {sink!r}, "
+                    "which alerting.sinks does not declare"
+                )
+
+
 def _check_endpoints(problems, view):
     """Every endpoint belongs to a declared sink and names an env var the document requires."""
     endpoints = view.alert_endpoints
@@ -960,7 +1011,8 @@ class ServeDocument:
         obj = copy.deepcopy(obj)
         problems = []
         view = _GRAMMAR.check(problems, "", obj)
-        for rule in (_check_lease_budget, _check_routes, _check_endpoints, _check_rung):
+        for rule in (_check_lease_budget, _check_routes, _check_escalation,
+                     _check_endpoints, _check_rung):
             rule(problems, view)
         if problems:
             raise ProductionError(problems)

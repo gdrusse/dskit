@@ -60,20 +60,25 @@ from dskit.production import vocab
 from dskit.production.base import (
     ProductionError,
     Registry,
+    _check_dict,
     _check_str,
+    pin_members,
     reject_unknown_params,
 )
 from dskit.production.document import GROUP_WAIT_S_BOUNDS, REPEAT_INTERVAL_S_BOUNDS
-from dskit.production.records import Alert
+from dskit.production.records import Alert, alert_labels, label_match
 from dskit.production.redact import get_logger, redact
 
 __all__ = [
     "ALERT_SINK_KINDS",
     "AlertRouter",
     "AlertSink",
+    "InhibitRule",
     "CallResult",
     "DEFAULT_GROUP_WAIT_S",
     "DEFAULT_MAIL_SENDER",
+    "DEFAULT_MAX_ACK_S",
+    "DEFAULT_MAX_SILENCE_S",
     "DEFAULT_QUEUE_MAXSIZE",
     "DEFAULT_REPEAT_INTERVAL_S",
     "DEFAULT_SINK_TIMEOUT_S",
@@ -109,6 +114,14 @@ DEFAULT_TEMPLATE = "json"
 DEFAULT_MAIL_SENDER = "dskit-production@localhost"
 #: How often the ``start()`` worker re-runs ``process`` when nothing wakes it.
 WORKER_POLL_S = 0.1
+#: ``alerting.max_silence_s`` and ``alerting.max_ack_s`` when the document
+#: names neither (§5.11.2). A bound always applies: an unbounded silence is
+#: how a page is lost forever, and an unbounded ack is how an escalation
+#: never happens. A day is the longest either may run unreviewed — it
+#: outlives one shift and no more — and a document that wants a different
+#: one declares it, inside ``document.MAX_SILENCE_S_BOUNDS``.
+DEFAULT_MAX_SILENCE_S = 86400
+DEFAULT_MAX_ACK_S = 86400
 
 #: The §5.11.1 counters, spelled once from the closed table.
 _FAILURES = "alert_sink_failures_total"
@@ -120,6 +133,15 @@ _JSON_HEADERS = {"Content-Type": "application/json"}
 #: The severity whose notifications the token bucket never withholds.
 _BYPASSES_RATE_LIMIT = "critical"
 _FIRING, _RESOLVED = vocab.ALERT_STATUSES
+
+#: The two §5.11.2 mechanisms ``process`` consults BEFORE the phase-1 four,
+#: in that order: the operator's own window first, because it is the most
+#: specific statement anyone has made about this alert, then the rule that
+#: says a louder alert already covers it. The order is data here rather
+#: than the shape of an ``if`` chain, so a test can read it.
+_PRIOR_SUPPRESSIONS = pin_members(
+    "alerts.py's prior suppressions", ("silenced", "inhibited"), vocab.ALERT_SUPPRESSIONS
+)
 
 _log = get_logger("alerts")
 
@@ -797,6 +819,164 @@ class EmailSink(AlertSink):
 
 
 # ---------------------------------------------------------------------------
+# Inhibition — the rule a document declares (§5.11.2)
+# ---------------------------------------------------------------------------
+
+
+class InhibitRule:
+    """While a ``source`` alert fires, a matching ``target`` is not paged.
+
+    Alertmanager's rule, and the reason it exists: when a venue link drops,
+    every quote and staleness alert behind it fires too, and paging all of
+    them buries the one an operator can act on. The rule NEVER deletes an
+    alert — the §6 ``alert`` record is still appended — so the evidence
+    survives the suppression.
+
+    Parameters
+    ----------
+    params : dict
+        ``source`` (dict of label -> value, required, non-empty),
+        ``target`` (the same, required) and ``equal`` (list of label names
+        that must agree between the two, optional). Default-deny over
+        those three plus ``notes``.
+
+    Examples
+    --------
+    A critical alert silences the warnings about the same instrument::
+
+        rule = InhibitRule({
+            "source": {"severity": "critical"}, "target": {"severity": "warning"},
+            "equal": ["instrument"],
+        })
+        rule.equal   # ('instrument',)
+    """
+
+    _PARAMS = ("source", "target", "equal")
+    #: The two matcher sets, so neither the checks nor the constructor
+    #: spells them twice.
+    _MATCHER_SETS = ("source", "target")
+
+    def __init__(self, params):
+        params = {} if params is None else params
+        problems = self.validate_params(params)
+        if problems:
+            raise ProductionError(problems)
+        self._source = dict(params["source"])
+        self._target = dict(params["target"])
+        self._equal = tuple(params.get("equal") or ())
+
+    @classmethod
+    def from_section(cls, section):
+        """Build one rule from a ``document.alerting.inhibit`` entry.
+
+        Parameters
+        ----------
+        section : object
+            The document view: ``source``, ``target`` and ``equal``.
+
+        Returns
+        -------
+        InhibitRule
+            Validated; the class owns the shape of its own three knobs, so
+            the composition root does not restate them.
+        """
+        return cls(
+            {
+                "source": dict(getattr(section, "source", None) or {}),
+                "target": dict(getattr(section, "target", None) or {}),
+                "equal": list(getattr(section, "equal", None) or ()),
+            }
+        )
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return every problem with ``params``; empty when acceptable.
+
+        Parameters
+        ----------
+        params : dict
+            The rule as the document wrote it.
+
+        Returns
+        -------
+        list of str
+            Default-deny over ``_PARAMS`` plus ``notes``, then the two
+            matcher sets and the ``equal`` list.
+        """
+        if not isinstance(params, dict):
+            return [f"an inhibit rule must be an object (dict), got {params!r}"]
+        problems = []
+        reject_unknown_params(problems, params, tuple(cls._PARAMS) + _NOTES)
+        for name in cls._MATCHER_SETS:
+            cls._check_matchers(problems, name, params.get(name))
+        equal = params.get("equal")
+        if equal is not None and not isinstance(equal, (list, tuple)):
+            problems.append(f"inhibit.equal must be a list of label names, got {equal!r}")
+        return problems
+
+    @staticmethod
+    def _check_matchers(problems, name, matchers):
+        """One matcher set: a non-empty map of label names to string values."""
+        _check_dict(problems, f"inhibit.{name}", matchers)
+        if not isinstance(matchers, dict):
+            return
+        if not matchers:
+            problems.append(
+                f"inhibit.{name} must name at least one label: a matcher set that matches "
+                "every alert is not a rule"
+            )
+        for label, value in matchers.items():
+            _check_str(problems, f"inhibit.{name}.{label}", value)
+
+    @property
+    def source(self):
+        """Return the matchers an alert must satisfy to inhibit."""
+        return dict(self._source)
+
+    @property
+    def target(self):
+        """Return the matchers an alert must satisfy to be inhibited."""
+        return dict(self._target)
+
+    @property
+    def equal(self):
+        """Return the label names that must agree between the two."""
+        return self._equal
+
+    def inhibits(self, firing, candidate):
+        """Say whether ``firing`` suppresses ``candidate`` under this rule.
+
+        Parameters
+        ----------
+        firing : records.Alert
+            An alert the router has notified and not resolved.
+        candidate : records.Alert
+            The arrival being judged.
+
+        Returns
+        -------
+        bool
+            True when ``firing`` matches ``source``, ``candidate`` matches
+            ``target`` and every ``equal`` label is present and equal on
+            both. An alert never inhibits its own fingerprint: a rule whose
+            two matcher sets overlap would otherwise take that
+            fingerprint's repeats out of the dedup pipeline the repeat
+            interval owns.
+        """
+        if firing.fingerprint == candidate.fingerprint:
+            return False
+        source_labels, target_labels = alert_labels(firing), alert_labels(candidate)
+        if not label_match(self._source, source_labels):
+            return False
+        if not label_match(self._target, target_labels):
+            return False
+        return all(
+            name in source_labels and source_labels[name] == target_labels.get(name)
+            for name in self._equal
+        )
+
+
+# ---------------------------------------------------------------------------
 # The router
 # ---------------------------------------------------------------------------
 
@@ -822,9 +1002,17 @@ class _TokenBucket:
 
 
 class _Group:
-    """One fingerprint's state: the alert waiting, what fired, what is resolving."""
+    """One fingerprint's state: the alert waiting, what fired, what is resolving.
 
-    __slots__ = ("waiting", "due_ms", "firing", "last_alert", "last_notified_ms", "resolve_ms")
+    ``first_fired_ms`` and ``climbed`` are the escalation's: the ladder is
+    measured from when this EPISODE first fired, and a resolution ends the
+    episode, so a fingerprint that fires again starts at the bottom.
+    """
+
+    __slots__ = (
+        "waiting", "due_ms", "firing", "last_alert", "last_notified_ms", "resolve_ms",
+        "first_fired_ms", "climbed",
+    )
 
     def __init__(self):
         self.waiting = None
@@ -833,6 +1021,8 @@ class _Group:
         self.last_alert = None
         self.last_notified_ms = None
         self.resolve_ms = None
+        self.first_fired_ms = None
+        self.climbed = -1
 
 
 class AlertRouter:
@@ -855,9 +1045,20 @@ class AlertRouter:
         ``alerts_suppressed_total{why}`` are declared at construction.
     ledger : ledger.Ledger or None, optional
         When given, ``process`` appends one ``alert`` record per
-        notification; ``start()`` then refuses (ruling R19).
+        notification AND per §5.11.2 suppression; ``start()`` then refuses
+        (ruling R19).
     maxsize : int, optional
         The bound of the arrival queue; default ``DEFAULT_QUEUE_MAXSIZE``.
+    inhibits : sequence of InhibitRule, optional
+        The rules ``document.alerting.inhibit`` declares, in order, built
+        by the composition root exactly as the sinks are.
+    silences : callable, optional
+        ``SeriesState.silences`` — the fold's own accessor, CALLED at each
+        ``process`` so a window created between two ticks takes effect at
+        the next one, and so a restart's replay is visible without the
+        router being rebuilt.
+    acks : callable, optional
+        ``SeriesState.alert_acks``, read the same way.
 
     Examples
     --------
@@ -880,10 +1081,16 @@ class AlertRouter:
         metrics,
         ledger=None,
         maxsize=DEFAULT_QUEUE_MAXSIZE,
+        inhibits=(),
+        silences=None,
+        acks=None,
     ):
         problems = []
         sinks = self._checked_sinks(problems, document_alerting, sinks)
         routes = self._checked_routes(problems, document_alerting, sinks)
+        ladder = self._checked_ladder(problems, document_alerting, sinks)
+        inhibits = self._checked_inhibits(problems, inhibits)
+        self._checked_fold(problems, silences, acks)
         group_wait_s = _knob(document_alerting, "group_wait_s", DEFAULT_GROUP_WAIT_S)
         repeat_interval_s = _knob(document_alerting, "repeat_interval_s", DEFAULT_REPEAT_INTERVAL_S)
         _check_bounded(problems, "alerting.group_wait_s", group_wait_s, GROUP_WAIT_S_BOUNDS)
@@ -900,6 +1107,11 @@ class AlertRouter:
             raise ProductionError(problems)
         self._sinks = sinks
         self._routes = routes
+        self._ladder = ladder
+        self._inhibits = inhibits
+        self._silences = _no_fold if silences is None else silences
+        self._acks = _no_fold if acks is None else acks
+        self._prior = {"silenced": self._silenced, "inhibited": self._inhibited}
         self._group_wait_ms = int(group_wait_s) * _MS_PER_S
         self._repeat_ms = int(repeat_interval_s) * _MS_PER_S
         self._bucket = bucket
@@ -956,6 +1168,59 @@ class AlertRouter:
                     )
                 routes[severity].add(name)
         return {severity: tuple(sorted(names)) for severity, names in routes.items()}
+
+    @staticmethod
+    def _checked_ladder(problems, document_alerting, sinks):
+        """Return the declared escalation rungs in ``ESCALATION_LEVELS`` order."""
+        escalation = getattr(document_alerting, "escalation", None)
+        if escalation is None:
+            return ()
+        ladder = []
+        for level in vocab.ESCALATION_LEVELS:
+            declared = getattr(escalation, level, None)
+            if declared is None:
+                continue
+            where = f"alerting.escalation.{level}"
+            after_s = getattr(declared, "after_s", None)
+            before = len(problems)
+            check_int_param(problems, f"{where}.after_s", after_s, ge=1)
+            names = tuple(getattr(declared, "sinks", None) or ())
+            for name in names:
+                if name not in sinks:
+                    problems.append(f"{where} names sink {name!r}, which was not given")
+            if len(problems) != before:
+                continue
+            after_ms = int(after_s) * _MS_PER_S
+            if ladder and after_ms <= ladder[-1][1]:
+                problems.append(
+                    f"{where}.after_s must be later than {ladder[-1][0]}'s "
+                    f"({ladder[-1][1] // _MS_PER_S} s): a rung due before the one above it "
+                    "is not a ladder"
+                )
+                continue
+            ladder.append((level, after_ms, names))
+        return tuple(ladder)
+
+    @staticmethod
+    def _checked_inhibits(problems, inhibits):
+        """Every given rule is an ``InhibitRule``; return them in declared order."""
+        if isinstance(inhibits, (str, bytes)) or not isinstance(inhibits, (list, tuple)):
+            problems.append(f"inhibits must be a sequence of InhibitRule, got {inhibits!r}")
+            return ()
+        for index, rule in enumerate(inhibits):
+            if not isinstance(rule, InhibitRule):
+                problems.append(f"inhibits[{index}] must be an InhibitRule, got {rule!r}")
+        return tuple(inhibits)
+
+    @staticmethod
+    def _checked_fold(problems, silences, acks):
+        """Both fold accessors are called, so both must be callable."""
+        for name, accessor in (("silences", silences), ("acks", acks)):
+            if accessor is not None and not callable(accessor):
+                problems.append(
+                    f"{name} must be the fold's own accessor, called at each process(), "
+                    f"got {accessor!r}"
+                )
 
     @staticmethod
     def _checked_bucket(problems, document_alerting):
@@ -1084,7 +1349,7 @@ class AlertRouter:
             What was delivered, resolutions first.
         """
         with self._lock:
-            self._drain()
+            self._drain(now_ms)
             return tuple(self._flush(now_ms))
 
     def drain(self):
@@ -1147,17 +1412,22 @@ class AlertRouter:
 
     # -- admission ----------------------------------------------------------
 
-    def _drain(self):
+    def _drain(self, now_ms):
         """Admit every queued arrival into its fingerprint's group."""
         while True:
             try:
                 arrived_ms, alert = self._queue.get_nowait()
             except queue.Empty:
                 return
-            self._admit(arrived_ms, alert)
+            self._admit(now_ms, arrived_ms, alert)
 
-    def _admit(self, arrived_ms, alert):
-        """Place one arrival: open a group, supersede a pending one, or count it."""
+    def _admit(self, now_ms, arrived_ms, alert):
+        """Place one arrival: withhold it, open a group, supersede a pending one, or count it."""
+        why = self._withheld(now_ms, alert)
+        if why is not None:
+            self._suppress(why)
+            self._record(alert, now_ms, {}, why)
+            return
         group = self._groups.setdefault(alert.fingerprint, _Group())
         firing = group.firing and group.resolve_ms is None
         if group.waiting is not None:
@@ -1175,19 +1445,60 @@ class AlertRouter:
         """Count one withheld alert under its ``vocab.ALERT_SUPPRESSIONS`` reason."""
         self._suppressed.inc(why=why)
 
+    def _withheld(self, now_ms, alert):
+        """Return the first ``_PRIOR_SUPPRESSIONS`` reason to withhold ``alert``, or None."""
+        for why in _PRIOR_SUPPRESSIONS:
+            if self._prior[why](now_ms, alert):
+                return why
+        return None
+
+    def _silenced(self, now_ms, alert):
+        """Whether an operator window active at ``now_ms`` names this alert."""
+        return any(
+            silence.active_at(now_ms) and silence.matches(alert)
+            for silence in self._silences().values()
+        )
+
+    def _inhibited(self, now_ms, alert):
+        """Whether a firing alert inhibits this one under any declared rule."""
+        firing = [
+            group.last_alert
+            for group in self._groups.values()
+            if group.firing and group.resolve_ms is None and group.last_alert is not None
+        ]
+        return any(
+            rule.inhibits(source, alert) for rule in self._inhibits for source in firing
+        )
+
+    def _acked(self, now_ms, alert):
+        """Whether an unlapsed acknowledgement stands over this fingerprint."""
+        ack = self._acks().get(alert.fingerprint)
+        return ack is not None and ack.holds_at(now_ms)
+
     # -- delivery -----------------------------------------------------------
 
     def _flush(self, now_ms):
-        """Deliver resolutions, then every pending group that is due; yield notifications."""
+        """Deliver resolutions, then what is due, then what has waited long enough."""
+        yield from self._resolutions(now_ms)
+        yield from self._due(now_ms)
+        yield from self._escalations(now_ms)
+
+    def _resolutions(self, now_ms):
+        """Deliver ``status: resolved`` for every fingerprint that recovered."""
         for fingerprint in list(self._groups):
             group = self._groups[fingerprint]
-            if group.resolve_ms is not None:
-                obj = group.last_alert.to_obj()
-                obj["status"], obj["at_ms"] = _RESOLVED, group.resolve_ms
-                yield self._notify(Alert.from_obj(obj), now_ms)
-                group.firing, group.last_alert, group.resolve_ms = False, None, None
-                if group.waiting is None:
-                    del self._groups[fingerprint]
+            if group.resolve_ms is None:
+                continue
+            obj = group.last_alert.to_obj()
+            obj["status"], obj["at_ms"] = _RESOLVED, group.resolve_ms
+            yield self._notify(Alert.from_obj(obj), now_ms, self._routes[obj["severity"]])
+            group.firing, group.last_alert, group.resolve_ms = False, None, None
+            group.first_fired_ms, group.climbed = None, -1
+            if group.waiting is None:
+                del self._groups[fingerprint]
+
+    def _due(self, now_ms):
+        """Deliver every grouped alert whose wait has elapsed, if the bucket allows."""
         for group in list(self._groups.values()):
             if group.waiting is None or now_ms < group.due_ms:
                 continue
@@ -1199,25 +1510,62 @@ class AlertRouter:
             ):
                 self._suppress("rate_limit")
                 continue
-            yield self._notify(alert, now_ms)
+            yield self._notify(alert, now_ms, self._routes[alert.severity])
+            if not group.firing:
+                group.first_fired_ms = now_ms
             group.firing, group.last_alert, group.last_notified_ms = True, alert, now_ms
 
-    def _notify(self, alert, now_ms):
-        """Send to every routed sink, record the outcomes, return the notification."""
-        outcomes = {name: self._send(name, alert) for name in self._routes[alert.severity]}
-        notification = Notification(alert, outcomes)
-        if self._ledger is not None:
-            self._ordinal += 1
-            body = redact_strings(alert.to_obj())
-            body["sinks"] = {name: outcome.to_obj() for name, outcome in outcomes.items()}
-            self._ledger.append(
-                {
-                    "kind": "alert",
-                    "id": f"alert:{alert.fingerprint}:{alert.status}:{now_ms}:{self._ordinal}",
-                    "body": body,
-                }
-            )
-        return notification
+    def _escalations(self, now_ms):
+        """Climb ONE rung for every firing, unacknowledged, unsilenced fingerprint.
+
+        One rung per ``process`` is what "climbed in order and never
+        skipped" means when the loop is late: a process that has not run
+        for an hour sends the next rung, not all three at once. Reaching
+        the top ends the climb, so ``final`` is never sent twice.
+        """
+        for group in list(self._groups.values()):
+            step = group.climbed + 1
+            if not (group.firing and group.resolve_ms is None) or step >= len(self._ladder):
+                continue
+            _level, after_ms, names = self._ladder[step]
+            if now_ms - group.first_fired_ms < after_ms:
+                continue
+            if self._held(now_ms, group.last_alert):
+                continue
+            group.climbed = step
+            yield self._notify(group.last_alert, now_ms, names)
+
+    def _held(self, now_ms, alert):
+        """Whether a human owns this alert, or asked not to be paged about it."""
+        return self._acked(now_ms, alert) or self._silenced(now_ms, alert)
+
+    def _notify(self, alert, now_ms, sinks):
+        """Send to every named sink, record the outcomes, return the notification."""
+        outcomes = {name: self._send(name, alert) for name in sinks}
+        self._record(alert, now_ms, outcomes, None)
+        return Notification(alert, outcomes)
+
+    def _record(self, alert, now_ms, outcomes, suppressed):
+        """Append the §6 ``alert`` record, whether it was delivered or withheld.
+
+        A withheld alert is recorded too (§5.11.2), and the body NAMES the
+        suppression: a record with no sink outcomes is otherwise
+        indistinguishable from an alert whose severity no route covers,
+        and "the evidence survives the suppression" would not be true.
+        """
+        if self._ledger is None:
+            return
+        self._ordinal += 1
+        body = redact_strings(alert.to_obj())
+        body["sinks"] = {name: outcome.to_obj() for name, outcome in outcomes.items()}
+        body["suppressed"] = suppressed
+        self._ledger.append(
+            {
+                "kind": "alert",
+                "id": f"alert:{alert.fingerprint}:{alert.status}:{now_ms}:{self._ordinal}",
+                "body": body,
+            }
+        )
 
     def _send(self, name, alert):
         """One sink, one alert: inline for a core kind, supervised for a custom one."""
@@ -1252,6 +1600,16 @@ class AlertRouter:
         if result.error is not None:
             return SinkOutcome(ok=False, detail=_failure_detail(result.error))
         return result.value
+
+
+def _no_fold():
+    """Return nothing: the router was built without a fold to read.
+
+    ``validate``, ``plan`` and every test that predates a series build a
+    router long before a fold exists, and phase 1's behaviour is exactly
+    "no silences, no acknowledgements".
+    """
+    return {}
 
 
 def _knob(section, name, default):

@@ -46,6 +46,7 @@ __all__ = [
     "DEDUPE_MODES",
     "DIVERGENCE_CLASSES",
     "ECONOMIC_ATTRS",
+    "ESCALATION_LEVELS",
     "EXIT_CODES",
     "FEED_STATUSES",
     "FEE_KIND_NAMES",
@@ -97,6 +98,7 @@ __all__ = [
     "SEVERITY_LEVELS",
     "SIDES",
     "SIGNER_ALGORITHMS",
+    "SILENCE_STATES",
     "SIZE_CAPS",
     "STATUSES",
     "TERMINAL_STATUSES",
@@ -230,7 +232,10 @@ CIRCUIT_STATES = ("closed", "open", "half_open", "forced_open", "metrics_only")
 
 #: §6's twenty-five record kinds in table order, plus ``cancel_outcome``
 #: (ruling R6: a halting ``trip`` is barriered BEFORE the cancel I/O, so
-#: what the cancel came to is a record of its own) — twenty-six.
+#: what the cancel came to is a record of its own) and phase 2's ``silence``
+#: and ``alert_ack`` (§5.11.2: alert state rides in the fold, in whatever
+#: ledger the document declared, never in an alert database beside it that
+#: could disagree with the chain after a crash) — twenty-eight.
 RECORD_KINDS = (
     "process",
     "tick_start",
@@ -256,6 +261,8 @@ RECORD_KINDS = (
     "command_result",
     "monitor",
     "alert",
+    "silence",
+    "alert_ack",
     "health",
     "snapshot",
 )
@@ -331,9 +338,14 @@ APPROVAL_PURPOSES = (
     "execute_flatten",
     "resume",
     "adopt",
+    # Phase 2 (§5.11.2): a page an unauthenticated caller could suppress is
+    # an outage with no evidence, so acknowledging one and silencing one are
+    # proof-carrying acts like every other member here.
+    "ack",
+    "silence",
 )
 
-#: What the control spool carries (§5.8): the eight authenticated
+#: What the control spool carries (§5.8): the ten authenticated
 #: ``APPROVAL_PURPOSES`` plus the four §7 verbs that queue without a
 #: maker-checker proof. One home, so the inbox and every handler agree
 #: on what a command may ask for.
@@ -523,8 +535,33 @@ MONEY_FIELDS = (
 #: meanings of 3 kept apart (§5.13).
 EXIT_CODES = {"stopped": 0, "error": 1, "halted": 3, "already_running": 4, "refused": 5}
 
-#: Why the alert router did not deliver an alert (§5.11's mechanisms).
-ALERT_SUPPRESSIONS = ("dedup", "group_wait", "repeat_interval", "rate_limit", "queue_full")
+#: Why the alert router did not deliver an alert — §5.11's five mechanisms
+#: plus §5.11.2's two, in the order ``process`` consults them backwards:
+#: ``silenced`` (an operator's window), ``inhibited`` (a louder alert is
+#: already firing), then the phase-1 five. Every member is COUNTED, because
+#: a page withheld and not counted is indistinguishable from one never
+#: raised.
+ALERT_SUPPRESSIONS = (
+    "dedup",
+    "group_wait",
+    "repeat_interval",
+    "rate_limit",
+    "queue_full",
+    "inhibited",
+    "silenced",
+)
+
+#: The three states a :class:`~dskit.production.records.Silence` DERIVES
+#: from its two instants (§5.11.2). Nothing stores one: a stored state
+#: would be wrong from the moment nothing wrote it, and no process is
+#: scheduled to.
+SILENCE_STATES = ("pending", "active", "expired")
+
+#: The escalation ladder ``document.alerting.escalation`` may declare
+#: (§5.11.2), and the ORDER is the content — levels are climbed in order
+#: and never skipped. Closed for the same reason ``SEVERITIES`` is: an
+#: operator cannot invent a fourth rung whose delivery no test covers.
+ESCALATION_LEVELS = ("primary", "secondary", "final")
 
 #: §5.11.1's phase-1 table: metric name -> {label name -> permitted values}.
 #: Label NAMES are closed at declaration; an undeclared VALUE drops to

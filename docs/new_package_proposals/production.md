@@ -606,7 +606,13 @@ live arm. Same hole as `required_universe`, same fix.
   "heartbeat": {"every_s": 60, "in_degraded": false, "emitters": {"file": {"uses": "file"}}},
   "alerting": {"sinks": {"ops": {"uses": "webhook"}},                 // GRADED: which sinks exist and HOW they deliver
                "routes": [{"severity": "critical", "sinks": ["ops"]}, {"severity": "warning", "sinks": ["ops"]}],
-               "group_wait_s": 30, "repeat_interval_s": 14400, "rate_limit": {"max_per_hour": 20, "burst": 5}},
+               "group_wait_s": 30, "repeat_interval_s": 14400, "rate_limit": {"max_per_hour": 20, "burst": 5},
+               // [phase 2, §5.11.2] all four OPTIONAL and GRADED: a phase-1 document keeps its identity
+               "inhibit": [{"source": {"severity": "critical"}, "target": {"severity": "warning"},
+                            "equal": ["instrument"]}],       // matcher = label NAME -> the value it must equal
+               "escalation": {"primary": {"after_s": 300, "sinks": ["ops"]},   // keys closed to ESCALATION_LEVELS
+                              "final": {"after_s": 3600, "sinks": ["pager"]}}, // delays must increase down the ladder
+               "max_silence_s": 86400, "max_ack_s": 14400},   // [60, 604800]; absent takes the named default
   "alert_endpoints": {"ops": {"url_env": "OPS_WEBHOOK_URL", "template": "slack", "timeout_s": 5}},  // EXCLUDED: where it goes
   "placement": {"ledger_root": "./serve", "rotate": {"by": "day", "max_bytes": 268435456}, "log_dir": "./serve/logs"},
   "env": {"env_file": ".env", "require": ["OPS_WEBHOOK_URL"]}
@@ -1072,6 +1078,23 @@ non-finite number.
 - `Alert{fingerprint, severity ∈ SEVERITIES, status ∈ {firing, resolved}, summary,
   source, tick_id, at_ms, labels}`; `Verdict{status ∈ {ok, warn, alarm, insufficient},
   statistic, threshold, n_ref, n_cur, window, slice, provisional}`.
+- **[phase 2]** `Silence{silence_id, matchers, starts_at_ms, ends_at_ms, created_by,
+  comment}` with `state_at(now_ms) -> SILENCE_STATES`, `active_at(now_ms)` (the ONE
+  owner of what `active` means, so the router asks rather than comparing a string)
+  and `matches(alert)`; and `AlertAck{fingerprint, acknowledged_until_ms, by, reason}`
+  with `holds_at(now_ms)` (the one owner of the lapse). Both refuse a window that
+  ends before it begins, and a `Silence` refuses an EMPTY `matchers`: a silence
+  matching everything is a global mute and nothing on the record would say it was
+  meant to be one. `created_by`/`by` are the PRINCIPAL DIGEST `_principal_and_proof`
+  derives — §6 keeps principals on the chain as digests, never as names.
+  Beside them, the two module rules a `Silence` and an `alerts.InhibitRule` must
+  share, since a second copy is the bug: `alert_labels(alert)` is the matchable
+  space — the alert's own `labels` plus `fingerprint`/`severity`/`source`, the
+  closed FIELDS winning over a declared label of the same name, or an alert could
+  lie about its own severity to a silence written against it — and
+  `label_match(matchers, labels)` is exact equality over every named label (a regex
+  here would be a second grammar with its own escaping and no test could enumerate
+  what it matches).
 - `InputWatermark{key, latest_asof_ms, source_digest}`;
   `EntryBatch{outputs, watermarks_by_key, required_keys_digest, coverage_digest,
   data_asof_ms, inputs_digest, source_config_hash}` where `data_asof_ms` is the
@@ -1656,7 +1679,16 @@ section names box 3.
   `open_ticks()`, `undecided_ticks()`, `tick_plans(tick_id)`, `last_trip()`
   and — phase 2 — `silences()` and `alert_acks()`. Every one of them rides in
   the §6 `snapshot` payload, because `Recovery` replays forward from the last
-  snapshot and cannot restore a member the snapshot never carried.
+  snapshot and cannot restore a member the snapshot never carried. Phase 2 adds
+  both to `_SNAPSHOT_KEYS`, and `restore` stays default-deny over them: a payload
+  written before §5.11.2 refuses BY NAME rather than restoring a fold whose
+  silences are gone and whose pages would then resurrect — the `cancelled`
+  precedent, and `schema_version` stays `1` for the same reason (the branch is
+  unreleased and no such snapshot exists outside a working tree). Phase 2 also
+  gives the `alert` kind a fold of its own: a `resolved` alert drops that
+  fingerprint's entry from `alert_acks()`, which is §5.11.2's second lapse and
+  the only place it can live (an `AlertAck` carries no creation instant, so
+  nothing else can tell this episode's ack from the last one's).
   **`economic_seq` advances on economic events only.** A `fill`, a terminal
   `order_event`, a `cash_flow` (a balance update, D14) and a position
   correction advance it; an `authority_use` (a rights reservation), an
@@ -2268,6 +2300,21 @@ already used to refuse R3's `Idempotency` ledger, and it holds here unchanged.
   `document.alerting.inhibit`, a list, and are evaluated in order at
   `process(now_ms)` time; inhibition never deletes an alert, so the §6 `alert`
   record is still appended and the evidence survives the suppression.
+  Four readings the first sentence does not settle. **"Firing" is the router's
+  own `firing` set** — a fingerprint notified and not yet resolved — so an alert
+  still inside its `group_wait` inhibits nothing: it has paged no one, and
+  suppressing behind it would withhold the target with no louder alert delivered.
+  **An empty `source` or `target` refuses**, for the `Silence` reason above: a
+  matcher set that matches every alert is not a rule. **A firing alert never
+  inhibits its OWN fingerprint** — a rule whose two matcher sets overlap
+  (`critical` → `critical`) would otherwise take that fingerprint's repeats out of
+  the dedup pipeline the repeat interval owns and file them under `inhibited`.
+  And **"in order" is unobservable while every rule yields one reason**: what a
+  test can assert is that EVERY declared rule is consulted, so a rule the document
+  writes second still inhibits. The rules are resolved by the composition root
+  (`InhibitRule.from_section`, the class owning the shape of its own three knobs)
+  and handed to the router exactly as the sinks are — the router never reads a
+  document section for its own collaborators (§5.16's spelling rule).
 - **Silences.** `Silence{silence_id, matchers, starts_at_ms, ends_at_ms,
   created_by, comment}` — six fields, and **no `state` among them**:
   `state_at(now_ms) -> SILENCE_STATES` (`pending | active | expired`) is
@@ -2280,7 +2327,13 @@ already used to refuse R3's `Idempotency` ledger, and it holds here unchanged.
   restart cannot resurrect a silenced page. A matching alert is suppressed with
   `why: "silenced"`. An unbounded silence refuses: `ends_at_ms` is required and
   bounded by `document.alerting.max_silence_s`, because a silence with no end
-  is how a page is lost forever.
+  is how a page is lost forever. **The bound is never absent**: a document that
+  declares no `max_silence_s` takes `alerts.DEFAULT_MAX_SILENCE_S` (86400 — one
+  day outlives one shift and no more), and `document.MAX_SILENCE_S_BOUNDS` is
+  `[60, 604800]`; a knob that could be omitted would make "bounded" advisory,
+  which is the failure the sentence above forbids. `max_ack_s` has the same
+  default and bounds for the same reason: an unbounded acknowledgement is how an
+  escalation never happens.
 - **Escalation.** `document.alerting.escalation` maps a level name in
   `ESCALATION_LEVELS = ("primary", "secondary", "final")` to
   `{after_s, sinks}`. An alert still firing and still unacknowledged
@@ -2288,7 +2341,24 @@ already used to refuse R3's `Idempotency` ledger, and it holds here unchanged.
   levels are climbed in order and never skipped, and reaching `final` twice
   does not double-send because the repeat interval still applies. The level
   names are closed for the same reason severities are: an operator cannot
-  invent a fourth rung whose delivery no test covers.
+  invent a fourth rung whose delivery no test covers. (Their VARIABLE may not be
+  called `rung`: D2's AST ban is on that spelling, and an escalation level is
+  not the permission rung.) The climb, spelled out, because "never skipped" and
+  "twice" leave it open: `process` advances a firing group by **at most one
+  level per call**, from an index that only increases, measured from when this
+  EPISODE first fired — so a loop that has not run for an hour sends the next
+  level rather than all three at once, and `final` cannot be reached twice at
+  all. What the repeat interval then buys is the sentence's real content: once
+  the top is reached the ladder is spent, and further pages for that fingerprint
+  come only from the ordinary repeat. A `resolved` transition ends the episode,
+  so a fingerprint that fires again starts at the bottom. An escalation delivery
+  is a NOTIFICATION like any other and appends its own §6 `alert` record, whose
+  `sinks` map names the level's sinks — that record is the only evidence a level
+  was climbed. Two refusals at construction: a level naming a sink the document
+  does not declare (the closure `alerting.routes` already has — a level that
+  pages an undeclared sink pages nobody), and a ladder whose `after_s` values do
+  not increase, since a level due before the one above it can only ever fire
+  immediately after it and reading the document would not say so.
 - **Acknowledgement.** `AlertAck{fingerprint, acknowledged_until_ms, by,
   reason}`, appended by the authenticated `ack` verb as a §6 `alert_ack`
   record (body = `AlertAck.to_obj()` plus the control digests) and folded into
@@ -2297,11 +2367,39 @@ already used to refuse R3's `Idempotency` ledger, and it holds here unchanged.
   "this is fixed", and the `resolved` transition remains the only thing that
   ends an alert. The ack lapses at `acknowledged_until_ms` (from `--for`,
   bounded by `document.alerting.max_ack_s`) or when the alert resolves.
+  **That second lapse has to live in the FOLD**, not in the router: `AlertAck`
+  has four fields and no creation instant, so a router cannot tell an ack raised
+  for the episode that just resolved from one raised for the episode now firing,
+  and after a restart it would re-honour the old one. `SeriesState.apply`
+  therefore folds the `alert` record — a `resolved` status drops that
+  fingerprint's ack, a `firing` one leaves it — which is why the fold's `alert`
+  entry is no longer `_fold_nothing`. A silence is never dropped this way: it is
+  a window over MANY alerts, and one of them resolving says nothing about the
+  window. `--for` is an ISO-8601 duration through `parse_iso_duration` (the one
+  owner), carried as `for_ms` so the handler adds it to the CONSUMED command's
+  `queued_at_ms`; an absent `--for` takes the document's own bound, the only
+  default that is not a second threshold with no name.
 - `AlertRouter` gains `inhibits`, `silences` and `acks` as constructor
   collaborators read from the fold, and `process(now_ms)` consults them in the
   order silence → inhibition → dedup → group wait → rate limit, cheapest and
   most explicit first. It remains the sole appender of the `alert` record and
-  is still called only from the loop thread.
+  is still called only from the loop thread. `silences` and `acks` are the
+  fold's own ACCESSORS (`SeriesState.silences`, `SeriesState.alert_acks`),
+  CALLED at each `process` rather than snapshotted at construction — otherwise a
+  window created between two ticks would need the router rebuilt, and a
+  restart's replay would be invisible to it. The order is data
+  (`_PRIOR_SUPPRESSIONS`), not the shape of an `if` chain, so a test can read it;
+  what makes it TESTABLE is the pairwise conflicts, since a reason is only
+  observable when two mechanisms would both withhold: silenced beats inhibited
+  (an operator's own window is the most specific statement anyone has made),
+  inhibited beats `repeat_interval`, and both admission reasons beat
+  `rate_limit`, which is only ever asked at flush. **An ack or an active silence
+  also withholds an ESCALATION** — §5.11.2 says it of the ack, and it must hold
+  of the silence too, or a ladder climbs straight through the window and pages
+  exactly the alert the operator silenced. A withheld escalation is NOT counted:
+  the phase-1 conservation invariant is over ENQUEUED alerts ("delivered exactly
+  once or counted exactly once"), and an escalation is an additional route for an
+  alert already delivered and already counted.
 - **The systemd heartbeat emitter.** `SystemdEmitter(params)` is the third
   `HEARTBEAT_KINDS` member. `emit(payload)` sends `WATCHDOG=1` and a one-line
   `STATUS=` datagram to the `AF_UNIX` `SOCK_DGRAM` path in `NOTIFY_SOCKET` (a
@@ -2315,10 +2413,58 @@ already used to refuse R3's `Idempotency` ledger, and it holds here unchanged.
   to prevent, and systemd's own watchdog would then be the thing that never
   fires. `emit` never raises; a send failure is counted like any other
   emitter's.
+  Four readings that last sentence needs. **The two clauses reconcile one way
+  only**: `Heartbeat.failures` is the only counter there is, and §5.11 pins that
+  an emitter reports a failure by RAISING, so a `SystemdEmitter.emit` that
+  returned normally on a failed send would be counted nowhere and be exactly the
+  silent emitter this paragraph forbids. So `emit` raises `ProductionError` —
+  the package's own failure, never the socket's bare `OSError` — and the
+  heartbeat swallows and counts it; "never raises" holds at the boundary the
+  loop sees. `ready()`/`stopping()` DO swallow entirely, because the loop calls
+  them outside that count and a raise there would fault a process that is merely
+  shutting down. **`Heartbeat` gains the two matching verbs**: the loop reaches
+  the emitters only through it, so `Heartbeat.ready()`/`stopping()` fan out to
+  every emitter, count a failure like a failed beat, and are IDEMPOTENT — the
+  heartbeat owns "first", so the loop keeps no flag of its own and simply tells
+  it whenever evaluating the health machine answers `ready`. That is the first tick boundary
+  in practice, since nothing before it has evaluated a probe; a unit whose
+  `TimeoutStartSec` is shorter than one cadence period must raise it.
+  `stopping()` is sent between `Health.stop()` and `Heartbeat.close()`, while the
+  emitters still work: after `close()` a supervisor waiting on the signal would
+  time the process out instead of letting it finish. **`NOTIFY_SOCKET` is read
+  through the `secrets` collaborator**, the package's one door to the process
+  environment; it needs no `env.require` entry, since `resolve_secrets` carries
+  the whole environment and systemd SETS the variable rather than an operator
+  declaring it. Construction also refuses an address that is neither absolute
+  nor abstract — sd_notify's own rule, and the same refusal as the unset one,
+  since a relative path can never be connected to. **The status line is one line
+  by construction**: whitespace in the rendered payload is collapsed, because a
+  datagram is `KEY=value` lines and a newline in a value would forge a second
+  assignment systemd would then act on.
 - Both new verbs are authenticated control acts on §5.8's one path, with the
   purposes `ack` and `silence` added to `APPROVAL_PURPOSES` (a page suppressed
   by an unauthenticated caller is an outage with no evidence), and both journal
-  once per D22.
+  once per D22. They authenticate the way `adopt` does — the CLI requires
+  `--proof`, the bytes travel in the inbox file, and `_principal_and_proof` binds
+  the principal and proof digests onto the record — rather than calling
+  `ApprovalVerifier.verify`, which stays `Arming`'s: routing two more purposes
+  through that seam would give every child verifier two new purposes to implement
+  before it could suppress a page. Adding the purposes forces the cascade unit 1
+  hit with `outcomes`: a handler in `compose.py` (`_Ack` and `_Silence`, sharing
+  a `_SuppressionVerb` base that owns the "window bounded from the command's
+  queued instant" rule once) and a §7 verb in `__main__.py`; a purpose with no
+  handler is silently rejected into a receipt, and a verb with no CLI row is a
+  control an operator cannot take.
+- **A suppressed alert is recorded, and the record says so.** §5.11.2 asks for
+  the `alert` record to survive an inhibition; the §6 body therefore gains
+  `suppressed` (an `ALERT_SUPPRESSIONS` member, or null when delivered). Without
+  it the record is byte-indistinguishable from an alert whose severity no route
+  covers — both carry `sinks: {}` — and "the evidence survives the suppression"
+  would not be true. A SILENCED alert is recorded on the same argument: a
+  silence or an inhibition can withhold the FIRST and only notification of a
+  symptom, so the record is the only evidence it occurred, while the phase-1
+  five withhold a REPEAT of something the chain already carries and append
+  nothing.
 
 ### 5.11.3 `libs/prometheus.py` and `libs/opentelemetry.py` — metric sinks (phase 3)
 
@@ -3521,7 +3667,15 @@ recorded decision rather than something a later reader has to rediscover:
 in code as a module-level
 `PRODUCERS: dict[tuple[str, str], str]` mapping `(record, field)` to a dotted
 producer path, with a sentinel for the handful whose producer is a step verdict
-rather than an attribute. Two assertions, and the second is what makes it bite:
+rather than an attribute — and, from phase 2, a SECOND sentinel `<command>` for
+`Silence` and `AlertAck`. Every field of both is filled from the consumed
+control command (its `request_id`, its `queued_at_ms`, the payload the maker
+signed, the principal digest derived from it), and a command is a dict on the
+wire rather than a class any `getattr` walk can resolve against; attributing
+those fields to `<step>` would claim they are a step's own verdict, which they
+are not — they are an operator's, and that difference is what an authenticated
+act means. The completeness half still bites: a field added to either record
+without a row fails. Two assertions, and the second is what makes it bite:
 
 - **resolution** — every dotted path resolves by `getattr` chain against the
   built classes, so a renamed collaborator fails here;
@@ -3591,9 +3745,9 @@ sha256-canonical idiom.
 | `adoption` | authenticated venue-break adoption | `control_request_id`, `principal_digest`/`proof_digest`, `break_ids[]`, `delta_digest`, `before_recon_id` — the `recon` record the adoption acted on. There is no `after_recon_id`: the follow-up reconciliation is its own `recon` record appended after this barrier, and a field naming a record that does not exist yet has no producer |
 | `command_result` | consumed inbox request | `request_id`, `status ∈ {applied, rejected}`, emitted record ids, reason |
 | `monitor` | verdict change / window close | `monitor`, `slice`, `window`, `statistic`, `threshold`, `status`, `provisional` |
-| `alert` | firing / resolved | the `Alert` record + per-sink outcomes. Appended only by `AlertRouter.process`, only from the loop thread (§5.11) |
-| `silence` | [phase 2] one operator silence window | `Silence.to_obj()` — `silence_id`, `matchers`, `starts_at_ms`, `ends_at_ms`, `created_by`, `comment` — plus `control_request_id`, `principal_digest`, `proof_digest`. `ends_at_ms` is required and bounded, since an unbounded silence is how a page is lost forever. The record stores no state: `Silence.state_at(now_ms)` derives one of `SILENCE_STATES` from the two instants |
-| `alert_ack` | [phase 2] one operator acknowledgement | `AlertAck.to_obj()` — `fingerprint`, `acknowledged_until_ms`, `by`, `reason` — plus `control_request_id`, `principal_digest`, `proof_digest`. An ack stops ESCALATION and nothing else: the alert keeps firing and keeps being recorded, because an ack means a human owns it, not that it is fixed |
+| `alert` | firing / resolved / withheld | the `Alert` record + per-sink outcomes + **[phase 2]** `suppressed` (an `ALERT_SUPPRESSIONS` member, or null when delivered). Appended only by `AlertRouter.process`, only from the loop thread (§5.11) — for every notification INCLUDING an escalation's, whose `sinks` map names the level's sinks, and for every alert §5.11.2 silenced or inhibited, whose `sinks` map is empty. `suppressed` is what tells those two apart from an alert whose severity no route covers; without it "the evidence survives the suppression" would not be true. Phase 2 also folds it: a `resolved` alert lapses that fingerprint's `alert_ack` (§5.11.2) |
+| `silence` | [phase 2] one operator silence window | `Silence.to_obj()` — `silence_id`, `matchers`, `starts_at_ms`, `ends_at_ms`, `created_by`, `comment` — plus `control_request_id`, `principal_digest`, `proof_digest`. `ends_at_ms` is required and bounded, since an unbounded silence is how a page is lost forever. The record stores no state: `Silence.state_at(now_ms)` derives one of `SILENCE_STATES` from the two instants. `id = silence:<control_request_id>` (R9's kind-qualified id), which is what makes a crash-replayed command idempotent rather than a changed payload under a reused id |
+| `alert_ack` | [phase 2] one operator acknowledgement | `AlertAck.to_obj()` — `fingerprint`, `acknowledged_until_ms`, `by`, `reason` — plus `control_request_id`, `principal_digest`, `proof_digest`. An ack stops ESCALATION and nothing else: the alert keeps firing and keeps being recorded, because an ack means a human owns it, not that it is fixed. `id = alert_ack:<control_request_id>`, for the same reason |
 | `health` | transition | `from`, `to`, `cause`, `probe_evidence` |
 | `snapshot` | every N records | `at_seq`, `state_digest`, `state` — **every `StateView` member** (positions, working orders, pending refs, balances, decision history, breaker, arming, readiness, guard holds, reduction projection, pending control, risk version) **plus monitor state**, which §5.10 requires the snapshot to carry and which is not a `StateView` member — dropping it would reset every drift window on restart, and a monitor below `min_n` cannot alarm until it refills. `risk_version`'s `executor_token`/`accounting_tokens` are live session tokens re-acquired on restart, not restored. Since `Recovery` replays `SeriesState.apply` from the last snapshot forward and cannot restore a member the snapshot never carried. The non-`StateView` projections §5.8.1 lists ride here for the same reason, and `last_trip` carries exactly `{id, seq, recorded_at_ms, from, to, reason, acknowledged_trip_id, cancelled}` — `cancelled` says whether a `cancel_outcome` naming that trip has been folded, which is what makes "a halting `trip` with no later `cancel_outcome`" answerable from the fold alone rather than by a second walk of the ledger. `restore` is default-deny over those keys, so a snapshot written before `cancelled` existed refuses by name (`missing key(s) ['cancelled']`) instead of restoring a trip recovery would then re-sweep; `schema_version` stays `1` because the branch is unreleased and no such snapshot exists outside a working tree |
 
@@ -3617,7 +3771,7 @@ sha256-canonical idiom.
 | `outcomes <doc> [--asof TS]` | [phase 2] collect and record outcomes up to the cut (§5.13.2); mutating, so queued or synchronous under the lock, and journaled | 0 / 1 / 5 |
 | `report <doc> [--asof T] [--format markdown\|json] [--out FILE]` | [phase 2] attribution, calibration, value and parity at the cut; read-only, no lock, no journal row | 0 / 1 |
 | `approve-hold <doc> --guard NAME --scope KEY --proof FILE` | [phase 2] authenticated early release of one guard hold (§5.5.1) | 0 / 1 / 5 |
-| `ack <doc> --fingerprint F --proof FILE [--for D]` / `silence <doc> --matcher K=V… --until TS --proof FILE` | [phase 2] authenticated alert acknowledgement, or an operator silence window (§5.11.2) | 0 / 1 / 5 |
+| `ack <doc> --fingerprint F --proof FILE [--for D] [--reason TEXT]` / `silence <doc> --matcher K=V… --until TS --proof FILE [--comment TEXT]` | [phase 2] authenticated alert acknowledgement, or an operator silence window (§5.11.2). `--for` is an ISO-8601 duration (`PT2H`); `--reason` and `--comment` are here because §5.16 gives both records that field and a field with no producer is a plan defect. A `--matcher` that is not `K=V` refuses, and `silence` requires at least one | 0 / 1 / 5 |
 | `ready <doc>` | release-bound readiness GO / NO-GO (required for live rungs) | 0 / 1 / 5 |
 
 `replay --strict` exits 1 when the diff is non-empty, and plain `replay` exits
@@ -3681,7 +3835,9 @@ dskit/production/
 │                      QuoteSet, GateResult, FeedResult, FeedAge, ScopeVerdict, PolicyRequest, Provenance;
 │                      LeasePermit is coordination.py's, not here; Permit (frozen dataclass base) + SimulatedPermit + ActPermit, TickResult, Intent,
 │                      execution/monitoring values; [phase 2] Outcome (which IS the §6 outcome body), DecidedLeg,
-│                      Silence, AlertAck
+│                      Silence, AlertAck + the two matcher rules they share with alerts.InhibitRule
+│                      (alert_labels, label_match — one owner, since a second copy would let a silence and
+│                      an inhibit rule suppress different alerts for the same written matcher)
 ├── clock.py           Clock ABC; ManualTime (the settable instant TestClock and ReplayClock each compose);
 │                      WallClock, TestClock, ReplayClock; CLOCK_KINDS
 ├── sessions.py        Calendar ABC; AlwaysOpen, WeeklySessions, EventWindow, Composite; CALENDAR_KINDS

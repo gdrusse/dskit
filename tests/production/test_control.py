@@ -67,8 +67,8 @@ GENESIS_HASH = "0" * 64
 PROCESS_ID = "proc-1"
 BASE_MS = 1_767_268_800_000
 
-#: The eight authenticated purposes §5.6 closes — restated, not imported, so
-#: this file can disagree with `vocab` and say so.
+#: The ten authenticated purposes §5.6 and §5.11.2 close — restated, not
+#: imported, so this file can disagree with `vocab` and say so.
 AUTHENTICATED_PURPOSES = (
     "arm_request",
     "arm_approval",
@@ -78,6 +78,10 @@ AUTHENTICATED_PURPOSES = (
     "execute_flatten",
     "resume",
     "adopt",
+    # §5.11.2: a page suppressed by an unauthenticated caller is an outage
+    # with no evidence, so both alert verbs carry a proof.
+    "ack",
+    "silence",
 )
 
 #: The §7 mutating verbs that carry no maker-checker proof and so are not
@@ -364,8 +368,8 @@ def test_the_control_purpose_set_has_exactly_one_home():
 
 
 def test_every_authenticated_purpose_of_the_control_set_is_an_approval_purpose():
-    """The eight §5.6 purposes a verifier may be asked about are a subset of
-    what the spool carries; the four unauthenticated verbs are the difference."""
+    """The ten purposes a verifier may be asked about are a subset of what
+    the spool carries; the five unauthenticated verbs are the difference."""
     assert set(AUTHENTICATED_PURPOSES) == set(vocab.APPROVAL_PURPOSES)
     assert not set(UNAUTHENTICATED_PURPOSES) & set(vocab.APPROVAL_PURPOSES)
 

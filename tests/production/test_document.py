@@ -30,7 +30,7 @@ from dskit.production.document import (
     PRODUCTION_NON_IDENTITY_SECTIONS,
     ServeDocument,
 )
-from dskit.production.vocab import RUNGS
+from dskit.production.vocab import ESCALATION_LEVELS, RUNGS
 
 # --------------------------------------------------------------------------
 # The §4.2 partition, restated.  Eighteen graded sections plus four excluded
@@ -942,6 +942,10 @@ def test_readiness_valid_for_s_must_be_positive():
         (("lifecycle", "shutdown_grace_s"), (0, 301, -1), (1, 30, 300)),
         (("alerting", "group_wait_s"), (-1, 601), (0, 30, 600)),
         (("alerting", "repeat_interval_s"), (59, 86401, 0), (60, 14400, 86400)),
+        # §5.11.2: a suppression an operator can leave running for ever is
+        # how a page is lost, so both windows are bounded at the document.
+        (("alerting", "max_silence_s"), (59, 604801, 0), (60, 86400, 604800)),
+        (("alerting", "max_ack_s"), (59, 604801, 0), (60, 14400, 604800)),
     ),
 )
 def test_a_bounded_knob_refuses_outside_its_range(path, bad, good):
@@ -1337,3 +1341,121 @@ def test_declaring_the_phase_two_selector_moves_the_identity(section, key, site)
     obj[section][key] = site
     assert ServeDocument.from_obj(obj).doc_hash != plain.doc_hash
     assert section in GRADED_SECTIONS
+
+
+# ---------------------------------------------------------------------------
+# `alerting`'s phase-2 sections — inhibition and escalation (§4.1, §5.11.2)
+# ---------------------------------------------------------------------------
+
+
+def with_alerting(**knobs):
+    """The example document with `alerting` knobs set, or removed when None."""
+    obj = example_document()
+    for key, value in knobs.items():
+        if value is None:
+            obj["alerting"].pop(key, None)
+        else:
+            obj["alerting"][key] = value
+    return obj
+
+
+def an_inhibit(**overrides):
+    """One `alerting.inhibit` entry."""
+    entry = {"source": {"severity": "critical"}, "target": {"severity": "warning"},
+             "equal": ["instrument"]}
+    entry.update(overrides)
+    return entry
+
+
+def test_the_four_phase_two_alerting_knobs_are_optional():
+    """Every one is absent from §4.1's illustration and from the example
+    document, so a phase-1 document keeps its identity (§4.2: an optional
+    field is emitted only when present)."""
+    doc = ServeDocument.from_obj(example_document())
+    for name in ("inhibit", "escalation", "max_silence_s", "max_ack_s"):
+        assert getattr(doc.alerting, name) is None
+
+
+def test_declaring_one_moves_the_identity_and_omitting_it_does_not():
+    base = ServeDocument.from_obj(example_document())
+    declared = ServeDocument.from_obj(with_alerting(max_ack_s=3600))
+    assert declared.doc_hash != base.doc_hash
+    assert "max_ack_s" not in base.to_obj()["alerting"]
+    assert ServeDocument.from_obj(example_document()).doc_hash == base.doc_hash
+
+
+def test_an_inhibit_rule_declares_source_target_and_the_labels_that_must_agree():
+    doc = ServeDocument.from_obj(with_alerting(inhibit=[an_inhibit()]))
+    (rule,) = doc.alerting.inhibit
+    assert dict(rule.source) == {"severity": "critical"}
+    assert dict(rule.target) == {"severity": "warning"}
+    assert list(rule.equal) == ["instrument"]
+
+
+def test_an_inhibit_rule_needs_both_matcher_sets():
+    for missing in ("source", "target"):
+        entry = an_inhibit()
+        entry.pop(missing)
+        assert missing in refusal(with_alerting(inhibit=[entry]))
+
+
+def test_an_inhibit_rules_equal_list_is_optional():
+    entry = an_inhibit()
+    entry.pop("equal")
+    doc = ServeDocument.from_obj(with_alerting(inhibit=[entry]))
+    assert doc.alerting.inhibit[0].equal is None
+
+
+def test_an_inhibit_rule_refuses_an_undeclared_key():
+    assert "nonsuch" in refusal(with_alerting(inhibit=[an_inhibit(nonsuch=1)]))
+
+
+def test_an_inhibit_matcher_is_a_map_of_label_names_to_string_values():
+    assert "source" in refusal(with_alerting(inhibit=[an_inhibit(source=["severity"])]))
+    assert "severity" in refusal(
+        with_alerting(inhibit=[an_inhibit(source={"severity": 3})])
+    )
+
+
+def test_escalation_is_keyed_by_the_closed_level_names():
+    doc = ServeDocument.from_obj(
+        with_alerting(escalation={"primary": {"after_s": 300, "sinks": ["ops"]}})
+    )
+    assert doc.alerting.escalation.primary.after_s == 300
+    assert list(doc.alerting.escalation.primary.sinks) == ["ops"]
+    assert doc.alerting.escalation.secondary is None
+
+
+def test_escalation_refuses_a_level_the_vocabulary_does_not_name():
+    """§5.11.2: "the level names are closed for the same reason severities
+    are: an operator cannot invent a fourth rung whose delivery no test
+    covers"."""
+    assert "board" in refusal(
+        with_alerting(escalation={"board": {"after_s": 300, "sinks": ["ops"]}})
+    )
+    for level in ESCALATION_LEVELS:
+        ServeDocument.from_obj(
+            with_alerting(escalation={level: {"after_s": 300, "sinks": ["ops"]}})
+        )
+
+
+def test_an_escalation_level_needs_both_its_delay_and_its_sinks():
+    for missing in ("after_s", "sinks"):
+        level = {"after_s": 300, "sinks": ["ops"]}
+        level.pop(missing)
+        assert missing in refusal(with_alerting(escalation={"final": level}))
+
+
+def test_an_escalation_level_refuses_an_empty_sink_list_or_a_zero_delay():
+    assert "sinks" in refusal(with_alerting(escalation={"final": {"after_s": 300, "sinks": []}}))
+    assert "after_s" in refusal(
+        with_alerting(escalation={"final": {"after_s": 0, "sinks": ["ops"]}})
+    )
+
+
+def test_an_escalation_level_must_name_a_declared_sink():
+    """The same closure `alerting.routes` already has: a level that pages a
+    sink the document never declared pages nobody."""
+    assert "nonsuch" in refusal(
+        with_alerting(escalation={"final": {"after_s": 300, "sinks": ["nonsuch"]}})
+    )

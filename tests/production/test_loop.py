@@ -522,6 +522,12 @@ class FakeHeartbeat:
     def start(self):
         self.calls.add("heartbeat.start")
 
+    def ready(self):
+        self.calls.add("heartbeat.ready")
+
+    def stopping(self):
+        self.calls.add("heartbeat.stopping")
+
     def close(self):
         self.calls.add("heartbeat.close")
 
@@ -2753,3 +2759,57 @@ def test_the_loop_writes_json_serialisable_bodies_only(harness):
     for envelope in harness.records():
         json.dumps(envelope["body"])
 
+
+
+# ==========================================================================
+# The heartbeat's lifecycle — §5.11.2's two hooks, driven from here
+# ==========================================================================
+
+
+def test_the_loop_tells_the_heartbeat_when_health_becomes_ready(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """§5.11.2: the two hooks are "called by the loop on the health
+    machine's first `ready` and on entering `stopping`". The loop reaches
+    the emitters only through the `Heartbeat`, so it tells that, and the
+    heartbeat owns "first"."""
+    made = make_harness(tmp_path, serve_document, release_manifest, clock, calls)
+    try:
+        made.loop().run()
+        order = calls.names()
+        assert "heartbeat.ready" in order
+        assert order.index("health.evaluate") < order.index("heartbeat.ready")
+    finally:
+        made.close()
+
+
+def test_the_loop_never_reports_ready_while_health_is_not(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """A degraded process is not ready, and telling systemd otherwise
+    would make its watchdog stop waiting for a start that never finished."""
+    made = make_harness(
+        tmp_path, serve_document, release_manifest, clock, calls,
+        health=FakeHealth(calls, state="degraded"),
+    )
+    try:
+        made.loop().run()
+        assert "heartbeat.ready" not in calls.names()
+    finally:
+        made.close()
+
+
+def test_the_loop_tells_the_heartbeat_it_is_stopping_before_it_closes_it(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """`STOPPING=1` must go out while the emitter still works: after
+    `close()` the worker is gone, and a supervisor waiting on the signal
+    would time the process out instead of letting it finish."""
+    made = make_harness(tmp_path, serve_document, release_manifest, clock, calls)
+    try:
+        made.loop().run()
+        order = calls.names()
+        assert order.index("health.stop") < order.index("heartbeat.stopping")
+        assert order.index("heartbeat.stopping") < order.index("heartbeat.close")
+    finally:
+        made.close()

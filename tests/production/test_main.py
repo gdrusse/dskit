@@ -30,7 +30,7 @@ from dskit.production import __main__ as cli
 from dskit.production.accounting import ACCOUNTING_KINDS
 from dskit.production.alerts import ALERT_SINK_KINDS
 from dskit.production.arming import APPROVAL_KINDS
-from dskit.production.base import ProductionError, canonical_hash
+from dskit.production.base import ProductionError, canonical_hash, parse_utc_ms
 from dskit.production.cadence import CADENCE_KINDS
 from dskit.production.clock import CLOCK_KINDS
 from dskit.production.control import ControlInbox
@@ -92,7 +92,7 @@ PHASE_ONE_VERBS = (
 #: now honours, so it is registered; the other five are not, and offering
 #: one would advertise a control nothing would take.
 PHASE_TWO_VERBS = ("replay", "outcomes", "report", "approve-hold", "ack", "silence")
-LANDED_PHASE_TWO_VERBS = ("outcomes",)
+LANDED_PHASE_TWO_VERBS = ("outcomes", "ack", "silence")
 UNLANDED_PHASE_TWO_VERBS = tuple(
     verb for verb in PHASE_TWO_VERBS if verb not in LANDED_PHASE_TWO_VERBS
 )
@@ -118,6 +118,9 @@ MUTATING_VERBS = (
     # §5.13.2: the `outcomes` verb MUTATES — it appends `outcome` records —
     # so it journals once, like every other mutating verb (D22).
     "outcomes",
+    # §5.11.2: both alert verbs append a record and both journal once.
+    "ack",
+    "silence",
 )
 
 #: The read-only verbs of §7 — no journal row, no writer lock.
@@ -592,6 +595,9 @@ def control_argv(verb, doc_path, proof, request_id, extra=None):
         "reconcile": [],
         "ready": [],
         "outcomes": [],
+        "ack": ["--fingerprint", "feed-stale", "--proof", proof.maker],
+        "silence": ["--matcher", "source=feed", "--until", "2026-01-06T04:00:00Z",
+                    "--proof", proof.maker],
     }[verb]
     return [verb, doc_path, *needs_proof, "--request-id", request_id, *(extra or [])]
 
@@ -611,6 +617,8 @@ VERB_PURPOSE = {
     "adopt": "adopt",
     "ready": "ready",
     "outcomes": "outcomes",
+    "ack": "ack",
+    "silence": "silence",
 }
 
 
@@ -1486,3 +1494,133 @@ def test_a_document_naming_an_unregistered_kind_refuses_when_it_is_resolved(
     assert cli.main(["validate", path], journal_hook=journal) == STOPPED
     assert cli.main(["plan", path], journal_hook=journal) == STOPPED
     assert cli.main(["serve", path, "--once"], journal_hook=journal) == ERROR
+
+
+# ---------------------------------------------------------------------------
+# `ack` and `silence` — §7's two phase-2 alert verbs (§5.11.2)
+# ---------------------------------------------------------------------------
+
+
+def queued_command(doc_path, request_id):
+    """The stored inbox command, read while a lock-holder keeps it queued."""
+    return queued(doc_path)[request_id]
+
+
+def test_the_silence_verb_carries_the_matchers_the_window_and_the_comment(
+    doc_path, proof, journal
+):
+    """§7: `silence <doc> --matcher K=V… --until TS --proof FILE`. The
+    matchers repeat, and `--comment` is here because §5.16 gives the
+    `Silence` a comment and a field with no producer is a plan defect."""
+    planned(doc_path, journal)
+    request_id = str(uuid.uuid4())
+    lock = InstanceLock(serve_root_of(doc_path).lock_path)
+    lock.acquire()  # a serve process holds the lock: the command stays queued
+    try:
+        code = cli.main(
+            [
+                "silence", doc_path, "--matcher", "source=feed", "--matcher",
+                "severity=warning", "--until", "2026-01-06T04:00:00Z",
+                "--comment", "vendor maintenance", "--proof", proof.maker,
+                "--request-id", request_id,
+            ],
+            journal_hook=journal,
+        )
+    finally:
+        lock.release()
+    assert code == STOPPED
+    stored = queued_command(doc_path, request_id)
+    assert stored["purpose"] == "silence"
+    assert stored["payload"]["matchers"] == {"source": "feed", "severity": "warning"}
+    assert stored["payload"]["ends_at_ms"] == parse_utc_ms("2026-01-06T04:00:00Z")
+    assert stored["payload"]["comment"] == "vendor maintenance"
+
+
+def test_the_silence_verb_refuses_a_matcher_that_is_not_a_key_value_pair(
+    doc_path, proof, journal
+):
+    """A `--matcher` with no `=` would otherwise silence nothing and say
+    nothing about why."""
+    planned(doc_path, journal)
+    code = cli.main(
+        ["silence", doc_path, "--matcher", "source", "--until", "2026-01-06T04:00:00Z",
+         "--proof", proof.maker],
+        journal_hook=journal,
+    )
+    assert code == ERROR
+
+
+def test_the_silence_verb_requires_at_least_one_matcher(doc_path, proof, journal):
+    planned(doc_path, journal)
+    with pytest.raises(SystemExit):
+        cli.main(
+            ["silence", doc_path, "--until", "2026-01-06T04:00:00Z", "--proof", proof.maker],
+            journal_hook=journal,
+        )
+
+
+def test_the_ack_verb_carries_the_fingerprint_and_an_optional_window(
+    doc_path, proof, journal
+):
+    """§7: `ack <doc> --fingerprint F --proof FILE [--for D]`, the duration
+    in the ISO-8601 spelling `parse_iso_duration` already owns."""
+    planned(doc_path, journal)
+    request_id = str(uuid.uuid4())
+    lock = InstanceLock(serve_root_of(doc_path).lock_path)
+    lock.acquire()
+    try:
+        code = cli.main(
+            ["ack", doc_path, "--fingerprint", "feed-stale", "--for", "PT2H",
+             "--reason", "paging the vendor", "--proof", proof.maker,
+             "--request-id", request_id],
+            journal_hook=journal,
+        )
+    finally:
+        lock.release()
+    assert code == STOPPED
+    stored = queued_command(doc_path, request_id)
+    assert stored["purpose"] == "ack"
+    assert stored["payload"]["fingerprint"] == "feed-stale"
+    assert stored["payload"]["for_ms"] == 7_200_000
+    assert stored["payload"]["reason"] == "paging the vendor"
+
+
+def test_an_ack_without_for_carries_no_window_and_lets_the_document_decide(
+    doc_path, proof, journal
+):
+    planned(doc_path, journal)
+    request_id = str(uuid.uuid4())
+    lock = InstanceLock(serve_root_of(doc_path).lock_path)
+    lock.acquire()
+    try:
+        cli.main(
+            ["ack", doc_path, "--fingerprint", "feed-stale", "--proof", proof.maker,
+             "--request-id", request_id],
+            journal_hook=journal,
+        )
+    finally:
+        lock.release()
+    assert "for_ms" not in queued_command(doc_path, request_id)["payload"]
+
+
+def test_the_ack_verb_refuses_a_duration_that_is_not_iso_8601(doc_path, proof, journal):
+    planned(doc_path, journal)
+    code = cli.main(
+        ["ack", doc_path, "--fingerprint", "feed-stale", "--for", "2h",
+         "--proof", proof.maker],
+        journal_hook=journal,
+    )
+    assert code == ERROR
+
+
+def test_both_alert_verbs_are_authenticated(doc_path, journal):
+    """§5.11.2: "a page suppressed by an unauthenticated caller is an
+    outage with no evidence", so both carry `--proof` and argparse refuses
+    a call without one."""
+    planned(doc_path, journal)
+    for argv in (
+        ["ack", doc_path, "--fingerprint", "feed-stale"],
+        ["silence", doc_path, "--matcher", "source=feed", "--until", "2026-01-06T04:00:00Z"],
+    ):
+        with pytest.raises(SystemExit):
+            cli.main(argv, journal_hook=journal)
