@@ -32,9 +32,25 @@ is judged as it fills, because nothing but a clock could close it and no
 monitor holds one; a ``snapshot`` reference reconstructs a bin-midpoint
 sample from its profile because the ``Reference`` seam speaks in samples;
 ``PageHinkley`` resets its recursion on the observation after an alarm.
-Every statistic is stdlib arithmetic — ``statistics.NormalDist`` for the
-χ² benchmark, ``math`` for the Kolmogorov series — and nothing here reads
-a clock, so the same tape always yields the same verdict.
+
+The outcome family is the one that observes TWO record kinds through the
+one ``observe`` hook, because a score needs a forecast and a label and the
+two arrive as separate §6 records — sometimes days apart. Readings taken
+where §5.10.1 is silent: ``supersedes`` names a ledger RECORD ID and a
+monitor is handed bodies, never envelopes, so a correction replaces the
+observation standing for its ``leg_id``; an eviction is counted unlabelled
+for the monitor's life, because an evicted leg's forecast is gone and its
+label can never pair; coverage over an empty denominator is 1.0, since no
+leg is waiting; and the weight §5.10.1 asks the ``decision`` to park is not
+a §6 decision-leg field at all, so the pair takes the outcome's when the
+leg has none.
+
+Every statistic here is stdlib arithmetic — ``statistics.NormalDist`` for
+the χ² benchmark, ``math`` for the Kolmogorov series — except the outcome
+family's, which imports its scoring rules whole from ``dskit.pipeline``
+(``metrics.brier``, ``stats.dm_loss_series``, ``stats.diebold_mariano_test``)
+rather than restating arithmetic that already has an owner. Nothing here
+reads a clock, so the same tape always yields the same verdict.
 """
 
 import bisect
@@ -45,9 +61,11 @@ import statistics
 from abc import ABC, abstractmethod
 from collections import Counter
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from dskit.pipeline import metrics as pipeline_metrics
+from dskit.pipeline import stats as pipeline_stats
 from dskit.pipeline.node import check_int_param
 from dskit.pipeline.records import number_ok
 from dskit.production.base import (
@@ -60,13 +78,22 @@ from dskit.production.base import (
 )
 from dskit.production.records import Verdict
 from dskit.production.release import parse_iso_duration
-from dskit.production.vocab import MONITOR_STATUSES, RESPONSES, SIDES, TICK_STATUSES
+from dskit.production.vocab import (
+    DIVERGENCE_CLASSES,
+    MONITOR_STATUSES,
+    OUTCOME_KINDS,
+    RESPONSES,
+    SIDES,
+    TICK_STATUSES,
+)
 
 __all__ = [
     "ADWIN",
     "ALL_SLICE",
     "Alpha",
+    "Brier",
     "CHUNKER_KINDS",
+    "Calibration",
     "Chunker",
     "Constant",
     "Count",
@@ -76,6 +103,8 @@ __all__ = [
     "DEFAULT_ADWIN_MAX_WINDOW",
     "DEFAULT_BINS",
     "DEFAULT_DELTA",
+    "DEFAULT_LABEL_COVERAGE",
+    "DEFAULT_MAX_PENDING",
     "DEFAULT_MIN_N",
     "DEFAULT_MIN_SUB",
     "DEFAULT_PERCENTILE",
@@ -92,16 +121,20 @@ __all__ = [
     "MONITOR_KINDS",
     "Monitor",
     "OperationalMonitor",
+    "OutcomeMonitor",
     "PSI",
     "PSI_EPSILON",
     "PageHinkley",
+    "ParityMonitor",
     "Period",
+    "PredictionBias",
     "Profile",
     "REFERENCE_KINDS",
     "Reference",
     "ReferenceStd",
     "RefusalCount",
     "Rolling",
+    "Skill",
     "Sliding",
     "Snapshot",
     "Staleness",
@@ -150,6 +183,20 @@ DEFAULT_MIN_SUB = 5
 #: bounded field's range at ``DEFAULT_ADWIN_DELTA``.
 DEFAULT_ADWIN_MAX_WINDOW = 500
 
+#: The share of a window's legs whose labels must have arrived before an
+#: outcome verdict stops calling itself ``provisional``. High on purpose:
+#: ``provisional`` is the CAUTIOUS state, so the default errs towards
+#: saying "the labels are still arriving" rather than towards silence.
+DEFAULT_LABEL_COVERAGE = 0.9
+
+#: How many decided legs an outcome monitor keeps waiting for a label. The
+#: map rides in every §6 ``snapshot`` — the same budget that caps
+#: ``DEFAULT_ADWIN_MAX_WINDOW`` — and an eviction is a leg whose forecast is
+#: gone, so the bound is a real loss and not a convenience: 500 spans a
+#: multi-day settlement lag at a hundred legs a day while keeping the map
+#: inside ~50 KB of snapshot.
+DEFAULT_MAX_PENDING = 500
+
 #: ``sliding``'s default step and ``period``'s default time field (the
 #: §6 tick record's data instant).
 DEFAULT_STEP = 1
@@ -161,6 +208,13 @@ PSI_EPSILON = 1e-4
 
 #: The one slice phase 1 reports; per-key slices are phase-2 work.
 ALL_SLICE = "all"
+
+#: The forecast horizon, in observation steps, a ``skill`` monitor's
+#: Diebold-Mariano test is run at, and the fewest pairs the test itself
+#: accepts. §5.10.1 names neither; §5.13.3 states the sibling rule the
+#: report follows, and this is it at a one-step horizon.
+_DM_HORIZON = 1
+_DM_MIN_PAIRS = 2
 
 # Vocabulary members by name, unpacked from the closed sets so a reorder
 # in vocab.py fails here at import instead of drifting silently.
@@ -180,8 +234,23 @@ _KIND = "kind"
 _USES = "uses"
 _PARAMS_KEY = "params"
 _LEGS = "legs"
+
+# The observation's own keys. ``_VALUE`` is the number a monitor scores —
+# the forecast, for the outcome family — and ``_TARGET`` the realised value
+# it is scored against. The §6 ``outcome`` body happens to spell its LABEL
+# ``value`` too, so ``_VALUE`` reads a label off a record and writes a
+# forecast to an observation; the two dicts are never the same dict.
 _VALUE = "value"
 _TARGET = "target"
+_BASELINE = "baseline"
+_WEIGHT = "weight"
+_LEG = "leg"
+
+# The §6 body fields the phase-2 families read.
+_LEG_ID = "leg_id"
+_OUTCOME_KIND = "outcome_kind"
+_SUPERSEDES = "supersedes"
+_DIVERGENCE = "divergence"
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +267,7 @@ def _number(value, path):
     raise ProductionError([f"{path}: expected a finite number, got {value!r}"])
 
 
-def _check_number(problems, name, value, *, ge=None, gt=None, lt=None):
+def _check_number(problems, name, value, *, ge=None, gt=None, le=None, lt=None):
     """Append a problem unless ``value`` is a finite number inside the stated bounds."""
     if not number_ok(value):
         problems.append(f"{name} must be a finite number, got {value!r}")
@@ -208,10 +277,43 @@ def _check_number(problems, name, value, *, ge=None, gt=None, lt=None):
         bounds.append(f">= {ge}")
     if gt is not None and value <= gt:
         bounds.append(f"> {gt}")
+    if le is not None and value > le:
+        bounds.append(f"<= {le}")
     if lt is not None and value >= lt:
         bounds.append(f"< {lt}")
     if bounds:
         problems.append(f"{name} must be {' and '.join(bounds)}, got {value!r}")
+
+
+def _check_subset(problems, name, value, vocabulary):
+    """Append a problem unless ``value`` is a non-empty list of ``vocabulary`` members."""
+    if not isinstance(value, list) or not value:
+        problems.append(f"{name} must be a non-empty list of {list(vocabulary)}, got {value!r}")
+        return
+    stray = sorted(member for member in value if member not in vocabulary)
+    if stray:
+        problems.append(f"{name} must name only {list(vocabulary)}, got {stray}")
+
+
+def _quantity(value, path):
+    """Return a §6 money-shaped field as a float; a decimal string widens.
+
+    ``Outcome.value`` and ``Outcome.weight`` are ``Decimal``s, so the body
+    a producer appends carries them as decimal STRINGS. A reader that only
+    understood floats would refuse every real label; one that used ``float``
+    on the string would drop the money rule's own refusals.
+    """
+    if isinstance(value, str):
+        try:
+            value = Decimal(value)
+        except InvalidOperation:
+            raise ProductionError([f"{path}: {value!r} is not a decimal string"]) from None
+    return _number(value, path)
+
+
+def _optional(reader, value, path):
+    """Return None for a field the record omits, else ``reader(value, path)``."""
+    return None if value is None else reader(value, path)
 
 
 def _prefixed(problems, name, inner):
@@ -353,6 +455,41 @@ def _ks(reference, window):
         cur_cdf = bisect.bisect_right(cur, point) / len(cur)
         gap = max(gap, abs(ref_cdf - cur_cdf))
     return gap
+
+
+def _pairs(window):
+    """Return a window of paired observations as ``(forecast, label)`` tuples."""
+    return [(observation[_VALUE], observation[_TARGET]) for observation in window]
+
+
+# The two scoring rules the outcome family reports already have owners in
+# ``dskit.pipeline``; these compose them and restate none of their
+# arithmetic, so loosening a rule there moves the monitor with it.
+def _mean_brier(pairs):
+    """Return the mean of ``dskit.pipeline.metrics.brier`` over ``(forecast, label)`` pairs."""
+    try:
+        return statistics.fmean(
+            pipeline_metrics.brier(forecast, label) for forecast, label in pairs
+        )
+    except ValueError as exc:
+        raise ProductionError([str(exc)]) from exc
+
+
+def _ece(pairs, bins):
+    """Return the expected calibration error over ``bins`` equal-width bins of ``[0, 1]``."""
+    buckets = {}
+    for forecast, label in pairs:
+        index = min(max(int(forecast * bins), 0), bins - 1)
+        buckets.setdefault(index, []).append((forecast, label))
+    return math.fsum(
+        len(members)
+        / len(pairs)
+        * abs(
+            statistics.fmean(forecast for forecast, _ in members)
+            - statistics.fmean(label for _, label in members)
+        )
+        for members in buckets.values()
+    )
 
 
 def _top(values, top_k):
@@ -3260,6 +3397,592 @@ class LInf(_BinnedMonitor):
 
 
 # ---------------------------------------------------------------------------
+# OutcomeMonitor — a forecast joined to the label that scored it
+# ---------------------------------------------------------------------------
+
+
+class OutcomeMonitor(Monitor):
+    """A monitor over forecasts joined to the labels that scored them (§5.10.1).
+
+    The family phase 1 declares and cannot populate, because it needs a
+    label — and a label arrives as its own §6 record, often days after the
+    decision it scores. So this is the one family that observes BOTH record
+    kinds through the one ``observe`` hook: a ``decision`` body PARKS each
+    leg's forecast, baseline and weight against its ``leg_id``, and an
+    ``outcome`` body whose ``outcome_kind`` is declared and whose ``leg_id``
+    is parked completes the pair into exactly one observation. An outcome
+    carrying ``supersedes`` REPLACES the observation standing for its leg
+    rather than adding a second, so a corrected settlement corrects the
+    score instead of being averaged into it.
+
+    Three readings §5.10.1 leaves open. ``supersedes`` names a ledger
+    RECORD ID and a monitor is handed §6 bodies, never envelopes, so the
+    observation a correction names can only be the one standing for its
+    ``leg_id``; a correction revises the LABEL, never the forecast, which
+    came from the decision and cannot be revised by something that happened
+    after it. An eviction is counted unlabelled for the monitor's life: an
+    evicted leg's forecast is gone, so its label can never pair, and a
+    coverage that forgot it would claim labels the monitor does not have —
+    the remedy is a larger ``max_pending``, not a shorter memory. And the
+    ``weight`` §5.10.1 asks the ``decision`` to park is not a §6
+    ``decision.legs[]`` field at all; the §6 ``outcome`` body carries one,
+    so the pair takes the leg's when it has one and the outcome's
+    otherwise. No phase-2 statistic is weighted.
+
+    ``label_coverage()`` is ``paired / (paired + pending)`` over the current
+    window and ``provisional()`` is that against the declared floor, so an
+    outcome verdict says out loud that its labels are still arriving rather
+    than reading as clean. With nothing paired and nothing pending the
+    coverage is 1.0: no leg is waiting, and such a verdict is
+    ``insufficient`` on its own account.
+
+    Parameters
+    ----------
+    params : dict
+        The four common knobs (see ``Monitor``) plus ``field`` (str,
+        required): the forecast field on each decided leg; ``outcome_kinds``
+        (non-empty list of ``OUTCOME_KINDS``, required): which labels this
+        monitor takes; ``label_coverage`` (number in ``[0, 1]``, default
+        ``DEFAULT_LABEL_COVERAGE``): the floor below which a verdict is
+        provisional; ``max_pending`` (int >= 1, default
+        ``DEFAULT_MAX_PENDING``): how many legs may await a label.
+    name : str or None, keyword-only
+        The owner's name for this instance.
+
+    Examples
+    --------
+    One decision and the settlement that scored it::
+
+        monitor = Brier(
+            {"field": "prediction", "outcome_kinds": ["settled"],
+             "window": {"kind": "count", "n": 1},
+             "threshold": {"kind": "constant", "max": 0.25}, "min_n": 1}
+        )
+        monitor.observe({"legs": [{"leg_id": "l-1", "prediction": 0.6, "baseline": 0.5}]})
+        monitor.observe({"leg_id": "l-1", "outcome_kind": "settled", "value": "1"})
+        monitor.verdict().statistic
+        # -> 0.16000000000000003
+        monitor.label_coverage()
+        # -> 1.0
+    """
+
+    _PARAMS = Monitor._PARAMS + ("field", "outcome_kinds", "label_coverage", "max_pending")
+    _STATE_KEYS = Monitor._STATE_KEYS + ("pending", "unlabelled")
+
+    @classmethod
+    def _check(cls, problems, params):
+        """Require the forecast field, the label kinds and both bounds."""
+        super()._check(problems, params)
+        _check_str(problems, "field", params.get("field"))
+        _check_subset(problems, "outcome_kinds", params.get("outcome_kinds"), OUTCOME_KINDS)
+        _check_number(
+            problems,
+            "label_coverage",
+            params.get("label_coverage", DEFAULT_LABEL_COVERAGE),
+            ge=0.0,
+            le=1.0,
+        )
+        check_int_param(
+            problems, "max_pending", params.get("max_pending", DEFAULT_MAX_PENDING), ge=1
+        )
+
+    def _configure(self, params):
+        """Take the field, the label kinds and the two bounds; start with nothing parked."""
+        super()._configure(params)
+        self._field = params["field"]
+        self._outcome_kinds = tuple(params["outcome_kinds"])
+        self._floor = params.get("label_coverage", DEFAULT_LABEL_COVERAGE)
+        self._max_pending = int(params.get("max_pending", DEFAULT_MAX_PENDING))
+        self._pending = {}
+        self._unlabelled = 0
+
+    def observe(self, record):
+        """Park a decision's legs, or complete the pair an outcome labels.
+
+        Parameters
+        ----------
+        record : dict
+            A §6 record body. A ``decision`` announces itself by its
+            ``legs``, an ``outcome`` by its ``outcome_kind``; a body with
+            neither — a ``tick``, a ``fill`` — is not this monitor's.
+
+        Returns
+        -------
+        None
+            Zero or one observation was added or replaced.
+        """
+        if not isinstance(record, dict):
+            return
+        for marker, take in self._BODY_ROLES:
+            if marker in record:
+                take(self, record)
+                return
+
+    def verdict(self):
+        """Reduce the current window of paired observations.
+
+        Returns
+        -------
+        Verdict
+            ``statistic`` is this member's own; ``n_ref`` is always 0 and
+            ``provisional`` says whether the labels are still arriving.
+        """
+        window, complete = self._window()
+        statistic = self._reduce(window) if window else None
+        return self._judge(statistic, 0, len(window), complete)
+
+    def label_coverage(self):
+        """Return the paired share of the legs this monitor knows of.
+
+        Returns
+        -------
+        float
+            ``paired / (paired + pending)`` over the current window, with
+            every evicted leg counted pending for ever. 1.0 when nothing is
+            paired and nothing is waiting: no label is outstanding.
+        """
+        paired = len(self._window()[0])
+        total = paired + len(self._pending) + self._unlabelled
+        return 1.0 if not total else paired / total
+
+    def provisional(self):
+        """Say whether the verdict still awaits its labels.
+
+        Returns
+        -------
+        bool
+            True while ``label_coverage()`` is below the declared floor.
+        """
+        return self.label_coverage() < self._floor
+
+    def state(self):
+        """Return the window, the strategies, the parked legs and the evictions.
+
+        Returns
+        -------
+        dict
+            The ``Monitor`` shape plus ``"pending"`` (a list in arrival
+            order, so eviction survives a restart) and ``"unlabelled"``.
+        """
+        state = super().state()
+        state["pending"] = [
+            {_LEG: leg_id, **entry} for leg_id, entry in self._pending.items()
+        ]
+        state["unlabelled"] = self._unlabelled
+        return state
+
+    def _take_decision(self, record):
+        """Park every leg of a decision body that carries a forecast."""
+        for candidate in self._candidates(record):
+            self._park(candidate)
+
+    def _take_outcome(self, record):
+        """Complete the pair one outcome labels, or replace the observation it corrects."""
+        for observation in self._extract(record):
+            self._place(record, observation)
+
+    #: How a §6 body announces itself to this family, and the method that
+    #: takes it — a table rather than a chain, so a third body kind is a
+    #: row and not another branch.
+    _BODY_ROLES = ((_OUTCOME_KIND, _take_outcome), (_LEGS, _take_decision))
+
+    def _park(self, candidate):
+        """Park one decided leg's forecast against its id, evicting the oldest if full."""
+        leg_id, forecast = candidate.get(_LEG_ID), candidate.get(self._field)
+        if not isinstance(leg_id, str) or forecast is None:
+            return
+        self._pending[leg_id] = {
+            _VALUE: _number(forecast, self._field),
+            _BASELINE: _optional(_number, candidate.get(_BASELINE), _BASELINE),
+            _WEIGHT: _optional(_quantity, candidate.get(_WEIGHT), _WEIGHT),
+        }
+        self._evict()
+        self._touch()
+
+    def _evict(self):
+        """Drop the oldest parked legs the bound no longer admits, counting each unlabelled."""
+        while len(self._pending) > self._max_pending:
+            self._pending.pop(next(iter(self._pending)))
+            self._unlabelled += 1
+
+    def _parked(self, candidate):
+        """Return the parked leg an outcome may pair with: its pending entry, or what it corrects."""
+        if candidate.get(_OUTCOME_KIND) not in self._outcome_kinds:
+            return None
+        pending = self._pending.get(candidate.get(_LEG_ID))
+        if candidate.get(_SUPERSEDES) is None:
+            return pending
+        standing = self._standing(candidate.get(_LEG_ID))
+        return pending if standing is None else self._observations[standing]
+
+    def _standing(self, leg_id):
+        """Return the index of the observation standing for ``leg_id``, or None."""
+        for index, observation in enumerate(self._observations):
+            if observation.get(_LEG) == leg_id:
+                return index
+        return None
+
+    def _place(self, record, observation):
+        """Replace the observation this outcome corrects, or add the pair it completes."""
+        index = None if record.get(_SUPERSEDES) is None else self._standing(observation[_LEG])
+        if index is None:
+            self._pending.pop(observation[_LEG], None)
+            self._add(observation)
+            return
+        self._observations[index] = observation
+        self._touch()
+
+    def _observation(self, candidate):
+        """Return the paired observation one outcome body completes, or None."""
+        parked = self._parked(candidate)
+        if parked is None:
+            return None
+        observation = dict(parked)
+        observation[_LEG] = candidate.get(_LEG_ID)
+        observation[_TARGET] = _quantity(candidate.get(_VALUE), _VALUE)
+        weight = _optional(_quantity, candidate.get(_WEIGHT), _WEIGHT)
+        if weight is not None:
+            observation[_WEIGHT] = weight
+        return observation
+
+    def _check_extra(self, problems, state):
+        """Require a list of parked legs, each naming one, and a non-negative eviction count."""
+        pending = state.get("pending")
+        if not isinstance(pending, list) or not all(
+            isinstance(entry, dict) and isinstance(entry.get(_LEG), str) for entry in pending
+        ):
+            problems.append("monitor state: pending must be a list of dicts naming a leg")
+        check_int_param(problems, "monitor state.unlabelled", state.get("unlabelled"), ge=0)
+
+    def _restore_extra(self, state):
+        """Take the parked legs and the eviction count back, in arrival order."""
+        self._pending = {
+            entry[_LEG]: {key: value for key, value in entry.items() if key != _LEG}
+            for entry in state["pending"]
+        }
+        self._unlabelled = int(state["unlabelled"])
+
+    @abstractmethod
+    def _reduce(self, window):
+        """Fold a non-empty window of paired observations into the statistic."""
+
+
+class Calibration(OutcomeMonitor):
+    """The expected calibration error over equal-width bins of the forecast.
+
+    ``Σ_b (n_b/n)·|mean forecast_b − mean label_b|`` over ``bins`` bins of
+    ``[0, 1]``. The bins are EQUAL-WIDTH, not the reference quantiles the
+    distribution family cuts on: that fixed partition is what ECE means,
+    and §5.13.3 keeps the same split between it and the exact
+    stratification the Murphy terms need.
+
+    Parameters
+    ----------
+    params : dict
+        The ``OutcomeMonitor`` knobs plus ``bins`` (int >= 2, default
+        ``DEFAULT_BINS``).
+    name : str or None, keyword-only
+        The owner's name for this instance.
+
+    Examples
+    --------
+    Two confident forecasts, each one bin's whole population::
+
+        monitor = Calibration(
+            {"field": "prediction", "outcome_kinds": ["settled"], "bins": 2,
+             "window": {"kind": "count", "n": 2},
+             "threshold": {"kind": "constant", "max": 0.1}, "min_n": 2}
+        )
+        for leg_id, forecast, label in (("l-1", 0.2, "0"), ("l-2", 0.9, "1")):
+            monitor.observe({"legs": [{"leg_id": leg_id, "prediction": forecast}]})
+            monitor.observe({"leg_id": leg_id, "outcome_kind": "settled", "value": label})
+        monitor.verdict().statistic
+        # -> 0.15
+    """
+
+    _PARAMS = OutcomeMonitor._PARAMS + ("bins",)
+
+    @classmethod
+    def _check(cls, problems, params):
+        """Require at least two bins: one bin cannot show a miscalibration."""
+        super()._check(problems, params)
+        check_int_param(problems, "bins", params.get("bins", DEFAULT_BINS), ge=2)
+
+    def _configure(self, params):
+        """Take the bin count."""
+        super()._configure(params)
+        self._bins = int(params.get("bins", DEFAULT_BINS))
+
+    def _reduce(self, window):
+        """Return the expected calibration error of the window's pairs."""
+        return _ece(_pairs(window), self._bins)
+
+
+class Brier(OutcomeMonitor):
+    """The mean Brier score of the window's forecasts.
+
+    The per-pair rule is ``dskit.pipeline.metrics.brier``, IMPORTED rather
+    than restated — so a forecast outside ``[0, 1]`` or a label outside
+    ``{0, 1}`` is refused by the one owner of that rule, and loosening it
+    there moves this statistic with it. The Murphy decomposition is
+    deliberately NOT here: a ``Verdict`` carries one statistic, and
+    reliability, resolution and uncertainty only sum on the exact
+    stratification ``report.py`` computes (§5.13.3).
+
+    Parameters
+    ----------
+    params : dict
+        The ``OutcomeMonitor`` knobs.
+    name : str or None, keyword-only
+        The owner's name for this instance.
+
+    Examples
+    --------
+    A forecast of 0.6 on an event that happened::
+
+        monitor = Brier(
+            {"field": "prediction", "outcome_kinds": ["settled"],
+             "window": {"kind": "count", "n": 1},
+             "threshold": {"kind": "constant", "max": 0.25}, "min_n": 1}
+        )
+        monitor.observe({"legs": [{"leg_id": "l-1", "prediction": 0.6}]})
+        monitor.observe({"leg_id": "l-1", "outcome_kind": "settled", "value": "1"})
+        monitor.verdict().statistic
+        # -> 0.16000000000000003
+    """
+
+    def _reduce(self, window):
+        """Return the mean Brier score of the window's pairs."""
+        return _mean_brier(_pairs(window))
+
+
+class Skill(OutcomeMonitor):
+    """The Brier skill score against the benchmark each leg itself stored.
+
+    ``1 − brier(forecast)/brier(baseline)``, so a ``constant`` threshold at
+    ``min: 0`` reads as "no worse than the benchmark" and a baseline scored
+    on itself is exactly 0. The baseline is the LEG's — the one its
+    decision recorded — so the score is comparable across instruments, and
+    a leg whose decision stored none refuses rather than being scored
+    against a number nobody chose. A window whose benchmark scored a
+    perfect 0 has no skill to measure and reports ``insufficient``, the
+    same answer ``DDM`` gives a stream with no sigma.
+
+    ``dm_test()`` sits BESIDE the statistic rather than being it, for two
+    reasons §5.10.1 states: ``Threshold.breached(statistic, n_ref, n_cur)``
+    sees one number and cannot see a series, and re-testing significance on
+    every arriving observation is a multiple-comparisons trap.
+
+    Parameters
+    ----------
+    params : dict
+        The ``OutcomeMonitor`` knobs.
+    name : str or None, keyword-only
+        The owner's name for this instance.
+
+    Examples
+    --------
+    A forecast that beat its own benchmark::
+
+        monitor = Skill(
+            {"field": "prediction", "outcome_kinds": ["settled"],
+             "window": {"kind": "count", "n": 1},
+             "threshold": {"kind": "constant", "min": 0.0}, "min_n": 1}
+        )
+        monitor.observe({"legs": [{"leg_id": "l-1", "prediction": 0.6, "baseline": 0.5}]})
+        monitor.observe({"leg_id": "l-1", "outcome_kind": "settled", "value": "1"})
+        monitor.verdict().statistic
+        # -> 0.3599999999999999
+    """
+
+    def dm_test(self):
+        """Return the Diebold-Mariano test over the current window.
+
+        Both halves come from ``dskit.pipeline.stats``:
+        ``dm_loss_series`` builds the loss gap of the forecasts against the
+        benchmark and ``diebold_mariano_test`` runs the HAC t on it at
+        ``dm_lags``. That function takes ONE constant benchmark while each
+        leg stores its own, so the series is tested against the window's
+        MEAN baseline; the ``statistic`` the verdict reports uses each
+        leg's own and is the number a threshold bounds.
+
+        Returns
+        -------
+        dict or None
+            ``diebold_mariano_test``'s answer, or ``None`` below two pairs,
+            which is the shortest series that function accepts.
+        """
+        window = self._window()[0]
+        if len(window) < _DM_MIN_PAIRS:
+            return None
+        gaps = pipeline_stats.dm_loss_series(
+            [observation[_TARGET] for observation in window],
+            [observation[_VALUE] for observation in window],
+            mu=statistics.fmean(self._benchmarks(window)),
+        )
+        return pipeline_stats.diebold_mariano_test(
+            gaps,
+            lags=pipeline_stats.dm_lags(len(gaps), _DM_HORIZON),
+            h_steps=_DM_HORIZON,
+        )
+
+    def _reduce(self, window):
+        """Return the skill score, or None when the benchmark itself scored perfectly."""
+        benchmark = _mean_brier(list(zip(self._benchmarks(window), self._labels(window))))
+        if not benchmark:
+            return None
+        return 1.0 - _mean_brier(_pairs(window)) / benchmark
+
+    def _benchmarks(self, window):
+        """Return each observation's stored baseline; a leg without one refuses."""
+        return [_number(observation[_BASELINE], _BASELINE) for observation in window]
+
+    def _labels(self, window):
+        """Return the window's labels."""
+        return [observation[_TARGET] for observation in window]
+
+
+class PredictionBias(OutcomeMonitor):
+    """The mean signed error of the window's forecasts, ``mean(forecast − label)``.
+
+    Signed, and bounded by a two-sided ``constant`` ``{min, max}``: a bias
+    monitor that took an absolute value could not say which way the model
+    leans, and which way it leans is the whole question. It is the one
+    member with no probability frame — the mean signed error needs none —
+    so it reads an unbounded value where ``Brier`` and ``Skill`` refuse one.
+
+    Parameters
+    ----------
+    params : dict
+        The ``OutcomeMonitor`` knobs.
+    name : str or None, keyword-only
+        The owner's name for this instance.
+
+    Examples
+    --------
+    Two forecasts that both sat below the event::
+
+        monitor = PredictionBias(
+            {"field": "prediction", "outcome_kinds": ["settled"],
+             "window": {"kind": "count", "n": 2},
+             "threshold": {"kind": "constant", "min": -0.1, "max": 0.1}, "min_n": 2}
+        )
+        for leg_id, forecast in (("l-1", 0.8), ("l-2", 0.9)):
+            monitor.observe({"legs": [{"leg_id": leg_id, "prediction": forecast}]})
+            monitor.observe({"leg_id": leg_id, "outcome_kind": "settled", "value": "1"})
+        monitor.verdict().statistic
+        # -> -0.14999999999999997
+        monitor.verdict().status
+        # -> 'warn'
+    """
+
+    def _reduce(self, window):
+        """Return the mean signed error of the window's pairs."""
+        return statistics.fmean(forecast - label for forecast, label in _pairs(window))
+
+
+# ---------------------------------------------------------------------------
+# ParityMonitor — replay divergences, counted by class
+# ---------------------------------------------------------------------------
+
+
+class ParityMonitor(Monitor):
+    """How many replay divergences of the declared classes a window holds (§5.10.1).
+
+    The family with no phase-1 member, because it observes no data
+    statistic: it takes ``Divergence.to_obj()`` bodies (§5.13.3) and counts
+    the ones whose ``divergence`` class the document declared.
+
+    **The serve loop never calls it.** Replay runs in a separate process
+    against a scratch serve root and appends nothing to the series, so
+    ``report.py`` drives this monitor and prints its verdict in the parity
+    section. A parity monitor wired into a document's ``monitors`` by
+    mistake would silently never observe anything — the tick and decision
+    bodies the loop does feed a monitor carry no ``divergence`` — and would
+    report ``insufficient`` for ever without ever saying why.
+
+    Every divergence is an observation whatever its class, and the
+    statistic counts the declared ones. A monitor whose window held only
+    the classes it counts would report ``statistic == n_cur`` always and
+    ``min_n`` would mean "answer nothing until thirty divergences have
+    arrived". A clean replay produces no bodies at all, so it is
+    ``insufficient`` rather than ``ok``: the count is a breach detector,
+    and a parity document writes ``min_n: 1``.
+
+    Parameters
+    ----------
+    params : dict
+        The four common knobs (see ``Monitor``) plus ``classes`` (non-empty
+        list of ``DIVERGENCE_CLASSES``, required).
+    name : str or None, keyword-only
+        The owner's name for this instance.
+
+    Examples
+    --------
+    One unclassifiable difference among two compared records::
+
+        monitor = ParityMonitor(
+            {"classes": ["nondeterminism"], "window": {"kind": "count", "n": 2},
+             "threshold": {"kind": "constant", "max": 0}, "min_n": 1, "response": "halt"}
+        )
+        monitor.observe({"seq": 1, "field": "positions", "divergence": "state"})
+        monitor.observe({"seq": 2, "field": "client_ref", "divergence": "nondeterminism"})
+        monitor.verdict().statistic
+        # -> 1.0
+        monitor.should_trip()
+        # -> True
+    """
+
+    _PARAMS = Monitor._PARAMS + ("classes",)
+
+    @classmethod
+    def _check(cls, problems, params):
+        """Require a non-empty subset of the divergence vocabulary."""
+        super()._check(problems, params)
+        _check_subset(problems, "classes", params.get("classes"), DIVERGENCE_CLASSES)
+
+    def _configure(self, params):
+        """Take the classes this monitor counts."""
+        super()._configure(params)
+        self._classes = tuple(params["classes"])
+
+    def observe(self, record):
+        """Take one ``Divergence`` body into the window.
+
+        Parameters
+        ----------
+        record : dict
+            A §5.13.3 ``Divergence.to_obj()`` body. Anything without a
+            ``divergence`` class is not this monitor's observation.
+
+        Returns
+        -------
+        None
+            One observation per divergence, whatever its class.
+        """
+        self._absorb(record)
+
+    def verdict(self):
+        """Count the declared classes in the current window.
+
+        Returns
+        -------
+        Verdict
+            ``statistic`` is the count; ``n_ref`` is always 0 and ``n_cur``
+            is every divergence the window holds.
+        """
+        window, complete = self._window()
+        statistic = float(sum(observation[_VALUE] for observation in window)) if window else None
+        return self._judge(statistic, 0, len(window), complete)
+
+    def _observation(self, candidate):
+        """Return 1 for a divergence of a declared class, 0 for any other divergence."""
+        divergence = candidate.get(_DIVERGENCE)
+        if not isinstance(divergence, str):
+            return None
+        return {_VALUE: 1 if divergence in self._classes else 0}
+
+# ---------------------------------------------------------------------------
 # Registries — import is registration (§4.3)
 # ---------------------------------------------------------------------------
 
@@ -3277,6 +4000,11 @@ MONITOR_KINDS.register("ddm", DDM)
 MONITOR_KINDS.register("adwin", ADWIN)
 MONITOR_KINDS.register("jensen_shannon", JensenShannon)
 MONITOR_KINDS.register("linf", LInf)
+MONITOR_KINDS.register("calibration", Calibration)
+MONITOR_KINDS.register("brier", Brier)
+MONITOR_KINDS.register("skill", Skill)
+MONITOR_KINDS.register("prediction_bias", PredictionBias)
+MONITOR_KINDS.register("parity", ParityMonitor)
 
 REFERENCE_KINDS = Registry("reference", Reference)
 REFERENCE_KINDS.register("leading", Leading)

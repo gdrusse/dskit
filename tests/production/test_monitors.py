@@ -70,6 +70,48 @@ Readings taken where §5.10.1 is silent about the phase-2 stream detectors
   show the breach that made it shrink.
 * `min_sub` has no default in §5.10.1 the way `delta` does; `DEFAULT_MIN_SUB`
   is one here, and this file asserts a monitor that omits both reads them.
+
+Readings taken where §5.10.1 is silent about the outcome and parity families
+(each reported to the orchestrator as a plan gap):
+
+* `supersedes` names a ledger RECORD ID (§6, §5.13.2) and a monitor is handed
+  §6 BODIES, never envelopes — `loop._observe` passes `decision_body` and
+  `tick_body`. So "REPLACES the observation it names" can only be read as
+  "replaces the observation standing for this outcome's `leg_id`", and that
+  is what is pinned here. A correction corrects the LABEL; the forecast and
+  baseline came from the decision and cannot change.
+* An eviction is counted as an unlabelled leg for the monitor's LIFE. An
+  evicted leg's forecast is gone, so its label can never pair — a coverage
+  that forgot it would claim labels it does not have. The consequence is
+  pinned: coverage does not recover when labels resume, and the remedy is a
+  larger `max_pending`.
+* `label_coverage()` over an EMPTY denominator (nothing paired, nothing
+  pending) is 1.0, not 0.0: no leg is waiting, so nothing is provisional.
+  Such a verdict is `insufficient` on its own account.
+* §5.10.1 parks `weight` off the `decision` body, but §6's `decision.legs[]`
+  carries no `weight` — the §6 `outcome` body does. The pair therefore takes
+  the leg's weight when it has one and the outcome's otherwise, and no
+  phase-2 statistic is weighted.
+* `Brier`/`Skill` score with `dskit.pipeline.metrics.brier`, which refuses a
+  forecast outside [0, 1] and a label outside {0, 1}. §5.10.1 gives the
+  monitors no `scoring` knob the way §5.13.3 gives the report one, so an
+  unbounded-value series is refused rather than silently mis-scored.
+* `Skill.dm_test()` is `diebold_mariano_test(dm_loss_series(...), lags=...)`;
+  §5.10.1 names neither `lags` nor `h_steps`, so the sibling rule §5.13.3
+  states is used — `dm_lags(n, h_steps)` at a one-step horizon — and the
+  answer is `None` below two pairs, which is also §5.13.3's rule and the
+  only possible one, since `diebold_mariano_test` refuses a shorter series.
+* `dm_loss_series(y, yhat, mu)` takes ONE constant benchmark, while §5.10.1's
+  `Skill` compares against "the leg's stored `baseline`", which varies per
+  leg. The DM test therefore runs against the window's mean baseline and
+  says so; the `statistic` — the skill score — uses each leg's own.
+* `ParityMonitor` counts the declared classes IN its window, and every
+  `Divergence` body is an observation whatever its class: a monitor whose
+  window held only the classes it counts would report `statistic == n_cur`
+  always, and `min_n` would then mean "answer nothing until 30 divergences
+  have arrived". A clean replay produces no bodies at all, so it is
+  `insufficient` rather than `ok` — the DDM consequence again, and the
+  reason a parity document writes `min_n: 1`.
 """
 
 import ast
@@ -83,12 +125,16 @@ import pytest
 
 import dskit.production.monitors as monitors
 from dskit.production.base import ProductionError
+from dskit.pipeline import metrics as pipeline_metrics
+from dskit.pipeline import stats as pipeline_stats
 from dskit.production.monitors import (
     ADWIN,
     CHUNKER_KINDS,
     DDM,
     DEFAULT_ADWIN_DELTA,
     DEFAULT_ADWIN_MAX_WINDOW,
+    DEFAULT_LABEL_COVERAGE,
+    DEFAULT_MAX_PENDING,
     DEFAULT_MIN_N,
     DEFAULT_MIN_SUB,
     MONITOR_KINDS,
@@ -97,6 +143,8 @@ from dskit.production.monitors import (
     KS,
     PSI,
     Alpha,
+    Brier,
+    Calibration,
     Chunker,
     Constant,
     Count,
@@ -109,13 +157,17 @@ from dskit.production.monitors import (
     Leading,
     Monitor,
     OperationalMonitor,
+    OutcomeMonitor,
     PageHinkley,
+    ParityMonitor,
     Period,
+    PredictionBias,
     Profile,
     Reference,
     ReferenceStd,
     RefusalCount,
     Rolling,
+    Skill,
     Sliding,
     Snapshot,
     Staleness,
@@ -123,7 +175,13 @@ from dskit.production.monitors import (
     Threshold,
     TrackingSignal,
 )
-from dskit.production.vocab import MONITOR_STATUSES, RESPONSES, TICK_PHASES
+from dskit.production.vocab import (
+    DIVERGENCE_CLASSES,
+    MONITOR_STATUSES,
+    OUTCOME_KINDS,
+    RESPONSES,
+    TICK_PHASES,
+)
 
 #: §5.10's phase-1 members, one registry name each.
 KINDS = (
@@ -140,7 +198,6 @@ KINDS = (
 
 #: §5.10.1's four additions to the two phase-1 families — two change
 #: detectors on the stream family, two distances on the distribution one.
-#: The outcome and parity families are the rest of phase 2 and are NOT here.
 PHASE_TWO_KINDS = (
     "adwin",
     "ddm",
@@ -148,11 +205,23 @@ PHASE_TWO_KINDS = (
     "linf",
 )
 
+#: §5.10.1's outcome family — the four members phase 1 could not populate,
+#: because each of them needs a label.
+OUTCOME_FAMILY_KINDS = (
+    "brier",
+    "calibration",
+    "prediction_bias",
+    "skill",
+)
+
+#: §5.10.1's parity family, whose one member observes no data statistic.
+PARITY_KINDS = ("parity",)
+
 #: Every registered monitor after §5.10.1. The generic rules below are
 #: parametrised over ALL of them: a phase-2 member that broke `min_n`, the
 #: partial-chunk rule or the state round-trip would be a monitor the loop
 #: cannot trust, exactly like a phase-1 one.
-ALL_KINDS = tuple(sorted(KINDS + PHASE_TWO_KINDS))
+ALL_KINDS = tuple(sorted(KINDS + PHASE_TWO_KINDS + OUTCOME_FAMILY_KINDS + PARITY_KINDS))
 
 #: §6's `monitor` record body. `monitor` is the owner's name for the
 #: instance; every other field comes off the `Verdict`.
@@ -230,6 +299,62 @@ def fill_record():
     return {"kind": "fill", "id": "f-1", "qty": "1", "price": "10.00"}
 
 
+def decided_leg(leg_id, prediction, baseline=0.5, **fields):
+    """One §6 `decision.legs[]` entry an outcome monitor parks."""
+    body = leg(prediction=prediction, baseline=baseline, **fields)
+    body["leg_id"] = leg_id
+    return body
+
+
+def decided(legs, tick_id="t-1"):
+    """A §6 `decision` body carrying already-built legs."""
+    return decision_record(legs, tick_id=tick_id)
+
+
+def outcome_record(
+    leg_id,
+    value,
+    outcome_kind="settled",
+    weight="1",
+    supersedes=None,
+    effective_at_ms=1_000,
+    known_at_ms=2_000,
+):
+    """A §6 `outcome` body — `Outcome.to_obj()`, so money is a decimal STRING."""
+    return {
+        "leg_id": leg_id,
+        "outcome_kind": outcome_kind,
+        "effective_at_ms": effective_at_ms,
+        "known_at_ms": known_at_ms,
+        "value": value,
+        "weight": weight,
+        "terminal": True,
+        "source": "settlement",
+        "supersedes": supersedes,
+    }
+
+
+def divergence_record(seq=1, divergence="execution", field="fills"):
+    """A §5.13.3 `Divergence.to_obj()` body — the only thing `parity` observes."""
+    return {
+        "seq": seq,
+        "record_id": "decision:t-%d" % seq,
+        "field": field,
+        "divergence": divergence,
+        "tape": "a",
+        "replay": "b",
+    }
+
+
+def scored(monitor, pairs, outcome_kind="settled", baseline=0.5):
+    """Feed `(forecast, label)` pairs as decision/outcome couples, one leg each."""
+    for index, (forecast, label) in enumerate(pairs):
+        leg_id = "l-%d" % index
+        monitor.observe(decided([decided_leg(leg_id, forecast, baseline=baseline)]))
+        monitor.observe(outcome_record(leg_id, str(label), outcome_kind=outcome_kind))
+    return monitor
+
+
 # ---------------------------------------------------------------------------
 # Params — the §4.1 selector sites, small enough to read
 # ---------------------------------------------------------------------------
@@ -282,6 +407,11 @@ def kind_params(kind, **overrides):
         "ddm": {"field": "error"},
         "adwin": {"field": "prediction", "min_sub": 1},
         "tracking_signal": {"field": "prediction", "target_field": "realised"},
+        "brier": {"field": "prediction", "outcome_kinds": ["settled"]},
+        "calibration": {"field": "prediction", "outcome_kinds": ["settled"], "bins": 2},
+        "prediction_bias": {"field": "prediction", "outcome_kinds": ["settled"]},
+        "skill": {"field": "prediction", "outcome_kinds": ["settled"]},
+        "parity": {"classes": ["execution"]},
     }
     params.update(extra.get(kind, {}))
     params.update(overrides)
@@ -289,7 +419,19 @@ def kind_params(kind, **overrides):
 
 
 def kind_record(kind, i):
-    """One record the given kind counts as an observation, varying with `i`."""
+    """One record the given kind counts as an observation, varying with `i`.
+
+    An outcome monitor needs TWO records per observation, so its sequence
+    alternates: the even `i` parks a leg, the odd `i` labels it. Four records
+    are then two paired observations, exactly like every other kind.
+    """
+    if kind in OUTCOME_FAMILY_KINDS:
+        leg_id = "l-%d" % (i // 2)
+        if i % 2 == 0:
+            return decided([decided_leg(leg_id, 0.6)], tick_id="t-%d" % i)
+        return outcome_record(leg_id, "1")
+    if kind == "parity":
+        return divergence_record(seq=i)
     if kind in ("psi", "ks", "page_hinkley", "adwin", "jensen_shannon", "linf"):
         return prediction_record(float(i))
     if kind == "ddm":
@@ -406,11 +548,12 @@ def test_the_registry_lists_the_nine_phase_one_kinds_and_no_more():
         assert MONITOR_KINDS.resolve(name) is cls
 
 
-def test_the_registry_lists_exactly_the_thirteen_kinds_of_the_two_families():
-    """§5.10.1 adds four members to the two existing families and nothing
-    else: the registry is EXACTLY the nine plus the four until the outcome
-    and parity families land."""
+def test_the_registry_lists_exactly_the_eighteen_kinds_of_the_four_families():
+    """§5.10.1 adds four members to the two existing families and populates
+    the two families phase 1 declared and could not: the registry is EXACTLY
+    the nine plus the four plus the five, and nothing else."""
     assert MONITOR_KINDS.kinds() == ALL_KINDS
+    assert len(ALL_KINDS) == 18
     for name, cls in (
         ("ddm", DDM),
         ("adwin", ADWIN),
@@ -420,13 +563,20 @@ def test_the_registry_lists_exactly_the_thirteen_kinds_of_the_two_families():
         assert MONITOR_KINDS.resolve(name) is cls
 
 
-def test_the_outcome_and_parity_families_are_not_registered_yet():
-    """§5.10.1's other two families need a label and a replay tape; neither
-    has a producer until `outcomes` and `report` land."""
-    for name in ("calibration", "brier", "skill", "prediction_bias", "parity"):
-        assert name not in MONITOR_KINDS
-        with pytest.raises(ProductionError):
-            MONITOR_KINDS.resolve(name)
+def test_the_outcome_and_parity_families_are_registered_with_their_own_kinds():
+    """§5.10.1's other two families: four outcome members that each need a
+    label, and the one parity member that observes replay divergences. The
+    names are the document's, so a renamed kind fails here and not in a
+    serve document."""
+    for name, cls in (
+        ("calibration", Calibration),
+        ("brier", Brier),
+        ("skill", Skill),
+        ("prediction_bias", PredictionBias),
+        ("parity", ParityMonitor),
+    ):
+        assert name in MONITOR_KINDS
+        assert MONITOR_KINDS.resolve(name) is cls
 
 
 def test_the_three_strategy_registries_name_their_kinds():
@@ -469,7 +619,7 @@ def test_the_strategy_registries_refuse_an_unregistered_name():
 
 
 def test_the_families_are_is_a_hierarchies_under_monitor():
-    for family in (OperationalMonitor, StreamMonitor, DistributionMonitor):
+    for family in (OperationalMonitor, StreamMonitor, DistributionMonitor, OutcomeMonitor):
         assert issubclass(family, Monitor)
     for cls in (Staleness, DecisionRate, Coverage, LatencyPercentiles, RefusalCount):
         assert issubclass(cls, OperationalMonitor)
@@ -477,8 +627,24 @@ def test_the_families_are_is_a_hierarchies_under_monitor():
         assert issubclass(cls, StreamMonitor)
     for cls in (PSI, KS, JensenShannon, LInf):
         assert issubclass(cls, DistributionMonitor)
+    for cls in (Calibration, Brier, Skill, PredictionBias):
+        assert issubclass(cls, OutcomeMonitor)
+    assert issubclass(ParityMonitor, Monitor)
     assert not issubclass(StreamMonitor, OperationalMonitor)
     assert not issubclass(DistributionMonitor, StreamMonitor)
+    assert not issubclass(OutcomeMonitor, DistributionMonitor)
+    assert not issubclass(ParityMonitor, OutcomeMonitor)
+
+
+def test_the_outcome_family_is_abstract_and_supplies_the_shared_hooks():
+    """§5.10.1: the family owns `observe`, the pending map, `label_coverage`
+    and `provisional`; a member supplies only the statistic. A hook that
+    merely raised would let an incomplete member construct and fail later."""
+    assert "_reduce" in OutcomeMonitor.__abstractmethods__
+    assert "observe" not in OutcomeMonitor.__abstractmethods__
+    assert "verdict" not in OutcomeMonitor.__abstractmethods__
+    with pytest.raises(TypeError):
+        OutcomeMonitor(kind_params("brier"))
 
 
 # ---------------------------------------------------------------------------
@@ -588,7 +754,10 @@ def test_a_distribution_monitor_without_a_reference_refuses():
         assert "reference" in str(exc.value)
 
 
-@pytest.mark.parametrize("kind", ("psi", "ks", "page_hinkley", "tracking_signal"))
+@pytest.mark.parametrize(
+    "kind",
+    ("psi", "ks", "page_hinkley", "tracking_signal") + OUTCOME_FAMILY_KINDS,
+)
 def test_a_field_reading_monitor_without_a_field_refuses(kind):
     params = kind_params(kind)
     del params["field"]
@@ -1850,6 +2019,710 @@ def test_the_three_binned_monitors_share_one_bins_knob_and_one_binning():
         assert monitor.verdict().statistic == pytest.approx(want), kind
         assert "bins" in type(monitor)._PARAMS
 
+
+# ---------------------------------------------------------------------------
+# OutcomeMonitor — the family that needs a label (§5.10.1)
+# ---------------------------------------------------------------------------
+#
+# It is the only family that observes TWO record kinds through the one
+# `observe(record)` hook: a `decision` parks each leg's forecast, an
+# `outcome` brings the label that completes the pair. Everything that can
+# go wrong between the two is what this section pins — an eviction, a
+# correction, an outcome of an undeclared kind, an outcome for a leg that
+# was never parked — because each of them is a silent loss of a label, and
+# a label a monitor lost is a verdict computed on a sample nobody chose.
+
+
+def outcome_monitor(kind, **overrides):
+    """Build one outcome-family monitor over a two-observation count window."""
+    return MONITOR_KINDS.resolve(kind)(kind_params(kind, **overrides), name=kind)
+
+
+def ece_of(pairs, bins):
+    """Expected calibration error over `bins` equal-width bins of [0, 1]."""
+    buckets = {}
+    for forecast, label in pairs:
+        index = min(int(forecast * bins), bins - 1)
+        buckets.setdefault(index, []).append((forecast, label))
+    total = 0.0
+    for members in buckets.values():
+        gap = abs(
+            sum(f for f, _ in members) / len(members)
+            - sum(y for _, y in members) / len(members)
+        )
+        total += len(members) / len(pairs) * gap
+    return total
+
+
+def brier_of(pairs):
+    """Mean squared error of a probability forecast, restated with arithmetic."""
+    return sum((f - y) ** 2 for f, y in pairs) / len(pairs)
+
+
+def test_a_decision_leg_alone_is_only_parked_and_is_not_yet_an_observation():
+    """§5.10.1: the decision PARKS `(leg_id, forecast, baseline, weight)`.
+    Nothing can be scored until the label arrives, so a window of decisions
+    with no outcomes has no observation in it at all."""
+    monitor = outcome_monitor("brier", min_n=1)
+    monitor.observe(decided([decided_leg("l-0", 0.6), decided_leg("l-1", 0.4)]))
+    verdict = monitor.verdict()
+    assert verdict.n_cur == 0
+    assert verdict.status == "insufficient"
+    assert monitor.label_coverage() == 0.0
+
+
+def test_an_outcome_completes_the_parked_leg_into_exactly_one_observation():
+    monitor = outcome_monitor("brier", window=count(4), min_n=1)
+    monitor.observe(decided([decided_leg("l-0", 0.6)]))
+    monitor.observe(outcome_record("l-0", "1"))
+    assert monitor.verdict().n_cur == 1
+    assert monitor.verdict().statistic == pytest.approx((0.6 - 1.0) ** 2)
+    assert monitor.label_coverage() == 1.0
+
+
+def test_a_second_plain_outcome_for_a_paired_leg_adds_nothing():
+    """"whose `leg_id` is PENDING completes the pair" — once completed the leg
+    is no longer pending, so a repeat is not a second observation. Only a
+    `supersedes` may touch a pair that already stands."""
+    monitor = outcome_monitor("brier", window=count(4), min_n=1)
+    monitor.observe(decided([decided_leg("l-0", 0.6)]))
+    monitor.observe(outcome_record("l-0", "1"))
+    monitor.observe(outcome_record("l-0", "0"))
+    assert monitor.verdict().n_cur == 1
+    assert monitor.verdict().statistic == pytest.approx((0.6 - 1.0) ** 2)
+
+
+def test_an_outcome_whose_kind_is_outside_the_declared_set_is_ignored():
+    monitor = outcome_monitor("brier", window=count(4), min_n=1, outcome_kinds=["settled"])
+    monitor.observe(decided([decided_leg("l-0", 0.6)]))
+    monitor.observe(outcome_record("l-0", "1", outcome_kind="marked"))
+    assert monitor.verdict().n_cur == 0
+    assert monitor.label_coverage() == 0.0
+
+    monitor.observe(outcome_record("l-0", "1", outcome_kind="settled"))
+    assert monitor.verdict().n_cur == 1
+
+
+def test_an_outcome_for_a_leg_that_was_never_parked_is_ignored():
+    monitor = outcome_monitor("brier", window=count(4), min_n=1)
+    monitor.observe(decided([decided_leg("l-0", 0.6)]))
+    monitor.observe(outcome_record("l-99", "1"))
+    assert monitor.verdict().n_cur == 0
+    assert monitor.label_coverage() == 0.0
+
+
+def test_an_evicted_pending_leg_is_counted_unlabelled_rather_than_vanishing():
+    """§5.10.1: "oldest evicted — and an eviction is counted as an unlabelled
+    leg, never dropped silently". A monitor that dropped it would report FULL
+    coverage over the legs it happened to keep, which is the one thing
+    `label_coverage` exists to prevent."""
+    monitor = outcome_monitor("brier", window=count(4), min_n=1, max_pending=2)
+    monitor.observe(
+        decided([decided_leg("l-0", 0.6), decided_leg("l-1", 0.6), decided_leg("l-2", 0.6)])
+    )
+    monitor.observe(outcome_record("l-1", "1"))
+    monitor.observe(outcome_record("l-2", "1"))
+
+    # two paired, none pending, one evicted: a monitor that forgot the
+    # eviction would say 2/2 here.
+    assert monitor.verdict().n_cur == 2
+    assert monitor.label_coverage() == pytest.approx(2.0 / 3.0)
+
+
+def test_the_label_of_an_evicted_leg_can_no_longer_pair():
+    """Eviction is a LOSS, not a delay: the forecast is gone, so the label
+    that arrives later has nothing to pair with and coverage stays down."""
+    monitor = outcome_monitor("brier", window=count(4), min_n=1, max_pending=1)
+    monitor.observe(decided([decided_leg("l-0", 0.6), decided_leg("l-1", 0.6)]))
+    monitor.observe(outcome_record("l-0", "1"))
+    assert monitor.verdict().n_cur == 0
+    assert monitor.label_coverage() == 0.0
+
+    monitor.observe(outcome_record("l-1", "1"))
+    assert monitor.verdict().n_cur == 1
+    assert monitor.label_coverage() == pytest.approx(1.0 / 2.0)
+
+
+def test_a_superseding_outcome_replaces_its_observation_and_moves_the_statistic():
+    """§5.10.1: an outcome carrying `supersedes` REPLACES the observation it
+    names "instead of adding a second". The window keeps ONE observation for
+    the leg and the statistic moves to the corrected label — a second
+    observation would leave the wrong label averaged in for ever."""
+    monitor = outcome_monitor(
+        "brier", window=count(4), min_n=1, outcome_kinds=["settled", "corrected"]
+    )
+    monitor.observe(decided([decided_leg("l-0", 0.6)]))
+    monitor.observe(outcome_record("l-0", "1"))
+    assert monitor.verdict().statistic == pytest.approx((0.6 - 1.0) ** 2)
+
+    monitor.observe(
+        outcome_record("l-0", "0", outcome_kind="corrected", supersedes="outcome:abc")
+    )
+    verdict = monitor.verdict()
+    assert verdict.n_cur == 1
+    assert verdict.statistic == pytest.approx((0.6 - 0.0) ** 2)
+
+
+def test_a_correction_keeps_the_forecast_the_decision_parked():
+    """A correction corrects the LABEL. The forecast and the baseline came
+    from the decision and cannot be revised by something that happened
+    after it."""
+    monitor = outcome_monitor(
+        "skill", window=count(4), min_n=1, outcome_kinds=["settled", "corrected"]
+    )
+    monitor.observe(decided([decided_leg("l-0", 0.6, baseline=0.5)]))
+    monitor.observe(outcome_record("l-0", "1"))
+    monitor.observe(
+        outcome_record("l-0", "0", outcome_kind="corrected", supersedes="outcome:abc")
+    )
+    # 1 - (0.6-0)^2 / (0.5-0)^2 : the forecast is still 0.6, the baseline 0.5
+    assert monitor.verdict().statistic == pytest.approx(1.0 - 0.36 / 0.25)
+
+
+def test_a_correction_of_a_leg_the_monitor_never_paired_takes_it_as_the_pair():
+    """The first outcome was of an undeclared kind, so nothing stands. The
+    correction is then the leg's first usable label rather than a lost one."""
+    monitor = outcome_monitor("brier", window=count(4), min_n=1, outcome_kinds=["corrected"])
+    monitor.observe(decided([decided_leg("l-0", 0.6)]))
+    monitor.observe(outcome_record("l-0", "1", outcome_kind="settled"))
+    monitor.observe(
+        outcome_record("l-0", "0", outcome_kind="corrected", supersedes="outcome:abc")
+    )
+    assert monitor.verdict().n_cur == 1
+    assert monitor.verdict().statistic == pytest.approx(0.36)
+
+
+def test_label_coverage_is_the_paired_share_of_the_legs_the_monitor_knows_of():
+    monitor = outcome_monitor("brier", window=count(4), min_n=1)
+    monitor.observe(
+        decided([decided_leg("l-%d" % i, 0.6) for i in range(4)])
+    )
+    assert monitor.label_coverage() == 0.0
+    monitor.observe(outcome_record("l-0", "1"))
+    assert monitor.label_coverage() == pytest.approx(1.0 / 4.0)
+    monitor.observe(outcome_record("l-1", "1"))
+    assert monitor.label_coverage() == pytest.approx(2.0 / 4.0)
+
+
+def test_a_monitor_with_nothing_parked_and_nothing_paired_is_not_provisional():
+    """An empty denominator is not zero coverage: no leg is waiting, so no
+    label is outstanding. Such a verdict is `insufficient` on its own
+    account and does not need a second caution."""
+    monitor = outcome_monitor("brier")
+    assert monitor.label_coverage() == 1.0
+    assert monitor.provisional() is False
+    assert monitor.verdict().status == "insufficient"
+
+
+def test_a_verdict_is_provisional_below_the_declared_floor_and_says_so():
+    """§5.10.1: `provisional()` is `label_coverage() < params["label_coverage"]`
+    — "so an outcome verdict says out loud that its labels are still
+    arriving". The verdict below is `ok`, which is exactly when the flag
+    matters: without it the reader would take a half-labelled window for a
+    clean one."""
+    monitor = outcome_monitor("brier", window=count(2), min_n=2, label_coverage=0.75)
+    monitor.observe(decided([decided_leg("l-%d" % i, 0.6) for i in range(4)]))
+    monitor.observe(outcome_record("l-0", "1"))
+    monitor.observe(outcome_record("l-1", "1"))
+
+    verdict = monitor.verdict()
+    assert monitor.label_coverage() == pytest.approx(0.5)
+    assert monitor.provisional() is True
+    assert verdict.provisional is True
+    assert verdict.status == "ok"
+
+    monitor.observe(outcome_record("l-2", "1"))
+    monitor.observe(outcome_record("l-3", "1"))
+    assert monitor.label_coverage() == 1.0
+    assert monitor.provisional() is False
+    assert monitor.verdict().provisional is False
+
+
+def test_the_base_hook_the_outcome_family_overrides_answers_false_elsewhere():
+    """§5.10 reserves `provisional()` on the base for exactly this family."""
+    assert Monitor.provisional is not OutcomeMonitor.provisional
+    assert build("coverage").provisional() is False
+    assert build("parity").provisional() is False
+
+
+def test_the_outcome_defaults_are_named_constants_the_monitor_reads():
+    assert 0.0 <= DEFAULT_LABEL_COVERAGE <= 1.0
+    assert isinstance(DEFAULT_MAX_PENDING, int) and DEFAULT_MAX_PENDING >= 1
+
+    params = kind_params("brier", window=count(1), min_n=1)
+    assert "label_coverage" not in params
+    monitor = MONITOR_KINDS.resolve("brier")(params)
+    monitor.observe(decided([decided_leg("l-0", 0.6)]))
+    monitor.observe(outcome_record("l-0", "1"))
+    # one paired leg and none pending is coverage 1.0, so the floor is met
+    # whatever it is; parking one more leg drops coverage to 0.5, which is
+    # below the default and above 0.
+    assert monitor.provisional() is False
+    monitor.observe(decided([decided_leg("l-1", 0.6)]))
+    assert monitor.label_coverage() == pytest.approx(0.5)
+    assert monitor.provisional() is (0.5 < DEFAULT_LABEL_COVERAGE)
+
+
+def test_the_pending_map_is_bounded_by_the_declared_maximum():
+    monitor = outcome_monitor("brier", window=count(4), min_n=1, max_pending=3)
+    monitor.observe(decided([decided_leg("l-%d" % i, 0.6) for i in range(10)]))
+    # seven evictions, three still pending, nothing paired
+    assert monitor.label_coverage() == 0.0
+    assert len(json.loads(json.dumps(monitor.state()))["pending"]) == 3
+
+
+def test_the_outcome_family_takes_its_own_four_knobs_and_nothing_else():
+    for kind in OUTCOME_FAMILY_KINDS:
+        declared = set(MONITOR_KINDS.resolve(kind)._PARAMS)
+        assert {"field", "outcome_kinds", "label_coverage", "max_pending"} <= declared
+        assert "reference" not in declared
+    assert "bins" in Calibration._PARAMS
+    assert "bins" not in Brier._PARAMS
+
+
+@pytest.mark.parametrize("kind", OUTCOME_FAMILY_KINDS)
+def test_an_outcome_monitor_without_its_outcome_kinds_refuses(kind):
+    params = kind_params(kind)
+    del params["outcome_kinds"]
+    with pytest.raises(ProductionError) as exc:
+        MONITOR_KINDS.resolve(kind)(params)
+    assert "outcome_kinds" in str(exc.value)
+
+
+@pytest.mark.parametrize("bad", (["shipped"], [], "settled", ["settled", "shipped"]))
+def test_an_outcome_kind_outside_the_closed_vocabulary_refuses(bad):
+    """`OUTCOME_KINDS` lives in `vocab.py` and nowhere else; a monitor that
+    accepted a kind outside it would wait for a label that never arrives."""
+    with pytest.raises(ProductionError) as exc:
+        outcome_monitor("brier", outcome_kinds=bad)
+    assert "outcome_kinds" in str(exc.value)
+
+
+def test_every_member_of_the_outcome_vocabulary_is_declarable():
+    monitor = outcome_monitor("brier", outcome_kinds=list(OUTCOME_KINDS))
+    assert isinstance(monitor, OutcomeMonitor)
+
+
+@pytest.mark.parametrize("bad", (-0.1, 1.1, "0.9", None))
+def test_a_label_coverage_outside_the_unit_interval_refuses(bad):
+    with pytest.raises(ProductionError):
+        outcome_monitor("brier", label_coverage=bad)
+
+
+@pytest.mark.parametrize("bad", (0, -1, 2.5, "10"))
+def test_a_max_pending_that_is_not_a_positive_integer_refuses(bad):
+    with pytest.raises(ProductionError):
+        outcome_monitor("brier", max_pending=bad)
+
+
+def test_the_label_is_read_from_the_decimal_string_the_outcome_body_carries():
+    """§6's `outcome` body IS `Outcome.to_obj()`, and `Outcome.value` is a
+    `Decimal` — so the label arrives as a decimal STRING. A monitor that
+    only understood floats would refuse every real label."""
+    monitor = outcome_monitor("prediction_bias", window=count(2), min_n=2)
+    monitor.observe(decided([decided_leg("l-0", 0.75), decided_leg("l-1", 0.25)]))
+    monitor.observe(outcome_record("l-0", "1.00"))
+    monitor.observe(outcome_record("l-1", 0.0))
+    assert monitor.verdict().statistic == pytest.approx((0.75 - 1.0 + 0.25 - 0.0) / 2)
+
+
+def test_a_leg_with_no_forecast_is_not_parked_at_all():
+    monitor = outcome_monitor("brier", window=count(4), min_n=1)
+    monitor.observe(decided([leg(final="none")]))
+    monitor.observe(outcome_record("l-1", "1"))
+    assert monitor.label_coverage() == 1.0
+    assert monitor.verdict().n_cur == 0
+
+
+def test_a_tick_body_is_neither_parked_nor_paired():
+    monitor = outcome_monitor("brier", window=count(4), min_n=1)
+    monitor.observe(tick_record())
+    monitor.observe(fill_record())
+    assert monitor.verdict().n_cur == 0
+    assert monitor.label_coverage() == 1.0
+
+
+def test_the_outcome_family_state_round_trips_its_pending_map_and_its_evictions():
+    """§6's `snapshot` carries monitor state; a restart that forgot the
+    pending map would re-pair nothing and report full coverage over the legs
+    it happened to keep."""
+    live = outcome_monitor("brier", window=count(4), min_n=1, max_pending=2)
+    live.observe(decided([decided_leg("l-%d" % i, 0.6) for i in range(3)]))
+    live.observe(outcome_record("l-1", "1"))
+
+    restored = outcome_monitor("brier", window=count(4), min_n=1, max_pending=2)
+    restored.restore(json.loads(json.dumps(live.state())))
+    assert restored.verdict() == live.verdict()
+    assert restored.label_coverage() == live.label_coverage()
+
+    live.observe(outcome_record("l-2", "1"))
+    restored.observe(outcome_record("l-2", "1"))
+    assert restored.verdict() == live.verdict()
+    assert restored.verdict().n_cur == 2
+    assert json.loads(json.dumps(restored.state())) == json.loads(json.dumps(live.state()))
+
+
+def test_the_outcome_state_refuses_an_unknown_or_malformed_member():
+    monitor = outcome_monitor("brier")
+    state = json.loads(json.dumps(monitor.state()))
+    with pytest.raises(ProductionError):
+        monitor.restore({**state, "pending": {}})
+    with pytest.raises(ProductionError):
+        monitor.restore({**state, "unlabelled": -1})
+    with pytest.raises(ProductionError):
+        monitor.restore({**state, "surprise": 1})
+
+
+# ---------------------------------------------------------------------------
+# The four outcome members — one statistic each
+# ---------------------------------------------------------------------------
+
+
+def test_calibration_is_the_expected_calibration_error_over_equal_width_bins():
+    """§5.10.1: "the expected calibration error over `bins` equal-width bins
+    of the forecast". Equal-width, NOT the reference quantiles the
+    distribution family cuts on — ECE means the fixed [0, 1] partition."""
+    pairs = ((0.1, 0.0), (0.2, 0.0), (0.9, 1.0), (0.6, 1.0))
+    monitor = outcome_monitor("calibration", window=count(4), min_n=4, bins=2)
+    scored(monitor, pairs)
+    assert ece_of(pairs, 2) == pytest.approx(0.2)
+    assert monitor.verdict().statistic == pytest.approx(0.2)
+
+
+def test_a_perfectly_calibrated_window_scores_zero():
+    pairs = ((1.0, 1.0), (1.0, 1.0), (0.0, 0.0), (0.0, 0.0))
+    monitor = outcome_monitor("calibration", window=count(4), min_n=4, bins=2)
+    scored(monitor, pairs)
+    assert monitor.verdict().statistic == pytest.approx(0.0)
+
+
+def test_calibration_refuses_fewer_than_two_bins():
+    for bad in (1, 0, -2, 2.5):
+        with pytest.raises(ProductionError):
+            outcome_monitor("calibration", bins=bad)
+
+
+def test_brier_is_the_mean_of_the_pipelines_own_brier():
+    pairs = ((0.6, 1.0), (0.4, 0.0))
+    monitor = outcome_monitor("brier", window=count(2), min_n=2)
+    scored(monitor, pairs)
+    assert brier_of(pairs) == pytest.approx(0.16)
+    assert monitor.verdict().statistic == pytest.approx(0.16)
+
+
+def test_moving_the_pipelines_brier_moves_the_monitors_statistic(monkeypatch):
+    """§5.10.1: "the mean of `dskit.pipeline.metrics.brier`, imported rather
+    than restated". A restated copy would keep answering 0.16 here, which is
+    exactly the drift this repo's duplication rule exists to catch."""
+    monitor = outcome_monitor("brier", window=count(2), min_n=2)
+    scored(monitor, ((0.6, 1.0), (0.4, 0.0)))
+    assert monitor.verdict().statistic == pytest.approx(0.16)
+
+    monkeypatch.setattr(pipeline_metrics, "brier", lambda q, y: 5.0)
+    moved = outcome_monitor("brier", window=count(2), min_n=2)
+    scored(moved, ((0.6, 1.0), (0.4, 0.0)))
+    assert moved.verdict().statistic == pytest.approx(5.0)
+
+
+def test_brier_refuses_a_forecast_or_label_the_scoring_rule_does_not_accept():
+    """`dskit.pipeline.metrics.brier` owns the rule "q in [0, 1], y in
+    {0, 1}"; the monitor inherits it by importing rather than restating,
+    and refuses in this package's own error type."""
+    high = outcome_monitor("brier", window=count(1), min_n=1)
+    scored(high, ((1.5, 1.0),))
+    with pytest.raises(ProductionError) as exc:
+        high.verdict()
+    assert "[0, 1]" in str(exc.value)
+
+    unbounded = outcome_monitor("brier", window=count(1), min_n=1)
+    scored(unbounded, ((0.6, 12.5),))
+    with pytest.raises(ProductionError):
+        unbounded.verdict()
+
+
+def test_the_murphy_decomposition_is_not_on_the_monitor():
+    """§5.10.1: deliberately NOT here — "a `Verdict` carries one statistic,
+    and the three terms only sum on the exact stratification `report.py`
+    computes"."""
+    for term in ("reliability", "resolution", "uncertainty"):
+        assert not hasattr(Brier, term)
+    assert {f.name for f in dataclasses.fields(build("brier").verdict())} == {
+        "status",
+        "statistic",
+        "threshold",
+        "n_ref",
+        "n_cur",
+        "window",
+        "slice",
+        "provisional",
+    }
+
+
+def test_skill_against_a_baseline_scored_on_itself_is_zero():
+    """§5.10.1: "an ordinary `constant` threshold at `min: 0` says 'no worse
+    than the benchmark'". That reading only holds if a forecast that IS the
+    benchmark scores exactly 0."""
+    monitor = outcome_monitor(
+        "skill", window=count(3), min_n=3, threshold=at_least(0.0), response="halt"
+    )
+    for index, (forecast, label) in enumerate(((0.5, 1.0), (0.5, 0.0), (0.5, 1.0))):
+        leg_id = "l-%d" % index
+        monitor.observe(decided([decided_leg(leg_id, forecast, baseline=forecast)]))
+        monitor.observe(outcome_record(leg_id, str(label)))
+    assert monitor.verdict().statistic == pytest.approx(0.0)
+    assert monitor.verdict().status == "ok"
+    assert monitor.should_trip() is False
+
+
+def test_skill_is_the_brier_skill_score_against_the_legs_stored_baseline():
+    pairs = ((0.6, 1.0), (0.4, 0.0))
+    monitor = outcome_monitor("skill", window=count(2), min_n=2)
+    scored(monitor, pairs, baseline=0.5)
+    want = 1.0 - brier_of(pairs) / brier_of(tuple((0.5, y) for _f, y in pairs))
+    assert want == pytest.approx(0.36)
+    assert monitor.verdict().statistic == pytest.approx(0.36)
+
+
+def test_a_forecast_worse_than_its_benchmark_scores_below_zero_and_breaches():
+    monitor = outcome_monitor(
+        "skill", window=count(2), min_n=2, threshold=at_least(0.0), response="halt"
+    )
+    scored(monitor, ((0.1, 1.0), (0.9, 0.0)), baseline=0.5)
+    assert monitor.verdict().statistic < 0.0
+    assert monitor.verdict().status == "alarm"
+    assert monitor.should_trip() is True
+
+
+def test_a_benchmark_that_scored_perfectly_leaves_no_skill_to_measure():
+    """`1 - brier/0` is not a number. D16's answer for a question that cannot
+    be asked is `insufficient`, which is what `DDM` answers when its sigma is
+    zero for the same reason."""
+    monitor = outcome_monitor("skill", window=count(2), min_n=1)
+    for index, label in enumerate((1.0, 0.0)):
+        leg_id = "l-%d" % index
+        monitor.observe(decided([decided_leg(leg_id, 0.7, baseline=label)]))
+        monitor.observe(outcome_record(leg_id, str(label)))
+    verdict = monitor.verdict()
+    assert verdict.statistic is None
+    assert verdict.status == "insufficient"
+    assert monitor.should_trip() is False
+
+
+def test_skill_refuses_a_leg_whose_decision_stored_no_baseline():
+    monitor = outcome_monitor("skill", window=count(1), min_n=1)
+    monitor.observe(decided([leg(prediction=0.6, leg_id="l-0")]))
+    monitor.observe(outcome_record("l-0", "1"))
+    with pytest.raises(ProductionError) as exc:
+        monitor.verdict()
+    assert "baseline" in str(exc.value)
+
+
+def test_the_dm_test_is_a_method_beside_the_statistic_and_not_the_statistic():
+    """§5.10.1: "a method rather than the statistic because
+    `Threshold.breached(statistic, n_ref, n_cur)` sees one number and cannot
+    see a series, and because re-testing significance on every arriving
+    observation is a multiple-comparisons trap"."""
+    monitor = outcome_monitor("skill", window=count(4), min_n=4)
+    scored(monitor, ((0.9, 1.0), (0.1, 0.0), (0.8, 1.0), (0.2, 0.0)), baseline=0.5)
+    answer = monitor.dm_test()
+    assert isinstance(answer, dict)
+    assert monitor.verdict().statistic not in (answer["t"], answer["p_value"])
+    assert set(answer) == {"n", "mean", "se", "t", "p_value", "lags", "h_steps", "hln"}
+
+
+def test_the_dm_test_is_the_pipelines_own_two_functions_composed():
+    """Both come from `dskit.pipeline.stats`, imported rather than restated;
+    the loss series and the HAC test each have one owner there."""
+    forecasts, labels = (0.9, 0.1, 0.8, 0.2), (1.0, 0.0, 1.0, 0.0)
+    monitor = outcome_monitor("skill", window=count(4), min_n=4)
+    scored(monitor, tuple(zip(forecasts, labels)), baseline=0.5)
+
+    gaps = pipeline_stats.dm_loss_series(list(labels), list(forecasts), mu=0.5)
+    want = pipeline_stats.diebold_mariano_test(
+        gaps, lags=pipeline_stats.dm_lags(len(gaps), 1), h_steps=1
+    )
+    assert monitor.dm_test() == want
+    assert want["mean"] > 0.0
+
+
+def test_moving_the_pipelines_dm_test_moves_the_monitors_answer(monkeypatch):
+    monitor = outcome_monitor("skill", window=count(4), min_n=4)
+    scored(monitor, ((0.9, 1.0), (0.1, 0.0), (0.8, 1.0), (0.2, 0.0)), baseline=0.5)
+    monkeypatch.setattr(pipeline_stats, "diebold_mariano_test", lambda *a, **k: {"t": 7.0})
+    assert monitor.dm_test() == {"t": 7.0}
+
+
+def test_the_dm_test_is_none_below_two_pairs():
+    """`diebold_mariano_test` refuses a series shorter than two, so there is
+    no dict to return — §5.13.3 states the same rule for the report."""
+    monitor = outcome_monitor("skill", window=count(4), min_n=1)
+    assert monitor.dm_test() is None
+    scored(monitor, ((0.9, 1.0),), baseline=0.5)
+    assert monitor.dm_test() is None
+    scored(monitor, ((0.1, 0.0),), baseline=0.5)
+    assert monitor.dm_test() is not None
+
+
+def test_only_the_skill_member_carries_a_dm_test():
+    assert not hasattr(build("brier"), "dm_test")
+    assert not hasattr(build("calibration"), "dm_test")
+    assert not hasattr(build("prediction_bias"), "dm_test")
+
+
+def test_prediction_bias_is_signed_so_the_two_directions_do_not_cancel():
+    """§5.10.1: "a bias monitor that took an absolute value could not say
+    which way the model leans". The two windows below have the SAME absolute
+    mean error and opposite signs; an `abs` would make them identical."""
+    low = outcome_monitor("prediction_bias", window=count(2), min_n=2)
+    scored(low, ((0.8, 1.0), (0.9, 1.0)))
+    assert low.verdict().statistic == pytest.approx(-0.15)
+
+    high = outcome_monitor("prediction_bias", window=count(2), min_n=2)
+    scored(high, ((0.2, 0.0), (0.1, 0.0)))
+    assert high.verdict().statistic == pytest.approx(0.15)
+    assert low.verdict().statistic != high.verdict().statistic
+
+
+def test_a_two_sided_constant_bound_catches_each_lean_on_its_own_side():
+    both = {"kind": "constant", "min": -0.1, "max": 0.1}
+    low = outcome_monitor(
+        "prediction_bias", window=count(2), min_n=2, threshold=both, response="halt"
+    )
+    scored(low, ((0.8, 1.0), (0.9, 1.0)))
+    assert low.verdict().status == "alarm"
+
+    inside = outcome_monitor(
+        "prediction_bias", window=count(2), min_n=2, threshold=both, response="halt"
+    )
+    scored(inside, ((0.95, 1.0), (0.05, 0.0)))
+    assert inside.verdict().statistic == pytest.approx(0.0)
+    assert inside.verdict().status == "ok"
+
+
+def test_prediction_bias_scores_a_series_the_probability_rules_refuse():
+    """The mean signed error needs no [0, 1] frame, which is why it is the
+    one member that reads an unbounded value."""
+    monitor = outcome_monitor("prediction_bias", window=count(2), min_n=2)
+    scored(monitor, ((12.0, 10.0), (8.0, 10.0)))
+    assert monitor.verdict().statistic == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# ParityMonitor — the family with no phase-1 member (§5.10.1)
+# ---------------------------------------------------------------------------
+
+
+def test_parity_counts_only_the_divergence_classes_it_declares():
+    monitor = MONITOR_KINDS.resolve("parity")(
+        kind_params("parity", window=count(4), min_n=1, classes=["execution", "state"]),
+        name="parity",
+    )
+    feed(
+        monitor,
+        [
+            divergence_record(1, "execution"),
+            divergence_record(2, "state"),
+            divergence_record(3, "data"),
+            divergence_record(4, "nondeterminism"),
+        ],
+    )
+    verdict = monitor.verdict()
+    assert verdict.statistic == pytest.approx(2.0)
+    assert verdict.n_cur == 4
+
+
+def test_a_clean_window_of_other_classes_is_ok_rather_than_a_breach():
+    monitor = MONITOR_KINDS.resolve("parity")(
+        kind_params(
+            "parity", window=count(2), min_n=1, classes=["execution"], threshold=at_most(0.0)
+        ),
+        name="parity",
+    )
+    feed(monitor, [divergence_record(1, "data"), divergence_record(2, "version")])
+    assert monitor.verdict().statistic == pytest.approx(0.0)
+    assert monitor.verdict().status == "ok"
+
+
+def test_one_divergence_of_a_declared_class_breaches_a_zero_bound():
+    monitor = MONITOR_KINDS.resolve("parity")(
+        kind_params(
+            "parity",
+            window=count(2),
+            min_n=1,
+            classes=["nondeterminism"],
+            threshold=at_most(0.0),
+            response="halt",
+        ),
+        name="parity",
+    )
+    feed(monitor, [divergence_record(1, "data"), divergence_record(2, "nondeterminism")])
+    assert monitor.verdict().statistic == pytest.approx(1.0)
+    assert monitor.verdict().status == "alarm"
+
+
+@pytest.mark.parametrize("bad", (["timing"], [], "execution", ["execution", "timing"]))
+def test_parity_refuses_a_class_outside_the_closed_set(bad):
+    with pytest.raises(ProductionError) as exc:
+        build("parity", classes=bad)
+    assert "classes" in str(exc.value)
+
+
+def test_every_member_of_the_divergence_vocabulary_is_declarable():
+    monitor = build("parity", classes=list(DIVERGENCE_CLASSES))
+    assert isinstance(monitor, ParityMonitor)
+
+
+def test_parity_without_its_classes_refuses():
+    params = kind_params("parity")
+    del params["classes"]
+    with pytest.raises(ProductionError) as exc:
+        MONITOR_KINDS.resolve("parity")(params)
+    assert "classes" in str(exc.value)
+
+
+def test_parity_has_no_field_or_reference_knob():
+    declared = set(ParityMonitor._PARAMS)
+    assert "classes" in declared
+    assert "field" not in declared
+    assert "reference" not in declared
+
+
+def test_a_parity_monitor_wired_into_a_serve_document_never_observes_anything():
+    """§5.10.1: "It is the one monitor the serve loop never calls" — replay
+    runs in a separate process against a scratch root and appends nothing to
+    the series, so `report.py` drives it. The tick and decision bodies the
+    loop DOES feed a monitor carry no `divergence`, so a misplaced parity
+    monitor silently reports `insufficient` for ever. Pinned so the failure
+    mode is a known one rather than a surprise."""
+    monitor = build("parity", min_n=1)
+    feed(monitor, [tick_record(), prediction_record(0.5), fill_record()])
+    assert monitor.verdict().n_cur == 0
+    assert monitor.verdict().status == "insufficient"
+
+
+def test_a_period_window_cuts_an_outcome_stream_on_the_instant_it_declares():
+    """The pair exists when the LABEL arrives, so a `period` window over an
+    outcome monitor reads an instant the §6 `outcome` body carries — the
+    decision body has none, and `period` says so rather than bucketing a
+    record it cannot place."""
+    site = {"kind": "period", "iso": "PT1H", "time_field": "known_at_ms"}
+    monitor = outcome_monitor("brier", window=site, min_n=1)
+    monitor.observe(decided([decided_leg("l-0", 0.6), decided_leg("l-1", 0.4)]))
+    monitor.observe(outcome_record("l-0", "1", known_at_ms=3_600_000))
+    monitor.observe(outcome_record("l-1", "0", known_at_ms=7_200_000))
+    verdict = monitor.verdict()
+    assert verdict.window.startswith("period:")
+    assert verdict.n_cur == 1
+    assert verdict.statistic == pytest.approx(0.16)
+
+
+def test_parity_state_round_trips_through_json():
+    live = build("parity", window=count(4), min_n=1)
+    feed(live, [divergence_record(i, "execution") for i in range(3)])
+    restored = build("parity", window=count(4), min_n=1)
+    restored.restore(json.loads(json.dumps(live.state())))
+    assert restored.verdict() == live.verdict()
+    assert restored.verdict().statistic == pytest.approx(3.0)
 
 # ---------------------------------------------------------------------------
 # The rules §5.10 pins by test

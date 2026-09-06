@@ -134,9 +134,9 @@ leases, readiness GO/NO-GO.
 torn-tail recovery; `SeriesState`, the sole fold; checkpoints; the durable
 control inbox; reconciliation and authenticated adoption.
 
-**Observation** — operational, stream and distribution monitors; alert sinks
-and a router; a health state machine with probes and an external dead-man
-heartbeat; a metrics registry with closed label sets.
+**Observation** — operational, stream, distribution, outcome and parity
+monitors; alert sinks and a router; a health state machine with probes and an
+external dead-man heartbeat; a metrics registry with closed label sets.
 
 ## Directory
 
