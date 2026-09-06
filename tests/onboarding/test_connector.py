@@ -1,4 +1,7 @@
-"""connector.py: the envelope, default-deny config, and resolution."""
+"""connector.py: the envelope, default-deny config, resolution, retry policy."""
+
+import ast
+import pathlib
 
 import pytest
 
@@ -13,7 +16,15 @@ from dskit.onboarding import (
     connector,
     resolve_connector,
 )
-from dskit.onboarding.libs import kalshi, polymarket, predexon, restapi, schwab
+from dskit.onboarding import libs
+from dskit.onboarding.libs import (
+    alpaca_quotes,
+    kalshi,
+    polymarket,
+    predexon,
+    restapi,
+    schwab,
+)
 
 from .fake_connector import FakeConnector, file_message, record
 
@@ -214,3 +225,144 @@ def test_max_backoff_is_one_name_across_every_pack():
     # The documented ceiling, restated on purpose — an assertion sourced from
     # its subject would assert nothing.
     assert MAX_BACKOFF_S == 60.0
+
+
+# -- the one retry policy (ADR-0101) ----------------------------------------
+#
+# Six packs each hand-rolled the same wait: an attempt counter, a doubling
+# delay, the shared ceiling, and — in three of them — a numeric Retry-After.
+# `connector.backoff` and `connector.retry_after` are now the one home; the
+# scan below is what makes a seventh copy impossible.
+
+#: Every pack that retries. `localfiles`/`localtables`/`huggingface`/`alpaca`
+#: move no wait of their own and are scanned but not expected to import.
+RETRYING_PACKS = (alpaca_quotes, kalshi, polymarket, predexon, restapi, schwab)
+
+
+def _two(node):
+    """Report whether an AST node is the literal 2."""
+    return (
+        isinstance(node, ast.Constant)
+        and not isinstance(node.value, bool)
+        and isinstance(node.value, (int, float))
+        and node.value == 2
+    )
+
+
+def _named(node):
+    """The bare name an AST node refers to, or ''."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
+def _policy_offences(path):
+    """Every way one pack still spells the retry policy instead of importing it."""
+    found = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name.lstrip("_") in ("backoff", "retry_after"):
+                found.append(f"line {node.lineno}: defines {node.name}()")
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
+            if _two(node.left):
+                found.append(f"line {node.lineno}: spells a doubling (2 ** n)")
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+            if _two(node.left) or _two(node.right):
+                found.append(f"line {node.lineno}: spells a doubling (x * 2)")
+        elif isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Mult):
+            if _two(node.value):
+                found.append(f"line {node.lineno}: spells a doubling (x *= 2)")
+        elif isinstance(node, ast.Call) and _named(node.func) == "min":
+            if any(_named(arg) == "MAX_BACKOFF_S" for arg in node.args):
+                found.append(f"line {node.lineno}: clamps with the ceiling itself")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value.strip().lower() == "retry-after":
+                found.append(f"line {node.lineno}: names the Retry-After header")
+    return found
+
+
+def test_no_pack_spells_its_own_backoff_or_retry_after():
+    # The drift pin. The six copies had already diverged on jitter, on which
+    # outcomes retry, and on a NaN Retry-After; a source scan is what stops a
+    # seventh from being written beside the one owner.
+    offences = {}
+    for path in sorted(pathlib.Path(libs.__file__).parent.glob("*.py")):
+        problems = _policy_offences(path)
+        if problems:
+            offences[path.name] = problems
+    assert not offences, (
+        "a connector pack may not compute its own wait — import `backoff` and "
+        f"`retry_after` from dskit.onboarding.connector: {offences}"
+    )
+
+
+def test_the_policy_owner_is_the_only_module_that_spells_it():
+    # Deliberate independent restatement: the scan must find the expression
+    # SOMEWHERE, or it is passing because it looks for the wrong shape.
+    assert _policy_offences(pathlib.Path(connector.__file__))
+
+
+def test_every_retrying_pack_binds_the_one_owner():
+    # `is`, not a name check: a pack that redefined `backoff` locally would
+    # still have the attribute — identity proves it BINDS the contract's.
+    for pack in RETRYING_PACKS:
+        assert pack.backoff is connector.backoff, pack.__name__
+    for pack in (kalshi, polymarket, predexon):
+        assert pack.retry_after is connector.retry_after, pack.__name__
+
+
+def test_the_backoff_base_has_one_name():
+    # restapi keeps `_BACKOFF` as its documented test seam, but the VALUE is
+    # the contract's — an alias, never a second 0.5.
+    assert restapi._BACKOFF is connector.DEFAULT_BACKOFF_S
+    # Restated on purpose: an assertion sourced from its subject asserts nothing.
+    assert connector.DEFAULT_BACKOFF_S == 0.5
+
+
+def test_backoff_doubles_from_the_base_and_stops_at_the_ceiling():
+    assert [connector.backoff(n) for n in range(1, 9)] == [
+        0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, MAX_BACKOFF_S
+    ]
+    assert connector.backoff(1, 2.0) == 2.0
+    assert connector.backoff(6, 2.0) == MAX_BACKOFF_S
+    assert connector.backoff(4, 0) == 0.0
+    # No attempt count, however large, escapes the ceiling — or overflows the
+    # float that `base * 2 ** (attempt - 1)` would have built.
+    assert connector.backoff(4096) == MAX_BACKOFF_S
+
+
+@pytest.mark.parametrize("attempt", [0, -1, 1.0, True, None, "1"])
+def test_backoff_refuses_an_attempt_that_is_not_one_based(attempt):
+    # The convention is the one thing a call site can break silently: at
+    # attempt 0 the doubling would halve the first wait, not raise.
+    with pytest.raises(AssetError, match="attempt"):
+        connector.backoff(attempt)
+
+
+def test_retry_after_reads_a_numeric_header_whatever_its_case():
+    assert connector.retry_after({"Retry-After": "3"}, 9.0) == 3.0
+    assert connector.retry_after({"retry-after": "3"}, 9.0) == 3.0
+    assert connector.retry_after({"RETRY-AFTER": 3}, 9.0) == 3.0
+
+
+def test_retry_after_is_capped_by_the_one_ceiling_and_floored_at_zero():
+    assert connector.retry_after({"Retry-After": "100000"}, 9.0) == MAX_BACKOFF_S
+    assert connector.retry_after({"Retry-After": "inf"}, 9.0) == MAX_BACKOFF_S
+    assert connector.retry_after({"Retry-After": "-5"}, 9.0) == 0.0
+
+
+@pytest.mark.parametrize("headers", [
+    {},
+    None,
+    {"Retry-After": "soon"},
+    {"Retry-After": "Fri, 31 Dec 1999 23:59:59 GMT"},
+    {"Retry-After": None},
+    {"Retry-After": "nan"},
+    object(),
+])
+def test_an_unusable_retry_after_falls_back_to_the_ordinary_backoff(headers):
+    # NaN is the one the copies disagreed on: `min(max(nan, 0.0), cap)` is
+    # NaN, which reaches time.sleep as a ValueError. Unusable means fall back.
+    assert connector.retry_after(headers, 9.0) == 9.0

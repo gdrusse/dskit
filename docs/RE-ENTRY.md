@@ -81,11 +81,60 @@ approved additive ablation against the full nonduplicative P12 feature set;
 do not fine-tune or promote while the cheaper frozen representation shows no
 incremental value and pretraining-contamination certainty remains low.
 
-## Current wrap: dskit.production BUILT — phases 1, 2, 2b and 3 (2026-09-06)
+## Current wrap: production merged, and its four follow-ups too (2026-09-06)
 
-Branch: `claude/dskit-production-build-3g17vw`. ADR-0090 and ADR-0091 are
-**accepted**; the package is complete against
-`docs/new_package_proposals/production.md`, which is the contract.
+`dskit.production` is BUILT — phases 1, 2, 2b and 3 — and MERGED to `main` at
+`8ea1b98`. ADR-0090 and ADR-0091 are **accepted**; the package is complete
+against `docs/new_package_proposals/production.md`, which is the contract.
+
+The four follow-ups landed as PR #8, reviewed and merged after one round
+that sent the private-import gate back (item 2). What they were:
+
+1. Main was red before the merge, from its own two new pipeline modules —
+   fourteen missing docstrings, and one spelling the run-root default instead
+   of importing it, which is the very defect its pin exists to catch. Fixed.
+2. Production was importing two PRIVATE driver names. §9.1 says twice that it
+   may not, and nothing checked — the purity gate tested what production
+   EXPORTS, never what it IMPORTS. Both rules are public with one owner now,
+   the private spellings survive as aliases, and the missing gate is written
+   and proven to fail on the old code.
+
+   **Review round (2026-09-06).** The first gate was a line scan matching
+   `from dskit.` and three ordinary idioms walked straight past it: a
+   parenthesized multi-line import, a relative `from ..pipeline.driver
+   import`, and reading the attribute off a module alias the file already
+   held for a legitimate public call. It was also scoped to `production`
+   alone while three documents claimed both directions — the coverage a pin
+   claims and lacks is the defect CLAUDE.md names. Rewritten as an AST walk
+   over EVERY package in both directions; the rule has one owner,
+   `private_cross_package_uses` in the toolkit's own gate, and each
+   package's gate calls it. All four forms are pinned by a synthetic test
+   and were re-proven against the real reverted file.
+
+   Widening it surfaced eight more breaches nobody had seen: `onboarding`
+   and `production` both read `_check_dict` / `_check_str` /
+   `_check_unknown` / `_raise_if` across the boundary from `dskit.assets`,
+   in exactly the multi-line form the old scan could not see. Same remedy
+   as the driver names — public in `assets.base`, private spellings kept as
+   aliases, the two callers importing the public name under their own
+   private alias. No behaviour changed.
+3. ADR-0101 **accepted**: the six connector packs' hand-rolled retries are one
+   owner in `dskit/onboarding/connector.py`, pinned by a scan so the copies
+   cannot return. One behaviour changes on purpose — against a
+   `Retry-After: nan`, two packs used to retry IMMEDIATELY and now wait the
+   ordinary backoff. The full graduation stays the eventual direction.
+4. `alpaca_quotes` carried its own hardcoded ceiling, a second copy of the cap
+   that nothing pinned. Gone.
+
+**Owner's standing objection, recorded.** This build reached outside its own
+package: thirteen files in `dskit/pipeline` and one in `dskit/onboarding`, none
+in `assets` or `journal`. It was authorised — §9 is titled "Changes outside the
+package" and ADR-0091 IS a pipeline change — but the footprint was never put in
+front of the owner plainly, and it should have been. The seam change was
+load-bearing (serving re-executes the backtest's own nodes, and that mechanism
+was private); the serving-effect classifications were not, and could have been
+their own later change. Future package work: state the cross-package footprint
+up front.
 
 **What it is.** The serving layer: an immutable release of a finished pipeline
 run, driven forward on a cadence — fetch, decide, guard, act, record. Every

@@ -18,7 +18,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 from ..base import AssetError, MODES, parse_utc
-from ..connector import MAX_BACKOFF_S, PROTOCOL, Connector
+from ..connector import MAX_BACKOFF_S, PROTOCOL, Connector, backoff
 from ..oauth import OAuth2TokenService
 from .alpaca import BAR_FIELDS, BAR_KEY_FIELDS, BAR_STREAM
 
@@ -46,7 +46,6 @@ _TOKEN_URL = "https://api.schwabapi.com/v1/oauth/token"
 _PRICE_HISTORY_URL = "https://api.schwabapi.com/marketdata/v1/pricehistory"
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_RETRIES = 3
-_BACKOFF_SECONDS = 0.5
 _RETRY_STATUSES = (429, 500, 502, 503, 504)
 
 
@@ -333,7 +332,7 @@ class SchwabBarsConnector(Connector):
         params = {"symbol": symbol, **params}
         for attempt in range(knobs["max_retries"] + 1):
             if attempt:
-                time.sleep(min(_BACKOFF_SECONDS * (2 ** (attempt - 1)), MAX_BACKOFF_S))
+                time.sleep(backoff(attempt))
             try:
                 return self._fetch(token, symbol, params, knobs["timeout"])
             except (ConnectionError, OSError) as exc:

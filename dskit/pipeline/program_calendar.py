@@ -250,6 +250,18 @@ class ProgramCalendar(Stage):
 
     @classmethod
     def validate_params(cls, params):
+        """Require both knobs as non-empty strings and refuse the rest.
+
+        Parameters
+        ----------
+        params : dict
+            ``path`` and ``phase``, both required.
+
+        Returns
+        -------
+        list of str
+            Every problem found, empty when the params are legal.
+        """
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
         for field in cls._PARAMS:
@@ -258,9 +270,35 @@ class ProgramCalendar(Stage):
         return problems
 
     def validate_inputs(self, inputs):
+        """Refuse any input: the calendar is read from the declared path alone.
+
+        Parameters
+        ----------
+        inputs : dict
+
+        Returns
+        -------
+        list of str
+            Every problem found, empty when the inputs are legal.
+        """
         return [] if inputs == {} else ["calendar takes no inputs"]
 
     def run(self, ctx, inputs):
+        """Load the declared phase of the program calendar and its digest.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            Its ``source_path`` anchors the relative calendar path.
+        inputs : dict
+            Unused; the stage takes none.
+
+        Returns
+        -------
+        dict
+            The phase, the whole calendar and the file's sha256, so a reader
+            can prove which calendar a run was planned against.
+        """
         del inputs
         calendar, digest = load_program_calendar(ctx.source_path, self.params["path"])
         key = self.params["phase"]
