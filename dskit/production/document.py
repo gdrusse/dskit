@@ -498,6 +498,12 @@ _EXECUTION = _Fixed(
         "params": _OPAQUE,
         "submit_timeout_ms": _POSITIVE_INT,
         "on_halt": _Fixed({"cancel_open": _BOOL}, required=("cancel_open",)),
+        # [phase 2] §5.12.1's request signer. OPTIONAL inside a section
+        # that is already graded, so a document that does not sign hashes
+        # exactly as it does today; declaring one changes what leaves the
+        # process, so it changes identity. A child's `LiveExecutor` calls
+        # it — core never does, because core ships no venue.
+        "signer": _SELECTOR,
     },
     required=("uses", "submit_timeout_ms"),
 )
@@ -541,7 +547,11 @@ _HEALTH = _Fixed(
     },
     required=("failure_threshold", "success_threshold", "timeout_s", "probes"),
 )
-_DURABILITY = _Fixed({"fsync": _Fsync()}, required=("fsync",))
+#: [phase 2] §5.8.2's store selector beside the grade. `fsync` says how
+#: often the writer commits; `ledger` says WHERE the chain lives, and is
+#: OPTIONAL so every phase-1 document keeps both its identity and its
+#: existing `jsonl` chain.
+_DURABILITY = _Fixed({"fsync": _Fsync(), "ledger": _SELECTOR}, required=("fsync",))
 _RETRY_BUDGET = _Fixed(
     {"capacity": _COUNT, "transient_cost": _COUNT, "throttle_cost": _COUNT, "refund": _COUNT}
 )

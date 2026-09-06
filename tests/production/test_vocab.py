@@ -115,6 +115,8 @@ CLOSED_SET_NAMES = (
     "TRANSITION_CAUSES",
     "CONTROL_PURPOSES",
     "ALERT_SUPPRESSIONS",
+    # Phase 2 (§8): the two hash algorithms a `Signer` may name (§5.12.1).
+    "SIGNER_ALGORITHMS",
 )
 
 #: The names whose value is a MAP, not a tuple — checked by their own tests.
@@ -143,6 +145,7 @@ EXPECTED_MEMBERS = {
     "LINK_STATES": ("connected", "recovering", "disconnected"),
     "OUTCOME_KINDS": ("settled", "marked", "voided", "partial", "corrected"),
     "OUTCOME_SOURCES": ("settlement", "label", "operator"),
+    "SIGNER_ALGORITHMS": ("sha256", "sha512"),
     "RISK_EFFECTS": ("increase", "neutral", "reduce"),
     "OPERATIONS": ("submit", "cancel", "query", "reconcile"),
     "APPROVAL_PURPOSES": (

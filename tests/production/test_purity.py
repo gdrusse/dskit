@@ -188,6 +188,40 @@ def test_library_packs_name_their_library_only_inside_a_method():
     assert not offenders, offenders
 
 
+def _names_its_own_library(path, module):
+    """Say whether ``module`` is the library the pack's own filename names."""
+    root = module.split(".")[0]
+    return root.startswith(path.stem) or path.stem.startswith(root)
+
+
+def test_a_pack_never_names_its_own_library_at_module_level_even_a_stdlib_one():
+    """The rule above is blind to a pack whose library ships with Python:
+    `sqlite3` is stdlib, so `_is_stdlib` waves it through, and
+    `libs/sqlite.py` would then import its library at module level while the
+    gate reported clean. The pack's FILENAME is what names its library
+    (§8: "one module per library"), so that is what is checked — importing
+    the production layer must never pay for a library the serve document
+    does not declare, whoever ships it."""
+    offenders = [
+        f"libs/{path.name}: {module}"
+        for path in _pack_files()
+        for module, top in _imports(path, LIBS_PACKAGE)
+        if top and _names_its_own_library(path, module)
+    ]
+    assert not offenders, offenders
+
+
+def test_the_own_library_detector_matches_a_pack_to_its_library(tmp_path):
+    """The gate is worth what its detector catches: `sqlite.py` must own
+    `sqlite3`, `opentelemetry.py` must own the package of its own name, and
+    an unrelated stdlib import must stay legal."""
+    assert _names_its_own_library(tmp_path / "sqlite.py", "sqlite3")
+    assert _names_its_own_library(tmp_path / "opentelemetry.py", "opentelemetry.sdk")
+    assert _names_its_own_library(tmp_path / "exchange_calendars.py", "exchange_calendars")
+    assert not _names_its_own_library(tmp_path / "sqlite.py", "json")
+    assert not _names_its_own_library(tmp_path / "parquet.py", "os")
+
+
 def test_the_pipeline_never_imports_the_production_package():
     """The arrow points one way: an application imports its toolkit."""
     offenders = []

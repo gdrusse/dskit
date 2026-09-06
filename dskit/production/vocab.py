@@ -96,6 +96,7 @@ __all__ = [
     "SEVERITIES",
     "SEVERITY_LEVELS",
     "SIDES",
+    "SIGNER_ALGORITHMS",
     "SIZE_CAPS",
     "STATUSES",
     "TERMINAL_STATUSES",
@@ -476,6 +477,12 @@ RETRY_DECISIONS = ("retry", "give_up", "reconcile")
 JITTER_MODES = ("full", "equal", "none")
 RETRY_AFTER_MODES = ("honor", "ignore")
 RETRY_WRITE_MODES = ("never", "idempotent_only")
+
+#: The hash a ``Signer`` may compute its HMAC with (§5.12.1). Two members
+#: and no more: an algorithm is a venue's requirement, not a preference,
+#: and the ones a venue asks for are these. A weaker digest would be a knob
+#: whose only effect is to make a signature easier to forge.
+SIGNER_ALGORITHMS = ("sha256", "sha512")
 
 #: A health probe's scope.
 PROBE_SCOPES = ("local", "dependency")

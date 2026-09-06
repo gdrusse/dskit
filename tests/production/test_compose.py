@@ -1527,3 +1527,47 @@ def test_a_second_composition_over_the_same_series_reuses_the_genesis(
         assert pathlib.Path(serve.genesis_path).read_text() == genesis
     finally:
         second.close()
+
+
+# ==========================================================================
+# execution.signer (§5.12.1) — built by the rung that has a venue, and no other
+# ==========================================================================
+
+
+SIGNER_SITE = {
+    "uses": "hmac",
+    "params": {
+        "key_env": "DSKIT_TEST_NO_SUCH_VENUE_KEY",
+        "header": "X-Signature",
+        "timestamp_header": "X-Timestamp",
+        "probe_every_ms": 60000,
+    },
+}
+
+
+def test_a_simulated_rung_never_resolves_the_venue_key(serve_document, composer, tmp_path, monkeypatch):
+    """§5.12.1: the key "resolves once through `redact.resolve_secrets` and
+    is registered as a credential" — so BUILDING a signer puts a venue
+    credential in the process. A shadow dry-run of a live document has no
+    venue and no business holding one, and must not refuse to start on a
+    machine that rightly lacks it. The env var here is deliberately unset:
+    a rung that built the signer would raise."""
+    monkeypatch.delenv(SIGNER_SITE["params"]["key_env"], raising=False)
+    document = document_at(
+        serve_document, "shadow", tmp_path, {"execution.signer": SIGNER_SITE}
+    )
+    bundles = composer.build(document)
+    assert bundles[4].executor is not None
+
+
+def test_the_signer_is_a_rung_family_hook_not_a_branch(serve_document, tmp_path):
+    """Which rungs can use a signer is the rung table's answer, like every
+    other collaborator whose arity differs — `compose.py` reads the rung
+    once, in the table, and never in a conditional beside it."""
+    document = document_at(
+        serve_document, "shadow", tmp_path, {"execution.signer": SIGNER_SITE}
+    )
+    simulated = RUNG_TABLE["shadow"].build
+    live = RUNG_TABLE["live"].build
+    assert simulated.signer(document, None) is None
+    assert type(live).signer is not type(simulated).signer

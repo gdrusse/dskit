@@ -37,6 +37,8 @@ name. Dispatch over outcomes, circuit states and jitter modes goes through
 tables, never a chain of ``if``.
 """
 
+import hashlib
+import hmac
 import math
 import urllib.error
 import urllib.request
@@ -47,14 +49,26 @@ from email.utils import parsedate_to_datetime
 
 from dskit.onboarding.connector import MAX_BACKOFF_S
 from dskit.pipeline.node import check_int_param
-from dskit.production.base import ProductionError, Registry, reject_unknown_params
+from dskit.production.base import (
+    ProductionError,
+    Registry,
+    _check_str,
+    pin_members,
+    reject_unknown_params,
+)
 from dskit.production.document import (
     BREAKER_KEYS,
     LIMITER_LANE_KEYS,
     RETRY_BUDGET_KEYS,
     RETRY_KEYS,
 )
-from dskit.production.vocab import JITTER_MODES, RETRY_AFTER_MODES, RETRY_WRITE_MODES
+from dskit.production.redact import register_secret, resolve_secrets
+from dskit.production.vocab import (
+    JITTER_MODES,
+    RETRY_AFTER_MODES,
+    RETRY_WRITE_MODES,
+    SIGNER_ALGORITHMS,
+)
 
 __all__ = [
     "DEFAULT_BASE_S",
@@ -65,6 +79,7 @@ __all__ = [
     "DEFAULT_JITTER",
     "DEFAULT_MAX_ATTEMPTS",
     "DEFAULT_MAX_IN_FLIGHT",
+    "DEFAULT_MAX_SKEW_MS",
     "DEFAULT_MIN_CALLS",
     "DEFAULT_OPEN_S",
     "DEFAULT_READ_S",
@@ -72,21 +87,26 @@ __all__ = [
     "DEFAULT_RESERVED",
     "DEFAULT_RETRY_AFTER",
     "DEFAULT_RETRY_WRITES",
+    "DEFAULT_SIGNER_ALGORITHM",
+    "DEFAULT_SIGNER_PREFIX",
     "DEFAULT_THROTTLE_BASE_S",
     "DEFAULT_THROTTLE_COST",
     "DEFAULT_TRANSIENT_COST",
     "MAX_ATTEMPTS_BOUNDS",
     "MAX_BACKOFF_S",
+    "SIGNER_KINDS",
     "TRANSPORT_KINDS",
     "CallOutcome",
     "CircuitBreaker",
     "CircuitBreakers",
     "Classifier",
+    "HmacSigner",
     "HttpClassifier",
     "RateLimiter",
     "ResiliencePolicies",
     "Retry",
     "RetryBudget",
+    "Signer",
     "Transport",
     "UrllibTransport",
     "resilience_from_document",
@@ -130,6 +150,27 @@ DEFAULT_RESERVED = False
 #: Socket deadlines in seconds; urllib takes the wider of the two.
 DEFAULT_CONNECT_S = 2.0
 DEFAULT_READ_S = 5.0
+
+# --- Signer (§5.12.1) -------------------------------------------------------
+#: The hash a signer computes with when the document names none.
+DEFAULT_SIGNER_ALGORITHM = pin_members(
+    "resilience.py's DEFAULT_SIGNER_ALGORITHM", ("sha256",), SIGNER_ALGORITHMS
+)[0]
+#: The widest venue clock skew a signature may be stamped at, in ms. Five
+#: seconds sits well inside the windows venues publish, so a refusal here
+#: means the local clock has genuinely drifted rather than that the bound is
+#: tight; a document that knows its venue's window may widen it.
+DEFAULT_MAX_SKEW_MS = 5_000
+#: The literal a venue requires before the payload: none, unless asked for.
+DEFAULT_SIGNER_PREFIX = ""
+
+#: The two hashes, keyed by the vocabulary — a table, never an ``if``.
+_ALGORITHMS = {"sha256": hashlib.sha256, "sha512": hashlib.sha512}
+pin_members("resilience.py's signer algorithms", _ALGORITHMS, SIGNER_ALGORITHMS, exact=True)
+
+#: What ``probe_request()`` must supply: ``Transport.send``'s arguments, so
+#: the base can send it without knowing anything about the venue.
+_PROBE_KEYS = ("method", "url", "headers", "body", "timeout")
 
 _NOTES = ("notes",)
 #: The two lanes §5.12 gives the limiter; ``document.py`` spells the same
@@ -1562,6 +1603,469 @@ class UrllibTransport(Transport):
 
 
 # ---------------------------------------------------------------------------
+# Signer (§5.12.1) — a request signature bound to a bounded clock skew
+# ---------------------------------------------------------------------------
+
+
+def _canonical_request(prefix, method, url, at_ms, body):
+    """Return the bytes a signature covers: prefix, request line, timestamp, body.
+
+    One owner for the payload, so the object that signs and the test that
+    checks a signature are not two spellings of the same recipe. Newline
+    separated because a separator no field may contain is what stops
+    ``POST /a`` + ``/b`` from signing the same bytes as ``POST /a/b``.
+
+    Parameters
+    ----------
+    prefix : str
+        The venue-required literal that leads the payload; ``""`` for none.
+    method : str
+        The HTTP method, upper-cased here so a caller's spelling cannot
+        change the signature.
+    url : str
+        The absolute URL.
+    at_ms : int
+        The timestamp being stamped, in epoch milliseconds.
+    body : bytes or None
+        The request body; absent bodies sign as empty.
+
+    Returns
+    -------
+    bytes
+        The payload to authenticate.
+    """
+    return b"\n".join(
+        [
+            prefix.encode("utf-8"),
+            method.upper().encode("utf-8"),
+            url.encode("utf-8"),
+            str(at_ms).encode("utf-8"),
+            bytes(body or b""),
+        ]
+    )
+
+
+def _check_body(problems, body):
+    """Append a problem unless ``body`` is bytes-like or absent."""
+    if body is not None and not isinstance(body, (bytes, bytearray)):
+        problems.append(f"body must be bytes or None, got {type(body).__name__}")
+
+
+class Signer(_Configured):
+    """The venue-facing signature seam, and the skew window that bounds it (§5.12.1).
+
+    It lives beside the retry policies rather than in ``arming.py`` because
+    it authenticates the PROCESS to the venue, while ``ApprovalVerifier``
+    authenticates a HUMAN to the process; the two share nothing but the
+    word "sign", and merging them would put a venue API key on the same
+    seam as an operator's proof.
+
+    The estimate is kept here, not in the subclass: ``probe(transport)``
+    asks the venue what time it thinks it is and records the difference,
+    ``skew_ms()`` reports it, and :meth:`check_skew` is the refusal every
+    ``sign`` owes its caller before it computes anything. Core holds no
+    venue and therefore no time endpoint, so :meth:`probe_request` answers
+    ``None`` here and a child supplies the one venue fact.
+
+    Parameters
+    ----------
+    params : dict, optional
+        ``max_skew_ms`` (int >= 0, default :data:`DEFAULT_MAX_SKEW_MS`) and
+        ``probe_every_ms`` (int >= 1, REQUIRED — a staleness rule with no
+        period never fires), plus whatever the subclass declares.
+    clock : Clock, keyword-only
+        Injected; ``now_ms()`` is what a server's answer is measured
+        against and what makes an estimate old.
+
+    Raises
+    ------
+    ProductionError
+        On an unknown or malformed knob, or a clock with no ``now_ms()``.
+
+    Examples
+    --------
+    A venue's signer is a subclass that supplies ``sign`` and the one thing
+    core cannot know — where to ask the time::
+
+        class MyVenueSigner(HmacSigner):
+            def probe_request(self):
+                return {"method": "GET", "url": "https://venue.example/time",
+                        "headers": {}, "body": None,
+                        "timeout": {"connect_s": 1.0, "read_s": 1.0}}
+
+        signer = MyVenueSigner({"key_env": "VENUE_KEY", "header": "X-Sig",
+                                "timestamp_header": "X-Ts",
+                                "probe_every_ms": 60000}, clock=clock)
+        signer.probe(transport)   # 40 — the venue's clock is 40 ms ahead
+        headers, body = signer.sign("POST", url, {}, b"{}", clock.now_ms())
+    """
+
+    _PARAMS = ("max_skew_ms", "probe_every_ms")
+    _DEFAULTS = {"max_skew_ms": DEFAULT_MAX_SKEW_MS}
+
+    def __init__(self, params=None, *, clock):
+        if not callable(getattr(clock, "now_ms", None)):
+            raise ProductionError([f"clock must provide now_ms(), got {clock!r}"])
+        self._clock = clock
+        self._skew_ms = 0
+        self._probed_at_ms = None
+        super().__init__(params)
+
+    @classmethod
+    def _check(cls, problems, knobs):
+        """Bound the window and require the period the freshness rule needs."""
+        check_int_param(problems, "max_skew_ms", knobs.get("max_skew_ms"), ge=0)
+        check_int_param(problems, "probe_every_ms", knobs.get("probe_every_ms"), ge=1)
+
+    def _configure(self, knobs):
+        """Keep the two bounds; the subclass reads the rest."""
+        self._max_skew_ms = int(knobs["max_skew_ms"])
+        self._probe_every_ms = int(knobs["probe_every_ms"])
+
+    @property
+    def max_skew_ms(self):
+        """The widest skew this signer will stamp a request at, in ms."""
+        return self._max_skew_ms
+
+    @property
+    def probe_every_ms(self):
+        """How old the last successful probe may be before signing refuses, in ms."""
+        return self._probe_every_ms
+
+    def skew_ms(self):
+        """Return the current estimate of the venue's clock minus ours.
+
+        Returns
+        -------
+        int
+            Milliseconds; positive when the venue is ahead, negative when
+            it is behind, and ``0`` before any probe has succeeded — which
+            :meth:`check_skew` refuses on separately, so the zero is never
+            mistaken for agreement.
+        """
+        return self._skew_ms
+
+    def probe_request(self):
+        """Return the bounded request that asks the venue for its clock.
+
+        Returns
+        -------
+        dict or None
+            ``{method, url, headers, body, timeout}`` — exactly
+            ``Transport.send``'s arguments. ``None`` here, because core
+            ships no venue and therefore holds no time endpoint; a child
+            overrides it with the one its venue publishes.
+        """
+        return None
+
+    def server_ms(self, status, headers, body):
+        """Read the venue's own instant out of a probe's answer.
+
+        The default reads the HTTP ``Date`` header, which every compliant
+        server sends and which needs no agreement about a body's shape. An
+        HTTP-date is a whole number of SECONDS, so the estimate it yields is
+        good to a second and no better — a venue that publishes milliseconds
+        is worth an override, and ``max_skew_ms`` should be set knowing that
+        a venue in perfect agreement can read as up to a second behind.
+
+        Parameters
+        ----------
+        status : int
+            The response status.
+        headers : dict
+            The response headers.
+        body : bytes
+            The response body.
+
+        Returns
+        -------
+        int
+            The venue's instant in epoch milliseconds.
+
+        Raises
+        ------
+        ProductionError
+            When the answer carries no readable server time — an estimate
+            guessed from a silent response is worse than none.
+        """
+        stamp = _http_date_ms(_header(headers, "date"))
+        if stamp is None:
+            raise ProductionError(
+                [
+                    f"the time probe answered {status} with no readable Date header; "
+                    "override server_ms(status, headers, body) for a venue that "
+                    "publishes its clock elsewhere"
+                ]
+            )
+        return stamp
+
+    def probe(self, transport):
+        """Ask the venue for its clock once and update the estimate.
+
+        Parameters
+        ----------
+        transport : Transport
+            The socket boundary; ``send`` is called exactly once.
+
+        Returns
+        -------
+        int
+            The new skew in milliseconds.
+
+        Raises
+        ------
+        ProductionError
+            When this signer declares no time endpoint, when the request
+            it declares carries no deadline, or when the answer holds no
+            server time. A failed probe leaves the previous estimate and
+            its age untouched, so it ages out rather than being trusted.
+        """
+        request = self.probe_request()
+        if request is None:
+            raise ProductionError(
+                [
+                    f"{type(self).__name__} declares no time endpoint: override "
+                    "probe_request() with the venue's own, since core ships no venue"
+                ]
+            )
+        problems = []
+        reject_unknown_params(problems, request, _PROBE_KEYS)
+        for name in _PROBE_KEYS:
+            if name not in request:
+                problems.append(f"probe_request() must supply {name!r}")
+        if problems:
+            raise ProductionError(problems)
+        _check_timeout(request["timeout"])
+        status, headers, body = transport.send(**request)
+        server = self.server_ms(status, headers, body)
+        local = self._clock.now_ms()
+        self._skew_ms = int(server) - int(local)
+        self._probed_at_ms = int(local)
+        return self._skew_ms
+
+    def check_skew(self):
+        """Refuse to sign at all when the estimate is stale or too wide.
+
+        This is the safety point of the object. A signature stamped outside
+        the venue's own window is rejected AFTER the request has been sent,
+        which makes the submit ``unknown`` and forces a reconciliation;
+        refusing to sign makes it ``not_sent``, which costs nothing.
+        Sending a request that is known to be unacceptable is never the
+        better branch, so both halves fail CLOSED: an estimate that was
+        never taken is infinitely old, and the width is judged in BOTH
+        directions, since a venue whose clock is behind ours rejects a
+        signature exactly as one that is ahead does.
+
+        Returns
+        -------
+        None
+            Returns only when the estimate is fresh and inside the bound.
+
+        Raises
+        ------
+        ProductionError
+            Naming the age or the skew and the bound it broke. It quotes
+            neither the key nor anything derived from it.
+        """
+        if self._probed_at_ms is None:
+            raise ProductionError(
+                [
+                    "no clock probe has succeeded: refusing to sign rather than "
+                    "stamp a request at a skew nobody has measured"
+                ]
+            )
+        age = self._clock.now_ms() - self._probed_at_ms
+        if age > self._probe_every_ms:
+            raise ProductionError(
+                [
+                    f"the last clock probe is {age} ms old, past probe_every_ms="
+                    f"{self._probe_every_ms}: refusing to sign on a stale estimate"
+                ]
+            )
+        if abs(self._skew_ms) > self._max_skew_ms:
+            raise ProductionError(
+                [
+                    f"venue clock skew {self._skew_ms} ms exceeds max_skew_ms="
+                    f"{self._max_skew_ms}: refusing to sign, which is not_sent, "
+                    "rather than sending a signature the venue will reject, which "
+                    "is unknown"
+                ]
+            )
+
+    @abstractmethod
+    def sign(self, method, url, headers, body, at_ms):
+        """Return a NEW header map and body carrying the signature.
+
+        Parameters
+        ----------
+        method : str
+            The HTTP method.
+        url : str
+            The absolute URL.
+        headers : dict or None
+            The caller's headers; never mutated.
+        body : bytes or None
+            The request body; never mutated.
+        at_ms : int
+            The instant to stamp, in epoch milliseconds.
+
+        Returns
+        -------
+        tuple
+            ``(dict headers, bytes body)`` — new objects, so a retry signs
+            the original request rather than one already stamped.
+
+        Raises
+        ------
+        ProductionError
+            On a malformed argument, or when :meth:`check_skew` refuses.
+        """
+
+
+class HmacSigner(Signer):
+    """The HMAC signature most venues ask for, over a bounded skew window.
+
+    The document names the env var, never the value: the key resolves once
+    through :func:`~dskit.production.redact.resolve_secrets` and is
+    registered as a credential, so it can reach neither a log line nor a
+    record. An unset or empty variable refuses HERE, at construction —
+    discovering a missing credential at the first live submit is the
+    failure that ordering exists to prevent.
+
+    What the signature covers is :func:`_canonical_request`: the venue's
+    prefix, the request line, the timestamp and the body. The DIGEST is
+    what a ``reason`` may quote; the key never appears in a header, a
+    message or a repr.
+
+    It declares no time endpoint, so it cannot probe on its own — a venue's
+    clock URL is a venue fact and core ships no venue. A child subclasses
+    it and supplies :meth:`~Signer.probe_request`.
+
+    Parameters
+    ----------
+    params : dict
+        ``key_env`` (str, required): the NAME of the environment variable
+        holding the secret; ``header`` and ``timestamp_header`` (str,
+        required): the header names the venue expects; ``algorithm`` (one
+        of ``vocab.SIGNER_ALGORITHMS``, default
+        :data:`DEFAULT_SIGNER_ALGORITHM`); ``prefix`` (str, default
+        :data:`DEFAULT_SIGNER_PREFIX`): a venue-required literal before the
+        payload; plus ``max_skew_ms`` and ``probe_every_ms`` from
+        :class:`Signer`.
+    clock : Clock, keyword-only
+        Injected, as for :class:`Signer`.
+
+    Raises
+    ------
+    ProductionError
+        On an unknown or malformed knob, or when ``key_env`` names a
+        variable that is unset or empty.
+
+    Examples
+    --------
+    Built the way ``compose`` builds it, from a document's site::
+
+        signer = HmacSigner({"key_env": "VENUE_KEY", "header": "X-Signature",
+                             "timestamp_header": "X-Timestamp",
+                             "algorithm": "sha256", "probe_every_ms": 60000,
+                             "max_skew_ms": 5000}, clock=clock)
+        signer.skew_ms()   # 0 — and signing refuses until a probe succeeds
+    """
+
+    _PARAMS = Signer._PARAMS + (
+        "key_env",
+        "header",
+        "timestamp_header",
+        "algorithm",
+        "prefix",
+    )
+    _DEFAULTS = {
+        **Signer._DEFAULTS,
+        "algorithm": DEFAULT_SIGNER_ALGORITHM,
+        "prefix": DEFAULT_SIGNER_PREFIX,
+    }
+
+    @classmethod
+    def _check(cls, problems, knobs):
+        """Require the three names the venue fixes, and a known algorithm."""
+        super()._check(problems, knobs)
+        for name in ("key_env", "header", "timestamp_header"):
+            _check_str(problems, name, knobs.get(name))
+        _check_str(problems, "prefix", knobs.get("prefix"), non_empty=False)
+        _check_choice(problems, "algorithm", knobs.get("algorithm"), SIGNER_ALGORITHMS)
+
+    def _configure(self, knobs):
+        """Resolve the key once, register it as a credential, keep the rest."""
+        super()._configure(knobs)
+        self._header_name = knobs["header"]
+        self._timestamp_header = knobs["timestamp_header"]
+        self._algorithm = knobs["algorithm"]
+        self._prefix = knobs["prefix"]
+        self._key = self._resolve_key(knobs["key_env"])
+
+    @staticmethod
+    def _resolve_key(key_env):
+        """Read the named variable, register the value as a credential, return its bytes."""
+        secrets = resolve_secrets(None)
+        value = secrets.get(key_env)
+        if not value:
+            raise ProductionError(
+                [
+                    f"key_env names {key_env!r}, which is unset or empty in this "
+                    "environment — a signer with no key cannot sign, and finding "
+                    "that out at the first live submit is the failure this refusal "
+                    "exists to prevent"
+                ]
+            )
+        register_secret(value)
+        return value.encode("utf-8")
+
+    @property
+    def algorithm(self):
+        """The hash the document named, a member of ``vocab.SIGNER_ALGORITHMS``."""
+        return self._algorithm
+
+    def sign(self, method, url, headers, body, at_ms):
+        """Stamp and sign one request, refusing first on skew (see :meth:`Signer.sign`).
+
+        Parameters
+        ----------
+        method, url, headers, body, at_ms
+            As :meth:`Signer.sign` takes them.
+
+        Returns
+        -------
+        tuple
+            ``(dict headers, bytes body)`` — a new map carrying the
+            signature and the timestamp, and the body as immutable bytes,
+            so nothing the caller does afterwards changes what was signed.
+
+        Raises
+        ------
+        ProductionError
+            When the skew estimate is stale or too wide, or on a malformed
+            argument. Neither message quotes the key.
+        """
+        self.check_skew()
+        problems = []
+        _check_str(problems, "method", method)
+        _check_str(problems, "url", url)
+        if headers is not None and not isinstance(headers, dict):
+            problems.append(f"headers must be a dict or None, got {headers!r}")
+        _check_body(problems, body)
+        check_int_param(problems, "at_ms", at_ms, ge=0)
+        if problems:
+            raise ProductionError(problems)
+        signed_body = bytes(body) if body is not None else None
+        payload = _canonical_request(self._prefix, method, url, at_ms, signed_body)
+        digest = hmac.new(self._key, payload, _ALGORITHMS[self._algorithm]).hexdigest()
+        out = dict(headers or {})
+        out[self._header_name] = digest
+        out[self._timestamp_header] = str(at_ms)
+        return out, signed_body
+
+
+# ---------------------------------------------------------------------------
 # ResiliencePolicies — the one value the Execution bundle carries (§5.16)
 # ---------------------------------------------------------------------------
 
@@ -1667,3 +2171,9 @@ def resilience_from_document(section, *, clock, sleeper, rng):
 #: The transport family (§4.3): the core kind, or a ``pkg.module:Class``.
 TRANSPORT_KINDS = Registry("transport", Transport)
 TRANSPORT_KINDS.register("urllib", UrllibTransport)
+
+#: The signer family (§5.12.1), behind ``document.execution.signer``. A
+#: child's venue signer subclasses ``HmacSigner`` for the one fact core
+#: cannot hold — where to ask the venue's clock — and is named by path.
+SIGNER_KINDS = Registry("signer", Signer)
+SIGNER_KINDS.register("hmac", HmacSigner)

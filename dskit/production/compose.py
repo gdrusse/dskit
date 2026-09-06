@@ -97,7 +97,7 @@ from dskit.production.health import (
     Heartbeat,
 )
 from dskit.production.ids import ReleaseIdSource
-from dskit.production.ledger import Checkpoint, JsonlLedger
+from dskit.production.ledger import Checkpoint, ledger_class
 from dskit.production.leg import LiveAuthority, ReductionAuthority, SimulatedAuthority
 from dskit.production.metrics import Metrics
 from dskit.production.monitors import MONITOR_KINDS
@@ -107,7 +107,7 @@ from dskit.production.readiness import Readiness
 from dskit.production.reconcile import LedgerHistory, Reconciler, enact
 from dskit.production.records import ReductionPlan
 from dskit.production.redact import get_logger, redact
-from dskit.production.resilience import resilience_from_document
+from dskit.production.resilience import SIGNER_KINDS, resilience_from_document
 from dskit.production.sessions import CALENDAR_KINDS
 from dskit.production.state import SeriesState
 from dskit.production.verifier import SubmissionVerifier
@@ -186,24 +186,57 @@ class _Build(ABC):
     """How one family of rungs constructs the collaborators whose arity differs."""
 
     @abstractmethod
-    def executor(self, cls, params, *, clock, scope, gate, lease):
+    def executor(self, cls, params, *, clock, scope, gate, lease, signer):
         """Return the executor this rung's family builds."""
+
+    def signer(self, document, clock):
+        """Return the signer this rung's family can use; none, for a simulated venue.
+
+        Building one RESOLVES the venue key into the process (§5.12.1), so
+        a rung with no venue must not build it: a shadow dry-run of a live
+        document has no business holding a credential it can never use, and
+        would otherwise refuse to start on a machine that rightly lacks it.
+        """
+        return None
 
 
 class _SimulatedBuild(_Build):
     """Shadow and paper: the executor simulates a venue and needs no gate."""
 
-    def executor(self, cls, params, *, clock, scope, gate, lease):
-        """Build a simulated executor over the document's declared scope."""
+    def executor(self, cls, params, *, clock, scope, gate, lease, signer):
+        """Build a simulated executor over the document's declared scope.
+
+        The signer is not offered — and, per :meth:`_Build.signer`, was
+        never built: a simulated venue authenticates nothing.
+        """
         return cls(params, clock=clock, scope=scope)
 
 
 class _LiveBuild(_Build):
     """``live_limited`` and ``live``: the child venue wrapper holds the act gate."""
 
-    def executor(self, cls, params, *, clock, scope, gate, lease):
-        """Build the child ``LiveExecutor`` around the gate and the fenced lease."""
-        return cls(params, clock=clock, verifier=gate, lease=lease)
+    def signer(self, document, clock):
+        """Build ``execution.signer`` when the document declares one (§5.12.1)."""
+        site = document.execution.signer
+        if site is None:
+            return None
+        return SIGNER_KINDS.resolve(site.uses)(_selector(site), clock=clock)
+
+    def executor(self, cls, params, *, clock, scope, gate, lease, signer):
+        """Build the child ``LiveExecutor`` around the gate, the fenced lease and its signer.
+
+        The signer is offered only to a venue whose own ``__init__``
+        declares it (§5.12.1: core never calls ``sign``, because core ships
+        no venue), which is the same rule ``_offered`` applies to probes,
+        emitters and outcome sources.
+        """
+        return cls(
+            params,
+            clock=clock,
+            verifier=gate,
+            lease=lease,
+            **_offered(cls, {"signer": signer}),
+        )
 
 
 @dataclass(frozen=True)
@@ -754,7 +787,7 @@ def bundles_for(
     )
 
     state = SeriesState(document.series_id)
-    ledger = JsonlLedger(
+    ledger = ledger_class(document)(
         serve_root,
         process_id,
         release.release_hash,
@@ -784,6 +817,7 @@ def bundles_for(
         scope=document.coordination.scope,
         gate=gate,
         lease=lease,
+        signer=row.build.signer(document, clock),
     )
     accounting = resolved["accounting.uses"](
         _selector(document.accounting),

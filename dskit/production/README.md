@@ -164,8 +164,9 @@ dskit/production/
 ├── coordination.py    Lease ABC; ProcessLease; LeasePermit; fencing tokens
 ├── policy.py          ActionPolicy; TransitionPolicy; the composed rule sets
 ├── verifier.py        SubmissionVerifier — the final verify-and-call gate
-├── resilience.py      Classifier; Retry; CircuitBreaker; RateLimiter; Transport
-├── ledger.py          Ledger ABC; JsonlLedger; Checkpoint; ServeRoot; chain + verify
+├── resilience.py      Classifier; Retry; CircuitBreaker; RateLimiter; Transport; Signer + HmacSigner
+├── ledger.py          Ledger ABC + LEDGER_KINDS; ChainLedger (the chain itself); JsonlLedger;
+│                      Checkpoint; ServeRoot; chain + verify
 ├── state.py           SeriesState (the sole fold); StateView; PositionBook; Recovery
 ├── reconcile.py       Reconciler; breaks; adoption; LedgerHistory
 ├── monitors.py        Monitor ABC; reference/chunker/threshold strategies; families
@@ -180,8 +181,11 @@ dskit/production/
 ├── readiness.py       release-bound checklist → GO / NO-GO
 ├── outcomes.py        forward_asof; OutcomeSource + registry; OutcomeJoin (D21)
 ├── libs/              tier-2 packs — a library behind a seam this package owns
-│   └── parquet.py     RunReference over a run's predictions, registered as `run`
-│                      in REFERENCE_KINDS; pyarrow inside the method
+│   ├── parquet.py     RunReference over a run's predictions, registered as `run`
+│   │                  in REFERENCE_KINDS; pyarrow inside the method
+│   └── sqlite.py      SqliteLedger — the chain in one file, WAL + synchronous=FULL
+│                      pinned, append-only enforced by three triggers, rotate refused;
+│                      registered as `sqlite` in LEDGER_KINDS; sqlite3 inside the method
 ├── README.md          this file
 ├── CLAUDE.md          agent orientation
 └── AGENTS.md          agent orientation (same content, Codex-facing)

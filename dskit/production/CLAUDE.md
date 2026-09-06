@@ -84,11 +84,17 @@ eight submission steps and is where a permit is minted. `Tick.run` and
 ## Extension points
 
 The registry-resolved seam ABCs (one per `§4.3` registry — twenty in phase 1,
-plus `OutcomeSource`), and `Proposer` and `Measure`. A child implements the
+plus phase 2's `OutcomeSource`, `Ledger` (`LEDGER_KINDS`) and `Signer`
+(`SIGNER_KINDS`)), and `Proposer` and `Measure`. A child implements the
 venue executor, its accounting, its
 approval verifier and its fenced lease, and references them by
 `pkg.module:Class`. Children never subclass `ServeLoop`, `GuardChain` or a
-policy.
+policy. A second STORE subclasses `ChainLedger`, not `Ledger`: the envelope,
+the digest, the idempotency index, the durability grade and the writer lock
+are one implementation, and the five hooks (`_open`, `_store`, `_sync`,
+`_walk`, `_shutdown`) plus `scan` are all a store supplies. A child's venue
+signer subclasses `HmacSigner` and supplies `probe_request()` — the one
+venue fact core cannot hold.
 
 ## Testing
 

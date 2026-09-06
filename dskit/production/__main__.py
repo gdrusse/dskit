@@ -82,7 +82,7 @@ from dskit.production.decider import (
 from dskit.production.document import ServeDocument
 from dskit.production.feed import FeedSpec, active_source_identity
 from dskit.production.health import InstanceLock
-from dskit.production.ledger import Checkpoint, JsonlLedger, ServeRoot
+from dskit.production.ledger import Checkpoint, ServeRoot, ledger_class
 from dskit.production.loop import JOURNAL_NOTES, JOURNAL_STEP, ServeLoop
 from dskit.production.policy import TransitionPolicy
 from dskit.production.readiness import checklist_digest
@@ -485,7 +485,15 @@ class Plan(DocumentVerb):
     MUTATING = True
 
     def act(self, document):
-        """Build the manifest, write the release directory and print its hashes."""
+        """Refuse a store that cannot honour the placement, then mint the release.
+
+        The ledger question is asked FIRST and nothing is built from the
+        answer: a document whose store cannot segment while its
+        ``placement.rotate`` says it must (§5.8.2) has to refuse where the
+        release is minted, not have a knob its author believed in quietly
+        ignored at the first tick.
+        """
+        ledger_class(document)
         clock = _clock(document)
         serve_root = _serve_root(document)
         self.db_location = serve_root.series_path
@@ -1262,8 +1270,8 @@ class Verify(SeriesVerb):
 
     def over(self, document, serve_root, release):
         """Walk the chain, place the anchor on it and list the receiptless commands."""
-        ledger = JsonlLedger(serve_root, _process_id(), release.release_hash,
-                             clock=_clock(document))
+        ledger = ledger_class(document)(serve_root, _process_id(), release.release_hash,
+                                        clock=_clock(document))
         try:
             first_bad = ledger.verify()
             head_seq, head_hash = ledger.head()

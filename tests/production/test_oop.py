@@ -68,14 +68,14 @@ from dskit.production.feed import Feed
 from dskit.production.guards import Guard, GuardChain, Measure
 from dskit.production.health import HealthProbe, HeartbeatEmitter
 from dskit.production.ids import IdSource
-from dskit.production.ledger import Ledger
+from dskit.production.ledger import ChainLedger, Ledger
 from dskit.production.leg import Authority, LegPipeline
 from dskit.production.loop import ServeLoop, Tick
 from dskit.production.monitors import Chunker, Monitor, Reference, Threshold
 from dskit.production.outcomes import OutcomeSource
 from dskit.production.policy import ActionPolicy, TransitionPolicy
 from dskit.production.records import Ack
-from dskit.production.resilience import Classifier, Transport
+from dskit.production.resilience import Classifier, Signer, Transport
 from dskit.production.sessions import Calendar
 from tests.production.test_executor import intent, tick_state
 
@@ -121,18 +121,24 @@ SEAM_ABCS = (
     ("Fee", "executor", "FEE_KINDS"),
     ("HeartbeatEmitter", "health", "HEARTBEAT_KINDS"),
     ("OutcomeSource", "outcomes", "OUTCOME_SOURCE_KINDS"),
+    ("Ledger", "ledger", "LEDGER_KINDS"),
+    ("Signer", "resilience", "SIGNER_KINDS"),
 )
 
-#: The seven ABCs §5.15 calls structural rather than registry-resolved, named
-#: so the twenty above is not read as the whole abstract surface. Phase 1
-#: ships one implementation of `Ledger` and `Classifier`, `SubmittingExecutor`
-#: and the abstract `LiveExecutor` split the executor contract (§5.7),
-#: `IdSource` and `Authority` are closed to core, and `ExecutionPolicy` is the
-#: pipeline-side seam of §9.1.
+#: The ABCs §5.15 calls structural rather than registry-resolved, named so
+#: the table above is not read as the whole abstract surface.
+#: `SubmittingExecutor` and the abstract `LiveExecutor` split the executor
+#: contract (§5.7), `IdSource` and `Authority` are closed to core, and
+#: `ExecutionPolicy` is the pipeline-side seam of §9.1. `ChainLedger` is
+#: `Ledger`'s shared concrete half — the envelope, the digest, the
+#: idempotency index, the durability grade and the writer lock, which both
+#: stores inherit rather than each writing out. `Ledger` itself LEFT this
+#: list in phase 2: §4.3 gives it `LEDGER_KINDS`, and `libs/sqlite.py` is
+#: what gives that registry a second member.
 STRUCTURAL_ABCS = (
     SubmittingExecutor,
     LiveExecutor,
-    Ledger,
+    ChainLedger,
     Classifier,
     IdSource,
     Authority,
@@ -147,7 +153,7 @@ ABC_BY_NAME = {
         Clock, Calendar, Cadence, Feed, Proposer, Guard, Measure, Executor,
         Accounting, Lease, Monitor, Reference, Chunker, Threshold, AlertSink,
         HealthProbe, Transport, ApprovalVerifier, Fee, HeartbeatEmitter,
-        OutcomeSource,
+        OutcomeSource, Ledger, Signer,
     )
 }
 

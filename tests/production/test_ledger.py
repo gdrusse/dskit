@@ -42,6 +42,7 @@ here are local fakes with the two methods the ledger actually calls:
 ``now_ms()`` and ``apply(record)``.
 """
 
+import inspect
 import json
 import os
 import stat
@@ -54,12 +55,17 @@ import pytest
 
 from dskit.production import ledger as ledger_module
 from dskit.production import vocab
-from dskit.production.base import ProductionError, canonical_hash, record_hash
+from dskit.production.base import ProductionError, Registry, canonical_hash, record_hash
+from dskit.production.document import ServeDocument
 from dskit.production.ledger import (
+    DEFAULT_LEDGER_KIND,
+    LEDGER_KINDS,
+    ChainLedger,
     Checkpoint,
     JsonlLedger,
     Ledger,
     ServeRoot,
+    ledger_class,
     validate_cache_head,
 )
 from dskit.production.health import InstanceLock
@@ -1778,3 +1784,117 @@ def test_head_reflects_the_process_stop_record_the_journal_row_renders(
     reopened = open_ledger(serve)
     assert reopened.head() == (stop_seq, stop["hash"])
     assert reopened.verify() is None
+
+
+# ---------------------------------------------------------------------------
+# The family (§4.3, §5.8.2) — the registry lives with its seam
+# ---------------------------------------------------------------------------
+
+
+def test_the_ledger_registry_lives_beside_the_abc_and_holds_jsonl():
+    """§5.8.2: "`LEDGER_KINDS = Registry("ledger", Ledger)` lives in
+    `ledger.py`, beside the ABC" — §4.3's rule that a family's registry
+    sits with its seam — "and `ledger.py` registers `jsonl`"."""
+    assert isinstance(LEDGER_KINDS, Registry)
+    assert LEDGER_KINDS.abc is Ledger
+    assert LEDGER_KINDS.resolve("jsonl") is JsonlLedger
+    assert "LEDGER_KINDS" in ledger_module.__all__
+
+
+def test_there_is_no_second_list_of_ledger_kinds():
+    """§5.8.2: "There is deliberately **no** `LEDGER_KIND_NAMES` tuple in
+    `vocab.py` … a ledger is selected by a top-level `uses`, like every
+    other family, so the registry is the whole vocabulary and a second list
+    would be the duplication §5.0 forbids"."""
+    assert not [name for name in dir(vocab) if "LEDGER" in name]
+
+
+def test_the_shared_chain_base_is_abstract_and_both_ledgers_extend_it():
+    """The envelope, the digest, the idempotency index, the durability
+    grade and the writer lock are ONE implementation: a second copy of them
+    beside `JsonlLedger` is exactly the duplication that diverges."""
+    from dskit.production.libs.sqlite import SqliteLedger
+
+    assert inspect.isabstract(ChainLedger)
+    assert issubclass(ChainLedger, Ledger)
+    assert issubclass(JsonlLedger, ChainLedger)
+    assert issubclass(SqliteLedger, ChainLedger)
+
+
+def test_the_default_ledger_kind_is_named_once_and_is_jsonl():
+    """Every phase-1 document keeps BOTH its identity and its existing
+    chain, which is what "defaulting to `jsonl`" buys."""
+    assert DEFAULT_LEDGER_KIND in LEDGER_KINDS
+    assert LEDGER_KINDS.resolve(DEFAULT_LEDGER_KIND) is JsonlLedger
+
+
+def test_serve_root_owns_the_single_file_chains_path(serve):
+    """`ServeRoot` "is the only thing that knows the directory shape — no
+    other module builds a serve path by concatenation", and a one-file
+    chain is a name under the same tree."""
+    assert serve.database_path == os.path.join(serve.ledger_dir, "ledger.db")
+
+
+def _doc(**overrides):
+    """The smallest valid document, with `durability`/`placement` overridable."""
+    from tests.production.test_document import minimal_document
+
+    return ServeDocument(minimal_document(**overrides))
+
+
+def test_a_document_that_names_no_ledger_gets_the_jsonl_chain():
+    assert ledger_class(_doc()) is JsonlLedger
+
+
+def test_a_document_may_name_a_ledger_by_class_reference():
+    """§4.3: every `uses` is a registered name or a `pkg.module:Class`
+    reference — a child's own store needs no entry in this package."""
+    assert (
+        ledger_class(
+            _doc(
+                durability={
+                    "fsync": "every",
+                    "ledger": {"uses": "dskit.production.ledger:JsonlLedger"},
+                }
+            )
+        )
+        is JsonlLedger
+    )
+
+
+def test_an_unknown_ledger_kind_refuses_naming_the_family():
+    with pytest.raises(ProductionError) as exc:
+        ledger_class(_doc(durability={"fsync": "every", "ledger": {"uses": "lmdb"}}))
+    assert "ledger" in str(exc.value)
+
+
+def test_a_ledger_site_carrying_params_refuses_rather_than_dropping_them():
+    """The constructor §5.8.2 pins takes no `params`, so a document that
+    wrote some believed in a knob nothing reads. Refusing is the same rule
+    that refuses `rotate` under `sqlite`."""
+    with pytest.raises(ProductionError) as exc:
+        ledger_class(
+            _doc(
+                durability={
+                    "fsync": "every",
+                    "ledger": {"uses": "jsonl", "params": {"page_size": 4096}},
+                }
+            )
+        )
+    assert "params" in str(exc.value)
+
+
+def test_an_empty_params_block_is_accepted():
+    assert (
+        ledger_class(_doc(durability={"fsync": "every", "ledger": {"uses": "jsonl", "params": {}}}))
+        is JsonlLedger
+    )
+
+
+def test_the_placement_hook_is_the_one_owner_both_the_verb_and_the_open_ask():
+    """`check_placement` is asked by `ledger_class` (so `plan` refuses
+    without constructing anything) and again by the constructor (so a child
+    building one directly cannot slip past). One rule, two callers."""
+    problems = []
+    JsonlLedger.check_placement(problems, {"by": "day"})
+    assert problems == []

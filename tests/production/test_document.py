@@ -1274,3 +1274,66 @@ def test_a_non_finite_number_refuses_rather_than_reaching_the_hash():
     assert "window_ms" in refusal(
         set_path(example_document(), ("serving", "entry", "window_ms"), float("inf"))
     )
+
+
+# --------------------------------------------------------------------------
+# Phase 2's two optional selector sites (§5.8.2, §5.12.1)
+# --------------------------------------------------------------------------
+#
+# Both are OPTIONAL keys inside sections that are already graded, so a
+# document written against phase 1 keeps its identity, its release and its
+# running chain — and a document that declares one has changed what the
+# process COMPUTES or SENDS, so its identity moves.
+
+PHASE_TWO_SITES = (
+    ("durability", "ledger", {"uses": "jsonl"}),
+    ("execution", "signer", {"uses": "hmac", "params": {"key_env": "K"}}),
+)
+
+
+@pytest.mark.parametrize(
+    "section,key,site", PHASE_TWO_SITES, ids=[f"{s}.{k}" for s, k, _ in PHASE_TWO_SITES]
+)
+def test_the_phase_two_selector_is_optional_and_absent_by_default(section, key, site):
+    doc = ServeDocument.from_obj(minimal_document())
+    assert key not in doc.to_obj()[section]
+    assert getattr(getattr(doc, section), key) is None
+
+
+@pytest.mark.parametrize(
+    "section,key,site", PHASE_TWO_SITES, ids=[f"{s}.{k}" for s, k, _ in PHASE_TWO_SITES]
+)
+def test_the_phase_two_selector_takes_the_uses_params_shape(section, key, site):
+    obj = minimal_document()
+    obj[section][key] = site
+    doc = ServeDocument.from_obj(obj)
+    assert getattr(getattr(doc, section), key).uses == site["uses"]
+
+
+@pytest.mark.parametrize(
+    "section,key,site", PHASE_TWO_SITES, ids=[f"{s}.{k}" for s, k, _ in PHASE_TWO_SITES]
+)
+def test_the_phase_two_selector_refuses_an_unknown_key(section, key, site):
+    obj = minimal_document()
+    obj[section][key] = dict(site, kind="jsonl")
+    assert "kind" in refusal(obj)
+
+
+@pytest.mark.parametrize(
+    "section,key,site", PHASE_TWO_SITES, ids=[f"{s}.{k}" for s, k, _ in PHASE_TWO_SITES]
+)
+def test_the_phase_two_selector_requires_a_uses(section, key, site):
+    obj = minimal_document()
+    obj[section][key] = {"params": {}}
+    assert "uses" in refusal(obj)
+
+
+@pytest.mark.parametrize(
+    "section,key,site", PHASE_TWO_SITES, ids=[f"{s}.{k}" for s, k, _ in PHASE_TWO_SITES]
+)
+def test_declaring_the_phase_two_selector_moves_the_identity(section, key, site):
+    plain = ServeDocument.from_obj(minimal_document())
+    obj = minimal_document()
+    obj[section][key] = site
+    assert ServeDocument.from_obj(obj).doc_hash != plain.doc_hash
+    assert section in GRADED_SECTIONS

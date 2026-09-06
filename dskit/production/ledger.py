@@ -5,9 +5,12 @@ segments under ``<root>/<series_id>/``, and everything a process knows is
 a fold over it (§5.8.1). This module owns three things and nothing else:
 WHERE the files live (:class:`ServeRoot` is the only object that knows the
 directory shape — no other module builds a serve path by concatenation),
-HOW a record lands (:class:`JsonlLedger`: one ``O_APPEND`` write per
-record, a graded fsync policy, the ``serve.lock`` writer lock, torn-tail
-recovery and segment rotation), and WHAT a head-bound cache must prove
+HOW a record lands (:class:`ChainLedger`, which is the chain itself —
+envelope, digest, idempotency, ``prev_hash``, the graded fsync policy, the
+``serve.lock`` writer lock and the snapshot cadence — and
+:class:`JsonlLedger`, the store that puts it in ``O_APPEND`` segments with
+torn-tail recovery and rotation; ``libs/sqlite.py`` is the second store and
+inherits everything but its five hooks), and WHAT a head-bound cache must prove
 before it is trusted (:class:`HeadBoundCache`, the discipline
 ``breaker.json`` and ``arming.json`` follow, and :class:`Checkpoint`,
 which applies the same head rule to the projection written last in a
@@ -65,6 +68,7 @@ from dskit.pipeline.node import check_int_param
 from dskit.production.base import (
     GENESIS_HASH,
     ProductionError,
+    Registry,
     _check_dict,
     _check_str,
     _check_unknown,
@@ -86,15 +90,19 @@ from dskit.production.vocab import (
 )
 
 __all__ = [
+    "ChainLedger",
     "Checkpoint",
     "DEFAULT_FSYNC",
+    "DEFAULT_LEDGER_KIND",
     "DEFAULT_ROTATE_BY",
     "DEFAULT_SNAPSHOT_EVERY",
     "HeadBoundCache",
     "JsonlLedger",
+    "LEDGER_KINDS",
     "Ledger",
     "SCHEMA_VERSION",
     "ServeRoot",
+    "ledger_class",
     "validate_cache_head",
 ]
 
@@ -143,6 +151,10 @@ pin_members("ledger.py's cache states", (_CURRENT, _STALE), CACHE_STATES, exact=
 
 _MS_PER_DAY = 86_400_000
 _SEGMENT_NAME = "ledger.{index:04d}.jsonl"
+#: What a chain that is ONE file is called. The layout owns every name
+#: under the tree, including this one — no store builds a serve path by
+#: concatenation — and the name says what it holds, not what wrote it.
+_DATABASE_NAME = "ledger.db"
 _SEGMENT = re.compile(r"^ledger\.(\d+)\.jsonl\Z")
 
 
@@ -305,8 +317,13 @@ class ServeRoot:
 
     @property
     def ledger_dir(self):
-        """``ledger/``: the segments of the one chain across releases."""
+        """``ledger/``: the one chain across releases, however it is stored."""
         return os.path.join(self._series_path, "ledger")
+
+    @property
+    def database_path(self):
+        """``ledger/ledger.db``: the whole chain when the store is one file."""
+        return os.path.join(self.ledger_dir, _DATABASE_NAME)
 
     def release_dir(self, release_hash):
         """Return ``releases/<release_hash>``, a release's frozen home.
@@ -392,12 +409,14 @@ class Ledger(ABC):
 
     Examples
     --------
-    The one shipped implementation, seen through the seam::
+    Either shipped store, seen through the seam — which is the point of the
+    seam: a document names the store and nothing downstream asks::
 
         from dskit.production.clock import WallClock
 
         serve = ServeRoot("./serve", "018f0f4e-7b21-7d3a-9c31-6d8f36d806a1")
-        ledger = JsonlLedger(serve, "proc-1", "a" * 64, clock=WallClock())
+        cls = LEDGER_KINDS.resolve("jsonl")
+        ledger = cls(serve, "proc-1", "a" * 64, clock=WallClock())
         isinstance(ledger, Ledger)  # True
         ledger.append({"kind": "tick_start", "id": "tick-1", "body": {}})  # 1
         ledger.barrier()
@@ -534,6 +553,31 @@ class Ledger(ABC):
         -------
         None
             A closed ledger refuses every further write.
+        """
+
+    @classmethod
+    def check_placement(cls, problems, rotate):
+        """Judge ``document.placement.rotate`` against this store, accumulating.
+
+        Asked twice on purpose and answered once: by :func:`ledger_class`,
+        so ``plan`` refuses a document without constructing anything, and
+        by the constructor, so a caller building one directly cannot slip
+        past. A store that segments accepts every policy — this base — and
+        a store that is one file overrides to refuse any policy at all,
+        because silently ignoring a knob its author believed in is how a
+        chain ends up unsegmented and nobody notices.
+
+        Parameters
+        ----------
+        problems : list of str
+            The accumulator. Appended to in place.
+        rotate : dict or None
+            The declared rotation, or ``None`` when none is declared.
+
+        Returns
+        -------
+        None
+            Problems are appended to ``problems``.
         """
 
 
@@ -728,18 +772,23 @@ def _read(path):
             yield lineno, raw
 
 
+def _is_envelope(decoded):
+    """Say whether a decoded object carries the twelve fields with their types."""
+    return isinstance(decoded, dict) and all(
+        isinstance(decoded.get(name), expected)
+        for name, expected in _ENVELOPE_TYPES.items()
+    )
+
+
 def _decode(path, lineno, raw):
     """Parse one written line into its envelope, refusing anything else."""
     try:
-        envelope = json.loads(raw)
+        decoded = json.loads(raw)
     except ValueError as exc:
         raise ProductionError([f"{path} line {lineno}: not JSON ({exc})"]) from exc
-    if not isinstance(envelope, dict) or any(
-        not isinstance(envelope.get(name), expected)
-        for name, expected in _ENVELOPE_TYPES.items()
-    ):
+    if not _is_envelope(decoded):
         raise ProductionError([f"{path} line {lineno}: not a ledger envelope"])
-    return envelope
+    return decoded
 
 
 # ---------------------------------------------------------------------------
@@ -757,18 +806,25 @@ def _check_held_lock(problems, lock, lock_path):
         )
 
 
-class JsonlLedger(Ledger):
-    """The JSONL chain: one ``O_APPEND`` write per record, locked, verifiable.
+class ChainLedger(Ledger):
+    """Everything the chain IS, minus where the bytes land (§5.8, §5.8.2).
 
-    Opening takes ``serve.lock`` (``flock``, exclusive, non-blocking) for
-    the object's lifetime, walks every segment to recover the head, the
-    idempotency index and the latest snapshot, and truncates a torn final
-    line — a line without its newline is a write the crash cut short,
-    never a record. Segments are ``ledger.NNNN.jsonl``, created lazily on
-    the first write and rolled by the rotation policy; a roll seals the
-    old segment with an fsync and fsyncs the directory, and the first
-    record of the new segment chains from the old one's tail, so the
-    chain is continuous across files.
+    §5.8.2 asks for a second `Ledger` with "the SAME constructor as
+    ``JsonlLedger``, so ``compose.py`` builds either from one site and
+    nothing downstream learns which it got". What the two stores share is
+    almost the whole class: the twelve-field envelope, the caller-content
+    ``payload_digest`` and the idempotency it buys, the dense ``seq``, the
+    ``prev_hash`` chain, the graded durability, the ``serve.lock`` writer
+    lock, the snapshot cadence and the walk ``verify`` performs. That is
+    written once, here, because two copies of a hash chain are two chains.
+
+    A store supplies five hooks and nothing else: :meth:`_open` (recover
+    the head, the index and the snapshot cadence), :meth:`_store` (land one
+    record), :meth:`_sync` (make what is landed durable), :meth:`_walk`
+    (yield envelopes in storage order for :meth:`verify`, ``None`` for a
+    record it cannot decode) and :meth:`_shutdown` (close its handles).
+    ``scan`` stays the subclass's, because how a store answers a filtered
+    range IS the reason to have chosen it.
 
     Parameters
     ----------
@@ -779,50 +835,56 @@ class JsonlLedger(Ledger):
     release_hash : str
         The writing process's release, stamped on every envelope.
     clock : Clock
-        Injected; ``now_ms()`` stamps ``recorded_at_ms`` and drives day
-        rotation, ``monotonic()`` bounds a batch's age.
+        Injected; ``now_ms()`` stamps ``recorded_at_ms``, ``monotonic()``
+        bounds a batch's age.
     fsync : str or dict
         ``"every"`` (default), ``"none"``, or ``{"batch": {"n": int >= 1,
-        "ms": int >= 0}}`` — fsync after ``n`` pending lines or ``ms``
-        since the first pending one. Members of ``vocab.FSYNC_MODES``.
+        "ms": int >= 0}}`` — members of ``vocab.FSYNC_MODES``. It grades
+        how often the writer makes records durable, never how durable the
+        store itself is.
     rotate : dict or None
-        ``{"by": one of vocab.ROTATE_BY, "max_bytes": int >= 1}``;
-        ``max_bytes`` is required for ``size`` and an optional cap
-        otherwise. ``None`` means ``{"by": DEFAULT_ROTATE_BY}``.
+        ``document.placement.rotate``, judged by :meth:`check_placement`;
+        a store that is one file refuses one.
     state : SeriesState or None
         The fold; every appended envelope is handed to ``state.apply``
         exactly as it will be read back (a deduplicated append is not).
     snapshot_every : int or None
         Append a ``snapshot`` of ``state.to_snapshot_obj()`` after this
-        many records since the last one; ``None`` (the default) never
-        does. Requires ``state``.
+        many records since the last one; ``None`` never does.
     lock : health.InstanceLock or None
-        A HELD instance lock on this series' ``serve.lock`` (ruling R18:
-        one lock). Given one, the ledger takes no second ``flock`` and
-        ``close()`` leaves release to the lock's owner; ``None`` (the
-        default) makes the ledger take and release the lock itself.
+        A HELD instance lock on this series' ``serve.lock`` (R18: one
+        lock). ``None`` makes the ledger take and release it itself.
 
     Raises
     ------
     ProductionError
-        On a malformed argument, a ``lock`` that is not held or is not
-        this series' ``serve.lock``, when another writer holds
-        ``serve.lock``, or when a sealed segment is damaged.
+        On a malformed argument, a ``lock`` that is not held or is not this
+        series' ``serve.lock``, a placement this store cannot honour, or
+        when another writer holds ``serve.lock``.
 
     Examples
     --------
-    Open the series' sole writer, record a tick start and make it durable
-    before any work::
+    A store of one's own is four hooks over this base::
 
-        from dskit.production.clock import WallClock
+        class MemoryLedger(ChainLedger):
+            def _open(self):
+                self._rows = []
 
-        serve = ServeRoot("./serve", "018f0f4e-7b21-7d3a-9c31-6d8f36d806a1")
-        ledger = JsonlLedger(serve, "proc-1", "a" * 64, clock=WallClock())
-        ledger.append({"kind": "tick_start", "id": "tick-1",
-                       "body": {"tick_id": "tick-1", "tick_at_ms": 0}})  # 1
-        ledger.barrier()
-        ledger.head()  # (1, '<sha256 hex>')
-        ledger.close()
+            def _store(self, envelope, line, at_ms):
+                self._rows.append(line)
+
+            def _sync(self):
+                pass
+
+            def _walk(self):
+                return (json.loads(row) for row in self._rows)
+
+            def _shutdown(self):
+                pass
+
+            def scan(self, kind=None, since_seq=0):
+                return (e for e in self._walk()
+                        if e["seq"] > since_seq and kind in (None, e["kind"]))
     """
 
     def __init__(
@@ -849,7 +911,7 @@ class JsonlLedger(Ledger):
             if not callable(getattr(clock, method, None)):
                 problems.append(f"clock must provide {method}(), got {clock!r}")
         durability = _durability(problems, fsync, clock)
-        rotation = _rotation(problems, rotate)
+        placement = self._placement(problems, rotate)
         if state is not None and not callable(getattr(state, "apply", None)):
             problems.append(f"state must provide apply(envelope), got {state!r}")
         if snapshot_every is not None:
@@ -865,21 +927,27 @@ class JsonlLedger(Ledger):
         self._release_hash = release_hash
         self._clock = clock
         self._durability = durability
-        self._rotation = rotation
+        self._placement_policy = placement
         self._state = state
         self._snapshot_every = snapshot_every
         self._seq, self._head = 0, GENESIS_HASH
         self._index = {}
         self._latest_snapshot_seq = None
         self._since_snapshot = 0
-        self._cursor = None
         self._closed = False
         self._lock_fd = None if lock is not None else self._acquire_lock()
         try:
-            self._recover()
+            self._open()
         except BaseException:
             self._release_lock()
             raise
+
+    # -- placement ----------------------------------------------------------
+
+    def _placement(self, problems, rotate):
+        """Judge the rotation and return this store's policy object; the base keeps none."""
+        type(self).check_placement(problems, rotate)
+        return None
 
     # -- open / close -------------------------------------------------------
 
@@ -906,8 +974,289 @@ class JsonlLedger(Ledger):
         finally:
             os.close(fd)
 
-    def _recover(self):
+    def _open_check(self):
+        """Refuse any write after ``close()``."""
+        if self._closed:
+            raise ProductionError(["the ledger is closed"])
+
+    def close(self):
+        """Make the head durable, release every handle and the writer lock if this ledger took it.
+
+        Returns
+        -------
+        None
+            Idempotent; a second call does nothing. A lock handed in at
+            open stays with its owner, and reads keep working.
+        """
+        if self._closed:
+            return
+        try:
+            self._shutdown()
+        finally:
+            self._closed = True
+            self._release_lock()
+
+    # -- the write path -----------------------------------------------------
+
+    def _prepare(self, record, where):
+        """Validate a caller record; return it as a plain dict with its digest."""
+        problems = []
+        _check_dict(problems, where, record)
+        if problems:
+            raise ProductionError(problems)
+        _check_unknown(problems, record, _CALLER_KEYS, where)
+        record_kind = record.get("kind")
+        if record_kind not in RECORD_KINDS:
+            problems.append(
+                f"{where}.kind must be one of {list(RECORD_KINDS)}, got {record_kind!r}"
+            )
+        _check_str(problems, f"{where}.id", record.get("id"))
+        body = record.get("body")
+        _check_dict(problems, f"{where}.body", body)
+        if isinstance(body, dict):
+            reject_money_floats(problems, body, f"{where}.body")
+        if problems:
+            raise ProductionError(problems)
+        caller = {"kind": record_kind, "id": record["id"], "body": body}
+        return caller, canonical_hash(caller)
+
+    def _commit(self, record, digest):
+        """Deduplicate, assign the envelope, land one record, fold; return the seq."""
+        self._open_check()
+        prior = self._index.get(record["id"])
+        if prior is not None:
+            if prior[0] == digest:
+                return prior[1]
+            raise ProductionError(
+                [
+                    f"record id {record['id']!r} was already appended at seq "
+                    f"{prior[1]} with a different payload"
+                ]
+            )
+        at_ms = self._clock.now_ms()
+        if isinstance(at_ms, bool) or not isinstance(at_ms, int):
+            raise ProductionError([f"clock.now_ms() must return an int, got {at_ms!r}"])
+        seq = self._seq + 1
+        envelope = dict(record)
+        envelope.update(
+            payload_digest=digest,
+            seq=seq,
+            series_id=self._root.series_id,
+            process_id=self._process_id,
+            release_hash=self._release_hash,
+            recorded_at_ms=at_ms,
+            schema_version=SCHEMA_VERSION,
+            prev_hash=self._head,
+        )
+        envelope["hash"] = record_hash(self._head, envelope)
+        line = canonical_bytes(envelope)
+        self._store(envelope, line, at_ms)
+        if self._durability.due():
+            self._sync()
+        self._seq, self._head = seq, envelope["hash"]
+        self._index[record["id"]] = (digest, seq)
+        self._note_kind(record["kind"], seq)
+        if self._state is not None:
+            self._state.apply(json.loads(line))
+        return seq
+
+    def _note_kind(self, record_kind, seq):
+        """Track the latest snapshot and the records since it."""
+        if record_kind == _SNAPSHOT_KIND:
+            self._latest_snapshot_seq = seq
+            self._since_snapshot = 0
+        else:
+            self._since_snapshot += 1
+
+    def _auto_snapshot(self):
+        """Project the state once the cadence is reached."""
+        if self._snapshot_every is not None and self._since_snapshot >= self._snapshot_every:
+            self.snapshot(self._state.to_snapshot_obj())
+
+    def append(self, record):
+        """Append one record (see :meth:`Ledger.append`); one write, one fold."""
+        caller, digest = self._prepare(record, "record")
+        seq = self._commit(caller, digest)
+        self._auto_snapshot()
+        return seq
+
+    def append_many(self, records):
+        """Append records in order (see :meth:`Ledger.append_many`).
+
+        Every record is validated before the first is written, so a
+        malformed third record leaves the first two unwritten.
+        """
+        problems, prepared = [], []
+        for position, record in enumerate(records):
+            try:
+                prepared.append(self._prepare(record, f"records[{position}]"))
+            except ProductionError as exc:
+                problems.extend(exc.problems)
+        if problems:
+            raise ProductionError(problems)
+        seqs = []
+        for caller, digest in prepared:
+            seqs.append(self._commit(caller, digest))
+            self._auto_snapshot()
+        return tuple(seqs)
+
+    def barrier(self):
+        """Make the head durable whatever the grade (see :meth:`Ledger.barrier`)."""
+        self._open_check()
+        self._sync()
+        self._durability.reset()
+
+    def snapshot(self, payload):
+        """Append a ``snapshot`` of ``payload`` at the head (see :meth:`Ledger.snapshot`)."""
+        at_seq = self._seq
+        record = {
+            "kind": _SNAPSHOT_KIND,
+            "id": f"snapshot-{at_seq}",
+            "body": {
+                "at_seq": at_seq,
+                "state_digest": canonical_hash(payload),
+                "state": payload,
+            },
+        }
+        caller, digest = self._prepare(record, "snapshot")
+        return self._commit(caller, digest)
+
+    # -- the read path ------------------------------------------------------
+
+    def head(self):
+        """Return ``(seq, hash)`` of the last record (see :meth:`Ledger.head`)."""
+        return (self._seq, self._head)
+
+    def latest_snapshot(self):
+        """Return the last ``snapshot`` envelope or ``None`` (see the seam)."""
+        if self._latest_snapshot_seq is None:
+            return None
+        for envelope in self.scan(
+            kind=_SNAPSHOT_KIND, since_seq=self._latest_snapshot_seq - 1
+        ):
+            return envelope
+        return None
+
+    def verify(self):
+        """Locate the first bad link in storage order (see :meth:`Ledger.verify`).
+
+        The returned ``seq`` is the one the walk EXPECTED at the first
+        failing position, so a deletion is located at the hole rather than
+        at the record after it — and both stores answer the same number for
+        the same damage.
+        """
+        expected, prev = 1, GENESIS_HASH
+        for envelope in self._walk():
+            intact = envelope is not None and (
+                envelope["seq"] == expected
+                and envelope["prev_hash"] == prev
+                and record_hash(prev, envelope) == envelope["hash"]
+            )
+            if not intact:
+                return expected
+            expected, prev = expected + 1, envelope["hash"]
+        return None
+
+    # -- what a store supplies ----------------------------------------------
+
+    @abstractmethod
+    def _open(self):
+        """Recover the head, the idempotency index and the snapshot cadence."""
+
+    @staticmethod
+    def _record_envelope(raw):
+        """Return the envelope ``raw`` holds, or ``None`` when the record is damaged.
+
+        The decoder :meth:`_walk` reports damage with, so a store answers
+        the same ``first_bad_seq`` whatever it keeps its records in.
+
+        Parameters
+        ----------
+        raw : bytes or str
+            One stored record, exactly as it was written.
+
+        Returns
+        -------
+        dict or None
+            The twelve-field envelope, or ``None`` when the bytes are not
+            JSON or are JSON that is not an envelope.
+        """
+        try:
+            decoded = json.loads(raw)
+        except ValueError:
+            return None
+        return decoded if _is_envelope(decoded) else None
+
+    @abstractmethod
+    def _store(self, envelope, line, at_ms):
+        """Land one record: its envelope, its canonical bytes (unframed), and the stamp."""
+
+    @abstractmethod
+    def _sync(self):
+        """Make everything landed so far durable."""
+
+    @abstractmethod
+    def _walk(self):
+        """Yield envelopes in storage order, ``None`` for one that cannot be decoded."""
+
+    @abstractmethod
+    def _shutdown(self):
+        """Make the head durable and close this store's handles."""
+
+
+class JsonlLedger(ChainLedger):
+    """The JSONL chain: one ``O_APPEND`` write per record, locked, verifiable.
+
+    Opening takes ``serve.lock`` (``flock``, exclusive, non-blocking) for
+    the object's lifetime, walks every segment to recover the head, the
+    idempotency index and the latest snapshot, and truncates a torn final
+    line — a line without its newline is a write the crash cut short,
+    never a record. Segments are ``ledger.NNNN.jsonl``, created lazily on
+    the first write and rolled by the rotation policy; a roll seals the
+    old segment with an fsync and fsyncs the directory, and the first
+    record of the new segment chains from the old one's tail, so the
+    chain is continuous across files.
+
+    Parameters
+    ----------
+    serve_root, process_id, release_hash, clock, fsync, state, snapshot_every, lock
+        As :class:`ChainLedger` takes them.
+    rotate : dict or None
+        ``{"by": one of vocab.ROTATE_BY, "max_bytes": int >= 1}``;
+        ``max_bytes`` is required for ``size`` and an optional cap
+        otherwise. ``None`` means ``{"by": DEFAULT_ROTATE_BY}``.
+
+    Raises
+    ------
+    ProductionError
+        As :class:`ChainLedger`, plus a damaged sealed segment.
+
+    Examples
+    --------
+    Open the series' sole writer, record a tick start and make it durable
+    before any work::
+
+        from dskit.production.clock import WallClock
+
+        serve = ServeRoot("./serve", "018f0f4e-7b21-7d3a-9c31-6d8f36d806a1")
+        ledger = JsonlLedger(serve, "proc-1", "a" * 64, clock=WallClock())
+        ledger.append({"kind": "tick_start", "id": "tick-1",
+                       "body": {"tick_id": "tick-1", "tick_at_ms": 0}})  # 1
+        ledger.barrier()
+        ledger.head()  # (1, '<sha256 hex>')
+        ledger.close()
+    """
+
+    def _placement(self, problems, rotate):
+        """Build the rotation policy: segmentation is what this store is for."""
+        super()._placement(problems, rotate)
+        return _rotation(problems, rotate)
+
+    # -- open / close -------------------------------------------------------
+
+    def _open(self):
         """Walk every segment: head, index, snapshot cadence, and the torn tail."""
+        self._cursor = None
         segments = self._root.segment_paths()
         last_ms = None
         for position, (index, path) in enumerate(segments):
@@ -958,98 +1307,21 @@ class JsonlLedger(Ledger):
         self._cursor = new
         self._durability.reset()
 
-    def _open_check(self):
-        """Refuse any write after ``close()``."""
-        if self._closed:
-            raise ProductionError(["the ledger is closed"])
-
-    def close(self):
-        """Seal the open segment, close every fd and release ``serve.lock`` if this ledger took it.
-
-        Returns
-        -------
-        None
-            Idempotent; a second call does nothing. A lock handed in at
-            open stays with its owner.
-        """
-        if self._closed:
-            return
-        try:
-            if self._cursor is not None:
-                os.fsync(self._cursor.fd)
-                os.close(self._cursor.fd)
-                self._cursor = None
-        finally:
-            self._closed = True
-            self._release_lock()
+    def _shutdown(self):
+        """Seal the open segment and close its descriptor."""
+        if self._cursor is not None:
+            os.fsync(self._cursor.fd)
+            os.close(self._cursor.fd)
+            self._cursor = None
 
     # -- the write path -----------------------------------------------------
 
-    def _prepare(self, record, where):
-        """Validate a caller record; return it as a plain dict with its digest."""
-        problems = []
-        _check_dict(problems, where, record)
-        if problems:
-            raise ProductionError(problems)
-        _check_unknown(problems, record, _CALLER_KEYS, where)
-        record_kind = record.get("kind")
-        if record_kind not in RECORD_KINDS:
-            problems.append(
-                f"{where}.kind must be one of {list(RECORD_KINDS)}, got {record_kind!r}"
-            )
-        _check_str(problems, f"{where}.id", record.get("id"))
-        body = record.get("body")
-        _check_dict(problems, f"{where}.body", body)
-        if isinstance(body, dict):
-            reject_money_floats(problems, body, f"{where}.body")
-        if problems:
-            raise ProductionError(problems)
-        caller = {"kind": record_kind, "id": record["id"], "body": body}
-        return caller, canonical_hash(caller)
-
-    def _commit(self, record, digest):
-        """Deduplicate, assign the envelope, write one line, fold; return the seq."""
-        self._open_check()
-        prior = self._index.get(record["id"])
-        if prior is not None:
-            if prior[0] == digest:
-                return prior[1]
-            raise ProductionError(
-                [
-                    f"record id {record['id']!r} was already appended at seq "
-                    f"{prior[1]} with a different payload"
-                ]
-            )
-        at_ms = self._clock.now_ms()
-        if isinstance(at_ms, bool) or not isinstance(at_ms, int):
-            raise ProductionError([f"clock.now_ms() must return an int, got {at_ms!r}"])
-        seq = self._seq + 1
-        envelope = dict(record)
-        envelope.update(
-            payload_digest=digest,
-            seq=seq,
-            series_id=self._root.series_id,
-            process_id=self._process_id,
-            release_hash=self._release_hash,
-            recorded_at_ms=at_ms,
-            schema_version=SCHEMA_VERSION,
-            prev_hash=self._head,
-        )
-        envelope["hash"] = record_hash(self._head, envelope)
-        line = canonical_bytes(envelope) + b"\n"
-        self._write(line, at_ms)
-        self._seq, self._head = seq, envelope["hash"]
-        self._index[record["id"]] = (digest, seq)
-        self._note_kind(record["kind"], seq)
-        if self._state is not None:
-            self._state.apply(json.loads(line))
-        return seq
-
-    def _write(self, line, at_ms):
-        """Land one line with a single ``write`` on the right segment."""
+    def _store(self, envelope, line, at_ms):
+        """Land one framed line with a single ``write`` on the right segment."""
+        line = line + b"\n"
         if self._cursor is None:
             self._cursor = self._create_segment(1, None)
-        elif self._rotation.rolls(self._cursor, len(line), at_ms):
+        elif self._placement_policy.rolls(self._cursor, len(line), at_ms):
             self._roll()
         cursor = self._cursor
         written = os.write(cursor.fd, line)
@@ -1063,70 +1335,11 @@ class JsonlLedger(Ledger):
             )
         cursor.size += written
         cursor.last_ms = at_ms
-        if self._durability.due():
-            os.fsync(cursor.fd)
 
-    def _note_kind(self, record_kind, seq):
-        """Track the latest snapshot and the records since it."""
-        if record_kind == _SNAPSHOT_KIND:
-            self._latest_snapshot_seq = seq
-            self._since_snapshot = 0
-        else:
-            self._since_snapshot += 1
-
-    def _auto_snapshot(self):
-        """Project the state once the cadence is reached."""
-        if self._snapshot_every is not None and self._since_snapshot >= self._snapshot_every:
-            self.snapshot(self._state.to_snapshot_obj())
-
-    def append(self, record):
-        """Append one record (see :meth:`Ledger.append`); one write, one fold."""
-        caller, digest = self._prepare(record, "record")
-        seq = self._commit(caller, digest)
-        self._auto_snapshot()
-        return seq
-
-    def append_many(self, records):
-        """Append records in order (see :meth:`Ledger.append_many`).
-
-        Every record is validated before the first is written, so a
-        malformed third record leaves the first two unwritten.
-        """
-        problems, prepared = [], []
-        for position, record in enumerate(records):
-            try:
-                prepared.append(self._prepare(record, f"records[{position}]"))
-            except ProductionError as exc:
-                problems.extend(exc.problems)
-        if problems:
-            raise ProductionError(problems)
-        seqs = []
-        for caller, digest in prepared:
-            seqs.append(self._commit(caller, digest))
-            self._auto_snapshot()
-        return tuple(seqs)
-
-    def barrier(self):
-        """Fsync the open segment whatever the grade (see :meth:`Ledger.barrier`)."""
-        self._open_check()
+    def _sync(self):
+        """Fsync the open segment; a chain with no segment yet has nothing to sync."""
         if self._cursor is not None:
             os.fsync(self._cursor.fd)
-        self._durability.reset()
-
-    def snapshot(self, payload):
-        """Append a ``snapshot`` of ``payload`` at the head (see :meth:`Ledger.snapshot`)."""
-        at_seq = self._seq
-        record = {
-            "kind": _SNAPSHOT_KIND,
-            "id": f"snapshot-{at_seq}",
-            "body": {
-                "at_seq": at_seq,
-                "state_digest": canonical_hash(payload),
-                "state": payload,
-            },
-        }
-        caller, digest = self._prepare(record, "snapshot")
-        return self._commit(caller, digest)
 
     # -- the read path ------------------------------------------------------
 
@@ -1136,9 +1349,10 @@ class JsonlLedger(Ledger):
             for lineno, raw in _read(path):
                 yield path, lineno, raw
 
-    def head(self):
-        """Return ``(seq, hash)`` of the last record (see :meth:`Ledger.head`)."""
-        return (self._seq, self._head)
+    def _walk(self):
+        """Yield every written line's envelope, ``None`` for one that will not decode."""
+        for _path, _lineno, raw in self._lines():
+            yield self._record_envelope(raw)
 
     def scan(self, kind=None, since_seq=0):
         """Yield envelopes from disk in seq order (see :meth:`Ledger.scan`)."""
@@ -1151,31 +1365,63 @@ class JsonlLedger(Ledger):
                 continue
             yield envelope
 
-    def latest_snapshot(self):
-        """Return the last ``snapshot`` envelope or ``None`` (see the seam)."""
-        if self._latest_snapshot_seq is None:
-            return None
-        for envelope in self.scan(kind=_SNAPSHOT_KIND, since_seq=self._latest_snapshot_seq - 1):
-            return envelope
-        return None
 
-    def verify(self):
-        """Locate the first bad link across every segment (see :meth:`Ledger.verify`)."""
-        expected, prev = 1, GENESIS_HASH
-        for path, lineno, raw in self._lines():
-            try:
-                envelope = _decode(path, lineno, raw)
-                intact = (
-                    envelope["seq"] == expected
-                    and envelope["prev_hash"] == prev
-                    and record_hash(prev, envelope) == envelope["hash"]
-                )
-            except ProductionError:
-                intact = False
-            if not intact:
-                return expected
-            expected, prev = expected + 1, envelope["hash"]
-        return None
+# ---------------------------------------------------------------------------
+# The family (§4.3, §5.8.2) — the registry lives beside its seam
+# ---------------------------------------------------------------------------
+
+#: The store a document that names none keeps: the one phase 1 shipped, so
+#: every document written against it keeps both its identity and its chain.
+DEFAULT_LEDGER_KIND = "jsonl"
+
+#: The §4.3 family behind ``document.durability.ledger``. ``libs/sqlite.py``
+#: is what gives it a second member; a child registers nothing and names its
+#: own store by ``pkg.module:Class``.
+LEDGER_KINDS = Registry("ledger", Ledger)
+LEDGER_KINDS.register(DEFAULT_LEDGER_KIND, JsonlLedger)
+
+
+def ledger_class(document):
+    """Resolve ``document.durability.ledger`` and judge the document's placement.
+
+    The one place a serve document is turned into a store class. It is
+    asked by ``compose.py``, which then builds one, and by the ``plan``
+    verb, which builds nothing — so a document whose store cannot honour
+    its ``placement.rotate`` refuses where the release is minted rather
+    than at the first tick.
+
+    Parameters
+    ----------
+    document : ServeDocument
+        The validated serve document.
+
+    Returns
+    -------
+    type
+        A :class:`Ledger` subclass; :class:`JsonlLedger` when the document
+        names no store.
+
+    Raises
+    ------
+    ProductionError
+        On an unknown kind, an unimportable reference, a class outside the
+        family, a ``params`` block the pinned constructor has nowhere to
+        put, or a placement this store refuses.
+    """
+    site = document.durability.ledger
+    cls = LEDGER_KINDS.resolve(DEFAULT_LEDGER_KIND if site is None else site.uses)
+    params = None if site is None else site.params
+    problems = []
+    if params:
+        problems.append(
+            f"durability.ledger.params: {sorted(params)} — a ledger takes the "
+            "constructor §5.8.2 pins and no params block; declare the knobs that "
+            "exist (durability.fsync, placement.rotate) or none"
+        )
+    cls.check_placement(problems, document.placement.rotate)
+    if problems:
+        raise ProductionError(problems)
+    return cls
 
 
 # ---------------------------------------------------------------------------

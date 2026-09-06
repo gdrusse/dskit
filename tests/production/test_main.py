@@ -41,7 +41,7 @@ from dskit.production.executor import EXECUTOR_KINDS, FEE_KINDS
 from dskit.production.feed import FEED_KINDS
 from dskit.production.guards import GUARD_KINDS, MEASURE_KINDS
 from dskit.production.health import HEARTBEAT_KINDS, PROBE_KINDS, InstanceLock
-from dskit.production.ledger import ServeRoot
+from dskit.production.ledger import LEDGER_KINDS, ServeRoot
 from dskit.production.monitors import (
     CHUNKER_KINDS,
     MONITOR_KINDS,
@@ -55,7 +55,7 @@ from dskit.production.release import (
     RELEASE_FILENAME,
     ReleaseManifest,
 )
-from dskit.production.resilience import TRANSPORT_KINDS
+from dskit.production.resilience import SIGNER_KINDS, TRANSPORT_KINDS
 from dskit.production.sessions import CALENDAR_KINDS
 from dskit.production.vocab import CONTROL_PURPOSES, TRIP_REASONS
 from tests.production.conftest import DAY_MS, NOW_MS, SERIES_ID, UNIVERSE
@@ -1366,8 +1366,8 @@ def test_adopt_requires_the_breaks_origin(doc_path, proof, journal):
 # ==========================================================================
 
 #: §4.3's families, restated: name -> the registry object. Twenty in phase
-#: 1, plus `OUTCOME_SOURCE_KINDS`, the first of the three §4.3 says phase 2
-#: adds.
+#: 1, plus the three §4.3 says phase 2 adds — `OUTCOME_SOURCE_KINDS`,
+#: `LEDGER_KINDS` (§5.8.2) and `SIGNER_KINDS` (§5.12.1).
 REGISTRIES = {
     "CLOCK_KINDS": CLOCK_KINDS,
     "CALENDAR_KINDS": CALENDAR_KINDS,
@@ -1390,6 +1390,8 @@ REGISTRIES = {
     "TRANSPORT_KINDS": TRANSPORT_KINDS,
     "FEE_KINDS": FEE_KINDS,
     "OUTCOME_SOURCE_KINDS": OUTCOME_SOURCE_KINDS,
+    "LEDGER_KINDS": LEDGER_KINDS,
+    "SIGNER_KINDS": SIGNER_KINDS,
 }
 
 #: Every `uses` / `kind` / `measure` site §4.1's grammar spells, with the
@@ -1425,6 +1427,8 @@ GRAMMAR_SELECTORS = (
     ("alerting.sinks.ops.uses", "webhook", "ALERT_SINK_KINDS"),
     ("heartbeat.emitters.file.uses", "file", "HEARTBEAT_KINDS"),
     ("outcomes.sources.settle.uses", "settlement", "OUTCOME_SOURCE_KINDS"),
+    ("durability.ledger.uses", "jsonl", "LEDGER_KINDS"),
+    ("execution.signer.uses", "hmac", "SIGNER_KINDS"),
 )
 
 

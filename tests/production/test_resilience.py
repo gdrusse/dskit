@@ -32,7 +32,11 @@ changes a value proves the value is READ rather than compiled in.
 """
 
 import dataclasses
+import hashlib
+import hmac
+import inspect
 import io
+import json
 import socket
 import urllib.error
 import urllib.request
@@ -44,6 +48,8 @@ import pytest
 from dskit.onboarding.connector import MAX_BACKOFF_S as ONBOARDING_MAX_BACKOFF_S
 from dskit.production import resilience
 from dskit.production.base import ProductionError
+from dskit.production.document import ServeDocument
+from dskit.production.redact import REDACTED, get_logger, redact
 from dskit.production.resilience import (
     DEFAULT_BASE_S,
     DEFAULT_BUDGET_CAPACITY,
@@ -53,26 +59,31 @@ from dskit.production.resilience import (
     DEFAULT_JITTER,
     DEFAULT_MAX_ATTEMPTS,
     DEFAULT_MAX_IN_FLIGHT,
+    DEFAULT_MAX_SKEW_MS,
     DEFAULT_MIN_CALLS,
     DEFAULT_OPEN_S,
     DEFAULT_READ_S,
     DEFAULT_REFUND,
     DEFAULT_RETRY_AFTER,
     DEFAULT_RETRY_WRITES,
+    DEFAULT_SIGNER_ALGORITHM,
     DEFAULT_THROTTLE_BASE_S,
     DEFAULT_THROTTLE_COST,
     DEFAULT_TRANSIENT_COST,
     MAX_ATTEMPTS_BOUNDS,
     MAX_BACKOFF_S,
+    SIGNER_KINDS,
     TRANSPORT_KINDS,
     CallOutcome,
     CircuitBreaker,
     CircuitBreakers,
     Classifier,
+    HmacSigner,
     HttpClassifier,
     RateLimiter,
     ResiliencePolicies,
     Retry,
+    Signer,
     Transport,
     UrllibTransport,
     resilience_from_document,
@@ -84,6 +95,7 @@ from dskit.production.vocab import (
     RETRY_AFTER_MODES,
     RETRY_DECISIONS,
     RETRY_WRITE_MODES,
+    SIGNER_ALGORITHMS,
 )
 
 #: A fixed instant, so nothing here depends on when the suite runs.
@@ -1520,3 +1532,496 @@ def test_cancel_all_can_still_send_when_the_submit_lane_is_exhausted():
         sent += 1
         limiter.release("cancel")
     assert sent == 3, "sequential cancels, bounded by the cancel burst"
+
+
+# ===========================================================================
+# Signer (§5.12.1) — a signature bound to a bounded clock skew
+# ===========================================================================
+#
+# The safety point of the object is a REFUSAL, and it is the only thing in
+# this module that costs nothing when it fires: a signature stamped outside
+# the venue's window is rejected AFTER the request has been sent, which makes
+# the submit `unknown` and forces a reconciliation, while refusing to sign
+# makes it `not_sent`. So the refusals are asserted first and hardest — in
+# both skew directions, and on a probe that has gone stale.
+#
+# The key is a VALUE the process must never emit. Every assertion about it is
+# negative: it is absent from the returned headers, from `str(exc)`, and from
+# a log line the module's own logger rendered.
+
+SECRET = "sk_live_this_value_must_never_be_emitted_9134"
+KEY_ENV = "DSKIT_TEST_VENUE_KEY"
+SIGN_HEADER = "X-Venue-Signature"
+STAMP_HEADER = "X-Venue-Timestamp"
+PROBE_EVERY_MS = 60_000
+
+
+def signer_params(**overrides):
+    """The §5.12.1 params block, every knob spelled so a test can move one."""
+    params = {
+        "key_env": KEY_ENV,
+        "header": SIGN_HEADER,
+        "timestamp_header": STAMP_HEADER,
+        "probe_every_ms": PROBE_EVERY_MS,
+    }
+    params.update(overrides)
+    return params
+
+
+class ProbingSigner(HmacSigner):
+    """A child's signer: the one venue fact core cannot hold is the time endpoint."""
+
+    URL = "https://venue.invalid/v1/time"
+
+    def probe_request(self):
+        """Ask the venue for its clock, bounded."""
+        return {
+            "method": "GET",
+            "url": self.URL,
+            "headers": {},
+            "body": None,
+            "timeout": {"connect_s": 1.0, "read_s": 1.0},
+        }
+
+
+class UnboundedSigner(ProbingSigner):
+    """A child that forgot the deadline — the base must not let it through."""
+
+    def probe_request(self):
+        """Return a request with no deadline at all."""
+        return {"method": "GET", "url": self.URL, "headers": {}, "body": None, "timeout": None}
+
+
+class TimeTransport:
+    """A transport that answers one `Date` header and records what it was sent."""
+
+    def __init__(self, server_ms, status=200):
+        self.server_ms = server_ms
+        self.status = status
+        self.sent = []
+
+    def send(self, method, url, headers, body, timeout):
+        """Answer the recorded server time; never touch a socket."""
+        self.sent.append((method, url, dict(headers), body, dict(timeout)))
+        stamp = formatdate(self.server_ms / 1000.0, usegmt=True)
+        return self.status, {"Date": stamp}, b""
+
+
+@pytest.fixture
+def venue_key(monkeypatch):
+    """Put the secret in the environment the way a deployment would."""
+    monkeypatch.setenv(KEY_ENV, SECRET)
+    return SECRET
+
+
+def make_signer(params=None, *, cls=ProbingSigner, start_ms=START_MS):
+    """Build one signer over a hand-advanced clock."""
+    clock = FakeClock(start_ms=start_ms)
+    return cls(signer_params(**(params or {})), clock=clock), clock
+
+
+def canonical(prefix, method, url, at_ms, body):
+    """§5.12.1's payload, RESTATED: the request line, the timestamp and the body.
+
+    Deliberate independent restatement — an expected value read back from
+    the object that produced it asserts nothing.
+    """
+    return b"\n".join(
+        [
+            prefix.encode("utf-8"),
+            method.upper().encode("utf-8"),
+            url.encode("utf-8"),
+            str(at_ms).encode("utf-8"),
+            bytes(body or b""),
+        ]
+    )
+
+
+def expected_digest(secret, prefix, method, url, at_ms, body, algorithm="sha256"):
+    """The signature a venue would compute for itself."""
+    return hmac.new(
+        secret.encode("utf-8"),
+        canonical(prefix, method, url, at_ms, body),
+        getattr(hashlib, algorithm),
+    ).hexdigest()
+
+
+# --- the family ------------------------------------------------------------
+
+
+def test_the_signer_seam_is_abstract_and_its_registry_lives_beside_it():
+    """§5.12.1: "`SIGNER_KINDS = Registry("signer", Signer)`", and §5.15's
+    rule that a seam hook is `@abstractmethod` so an incomplete subclass
+    fails at construction rather than at the first live submit."""
+    assert inspect.isabstract(Signer)
+    assert "sign" in Signer.__abstractmethods__
+    assert SIGNER_KINDS.abc is Signer
+    assert SIGNER_KINDS.resolve("hmac") is HmacSigner
+
+
+def test_the_algorithms_are_a_closed_vocabulary_the_module_only_spells():
+    assert SIGNER_ALGORITHMS == ("sha256", "sha512")
+    assert DEFAULT_SIGNER_ALGORITHM in SIGNER_ALGORITHMS
+
+
+def test_an_unknown_param_refuses_by_name(venue_key):
+    with pytest.raises(ProductionError, match="algorithim"):
+        ProbingSigner(signer_params(algorithim="sha256"), clock=FakeClock())
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"key_env": None},
+        {"header": ""},
+        {"timestamp_header": 7},
+        {"algorithm": "md5"},
+        {"max_skew_ms": -1},
+        {"probe_every_ms": 0},
+    ],
+    ids=lambda p: next(iter(p)),
+)
+def test_a_malformed_knob_refuses(venue_key, params):
+    with pytest.raises(ProductionError):
+        ProbingSigner(signer_params(**params), clock=FakeClock())
+
+
+def test_a_freshness_bound_with_no_value_is_no_bound(venue_key):
+    """`probe_every_ms` is required for the reason `fsync: {"batch"}` needs
+    both its knobs: a staleness rule with no period never fires."""
+    params = signer_params()
+    params.pop("probe_every_ms")
+    with pytest.raises(ProductionError, match="probe_every_ms"):
+        ProbingSigner(params, clock=FakeClock())
+
+
+def test_the_defaults_are_named_once_and_read_by_the_run(venue_key):
+    signer, _clock = make_signer()
+    assert signer.max_skew_ms == DEFAULT_MAX_SKEW_MS
+    assert signer.algorithm == DEFAULT_SIGNER_ALGORITHM
+
+
+# --- the key never leaves ---------------------------------------------------
+
+
+def test_the_document_names_the_env_var_never_the_secret(venue_key):
+    """§5.12.1: `key_env` is "the env-var NAME holding the secret, NEVER the
+    secret". The params block is recorded, logged and hashed; the value is
+    not in it."""
+    signer, _clock = make_signer()
+    assert KEY_ENV in signer_params().values()
+    assert SECRET not in json.dumps(signer_params())
+    assert isinstance(signer, Signer)
+
+
+def test_an_unset_key_refuses_at_construction_not_at_the_first_submit(monkeypatch):
+    monkeypatch.delenv(KEY_ENV, raising=False)
+    with pytest.raises(ProductionError) as exc:
+        ProbingSigner(signer_params(), clock=FakeClock())
+    assert KEY_ENV in str(exc.value)
+
+
+def test_an_empty_key_refuses(monkeypatch):
+    monkeypatch.setenv(KEY_ENV, "")
+    with pytest.raises(ProductionError) as exc:
+        ProbingSigner(signer_params(), clock=FakeClock())
+    assert KEY_ENV in str(exc.value)
+
+
+def test_the_key_is_registered_as_a_credential_so_redact_masks_it(venue_key):
+    """§5.12.1: "The key resolves once through `redact.resolve_secrets` and
+    is registered as a credential, so it can reach neither a log line nor a
+    record"."""
+    make_signer()
+    masked = redact(f"venue refused: signature={SECRET} rejected")
+    assert SECRET not in masked
+    assert REDACTED in masked
+
+
+def test_the_key_is_absent_from_every_signed_header(venue_key):
+    signer, clock = make_signer()
+    signer.probe(TimeTransport(clock.now_ms()))
+    headers, _body = signer.sign("POST", "https://venue.invalid/o", {}, b"{}", clock.now_ms())
+    assert SECRET not in json.dumps(headers)
+
+
+def test_the_key_is_absent_from_every_refusal_message(venue_key):
+    """A refusal is the one place a signer speaks, so it is the one place a
+    key could escape. §5.12.1: "the digest — never the key — is what a
+    `reason` may quote"."""
+    signer, clock = make_signer({"max_skew_ms": 10})
+    signer.probe(TimeTransport(clock.now_ms() + 5_000))
+    with pytest.raises(ProductionError) as exc:
+        signer.sign("POST", "https://venue.invalid/o", {}, b"{}", clock.now_ms())
+    assert SECRET not in str(exc.value)
+    assert SECRET not in repr(exc.value)
+
+
+def test_the_key_is_absent_from_a_log_line_the_module_rendered(venue_key, caplog):
+    make_signer()
+    with caplog.at_level("ERROR", logger="dskit.production.resilience"):
+        get_logger("resilience").error("venue said %s", f"key={SECRET}")
+    assert SECRET not in caplog.text
+    assert REDACTED in caplog.text
+
+
+# --- sign mutates neither argument -----------------------------------------
+
+
+def test_sign_returns_a_new_header_map_and_leaves_the_callers_alone(venue_key):
+    """§5.12.1: it "returns a NEW header map and body and mutates neither
+    argument, so a retry signs the original request rather than one already
+    stamped"."""
+    signer, clock = make_signer()
+    signer.probe(TimeTransport(clock.now_ms()))
+    original = {"Content-Type": "application/json"}
+    before = dict(original)
+    headers, _body = signer.sign("POST", "https://venue.invalid/o", original, b"{}", clock.now_ms())
+    assert original == before
+    assert headers is not original
+    assert set(headers) == set(before) | {SIGN_HEADER, STAMP_HEADER}
+
+
+def test_sign_never_mutates_the_body_it_was_given(venue_key):
+    """A mutable body proves the point a `bytes` body cannot: what was
+    signed must not change when the caller's buffer does."""
+    signer, clock = make_signer()
+    signer.probe(TimeTransport(clock.now_ms()))
+    body = bytearray(b'{"qty":1}')
+    _headers, signed = signer.sign(
+        "POST", "https://venue.invalid/o", {}, body, clock.now_ms()
+    )
+    body.extend(b"TAMPERED")
+    assert bytes(signed) == b'{"qty":1}'
+    assert signed is not body
+
+
+def test_signing_twice_gives_the_same_signature_not_a_double_stamped_one(venue_key):
+    """The retry case the rule exists for: the second call sees the caller's
+    ORIGINAL headers, so it produces the same signature, not one over a
+    request that already carries a timestamp."""
+    signer, clock = make_signer()
+    signer.probe(TimeTransport(clock.now_ms()))
+    headers = {"Content-Type": "application/json"}
+    first, _b1 = signer.sign("POST", "https://venue.invalid/o", headers, b"{}", 1_700_000)
+    second, _b2 = signer.sign("POST", "https://venue.invalid/o", headers, b"{}", 1_700_000)
+    assert first == second
+
+
+# --- the signature covers the request, the timestamp and the body -----------
+
+
+def test_the_signature_is_the_hmac_over_the_request_line_timestamp_and_body(venue_key):
+    signer, clock = make_signer()
+    signer.probe(TimeTransport(clock.now_ms()))
+    at_ms = clock.now_ms()
+    headers, _body = signer.sign(
+        "post", "https://venue.invalid/v1/orders", {}, b'{"qty":1}', at_ms
+    )
+    assert headers[SIGN_HEADER] == expected_digest(
+        SECRET, "", "post", "https://venue.invalid/v1/orders", at_ms, b'{"qty":1}'
+    )
+    assert headers[STAMP_HEADER] == str(at_ms)
+
+
+@pytest.mark.parametrize(
+    "moved",
+    [
+        {"method": "PUT"},
+        {"url": "https://venue.invalid/v1/cancel"},
+        {"at_ms": 1},
+        {"body": b'{"qty":2}'},
+    ],
+    ids=lambda m: next(iter(m)),
+)
+def test_every_covered_part_moves_the_signature(venue_key, moved):
+    signer, clock = make_signer()
+    signer.probe(TimeTransport(clock.now_ms()))
+    call = {
+        "method": "POST",
+        "url": "https://venue.invalid/v1/orders",
+        "headers": {},
+        "body": b'{"qty":1}',
+        "at_ms": clock.now_ms(),
+    }
+    base, _b = signer.sign(**call)
+    other, _b2 = signer.sign(**{**call, **moved})
+    assert base[SIGN_HEADER] != other[SIGN_HEADER]
+
+
+def test_the_prefix_a_venue_requires_is_part_of_the_payload(venue_key):
+    signer, clock = make_signer({"prefix": "venue-v2"})
+    signer.probe(TimeTransport(clock.now_ms()))
+    at_ms = clock.now_ms()
+    headers, _body = signer.sign("GET", "https://venue.invalid/x", {}, None, at_ms)
+    assert headers[SIGN_HEADER] == expected_digest(
+        SECRET, "venue-v2", "GET", "https://venue.invalid/x", at_ms, None
+    )
+
+
+def test_the_algorithm_the_document_names_is_the_one_used(venue_key):
+    signer, clock = make_signer({"algorithm": "sha512"})
+    signer.probe(TimeTransport(clock.now_ms()))
+    at_ms = clock.now_ms()
+    headers, _body = signer.sign("GET", "https://venue.invalid/x", {}, None, at_ms)
+    assert headers[SIGN_HEADER] == expected_digest(
+        SECRET, "", "GET", "https://venue.invalid/x", at_ms, None, algorithm="sha512"
+    )
+    assert len(headers[SIGN_HEADER]) == 128
+
+
+@pytest.mark.parametrize("bad", [None, 7, ["POST"]])
+def test_a_malformed_sign_argument_refuses(venue_key, bad):
+    signer, clock = make_signer()
+    signer.probe(TimeTransport(clock.now_ms()))
+    with pytest.raises(ProductionError):
+        signer.sign(bad, "https://venue.invalid/x", {}, None, clock.now_ms())
+
+
+# --- the probe --------------------------------------------------------------
+
+
+def test_the_probe_answers_the_skew_and_updates_the_estimate(venue_key):
+    signer, clock = make_signer()
+    assert signer.skew_ms() == 0
+    transport = TimeTransport(clock.now_ms() + 4_000)
+    assert signer.probe(transport) == 4_000
+    assert signer.skew_ms() == 4_000
+
+
+def test_the_probe_measures_a_venue_behind_us_as_a_negative_skew(venue_key):
+    signer, clock = make_signer()
+    assert signer.probe(TimeTransport(clock.now_ms() - 3_000)) == -3_000
+    assert signer.skew_ms() == -3_000
+
+
+def test_the_probe_is_one_bounded_request(venue_key):
+    """§5.12.1: "one BOUNDED request". A child that forgot the deadline is
+    refused by the base, not trusted."""
+    signer, clock = make_signer()
+    transport = TimeTransport(clock.now_ms())
+    signer.probe(transport)
+    assert len(transport.sent) == 1
+    assert transport.sent[0][4] == {"connect_s": 1.0, "read_s": 1.0}
+    unbounded, _clock = make_signer(cls=UnboundedSigner)
+    with pytest.raises(ProductionError, match="timeout"):
+        unbounded.probe(TimeTransport(clock.now_ms()))
+
+
+def test_a_signer_that_declares_no_time_endpoint_cannot_probe(venue_key):
+    """Core ships no venue, so core holds no time URL: the base refuses
+    rather than inventing one, and a child supplies `probe_request`."""
+    signer = HmacSigner(signer_params(), clock=FakeClock())
+    with pytest.raises(ProductionError, match="probe_request"):
+        signer.probe(TimeTransport(0))
+
+
+def test_the_default_server_time_reads_the_date_header_to_the_second(venue_key):
+    """An HTTP `Date` is a whole number of seconds, so the estimate the base
+    can take from it is good to a second and no better — which is why
+    `max_skew_ms` is measured against it in seconds' worth of milliseconds,
+    and why a venue that publishes milliseconds is worth an override."""
+    signer, clock = make_signer()
+    assert signer.probe(TimeTransport(clock.now_ms() + 1_999)) == 1_000
+
+
+def test_a_probe_that_answers_no_server_time_refuses_and_leaves_the_estimate(venue_key):
+    signer, clock = make_signer()
+    signer.probe(TimeTransport(clock.now_ms() + 1_000))
+
+    class Mute(TimeTransport):
+        def send(self, method, url, headers, body, timeout):
+            return 200, {}, b""
+
+    with pytest.raises(ProductionError):
+        signer.probe(Mute(0))
+    assert signer.skew_ms() == 1_000
+
+
+# --- sign REFUSES on skew, in both directions (§5.12.1) ---------------------
+
+
+def test_sign_refuses_before_any_probe_has_succeeded(venue_key):
+    """Fail closed: an estimate that was never taken is infinitely old."""
+    signer, clock = make_signer()
+    with pytest.raises(ProductionError) as exc:
+        signer.sign("POST", "https://venue.invalid/o", {}, b"{}", clock.now_ms())
+    assert "probe" in str(exc.value)
+
+
+def test_sign_refuses_once_the_probe_is_older_than_probe_every_ms(venue_key):
+    signer, clock = make_signer()
+    signer.probe(TimeTransport(clock.now_ms()))
+    clock.advance(PROBE_EVERY_MS)
+    assert signer.sign("POST", "https://venue.invalid/o", {}, None, clock.now_ms())
+    clock.advance(1)
+    with pytest.raises(ProductionError) as exc:
+        signer.sign("POST", "https://venue.invalid/o", {}, None, clock.now_ms())
+    assert "probe" in str(exc.value)
+
+
+def test_a_fresh_probe_makes_signing_possible_again(venue_key):
+    signer, clock = make_signer()
+    signer.probe(TimeTransport(clock.now_ms()))
+    clock.advance(PROBE_EVERY_MS * 2)
+    signer.probe(TimeTransport(clock.now_ms()))
+    assert signer.sign("POST", "https://venue.invalid/o", {}, None, clock.now_ms())
+
+
+@pytest.mark.parametrize("direction", [1, -1], ids=("ahead", "behind"))
+def test_sign_refuses_when_the_skew_exceeds_the_bound_in_either_direction(
+    venue_key, direction
+):
+    """§5.12.1: "when `|skew_ms()| > max_skew_ms`". A venue whose clock is
+    BEHIND ours rejects a signature exactly as one that is ahead does; a
+    one-sided check would sign half of the unacceptable requests."""
+    signer, clock = make_signer({"max_skew_ms": 1_000})
+    signer.probe(TimeTransport(clock.now_ms() + direction * 2_000))
+    with pytest.raises(ProductionError) as exc:
+        signer.sign("POST", "https://venue.invalid/o", {}, None, clock.now_ms())
+    assert "skew" in str(exc.value)
+    assert str(direction * 2_000) in str(exc.value)
+
+
+def test_the_bound_is_inclusive_so_exactly_max_skew_still_signs(venue_key):
+    signer, clock = make_signer({"max_skew_ms": 1_000})
+    signer.probe(TimeTransport(clock.now_ms() + 1_000))
+    assert signer.sign("POST", "https://venue.invalid/o", {}, None, clock.now_ms())
+
+
+def test_the_refusal_happens_before_anything_is_computed(venue_key):
+    """Refusing makes the submit `not_sent`, which costs nothing; sending a
+    request known to be unacceptable makes it `unknown` and forces a
+    reconciliation. Nothing may be produced on the refusing path."""
+    signer, clock = make_signer({"max_skew_ms": 0})
+    signer.probe(TimeTransport(clock.now_ms() + 1_000))
+    headers = {"Content-Type": "application/json"}
+    with pytest.raises(ProductionError):
+        signer.sign("POST", "https://venue.invalid/o", headers, b"{}", clock.now_ms())
+    assert headers == {"Content-Type": "application/json"}
+
+
+# --- the declaration site ---------------------------------------------------
+
+
+def test_a_document_may_declare_a_signer_inside_execution():
+    """§5.12.1: "declared at `document.execution.signer`, an OPTIONAL
+    `{uses, params}` key inside the already-graded `execution` section"."""
+    from tests.production.test_document import minimal_document
+
+    obj = minimal_document()
+    obj["execution"]["signer"] = {"uses": "hmac", "params": signer_params()}
+    assert ServeDocument(obj).execution.signer.uses == "hmac"
+
+
+def test_a_document_that_does_not_sign_hashes_exactly_as_it_did():
+    """The optional key is emitted ONLY WHEN PRESENT, so phase-1 identity is
+    untouched — and a document that declares one changes what the process
+    sends, so its identity moves."""
+    from tests.production.test_document import minimal_document
+
+    plain = ServeDocument(minimal_document())
+    obj = minimal_document()
+    obj["execution"]["signer"] = {"uses": "hmac", "params": signer_params()}
+    assert "signer" not in plain.to_obj()["execution"]
+    assert ServeDocument(obj).doc_hash != plain.doc_hash
