@@ -82,6 +82,7 @@ __all__ = [
     "PROBE_SCOPES",
     "PROCESS_EVENTS",
     "PULL_MODES",
+    "READINESS_EVIDENCE",
     "READINESS_VERDICTS",
     "RECON_ACTIONS",
     "RECORD_KINDS",
@@ -107,6 +108,7 @@ __all__ = [
     "TIFS",
     "TRANSITION_CAUSES",
     "TRIP_REASONS",
+    "UNWAIVABLE_ITEMS",
     "VERDICTS",
     "VERDICT_ORDER",
     "WINDOW_KINDS",
@@ -307,11 +309,40 @@ OUTCOME_SOURCES = ("settlement", "label", "operator")
 #: The ``cash_flow`` record's ``kind`` — the only kinds ``adopt`` can emit.
 CASH_FLOW_KINDS = ("deposit", "withdrawal", "adjustment")
 
-#: The ``guard_state`` record's ``kind``.
-GUARD_STATE_KINDS = ("hold", "pause")
+#: The ``guard_state`` record's ``kind``. ``released`` is phase 2's
+#: (§5.5.1): ``approve-hold`` ends one hold before its ttl, and the fold
+#: DROPS the pair it names. It is a record rather than a deletion because
+#: an operator overriding a safety verdict is exactly the act the chain
+#: has to keep.
+GUARD_STATE_KINDS = ("hold", "pause", "released")
 
 #: The ``readiness`` record's ``verdict``.
 READINESS_VERDICTS = ("go", "no_go")
+
+#: §5.13's six foundations — release/runtime verification, executor
+#: conformance, authenticated execution-scope equality, a clean startup
+#: reconciliation, fenced lease capability and the required safety
+#: controls. A checklist that omits one, marks one optional, or waives one
+#: refuses: they are what the rest of the ladder stands on.
+UNWAIVABLE_ITEMS = (
+    "release_verified",
+    "executor_conformant",
+    "scope_authenticated",
+    "startup_reconciled",
+    "lease_fenced",
+    "safety_controls",
+)
+
+#: [phase 2] §5.13.4's third kind of checklist evidence: the names the
+#: SERIES itself can prove, from the ``outcome`` fold of §5.13.2 and the
+#: outcome monitors of §5.10.1. They are ORDINARY WAIVABLE items — a
+#: shadow series has no outcomes and a new release starts with none — so
+#: they are deliberately not in :data:`UNWAIVABLE_ITEMS`; what they add is
+#: that a live series can be REQUIRED by its own checklist to prove its
+#: decisions have been scored. ``readiness.py`` keys its rule table by
+#: these names, so a name here with no rule (or a rule with no name)
+#: refuses at import.
+READINESS_EVIDENCE = ("outcome_coverage", "outcome_freshness", "calibration_current")
 
 #: The ``command_result`` record's ``status``.
 COMMAND_STATUSES = ("applied", "rejected")
@@ -343,6 +374,10 @@ APPROVAL_PURPOSES = (
     # proof-carrying acts like every other member here.
     "ack",
     "silence",
+    # Phase 2 (§5.5.1): a hold is a guard's refusal to keep acting on a
+    # scope, so ending one early is an operator overriding a safety
+    # verdict — the class of act D11 requires a verifier for.
+    "approve_hold",
 )
 
 #: What the control spool carries (§5.8): the ten authenticated

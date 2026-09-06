@@ -94,7 +94,9 @@ the digest, the idempotency index, the durability grade and the writer lock
 are one implementation, and the five hooks (`_open`, `_store`, `_sync`,
 `_walk`, `_shutdown`) plus `scan` are all a store supplies. A child's venue
 signer subclasses `HmacSigner` and supplies `probe_request()` — the one
-venue fact core cannot hold.
+venue fact core cannot hold. `readiness.Evidence` is the one seam with a plain
+TABLE rather than a registry (§5.13.4): a checklist evidence name the series
+can prove is an `EVIDENCE_RULES` entry, and there is no `uses` site for one.
 
 ## Testing
 

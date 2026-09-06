@@ -1185,6 +1185,26 @@ def _matchers(pairs):
     return matchers
 
 
+class ApproveHold(ControlVerb):
+    """`approve-hold`: end one guard's hold on a scope before its ttl (§5.5.1)."""
+
+    NAME = "approve-hold"
+    HELP = "queue an authenticated early release of one guard hold"
+    PURPOSE = "approve_hold"
+
+    @classmethod
+    def add_act_arguments(cls, parser):
+        """Name the held guard and the scope key its hold binds."""
+        parser.add_argument("--guard", required=True,
+                            help="the document key of the guard whose hold is released")
+        parser.add_argument("--scope", required=True,
+                            help="the scope key the hold binds ('*' for an aggregate limit)")
+
+    def payload(self, document, release):
+        """Carry the pair being released; the instant is the command's own."""
+        return {"guard": self.args.guard, "scope_key": self.args.scope}
+
+
 class Ready(ControlVerb):
     """`ready`: the release-bound GO / NO-GO the action matrix reads (§5.13).
 
@@ -1424,6 +1444,7 @@ VERBS = {
         Outcomes,
         Ack,
         Silence,
+        ApproveHold,
         Ready,
     )
 }

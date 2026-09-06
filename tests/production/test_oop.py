@@ -74,6 +74,7 @@ from dskit.production.loop import ServeLoop, Tick
 from dskit.production.monitors import Chunker, Monitor, Reference, Threshold
 from dskit.production.outcomes import OutcomeSource
 from dskit.production.policy import ActionPolicy, TransitionPolicy
+from dskit.production.readiness import Evidence
 from dskit.production.records import Ack
 from dskit.production.resilience import Classifier, Signer, Transport
 from dskit.production.sessions import Calendar
@@ -143,6 +144,10 @@ STRUCTURAL_ABCS = (
     IdSource,
     Authority,
     ExecutionPolicy,
+    # §5.13.4: a checklist item cites an evidence NAME, not a `uses`
+    # selector, so the family is a module-level table and a registry here
+    # would add a §4.3 family no document key selects.
+    Evidence,
 )
 
 #: The seam ABCs by name, so the table above resolves without importing

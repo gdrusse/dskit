@@ -97,6 +97,7 @@ __all__ = [
     "LIMITER_LANE_KEYS",
     "LOSS_MEASURE",
     "MAX_ACK_S_BOUNDS",
+    "MAX_OUTCOME_COVERAGE",
     "MAX_SILENCE_S_BOUNDS",
     "MIN_HEARTBEAT_EVERY_S",
     "MIN_VALID_FOR_S",
@@ -142,6 +143,9 @@ MAX_ACK_S_BOUNDS = (60, 604800)
 MIN_HEARTBEAT_EVERY_S = 1
 #: ``readiness.valid_for_s``: a GO that expires immediately is no GO.
 MIN_VALID_FOR_S = 1
+#: ``readiness.min_outcome_coverage`` (§5.13.4): a FRACTION of the decided
+#: legs in the window, so 1 is "every one" and there is nothing above it.
+MAX_OUTCOME_COVERAGE = 1
 #: ``coordination.ttl_ms > RENEWAL_BUDGET_FACTOR * (renew_every_ms +
 #: renew_timeout_ms)`` — a missed renewal deadline can never be mistaken
 #: for a still-valid permit.
@@ -258,10 +262,11 @@ class _Int(_Shape):
 
 
 class _Number(_Shape):
-    """A finite int or float, strictly above ``gt`` when one is given."""
+    """A finite int or float, strictly above ``gt`` and at most ``le`` when given."""
 
-    def __init__(self, gt=None):
+    def __init__(self, gt=None, le=None):
         self.gt = gt
+        self.le = le
 
     def check(self, problems, where, value):
         """Refuse NaN/Infinity here, so no refusal a caller sees comes from the hash."""
@@ -269,6 +274,8 @@ class _Number(_Shape):
             problems.append(f"{where} must be a finite number, got {value!r}")
         elif self.gt is not None and value <= self.gt:
             problems.append(f"{where} must be > {self.gt}, got {value!r}")
+        elif self.le is not None and value > self.le:
+            problems.append(f"{where} must be <= {self.le}, got {value!r}")
         return value
 
 
@@ -591,8 +598,23 @@ _LIFECYCLE = _Fixed(
     {"cooling_off_s": _COUNT, "shutdown_grace_s": _Int(*SHUTDOWN_GRACE_S_BOUNDS)},
     required=("cooling_off_s", "shutdown_grace_s"),
 )
+#: [phase 2] §5.13.4's four knobs are OPTIONAL and GRADED: absent, they
+#: are absent from the hash material, so a phase-1 document keeps its
+#: identity; present, they change what a GO means and are therefore
+#: graded. Each is required only when a checklist item CITES the evidence
+#: name that reads it (`readiness.py` refuses by name when one is
+#: missing), because §4.1 rules that code holds no threshold and a
+#: default minimum coverage would be exactly that.
 _READINESS = _Fixed(
-    {"checklist": _STR, "waivers": _KEY_LIST, "valid_for_s": _Int(ge=MIN_VALID_FOR_S)},
+    {
+        "checklist": _STR,
+        "waivers": _KEY_LIST,
+        "valid_for_s": _Int(ge=MIN_VALID_FOR_S),
+        "outcome_window": _Duration(),
+        "min_outcome_coverage": _Number(gt=0, le=MAX_OUTCOME_COVERAGE),
+        "max_outcome_age": _Duration(),
+        "calibration_monitor": _STR,
+    },
     required=("checklist", "waivers", "valid_for_s"),
 )
 #: [phase 2] §5.13.2's outcome sources: an ordered map of author-chosen
@@ -938,6 +960,20 @@ def _check_endpoints(problems, view):
             )
 
 
+def _check_calibration_monitor(problems, view):
+    """`readiness.calibration_monitor` names a declared monitor (§5.13.4)."""
+    readiness = view.readiness
+    named = None if readiness is None else readiness.calibration_monitor
+    if named is None:
+        return
+    declared = view.monitors or {}
+    if named not in declared:
+        problems.append(
+            f"readiness.calibration_monitor names {named!r}, which monitors does not declare "
+            "— its verdict would be one nothing writes"
+        )
+
+
 def _check_rung(problems, view):
     """Apply the rung's row of the table, when the rung parsed."""
     rules = _RUNG_RULES.get(view.rung) if isinstance(view.rung, str) else None
@@ -1012,7 +1048,7 @@ class ServeDocument:
         problems = []
         view = _GRAMMAR.check(problems, "", obj)
         for rule in (_check_lease_budget, _check_routes, _check_escalation,
-                     _check_endpoints, _check_rung):
+                     _check_endpoints, _check_calibration_monitor, _check_rung):
             rule(problems, view)
         if problems:
             raise ProductionError(problems)

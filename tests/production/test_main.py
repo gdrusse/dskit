@@ -92,7 +92,7 @@ PHASE_ONE_VERBS = (
 #: now honours, so it is registered; the other five are not, and offering
 #: one would advertise a control nothing would take.
 PHASE_TWO_VERBS = ("replay", "outcomes", "report", "approve-hold", "ack", "silence")
-LANDED_PHASE_TWO_VERBS = ("outcomes", "ack", "silence")
+LANDED_PHASE_TWO_VERBS = ("outcomes", "ack", "silence", "approve-hold")
 UNLANDED_PHASE_TWO_VERBS = tuple(
     verb for verb in PHASE_TWO_VERBS if verb not in LANDED_PHASE_TWO_VERBS
 )
@@ -121,6 +121,9 @@ MUTATING_VERBS = (
     # §5.11.2: both alert verbs append a record and both journal once.
     "ack",
     "silence",
+    # §5.5.1: `approve-hold` appends a `guard_state` release and "journals
+    # like every other mutating verb".
+    "approve-hold",
 )
 
 #: The read-only verbs of §7 — no journal row, no writer lock.
@@ -598,6 +601,7 @@ def control_argv(verb, doc_path, proof, request_id, extra=None):
         "ack": ["--fingerprint", "feed-stale", "--proof", proof.maker],
         "silence": ["--matcher", "source=feed", "--until", "2026-01-06T04:00:00Z",
                     "--proof", proof.maker],
+        "approve-hold": ["--guard", "size", "--scope", "*", "--proof", proof.maker],
     }[verb]
     return [verb, doc_path, *needs_proof, "--request-id", request_id, *(extra or [])]
 
@@ -619,6 +623,7 @@ VERB_PURPOSE = {
     "outcomes": "outcomes",
     "ack": "ack",
     "silence": "silence",
+    "approve-hold": "approve_hold",
 }
 
 
@@ -1624,3 +1629,59 @@ def test_both_alert_verbs_are_authenticated(doc_path, journal):
     ):
         with pytest.raises(SystemExit):
             cli.main(argv, journal_hook=journal)
+
+
+def test_the_approve_hold_verb_names_the_guard_and_the_scope_it_releases(
+    doc_path, proof, journal
+):
+    """§7: `approve-hold <doc> --guard NAME --scope KEY --proof FILE`. The
+    payload names the hold and nothing else — the instant is the consumed
+    command's and the guard's own bound is the document's."""
+    planned(doc_path, journal)
+    request_id = str(uuid.uuid4())
+    lock = InstanceLock(serve_root_of(doc_path).lock_path)
+    lock.acquire()
+    try:
+        code = cli.main(
+            ["approve-hold", doc_path, "--guard", "size", "--scope", "AAA",
+             "--proof", proof.maker, "--request-id", request_id],
+            journal_hook=journal,
+        )
+    finally:
+        lock.release()
+    assert code == STOPPED
+    stored = queued_command(doc_path, request_id)
+    assert stored["purpose"] == "approve_hold"
+    assert stored["payload"] == {"guard": "size", "scope_key": "AAA"}
+
+
+def test_the_approve_hold_verb_is_authenticated(doc_path, journal):
+    """§5.5.1: ending a hold early is an operator overriding a safety
+    verdict — "exactly the class of act D11 requires a verifier for" — so
+    argparse refuses a call with no proof."""
+    planned(doc_path, journal)
+    with pytest.raises(SystemExit):
+        cli.main(["approve-hold", doc_path, "--guard", "size", "--scope", "*"],
+                 journal_hook=journal)
+
+
+def test_approve_hold_refuses_a_release_the_series_cannot_honour(
+    doc_path, proof, journal, capsys
+):
+    """No serve process holds the lock, so the CLI applies the command
+    itself (§5.8). This document declares no guards and the fold holds no
+    hold, so the handler REJECTS — and §7 gives a refused control verb
+    exit 5, never a silent success. The receipt says which guard, so the
+    refusal is actionable and no `guard_state` reaches the chain."""
+    planned(doc_path, journal)
+    code = cli.main(
+        ["approve-hold", doc_path, "--guard", "size", "--scope", "*",
+         "--proof", proof.maker],
+        journal_hook=journal,
+    )
+    assert code == REFUSED
+    report = last_report(capsys)
+    assert report["purpose"] == "approve_hold"
+    assert report["status"] == "rejected"
+    assert "size" in report["reason"]
+    assert envelopes(doc_path, kind="guard_state") == []

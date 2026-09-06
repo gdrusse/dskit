@@ -1459,3 +1459,73 @@ def test_an_escalation_level_must_name_a_declared_sink():
     assert "nonsuch" in refusal(
         with_alerting(escalation={"final": {"after_s": 300, "sinks": ["nonsuch"]}})
     )
+
+
+# ---------------------------------------------------------------------------
+# §5.13.4 — the readiness knobs the series-proved evidence names read
+# ---------------------------------------------------------------------------
+
+
+def with_readiness(**knobs):
+    """The example document with `readiness` knobs set, or removed when None."""
+    obj = example_document()
+    for key, value in knobs.items():
+        if value is None:
+            obj["readiness"].pop(key, None)
+        else:
+            obj["readiness"][key] = value
+    return obj
+
+
+def test_the_four_phase_two_readiness_knobs_are_optional():
+    """§5.13.4's evidence names need a window, a minimum, a maximum age and
+    the monitor whose verdict they read; every one is absent from §4.1's
+    illustration, so a phase-1 document keeps its identity."""
+    doc = ServeDocument.from_obj(example_document())
+    for name in ("outcome_window", "min_outcome_coverage", "max_outcome_age",
+                 "calibration_monitor"):
+        assert getattr(doc.readiness, name) is None
+
+
+def test_declaring_a_readiness_knob_moves_the_identity_and_omitting_it_does_not():
+    base = ServeDocument.from_obj(example_document())
+    declared = ServeDocument.from_obj(with_readiness(outcome_window="P7D"))
+    assert declared.doc_hash != base.doc_hash
+    assert "outcome_window" not in base.to_obj()["readiness"]
+
+
+def test_the_readiness_windows_are_iso_8601_durations():
+    doc = ServeDocument.from_obj(
+        with_readiness(outcome_window="P7D", max_outcome_age="PT6H")
+    )
+    assert doc.readiness.outcome_window == "P7D"
+    assert doc.readiness.max_outcome_age == "PT6H"
+    for knob in ("outcome_window", "max_outcome_age"):
+        assert knob in refusal(with_readiness(**{knob: "7 days"}))
+
+
+@pytest.mark.parametrize("value", [0, -0.1, 1.01, 2, "0.8", True])
+def test_the_minimum_coverage_is_a_fraction_above_zero_and_at_most_one(value):
+    assert "min_outcome_coverage" in refusal(with_readiness(min_outcome_coverage=value))
+
+
+@pytest.mark.parametrize("value", [0.5, 1, 0.999])
+def test_a_fraction_in_range_is_accepted_as_the_minimum_coverage(value):
+    assert ServeDocument.from_obj(
+        with_readiness(min_outcome_coverage=value)
+    ).readiness.min_outcome_coverage == value
+
+
+def test_the_calibration_monitor_must_name_a_declared_monitor():
+    """A knob naming a monitor the document does not declare would read a
+    verdict nothing writes — the same cross-section rule `alerting.routes`
+    already answers to."""
+    assert "calibration_monitor" in refusal(with_readiness(calibration_monitor="absent"))
+    declared = list(example_document()["monitors"])[0]
+    ServeDocument.from_obj(with_readiness(calibration_monitor=declared))
+
+
+def test_an_unknown_readiness_knob_still_refuses():
+    """Default-deny reaches the new keys too: a typo is an error, never a
+    knob that silently does nothing."""
+    assert "scored_enough" in refusal(with_readiness(scored_enough=True))

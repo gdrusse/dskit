@@ -122,6 +122,7 @@ from dskit.production.vocab import (
     CASH_FLOW_KINDS,
     CONTROL_PURPOSES,
     LEG_ORIGINS,
+    RECORD_KINDS,
     RUNGS,
     TRIP_REASONS,
 )
@@ -155,6 +156,9 @@ _OPERATOR_ACTOR = "operator"
 
 #: ``Breaker.trip``'s cause for the out-of-band kill switch (§5.6).
 _HALT_CAUSE = "halt"
+
+#: The record kind ``approve_hold`` appends (§6, §5.5.1).
+_GUARD_STATE = pin_members("compose.py's release record kind", ("guard_state",), RECORD_KINDS)[0]
 
 #: The recipe a reduction authority id derives from — one owner, so a
 #: replayed approval mints the same id and the ledger dedups it.
@@ -1646,6 +1650,50 @@ class _Ack(_SuppressionVerb):
         return self.suppression(command, ack.to_obj())
 
 
+class _ApproveHold(_Verb):
+    """`approve_hold`: end one guard's hold on a scope before its ttl (§5.5.1).
+
+    The chain answers the §6 ``guard_state`` body and the processor
+    appends it, inside the same barrier as the ``control_request`` — the
+    same shape every other verb whose owner holds no ledger takes.
+    """
+
+    PURPOSE = "approve_hold"
+
+    def run(self, command, view):
+        """Ask the chain to clear the named hold under the operator's proof.
+
+        The instant is the CONSUMED COMMAND's ``queued_at_ms``, never the
+        handler's clock, so a crash-replayed command rebuilds the same
+        body and the ledger dedups it instead of refusing a changed
+        payload under a reused id (§6).
+        """
+        payload = command["payload"]
+        for name in ("guard", "scope_key"):
+            value = payload.get(name)
+            if not isinstance(value, str) or not value:
+                return self.rejected(
+                    f"approve-hold requires {name}: a release names the ONE hold it clears "
+                    "(§5.5.1)"
+                )
+        principal, proof = _principal_and_proof(self._w, command)
+        try:
+            body = self._w.decision.guards.approve_hold(
+                view,
+                payload["guard"],
+                payload["scope_key"],
+                {
+                    "control_request_id": command["request_id"],
+                    "principal_digest": principal,
+                    "proof_digest": proof,
+                },
+                command["queued_at_ms"],
+            )
+        except ProductionError as exc:
+            return self.rejected(redact(str(exc)))
+        return self.applied([self.record(_GUARD_STATE, command["request_id"], body)])
+
+
 #: One handler class per ``CONTROL_PURPOSES`` member, pinned exact: a
 #: purpose with no handler is silently rejected by ``CommandProcessor``,
 #: so a missing entry is an operator act that vanishes into a receipt.
@@ -1669,6 +1717,7 @@ _VERBS = pin_members(
             _Outcomes,
             _Ack,
             _Silence,
+            _ApproveHold,
         )
     },
     CONTROL_PURPOSES,

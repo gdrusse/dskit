@@ -34,9 +34,37 @@ A NO-GO is a VERDICT, recorded like a GO, because "the checklist is not
 yet satisfied" is a result and not an error; the exit code 5 belongs to
 ``__main__``. Nothing here reads wall time unless asked: ``evaluate``
 takes its instant from the caller and falls back to the injected clock.
+
+**Phase 2 — §5.13.4, evidence the SERIES can prove.** The checklist
+mechanism does not change; only the kinds of evidence an item may cite.
+Phase 1 knows two: an operator-supplied assertion (any truthy value
+passes) and the foundation checks above. The third is
+:meth:`Readiness.evidence_for`, resolved against :data:`EVIDENCE_RULES` —
+a module-level TABLE keyed by ``vocab.READINESS_EVIDENCE``, so a new
+evidence name is a table entry and a test line rather than a branch.
+Three readings shape the family:
+
+* **The vacuous case FAILS.** A series with no decided leg in the window,
+  or no outcome at all, has proven nothing — so it is a NO-GO, which is
+  precisely why §5.13.4 makes these WAIVABLE items: a shadow series and a
+  new release clear them with a waiver. (§5.10.1's monitor answers the
+  same emptiness with ``insufficient``; readiness has no third verdict,
+  so it fails closed.)
+* **Nothing here holds a threshold.** The window, the minimum coverage,
+  the maximum label age and the monitor whose verdict is read are
+  ``document.readiness`` knobs, and an item citing a name whose knob the
+  document lacks REFUSES by name — a misconfiguration is not a failed
+  proof.
+* **A rule takes what it needs.** ``view`` is the fold's frozen
+  projection, which is what an evidence name about current state would
+  read; the two outcome rules read the ledger's own history through
+  ``LedgerHistory`` (§5.13.2's one reader) and the calibration rule reads
+  ``SeriesState.monitor_state()``, because §6 puts monitor verdicts in the
+  snapshot and deliberately NOT in ``StateView``.
 """
 
 import json
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
 
 from dskit.pipeline.node import check_int_param
@@ -46,18 +74,33 @@ from dskit.production.base import (
     _check_str,
     _check_unknown,
     canonical_hash,
+    pin_members,
 )
+from dskit.production.outcomes import standing_outcomes
+from dskit.production.reconcile import LedgerHistory
 from dskit.production.redact import get_logger
-from dskit.production.vocab import READINESS_VERDICTS, RECORD_KINDS
+from dskit.production.release import parse_iso_duration
+from dskit.production.vocab import (
+    MONITOR_STATUSES,
+    READINESS_EVIDENCE,
+    READINESS_VERDICTS,
+    RECORD_KINDS,
+    UNWAIVABLE_ITEMS,
+)
 
 __all__ = [
     "CHECKLIST_FIELDS",
     "DOCUMENT_WAIVER",
     "ITEM_FIELDS",
+    "EVIDENCE_KNOBS",
+    "EVIDENCE_RULES",
     "READINESS_ID_TAG",
+    "CalibrationCurrent",
+    "Evidence",
+    "OutcomeCoverage",
+    "OutcomeFreshness",
     "Readiness",
     "ReadinessResult",
-    "UNWAIVABLE_ITEMS",
     "checklist_digest",
     "readiness_digest",
 ]
@@ -70,19 +113,6 @@ ITEM_FIELDS = ("item", "required", "evidence", "waiver", "passed")
 #: What the checklist FILE declares per item — ``passed`` is the evaluation's
 #: answer, never an input.
 CHECKLIST_FIELDS = ITEM_FIELDS[:-1]
-
-#: §5.13's six foundations: release/runtime verification, executor
-#: conformance, authenticated execution-scope equality, a clean startup
-#: reconciliation, fenced lease capability and the required safety
-#: controls. Each must be present, required and unwaived.
-UNWAIVABLE_ITEMS = (
-    "release_verified",
-    "executor_conformant",
-    "scope_authenticated",
-    "startup_reconciled",
-    "lease_fenced",
-    "safety_controls",
-)
 
 #: The ``waiver`` recorded when ``document.readiness.waivers`` — not the
 #: checklist file — waived an item, so the digest records WHY it passed.
@@ -97,8 +127,7 @@ for _member, _vocabulary in ((_GO, READINESS_VERDICTS), (_NO_GO, READINESS_VERDI
                              (_READINESS, RECORD_KINDS)):
     if _member not in _vocabulary:
         raise ProductionError([f"readiness.py: {_member!r} is not a vocabulary member"])
-if len(set(UNWAIVABLE_ITEMS)) != len(UNWAIVABLE_ITEMS):
-    raise ProductionError(["readiness.py: UNWAIVABLE_ITEMS repeats a name"])
+
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +344,247 @@ class ReadinessResult:
 
 
 # ---------------------------------------------------------------------------
+# §5.13.4 — the third kind of evidence: what the series itself can prove
+# ---------------------------------------------------------------------------
+
+#: The two `MONITOR_STATUSES` that are an ANSWER. `alarm` is the monitor
+#: saying the bound broke; `insufficient` is it saying it cannot answer
+#: yet — the same "not yet known" `provisional` carries, and evidence is
+#: what a series PROVED, never what it has not disproved.
+_ANSWERED_STATUSES = pin_members(
+    "readiness.py's answered monitor statuses", ("ok", "warn"), MONITOR_STATUSES
+)
+
+
+class Evidence(ABC):
+    """One evidence name the SERIES can prove for itself (§5.13.4).
+
+    A rule is a strategy object in :data:`EVIDENCE_RULES`, keyed by its
+    ``vocab.READINESS_EVIDENCE`` name, so adding one is a table entry and
+    a test line and never a branch in :meth:`Readiness.evaluate`. It is
+    handed the :class:`Readiness` whose document and collaborators it
+    reads, the fold's frozen view and the evaluation instant, and answers
+    ``(proven, detail)`` — the detail says WHY, and is what an operator
+    reads back out of the log when an item did not pass.
+
+    Examples
+    --------
+    A child's own evidence, registered under a name of its own::
+
+        class ShadowRunLongEnough(Evidence):
+            def prove(self, readiness, view, at_ms):
+                return view.head_seq > 1000, f"{view.head_seq} records folded"
+
+        EVIDENCE_RULES["shadow_long_enough"] = ShadowRunLongEnough()
+        # -> a checklist item may now cite "shadow_long_enough" as its evidence,
+        #    and nothing else in the module changes
+    """
+
+    @abstractmethod
+    def prove(self, readiness, view, at_ms):
+        """Return ``(proven, detail)`` for this evidence name at ``at_ms``."""
+
+
+class OutcomeCoverage(Evidence):
+    """The fraction of the window's decided legs carrying a terminal outcome.
+
+    A series whose labels never arrive cannot be shown to be working, and
+    a GO earned without that is the checklist agreeing with itself. Every
+    decided leg counts, including one whose ``final`` was ``none``: §6's
+    ``decision.legs[]`` is what a `DecidedLeg` is (§5.13.2), a second
+    definition here would be the copy that diverges, and a label stream
+    can score a decision that never traded. A series that mostly declines
+    therefore declares a lower minimum — a document choice, not a code
+    one.
+
+    Examples
+    --------
+    ::
+
+        rule = OutcomeCoverage()
+        proven, detail = rule.prove(readiness, state.snapshot(), 1_767_268_800_000)
+        # -> (False, '3/5 decided leg(s) carry a terminal outcome (0.60) ...')
+    """
+
+    def prove(self, readiness, view, at_ms):
+        """Judge the window's coverage against ``document.readiness.min_outcome_coverage``.
+
+        Parameters
+        ----------
+        readiness : Readiness
+        view : StateView
+            Unread here: coverage is a question about recorded history.
+        at_ms : int
+            The cut; an outcome learned later was not knowable now.
+
+        Returns
+        -------
+        tuple
+            ``(proven, detail)``.
+        """
+        window_ms = readiness.window_ms("outcome_window")
+        minimum = readiness.knob("min_outcome_coverage")
+        legs = readiness.history.legs(max(0, at_ms - window_ms))
+        if not legs:
+            return False, (
+                f"no decided leg in the last {window_ms} ms: an unscored window proves "
+                "nothing (waive the item while the series is new)"
+            )
+        heads = standing_outcomes(readiness.history.outcomes(0), at_ms)
+        scored = sum(
+            1 for leg in legs
+            if leg.leg_id in heads and heads[leg.leg_id][1].terminal
+        )
+        covered = scored / len(legs)
+        detail = (
+            f"{scored}/{len(legs)} decided leg(s) carry a terminal outcome "
+            f"({covered:.2f}) against the declared minimum {minimum:.2f}"
+        )
+        return covered >= minimum, detail
+
+
+class OutcomeFreshness(Evidence):
+    """The age of the newest ``known_at_ms``, against a declared maximum.
+
+    It catches the stopped label feed that coverage alone would not,
+    because a long window keeps its average up for a while after the
+    arrivals stop. The scan is over ``known_at_ms`` and is deliberately
+    NOT bounded by ``effective_at_ms``: a late label is precisely one
+    whose effective instant is old and whose arrival is now, so bounding
+    on the effective instant would drop the freshest arrival there is.
+
+    Examples
+    --------
+    ::
+
+        rule = OutcomeFreshness()
+        proven, detail = rule.prove(readiness, state.snapshot(), 1_767_268_800_000)
+        # -> (True, 'the newest outcome arrived 60000 ms ago, against ...')
+    """
+
+    def prove(self, readiness, view, at_ms):
+        """Judge the newest arrival against ``document.readiness.max_outcome_age``.
+
+        Parameters
+        ----------
+        readiness : Readiness
+        view : StateView
+            Unread here: freshness is a question about recorded history.
+        at_ms : int
+            The cut.
+
+        Returns
+        -------
+        tuple
+            ``(proven, detail)``.
+        """
+        maximum = readiness.window_ms("max_outcome_age")
+        arrivals = [
+            outcome.known_at_ms
+            for _record_id, outcome in readiness.history.outcomes(0)
+            if outcome.known_at_ms <= at_ms
+        ]
+        if not arrivals:
+            return False, (
+                f"no outcome had arrived by {at_ms}: a feed that has never delivered "
+                "proves nothing"
+            )
+        age = at_ms - max(arrivals)
+        # Inclusive, as every `guards.Bound` maximum is: an age bound that
+        # failed AT its bound would be the one maximum in the package that
+        # means something else.
+        return age <= maximum, (
+            f"the newest outcome arrived {age} ms ago, against the declared maximum {maximum} ms"
+        )
+
+
+class CalibrationCurrent(Evidence):
+    """The declared calibration monitor's latest verdict, and what it may not be.
+
+    Not ``alarm``, and NOT ``provisional``: §5.10.1 makes an outcome
+    monitor say out loud that its labels are still arriving, and treating
+    "not yet known" as "fine" is the failure this hook exists to prevent.
+    ``insufficient`` fails for the same reason — a monitor that could not
+    answer has not answered. Every SLICE must be evidence, because the
+    fold keys verdicts by ``(monitor, slice)`` and a per-instrument
+    monitor would otherwise pass on its best one.
+
+    Examples
+    --------
+    ::
+
+        rule = CalibrationCurrent()
+        proven, detail = rule.prove(readiness, state.snapshot(), 1_767_268_800_000)
+        # -> (False, "monitor 'calib': slice 'all' is 'ok' and provisional")
+    """
+
+    def prove(self, readiness, view, at_ms):
+        """Judge every folded slice of ``document.readiness.calibration_monitor``.
+
+        Parameters
+        ----------
+        readiness : Readiness
+        view : StateView
+            Unread here: §6 carries monitor verdicts in the snapshot and
+            deliberately not as a ``StateView`` member.
+        at_ms : int
+            Unread here: a verdict is the latest one folded, not one that
+            expires.
+
+        Returns
+        -------
+        tuple
+            ``(proven, detail)``.
+        """
+        name = readiness.knob("calibration_monitor")
+        slices = readiness.monitor_verdicts().get(name, {})
+        if not slices:
+            return False, (
+                f"monitor {name!r} has recorded no verdict: an unscored monitor is not evidence"
+            )
+        failing = [
+            f"slice {slice_name!r} is {verdict.get('status')!r}"
+            + (" and provisional" if verdict.get("provisional") else "")
+            for slice_name, verdict in sorted(slices.items())
+            if verdict.get("status") not in _ANSWERED_STATUSES or verdict.get("provisional")
+        ]
+        if failing:
+            return False, f"monitor {name!r}: " + "; ".join(failing)
+        return True, f"monitor {name!r} answered on {len(slices)} slice(s), none alarming"
+
+
+#: §5.13.4's table: evidence name -> the rule that proves it. Keyed
+#: EXACTLY by ``vocab.READINESS_EVIDENCE``, so a name with no rule — or a
+#: rule under a name the vocabulary does not carry — refuses at import.
+#: A child adds its own by putting an :class:`Evidence` under a new key.
+EVIDENCE_RULES = dict(
+    pin_members(
+        "readiness.py's evidence rules",
+        {
+            "outcome_coverage": OutcomeCoverage(),
+            "outcome_freshness": OutcomeFreshness(),
+            "calibration_current": CalibrationCurrent(),
+        },
+        READINESS_EVIDENCE,
+        exact=True,
+    )
+)
+
+#: Which ``document.readiness`` knob each evidence name needs, so a
+#: missing one refuses BY NAME instead of falling back on a threshold the
+#: code invented (§4.1: "Code holds no threshold").
+EVIDENCE_KNOBS = pin_members(
+    "readiness.py's evidence knobs",
+    {
+        "outcome_coverage": ("outcome_window", "min_outcome_coverage"),
+        "outcome_freshness": ("max_outcome_age",),
+        "calibration_current": ("calibration_monitor",),
+    },
+    READINESS_EVIDENCE,
+)
+
+
+# ---------------------------------------------------------------------------
 # The evaluator
 # ---------------------------------------------------------------------------
 
@@ -325,15 +595,21 @@ class Readiness:
     Parameters
     ----------
     document : ServeDocument
-        Read for ``readiness.waivers`` (item NAMES the document waives)
-        and ``readiness.valid_for_s``.
+        Read for ``readiness.waivers`` (item NAMES the document waives),
+        ``readiness.valid_for_s``, and — when a checklist item cites one
+        of :data:`EVIDENCE_RULES`' names — the four §5.13.4 knobs that
+        name's rule reads.
     release : ReleaseManifest
         Binds ``release_hash`` and ``checklist_digest`` (D24).
     ledger : Ledger
-        Where ``record`` appends and barriers the ``readiness`` record.
+        Where ``record`` appends and barriers the ``readiness`` record,
+        and what the outcome evidence reads through its own
+        ``LedgerHistory`` (the one reader of the chain, §5.13.2).
     state : SeriesState
         The fold; ``record`` refuses an evaluation older than the one the
-        fold already holds, so a GO never rolls back in time.
+        fold already holds, so a GO never rolls back in time, and
+        ``monitor_state()`` is where ``calibration_current`` reads a
+        verdict that survived a restart.
     clock : Clock
         The fallback instant for ``evaluate`` when the caller gives none.
     checklist_path : str or pathlib.Path
@@ -356,6 +632,7 @@ class Readiness:
 
     def __init__(self, document, release, *, ledger, state, clock, checklist_path):
         block = document.readiness
+        self._block = block
         self._waivers = tuple(block.waivers)
         self._valid_for_ms = int(block.valid_for_s) * 1000
         self._release_hash = release.release_hash
@@ -364,6 +641,101 @@ class Readiness:
         self._state = state
         self._clock = clock
         self._path = checklist_path
+        self._history = LedgerHistory(ledger)
+
+    # -- what an Evidence rule reads (§5.13.4) -------------------------------
+
+    @property
+    def history(self):
+        """Return the ledger's own reader (§5.13.2's one reader of the chain)."""
+        return self._history
+
+    def monitor_verdicts(self):
+        """Return the fold's latest ``monitor`` verdict per monitor and slice.
+
+        Returns
+        -------
+        mapping
+            ``monitor -> slice -> body``. It is the FOLD's, not a live
+            monitor's: `ready` may run with no loop in the process, and a
+            freshly built monitor has observed nothing.
+        """
+        return self._state.monitor_state()
+
+    def knob(self, name):
+        """Return one ``document.readiness`` knob, refusing when it is absent.
+
+        Parameters
+        ----------
+        name : str
+            The knob an evidence rule needs.
+
+        Returns
+        -------
+        object
+            The declared value.
+
+        Raises
+        ------
+        ProductionError
+            When the document declares none — a missing threshold is a
+            misconfiguration, and §4.1 leaves the code none to fall back
+            on.
+        """
+        value = getattr(self._block, name)
+        if value is None:
+            raise ProductionError(
+                [f"document.readiness.{name} is required by the checklist evidence that "
+                 "reads it, and code holds no threshold (§4.1)"]
+            )
+        return value
+
+    def window_ms(self, name):
+        """Return one ISO-8601 duration knob in milliseconds.
+
+        Parameters
+        ----------
+        name : str
+            ``outcome_window`` or ``max_outcome_age``.
+
+        Returns
+        -------
+        int
+            The duration in ms, through ``release.parse_iso_duration`` —
+            the one owner of that spelling.
+        """
+        return parse_iso_duration(self.knob(name))
+
+    def evidence_for(self, name, view, at_ms):
+        """Prove one evidence name the series can answer for itself (§5.13.4).
+
+        Parameters
+        ----------
+        name : str
+            A key of :data:`EVIDENCE_RULES`.
+        view : StateView
+            The fold's frozen projection.
+        at_ms : int
+            The evaluation instant.
+
+        Returns
+        -------
+        tuple
+            ``(proven, detail)`` — the rule's verdict and why.
+
+        Raises
+        ------
+        ProductionError
+            When ``name`` is not in the table, or the document lacks a
+            knob the rule reads.
+        """
+        rule = EVIDENCE_RULES.get(name) if isinstance(name, str) else None
+        if rule is None:
+            raise ProductionError(
+                [f"{name!r} is not a series evidence name; the table holds "
+                 f"{sorted(EVIDENCE_RULES)}"]
+            )
+        return rule.prove(self, view, at_ms)
 
     # -- evaluate --------------------------------------------------------------
 
@@ -404,9 +776,14 @@ class Readiness:
         items = self._checklist_items(problems, raw)
         if items is not None:
             self._check_foundations(problems, items)
+            self._check_evidence_knobs(problems, items)
         if problems:
             raise ProductionError(problems)
-        evaluated = sorted((self._evaluate_item(item) for item in items), key=lambda i: i["item"])
+        view = self._state.snapshot()
+        evaluated = sorted(
+            (self._evaluate_item(item, view, at_ms) for item in items),
+            key=lambda i: i["item"],
+        )
         verdict = _GO if all(i["passed"] for i in evaluated if i["required"]) else _NO_GO
         return ReadinessResult(
             verdict=verdict,
@@ -455,18 +832,41 @@ class Readiness:
                     f"document.readiness.waivers names {name!r}, which is not a checklist item"
                 )
 
-    def _evaluate_item(self, item):
-        """Answer one item: truthy evidence or a waiver passes it; the waiver says which source."""
+    def _check_evidence_knobs(self, problems, items):
+        """Refuse an item citing a series evidence name whose knob the document lacks."""
+        for item in items:
+            evidence = item["evidence"]
+            if not isinstance(evidence, str):
+                continue
+            for knob in EVIDENCE_KNOBS.get(evidence, ()):
+                if getattr(self._block, knob) is None:
+                    problems.append(
+                        f"checklist item {item['item']!r} cites {evidence!r}, which reads "
+                        f"document.readiness.{knob} — and the document declares none "
+                        "(§4.1: code holds no threshold)"
+                    )
+
+    def _evaluate_item(self, item, view, at_ms):
+        """Answer one item: proven evidence or a waiver passes it; the waiver says which source."""
         waiver = item["waiver"]
         if waiver is None and item["item"] in self._waivers:
             waiver = DOCUMENT_WAIVER
+        proven, detail = self._proven(item["evidence"], view, at_ms)
+        if detail:
+            _LOG.info("readiness item %s: %s", item["item"], detail)
         return {
             "item": item["item"],
             "required": item["required"],
             "evidence": item["evidence"],
             "waiver": waiver,
-            "passed": bool(item["evidence"]) or waiver is not None,
+            "passed": proven or waiver is not None,
         }
+
+    def _proven(self, evidence, view, at_ms):
+        """Answer one item's evidence: the table's rule when it names one, else truthiness."""
+        if isinstance(evidence, str) and evidence in EVIDENCE_RULES:
+            return self.evidence_for(evidence, view, at_ms)
+        return bool(evidence), ""
 
     # -- record and read back ------------------------------------------------------
 

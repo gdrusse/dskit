@@ -42,6 +42,7 @@ Nothing here reads wall time: the clock is injected and cooling-off is
 measured against the acknowledged trip's ``recorded_at_ms``.
 """
 
+import dataclasses
 import os
 from dataclasses import dataclass
 
@@ -49,7 +50,7 @@ from dskit.onboarding.base import fsync_dir
 from dskit.production.base import (
     ProductionError,
     _check_str,
-    check_digest,
+    check_credentials,
     pin_members,
 )
 from dskit.production.ledger import HeadBoundCache, validate_cache_head
@@ -104,15 +105,6 @@ _CANCEL_REFUSED = ("rejected", "not_sent")
 _UNRESOLVED = "unknown"
 _OUTCOME_NONE, _OUTCOME_SUBMITTED = "none", "submitted"
 _OUTCOME_FAILED, _OUTCOME_PARTIAL, _OUTCOME_UNKNOWN = "failed", "partial", "unknown"
-#: The three optional ids an authenticated transition carries, and the
-#: check each owes. The two digests are 64-hex through ``base.check_digest``
-#: — a ``trip`` body records DIGESTS, so a raw proof handed in where a
-#: digest belongs must refuse rather than be written to the chain (D11).
-_CREDENTIAL_CHECKS = {
-    "control_request_id": _check_str,
-    "principal_digest": check_digest,
-    "proof_digest": check_digest,
-}
 
 
 pin_members("breaker.py's CAUSE_TARGETS values", CAUSE_TARGETS.values(), BREAKER_STATES)
@@ -204,13 +196,7 @@ class _Credentials:
 
     def check(self, problems, required):
         """Append a problem per malformed id; per missing id too when ``required``."""
-        for name, checked in _CREDENTIAL_CHECKS.items():
-            value = getattr(self, name)
-            if value is None:
-                if required:
-                    problems.append(f"{name} is required: this is an authenticated act (D12)")
-            else:
-                checked(problems, name, value)
+        check_credentials(problems, dataclasses.asdict(self), required=required)
 
 
 class Breaker:

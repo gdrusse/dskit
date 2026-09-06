@@ -1803,3 +1803,146 @@ def test_the_router_is_built_with_the_documents_inhibit_rules(
         if record["body"]["suppressed"] == "inhibited"
     ]
     assert len(suppressed) == 1
+
+
+# ==========================================================================
+# `approve_hold` — the third authenticated guard verb (§5.5.1)
+# ==========================================================================
+
+
+def with_guards(document, guards):
+    """The same document with a `guards` block, so a hold has a guard to name."""
+    obj = document.to_obj()
+    obj["guards"] = json.loads(json.dumps(guards))
+    return ServeDocument.from_obj(obj)
+
+
+def held(recording, guard="size", scope_key="*", held_until_ms=None):
+    """Append the §6 `guard_state` hold the release will clear, and fold it."""
+    body = {
+        "guard": guard,
+        "scope_key": scope_key,
+        "state_kind": "hold",
+        "reason": "quantity 500 outside max 100",
+        "held_until_ms": NOW_MS + 3_600_000 if held_until_ms is None else held_until_ms,
+        "resume_at_ms": None,
+        "finding": {"guard": guard, "verdict": "hold"},
+    }
+    recording.ledger.append(
+        {"kind": "guard_state", "id": f"guard_state:hold:{guard}:{scope_key}", "body": body}
+    )
+    return body
+
+
+def hold_command(guard="size", scope_key="*", **kw):
+    """One consumed `approve_hold` command."""
+    return command("approve_hold", {"guard": guard, "scope_key": scope_key}, **kw)
+
+
+@pytest.fixture
+def guarded(shadow_document, composer):
+    """The shadow document with one guard, composed, with a hold standing."""
+    document = with_guards(shadow_document, {"size": LIVE_GUARDS["size"]})
+    bundles = composer.build(document)
+    body = held(bundles[5])
+    return document, bundles, body
+
+
+def test_the_package_holds_a_handler_for_every_control_purpose_including_the_new_one(
+    shadow_document, shadow_bundles, release_manifest
+):
+    """§5.8: a purpose with no handler is silently rejected by
+    `CommandProcessor`, so a missing entry is an operator act that vanishes
+    into a receipt."""
+    handlers = handlers_for(shadow_document, shadow_bundles, release=release_manifest)
+    assert set(handlers) == set(CONTROL_PURPOSES)
+    assert "approve_hold" in handlers
+
+
+def test_the_approve_hold_handler_returns_the_guard_state_the_processor_appends(
+    guarded, release_manifest
+):
+    """The chain answers the BODY and the handler wraps it: `GuardChain`
+    holds no ledger, and `CommandProcessor` appends inside its one barrier."""
+    document, bundles, hold = guarded
+    handlers = handlers_for(document, bundles, release=release_manifest)
+    consumed = hold_command()
+    records, status, _reason = handlers["approve_hold"](consumed, bundles[5].state.snapshot())
+    assert status == "applied"
+    (record,) = records
+    assert record["kind"] == "guard_state"
+    assert record["id"].startswith("guard_state:")
+    body = record["body"]
+    assert body["state_kind"] == "released"
+    assert (body["guard"], body["scope_key"]) == ("size", "*")
+    assert body["held_until_ms"] == hold["held_until_ms"]
+    assert body["control_request_id"] == consumed["request_id"]
+    assert len(body["principal_digest"]) == 64 and len(body["proof_digest"]) == 64
+
+
+def test_a_replayed_approve_hold_command_produces_a_byte_identical_body(
+    guarded, release_manifest
+):
+    """The instant a release stamps is the CONSUMED COMMAND's, never the
+    handler's clock — or a crash-replayed command would be a changed
+    payload under a reused id (§6)."""
+    document, bundles, _hold = guarded
+    handlers = handlers_for(document, bundles, release=release_manifest)
+    consumed = hold_command()
+    view = bundles[5].state.snapshot()
+    assert handlers["approve_hold"](consumed, view) == handlers["approve_hold"](consumed, view)
+
+
+def test_the_approve_hold_handler_rejects_a_pair_that_holds_nothing(
+    guarded, release_manifest
+):
+    """A refusal the operator asked for is a REJECTED receipt, not a raise:
+    the command was well formed and the series had nothing to release."""
+    document, bundles, _hold = guarded
+    handlers = handlers_for(document, bundles, release=release_manifest)
+    records, status, reason = handlers["approve_hold"](
+        hold_command(scope_key="AAA"), bundles[5].state.snapshot()
+    )
+    assert (records, status) == ((), "rejected")
+    assert "AAA" in reason
+
+
+def test_the_approve_hold_handler_rejects_a_guard_the_document_does_not_declare(
+    guarded, release_manifest
+):
+    document, bundles, _hold = guarded
+    handlers = handlers_for(document, bundles, release=release_manifest)
+    records, status, reason = handlers["approve_hold"](
+        hold_command(guard="day_loss"), bundles[5].state.snapshot()
+    )
+    assert (records, status) == ((), "rejected")
+    assert "day_loss" in reason
+
+
+@pytest.mark.parametrize("missing", ["guard", "scope_key"])
+def test_the_approve_hold_handler_rejects_a_payload_that_names_no_hold(
+    guarded, release_manifest, missing
+):
+    document, bundles, _hold = guarded
+    handlers = handlers_for(document, bundles, release=release_manifest)
+    consumed = hold_command()
+    consumed["payload"].pop(missing)
+    records, status, reason = handlers["approve_hold"](consumed, bundles[5].state.snapshot())
+    assert (records, status) == ((), "rejected")
+    assert missing in reason
+
+
+def test_the_released_record_folds_the_hold_away(guarded, release_manifest):
+    """End to end through the fold: the handler's record, appended to the
+    real ledger, leaves the pair unheld — which is what makes the release
+    durable rather than a decision held in a strategy object."""
+    document, bundles, _hold = guarded
+    recording = bundles[5]
+    handlers = handlers_for(document, bundles, release=release_manifest)
+    assert sorted(recording.state.snapshot().guard_holds) == [("size", "*")]
+    records, _status, _reason = handlers["approve_hold"](
+        hold_command(), recording.state.snapshot()
+    )
+    for record in records:
+        recording.ledger.append(record)
+    assert recording.state.snapshot().guard_holds == {}

@@ -1581,17 +1581,22 @@ def test_an_empty_chain_allows_and_asks_for_nothing():
     assert chain.requirements((candidate(),), AT_MS, CAL) == ()
 
 
-def test_the_chains_public_surface_is_exactly_four_names():
+def test_the_chains_public_surface_is_exactly_five_names():
+    # Four in phase 1; §5.5.1 adds `approve_hold`, the one verb that reads
+    # the fold's holds instead of judging a proposal. Anything else on the
+    # chain would be a seam nobody decided to offer.
     chain = chain_of(a_limit(name="size"))
     public = {name for name in dir(chain) if not name.startswith("_")}
-    assert public == {"requirements", "check_all", "check_authority_scope", "guards"}
+    assert public == {
+        "requirements", "check_all", "check_authority_scope", "approve_hold", "guards",
+    }
 
 
 def test_no_chain_verb_accepts_an_operation_or_a_cancel():
     # D9: cancels bypass proposal guards entirely. There is no seam for one —
     # not a parameter, not a verb — so a cancel cannot be routed here by
     # mistake.
-    for name in ("requirements", "check_all", "check_authority_scope"):
+    for name in ("requirements", "check_all", "check_authority_scope", "approve_hold"):
         parameters = set(inspect.signature(getattr(GuardChain, name)).parameters)
         assert not parameters & {"operation", "cancel", "ack", "client_ref", "venue_ref"}
 
@@ -2351,3 +2356,173 @@ def test_a_child_measure_answers_through_the_same_limit():
     assert finding.measure == "child_edge"
     assert finding.value == Decimal("0.03")
     assert not math.isnan(float(finding.value))
+
+
+# ---------------------------------------------------------------------------
+# §5.5.1 — `approve_hold`: ending one hold early, as an authenticated act
+# ---------------------------------------------------------------------------
+#
+# §5.5 rules that a `hold` expires as `refuse` at its ttl. `approve-hold` is
+# the phase-2 verb that ends one before then. A hold is a guard's refusal to
+# keep acting on a scope, so ending one early is an operator OVERRIDING a
+# safety verdict — the class of act D11 requires a verifier for — and it
+# grants nothing: the next proposal on that scope is judged by the whole
+# chain again.
+
+CONTROL_REQUEST_ID = "018f0f4e-7b21-7d3a-9c31-6d8f36d806a1"
+PRINCIPAL_DIGEST = "7" * 64
+PROOF_DIGEST = "8" * 64
+
+#: The §6 `guard_state` body a release carries: the seven fields of a hold
+#: plus the three ids that say who ended it and how they proved it.
+RELEASE_BODY_KEYS = {
+    "guard",
+    "scope_key",
+    "state_kind",
+    "reason",
+    "held_until_ms",
+    "resume_at_ms",
+    "finding",
+    "control_request_id",
+    "principal_digest",
+    "proof_digest",
+}
+
+
+def credentials(**over):
+    """The three ids an authenticated control act carries."""
+    values = {
+        "control_request_id": CONTROL_REQUEST_ID,
+        "principal_digest": PRINCIPAL_DIGEST,
+        "proof_digest": PROOF_DIGEST,
+    }
+    values.update(over)
+    return values
+
+
+def a_chain(**over):
+    """A chain of the §4.1 `size` limit, under whichever breach response is asked for."""
+    return GuardChain({"size": a_limit(name="size", **over)})
+
+
+def hold_view(guard="size", scope_key="*", held_until_ms=AT_MS + HOUR):
+    """A `StateView` stand-in holding one `(guard, scope_key)` pair."""
+    return held_view(guard=guard, scope_key=scope_key, held_until_ms=held_until_ms)
+
+
+def released_body(chain=None, view=None, guard="size", scope_key="*", at_ms=AT_MS, **over):
+    """Run `approve_hold` over a held view and return the body it answered."""
+    chain = chain or a_chain()
+    view = hold_view(guard=guard, scope_key=scope_key) if view is None else view
+    return chain.approve_hold(view, guard, scope_key, credentials(**over), at_ms)
+
+
+def test_approve_hold_answers_the_section_six_body_of_the_third_kind():
+    body = released_body()
+    assert set(body) == RELEASE_BODY_KEYS
+    assert body["state_kind"] == "released"
+    assert body["state_kind"] in vocab.GUARD_STATE_KINDS
+
+
+def test_the_release_names_the_hold_it_clears():
+    """"naming the hold it clears": the pair it is keyed by, the instant the
+    hold would have run to, and the guard's own finding — so the record says
+    which safety verdict was overridden without a second lookup."""
+    held = hold_view(held_until_ms=AT_MS + 2 * HOUR)
+    body = released_body(view=held)
+    original = held.guard_holds[("size", "*")]
+    assert body["guard"] == "size" and body["scope_key"] == "*"
+    assert body["held_until_ms"] == original["held_until_ms"]
+    assert body["finding"] == original["finding"]
+    assert original["reason"] in body["reason"]
+
+
+def test_the_release_carries_the_credentials_of_the_act():
+    body = released_body()
+    assert body["control_request_id"] == CONTROL_REQUEST_ID
+    assert body["principal_digest"] == PRINCIPAL_DIGEST
+    assert body["proof_digest"] == PROOF_DIGEST
+
+
+def test_the_scope_resumes_at_the_instant_of_the_act():
+    """A release is not a pause: the scope is free from the moment the
+    operator's act is recorded, which is what `resume_at_ms` says."""
+    body = released_body(at_ms=AT_MS + 5)
+    assert body["resume_at_ms"] == AT_MS + 5
+
+
+def test_approve_hold_refuses_a_pair_that_holds_nothing():
+    """"there is nothing left to release, and pretending otherwise would
+    record an act that did nothing"."""
+    chain = a_chain()
+    with pytest.raises(ProductionError):
+        chain.approve_hold(FakeView(), "size", "*", credentials(), AT_MS)
+
+
+def test_approve_hold_refuses_a_scope_key_that_is_not_the_held_one():
+    with pytest.raises(ProductionError):
+        released_body(view=hold_view(scope_key="AAA"), scope_key="BBB")
+
+
+def test_approve_hold_refuses_a_guard_the_document_does_not_declare():
+    """The chain judges what the document configured; a release against a
+    guard that is not in it names a hold nothing could have placed."""
+    with pytest.raises(ProductionError) as exc:
+        released_body(view=hold_view(guard="day_loss"), guard="day_loss")
+    assert "day_loss" in str(exc.value)
+
+
+@pytest.mark.parametrize("at_ms", [AT_MS + HOUR, AT_MS + HOUR + 1])
+def test_approve_hold_refuses_a_hold_that_has_already_passed(at_ms):
+    """The hold's own expiry rule, inclusive at the instant — the same one
+    `Limit.check` applies, so a hold cannot be both expired for the guard
+    and releasable for the operator."""
+    with pytest.raises(ProductionError):
+        released_body(at_ms=at_ms)
+
+
+def test_a_hold_is_releasable_up_to_the_instant_before_it_expires():
+    body = released_body(at_ms=AT_MS + HOUR - 1)
+    assert body["state_kind"] == "released"
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"control_request_id": None},
+        {"principal_digest": None},
+        {"proof_digest": None},
+        {"principal_digest": "not-a-digest"},
+        {"proof_digest": ""},
+    ],
+)
+def test_approve_hold_refuses_without_the_credentials_of_an_authenticated_act(over):
+    """D11: ending a hold early is an operator overriding a safety verdict,
+    so it carries a request id and two digests or it does not happen."""
+    with pytest.raises(ProductionError):
+        released_body(**over)
+
+
+def test_approve_hold_writes_nothing_itself():
+    """The chain holds no ledger: it answers the body and the control
+    handler is what appends it, inside the processor's one barrier."""
+    chain = a_chain()
+    assert not hasattr(chain, "_ledger")
+    released_body(chain=chain)
+
+
+def test_releasing_a_hold_grants_no_submit_authority():
+    """§5.5.1's last sentence, proved rather than asserted: the released
+    scope is judged by the WHOLE chain again, so a proposal that breaches
+    the limit still refuses — with the limit's own reason, not the hold's."""
+    chain = a_chain()
+    body = released_body(chain=chain)
+    freed = FakeView(guard_holds={})  # what the fold leaves after the release
+    assert body["state_kind"] == "released"
+    breaching = chain.check_all(proposal(qty=Decimal("500")), tick_state(view=freed))
+    _final, findings = breaching
+    finding = only(findings, "size")
+    assert finding.verdict == "refuse"
+    assert "held" not in finding.reason
+    inside = chain.check_all(proposal(qty=Decimal("1")), tick_state(view=freed))
+    assert only(inside[1], "size").verdict == "allow"

@@ -121,6 +121,12 @@ CLOSED_SET_NAMES = (
     # two instants, and the escalation ladder a document may climb.
     "SILENCE_STATES",
     "ESCALATION_LEVELS",
+    # §8 places the six readiness foundations here and phase 1 left them in
+    # `readiness.py`; §5.13.4 adds the evidence names beside them, and a
+    # closed set that lives in the module that reads it is exactly what
+    # this test exists to catch.
+    "UNWAIVABLE_ITEMS",
+    "READINESS_EVIDENCE",
 )
 
 #: The names whose value is a MAP, not a tuple — checked by their own tests.
@@ -178,6 +184,10 @@ EXPECTED_MEMBERS = {
         # is an outage with no evidence, so both alert verbs are approvals.
         "ack",
         "silence",
+        # Phase 2 (§5.5.1): ending a guard's hold early is an operator
+        # overriding a safety verdict — the class of act D11 requires a
+        # verifier for.
+        "approve_hold",
     ),
     "ORDER_EVENTS": (
         "not_sent",
@@ -244,7 +254,20 @@ EXPECTED_MEMBERS = {
     "CALENDAR_WINDOWS": ("session", "day", "event"),
     "AT_TIMES_RELATIVE": ("open", "close", "clock"),
     "LEG_ORIGINS": ("model", "reduction"),
-    "GUARD_STATE_KINDS": ("hold", "pause"),
+    # Phase 2 (§5.5.1): `approve-hold` clears a hold before its ttl, and the
+    # release is a RECORD of the third kind rather than a silent deletion.
+    "GUARD_STATE_KINDS": ("hold", "pause", "released"),
+    # §5.13 names the six foundations the rest of the ladder stands on.
+    "UNWAIVABLE_ITEMS": (
+        "release_verified",
+        "executor_conformant",
+        "scope_authenticated",
+        "startup_reconciled",
+        "lease_fenced",
+        "safety_controls",
+    ),
+    # §5.13.4's third kind of evidence: what the SERIES itself can prove.
+    "READINESS_EVIDENCE": ("outcome_coverage", "outcome_freshness", "calibration_current"),
     "PROCESS_EVENTS": ("start", "stop", "recovered"),
     "ECONOMIC_ATTRS": ("positions", "working", "balances"),
     "CASH_FLOW_KINDS": ("deposit", "withdrawal", "adjustment"),
@@ -283,6 +306,8 @@ EXPECTED_MEMBERS = {
         # so they arrive here through that tuple rather than beside it.
         "ack",
         "silence",
+        # Phase 2 (§5.5.1): so does `approve_hold`, for the same reason.
+        "approve_hold",
     ),
     "TICK_STATUSES": (
         "decided",

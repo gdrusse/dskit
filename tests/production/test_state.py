@@ -1561,6 +1561,73 @@ def test_guard_holds_and_pauses_survive_in_the_fold():
     assert isinstance(held, types.MappingProxyType)
 
 
+def test_a_released_guard_state_drops_the_hold_it_names():
+    """§5.5.1: `approve-hold` clears one hold before its ttl, "and the fold
+    drops it" — the release is a RECORD of the third kind, so the clearing
+    is durable and auditable rather than a deletion nobody can see."""
+    st, chain = new_state()
+    fold(st, chain, "guard_state", guard_state_body())
+    assert sorted(st.snapshot().guard_holds) == [("day_loss", "AAA")]
+    fold(st, chain, "guard_state",
+         guard_state_body(state_kind="released", resume_at_ms=BASE_MS + 5))
+    assert st.snapshot().guard_holds == {}
+
+
+def test_a_release_drops_only_the_pair_it_names():
+    st, chain = new_state()
+    fold(st, chain, "guard_state", guard_state_body())
+    fold(st, chain, "guard_state", guard_state_body(scope_key="BBB"))
+    fold(st, chain, "guard_state", guard_state_body(scope_key="BBB", state_kind="released"))
+    assert sorted(st.snapshot().guard_holds) == [("day_loss", "AAA")]
+
+
+def test_a_release_of_a_pair_that_holds_nothing_folds_to_nothing():
+    """The fold is not the gate: `GuardChain.approve_hold` is what refuses a
+    pair holding nothing, and a fold that raised here would make a replay of
+    a legitimately recorded chain fail after the fact."""
+    st, chain = new_state()
+    fold(st, chain, "guard_state", guard_state_body(state_kind="released"))
+    assert st.snapshot().guard_holds == {}
+
+
+def test_a_released_hold_never_reaches_a_snapshot():
+    st, chain = new_state()
+    fold(st, chain, "guard_state", guard_state_body())
+    fold(st, chain, "guard_state", guard_state_body(state_kind="released"))
+    assert st.to_snapshot_obj()["guard_holds"] == []
+
+
+def test_a_restart_that_replays_the_fold_does_not_resurrect_a_released_hold(tmp_path):
+    """§5.5.1: "so the release is durable and a restart cannot resurrect the
+    hold it cleared". Nothing here is mocked — a real `JsonlLedger`, a real
+    `SeriesState`, a real replay of the chain a second process reads."""
+    from dskit.production.ledger import JsonlLedger, ServeRoot
+
+    serve = ServeRoot(str(tmp_path / "serve"), SERIES_ID)
+    clock = FakeClock()
+    first = SeriesState(SERIES_ID)
+    ledger = JsonlLedger(serve, "proc-a", RELEASE_HASH, clock=clock, state=first)
+    try:
+        ledger.append({"kind": "guard_state", "id": "guard_state:hold:day_loss:AAA",
+                       "body": guard_state_body()})
+        assert sorted(first.snapshot().guard_holds) == [("day_loss", "AAA")]
+        ledger.append({"kind": "guard_state", "id": "guard_state:released:day_loss:AAA",
+                       "body": guard_state_body(state_kind="released",
+                                                resume_at_ms=BASE_MS + 5)})
+        ledger.barrier()
+    finally:
+        ledger.close()
+
+    restarted = SeriesState(SERIES_ID)
+    reopened = JsonlLedger(serve, "proc-b", RELEASE_HASH, clock=clock, state=restarted)
+    try:
+        for envelope in reopened.scan():
+            restarted.apply(envelope)
+    finally:
+        reopened.close()
+    assert restarted.snapshot().guard_holds == {}
+
+
 def test_a_control_request_is_pending_until_its_command_result():
     st, chain = new_state()
     fold(st, chain, "control_request",

@@ -67,8 +67,8 @@ GENESIS_HASH = "0" * 64
 PROCESS_ID = "proc-1"
 BASE_MS = 1_767_268_800_000
 
-#: The ten authenticated purposes §5.6 and §5.11.2 close — restated, not
-#: imported, so this file can disagree with `vocab` and say so.
+#: The eleven authenticated purposes §5.6, §5.11.2 and §5.5.1 close —
+#: restated, not imported, so this file can disagree with `vocab` and say so.
 AUTHENTICATED_PURPOSES = (
     "arm_request",
     "arm_approval",
@@ -82,6 +82,9 @@ AUTHENTICATED_PURPOSES = (
     # with no evidence, so both alert verbs carry a proof.
     "ack",
     "silence",
+    # §5.5.1: ending a guard's hold early is an operator overriding a
+    # safety verdict — the class of act D11 requires a verifier for.
+    "approve_hold",
 )
 
 #: The §7 mutating verbs that carry no maker-checker proof and so are not

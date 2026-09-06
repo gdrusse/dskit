@@ -58,11 +58,13 @@ from dskit.pipeline.node import reject_unknown_params  # noqa: F401  (re-export)
 from dskit.production.vocab import MONEY_FIELDS
 
 __all__ = [
+    "CREDENTIAL_CHECKS",
     "GENESIS_HASH",
     "ProductionError",
     "Registry",
     "canonical_bytes",
     "canonical_hash",
+    "check_credentials",
     "check_digest",
     "now_ms",
     "parse_utc_ms",
@@ -387,6 +389,54 @@ def check_digest(problems, name, value):
     """
     if not isinstance(value, str) or not _HEX_DIGEST.match(value):
         problems.append(f"{name} must be a 64-hex sha256 digest, got {value!r}")
+
+
+#: The three ids an authenticated control act carries, and the check each
+#: owes (D11, D12, §5.5.1). The two digests are 64-hex through
+#: :func:`check_digest`, because a record stores DIGESTS: a raw proof
+#: handed in where a digest belongs must refuse rather than be written to
+#: the chain. One table, because a breaker transition, an adoption and a
+#: released hold are the same act with different consequences, and three
+#: modules spelling it three ways is how one of them loosens.
+CREDENTIAL_CHECKS = {
+    "control_request_id": _check_str,
+    "principal_digest": check_digest,
+    "proof_digest": check_digest,
+}
+
+
+def check_credentials(problems, credentials, where=None, required=True):
+    """Append a problem per malformed credential; per missing one too when required.
+
+    Parameters
+    ----------
+    problems : list of str
+        The accumulator the caller raises from.
+    credentials : mapping
+        Any subset of :data:`CREDENTIAL_CHECKS`; a name it does not carry
+        reads as absent.
+    where : str or None
+        A prefix for the refusals (``"adopt"`` gives ``"adopt:
+        proof_digest ..."``); None names the credential alone.
+    required : bool
+        Whether an absent credential is itself a problem — an
+        authenticated act says yes, and the one transition that may be
+        the process's own says no.
+
+    Returns
+    -------
+    None
+        ``problems`` gains one entry per credential that is absent when
+        required, or present and malformed.
+    """
+    for name, checked in CREDENTIAL_CHECKS.items():
+        spelled = name if where is None else f"{where}: {name}"
+        value = credentials.get(name)
+        if value is None:
+            if required:
+                problems.append(f"{spelled} is required: this is an authenticated act (D12)")
+        else:
+            checked(problems, spelled, value)
 
 
 def pin_members(what, members, vocabulary, *, exact=False):

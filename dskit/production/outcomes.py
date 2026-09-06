@@ -83,6 +83,7 @@ __all__ = [
     "SettlementOutcomes",
     "forward_asof",
     "outcome_record_id",
+    "standing_outcomes",
 ]
 
 _LOG = get_logger("outcomes")
@@ -123,6 +124,46 @@ _LABEL_KIND_CHOICES = (_SETTLED, _MARKED)
 # ---------------------------------------------------------------------------
 # The forward as-of rule — one owner, because both sources need exactly it
 # ---------------------------------------------------------------------------
+
+
+def standing_outcomes(recorded, at_ms):
+    """Return each leg's unsuperseded head outcome as it stood at a cut (D21).
+
+    The one owner of "what stands": :meth:`OutcomeJoin.as_of` answers with
+    it, and ``readiness.py``'s outcome evidence asks the same question of
+    the same history. A second walk of the supersede chain would be the
+    copy that diverges the first time a chain link grows a rule.
+
+    Parameters
+    ----------
+    recorded : iterable of tuple
+        ``(record_id, Outcome)`` pairs, as ``LedgerHistory.outcomes``
+        answers them — the ENVELOPE's id, because ``supersedes`` names a
+        record.
+    at_ms : int
+        The ``known_at_ms <= at_ms`` cut; an outcome learned after it was
+        not knowable then.
+
+    Returns
+    -------
+    dict
+        ``leg_id -> (record_id, Outcome)`` for the head of each chain.
+    """
+    known = {
+        record_id: outcome
+        for record_id, outcome in recorded
+        if outcome.known_at_ms <= at_ms
+    }
+    superseded = {
+        outcome.supersedes for outcome in known.values() if outcome.supersedes is not None
+    }
+    heads = {}
+    for record_id, outcome in sorted(
+        known.items(), key=lambda pair: (pair[1].known_at_ms, pair[1].effective_at_ms, pair[0])
+    ):
+        if record_id not in superseded:
+            heads[outcome.leg_id] = (record_id, outcome)
+    return heads
 
 
 def forward_asof(legs, events, key, at):
@@ -931,21 +972,7 @@ class OutcomeJoin:
 
     def _standing(self, at_ms):
         """Return ``leg_id -> (record_id, Outcome)`` for the unsuperseded head at the cut."""
-        known = {
-            record_id: outcome
-            for record_id, outcome in self._by_id().items()
-            if outcome.known_at_ms <= at_ms
-        }
-        superseded = {
-            outcome.supersedes for outcome in known.values() if outcome.supersedes is not None
-        }
-        heads = {}
-        for record_id, outcome in sorted(
-            known.items(), key=lambda pair: (pair[1].known_at_ms, pair[1].effective_at_ms, pair[0])
-        ):
-            if record_id not in superseded:
-                heads[outcome.leg_id] = (record_id, outcome)
-        return heads
+        return standing_outcomes(self._by_id().items(), at_ms)
 
     def _stamped(self, name, answer, at_ms, heads):
         """Re-stamp one answer with the run's instant, linking a correction to its head."""

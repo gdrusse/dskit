@@ -58,11 +58,13 @@ from types import MappingProxyType
 
 from dskit.pipeline.node import check_int_param
 from dskit.production.base import (
+    CREDENTIAL_CHECKS,
     ProductionError,
     Registry,
     _check_dict,
     _check_str,
     _check_unknown,
+    check_credentials,
     reject_unknown_params,
 )
 from dskit.production.records import EvidenceRequirement, Finding, Proposal, ScopeVerdict
@@ -153,6 +155,15 @@ _AMEND = BREACH_VERDICTS["amend"]
 _HOLD_SHAPES = {"hold": "hold", "pause": "pause"}
 if not set(_HOLD_SHAPES) <= set(GUARD_STATE_KINDS):
     raise ProductionError(["guards.py: a hold shape is not a GUARD_STATE_KINDS member"])
+
+#: The ``state_kind`` §5.5.1's ``approve-hold`` records: the hold is
+#: cleared, and ``SeriesState`` drops the pair it names.
+_RELEASED = "released"
+if _RELEASED not in GUARD_STATE_KINDS:
+    raise ProductionError(["guards.py: 'released' is not a GUARD_STATE_KINDS member"])
+
+#: How the release verb spells itself in a refusal (§7's ``approve-hold``).
+_APPROVE_HOLD = "approve_hold"
 
 #: ``notes`` is documentation on every config object and never a knob.
 _NOTES = ("notes",)
@@ -1657,6 +1668,11 @@ class Guard(ABC):
         )
 
 
+def _stands_at(hold, at_ms):
+    """Say whether a folded hold still binds at ``at_ms`` — expiry is inclusive."""
+    return hold is not None and hold["held_until_ms"] > at_ms
+
+
 def _hold_problems(params):
     """Return the problems with a ``hold: {ttl}`` block."""
     problems = []
@@ -1916,7 +1932,7 @@ class Limit(Guard):
         """
         scope_key = self.scope.key_of(proposal)
         hold = state.view.guard_holds.get((self.name, scope_key))
-        if hold is not None and hold["held_until_ms"] > state.account.asof_ms:
+        if _stands_at(hold, state.account.asof_ms):
             return self._limit_finding(
                 None,
                 self.bound.recorded(None),
@@ -2424,6 +2440,81 @@ class GuardChain:
                     allowed=False, scope_key=instrument, reason=f"{guard_name}: {finding.reason}"
                 )
         return ScopeVerdict(allowed=True, scope_key=instrument, reason="")
+
+    def approve_hold(self, state_view, guard, scope_key, credentials, at_ms):
+        """Clear one standing hold before its ttl, as an authenticated act (§5.5.1).
+
+        A hold is a guard's refusal to keep acting on a scope, so ending
+        one early is an operator OVERRIDING a safety verdict — the class
+        of act D11 requires a verifier for. It grants nothing: the next
+        proposal on that scope is judged by the whole chain again.
+
+        Parameters
+        ----------
+        state_view : StateView
+            The fold; ``guard_holds`` is read and nothing is written —
+            the control handler appends what this returns.
+        guard : str
+            The held guard's document key.
+        scope_key : str
+            The scope the hold binds, as the guard's ``Scope`` spells it.
+        credentials : mapping
+            ``control_request_id``, ``principal_digest`` and
+            ``proof_digest`` — every one required.
+        at_ms : int
+            The instant of the act; the scope resumes here.
+
+        Returns
+        -------
+        dict
+            The §6 ``guard_state`` body with ``state_kind`` ``released``:
+            the seven fields of the hold it clears — including that
+            hold's ``held_until_ms`` and ``finding``, so the record names
+            the verdict being overridden — plus the three credentials.
+
+        Raises
+        ------
+        ProductionError
+            If the guard is not in this chain, the pair holds nothing, the
+            hold has already expired (there is nothing left to release,
+            and pretending otherwise would record an act that did
+            nothing), or a credential is missing or malformed.
+        """
+        problems = []
+        _check_str(problems, "approve_hold: guard", guard)
+        _check_str(problems, "approve_hold: scope_key", scope_key)
+        check_int_param(problems, "approve_hold: at_ms", at_ms, ge=0)
+        _check_dict(problems, "approve_hold: credentials", credentials)
+        if isinstance(credentials, typing.Mapping):
+            check_credentials(problems, credentials, where=_APPROVE_HOLD)
+        if guard not in self._guards:
+            problems.append(
+                f"approve_hold names guard {guard!r}, which this document does not declare "
+                f"(it declares {list(self._guards)})"
+            )
+        if problems:
+            raise ProductionError(problems)
+        hold = state_view.guard_holds.get((guard, scope_key))
+        if not _stands_at(hold, at_ms):
+            raise ProductionError(
+                [
+                    f"approve_hold: {guard!r} holds nothing on {scope_key!r} at {at_ms} — "
+                    "a release of an expired or absent hold would record an act that did nothing"
+                ]
+            )
+        return {
+            "guard": guard,
+            "scope_key": scope_key,
+            "state_kind": _RELEASED,
+            "reason": redact(
+                f"released a {hold['state_kind']} held until {hold['held_until_ms']}: "
+                f"{hold['reason']}"
+            ),
+            "held_until_ms": hold["held_until_ms"],
+            "resume_at_ms": at_ms,
+            "finding": hold["finding"],
+            **{name: credentials[name] for name in CREDENTIAL_CHECKS},
+        }
 
     @staticmethod
     def _require_proposal(proposal):

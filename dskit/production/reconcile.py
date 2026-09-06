@@ -62,6 +62,7 @@ from dskit.production.base import (
     _check_str,
     _check_unknown,
     canonical_hash,
+    check_credentials,
     pin_members,
 )
 from dskit.production.records import (
@@ -308,6 +309,8 @@ _ZERO = Decimal(0)
 #: The vocabulary members this module spells, each pinned to its tuple at
 #: import so a renamed member cannot leave a stale literal behind.
 _RECON, _CASH_FLOW, _ADOPTION, _FILL, _OUTCOME = "recon", "cash_flow", "adoption", "fill", "outcome"
+#: How the adoption verb spells itself in a refusal (§7's `adopt`).
+_ADOPT_VERB = "adopt"
 _DECISION, _TICK = pin_members("reconcile.py's leg reader", ("decision", "tick"), RECORD_KINDS)
 _TIMING, _MISSING_IN_LEDGER, _MISSING_AT_VENUE = "timing", "missing_in_ledger", "missing_at_venue"
 _QUANTITY, _SETTLEMENT, _CASH = "quantity", "settlement", "cash"
@@ -321,7 +324,6 @@ _ID, _OUTCOME_KIND, _TICK_ID, _OBSERVED_AT = "id", "outcome_kind", "tick_id", "o
 _CLEAN = BREAK_SEVERITIES[0]
 #: The ``cash_flow.source`` §6 fixes: the amount is the reconciler's delta.
 _VENUE_SOURCE = "venue"
-_CREDENTIAL_NAMES = ("control_request_id", "principal_digest", "proof_digest")
 _BALANCES, _ORDERS, _FILLS, _POSITIONS, _SETTLEMENTS = RECON_DOMAINS[0], RECON_DOMAINS[2], RECON_DOMAINS[1], RECON_DOMAINS[3], RECON_DOMAINS[4]
 
 for _member, _vocabulary in (
@@ -1427,7 +1429,10 @@ class Reconciler:
             Break ids reported by the last run, each of class ``cash``.
         control_request_id, principal_digest, proof_digest : str
             The operator's request and its verified proof (D13: adoption
-            is authenticated and ledgered, never a flag).
+            is authenticated and ledgered, never a flag). Checked by
+            ``base.check_credentials``, the one owner: the two digests are
+            64-hex, so a raw proof handed in where a digest belongs
+            refuses rather than being written to the chain.
         release_hash : str
             Must be this release's.
         flow_kind : str
@@ -1445,18 +1450,21 @@ class Reconciler:
         ------
         ProductionError
             Every problem at once: no run yet, an unknown or non-cash
-            break id, a missing credential, another release's hash, a flow
-            kind outside the closed set, a non-boolean ``external`` —
-            nothing is appended.
+            break id, a missing or malformed credential, another release's
+            hash, a flow kind outside the closed set, a non-boolean
+            ``external`` — nothing is appended.
         """
         problems = []
         breaks = self._adoptable(problems, break_ids)
-        for name, value in (
-            ("control_request_id", control_request_id),
-            ("principal_digest", principal_digest),
-            ("proof_digest", proof_digest),
-        ):
-            _check_str(problems, f"adopt: {name}", value)
+        check_credentials(
+            problems,
+            {
+                "control_request_id": control_request_id,
+                "principal_digest": principal_digest,
+                "proof_digest": proof_digest,
+            },
+            where=_ADOPT_VERB,
+        )
         if release_hash != self._release_hash:
             problems.append(
                 f"adopt: release_hash {release_hash!r} is not this release's "

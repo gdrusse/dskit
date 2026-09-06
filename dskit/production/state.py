@@ -895,6 +895,17 @@ _AUTHORITY_CLEARS = {"ordinary": "_clear_arming", "reduction": "_clear_rights"}
 if set(_AUTHORITY_ISSUES) != set(AUTHORITY_ROLES) or set(_AUTHORITY_CLEARS) != set(AUTHORITY_ROLES):
     raise ProductionError(["state.py: the authority tables do not cover AUTHORITY_ROLES"])
 
+#: ``guard_state`` kind -> what it does to the hold map. §5.5.1's
+#: ``released`` is the third member, and a table rather than a branch is
+#: what makes a fourth kind an entry here and a test line.
+_GUARD_STATE_FOLDS = {
+    "hold": "_hold_scope",
+    "pause": "_hold_scope",
+    "released": "_release_scope",
+}
+if set(_GUARD_STATE_FOLDS) != set(GUARD_STATE_KINDS):
+    raise ProductionError(["state.py: the guard_state table does not cover GUARD_STATE_KINDS"])
+
 #: ``alert`` status -> what the fold does with the acknowledgement the
 #: fingerprint may carry. §5.11.2: an ack lapses at its own instant "or
 #: when the alert resolves", and the fold is where that second lapse must
@@ -1337,6 +1348,13 @@ class SeriesState:
             )
         self._reduction = current.reserve(body["reduction_intent_digest"])
 
+    def _restored_holds(self, holds):
+        """Rebuild the hold map from a snapshot's list, through the same kind hooks."""
+        restored = {}
+        for position, hold in enumerate(holds):
+            self._apply_guard_state(restored, hold, f"snapshot.state.guard_holds[{position}]")
+        return restored
+
     def _hold_key(self, body, where):
         """Return the ``(guard, scope_key)`` a ``guard_state`` body is held under."""
         problems = []
@@ -1352,8 +1370,29 @@ class SeriesState:
         return (body["guard"], body["scope_key"])
 
     def _fold_guard_state(self, body, envelope):
-        """Hold or pause the guard's scope until a later record replaces it."""
-        self._guard_holds[self._hold_key(body, "guard_state")] = dict(body)
+        """Hold, pause or release the guard's scope — the kind's own hook (§5.5.1)."""
+        self._apply_guard_state(self._guard_holds, body, "guard_state")
+
+    def _apply_guard_state(self, holds, body, where):
+        """Apply one ``guard_state`` body to a hold map, through the kind's hook."""
+        key = self._hold_key(body, where)
+        getattr(self, _GUARD_STATE_FOLDS[body["state_kind"]])(holds, key, body)
+
+    @staticmethod
+    def _hold_scope(holds, key, body):
+        """Keep a hold or a pause standing until a later record replaces it."""
+        holds[key] = dict(body)
+
+    @staticmethod
+    def _release_scope(holds, key, body):
+        """§5.5.1: a release DROPS the pair it names, so a restart cannot resurrect it.
+
+        Releasing a pair that holds nothing folds to nothing rather than
+        refusing: ``GuardChain.approve_hold`` is the gate, and a fold that
+        raised here would make a legitimately recorded chain unreplayable
+        after the fact.
+        """
+        holds.pop(key, None)
 
     def _fold_readiness(self, body, envelope):
         """Replace the readiness evaluation."""
@@ -1756,10 +1795,7 @@ class SeriesState:
             "_readiness": (
                 None if state["readiness"] is None else ReadinessProjection.from_obj(state["readiness"])
             ),
-            "_guard_holds": {
-                self._hold_key(hold, f"snapshot.state.guard_holds[{position}]"): dict(hold)
-                for position, hold in enumerate(state["guard_holds"])
-            },
+            "_guard_holds": self._restored_holds(state["guard_holds"]),
             "_reduction": (
                 None if state["reduction"] is None else ReductionProjection.from_obj(state["reduction"])
             ),

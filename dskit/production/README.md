@@ -128,7 +128,11 @@ adopted deposit can never turn a trading loss into headroom.
 
 **Safety** — the breaker (`active | reducing | halted`), authenticated arming,
 the action and transition matrices, the final verify-and-call gate, fenced
-leases, readiness GO/NO-GO.
+leases, readiness GO/NO-GO. A checklist item may cite what the SERIES can
+prove — `outcome_coverage`, `outcome_freshness`, `calibration_current` — so a
+live series is required by its own checklist to show its decisions have been
+scored; a hold ends early only through the authenticated `approve-hold`, which
+grants nothing beyond ending it.
 
 **Recording** — the JSONL hash-chained ledger with barriers, segments and
 torn-tail recovery; `SeriesState`, the sole fold; checkpoints; the durable
@@ -157,7 +161,8 @@ dskit/production/
 ├── control.py         ControlInbox; CommandProcessor
 ├── feed.py            Feed ABC; ServingContract + FeedSpec; EntrySourceFeed; ReplayFeed
 ├── decider.py         serving_document(); Decider; ServingExecutionPolicy; proposers
-├── guards.py          Guard ABC; GuardChain; Limit; RangeGuard; Measure + registry
+├── guards.py          Guard ABC; GuardChain (+ approve_hold, the early release of a hold);
+│                      Limit; RangeGuard; Measure + registry
 ├── breaker.py         the breaker, its trips, the kill switch, cooling-off
 ├── arming.py          ApprovalVerifier ABC; maker-checker proofs; the arming fold
 ├── executor.py        Executor / SubmittingExecutor; Shadow, Paper, Recorded, Live
@@ -182,7 +187,9 @@ dskit/production/
 ├── leg.py             LegPipeline (the eight submission steps); the Authority family
 ├── compose.py         bundles_for(); the AuthorityTable; the one rung reader
 ├── loop.py            ServeLoop (the scheduler); Tick (the ten phases)
-├── readiness.py       release-bound checklist → GO / NO-GO
+├── readiness.py       release-bound checklist → GO / NO-GO; Evidence + EVIDENCE_RULES,
+│                      the names the series proves for itself (coverage, freshness,
+│                      calibration)
 ├── outcomes.py        forward_asof; OutcomeSource + registry; OutcomeJoin (D21)
 ├── libs/              tier-2 packs — a library behind a seam this package owns
 │   ├── parquet.py     RunReference over a run's predictions, registered as `run`
