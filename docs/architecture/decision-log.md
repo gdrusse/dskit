@@ -5471,3 +5471,67 @@ content-verified P14-v2 caches and start with one fold worker.
 The linear row supplies a cheap complexity floor, while TCN and Transformer
 answer whether sequence structure helps beyond that floor. The run remains
 inventory-gated, report-only, not locked, and cannot read the lockbox.
+
+## ADR-0106 — A generic cross-benchmark model selector graduates into dskit.pipeline
+
+**Status:** Accepted (2026-09-06; owner approved implementation)
+
+**Context.** P13, P14, and P15 each ran (or are running) as a separate
+inventory-gated benchmark document. `BenchmarkCompare` /
+`PathBenchmarkCompare` pick the simplest statistically-indistinguishable
+candidate *within* one document (`auto_promote` stays `False`), but nothing
+ranks candidates *across* the several zoos. Each memo ends by reasoning a
+frontier by hand ("pooled LightGBM remains the practical development
+frontier"). We want one programmatic step, run after the newest zoo finishes,
+that reads every completed zoo's results and names a single winner — not a
+second round of statistical testing, but the deterministic verdict the
+predeclared decision rule already implies, applied to one joined inventory.
+
+**Decision.** Add one read-only stage to `dskit.pipeline.benchmarks`:
+`BenchmarkSelect` (tentative name). It takes a declared, ordered list of
+benchmark result summaries (each zoo's `stages/compare.json` artifact) plus a
+pinned digest per source, and emits a single `selection` record.
+
+1. **Score source.** The selector reads the metrics each source's compare
+   artifact already emits — specifically the `ranking` rows the comparator
+   produces (candidate id, family, mean, std, compute rank, and the
+   per-candidate fold means) — together with the `paired` and `pairwise`
+   records. It does not recompute scores, re-run folds, or re-derive any
+   statistic.
+
+2. **Config-declared decision metric.** The scoring field is a config param
+   (e.g. `decision_metric: "mean"`), matching a key every source's `ranking`
+   row carries. Defaulting to `"mean"` preserves today's behaviour, but a
+   different key (std, a fold-stability measure, or any future row field) can
+   drive selection without a code change. The winner rule is argmax/min over
+   that key, honoring each source's shared `select` direction (`max`).
+
+3. **Ranking.** It ranks every finishing candidate across all sources by the
+   decision metric. It keeps the provenance of each source (benchmark hash,
+   asof, inventory digest, fold count) so cross-zoo comparability is declared,
+   never assumed silently — a source whose candidates all lack the metric or
+   that did not complete every declared fold is refused by name rather than
+   folded in.
+
+4. **No cross-zoo significance claim.** Because zoos do not share one origin
+   set, the selector reports a *ranking only*. The existing per-zoo
+   paired/Bonferroni evidence stays the only statistical claim, and the
+   selector links back to it.
+
+5. **No promotion.** The stage emits `auto_promote: False` exactly as the
+   comparators do; it selects, it does not refit, freeze, or pin a training
+   run. Promotion and finalist refit remain ADR-0098 §3–4 (separate owner
+   actions).
+
+6. **Tiering.** It lives in `dskit/pipeline/benchmarks.py` beside
+   `BenchmarkCompare` because it is a generic mechanism over the same
+   artifacts — a project that has never heard of intraday equities can point
+   it at any set of completed benchmarks. It names no estimator, model, or
+   domain constant.
+
+**Consequences.** Selecting a model becomes a rerunnable JSON step whose
+output is a durable, provenance-linked artifact, instead of a memo paragraph.
+It changes no hash, retrains nothing, and leaves promotion to the owner. On
+approval, build under the TDD + skeptic loop: the stage, its params
+validation, and a child config/tests. No execution is authorized by this
+decision.

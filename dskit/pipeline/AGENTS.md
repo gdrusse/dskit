@@ -162,7 +162,11 @@ on it without breaking its rulings.
   `BenchmarkApproval` must bind the exact reviewed inventory hash before
   `BenchmarkRun`, the only candidate-executing stage; `BenchmarkCompare` reads
   paired outer folds and never promotes a winner. Disabled candidates name a
-  prerequisite and do not count as attempts. Until walk-forward records a
+  prerequisite and do not count as attempts. `BenchmarkSelect` (ADR-0106)
+  joins several completed zoos' pinned `compare.json` artifacts and names one
+  winner by a config-declared `decision_metric` + `select` direction; it
+  reads only the emitted `ranking` rows, refuses incomplete sources, and
+  never promotes. Until walk-forward records a
   portable resource contract, call `compute_rank` declared—not measured.
 - **One name per shared vocabulary.** `node.class_ref(cls)` is the
   `module:QualName` an artifact sidecar RECORDS and load mode compares —
