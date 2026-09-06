@@ -5264,10 +5264,13 @@ No zoo execution is authorized by this decision.
 
 ## ADR-0101 — The onboarding connector packs' retry policy has one owner
 
-**Status:** proposed (2026-09-06; phase 3 of ADR-0090; Appendix C of
-`docs/new_package_proposals/production.md` is the draft this replaces —
-0092 and 0095 were both taken by the child's own decisions while phase 3
-waited, so this is 0101)
+**Status:** accepted (2026-09-06; the owner ruled for the NARROW FIRST
+STEP, which is built. Option (a), the full graduation, is NOT rejected —
+it stays the eventual direction, with its three obstacles still to clear,
+and this step is the piece of it that could be taken without them. Phase 3
+of ADR-0090; Appendix C of `docs/new_package_proposals/production.md` is
+the draft this replaces — 0092 and 0095 were both taken by the child's own
+decisions while phase 3 waited, so this is 0101)
 
 **Context.** Six connector packs under `dskit/onboarding/libs/` each
 hand-roll the same retry: an attempt counter, an exponential delay, a cap
@@ -5304,10 +5307,10 @@ it:
   `tests/onboarding/test_purity.py`, which asserts module-level imports
   are stdlib + `dskit.assets` + itself.
 
-So (a) — **and this ADR is deliberately not implemented with it.** Three
-obstacles the Appendix C draft did not see make (a) a larger change than
-"the packs delete their private helpers", and each needs the owner's
-ruling before code:
+So (a) is the direction — **and this ADR deliberately does not build it.**
+Three obstacles the Appendix C draft did not see make (a) a larger change
+than "the packs delete their private helpers", and each still needs the
+owner's ruling before code:
 
 1. **The pipeline firewall.** `resilience.py` reaches
    `dskit.pipeline.node` for `check_int_param` and (through
@@ -5328,23 +5331,36 @@ ruling before code:
    `AssetError`, and `pytest.raises(ProductionError)` does not catch one.
    Every §5.12 refusal assertion moves with the classes.
 
-A narrower first step exists and is offered as the alternative: give the
-onboarding-side rule ONE home in `dskit/onboarding/connector.py`, beside
-the `MAX_BACKOFF_S` it already owns — one `backoff` and one `retry_after`
-the six packs import — which deletes the six copies, keeps every gate
-green, needs no cross-package move, and is what would later grow into the
-`dskit/onboarding/resilience.py` of (a).
+**The owner ruled for the narrower first step, and it is built:** the
+onboarding-side rule has ONE home in `dskit/onboarding/connector.py`,
+beside the `MAX_BACKOFF_S` it already owns — one `backoff(attempt,
+base_s)` and one `retry_after(headers, fallback)` the six packs import.
+That deletes the six copies, keeps every gate green (no pipeline import,
+no vocabulary move, no error type crossing a package), needs no
+cross-package move, and is what would later grow into the
+`dskit/onboarding/resilience.py` of (a). Three consolidation rulings are
+recorded in the two docstrings: attempts are ONE-based (three copies
+counted from zero); there is no jitter and no `cap_s` knob, because none
+of the six had jitter and one ceiling is what `MAX_BACKOFF_S` means; and a
+`NaN` `Retry-After` is unusable and falls back — `polymarket` already
+guarded it, while `kalshi` and `predexon` turned it into a zero-second
+wait, so those two now wait the ordinary backoff. That NaN reading is the
+step's ONE behaviour change. `tests/onboarding/test_connector.py` scans
+every `libs/*.py` for a doubling, a `MAX_BACKOFF_S` clamp, a
+`Retry-After` spelling or a locally-defined `backoff`/`retry_after`, so a
+seventh copy cannot be written.
 
-**Consequences.** Until this is ratified the packs keep their copies, and
+**Consequences.** The packs now carry no retry policy of their own, and
 phase 3's other three items (the calendar pack, the two metric sinks and
 the stream feed) do not depend on it. Under (a): one retry policy, one
 jitter rule, one `Retry-After` handling, one ceiling; each pack's
 documented `retries`/`pace_s` prose becomes the `Retry` params it already
 describes; the ambiguous-write rule reaches acquisition, where it is a
-no-op today and correct tomorrow. The migration's real cost is the
-onboarding tests that assert a wait sequence through a monkeypatched
-`time.sleep` and must be rewritten against the injected sleeper — which is
-why Appendix C made it a phase of its own — plus obstacle 3's production
-suite. `MAX_BACKOFF_S` stays exactly where it is; nothing about
-acquisition identity, source config hashes or stored rows changes under
-either option.
+no-op today and correct tomorrow. Its remaining cost — the onboarding
+tests that assert a wait sequence through a monkeypatched `time.sleep` and
+must be rewritten against the injected sleeper, which is why Appendix C
+made it a phase of its own, plus obstacle 3's production suite — is
+untouched by this step: the one owner COMPUTES a wait and never sleeps, so
+each pack keeps the sleeper seam it already had. `MAX_BACKOFF_S` stays
+exactly where it is; nothing about acquisition identity, source config
+hashes or stored rows changes under either option.
