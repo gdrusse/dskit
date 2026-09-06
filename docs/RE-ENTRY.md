@@ -1,24 +1,49 @@
 # Re-entry
 
-## Current wrap: dskit.production build — PAUSED mid-phase-1 (2026-09-05)
+## Current wrap: dskit.production BUILT — phases 1, 2, 2b and 3 (2026-09-06)
 
-Branch: `claude/dskit-production-build-3g17vw` (off `main` @ 03d797c). Not merged.
+Branch: `claude/dskit-production-build-3g17vw`. ADR-0090 and ADR-0091 are
+**accepted**; the package is complete against
+`docs/new_package_proposals/production.md`, which is the contract.
 
-Green and committed: G1 foundations (`vocab/base/redact/records`, purity gate;
-510 tests) and G4 `ledger.py` (154 tests). Red (TDD) tests committed for
-document/release, clock/sessions/cadence, state, resilience/metrics,
-ids/bundles/policy (+ golden table), monitors, breaker/arming/coordination,
-guards, and the ADR-0091 seam under `tests/pipeline/`.
+**What it is.** The serving layer: an immutable release of a finished pipeline
+run, driven forward on a cadence — fetch, decide, guard, act, record. Every
+tick writes one decision into a hash-chained append-only ledger; every proposal
+passes a declared guard chain before anything is sent. The four rungs differ
+only by which objects were injected, and reaching a live venue additionally
+needs a recorded, expiring, independently authenticated maker-checker arm bound
+to the release hash. A child ships the venue executor, its accounting, its
+approval verifier and its fenced lease; dskit ships everything else.
 
-Stopped mid-build at the owner's request: `state.py` (partial or absent),
-the pipeline seam (only `dskit/pipeline/policy.py` started), and the first
-skeptic review of G1+G4. Session working notes — the agent brief, the build
-log with every ruling (R1–R8, nested ledger envelope, cancel_outcome record,
-MONEY_FIELDS, re-anchored evidence), and the seam design — are in
-`docs/new_package_proposals/build-notes/` (branch-only; delete before merge).
+**What phase 2 added**: the series can score its own decisions. `outcomes`
+records what happened to each leg bitemporally; `report` gives attribution,
+calibration and a value curve at an explicit cut; `replay` re-runs the tape and
+diffs it. Plus the outcome and parity monitor families, four statistical
+monitors, a sqlite chain, a request signer, alert inhibition/silences/
+escalation/ack, the systemd heartbeat, readiness evidence drawn from the
+outcome fold, and durable guard holds. **Phase 3**: the exchange-calendar pack,
+the metric-sink seam with prometheus and opentelemetry exporters, and the
+websocket stream seam.
 
-Next step: resume per the build log's "TO RESUME" list (F5 state, F11 seam,
-R1 review first), then the remaining implementers, test authors, Stage 0.
+**State.** 7973 passed over production, production_libs and pipeline; the full
+suite is 9560 passed with three failures that are all pre-existing on `main`
+(two uid-0 environment cases, one child's own config assertion). ruff clean,
+five purity gates at 44, the 20 pinned sha256 literals unmoved, `check_plan.py`
+CLEAN, and the pinned driver and search suites passing untouched.
+
+**Open, needing the owner.** ADR-0095 (proposed) holds the last phase-3 item:
+moving the onboarding connector packs onto `resilience.Retry`. It was NOT
+migrated, deliberately — the record names three obstacles the draft did not,
+two of which need a ruling, and the onboarding purity gate is a hard stop
+rather than something to adjust. Also open: whether `kinds_banking`'s newly
+pure classes and `TorchImportance` were the right calls (both flagged), and
+`authority.expire` plus `cash_flow.supersedes` remain folded but unproduced.
+
+**How to run it.** `python -m dskit.production validate|plan|ready|serve|
+status|verify` for the loop; `outcomes|report|replay` to score it, all
+read-only bar `outcomes`; the authenticated verbs are `arm-request|approve-arm|
+disarm|halt|reduce|resume|flatten-request|approve-flatten|execute-flatten|
+adopt|ack|silence|approve-hold`. See `dskit/production/README.md`.
 
 ## Current wrap: child infrastructure
 

@@ -4264,7 +4264,7 @@ HFDR is a later MIO capital constraint. It does not replace Gate 3, and P11 does
 
 ## ADR-0090 — `dskit.production`: the production layer (serve, guard, act, record, monitor)
 
-**Status:** proposed (2026-09-04; Opus-reviewed; awaiting owner approval)
+**Status:** accepted (2026-09-06; built in full — phases 1, 2, 2b and 3, under TDD with a skeptic review per module and a consolidated pass over the whole package)
 
 **Context.** dskit runs documents in batch and has no seam for running a fitted
 model forward on a cadence. Two hand-rolled tier-3 forward loops exist:
@@ -4379,7 +4379,8 @@ defaults for this resubmission.
 
 ## ADR-0091 — The driver's subgraph re-execution is a public seam with a policy object
 
-**Status:** proposed (2026-09-04)
+**Status:** accepted (2026-09-06; built, with the pinned driver and search
+suites passing untouched)
 
 **Context.** `_SearchSeam._execute` already re-executes `needed ∩ dirty` under
 `"node.param.path"` overrides with the full node lifecycle, but it is private,
