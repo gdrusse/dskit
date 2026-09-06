@@ -926,5 +926,7 @@ def test_p14_recurrent_zoo_has_two_one_minute_late_fusion_searches():
         assert template["model"]["hpo_space"]["context_length"] == [30, 60, 120]
         assert "batch_size" in template["model"]["hpo_space"]
     approval = raw["stages"]["approval"]["params"]
-    assert approval["approved_inventory_sha256"] == "PENDING-PLAN-REVIEW"
-    assert approval["approved_by"] == "PENDING-PLAN-REVIEW"
+    assert approval["approved_inventory_sha256"] == (
+        "0e526b27396ffc83d22b4605b17fa111e6428f2a2bd5e820ab1520c4e7b25dd9"
+    )
+    assert approval["approved_by"] == "owner"

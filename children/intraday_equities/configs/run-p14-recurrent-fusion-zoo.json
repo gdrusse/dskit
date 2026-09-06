@@ -598,9 +598,9 @@
         "inventory_sha256": "$plan.inventory_sha256"
       },
       "params": {
-        "approved_inventory_sha256": "PENDING-PLAN-REVIEW",
-        "approved_by": "PENDING-PLAN-REVIEW",
-        "approval_note": "Awaiting owner review of the exact two-candidate P14 inventory: pooled one-minute OHLCV LSTM fusion and pooled one-minute OHLCV GRU fusion, each with four purged train-only HPO trials."
+        "approved_inventory_sha256": "0e526b27396ffc83d22b4605b17fa111e6428f2a2bd5e820ab1520c4e7b25dd9",
+        "approved_by": "owner",
+        "approval_note": "Owner approved this exact two-candidate P14 inventory on 2026-09-06: pooled one-minute OHLCV LSTM fusion and pooled one-minute OHLCV GRU fusion, each with four purged train-only HPO trials."
       }
     },
     "run": {
