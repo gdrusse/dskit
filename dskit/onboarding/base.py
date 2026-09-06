@@ -42,12 +42,12 @@ from datetime import datetime, timezone
 # one error type, one checker idiom across both packages.
 from dskit.assets.base import (  # noqa: F401  (re-exports)
     AssetError,
-    _check_dict,
-    _check_str,
-    _check_unknown,
-    _raise_if,
     atomic_write_json,
     canonical_hash,
+    check_dict as _check_dict,
+    check_str as _check_str,
+    check_unknown as _check_unknown,
+    raise_if as _raise_if,
     utc_now,
 )
 

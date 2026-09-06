@@ -1015,6 +1015,7 @@ def is_summary(value):
 #: suite — is not rewritten by making the rule public.
 _is_summary = is_summary
 
+
 def _too_big_to_carry(value):
     """Refuse values a dumps cannot fit under ``_CARRY_LIMIT``."""
     if isinstance(value, str) and len(value) > _CARRY_LIMIT:
@@ -1172,7 +1173,6 @@ def winner_names():
 #: The private spelling, kept as an alias for the same reason
 #: :data:`_is_summary` is.
 _winner_names = winner_names
-
 
 
 def _search_record(seam, outputs):

@@ -17,6 +17,26 @@ awaiting review:
    EXPORTS, never what it IMPORTS. Both rules are public with one owner now,
    the private spellings survive as aliases, and the missing gate is written
    and proven to fail on the old code.
+
+   **Review round (2026-09-06).** The first gate was a line scan matching
+   `from dskit.` and three ordinary idioms walked straight past it: a
+   parenthesized multi-line import, a relative `from ..pipeline.driver
+   import`, and reading the attribute off a module alias the file already
+   held for a legitimate public call. It was also scoped to `production`
+   alone while three documents claimed both directions — the coverage a pin
+   claims and lacks is the defect CLAUDE.md names. Rewritten as an AST walk
+   over EVERY package in both directions; the rule has one owner,
+   `private_cross_package_uses` in the toolkit's own gate, and each
+   package's gate calls it. All four forms are pinned by a synthetic test
+   and were re-proven against the real reverted file.
+
+   Widening it surfaced eight more breaches nobody had seen: `onboarding`
+   and `production` both read `_check_dict` / `_check_str` /
+   `_check_unknown` / `_raise_if` across the boundary from `dskit.assets`,
+   in exactly the multi-line form the old scan could not see. Same remedy
+   as the driver names — public in `assets.base`, private spellings kept as
+   aliases, the two callers importing the public name under their own
+   private alias. No behaviour changed.
 3. ADR-0101 **accepted**: the six connector packs' hand-rolled retries are one
    owner in `dskit/onboarding/connector.py`, pinned by a scan so the copies
    cannot return. One behaviour changes on purpose — against a

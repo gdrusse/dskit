@@ -140,6 +140,125 @@ def _imports(path, package=CORE_PACKAGE):
                     yield _resolve_relative(package, node.level, alias.name), top
 
 
+#: Where the owning distribution's packages live — `dskit/`.
+DIST_DIR = PACKAGE_DIR.parent
+
+
+def _distribution_packages():
+    """The ``dskit.<name>`` packages that EXIST, discovered not listed.
+
+    Returns
+    -------
+    list of str
+        Sorted dotted names. Discovered from disk so a sixth package is
+        covered by this gate the day it exists, not the day someone
+        remembers to add it to a tuple here.
+    """
+    return sorted(
+        f"{ROOT_PACKAGE}.{child.name}"
+        for child in DIST_DIR.iterdir()
+        if child.is_dir() and (child / "__init__.py").is_file()
+    )
+
+
+def _package_of(module):
+    """The ``dskit.<name>`` package a module name belongs to, else None."""
+    parts = module.split(".")
+    if len(parts) >= 2 and parts[0] == ROOT_PACKAGE:
+        return f"{ROOT_PACKAGE}.{parts[1]}"
+    return None
+
+
+def _dotted(node):
+    """The dotted name of an attribute chain, or None if it is not one."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def private_cross_package_uses(path, package):
+    """Every private name ``path`` reaches in ANOTHER distribution package.
+
+    The `_` prefix plus ``__all__`` IS the API contract here, in both
+    directions, so this is the rule's ONE owner — each package's gate
+    calls it rather than keeping a copy that drifts.
+
+    A text scan is not enough, and the three ways past one are why: an
+    import may be parenthesized across lines, spelled relatively
+    (``from ..pipeline.driver import _x``), or avoided entirely by
+    reading the attribute off a module object the file already imported
+    for a legitimate public call. All three reach the same private name;
+    the AST sees all three the same way.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        The module to scan.
+    package : str
+        The dotted package the file belongs to (``dskit.production``,
+        ``dskit.pipeline.libs``), which relative imports resolve against.
+
+    Returns
+    -------
+    list of str
+        One sorted, de-duplicated message per offending use, empty when
+        the file reaches nothing private outside its own package.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    own = _package_of(package) or package
+    bound = {}
+    offenders = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    bound[alias.asname] = alias.name
+                else:
+                    head = alias.name.split(".")[0]
+                    bound[head] = head
+        elif isinstance(node, ast.ImportFrom):
+            module = (
+                node.module
+                if node.level == 0
+                else _resolve_relative(package, node.level, node.module)
+            )
+            if not module:
+                continue
+            target = _package_of(module)
+            for alias in node.names:
+                bound[alias.asname or alias.name] = f"{module}.{alias.name}"
+                if target and target != own and alias.name.startswith("_"):
+                    offenders.append(f"{path.name}: from {module} import {alias.name}")
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute) or not node.attr.startswith("_"):
+            continue
+        dotted = _dotted(node)
+        if dotted is None:
+            continue
+        head, _sep, rest = dotted.partition(".")
+        if head not in bound:
+            continue
+        absolute = f"{bound[head]}.{rest}" if rest else bound[head]
+        module, _sep, name = absolute.rpartition(".")
+        target = _package_of(module)
+        if target and target != own and name.startswith("_"):
+            offenders.append(f"{path.name}: {dotted}")
+    return sorted(set(offenders))
+
+
+def _package_files(package):
+    """``(path, dotted package)`` for every module in ``package``'s tree."""
+    directory = DIST_DIR / package.split(".")[1]
+    for path in sorted(directory.rglob("*.py")):
+        parts = path.relative_to(DIST_DIR.parent).parts[:-1]
+        yield path, ".".join(parts)
+
+
 def _is_stdlib(root):
     return root in sys.stdlib_module_names
 
@@ -633,3 +752,93 @@ def test_venue_hits_keeps_the_docstring_exemption(tmp_path):
     leaky = tmp_path / "leaky_module.py"
     leaky.write_text('VENUE = "examplevenue"\n', encoding="utf-8")
     assert len(_venue_hits(leaky)) == 1
+
+
+def test_no_package_reaches_another_packages_private_name():
+    """The `_` prefix is the API contract BETWEEN packages, both ways.
+
+    Production imported ``driver._is_summary`` and ``driver._winner_names``
+    through three build phases and four reviews because the rule was
+    written down twice and enforced nowhere. This is the enforcement, and
+    it covers every package the distribution ships rather than the one
+    package whose breach was noticed: the arrow reverses just as easily.
+    """
+    offenders = []
+    for package in _distribution_packages():
+        for path, module_package in _package_files(package):
+            offenders.extend(private_cross_package_uses(path, module_package))
+    assert not offenders, offenders
+
+
+def test_the_private_import_gate_sees_past_all_three_evasions(tmp_path):
+    """A text scan catches the plain spelling only — this pins the rest.
+
+    Each block below reaches ``dskit.pipeline.driver._is_summary`` from a
+    file in another package. A line-oriented scan matching ``from dskit.``
+    misses the last three; the AST walk must catch all four, or the gate
+    claims coverage it lacks (CLAUDE.md).
+    """
+    plain = _synthetic(tmp_path, "from dskit.pipeline.driver import _is_summary\n")
+    assert private_cross_package_uses(plain, "dskit.production")
+
+    wrapped = tmp_path / "wrapped.py"
+    wrapped.write_text(
+        "from dskit.pipeline.driver import (\n"
+        "    apply_param_override,\n"
+        "    _is_summary,\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    assert private_cross_package_uses(wrapped, "dskit.production")
+
+    relative = tmp_path / "relative.py"
+    relative.write_text(
+        "from ..pipeline.driver import _is_summary\n", encoding="utf-8"
+    )
+    assert private_cross_package_uses(relative, "dskit.production")
+
+    attribute = tmp_path / "attribute.py"
+    attribute.write_text(
+        "import dskit.pipeline.driver as driver\n"
+        "summary = driver._is_summary\n",
+        encoding="utf-8",
+    )
+    assert private_cross_package_uses(attribute, "dskit.production")
+
+    dotted = tmp_path / "dotted.py"
+    dotted.write_text(
+        "import dskit.pipeline.driver\n"
+        "summary = dskit.pipeline.driver._is_summary\n",
+        encoding="utf-8",
+    )
+    assert private_cross_package_uses(dotted, "dskit.production")
+
+
+def test_the_private_import_gate_leaves_legitimate_reaches_alone(tmp_path):
+    """Public cross-package names, and a package's OWN privates, pass.
+
+    A gate that fired on either would be worked around rather than kept.
+    """
+    public = _synthetic(
+        tmp_path,
+        """
+        import dskit.pipeline.driver as driver
+        from dskit.pipeline.driver import apply_param_override
+
+        value = driver.run_document
+        """,
+    )
+    assert private_cross_package_uses(public, "dskit.production") == []
+
+    own = tmp_path / "own.py"
+    own.write_text(
+        "from dskit.pipeline.driver import _is_summary\n", encoding="utf-8"
+    )
+    assert private_cross_package_uses(own, "dskit.pipeline") == []
+
+    unrelated = tmp_path / "unrelated.py"
+    unrelated.write_text(
+        "import numpy as np\n\nvalue = np._core\nother = self._cache\n",
+        encoding="utf-8",
+    )
+    assert private_cross_package_uses(unrelated, "dskit.production") == []

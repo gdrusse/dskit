@@ -41,7 +41,12 @@ from dskit.pipeline.conformance import DEFAULT_BLOCKED_IMPORTS, import_with_bloc
 
 # The venue rule and its AST walkers have ONE owner (CLAUDE.md: a function
 # is never repeated across modules) — the toolkit's own gate.
-from tests.pipeline.test_purity import VENUE_NAMES, _imports, _venue_hits
+from tests.pipeline.test_purity import (
+    VENUE_NAMES,
+    _imports,
+    _venue_hits,
+    private_cross_package_uses,
+)
 
 PACKAGE = "dskit.production"
 LIBS_PACKAGE = "dskit.production.libs"
@@ -395,21 +400,16 @@ def test_no_private_name_is_imported_from_another_package():
     Reaching past another package's public surface couples this one to
     an internal that may be renamed without notice; the fix is always to
     give the rule a public name and ONE owner, never a second copy.
+
+    This is THIS package's half of the rule. The rule itself, and the
+    sweep across every package in both directions, belong to the
+    toolkit's own gate — `private_cross_package_uses` is imported, not
+    restated, because a second copy of a drift check drifts.
     """
     offenders = []
     for path in _all_files():
-        for line in path.read_text(encoding="utf-8").splitlines():
-            text = line.strip()
-            if not text.startswith("from dskit."):
-                continue
-            if text.startswith(f"from {PACKAGE}"):
-                continue
-            head, _sep, names = text.partition(" import ")
-            if not _sep:
-                continue
-            for name in names.split("#")[0].split(","):
-                if name.strip().split(" as ")[0].startswith("_"):
-                    offenders.append(f"{path.name}: {text}")
+        package = LIBS_PACKAGE if path.parent == LIBS_DIR else PACKAGE
+        offenders.extend(private_cross_package_uses(path, package))
     assert not offenders, offenders
 
 
