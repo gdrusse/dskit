@@ -54,6 +54,11 @@ P15 adds a useful negative result: changing recurrent sequence bias to
 convolution or causal attention did not beat a flattened linear sequence
 baseline on the common P14/P15 sequence-eligible design.
 
+The read-only cross-benchmark selector was rerun after P15 completion. It
+accepted all three pinned sources and all nine candidates, and selected P13
+pooled LightGBM by the declared maximum-mean rule. This is a deterministic
+descriptive ranking, not a cross-study significance claim or promotion.
+
 ## What was tested
 
 P15 reused P14's verified one-minute sequence caches and eligibility policy:
@@ -116,3 +121,7 @@ and two existing Kronos purity assertions; none reads the P15 candidate paths.
   `pipeline_runs/transformer-pooled-h10-walkforward-2026-02-28-8c0feaa6`
 - candidate and comparison journal evidence: A18772-A18776
 - result memo journal record: A18777
+- nine-model selector:
+  `pipeline_runs/model-select-staged-2026-02-28-ef2e8f37/stages/select.json`
+- selector artifact SHA-256:
+  `df474f644fa918edead34a4e034ebdbb415c2d819e37cd178df35be92a4bcf0e`

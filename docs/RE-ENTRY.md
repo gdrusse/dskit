@@ -26,11 +26,11 @@ hypothesis; keep promotion/final refit as a separate owner-approved action.
 Shipped in `dskit/pipeline/benchmarks.py` with `is_sha256hex` (single owner of
 the lowercase-64 SHA-256 rule, `dskit/pipeline/stages.py`); 27 tests, ruff clean,
 skeptic loop closed with a clean round-3 pass. Child config
-`configs/run-model-select.json` chains P13+P14 and selects `lgbm-pooled-h10`.
-Committed and pushed to `feat/p15-temporal-zoo` (not merged to main).
-
-**Next:** append a P15 source to `run-model-select.json` once its staged
-compare.json completes a full ranking; then rerun to fold P15 candidates in.
+`configs/run-model-select.json` now chains P13+P14+P15, ranks all nine
+candidates, and selects `lgbm-pooled-h10`. The completed selector artifact is
+`pipeline_runs/model-select-staged-2026-02-28-ef2e8f37/stages/select.json`
+(SHA-256 `df474f64…`). This is descriptive ranking only, not a cross-zoo
+significance claim, final refit, or promotion.
 
 ## Current state: P14 recurrent-fusion model zoo complete (2026-09-06)
 

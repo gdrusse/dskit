@@ -25,10 +25,15 @@
             "id": "p14-recurrent",
             "path": "../pipeline_runs/p14-recurrent-fusion-zoo-staged-2026-02-28-70b5a399/stages/compare.json",
             "sha256": "12b893e4706919018ecdf15837b4c4abc4acaaeea94c6f6afa9c36d70dacfe75"
+          },
+          {
+            "id": "p15-temporal",
+            "path": "../pipeline_runs/p15-temporal-fusion-zoo-staged-2026-02-28-5e88726b/stages/compare.json",
+            "sha256": "47bfa13576dc3bf14d8e2a09617e5b2630f8252435c166d659b5495f37104738"
           }
         ]
       },
-      "notes": "Winner is argmax of each candidate's mean path score across both zoos. P15 is intentionally absent: its staged compare.json still has an empty ranking while candidates finish. Append a p15 source here once it completes."
+      "notes": "Winner is argmax of each candidate's mean path score across the three completed zoos. Cross-zoo ordering is descriptive only; source-local paired tests remain authoritative."
     }
   },
   "outputs": {
