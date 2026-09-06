@@ -1,5 +1,19 @@
 # Re-entry
 
+## Current state: cross-benchmark model selector landed (2026-09-06)
+
+`BenchmarkSelect` (ADR-0106, accepted) joins completed benchmark zoos' pinned
+`compare.json` artifacts and names one winner by a config-declared
+`decision_metric` + `select` direction — never promotes (`auto_promote` False).
+Shipped in `dskit/pipeline/benchmarks.py` with `is_sha256hex` (single owner of
+the lowercase-64 SHA-256 rule, `dskit/pipeline/stages.py`); 27 tests, ruff clean,
+skeptic loop closed with a clean round-3 pass. Child config
+`configs/run-model-select.json` chains P13+P14 and selects `lgbm-pooled-h10`.
+Committed and pushed to `feat/p15-temporal-zoo` (not merged to main).
+
+**Next:** append a P15 source to `run-model-select.json` once its staged
+compare.json completes a full ranking; then rerun to fold P15 candidates in.
+
 ## Current state: P14 recurrent-fusion model zoo complete (2026-09-06)
 
 The corrected two-candidate P14 run completed 20 paired outer folds per model
