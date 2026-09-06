@@ -1,5 +1,21 @@
 # Re-entry
 
+## Current state: horizon-conquest gate landed (2026-09-06)
+
+ADR-0107 (accepted) adds `dskit.pipeline.conquest:HorizonConquest` — the
+generic per-(unit,horizon) prediction-quality gate that caps a unit at the
+furthest contiguous horizon passing every config-declared check, with an
+optional `slice_field` for regime stability. Tier-1 stdlib-only, default-deny,
+fail-loud on duplicates/gaps/non-finite metrics; 21 tests, ruff clean,
+skeptic loop closed with a clean round-3 pass. Journaled research at
+`children/intraday_equities/docs/research/horizon-cap-gates/2026-09-06-synthesis.md`.
+Branch `feat/final-model-gates` (based on local main, 2 commits ahead of origin).
+
+**Next:** after the final model is chosen (last zoo batch still running), a
+follow-on ADR wires the gate into the child over the final model's per-lead
+evidence and defines the over/underfit gap + slice floors as config. The gate
+itself ships now and is reusable by any project.
+
 ## Current state: P14 recurrent-fusion model zoo complete (2026-09-06)
 
 The corrected two-candidate P14 run completed 20 paired outer folds per model
