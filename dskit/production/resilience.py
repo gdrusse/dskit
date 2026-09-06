@@ -85,6 +85,7 @@ __all__ = [
     "DEFAULT_READ_S",
     "DEFAULT_REFUND",
     "DEFAULT_RESERVED",
+    "DATE_HEADER_RESOLUTION_MS",
     "DEFAULT_RETRY_AFTER",
     "DEFAULT_RETRY_WRITES",
     "DEFAULT_SIGNER_ALGORITHM",
@@ -163,6 +164,12 @@ DEFAULT_SIGNER_ALGORITHM = pin_members(
 DEFAULT_MAX_SKEW_MS = 5_000
 #: The literal a venue requires before the payload: none, unless asked for.
 DEFAULT_SIGNER_PREFIX = ""
+#: How finely an HTTP ``Date`` header can place an instant. An HTTP-date is
+#: a whole number of SECONDS (RFC 7231), so a skew measured from one is good
+#: to a second and no better — which is a BOUND on what any ``max_skew_ms``
+#: read against it can mean, not merely a caveat. ``Signer.TIME_RESOLUTION_MS``
+#: is what a subclass with a finer source lowers.
+DATE_HEADER_RESOLUTION_MS = 1_000
 
 #: The two hashes, keyed by the vocabulary — a table, never an ``if``.
 _ALGORITHMS = {"sha256": hashlib.sha256, "sha512": hashlib.sha512}
@@ -1670,9 +1677,13 @@ class Signer(_Configured):
     Parameters
     ----------
     params : dict, optional
-        ``max_skew_ms`` (int >= 0, default :data:`DEFAULT_MAX_SKEW_MS`) and
-        ``probe_every_ms`` (int >= 1, REQUIRED — a staleness rule with no
-        period never fires), plus whatever the subclass declares.
+        ``max_skew_ms`` (int, default :data:`DEFAULT_MAX_SKEW_MS`, and never
+        finer than :attr:`TIME_RESOLUTION_MS`), ``probe_every_ms`` (int >= 1,
+        REQUIRED — a staleness rule with no period never fires), ``time_url``
+        (str, optional): the venue's clock endpoint, and ``probe_timeout``
+        (``{connect_s, read_s}``, default the transport's own deadlines):
+        what bounds the one request that reads it. Plus whatever the subclass
+        declares.
     clock : Clock, keyword-only
         Injected; ``now_ms()`` is what a server's answer is measured
         against and what makes an estimate old.
@@ -1687,21 +1698,40 @@ class Signer(_Configured):
     A venue's signer is a subclass that supplies ``sign`` and the one thing
     core cannot know — where to ask the time::
 
-        class MyVenueSigner(HmacSigner):
-            def probe_request(self):
-                return {"method": "GET", "url": "https://venue.example/time",
-                        "headers": {}, "body": None,
-                        "timeout": {"connect_s": 1.0, "read_s": 1.0}}
+    A venue is a DOCUMENT, not a subclass — the params below are what one
+    writes, and nothing here is overridden::
 
-        signer = MyVenueSigner({"key_env": "VENUE_KEY", "header": "X-Sig",
-                                "timestamp_header": "X-Ts",
-                                "probe_every_ms": 60000}, clock=clock)
+        signer = HmacSigner({"key_env": "VENUE_KEY", "header": "X-Sig",
+                             "timestamp_header": "X-Ts",
+                             "time_url": "https://venue.example/time",
+                             "probe_every_ms": 60000}, clock=clock)
         signer.probe(transport)   # 40 — the venue's clock is 40 ms ahead
         headers, body = signer.sign("POST", url, {}, b"{}", clock.now_ms())
+
+    The hook is for the venues those knobs cannot describe — a probe that
+    must be a POST, be signed, or carry a header::
+
+        class MyVenueSigner(HmacSigner):
+            def probe_request(self):
+                return {"method": "POST", "url": "https://venue.example/time",
+                        "headers": {"X-Api-Key": "..."}, "body": b"{}",
+                        "timeout": {"connect_s": 1.0, "read_s": 1.0}}
     """
 
-    _PARAMS = ("max_skew_ms", "probe_every_ms")
-    _DEFAULTS = {"max_skew_ms": DEFAULT_MAX_SKEW_MS}
+    #: How finely THIS signer's time source can place the venue's instant.
+    #: The base reads an HTTP ``Date``, which resolves to a second; a venue
+    #: that publishes milliseconds declares a smaller value and may then set
+    #: a finer ``max_skew_ms``. It is a class declaration for the same reason
+    #: ``Lease.LIVE_CAPABLE`` is: the fact belongs to the implementation, and
+    #: the check must be able to read it without building one.
+    TIME_RESOLUTION_MS = DATE_HEADER_RESOLUTION_MS
+
+    _PARAMS = ("max_skew_ms", "probe_every_ms", "time_url", "probe_timeout")
+    _DEFAULTS = {
+        "max_skew_ms": DEFAULT_MAX_SKEW_MS,
+        "time_url": None,
+        "probe_timeout": {"connect_s": DEFAULT_CONNECT_S, "read_s": DEFAULT_READ_S},
+    }
 
     def __init__(self, params=None, *, clock):
         if not callable(getattr(clock, "now_ms", None)):
@@ -1713,14 +1743,38 @@ class Signer(_Configured):
 
     @classmethod
     def _check(cls, problems, knobs):
-        """Bound the window and require the period the freshness rule needs."""
+        """Bound the window, require the freshness period, and check the probe."""
         check_int_param(problems, "max_skew_ms", knobs.get("max_skew_ms"), ge=0)
         check_int_param(problems, "probe_every_ms", knobs.get("probe_every_ms"), ge=1)
+        cls._check_reachable(problems, knobs.get("max_skew_ms"))
+        if knobs.get("time_url") is not None:
+            _check_str(problems, "time_url", knobs["time_url"])
+        try:
+            _check_timeout(knobs.get("probe_timeout"))
+        except ProductionError as exc:
+            problems.extend(f"probe_timeout: {problem}" for problem in exc.problems)
+
+    @classmethod
+    def _check_reachable(cls, problems, max_skew_ms):
+        """Refuse a bound this signer's time source can never satisfy."""
+        if not isinstance(max_skew_ms, int) or isinstance(max_skew_ms, bool):
+            return
+        if max_skew_ms < cls.TIME_RESOLUTION_MS:
+            problems.append(
+                f"max_skew_ms={max_skew_ms} is finer than {cls.__name__}'s time "
+                f"source can resolve ({cls.TIME_RESOLUTION_MS} ms), so this signer "
+                "could never produce a signature: refusing here, where the document "
+                "is planned, rather than at the first submit after someone arms it. "
+                "Widen the bound, or declare a finer TIME_RESOLUTION_MS on a "
+                "subclass whose server_ms() reads a finer source"
+            )
 
     def _configure(self, knobs):
-        """Keep the two bounds; the subclass reads the rest."""
+        """Keep the two bounds and the probe the document configured."""
         self._max_skew_ms = int(knobs["max_skew_ms"])
         self._probe_every_ms = int(knobs["probe_every_ms"])
+        self._time_url = knobs["time_url"]
+        self._probe_timeout = dict(knobs["probe_timeout"])
 
     @property
     def max_skew_ms(self):
@@ -1748,15 +1802,30 @@ class Signer(_Configured):
     def probe_request(self):
         """Return the bounded request that asks the venue for its clock.
 
+        The base builds a plain ``GET`` of the document's ``time_url`` under
+        its ``probe_timeout``, because a venue's clock endpoint is a CONFIG
+        value in exactly the way a connector's endpoint is — using this
+        package against a new venue means writing a new document, not
+        subclassing. The hook survives for the venues those two knobs cannot
+        describe: a probe that must be signed, that is a ``POST``, or that
+        needs a header. A signer given neither refuses in :meth:`probe`.
+
         Returns
         -------
         dict or None
             ``{method, url, headers, body, timeout}`` — exactly
-            ``Transport.send``'s arguments. ``None`` here, because core
-            ships no venue and therefore holds no time endpoint; a child
-            overrides it with the one its venue publishes.
+            ``Transport.send``'s arguments — or ``None`` when the document
+            named no ``time_url`` and nothing overrode this.
         """
-        return None
+        if self._time_url is None:
+            return None
+        return {
+            "method": "GET",
+            "url": self._time_url,
+            "headers": {},
+            "body": None,
+            "timeout": dict(self._probe_timeout),
+        }
 
     def server_ms(self, status, headers, body):
         """Read the venue's own instant out of a probe's answer.
@@ -1824,8 +1893,9 @@ class Signer(_Configured):
         if request is None:
             raise ProductionError(
                 [
-                    f"{type(self).__name__} declares no time endpoint: override "
-                    "probe_request() with the venue's own, since core ships no venue"
+                    f"{type(self).__name__} has no time endpoint: name the venue's "
+                    "clock in params.time_url, or — for a venue whose probe must be "
+                    "a POST, be signed, or carry a header — override probe_request()"
                 ]
             )
         problems = []
@@ -1937,9 +2007,11 @@ class HmacSigner(Signer):
     what a ``reason`` may quote; the key never appears in a header, a
     message or a repr.
 
-    It declares no time endpoint, so it cannot probe on its own — a venue's
-    clock URL is a venue fact and core ships no venue. A child subclasses
-    it and supplies :meth:`~Signer.probe_request`.
+    A document is enough to make one work: ``time_url`` names the venue's
+    clock and ``probe_timeout`` bounds the request that reads it, so using
+    this against a new venue means writing a new config rather than
+    subclassing. :meth:`~Signer.probe_request` remains for the venues those
+    two knobs cannot describe.
 
     Parameters
     ----------
@@ -1950,8 +2022,8 @@ class HmacSigner(Signer):
         of ``vocab.SIGNER_ALGORITHMS``, default
         :data:`DEFAULT_SIGNER_ALGORITHM`); ``prefix`` (str, default
         :data:`DEFAULT_SIGNER_PREFIX`): a venue-required literal before the
-        payload; plus ``max_skew_ms`` and ``probe_every_ms`` from
-        :class:`Signer`.
+        payload; plus ``max_skew_ms``, ``probe_every_ms``, ``time_url`` and
+        ``probe_timeout`` from :class:`Signer`.
     clock : Clock, keyword-only
         Injected, as for :class:`Signer`.
 
@@ -1968,7 +2040,9 @@ class HmacSigner(Signer):
         signer = HmacSigner({"key_env": "VENUE_KEY", "header": "X-Signature",
                              "timestamp_header": "X-Timestamp",
                              "algorithm": "sha256", "probe_every_ms": 60000,
-                             "max_skew_ms": 5000}, clock=clock)
+                             "max_skew_ms": 5000,
+                             "time_url": "https://venue.example/time"},
+                            clock=clock)
         signer.skew_ms()   # 0 — and signing refuses until a probe succeeds
     """
 

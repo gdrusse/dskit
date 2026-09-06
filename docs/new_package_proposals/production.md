@@ -1725,12 +1725,37 @@ section names box 3.
 
 The second `Ledger`, and the reason the seam is an ABC. It is a pack because
 `sqlite3` is stdlib but the SCHEMA and its pragmas are a library-shaped choice,
-and because §8's tier rule puts a named library's plumbing in `libs/`.
+and because §8's tier rule puts a named library's plumbing in `libs/`. The rule
+is about what importing the production layer COSTS, not about who publishes the
+library, so `sqlite3` is named only inside a method exactly as `pyarrow` is —
+and `tests/production/test_purity.py` matches a pack to the library its own
+FILENAME names, because the stdlib check would otherwise wave `sqlite3` through
+and report a module-level import clean.
 
 - `SqliteLedger(serve_root, process_id, release_hash, *, clock, fsync="every",
   rotate=None, state=None, snapshot_every=None, lock=None)` — the SAME
   constructor as `JsonlLedger`, so `compose.py` builds either from one site and
   nothing downstream learns which it got.
+- **`ChainLedger` is what makes "the SAME constructor" buildable.** Written as
+  first drafted, the second store would have had to restate the twelve-field
+  envelope, the caller-content `payload_digest` and the idempotency it buys,
+  the dense `seq`, the `prev_hash` link, the graded barrier, the `serve.lock`
+  writer lock, the snapshot cadence and the walk `verify` performs — and it
+  could not have IMPORTED any of it, because those live behind `ledger.py`'s
+  `_`-prefixed names and `__all__` plus the `_` prefix is the API contract. Two
+  implementations of one hash chain are two chains, so the shared half is
+  extracted into a public `ChainLedger(Ledger)` in `ledger.py` and both stores
+  subclass it. A store supplies five hooks and nothing else: `_open` (recover
+  the head, the index and the snapshot cadence), `_store` (land one record,
+  given its envelope and its canonical bytes UNFRAMED — the newline is JSONL's
+  framing, not the chain's), `_sync` (make what is landed durable), `_walk`
+  (yield envelopes in storage order, `None` for one it cannot decode) and
+  `_shutdown`; `scan` stays the subclass's, because how a store answers a
+  filtered range IS the reason to have chosen it. `verify()` is therefore
+  written once, over `_walk`, which is what makes "the same `first_bad_seq`"
+  a fact rather than a promise. `Ledger` itself stays the ABC the registry
+  resolves; `ChainLedger` is a concrete half beneath it, and a child free to
+  implement `Ledger` directly still may.
 - `journal_mode=WAL` and `synchronous=FULL` are PINNED and not configurable. A
   document's `document.durability.fsync` grades the BARRIER cadence — how often
   the writer commits — and never the pragma, because a chain whose durability
@@ -1738,19 +1763,69 @@ and because §8's tier rule puts a named library's plumbing in `libs/`.
   still means "commit lazily", not "lose the write", and remains legal only at
   `shadow` for the same reason it is in `JsonlLedger`.
 - One table `records(seq INTEGER PRIMARY KEY, kind, id UNIQUE, envelope TEXT
-  NOT NULL, hash, prev_hash)`, plus three triggers refusing `UPDATE` and
-  `DELETE` on it. Append-only is enforced by the STORE, not only by the code
-  that writes to it, which is the property JSONL gets from `O_APPEND` and a
-  sqlite file would otherwise lack.
+  NOT NULL, hash, prev_hash)`, plus an index on `(kind, seq)` so `scan` is one
+  indexed query in both its shapes, plus **three triggers**. Append-only is
+  enforced by the STORE, not only by the code that writes to it, which is the
+  property JSONL gets from `O_APPEND` and a sqlite file would otherwise lack.
+  Two of the three refuse `UPDATE` and `DELETE`; the third is append-only's
+  other half and is what the first draft's "three triggers refusing UPDATE and
+  DELETE" left unsaid: **an `INSERT` must land at the tail and continue the
+  chain** — `NEW.seq = MAX(seq) + 1` and `NEW.prev_hash` = the current head's
+  hash (the genesis 64 zeros when the table is empty). Without it a row could
+  be spliced into the middle, or a fork started at the end, by anything holding
+  a connection; with it the file refuses, so the guarantee belongs to the store
+  rather than to the good manners of whoever opened it.
+- One consequence worth stating: the store-enforced `seq` makes an
+  out-of-order insert impossible THROUGH the store, so the deletion and
+  insertion cases `verify()` locates can only be produced by dropping the
+  triggers first. The tests do exactly that and say so; a suite that quietly
+  could not reach those cases would be claiming coverage it lacks.
 - `barrier()` is the `COMMIT`; `scan(kind, since_seq)` is one indexed query;
   `head()`, `verify()`, `snapshot(payload)`, `latest_snapshot()` and `close()`
   answer exactly §5.8's contract, and `verify()` returns the same
   `first_bad_seq | None` walking in `seq` order.
+- **Reads borrow the writer's connection while it is open**, and open one of
+  their own after `close()`. §5.8 says reads still work after `close()`, which
+  is free for JSONL and is not free here: the write connection has to go, so a
+  later read reopens. Borrowing while open is not an optimisation — it is what
+  makes the two stores agree: under a lazy grade a JSONL reader sees lines that
+  are written but not yet fsynced, and only a reader on the writer's own
+  connection sees rows that are inserted but not yet committed. A separate
+  connection would silently miss the newest records mid-tick.
+- **A torn write has no sqlite analogue**, because a commit is atomic. The two
+  honest equivalents are asserted instead: a process killed mid-transaction
+  loses WHOLE uncommitted records, so the chain comes back shorter and
+  `verify()` answers `None`; and a corrupted `envelope` is located at exactly
+  the `seq` JSONL reports for the same damage. A graceful `close()` commits
+  what a lazy grade was holding, so only a real crash can lose a record — the
+  test uses a subprocess that `os._exit`s, since a test that closed the ledger
+  would be asserting the opposite of what it claims.
 - `rotate` REFUSES: a sqlite chain is one file, and `document.placement.rotate`
   names a JSONL segmentation policy. A document that selects `sqlite` while
   declaring `rotate` refuses at `plan` rather than silently ignoring a knob its
-  author believed in.
-- `sqlite3` is named only inside methods, per §8's tier-2 rule.
+  author believed in. **Where that refusal lives** is not obvious and matters:
+  `plan` builds no ledger, and `document.py` is written before the registries
+  exist (§10) and deliberately resolves none, so the rule cannot sit in the
+  grammar and `validate` — which §7 keeps to shape and identity — cannot ask
+  it. It is `Ledger.check_placement(problems, rotate)`, a concrete classmethod
+  hook on the ABC that a segmenting store inherits (accept) and a one-file
+  store overrides (refuse), with ONE owner asking it: `ledger.ledger_class(
+  document)`, called by `compose.py`, which then builds one, and by the `plan`
+  verb, which builds nothing. The constructor asks the same hook, so a caller
+  building a store directly cannot slip past.
+- **`document.durability.ledger` carries no `params`.** §4.3 gives every
+  selector the `{uses, params}` shape, but this family's constructor is pinned
+  by the first bullet and has nowhere to put a params block. A non-empty one
+  therefore REFUSES rather than being dropped — the same rule as `rotate`, for
+  the same reason: a knob its author believed in must not be silently ignored.
+  The knobs that do exist are `document.durability.fsync` and
+  `document.placement.rotate`.
+- `ServeRoot` owns the path. §5.8's tree only spells `ledger.NNNN.jsonl`, but
+  "no other module builds a serve path by concatenation" is a rule, so a chain
+  that is ONE file needs a name in the layout: `ServeRoot.database_path` →
+  `ledger/ledger.db`. The extension is deliberately not the library's — core
+  naming a file `ledger.sqlite3` would put a library's name in tier-1 code for
+  no gain, and the layout's job is to say what the file HOLDS.
 - There is deliberately **no** `LEDGER_KIND_NAMES` tuple in `vocab.py`.
   `FEE_KIND_NAMES` exists only because a fee is selected by a nested `kind`
   inside a guard's params and §4.3 pins the tuple and the registry equal; a
@@ -1764,7 +1839,9 @@ and because §8's tier rule puts a named library's plumbing in `libs/`.
   second implementation that gives the registry a purpose, not that the
   registry moves into a pack. `document.durability.ledger` is the OPTIONAL
   `{uses, params}` site, defaulting to `jsonl`, so every phase-1 document keeps
-  both its identity and its existing chain.
+  both its identity and its existing chain. `Ledger` therefore LEAVES §5.15's
+  structural list and joins the registry-resolved seams; `ChainLedger` takes
+  its place there, since no `uses` selects it.
 
 ### 5.9 `reconcile.py`
 
@@ -2328,6 +2405,11 @@ seam as an operator's proof.
   stamped; concrete `skew_ms()` returns the current estimate and
   `probe(transport) -> int` performs one bounded request whose server-time
   answer updates it. `SIGNER_KINDS = Registry("signer", Signer)`.
+- **The clock is injected**, as everywhere else in this package: skew is
+  (server − local) and staleness is (now − last successful probe), so neither
+  is computable without one, and nothing outside `clock.py` reads the wall
+  clock. `Signer(params, *, clock)`, following `CircuitBreaker(params, *,
+  clock)` rather than the bare `HmacSigner(params)` this section first wrote.
 - `HmacSigner(params)`: `key_env` (the env-var NAME holding the secret, never
   the secret), `algorithm ∈ SIGNER_ALGORITHMS = ("sha256", "sha512")` (default
   `DEFAULT_SIGNER_ALGORITHM`), `header` and `timestamp_header` (the header
@@ -2336,18 +2418,68 @@ seam as an operator's proof.
   payload). The key resolves once through `redact.resolve_secrets` and is
   registered as a credential, so it can reach neither a log line nor a record;
   the signature covers the canonical request line, the timestamp and the body,
-  and the digest — never the key — is what a `reason` may quote.
+  and the digest — never the key — is what a `reason` may quote. `max_skew_ms`
+  and `probe_every_ms` sit on `Signer` rather than on `HmacSigner`: they are
+  the skew window, which every signer has, and only the HMAC knobs are the
+  subclass's.
+- **The probe target is CONFIGURATION.** `Signer` also takes `time_url` (the
+  venue's clock endpoint) and `probe_timeout` (`{connect_s, read_s}`, defaulting
+  to the transport's own deadlines and validated by the same checker), and the
+  concrete `probe_request()` builds a plain bounded `GET` from them. An earlier
+  draft left the endpoint to a subclass on the grounds that core ships no
+  venue; that gets the toolkit's doctrine backwards. Behaviour is supplied by
+  JSON at run time, and using a package against a new venue means writing a new
+  document — a server-time URL is a config value in exactly the way a
+  connector's endpoint is, not domain logic. Left as a subclass hook, the
+  registered `hmac` kind was selectable from a document and could never sign.
+  `probe_request()` SURVIVES as the overridable hook, because a venue whose
+  probe must be a `POST`, be signed, or carry a header is real; it simply stops
+  being the only way to get a working signer, and a signer given neither the
+  knob nor the hook refuses in `probe` naming both ways out. The hook wins when
+  both are present: one answer, not two.
+- **`probe_every_ms` is REQUIRED, not defaulted.** A staleness rule with no
+  period never fires, which is the same reason `fsync: {"batch": …}` requires
+  both its bounds and a `size` rotation requires `max_bytes`.
+- **A skew bound finer than the time source can resolve REFUSES at
+  construction.** The generic `server_ms(status, headers, body)` reads the HTTP
+  `Date` header — the one server-time field every compliant response carries —
+  and an HTTP-date is a whole number of SECONDS, so an estimate taken from it
+  is good to a second and no better. A document setting `max_skew_ms` below
+  that would refuse to sign for ever: a live venue that can never be reached,
+  discovered when someone arms it. So the resolution is a class declaration,
+  `Signer.TIME_RESOLUTION_MS` (= `DATE_HEADER_RESOLUTION_MS`), for the same
+  reason `Lease.LIVE_CAPABLE` is one — the fact belongs to the implementation
+  and the check must read it without building anything — and
+  `max_skew_ms < TIME_RESOLUTION_MS` refuses where the document is planned,
+  naming both the bound and the source that set the floor. A subclass whose
+  `server_ms` reads a millisecond field declares a smaller
+  `TIME_RESOLUTION_MS` and may then set a finer bound honestly. `DEFAULT_MAX_
+  SKEW_MS` is set knowing the floor, and a venue in perfect agreement reads as
+  up to a second BEHIND, since an HTTP-date truncates.
 - **`sign` REFUSES on skew**, in both directions: when the last successful
   probe is older than `probe_every_ms`, or when `|skew_ms()| > max_skew_ms`.
   This is the safety point of the object. A signature stamped outside the
   venue's own window is rejected AFTER the request has been sent, which makes
   the submit `unknown` and forces a reconciliation; refusing to sign makes it
   `not_sent`, which costs nothing. Sending a request that is known to be
-  unacceptable is never the better branch.
+  unacceptable is never the better branch. Both halves fail CLOSED: an estimate
+  that was never taken is infinitely old, and a failed probe leaves the
+  previous estimate and its age untouched so it ages out rather than being
+  trusted. The refusal is `check_skew()`, concrete on `Signer` so every
+  subclass's `sign` owes it before computing anything.
 - It is declared at `document.execution.signer`, an OPTIONAL `{uses, params}`
   key inside the already-graded `execution` section, so a document that does
   not sign hashes exactly as it does today. A child's `LiveExecutor` calls it;
   core never does, because core ships no venue.
+- **Only a live rung builds one, and that is a security property.** Building a
+  signer RESOLVES the venue key into the process and registers it as a
+  credential, so a shadow or paper run of a live document would be holding a
+  credential it can never use — and would refuse to start on a machine that
+  rightly lacks it. Construction is therefore a hook on `compose.py`'s rung
+  family (beside `executor`, whose arity already differs by rung), answering
+  `None` for a simulated venue; the built signer is then offered to the child
+  executor only when its own `__init__` declares one, the rule `_offered`
+  already applies to probes, emitters and outcome sources.
 
 ### 5.13 `loop.py`, `outcomes.py`, `report.py`, `readiness.py`
 
@@ -3112,7 +3244,9 @@ unregistered) and pipeline-side `ExecutionPolicy` (§9.1).
 **The twenty is a phase-1 count, and the test grows with the package.** Phase 2
 adds three registry-resolved families — `Ledger` (`LEDGER_KINDS`, §5.8.2),
 `OutcomeSource` (`OUTCOME_SOURCE_KINDS`, §5.13.2) and `Signer`
-(`SIGNER_KINDS`, §5.12.1) — and one more structural ABC, `ReportEmitter`
+(`SIGNER_KINDS`, §5.12.1) — so `Ledger` MOVES out of the structural list and
+`ChainLedger` (§5.8.2, the concrete half both stores inherit) takes its place
+there, since no `uses` selects it; and one more structural ABC, `ReportEmitter`
 (§5.13.3), which stays unregistered because `--format` chooses between exactly
 two and no document selects a report format. Phase 3 adds one registry-resolved
 family, `MetricSink` (`METRIC_SINK_KINDS`, §5.11.3), and no packs of its own
@@ -3575,10 +3709,15 @@ dskit/production/
 ├── verifier.py        SubmissionVerifier (the final verify-and-call gate) — separate from policy.py because it performs
 │                      I/O against feed/quote/accounting/lease state, while the policies are pure over closed vocabularies
 ├── resilience.py      Classifier ABC + HttpClassifier; Retry (+ budget); CircuitBreaker; RateLimiter;
-│                      Transport ABC + UrllibTransport + TRANSPORT_KINDS; [phase 2] Signer ABC + HmacSigner +
+│                      Transport ABC + UrllibTransport + TRANSPORT_KINDS; [phase 2] Signer ABC (injected clock, the
+│                      skew window, the configured time probe and its TIME_RESOLUTION_MS floor) + HmacSigner +
 │                      SIGNER_KINDS — §5.12.1
-├── ledger.py          Ledger ABC + barrier; JsonlLedger; LEDGER_KINDS (the registry lives with its seam, §4.3; libs/sqlite.py is
-│                      what gives it a second member); Checkpoint caches; ServeRoot + series genesis; envelope + chain + verify
+├── ledger.py          Ledger ABC + barrier + check_placement; ChainLedger (the chain itself: envelope, digest,
+│                      idempotency, prev_hash, graded barrier, writer lock, snapshot cadence, verify — both stores
+│                      inherit it, §5.8.2); JsonlLedger; LEDGER_KINDS (the registry lives with its seam, §4.3;
+│                      libs/sqlite.py is what gives it a second member) + ledger_class(document), the one resolver
+│                      compose and plan both ask; Checkpoint caches; ServeRoot + series genesis (+ database_path);
+│                      envelope + chain + verify
 ├── state.py           SeriesState (the sole ledger fold, with the non-StateView accessors monitor_state/open_ticks/
 │                      undecided_ticks/tick_plans/last_trip); StateView; TickState; PositionBook (with its per-instrument
 │                      fill log); Recovery; [phase 2] silences()/alert_acks()
@@ -3625,9 +3764,10 @@ dskit/production/
 │                      GO / NO-GO; required for live
 ├── libs/
 │   ├── __init__.py
-│   ├── sqlite.py      [phase 2] SqliteLedger — WAL + synchronous=FULL PINNED (durability.fsync grades the barrier
-│   │                  cadence, never the pragma), append-only triggers, rotate refused; registers `sqlite` into
-│   │                  ledger.py's LEDGER_KINDS — §5.8.2
+│   ├── sqlite.py      [phase 2] SqliteLedger over ChainLedger — WAL + synchronous=FULL PINNED (durability.fsync
+│   │                  grades the barrier cadence, never the pragma), three append-only triggers (no UPDATE, no
+│   │                  DELETE, and an INSERT only at the tail chained to the head), rotate refused, params refused;
+│   │                  registers `sqlite` into ledger.py's LEDGER_KINDS — §5.8.2
 │   ├── parquet.py     [phase 2] RunReference over the run's predictions parquet, registered as `run` in
 │   │                  REFERENCE_KINDS; pyarrow inside the method — §5.10.2
 │   ├── exchange_calendars.py  [phase 3] ExchangeCalendar — the published schedule materialised once into the
@@ -3692,7 +3832,10 @@ tests/production/
 │                          every duration/count/calendar × scope-key evidenced; monotonic source tokens; risk versions/digests; corrections; freshness; reducing proof
 ├── test_coordination.py   expected/authenticated/lease/gateway scope equality; cross-release contention; fencing; stale renewal disables submit
 ├── test_control.py        caller UUID retry vs repeat; sole writer; HALT; normal-exit journal rows; SIGKILL gap reported; flatten recovery
-├── test_resilience.py     ambiguous writes; retry cap; reserved cancel lane; bounded cancel_all 429/timeout/query/reconcile behavior
+├── test_resilience.py     ambiguous writes; retry cap; reserved cancel lane; bounded cancel_all 429/timeout/query/reconcile behavior;
+│                          [phase 2] sign returns new objects and mutates neither argument; refuses on a stale probe and on excess
+│                          skew in BOTH directions; a bound finer than the time source refuses at construction; the key never
+│                          reaches a header, a message or a log line; `hmac` plus a time_url signs with no subclass
 ├── test_ledger.py         chain/idempotency; genesis prev_hash of 64 zeros; torn tail recovered; an edit/delete/insert/reorder
 │                          located by verify() -> first_bad_seq; rotation continuity across segments for each rotate.by;
 │                          checkpoint atomicity under a crash subprocess mid-batch; no float in any money field;
@@ -3738,9 +3881,11 @@ tests/production/
                            [phase 2] a provisional calibration verdict is not evidence
 
 tests/production_libs/     [phase 2/3] the tier-2 packs, beside tests/pipeline_libs and tests/assets_libs
-├── test_sqlite.py         [phase 2] the §5.8 chain contract run against SqliteLedger — same envelope, same first_bad_seq, same
-│                          idempotency; WAL + synchronous=FULL cannot be lowered by a document; UPDATE and DELETE refuse at the
-│                          store; a document declaring rotate refuses at plan
+├── test_sqlite.py         [phase 2] the §5.8 chain contract run against SqliteLedger as a CONFORMANCE battery — the same
+│                          records folded through both stores give the same seqs, envelopes, hashes, scan results and
+│                          first_bad_seq; WAL + synchronous=FULL cannot be lowered by any document key; UPDATE, DELETE and a
+│                          non-tail INSERT refuse at the STORE, asserted through a connection the package never opened; a
+│                          document declaring rotate, or a non-empty durability.ledger.params, refuses at plan
 ├── test_parquet.py        [phase 2] RunReference reads once and lazily, add() ignores and a window roll never moves the
 │                          anchor, a missing column and a run scored by several nodes both refuse at sample()
 ├── test_exchange_calendars.py  [phase 3] the materialised schedule answers identically to an equivalent WeeklySessions; a moved

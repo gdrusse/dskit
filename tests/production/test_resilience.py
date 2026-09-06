@@ -67,6 +67,7 @@ from dskit.production.resilience import (
     DEFAULT_RETRY_AFTER,
     DEFAULT_RETRY_WRITES,
     DEFAULT_SIGNER_ALGORITHM,
+    DATE_HEADER_RESOLUTION_MS,
     DEFAULT_THROTTLE_BASE_S,
     DEFAULT_THROTTLE_COST,
     DEFAULT_TRANSIENT_COST,
@@ -1568,20 +1569,35 @@ def signer_params(**overrides):
     return params
 
 
-class ProbingSigner(HmacSigner):
-    """A child's signer: the one venue fact core cannot hold is the time endpoint."""
+#: The venue's clock endpoint — a CONFIG value a document writes, exactly as
+#: a connector writes its own endpoint. Nothing in the package holds it.
+TIME_URL = "https://venue.invalid/v1/time"
 
-    URL = "https://venue.invalid/v1/time"
+
+class ProbingSigner(HmacSigner):
+    """The escape hatch: a venue whose clock endpoint two params cannot describe."""
+
+    URL = TIME_URL
 
     def probe_request(self):
-        """Ask the venue for its clock, bounded."""
+        """Ask the venue for its clock with a shape `time_url` cannot express."""
         return {
-            "method": "GET",
+            "method": "POST",
             "url": self.URL,
-            "headers": {},
-            "body": None,
+            "headers": {"X-Probe": "1"},
+            "body": b"{}",
             "timeout": {"connect_s": 1.0, "read_s": 1.0},
         }
+
+
+class MillisecondSigner(HmacSigner):
+    """A venue that publishes milliseconds, so its bound may be finer than a second."""
+
+    TIME_RESOLUTION_MS = 1
+
+    def server_ms(self, status, headers, body):
+        """Read the exact instant the venue put in its body."""
+        return int(body)
 
 
 class UnboundedSigner(ProbingSigner):
@@ -1615,9 +1631,15 @@ def venue_key(monkeypatch):
 
 
 def make_signer(params=None, *, cls=ProbingSigner, start_ms=START_MS):
-    """Build one signer over a hand-advanced clock."""
+    """Build one signer over a hand-advanced clock, through the overriding hook."""
     clock = FakeClock(start_ms=start_ms)
     return cls(signer_params(**(params or {})), clock=clock), clock
+
+
+def make_configured(params=None, *, cls=HmacSigner, start_ms=START_MS):
+    """Build the signer a DOCUMENT alone produces: `hmac` plus a `time_url`."""
+    clock = FakeClock(start_ms=start_ms)
+    return cls(signer_params(time_url=TIME_URL, **(params or {})), clock=clock), clock
 
 
 def canonical(prefix, method, url, at_ms, body):
@@ -1749,7 +1771,7 @@ def test_the_key_is_absent_from_every_refusal_message(venue_key):
     """A refusal is the one place a signer speaks, so it is the one place a
     key could escape. §5.12.1: "the digest — never the key — is what a
     `reason` may quote"."""
-    signer, clock = make_signer({"max_skew_ms": 10})
+    signer, clock = make_signer({"max_skew_ms": 1_000})
     signer.probe(TimeTransport(clock.now_ms() + 5_000))
     with pytest.raises(ProductionError) as exc:
         signer.sign("POST", "https://venue.invalid/o", {}, b"{}", clock.now_ms())
@@ -1909,11 +1931,14 @@ def test_the_probe_is_one_bounded_request(venue_key):
 
 
 def test_a_signer_that_declares_no_time_endpoint_cannot_probe(venue_key):
-    """Core ships no venue, so core holds no time URL: the base refuses
-    rather than inventing one, and a child supplies `probe_request`."""
+    """Core holds no venue's URL, so a signer given neither the config knob
+    nor the hook refuses rather than inventing one — and the refusal names
+    BOTH ways out, since a reader hitting it has to choose between them."""
     signer = HmacSigner(signer_params(), clock=FakeClock())
-    with pytest.raises(ProductionError, match="probe_request"):
+    with pytest.raises(ProductionError) as exc:
         signer.probe(TimeTransport(0))
+    assert "time_url" in str(exc.value)
+    assert "probe_request" in str(exc.value)
 
 
 def test_the_default_server_time_reads_the_date_header_to_the_second(venue_key):
@@ -1993,8 +2018,8 @@ def test_the_refusal_happens_before_anything_is_computed(venue_key):
     """Refusing makes the submit `not_sent`, which costs nothing; sending a
     request known to be unacceptable makes it `unknown` and forces a
     reconciliation. Nothing may be produced on the refusing path."""
-    signer, clock = make_signer({"max_skew_ms": 0})
-    signer.probe(TimeTransport(clock.now_ms() + 1_000))
+    signer, clock = make_signer({"max_skew_ms": 1_000})
+    signer.probe(TimeTransport(clock.now_ms() + 2_000))
     headers = {"Content-Type": "application/json"}
     with pytest.raises(ProductionError):
         signer.sign("POST", "https://venue.invalid/o", headers, b"{}", clock.now_ms())
@@ -2025,3 +2050,151 @@ def test_a_document_that_does_not_sign_hashes_exactly_as_it_did():
     obj["execution"]["signer"] = {"uses": "hmac", "params": signer_params()}
     assert "signer" not in plain.to_obj()["execution"]
     assert ServeDocument(obj).doc_hash != plain.doc_hash
+
+
+# --- ruling 1: the probe target is CONFIGURATION -----------------------------
+#
+# dskit's premise is that behaviour is supplied by JSON at run time and that
+# using a package on a new project means writing a new config, never editing
+# or subclassing code. A venue's server-time URL is a config value in exactly
+# the way a connector's endpoint is; it is not domain logic. So the registered
+# `hmac` kind must work from a document alone, and `probe_request()` survives
+# only as the escape hatch for a venue two params cannot describe.
+
+
+def test_a_document_declaring_hmac_with_a_time_url_signs_without_a_subclass(venue_key):
+    """The whole ruling in one test: no subclass anywhere, a params block a
+    document could hold verbatim, and a signature at the end of it."""
+    signer, clock = make_configured()
+    assert type(signer) is HmacSigner
+    assert signer.probe(TimeTransport(clock.now_ms() + 2_000)) == 2_000
+    headers, _body = signer.sign(
+        "POST", "https://venue.invalid/o", {}, b"{}", clock.now_ms()
+    )
+    assert headers[SIGN_HEADER] == expected_digest(
+        SECRET, "", "POST", "https://venue.invalid/o", clock.now_ms(), b"{}"
+    )
+
+
+def test_the_probe_asks_the_url_the_document_named(venue_key):
+    signer, clock = make_configured()
+    transport = TimeTransport(clock.now_ms())
+    signer.probe(transport)
+    method, url, _headers, body, _timeout = transport.sent[0]
+    assert (method, url, body) == ("GET", TIME_URL, None)
+
+
+def test_the_probe_deadline_is_the_transports_own_spelling(venue_key):
+    """`resilience.py` already names a deadline `{connect_s, read_s}` and
+    validates it in one place; a second spelling for the same fact is the
+    duplication that diverges."""
+    signer, clock = make_configured()
+    transport = TimeTransport(clock.now_ms())
+    signer.probe(transport)
+    assert transport.sent[0][4] == {"connect_s": DEFAULT_CONNECT_S, "read_s": DEFAULT_READ_S}
+
+    tighter, clock = make_configured({"probe_timeout": {"connect_s": 0.5, "read_s": 0.5}})
+    transport = TimeTransport(clock.now_ms())
+    tighter.probe(transport)
+    assert transport.sent[0][4] == {"connect_s": 0.5, "read_s": 0.5}
+
+
+@pytest.mark.parametrize(
+    "timeout",
+    [None, {}, {"connect_s": 1.0}, {"connect_s": 0, "read_s": 1.0}, {"connect_s": 1.0, "read_s": 1.0, "x": 1}],
+    ids=("none", "empty", "partial", "zero", "unknown"),
+)
+def test_a_probe_deadline_that_is_not_a_deadline_refuses(venue_key, timeout):
+    """One BOUNDED request: the deadline is checked by the same function the
+    transport's is, so a signer cannot be configured to hang."""
+    with pytest.raises(ProductionError):
+        HmacSigner(
+            signer_params(time_url=TIME_URL, probe_timeout=timeout), clock=FakeClock()
+        )
+
+
+@pytest.mark.parametrize("bad", [7, "", ["https://x"]], ids=("int", "empty", "list"))
+def test_a_time_url_that_is_not_a_url_refuses(venue_key, bad):
+    with pytest.raises(ProductionError, match="time_url"):
+        HmacSigner(signer_params(time_url=bad), clock=FakeClock())
+
+
+def test_the_hook_still_wins_for_a_venue_the_two_params_cannot_describe(venue_key):
+    """`probe_request()` survives the ruling: a venue needing a signed probe,
+    a POST, or a header stays reachable — it simply stops being the only way
+    to get a working signer."""
+    signer, clock = make_signer()
+    transport = TimeTransport(clock.now_ms())
+    signer.probe(transport)
+    method, url, headers, body, _timeout = transport.sent[0]
+    assert (method, url, headers, body) == ("POST", TIME_URL, {"X-Probe": "1"}, b"{}")
+
+
+def test_the_hook_overrides_the_configured_url_rather_than_racing_it(venue_key):
+    """One answer, not two: a subclass that supplies the hook owns the probe
+    even when the document also names a `time_url`."""
+    signer, clock = make_signer({"time_url": "https://venue.invalid/ignored"})
+    transport = TimeTransport(clock.now_ms())
+    signer.probe(transport)
+    assert transport.sent[0][1] == TIME_URL
+
+
+# --- ruling 2: an unsatisfiable skew bound refuses at construction -----------
+#
+# A `max_skew_ms` finer than the time source can resolve is a signer that
+# refuses for ever — a live venue that can never be reached, discovered when
+# someone arms it. It has to refuse when the document is planned instead.
+
+
+def test_the_time_sources_resolution_is_named_once_and_is_the_date_headers(venue_key):
+    """The refusal reads its bound from ONE owner, not a literal: the base
+    resolves to whatever an HTTP-date resolves to, which is a second."""
+    assert Signer.TIME_RESOLUTION_MS == DATE_HEADER_RESOLUTION_MS
+    assert DATE_HEADER_RESOLUTION_MS == 1_000
+    assert DEFAULT_MAX_SKEW_MS >= DATE_HEADER_RESOLUTION_MS
+
+
+@pytest.mark.parametrize("bound", [0, 1, 999])
+def test_a_skew_bound_finer_than_the_time_source_refuses_at_construction(venue_key, bound):
+    """Not at the first sign, and not at the first arm: a document whose
+    signer could never produce a signature is a live venue that can never be
+    reached, and it must be rejected where it is planned."""
+    with pytest.raises(ProductionError) as exc:
+        HmacSigner(signer_params(max_skew_ms=bound, time_url=TIME_URL), clock=FakeClock())
+    assert "max_skew_ms" in str(exc.value)
+    assert str(DATE_HEADER_RESOLUTION_MS) in str(exc.value)
+
+
+def test_the_bound_may_equal_the_resolution(venue_key):
+    """The refusal is about what is unreachable, not about what is tight: a
+    bound AT the resolution is exactly satisfiable and stays legal."""
+    signer, clock = make_configured({"max_skew_ms": DATE_HEADER_RESOLUTION_MS})
+    signer.probe(TimeTransport(clock.now_ms()))
+    assert signer.sign("GET", "https://venue.invalid/x", {}, None, clock.now_ms())
+
+
+def test_a_subclass_with_a_millisecond_time_source_may_set_a_finer_bound(venue_key):
+    """The declaration is the class's, so a venue that publishes milliseconds
+    lowers it honestly rather than the package pretending nobody can."""
+    clock = FakeClock()
+    signer = MillisecondSigner(
+        signer_params(max_skew_ms=50, time_url=TIME_URL), clock=clock
+    )
+    assert MillisecondSigner.TIME_RESOLUTION_MS < DATE_HEADER_RESOLUTION_MS
+
+    class Exact(TimeTransport):
+        def send(self, method, url, headers, body, timeout):
+            self.sent.append((method, url, dict(headers), body, dict(timeout)))
+            return 200, {}, str(self.server_ms).encode()
+
+    assert signer.probe(Exact(clock.now_ms() + 40)) == 40
+    assert signer.sign("GET", "https://venue.invalid/x", {}, None, clock.now_ms())
+
+
+def test_the_refusal_names_the_source_that_set_the_floor(venue_key):
+    """A reader hitting it has to know WHICH source is coarse, since the fix
+    is either a wider bound or a finer source."""
+    with pytest.raises(ProductionError) as exc:
+        MillisecondSigner(signer_params(max_skew_ms=0, time_url=TIME_URL), clock=FakeClock())
+    assert "MillisecondSigner" in str(exc.value)
+    assert str(MillisecondSigner.TIME_RESOLUTION_MS) in str(exc.value)
