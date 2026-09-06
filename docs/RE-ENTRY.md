@@ -31,7 +31,7 @@ suite is 9560 passed with three failures that are all pre-existing on `main`
 five purity gates at 44, the 20 pinned sha256 literals unmoved, `check_plan.py`
 CLEAN, and the pinned driver and search suites passing untouched.
 
-**Open, needing the owner.** ADR-0095 (proposed) holds the last phase-3 item:
+**Open, needing the owner.** ADR-0101 (proposed) holds the last phase-3 item:
 moving the onboarding connector packs onto `resilience.Retry`. It was NOT
 migrated, deliberately — the record names three obstacles the draft did not,
 two of which need a ruling, and the onboarding purity gate is a hard stop
@@ -45,10 +45,52 @@ read-only bar `outcomes`; the authenticated verbs are `arm-request|approve-arm|
 disarm|halt|reduce|resume|flatten-request|approve-flatten|execute-flatten|
 adopt|ack|silence|approve-hold`. See `dskit/production/README.md`.
 
-## Current wrap: child infrastructure
+## Current state: P12 Gate 3 recovery complete (2026-09-05)
 
-## Current wrap: Gate 3 rebuild built (2026-09-05, overnight, autonomous)
+Branch: `main`; `571884a` is pushed to `origin/main`. Focused recovery,
+staged-run, and concurrent-journal verification: 142 passed. P12 recovered
+without changing any original partial artifact.
+The only Gate 1 selection source was persisted `gate1.json` rows with boolean
+`gate1_passes=true`: 31 survivors. The final Gate 3 result is 25 pass / 6
+fail. Pass: LLY3, QQQ1, XLF3, XLE1, XLK5, BAC1, SMH5, IWM5, XBI1, FCX1,
+DAL1, NRG1, MET1, MSTR10, NOW5, LULU5, PANW5, INTC1, CIEN5, LRCX10,
+TER5, BIDU2, LITE5, ADBE5, ANET3. Fail: TQQQ3, NVDA2, UPRO60, AVGO10,
+NFLX3, BA1; all six beat all 19 draws but failed shipped calibration.
 
+A12580 is the immutable source inventory. A12581-A12596 separately record
+the 16 legitimate reconstructions with all 19 draw and 380 part action/path
+references each. The remaining 15 families were rerun completely. A18619 is
+the final `gate3_recovery.json`; its SHA-256 is
+`098b21eaef6ee0260753d4f981ca2337bccae406b9efd394284d9b180ba03bd0`.
+It contains all 63 Gate 1 rows, the exact 16/15 partition, 285 rerun main
+walks and 5,700 matching part journals. NRG seed05 part00 replacement A12731
+passes the fixed journal seam. Recovery summary: A18622.
+
+The missing-evidence fix is `cd4fb1c`; continuation construction is
+`d1230ba`; the safe journal-label bound fix is `47bcdaa`. Independent review
+is clean after all major findings were resolved. A12618 preserves the failed
+long-label continuation attempt. A18620 appends corrected locations for smoke
+rows A2888-A2909; A18621 records the first 64-asset attempt's exit 143. Memo:
+`children/intraday_equities/docs/memos/p12-gate3-recovery-results.md`.
+
+**Next:** use the Gate 3 survivors as the fixed input to the ratified
+predictor-output/model-development plan. For future long runs on this 16-CPU
+host, set `INTRADAY_EQUITIES_FOLD_WORKERS=4`; benchmark before going wider.
+
+## Current state: predictor-output research + topic folders (2026-09-05)
+
+Branch: `main`. ADR-0096: `journal research` writes
+`docs/research/<topic>/<YYYY-MM-DD>-<name>.md` (no root markdown). Skills
+copied to Cursor + Claude; OpenCode `/research` updated. Deep-research
+finding for post-Gate-3 output:
+`children/intraday_equities/docs/research/post-gate3-predictor-output/2026-09-05-synthesis.md`
+(A12628–A12635). Journal/skeleton tests 38 passed. P12 Gate-3 recovery
+execute rows continued appending in the same ledger.
+
+**Next (owner):** ratify or amend the synthesis (pooled trunk + \(H_i\)
+heads, 5-seed ensembles, quantiles+conformal, empirical robust sets;
+large transformers as challengers only). P12 recovery still in flight
+elsewhere — do not treat this wrap as a Gate-3 result.
 ## Current state: agent-doc sync + opencode setup (2026-09-05)
 
 Branch: `main`. Synced all nine `AGENTS.md`/`CLAUDE.md` pairs so the Codex-

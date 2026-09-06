@@ -75,8 +75,10 @@ def _finish(argv, cwd, journaled):
     os.makedirs(summary, exist_ok=True)
     cutoff = document.walkforward.first
     payload = {
+        "name": document.name,
         "state": "ran",
         "document_hash": document.hash,
+        "asof": asof,
         "folds": [
             {
                 "cutoff": cutoff,
@@ -86,6 +88,7 @@ def _finish(argv, cwd, journaled):
             }
         ],
     }
+    os.makedirs(payload["folds"][0]["run_dir"], exist_ok=True)
     with open(os.path.join(summary, "walkforward.json"), "w", encoding="utf-8") as fh:
         json.dump(payload, fh)
     journaled.add(summary)
@@ -233,6 +236,91 @@ def test_bounded_walk_refuses_a_fold_with_artifacts_but_no_journal(
     else:  # pragma: no cover - the assertion below reports it
         raise AssertionError("orphaned fold artifacts were accepted")
     assert all(not runner.batches for runner in FakeRunner.instances)
+
+
+def test_nrg_seed05_exit_zero_fold_gets_parent_journal_evidence(
+    tmp_path, monkeypatch
+):
+    """The bounded parent records a verified fold when its child did not."""
+    ctx, journaled = _harness(tmp_path, monkeypatch)
+    document = _document(tmp_path / "runs", count=1)
+    obj = document.to_obj()
+    obj["name"] = "p12-63-asset-modelability-gate3-seed05-nrg-h01"
+    document = PipelineDocument.from_obj(obj)
+    recorded = []
+
+    def no_child_journal(runner, commands, cwd=None, env=None):
+        runner.batches.append((commands, cwd, env))
+        for argv in commands:
+            summary = _finish(argv, cwd, journaled)
+            journaled.discard(summary)
+        return [
+            subprocess.CompletedProcess(argv, 0, "", "")
+            for argv in commands
+        ]
+
+    def parent_journal(*_args, **kwargs):
+        recorded.append(kwargs)
+        journaled.add(kwargs["outputs"])
+
+    monkeypatch.setattr(FakeRunner, "run", no_child_journal)
+    monkeypatch.setattr(modelability, "append_action", parent_journal)
+    summary = modelability._run_bounded_walk(ctx, document, document.name)
+    assert Path(summary, "walkforward.json").is_file()
+    assert len(recorded) == 2
+    fold, aggregate = recorded
+    assert "part-00-walkforward" in fold["outputs"]
+    assert "journaled_by=bounded-parent-after-exit-0" in fold["notes"]
+    assert aggregate["outputs"] == summary
+
+
+@pytest.mark.parametrize(
+    ("corruption", "expected"),
+    [
+        ("document_hash", "identity mismatch"),
+        ("fold_state", "not a complete ran row"),
+        ("missing_score", "not a complete ran row"),
+        ("extra_key", "not a complete ran row"),
+    ],
+)
+def test_parent_refuses_invalid_exit_zero_fold_before_journaling(
+    tmp_path, monkeypatch, corruption, expected
+):
+    """The NRG repair path must fail closed before durable evidence exists."""
+    ctx, journaled = _harness(tmp_path, monkeypatch)
+    document = _document(tmp_path / "runs", count=1)
+    recorded = []
+
+    def invalid_child_output(runner, commands, cwd=None, env=None):
+        runner.batches.append((commands, cwd, env))
+        for argv in commands:
+            summary = _finish(argv, cwd, journaled)
+            record = Path(summary, "walkforward.json")
+            payload = json.loads(record.read_text(encoding="utf-8"))
+            if corruption == "document_hash":
+                payload["document_hash"] = "0" * 64
+            elif corruption == "fold_state":
+                payload["folds"][0]["state"] = "error"
+            elif corruption == "missing_score":
+                payload["folds"][0]["score"] = None
+            else:
+                payload["folds"][0]["surprise"] = True
+            record.write_text(json.dumps(payload), encoding="utf-8")
+            journaled.discard(summary)
+        return [
+            subprocess.CompletedProcess(argv, 0, "", "")
+            for argv in commands
+        ]
+
+    def parent_journal(*_args, **kwargs):
+        recorded.append(kwargs)
+        journaled.add(kwargs["outputs"])
+
+    monkeypatch.setattr(FakeRunner, "run", invalid_child_output)
+    monkeypatch.setattr(modelability, "append_action", parent_journal)
+    with pytest.raises(ValueError, match=expected):
+        modelability._run_bounded_walk(ctx, document, "tag")
+    assert recorded == []
 
 
 def test_bounded_walk_reads_each_row_through_single_fold_row(tmp_path, monkeypatch):

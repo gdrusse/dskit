@@ -781,6 +781,59 @@ def test_the_seed_averaged_cell_is_its_single_seed_twin():
     assert averaged["hpo_space"] == single["hpo_space"]
 
 
+def test_p13_expands_every_enabled_family_over_gate3_passers():
+    """ADR-0099: the official zoo is post-Gate-3, not the old P7 cohort."""
+    raw = _raw("run-p13-model-zoo.json")
+    materialize = raw["stages"]["materialize"]["params"]
+    for field in (
+        "source_document_sha256",
+        "gate3_sha256",
+        "memory_sha256",
+    ):
+        assert len(materialize[field]) == 64
+    enabled = [row for row in materialize["templates"] if row["enabled"]]
+    assert len(enabled) == 13
+    assert {row["family"] for row in enabled} == {
+        "lightgbm-incumbent",
+        "lightgbm-tuned",
+        "extra-trees",
+        "random-forest",
+        "hist-gradient-boosting",
+        "partial-least-squares",
+        "ridge-control",
+        "elastic-net",
+        "small-tabular-mlp",
+        "nlinear",
+        "small-gru",
+        "compact-patchtst",
+        "compact-transformer",
+    }
+    for template in enabled:
+        model = template["model"]
+        assert model["estimator"]
+        if template["id"] != "lgbm-gate3-incumbent":
+            assert model["hpo_trials"] > 0
+            assert isinstance(model["hpo_space"], dict) and model["hpo_space"]
+    assert raw["stages"]["plan"]["inputs"]["candidates"] == (
+        "$materialize.candidates"
+    )
+    assert raw["stages"]["approval"]["inputs"] == {
+        "inventory_sha256": "$plan.inventory_sha256"
+    }
+    assert materialize["path_protocol"] == {
+        "forecast_strategy": "direct_per_lead",
+        "horizon_weighting": "equal",
+        "primary_metric": "train_scaled_improvement",
+        "common_origins": True,
+    }
+    plan = raw["stages"]["plan"]["params"]
+    assert "pipeline.scan_h01.params.common_lead_stop" in plan["contract_paths"]
+    assert "pipeline.path.params.horizon_weights" in plan["contract_paths"]
+    assert plan["protocol"]["path_evidence"] == "path.records"
+    assert raw["stages"]["compare"]["uses"].endswith(":PathBenchmarkCompare")
+    assert raw["stages"]["compare"]["params"]["bootstrap_draws"] == 9999
+
+
 def test_the_p1_cell_differs_from_its_baseline_in_two_knobs_only():
     """Rows every minute, judged every thirty; everything else held.
 

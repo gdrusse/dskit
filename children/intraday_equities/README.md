@@ -115,6 +115,18 @@ INTRADAY_EQUITIES_FOLD_WORKERS=4 python -m dskit.pipeline staged \
   configs/run-p11-modelability.json --asof 2026-02-28 --adapter intraday_equities
 ```
 
+To inspect the official model-zoo DAG without running it:
+
+```bash
+python -m dskit.pipeline plan configs/run-p13-model-zoo.json \
+  --adapter intraday_equities
+```
+
+P13 expands 13 enabled model families across the exact 25 Gate-3-approved
+asset/horizon pairs. Its first `staged` invocation only materializes and hashes
+the inventory: no candidate fits until that hash and a reviewer identity replace
+the pending approval values in the JSON.
+
 ## Layout
 
 ```
@@ -132,11 +144,11 @@ intraday_equities/
 │   ├── models.py        # empty bespoke-architecture seam
 │   ├── live.py          # paper intents from shipped configs
 │   └── testing.py       # network-free connector doubles
-├── configs/             # universe, sources, suites, scan/action/HPO/train
+├── configs/             # universe, sources, suites, model zoo, scan/action/HPO/train
 ├── docs/decisioning/    # framework.md + one file per decision
 ├── docs/explanations/   # standalone worked explanations
 ├── docs/memos/          # durable implementation and operational handoffs
-├── docs/research/       # CLI-written research Markdown
+├── docs/research/       # topic folders; <date>-synthesis.md + dated notes
 └── tests/
 ```
 

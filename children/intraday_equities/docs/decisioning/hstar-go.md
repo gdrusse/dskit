@@ -1,5 +1,11 @@
 # H* GO splits
 
+> **Historical calendar notice (2026-09-05).** ADR-0098 and
+> `configs/program-calendar.json` supersede this document's 40-fold calendar
+> for Gate 1, Gate 3, and the model zoo. Their locked development schedule is
+> 20 folds beginning 2022-05-06 and ending 2025-10-16. This file remains the
+> historical record of ADR-0058 and must not be used as the active date source.
+
 **Status:** locked 2026-09-01 (revised 2026-09-01; pooled ŷ + per-series H). ADR-0058. Toolkit: `no_information_test` (ADR-0057).
 
 H and L come from **one sliding walk-forward through 2025-11-30**. HPO may read through Feb 2026. **Nothing after 2026-02-28 is peeked.**

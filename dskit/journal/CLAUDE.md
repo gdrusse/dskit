@@ -45,9 +45,11 @@ Orientation for an agent working inside this package. Read
   `DSKIT_JOURNAL_LOCK_TIMEOUT` (default 60s).
 - `step` <= 80 characters.
 - **Research is CLI-only.** Never Write `docs/research/` yourself.
-  `python -m dskit.journal research "title" --body-file <draft>` writes
-  the markdown and the row. Skills: `.cursor/skills/record-research/`
-  and `.claude/skills/record-research/` (Claude: `/research`).
+  `python -m dskit.journal research "title" --topic T --name N --body-file <draft>`
+  writes `docs/research/<topic>/<date>-<name>.md` and the row. No
+  markdown in the research root. Skills: `record-research` and
+  `deep-research` under `.cursor/skills/` and `.claude/skills/`
+  (Claude `/research`).
 - **The process text is `render.PROCESS`.** The generated child README
   and `journal/README.md` restate it; `test_store.py` pins the copies.
 

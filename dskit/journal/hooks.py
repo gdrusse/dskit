@@ -66,7 +66,7 @@ def record_execute(step, inputs="", outputs="", db_location="", notes=""):
     )
 
 
-def record_research(step, inputs="", outputs="", db_location="", notes=""):
+def record_research(step, inputs="", outputs="", db_location="", notes="", start=None):
     """Append a research-category row.
 
     Parameters
@@ -74,6 +74,8 @@ def record_research(step, inputs="", outputs="", db_location="", notes=""):
     step : str
         Title slug or short question.
     inputs, outputs, db_location, notes : str, optional
+    start : str, optional
+        Locate start; default cwd.
 
     Returns
     -------
@@ -86,6 +88,7 @@ def record_research(step, inputs="", outputs="", db_location="", notes=""):
         outputs=outputs,
         db_location=db_location,
         notes=notes,
+        start=start,
     )
 
 

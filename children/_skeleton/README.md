@@ -39,7 +39,7 @@ python -m dskit.pipeline run configs/run-sample.json \   # 5. fit / score
     --asof 2026-01-01 --adapter yourproject
 # execute rows land in docs/decisioning/actions.csv automatically
 
-python -m dskit.journal research "a question"            # 5b. research note
+python -m dskit.journal research "a question" --topic a-question  # 5b. research note
 python -m dskit.journal promote A0001 --criteria empirical  # owner path
 
 python -m dskit.assets init --store ./yourproject_store \  # 6. OPTIONAL — a

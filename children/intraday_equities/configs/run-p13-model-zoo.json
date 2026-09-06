@@ -1,0 +1,767 @@
+{
+  "name": "intraday-equities-p13-gate3-model-zoo",
+  "notes": "ADR-0097/0099/0100 official post-Gate-3 model zoo. Each stock i keeps its certified H_i and every candidate emits honest direct forecasts for h=1..H_i on common max-H_i origins. Models are selected as full paths with training-scale-normalized benchmark-relative loss and session-cluster uncertainty sets. The 25 targets, P12 caches, calendar, and artifacts remain pinned. Building or validating this JSON does not train anything.",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe-p12.json"
+      },
+      "notes": "Structural node only; materialized candidates read the pinned P12 group caches."
+    }
+  },
+  "outputs": {
+    "run_root": ""
+  },
+  "stages": {
+    "calendar": {
+      "uses": "dskit.pipeline.program_calendar:ProgramCalendar",
+      "params": {
+        "path": "program-calendar.json",
+        "phase": "model_zoo"
+      }
+    },
+    "materialize": {
+      "uses": "intraday_equities.model_zoo:Gate3ZooCandidates",
+      "params": {
+        "source_document": "run-p12-modelability.json",
+        "source_document_sha256": "2d203f5c95c99eeedb69486cd378df6c884ce2a411840881a50a8e0844dc583b",
+        "gate3_artifact": "../pipeline_runs/p12-g3-recovery-staged-2026-02-28-a1f293a2/stages/gate3_recovery.json",
+        "gate3_sha256": "098b21eaef6ee0260753d4f981ca2337bccae406b9efd394284d9b180ba03bd0",
+        "memory_artifact": "../pipeline_runs/p12-63-asset-modelability-staged-2026-02-28-2d203f5c/stages/memory.json",
+        "memory_sha256": "a665784d5233635b4cb3002091e7ae3f08229fa280163c647607da9a0301789b",
+        "templates": [
+          {
+            "id": "lgbm-gate3-incumbent",
+            "family": "lightgbm-incumbent",
+            "representation": "tabular",
+            "feature_policy": "frozen Gate-3 column subsampling and regularization baseline",
+            "seed_policy": "fixed seed 0",
+            "compute_class": "cpu-medium",
+            "compute_rank": 2,
+            "enabled": true,
+            "model": {
+              "estimator": "lightgbm.LGBMRegressor",
+              "estimator_params": {
+                "n_estimators": 800,
+                "learning_rate": 0.005,
+                "num_leaves": 4,
+                "max_depth": 2,
+                "min_child_samples": 2000,
+                "reg_lambda": 100.0,
+                "reg_alpha": 0.1,
+                "subsample": 0.5,
+                "subsample_freq": 1,
+                "colsample_bytree": 0.3,
+                "n_jobs": 8,
+                "random_state": 0,
+                "verbosity": -1
+              }
+            }
+          },
+          {
+            "id": "lgbm-tuned",
+            "family": "lightgbm-tuned",
+            "representation": "tabular",
+            "feature_policy": "train-only univariate feature count jointly selected with column fraction, leaf count, minimum leaf size, and penalties jointly selected inside train",
+            "seed_policy": "fixed seed 0 with purged inner HPO",
+            "compute_class": "cpu-medium",
+            "compute_rank": 2,
+            "enabled": true,
+            "model": {
+              "estimator": "intraday_equities.model_zoo.EmpiricalSelectRegressor",
+              "estimator_params": {
+                "estimator": "lightgbm.LGBMRegressor",
+                "k_features": 40,
+                "scale": false,
+                "n_estimators": 800,
+                "learning_rate": 0.005,
+                "num_leaves": 4,
+                "max_depth": 3,
+                "min_child_samples": 2000,
+                "reg_lambda": 100.0,
+                "reg_alpha": 0.1,
+                "subsample": 0.5,
+                "subsample_freq": 1,
+                "colsample_bytree": 0.3,
+                "n_jobs": 8,
+                "random_state": 0,
+                "verbosity": -1
+              },
+              "hpo_trials": 16,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "k_features": [
+                  10,
+                  20,
+                  40,
+                  70
+                ],
+                "num_leaves": [
+                  2,
+                  4,
+                  8
+                ],
+                "min_child_samples": [
+                  1000,
+                  2000,
+                  4000
+                ],
+                "reg_lambda": [
+                  10.0,
+                  100.0,
+                  1000.0
+                ],
+                "colsample_bytree": [
+                  0.15,
+                  0.3,
+                  0.5
+                ]
+              }
+            }
+          },
+          {
+            "id": "extratrees",
+            "family": "extra-trees",
+            "representation": "tabular",
+            "feature_policy": "train-only univariate feature count jointly selected with max_features jointly selected with depth and leaf size inside train",
+            "seed_policy": "fixed seed 0 with purged inner HPO",
+            "compute_class": "cpu-large",
+            "compute_rank": 3,
+            "enabled": true,
+            "model": {
+              "estimator": "intraday_equities.model_zoo.EmpiricalSelectRegressor",
+              "estimator_params": {
+                "estimator": "sklearn.ensemble.ExtraTreesRegressor",
+                "k_features": 40,
+                "scale": false,
+                "n_estimators": 300,
+                "max_depth": 6,
+                "min_samples_leaf": 500,
+                "max_features": 0.3,
+                "n_jobs": 4,
+                "random_state": 0
+              },
+              "hpo_trials": 16,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "k_features": [
+                  10,
+                  20,
+                  40,
+                  70
+                ],
+                "max_depth": [
+                  4,
+                  6,
+                  8
+                ],
+                "min_samples_leaf": [
+                  200,
+                  500,
+                  1000
+                ],
+                "max_features": [
+                  0.15,
+                  0.3,
+                  0.5,
+                  0.75
+                ]
+              }
+            }
+          },
+          {
+            "id": "randomforest",
+            "family": "random-forest",
+            "representation": "tabular",
+            "feature_policy": "train-only univariate feature count jointly selected with max_features jointly selected with depth and leaf size inside train",
+            "seed_policy": "fixed seed 0 with purged inner HPO",
+            "compute_class": "cpu-large",
+            "compute_rank": 3,
+            "enabled": true,
+            "model": {
+              "estimator": "intraday_equities.model_zoo.EmpiricalSelectRegressor",
+              "estimator_params": {
+                "estimator": "sklearn.ensemble.RandomForestRegressor",
+                "k_features": 40,
+                "scale": false,
+                "n_estimators": 300,
+                "max_depth": 6,
+                "min_samples_leaf": 500,
+                "max_features": 0.3,
+                "n_jobs": 4,
+                "random_state": 0
+              },
+              "hpo_trials": 16,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "k_features": [
+                  10,
+                  20,
+                  40,
+                  70
+                ],
+                "max_depth": [
+                  4,
+                  6,
+                  8
+                ],
+                "min_samples_leaf": [
+                  200,
+                  500,
+                  1000
+                ],
+                "max_features": [
+                  0.15,
+                  0.3,
+                  0.5,
+                  0.75
+                ]
+              }
+            }
+          },
+          {
+            "id": "histgradientboosting",
+            "family": "hist-gradient-boosting",
+            "representation": "tabular",
+            "feature_policy": "train-only univariate feature count jointly selected with leaf capacity and L2 regularization selected inside train",
+            "seed_policy": "fixed seed 0 with purged inner HPO",
+            "compute_class": "cpu-medium",
+            "compute_rank": 2,
+            "enabled": true,
+            "model": {
+              "estimator": "intraday_equities.model_zoo.EmpiricalSelectRegressor",
+              "estimator_params": {
+                "estimator": "sklearn.ensemble.HistGradientBoostingRegressor",
+                "k_features": 40,
+                "scale": false,
+                "learning_rate": 0.05,
+                "max_iter": 200,
+                "max_leaf_nodes": 7,
+                "min_samples_leaf": 200,
+                "l2_regularization": 10.0,
+                "random_state": 0
+              },
+              "hpo_trials": 12,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "k_features": [
+                  10,
+                  20,
+                  40,
+                  70
+                ],
+                "max_leaf_nodes": [
+                  3,
+                  7,
+                  15
+                ],
+                "min_samples_leaf": [
+                  100,
+                  200,
+                  500
+                ],
+                "l2_regularization": [
+                  1.0,
+                  10.0,
+                  100.0
+                ]
+              }
+            }
+          },
+          {
+            "id": "pls",
+            "family": "partial-least-squares",
+            "representation": "standardized-tabular",
+            "feature_policy": "train-only univariate feature count jointly selected with supervised latent component count selected inside train",
+            "seed_policy": "deterministic purged inner HPO",
+            "compute_class": "cpu-small",
+            "compute_rank": 1,
+            "enabled": true,
+            "model": {
+              "estimator": "intraday_equities.model_zoo.EmpiricalSelectRegressor",
+              "estimator_params": {
+                "estimator": "sklearn.cross_decomposition.PLSRegression",
+                "k_features": 40,
+                "scale": true,
+                "n_components": 2,
+                "max_iter": 500
+              },
+              "hpo_trials": 5,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "k_features": [
+                  10,
+                  20,
+                  40,
+                  70
+                ],
+                "n_components": [
+                  1,
+                  2,
+                  3,
+                  5,
+                  8
+                ]
+              }
+            }
+          },
+          {
+            "id": "ridge-select",
+            "family": "ridge-control",
+            "representation": "standardized-tabular",
+            "feature_policy": "train-only univariate feature count jointly selected with ridge penalty",
+            "seed_policy": "deterministic purged inner HPO",
+            "compute_class": "cpu-small",
+            "compute_rank": 1,
+            "enabled": true,
+            "model": {
+              "estimator": "intraday_equities.model_zoo.EmpiricalSelectRegressor",
+              "estimator_params": {
+                "estimator": "sklearn.linear_model.Ridge",
+                "scale": true,
+                "k_features": 20,
+                "alpha": 1.0
+              },
+              "hpo_trials": 12,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "k_features": [
+                  10,
+                  20,
+                  40,
+                  70
+                ],
+                "alpha": [
+                  0.01,
+                  0.1,
+                  1.0,
+                  10.0,
+                  100.0
+                ]
+              }
+            }
+          },
+          {
+            "id": "elasticnet-select",
+            "family": "elastic-net",
+            "representation": "standardized-tabular",
+            "feature_policy": "train-only univariate feature count jointly selected with elastic-net penalties",
+            "seed_policy": "fixed seed 0 with purged inner HPO",
+            "compute_class": "cpu-small",
+            "compute_rank": 1,
+            "enabled": true,
+            "model": {
+              "estimator": "intraday_equities.model_zoo.EmpiricalSelectRegressor",
+              "estimator_params": {
+                "estimator": "sklearn.linear_model.ElasticNet",
+                "scale": true,
+                "k_features": 20,
+                "alpha": 0.01,
+                "l1_ratio": 0.5,
+                "max_iter": 1000,
+                "random_state": 0
+              },
+              "hpo_trials": 16,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "k_features": [
+                  10,
+                  20,
+                  40,
+                  70
+                ],
+                "alpha": [
+                  0.0001,
+                  0.001,
+                  0.01,
+                  0.1
+                ],
+                "l1_ratio": [
+                  0.1,
+                  0.5,
+                  0.9
+                ]
+              }
+            }
+          },
+          {
+            "id": "tabular-mlp-select",
+            "family": "small-tabular-mlp",
+            "representation": "standardized-tabular",
+            "feature_policy": "train-only feature count jointly selected with width and weight penalty",
+            "seed_policy": "fixed seed 0 screen with purged inner HPO",
+            "compute_class": "cpu-medium",
+            "compute_rank": 2,
+            "enabled": true,
+            "model": {
+              "estimator": "intraday_equities.model_zoo.EmpiricalSelectRegressor",
+              "estimator_params": {
+                "estimator": "sklearn.neural_network.MLPRegressor",
+                "scale": true,
+                "k_features": 20,
+                "hidden_size": 16,
+                "alpha": 0.01,
+                "max_iter": 200,
+                "random_state": 0
+              },
+              "hpo_trials": 12,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "k_features": [
+                  10,
+                  20,
+                  40
+                ],
+                "hidden_size": [
+                  4,
+                  8,
+                  16,
+                  32
+                ],
+                "alpha": [
+                  0.001,
+                  0.01,
+                  0.1
+                ]
+              }
+            }
+          },
+          {
+            "id": "nlinear",
+            "family": "nlinear",
+            "representation": "causal-return-sequence-only",
+            "feature_policy": "return-history context length selected inside train; static columns excluded",
+            "seed_policy": "fixed seed 0 screen with purged inner HPO",
+            "compute_class": "gpu-small",
+            "compute_rank": 1,
+            "enabled": true,
+            "model": {
+              "estimator": "intraday_equities.model_zoo.SequenceOnlyZooEstimator",
+              "estimator_params": {
+                "arch": "nlinear",
+                "context_length": 20,
+                "epochs": 20,
+                "lr": 0.001,
+                "batch_size": 4096,
+                "weight_decay": 0.01,
+                "seed": 0
+              },
+              "hpo_trials": 12,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "context_length": [
+                  5,
+                  10,
+                  20,
+                  30
+                ],
+                "weight_decay": [
+                  0.0001,
+                  0.001,
+                  0.01,
+                  0.1
+                ],
+                "epochs": [
+                  5,
+                  10,
+                  20
+                ]
+              }
+            }
+          },
+          {
+            "id": "gru-small",
+            "family": "small-gru",
+            "representation": "causal-return-sequence-only",
+            "feature_policy": "return-history context length selected inside train; static columns excluded",
+            "seed_policy": "fixed seed 0 screen with purged inner HPO",
+            "compute_class": "gpu-medium",
+            "compute_rank": 2,
+            "enabled": true,
+            "model": {
+              "estimator": "intraday_equities.model_zoo.SequenceOnlyZooEstimator",
+              "estimator_params": {
+                "arch": "gru",
+                "context_length": 20,
+                "arch_params": {
+                  "gru": {
+                    "hidden_size": 4,
+                    "num_layers": 1
+                  }
+                },
+                "epochs": 20,
+                "lr": 0.001,
+                "batch_size": 4096,
+                "weight_decay": 0.01,
+                "seed": 0
+              },
+              "hpo_trials": 12,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "context_length": [
+                  5,
+                  10,
+                  20,
+                  30
+                ],
+                "weight_decay": [
+                  0.0001,
+                  0.001,
+                  0.01,
+                  0.1
+                ],
+                "epochs": [
+                  5,
+                  10,
+                  20
+                ]
+              }
+            }
+          },
+          {
+            "id": "patchtst-small",
+            "family": "compact-patchtst",
+            "representation": "causal-return-sequence-only",
+            "feature_policy": "return-history context length selected inside train; static columns excluded",
+            "seed_policy": "fixed seed 0 screen with purged inner HPO",
+            "compute_class": "gpu-large",
+            "compute_rank": 3,
+            "enabled": true,
+            "model": {
+              "estimator": "intraday_equities.model_zoo.SequenceOnlyZooEstimator",
+              "estimator_params": {
+                "arch": "patchtst",
+                "context_length": 20,
+                "arch_params": {
+                  "patchtst": {
+                    "hidden_size": 16,
+                    "patch_len": 2
+                  }
+                },
+                "epochs": 20,
+                "lr": 0.001,
+                "batch_size": 4096,
+                "weight_decay": 0.01,
+                "seed": 0
+              },
+              "hpo_trials": 12,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "context_length": [
+                  5,
+                  10,
+                  20,
+                  30
+                ],
+                "weight_decay": [
+                  0.0001,
+                  0.001,
+                  0.01,
+                  0.1
+                ],
+                "epochs": [
+                  5,
+                  10,
+                  20
+                ]
+              }
+            }
+          },
+          {
+            "id": "transformer-small",
+            "family": "compact-transformer",
+            "representation": "causal-return-sequence-only",
+            "feature_policy": "return-history context length selected inside train; static columns excluded",
+            "seed_policy": "fixed seed 0 screen with purged inner HPO",
+            "compute_class": "gpu-large",
+            "compute_rank": 3,
+            "enabled": true,
+            "model": {
+              "estimator": "intraday_equities.model_zoo.SequenceOnlyZooEstimator",
+              "estimator_params": {
+                "arch": "transformer",
+                "context_length": 20,
+                "arch_params": {
+                  "transformer": {
+                    "hidden_size": 16,
+                    "nhead": 2
+                  }
+                },
+                "epochs": 20,
+                "lr": 0.001,
+                "batch_size": 4096,
+                "weight_decay": 0.01,
+                "seed": 0
+              },
+              "hpo_trials": 12,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "context_length": [
+                  5,
+                  10,
+                  20,
+                  30
+                ],
+                "weight_decay": [
+                  0.0001,
+                  0.001,
+                  0.01,
+                  0.1
+                ],
+                "epochs": [
+                  5,
+                  10,
+                  20
+                ]
+              }
+            }
+          }
+        ],
+        "path_protocol": {
+          "forecast_strategy": "direct_per_lead",
+          "horizon_weighting": "equal",
+          "primary_metric": "train_scaled_improvement",
+          "common_origins": true
+        }
+      }
+    },
+    "plan": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkPlan",
+      "inputs": {
+        "phase": "$calendar.phase",
+        "calendar_sha256": "$calendar.calendar_sha256",
+        "candidates": "$materialize.candidates"
+      },
+      "params": {
+        "protocol": {
+          "attempt_family": "intraday-equities-p13-gate3-model-zoo",
+          "primary_score": "equal-weight mean across h=1..H_i of outer-validation squared-error improvement versus the train-only no-information mean, normalized by each lead training variance",
+          "null_baseline": "Gate-3 LightGBM incumbent plus canonical train-only-selected ridge control",
+          "cost_model": "equal weight within each stock path and equal stock-H_i group weight; fixed compute-class tables and declared compute frontier",
+          "lockbox": "no candidate may read at or after 2026-03-01",
+          "decision_rule": "retain conservative session-cluster bootstrap superior sets at each horizon and for the full path; report average and uniform SPA evidence; tie-break path-set members by fold stability, worst-horizon regret, then compute rank; never auto-promote",
+          "alpha": 0.05,
+          "comparison_hac_lags": 1,
+          "multiplicity_method": "bonferroni_all_pairwise",
+          "indifference_method": "paired_fold_newey_west_no_detectable_difference",
+          "path_evidence": "path.records",
+          "path_loss": "training-scale-normalized squared-error improvement versus no-information",
+          "path_resampling": "whole UTC trading sessions shared across candidates and horizons",
+          "horizon_diagnostic": "Bonferroni session-cluster bootstrap-t horizon confidence sets",
+          "path_selection": "Bonferroni session-cluster bootstrap-t model confidence set with average and uniform SPA evidence",
+          "tie_break": "fold stability, worst-horizon regret, compute rank, id"
+        },
+        "contract_paths": [
+          "pipeline.universe.uses",
+          "pipeline.universe.params.path",
+          "pipeline.features.uses",
+          "pipeline.features.params.path",
+          "pipeline.features.params.manifest_sha256",
+          "pipeline.asset_features.uses",
+          "pipeline.asset_features.inputs.records",
+          "pipeline.asset_features.params.where",
+          "pipeline.reference_tape.uses",
+          "pipeline.reference_tape.inputs.records",
+          "pipeline.reference_tape.params.where",
+          "pipeline.scan_h01.uses",
+          "pipeline.scan_h01.inputs.records",
+          "pipeline.scan_h01.inputs.bars",
+          "pipeline.scan_h01.inputs.spec",
+          "pipeline.scan_h01.params.split",
+          "pipeline.scan_h01.params.label_scale",
+          "pipeline.scan_h01.params.label_residual",
+          "pipeline.scan_h01.params.label_residual_self",
+          "pipeline.scan_h01.params.fit_symbols",
+          "pipeline.scan_h01.params.score_symbols",
+          "pipeline.scan_h01.params.lead_start",
+          "pipeline.scan_h01.params.lead_step",
+          "pipeline.scan_h01.params.lead_stop",
+          "pipeline.scan_h01.params.score_period_ms",
+          "walkforward.objective",
+          "walkforward.select",
+          "walkforward.first",
+          "walkforward.step_days",
+          "walkforward.count",
+          "walkforward.val_days",
+          "walkforward.embargo_days",
+          "walkforward.train_days",
+          "pipeline.scan_h01.params.common_lead_stop",
+          "pipeline.path.uses",
+          "pipeline.path.params.split",
+          "pipeline.path.params.asset",
+          "pipeline.path.params.max_horizon",
+          "pipeline.path.params.horizon_weights",
+          "pipeline.path.params.score"
+        ]
+      }
+    },
+    "approval": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkApproval",
+      "inputs": {
+        "inventory_sha256": "$plan.inventory_sha256"
+      },
+      "params": {
+        "approved_inventory_sha256": "PENDING-PLAN-REVIEW",
+        "approved_by": "PENDING-PLAN-REVIEW",
+        "approval_note": "First invocation is plan-only. Review the frozen inventory, then replace both PENDING values before any candidate may fit."
+      }
+    },
+    "run": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkRun",
+      "inputs": {
+        "candidates": "$plan.candidates",
+        "approval": "$approval.approval"
+      }
+    },
+    "compare": {
+      "uses": "dskit.pipeline.benchmarks:PathBenchmarkCompare",
+      "inputs": {
+        "runs": "$run.runs",
+        "protocol": "$plan.protocol",
+        "contracts": "$plan.contracts",
+        "approval": "$approval.approval"
+      },
+      "params": {
+        "bootstrap_draws": 9999,
+        "bootstrap_seed": 0
+      }
+    }
+  }
+}

@@ -56,13 +56,21 @@ def test_cli_loop(tmp_path):
     assert proc.returncode == 0, proc.stderr
     proc = run_cli("research", "why gaps", "--root", str(tmp_path), cwd=tmp_path)
     assert proc.returncode == 0, proc.stderr
-    research = tmp_path / "docs" / "research" / "why-gaps.md"
+    from datetime import datetime, timezone
+
+    day = datetime.now(timezone.utc).date().isoformat()
+    research = tmp_path / "docs" / "research" / "why-gaps" / f"{day}-synthesis.md"
     assert research.is_file()
+    assert not (tmp_path / "docs" / "research" / "why-gaps.md").exists()
     draft = tmp_path / "draft.md"
     draft.write_text("# why body-file\n\n## Finding\n\nit works\n")
     proc = run_cli(
         "research",
         "why body-file",
+        "--topic",
+        "why-gaps",
+        "--name",
+        "body-file",
         "--body-file",
         str(draft),
         "--root",
@@ -70,7 +78,7 @@ def test_cli_loop(tmp_path):
         cwd=tmp_path,
     )
     assert proc.returncode == 0, proc.stderr
-    filled = tmp_path / "docs" / "research" / "why-body-file.md"
+    filled = tmp_path / "docs" / "research" / "why-gaps" / f"{day}-body-file.md"
     assert "it works" in filled.read_text()
     readme = (tmp_path / "docs" / "decisioning" / "README.md").read_text()
     assert "A0001" in readme and "empirical" in readme

@@ -4961,7 +4961,7 @@ and the scope rather than a single seam.
   forbids `vocab.py` importing anything but stdlib; and the classes raise
   `ProductionError`, which an onboarding module cannot, so the draft's
   "no production test moves" is false. Its ADR is written and PROPOSED
-  (ADR-0095 — 0092 through 0094 were taken by the child's decisions while
+  (ADR-0101 — 0092 through 0100 were taken by the child's decisions while
   phase 3 waited), and the migration waits for the owner, per root
   `CLAUDE.md`: a proposal is not an approval. A narrower first step is
   offered in the ADR — one `backoff` and one `retry_after` owned by
@@ -5001,7 +5001,7 @@ their own deterministic chain assertions.
 | 1 — foundation | every module in §8 not marked phase 2, including the full authority stack (`arming.py`, `coordination.py`, `readiness.py`, `LiveExecutor`, `LiveAuthority`, `ReductionAuthority`) and all four rungs; ADR-0091, every §7 verb not marked phase 2, README/AGENTS/CLAUDE, examples, skeleton, doc updates | tests: Opus · code: Fable · review: Opus |
 | 2 — evidence | `outcomes.py` (§5.13.2) · `report.py` and the `replay` verb (§5.13.3) · outcome-readiness evidence (§5.13.4) · the Outcome and Parity monitor families and DDM/ADWIN/JensenShannon/LInf (§5.10.1) · alert inhibition, silences, escalation and `ack` (§5.11.2) · the systemd heartbeat (§5.11.2) · `libs/sqlite.py` (§5.8.2) · `libs/parquet.py` (§5.10.2) · `Signer` (§5.12.1) · `approve-hold` (§5.5.1) · the six §7 verbs and the two optional §4.1 sections | tests: Opus · code: Opus · review: Opus |
 | 2b — audit | classify the remaining registered `kinds_*.py` / `libs/*.py` classes for `serving_effect` by the four-step procedure in §9.1, widening what a serve document may reference; touches only overrides and `tests/pipeline`, so it can run at any time after phase 1 | Opus |
-| 3 — packs | `libs/exchange_calendars.py` (§5.1.1) · the `MetricSink` seam and `libs/prometheus.py` / `libs/opentelemetry.py` (§5.11.3), with the `placement.metric_sinks` grammar key they are selected by · the `websocket` stream seam (§5.2.1) · phase 2b's `kinds_banking.py` carry-over · the onboarding backoff migration, written as ADR-0095 and left PROPOSED rather than implemented (see §10) | Opus |
+| 3 — packs | `libs/exchange_calendars.py` (§5.1.1) · the `MetricSink` seam and `libs/prometheus.py` / `libs/opentelemetry.py` (§5.11.3), with the `placement.metric_sinks` grammar key they are selected by · the `websocket` stream seam (§5.2.1) · phase 2b's `kinds_banking.py` carry-over · the onboarding backoff migration, written as ADR-0101 and left PROPOSED rather than implemented (see §10) | Opus |
 
 Per the owner: no Fable after the initial plan and build.
 
@@ -5216,7 +5216,7 @@ The owner's ruling is that this migration carries its own ADR. This is the
 draft text; it is proposed only when phase 3 starts, and its number is
 whatever is next free in the log at that time.
 
-**Landed as ADR-0095** (2026-09-06): 0092 through 0094 went to the child's
+**Landed as ADR-0101** (2026-09-06): 0092 through 0100 went to the child's
 decisions while phase 3 waited. The entry in the log is this draft plus the
 three obstacles the build found — the pipeline firewall, the vocabulary
 home and the error type (see §10) — and it is `proposed`, so the packs

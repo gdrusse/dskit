@@ -3001,6 +3001,23 @@ def _mspe(y, yhat):
     return float(np.mean((y - yhat) ** 2))
 
 
+def _calibration_slope(y, yhat):
+    """OLS slope of outcomes on forecasts, with an intercept."""
+    import numpy as np
+
+    y = np.asarray(y, dtype=np.float64)
+    yhat = np.asarray(yhat, dtype=np.float64)
+    if y.size < 2 or yhat.size != y.size:
+        return 0.0
+    centered = yhat - yhat.mean()
+    denominator = float(centered @ centered)
+    return (
+        float(centered @ (y - y.mean()) / denominator)
+        if denominator > 0.0
+        else 0.0
+    )
+
+
 def _fit_split_metrics(
     model,
     train_x,
@@ -3024,6 +3041,7 @@ def _fit_split_metrics(
         if y.size < 2:
             out[f"{prefix}_mspe"] = 0.0
             out[f"{prefix}_ic"] = 0.0
+            out[f"{prefix}_calibration_slope"] = 0.0
             out[f"{prefix}_yhat_sd"] = 0.0
             if prediction_cache is not None:
                 prediction_cache[prefix] = np.zeros(y.size, dtype=np.float64)
@@ -3033,6 +3051,7 @@ def _fit_split_metrics(
             prediction_cache[prefix] = hat
         out[f"{prefix}_mspe"] = _mspe(y, hat)
         out[f"{prefix}_ic"] = float(_spearman(y, hat))
+        out[f"{prefix}_calibration_slope"] = _calibration_slope(y, hat)
         out[f"{prefix}_yhat_sd"] = float(np.std(hat)) if hat.size else 0.0
     return out
 
@@ -4237,6 +4256,7 @@ def _scan_fold_stamped(
     val_start,
     val_end,
     train_start=None,
+    common_lead_stop=None,
     label=None,
     score_period_ms=None,
     score_offset_ms=0,
@@ -4277,8 +4297,12 @@ def _scan_fold_stamped(
         if series_counts is not None:
             series_counts[item[0]] = {"train": 0, "val": 0}
         stamps, x, loc, match, t_ms, t_px = item[-6:]
+        common_lead = lead if common_lead_stop is None else int(common_lead_stop)
+        if common_lead < lead:
+            raise ValueError("common_lead_stop must be >= the scored lead")
         future = loc + lead
-        ok = match & (future < t_ms.size)
+        common_future = loc + common_lead
+        ok = match & (future < t_ms.size) & (common_future < t_ms.size)
         if not np.any(ok):
             continue
         ok_rows = np.flatnonzero(ok)
@@ -4293,14 +4317,14 @@ def _scan_fold_stamped(
         # whether or not the labels are about to be scrambled — which is
         # what lets a scrambled walk keep the real walk's fold geometry.
         every_stamp = stamps[ok_rows]
-        every_future = t_ms[fut_ok]
-        train_all = (every_stamp <= train_end) & (every_future <= train_end)
+        every_common_future = t_ms[common_future[ok_rows]]
+        train_all = (every_stamp <= train_end) & (every_common_future <= train_end)
         if train_start is not None:
             train_all &= every_stamp >= train_start
         val_all = (
             (every_stamp >= val_start)
             & (every_stamp <= val_end)
-            & (every_future <= val_end)
+            & (every_common_future <= val_end)
         )
         if score_period_ms:
             val_all &= ((every_stamp - score_offset_ms) % score_period_ms) == 0
@@ -4376,12 +4400,17 @@ def _blank_lead_row(symbol, lead, lags):
         "n": 0.0,
         "lags": float(lags),
         "r2oos": 0.0,
+        "train_scale": 0.0,
+        "train_scaled_improvement": 0.0,
+        "origin_sha256": "",
         "dm_t": 0.0,
         "dm_p": 1.0,
     }
 
 
-def _lead_skill(symbol, lead, h_steps, y, yhat, mu, mspe_mean, stamps, writer=None):
+def _lead_skill(
+    symbol, lead, h_steps, y, yhat, mu, mspe_mean, train_scale, stamps, writer=None
+):
     """One lead's ADR-0067 verdict, with its rows streamed to disk.
 
     ``d_t = (y-mu)^2 - (y-yhat)^2`` against the fold's TRAIN mean: the
@@ -4435,8 +4464,18 @@ def _lead_skill(symbol, lead, h_steps, y, yhat, mu, mspe_mean, stamps, writer=No
     )
     if writer is not None:
         writer.append(symbol, lead, stamps, y, yhat, mu)
+    origin_sha256 = hashlib.sha256(
+        json.dumps(
+            [int(stamp) for stamp in stamps], separators=(",", ":")
+        ).encode()
+    ).hexdigest()
     return {
         "r2oos": mean_gap / q if q > 0.0 else 0.0,
+        "train_scale": float(train_scale),
+        "origin_sha256": origin_sha256,
+        "train_scaled_improvement": (
+            mean_gap / train_scale if train_scale > 0.0 else 0.0
+        ),
         "dm_t": 0.0 if dm["t"] is None else float(dm["t"]),
         "dm_p": float(dm["p_value"]),
     }
@@ -4451,6 +4490,7 @@ def _walk_no_information_series(
     val_end,
     period_minutes,
     train_start=None,
+    common_lead_stop=None,
     label=None,
     writer=None,
     score_period_ms=None,
@@ -4500,6 +4540,7 @@ def _walk_no_information_series(
                 val_start,
                 val_end,
                 train_start=train_start,
+                common_lead_stop=common_lead_stop,
                 label=label,
                 score_period_ms=score_period_ms,
                 score_offset_ms=score_offset_ms,
@@ -4508,6 +4549,7 @@ def _walk_no_information_series(
         else:
             tr_y, val_x, val_y, val_stamps = built
         mu = float(tr_y.mean()) if tr_y.size else 0.0
+        train_scale = float(np.mean((tr_y - mu) ** 2)) if tr_y.size else 0.0
         if val_x.shape[0] < 2:
             row = _blank_lead_row(symbol, lead, lags)
             row["lags"] = float(lags)
@@ -4560,6 +4602,7 @@ def _walk_no_information_series(
                 yhat.tolist(),
                 mu,
                 out["mspe_mean"],
+                train_scale,
                 val_stamps.tolist(),
                 writer=writer,
             )
@@ -4852,6 +4895,7 @@ class NoInformationScan(Node):
             "hpo_objective",
             "score_symbols",
             "fit_symbols",
+            "common_lead_stop",
         )
         + LABEL_PARAMS
         + LEAD_PARAMS
@@ -4980,6 +5024,18 @@ class NoInformationScan(Node):
                         )
         problems.extend(_label_problems(params))
         problems.extend(_lead_problems(params))
+        common = params.get("common_lead_stop")
+        if common is not None:
+            check_int_param(problems, "common_lead_stop", common, ge=1)
+            stop = params.get("lead_stop")
+            if (
+                isinstance(common, int)
+                and not isinstance(common, bool)
+                and isinstance(stop, int)
+                and not isinstance(stop, bool)
+                and common < stop
+            ):
+                problems.append("common_lead_stop must be >= lead_stop")
         if params.get("label_scramble_seed") is not None:
             check_int_param(
                 problems,
@@ -5082,6 +5138,10 @@ class NoInformationScan(Node):
         horizon = spec["horizon"]
         features = _feature_names_for_rows(spec, inputs["records"])
         leads, train_lead = _lead_grid(self.params, horizon)
+        common_lead_stop = self.params.get("common_lead_stop")
+        common_lead_stop = (
+            None if common_lead_stop is None else int(common_lead_stop)
+        )
         train_end = int(self.params["train_end_ms"])
         train_start = self.params.get("train_start_ms")
         train_start = None if train_start is None else int(train_start)
@@ -5198,6 +5258,7 @@ class NoInformationScan(Node):
             val_start,
             val_end,
             train_start=train_start,
+            common_lead_stop=common_lead_stop,
             label=label,
             score_period_ms=score_period_ms,
             score_offset_ms=score_offset_ms,
@@ -5235,6 +5296,7 @@ class NoInformationScan(Node):
                     inner_val_start,
                     inner_val_end,
                     train_start=train_start,
+                    common_lead_stop=common_lead_stop,
                     label=label,
                     scramble=scramble,
                 )
@@ -5291,6 +5353,8 @@ class NoInformationScan(Node):
             metrics["val_mspe"] = fit["val_mspe"]
             metrics["train_ic"] = fit["train_ic"]
             metrics["val_ic"] = fit["val_ic"]
+            metrics["train_calibration_slope"] = fit["train_calibration_slope"]
+            metrics["val_calibration_slope"] = fit["val_calibration_slope"]
             metrics["train_yhat_sd"] = fit["train_yhat_sd"]
             metrics["val_yhat_sd"] = fit["val_yhat_sd"]
             self.log.info(
@@ -5330,6 +5394,7 @@ class NoInformationScan(Node):
                     val_end,
                     period_minutes,
                     train_start=train_start,
+                    common_lead_stop=common_lead_stop,
                     label=label,
                     writer=writer,
                     score_period_ms=score_period_ms,
