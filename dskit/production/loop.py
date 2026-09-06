@@ -1581,5 +1581,3 @@ def _labels(name):
 def _recorded_feed(result):
     """Return the §6 ``feed`` block, or ``null`` when the fetch never completed."""
     return None if result.feed == _unfetched_feed() else dict(result.feed)
-
-

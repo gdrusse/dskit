@@ -17,7 +17,7 @@
     "calendar": {
       "uses": "dskit.pipeline.program_calendar:ProgramCalendar",
       "params": {
-        "path": "program-calendar.json",
+        "path": "program-calendar-p13-model-zoo.json",
         "phase": "model_zoo"
       }
     },
@@ -723,6 +723,7 @@
           "walkforward.embargo_days",
           "walkforward.train_days",
           "pipeline.scan_h01.params.common_lead_stop",
+          "pipeline.scan_h01.params.common_origin_policy",
           "pipeline.path.uses",
           "pipeline.path.params.split",
           "pipeline.path.params.asset",
@@ -738,8 +739,8 @@
         "inventory_sha256": "$plan.inventory_sha256"
       },
       "params": {
-        "approved_inventory_sha256": "PENDING-PLAN-REVIEW",
-        "approved_by": "PENDING-PLAN-REVIEW",
+        "approved_inventory_sha256": "86f9cbf452340c7aae38757b8ac744e1debb24c69a1206dfb7a0ebd2814d7109",
+        "approved_by": "Russell",
         "approval_note": "First invocation is plan-only. Review the frozen inventory, then replace both PENDING values before any candidate may fit."
       }
     },

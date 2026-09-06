@@ -5260,6 +5260,75 @@ Bonferroni superior-set implementation, and tie-break order are judgemental.
 **Consequences.** A stock approved at H_i=5 emits h=1,2,3,4,5; a stock approved
 at H_i=10 emits h=1,...,10. Stocks do not share one global terminal horizon.
 No zoo execution is authorized by this decision.
+
+## ADR-0102 -- Replace the individualized zoo with two pooled challengers
+
+**Status:** Accepted, not locked (2026-09-05; owner approved)
+
+**Context.** The approved P13 inventory expands 13 families over 25 stocks,
+creating 325 path candidates and impractical runtime. The owner stopped that
+run and directed a pooled comparison of LightGBM and a Torch MLP.
+
+**Decision.** Preserve the stopped P13 artifacts and create a separate pooled
+zoo over the same 25 Gate-3 passers and locked outer calendar. Reuse the four
+immutable P12 group caches, verify their exact manifests, filter the selected
+names, and join their memory-mapped rows by reference. At each direct lead
+h=1,...,10, fit one model across all 25 names and score names whose certified
+H_i includes h. Weight stocks equally and leads equally within each stock.
+
+LightGBM receives the symbol code as a native categorical feature. The Torch
+MLP receives a learned symbol embedding plus standardized continuous features.
+Each family has its own discrete HPO space, selected only on a purged inner
+training holdout; outer validation remains unread until scoring. The usual
+inventory-hash approval barrier remains, and execution starts with one worker.
+
+**Consequences.** The zoo has two pooled candidates rather than 325 asset-local
+candidates. It still trains one direct head per lead and outer fold, but shares
+statistical strength across stocks. The cache build that exceeded WSL memory is
+removed; maximum-window smokes measured 4.71 GB for LightGBM and 5.33 GB for the
+float32 Torch path under a stricter 12 GiB cap. Execution remains separately
+inventory-gated.
+
+## ADR-0103 -- Add two frozen-Kronos pooled fusion challengers
+
+**Status:** Accepted, not locked (2026-09-05; owner approved implementation)
+
+**Context.** OHLCV sequence structure may be better represented by the
+pretrained Kronos-small predictor than by widening a pooled tabular model. The
+linked Tokenizer-base alone has no temporal predictor, and fold-by-fold Kronos
+fine-tuning would multiply an already large P13 workload.
+
+**Decision.** Acquire Tokenizer-base and Kronos-small as separate verified WORM
+snapshots and pin the official Kronos source revision. Build session-local
+five-minute OHLCVA paths (at most 78 RTH bars); derive amount from price and
+volume as the upstream predictor does; and reproduce upstream preprocessing by
+normalizing each already-causal prefix with that prefix's mean and standard
+deviation. Batch the declared 30-minute prefixes across sessions, retaining
+only each prefix's final 512-wide hidden state. No prefix crosses an overnight
+boundary. The backbone stays frozen for this experiment.
+
+Append two ordered candidates after pooled LightGBM and pooled Torch MLP:
+Kronos hidden state plus exogenous/calendar/category columns into native
+LightGBM, and the same matrix into the categorical-embedding Torch MLP. Each
+fusion head owns train-only inner HPO; both reuse one content-verified embedding
+cache. Outer dates, labels, eligible names, direct leads, scoring, approval, and
+one-worker execution remain those of ADR-0102.
+
+**Consequences.** The four candidates isolate backbone value from fusion-head
+value without duplicate Kronos inference or validation leakage. Kronos models
+train on the 30-minute lattice because only those origins have embeddings, so
+sample-frequency differences are explicit. Pretraining dates are undisclosed;
+Kronos evidence is exploratory and cannot promote a production model. The
+generic encoder/runtime is also exposed to pmquant, but its current ladder model
+is unchanged because a ladder is not OHLCV. A later
+ADR may add walk-forward fine-tuning only if frozen embeddings improve OOF
+results. Implementation adds a pinned upstream source dependency, one generic
+Kronos library pack, columnar K-line/feature-cache support, focused tests, and
+the two templates. The owner authorized implementation and the resulting
+four-candidate run in the same session. Completed pre-merge run configs and
+immutable artifacts retain their original ADR-0101/0102 reference strings;
+this integration-time renumbering does not alter their approved identities.
+
 ---
 
 ## ADR-0101 — The onboarding connector packs' retry policy has one owner
@@ -5364,3 +5433,28 @@ untouched by this step: the one owner COMPUTES a wait and never sleeps, so
 each pack keeps the sleeper seam it already had. `MAX_BACKOFF_S` stays
 exactly where it is; nothing about acquisition identity, source config
 hashes or stored rows changes under either option.
+---
+
+## ADR-0104 -- Compare two pooled one-minute recurrent late-fusion models
+
+**Status:** Accepted, not locked (2026-09-06; owner approved implementation)
+
+**Context.** P13 found no incremental value from frozen Kronos embeddings, but
+its five-minute representation can blur the one- through ten-minute targets.
+The owner requested two simpler sequence models that keep OHLCV dynamics
+separate from origin-time side information until the prediction head.
+
+**Decision.** Add pooled LSTM and GRU candidates over the same 25 Gate-3
+passers, direct leads, outer folds, and equal-stock path score. At each
+30-minute scoring origin, cache the preceding 120 complete, contiguous,
+session-local one-minute OHLCV bars. HPO may select the latest 30, 60, or 120
+minutes. The recurrent tower receives only OHLCV; a single linear projection
+receives an explicit calendar/overnight/SPY allowlist; a learned symbol
+embedding joins both at one final linear head. Prices become causal log ratios
+to the origin close, volume is log-scaled, and remaining moments fit on
+training rows only. Each family owns four purged inner-HPO trials.
+
+**Consequences.** This is a paired development ablation, not a promotion or
+final refit. It adds a version-3 content-verified sequence cache without
+altering P13 artifacts. Candidate execution remains inventory-gated and begins
+with one fold worker because each process retains the full memory allowance.

@@ -25,6 +25,8 @@ torch = pytest.importorskip("torch")
 
 from dskit.pipeline.libs.torch_ts import (  # noqa: E402
     ARCHS,
+    CategoricalEmbeddingMLPRegressor,
+    CategoricalRecurrentFusionRegressor,
     NODE_KINDS,
     TimeSeriesPredict,
     TimeSeriesTrain,
@@ -36,9 +38,10 @@ TORCH_PY = (
     pathlib.Path(__file__).parents[2] / "dskit" / "pipeline" / "libs" / "torch.py"
 )
 #: Content pin of ``libs/torch.py``. Recompute on a deliberate engine-pack
-#: change (ADR-0045 moved it for batched eval); accidental edits fail here.
+#: change (ADR-0045 moved it for batched eval; ADR-0091 added the audited
+#: serving-load declaration); accidental edits fail here.
 TORCH_PY_SHA256 = (
-    "83cb4a211bf4702a16031a781dcd88470eff568ec732c49ae413c1cad3f10c14"
+    "3cdfc7a089f1a3009a0dca15a791aecc3bc7eb50484456ad85f20ea45757e556"
 )
 
 SHIPPED = (
@@ -505,3 +508,126 @@ def test_zoo_estimator_serves_every_named_arch():
             arch=arch, epochs=1, batch_size=128, seed=0,
         ).fit(x, y, feature_names=names).predict(x)
         assert hat.shape == (300,) and np.isfinite(hat).all(), arch
+
+
+def test_categorical_embedding_mlp_fits_one_declared_category_column():
+    import numpy as np
+
+    x = np.asarray(
+        [
+            [0.0, 10.0, 0.0],
+            [1.0, 9.0, 0.0],
+            [0.0, 8.0, 1.0],
+            [1.0, 7.0, 1.0],
+        ]
+    )
+    model = CategoricalEmbeddingMLPRegressor(
+        hidden_size=4,
+        hidden_depth=3,
+        embedding_dim=2,
+        epochs=1,
+        batch_size=2,
+        dropout=0.0,
+        seed=0,
+        device="cpu",
+    )
+    model.fit(
+        x,
+        np.asarray([0.0, 1.0, 1.0, 2.0]),
+        categorical_feature=[2],
+        feature_names=["x", "z", "symbol_code"],
+    )
+    prediction = model.predict(x)
+    assert prediction.shape == (4,)
+    assert np.all(np.isfinite(prediction))
+    linear = [
+        layer
+        for layer in model._module.net
+        if layer.__class__.__name__ == "Linear"
+    ]
+    assert len(linear) == 4
+    with pytest.raises(ValueError, match="unseen category"):
+        model.predict(np.asarray([[0.0, 1.0, 2.0]]))
+
+
+def test_categorical_embedding_mlp_does_not_promote_pooled_input_to_float64():
+    import numpy as np
+
+    class Float32Only:
+        def __init__(self, values):
+            self.values = np.asarray(values, dtype=np.float32)
+
+        def __array__(self, dtype=None, copy=None):
+            if dtype is not None and np.dtype(dtype) == np.dtype(np.float64):
+                raise AssertionError("pooled feature matrix was promoted to float64")
+            return np.array(self.values, dtype=dtype, copy=copy)
+
+    x = Float32Only([[0.0, 1.0, 0.0], [1.0, 0.0, 1.0]])
+    model = CategoricalEmbeddingMLPRegressor(
+        hidden_size=2,
+        embedding_dim=2,
+        epochs=1,
+        batch_size=2,
+        seed=0,
+        device="cpu",
+    )
+    model.fit(
+        x,
+        np.asarray([0.0, 1.0], dtype=np.float32),
+        categorical_feature=[2],
+    )
+    assert model._center.dtype == np.float32
+    assert model._scale.dtype == np.float32
+
+
+def test_categorical_embedding_mlp_chunked_standardizer_matches_numpy():
+    import numpy as np
+
+    values = np.random.default_rng(4).normal(size=(19, 5)).astype(np.float32)
+    center, scale = CategoricalEmbeddingMLPRegressor._standardizer(
+        values, block_rows=3
+    )
+    np.testing.assert_allclose(center, values.mean(axis=0), rtol=1e-6)
+    np.testing.assert_allclose(scale, values.std(axis=0), rtol=1e-6)
+
+
+@pytest.mark.parametrize("arch", ["lstm", "gru"])
+def test_categorical_recurrent_fusion_keeps_static_features_outside_time(arch):
+    import numpy as np
+
+    names = [
+        f"ohlcv_t{step:03d}_{field}"
+        for step in range(3)
+        for field in ("open", "high", "low", "close", "volume")
+    ] + ["tod_sin", "ref_ret_SPY", "symbol_code"]
+    rows = []
+    for index in range(8):
+        path = []
+        for step in range(3):
+            price = 100.0 + index + step
+            path.extend([price, price + 1.0, price - 1.0, price + 0.5, 10 + step])
+        rows.append(path + [index / 8.0, -index / 100.0, index % 2])
+    x = np.asarray(rows, dtype=np.float32)
+    model = CategoricalRecurrentFusionRegressor(
+        arch=arch,
+        context_length=2,
+        hidden_size=4,
+        num_layers=1,
+        static_projection_dim=3,
+        embedding_dim=2,
+        epochs=1,
+        batch_size=4,
+        dropout=0.0,
+        device="cpu",
+    ).fit(
+        x,
+        np.linspace(-0.1, 0.1, len(x)),
+        categorical_feature=[len(names) - 1],
+        feature_names=names,
+    )
+    prediction = model.predict(x)
+    assert prediction.shape == (len(x),)
+    assert np.isfinite(prediction).all()
+    assert model._module.recurrent.input_size == 5
+    assert model._module.static[0].in_features == 2
+    assert model._module.head.in_features == 4 + 3 + 2

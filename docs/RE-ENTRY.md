@@ -1,13 +1,40 @@
 # Re-entry
 
-## Current wrap: production merged; four follow-ups on a PR (2026-09-06)
+## Current state: P13 pooled/Kronos model zoo complete (2026-09-06)
+
+The four owner-approved candidates completed 20 outer folds each under
+benchmark identity `b017ea1b…` and approved inventory `8731619d…`. Mean path
+scores ranked pooled LightGBM 0.006401, pooled Torch MLP 0.005322, frozen
+Kronos+LightGBM 0.001175, and frozen Kronos+MLP -0.003852. LightGBM and the
+tabular MLP were not detectably different (`p=0.382351`); both Kronos variants
+were detectably worse than both tabular baselines after all-pairs Bonferroni.
+The comparison selected the simpler native LightGBM frontier but made no
+automatic promotion.
+
+ADR-0103 and its implementation add the generic verified local Kronos hidden
+state node/cache to dskit, expose the optional runtime through pmquant, add
+causal OHLCVA cache rows and P13 fusion, and allow Torch MLP width/depth HPO.
+The pmquant ladder model itself is unchanged. Final Bugbot review is clear;
+the real pinned 128-session GPU smoke passes. P13 D/E cache membership was
+narrowed to approved cohort names plus SPY after one WSL OOM on unused P12
+breadth names. The final run took about 7h25m; journal evidence is A18704-
+A18709. Memo:
+`children/intraday_equities/docs/memos/p13-pooled-kronos-model-zoo-results.md`.
+
+**Next:** treat pooled native LightGBM as the current simplest development
+frontier. If Kronos receives another exploratory attempt, first test an
+approved additive ablation against the full nonduplicative P12 feature set;
+do not fine-tune or promote while the cheaper frozen representation shows no
+incremental value and pretraining-contamination certainty remains low.
+
+## Current wrap: production merged, and its four follow-ups too (2026-09-06)
 
 `dskit.production` is BUILT — phases 1, 2, 2b and 3 — and MERGED to `main` at
 `8ea1b98`. ADR-0090 and ADR-0091 are **accepted**; the package is complete
 against `docs/new_package_proposals/production.md`, which is the contract.
 
-**Open PR** on `claude/dskit-production-build-3g17vw`, four commits past main,
-awaiting review:
+The four follow-ups landed as PR #8, reviewed and merged after one round
+that sent the private-import gate back (item 2). What they were:
 
 1. Main was red before the merge, from its own two new pipeline modules —
    fourteen missing docstrings, and one spelling the run-root default instead

@@ -33,9 +33,18 @@ shape for future children: keep the module set stable
   are human-owner-only. Every Path row has ID, label, purpose, relevant files,
   and `LOCKED` (`Y`/`N`). The generated README displays the full Path and
   latest 10 Actions; CSV history is append-only. Pipeline and onboarding
-  commands record themselves. Research uses `python -m dskit.journal research`
-  (never write `docs/research/` by hand). Wrap `live.main` in
+  commands record themselves. Research uses
+  `python -m dskit.journal research --topic T --name N` (never write
+  `docs/research/` by hand; no markdown in that root — only
+  `docs/research/<topic>/<YYYY-MM-DD>-<name>.md`, with
+  `<date>-synthesis.md` as the task summary). Wrap `live.main` in
   `dskit.journal.hooks.production`. An uninitialized child refuses.
+- **Standalone explanations live in `docs/explanations/`.** Put worked,
+  self-contained explanations there rather than beside decision records or
+  research notes.
+- **Durable handoffs live in `docs/memos/`.** Keep implementation outcomes,
+  operational evidence, and known caveats there. A memo is not an ADR and is
+  not journaled research.
 
 ## Layout
 
@@ -57,7 +66,7 @@ journal.json        # dskit.journal marker (ADR-0056)
 docs/decisioning/   # actions.csv + path.csv; README generated
 docs/explanations/  # durable explanations; use record-explanation
 docs/memos/         # decision memos; use memo
-docs/research/      # research markdown; use journal research CLI
+docs/research/      # topic folders; <date>-synthesis.md + dated notes
 pyproject.toml      # dskit + alpaca-py/torch/pyomo/highspy/mlflow (run-path)
 .env.example        # Alpaca paper keys — .env is gitignored, never committed
 ```

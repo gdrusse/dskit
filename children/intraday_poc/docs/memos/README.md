@@ -1,5 +1,7 @@
 # Memos
 
-Use the `memo` skill to create decision memos here.
-Memos should state the decision, its rationale, tradeoffs, and links to the
-supporting evidence or decisioning record.
+Use the `memo` skill for durable records of completed runs, builds,
+migrations, deployments, benchmarks, or validation outcomes.
+
+Write a short kebab-case Markdown file here. Memos are ordinary reviewed
+handoffs: they are not research notes, ADRs, or journal actions.

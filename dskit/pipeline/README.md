@@ -398,7 +398,11 @@ or sigmoid by the head's own `problem_type`), and a zero-shot forecast
 bespoke model must beat. The forecast kind's default hooks fit models whose
 forward takes `past_values` alone and returns `prediction_outputs`
 (PatchTST, PatchTSMixer); anything else refuses at load, by name, and is a
-subclass supplying `build_model`/`forecast`. Never a hub name); **optuna** `optuna-search`
+subclass supplying `build_model`/`forecast`. Never a hub name); **kronos**
+`dskit-kronos-hidden-state` (ADR-0102: a clean source revision plus
+separate tokenizer/model WORM snapshots produce upstream-normalized causal,
+session-local hidden states on a declared scoring lattice; one verified cache is reusable
+by multiple downstream heads; never a hub name at run time); **optuna** `optuna-search`
 (categorical lists AND `{"low", "high"[, "log"][, "int"]}` continuous ranges;
 `hpo-grid` keeps refusing ranges — enumerating an interval is meaningless);
 **pyomo** `pyomo-budgeted-select` + `PyomoSolve` base (`build_model`/`extract`
@@ -613,7 +617,9 @@ dskit/pipeline/
 ├── libs/              tier-2 packs: numpy, sklearn, torch + torch_ts
 │                      (ADR-0041 zoo), transformers (fit/predict + the
 │                      pretrained encode/classify/forecast trio over an
-│                      acquired snapshot, ADR-0083), optuna, pyomo, sb3,
+│                      acquired snapshot, ADR-0083), kronos (frozen causal
+│                      hidden states over two acquired snapshots, ADR-0102),
+│                      optuna, pyomo, sb3,
 │                      matplotlib, mlflow (the tracking SINK pack —
 │                      registers into SINK_KINDS, no node kinds),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077)

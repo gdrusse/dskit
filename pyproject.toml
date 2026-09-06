@@ -48,6 +48,16 @@ polymarket = ["huggingface_hub>=0.20", "pyarrow>=15"]
 # hub client token=False for "anonymous" — earlier releases read False as
 # a token value rather than as "send nothing".
 huggingface = ["huggingface_hub>=0.23"]
+# Frozen Kronos encoders loaded from verified local snapshots.  The upstream
+# package is source-pinned separately; this extra supplies only its runtime.
+kronos = [
+    "torch>=2.0",
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "huggingface_hub>=0.33.1",
+    "safetensors>=0.6.2",
+    "einops>=0.8.1",
+]
 # Tier-2 production packs (dskit/production/libs/*), phase 3 of ADR-0090.
 # Each is named only inside a method, like every other pack: a serve
 # document that declares no `exchange` calendar and no metric sink installs
@@ -73,6 +83,9 @@ all = [
     "pyarrow>=15",
     "alpaca-py>=0.44",
     "huggingface_hub>=0.23",
+    "pandas>=2.0",
+    "safetensors>=0.6.2",
+    "einops>=0.8.1",
     "exchange_calendars>=4.5",
     "prometheus-client>=0.20",
     "opentelemetry-sdk>=1.20",

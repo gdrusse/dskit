@@ -1,0 +1,118 @@
+{
+  "notes": "ADR-0101 pooled zoo: exactly the 25 Gate-3 passers plus SPY as residual reference, retaining P12 geometry and feature vocabulary.",
+  "symbols": [
+    "LLY",
+    "QQQ",
+    "XLF",
+    "XLE",
+    "XLK",
+    "BAC",
+    "SMH",
+    "IWM",
+    "XBI",
+    "FCX",
+    "DAL",
+    "NRG",
+    "MET",
+    "MSTR",
+    "NOW",
+    "LULU",
+    "PANW",
+    "INTC",
+    "CIEN",
+    "LRCX",
+    "TER",
+    "BIDU",
+    "LITE",
+    "ADBE",
+    "ANET",
+    "SPY"
+  ],
+  "tradable": [
+    "LLY",
+    "QQQ",
+    "XLF",
+    "XLE",
+    "XLK",
+    "BAC",
+    "SMH",
+    "IWM",
+    "XBI",
+    "FCX",
+    "DAL",
+    "NRG",
+    "MET",
+    "MSTR",
+    "NOW",
+    "LULU",
+    "PANW",
+    "INTC",
+    "CIEN",
+    "LRCX",
+    "TER",
+    "BIDU",
+    "LITE",
+    "ADBE",
+    "ANET"
+  ],
+  "reference": [
+    "SPY"
+  ],
+  "holidays": [],
+  "lookback": 30,
+  "max_gap_minutes": 5,
+  "period_ms": 300000,
+  "offset_ms": 0,
+  "price_field": "close",
+  "session": {
+    "tz": "America/New_York",
+    "rth_start_minutes": 570,
+    "rth_end_minutes": 960
+  },
+  "scales": [
+    {
+      "width": 5,
+      "tag": "5m",
+      "cross_session": false
+    },
+    {
+      "width": 15,
+      "tag": "15m",
+      "cross_session": false
+    },
+    {
+      "width": 60,
+      "tag": "60m",
+      "cross_session": true
+    },
+    {
+      "width": 390,
+      "tag": "1s",
+      "cross_session": true
+    },
+    {
+      "width": 1170,
+      "tag": "3s",
+      "cross_session": true
+    }
+  ],
+  "horizon": {
+    "lead_start": 1,
+    "lead_step": 1,
+    "lead_stop": 60,
+    "anchors": [
+      1,
+      2,
+      3,
+      5,
+      10,
+      20,
+      30,
+      60
+    ],
+    "top_k": 8,
+    "se_mult": 2.0,
+    "band_leads": 8,
+    "label_lead": 1
+  }
+}

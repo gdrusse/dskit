@@ -52,10 +52,12 @@ Agent orientation — see README.md for operator commands.
 - Every run document tracks to one local MLflow experiment
   (`intraday_equities`). HPO maximizes `$select.metrics.rank_ic`.
   Fill rate / delay decay wait on a fill model.
-- P13's model zoo is `configs/run-p13-model-zoo.json`: 13 enabled model
-  families expand across the exact 25 Gate-3-approved asset/horizon pairs.
-  The first invocation is inventory-only; `BenchmarkRun` may launch folds only
-  after the materialized inventory hash and reviewer identity are approved.
+- The stopped asset-local P13 remains reproducible in
+  `configs/run-p13-model-zoo.json`; its active pooled replacement is
+  `configs/run-p13-pooled-model-zoo.json`.
+- P14's exploratory extension is `configs/run-p14-recurrent-fusion-zoo.json`:
+  paired pooled LSTM/GRU late fusion over session-local one-minute OHLCV and an
+  explicit side-feature projection. It remains inventory-gated and not locked.
 
 ## Machine knobs
 

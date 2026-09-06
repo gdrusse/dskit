@@ -17,7 +17,7 @@ time. Once code is set, using it on a new project means writing a new config —
 never editing the package.
 
 Wrapping a standard DS/ML library is encouraged when it earns its place
-(see `dskit/pipeline/libs/`: numpy, sklearn, torch, transformers, optuna, pyomo,
+(see `dskit/pipeline/libs/`: numpy, sklearn, torch, transformers, kronos, optuna, pyomo,
 sb3, matplotlib, mlflow).
 Wrap the *library*, generically — never a project's use of it.
 

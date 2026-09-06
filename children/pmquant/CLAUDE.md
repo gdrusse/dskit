@@ -9,6 +9,9 @@ Agent orientation — see README.md for what the child does and how to run it.
 - **Standalone explanations live in `docs/explanations/`.** Put worked,
   self-contained explanations there rather than beside decision records or
   research notes.
+- **Durable handoffs live in `docs/memos/`.** Keep implementation outcomes,
+  operational evidence, and known caveats there. A memo is not an ADR and is
+  not journaled research.
 - **Never edit dskit.** A missing capability is either a genuinely
   generic gap — propose an ADR upstream — or domain logic that stays
   here. There is no third option.
@@ -64,7 +67,10 @@ Agent orientation — see README.md for what the child does and how to run it.
   relevant files, and `LOCKED` (`Y`/`N`). The generated README displays the
   full Path and latest 10 Actions; CSV history is append-only. Pipeline runs
   and onboarding verbs record themselves. Research always goes through
-  `python -m dskit.journal research` (never Write `docs/research/` by hand).
+  `python -m dskit.journal research --topic T --name N` (never Write
+  `docs/research/` by hand; no markdown in that root — only
+  `docs/research/<topic>/<YYYY-MM-DD>-<name>.md`, with
+  `<date>-synthesis.md` as the task summary).
   Wrap `live.main` in `dskit.journal.hooks.production`. An uninitialized
   child refuses.
 - The skeleton's file list is pinned in dskit's
@@ -110,7 +116,7 @@ journal.json           # dskit.journal marker
 docs/decisioning/      # actions.csv + path.csv; README generated
 docs/explanations/     # durable explanations; use record-explanation
 docs/memos/            # decision memos; use memo
-docs/research/         # research markdown; use journal research CLI
+docs/research/         # topic folders; <date>-synthesis.md + dated notes
 tests/                 # conftest bootstrap; one file per module + test_configs + test_e2e
 pyproject.toml         # dependencies: dskit, numpy, torch, pyomo, highspy, pyarrow
 ```

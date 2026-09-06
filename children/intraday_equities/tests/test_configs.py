@@ -47,6 +47,7 @@ MODELABILITY_DOCS = {
     "run-p10-modelability.json": ("configs/universe-p10.json", 25),
     "run-p11-modelability.json": ("configs/universe-p10.json", 25),
     "run-p12-modelability.json": ("configs/universe-p12.json", 65),
+    "run-p13-pooled-model-zoo.json": ("configs/universe-p13-pooled.json", 26),
 }
 MODELABILITY_SOURCES = {
     "alpaca-sip-split",
@@ -814,9 +815,7 @@ def test_p13_expands_every_enabled_family_over_gate3_passers():
         if template["id"] != "lgbm-gate3-incumbent":
             assert model["hpo_trials"] > 0
             assert isinstance(model["hpo_space"], dict) and model["hpo_space"]
-    assert raw["stages"]["plan"]["inputs"]["candidates"] == (
-        "$materialize.candidates"
-    )
+    assert raw["stages"]["plan"]["inputs"]["candidates"] == ("$materialize.candidates")
     assert raw["stages"]["approval"]["inputs"] == {
         "inventory_sha256": "$plan.inventory_sha256"
     }
@@ -828,6 +827,7 @@ def test_p13_expands_every_enabled_family_over_gate3_passers():
     }
     plan = raw["stages"]["plan"]["params"]
     assert "pipeline.scan_h01.params.common_lead_stop" in plan["contract_paths"]
+    assert "pipeline.scan_h01.params.common_origin_policy" in plan["contract_paths"]
     assert "pipeline.path.params.horizon_weights" in plan["contract_paths"]
     assert plan["protocol"]["path_evidence"] == "path.records"
     assert raw["stages"]["compare"]["uses"].endswith(":PathBenchmarkCompare")
@@ -868,3 +868,65 @@ def test_the_p1_cell_differs_from_its_baseline_in_two_knobs_only():
             cell["pipeline"]["scan"]["params"][knob]
             == base["pipeline"]["scan"]["params"][knob]
         ), knob
+
+
+def test_p13_pooled_zoo_has_four_family_specific_inner_searches():
+    raw = _raw("run-p13-pooled-model-zoo.json")
+    materialize = raw["stages"]["materialize"]
+    assert materialize["inputs"] == {
+        "preflight": "$memory.passed",
+        "caches": "$memory.groups",
+    }
+    templates = materialize["params"]["templates"]
+    assert [row["family"] for row in templates] == [
+        "pooled-lightgbm",
+        "pooled-torch-mlp",
+        "pooled-kronos-lightgbm",
+        "pooled-kronos-torch-mlp",
+    ]
+    assert templates[0]["model"]["estimator"] == "lightgbm.LGBMRegressor"
+    assert templates[1]["model"]["estimator"].endswith(
+        "CategoricalEmbeddingMLPRegressor"
+    )
+    assert templates[2]["model"]["estimator"] == "lightgbm.LGBMRegressor"
+    assert templates[3]["model"]["estimator"].endswith(
+        "CategoricalEmbeddingMLPRegressor"
+    )
+    assert templates[2]["kronos"] == templates[3]["kronos"]
+    assert [row["model"]["hpo_trials"] for row in templates] == [4, 4, 4, 4]
+    assert "hidden_depth" in templates[1]["model"]["hpo_space"]
+    assert "hidden_depth" in templates[3]["model"]["hpo_space"]
+    assert set(templates[0]["model"]["hpo_space"]) != set(
+        templates[1]["model"]["hpo_space"]
+    )
+    assert raw["stages"]["approval"]["params"]["approved_inventory_sha256"] == (
+        "8731619d0eabb93246ebf72b6993f4a2e858c05bb775eb4a0ef5f6c589b33605"
+    )
+    universe = _raw("universe-p13-pooled.json")
+    assert len(universe["tradable"]) == 25
+    assert set(universe["symbols"]) == set(universe["tradable"]) | {"SPY"}
+
+
+def test_p14_recurrent_zoo_has_two_one_minute_late_fusion_searches():
+    raw = _raw("run-p14-recurrent-fusion-zoo.json")
+    features = raw["pipeline"]["features"]["params"]
+    assert features["sequence_lookback"] == 120
+    assert features["sequence_period_ms"] == 1_800_000
+    templates = raw["stages"]["materialize"]["params"]["templates"]
+    assert [row["family"] for row in templates] == [
+        "pooled-ohlcv-lstm-fusion",
+        "pooled-ohlcv-gru-fusion",
+    ]
+    assert [row["model"]["estimator_params"]["arch"] for row in templates] == [
+        "lstm", "gru"
+    ]
+    for template in templates:
+        assert template["feature_source"] == "sequence"
+        assert template["model"]["hpo_trials"] == 4
+        assert template["model"]["hpo_space"]["context_length"] == [30, 60, 120]
+        assert "batch_size" in template["model"]["hpo_space"]
+    approval = raw["stages"]["approval"]["params"]
+    assert approval["approved_inventory_sha256"] == (
+        "0e526b27396ffc83d22b4605b17fa111e6428f2a2bd5e820ab1520c4e7b25dd9"
+    )
+    assert approval["approved_by"] == "owner"

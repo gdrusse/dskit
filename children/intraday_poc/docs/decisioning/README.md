@@ -17,10 +17,11 @@ acquire  →  research  →  execute  →  production
    `acquire --mode backfill|live` / `validate` / `certify` / `publish`.
    `watch` is one row per process, not per pull. **Automatic.**
 2. **Research** — only
-   `python -m dskit.journal research "TITLE" --body-file <draft>`.
-   Writes `docs/research/<slug>.md` and the row together. Never write
-   that folder by hand. Skills: `record-research` (Cursor + Claude;
-   Claude `/research`).
+   `python -m dskit.journal research "TITLE" --topic T --name N --body-file <draft>`.
+   Writes `docs/research/<topic>/<YYYY-MM-DD>-<name>.md` and the row
+   together. Default name is `synthesis`. No markdown in the research
+   root. Never write that folder by hand. Skills: `record-research`
+   and `deep-research` (Cursor, Claude, OpenCode).
 3. **Execute** — `python -m dskit.pipeline run|walkforward`.
    **Automatic** after RECORD. Walk-forward is one row, not per fold.
 4. **Production** — wrap `live.main` in

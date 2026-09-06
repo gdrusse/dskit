@@ -23,6 +23,8 @@ from dskit.pipeline.node import (
 
 __all__ = [
     "ARCHS",
+    "CategoricalEmbeddingMLPRegressor",
+    "CategoricalRecurrentFusionRegressor",
     "DEFAULT_SEQUENCE_PREFIX",
     "ZooEstimator",
     "DEFAULT_ORDER",
@@ -846,6 +848,568 @@ class ZooEstimator:
         return (
             np.concatenate(out) if out else np.zeros(0, dtype=np.float64)
         ).astype(np.float64)
+
+
+class CategoricalEmbeddingMLPRegressor:
+    """Torch MLP over continuous columns plus one learned category embedding.
+
+    The estimator follows sklearn's ``fit``/``predict`` shape while accepting
+    the categorical-column index supplied by callers such as LightGBM. Only
+    training rows determine category vocabulary and continuous standardization.
+
+    Parameters
+    ----------
+    hidden_size : int
+        Width of every hidden layer.
+    hidden_depth : int
+        Number of hidden layers.
+    embedding_dim : int
+        Width of the learned categorical embedding.
+    epochs, lr, weight_decay, batch_size, dropout, seed : numeric
+        Training-loop and regularization controls.
+    device : str or None
+        Explicit Torch device; ``None`` selects CUDA when available.
+    standardize : bool
+        Whether to standardize continuous columns on training rows.
+
+    Examples
+    --------
+    Fit two entities with one continuous feature::
+
+        model = CategoricalEmbeddingMLPRegressor(epochs=2, device="cpu")
+        model.fit([[1.0, 0], [2.0, 1]], [0.1, 0.2], categorical_feature=[1])
+        model.predict([[1.5, 0]])  # one forecast
+    """
+
+    def __init__(
+        self,
+        hidden_size=64,
+        hidden_depth=1,
+        embedding_dim=8,
+        epochs=15,
+        lr=1e-3,
+        weight_decay=1e-4,
+        batch_size=4096,
+        dropout=0.1,
+        seed=0,
+        device=None,
+        standardize=True,
+    ):
+        self.hidden_size = hidden_size
+        self.hidden_depth = hidden_depth
+        self.embedding_dim = embedding_dim
+        self.epochs = epochs
+        self.lr = lr
+        self.weight_decay = weight_decay
+        self.batch_size = batch_size
+        self.dropout = dropout
+        self.seed = seed
+        self.device = device
+        self.standardize = standardize
+        self._category_index = None
+        self._continuous_indices = None
+        self._categories = None
+        self._center = None
+        self._scale = None
+        self._module = None
+
+    def _resolved_device(self):
+        import torch
+
+        if self.device:
+            return torch.device(self.device)
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    @staticmethod
+    def _standardizer(matrix, block_rows=32768):
+        """Return float32 population moments without a matrix-sized temp."""
+        import numpy as np
+
+        count = 0
+        mean = np.zeros(matrix.shape[1], dtype=np.float64)
+        m2 = np.zeros(matrix.shape[1], dtype=np.float64)
+        for start in range(0, matrix.shape[0], block_rows):
+            block = matrix[start : start + block_rows]
+            block_count = block.shape[0]
+            block_mean = block.mean(axis=0, dtype=np.float64)
+            block_m2 = block.var(axis=0, dtype=np.float64) * block_count
+            total = count + block_count
+            delta = block_mean - mean
+            m2 += block_m2 + delta * delta * count * block_count / total
+            mean += delta * block_count / total
+            count = total
+        scale = np.sqrt(m2 / count)
+        center = mean.astype(np.float32)
+        scale = scale.astype(np.float32)
+        scale[~np.isfinite(scale) | (scale <= 0.0)] = 1.0
+        return center, scale
+
+    def _split(self, matrix, *, fitting):
+        import numpy as np
+
+        x = np.asarray(matrix)
+        if x.ndim != 2:
+            raise ValueError("CategoricalEmbeddingMLPRegressor requires a 2-D matrix")
+        raw = x[:, self._category_index]
+        if not np.all(np.isfinite(raw)):
+            raise ValueError("categorical feature contains non-finite values")
+        if fitting:
+            self._categories = np.unique(raw)
+        positions = np.searchsorted(self._categories, raw)
+        valid = positions < len(self._categories)
+        valid[valid] &= self._categories[positions[valid]] == raw[valid]
+        if not np.all(valid):
+            raise ValueError("categorical feature contains an unseen category")
+        # The scan already supplies float32 cache data.  Selecting the
+        # continuous columns necessarily makes one compact copy; keep that
+        # copy float32 and standardize it in place instead of first cloning
+        # the full pooled matrix to float64.
+        continuous = np.asarray(
+            x[:, self._continuous_indices], dtype=np.float32
+        )
+        if self.standardize:
+            if fitting:
+                self._center, self._scale = self._standardizer(continuous)
+            continuous -= self._center
+            continuous /= self._scale
+        return continuous, positions.astype(np.int64, copy=False)
+
+    def _build(self, n_continuous, n_categories):
+        import torch
+
+        hidden = int(self.hidden_size)
+        depth = int(self.hidden_depth)
+        embedding = int(self.embedding_dim)
+        dropout = float(self.dropout)
+        if hidden < 1 or depth < 1 or embedding < 1:
+            raise ValueError(
+                "hidden_size, hidden_depth, and embedding_dim must be positive"
+            )
+        if not 0.0 <= dropout < 1.0:
+            raise ValueError("dropout must lie in [0, 1)")
+
+        class EmbeddedMLP(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embedding = torch.nn.Embedding(n_categories, embedding)
+                layers = []
+                width = n_continuous + embedding
+                for _ in range(depth):
+                    layers.extend(
+                        [
+                            torch.nn.Linear(width, hidden),
+                            torch.nn.ReLU(),
+                            torch.nn.Dropout(dropout),
+                        ]
+                    )
+                    width = hidden
+                layers.append(torch.nn.Linear(width, 1))
+                self.net = torch.nn.Sequential(*layers)
+
+            def forward(self, continuous, category):
+                joined = torch.cat([continuous, self.embedding(category)], dim=1)
+                return self.net(joined)
+
+        return EmbeddedMLP()
+
+    def fit(self, X, y, categorical_feature=None, feature_names=None):
+        """Fit on training rows and return this estimator.
+
+        Parameters
+        ----------
+        X, y : array-like
+            Training design matrix and one numeric target per row.
+        categorical_feature : sequence of int
+            Exactly one categorical-column index.
+        feature_names : sequence of str or None
+            Optional names checked against matrix width.
+
+        Returns
+        -------
+        CategoricalEmbeddingMLPRegressor
+            The fitted estimator.
+
+        Raises
+        ------
+        ValueError
+            If the matrix, category declaration, or knobs are invalid.
+        """
+        import numpy as np
+        import torch
+
+        x = np.asarray(X)
+        target = np.asarray(y, dtype=np.float32).reshape(-1)
+        categorical = list(categorical_feature or [])
+        if x.ndim != 2 or x.shape[0] != target.size or x.shape[0] < 1:
+            raise ValueError("X and y must contain the same non-empty row count")
+        if feature_names is not None and len(feature_names) != x.shape[1]:
+            raise ValueError("feature_names must match the design-matrix width")
+        if len(categorical) != 1 or isinstance(categorical[0], bool):
+            raise ValueError("exactly one categorical feature index is required")
+        index = int(categorical[0])
+        if index < 0 or index >= x.shape[1]:
+            raise ValueError("categorical feature index is outside the matrix")
+        self._category_index = index
+        self._continuous_indices = [i for i in range(x.shape[1]) if i != index]
+        continuous, category = self._split(x, fitting=True)
+        device = self._resolved_device()
+        torch.manual_seed(int(self.seed))
+        self._module = self._build(continuous.shape[1], len(self._categories)).to(
+            device
+        )
+        optimizer = torch.optim.Adam(
+            self._module.parameters(),
+            lr=float(self.lr),
+            weight_decay=float(self.weight_decay),
+        )
+        features = torch.as_tensor(continuous, dtype=torch.float32)
+        codes = torch.as_tensor(category, dtype=torch.long)
+        labels = torch.as_tensor(target, dtype=torch.float32).reshape(-1, 1)
+        batch = max(int(self.batch_size), 1)
+        generator = torch.Generator().manual_seed(int(self.seed))
+        self._module.train()
+        for _ in range(max(int(self.epochs), 1)):
+            order = torch.randperm(features.shape[0], generator=generator)
+            for start in range(0, features.shape[0], batch):
+                take = order[start : start + batch]
+                optimizer.zero_grad(set_to_none=True)
+                prediction = self._module(
+                    features[take].to(device), codes[take].to(device)
+                )
+                loss = torch.nn.functional.mse_loss(prediction, labels[take].to(device))
+                loss.backward()
+                optimizer.step()
+        return self
+
+    def predict(self, X):
+        """Return one forecast per row.
+
+        Parameters
+        ----------
+        X : array-like
+            Matrix with the fitted column layout and known categories.
+
+        Returns
+        -------
+        numpy.ndarray
+            One float64 forecast per row.
+
+        Raises
+        ------
+        RuntimeError
+            If called before fitting.
+        """
+        import numpy as np
+        import torch
+
+        if self._module is None:
+            raise RuntimeError("CategoricalEmbeddingMLPRegressor: predict before fit")
+        continuous, category = self._split(X, fitting=False)
+        features = torch.as_tensor(continuous, dtype=torch.float32)
+        codes = torch.as_tensor(category, dtype=torch.long)
+        device = self._resolved_device()
+        batch = max(int(self.batch_size), 1)
+        output = []
+        self._module.eval()
+        with torch.no_grad():
+            for start in range(0, features.shape[0], batch):
+                stop = start + batch
+                output.append(
+                    self._module(
+                        features[start:stop].to(device), codes[start:stop].to(device)
+                    )
+                    .reshape(-1)
+                    .cpu()
+                    .numpy()
+                )
+        return (
+            np.concatenate(output).astype(np.float64)
+            if output
+            else np.zeros(0, dtype=np.float64)
+        )
+
+
+class CategoricalRecurrentFusionRegressor:
+    """Late-fuse an OHLCV recurrent tower with static and entity features.
+
+    Sequence columns are named ``ohlcv_tNNN_<field>`` in chronological order,
+    where every step contains open, high, low, close, and volume. The latest
+    ``context_length`` steps enter a one-layer or two-layer LSTM/GRU. Static
+    columns are standardized and projected once, never broadcast through time;
+    one learned entity embedding joins the two towers at the final linear head.
+    All normalization statistics come only from the rows passed to ``fit``.
+    """
+
+    _FIELDS = ("open", "high", "low", "close", "volume")
+    _PREFIX = "ohlcv_t"
+
+    def __init__(
+        self,
+        arch="lstm",
+        context_length=60,
+        hidden_size=32,
+        num_layers=1,
+        static_projection_dim=16,
+        embedding_dim=8,
+        epochs=6,
+        lr=1e-3,
+        weight_decay=1e-4,
+        batch_size=2048,
+        dropout=0.1,
+        seed=0,
+        device=None,
+        standardize=True,
+    ):
+        self.arch = arch
+        self.context_length = context_length
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.static_projection_dim = static_projection_dim
+        self.embedding_dim = embedding_dim
+        self.epochs = epochs
+        self.lr = lr
+        self.weight_decay = weight_decay
+        self.batch_size = batch_size
+        self.dropout = dropout
+        self.seed = seed
+        self.device = device
+        self.standardize = standardize
+        self._category_index = None
+        self._sequence_indices = None
+        self._static_indices = None
+        self._categories = None
+        self._sequence_center = None
+        self._sequence_scale = None
+        self._static_center = None
+        self._static_scale = None
+        self._module = None
+
+    def _resolved_device(self):
+        """Resolve the declared device, defaulting to CUDA when available."""
+        import torch
+
+        if self.device:
+            return torch.device(self.device)
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def _layout(self, feature_names, width):
+        """Return ordered sequence columns and all non-category side columns."""
+        if not isinstance(feature_names, list) or len(feature_names) != width:
+            raise ValueError("feature_names must match the design-matrix width")
+        by_step = {}
+        sequence_set = set()
+        for index, name in enumerate(feature_names):
+            if not isinstance(name, str) or not name.startswith(self._PREFIX):
+                continue
+            step_text, separator, field = name[len(self._PREFIX) :].partition("_")
+            if not separator or not step_text.isdigit() or field not in self._FIELDS:
+                raise ValueError(f"malformed OHLCV sequence column {name!r}")
+            step = int(step_text)
+            if field in by_step.setdefault(step, {}):
+                raise ValueError(f"duplicate OHLCV sequence column {name!r}")
+            by_step[step][field] = index
+            sequence_set.add(index)
+        steps = sorted(by_step)
+        if steps != list(range(len(steps))) or any(
+            set(by_step[step]) != set(self._FIELDS) for step in steps
+        ):
+            raise ValueError("OHLCV sequence steps must be contiguous and complete")
+        context = int(self.context_length)
+        if context < 1 or context > len(steps):
+            raise ValueError(
+                f"context_length must lie in [1, {len(steps)}], got {context}"
+            )
+        selected = steps[-context:]
+        sequence = [by_step[step][field] for step in selected for field in self._FIELDS]
+        static = [
+            index
+            for index in range(width)
+            if index not in sequence_set and index != self._category_index
+        ]
+        return sequence, static
+
+    @staticmethod
+    def _moments(matrix):
+        """Return finite float32 population moments for a two-dimensional view."""
+        import numpy as np
+
+        center = matrix.mean(axis=0, dtype=np.float64).astype(np.float32)
+        scale = matrix.std(axis=0, dtype=np.float64).astype(np.float32)
+        scale[~np.isfinite(scale) | (scale <= 0.0)] = 1.0
+        return center, scale
+
+    def _parts(self, matrix, *, fitting):
+        """Split, causally transform, and training-standardize all three inputs."""
+        import numpy as np
+
+        x = np.asarray(matrix)
+        sequence = np.asarray(x[:, self._sequence_indices], dtype=np.float32)
+        sequence = sequence.reshape(len(x), int(self.context_length), len(self._FIELDS))
+        prices = sequence[:, :, :4]
+        volume = sequence[:, :, 4]
+        if np.any(prices <= 0.0) or np.any(volume < 0.0) or not np.isfinite(sequence).all():
+            raise ValueError("OHLCV sequence contains invalid price or volume values")
+        anchor = sequence[:, -1:, 3:4]
+        np.divide(prices, anchor, out=prices)
+        np.log(prices, out=prices)
+        np.log1p(volume, out=volume)
+        flattened = sequence.reshape(-1, len(self._FIELDS))
+        if self.standardize:
+            if fitting:
+                self._sequence_center, self._sequence_scale = self._moments(flattened)
+            flattened -= self._sequence_center
+            flattened /= self._sequence_scale
+
+        static = np.asarray(x[:, self._static_indices], dtype=np.float32)
+        if not np.isfinite(static).all():
+            raise ValueError("static feature contains non-finite values")
+        if self.standardize and static.shape[1]:
+            if fitting:
+                self._static_center, self._static_scale = self._moments(static)
+            static -= self._static_center
+            static /= self._static_scale
+
+        raw = x[:, self._category_index]
+        if not np.isfinite(raw).all():
+            raise ValueError("categorical feature contains non-finite values")
+        if fitting:
+            self._categories = np.unique(raw)
+        category = np.searchsorted(self._categories, raw)
+        valid = category < len(self._categories)
+        valid[valid] &= self._categories[category[valid]] == raw[valid]
+        if not np.all(valid):
+            raise ValueError("categorical feature contains an unseen category")
+        return sequence, static, category.astype(np.int64, copy=False)
+
+    def _build(self, n_static, n_categories):
+        """Build the recurrent, static-projection, embedding, and fusion towers."""
+        import torch
+
+        arch = str(self.arch).lower()
+        if arch not in ("lstm", "gru"):
+            raise ValueError("arch must be lstm or gru")
+        hidden = int(self.hidden_size)
+        layers = int(self.num_layers)
+        projection = int(self.static_projection_dim)
+        embedding = int(self.embedding_dim)
+        dropout = float(self.dropout)
+        if min(hidden, layers, projection, embedding) < 1:
+            raise ValueError("hidden, layers, projection, and embedding must be positive")
+        if not 0.0 <= dropout < 1.0:
+            raise ValueError("dropout must lie in [0, 1)")
+        recurrent = torch.nn.LSTM if arch == "lstm" else torch.nn.GRU
+        fields = len(self._FIELDS)
+
+        class RecurrentFusion(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.recurrent = recurrent(
+                    fields,
+                    hidden,
+                    num_layers=layers,
+                    batch_first=True,
+                    dropout=dropout if layers > 1 else 0.0,
+                )
+                self.static = torch.nn.Sequential(
+                    torch.nn.Linear(n_static, projection),
+                    torch.nn.ReLU(),
+                )
+                self.embedding = torch.nn.Embedding(n_categories, embedding)
+                self.dropout = torch.nn.Dropout(dropout)
+                self.head = torch.nn.Linear(hidden + projection + embedding, 1)
+
+            def forward(self, sequence, static, category):
+                temporal, _state = self.recurrent(sequence)
+                joined = torch.cat(
+                    [temporal[:, -1, :], self.static(static), self.embedding(category)],
+                    dim=1,
+                )
+                return self.head(self.dropout(joined))
+
+        return RecurrentFusion()
+
+    def fit(self, X, y, categorical_feature=None, feature_names=None):
+        """Fit the late-fusion model on the supplied training rows."""
+        import numpy as np
+        import torch
+
+        x = np.asarray(X)
+        target = np.asarray(y, dtype=np.float32).reshape(-1)
+        categorical = list(categorical_feature or [])
+        if x.ndim != 2 or x.shape[0] != target.size or x.shape[0] < 1:
+            raise ValueError("X and y must contain the same non-empty row count")
+        if len(categorical) != 1 or isinstance(categorical[0], bool):
+            raise ValueError("exactly one categorical feature index is required")
+        self._category_index = int(categorical[0])
+        if self._category_index < 0 or self._category_index >= x.shape[1]:
+            raise ValueError("categorical feature index is outside the matrix")
+        self._sequence_indices, self._static_indices = self._layout(
+            feature_names, x.shape[1]
+        )
+        sequence, static, category = self._parts(x, fitting=True)
+        device = self._resolved_device()
+        torch.manual_seed(int(self.seed))
+        self._module = self._build(static.shape[1], len(self._categories)).to(device)
+        optimizer = torch.optim.Adam(
+            self._module.parameters(),
+            lr=float(self.lr),
+            weight_decay=float(self.weight_decay),
+        )
+        seq_tensor = torch.as_tensor(sequence, dtype=torch.float32)
+        static_tensor = torch.as_tensor(static, dtype=torch.float32)
+        codes = torch.as_tensor(category, dtype=torch.long)
+        labels = torch.as_tensor(target, dtype=torch.float32).reshape(-1, 1)
+        batch = max(int(self.batch_size), 1)
+        generator = torch.Generator().manual_seed(int(self.seed))
+        self._module.train()
+        for _ in range(max(int(self.epochs), 1)):
+            order = torch.randperm(seq_tensor.shape[0], generator=generator)
+            for start in range(0, seq_tensor.shape[0], batch):
+                take = order[start : start + batch]
+                optimizer.zero_grad(set_to_none=True)
+                prediction = self._module(
+                    seq_tensor[take].to(device),
+                    static_tensor[take].to(device),
+                    codes[take].to(device),
+                )
+                loss = torch.nn.functional.mse_loss(prediction, labels[take].to(device))
+                loss.backward()
+                optimizer.step()
+        return self
+
+    def predict(self, X):
+        """Return one forecast per row using the fitted late-fusion model."""
+        import numpy as np
+        import torch
+
+        if self._module is None:
+            raise RuntimeError("CategoricalRecurrentFusionRegressor: predict before fit")
+        sequence, static, category = self._parts(X, fitting=False)
+        seq_tensor = torch.as_tensor(sequence, dtype=torch.float32)
+        static_tensor = torch.as_tensor(static, dtype=torch.float32)
+        codes = torch.as_tensor(category, dtype=torch.long)
+        device = self._resolved_device()
+        batch = max(int(self.batch_size), 1)
+        output = []
+        self._module.eval()
+        with torch.no_grad():
+            for start in range(0, seq_tensor.shape[0], batch):
+                stop = start + batch
+                output.append(
+                    self._module(
+                        seq_tensor[start:stop].to(device),
+                        static_tensor[start:stop].to(device),
+                        codes[start:stop].to(device),
+                    )
+                    .reshape(-1)
+                    .cpu()
+                    .numpy()
+                )
+        return (
+            np.concatenate(output).astype(np.float64)
+            if output
+            else np.zeros(0, dtype=np.float64)
+        )
 
 
 class _TsModel:
