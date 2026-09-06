@@ -19,6 +19,7 @@ from dskit.pipeline.driver import run_walk_forward
 from dskit.pipeline.planner import plan as plan_document
 from dskit.pipeline.predictions import read_prediction_series
 from dskit.pipeline.program_calendar import ProgramCalendar
+from dskit.pipeline.runs import DEFAULT_RUN_ROOT
 from dskit.pipeline.stages import Stage, reject_unknown_params
 from dskit.pipeline.stats import bonferroni, cluster_bootstrap_t, newey_west_mean
 
@@ -204,7 +205,7 @@ def _expected_summary_dir(document, asof):
     root = os.path.abspath(
         os.path.expanduser(
             (outputs.run_root if outputs is not None else "")
-            or "./pipeline_runs"
+            or DEFAULT_RUN_ROOT
         )
     )
     return os.path.join(
@@ -475,6 +476,17 @@ class BenchmarkApproval(Stage):
 
     @classmethod
     def validate_params(cls, params):
+        """Refuse any knob but the three this stage declares.
+
+        Parameters
+        ----------
+        params : dict
+
+        Returns
+        -------
+        list of str
+            Every problem found, empty when the params are legal.
+        """
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
         for field in cls._PARAMS:
@@ -490,6 +502,17 @@ class BenchmarkApproval(Stage):
         return problems
 
     def validate_inputs(self, inputs):
+        """Require exactly the reviewed inventory digest and nothing else.
+
+        Parameters
+        ----------
+        inputs : dict
+
+        Returns
+        -------
+        list of str
+            Every problem found, empty when the inputs are legal.
+        """
         if not isinstance(inputs, dict) or set(inputs) != {"inventory_sha256"}:
             return ["inputs must contain exactly inventory_sha256"]
         digest = inputs["inventory_sha256"]
@@ -498,6 +521,23 @@ class BenchmarkApproval(Stage):
         return []
 
     def run(self, ctx, inputs):
+        """Bind the approval to the exact inventory that was reviewed.
+
+        The digest is compared rather than trusted: an inventory that moved
+        after review is a different inventory, and approving it would let an
+        unreviewed candidate run.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+        inputs : dict
+            Carries ``inventory_sha256``.
+
+        Returns
+        -------
+        dict
+            The approval record, whose ``approved`` flag gates the run stage.
+        """
         observed = inputs["inventory_sha256"]
         approved = self.params["approved_inventory_sha256"]
         if approved == self._PENDING:
@@ -534,11 +574,33 @@ class BenchmarkRun(Stage):
 
     @classmethod
     def validate_params(cls, params):
+        """Refuse every knob: what this stage runs is decided upstream.
+
+        Parameters
+        ----------
+        params : dict
+
+        Returns
+        -------
+        list of str
+            Every problem found, empty when the params are legal.
+        """
         problems = []
         reject_unknown_params(problems, params, ())
         return problems
 
     def validate_inputs(self, inputs):
+        """Require the approval and the candidate inventory, exactly.
+
+        Parameters
+        ----------
+        inputs : dict
+
+        Returns
+        -------
+        list of str
+            Every problem found, empty when the inputs are legal.
+        """
         wanted = {"approval", "candidates"}
         if not isinstance(inputs, dict) or set(inputs) != wanted:
             return [f"inputs must contain exactly {sorted(wanted)}"]
@@ -550,6 +612,22 @@ class BenchmarkRun(Stage):
         return []
 
     def run(self, ctx, inputs):
+        """Execute each approved candidate, refusing an unapproved inventory.
+
+        This is the only candidate-executing stage, which is why the approval
+        is rechecked here rather than trusted from the plan.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+        inputs : dict
+            Carries ``approval`` and ``candidates``.
+
+        Returns
+        -------
+        dict
+            One ``runs`` row per candidate, each recording its state.
+        """
         approval = inputs["approval"]
         if approval.get("approved") is not True:
             return {
@@ -805,11 +883,33 @@ class BenchmarkCompare(Stage):
 
     @classmethod
     def validate_params(cls, params):
+        """Refuse every knob: the comparison is the protocol's, not a caller's.
+
+        Parameters
+        ----------
+        params : dict
+
+        Returns
+        -------
+        list of str
+            Every problem found, empty when the params are legal.
+        """
         problems = []
         reject_unknown_params(problems, params, ())
         return problems
 
     def validate_inputs(self, inputs):
+        """Require the runs, the protocol, the contracts and the approval.
+
+        Parameters
+        ----------
+        inputs : dict
+
+        Returns
+        -------
+        list of str
+            Every problem found, empty when the inputs are legal.
+        """
         wanted = {"runs", "protocol", "contracts", "approval"}
         if not isinstance(inputs, dict) or set(inputs) != wanted:
             return [f"inputs must contain exactly {sorted(wanted)}"]
@@ -825,6 +925,22 @@ class BenchmarkCompare(Stage):
         return []
 
     def run(self, ctx, inputs):
+        """Compare the paired outer folds; never promote a winner.
+
+        The protocol reports and a human decides what ships, which is why
+        nothing here writes a selection.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+        inputs : dict
+            Carries ``runs``, ``protocol``, ``contracts`` and ``approval``.
+
+        Returns
+        -------
+        dict
+            The comparison, its multiplicity correction and its provenance.
+        """
         if inputs["approval"].get("approved") is not True:
             if any(row.get("state") == "ran" for row in inputs["runs"]):
                 raise ValueError("an unapproved benchmark contains executed candidates")
@@ -1292,6 +1408,17 @@ class PathBenchmarkCompare(BenchmarkCompare):
 
     @classmethod
     def validate_params(cls, params):
+        """Refuse any knob but the two bootstrap settings this stage declares.
+
+        Parameters
+        ----------
+        params : dict
+
+        Returns
+        -------
+        list of str
+            Every problem found, empty when the params are legal.
+        """
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
         draws = params.get("bootstrap_draws")
@@ -1303,6 +1430,18 @@ class PathBenchmarkCompare(BenchmarkCompare):
         return problems
 
     def run(self, ctx, inputs):
+        """Compare as the base does, then add the path-evidence extras.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+        inputs : dict
+
+        Returns
+        -------
+        dict
+            The base comparison plus this subclass's path diagnostics.
+        """
         result = super().run(ctx, inputs)
         extras = {
             "loss_evidence": {},
