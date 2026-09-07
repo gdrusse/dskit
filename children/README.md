@@ -38,6 +38,8 @@ _skeleton/
 │   ├── source-sample.json    # a connector config
 │   ├── suite-sample.json     # a validation suite
 │   └── run-sample.json       # a pipeline document
+├── models/                  # fitted ML/optimization artifacts (gitignored)
+│   └── README.md             # what belongs here vs the run directory
 ├── docs/decisioning/         # generated grid (CSV is the store; ADR-0056)
 │   ├── README.md             # GENERATED from actions.csv / path.csv
 │   ├── actions.csv
@@ -45,6 +47,8 @@ _skeleton/
 ├── docs/research/            # research agent markdown
 │   └── .gitkeep
 ├── docs/memos/               # durable implementation and operational handoffs
+│   └── .gitkeep
+├── docs/plans/               # project-specific plan builds
 │   └── .gitkeep
 ├── journal.json              # walk-up marker for dskit.journal
 └── tests/
@@ -90,6 +94,10 @@ _skeleton/
   outcomes, and operational caveats go in `docs/memos/`. They are reviewed
   documents, not ADRs and not journaled research. The skeleton initializes the
   folder so every copied child inherits it.
+- **Fitted artifacts are `models/`; plans are `docs/plans/`.** The skeleton
+  ships both: `models/` holds ML/optimization artifacts that outlive a run
+  directory (gitignored — reproducibility is the identity hash), and
+  `docs/plans/` holds the child's own project-specific plan builds.
 - **A vendor knob is a `spec()` knob.** If it selects WHAT you pull — bar
   interval, feed, adjustment, universe — it is config, not a constant in
   `_fetch`. The test: would a second project want it different? Then it

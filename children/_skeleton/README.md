@@ -83,6 +83,16 @@ operational caveats in `docs/memos/`. They are ordinary reviewed documents,
 not ADRs and not journaled research. The skeleton keeps the folder present via
 `.gitkeep`, so every copied child starts with it.
 
+**Models.** Fitted artifacts that outlive a run directory — ML weights,
+optimization solutions, serialized transforms — live in `models/`, gitignored:
+reproducibility is the run document's identity hash, never a committed binary.
+Run-scoped outputs stay in the run directory; a file belongs in `models/` only
+when a later config or the serving loop must reload it by stable name.
+
+**Plans.** Project-specific plan builds — the child's phased work plans and
+closeout checklists — live in `docs/plans/`. The dskit repo's `docs/plans/` is
+repo-level; this folder is the child's own, and it travels with graduation.
+
 > The skeleton's sample data node is self-contained, so step 5 works
 > before step 2. A real child's data node reads the store, so there the
 > order is real.
@@ -149,6 +159,10 @@ _skeleton/
 │   ├── suite-sample.json  # a validation suite
 │   ├── run-sample.json    # a pipeline document
 │   └── serve-sample.json  # a serve document — the run, served forward
+├── models/                # fitted ML/optimization artifacts (gitignored)
+│   ├── README.md          # what belongs here vs the run directory
+│   ├── .gitignore         # artifacts are rebuilt, never committed
+│   └── .gitkeep
 ├── docs/decisioning/      # generated grid (CSV store; ADR-0056)
 │   ├── README.md          # GENERATED — do not edit
 │   ├── actions.csv
@@ -157,6 +171,9 @@ _skeleton/
 │   └── README.md          # use record-explanation
 ├── docs/memos/            # durable implementation and operational handoffs
 │   ├── README.md          # use memo
+│   └── .gitkeep
+├── docs/plans/            # project-specific plan builds
+│   ├── README.md          # the child's own phased work plans
 │   └── .gitkeep
 ├── docs/research/         # research agent markdown
 │   ├── README.md          # use record-research

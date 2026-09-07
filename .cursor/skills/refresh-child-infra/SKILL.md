@@ -18,7 +18,8 @@ turning it into a fresh skeleton copy. Work from the child root.
 - Read the child's `AGENTS.md`, `CLAUDE.md`, and `README.md` first.
 - Compare only infrastructure with `children/_skeleton/`: `journal.json`,
   `docs/decisioning/`, `docs/explanations/`, `docs/memos/`,
-  `docs/research/`, their README reminders, and layout/instruction prose.
+  `docs/plans/`, `docs/research/`, `models/`, their README reminders,
+  and layout/instruction prose.
 - Do not copy or overwrite the child's package, configs, tests, evidence,
   research, memos, explanations, `actions.csv`, or `path.csv`.
 - Never add, edit, migrate, or regenerate owner-only Path content. Only the
@@ -33,15 +34,19 @@ turning it into a fresh skeleton copy. Work from the child root.
 2. If `journal.json` is missing, run `python -m dskit.journal init --root .`.
    If it exists, do not re-init it.
 3. Ensure these directories exist:
-   `docs/decisioning/`, `docs/explanations/`, `docs/memos/`, and
-   `docs/research/`.
+   `docs/decisioning/`, `docs/explanations/`, `docs/memos/`,
+   `docs/plans/`, `docs/research/`, and `models/`.
 4. Add missing folder READMEs from the skeleton's current intent:
    - `docs/explanations/README.md`: `record-explanation`
    - `docs/memos/README.md`: `memo`
+   - `docs/plans/README.md`: child-authored plan builds (no skill)
    - `docs/research/README.md`: `record-research`
+   - `models/README.md` + `models/.gitignore` + `models/.gitkeep`:
+     fitted artifacts, gitignored; never overwrite an existing
+     `models/.gitignore`
    Do not overwrite a child README with substantive child-specific content.
 5. Ensure the child's `AGENTS.md`, `CLAUDE.md`, and README layout state:
-   - the four documentation folders;
+   - the five documentation folders plus `models/`;
    - generated decisioning README and CSV store;
    - human-owner-only Path and Current Work;
    - full Path display, latest-10 Actions display, and append-only history.

@@ -12,6 +12,12 @@ Agent orientation template — see README.md for what the child does.
 - **Durable handoffs live in `docs/memos/`.** Keep implementation outcomes,
   operational evidence, and known caveats there. A memo is not an ADR and is
   not journaled research; the skeleton initializes the folder with `.gitkeep`.
+- **Fitted artifacts live in `models/`.** ML weights, optimization solutions,
+  serialized transforms that outlive a run directory — gitignored, because
+  reproducibility is the run document's identity hash, never a committed
+  binary. Run-scoped outputs stay in the run directory.
+- **Project plans live in `docs/plans/`.** The child's own phased work plans
+  and closeout checklists; results move to `docs/memos/`, never into a plan.
 - **Never edit dskit.** A missing capability is either a genuinely
   generic gap — propose an ADR upstream — or domain logic that stays
   here. There is no third option.
@@ -101,10 +107,12 @@ yourproject/           # tier-3 code: connectors.py, nodes.py, and the four
                        #   approvals / coordination, all fail-closed
 configs/               # asset-model / source-sample / suite-sample /
                        #   run-sample / serve-sample
+models/                # fitted ML/optimization artifacts (gitignored)
 journal.json           # dskit.journal marker
 docs/decisioning/      # actions.csv + path.csv; README generated
 docs/explanations/     # README points to record-explanation
 docs/memos/            # README points to memo
+docs/plans/            # the child's own project-specific plan builds
 docs/research/         # topic folders; <date>-synthesis.md + dated notes
 tests/                 # conftest bootstrap + configs/connectors/nodes/
                        #   execution/production tests
