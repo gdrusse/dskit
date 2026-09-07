@@ -1,5 +1,5 @@
 {
-  "notes": "Per-platform adapter table for /chain's cross-process dispatch (.agent-chain/dispatch.py). One source of truth for CLI flags -- edit here, never restate these flags as prose in a SKILL.md. 'models' maps a logical tier (opus/sonnet/haiku) to that platform's concrete model string; a tier missing here means dispatch.py omits the model flag and the tool uses its own default -- fill in real values as you confirm what your account has access to on that platform, rather than guessing.",
+  "notes": "Per-platform adapter table for /chain cross-process dispatch. autoApproveFlags are added only when dispatch(..., allow_mutation=True), after the explicit human approval required by docs/skills/chain.md. 'models' maps logical tiers (opus/sonnet/haiku) to concrete model strings; an unmapped tier uses the tool default, while a non-tier concrete model name is passed through unchanged.",
   "claude": {
     "binary": "claude",
     "promptArg": "-p",
