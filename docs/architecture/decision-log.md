@@ -5563,7 +5563,7 @@ decision.
 
 ## ADR-0108 — A feature mask is a MODEL knob, not a second feature pipeline
 
-**Status:** proposed (2026-09-07 — owner asked for 4-5 feature sets compared in one zoo)
+**Status:** accepted (2026-09-07 — owner approved the build)
 
 **Numbering.** 0107 is taken by `feat/final-model-gates`, unmerged at the time
 of writing. This is 0108 to avoid the collision that branch's `actions.csv`
