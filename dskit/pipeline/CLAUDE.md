@@ -449,6 +449,8 @@ dskit/pipeline/
 │                      (ADR-0056); run_walk_forward (ADR-0027)
 ├── stages.py          journal-backed staged DAG execution and resume (ADR-0081)
 ├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)
+├── conquest.py        HorizonConquest: per-(unit,horizon) contiguous cap over
+│                      config-declared checks + slice stability (ADR-0107)
 ├── folds.py           BoundedFoldRunner: capped, width-bounded fold spawning;
 │                      spawn is the hook, measure_one the one reading (ADR-0093)
 ├── runs.py            the READER: scan_runs/format_runs over a run root (`runs` verb)

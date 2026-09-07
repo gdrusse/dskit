@@ -65,16 +65,23 @@ import time
 import urllib.parse
 
 from ..base import AssetError, _check_dict, _check_str, _check_unknown, _raise_if, parse_utc
-from ..connector import MAX_BACKOFF_S, PROTOCOL, Connector
+from ..connector import (
+    DEFAULT_BACKOFF_S,
+    MAX_BACKOFF_S,
+    PROTOCOL,
+    Connector,
+    backoff,
+)
 
 __all__ = ["RestApiConnector"]
 
 #: HTTP statuses worth retrying — throttling and transient server faults.
 _RETRY_STATUSES = (429, 500, 502, 503, 504)
 
-#: Backoff base in seconds, doubled per attempt. Module-level so the test
-#: suite can zero it out instead of sleeping through retry scenarios.
-_BACKOFF = 0.5
+#: This pack's backoff base — the contract's own (ADR-0101), never a second
+#: 0.5. Kept as a module-level NAME so the test suite can zero it out instead
+#: of sleeping through retry scenarios.
+_BACKOFF = DEFAULT_BACKOFF_S
 
 #: Default ``config.timeout`` (seconds) and ``config.max_retries`` — named
 #: once so ``_conf`` and the spec() notes (f-strings) share one value. The
@@ -357,7 +364,7 @@ class RestApiConnector(Connector):
         last = None
         for attempt in range(cfg["max_retries"] + 1):
             if attempt:
-                time.sleep(min(_BACKOFF * (2 ** (attempt - 1)), MAX_BACKOFF_S))
+                time.sleep(backoff(attempt, _BACKOFF))
             try:
                 status, body = self._fetch(url, headers, cfg["timeout"])
             except OSError as exc:

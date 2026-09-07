@@ -30,6 +30,10 @@ __all__ = [
     "AssetError",
     "atomic_write_json",
     "canonical_hash",
+    "check_dict",
+    "check_str",
+    "check_unknown",
+    "raise_if",
     "utc_now",
 ]
 
@@ -60,17 +64,17 @@ class AssetError(ValueError):
 # ---------------------------------------------------------------------------
 
 
-def _check_str(errors, name, value, *, non_empty=True):
+def check_str(errors, name, value, *, non_empty=True):
     if not isinstance(value, str) or (non_empty and not value):
         errors.append(f"{name} must be a non-empty string, got {value!r}")
 
 
-def _check_dict(errors, name, value):
+def check_dict(errors, name, value):
     if not isinstance(value, dict) or any(not isinstance(k, str) for k in value):
         errors.append(f"{name} must be a dict with string keys, got {value!r}")
 
 
-def _check_unknown(errors, obj, allowed, where=""):
+def check_unknown(errors, obj, allowed, where=""):
     """Default-DENY on keys: a typo is an error, not a silent default."""
     unknown = sorted(set(obj) - set(allowed))
     if unknown:
@@ -78,9 +82,21 @@ def _check_unknown(errors, obj, allowed, where=""):
         errors.append(f"{prefix}unknown key(s) {unknown} — allowed: {sorted(allowed)}")
 
 
-def _raise_if(errors):
+def raise_if(errors):
     if errors:
         raise AssetError(errors)
+
+
+#: The private spellings these four shipped with. `dskit.onboarding` and
+#: `dskit.production` both read them across the package boundary, which
+#: the `_` prefix forbids, so the rule is given a PUBLIC name with ONE
+#: owner rather than a second copy in each caller — the `render_cell`
+#: precedent, and the same remedy `driver.is_summary` took. The aliases
+#: stay so this package's own callers are not rewritten.
+_check_str = check_str
+_check_dict = check_dict
+_check_unknown = check_unknown
+_raise_if = raise_if
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ from dskit.pipeline.document import load_document
 from intraday_equities.model_zoo import (
     DirectPathScore,
     EmpiricalSelectRegressor,
+    FinalistCandidate,
     KronosFusionRows,
     PooledDirectPathScore,
     PooledGate3ZooCandidates,
@@ -348,3 +349,61 @@ def test_sequence_fusion_inner_aligns_and_allows_only_declared_side_features():
     ]
     np.testing.assert_allclose(frame["X"][:, -1], [0.1, 0.3])
     np.testing.assert_allclose(frame["close"], [10.0, 12.0])
+
+
+def _finalist_stage():
+    document = load_document(
+        str(Path(__file__).parents[1] / "configs" / "run-final-hpo.json")
+    )
+    params = document.stages["finalist"].params
+    return FinalistCandidate("finalist", params)
+
+
+def test_the_finalist_stage_requires_the_selectors_choice():
+    """Its parent takes preflight and caches; this one also takes a winner."""
+    stage = _finalist_stage()
+    assert stage.validate_inputs({"preflight": True, "caches": {}}) == [
+        "inputs must contain exactly preflight, caches and selection"
+    ]
+
+
+def test_the_finalist_stage_refuses_a_selection_that_claims_promotion():
+    """`final_hpo` selects hyperparameters; nothing here promotes a model."""
+    stage = _finalist_stage()
+    problems = stage.validate_inputs(
+        {
+            "preflight": True,
+            "caches": {},
+            "selection": {"candidate": "lgbm-pooled-h10", "auto_promote": True},
+        }
+    )
+    assert problems == [
+        "selection.auto_promote must be False — this phase never promotes"
+    ]
+
+
+def test_the_finalist_stage_refuses_a_nameless_selection():
+    """A selection with no candidate would leave WHICH model undecided."""
+    stage = _finalist_stage()
+    problems = stage.validate_inputs(
+        {"preflight": True, "caches": {}, "selection": {"auto_promote": False}}
+    )
+    assert problems == ["selection.candidate must name the selected candidate"]
+
+
+def test_the_finalist_stage_accepts_a_well_formed_selection():
+    """The shape BenchmarkSelect actually emits must pass."""
+    stage = _finalist_stage()
+    assert (
+        stage.validate_inputs(
+            {
+                "preflight": True,
+                "caches": {},
+                "selection": {
+                    "candidate": "lgbm-pooled-h10",
+                    "auto_promote": False,
+                },
+            }
+        )
+        == []
+    )

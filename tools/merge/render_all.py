@@ -1,6 +1,6 @@
 """Post-merge re-render of every child's generated decisioning README.
 
-Installed as the ``post-merge`` hook by ``install.sh`` (ADR-0107): the
+Installed as the ``post-merge`` hook by ``install.sh`` (ADR-0109): the
 ledger union driver merged the CSVs, the render driver took one side of
 the generated README, and this loop regenerates every child's README
 from the merged CSVs so the projection never stays stale. Failures are

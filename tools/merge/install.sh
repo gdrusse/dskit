@@ -1,5 +1,5 @@
 #!/bin/sh
-# Register the ADR-0107 merge drivers and the post-merge re-render hook
+# Register the ADR-0109 merge drivers and the post-merge re-render hook
 # in THIS clone. git ships driver commands in .git/config, not in the
 # repository, so every clone runs this once — and again after the repo
 # moves, because the configured paths are absolute.
@@ -14,4 +14,4 @@ git config merge.keep-both.driver "$PY '$TOOLS/keep_both.py' %O %A %B"
 mkdir -p .git/hooks
 printf '#!/bin/sh\nexec "%s" "%s/render_all.py"\n' "$PY" "$TOOLS" > .git/hooks/post-merge
 chmod +x .git/hooks/post-merge
-echo "ADR-0107 merge drivers + post-merge render installed for this clone."
+echo "ADR-0109 merge drivers + post-merge render installed for this clone."

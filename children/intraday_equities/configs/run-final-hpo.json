@@ -1,0 +1,467 @@
+{
+  "name": "final-hpo",
+  "notes": "The finalist fit. The cross-zoo selector (ADR-0106) names the winner by max mean path score over the three pinned compare artifacts, and the finalist stage trains THAT candidate \u2014 this document never restates a model name. The window is the locked calendar's final_hpo phase: fit through 2025-11-30, one embargo session, select on 2025-12-02..2026-02-28. No walkforward section: the phase declares no fold schedule, so this is one fit, not a rolling series. Nothing at or after the 2026-03-01 lockbox is readable. This document SELECTS hyperparameters and is spent by doing so; it is not a performance claim and it promotes nothing.",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe-p13-pooled.json"
+      }
+    },
+    "source_a": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      },
+      "notes": "alpaca-sip-split holds eleven P10 names and SPY; SPY is the reference every group build reads from this source under its own group universe bound."
+    },
+    "source_c": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-c",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      }
+    },
+    "source_d": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-d",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      }
+    },
+    "source_e": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-e",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      }
+    },
+    "pooled": {
+      "uses": "concat",
+      "inputs": {
+        "a": "$source_a.records",
+        "c": "$source_c.records",
+        "d": "$source_d.records",
+        "e": "$source_e.records"
+      },
+      "params": {
+        "shape": "records",
+        "provenance_waiver": "Each immutable MarketRecord already carries its source; the five symbol namespaces are disjoint and checked below.",
+        "key": "symbol",
+        "consume_inputs": true
+      },
+      "notes": "Only source groups containing the 25 selected names are read; their symbol namespaces are disjoint and source_a also supplies SPY."
+    },
+    "features": {
+      "uses": "intraday_equities-session-features",
+      "inputs": {
+        "records": "$pooled.merged",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "lookback": 20,
+        "layout": "columns",
+        "dtype": "float32",
+        "include_klines": true,
+        "cache_dir": "./pipeline_cache/p13-features-f32-kronos-v1",
+        "momentum_horizons": [
+          {
+            "width": 3,
+            "tag": "3m",
+            "cross_session": false
+          },
+          {
+            "width": 120,
+            "tag": "2h",
+            "cross_session": true
+          },
+          {
+            "width": 180,
+            "tag": "3h",
+            "cross_session": true
+          },
+          {
+            "width": 780,
+            "tag": "2s",
+            "cross_session": true
+          },
+          {
+            "width": 1950,
+            "tag": "1w",
+            "cross_session": true
+          }
+        ]
+      }
+    },
+    "scan": {
+      "uses": "intraday_equities-no-information-scan",
+      "inputs": {
+        "records": "$features.records",
+        "bars": "$features.tape",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
+        "val_start_ms": "$splits.val_start_ms",
+        "val_end_ms": "$splits.val_end_ms",
+        "label_scale": "vol",
+        "label_residual": "SPY",
+        "label_residual_self": "raw",
+        "fit_symbols": [
+          "LLY",
+          "QQQ",
+          "XLF",
+          "XLE",
+          "XLK",
+          "BAC",
+          "SMH",
+          "IWM",
+          "XBI",
+          "FCX",
+          "DAL",
+          "NRG",
+          "MET",
+          "MSTR",
+          "NOW",
+          "LULU",
+          "PANW",
+          "INTC",
+          "CIEN",
+          "LRCX",
+          "TER",
+          "BIDU",
+          "LITE",
+          "ADBE",
+          "ANET"
+        ],
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 1,
+        "score_period_ms": 1800000,
+        "estimator": "lightgbm.LGBMRegressor",
+        "estimator_params": {
+          "n_estimators": 800,
+          "learning_rate": 0.005,
+          "num_leaves": 4,
+          "max_depth": 2,
+          "min_child_samples": 2000,
+          "reg_lambda": 100.0,
+          "reg_alpha": 0.1,
+          "subsample": 0.5,
+          "subsample_freq": 1,
+          "colsample_bytree": 0.3,
+          "n_jobs": 8,
+          "random_state": 0,
+          "verbosity": -1
+        },
+        "score_symbols": [
+          "LLY",
+          "QQQ",
+          "XLF",
+          "XLE",
+          "XLK",
+          "BAC",
+          "SMH",
+          "IWM",
+          "XBI",
+          "FCX",
+          "DAL",
+          "NRG",
+          "MET",
+          "MSTR",
+          "NOW",
+          "LULU",
+          "PANW",
+          "INTC",
+          "CIEN",
+          "LRCX",
+          "TER",
+          "BIDU",
+          "LITE",
+          "ADBE",
+          "ANET"
+        ]
+      }
+    }
+  },
+  "splits": {
+    "kind": "time",
+    "train_end_ms": 1764547199000,
+    "val_start_ms": 1764633600000,
+    "val_end_ms": 1772323199000,
+    "test_end_ms": 1772323199001,
+    "notes": "configs/program-calendar.json is the authority; these are its final_hpo dates in epoch ms. train_end 2025-11-30T23:59:59Z, the 2025-12-01 embargo session, val 2025-12-02..2026-02-28T23:59:59Z. test_end sits one millisecond past val_end so the band is empty by construction: the lockbox opens at 2026-03-01 and this phase may not read it."
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        },
+        "notes": "Local sqlite beside the invoking cwd."
+      }
+    ],
+    "notes": "Excluded from identity - where metrics land is not what it computes."
+  },
+  "outputs": {
+    "run_root": "./pipeline_runs"
+  },
+  "stages": {
+    "calendar": {
+      "uses": "dskit.pipeline.program_calendar:ProgramCalendar",
+      "params": {
+        "path": "program-calendar.json",
+        "phase": "final_hpo"
+      },
+      "notes": "The locked calendar gates the phase and its asof; the splits above are its dates."
+    },
+    "select": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkSelect",
+      "params": {
+        "decision_metric": "mean",
+        "select": "max",
+        "sources": [
+          {
+            "id": "p13-pooled",
+            "path": "../pipeline_runs/p13-pooled-model-zoo-staged-2026-02-28-b017ea1b/stages/compare.json",
+            "sha256": "924e630dbb41bae0d4baae3c6538512a9bca56aaffd6d4d37604d1d3db60dfb1"
+          },
+          {
+            "id": "p14-recurrent",
+            "path": "../pipeline_runs/p14-recurrent-fusion-zoo-staged-2026-02-28-70b5a399/stages/compare.json",
+            "sha256": "12b893e4706919018ecdf15837b4c4abc4acaaeea94c6f6afa9c36d70dacfe75"
+          },
+          {
+            "id": "p15-temporal",
+            "path": "../pipeline_runs/p15-temporal-fusion-zoo-staged-2026-02-28-5e88726b/stages/compare.json",
+            "sha256": "47bfa13576dc3bf14d8e2a09617e5b2630f8252435c166d659b5495f37104738"
+          }
+        ]
+      },
+      "notes": "The max selector: argmax of each candidate's mean path score across the three completed zoos, every source pinned by SHA-256. Read-only and never promoting. Its winner is the only input that decides WHICH model the finalist stage trains."
+    },
+    "memory": {
+      "uses": "intraday_equities.modelability_study:MemoryPreflightStage",
+      "params": {
+        "memory_limit_bytes": 18253611008,
+        "groups": {
+          "a": {
+            "universe": "configs/universe-p12-a.json",
+            "sources": [
+              "source_a"
+            ]
+          },
+          "c": {
+            "universe": "configs/universe-p12-c.json",
+            "sources": [
+              "source_a",
+              "source_c"
+            ]
+          },
+          "d": {
+            "universe": "configs/universe-p13-d-selected.json",
+            "sources": [
+              "source_a",
+              "source_d"
+            ]
+          },
+          "e": {
+            "universe": "configs/universe-p13-e-selected.json",
+            "sources": [
+              "source_a",
+              "source_e"
+            ]
+          }
+        }
+      },
+      "notes": "Build four bounded P13 group caches containing the frozen P12 feature matrix, label tape, and causal five-minute OHLCVA bars. The P12 caches remain untouched because write-once cache identity changes when K-lines are added. Groups D and E use P13 cohort-only universes plus SPY so unused P12 breadth candidates cannot inflate peak memory."
+    },
+    "finalist": {
+      "uses": "intraday_equities.model_zoo:FinalistCandidate",
+      "inputs": {
+        "preflight": "$memory.passed",
+        "caches": "$memory.groups",
+        "selection": "$select.selection"
+      },
+      "params": {
+        "gate3_artifact": "../pipeline_runs/p12-g3-recovery-staged-2026-02-28-a1f293a2/stages/gate3_recovery.json",
+        "gate3_sha256": "098b21eaef6ee0260753d4f981ca2337bccae406b9efd394284d9b180ba03bd0",
+        "cache_groups": [
+          "a",
+          "c",
+          "d",
+          "e"
+        ],
+        "templates": [
+          {
+            "id": "lgbm",
+            "family": "pooled-lightgbm",
+            "representation": "pooled-tabular-native-category",
+            "feature_policy": "all frozen P12 features; symbol_code is native categorical",
+            "feature_source": "tabular",
+            "seed_policy": "fixed seed 0 with a 24-trial purged inner random search",
+            "compute_class": "cpu-medium",
+            "compute_rank": 1,
+            "enabled": true,
+            "model": {
+              "estimator": "lightgbm.LGBMRegressor",
+              "estimator_params": {
+                "n_estimators": 600,
+                "learning_rate": 0.01,
+                "num_leaves": 8,
+                "max_depth": 3,
+                "min_child_samples": 1000,
+                "reg_lambda": 100.0,
+                "reg_alpha": 0.1,
+                "subsample": 0.7,
+                "subsample_freq": 1,
+                "colsample_bytree": 0.5,
+                "n_jobs": 8,
+                "random_state": 0,
+                "verbosity": -1
+              },
+              "hpo_trials": 24,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "learning_rate": [
+                  0.003,
+                  0.01,
+                  0.03
+                ],
+                "num_leaves": [
+                  4,
+                  8,
+                  16
+                ],
+                "min_child_samples": [
+                  500,
+                  1000,
+                  2000,
+                  4000
+                ],
+                "reg_lambda": [
+                  10.0,
+                  100.0,
+                  1000.0
+                ],
+                "reg_alpha": [
+                  0.0,
+                  0.1,
+                  1.0
+                ]
+              }
+            },
+            "notes": "Space rebuilt on the 2026-09-06 research (docs/research/zoo-feature-selection-and-hpo/): learning_rate is the most tunable non-structural knob and was absent from P13's; max_depth and colsample_bytree were two of six dimensions and rank near the bottom, so they stay pinned at P13's values instead of searched. Ladders are log-spaced because that is the scale these knobs act on. 324 combinations, 24 drawn: P13's 4 draws covered 18.5 percent of the top-5-percent region and left about 3.6 of 18 knob-level cells unvisited; 24 covers 71 percent. n_estimators stays pinned \u2014 searching it against learning_rate needs the monitored early stop the torch pack has and this scan node does not."
+          },
+          {
+            "id": "torch-mlp",
+            "family": "pooled-torch-mlp",
+            "representation": "standardized-tabular-plus-symbol-embedding",
+            "feature_policy": "all frozen P12 continuous features plus learned symbol embedding",
+            "feature_source": "tabular",
+            "seed_policy": "fixed seed 0 with a 24-trial purged inner random search",
+            "compute_class": "gpu-medium",
+            "compute_rank": 2,
+            "enabled": true,
+            "model": {
+              "estimator": "dskit.pipeline.libs.torch_ts.CategoricalEmbeddingMLPRegressor",
+              "estimator_params": {
+                "hidden_size": 64,
+                "hidden_depth": 2,
+                "embedding_dim": 8,
+                "epochs": 8,
+                "lr": 0.001,
+                "weight_decay": 0.0001,
+                "batch_size": 4096,
+                "dropout": 0.1,
+                "seed": 0,
+                "standardize": true
+              },
+              "hpo_trials": 24,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "lr": [
+                  0.0003,
+                  0.001,
+                  0.003
+                ],
+                "weight_decay": [
+                  1e-05,
+                  0.0001,
+                  0.001,
+                  0.01
+                ],
+                "dropout": [
+                  0.0,
+                  0.1,
+                  0.2,
+                  0.3
+                ],
+                "epochs": [
+                  5,
+                  10,
+                  20
+                ]
+              }
+            },
+            "notes": "Capacity pinned at P13's winning width and depth, shrinkage searched. The research reads this family's 2.3x fold-variance against LightGBM as the symptom of a net fed near-duplicate columns, so the target here is variance, not mean, and weight_decay/dropout/epochs are the knobs that act on it. epochs in the space IS early stopping chosen on purged data."
+          }
+        ],
+        "path_protocol": {
+          "forecast_strategy": "direct_per_lead",
+          "horizon_weighting": "equal_asset_equal_within_asset",
+          "fit_universe": "all_gate3_passers_each_lead",
+          "score_universe": "certified_horizon_includes_lead"
+        }
+      },
+      "notes": "Builds the finalist document for whichever candidate the selector named, and refuses by name if this document declares no recipe for it. One document, no walkforward, the splits above."
+    }
+  }
+}

@@ -127,6 +127,7 @@ from dskit.pipeline.driver import (
     run_document,
     run_walk_forward,
 )
+from dskit.pipeline.conquest import HorizonConquest
 from dskit.pipeline.env import Secrets, load_env
 from dskit.pipeline.features import apply_stream_steps
 from dskit.pipeline.fitted import ApplyTransform, FittedTransform, Standardize
@@ -225,6 +226,7 @@ __all__ = [
     "FittedTransform",
     "ForeachSpec",
     "GroupBy",
+    "HorizonConquest",
     "HpoGrid",
     "Join",
     "Node",

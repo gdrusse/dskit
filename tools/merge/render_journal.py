@@ -1,6 +1,6 @@
 """Take-either merge driver for the generated child decisioning README.
 
-Git invokes this as ``render_journal.py %O %A %B`` (ADR-0107). The CSVs
+Git invokes this as ``render_journal.py %O %A %B`` (ADR-0109). The CSVs
 are the store and this file is only their projection, so a conflict here
 is noise: the driver takes the current side untouched and exits clean.
 The regeneration is deliberately POST-merge — the ledger union driver's

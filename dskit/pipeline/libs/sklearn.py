@@ -17,6 +17,20 @@ Three Nodes and one signal object, docs/25 §2 row 2:
   a :class:`~dskit.pipeline.fitted.FeatureSelector` whose rule is a
   dotted selector path (and optional inner ``estimator``).
 
+Plus one plain estimator wrapper, not a Node: :class:`ColumnSubsetEstimator`
+(ADR-0108) fits any estimator — named the same dotted way — on a declared
+``drop``/``keep`` subset of columns, so a feature MASK is an ordinary
+``estimator_params`` knob beside a candidate's hyperparameters rather than a
+second feature pipeline upstream. It forwards the surviving column names
+(as ``feature_names`` or, failing that, LightGBM's own singular
+``feature_name``) and ``categorical_feature`` to the inner estimator,
+RE-INDEXED to the surviving columns, so a native categorical such as
+``symbol_code`` stays declared correctly after masking shifts its
+position. It needs a CALLER that forwards those two kwargs into its own
+``fit`` — :class:`SklearnFit` does not, so this class reaches an
+estimator only through a caller written to do so (``intraday_equities``'s
+``NoInformationScan``, not this pack's own train node).
+
 This is a DOORWAY, not a model registry: the estimator is named by the
 document, constructed from the document's own ``estimator_params``, and
 nothing here hard-codes a family. A project's own problem-specific model
@@ -187,6 +201,7 @@ from dskit.pipeline.node import (
 )
 
 __all__ = [
+    "ColumnSubsetEstimator",
     "NODE_KINDS",
     "SklearnFit",
     "SklearnPredict",
@@ -693,6 +708,271 @@ class SklearnSignal:
         if hasattr(out, "__len__") and not isinstance(out, (str, bytes)):
             return [float(item) for item in out]
         return float(out)
+
+
+# ---------------------------------------------------------------------------
+# The column-mask estimator wrapper (ADR-0108) — a plain fit/predict object,
+# never a Node: it is named by the SAME dotted-path doorway as any other
+# estimator and lives in a document's estimator_params, never on a node kind
+# of its own.
+# ---------------------------------------------------------------------------
+
+
+def _accepts_kwarg(model, name):
+    """Report whether ``model.fit`` accepts the keyword ``name`` (or **kwargs)."""
+    import inspect
+
+    try:
+        parameters = inspect.signature(model.fit).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in parameters or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    )
+
+
+#: The two spellings a wrapped estimator's ``fit`` might declare for the
+#: surviving column-name list, tried in this order. Most sklearn-style
+#: estimators that take one spell it plural (``feature_names``, matched
+#: by this pack's own stub fixtures); LightGBM's own ``fit`` spells it
+#: SINGULAR (``feature_name``) and declares no ``**kwargs``, so trying
+#: only the plural leaves the one library this ADR targets never told
+#: the surviving names at all.
+_FEATURE_NAME_KWARGS = ("feature_names", "feature_name")
+
+
+class ColumnSubsetEstimator:
+    """Fit any estimator on a declared subset of columns (ADR-0108).
+
+    A feature mask is a MODEL knob, not a second feature pipeline: this
+    wraps any estimator named by DOTTED import path (``module.ClassName``,
+    never the ``module:Class`` colon form a node's own ``estimator`` knob
+    takes) and fits it on the columns that survive a declared ``drop`` or
+    ``keep`` list of column names — exactly one of the two, never both,
+    never neither. A ``drop``/``keep`` name absent from ``feature_names``,
+    or a mask that would leave zero surviving columns, refuses BY NAME
+    naming the offender, because a typo'd mask that quietly keeps (or
+    drops) everything reports a difference that never happened.
+
+    The surviving column names are forwarded to the wrapped estimator's
+    ``fit`` under whichever of ``feature_names`` or ``feature_name`` its
+    signature accepts (inspected, never assumed, tried in that order) —
+    LightGBM's own ``fit`` spells it singular and takes no ``**kwargs``,
+    so trying the plural alone would silently forward nothing to the one
+    library this ADR is written for. ``categorical_feature`` is forwarded
+    the same inspected way, subset and RE-INDEXED to the surviving
+    columns, so a native categorical such as ``symbol_code`` stays
+    declared categorical at its correct, shifted position instead of
+    silently pointing at whatever column now sits where it used to.
+    ``predict`` projects with the same column indices ``fit`` chose, and
+    refuses a matrix whose column COUNT has changed since fit.
+
+    This class expects its CALLER to forward ``feature_names`` (and,
+    where one exists, ``categorical_feature``) into ``fit`` — it is a
+    plain estimator, not a node, and arranges no forwarding of its own.
+    This pack's own :class:`SklearnFit` does NOT do this: ``run_train``
+    calls ``estimator.fit(matrix, targets)`` with neither kwarg, so
+    naming this class as ``SklearnFit``'s ``estimator`` refuses
+    immediately (the mask cannot be verified with no ``feature_names``).
+    The path that DOES forward both — by the same signature inspection
+    this class itself uses — is ``intraday_equities``'s
+    ``NoInformationScan``/``_fit_estimator``
+    (``children/intraday_equities/intraday_equities/nodes.py:3160-3193``),
+    which is what P16
+    (``children/intraday_equities/configs/run-p16-feature-mask-zoo.json``)
+    actually runs through. Teaching ``SklearnFit`` to forward them too is
+    a named follow-up, not done here.
+
+    Parameters
+    ----------
+    estimator : str
+        Dotted import path of the wrapped estimator class, e.g.
+        ``"lightgbm.LGBMRegressor"``.
+    drop : list of str, optional
+        Column names to remove; every survivor keeps its ORIGINAL
+        column order. Exactly one of ``drop``/``keep`` must be given.
+    keep : list of str, optional
+        Column names to keep; every other column is removed. Exactly
+        one of ``drop``/``keep`` must be given.
+    **estimator_params
+        Forwarded verbatim to the wrapped estimator's constructor.
+
+    Examples
+    --------
+    Drop two stale lag columns and keep a trailing native-categorical
+    column declared at its ORIGINAL (pre-mask) index::
+
+        model = ColumnSubsetEstimator(
+            "lightgbm.LGBMRegressor",
+            drop=["ret_lag_5", "ret_lag_6"],
+            n_estimators=50,
+        )
+        model.fit(
+            x, y,
+            feature_names=["ret_lag_5", "ret_lag_6", "vol_5m", "symbol_code"],
+            categorical_feature=[3],
+        )
+        model.predict(x)
+        # -> one prediction per row, fit on ["vol_5m", "symbol_code"]
+        # alone, with categorical_feature=[1] (symbol_code's NEW index)
+        # reaching the wrapped LightGBM
+    """
+
+    def __init__(self, estimator, drop=None, keep=None, **estimator_params):
+        self.estimator = estimator
+        self.drop = drop
+        self.keep = keep
+        self.estimator_params = dict(estimator_params)
+        self._indices = None
+        self._model = None
+        self._n_columns = None
+
+    def fit(self, x, y, feature_names=None, categorical_feature=None):
+        """Fit the wrapped estimator on the declared column subset.
+
+        Parameters
+        ----------
+        x : numpy.ndarray
+            Rows x full candidate columns, in ``feature_names`` order.
+        y : numpy.ndarray
+            Targets, one per row.
+        feature_names : list of str, optional
+            ``x``'s column names, in order. Required whenever ``drop``
+            or ``keep`` is declared — the mask cannot be verified by
+            name without them.
+        categorical_feature : list of int, optional
+            Indices into ``x`` (BEFORE masking) naming native
+            categorical columns. Re-indexed to the surviving columns
+            and forwarded to the wrapped estimator when its ``fit``
+            accepts the keyword; an index the mask removed is simply
+            not forwarded — there is no column left to declare.
+
+        Returns
+        -------
+        ColumnSubsetEstimator
+            ``self``, fitted.
+
+        Raises
+        ------
+        ValueError
+            Neither or both of ``drop``/``keep`` were declared; ``drop``
+            or ``keep`` is not a non-empty list of distinct, non-empty
+            column-name strings; a ``drop``/``keep`` name is absent from
+            ``feature_names``; the mask leaves zero surviving columns; a
+            mask is declared and ``feature_names`` is ``None``; or
+            ``estimator`` cannot be imported, names no ``fit`` method, or
+            rejects ``estimator_params``.
+        """
+        has_drop = self.drop is not None
+        has_keep = self.keep is not None
+        if has_drop == has_keep:
+            raise ValueError(
+                "ColumnSubsetEstimator requires exactly one of 'drop' or "
+                f"'keep', got drop={self.drop!r} keep={self.keep!r}"
+            )
+        knob, raw_mask = ("drop", self.drop) if has_drop else ("keep", self.keep)
+        # Reuse the ONE list-of-column-names rule this file already owns
+        # (``features``' own validator) rather than writing a second one:
+        # a duplicate name was silently deduped by a bare ``set()`` before,
+        # which is exactly the drift CLAUDE.md calls a scheduled bug.
+        problems = _feature_list_problems(knob, raw_mask)
+        if problems:
+            raise ValueError("; ".join(problems))
+        mask_names = list(raw_mask)
+        if feature_names is None:
+            raise ValueError(
+                f"ColumnSubsetEstimator.{knob}={mask_names} is declared but "
+                "fit was called with feature_names=None — the mask cannot "
+                "be verified by name without them"
+            )
+        names = list(feature_names)
+        if len(names) != int(x.shape[1]):
+            raise ValueError(
+                f"feature_names has {len(names)} name(s) for a design "
+                f"matrix of {int(x.shape[1])} column(s)"
+            )
+        unknown = [name for name in mask_names if name not in names]
+        if unknown:
+            raise ValueError(
+                f"{knob} names {unknown} are not present in feature_names {names}"
+            )
+        if has_drop:
+            drop_set = set(mask_names)
+            indices = [i for i, name in enumerate(names) if name not in drop_set]
+        else:
+            keep_set = set(mask_names)
+            indices = [i for i, name in enumerate(names) if name in keep_set]
+        if not indices:
+            raise ValueError(
+                f"{knob}={mask_names} leaves zero surviving columns of {names}"
+            )
+
+        where = "ColumnSubsetEstimator"
+        path_problems = _import_path_problems(
+            "estimator", self.estimator, example="lightgbm.LGBMRegressor"
+        )
+        if path_problems:
+            raise ValueError(f"{where}: {'; '.join(path_problems)}")
+        est_cls = _import_estimator(self.estimator, where)
+        inner = _construct(
+            est_cls, self.estimator_params, self.estimator, where, "estimator_params"
+        )
+
+        fit_kwargs = {}
+        for kwarg in _FEATURE_NAME_KWARGS:
+            if _accepts_kwarg(inner, kwarg):
+                fit_kwargs[kwarg] = [names[i] for i in indices]
+                break
+        if categorical_feature is not None and _accepts_kwarg(
+            inner, "categorical_feature"
+        ):
+            new_index = {old: new for new, old in enumerate(indices)}
+            fit_kwargs["categorical_feature"] = [
+                new_index[old] for old in categorical_feature if old in new_index
+            ]
+
+        inner.fit(x[:, indices], y, **fit_kwargs)
+        self._indices = indices
+        self._model = inner
+        self._n_columns = int(x.shape[1])
+        return self
+
+    def predict(self, x):
+        """Predict with the fitted estimator, on the fitted column subset.
+
+        Parameters
+        ----------
+        x : numpy.ndarray
+            Rows x the SAME full candidate columns ``fit`` saw, in the
+            same order.
+
+        Returns
+        -------
+        numpy.ndarray
+            One prediction per row.
+
+        Raises
+        ------
+        RuntimeError
+            Called before ``fit``.
+        ValueError
+            ``x`` does not carry the same number of columns ``fit`` saw.
+            This checks column COUNT only: a matrix with the right width
+            whose columns were reordered or renamed since ``fit`` is
+            indistinguishable from a correct one by shape alone, and is
+            NOT caught here — only a ``feature_names`` mismatch supplied
+            at ``fit`` time can catch that kind of corruption.
+        """
+        if self._model is None:
+            raise RuntimeError("ColumnSubsetEstimator is not fitted")
+        got = int(x.shape[1])
+        if got != self._n_columns:
+            raise ValueError(
+                f"ColumnSubsetEstimator.predict: x has {got} column(s), fit "
+                f"saw {self._n_columns} — the design matrix's shape has "
+                "changed since fit"
+            )
+        return self._model.predict(x[:, self._indices])
 
 
 # ---------------------------------------------------------------------------

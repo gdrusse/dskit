@@ -18,6 +18,7 @@ from intraday_equities.modelability_study import asset_walk_document
 __all__ = [
     "DirectPathScore",
     "EmpiricalSelectRegressor",
+    "FinalistCandidate",
     "Gate3ZooCandidates",
     "PooledDirectPathScore",
     "PooledGate3ZooCandidates",
@@ -52,6 +53,10 @@ _TEMPLATE_FIELDS = frozenset(
         "enabled",
         "prerequisite",
         "model",
+        # Repo standard: `notes` is legal on every config object and the
+        # canonical hash strips it at every level, so a template may carry
+        # the WHY of its space without moving the identity it declares.
+        "notes",
     }
 )
 _MODEL_FIELDS = frozenset(
@@ -1165,8 +1170,13 @@ def _pooled_document(source, template, eligible, caches, candidate_id):
         },
     }
     obj["pipeline"] = pipeline
-    obj["walkforward"]["objective"] = "$path.metrics.path_score"
-    obj["walkforward"]["select"] = "max"
+    # A zoo source carries a walk-forward and the candidate inherits it. A
+    # FINALIST source carries none (`final_hpo` declares no fold schedule),
+    # and `to_obj` omits the section rather than emitting a null, so its
+    # absence is the single fit the calendar phase asks for.
+    if "walkforward" in obj:
+        obj["walkforward"]["objective"] = "$path.metrics.path_score"
+        obj["walkforward"]["select"] = "max"
     obj["name"] = candidate_id
     obj["notes"] = (
         "ADR-0104: session-local one-minute OHLCV enters a recurrent tower and "
@@ -1279,8 +1289,32 @@ class PooledGate3ZooCandidates(Stage):
             return ["caches must materialize as an object"]
         return []
 
-    def run(self, ctx, inputs):
-        """Pin eligibility and write one candidate document per template."""
+    def resolve(self, ctx, inputs):
+        """Pinned eligibility and verified caches, with the pooled geometry.
+
+        Shared with :class:`FinalistCandidate`, which materializes one
+        document rather than many: the Gate-3 pin, the cache membership
+        rules and the lead weighting are the same facts for both, and a
+        second copy of them would drift.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+            The stage context; ``document`` supplies the residual reference.
+        inputs : dict
+            The passed ``preflight`` gate and the ``caches`` it verified.
+
+        Returns
+        -------
+        tuple
+            ``(gate3_path, eligible, caches, horizon, weights)``.
+
+        Raises
+        ------
+        ValueError
+            An absent or incomplete cache group, an asset that belongs to
+            none or several of them, or a first group missing the residual.
+        """
         gate3_path, gate3 = _read_pinned_json(
             ctx.source_path,
             self.params["gate3_artifact"],
@@ -1312,6 +1346,11 @@ class PooledGate3ZooCandidates(Stage):
             raise ValueError("the first pooled cache does not contain the residual reference")
         horizon = max(row["horizon"] for row in eligible)
         weights = _pooled_horizon_weights(eligible)
+        return gate3_path, eligible, caches, horizon, weights
+
+    def run(self, ctx, inputs):
+        """Pin eligibility and write one candidate document per template."""
+        gate3_path, eligible, caches, horizon, weights = self.resolve(ctx, inputs)
         candidates = []
         root = os.path.join(ctx.artifact_dir, "candidate-documents")
         for template in self.params["templates"]:
@@ -1347,6 +1386,107 @@ class PooledGate3ZooCandidates(Stage):
                 ],
                 "eligible_count": len(eligible),
                 "candidate_count": len(candidates),
+            },
+        }
+
+
+class FinalistCandidate(PooledGate3ZooCandidates):
+    """Materialize the ONE finalist document the cross-zoo selector named.
+
+    The `final_hpo` phase fits a single finalist rather than a field, so
+    this subclass changes exactly two things about its parent and inherits
+    everything else: WHICH template is built (the one the selector named,
+    never a name this document restates) and HOW MANY (one).
+
+    The document it emits carries no walk-forward, because the phase
+    declares no fold schedule: its window is the source document's own
+    ``splits`` block, which is the calendar's finalist cut. Selection is
+    therefore not re-litigated here and the window is not re-derived here.
+
+    A selector naming a candidate this document holds no recipe for is a
+    REFUSAL, by name and with the recipes it does hold — the alternative is
+    training whatever happens to be first and calling it the winner.
+
+    Parameters
+    ----------
+    params : dict
+        :class:`PooledGate3ZooCandidates`' block exactly: the pinned Gate-3
+        artifact and digest, the ordered cache groups, the templates (one
+        per candidate this document can train), and the path protocol.
+
+    Examples
+    --------
+    Construct from a complete config-owned parameter block::
+
+        params = document.stages["finalist"].params
+        stage = FinalistCandidate("finalist", params)
+    """
+
+    outputs = ("candidate", "eligibility", "provenance")
+
+    def validate_inputs(self, inputs):
+        """Require the memory gate, its caches, and the selector's choice."""
+        if not isinstance(inputs, dict) or set(inputs) != {
+            "preflight",
+            "caches",
+            "selection",
+        }:
+            return ["inputs must contain exactly preflight, caches and selection"]
+        if inputs["preflight"] is not True:
+            return ["preflight must pass before finalist materialization"]
+        if not isinstance(inputs["caches"], dict):
+            return ["caches must materialize as an object"]
+        selection = inputs["selection"]
+        if not isinstance(selection, dict):
+            return ["selection must be the selector's object"]
+        if not _string(selection.get("candidate")):
+            return ["selection.candidate must name the selected candidate"]
+        if selection.get("auto_promote") is not False:
+            return ["selection.auto_promote must be False — this phase never promotes"]
+        return []
+
+    def run(self, ctx, inputs):
+        """Write the selected candidate's finalist document, and only it."""
+        gate3_path, eligible, caches, horizon, weights = self.resolve(ctx, inputs)
+        chosen = inputs["selection"]["candidate"]
+        recipes = {
+            f"{template['id']}-pooled-h{horizon:02d}": template
+            for template in self.params["templates"]
+        }
+        template = recipes.get(chosen)
+        if template is None:
+            raise ValueError(
+                f"the selector named {chosen!r} and this document declares no "
+                f"finalist recipe for it; declared: {sorted(recipes)}"
+            )
+        if not template["enabled"]:
+            raise ValueError(
+                f"the selector named {chosen!r} and its template is disabled "
+                f"pending: {template['prerequisite']}"
+            )
+        document = _pooled_document(ctx.document, template, eligible, caches, chosen)
+        path = os.path.join(ctx.artifact_dir, "finalist-document", chosen + ".json")
+        _write(path, document)
+        metadata = _metadata(template, chosen, "pooled-gate3", horizon, weights)
+        return {
+            "candidate": {**metadata, "path": path},
+            "eligibility": eligible,
+            "provenance": {
+                "gate3_artifact": gate3_path,
+                "gate3_sha256": self.params["gate3_sha256"],
+                "selected_by": inputs["selection"].get("decision_metric"),
+                "selection_direction": inputs["selection"].get("select"),
+                "declared_recipes": sorted(recipes),
+                "caches": [
+                    {
+                        "group": group,
+                        "cache": cache["cache"],
+                        "manifest_sha256": cache["manifest_sha256"],
+                        "universe_sha256": cache["universe_sha256"],
+                    }
+                    for group, cache in caches.items()
+                ],
+                "eligible_count": len(eligible),
             },
         }
 

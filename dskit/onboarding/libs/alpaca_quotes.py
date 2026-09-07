@@ -31,7 +31,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 from ..base import AssetError, MODES, parse_utc
-from ..connector import PROTOCOL, Connector
+from ..connector import PROTOCOL, Connector, backoff
 from .alpaca import DEFAULT_KEY_ENV, DEFAULT_SECRET_ENV, resolve_credentials
 
 __all__ = [
@@ -70,6 +70,9 @@ _FEEDS = ("sip", "iex")
 _ENDPOINT = "https://data.alpaca.markets/v2/stocks/quotes"
 _RETRY_CODES = (429, 500, 502, 503, 504)
 _MAX_ATTEMPTS = 8
+#: This pack starts wider than ``connector.DEFAULT_BACKOFF_S``: the vendor
+#: throttles a quote pull hard enough that half a second is not a pause.
+_BACKOFF_S = 2.0
 _UTC = timezone.utc
 _MINUTE_MS = 60000
 
@@ -482,7 +485,6 @@ class AlpacaQuoteMinutesConnector(Connector):
 
     def _request(self, url, headers, pacer):
         """One paced, retried GET returning the decoded JSON body."""
-        delay = 2.0
         for attempt in range(_MAX_ATTEMPTS):
             pacer.wait()
             try:
@@ -498,8 +500,7 @@ class AlpacaQuoteMinutesConnector(Connector):
             except (urllib.error.URLError, TimeoutError, OSError):
                 if attempt == _MAX_ATTEMPTS - 1:
                     raise
-            time.sleep(delay)
-            delay = min(delay * 2.0, 60.0)
+            time.sleep(backoff(attempt + 1, _BACKOFF_S))
         raise AssetError(["Alpaca quote request exhausted its retries"])
 
     def _pages(self, symbol, start, end, knobs, headers, pacer):

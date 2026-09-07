@@ -48,10 +48,10 @@ from decimal import Decimal
 # Re-exported for sibling modules (not exported): one checker idiom across
 # assets, onboarding and production.
 from dskit.assets.base import (  # noqa: F401
-    _check_dict,
-    _check_str,
-    _check_unknown,
-    _raise_if,
+    check_dict as _check_dict,
+    check_str as _check_str,
+    check_unknown as _check_unknown,
+    raise_if as _raise_if,
 )
 from dskit.pipeline.base import import_ref, is_class_ref
 from dskit.pipeline.node import reject_unknown_params  # noqa: F401  (re-export)

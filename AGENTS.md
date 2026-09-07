@@ -89,7 +89,7 @@ Wrap the *library*, generically — never a project's use of it.
 
 - **Start:** pull from the remote first (automated by the `SessionStart` hook in
   `.cursor/hooks.json`).
-- **Parallel merges (ADR-0107):** the child ledgers, the generated child
+- **Parallel merges (ADR-0109):** the child ledgers, the generated child
   decisioning READMEs, and `docs/RE-ENTRY.md` merge through the drivers in
   `tools/merge/` — run `tools/merge/install.sh` once per clone (and again
   after the repo moves; the configured paths are absolute). A refused ledger

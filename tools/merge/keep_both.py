@@ -1,6 +1,6 @@
 """Keep-both merge driver for ``docs/RE-ENTRY.md``.
 
-Git invokes this as ``keep_both.py %O %A %B`` (ADR-0107). Every ``/wrap``
+Git invokes this as ``keep_both.py %O %A %B`` (ADR-0109). Every ``/wrap``
 rewrites the re-entry note whole, so two parallel lanes always conflict
 and hand resolution silently drops one side's true session record. The
 driver keeps both — ours, a visible marker, theirs — and the next

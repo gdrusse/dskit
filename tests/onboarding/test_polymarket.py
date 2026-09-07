@@ -992,8 +992,9 @@ def test_retry_after_nan_is_unusable_and_falls_back(conn):
     # float("nan") parses, and min(max(nan, 0.0), cap) is still NaN — so
     # without the guard the wait reached time.sleep as NaN: a ValueError,
     # neither capped nor an AssetError. Unusable means the exponential
-    # backoff, exactly like a non-numeric header.
-    assert polymarket._retry_after({"Retry-After": "nan"}) is None
+    # backoff, exactly like a non-numeric header. This pack's guard is now
+    # `connector.retry_after`, the one owner of the rule (ADR-0101).
+    assert polymarket.retry_after({"Retry-After": "nan"}, 0.5) == 0.5
     queue = [_http_error(429, {"Retry-After": "nan"}), []]
 
     def flaky(url, params):

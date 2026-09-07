@@ -1,4 +1,4 @@
-"""ADR-0107 merge drivers — union validation, keep-both, render no-op.
+"""ADR-0109 merge drivers — union validation, keep-both, render no-op.
 
 The drivers run as git low-level merge commands (``<script> %O %A %B``);
 these tests drive the same entry points in-process, pin the

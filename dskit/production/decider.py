@@ -55,7 +55,7 @@ from dskit.pipeline.document import (
 # function is never repeated across modules): the collapsed-record shape
 # a replayed verdict must refuse, and the run's recorded-winner spelling.
 # Review debt for §9.1: export both publicly from driver.py.
-from dskit.pipeline.driver import SubgraphRunner, _is_summary, _winner_names
+from dskit.pipeline.driver import SubgraphRunner, is_summary, winner_names
 from dskit.pipeline.node import (
     DEFAULT_NODE_KINDS,
     SERVING_EFFECTS,
@@ -328,7 +328,7 @@ class RecordedOutputs(Node):
             return problems
         for name, value in recorded.items():
             _check_str(problems, "outputs: output name", name)
-            if _is_summary(value):
+            if is_summary(value):
                 problems.append(
                     f"outputs.{name}: {value!r} is a summarised (spent) record — a verdict "
                     "is replayed from its recorded outputs or refused, never recomputed"
@@ -544,7 +544,7 @@ def _planned(document, registry=None):
 
 def _apply_winners(the_plan, run_dir, params):
     """Apply every search node's recorded winner into ``params`` through the driver's own rule."""
-    _produced, recorded = _winner_names()
+    _produced, recorded = winner_names()
     for key in the_plan.order:
         if the_plan.role_of(key) != _SEARCH_ROLE:
             continue

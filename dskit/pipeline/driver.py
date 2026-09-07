@@ -112,8 +112,10 @@ __all__ = [
     "WalkForwardRunResult",
     "aggregate_folds",
     "apply_param_override",
+    "is_summary",
     "run_document",
     "run_walk_forward",
+    "winner_names",
     "write_walkforward_summary",
 ]
 
@@ -979,14 +981,39 @@ def _find_prev_run(run_root, name, own_dir):
     return max(candidates, key=lambda c: (c[0], c[1]))[2]
 
 
-def _is_summary(value):
-    """Return whether ``value`` is ``_summarize``'s collapsed form."""
+def is_summary(value):
+    """Return whether ``value`` is ``_summarize``'s collapsed form.
+
+    Public because a released stream's collapsed form is read OUTSIDE this
+    module — ``dskit.production``'s decider has to tell a summarized carry
+    from a real one before it re-executes a node — and a reader that spelled
+    the shape itself would drift from ``_summarize`` the moment either moved.
+    The private spelling stays as an alias: it is what this module and its
+    suite already call.
+
+    Parameters
+    ----------
+    value : object
+        Any carried value.
+
+    Returns
+    -------
+    bool
+        True only for the exact ``{"type", "len"}`` form ``_summarize``
+        writes, with a known type and an integer length.
+    """
     return (
         isinstance(value, dict)
         and set(value) == {"type", "len"}
         and value.get("type") in _SUMMARY_TYPES
         and isinstance(value.get("len"), int)
     )
+
+
+#: The private spellings this module shipped with. Kept as aliases so a
+#: caller written against them — including this package's own pinned
+#: suite — is not rewritten by making the rule public.
+_is_summary = is_summary
 
 
 def _too_big_to_carry(value):
@@ -1000,7 +1027,7 @@ def _too_big_to_carry(value):
 
 def _should_release(value):
     """Judge whether a spent port is a record stream, not in-process state."""
-    if _is_summary(value):
+    if is_summary(value):
         return False
     return isinstance(value, (list, tuple)) and len(value) >= _RELEASE_MIN_LEN
 
@@ -1043,7 +1070,7 @@ def _release_spent(the_plan, run, resolved):
 
 
 def _summarize(value):
-    if _is_summary(value):
+    if is_summary(value):
         return value
     if isinstance(value, bool) or value is None:
         return value
@@ -1082,7 +1109,7 @@ def _carryable(value):
     streams and already-released summaries are refused without dumps
     (ADR-0048).
     """
-    if _is_summary(value) or _too_big_to_carry(value):
+    if is_summary(value) or _too_big_to_carry(value):
         return None, False
     text = _json_text(value)
     if text is None or len(text) > _CARRY_LIMIT:
@@ -1122,11 +1149,11 @@ def _collect_flags(order, node_outputs):
 #: WINNER ITSELF is first; the rest merely describe it. This is the one
 #: owner of both spellings — the record writes through it, and every
 #: reader of either name (the driver's own apply step included) asks
-#: :func:`_winner_names`, so no site can be missed when it is edited.
+#: :func:`winner_names`, so no site can be missed when it is edited.
 _SEARCH_WINNER_FIELDS = (("best_params", "winner"), ("best_score", "winner_score"))
 
 
-def _winner_names():
+def winner_names():
     """Name the winner field, as ``(produced, recorded)``.
 
     The summary's readers ask here instead of re-spelling
@@ -1142,6 +1169,10 @@ def _winner_names():
         run's record carries it as.
     """
     return _SEARCH_WINNER_FIELDS[0]
+
+#: The private spelling, kept as an alias for the same reason
+#: :data:`_is_summary` is.
+_winner_names = winner_names
 
 
 def _search_record(seam, outputs):
@@ -1660,7 +1691,7 @@ def _run_one_node(attempt, key, spec, the_plan, ctx, run, instances):
     # Recorded BEFORE the winner is applied (ADR-0043): a winner-flip
     # refusal must still report the winner that caused it.
     run.search_meta[key] = _search_record(attempt.seam, out)
-    produced, _ = _winner_names()
+    produced, _ = winner_names()
     winner = out.get(produced)
     if winner:
         attempt.winner_reran, attempt.winner_seconds = attempt.seam.apply_winner(
@@ -2335,7 +2366,7 @@ def _winner_identity(meta):
         identifies it, or None when it was dropped and so cannot be
         compared with any other fold's.
     """
-    produced, recorded = _winner_names()
+    produced, recorded = winner_names()
     if recorded in meta:
         return True, _json_text(meta[recorded])
     if produced in meta.get("winner_dropped", ()):
@@ -2522,7 +2553,7 @@ def _winner_cell(meta):
     Its canonical JSON, a named drop when JSON could not hold it, or a
     dash for no winner at all.
     """
-    produced, recorded = _winner_names()
+    produced, recorded = winner_names()
     if recorded in meta:
         return f"`{_md_cell(_json_text(meta[recorded]))}`"
     if produced in meta.get("winner_dropped", ()):

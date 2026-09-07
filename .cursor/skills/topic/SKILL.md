@@ -8,7 +8,7 @@ description: >-
   → record → memo.
 ---
 
-# Work one topic end to end (ADR-0108)
+# Work one topic end to end (ADR-0110)
 
 One kebab-case slug names the whole effort. Every artifact links by that
 name: the research folder, the journal rows, the run directory, the

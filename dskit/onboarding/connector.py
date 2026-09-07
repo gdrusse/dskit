@@ -37,6 +37,14 @@ Unknown types are SKIPPABLE — the forward-compat valve: a newer
 connector can emit types an older platform ignores. Unknown KEYS on a
 known type are refused (default-deny) — a typo is an error.
 
+Retry: a pull's waits are policy, not per-pack taste, so this module
+owns them too (ADR-0101). :data:`MAX_BACKOFF_S` is the one ceiling and
+:func:`backoff` / :func:`retry_after` are the one rule; a connector pack
+imports them and spells no wait of its own. This is ADR-0101's narrow
+first step; its full graduation moves the whole policy — jitter, a token
+budget, the ambiguous-write rule — into onboarding for
+``dskit.production.resilience`` to re-export.
+
 Secrets: ``spec()`` flags which knobs are secret. A secret knob's value
 is the NAME of an environment variable, resolved by the connector inside
 ``check``/``read`` — secret material never enters config, stores, or
@@ -49,6 +57,7 @@ from __future__ import annotations
 
 import abc
 import importlib
+import math
 import re
 
 from .base import (
@@ -64,15 +73,18 @@ from .codec import storage_problems
 
 __all__ = [
     "Connector",
+    "DEFAULT_BACKOFF_S",
     "DEFAULT_CONNECTORS",
     "MAX_BACKOFF_S",
     "MESSAGE_TYPES",
     "MODES",
     "PROTOCOL",
     "RECORD_KINDS",
+    "backoff",
     "check_config",
     "check_message",
     "resolve_connector",
+    "retry_after",
 ]
 
 #: The envelope protocol this platform speaks. A connector emitting a
@@ -90,6 +102,11 @@ RECORD_KINDS = ("observation", "forecast")
 #: exponential backoff and a server-sent ``Retry-After`` included. A hostile
 #: or buggy server may ask for hours; a pull never grants more than this.
 MAX_BACKOFF_S = 60.0
+
+#: The FIRST wait, in seconds, an exponential backoff starts from. One
+#: name for the base four packs share; ``predexon`` reads its own from
+#: config and ``alpaca_quotes`` starts wider, and both pass ``base_s``.
+DEFAULT_BACKOFF_S = 0.5
 
 #: Registered connector kinds -> import references. Tier-2 connector
 #: packs add entries here; a project's own connectors use
@@ -385,3 +402,127 @@ def resolve_connector(ref):
              "contract (spec/check/discover/read) is the seam"]
         )
     return cls
+
+
+# -- the retry policy: one backoff, one Retry-After (ADR-0101) ---------------
+
+#: The header a server sends to ask for a specific wait. Matched
+#: case-insensitively: ``HTTPError.headers`` normalises case and a plain
+#: mapping does not, and the three packs this replaces looked it up three
+#: different ways.
+_RETRY_AFTER_HEADER = "retry-after"
+
+
+def backoff(attempt, base_s=DEFAULT_BACKOFF_S):
+    """Seconds to wait after the ``attempt``-th failure — doubling, capped.
+
+    The one exponential every pack shares: ``base_s`` doubled once per
+    failure so far, never above :data:`MAX_BACKOFF_S`. The six copies this
+    replaces all drew the same curve and disagreed only on how they
+    INDEXED it — three counted attempts from zero, three from one — so the
+    ONE-based convention wins, matching both the ``after N attempt(s)``
+    message a pack already reports and ``dskit.production.resilience``,
+    which the full graduation of ADR-0101 would merge this into.
+
+    Two knobs are deliberately absent. There is no jitter: none of the six
+    had any, so adding it would change every pack's waits — it belongs to
+    the full graduation, not to this step. And there is no ``cap_s``: one
+    ceiling for every wait is what :data:`MAX_BACKOFF_S` means.
+
+    Parameters
+    ----------
+    attempt : int
+        The ONE-based number of the attempt that just failed, so the first
+        wait is ``base_s`` itself.
+    base_s : float, optional
+        The first wait, in seconds, ``>= 0``; defaults to
+        :data:`DEFAULT_BACKOFF_S`. A pack that starts wider, or reads its
+        base from config, passes its own.
+
+    Returns
+    -------
+    float
+        Seconds in ``[0, MAX_BACKOFF_S]``.
+
+    Raises
+    ------
+    AssetError
+        If ``attempt`` is not an integer of one or more. Refusing zero is
+        the point of the check: the doubling would HALVE the first wait
+        rather than fail, which is exactly the silent drift one owner
+        exists to prevent.
+
+    Examples
+    --------
+    The default base, doubling until the ceiling binds::
+
+        [backoff(n) for n in (1, 2, 3, 99)]
+        # -> [0.5, 1.0, 2.0, 60.0]
+    """
+    if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+        raise AssetError(
+            ["backoff attempt must be an int >= 1 — the ONE-based number of "
+             f"the attempt that just failed — got {attempt!r}"]
+        )
+    # Doubled by repeated multiplication, not ``base_s * 2 ** (attempt - 1)``:
+    # a long-running pull's attempt count would overflow that exponent long
+    # before it changed an answer the ceiling has already pinned.
+    wait = float(base_s)
+    for _ in range(attempt - 1):
+        if wait >= MAX_BACKOFF_S:
+            break
+        wait *= 2
+    return min(wait, MAX_BACKOFF_S)
+
+
+def retry_after(headers, fallback):
+    """Seconds a server's ``Retry-After`` asks for — ``fallback`` when unusable.
+
+    Only a NUMERIC ``Retry-After`` is honoured, floored at zero and capped
+    at :data:`MAX_BACKOFF_S`, so no server parks a pull for hours; the
+    HTTP-date form reads as unusable, as it did in all three copies.
+
+    Where the copies disagreed, the safe reading wins: a ``NaN`` header is
+    unusable and falls back. ``polymarket`` already guarded it, while
+    ``kalshi`` and ``predexon`` turned it into a zero-second wait — an
+    immediate retry against a server that had just asked for one — because
+    ``max(0.0, nan)`` is ``0.0``. Those two now wait the ordinary backoff
+    (ADR-0101; the one behaviour change of that step).
+
+    Parameters
+    ----------
+    headers : mapping or None
+        The response headers. Anything without an ``items()`` — ``None``
+        included — is read as carrying no header, so a caller never has to
+        guard the shape a failed request handed it.
+    fallback : float
+        Seconds to use when no usable header is present. Callers pass
+        :func:`backoff` for the attempt, so an absent, malformed or
+        unusable header lands on the ordinary exponential.
+
+    Returns
+    -------
+    float
+        The capped header value, else ``fallback`` unchanged.
+
+    Examples
+    --------
+    A server's own answer, and the fallback when it gives none::
+
+        retry_after({"Retry-After": "3"}, backoff(1))   # 3.0
+        retry_after({}, backoff(1))                     # 0.5
+    """
+    items = getattr(headers, "items", None)
+    if not callable(items):
+        return fallback
+    for name, value in items():
+        if str(name).strip().lower() != _RETRY_AFTER_HEADER:
+            continue
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            return fallback
+        if math.isnan(seconds):
+            return fallback
+        return min(max(seconds, 0.0), MAX_BACKOFF_S)
+    return fallback

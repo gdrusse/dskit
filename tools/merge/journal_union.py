@@ -1,7 +1,7 @@
 """Validated-union merge driver for the append-only journal CSV ledgers.
 
 Git invokes this as ``journal_union.py %O %A %B`` (base, ours, theirs)
-for ``actions.csv`` and ``path.csv`` (ADR-0107). Two lanes that each
+for ``actions.csv`` and ``path.csv`` (ADR-0109). Two lanes that each
 appended rows under the in-repo ``flock`` still conflict textually in
 git; the union is accepted only when nothing was edited or deleted on
 either side, ids stay unique, and the header is unchanged — every other
