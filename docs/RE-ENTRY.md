@@ -1,5 +1,59 @@
 # Re-entry
 
+## Current wrap: the live MIO design proposal, measured not assumed (2026-09-07)
+
+Branch `claude/mio-implementation-xuhmtm`, merged to `main`. **Docs only —
+no code, no ADR yet.**
+
+**Landed.** `docs/plans/2026-09-intraday-equities-mio.md` — the design for
+`intraday_equities`' capital step: a per-tick fractional-Kelly MILP over joint
+net-return scenarios carrying the ADR-0088 HFDR row, a Bertsimas-Sim robust
+term on `mu`, an R-U CVaR cap and integer share lots.
+
+**The three findings are measured in-container** (pyomo 6.10.1 + HiGHS), not
+assumed, and each one changed the design:
+
+- **Envelope.** n=40, S=256, K=32, integer shares, gap=0 → worst 3.0s against
+  a 10s budget. S=512 breaks it at 13.6s, so `S <= 256` is a config ceiling.
+- **K=32 is exact** — matches a K=256 reference to 100% of log growth and
+  picks identical names. `pmquant.DEFAULT_N_TANGENTS = 128` is 2.4x the cost
+  for no gain.
+- **The cheap surrogate loses.** CVaR-only linear is 4x faster but captures
+  76-87% of the exact program's log growth and allocated *nothing* on one seed
+  of eight; a MAD term was catastrophically *slower*. Row count is a bad proxy
+  for MILP difficulty. So the exact-log tangent form stays.
+
+**Opportunity cost** had never been treated here. Three mechanisms: a
+bid-price reservation hurdle (Talluri-van Ryzin) that validates for free
+against the solver's own budget dual, a no-trade band, and Perold
+counterfactual logging of cleared-but-unfunded candidates.
+
+**Placement.** `ScenarioUtilitySolve` graduates to
+`dskit/pipeline/libs/pyomo.py`, with `pmquant.mio` refactored onto it in the
+same change so `utility_at`/`wealth_bounds` keep one home. Only the equity
+domain constraints stay child-side. No Julia — measured build is 0.10-0.15s.
+
+**State.** ruff clean. `tests/pipeline` 2042 passed, 1 failed — the known
+uid-0 case that fails on pristine `main` too. `tests/pipeline_libs` 2588
+passed, 25 failed, all but that one from `optuna`/`sklearn` absent in this
+container (`[all]` extras not installed). No regression: the change touches
+one markdown file.
+
+**Open — owner.**
+
+- **ADR-0109 must be written and approved before any code.** The proposal is
+  not an approval.
+- Ten owner decisions in §10, none inventable: `q` (and calibrating it
+  against realized hit rates, not a nominal FDR level), `U_pi` geometry
+  (A18044), the Kelly-fraction schedule against contributions, `lambda_t`,
+  and the risk knobs.
+- **Cash account cannot run this** — T+1 makes repeated intraday round trips
+  good-faith violations. Margin, or the strategy does not run.
+- FINRA Notice 26-10 retired the PDT rule as of 2026-06-04; Schwab's own
+  implementation could not be verified from their site.
+- h=1 may be disqualified by its own latency: §11 asks for realized signal
+  decay, and h=1 is this child's only positive gain cell.
+
 ## Current state: skeleton folders + parallel-merge drivers + topic skill (2026-09-07)
 
 Landed on `main`, unpushed-local-commit scope: (1) skeleton gains `models/`
@@ -428,7 +482,7 @@ must not overwrite or reinterpret those artifacts.
 
 # Re-entry
 
-## Current wrap: feature masks land, and 0107 merges after review (2026-09-07)
+## Prior wrap: feature masks land, and 0107 merges after review (2026-09-07)
 
 On `main`, pushed. Everything below was reviewed by a second agent before
 merging, and both reviews changed the code.

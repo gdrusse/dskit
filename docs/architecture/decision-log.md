@@ -5809,6 +5809,35 @@ same policy copies the two ledger lines into its own `.gitattributes`.
 Timestamps: no new timestamp field — `executed_at` already orders the
 union deterministically.
 
+**Amendment (2026-09-07, after review).** Three claims above were wrong in
+a way that LOST DATA, and the implementation now differs from the text:
+
+1. **"REFUSES (exit nonzero, leaving the conflict)" was false.** git does
+   not add conflict markers when a merge driver exits nonzero — it leaves
+   whatever bytes are in `%A`, which is OUR side alone. The refused file
+   was therefore a clean, well-formed CSV with the other lane's rows
+   simply absent: a resolver saw no conflict, committed, and those rows
+   were gone. Installing the driver was strictly worse than not having
+   it. The driver now WRITES the conflict itself — both sides between
+   `<<<<<<<`/`=======`/`>>>>>>>` — on every refusal path.
+2. **"Merged rows are ordered by `executed_at`" is withdrawn.** The
+   ledger is an append-only tape whose order is data, the real
+   `intraday_equities` ledger is not timestamp-sorted, and
+   `render.py` builds the operator table from the TAIL of file order — so
+   sorting silently rewrote history and changed what the README showed.
+   Base rows now keep base order; new rows append ours-then-theirs.
+   Determinism comes from that rule, not from a timestamp.
+3. **"what remains is exactly the dangerous case" was false.** `next_id`
+   is `max + 1`, so two lanes branching from one base allocate the SAME
+   id and the common append case refused. It still refuses — ids are
+   cited from prose, so the merge must never renumber them — but the
+   refusal is now safe and says what to do.
+
+The "store's own contract" check the text promised is now actually
+implemented: the header must equal `ACTION_FIELDS` or `PATH_FIELDS`, so
+two sides sharing an identically drifted header no longer merge clean and
+break the next journal write.
+
 ## ADR-0110 — A `topic` skill chaining research → run → record → memo
 
 **Status:** Accepted (2026-09-07; owner approved implementation)

@@ -51,7 +51,9 @@ motivated no run is a SKIP, reported as such (below), not a gap.
 
 ## 4. Phase 3 — memo
 
-Follow `../memo/SKILL.md` verbatim: evidence from the run directory, the
+Follow `.cursor/skills/memo/SKILL.md` (repo-relative — `.claude/skills/`
+carries no `memo/`, so `../memo/SKILL.md` does not resolve here) verbatim:
+evidence from the run directory, the
 config identity hash, and the topic's research files — never
 conversation memory. Write `docs/memos/<slug>-<outcome>.md`; `## TL;DR`
 first; failures and deliberately unrun work beside successes.

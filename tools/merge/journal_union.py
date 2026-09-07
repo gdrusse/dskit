@@ -111,7 +111,7 @@ def read_rows(path):
 
 
 def read_text(path):
-    """The file's raw text, or empty when it is absent."""
+    """Return the file's raw text, or empty when it is absent."""
     try:
         with open(path, encoding="utf-8", newline="") as fh:
             return fh.read()
@@ -141,7 +141,7 @@ def _csv_text(header, rows):
 
 
 def _row_lines(header, rows):
-    """The CSV body lines for ``rows`` (no header), as a list."""
+    """Return the CSV body lines for ``rows``, without the header."""
     if not rows:
         return []
     return _csv_text(header, rows).split("\n")[1:-1]
