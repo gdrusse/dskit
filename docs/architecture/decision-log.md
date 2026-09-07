@@ -5496,10 +5496,17 @@ a one-off child function. Its checks are config-selected and each is generic:
    10am, useless at 3pm" must not ship.
 
 The output is a per-unit verdict: the capped `h`, the first failing horizon,
-the passing checks, and the slice evidence, written to the run dir as a
-durable, provenance-linked artifact. Checks that fail cap the horizon; they do
-not (at this stage) alter the model, and the gate never re-fits, re-searches,
-or promotes.
+the passing checks, and the slice evidence. **What shipped ships the verdict
+as the node's ordinary OUTPUT** (`caps`), not as a durable artifact of its
+own: no node in this tree writes its own JSON generically, and this gate does
+not invent that seam. The driver's generic per-node record writer summarizes
+every node's outputs (a list or dict collapses to `{type, len}`) when it
+writes `nodes/NN-*.json`, so the full verdict is available to a document's
+own downstream nodes within the same run but is not durably persisted in
+full today. A per-unit artifact durable across runs needs its own read/write
+seam — that is a named follow-up, not built here. Checks that fail cap the
+horizon; they do not (at this stage) alter the model, and the gate never
+re-fits, re-searches, or promotes.
 
 **Config is the interface.** The gate lists the checks it allows and
 default-denies the rest; thresholds, the slice dimension, and the α are config
@@ -5513,13 +5520,16 @@ emits (the child wires it, nothing domain-specific enters core). Any check
 needing a heavy library computes inside `run()`.
 
 **Consequences.** A stock that would serve a weak intermediate horizon serves
-that capped horizon instead, and the cap is reproducible from the artifact.
-The gate does NOT choose the final model (ADR-0107 leaves selection to the
-existing zoo), does NOT feed MIO yet (MIO horizon semantics stay as-is until
-ADR-0100's utility question is frozen), and adds no new fold/run — it is a
-read-only gate over already-persisted per-lead evidence. On approval, build
-under TDD + skeptic loop; execution (running it over the final model's
-evidence) is a separate owner action.
+that capped horizon instead, and the cap is reproducible for as long as the
+producing run's node output is retained — durably, once the follow-up
+artifact seam exists. The gate does NOT choose the final model (ADR-0107
+leaves selection to the existing zoo), does NOT feed MIO yet (MIO horizon
+semantics stay as-is until ADR-0100's utility question is frozen), and adds
+no new fold/run — it is a read-only gate over already-persisted per-lead
+evidence. It also does not yet durably persist its own verdict outside the
+run's node output, as above; a per-unit artifact is future work, not assumed
+here. On approval, build under TDD + skeptic loop; execution (running it
+over the final model's evidence) is a separate owner action.
 
 **Research basis.** See `docs/research/horizon-cap-gates/2026-09-06-synthesis.md`
 (journaled): uniform SPA (Hansen 2005; multi-horizon uSPA/aSPA), the

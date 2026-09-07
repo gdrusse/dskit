@@ -11,19 +11,24 @@ The single owner of the contiguity rule. A unit whose horizon 1 already fails
 caps at ``0`` (no horizon served); a unit whose every horizon passes caps at
 its maximum. The node never re-fits, re-searches, or promotes — it reads
 per-horizon evidence and writes a verdict. Evidence is fail-loud: a duplicate
-``(unit, horizon[, slice])`` row, a non-finite metric, or (under a slice) a
-horizon missing one of a unit's canonical slices is refused, never silently
-averaged or skipped.
+``(unit, horizon[, slice])`` row, a non-finite metric, a gapped or
+non-1-starting horizon ladder, or (under a slice) a horizon missing one of a
+unit's canonical slices is refused, never silently averaged or skipped — a
+cap is a claim that every horizon up to it passed, so a gap means that claim
+was never tested.
 """
 
 from __future__ import annotations
 
-from dskit.pipeline.node import Node
+from dskit.pipeline.node import Node, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
 __all__ = ["HorizonConquest"]
 
 _PASS_IFS = ("positive", "negative", "boolean", "p_below", "p_above")
+_DEFAULT_PASS_IF = "positive"
+_DEFAULT_ALPHA = 0.05
+_CHECK_FIELDS = frozenset({"metric", "pass_if", "alpha"})
 
 
 class HorizonConquest(Node):
@@ -32,8 +37,12 @@ class HorizonConquest(Node):
     Consumes a list of evidence rows — one dict per (unit, horizon) when no
     slice is declared, or one per (unit, horizon, slice) when ``slice_field``
     is — and returns, per unit, the furthest horizon reached before the
-    first fail, the first failing horizon, and how many horizons passed.
-    Horizons are walked ascending regardless of row order.
+    first fail, the first failing horizon, how many horizons passed, and
+    which named checks (and, when ``slice_field`` is set, which named
+    slices) backed that cap. Horizons are walked ascending regardless of
+    row order, but every horizon from 1 up to the unit's furthest evidenced
+    horizon must actually be present — a gap is refused, never silently
+    treated as a shorter ladder.
 
     Parameters
     ----------
@@ -54,7 +63,7 @@ class HorizonConquest(Node):
 
     Examples
     --------
-    Cap AAPL at horizon 2 when horizon 5 first fails::
+    Cap AAPL at horizon 2 when horizon 3 first fails::
 
         node = HorizonConquest("gate", {
             "checks": [{"metric": "improvement", "pass_if": "positive"}],
@@ -62,22 +71,33 @@ class HorizonConquest(Node):
         out = node.run(ctx, {"records": [
             {"unit": "AAPL", "horizon": 1, "improvement": 0.2},
             {"unit": "AAPL", "horizon": 2, "improvement": 0.1},
-            {"unit": "AAPL", "horizon": 5, "improvement": -0.1},
+            {"unit": "AAPL", "horizon": 3, "improvement": -0.1},
         ]})
         # -> out["caps"][0]["capped_horizon"] == 2
     """
 
     role = "score"
-    outputs = ("caps", "records", "metrics")
+    outputs = ("caps", "metrics")
     _PARAMS = ("checks", "unit_field", "horizon_field", "slice_field")
 
     @classmethod
     def validate_params(cls, params):
-        """Return every malformed conquest knob as a problem."""
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params, straight from the document.
+
+        Returns
+        -------
+        list of str
+            One problem per malformed knob: an unknown top-level param, an
+            unknown or malformed ``checks`` entry, and a non-string
+            ``unit_field``/``horizon_field``/``slice_field``.
+        """
         problems = []
-        unknown = sorted(set(params) - set(cls._PARAMS))
-        if unknown:
-            problems.append(f"unknown param(s) {unknown} — allowed: {sorted(cls._PARAMS)}")
+        reject_unknown_params(problems, params, cls._PARAMS)
         checks = params.get("checks")
         if not isinstance(checks, list) or not checks:
             problems.append("checks must be a non-empty list")
@@ -87,15 +107,15 @@ class HorizonConquest(Node):
                 if not isinstance(check, dict):
                     problems.append(f"{where} must be an object")
                     continue
-                unknown_fields = sorted(set(check) - {"metric", "pass_if", "alpha"})
-                if unknown_fields:
-                    problems.append(f"{where} has unknown field(s) {unknown_fields}")
+                check_problems = []
+                reject_unknown_params(check_problems, check, _CHECK_FIELDS)
+                problems.extend(f"{where} {p}" for p in check_problems)
                 if not isinstance(check.get("metric"), str) or not check["metric"]:
                     problems.append(f"{where}.metric must be a non-empty string")
-                rule = check.get("pass_if", "positive")
+                rule = check.get("pass_if", _DEFAULT_PASS_IF)
                 if rule not in _PASS_IFS:
                     problems.append(f"{where}.pass_if must be one of {sorted(_PASS_IFS)}")
-                alpha = check.get("alpha", 0.05)
+                alpha = check.get("alpha", _DEFAULT_ALPHA)
                 if not number_ok(alpha) or not 0.0 < alpha < 1.0:
                     problems.append(f"{where}.alpha must be a number in (0, 1)")
         for field in ("unit_field", "horizon_field", "slice_field"):
@@ -105,7 +125,19 @@ class HorizonConquest(Node):
         return problems
 
     def validate_inputs(self, inputs):
-        """Require the evidence-row list port."""
+        """Problems with the materialized ``inputs``, empty when none.
+
+        Parameters
+        ----------
+        inputs : dict
+            Must contain exactly the ``records`` port.
+
+        Returns
+        -------
+        list of str
+            One problem when ``inputs`` is not exactly ``{"records": ...}``,
+            or when ``records`` did not materialize as a list.
+        """
         if not isinstance(inputs, dict) or set(inputs) != {"records"}:
             return ["inputs must contain exactly records"]
         if not isinstance(inputs["records"], list):
@@ -114,6 +146,7 @@ class HorizonConquest(Node):
 
     @staticmethod
     def _passes(value, rule, alpha):
+        """Say whether one already-typed metric value clears ``rule``."""
         if rule == "boolean":
             if not isinstance(value, bool):
                 raise ValueError(f"boolean check got non-boolean {value!r}")
@@ -127,7 +160,37 @@ class HorizonConquest(Node):
         return value > 0.0
 
     def run(self, ctx, inputs):
-        """Walk each unit's horizons ascending and cap at the first fail."""
+        """Walk each unit's horizons ascending and cap at the first fail.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext
+            The run frame; unused — the gate reads only the wired evidence
+            rows.
+        inputs : dict
+            ``records``, the evidence rows.
+
+        Returns
+        -------
+        dict
+            ``caps`` — one verdict per unit: ``unit``, ``capped_horizon``,
+            ``first_failing_horizon``, ``n_passed``, ``n_horizons``,
+            ``passing_checks`` (the check metric names satisfied at the
+            cap), and — only when ``slice_field`` is set — ``slice_evidence``
+            (each of the unit's canonical slices' pass/fail at the cap).
+            ``metrics`` — ``n_units``, ``n_capped_units``,
+            ``n_horizons_passed``.
+
+        Raises
+        ------
+        ValueError
+            When a row is not an object, a ``unit``/``horizon``/``slice``
+            value is unusable, a check's declared metric is absent or the
+            wrong shape for its rule, a duplicate ``(unit, horizon[,
+            slice])`` row appears, a horizon is missing evidence for one of
+            its unit's canonical slices, or a unit's evidenced horizons are
+            not a dense ladder starting at 1.
+        """
         del ctx
         checks = self.params["checks"]
         unit_field = self.params.get("unit_field", "unit")
@@ -155,8 +218,8 @@ class HorizonConquest(Node):
                     raise ValueError(
                         f"evidence row is missing {check['metric']!r}: {row!r}"
                     )
-                rule = check.get("pass_if", "positive")
-                alpha = check.get("alpha", 0.05)
+                rule = check.get("pass_if", _DEFAULT_PASS_IF)
+                alpha = check.get("alpha", _DEFAULT_ALPHA)
                 if rule != "boolean" and not number_ok(value):
                     raise ValueError(
                         f"{check['metric']!r} must be a finite number under "
@@ -182,53 +245,72 @@ class HorizonConquest(Node):
                 unit_slices.setdefault(unit, set()).add(slice_value)
 
         caps = []
-        records = []
         total_passed = 0
         for unit in sorted({key[0] for key in units}, key=str):
-            horizon_keys = sorted(
-                {key[1] for key in units if key[0] == unit}
-            )
+            horizon_keys = sorted({key[1] for key in units if key[0] == unit})
+            if horizon_keys != list(range(1, len(horizon_keys) + 1)):
+                present = set(horizon_keys)
+                missing = [
+                    h for h in range(1, horizon_keys[-1] + 1) if h not in present
+                ]
+                raise ValueError(
+                    f"unit {unit!r} has a gapped horizon ladder {horizon_keys}: "
+                    f"missing horizon(s) {missing} — a cap claims every "
+                    f"horizon up to it passed, so the ladder must be dense "
+                    f"from 1"
+                )
             canonical_slices = sorted(unit_slices.get(unit, set()), key=str)
             capped = 0
             first_fail = None
             passed = 0
+            passing_checks = []
+            slice_evidence = {}
             for horizon in horizon_keys:
                 if slice_field is not None:
-                    good = True
-                    missing = [
+                    missing_slices = [
                         sl for sl in canonical_slices
                         if (unit, horizon, sl) not in units
                     ]
-                    if missing:
+                    if missing_slices:
                         raise ValueError(
                             f"unit {unit!r} horizon {horizon} is missing "
-                            f"evidence for slice(s) {missing}"
+                            f"evidence for slice(s) {missing_slices}"
                         )
-                    for sl in canonical_slices:
-                        if not all(units[(unit, horizon, sl)]):
-                            good = False
-                            break
+                    per_slice = {
+                        sl: all(units[(unit, horizon, sl)]) for sl in canonical_slices
+                    }
+                    per_check = [
+                        all(units[(unit, horizon, sl)][i] for sl in canonical_slices)
+                        for i in range(len(checks))
+                    ]
+                    good = all(per_check)
                 else:
-                    good = all(units[(unit, horizon)])
+                    per_check = units[(unit, horizon)]
+                    good = all(per_check)
                 if not good:
                     first_fail = horizon
                     break
                 capped = horizon
                 passed += 1
-                records.append({"unit": unit, "horizon": horizon, "passed": True})
                 total_passed += 1
-            caps.append(
-                {
-                    "unit": unit,
-                    "capped_horizon": capped,
-                    "first_failing_horizon": first_fail,
-                    "n_passed": passed,
-                    "n_horizons": len(horizon_keys),
-                }
-            )
+                passing_checks = [
+                    check["metric"] for check, ok in zip(checks, per_check) if ok
+                ]
+                if slice_field is not None:
+                    slice_evidence = {str(sl): per_slice[sl] for sl in canonical_slices}
+            verdict = {
+                "unit": unit,
+                "capped_horizon": capped,
+                "first_failing_horizon": first_fail,
+                "n_passed": passed,
+                "n_horizons": len(horizon_keys),
+                "passing_checks": passing_checks,
+            }
+            if slice_field is not None:
+                verdict["slice_evidence"] = slice_evidence
+            caps.append(verdict)
         return {
             "caps": caps,
-            "records": records,
             "metrics": {
                 "n_units": len(caps),
                 "n_capped_units": sum(
