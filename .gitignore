@@ -56,3 +56,8 @@ children/*/decisions.jsonl
 # Isolated agent worktrees the Claude Code harness creates in-repo — a
 # working copy, never content to commit.
 .claude/worktrees/
+
+# journal_union.py writes a sibling temp beside git's merge scratch file so a
+# failed write cannot truncate %A. A hard kill between the write and the
+# rename leaves it behind, in the WORKTREE ROOT — never commit merge scratch.
+*.journal-union.tmp

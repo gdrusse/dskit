@@ -610,10 +610,106 @@ def test_a_failed_conflict_write_leaves_the_file_intact(tmp_path):
 
 
 def test_replace_file_is_atomic_and_leaves_no_temp(tmp_path):
+    """A naive direct write passes the happy half; only failure separates them."""
     union = _load("journal_union")
     target = tmp_path / "x.csv"
     target.write_text("original\n")
     union.replace_file(str(target), b"replaced\n")
     assert _read(target) == "replaced\n"
     assert not (tmp_path / "x.csv.journal-union.tmp").exists()
+    # The property that actually distinguishes atomic from direct: a FAILED
+    # write leaves the previous content whole, not truncated.
+    (tmp_path / "x.csv.journal-union.tmp").mkdir()
+    try:
+        union.replace_file(str(target), b"never lands\n")
+    except OSError:
+        pass
+    else:
+        raise AssertionError("replace_file should have raised")
+    assert _read(target) == "replaced\n", "a failed write damaged the file"
+
+def test_a_failed_union_write_never_leaves_a_clean_file(tmp_path):
+    """Blocker, review round 3 — the SUCCESS path.
+
+    replace_file was atomic, but main() called it unguarded. An OSError
+    propagated uncaught and git handed back its own %A: our side alone,
+    no markers, looking perfectly mergeable. The merge succeeding is
+    exactly what makes this dangerous — nothing else signals a problem.
+    """
+    union = _load("journal_union")
+    base, ours, theirs = (tmp_path / n for n in ("b.csv", "o.csv", "t.csv"))
+    row = "A0001,r,s,2026-09-07T10:00:00Z,x,y,z,base"
+    _write(base, ACTION_HEADER, [row])
+    _write(ours, ACTION_HEADER, [row, "A0002,r,s,2026-09-07T11:00:00Z,x,y,z,OURS-ROW"])
+    _write(theirs, ACTION_HEADER, [row, "A0003,r,s,2026-09-07T12:00:00Z,x,y,z,THEIRS-ROW"])
+    # This merge would SUCCEED; block every write so it cannot be stored.
+    (tmp_path / "o.csv.journal-union.tmp").mkdir()
+    assert union.main(["x", str(base), str(ours), str(theirs)]) == 1
+    after = _read(ours)
+    assert union.UNRESOLVED in after, f"the file looks clean:\n{after}"
+    # and it must not parse as a ledger, so it cannot be `git add`-ed blind
+    try:
+        union.read_rows(str(ours))
+    except union.LedgerConflict:
+        return
+    raise AssertionError("the unwritable merge left a parseable ledger")
+
+
+def test_a_failed_conflict_write_marks_the_file_unresolved(tmp_path):
+    """Same blocker, the REFUSAL path: the bool was returned but discarded."""
+    union = _load("journal_union")
+    base, ours, theirs = (tmp_path / n for n in ("b.csv", "o.csv", "t.csv"))
+    _write(base, ACTION_HEADER, [])
+    _write(ours, ACTION_HEADER, ["A0009,r,OURS-ROW,2026-09-07T10:00:00Z,x,y,z,n"])
+    _write(theirs, ACTION_HEADER, ["A0009,r,THEIRS-ROW,2026-09-07T10:00:00Z,x,y,z,n"])
+    (tmp_path / "o.csv.journal-union.tmp").mkdir()
+    assert union.main(["x", str(base), str(ours), str(theirs)]) == 1
+    assert union.UNRESOLVED in _read(ours)
+
+
+def test_reinstall_after_a_move_keeps_the_chained_hook(tmp_path):
+    """The saved path is ALWAYS stale after a move — which is when this runs.
+
+    Dropping the team's hook (direnv, lint-sync) on every move+reinstall
+    is silent apart from one warning line.
+    """
+    repo = _scratch_repo(tmp_path, "before")
+    os.makedirs(os.path.dirname(_hook(repo)), exist_ok=True)
+    with open(_hook(repo), "w") as fh:
+        fh.write("#!/bin/sh\necho TEAM-HOOK\n")
+    os.chmod(_hook(repo), 0o755)
+    _install(repo)
+    assert "pre-adr0109" in _read(_hook(repo))
+    moved = tmp_path / "after"
+    shutil.move(str(repo), str(moved))
+    _install(moved)
+    body = _read(_hook(moved))
+    assert "pre-adr0109" in body, f"the chained hook was dropped:\n{body}"
+    assert "before" not in body, f"stale path survived:\n{body}"
+    kept = [
+        f for f in os.listdir(os.path.dirname(_hook(moved))) if "pre-adr0109" in f
+    ]
+    assert kept and "TEAM-HOOK" in _read(
+        os.path.join(os.path.dirname(_hook(moved)), kept[0])
+    )
+
+
+def test_installing_from_a_worktree_pins_the_main_worktree(tmp_path):
+    """Driver config is SHARED across worktrees.
+
+    Pinning it to a linked worktree means deleting that worktree breaks
+    every future merge repo-wide — the original blocker reincarnated.
+    """
+    repo = _scratch_repo(tmp_path, "mainrepo")
+    (repo / "f").write_text("x\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+    wt = tmp_path / "wt"
+    added = _git(repo, "worktree", "add", "-q", str(wt), "-b", "tmp")
+    if added.returncode != 0:
+        return  # git too old for worktrees; nothing to assert
+    _install(wt)
+    driver = _git(wt, "config", "--get", "merge.journal-union.driver").stdout
+    assert "mainrepo" in driver, driver
+    assert f"{os.sep}wt{os.sep}" not in driver, f"pinned to the worktree:\n{driver}"
 

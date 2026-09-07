@@ -339,6 +339,43 @@ def replace_file(path, payload):
         raise
 
 
+#: Appended to ``%A`` when the conflict itself could not be written. It
+#: makes the file unparseable as a ledger, so nobody can `git add` a
+#: clean-looking one-sided file by mistake. Appending costs a few bytes,
+#: so it usually lands even when the full write did not.
+UNRESOLVED = (
+    ">>>>>>> journal-union: CONFLICT COULD NOT BE WRITTEN. This file holds "
+    "ONE SIDE ONLY. Do not commit it. Recover with `git checkout --merge` "
+    "or `git show :2:<path>` and `git show :3:<path>`."
+)
+
+
+def mark_unresolved(path):
+    """Append :data:`UNRESOLVED` to ``path``; never raise.
+
+    The last line of defence. When even the conflict write fails there is
+    no disk to fix that, but a file that cannot PARSE cannot be committed
+    by accident — and that is the whole failure mode this driver exists
+    to prevent.
+
+    Parameters
+    ----------
+    path : str
+        The file to mark.
+
+    Returns
+    -------
+    bool
+        Whether the marker landed.
+    """
+    try:
+        with open(path, "ab") as fh:
+            fh.write(b"\n" + UNRESOLVED.encode() + b"\n")
+        return True
+    except OSError:
+        return False
+
+
 def write_conflict(base_path, ours_path, theirs_path):
     """Write the conflict into ``%A``; report whether it landed.
 
@@ -380,6 +417,12 @@ def write_conflict(base_path, ours_path, theirs_path):
     return True
 
 
+def _refuse(base_path, ours_path, theirs_path):
+    """Write the conflict, or at minimum make %A unparseable."""
+    if not write_conflict(base_path, ours_path, theirs_path):
+        mark_unresolved(ours_path)
+
+
 def main(argv):
     """Drive one merge: write the union to ``%A``, or write the conflict.
 
@@ -404,11 +447,23 @@ def main(argv):
         # one-sided file under a `UU` status — indistinguishable from a safe
         # refusal, and the original defect exactly.
         print(f"journal-union: refusing to merge: {exc}", file=sys.stderr)
-        write_conflict(base_path, ours_path, theirs_path)
+        _refuse(base_path, ours_path, theirs_path)
         return 1
-    # The union goes through the same non-truncating replace: a half-written
-    # ledger is data loss just as surely as a one-sided one.
-    replace_file(ours_path, text.encode("utf-8", errors="surrogateescape"))
+    try:
+        # The union goes through the same non-truncating replace: a
+        # half-written ledger is data loss just as surely as a one-sided one.
+        replace_file(ours_path, text.encode("utf-8", errors="surrogateescape"))
+    except OSError as exc:
+        # The merge SUCCEEDED but could not be stored. Leaving it here would
+        # hand back git's own %A — our side alone, no markers, looking
+        # perfectly clean. Downgrade to a refusal instead: a conflict is
+        # honest, and its payload may fit where the union did not.
+        print(
+            f"journal-union: could not write the union: {exc} — refusing instead",
+            file=sys.stderr,
+        )
+        _refuse(base_path, ours_path, theirs_path)
+        return 1
     return 0
 
 

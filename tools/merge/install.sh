@@ -15,6 +15,11 @@ cd "$(dirname "$0")/../.."
 # the MAIN worktree from the common git dir and pin to that instead.
 ROOT="$(pwd)"
 COMMON="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [ -z "$COMMON" ]; then
+    echo "NOTE: this git cannot report --path-format=absolute (pre-2.31);" \
+         "skipping the main-worktree check. Run install.sh from the MAIN" \
+         "worktree, or the shared config will point at a disposable path."
+fi
 if [ -n "$COMMON" ]; then
     MAIN="$(dirname "$COMMON")"
     if [ "$MAIN" != "$ROOT" ] && [ -f "$MAIN/tools/merge/journal_union.py" ]; then
@@ -72,8 +77,20 @@ elif grep -qF "$MARKER" "$HOOK" 2>/dev/null; then
     # a chained prior hook silently stops running because its `[ -x ]` test
     # just goes false. Carry the prior-hook reference across if it survived.
     KEPT="$(sed -n 's/^\[ -x "\(.*\)" \] && .*/\1/p' "$HOOK" | head -1)"
-    [ -n "$KEPT" ] && [ ! -e "$KEPT" ] && \
-        echo "WARNING: the previously chained hook is gone: $KEPT" && KEPT=""
+    if [ -n "$KEPT" ] && [ ! -e "$KEPT" ]; then
+        # The saved path is the PRE-MOVE one, so it is stale after ANY move —
+        # which is precisely when this branch runs. The backup moved with the
+        # repo and sits in the hooks dir we just recomputed, so look there
+        # before giving up; dropping the team's hook silently is the bug.
+        CAND="$HOOKS/$(basename "$KEPT")"
+        if [ -e "$CAND" ]; then
+            KEPT="$CAND"
+        else
+            echo "WARNING: the previously chained hook is gone: $KEPT"
+            KEPT=""
+        fi
+    fi
+    [ -n "$KEPT" ] && chmod +x "$KEPT" 2>/dev/null || true
     write_hook "$KEPT"
 else
     # A foreign hook. MOVE it aside and INVOKE it, rather than appending to
