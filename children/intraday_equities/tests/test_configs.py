@@ -1,6 +1,7 @@
 """Every shipped config validates, and the action documents stay twins."""
 
 import copy
+import datetime
 import json
 import os
 
@@ -961,3 +962,57 @@ def test_p15_temporal_zoo_has_three_paired_sequence_searches():
         "65bbbfa44752b21f1a817e6b47d7e02984e56fbe8a5392a830a478cd977e6058"
     )
     assert approval["approved_by"] == "owner"
+
+
+def _ms(date_text, end_of_day=False):
+    """UTC epoch ms for an inclusive calendar date."""
+    stamp = datetime.datetime.fromisoformat(date_text).replace(
+        tzinfo=datetime.timezone.utc
+    )
+    if end_of_day:
+        stamp = stamp.replace(hour=23, minute=59, second=59)
+    return int(stamp.timestamp() * 1000)
+
+
+def test_the_finalist_window_is_the_locked_calendars_final_hpo_phase():
+    """The calendar declares dates; `run-final-hpo.json` declares epoch ms.
+
+    That is the same fact in two spellings, which is exactly the shape
+    CLAUDE.md says to pin rather than trust. The failure to design against
+    is one copy moving: a finalist that quietly fits past the cut, or
+    validates on a window the calendar never granted it.
+    """
+    calendar = _raw("program-calendar.json")
+    splits = _raw("run-final-hpo.json")["splits"]
+    periods = calendar["periods"]
+    assert splits["train_end_ms"] == _ms(periods["final_fit_extension"]["end"], True)
+    assert splits["val_start_ms"] == _ms(periods["final_hpo_validation"]["start"])
+    assert splits["val_end_ms"] == _ms(periods["final_hpo_validation"]["end"], True)
+    embargo = periods["final_hpo_embargo"]
+    assert embargo["start"] == embargo["end"]
+    assert splits["train_end_ms"] < _ms(embargo["start"]) < splits["val_start_ms"]
+
+
+def test_the_finalist_never_reaches_the_lockbox():
+    """test_end sits inside 2026-02-28, so the band cannot hold a lockbox row."""
+    calendar = _raw("program-calendar.json")
+    splits = _raw("run-final-hpo.json")["splits"]
+    lockbox = _ms(calendar["locks"]["lockbox_start"])
+    assert splits["val_end_ms"] < splits["test_end_ms"] < lockbox
+
+
+def test_the_finalist_document_declares_no_fold_schedule():
+    """`final_hpo` has `fold_schedule: null` — one fit, not a rolling series."""
+    calendar = _raw("program-calendar.json")
+    assert calendar["phases"]["final_hpo"]["fold_schedule"] is None
+    assert "walkforward" not in _raw("run-final-hpo.json")
+
+
+def test_the_finalist_names_no_model_and_takes_the_selectors_winner():
+    """WHICH model is the selector's output, never a name restated here."""
+    document = _raw("run-final-hpo.json")
+    finalist = document["stages"]["finalist"]
+    assert finalist["inputs"]["selection"] == "$select.selection"
+    assert document["stages"]["select"]["params"]["select"] == "max"
+    declared = json.dumps(finalist["params"]["templates"])
+    assert "pooled-h" not in declared
