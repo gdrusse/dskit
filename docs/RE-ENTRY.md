@@ -1,5 +1,35 @@
 # Re-entry
 
+## Current wrap: skill, TFT, and run-evidence consolidation (2026-09-07)
+
+Branch `consolidate-mio-skills-runs`, based on current `origin/main`.
+This is the linear consolidation of the parallel work completed today.
+
+**Landed in this consolidation.**
+
+- One canonical `docs/skills/` procedure per skill, with byte-aligned thin
+  Claude/Cursor stubs, plus the tested cross-platform `/chain` dispatcher.
+- TFT-lite support in `CategoricalTemporalFusionRegressor`, the completed P16
+  paired TFT/Ridge configuration and evidence, and the partial P17 RF run.
+- P17's two RF folds are now explicitly descriptive only. Historical A18800
+  is preserved unchanged; correction A18801 supersedes its overclaim.
+
+**MIO clarification.** The branch named
+`claude/mio-implementation-xuhmtm` contains the measured capital-MIO design
+proposal only and is already in `main`; exhaustive ref/worktree inspection
+found no capital-MIO implementation to merge or verify. The proposal remains
+blocked on ADR-0111 and its recorded owner decisions, so this wrap does not
+claim that code exists. TFT-lite is model-zoo work, not that capital solver.
+
+**Verification.** Focused agent-chain, TFT, merge-driver, and skeleton tests:
+117 passed, 10 optional-dependency skips. Ruff is clean. Both P16/P17 configs
+validate at their recorded identities; the child journal was regenerated and
+the Claude/Cursor skill stubs are byte-identical.
+
+**Next:** merge and push after the skeptic loop reports no Critical/Major.
+Capital-MIO implementation requires the missing work (if unpublished) or the
+owner decisions and accepted ADR-0111 before a new build can start.
+
 ## Current wrap: the live MIO design proposal, measured not assumed (2026-09-07)
 
 Branch `claude/mio-implementation-xuhmtm`, merged to `main`. **Docs only —
