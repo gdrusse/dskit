@@ -97,7 +97,8 @@ def read_rows(path):
         A row carries extra or missing cells.
     """
     try:
-        with open(path, encoding="utf-8", newline="") as fh:
+        with open(path, encoding="utf-8", errors="surrogateescape",
+                  newline="") as fh:
             reader = csv.DictReader(fh)
             header = list(reader.fieldnames or ())
             rows = []
@@ -113,7 +114,8 @@ def read_rows(path):
 def read_text(path):
     """Return the file's raw text, or empty when it is absent."""
     try:
-        with open(path, encoding="utf-8", newline="") as fh:
+        with open(path, encoding="utf-8", errors="surrogateescape",
+                  newline="") as fh:
             return fh.read()
     except FileNotFoundError:
         return ""
@@ -145,6 +147,15 @@ def _row_lines(header, rows):
     if not rows:
         return []
     return _csv_text(header, rows).split("\n")[1:-1]
+
+
+def _minus_once(rows, taken):
+    """``rows`` with one occurrence removed per row in ``taken``."""
+    remaining = list(rows)
+    for row in taken:
+        if row in remaining:
+            remaining.remove(row)
+    return remaining
 
 
 def merge_ledgers(base_path, ours_path, theirs_path):
@@ -257,8 +268,11 @@ def conflict_text(base_path, ours_path, theirs_path):
 
     agreed = [row for row in base_rows if row in our_rows and row in their_rows]
     keep = [dict(row) for row in agreed]
-    our_rest = [row for row in our_rows if row not in agreed]
-    their_rest = [row for row in their_rows if row not in agreed]
+    # Subtract ONE occurrence per agreed row, not every match: a side that
+    # duplicated a row must still show the extra copy in its own block, or
+    # the conflict renders empty and says nothing about what was wrong.
+    our_rest = _minus_once(our_rows, agreed)
+    their_rest = _minus_once(their_rows, agreed)
     lines = _csv_text(our_header, keep).rstrip("\n").split("\n")
     lines.append(MARK_OURS)
     lines.extend(_row_lines(our_header, our_rest))
@@ -266,6 +280,49 @@ def conflict_text(base_path, ours_path, theirs_path):
     lines.extend(_row_lines(our_header, their_rest))
     lines.append(MARK_THEIRS)
     return "\n".join(lines) + "\n"
+
+
+def _raw_conflict(ours_path, theirs_path):
+    """Both sides between markers as BYTES — the last-resort fallback.
+
+    Reads binary, so no encoding can make it fail. This is what stands
+    between a crash and the original defect: any failure that leaves
+    ``%A`` unwritten hands the resolver a clean one-sided file.
+    """
+    def data(path):
+        try:
+            with open(path, "rb") as fh:
+                return fh.read().rstrip(b"\n")
+        except OSError:
+            return b""
+
+    return b"\n".join([
+        MARK_OURS.encode(), data(ours_path), MARK_SEP.encode(),
+        data(theirs_path), MARK_THEIRS.encode(), b"",
+    ])
+
+
+def write_conflict(base_path, ours_path, theirs_path):
+    """Write the conflict into ``%A``, whatever it takes.
+
+    Guarded end to end: a malformed byte, an unreadable side, anything at
+    all falls back to :func:`_raw_conflict` rather than propagating. An
+    exception escaping here would leave ``%A`` holding OUR side alone —
+    the exact silent data loss this driver exists to prevent.
+
+    Parameters
+    ----------
+    base_path, ours_path, theirs_path : str
+        The three sides git supplied; ``%A`` is overwritten.
+    """
+    try:
+        payload = conflict_text(base_path, ours_path, theirs_path).encode(
+            "utf-8", errors="surrogateescape"
+        )
+    except Exception:  # noqa: BLE001 - a conflict MUST be written regardless
+        payload = _raw_conflict(ours_path, theirs_path)
+    with open(ours_path, "wb") as fh:
+        fh.write(payload)
 
 
 def main(argv):
@@ -285,13 +342,17 @@ def main(argv):
     base_path, ours_path, theirs_path = argv[1:4]
     try:
         text = merge_ledgers(base_path, ours_path, theirs_path)
-    except LedgerConflict as exc:
+    except Exception as exc:  # noqa: BLE001 - see write_conflict's docstring
+        # EVERY failure refuses, not just LedgerConflict. A UnicodeDecodeError
+        # from one bad byte in a free-text `notes` field used to escape main()
+        # uncaught, so %A was never written and the resolver got a clean
+        # one-sided file under a `UU` status — indistinguishable from a safe
+        # refusal, and the original defect exactly.
         print(f"journal-union: refusing to merge: {exc}", file=sys.stderr)
-        conflicted = conflict_text(base_path, ours_path, theirs_path)
-        with open(ours_path, "w", encoding="utf-8", newline="") as fh:
-            fh.write(conflicted)
+        write_conflict(base_path, ours_path, theirs_path)
         return 1
-    with open(ours_path, "w", encoding="utf-8", newline="") as fh:
+    with open(ours_path, "w", encoding="utf-8", errors="surrogateescape",
+              newline="") as fh:
         fh.write(text)
     return 0
 

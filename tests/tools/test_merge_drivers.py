@@ -288,6 +288,61 @@ def test_a_conflicted_ledger_is_never_silently_parseable(tmp_path):
     raise AssertionError("the refused file parsed as a clean ledger")
 
 
+def test_a_malformed_byte_still_writes_a_conflict(tmp_path):
+    """THE second data-loss hole (skeptic review, blocker).
+
+    main() caught only LedgerConflict, and called conflict_text OUTSIDE
+    the try. One invalid UTF-8 byte — a mis-pasted em-dash in a free-text
+    `notes` field — raised UnicodeDecodeError, escaped main() uncaught,
+    and %A was never written: a clean one-sided file under a `UU` status,
+    indistinguishable from a safe refusal.
+    """
+    union = _load("journal_union")
+    base, ours, theirs = (tmp_path / n for n in ("b.csv", "o.csv", "t.csv"))
+    _write(base, ACTION_HEADER, ["A0001,r,BASE-ROW,2026-09-07T10:00:00Z,x,y,z,n"])
+    # ours: a bad byte in notes, plus an appended row
+    with open(ours, "wb") as fh:
+        fh.write(ACTION_HEADER.encode())
+        fh.write(b"A0001,r,BASE-ROW,2026-09-07T10:00:00Z,x,y,z,n\n")
+        fh.write(b"A0002,r,OURS-ROW,2026-09-07T11:00:00Z,x,y,z,bad\xff\n")
+    # theirs EDITS the base row, which must refuse
+    _write(theirs, ACTION_HEADER, ["A0001,r,THEIRS-ROW,2026-09-07T10:00:00Z,x,y,z,n"])
+    assert union.main(["x", str(base), str(ours), str(theirs)]) == 1
+    with open(ours, "rb") as fh:
+        after = fh.read()
+    assert b"<<<<<<<" in after and b">>>>>>>" in after, after
+    assert b"THEIRS-ROW" in after, f"THEIR side was LOST\n{after!r}"
+
+
+def test_write_conflict_survives_an_unreadable_side(tmp_path):
+    """The guard must hold even when a side cannot be read at all."""
+    union = _load("journal_union")
+    ours, theirs = tmp_path / "o.csv", tmp_path / "t.csv"
+    _write(ours, ACTION_HEADER, ["A0001,r,OURS-ROW,2026-09-07T10:00:00Z,x,y,z,n"])
+    # `theirs` does not exist; `base` is a DIRECTORY, so reads raise OSError
+    bad_base = tmp_path / "base_dir"
+    bad_base.mkdir()
+    union.write_conflict(str(bad_base), str(ours), str(theirs))
+    after = _read(ours)
+    assert _has_conflict_markers(after), after
+    assert "OURS-ROW" in after
+
+
+def test_a_duplicate_within_a_side_is_visible_in_the_conflict(tmp_path):
+    """A refusal whose blocks render empty says nothing about what broke."""
+    union = _load("journal_union")
+    base, ours, theirs = (tmp_path / n for n in ("b.csv", "o.csv", "t.csv"))
+    row = "A0001,r,s,2026-09-07T10:00:00Z,x,y,z,n"
+    _write(base, ACTION_HEADER, [row])
+    _write(ours, ACTION_HEADER, [row, row])      # duplicated within our side
+    _write(theirs, ACTION_HEADER, [row])
+    assert union.main(["x", str(base), str(ours), str(theirs)]) == 1
+    after = _read(ours)
+    assert _has_conflict_markers(after), after
+    ours_block = after.split("<<<<<<<")[1].split("=======")[0]
+    assert "A0001" in ours_block, f"the duplicate is invisible:\n{after}"
+
+
 # --- keep_both ---------------------------------------------------------
 
 
