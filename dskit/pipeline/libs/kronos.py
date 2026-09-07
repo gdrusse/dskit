@@ -15,7 +15,6 @@ import os
 import subprocess
 import sys
 
-from dskit.onboarding.observations import verified_payload_dir
 from dskit.pipeline.node import Node, register_node_kind, reject_unknown_params
 
 __all__ = ["KronosHiddenState", "NODE_KINDS"]
@@ -62,6 +61,8 @@ def _identity(params):
 
 def _snapshot_model(source_root, onboarding_root, snapshot, class_name):
     """Load one upstream Kronos class from a verified local snapshot."""
+    from dskit.onboarding.observations import verified_payload_dir
+
     files = verified_payload_dir(onboarding_root, snapshot, "snapshot")
     before = list(sys.path)
     try:
@@ -369,6 +370,8 @@ class KronosHiddenState(Node):
 
     def run(self, ctx, inputs):
         """Load or build the shared hidden-state cache."""
+        from dskit.onboarding.observations import verified_payload_dir
+
         del ctx
         self._source()
         verified_payload_dir(
