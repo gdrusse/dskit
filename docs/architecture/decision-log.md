@@ -5558,3 +5558,87 @@ It changes no hash, retrains nothing, and leaves promotion to the owner. On
 approval, build under the TDD + skeptic loop: the stage, its params
 validation, and a child config/tests. No execution is authorized by this
 decision.
+
+---
+
+## ADR-0108 — A feature mask is a MODEL knob, not a second feature pipeline
+
+**Status:** proposed (2026-09-07 — owner asked for 4-5 feature sets compared in one zoo)
+
+**Numbering.** 0107 is taken by `feat/final-model-gates`, unmerged at the time
+of writing. This is 0108 to avoid the collision that branch's `actions.csv`
+rows will also raise.
+
+**Context.** The 2026-09-06 research (`docs/research/
+zoo-feature-selection-and-hpo/`) says selection is not the lever for pooled
+LightGBM and that the cheapest honest redundancy test is a paired **fixed
+family-mask ablation**: same folds, same rows, same labels, only the column
+set differs. Three facts block it today.
+
+1. **`universe.keep_features` is inert on the pooled path.** It sets
+   `spec["features"]`, but `nodes._feature_names_for_rows` returns a columnar
+   frame's own `names` before it ever consults the spec, and the pooled zoo
+   reads cached frames. A mask declared there would be silently ignored —
+   the worst failure mode, because the run still reports a number.
+2. **The benchmark contract pins `pipeline.features_*`.** Varying the feature
+   pipeline per candidate would either break the contract or weaken it to the
+   point where the comparison no longer proves the rows were identical.
+3. **Nothing in dskit projects a matrix to a declared column subset.**
+   `filter` cuts ROWS; the fitted-transform family fits a selector, which is
+   the thing the research says NOT to do here. A fitted selector also gives
+   fold-varying survivors, which is a different experiment.
+
+**Decision.** Put the mask on the MODEL side, where the HPO space already
+lives, and make it generic.
+
+`dskit/pipeline/libs/sklearn.py` gains **`ColumnSubsetRegressor`**: it wraps
+any estimator named by import path, takes a `drop` OR a `keep` list of column
+names (never both), and fits the wrapped estimator on the surviving columns.
+It forwards `feature_names` and any `categorical_feature` through to the inner
+estimator, so a native categorical (`symbol_code`) survives masking instead of
+being silently dropped — the defect `EmpiricalSelectRegressor` already has and
+the reason it is not reused here. Names it cannot find in the design matrix
+refuse BY NAME rather than being ignored, because a typo'd mask that quietly
+keeps everything reports a difference that is not there.
+
+The mask is therefore `estimator_params` — the same doorway `hpo_space`
+already tunes through. Consequences follow from that one choice:
+
+* `pipeline.features_*` stays **byte-identical** across every candidate, so
+  the contract stays pinned and the comparison keeps proving the rows were
+  the same.
+* A mask is searchable if a document ever wants it to be (ADR-0044), because
+  it is an ordinary declared knob.
+* The child supplies only name lists. The mechanism names no column, no
+  family and no domain.
+
+**The experiment this unlocks (P16),** five candidates, one LightGBM, the P13
+winner's parameters, the 20 development outer folds and the existing paired
+Newey-West + all-pairs Bonferroni compare:
+
+| id | mask | tests |
+|---|---|---|
+| `full` | none (control) | the incumbent |
+| `short-lags` | drop `ret_lag_5..19` | whether 15 of 20 lags are noise |
+| `core-scales` | drop the 2s/1w/3s families | whether multi-day scales carry h=1..10 |
+| `no-cal-tail` | drop `dow_*`, `month_*`, `after_holiday`, `session_gap_days` | whether the calendar tail is dead weight |
+| `lean` | the union of the three drops | whether the reductions compose |
+
+Five candidates is ten pairs at a 0.005 adjusted threshold. The predeclared
+reading: a mask with **no detectable deficit** wins on the existing
+simplest-candidate tie-break; a mask with a detectable deficit **certifies**
+the family it removed. `lean` is the combination test the owner asked for and
+is the one that can fail while its three parts each pass, which is exactly
+what "consider different combos" has to be able to discover.
+
+**Consequences.** No identity moves for any existing document: the class is
+new, and a document that does not name it is unchanged. P16 is a development
+zoo on the development window — it is NOT the finalist, and
+`configs/run-final-hpo.json` keeps the full matrix until a mask wins here.
+Deliberately NOT in scope: null-importance thresholds, stability selection,
+and per-fold survivor reporting, all of which the research names and none of
+which this mechanism needs.
+
+**On approval:** build under the TDD + skeptic loop — the class, its
+refusals, the pack tests, then the child config and its tests. No execution
+is authorized by this decision.
