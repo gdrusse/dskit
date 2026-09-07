@@ -7,7 +7,13 @@ The regeneration is deliberately POST-merge — the ledger union driver's
 output only reaches the working tree after all drivers ran — so
 ``render_all.py`` (installed as the post-merge hook by ``install.sh``)
 re-renders every child from the merged CSVs, and any later journal write
-re-renders again. The projection self-heals; it is never hand-resolved.
+re-renders again.
+
+One honest gap: git does NOT run ``post-merge`` when the merge stopped at
+a conflict, so a hand-resolved ledger leaves the README stale and CLEAN
+until the next journal write — and that is exactly the path where the
+ledger changed by hand. It is display-only and it does heal, but not on
+this merge. Run ``python -m dskit.journal render`` after resolving.
 """
 
 from __future__ import annotations

@@ -61,3 +61,7 @@ children/*/decisions.jsonl
 # failed write cannot truncate %A. A hard kill between the write and the
 # rename leaves it behind, in the WORKTREE ROOT — never commit merge scratch.
 *.journal-union.tmp
+
+# dskit.journal's atomic writer, same argument: it writes into a
+# TRACKED decisioning directory, so a hard kill leaves committable scratch.
+.tmp-journal-*

@@ -776,7 +776,102 @@ def test_keep_both_never_truncates_on_a_failed_write(tmp_path):
     base.write_text("# base\n")
     ours.write_text("# ours\nOUR-SESSION-RECORD\n")
     theirs.write_text("# theirs\nTHEIR-SESSION-RECORD\n")
-    before = _read(ours)
     (tmp_path / ("o.md" + union.TMP_SUFFIX)).mkdir()   # block the write
     assert keep.main(["x", str(base), str(ours), str(theirs)]) == 1
-    assert _read(ours) == before, "the file was truncated or cut mid-line"
+    after = _read(ours)
+    assert "OUR-SESSION-RECORD" in after, "our side was truncated"
+    # ...and their side must be APPENDED, not merely "left unchanged": an
+    # unchanged %A is a clean-looking single session record, exactly the
+    # loss this driver exists to prevent.
+    assert "THEIR-SESSION-RECORD" in after, f"their side was LOST\n{after}"
+
+
+def test_keep_both_survives_a_broken_sibling_module(tmp_path):
+    """The shared import must not be a new way to lose a side.
+
+    Sharing replace_file was right, but a module-level import made a
+    broken journal_union.py fatal — and this repo edits that file
+    constantly, so a merge mid-edit hit it.
+    """
+    shutil.copytree(MERGE_DIR, tmp_path / "merge", ignore=shutil.ignore_patterns("__pycache__"))
+    (tmp_path / "merge" / "journal_union.py").write_text("this is not python(\n")
+    # git runs each driver in a FRESH process; in-process, an earlier test
+    # may have cached a good journal_union, which would hide the break.
+    import sys as _sys
+
+    cached = _sys.modules.pop("journal_union", None)
+    spec = importlib.util.spec_from_file_location(
+        "kb_broken", tmp_path / "merge" / "keep_both.py"
+    )
+    keep = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(keep)
+    base, ours, theirs = (tmp_path / n for n in ("b.md", "o.md", "t.md"))
+    base.write_text("# base\n")
+    ours.write_text("# ours\nOUR-SESSION-RECORD\n")
+    theirs.write_text("# theirs\nTHEIR-SESSION-RECORD\n")
+    try:
+        assert keep.main(["x", str(base), str(ours), str(theirs)]) == 1
+    finally:
+        if cached is not None:
+            _sys.modules["journal_union"] = cached
+    after = _read(ours)
+    assert "OUR-SESSION-RECORD" in after and "THEIR-SESSION-RECORD" in after, after
+
+
+def test_keep_both_preserves_crlf(tmp_path):
+    """Without newline="" every CR is rewritten — a whole-file diff."""
+    keep = _load("keep_both")
+    base, ours, theirs = (tmp_path / n for n in ("b.md", "o.md", "t.md"))
+    base.write_bytes(b"# base\r\n")
+    ours.write_bytes(b"# ours\r\nOUR\r\n")
+    theirs.write_bytes(b"# theirs\r\nTHEIR\r\n")
+    assert keep.main(["x", str(base), str(ours), str(theirs)]) == 0
+    with open(ours, "rb") as fh:
+        after = fh.read()
+    assert b"OUR\r\n" in after and b"THEIR\r\n" in after, after
+
+
+def test_refuse_reports_when_even_the_marker_fails(tmp_path, capsys):
+    """The fix for the R3 blocker shipped without a test of its own."""
+    union = _load("journal_union")
+    base, ours, theirs = (tmp_path / n for n in ("b.csv", "o.csv", "t.csv"))
+    _write(base, ACTION_HEADER, [])
+    _write(ours, ACTION_HEADER, ["A0009,r,OURS,2026-09-07T10:00:00Z,x,y,z,n"])
+    _write(theirs, ACTION_HEADER, ["A0009,r,THEIRS,2026-09-07T10:00:00Z,x,y,z,n"])
+    (tmp_path / ("o.csv" + union.TMP_SUFFIX)).mkdir()      # block the replace
+    monkey = union.mark_unresolved
+    union.mark_unresolved = lambda path: False             # and the append
+    try:
+        assert union.main(["x", str(base), str(ours), str(theirs)]) == 1
+    finally:
+        union.mark_unresolved = monkey
+    err = capsys.readouterr().err
+    # Must be _refuse's OWN line: write_conflict prints a similar warning,
+    # so asserting the shared phrase passes even with this branch deleted.
+    assert "could not even mark" in err, err
+
+
+def test_install_does_not_reenable_a_disabled_chained_hook(tmp_path):
+    """`chmod -x` on the chained hook is the user's off-switch."""
+    repo = _scratch_repo(tmp_path)
+    os.makedirs(os.path.dirname(_hook(repo)), exist_ok=True)
+    with open(_hook(repo), "w") as fh:
+        fh.write("#!/bin/sh\necho TEAM\n")
+    os.chmod(_hook(repo), 0o755)
+    _install(repo)
+    hooks_dir = os.path.dirname(_hook(repo))
+    prior = [f for f in os.listdir(hooks_dir) if "pre-adr0109" in f][0]
+    os.chmod(os.path.join(hooks_dir, prior), 0o644)        # user disables it
+    _install(repo)
+    mode = os.stat(os.path.join(hooks_dir, prior)).st_mode
+    assert not mode & 0o111, "the reinstall silently re-enabled it"
+
+
+def test_the_temp_suffix_is_actually_ignored_by_git(tmp_path):
+    """Assert git's own answer, not a substring of .gitignore."""
+    union = _load("journal_union")
+    name = ".merge_file_aBcDeF" + union.TMP_SUFFIX
+    done = subprocess.run(
+        ["git", "check-ignore", "-q", name], cwd=REPO_ROOT
+    )
+    assert done.returncode == 0, f"{name} is not ignored"
