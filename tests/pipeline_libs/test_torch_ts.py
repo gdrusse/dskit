@@ -634,7 +634,7 @@ def test_categorical_recurrent_fusion_keeps_static_features_outside_time(arch):
     assert model._module.head.in_features == 4 + 3 + 2
 
 
-@pytest.mark.parametrize("arch", ["tcn", "transformer"])
+@pytest.mark.parametrize("arch", ["tcn", "transformer", "tft"])
 def test_categorical_temporal_fusion_keeps_static_features_outside_time(arch):
     import numpy as np
 

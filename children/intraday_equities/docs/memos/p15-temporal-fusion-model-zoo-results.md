@@ -1,4 +1,4 @@
-# P15 temporal-fusion model-zoo results
+# Pooled model-zoo results (P15/P16, P17 partial)
 
 ## Outcome
 
@@ -27,13 +27,34 @@ best-fold-excluded mean of -0.001088. Transformer was positive in 10/20 folds,
 with median 0.000098 and a best-fold-excluded mean of -0.000992. The small
 positive means are therefore not robust promotion evidence.
 
-## Nine-model reference across completed zoos
+## P16 TFT-lite vs Ridge (sequence zoo)
 
-This reference includes every model in the three completed zoos. Rankings
-across P13, P14, and P15 are descriptive only: the studies did not all use the
-same eligible origin rows or approved inventory, so cross-zoo differences are
-not paired hypothesis tests. Statistical claims remain confined to each zoo's
-own comparison artifact.
+P16 paired a TFT-lite candidate (channel VSN, LSTM encoder, gated attention —
+ADR-0051) against a bit-reproducible re-run of the P15 Ridge frontier on the
+identical session-local one-minute OHLCV sequence design. The TFT tower added
+a learned symbol embedding and the shared late-fusion head; its HPO swept
+`context_length`, width, depth, `nhead`, projection/embedding dims, epochs,
+`lr`, `weight_decay`, `batch_size`, and `dropout`.
+
+| rank | candidate | mean path score | fold standard deviation |
+| ---: | --- | ---: | ---: |
+| 1 | pooled OHLCV Ridge fusion (re-run) | 0.001346 | 0.009173 |
+| 2 | pooled OHLCV TFT-lite fusion | 0.000608 | 0.005520 |
+
+Ridge minus TFT was 0.000738 (HAC standard error 0.001270, `p=0.561241`) —
+no detectable difference under Bonferroni (threshold 0.05, single pair). TFT
+was positive in 9/20 folds; its positive mean rode one strong fold (0.010953
+at fold 7) and is negative excluding it. The TFT's mean sits slightly below
+the P15 Transformer (0.000835) and above the P15 TCN (0.000409), so adding
+gated attention over the LSTM encoder did not rescue the sequence tower.
+
+## Eleven-model reference across completed zoos
+
+This reference includes every model across the completed zoos. Rankings
+across P13, P14, P15, and P16 are descriptive only: the studies did not all
+use the same eligible origin rows or approved inventory, so cross-zoo
+differences are not paired hypothesis tests. Statistical claims remain
+confined to each zoo's own comparison artifact.
 
 | zoo | model | mean path score | fold standard deviation | within-zoo reading |
 | --- | --- | ---: | ---: | --- |
@@ -46,13 +67,37 @@ own comparison artifact.
 | P15 | pooled OHLCV Ridge fusion | 0.001346 | 0.009173 | selected simplest P15 frontier; fragile across folds |
 | P15 | pooled OHLCV small Transformer fusion | 0.000835 | 0.010375 | no detected improvement over Ridge |
 | P15 | pooled OHLCV TCN fusion | 0.000409 | 0.008933 | no detected improvement over Ridge |
+| P16 | pooled OHLCV TFT-lite fusion | 0.000608 | 0.005520 | no detected improvement over the re-run Ridge frontier |
+| P16 | pooled OHLCV Ridge (re-run) | 0.001346 | 0.009173 | bit-reproducible re-run of the P15 Ridge frontier |
+
+*P17 (pooled RandomForest) did not finish — see the note below.*
 
 The broad evidence still favors P13 pooled native LightGBM as the practical
 development frontier: it has the highest descriptive mean, the lowest-cost
 strong representation, and the only result positive in all twenty folds.
-P15 adds a useful negative result: changing recurrent sequence bias to
-convolution or causal attention did not beat a flattened linear sequence
-baseline on the common P14/P15 sequence-eligible design.
+P15 and P16 add useful negative results: neither recurrent fusion nor
+attention-based channel fusion (TFT) beat the flattened linear sequence
+baseline on the common P14/P15/P16 sequence-eligible design.
+
+### P17 RandomForest — terminated early; indistinguishable through two folds
+
+*P17 paired a pooled `RandomForestRegressor` (native `max_features`, `symbol_code`
+as a numeric code) against a bit-reproducible re-run of the P13 LightGBM
+frontier on the identical tabular cohort, folds, and leads. The RandomForest
+was terminated by owner decision after two of twenty folds at ~28 minutes per
+lead (an estimated ~90-hour total, CPU-bound), so no paired comparison
+artifact exists. The cut is recorded in the journal; RF's two completed folds
+are partial evidence, not a result.*
+
+*The direct head-to-head over those two folds and all ten leads was
+statistically indistinguishable: the per-symbol out-of-sample R² deltas flip
+sign between folds (fold 1 favors LightGBM by ~0.001 mean; fold 2 favors RF by
+~0.0003 mean), the horizon-decay shape is identical (signal strongest at
+lead 1, fading to ~0 by lead 10), and the same symbols light up for both
+models. The consistent reading is RF ≈ LightGBM in accuracy at roughly
+50× the fit cost. The judgment call is to record RF as indistinguishable
+rather than spend four further CPU-days to re-confirm it. No RandomForest
+candidate was promoted or refit.*
 
 The read-only cross-benchmark selector was rerun after P15 completion. It
 accepted all three pinned sources and all nine candidates, and selected P13
@@ -125,3 +170,21 @@ and two existing Kronos purity assertions; none reads the P15 candidate paths.
   `pipeline_runs/model-select-staged-2026-02-28-ef2e8f37/stages/select.json`
 - selector artifact SHA-256:
   `df474f644fa918edead34a4e034ebdbb415c2d819e37cd178df35be92a4bcf0e`
+
+## Immutable evidence — P16 and P17
+
+- P16 configuration: `configs/run-p16-tft-fusion-zoo.json`
+- P16 benchmark identity: `18568e4401f0168c3ef4340e131ff95e3b1f61e9ab0c0fc581a211301613d349`
+- P16 approved inventory: `dadff5d74c4ebe1a86f3bf93c7964d81e7ad5c5c291ec776a0678b6f351ae73f`
+- P16 staged run: `pipeline_runs/p16-tft-fusion-zoo-staged-2026-02-28-18568e44`
+- P16 comparison artifact: `stages/compare.json`, SHA-256
+  `eb96d00cd14a4ead361ef54dcbd050f2aaf64e002c0175800196d73f4da1f859`
+- TFT summary: `pipeline_runs/tft-pooled-h10-walkforward-2026-02-28-f52a027c`
+- P16 Ridge summary: `pipeline_runs/ridge-p16-pooled-h10-walkforward-2026-02-28-6f928fc1`
+- P17 configuration: `configs/run-p17-randomforest-zoo.json`
+- P17 approved inventory: `c97fb8d47dfd88e84495e1a457a0adf93c8d5b3a7c1caf55da0263b3c47ce081`
+- P17 terminated after two RF folds (owner decision); the paired LightGBM
+  re-run completed: `pipeline_runs/lgbm-p17-pooled-h10-walkforward-2026-02-28-c9b824ba`
+  (mean 0.006401, a bit-reproducible match to the P13 LightGBM).
+- journal evidence: P16 A18783-A18798; TFT walk A18796; P17 LightGBM A18799;
+  RF termination + result memo A18800.

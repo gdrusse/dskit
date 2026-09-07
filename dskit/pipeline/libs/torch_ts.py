@@ -1414,7 +1414,7 @@ class CategoricalRecurrentFusionRegressor:
 
 
 class CategoricalTemporalFusionRegressor(CategoricalRecurrentFusionRegressor):
-    """Late-fuse a causal TCN or Transformer with static/entity features.
+    """Late-fuse a causal TCN, Transformer, or TFT-lite with static/entity features.
 
     This preserves :class:`CategoricalRecurrentFusionRegressor`'s sequence
     parsing, causal OHLCV normalization, train-only standardization, static
@@ -1468,8 +1468,8 @@ class CategoricalTemporalFusionRegressor(CategoricalRecurrentFusionRegressor):
         import torch
 
         arch = str(self.arch).lower()
-        if arch not in ("tcn", "transformer"):
-            raise ValueError("arch must be tcn or transformer")
+        if arch not in ("tcn", "transformer", "tft"):
+            raise ValueError("arch must be tcn, transformer, or tft")
         hidden = int(self.hidden_size)
         layers = int(self.num_layers)
         projection = int(self.static_projection_dim)
@@ -1482,7 +1482,7 @@ class CategoricalTemporalFusionRegressor(CategoricalRecurrentFusionRegressor):
             raise ValueError("temporal fusion dimensions must all be positive")
         if arch == "tcn" and kernel % 2 == 0:
             raise ValueError("kernel_size must be odd")
-        if arch == "transformer" and hidden % nhead != 0:
+        if arch in ("transformer", "tft") and hidden % nhead != 0:
             raise ValueError("hidden_size must be divisible by nhead")
         if not 0.0 <= dropout < 1.0:
             raise ValueError("dropout must lie in [0, 1)")
@@ -1510,7 +1510,7 @@ class CategoricalTemporalFusionRegressor(CategoricalRecurrentFusionRegressor):
                     self.in_proj = None
                     self.position = None
                     self.encoder = None
-                else:
+                elif arch == "transformer":
                     self.blocks = None
                     self.in_proj = torch.nn.Linear(fields, hidden)
                     self.position = torch.nn.Parameter(
@@ -1526,6 +1526,23 @@ class CategoricalTemporalFusionRegressor(CategoricalRecurrentFusionRegressor):
                         norm_first=False,
                     )
                     self.encoder = torch.nn.TransformerEncoder(layer, layers)
+                else:
+                    self.blocks = None
+                    self.vsn = torch.nn.Linear(fields, fields)
+                    self.in_proj = torch.nn.Linear(fields, hidden)
+                    self.lstm = torch.nn.LSTM(
+                        hidden,
+                        hidden,
+                        num_layers=layers,
+                        batch_first=True,
+                        dropout=dropout if layers > 1 else 0.0,
+                    )
+                    self.attn = torch.nn.MultiheadAttention(
+                        hidden, nhead, dropout=dropout, batch_first=True,
+                    )
+                    self.gate = torch.nn.Linear(hidden * 2, hidden)
+                    self.position = None
+                    self.encoder = None
                 self.static = torch.nn.Sequential(
                     torch.nn.Linear(n_static, projection),
                     torch.nn.ReLU(),
@@ -1543,12 +1560,23 @@ class CategoricalTemporalFusionRegressor(CategoricalRecurrentFusionRegressor):
                         temporal = torch.nn.functional.pad(temporal, (left, 0))
                         temporal = torch.relu(block(temporal))
                     encoded = temporal.mean(dim=-1)
-                else:
+                elif arch == "transformer":
                     temporal = self.in_proj(sequence) + self.position
                     causal = torch.nn.Transformer.generate_square_subsequent_mask(
                         temporal.size(1), device=temporal.device
                     )
                     encoded = self.encoder(temporal, mask=causal)[:, -1, :]
+                else:
+                    weights = torch.softmax(self.vsn(sequence.mean(dim=1)), dim=-1)
+                    selected = sequence * weights.unsqueeze(1)
+                    temporal = torch.relu(self.in_proj(selected))
+                    encoded_seq, _ = self.lstm(temporal)
+                    attended, _ = self.attn(encoded_seq, encoded_seq, encoded_seq)
+                    last = encoded_seq[:, -1]
+                    fused = torch.sigmoid(
+                        self.gate(torch.cat([last, attended[:, -1]], dim=-1))
+                    )
+                    encoded = fused * last
                 joined = torch.cat(
                     [encoded, self.static(static), self.embedding(category)],
                     dim=1,
