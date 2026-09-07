@@ -17,6 +17,15 @@ Three Nodes and one signal object, docs/25 §2 row 2:
   a :class:`~dskit.pipeline.fitted.FeatureSelector` whose rule is a
   dotted selector path (and optional inner ``estimator``).
 
+Plus one plain estimator wrapper, not a Node: :class:`ColumnSubsetRegressor`
+(ADR-0108) fits any estimator — named the same dotted way — on a declared
+``drop``/``keep`` subset of columns, so a feature MASK is an ordinary
+``estimator_params`` knob beside a candidate's hyperparameters rather than a
+second feature pipeline upstream. It forwards ``feature_names`` and
+``categorical_feature`` to the inner estimator, RE-INDEXED to the surviving
+columns, so a native categorical such as ``symbol_code`` stays declared
+correctly after masking shifts its position.
+
 This is a DOORWAY, not a model registry: the estimator is named by the
 document, constructed from the document's own ``estimator_params``, and
 nothing here hard-codes a family. A project's own problem-specific model
@@ -187,6 +196,7 @@ from dskit.pipeline.node import (
 )
 
 __all__ = [
+    "ColumnSubsetRegressor",
     "NODE_KINDS",
     "SklearnFit",
     "SklearnPredict",
@@ -693,6 +703,213 @@ class SklearnSignal:
         if hasattr(out, "__len__") and not isinstance(out, (str, bytes)):
             return [float(item) for item in out]
         return float(out)
+
+
+# ---------------------------------------------------------------------------
+# The column-mask estimator wrapper (ADR-0108) — a plain fit/predict object,
+# never a Node: it is named by the SAME dotted-path doorway as any other
+# estimator and lives in a document's estimator_params, never on a node kind
+# of its own.
+# ---------------------------------------------------------------------------
+
+
+def _accepts_kwarg(model, name):
+    """Report whether ``model.fit`` accepts the keyword ``name`` (or **kwargs)."""
+    import inspect
+
+    try:
+        parameters = inspect.signature(model.fit).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in parameters or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    )
+
+
+class ColumnSubsetRegressor:
+    """Fit any estimator on a declared subset of columns (ADR-0108).
+
+    A feature mask is a MODEL knob, not a second feature pipeline: this
+    wraps any estimator named by DOTTED import path (``module.ClassName``,
+    never the ``module:Class`` colon form a node's own ``estimator`` knob
+    takes) and fits it on the columns that survive a declared ``drop`` or
+    ``keep`` list of column names — exactly one of the two, never both,
+    never neither. A ``drop``/``keep`` name absent from ``feature_names``,
+    or a mask that would leave zero surviving columns, refuses BY NAME
+    naming the offender, because a typo'd mask that quietly keeps (or
+    drops) everything reports a difference that never happened.
+
+    Both ``feature_names`` and ``categorical_feature`` are forwarded to
+    the wrapped estimator's ``fit`` when its signature accepts them
+    (inspected, never assumed) — subset and RE-INDEXED to the surviving
+    columns, so a native categorical such as ``symbol_code`` stays
+    declared categorical at its correct, shifted position instead of
+    silently pointing at whatever column now sits where it used to.
+    ``predict`` projects with the same column indices ``fit`` chose.
+
+    Parameters
+    ----------
+    estimator : str
+        Dotted import path of the wrapped estimator class, e.g.
+        ``"lightgbm.LGBMRegressor"``.
+    drop : list of str, optional
+        Column names to remove; every survivor keeps its ORIGINAL
+        column order. Exactly one of ``drop``/``keep`` must be given.
+    keep : list of str, optional
+        Column names to keep; every other column is removed. Exactly
+        one of ``drop``/``keep`` must be given.
+    **estimator_params
+        Forwarded verbatim to the wrapped estimator's constructor.
+
+    Examples
+    --------
+    Drop two stale lag columns and keep a trailing native-categorical
+    column declared at its ORIGINAL (pre-mask) index::
+
+        model = ColumnSubsetRegressor(
+            "lightgbm.LGBMRegressor",
+            drop=["ret_lag_5", "ret_lag_6"],
+            n_estimators=50,
+        )
+        model.fit(
+            x, y,
+            feature_names=["ret_lag_5", "ret_lag_6", "vol_5m", "symbol_code"],
+            categorical_feature=[3],
+        )
+        model.predict(x)
+        # -> one prediction per row, fit on ["vol_5m", "symbol_code"]
+        # alone, with categorical_feature=[1] (symbol_code's NEW index)
+        # reaching the wrapped LightGBM
+    """
+
+    def __init__(self, estimator, drop=None, keep=None, **estimator_params):
+        self.estimator = estimator
+        self.drop = drop
+        self.keep = keep
+        self.estimator_params = dict(estimator_params)
+        self._indices = None
+        self._model = None
+
+    def fit(self, x, y, feature_names=None, categorical_feature=None):
+        """Fit the wrapped estimator on the declared column subset.
+
+        Parameters
+        ----------
+        x : numpy.ndarray
+            Rows x full candidate columns, in ``feature_names`` order.
+        y : numpy.ndarray
+            Targets, one per row.
+        feature_names : list of str, optional
+            ``x``'s column names, in order. Required whenever ``drop``
+            or ``keep`` is declared — the mask cannot be verified by
+            name without them.
+        categorical_feature : list of int, optional
+            Indices into ``x`` (BEFORE masking) naming native
+            categorical columns. Re-indexed to the surviving columns
+            and forwarded to the wrapped estimator when its ``fit``
+            accepts the keyword; an index the mask removed is simply
+            not forwarded — there is no column left to declare.
+
+        Returns
+        -------
+        ColumnSubsetRegressor
+            ``self``, fitted.
+
+        Raises
+        ------
+        ValueError
+            Neither or both of ``drop``/``keep`` were declared; a
+            ``drop``/``keep`` name is absent from ``feature_names``;
+            the mask leaves zero surviving columns; or a mask is
+            declared and ``feature_names`` is ``None``.
+        """
+        import importlib
+
+        has_drop = self.drop is not None
+        has_keep = self.keep is not None
+        if has_drop == has_keep:
+            raise ValueError(
+                "ColumnSubsetRegressor requires exactly one of 'drop' or "
+                f"'keep', got drop={self.drop!r} keep={self.keep!r}"
+            )
+        knob, mask_names = (
+            ("drop", list(self.drop)) if has_drop else ("keep", list(self.keep))
+        )
+        if feature_names is None:
+            raise ValueError(
+                f"ColumnSubsetRegressor.{knob}={mask_names} is declared but "
+                "fit was called with feature_names=None — the mask cannot "
+                "be verified by name without them"
+            )
+        names = list(feature_names)
+        if len(names) != int(x.shape[1]):
+            raise ValueError(
+                f"feature_names has {len(names)} name(s) for a design "
+                f"matrix of {int(x.shape[1])} column(s)"
+            )
+        unknown = [name for name in mask_names if name not in names]
+        if unknown:
+            raise ValueError(
+                f"{knob} names {unknown} are not present in feature_names {names}"
+            )
+        if has_drop:
+            drop_set = set(mask_names)
+            indices = [i for i, name in enumerate(names) if name not in drop_set]
+        else:
+            keep_set = set(mask_names)
+            indices = [i for i, name in enumerate(names) if name in keep_set]
+        if not indices:
+            raise ValueError(
+                f"{knob}={mask_names} leaves zero surviving columns of {names}"
+            )
+
+        module_name, _, attr = self.estimator.rpartition(".")
+        if not module_name or not attr:
+            raise ValueError(
+                f"estimator must be a dotted import path, got {self.estimator!r}"
+            )
+        inner = getattr(importlib.import_module(module_name), attr)(
+            **self.estimator_params
+        )
+
+        fit_kwargs = {}
+        if _accepts_kwarg(inner, "feature_names"):
+            fit_kwargs["feature_names"] = [names[i] for i in indices]
+        if categorical_feature is not None and _accepts_kwarg(
+            inner, "categorical_feature"
+        ):
+            new_index = {old: new for new, old in enumerate(indices)}
+            fit_kwargs["categorical_feature"] = [
+                new_index[old] for old in categorical_feature if old in new_index
+            ]
+
+        inner.fit(x[:, indices], y, **fit_kwargs)
+        self._indices = indices
+        self._model = inner
+        return self
+
+    def predict(self, x):
+        """Predict with the fitted estimator, on the fitted column subset.
+
+        Parameters
+        ----------
+        x : numpy.ndarray
+            Rows x the SAME full candidate columns ``fit`` saw, in the
+            same order.
+
+        Returns
+        -------
+        numpy.ndarray
+            One prediction per row.
+
+        Raises
+        ------
+        RuntimeError
+            Called before ``fit``.
+        """
+        if self._model is None:
+            raise RuntimeError("ColumnSubsetRegressor is not fitted")
+        return self._model.predict(x[:, self._indices])
 
 
 # ---------------------------------------------------------------------------

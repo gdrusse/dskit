@@ -1,0 +1,829 @@
+{
+  "name": "p16-feature-mask-zoo",
+  "notes": "ADR-0108 (docs/architecture/decision-log.md): a fixed family-mask ablation over the P13 pooled LightGBM winner. Same sources, universe, memory stage, PooledGate3ZooCandidates materialization and 20-fold development walkforward as run-p13-pooled-model-zoo.json; the five candidates below (full/short-lags/core-scales/no-cal-tail/lean) share one estimator family and one hpo_space and differ ONLY in the column mask ColumnSubsetRegressor.drop carries in estimator_params — pipeline.features_* stays byte-identical across every candidate, so the benchmark contract keeps proving the rows were the same. Plan-only until the owner approves the exact inventory (see stages.approval).",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe-p13-pooled.json"
+      }
+    },
+    "source_a": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      },
+      "notes": "alpaca-sip-split holds eleven P10 names and SPY; SPY is the reference every group build reads from this source under its own group universe bound."
+    },
+    "source_c": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-c",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      }
+    },
+    "source_d": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-d",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      }
+    },
+    "source_e": {
+      "uses": "intraday_equities-bars",
+      "params": {
+        "root": "./ob",
+        "source": "alpaca-sip-split-e",
+        "universe": "configs/universe-p13-pooled.json",
+        "start_ms": 1514764800000,
+        "sessions": [
+          "rth"
+        ],
+        "shared_fields": [
+          "symbol",
+          "ts"
+        ]
+      }
+    },
+    "pooled": {
+      "uses": "concat",
+      "inputs": {
+        "a": "$source_a.records",
+        "c": "$source_c.records",
+        "d": "$source_d.records",
+        "e": "$source_e.records"
+      },
+      "params": {
+        "shape": "records",
+        "provenance_waiver": "Each immutable MarketRecord already carries its source; the five symbol namespaces are disjoint and checked below.",
+        "key": "symbol",
+        "consume_inputs": true
+      },
+      "notes": "Only source groups containing the 25 selected names are read; their symbol namespaces are disjoint and source_a also supplies SPY."
+    },
+    "features": {
+      "uses": "intraday_equities-session-features",
+      "inputs": {
+        "records": "$pooled.merged",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "lookback": 20,
+        "layout": "columns",
+        "dtype": "float32",
+        "include_klines": true,
+        "cache_dir": "./pipeline_cache/p13-features-f32-kronos-v1",
+        "momentum_horizons": [
+          {
+            "width": 3,
+            "tag": "3m",
+            "cross_session": false
+          },
+          {
+            "width": 120,
+            "tag": "2h",
+            "cross_session": true
+          },
+          {
+            "width": 180,
+            "tag": "3h",
+            "cross_session": true
+          },
+          {
+            "width": 780,
+            "tag": "2s",
+            "cross_session": true
+          },
+          {
+            "width": 1950,
+            "tag": "1w",
+            "cross_session": true
+          }
+        ]
+      }
+    },
+    "scan": {
+      "uses": "intraday_equities-no-information-scan",
+      "inputs": {
+        "records": "$features.records",
+        "bars": "$features.tape",
+        "spec": "$universe.spec"
+      },
+      "params": {
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
+        "val_start_ms": "$splits.val_start_ms",
+        "val_end_ms": "$splits.val_end_ms",
+        "label_scale": "vol",
+        "label_residual": "SPY",
+        "label_residual_self": "raw",
+        "fit_symbols": [
+          "LLY",
+          "QQQ",
+          "XLF",
+          "XLE",
+          "XLK",
+          "BAC",
+          "SMH",
+          "IWM",
+          "XBI",
+          "FCX",
+          "DAL",
+          "NRG",
+          "MET",
+          "MSTR",
+          "NOW",
+          "LULU",
+          "PANW",
+          "INTC",
+          "CIEN",
+          "LRCX",
+          "TER",
+          "BIDU",
+          "LITE",
+          "ADBE",
+          "ANET"
+        ],
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 1,
+        "score_period_ms": 1800000,
+        "estimator": "lightgbm.LGBMRegressor",
+        "estimator_params": {
+          "n_estimators": 800,
+          "learning_rate": 0.005,
+          "num_leaves": 4,
+          "max_depth": 2,
+          "min_child_samples": 2000,
+          "reg_lambda": 100.0,
+          "reg_alpha": 0.1,
+          "subsample": 0.5,
+          "subsample_freq": 1,
+          "colsample_bytree": 0.3,
+          "n_jobs": 8,
+          "random_state": 0,
+          "verbosity": -1
+        },
+        "score_symbols": [
+          "LLY",
+          "QQQ",
+          "XLF",
+          "XLE",
+          "XLK",
+          "BAC",
+          "SMH",
+          "IWM",
+          "XBI",
+          "FCX",
+          "DAL",
+          "NRG",
+          "MET",
+          "MSTR",
+          "NOW",
+          "LULU",
+          "PANW",
+          "INTC",
+          "CIEN",
+          "LRCX",
+          "TER",
+          "BIDU",
+          "LITE",
+          "ADBE",
+          "ANET"
+        ]
+      }
+    }
+  },
+  "walkforward": {
+    "objective": "$scan.metrics.val_ic",
+    "select": "max",
+    "first": "2022-05-06",
+    "step_days": 63,
+    "count": 20,
+    "val_days": 63,
+    "embargo_days": 5,
+    "train_days": 730
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        },
+        "notes": "Local sqlite beside the invoking cwd."
+      }
+    ],
+    "notes": "Excluded from identity - where metrics land is not what it computes."
+  },
+  "outputs": {
+    "run_root": "./pipeline_runs"
+  },
+  "stages": {
+    "calendar": {
+      "uses": "dskit.pipeline.program_calendar:ProgramCalendar",
+      "params": {
+        "path": "program-calendar-p13-model-zoo.json",
+        "phase": "model_zoo"
+      }
+    },
+    "memory": {
+      "uses": "intraday_equities.modelability_study:MemoryPreflightStage",
+      "params": {
+        "memory_limit_bytes": 18253611008,
+        "groups": {
+          "a": {
+            "universe": "configs/universe-p12-a.json",
+            "sources": [
+              "source_a"
+            ]
+          },
+          "c": {
+            "universe": "configs/universe-p12-c.json",
+            "sources": [
+              "source_a",
+              "source_c"
+            ]
+          },
+          "d": {
+            "universe": "configs/universe-p13-d-selected.json",
+            "sources": [
+              "source_a",
+              "source_d"
+            ]
+          },
+          "e": {
+            "universe": "configs/universe-p13-e-selected.json",
+            "sources": [
+              "source_a",
+              "source_e"
+            ]
+          }
+        }
+      },
+      "notes": "Build four bounded P13 group caches containing the frozen P12 feature matrix, label tape, and causal five-minute OHLCVA bars. The P12 caches remain untouched because write-once cache identity changes when K-lines are added. Groups D and E use P13 cohort-only universes plus SPY so unused P12 breadth candidates cannot inflate peak memory."
+    },
+    "materialize": {
+      "uses": "intraday_equities.model_zoo:PooledGate3ZooCandidates",
+      "inputs": {
+        "preflight": "$memory.passed",
+        "caches": "$memory.groups"
+      },
+      "params": {
+        "gate3_artifact": "../pipeline_runs/p12-g3-recovery-staged-2026-02-28-a1f293a2/stages/gate3_recovery.json",
+        "gate3_sha256": "098b21eaef6ee0260753d4f981ca2337bccae406b9efd394284d9b180ba03bd0",
+        "cache_groups": [
+          "a",
+          "c",
+          "d",
+          "e"
+        ],
+        "templates": [
+          {
+            "id": "full",
+            "family": "pooled-lightgbm",
+            "representation": "pooled-tabular-native-category",
+            "feature_policy": "all frozen P12 features; symbol_code is native categorical (control, no mask)",
+            "feature_source": "tabular",
+            "seed_policy": "fixed seed 0 with purged inner HPO",
+            "compute_class": "cpu-medium",
+            "compute_rank": 1,
+            "enabled": true,
+            "notes": "ADR-0108 control: the plain lightgbm.LGBMRegressor with no ColumnSubsetRegressor wrapper, byte-identical to P13's incumbent lgbm candidate's model block. hpo_space and hpo_trials are UNCHANGED from P13's lgbm candidate (ADR-0108): this zoo isolates the feature set, and searching the space too at the same time would confound the ablation.",
+            "model": {
+              "estimator": "lightgbm.LGBMRegressor",
+              "estimator_params": {
+                "n_estimators": 600,
+                "learning_rate": 0.01,
+                "num_leaves": 8,
+                "max_depth": 3,
+                "min_child_samples": 1000,
+                "reg_lambda": 100.0,
+                "reg_alpha": 0.1,
+                "subsample": 0.7,
+                "subsample_freq": 1,
+                "colsample_bytree": 0.5,
+                "n_jobs": 8,
+                "random_state": 0,
+                "verbosity": -1
+              },
+              "hpo_trials": 4,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "num_leaves": [
+                  4,
+                  8,
+                  16
+                ],
+                "max_depth": [
+                  2,
+                  3,
+                  4
+                ],
+                "min_child_samples": [
+                  500,
+                  1000,
+                  2000
+                ],
+                "reg_lambda": [
+                  10.0,
+                  100.0,
+                  1000.0
+                ],
+                "reg_alpha": [
+                  0.0,
+                  0.1,
+                  1.0
+                ],
+                "colsample_bytree": [
+                  0.3,
+                  0.5,
+                  0.7
+                ]
+              }
+            }
+          },
+          {
+            "id": "short-lags",
+            "family": "pooled-lightgbm",
+            "representation": "pooled-tabular-native-category",
+            "feature_policy": "all frozen P12 features except ret_lag_5..19 (the 15 oldest one-minute return lags); symbol_code is native categorical",
+            "feature_source": "tabular",
+            "seed_policy": "fixed seed 0 with purged inner HPO",
+            "compute_class": "cpu-medium",
+            "compute_rank": 2,
+            "enabled": true,
+            "notes": "ADR-0108: drops ret_lag_5..ret_lag_19 (15 of the 20 lag columns) via ColumnSubsetRegressor.drop to test whether the tail of one-minute lags beyond ret_lag_4 is noise. hpo_space and hpo_trials are UNCHANGED from P13's lgbm candidate (ADR-0108): this zoo isolates the feature set, and searching the space too at the same time would confound the ablation.",
+            "model": {
+              "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetRegressor",
+              "estimator_params": {
+                "estimator": "lightgbm.LGBMRegressor",
+                "drop": [
+                  "ret_lag_5",
+                  "ret_lag_6",
+                  "ret_lag_7",
+                  "ret_lag_8",
+                  "ret_lag_9",
+                  "ret_lag_10",
+                  "ret_lag_11",
+                  "ret_lag_12",
+                  "ret_lag_13",
+                  "ret_lag_14",
+                  "ret_lag_15",
+                  "ret_lag_16",
+                  "ret_lag_17",
+                  "ret_lag_18",
+                  "ret_lag_19"
+                ],
+                "n_estimators": 600,
+                "learning_rate": 0.01,
+                "num_leaves": 8,
+                "max_depth": 3,
+                "min_child_samples": 1000,
+                "reg_lambda": 100.0,
+                "reg_alpha": 0.1,
+                "subsample": 0.7,
+                "subsample_freq": 1,
+                "colsample_bytree": 0.5,
+                "n_jobs": 8,
+                "random_state": 0,
+                "verbosity": -1
+              },
+              "hpo_trials": 4,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "num_leaves": [
+                  4,
+                  8,
+                  16
+                ],
+                "max_depth": [
+                  2,
+                  3,
+                  4
+                ],
+                "min_child_samples": [
+                  500,
+                  1000,
+                  2000
+                ],
+                "reg_lambda": [
+                  10.0,
+                  100.0,
+                  1000.0
+                ],
+                "reg_alpha": [
+                  0.0,
+                  0.1,
+                  1.0
+                ],
+                "colsample_bytree": [
+                  0.3,
+                  0.5,
+                  0.7
+                ]
+              }
+            }
+          },
+          {
+            "id": "core-scales",
+            "family": "pooled-lightgbm",
+            "representation": "pooled-tabular-native-category",
+            "feature_policy": "all frozen P12 features except the 2s/1w/3s multi-day scale families (ret/rv/range/vol/amihud/mom for 3s, ret/rv/mom for 2s and 1w); symbol_code is native categorical",
+            "feature_source": "tabular",
+            "seed_policy": "fixed seed 0 with purged inner HPO",
+            "compute_class": "cpu-medium",
+            "compute_rank": 3,
+            "enabled": true,
+            "notes": "ADR-0108: drops the three multi-day scale families (base scale 3s plus momentum_horizons 2s and 1w) via ColumnSubsetRegressor.drop to test whether multi-day scales carry the h=1..10 forecast. hpo_space and hpo_trials are UNCHANGED from P13's lgbm candidate (ADR-0108): this zoo isolates the feature set, and searching the space too at the same time would confound the ablation.",
+            "model": {
+              "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetRegressor",
+              "estimator_params": {
+                "estimator": "lightgbm.LGBMRegressor",
+                "drop": [
+                  "ret_3s",
+                  "rv_3s",
+                  "range_3s",
+                  "vol_3s",
+                  "amihud_3s",
+                  "mom_3s",
+                  "ret_2s",
+                  "rv_2s",
+                  "mom_2s",
+                  "ret_1w",
+                  "rv_1w",
+                  "mom_1w"
+                ],
+                "n_estimators": 600,
+                "learning_rate": 0.01,
+                "num_leaves": 8,
+                "max_depth": 3,
+                "min_child_samples": 1000,
+                "reg_lambda": 100.0,
+                "reg_alpha": 0.1,
+                "subsample": 0.7,
+                "subsample_freq": 1,
+                "colsample_bytree": 0.5,
+                "n_jobs": 8,
+                "random_state": 0,
+                "verbosity": -1
+              },
+              "hpo_trials": 4,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "num_leaves": [
+                  4,
+                  8,
+                  16
+                ],
+                "max_depth": [
+                  2,
+                  3,
+                  4
+                ],
+                "min_child_samples": [
+                  500,
+                  1000,
+                  2000
+                ],
+                "reg_lambda": [
+                  10.0,
+                  100.0,
+                  1000.0
+                ],
+                "reg_alpha": [
+                  0.0,
+                  0.1,
+                  1.0
+                ],
+                "colsample_bytree": [
+                  0.3,
+                  0.5,
+                  0.7
+                ]
+              }
+            }
+          },
+          {
+            "id": "no-cal-tail",
+            "family": "pooled-lightgbm",
+            "representation": "pooled-tabular-native-category",
+            "feature_policy": "all frozen P12 features except the day-of-week/month/holiday calendar tail (dow_sin, dow_cos, month_sin, month_cos, after_holiday, session_gap_days); symbol_code is native categorical",
+            "feature_source": "tabular",
+            "seed_policy": "fixed seed 0 with purged inner HPO",
+            "compute_class": "cpu-medium",
+            "compute_rank": 4,
+            "enabled": true,
+            "notes": "ADR-0108: drops the six calendar-tail columns via ColumnSubsetRegressor.drop to test whether that tail is dead weight. hpo_space and hpo_trials are UNCHANGED from P13's lgbm candidate (ADR-0108): this zoo isolates the feature set, and searching the space too at the same time would confound the ablation.",
+            "model": {
+              "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetRegressor",
+              "estimator_params": {
+                "estimator": "lightgbm.LGBMRegressor",
+                "drop": [
+                  "dow_sin",
+                  "dow_cos",
+                  "month_sin",
+                  "month_cos",
+                  "after_holiday",
+                  "session_gap_days"
+                ],
+                "n_estimators": 600,
+                "learning_rate": 0.01,
+                "num_leaves": 8,
+                "max_depth": 3,
+                "min_child_samples": 1000,
+                "reg_lambda": 100.0,
+                "reg_alpha": 0.1,
+                "subsample": 0.7,
+                "subsample_freq": 1,
+                "colsample_bytree": 0.5,
+                "n_jobs": 8,
+                "random_state": 0,
+                "verbosity": -1
+              },
+              "hpo_trials": 4,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "num_leaves": [
+                  4,
+                  8,
+                  16
+                ],
+                "max_depth": [
+                  2,
+                  3,
+                  4
+                ],
+                "min_child_samples": [
+                  500,
+                  1000,
+                  2000
+                ],
+                "reg_lambda": [
+                  10.0,
+                  100.0,
+                  1000.0
+                ],
+                "reg_alpha": [
+                  0.0,
+                  0.1,
+                  1.0
+                ],
+                "colsample_bytree": [
+                  0.3,
+                  0.5,
+                  0.7
+                ]
+              }
+            }
+          },
+          {
+            "id": "lean",
+            "family": "pooled-lightgbm",
+            "representation": "pooled-tabular-native-category",
+            "feature_policy": "all frozen P12 features except the union of short-lags, core-scales and no-cal-tail's drops (33 columns); symbol_code is native categorical",
+            "feature_source": "tabular",
+            "seed_policy": "fixed seed 0 with purged inner HPO",
+            "compute_class": "cpu-medium",
+            "compute_rank": 5,
+            "enabled": true,
+            "notes": "ADR-0108: the combination test the owner asked for — the union of the three single-family drop lists above, via ColumnSubsetRegressor.drop, so a deficit here that none of the three parts show in isolation is discoverable. hpo_space and hpo_trials are UNCHANGED from P13's lgbm candidate (ADR-0108): this zoo isolates the feature set, and searching the space too at the same time would confound the ablation.",
+            "model": {
+              "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetRegressor",
+              "estimator_params": {
+                "estimator": "lightgbm.LGBMRegressor",
+                "drop": [
+                  "after_holiday",
+                  "amihud_3s",
+                  "dow_cos",
+                  "dow_sin",
+                  "mom_1w",
+                  "mom_2s",
+                  "mom_3s",
+                  "month_cos",
+                  "month_sin",
+                  "range_3s",
+                  "ret_1w",
+                  "ret_2s",
+                  "ret_3s",
+                  "ret_lag_10",
+                  "ret_lag_11",
+                  "ret_lag_12",
+                  "ret_lag_13",
+                  "ret_lag_14",
+                  "ret_lag_15",
+                  "ret_lag_16",
+                  "ret_lag_17",
+                  "ret_lag_18",
+                  "ret_lag_19",
+                  "ret_lag_5",
+                  "ret_lag_6",
+                  "ret_lag_7",
+                  "ret_lag_8",
+                  "ret_lag_9",
+                  "rv_1w",
+                  "rv_2s",
+                  "rv_3s",
+                  "session_gap_days",
+                  "vol_3s"
+                ],
+                "n_estimators": 600,
+                "learning_rate": 0.01,
+                "num_leaves": 8,
+                "max_depth": 3,
+                "min_child_samples": 1000,
+                "reg_lambda": 100.0,
+                "reg_alpha": 0.1,
+                "subsample": 0.7,
+                "subsample_freq": 1,
+                "colsample_bytree": 0.5,
+                "n_jobs": 8,
+                "random_state": 0,
+                "verbosity": -1
+              },
+              "hpo_trials": 4,
+              "hpo_seed": 0,
+              "hpo_val_days": 63,
+              "hpo_embargo_days": 5,
+              "hpo_objective": "ic",
+              "hpo_space": {
+                "num_leaves": [
+                  4,
+                  8,
+                  16
+                ],
+                "max_depth": [
+                  2,
+                  3,
+                  4
+                ],
+                "min_child_samples": [
+                  500,
+                  1000,
+                  2000
+                ],
+                "reg_lambda": [
+                  10.0,
+                  100.0,
+                  1000.0
+                ],
+                "reg_alpha": [
+                  0.0,
+                  0.1,
+                  1.0
+                ],
+                "colsample_bytree": [
+                  0.3,
+                  0.5,
+                  0.7
+                ]
+              }
+            }
+          }
+        ],
+        "path_protocol": {
+          "forecast_strategy": "direct_per_lead",
+          "horizon_weighting": "equal_asset_equal_within_asset",
+          "fit_universe": "all_gate3_passers_each_lead",
+          "score_universe": "certified_horizon_includes_lead"
+        }
+      }
+    },
+    "plan": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkPlan",
+      "inputs": {
+        "phase": "$calendar.phase",
+        "calendar_sha256": "$calendar.calendar_sha256",
+        "candidates": "$materialize.candidates"
+      },
+      "params": {
+        "protocol": {
+          "attempt_family": "intraday-equities-p16-feature-mask-zoo",
+          "primary_score": "equal-stock and equal-within-stock mean train-scaled squared-error improvement over each stock's train-only mean",
+          "null_baseline": "per-stock train-only no-information mean",
+          "cost_model": "one pooled direct fit per lead and fold; declared compute ranks",
+          "lockbox": "no candidate may read at or after 2026-03-01",
+          "decision_rule": "compare paired outer-fold path scores; report only, never auto-promote",
+          "alpha": 0.05,
+          "comparison_hac_lags": 1,
+          "multiplicity_method": "bonferroni_all_pairwise",
+          "indifference_method": "paired_fold_newey_west_no_detectable_difference"
+        },
+        "contract_paths": [
+          "pipeline.universe",
+          "pipeline.features_a",
+          "pipeline.features_c",
+          "pipeline.features_d",
+          "pipeline.features_e",
+          "pipeline.pooled_features_a",
+          "pipeline.pooled_features_c",
+          "pipeline.pooled_features_d",
+          "pipeline.pooled_features_e",
+          "pipeline.pooled_tape_a",
+          "pipeline.pooled_tape_c",
+          "pipeline.pooled_tape_d",
+          "pipeline.pooled_tape_e",
+          "pipeline.pooled_features",
+          "pipeline.reference_tape",
+          "pipeline.scan_h01.uses",
+          "pipeline.scan_h01.inputs.bars",
+          "pipeline.scan_h01.inputs.spec",
+          "pipeline.scan_h01.params.split",
+          "pipeline.scan_h01.params.label_scale",
+          "pipeline.scan_h01.params.label_residual",
+          "pipeline.scan_h01.params.label_residual_self",
+          "pipeline.scan_h01.params.fit_symbols",
+          "pipeline.scan_h01.params.score_symbols",
+          "pipeline.scan_h01.params.lead_start",
+          "pipeline.scan_h01.params.lead_step",
+          "pipeline.scan_h01.params.lead_stop",
+          "pipeline.scan_h01.params.score_period_ms",
+          "pipeline.scan_h01.params.common_lead_stop",
+          "pipeline.scan_h01.params.common_origin_policy",
+          "pipeline.path.uses",
+          "pipeline.path.params.split",
+          "pipeline.path.params.asset_horizons",
+          "pipeline.path.params.horizon_weighting",
+          "pipeline.path.params.score",
+          "walkforward.objective",
+          "walkforward.select",
+          "walkforward.first",
+          "walkforward.step_days",
+          "walkforward.count",
+          "walkforward.val_days",
+          "walkforward.embargo_days",
+          "walkforward.train_days"
+        ]
+      }
+    },
+    "approval": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkApproval",
+      "inputs": {
+        "inventory_sha256": "$plan.inventory_sha256"
+      },
+      "params": {
+        "approved_inventory_sha256": "PENDING-PLAN-REVIEW",
+        "approved_by": "PENDING-PLAN-REVIEW",
+        "approval_note": "Awaiting owner review of this exact five-candidate feature-mask inventory (ADR-0108): control full, three single-family drops (short-lags, core-scales, no-cal-tail), and their union (lean). Each candidate uses four inner HPO trials on P13's unchanged lgbm hpo_space, exploratory-screen scale, not an exhaustive ceiling — the mask is the only thing this zoo varies."
+      }
+    },
+    "run": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkRun",
+      "inputs": {
+        "candidates": "$plan.candidates",
+        "approval": "$approval.approval"
+      }
+    },
+    "compare": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkCompare",
+      "inputs": {
+        "runs": "$run.runs",
+        "protocol": "$plan.protocol",
+        "contracts": "$plan.contracts",
+        "approval": "$approval.approval"
+      }
+    }
+  }
+}

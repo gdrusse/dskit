@@ -1016,3 +1016,98 @@ def test_the_finalist_names_no_model_and_takes_the_selectors_winner():
     assert document["stages"]["select"]["params"]["select"] == "max"
     declared = json.dumps(finalist["params"]["templates"])
     assert "pooled-h" not in declared
+
+
+def test_p16_feature_mask_zoo_masks_are_real_and_isolate_the_feature_set():
+    """ADR-0108: five candidates, one estimator family, one hpo_space —
+    the declared column mask is the only thing that differs between them.
+    """
+    raw = _raw("run-p16-feature-mask-zoo.json")
+    p13 = _raw("run-p13-pooled-model-zoo.json")
+    universe = _raw("universe-p13-pooled.json")
+    features = raw["pipeline"]["features"]["params"]
+
+    real_names = set(
+        _emit_feature_names(
+            features["lookback"],
+            universe["scales"],
+            universe["reference"],
+            (),
+            features["momentum_horizons"],
+            (),
+        )
+    ) | {"symbol_code"}
+
+    templates = raw["stages"]["materialize"]["params"]["templates"]
+    assert [row["id"] for row in templates] == [
+        "full",
+        "short-lags",
+        "core-scales",
+        "no-cal-tail",
+        "lean",
+    ]
+
+    # The control declares NO mask, and is byte-identical to P13's own
+    # winning lgbm candidate's model block — same estimator, same
+    # hyperparameters, same hpo_space, nothing wrapped.
+    full = templates[0]["model"]
+    assert full == p13["stages"]["materialize"]["params"]["templates"][0]["model"]
+    assert full["estimator"] == "lightgbm.LGBMRegressor"
+    assert "drop" not in full["estimator_params"]
+    assert "keep" not in full["estimator_params"]
+
+    drops = {}
+    for template in templates[1:]:
+        tid, model = template["id"], template["model"]
+        assert model["estimator"] == (
+            "dskit.pipeline.libs.sklearn.ColumnSubsetRegressor"
+        ), tid
+        params = model["estimator_params"]
+        assert params["estimator"] == "lightgbm.LGBMRegressor", tid
+        assert "keep" not in params, tid
+        drop = params["drop"]
+        assert drop and len(set(drop)) == len(drop), tid  # non-empty, no dupes
+        missing = set(drop) - real_names
+        assert not missing, (tid, sorted(missing))
+        drops[tid] = frozenset(drop)
+
+    # lean is EXACTLY the union of the three single-family drop lists.
+    assert drops["lean"] == (
+        drops["short-lags"] | drops["core-scales"] | drops["no-cal-tail"]
+    )
+    # ...and the three single-family masks are pairwise disjoint, so the
+    # union is not silently smaller than the sum of the three parts.
+    assert not (drops["short-lags"] & drops["core-scales"])
+    assert not (drops["short-lags"] & drops["no-cal-tail"])
+    assert not (drops["core-scales"] & drops["no-cal-tail"])
+
+    # One estimator family, one hpo_space, one hpo_trials — across ALL
+    # five candidates, masked or not: this experiment isolates the
+    # feature set, so nothing about the search may also move.
+    hpo_fields = ("hpo_trials", "hpo_seed", "hpo_val_days", "hpo_embargo_days",
+                  "hpo_objective", "hpo_space")
+    baseline = {field: templates[0]["model"][field] for field in hpo_fields}
+    for template in templates[1:]:
+        model = template["model"]
+        assert {field: model[field] for field in hpo_fields} == baseline, template["id"]
+    assert templates[0]["model"]["hpo_trials"] == 4
+
+    # The plain LightGBM hyperparameters (everything but 'estimator' and
+    # the mask) are identical across all five candidates too.
+    def _lgbm_kwargs(model):
+        params = dict(model["estimator_params"])
+        params.pop("estimator", None)
+        params.pop("drop", None)
+        return params
+
+    kwarg_sets = [_lgbm_kwargs(row["model"]) for row in templates]
+    assert all(kwargs == kwarg_sets[0] for kwargs in kwarg_sets[1:])
+
+    # Plan-only: the approval stage carries the pending placeholder, never
+    # a real (or fabricated) hash — nothing here may run un-reviewed.
+    approval = raw["stages"]["approval"]["params"]
+    assert approval["approved_inventory_sha256"] == "PENDING-PLAN-REVIEW"
+    assert approval["approved_by"] == "PENDING-PLAN-REVIEW"
+    assert approval["approved_inventory_sha256"] != (
+        p13["stages"]["approval"]["params"]["approved_inventory_sha256"]
+    )

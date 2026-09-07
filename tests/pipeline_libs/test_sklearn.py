@@ -15,6 +15,7 @@ import pathlib
 import re
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from dskit.pipeline.base import ConfigError
@@ -24,6 +25,7 @@ from dskit.pipeline.driver import run_document
 from dskit.pipeline.fitted import SIDECAR_NAME, FeatureSelector
 from dskit.pipeline.libs.sklearn import (
     NODE_KINDS,
+    ColumnSubsetRegressor,
     SklearnFit,
     SklearnPredict,
     SklearnSelect,
@@ -2005,3 +2007,250 @@ def test_docstring_classifier_line_carries_the_binary_only_caveat():
         if "predict_proba" in para and "LogisticRegression" in para
     )
     assert "binary" in block
+
+
+# ---------------------------------------------------------------------------
+# ColumnSubsetRegressor (ADR-0108): a feature mask is a MODEL knob
+# ---------------------------------------------------------------------------
+
+#: A four-column design matrix naming a real child shape: two stale lags,
+#: one real feature, and a trailing native categorical (``symbol_code``'s
+#: own position in the pooled scan's design matrix — ADR-0108's own
+#: worked example).
+MASK_COLUMNS = ["ret_lag_0", "ret_lag_1", "vol_5m", "symbol_code"]
+
+
+class _RecordingLstsq:
+    """Least-squares stub with a LightGBM-shaped ``fit`` signature.
+
+    Requires no external library — numpy alone — so the mask/remap logic
+    below is proven correct even where sklearn and lightgbm are both
+    absent; it RECORDS the ``feature_names``/``categorical_feature`` it
+    was given, which is what the index-remap tests read back.
+    """
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.seen_feature_names = None
+        self.seen_categorical_feature = None
+
+    def fit(self, x, y, feature_names=None, categorical_feature=None):
+        """Fit by least squares; record the two forwarded kwargs."""
+        self.seen_feature_names = (
+            None if feature_names is None else list(feature_names)
+        )
+        self.seen_categorical_feature = (
+            None if categorical_feature is None else list(categorical_feature)
+        )
+        design = np.column_stack([np.ones(x.shape[0]), x])
+        self.coef_, *_ = np.linalg.lstsq(design, y, rcond=None)
+        return self
+
+    def predict(self, x):
+        """Predict from the fitted least-squares coefficients."""
+        design = np.column_stack([np.ones(x.shape[0]), x])
+        return design @ self.coef_
+
+
+class _NoKwargsStub:
+    """``fit``/``predict`` with NEITHER optional kwarg — proves the
+    wrapper inspects the signature rather than assuming both exist."""
+
+    def fit(self, x, y):
+        """Fit a trivial all-ones coefficient vector."""
+        self.n_features_seen = int(x.shape[1])
+        self.coef_ = np.ones(x.shape[1])
+        return self
+
+    def predict(self, x):
+        """Predict via the fixed coefficient vector."""
+        return x @ self.coef_
+
+
+def _lstsq_path():
+    return f"{_RecordingLstsq.__module__}.{_RecordingLstsq.__name__}"
+
+
+def _no_kwargs_path():
+    return f"{_NoKwargsStub.__module__}.{_NoKwargsStub.__name__}"
+
+
+def mask_rows(n=40, seed=0):
+    """Deterministic rows over :data:`MASK_COLUMNS`.
+
+    ``y`` depends only on ``vol_5m`` and ``symbol_code`` — the two
+    columns every mask below keeps — so a correct projection loses no
+    signal and an incorrect one (wrong columns, wrong order) would.
+    """
+    rng = np.random.default_rng(seed)
+    x = rng.normal(size=(n, 4)).astype(np.float64)
+    x[:, 3] = (x[:, 3] > 0.0).astype(np.float64)  # symbol_code: 0/1
+    y = 2.0 * x[:, 2] + 1.5 * x[:, 3] + 0.01 * rng.normal(size=n)
+    return x, y
+
+
+def test_column_subset_drop_and_keep_agree_on_the_same_surviving_columns():
+    """Complementary ``drop``/``keep`` masks must choose the identical
+    subset and therefore predict identically."""
+    x, y = mask_rows()
+    dropped = ColumnSubsetRegressor(_lstsq_path(), drop=["ret_lag_0", "ret_lag_1"])
+    dropped.fit(x, y, feature_names=MASK_COLUMNS)
+    kept = ColumnSubsetRegressor(_lstsq_path(), keep=["vol_5m", "symbol_code"])
+    kept.fit(x, y, feature_names=MASK_COLUMNS)
+
+    assert dropped._indices == kept._indices == [2, 3]
+    assert np.allclose(dropped.predict(x), kept.predict(x))
+
+
+def test_column_subset_survivor_order_is_the_declared_candidate_order():
+    """``keep`` names its columns out of order; the survivors must keep
+    their ORIGINAL position in ``feature_names``, never the keep list's
+    order — a mask reorders nothing, it only removes."""
+    model = ColumnSubsetRegressor(_lstsq_path(), keep=["symbol_code", "vol_5m"])
+    x, y = mask_rows()
+    model.fit(x, y, feature_names=MASK_COLUMNS)
+    assert [MASK_COLUMNS[i] for i in model._indices] == ["vol_5m", "symbol_code"]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"drop": ["vol_5m"], "keep": ["vol_5m"]},  # both
+        {},  # neither
+    ],
+)
+def test_column_subset_refuses_both_or_neither_of_drop_and_keep(kwargs):
+    x, y = mask_rows()
+    model = ColumnSubsetRegressor(_lstsq_path(), **kwargs)
+    with pytest.raises(ValueError, match="exactly one of 'drop' or 'keep'"):
+        model.fit(x, y, feature_names=MASK_COLUMNS)
+
+
+def test_column_subset_refuses_a_drop_name_absent_from_feature_names():
+    x, y = mask_rows()
+    model = ColumnSubsetRegressor(_lstsq_path(), drop=["not_a_real_column"])
+    with pytest.raises(ValueError, match=re.escape("not_a_real_column")):
+        model.fit(x, y, feature_names=MASK_COLUMNS)
+
+
+def test_column_subset_refuses_a_keep_name_absent_from_feature_names():
+    x, y = mask_rows()
+    model = ColumnSubsetRegressor(_lstsq_path(), keep=["not_a_real_column"])
+    with pytest.raises(ValueError, match=re.escape("not_a_real_column")):
+        model.fit(x, y, feature_names=MASK_COLUMNS)
+
+
+def test_column_subset_refuses_a_mask_that_leaves_zero_surviving_columns():
+    x, y = mask_rows()
+    model = ColumnSubsetRegressor(_lstsq_path(), drop=list(MASK_COLUMNS))
+    with pytest.raises(ValueError, match="zero surviving columns"):
+        model.fit(x, y, feature_names=MASK_COLUMNS)
+
+
+def test_column_subset_refuses_a_declared_mask_with_no_feature_names():
+    x, y = mask_rows()
+    model = ColumnSubsetRegressor(_lstsq_path(), drop=["vol_5m"])
+    with pytest.raises(ValueError, match="feature_names=None"):
+        model.fit(x, y, feature_names=None)
+
+
+def test_column_subset_categorical_feature_lands_on_its_new_index():
+    """``symbol_code`` sits at index 3; dropping the two lag columns
+    shifts every survivor down by two, so the wrapper must declare it
+    categorical at its NEW index (1), not its original one (3) — the
+    ADR's central correctness requirement."""
+    x, y = mask_rows()
+    model = ColumnSubsetRegressor(_lstsq_path(), drop=["ret_lag_0", "ret_lag_1"])
+    model.fit(x, y, feature_names=MASK_COLUMNS, categorical_feature=[3])
+
+    assert model._indices == [2, 3]
+    assert model._model.seen_categorical_feature == [1]
+    assert model._model.seen_feature_names == ["vol_5m", "symbol_code"]
+
+
+def test_column_subset_a_categorical_index_the_mask_removed_is_simply_dropped():
+    """A categorical index the mask itself removes names no surviving
+    column — nothing is left to declare categorical, so it is dropped
+    from the forwarded list rather than mis-forwarded at some index."""
+    x, y = mask_rows()
+    model = ColumnSubsetRegressor(_lstsq_path(), keep=["vol_5m"])
+    model.fit(x, y, feature_names=MASK_COLUMNS, categorical_feature=[3])
+    assert model._model.seen_categorical_feature == []
+
+
+def test_column_subset_never_forwards_a_kwarg_the_inner_fit_does_not_accept():
+    """Inspected, never assumed: an estimator whose ``fit`` takes neither
+    optional kwarg must still fit cleanly — nothing is forced on it."""
+    x, y = mask_rows()
+    model = ColumnSubsetRegressor(
+        _no_kwargs_path(), drop=["ret_lag_0", "ret_lag_1"]
+    )
+    model.fit(x, y, feature_names=MASK_COLUMNS, categorical_feature=[3])
+    assert model._model.n_features_seen == 2
+
+
+def test_column_subset_predict_projects_with_the_fitted_indices():
+    """Mutating a column the mask DROPPED must not move the prediction —
+    ``predict`` reads the fitted subset alone, never the full row."""
+    x, y = mask_rows()
+    model = ColumnSubsetRegressor(_lstsq_path(), keep=["vol_5m", "symbol_code"])
+    model.fit(x, y, feature_names=MASK_COLUMNS)
+    mutated = x.copy()
+    mutated[:, 0] = 999.0
+    mutated[:, 1] = -999.0
+    assert np.allclose(model.predict(x), model.predict(mutated))
+
+
+def test_column_subset_masked_fit_matches_an_equivalent_hand_sliced_fit():
+    """The real proof the projection is correct: fitting through the
+    mask must be numerically IDENTICAL to hand-slicing the same two
+    columns and fitting the SAME estimator directly on them, including
+    the categorical index each spells in its own coordinates."""
+    x, y = mask_rows()
+    masked = ColumnSubsetRegressor(_lstsq_path(), drop=["ret_lag_0", "ret_lag_1"])
+    masked.fit(x, y, feature_names=MASK_COLUMNS, categorical_feature=[3])
+
+    hand = _RecordingLstsq()
+    hand.fit(
+        x[:, [2, 3]], y,
+        feature_names=["vol_5m", "symbol_code"], categorical_feature=[1],
+    )
+
+    probe, _ = mask_rows(n=7, seed=99)
+    assert np.allclose(masked.predict(probe), hand.predict(probe[:, [2, 3]]))
+
+
+def test_column_subset_wraps_a_real_sklearn_estimator(tmp_path):
+    """Integration half, gated: a REAL sklearn regressor behind the same
+    dotted-path doorway :class:`SklearnFit` uses, masked and compared
+    against hand-slicing it directly."""
+    pytest.importorskip("sklearn")
+    from sklearn.linear_model import Ridge
+
+    x, y = mask_rows()
+    masked = ColumnSubsetRegressor(
+        "sklearn.linear_model.Ridge", drop=["ret_lag_0", "ret_lag_1"], alpha=1e-6,
+    )
+    masked.fit(x, y, feature_names=MASK_COLUMNS)
+    hand = Ridge(alpha=1e-6).fit(x[:, [2, 3]], y)
+    assert np.allclose(masked.predict(x), hand.predict(x[:, [2, 3]]))
+
+
+def test_column_subset_categorical_feature_reaches_real_lightgbm():
+    """Integration half, gated: real LightGBM's ``fit`` spells the
+    categorical kwarg ``categorical_feature`` (matching this wrapper)
+    but ``feature_name`` singular (NOT matching ``feature_names``), so
+    the mask must still fit and predict — proving the inspected-not-
+    assumed forwarding against the one library ADR-0108 is written for.
+    """
+    pytest.importorskip("lightgbm")
+    x, y = mask_rows(n=200)
+    masked = ColumnSubsetRegressor(
+        "lightgbm.LGBMRegressor",
+        drop=["ret_lag_0", "ret_lag_1"],
+        n_estimators=5,
+        verbosity=-1,
+    )
+    masked.fit(x, y, feature_names=MASK_COLUMNS, categorical_feature=[3])
+    prediction = masked.predict(x)
+    assert prediction.shape == (x.shape[0],)
