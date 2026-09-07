@@ -102,7 +102,7 @@ Wrap the *library*, generically — never a project's use of it.
   carrying a `journal-union: CONFLICT COULD NOT BE WRITTEN` line holds ONE
   SIDE ONLY — never `git add` it; recover with `git checkout --merge`.
 - **`/wrap`:** refresh `docs/RE-ENTRY.md`, merge into `main` when the work is
-  coherent and tests pass, push. Defined in `.cursor/skills/wrap/SKILL.md`.
+  coherent and tests pass, push. Defined in `docs/skills/wrap.md`.
 - **Every commit names the SPECIFIC model that wrote it** (owner ruling,
   2026-09-05; tightened 2026-09-07): the exact model AND version the session is
   running — `Claude Opus 5`, never a bare `Claude`, and never the shared `Codex`
@@ -115,6 +115,30 @@ Wrap the *library*, generically — never a project's use of it.
   never fall back to the family name — a commit that says only `Claude` cannot
   be attributed to the session that made it, which is the whole point.
 
+## Skills index
+
+Every skill's full procedure lives in `docs/skills/<name>.md`. Claude Code
+and Cursor also have a thin per-platform stub (`.claude/skills/<name>/`,
+`.cursor/skills/<name>/`) that just points here — Codex and OpenCode have no
+per-repo skill directory, so this index is your entry point: read the linked
+file before acting on a matching trigger.
+
+| Trigger | Canonical doc |
+|---|---|
+| `/chain`, or a described sequence of agent actions to run one after another | `docs/skills/chain.md` |
+| Implement/build a research finding or plan | `docs/skills/implement-research-build.md` |
+| Explicit request for deep, evidence-backed research | `docs/skills/deep-research.md` |
+| "Plain English" / "layman's terms" / `/layman-explain` | `docs/skills/layman-explain.md` |
+| Record a run/build/migration/deployment/benchmark outcome | `docs/skills/memo.md` |
+| Quick status check / `/progress` / "where are we" | `docs/skills/progress.md` |
+| Save a tutorial, toy example, or worked explanation for a child | `docs/skills/record-explanation.md` |
+| Research, investigate, or write to `docs/research/` | `docs/skills/record-research.md` |
+| Refresh a child's skeleton infrastructure | `docs/skills/refresh-child-infra.md` |
+| Bring a child up to the ADR-0056 action journal | `docs/skills/refresh-child-journal.md` |
+| Code about to be shipped/committed/merged | `docs/skills/skeptic-review.md` |
+| Implementing any feature or bugfix, before writing code | `docs/skills/test-drive-development.md` |
+| `/wrap`, wrap up, hand off, close the session | `docs/skills/wrap.md` |
+
 ## Repository layout
 
 ```
@@ -122,7 +146,7 @@ dskit/
 ├── AGENTS.md                  # this file — repo-wide standards
 ├── .cursor/
 │   ├── hooks.json          # SessionStart hook: git pull
-│   └── skills/wrap/SKILL.md       # /wrap
+│   └── skills/                # /chain, /wrap, /record-research, … (stubs; see docs/skills/)
 ├── README.md                  # the three pillars + the child pattern, 60-second paths
 ├── pyproject.toml             # core has ZERO required deps; heavy libs are extras
 ├── TODO.md
