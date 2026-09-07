@@ -707,9 +707,76 @@ def test_installing_from_a_worktree_pins_the_main_worktree(tmp_path):
     wt = tmp_path / "wt"
     added = _git(repo, "worktree", "add", "-q", str(wt), "-b", "tmp")
     if added.returncode != 0:
-        return  # git too old for worktrees; nothing to assert
+        import pytest
+
+        pytest.skip("git too old for worktrees")  # never a vacuous PASS
     _install(wt)
     driver = _git(wt, "config", "--get", "merge.journal-union.driver").stdout
     assert "mainrepo" in driver, driver
     assert f"{os.sep}wt{os.sep}" not in driver, f"pinned to the worktree:\n{driver}"
 
+
+def test_the_temp_suffix_is_pinned_to_gitignore():
+    """Rename the driver's temp suffix and leaked scratch becomes committable.
+
+    The suite stayed green through exactly that rename, so the agreement
+    needs pinning like .gitattributes and the ledger columns already are.
+    """
+    union = _load("journal_union")
+    with open(os.path.join(REPO_ROOT, ".gitignore"), encoding="utf-8") as fh:
+        ignored = fh.read()
+    assert f"*{union.TMP_SUFFIX}" in ignored, union.TMP_SUFFIX
+
+
+def test_the_unresolved_marker_starts_on_its_own_line(tmp_path):
+    """Without the leading newline the marker merges into the last row.
+
+    A %A with no trailing newline — a hand-edited path.csv, which the owner
+    maintains by hand — would then parse as a CLEAN ledger whose last note
+    swallowed the warning.
+    """
+    union = _load("journal_union")
+    target = tmp_path / "p.csv"
+    with open(target, "wb") as fh:  # deliberately no trailing newline
+        fh.write((PATH_HEADER + "A0001,l,p,f,Y,,empirical").encode())
+    assert union.mark_unresolved(str(target)) is True
+    try:
+        union.read_rows(str(target))
+    except union.LedgerConflict:
+        return
+    raise AssertionError("the marker was absorbed into the last row")
+
+
+def test_keep_both_survives_a_stray_byte(tmp_path):
+    """BLOCKER, review round 4: the sibling driver had both fixed defects.
+
+    install.sh registers keep_both for docs/RE-ENTRY.md — the file /wrap
+    writes every session. One pasted smart-quote raised UnicodeDecodeError
+    out of main(), leaving %A as OUR side alone with no marker: a whole
+    session record silently dropped.
+    """
+    keep = _load("keep_both")
+    base, ours, theirs = (tmp_path / n for n in ("b.md", "o.md", "t.md"))
+    base.write_text("# base\n")
+    with open(ours, "wb") as fh:
+        fh.write(b"# ours\nmangled \x92 byte\n")
+    theirs.write_text("# theirs\nTHEIR-SESSION-RECORD\n")
+    assert keep.main(["x", str(base), str(ours), str(theirs)]) == 0
+    with open(ours, "rb") as fh:
+        after = fh.read()
+    assert b"THEIR-SESSION-RECORD" in after, f"their side was LOST\n{after!r}"
+    assert b"\x92" in after, "the stray byte was not preserved"
+
+
+def test_keep_both_never_truncates_on_a_failed_write(tmp_path):
+    """The R2 shape, still present in keep_both: a truncating open(..., "w")."""
+    keep = _load("keep_both")
+    union = _load("journal_union")
+    base, ours, theirs = (tmp_path / n for n in ("b.md", "o.md", "t.md"))
+    base.write_text("# base\n")
+    ours.write_text("# ours\nOUR-SESSION-RECORD\n")
+    theirs.write_text("# theirs\nTHEIR-SESSION-RECORD\n")
+    before = _read(ours)
+    (tmp_path / ("o.md" + union.TMP_SUFFIX)).mkdir()   # block the write
+    assert keep.main(["x", str(base), str(ours), str(theirs)]) == 1
+    assert _read(ours) == before, "the file was truncated or cut mid-line"

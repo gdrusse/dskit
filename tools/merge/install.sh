@@ -90,7 +90,9 @@ elif grep -qF "$MARKER" "$HOOK" 2>/dev/null; then
             KEPT=""
         fi
     fi
-    [ -n "$KEPT" ] && chmod +x "$KEPT" 2>/dev/null || true
+    # Deliberately NOT chmod +x here: the generated hook's own `[ -x ]`
+    # test is the user's off-switch, and re-enabling it on every reinstall
+    # would silently undo a `chmod -x` they meant.
     write_hook "$KEPT"
 else
     # A foreign hook. MOVE it aside and INVOKE it, rather than appending to

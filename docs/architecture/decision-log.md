@@ -5838,3 +5838,27 @@ The "store's own contract" check the text promised is now actually
 implemented: the header must equal `ACTION_FIELDS` or `PATH_FIELDS`, so
 two sides sharing an identically drifted header no longer merge clean and
 break the next journal write.
+
+**Second amendment (2026-09-07, review rounds 2-4).** Three more things
+the original text claimed and the code did not do:
+
+4. **A write can fail, and saying so is part of the contract.** `%A` is
+   replaced through a temp file and a rename, so a full disk or a
+   read-only mount leaves the previous content whole instead of a
+   truncated file. When even the conflict cannot be written, one
+   `UNRESOLVED` line is APPENDED — appending costs a few bytes where a
+   full write failed, and a file that cannot PARSE cannot be committed by
+   accident. **That sentinel is operator-facing:** whoever meets it has a
+   one-sided file and must recover with `git checkout --merge`, or from
+   `git show :2:<path>` and `git show :3:<path>`, never `git add`.
+5. **§3's keep-both guarantee was false until now.** "No session record is
+   silently dropped… both sides are kept, visibly" did not hold: one
+   non-UTF-8 byte in `docs/RE-ENTRY.md` crashed the driver and left our
+   side alone, and its truncating write cut the file mid-line on a failed
+   write. `keep_both` now reads with `surrogateescape` and shares
+   `journal_union.replace_file`, which is the single owner of "replace
+   `%A` without truncating".
+6. **The union is not the only failure mode that matters.** A merge that
+   SUCCEEDS but cannot be stored is downgraded to a refusal, because a
+   silently-unstored success hands back git's own `%A` — our side alone,
+   looking perfectly clean.

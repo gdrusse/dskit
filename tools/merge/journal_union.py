@@ -68,6 +68,12 @@ PATH_FIELDS = (
     "criteria",
 )
 
+#: The sibling temp `replace_file` writes. Pinned against `.gitignore` by
+#: test: %A is git's scratch file in the WORKTREE ROOT, so this lands there
+#: too, and a rename that outran the ignore rule would make leaked merge
+#: scratch committable.
+TMP_SUFFIX = ".journal-union.tmp"
+
 #: git's standard conflict markers, so a resolver sees exactly what an
 #: unconfigured clone would show.
 MARK_OURS = "<<<<<<< ours"
@@ -324,7 +330,7 @@ def replace_file(path, payload):
         The write or the rename failed; ``path`` still holds its prior
         content.
     """
-    tmp = path + ".journal-union.tmp"
+    tmp = path + TMP_SUFFIX
     try:
         with open(tmp, "wb") as fh:
             fh.write(payload)
@@ -418,9 +424,21 @@ def write_conflict(base_path, ours_path, theirs_path):
 
 
 def _refuse(base_path, ours_path, theirs_path):
-    """Write the conflict, or at minimum make %A unparseable."""
-    if not write_conflict(base_path, ours_path, theirs_path):
-        mark_unresolved(ours_path)
+    """Write the conflict, or at minimum make %A unparseable.
+
+    Both outcomes are reported, because they differ materially for whoever
+    resolves this: a landed marker makes the file self-describing and
+    unparseable, while a failed one leaves a clean-LOOKING one-sided
+    ledger guarded only by stderr.
+    """
+    if write_conflict(base_path, ours_path, theirs_path):
+        return
+    if not mark_unresolved(ours_path):
+        print(
+            f"journal-union: *** could not even mark {ours_path} — it holds "
+            "ONE SIDE ONLY and looks clean. Do NOT `git add` it. ***",
+            file=sys.stderr,
+        )
 
 
 def main(argv):
@@ -456,8 +474,10 @@ def main(argv):
     except OSError as exc:
         # The merge SUCCEEDED but could not be stored. Leaving it here would
         # hand back git's own %A — our side alone, no markers, looking
-        # perfectly clean. Downgrade to a refusal instead: a conflict is
-        # honest, and its payload may fit where the union did not.
+        # perfectly clean. Downgrade to a refusal instead. The conflict
+        # payload is strictly LARGER and uses the same temp path that just
+        # failed, so this usually falls through to mark_unresolved — which is
+        # the point: end up unparseable rather than plausibly clean.
         print(
             f"journal-union: could not write the union: {exc} — refusing instead",
             file=sys.stderr,

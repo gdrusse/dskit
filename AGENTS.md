@@ -98,7 +98,9 @@ Wrap the *library*, generically — never a project's use of it.
   the conflict itself — both sides between `<<<<<<<`/`=======`/`>>>>>>>` —
   so renumber one side's rows by hand and drop the markers. It will never
   renumber for you: ids are cited from prose (`framework.md` names A2850),
-  and moving one silently would break references no test covers.
+  and moving one silently would break references no test covers. A file
+  carrying a `journal-union: CONFLICT COULD NOT BE WRITTEN` line holds ONE
+  SIDE ONLY — never `git add` it; recover with `git checkout --merge`.
 - **`/wrap`:** refresh `docs/RE-ENTRY.md`, merge into `main` when the work is
   coherent and tests pass, push. Defined in `.cursor/skills/wrap/SKILL.md`.
 - **Every commit names the SPECIFIC model that wrote it** (owner ruling,
