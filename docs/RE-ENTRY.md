@@ -1,5 +1,23 @@
 # Re-entry
 
+## Current state: skeleton folders + parallel-merge drivers + topic skill (2026-09-07)
+
+Landed on `main`, unpushed-local-commit scope: (1) skeleton gains `models/`
+(fitted ML/optimization artifacts, gitignored) and `docs/plans/` (child-level
+plan builds), pin updated in `tests/children/test_skeleton.py`;
+`refresh-child-infra` provisions both for existing children. (2) ADR-0107
+accepted and built: `.gitattributes` + `tools/merge/` validated-union drivers
+for `actions.csv`/`path.csv`, take-either for the generated decisioning
+README, keep-both for this file, post-merge re-render hook; `install.sh` run
+for this clone — **other clones must run it once**. (3) ADR-0108 accepted:
+`topic` skill (`.cursor` + `.claude`) chains research → run → memo under one
+slug. Tests: tools/skeleton/journal suites green (53); the intraday_equities
+suite failure (`run-model-select.json` vs `universe.json`) is another lane's
+uncommitted work.
+
+**Next:** existing children get `models/` + `docs/plans/` via
+refresh-child-infra on demand; nothing else pending.
+
 ## Current state: P15 temporal-fusion zoo complete (2026-09-06)
 
 The three-candidate P15 run completed 20/20 paired outer folds per model under
