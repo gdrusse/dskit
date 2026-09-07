@@ -1,6 +1,62 @@
 # Re-entry
 
-## Current wrap: the finalist document is locked, not run (2026-09-07)
+## Current wrap: feature masks land, and 0107 merges after review (2026-09-07)
+
+On `main`, pushed. Everything below was reviewed by a second agent before
+merging, and both reviews changed the code.
+
+**ADR-0108 accepted and built** — `ColumnSubsetEstimator`
+(`dskit/pipeline/libs/sklearn.py`) fits any named estimator on a declared
+column subset, forwarding `feature_names`/`feature_name` and
+`categorical_feature` re-indexed to the survivors. The mask rides in
+`estimator_params`, so `pipeline.features_*` stays byte-identical across
+candidates and the benchmark contract stays pinned.
+`configs/run-p16-feature-mask-zoo.json` (identity `820196c8…`) is the five-way
+experiment: `full` control, `short-lags`, `core-scales`, `no-cal-tail`, and
+`lean` as the union. Plan-only until its inventory is approved. NOT run.
+
+Its review caught four things worth remembering: the first class name
+tripped the "doorway, not a per-model registry" pin; LightGBM's kwarg is
+`feature_name`, singular, so name forwarding was dead code for the one
+library this targets; construction bypassed this file's own import helpers;
+and the ADR's "same doorway `hpo_space` tunes through" claim was false —
+`SklearnFit` forwards neither kwarg, so P16 works only through the child's
+scan node. Teaching `SklearnFit` to forward is a NAMED FOLLOW-UP.
+
+**ADR-0107 merged** — another agent's `feat/final-model-gates`, reviewed as a
+branch since it never had a PR. Its conquest walk never checked that a unit's
+evidenced horizons form a dense ladder, so evidence at h=1,3,5 returned a cap
+of 5 and evidence starting at h=3 capped as though 1 and 2 had passed. A cap
+asserts every horizon below it was tested. Fixed to refuse, naming the
+missing horizons. Also fixed: a byte-for-byte reimplementation of
+`reject_unknown_params`, a verdict that discarded the passing checks and
+slice evidence the ADR promised, and two literal defaults spelled twice.
+
+**Ledger.** Two independent id collisions were resolved this session; expect
+more whenever a branch that appends `actions.csv` rows sits unmerged. The
+branch's A18758-A18760 were byte-identical duplicates of main's
+A18774-A18776 — the same events journaled on both forks — so main's ledger
+was kept and only the genuinely new row appended. 18782 rows, unique,
+monotonic.
+
+**State.** ruff clean over `dskit`, `tests`, `children`. 8620 passed, 189
+skipped, 1 failed across the five packages; the one failure is the uid-0
+environment case (the container runs as root, so a directory chmod-ed to 0
+stays readable) and it fails on a pristine `main` too.
+
+**Open.**
+
+- All three remote branches are now merged and safe to delete, and none
+  could be deleted from the container: `git push --delete` is cut by the
+  proxy and the GitHub API returns 403 on write paths. Owner action.
+- `hpo_objective` stays `"ic"`. The research asks for the outer path score;
+  the scan node accepts only `mspe`/`ic`. A named gap, not a config value.
+- Seven generic dskit gaps from the 2026-09-06 research remain unbuilt, each
+  with a tier. Log-uniform range grammar in the child's scan node is the one
+  the finalist would have used.
+- P16 and the finalist both need owner inventory approval before any run.
+
+## Prior wrap: the finalist document is locked, not run (2026-09-07)
 
 Branch `claude/maine-memo-research-agents-4yb6c0`, merged to `main`.
 
@@ -45,9 +101,10 @@ environment case, the eleven need run artifacts this container has not got.
 - Seven generic dskit gaps are named across the two research notes, each with
   a tier. None was solved child-side. Log-uniform range grammar in the scan
   node is the one the finalist would have used.
-- `origin/feat/final-model-gates` is unmerged: another agent's ADR-0107
+- `origin/feat/final-model-gates` was unmerged here: another agent's ADR-0107
   horizon-conquest gate, 2 commits. It appends `actions.csv` rows, so expect
-  the same ledger-id collision this wrap already resolved once.
+  the same ledger-id collision this wrap already resolved once. (Superseded:
+  reviewed, fixed and merged later the same day — see the wrap above.)
 - `origin/claude/dskit-production-build-3g17vw` is merged and should be
   deleted; every delete refspec from this container was cut off by the git
   proxy, so it needs doing by hand.
