@@ -190,3 +190,4 @@ and two existing Kronos purity assertions; none reads the P15 candidate paths.
 - journal evidence: P16 A18784, A18788, and A18791-A18798 (including TFT walk
   A18796); P17 A18783, A18785-A18787, A18789-A18790, and A18799-A18800
   (including LightGBM A18799 and the RF termination/result memo A18800).
+  Correction A18801 supersedes only A18800's statistical wording.

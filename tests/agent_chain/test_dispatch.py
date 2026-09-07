@@ -132,7 +132,8 @@ def test_dispatch_nonzero_exit_raises_runtimeerror(monkeypatch):
 def test_timeout_kills_descendant_process(tmp_path):
     marker = tmp_path / "descendant-survived"
     child = (
-        "import time; from pathlib import Path; time.sleep(0.5); "
+        "import signal, time; from pathlib import Path; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(0.5); "
         f"Path({str(marker)!r}).write_text('bad')"
     )
     parent = (

@@ -83,13 +83,21 @@ def _terminate_process_tree(process):
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
         return
+    # Waiting for the root is insufficient: it may exit while a descendant
+    # ignores SIGTERM and retains the captured pipes. Always escalate against
+    # the process GROUP after the grace period, then reap the root.
+    try:
+        process.wait(timeout=0.2)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
     try:
         process.wait(timeout=1)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        pass
 
 
 def _run_process(argv, *, cwd, timeout):
