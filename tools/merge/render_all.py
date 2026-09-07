@@ -23,7 +23,17 @@ def _repo_root(override=None):
     )
 
 
-def _render_child(repo, root):
+#: Where ``dskit`` itself lives — always three levels above this file,
+#: never the caller's override. The override relocates which CHILDREN we
+#: scan (the suite points it at a scratch tree); it must not decide where
+#: the package is imported from, or the render subprocess dies with
+#: ModuleNotFoundError on any tree that is not an editable install.
+DSKIT_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+
+
+def _render_child(root):
     """Run ``dskit.journal render`` for one child root.
 
     Returns
@@ -31,9 +41,19 @@ def _render_child(repo, root):
     tuple of (str, int)
         The child's name and the render exit code.
     """
+    # PYTHONPATH pinned to DSKIT_ROOT, matching the four other subprocess
+    # suites in this repo (tests/journal/test_main.py, assets/conftest.py,
+    # onboarding/test_main.py, production/test_main.py) — dskit need not be
+    # pip-installed for the hook, or the tests, to work.
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        DSKIT_ROOT if not existing else DSKIT_ROOT + os.pathsep + existing
+    )
     done = subprocess.run(
         [sys.executable, "-m", "dskit.journal", "render", "--root", root],
-        cwd=repo,
+        cwd=DSKIT_ROOT,
+        env=env,
         capture_output=True,
         text=True,
     )
@@ -64,7 +84,7 @@ def main(argv=None):
         root = os.path.join(children, name)
         if not os.path.isfile(os.path.join(root, "journal.json")):
             continue
-        child, code = _render_child(repo, root)
+        child, code = _render_child(root)
         print(f"render-journal: {child}: {'rendered' if code == 0 else f'exit {code}'}")
     return 0
 
