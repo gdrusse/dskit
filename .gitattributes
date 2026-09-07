@@ -1,0 +1,6 @@
+# ADR-0107 — parallel-agent merge policy. The attribute names a driver;
+# the driver COMMAND is configured per clone by tools/merge/install.sh.
+children/*/docs/decisioning/actions.csv merge=journal-union
+children/*/docs/decisioning/path.csv merge=journal-union
+children/*/docs/decisioning/README.md merge=render-journal
+docs/RE-ENTRY.md merge=keep-both

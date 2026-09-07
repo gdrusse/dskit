@@ -89,6 +89,12 @@ Wrap the *library*, generically — never a project's use of it.
 
 - **Start:** pull from the remote first (automated by the `SessionStart` hook in
   `.cursor/hooks.json`).
+- **Parallel merges (ADR-0107):** the child ledgers, the generated child
+  decisioning READMEs, and `docs/RE-ENTRY.md` merge through the drivers in
+  `tools/merge/` — run `tools/merge/install.sh` once per clone (and again
+  after the repo moves; the configured paths are absolute). A refused ledger
+  merge means a row was edited or deleted, not appended: resolve that by
+  hand.
 - **`/wrap`:** refresh `docs/RE-ENTRY.md`, merge into `main` when the work is
   coherent and tests pass, push. Defined in `.cursor/skills/wrap/SKILL.md`.
 - **Commits are authored under the agent's own model name** (owner ruling,

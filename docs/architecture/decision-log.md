@@ -5543,3 +5543,95 @@ It changes no hash, retrains nothing, and leaves promotion to the owner. On
 approval, build under the TDD + skeptic loop: the stage, its params
 validation, and a child config/tests. No execution is authorized by this
 decision.
+
+## ADR-0107 — Parallel-agent merge policy: validated-union drivers for the shared ledgers
+
+**Status:** Accepted (2026-09-07; owner approved implementation)
+
+**Context.** Agents work this repo in parallel lanes and merge to `main`
+often. Three file families conflict on nearly every merge because they are
+single files that every lane rewrites:
+
+1. `actions.csv` / `path.csv` — append-only CSV ledgers written under
+   `base.locked` (one writer per working tree), but git merges them
+   textually, and two lanes that each appended rows conflict at the tail.
+2. `docs/decisioning/README.md` — GENERATED from the CSVs; a conflict here
+   is noise, yet it blocks the merge.
+3. `docs/RE-ENTRY.md` — rewritten whole by every `/wrap`; both sides are
+   true session records and today one side is resolved away by hand.
+
+The in-repo `flock` cannot help: it serializes writers in ONE working
+tree, not across clones. The defect is a merge-policy gap, not a locking
+gap.
+
+**Decision.** Declare the policy in `.gitattributes` and implement it as
+small repo tools (stdlib only), each fail-closed:
+
+1. **Ledgers: a validated-union driver** (`merge=journal-union`) for
+   `actions.csv` and `path.csv`. It unions both sides' rows, then
+   REFUSES (exit nonzero, leaving the conflict) unless the merged file
+   passes the store's own contract: exact header, unique ids, every row
+   parseable. Merged rows are ordered by `executed_at` (stable) so file
+   order is deterministic regardless of which lane merged. A row edit or
+   deletion on either side is not a union — it stays a conflict.
+2. **Generated README: take-either + re-render** (`merge=render-journal`)
+   for `docs/decisioning/README.md`. The driver takes one side and runs
+   `python -m dskit.journal render` post-merge; the CSVs are the store,
+   so the projection self-heals.
+3. **RE-ENTRY: keep-both** (`merge=keep-both`) for `docs/RE-ENTRY.md`.
+   The driver concatenates ours-then-theirs so no session record is
+   silently dropped; the next `/wrap` rewrites the file and prunes. No
+   false resolution — both sides are kept, visibly.
+4. **Registration**: `.gitattributes` at the repo root maps the three
+   families to the drivers; `[merge "…"]` driver lines live in
+   `.git/config` only via a checked-in setup step (git cannot ship
+   driver commands in `.gitattributes` — the attribute names the
+   driver, the command is configured per clone). `tools/merge/` ships
+   the scripts plus a one-line `tools/merge/install.sh` a clone runs
+   once. Documented in root `AGENTS.md` session workflow.
+
+**Consequences.** Routine parallel merges stop needing hand resolution;
+what remains is exactly the dangerous case (a ledger row changed, not
+appended). The drivers are repo tooling, not a dskit package: they name
+no domain, but they are merge infrastructure for THIS repo's process, and
+graduating them into a package has no second consumer yet. Skeleton
+children inherit nothing automatically; a graduated child that wants the
+same policy copies the two ledger lines into its own `.gitattributes`.
+Timestamps: no new timestamp field — `executed_at` already orders the
+union deterministically.
+
+## ADR-0108 — A `topic` skill chaining research → run → record → memo
+
+**Status:** Accepted (2026-09-07; owner approved implementation)
+
+**Context.** A unit of child work is a topic: research it, run the
+pipeline document it motivates, let the journal record the execute, and
+memo the outcome. Today that is four separate skills invoked by hand
+(`record-research`, the pipeline CLI's automatic hooks, `memo`), and the
+wiring knowledge (which order, which topic slug, where drafts go) lives
+in each agent's head instead of in one place.
+
+**Decision.** Add one orchestrating skill, `topic`, under
+`.cursor/skills/topic/SKILL.md` (mirrored to `.claude/skills/` per the
+existing convention). It composes existing mechanisms and adds NO code:
+
+1. **One argument**: a topic slug. The skill fixes the shared vocabulary
+   — `--topic <slug>` for `dskit.journal research`, the memo's
+   kebab-title, and the research folder — so all artifacts of one effort
+   link by name.
+2. **Phase 1 — research**: the `record-research` flow verbatim (draft
+   outside `docs/research/`, CLI records, never hand-write).
+3. **Phase 2 — run**: the pipeline `run`/`walkforward` command the
+   research motivates; the journal hooks append the execute row
+   themselves — the skill never writes `actions.csv`.
+4. **Phase 3 — memo**: the `memo` flow verbatim, pointing at the run
+   directory and the topic's research files as evidence.
+5. **Skipping is explicit**: any phase the work does not need is stated
+   as skipped in the final report, never silently omitted.
+
+**Consequences.** One invocation produces a linked trail —
+`docs/research/<topic>/`, an actions row, a run dir, a memo — with the
+existing skills unchanged beneath it. The skill is prose only; no
+package, no hash impact, no new writer of any ledger. It is dskit-repo
+process tooling like `wrap`, not a dskit capability, so nothing
+graduates.
