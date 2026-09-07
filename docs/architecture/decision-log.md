@@ -5591,7 +5591,7 @@ set differs. Three facts block it today.
 **Decision.** Put the mask on the MODEL side, where the HPO space already
 lives, and make it generic.
 
-`dskit/pipeline/libs/sklearn.py` gains **`ColumnSubsetRegressor`**: it wraps
+`dskit/pipeline/libs/sklearn.py` gains **`ColumnSubsetEstimator`**: it wraps
 any estimator named by import path, takes a `drop` OR a `keep` list of column
 names (never both), and fits the wrapped estimator on the surviving columns.
 It forwards `feature_names` and any `categorical_feature` through to the inner

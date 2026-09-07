@@ -1,6 +1,6 @@
 {
   "name": "p16-feature-mask-zoo",
-  "notes": "ADR-0108 (docs/architecture/decision-log.md): a fixed family-mask ablation over the P13 pooled LightGBM winner. Same sources, universe, memory stage, PooledGate3ZooCandidates materialization and 20-fold development walkforward as run-p13-pooled-model-zoo.json; the five candidates below (full/short-lags/core-scales/no-cal-tail/lean) share one estimator family and one hpo_space and differ ONLY in the column mask ColumnSubsetRegressor.drop carries in estimator_params — pipeline.features_* stays byte-identical across every candidate, so the benchmark contract keeps proving the rows were the same. Plan-only until the owner approves the exact inventory (see stages.approval).",
+  "notes": "ADR-0108 (docs/architecture/decision-log.md): a fixed family-mask ablation over the P13 pooled LightGBM winner. Same sources, universe, memory stage, PooledGate3ZooCandidates materialization and 20-fold development walkforward as run-p13-pooled-model-zoo.json; the five candidates below (full/short-lags/core-scales/no-cal-tail/lean) share one estimator family and one hpo_space and differ ONLY in the column mask ColumnSubsetEstimator.drop carries in estimator_params — pipeline.features_* stays byte-identical across every candidate, so the benchmark contract keeps proving the rows were the same. Plan-only until the owner approves the exact inventory (see stages.approval).",
   "pipeline": {
     "universe": {
       "uses": "intraday_equities-universe",
@@ -319,7 +319,7 @@
             "compute_class": "cpu-medium",
             "compute_rank": 1,
             "enabled": true,
-            "notes": "ADR-0108 control: the plain lightgbm.LGBMRegressor with no ColumnSubsetRegressor wrapper, byte-identical to P13's incumbent lgbm candidate's model block. hpo_space and hpo_trials are UNCHANGED from P13's lgbm candidate (ADR-0108): this zoo isolates the feature set, and searching the space too at the same time would confound the ablation.",
+            "notes": "ADR-0108 control: the plain lightgbm.LGBMRegressor with no ColumnSubsetEstimator wrapper, byte-identical to P13's incumbent lgbm candidate's model block. hpo_space and hpo_trials are UNCHANGED from P13's lgbm candidate (ADR-0108): this zoo isolates the feature set, and searching the space too at the same time would confound the ablation.",
             "model": {
               "estimator": "lightgbm.LGBMRegressor",
               "estimator_params": {
@@ -386,9 +386,9 @@
             "compute_class": "cpu-medium",
             "compute_rank": 2,
             "enabled": true,
-            "notes": "ADR-0108: drops ret_lag_5..ret_lag_19 (15 of the 20 lag columns) via ColumnSubsetRegressor.drop to test whether the tail of one-minute lags beyond ret_lag_4 is noise. hpo_space and hpo_trials are UNCHANGED from P13's lgbm candidate (ADR-0108): this zoo isolates the feature set, and searching the space too at the same time would confound the ablation.",
+            "notes": "ADR-0108: drops ret_lag_5..ret_lag_19 (15 of the 20 lag columns) via ColumnSubsetEstimator.drop to test whether the tail of one-minute lags beyond ret_lag_4 is noise. hpo_space and hpo_trials are UNCHANGED from P13's lgbm candidate (ADR-0108): this zoo isolates the feature set, and searching the space too at the same time would confound the ablation.",
             "model": {
-              "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetRegressor",
+              "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
               "estimator_params": {
                 "estimator": "lightgbm.LGBMRegressor",
                 "drop": [
@@ -471,9 +471,9 @@
             "compute_class": "cpu-medium",
             "compute_rank": 3,
             "enabled": true,
-            "notes": "ADR-0108: drops the three multi-day scale families (base scale 3s plus momentum_horizons 2s and 1w) via ColumnSubsetRegressor.drop to test whether multi-day scales carry the h=1..10 forecast. hpo_space and hpo_trials are UNCHANGED from P13's lgbm candidate (ADR-0108): this zoo isolates the feature set, and searching the space too at the same time would confound the ablation.",
+            "notes": "ADR-0108: drops the three multi-day scale families (base scale 3s plus momentum_horizons 2s and 1w) via ColumnSubsetEstimator.drop to test whether multi-day scales carry the h=1..10 forecast. hpo_space and hpo_trials are UNCHANGED from P13's lgbm candidate (ADR-0108): this zoo isolates the feature set, and searching the space too at the same time would confound the ablation.",
             "model": {
-              "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetRegressor",
+              "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
               "estimator_params": {
                 "estimator": "lightgbm.LGBMRegressor",
                 "drop": [
@@ -553,9 +553,9 @@
             "compute_class": "cpu-medium",
             "compute_rank": 4,
             "enabled": true,
-            "notes": "ADR-0108: drops the six calendar-tail columns via ColumnSubsetRegressor.drop to test whether that tail is dead weight. hpo_space and hpo_trials are UNCHANGED from P13's lgbm candidate (ADR-0108): this zoo isolates the feature set, and searching the space too at the same time would confound the ablation.",
+            "notes": "ADR-0108: drops the six calendar-tail columns via ColumnSubsetEstimator.drop to test whether that tail is dead weight. hpo_space and hpo_trials are UNCHANGED from P13's lgbm candidate (ADR-0108): this zoo isolates the feature set, and searching the space too at the same time would confound the ablation.",
             "model": {
-              "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetRegressor",
+              "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
               "estimator_params": {
                 "estimator": "lightgbm.LGBMRegressor",
                 "drop": [
@@ -629,9 +629,9 @@
             "compute_class": "cpu-medium",
             "compute_rank": 5,
             "enabled": true,
-            "notes": "ADR-0108: the combination test the owner asked for — the union of the three single-family drop lists above, via ColumnSubsetRegressor.drop, so a deficit here that none of the three parts show in isolation is discoverable. hpo_space and hpo_trials are UNCHANGED from P13's lgbm candidate (ADR-0108): this zoo isolates the feature set, and searching the space too at the same time would confound the ablation.",
+            "notes": "ADR-0108: the combination test the owner asked for — the union of the three single-family drop lists above, via ColumnSubsetEstimator.drop, so a deficit here that none of the three parts show in isolation is discoverable. hpo_space and hpo_trials are UNCHANGED from P13's lgbm candidate (ADR-0108): this zoo isolates the feature set, and searching the space too at the same time would confound the ablation.",
             "model": {
-              "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetRegressor",
+              "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
               "estimator_params": {
                 "estimator": "lightgbm.LGBMRegressor",
                 "drop": [

@@ -1060,7 +1060,7 @@ def test_p16_feature_mask_zoo_masks_are_real_and_isolate_the_feature_set():
     for template in templates[1:]:
         tid, model = template["id"], template["model"]
         assert model["estimator"] == (
-            "dskit.pipeline.libs.sklearn.ColumnSubsetRegressor"
+            "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator"
         ), tid
         params = model["estimator_params"]
         assert params["estimator"] == "lightgbm.LGBMRegressor", tid

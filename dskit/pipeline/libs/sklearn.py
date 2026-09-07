@@ -17,7 +17,7 @@ Three Nodes and one signal object, docs/25 §2 row 2:
   a :class:`~dskit.pipeline.fitted.FeatureSelector` whose rule is a
   dotted selector path (and optional inner ``estimator``).
 
-Plus one plain estimator wrapper, not a Node: :class:`ColumnSubsetRegressor`
+Plus one plain estimator wrapper, not a Node: :class:`ColumnSubsetEstimator`
 (ADR-0108) fits any estimator — named the same dotted way — on a declared
 ``drop``/``keep`` subset of columns, so a feature MASK is an ordinary
 ``estimator_params`` knob beside a candidate's hyperparameters rather than a
@@ -196,7 +196,7 @@ from dskit.pipeline.node import (
 )
 
 __all__ = [
-    "ColumnSubsetRegressor",
+    "ColumnSubsetEstimator",
     "NODE_KINDS",
     "SklearnFit",
     "SklearnPredict",
@@ -726,7 +726,7 @@ def _accepts_kwarg(model, name):
     )
 
 
-class ColumnSubsetRegressor:
+class ColumnSubsetEstimator:
     """Fit any estimator on a declared subset of columns (ADR-0108).
 
     A feature mask is a MODEL knob, not a second feature pipeline: this
@@ -766,7 +766,7 @@ class ColumnSubsetRegressor:
     Drop two stale lag columns and keep a trailing native-categorical
     column declared at its ORIGINAL (pre-mask) index::
 
-        model = ColumnSubsetRegressor(
+        model = ColumnSubsetEstimator(
             "lightgbm.LGBMRegressor",
             drop=["ret_lag_5", "ret_lag_6"],
             n_estimators=50,
@@ -812,7 +812,7 @@ class ColumnSubsetRegressor:
 
         Returns
         -------
-        ColumnSubsetRegressor
+        ColumnSubsetEstimator
             ``self``, fitted.
 
         Raises
@@ -829,7 +829,7 @@ class ColumnSubsetRegressor:
         has_keep = self.keep is not None
         if has_drop == has_keep:
             raise ValueError(
-                "ColumnSubsetRegressor requires exactly one of 'drop' or "
+                "ColumnSubsetEstimator requires exactly one of 'drop' or "
                 f"'keep', got drop={self.drop!r} keep={self.keep!r}"
             )
         knob, mask_names = (
@@ -837,7 +837,7 @@ class ColumnSubsetRegressor:
         )
         if feature_names is None:
             raise ValueError(
-                f"ColumnSubsetRegressor.{knob}={mask_names} is declared but "
+                f"ColumnSubsetEstimator.{knob}={mask_names} is declared but "
                 "fit was called with feature_names=None — the mask cannot "
                 "be verified by name without them"
             )
@@ -908,7 +908,7 @@ class ColumnSubsetRegressor:
             Called before ``fit``.
         """
         if self._model is None:
-            raise RuntimeError("ColumnSubsetRegressor is not fitted")
+            raise RuntimeError("ColumnSubsetEstimator is not fitted")
         return self._model.predict(x[:, self._indices])
 
 
