@@ -30,7 +30,10 @@ existing tier-placement rules (see the root `CLAUDE.md`/`AGENTS.md`
   The chain already runs under auto-approve by design (see
   `docs/skills/chain.md`'s Safety section) — the mandatory TDD and
   skeptic-review-loop passes from Step 3/4 are the substitute quality gate
-  in this context, not a human sign-off mid-chain.
+  in this context, not a human sign-off mid-chain. This also means no new
+  ADR entry gets authored under `/chain` — an unattended ADR would just be
+  the same bypass in a different form — so placement proceeds directly
+  under Step 2's tiering rule instead.
 
 ## Journal it
 

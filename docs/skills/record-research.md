@@ -13,8 +13,14 @@ markdown file there is a miss — no ledger row.
 3. Record and write in one shot:
 
 ```bash
-python -m dskit.journal research "SHORT TITLE" --body-file <draft> --root .
+python -m dskit.journal research "SHORT TITLE" --body-file <draft> \
+  --topic <topic-slug> --name <name-slug> --root .
 ```
+
+   `--topic` is the folder under `docs/research/` (default: a slug of
+   TITLE). `--name` is the file stem after the date (default `synthesis`).
+   Both are optional; the file lands at
+   `docs/research/<topic>/<date>-<name>.md`.
 
 4. The command prints the new path and appends a **research** row.
    Confirm `docs/decisioning/README.md` lists it.
@@ -27,13 +33,16 @@ python -m dskit.journal research "SHORT TITLE" --body-file <draft> --root .
 
 ## Already exists
 
-If `docs/research/<slug>.md` already exists, do not re-run `research`
-(it refuses). Edit that file in place, then:
+`research` does not refuse when a file at that exact date/topic/name path
+already exists — a same-day second write on the same topic auto-renames
+using a UTC-time-based stem instead. It only raises if that renamed path
+also collides (rare). To edit an **existing** research file in place
+(not to work around a collision), edit the file directly, then:
 
 ```bash
 python -m dskit.journal record --category research --step "<slug>" \
-  --inputs "<title>" --outputs docs/research/<slug>.md \
-  --db-location docs/research/<slug>.md --root .
+  --inputs "<title>" --outputs docs/research/<topic>/<date>-<name>.md \
+  --db-location docs/research/<topic>/<date>-<name>.md --root .
 ```
 
 Path to production is owner-only (`journal promote`). Do not add path rows.
