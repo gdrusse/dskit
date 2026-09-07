@@ -56,7 +56,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 from ..base import AssetError, MODES, parse_utc
-from ..connector import MAX_BACKOFF_S, PROTOCOL, Connector
+from ..connector import MAX_BACKOFF_S, PROTOCOL, Connector, backoff, retry_after
 
 __all__ = [
     "DEFAULT_BASE_URL",
@@ -102,7 +102,6 @@ DEFAULT_MAX_PAGES = 50
 DEFAULT_TIMEOUT_S = 30
 
 _KEY_HEADER = "x-api-key"
-_RETRY_AFTER_HEADER = "retry-after"
 _THROTTLED = 429
 _PROBE_LIMIT = 1
 #: Error bodies are quoted at most this far, the API key redacted first.
@@ -378,17 +377,6 @@ def _excerpt(body, secret):
     if secret:
         text = text.replace(secret, _REDACTED)
     return text[:_EXCERPT_CHARS]
-
-
-def _retry_after(headers):
-    """Seconds a numeric ``Retry-After`` asks for, capped at ``MAX_BACKOFF_S``; else ``None``."""
-    for name, value in headers.items():
-        if str(name).lower() == _RETRY_AFTER_HEADER:
-            try:
-                return min(max(0.0, float(value)), MAX_BACKOFF_S)
-            except (TypeError, ValueError):
-                return None
-    return None
 
 
 class RateLimiter:
@@ -677,23 +665,24 @@ class PredexonConnector(Connector):
         while True:
             attempts += 1
             limiter.wait()
+            # Pure and cheap, so it is read once per attempt rather than
+            # spelled at each of the three failure branches below.
+            wait_s = backoff(attempts, knobs["retry_floor_s"])
             try:
                 status, found, body = self._getter(url, params, headers, knobs["timeout_s"])
             except OSError as exc:
                 failure, ceiling = f"network error: {exc}", knobs["retries"]
-                delay = _backoff(knobs, attempts)
+                delay = wait_s
             else:
                 if 200 <= status < 300:
                     return _json_object(body, url, label)
                 if status == _THROTTLED:
                     failure, ceiling = f"HTTP {status}", knobs["retries"]
-                    delay = _retry_after(found)
-                    if delay is None:
-                        delay = _backoff(knobs, attempts)
+                    delay = retry_after(found, wait_s)
                 elif 500 <= status < 600:
                     failure = f"HTTP {status}"
                     ceiling = max(knobs["retries"], SERVER_FAULT_ATTEMPTS_FLOOR)
-                    delay = _backoff(knobs, attempts)
+                    delay = wait_s
                 else:
                     raise AssetError(
                         [f"{label}: HTTP {status} from {url}: "
@@ -938,8 +927,3 @@ def _iso_problems(name, value):
     except AssetError:
         return [f"config.{name} must be an ISO date/datetime, got {value!r}"]
     return []
-
-
-def _backoff(knobs, attempt):
-    """Backoff after the ``attempt``-th failure: the floor, doubled per attempt, capped."""
-    return min(knobs["retry_floor_s"] * (2 ** (attempt - 1)), MAX_BACKOFF_S)

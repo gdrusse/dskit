@@ -1,5 +1,59 @@
 # Re-entry
 
+## Current state: P15 temporal-fusion zoo complete (2026-09-06)
+
+The three-candidate P15 run completed 20/20 paired outer folds per model under
+benchmark `5e88726b…`. Mean path scores were Ridge 0.001346, Transformer
+0.000835, and TCN 0.000409. No pairwise test rejected equal performance at
+the 0.016667 adjusted threshold; all three positive means depended on the
+same 2023-05-19 fold and became approximately zero or negative without it.
+Ridge is the simplest P15 frontier, but no model was promoted or refit.
+
+The nine-model P13/P14/P15 reference leaves P13 pooled native LightGBM as the
+practical development frontier. Cross-zoo values are descriptive, not paired
+tests. Memo:
+`children/intraday_equities/docs/memos/p15-temporal-fusion-model-zoo-results.md`.
+
+**Next:** treat the temporal zoo as a completed negative complexity ablation.
+Only spend on another sequence family after a sharper representation or loss
+hypothesis; keep promotion/final refit as a separate owner-approved action.
+
+## Current state: cross-benchmark model selector landed (2026-09-06)
+
+`BenchmarkSelect` (ADR-0106, accepted) joins completed benchmark zoos' pinned
+`compare.json` artifacts and names one winner by a config-declared
+`decision_metric` + `select` direction — never promotes (`auto_promote` False).
+Shipped in `dskit/pipeline/benchmarks.py` with `is_sha256hex` (single owner of
+the lowercase-64 SHA-256 rule, `dskit/pipeline/stages.py`); 27 tests, ruff clean,
+skeptic loop closed with a clean round-3 pass. Child config
+`configs/run-model-select.json` now chains P13+P14+P15, ranks all nine
+candidates, and selects `lgbm-pooled-h10`. The completed selector artifact is
+`pipeline_runs/model-select-staged-2026-02-28-ef2e8f37/stages/select.json`
+(SHA-256 `df474f64…`). This is descriptive ranking only, not a cross-zoo
+significance claim, final refit, or promotion.
+
+## Current state: P14 recurrent-fusion model zoo complete (2026-09-06)
+
+The corrected two-candidate P14 run completed 20 paired outer folds per model
+under benchmark identity `70b5a399…` and approved inventory `85e1fb8c…`.
+Mean path scores were LSTM 0.001174 and GRU -0.000417. GRU minus LSTM was
+-0.001591 (`p=0.109186`), so the comparison selected the simpler LSTM frontier
+without detecting a reliable difference. LSTM's mean excluding its best fold
+was -0.000498; neither model was promoted or refit.
+
+The initial run exposed sparse no-trade minutes: strict 120-minute continuity
+left MSTR without fold-four path evidence. ADR-0104 and the config now state a
+causal bounded fill—carry the last close into OHLC and zero volume for gaps up
+to five minutes, while refusing longer gaps and session boundaries. Corrected
+MSTR fold-four coverage is 198 origins and both models finished 20/20 folds.
+Scoped verification passed (253 tests, 21 skips), Ruff/config validation and
+the diff check are clean, and final Major/Critical review is clear. Memo:
+`children/intraday_equities/docs/memos/p14-recurrent-fusion-model-zoo-results.md`.
+
+**Next:** retain pooled native LightGBM from P13 as the practical development
+frontier. Do not spend on a joint six-candidate rerun or promote a recurrent
+model unless a sharper sequence hypothesis is approved first.
+
 ## Current state: P13 pooled/Kronos model zoo complete (2026-09-06)
 
 The four owner-approved candidates completed 20 outer folds each under
@@ -27,11 +81,60 @@ approved additive ablation against the full nonduplicative P12 feature set;
 do not fine-tune or promote while the cheaper frozen representation shows no
 incremental value and pretraining-contamination certainty remains low.
 
-## Current wrap: dskit.production BUILT — phases 1, 2, 2b and 3 (2026-09-06)
+## Current wrap: production merged, and its four follow-ups too (2026-09-06)
 
-Branch: `claude/dskit-production-build-3g17vw`. ADR-0090 and ADR-0091 are
-**accepted**; the package is complete against
-`docs/new_package_proposals/production.md`, which is the contract.
+`dskit.production` is BUILT — phases 1, 2, 2b and 3 — and MERGED to `main` at
+`8ea1b98`. ADR-0090 and ADR-0091 are **accepted**; the package is complete
+against `docs/new_package_proposals/production.md`, which is the contract.
+
+The four follow-ups landed as PR #8, reviewed and merged after one round
+that sent the private-import gate back (item 2). What they were:
+
+1. Main was red before the merge, from its own two new pipeline modules —
+   fourteen missing docstrings, and one spelling the run-root default instead
+   of importing it, which is the very defect its pin exists to catch. Fixed.
+2. Production was importing two PRIVATE driver names. §9.1 says twice that it
+   may not, and nothing checked — the purity gate tested what production
+   EXPORTS, never what it IMPORTS. Both rules are public with one owner now,
+   the private spellings survive as aliases, and the missing gate is written
+   and proven to fail on the old code.
+
+   **Review round (2026-09-06).** The first gate was a line scan matching
+   `from dskit.` and three ordinary idioms walked straight past it: a
+   parenthesized multi-line import, a relative `from ..pipeline.driver
+   import`, and reading the attribute off a module alias the file already
+   held for a legitimate public call. It was also scoped to `production`
+   alone while three documents claimed both directions — the coverage a pin
+   claims and lacks is the defect CLAUDE.md names. Rewritten as an AST walk
+   over EVERY package in both directions; the rule has one owner,
+   `private_cross_package_uses` in the toolkit's own gate, and each
+   package's gate calls it. All four forms are pinned by a synthetic test
+   and were re-proven against the real reverted file.
+
+   Widening it surfaced eight more breaches nobody had seen: `onboarding`
+   and `production` both read `_check_dict` / `_check_str` /
+   `_check_unknown` / `_raise_if` across the boundary from `dskit.assets`,
+   in exactly the multi-line form the old scan could not see. Same remedy
+   as the driver names — public in `assets.base`, private spellings kept as
+   aliases, the two callers importing the public name under their own
+   private alias. No behaviour changed.
+3. ADR-0101 **accepted**: the six connector packs' hand-rolled retries are one
+   owner in `dskit/onboarding/connector.py`, pinned by a scan so the copies
+   cannot return. One behaviour changes on purpose — against a
+   `Retry-After: nan`, two packs used to retry IMMEDIATELY and now wait the
+   ordinary backoff. The full graduation stays the eventual direction.
+4. `alpaca_quotes` carried its own hardcoded ceiling, a second copy of the cap
+   that nothing pinned. Gone.
+
+**Owner's standing objection, recorded.** This build reached outside its own
+package: thirteen files in `dskit/pipeline` and one in `dskit/onboarding`, none
+in `assets` or `journal`. It was authorised — §9 is titled "Changes outside the
+package" and ADR-0091 IS a pipeline change — but the footprint was never put in
+front of the owner plainly, and it should have been. The seam change was
+load-bearing (serving re-executes the backtest's own nodes, and that mechanism
+was private); the serving-effect classifications were not, and could have been
+their own later change. Future package work: state the cross-package footprint
+up front.
 
 **What it is.** The serving layer: an immutable release of a finished pipeline
 run, driven forward on a cadence — fetch, decide, guard, act, record. Every

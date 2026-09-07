@@ -59,6 +59,9 @@ Agent orientation — see README.md for operator commands.
 - P14's exploratory extension is `configs/run-p14-recurrent-fusion-zoo.json`:
   paired pooled LSTM/GRU late fusion over session-local one-minute OHLCV and an
   explicit side-feature projection. It is not locked or automatically promoted.
+- P15's exploratory extension is `configs/run-p15-temporal-fusion-zoo.json`:
+  one-hot Ridge, causal TCN, and small causal Transformer candidates share the
+  exact P14 sequence rows and side features. It is not locked or auto-promoted.
 
 ## Machine knobs
 

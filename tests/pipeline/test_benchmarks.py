@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from dskit.pipeline.benchmarks import (
     BenchmarkApproval,
     BenchmarkCompare,
     BenchmarkPlan,
+    BenchmarkSelect,
     PathBenchmarkCompare,
     BenchmarkRun,
 )
@@ -101,6 +103,37 @@ def _summary(path, document_hash, scores, select="max"):
     path.mkdir(parents=True)
     (path / "walkforward.json").write_text(json.dumps(payload))
     return [fold["cutoff"] for fold in folds]
+
+
+def _write_compare_artifact(path, ranking_rows, benchmark_hash="e" * 64):
+    """Write a minimal compare.json whose ranking rows match BenchmarkCompare."""
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "outputs": {
+            "ranking": ranking_rows,
+            "paired": [],
+            "pairwise": [],
+            "frontier": [],
+            "family_ranking": [],
+            "provenance": {"benchmark_hash": benchmark_hash},
+        },
+    }
+    raw = json.dumps(payload, sort_keys=True).encode()
+    (path / "compare.json").write_bytes(raw)
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _select_row(candidate_id, mean, family=None, compute_rank=1, std=0.0):
+    return {
+        "id": candidate_id,
+        "family": family or candidate_id,
+        "mean": mean,
+        "std": std,
+        "compute_rank": compute_rank,
+        "n_folds": 20,
+        "n_scored": 20,
+    }
 
 
 def _run_row(candidate_id, document_hash, summary_dir, cutoffs, **metadata):
@@ -466,3 +499,167 @@ def test_path_compare_is_no_launch_while_approval_is_pending(tmp_path):
     assert result["loss_evidence"] == {}
     assert result["selection"] == []
     assert result["provenance"]["no_launch"] is True
+
+
+def _select_params(tmp_path, source_id, rows, digest="", metric="mean", select="max"):
+    digest = digest or _write_compare_artifact(tmp_path / source_id, rows)
+    return {
+        "sources": [
+            {"id": source_id, "path": str(tmp_path / source_id / "compare.json"),
+             "sha256": digest}
+        ],
+        "decision_metric": metric,
+        "select": select,
+    }
+
+
+def test_select_picks_the_top_candidate_across_two_zoos(tmp_path):
+    rows_a = [
+        _select_row("lgbm", 0.0064, compute_rank=1),
+        _select_row("mlp", 0.0053, compute_rank=2),
+    ]
+    rows_b = [
+        _select_row("lstm", 0.0012, compute_rank=2),
+        _select_row("gru", -0.0004, compute_rank=2),
+    ]
+    params = {
+        "sources": [
+            {"id": "a", "path": str(tmp_path / "a" / "compare.json"),
+             "sha256": _write_compare_artifact(tmp_path / "a", rows_a, "e" * 64)},
+            {"id": "b", "path": str(tmp_path / "b" / "compare.json"),
+             "sha256": _write_compare_artifact(tmp_path / "b", rows_b, "d" * 64)},
+        ],
+        "decision_metric": "mean",
+        "select": "max",
+    }
+    result = BenchmarkSelect("select", params).run(_context(tmp_path), {})
+    assert result["selection"]["candidate"] == "lgbm"
+    assert result["selection"]["auto_promote"] is False
+    assert [row["id"] for row in result["ranking"]] == [
+        "lgbm", "mlp", "lstm", "gru",
+    ]
+
+
+def test_select_honors_a_config_metric_and_min_direction(tmp_path):
+    rows_a = [
+        _select_row("lgbm", 0.0064, std=0.0024),
+        _select_row("mlp", 0.0053, std=0.0055),
+    ]
+    params = _select_params(
+        tmp_path, "a", rows_a, metric="std", select="min"
+    )
+    result = BenchmarkSelect("select", params).run(_context(tmp_path), {})
+    assert result["selection"]["candidate"] == "lgbm"
+    assert result["selection"]["decision_metric"] == "std"
+
+
+def test_select_refuses_a_metric_missing_from_a_source(tmp_path):
+    rows = [_select_row("lgbm", 0.0064)]
+    params = _select_params(tmp_path, "a", rows, metric="mean")
+    params["sources"][0]["sha256"] = _write_compare_artifact(
+        tmp_path / "a", [{k: v for k, v in rows[0].items() if k != "mean"}], "e" * 64
+    )
+    with pytest.raises(ValueError, match="decision_metric"):
+        BenchmarkSelect("select", params).run(_context(tmp_path), {})
+
+
+def test_select_refuses_a_source_digest_mismatch(tmp_path):
+    rows = [_select_row("lgbm", 0.0064)]
+    _write_compare_artifact(tmp_path / "a", rows, "e" * 64)
+    params = {
+        "sources": [
+            {"id": "a", "path": str(tmp_path / "a" / "compare.json"),
+             "sha256": "f" * 64},
+        ],
+        "decision_metric": "mean",
+        "select": "max",
+    }
+    with pytest.raises(ValueError, match="hash changed"):
+        BenchmarkSelect("select", params).run(_context(tmp_path), {})
+
+
+def test_select_params_default_deny_and_validate_shape():
+    problems = BenchmarkSelect.validate_params(
+        {"decision_metric": "mean", "select": "max", "surprise": True}
+    )
+    assert any("unknown param" in problem for problem in problems)
+    problems = BenchmarkSelect.validate_params(
+        {"sources": [], "decision_metric": "mean", "select": "max"}
+    )
+    assert any("sources" in problem for problem in problems)
+    problems = BenchmarkSelect.validate_params(
+        {"decision_metric": "mean", "select": "sideways"}
+    )
+    assert any("select" in problem for problem in problems)
+
+
+def test_select_refuses_a_boolean_fold_count(tmp_path):
+    rows = [_select_row("lgbm", 0.0064)]
+    rows[0]["n_folds"] = True
+    rows[0]["n_scored"] = True
+    params = _select_params(tmp_path, "a", rows)
+    with pytest.raises(ValueError, match="did not complete every fold"):
+        BenchmarkSelect("select", params).run(_context(tmp_path), {})
+
+
+def test_select_refuses_a_non_dict_provenance(tmp_path):
+    rows = [_select_row("lgbm", 0.0064)]
+    digest = _write_compare_artifact(tmp_path / "a", rows, "e" * 64)
+    raw_path = tmp_path / "a" / "compare.json"
+    payload = json.loads(raw_path.read_text())
+    payload["outputs"]["provenance"] = ["not", "a", "dict"]
+    raw_path.write_text(json.dumps(payload, sort_keys=True))
+    digest = hashlib.sha256(raw_path.read_bytes()).hexdigest()
+    params = {
+        "sources": [
+            {"id": "a", "path": str(raw_path), "sha256": digest},
+        ],
+        "decision_metric": "mean",
+        "select": "max",
+    }
+    result = BenchmarkSelect("select", params).run(_context(tmp_path), {})
+    assert result["selection"]["candidate"] == "lgbm"
+    assert result["provenance"]["sources"][0]["benchmark_hash"] is None
+
+
+def test_select_refuses_an_unreadable_source(tmp_path):
+    rows = [_select_row("lgbm", 0.0064)]
+    _write_compare_artifact(tmp_path / "a", rows, "e" * 64)
+    params = {
+        "sources": [
+            {"id": "a", "path": str(tmp_path / "a" / "missing.json"),
+             "sha256": "e" * 64},
+        ],
+        "decision_metric": "mean",
+        "select": "max",
+    }
+    with pytest.raises(ValueError, match="cannot be read"):
+        BenchmarkSelect("select", params).run(_context(tmp_path), {})
+
+
+def test_select_refuses_a_reserved_metric(tmp_path):
+    rows = [_select_row("lgbm", 0.0064)]
+    params = _select_params(tmp_path, "a", rows, metric="compute_rank")
+    problems = BenchmarkSelect.validate_params(params)
+    assert any("collides" in problem for problem in problems)
+
+
+def test_select_reports_a_non_string_sha256_digest(tmp_path):
+    for bad in (None, True, 123, ["a" * 64]):
+        params = {
+            "sources": [{"id": "a", "path": "p.json", "sha256": bad}],
+            "decision_metric": "mean",
+            "select": "max",
+        }
+        problems = BenchmarkSelect.validate_params(params)
+        assert any("sha256 must be a lowercase SHA-256" in p for p in problems), bad
+
+
+def test_select_reports_a_missing_sha256_digest(tmp_path):
+    params = {
+        "sources": [{"id": "a", "path": "p.json"}],
+        "decision_metric": "mean",
+        "select": "max",
+    }
+    problems = BenchmarkSelect.validate_params(params)
+    assert any("sha256 must be a lowercase SHA-256" in p for p in problems)

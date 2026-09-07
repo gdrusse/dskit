@@ -140,6 +140,25 @@ projection for the declared origin-time side features, a learned symbol
 embedding, and a final linear fusion head. LSTM and GRU own separate purged
 inner searches; execution remains inventory-gated.
 
+P15 keeps those rows fixed and changes the temporal inductive bias:
+
+```bash
+python -m dskit.pipeline plan configs/run-p15-temporal-fusion-zoo.json \
+  --adapter intraday_equities
+```
+
+The three new candidates are a deterministic one-hot Ridge baseline over the
+flattened causal window, a dilated causal TCN, and a small causal Transformer.
+All own separate purged inner searches and remain exploratory, inventory-gated,
+not locked, and ineligible for automatic promotion.
+
+The completed P15 comparison ranked Ridge 0.001346, Transformer 0.000835, and
+TCN 0.000409 by mean path score. No pairwise difference was detected after
+Bonferroni adjustment, and all means were dominated by one common fold. No
+candidate was promoted or refit; see
+`docs/memos/p15-temporal-fusion-model-zoo-results.md` for the full nine-model
+P13/P14/P15 reference.
+
 ## Layout
 
 ```

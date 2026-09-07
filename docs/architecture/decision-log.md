@@ -5333,10 +5333,13 @@ this integration-time renumbering does not alter their approved identities.
 
 ## ADR-0101 — The onboarding connector packs' retry policy has one owner
 
-**Status:** proposed (2026-09-06; phase 3 of ADR-0090; Appendix C of
-`docs/new_package_proposals/production.md` is the draft this replaces —
-0092 and 0095 were both taken by the child's own decisions while phase 3
-waited, so this is 0101)
+**Status:** accepted (2026-09-06; the owner ruled for the NARROW FIRST
+STEP, which is built. Option (a), the full graduation, is NOT rejected —
+it stays the eventual direction, with its three obstacles still to clear,
+and this step is the piece of it that could be taken without them. Phase 3
+of ADR-0090; Appendix C of `docs/new_package_proposals/production.md` is
+the draft this replaces — 0092 and 0095 were both taken by the child's own
+decisions while phase 3 waited, so this is 0101)
 
 **Context.** Six connector packs under `dskit/onboarding/libs/` each
 hand-roll the same retry: an attempt counter, an exponential delay, a cap
@@ -5373,10 +5376,10 @@ it:
   `tests/onboarding/test_purity.py`, which asserts module-level imports
   are stdlib + `dskit.assets` + itself.
 
-So (a) — **and this ADR is deliberately not implemented with it.** Three
-obstacles the Appendix C draft did not see make (a) a larger change than
-"the packs delete their private helpers", and each needs the owner's
-ruling before code:
+So (a) is the direction — **and this ADR deliberately does not build it.**
+Three obstacles the Appendix C draft did not see make (a) a larger change
+than "the packs delete their private helpers", and each still needs the
+owner's ruling before code:
 
 1. **The pipeline firewall.** `resilience.py` reaches
    `dskit.pipeline.node` for `check_int_param` and (through
@@ -5397,27 +5400,39 @@ ruling before code:
    `AssetError`, and `pytest.raises(ProductionError)` does not catch one.
    Every §5.12 refusal assertion moves with the classes.
 
-A narrower first step exists and is offered as the alternative: give the
-onboarding-side rule ONE home in `dskit/onboarding/connector.py`, beside
-the `MAX_BACKOFF_S` it already owns — one `backoff` and one `retry_after`
-the six packs import — which deletes the six copies, keeps every gate
-green, needs no cross-package move, and is what would later grow into the
-`dskit/onboarding/resilience.py` of (a).
+**The owner ruled for the narrower first step, and it is built:** the
+onboarding-side rule has ONE home in `dskit/onboarding/connector.py`,
+beside the `MAX_BACKOFF_S` it already owns — one `backoff(attempt,
+base_s)` and one `retry_after(headers, fallback)` the six packs import.
+That deletes the six copies, keeps every gate green (no pipeline import,
+no vocabulary move, no error type crossing a package), needs no
+cross-package move, and is what would later grow into the
+`dskit/onboarding/resilience.py` of (a). Three consolidation rulings are
+recorded in the two docstrings: attempts are ONE-based (three copies
+counted from zero); there is no jitter and no `cap_s` knob, because none
+of the six had jitter and one ceiling is what `MAX_BACKOFF_S` means; and a
+`NaN` `Retry-After` is unusable and falls back — `polymarket` already
+guarded it, while `kalshi` and `predexon` turned it into a zero-second
+wait, so those two now wait the ordinary backoff. That NaN reading is the
+step's ONE behaviour change. `tests/onboarding/test_connector.py` scans
+every `libs/*.py` for a doubling, a `MAX_BACKOFF_S` clamp, a
+`Retry-After` spelling or a locally-defined `backoff`/`retry_after`, so a
+seventh copy cannot be written.
 
-**Consequences.** Until this is ratified the packs keep their copies, and
+**Consequences.** The packs now carry no retry policy of their own, and
 phase 3's other three items (the calendar pack, the two metric sinks and
 the stream feed) do not depend on it. Under (a): one retry policy, one
 jitter rule, one `Retry-After` handling, one ceiling; each pack's
 documented `retries`/`pace_s` prose becomes the `Retry` params it already
 describes; the ambiguous-write rule reaches acquisition, where it is a
-no-op today and correct tomorrow. The migration's real cost is the
-onboarding tests that assert a wait sequence through a monkeypatched
-`time.sleep` and must be rewritten against the injected sleeper — which is
-why Appendix C made it a phase of its own — plus obstacle 3's production
-suite. `MAX_BACKOFF_S` stays exactly where it is; nothing about
-acquisition identity, source config hashes or stored rows changes under
-either option.
-
+no-op today and correct tomorrow. Its remaining cost — the onboarding
+tests that assert a wait sequence through a monkeypatched `time.sleep` and
+must be rewritten against the injected sleeper, which is why Appendix C
+made it a phase of its own, plus obstacle 3's production suite — is
+untouched by this step: the one owner COMPUTES a wait and never sleeps, so
+each pack keeps the sleeper seam it already had. `MAX_BACKOFF_S` stays
+exactly where it is; nothing about acquisition identity, source config
+hashes or stored rows changes under either option.
 ---
 
 ## ADR-0104 -- Compare two pooled one-minute recurrent late-fusion models
@@ -5431,8 +5446,11 @@ separate from origin-time side information until the prediction head.
 
 **Decision.** Add pooled LSTM and GRU candidates over the same 25 Gate-3
 passers, direct leads, outer folds, and equal-stock path score. At each
-30-minute scoring origin, cache the preceding 120 complete, contiguous,
-session-local one-minute OHLCV bars. HPO may select the latest 30, 60, or 120
+30-minute scoring origin, cache the preceding 120 session-local one-minute
+OHLCV slots. Because the minute aggregate omits no-trade minutes, bounded gaps
+of at most five minutes carry the last observed close into OHLC and set volume
+to zero; longer gaps and session boundaries remain ineligible. HPO may select
+the latest 30, 60, or 120
 minutes. The recurrent tower receives only OHLCV; a single linear projection
 receives an explicit calendar/overnight/SPY allowlist; a learned symbol
 embedding joins both at one final linear head. Prices become causal log ratios
@@ -5443,3 +5461,100 @@ training rows only. Each family owns four purged inner-HPO trials.
 final refit. It adds a version-3 content-verified sequence cache without
 altering P13 artifacts. Candidate execution remains inventory-gated and begins
 with one fold worker because each process retains the full memory allowance.
+
+---
+
+## ADR-0105 -- Compare linear, convolutional, and attention sequence biases
+
+**Status:** Accepted, not locked (2026-09-06; owner approved implementation)
+
+**Context.** Across P13 and P14, pooled LightGBM remains the strongest mean
+result, the tabular MLP is close, frozen Kronos features do not help, and the
+LSTM/GRU study is weak and unstable. That does not distinguish a generally
+unhelpful one-minute path from a poor recurrent inductive bias.
+
+**Decision.** Add exactly three P15 candidates on P14's identical eligible
+origins, OHLCV transformations, side-feature allowlist, folds, scoring, and
+25-name cohort. Ridge flattens the causal OHLCV window, keeps side features,
+and one-hot encodes symbol without ordinal leakage. A dilated causal TCN tests
+local motifs; a small causally masked Transformer with learned positions tests
+non-local interactions. Each tunes the 30/60/120-minute context and its own
+capacity/regularization knobs in four purged train-only trials. Reuse the
+content-verified P14-v2 caches and start with one fold worker.
+
+**Consequences.** P15 is a paired diagnostic, not a promotion or final refit.
+The linear row supplies a cheap complexity floor, while TCN and Transformer
+answer whether sequence structure helps beyond that floor. The run remains
+inventory-gated, report-only, not locked, and cannot read the lockbox.
+
+**Result (2026-09-06).** All three candidates completed 20 paired folds. Ridge
+ranked first (0.001346 mean), ahead of Transformer (0.000835) and TCN
+(0.000409), but none of the three pairwise tests rejected equal performance at
+the adjusted threshold. Each mean was dominated by the same 2023-05-19 fold;
+no candidate was promoted or refit. The result closes the ablation without
+locking it and leaves P13 pooled LightGBM as the practical development
+frontier.
+
+## ADR-0106 — A generic cross-benchmark model selector graduates into dskit.pipeline
+
+**Status:** Accepted (2026-09-06; owner approved implementation)
+
+**Context.** P13, P14, and P15 each ran (or are running) as a separate
+inventory-gated benchmark document. `BenchmarkCompare` /
+`PathBenchmarkCompare` pick the simplest statistically-indistinguishable
+candidate *within* one document (`auto_promote` stays `False`), but nothing
+ranks candidates *across* the several zoos. Each memo ends by reasoning a
+frontier by hand ("pooled LightGBM remains the practical development
+frontier"). We want one programmatic step, run after the newest zoo finishes,
+that reads every completed zoo's results and names a single winner — not a
+second round of statistical testing, but the deterministic verdict the
+predeclared decision rule already implies, applied to one joined inventory.
+
+**Decision.** Add one read-only stage to `dskit.pipeline.benchmarks`:
+`BenchmarkSelect` (tentative name). It takes a declared, ordered list of
+benchmark result summaries (each zoo's `stages/compare.json` artifact) plus a
+pinned digest per source, and emits a single `selection` record.
+
+1. **Score source.** The selector reads the metrics each source's compare
+   artifact already emits — specifically the `ranking` rows the comparator
+   produces (candidate id, family, mean, std, compute rank, and the
+   per-candidate fold means) — together with the `paired` and `pairwise`
+   records. It does not recompute scores, re-run folds, or re-derive any
+   statistic.
+
+2. **Config-declared decision metric.** The scoring field is a config param
+   (e.g. `decision_metric: "mean"`), matching a key every source's `ranking`
+   row carries. Defaulting to `"mean"` preserves today's behaviour, but a
+   different key (std, a fold-stability measure, or any future row field) can
+   drive selection without a code change. The winner rule is argmax/min over
+   that key, honoring each source's shared `select` direction (`max`).
+
+3. **Ranking.** It ranks every finishing candidate across all sources by the
+   decision metric. It keeps the provenance of each source (benchmark hash,
+   asof, inventory digest, fold count) so cross-zoo comparability is declared,
+   never assumed silently — a source whose candidates all lack the metric or
+   that did not complete every declared fold is refused by name rather than
+   folded in.
+
+4. **No cross-zoo significance claim.** Because zoos do not share one origin
+   set, the selector reports a *ranking only*. The existing per-zoo
+   paired/Bonferroni evidence stays the only statistical claim, and the
+   selector links back to it.
+
+5. **No promotion.** The stage emits `auto_promote: False` exactly as the
+   comparators do; it selects, it does not refit, freeze, or pin a training
+   run. Promotion and finalist refit remain ADR-0098 §3–4 (separate owner
+   actions).
+
+6. **Tiering.** It lives in `dskit/pipeline/benchmarks.py` beside
+   `BenchmarkCompare` because it is a generic mechanism over the same
+   artifacts — a project that has never heard of intraday equities can point
+   it at any set of completed benchmarks. It names no estimator, model, or
+   domain constant.
+
+**Consequences.** Selecting a model becomes a rerunnable JSON step whose
+output is a durable, provenance-linked artifact, instead of a memo paragraph.
+It changes no hash, retrains nothing, and leaves promotion to the owner. On
+approval, build under the TDD + skeptic loop: the stage, its params
+validation, and a child config/tests. No execution is authorized by this
+decision.

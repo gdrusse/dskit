@@ -1,0 +1,55 @@
+{
+  "name": "model-select",
+  "notes": "ADR-0106: join the completed zoos' compare artifacts and name one winner by a config-declared metric. Read-only — no refit, no promotion, no lockbox read. Append a source for any zoo once its staged compare.json finishes (all candidates n_scored == n_folds); a source with an empty or incomplete ranking is refused by name.",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe-p13-pooled.json"
+      }
+    }
+  },
+  "stages": {
+    "select": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkSelect",
+      "params": {
+        "decision_metric": "mean",
+        "select": "max",
+        "sources": [
+          {
+            "id": "p13-pooled",
+            "path": "../pipeline_runs/p13-pooled-model-zoo-staged-2026-02-28-b017ea1b/stages/compare.json",
+            "sha256": "924e630dbb41bae0d4baae3c6538512a9bca56aaffd6d4d37604d1d3db60dfb1"
+          },
+          {
+            "id": "p14-recurrent",
+            "path": "../pipeline_runs/p14-recurrent-fusion-zoo-staged-2026-02-28-70b5a399/stages/compare.json",
+            "sha256": "12b893e4706919018ecdf15837b4c4abc4acaaeea94c6f6afa9c36d70dacfe75"
+          },
+          {
+            "id": "p15-temporal",
+            "path": "../pipeline_runs/p15-temporal-fusion-zoo-staged-2026-02-28-5e88726b/stages/compare.json",
+            "sha256": "47bfa13576dc3bf14d8e2a09617e5b2630f8252435c166d659b5495f37104738"
+          }
+        ]
+      },
+      "notes": "Winner is argmax of each candidate's mean path score across the three completed zoos. Cross-zoo ordering is descriptive only; source-local paired tests remain authoritative."
+    }
+  },
+  "outputs": {
+    "run_root": "./pipeline_runs"
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        },
+        "notes": "Local sqlite beside the invoking cwd."
+      }
+    ],
+    "notes": "Excluded from identity - where metrics land is not what it computes."
+  }
+}

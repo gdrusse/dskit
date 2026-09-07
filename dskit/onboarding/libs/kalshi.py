@@ -67,7 +67,7 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 from ..base import AssetError, MODES, parse_utc
-from ..connector import MAX_BACKOFF_S, PROTOCOL, Connector
+from ..connector import MAX_BACKOFF_S, PROTOCOL, Connector, backoff, retry_after
 
 __all__ = [
     "CANDLE_FIELDS",
@@ -144,8 +144,6 @@ _STREAMS = {
 STREAMS = tuple(sorted(_STREAMS))
 
 _RETRY_STATUSES = (429, 500, 502, 503, 504)
-#: Backoff base in seconds, doubled per failed attempt up to ``MAX_BACKOFF_S``.
-_BACKOFF_S = 0.5
 _USER_AGENT = "dskit-onboarding"
 #: Candle window when a market's ``open_time`` is missing or unparseable:
 #: this much history before its end.
@@ -207,20 +205,6 @@ def _instant(value):
 def _quote(segment):
     """Return a ticker encoded as one URL path segment."""
     return urllib.parse.quote(segment, safe="")
-
-
-def _backoff(attempt):
-    """Exponential backoff for the ``attempt``-th failure, capped at ``MAX_BACKOFF_S``."""
-    return min(_BACKOFF_S * 2 ** attempt, MAX_BACKOFF_S)
-
-
-def _retry_after(headers, fallback):
-    """Seconds to wait: a numeric ``Retry-After`` capped at ``MAX_BACKOFF_S``, else ``fallback``."""
-    try:
-        value = float(headers.get("Retry-After"))
-    except (AttributeError, TypeError, ValueError):
-        return fallback
-    return min(max(0.0, value), MAX_BACKOFF_S)
 
 
 def _market_row(raw, where):
@@ -529,10 +513,10 @@ class KalshiConnector(Connector):
                 if exc.code not in _RETRY_STATUSES:
                     raise AssetError([f"Kalshi GET {shown}: HTTP {exc.code}"]) from exc
                 last = f"HTTP {exc.code}"
-                delay = _retry_after(exc.headers, _backoff(attempt))
+                delay = retry_after(exc.headers, backoff(attempt + 1))
             except OSError as exc:
                 last = f"network error: {exc}"
-                delay = _backoff(attempt)
+                delay = backoff(attempt + 1)
             except ValueError as exc:
                 raise AssetError(
                     [f"Kalshi GET {shown}: response is not JSON: {exc}"]
