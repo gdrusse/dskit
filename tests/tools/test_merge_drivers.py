@@ -461,3 +461,159 @@ def test_driver_columns_agree_with_the_journal():
     # agreement — not just the two column names.
     assert union.ACTION_FIELDS == tuple(ACTION_FIELDS)
     assert union.PATH_FIELDS == tuple(PATH_FIELDS)
+
+# --- install.sh, driven for real ---------------------------------------
+#
+# Round 2 of the skeptic review: every install.sh claim was guarded only by
+# hand-run shell scripts, so a future edit could silently reintroduce any of
+# them with the suite fully green. These run the script in scratch git repos.
+
+import subprocess
+
+
+def _git(cwd, *args):
+    return subprocess.run(("git", *args), cwd=cwd, capture_output=True, text=True)
+
+
+def _scratch_repo(tmp_path, name="repo"):
+    """A git repo carrying a copy of tools/merge, ready for install.sh."""
+    repo = tmp_path / name
+    (repo / "tools" / "merge").mkdir(parents=True)
+    for f in os.listdir(MERGE_DIR):
+        src = os.path.join(MERGE_DIR, f)
+        if os.path.isfile(src):  # skip __pycache__
+            shutil.copy(src, repo / "tools" / "merge" / f)
+    _git(repo, "init", "-q", ".")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "T")
+    return repo
+
+
+def _install(repo, frozen_clock=None):
+    """Run install.sh; `frozen_clock` stubs `date` so every call returns it.
+
+    Freezing the clock is how the repeated-backup-collision case is reached
+    at all: the fallback name carries a 1-second timestamp, so two installs
+    inside one second collide unless the suffix also counts up.
+    """
+    env = dict(os.environ)
+    if frozen_clock:
+        stub = repo / "_stub"
+        stub.mkdir(exist_ok=True)
+        (stub / "date").write_text(f'#!/bin/sh\necho "{frozen_clock}"\n')
+        os.chmod(stub / "date", 0o755)
+        env["PATH"] = f"{stub}{os.pathsep}{env['PATH']}"
+    done = subprocess.run(
+        ["sh", "tools/merge/install.sh"], cwd=repo, capture_output=True,
+        text=True, env=env,
+    )
+    assert done.returncode == 0, done.stderr
+    return done
+
+
+def _hook(repo):
+    path = _git(repo, "rev-parse", "--git-path", "hooks").stdout.strip()
+    return os.path.join(repo, path, "post-merge")
+
+
+def test_install_creates_a_hook_that_invokes_render_all(tmp_path):
+    repo = _scratch_repo(tmp_path)
+    _install(repo)
+    body = _read(_hook(repo))
+    assert "render_all.py" in body
+    assert os.access(_hook(repo), os.X_OK)
+
+
+def test_install_chains_a_prior_hook_that_ends_in_exec(tmp_path):
+    """`exec` never returns, so an APPENDED render_all would be dead code."""
+    repo = _scratch_repo(tmp_path)
+    _git(repo, "rev-parse", "--git-path", "hooks")
+    os.makedirs(os.path.dirname(_hook(repo)), exist_ok=True)
+    with open(_hook(repo), "w") as fh:
+        fh.write('#!/bin/sh\ntouch "$(dirname "$0")/PRIOR_RAN"\nexec echo team\n')
+    os.chmod(_hook(repo), 0o755)
+    _install(repo)
+    body = _read(_hook(repo))
+    # ours must NOT be appended after the prior hook's exec; the prior hook
+    # is invoked as a CHILD, so its exec replaces only that child.
+    assert "pre-adr0109" in body, body
+    assert body.index("pre-adr0109") < body.index("render_all.py"), body
+
+
+def test_install_never_overwrites_an_earlier_backup(tmp_path):
+    repo = _scratch_repo(tmp_path)
+    os.makedirs(os.path.dirname(_hook(repo)), exist_ok=True)
+    # THREE foreign hooks under a FROZEN clock: the timestamped fallback
+    # name is identical every time, so anything that does not also count up
+    # silently destroys the middle one.
+    for marker in ("ORIGINAL-TEAM-HOOK", "SECOND-TOOL-HOOK", "THIRD-TOOL-HOOK"):
+        with open(_hook(repo), "w") as fh:
+            fh.write(f"#!/bin/sh\necho {marker}\n")
+        os.chmod(_hook(repo), 0o755)
+        _install(repo, frozen_clock="20260907120000")
+    saved = "\n".join(
+        _read(os.path.join(os.path.dirname(_hook(repo)), f))
+        for f in os.listdir(os.path.dirname(_hook(repo)))
+        if "pre-adr0109" in f
+    )
+    assert "ORIGINAL-TEAM-HOOK" in saved, f"the true original was lost:\n{saved}"
+    assert "SECOND-TOOL-HOOK" in saved, f"a backup was overwritten:\n{saved}"
+    assert "THIRD-TOOL-HOOK" in saved, saved
+
+
+def test_reinstalling_after_a_move_heals_the_stale_paths(tmp_path):
+    """The marker alone is not proof the hook still works.
+
+    Absolute paths go stale when the repo moves; the hook then fails on
+    every merge and a chained prior hook silently stops running.
+    """
+    repo = _scratch_repo(tmp_path, "before")
+    _install(repo)
+    assert "before" in _read(_hook(repo))
+    moved = tmp_path / "after"
+    shutil.move(str(repo), str(moved))
+    _install(moved)
+    body = _read(_hook(moved))
+    assert "after" in body, body
+    assert "before" not in body, f"stale path survived the reinstall:\n{body}"
+
+
+def test_installing_is_idempotent(tmp_path):
+    repo = _scratch_repo(tmp_path)
+    _install(repo)
+    first = _read(_hook(repo))
+    _install(repo)
+    _install(repo)
+    assert _read(_hook(repo)) == first
+    assert _read(_hook(repo)).count("render_all.py") == 1
+
+def test_a_failed_conflict_write_leaves_the_file_intact(tmp_path):
+    """A failed write must not truncate %A (skeptic review round 2).
+
+    `open(path, "wb")` truncates the instant it succeeds, so a write that
+    then fails — full disk, quota, read-only mount — left %A at ZERO
+    bytes: worse than the one-sided file this driver exists to prevent.
+    The write goes through a temp file and a rename, so a failure changes
+    nothing. Blocking the temp path with a DIRECTORY reproduces the
+    failure without depending on permissions (this container runs as
+    root, where chmod proves nothing).
+    """
+    union = _load("journal_union")
+    base, ours, theirs = (tmp_path / n for n in ("b.csv", "o.csv", "t.csv"))
+    _write(base, ACTION_HEADER, [])
+    _write(ours, ACTION_HEADER, ["A0009,r,OURS-ROW,2026-09-07T10:00:00Z,x,y,z,n"])
+    _write(theirs, ACTION_HEADER, ["A0009,r,THEIRS-ROW,2026-09-07T10:00:00Z,x,y,z,n"])
+    before = _read(ours)
+    (tmp_path / "o.csv.journal-union.tmp").mkdir()   # block the temp write
+    assert union.write_conflict(str(base), str(ours), str(theirs)) is False
+    assert _read(ours) == before, "the file was truncated or partially written"
+
+
+def test_replace_file_is_atomic_and_leaves_no_temp(tmp_path):
+    union = _load("journal_union")
+    target = tmp_path / "x.csv"
+    target.write_text("original\n")
+    union.replace_file(str(target), b"replaced\n")
+    assert _read(target) == "replaced\n"
+    assert not (tmp_path / "x.csv.journal-union.tmp").exists()
+

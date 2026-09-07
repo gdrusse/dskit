@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 import sys
 
 #: The ledger's row key. Pinned against ``dskit.journal.base`` by
@@ -149,15 +150,6 @@ def _row_lines(header, rows):
     return _csv_text(header, rows).split("\n")[1:-1]
 
 
-def _minus_once(rows, taken):
-    """``rows`` with one occurrence removed per row in ``taken``."""
-    remaining = list(rows)
-    for row in taken:
-        if row in remaining:
-            remaining.remove(row)
-    return remaining
-
-
 def merge_ledgers(base_path, ours_path, theirs_path):
     """Union two appended ledger sides into merged CSV text.
 
@@ -266,13 +258,20 @@ def conflict_text(base_path, ours_path, theirs_path):
         return "\n".join([MARK_OURS, our_text.rstrip("\n"), MARK_SEP,
                           their_text.rstrip("\n"), MARK_THEIRS, ""])
 
-    agreed = [row for row in base_rows if row in our_rows and row in their_rows]
-    keep = [dict(row) for row in agreed]
-    # Subtract ONE occurrence per agreed row, not every match: a side that
-    # duplicated a row must still show the extra copy in its own block, or
-    # the conflict renders empty and says nothing about what was wrong.
-    our_rest = _minus_once(our_rows, agreed)
-    their_rest = _minus_once(their_rows, agreed)
+    # Consume one occurrence per side as each base row is matched. Counting
+    # matches instead (``row in our_rows``) double-counts when the BASE
+    # itself carries a duplicate id, and the conflict then FABRICATES a row
+    # that exists once on both sides. Consuming also means a side that
+    # duplicated a row still shows the extra copy in its own block, rather
+    # than rendering an empty block that says nothing about what broke.
+    pool_ours, pool_theirs = list(our_rows), list(their_rows)
+    keep = []
+    for row in base_rows:
+        if row in pool_ours and row in pool_theirs:
+            pool_ours.remove(row)
+            pool_theirs.remove(row)
+            keep.append(dict(row))
+    our_rest, their_rest = pool_ours, pool_theirs
     lines = _csv_text(our_header, keep).rstrip("\n").split("\n")
     lines.append(MARK_OURS)
     lines.extend(_row_lines(our_header, our_rest))
@@ -302,18 +301,64 @@ def _raw_conflict(ours_path, theirs_path):
     ])
 
 
-def write_conflict(base_path, ours_path, theirs_path):
-    """Write the conflict into ``%A``, whatever it takes.
+def replace_file(path, payload):
+    """Replace ``path`` with ``payload`` bytes, or leave it UNTOUCHED.
 
-    Guarded end to end: a malformed byte, an unreadable side, anything at
-    all falls back to :func:`_raw_conflict` rather than propagating. An
-    exception escaping here would leave ``%A`` holding OUR side alone —
-    the exact silent data loss this driver exists to prevent.
+    Writes a sibling temporary file and renames it over ``path``. A plain
+    ``open(path, "wb")`` truncates the instant it succeeds, so a write
+    that then fails — a full disk, a quota, a read-only mount — leaves
+    ``%A`` at zero bytes, which is worse than the one-sided file this
+    driver exists to prevent. Renaming means a failed write changes
+    nothing.
+
+    Parameters
+    ----------
+    path : str
+        The file to replace.
+    payload : bytes
+        The exact bytes to leave behind.
+
+    Raises
+    ------
+    OSError
+        The write or the rename failed; ``path`` still holds its prior
+        content.
+    """
+    tmp = path + ".journal-union.tmp"
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def write_conflict(base_path, ours_path, theirs_path):
+    """Write the conflict into ``%A``; report whether it landed.
+
+    The payload is guarded — a malformed byte or an unreadable side falls
+    back to :func:`_raw_conflict` rather than propagating. The WRITE
+    cannot be guaranteed: no disk, no write. What is guaranteed is that a
+    failed write leaves ``%A`` unchanged rather than truncated
+    (:func:`replace_file`), and that the caller is told, so the failure is
+    loud instead of a silent clean-looking file.
 
     Parameters
     ----------
     base_path, ours_path, theirs_path : str
-        The three sides git supplied; ``%A`` is overwritten.
+        The three sides git supplied; ``%A`` is replaced.
+
+    Returns
+    -------
+    bool
+        True when the conflict was written; False when it could not be,
+        in which case ``%A`` still holds whatever git left there.
     """
     try:
         payload = conflict_text(base_path, ours_path, theirs_path).encode(
@@ -321,8 +366,18 @@ def write_conflict(base_path, ours_path, theirs_path):
         )
     except Exception:  # noqa: BLE001 - a conflict MUST be written regardless
         payload = _raw_conflict(ours_path, theirs_path)
-    with open(ours_path, "wb") as fh:
-        fh.write(payload)
+    try:
+        replace_file(ours_path, payload)
+    except OSError as exc:
+        print(
+            f"journal-union: FAILED to write the conflict into {ours_path}: "
+            f"{exc}\njournal-union: *** {ours_path} may hold ONE SIDE ONLY. "
+            "Do NOT `git add` it. Recover with `git checkout --merge` or "
+            "resolve from `git show :2:<path>` and `git show :3:<path>`. ***",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def main(argv):
@@ -351,9 +406,9 @@ def main(argv):
         print(f"journal-union: refusing to merge: {exc}", file=sys.stderr)
         write_conflict(base_path, ours_path, theirs_path)
         return 1
-    with open(ours_path, "w", encoding="utf-8", errors="surrogateescape",
-              newline="") as fh:
-        fh.write(text)
+    # The union goes through the same non-truncating replace: a half-written
+    # ledger is data loss just as surely as a one-sided one.
+    replace_file(ours_path, text.encode("utf-8", errors="surrogateescape"))
     return 0
 
 
