@@ -79,7 +79,7 @@ P15 and P16 add useful negative results: neither recurrent fusion nor
 attention-based channel fusion (TFT) beat the flattened linear sequence
 baseline on the common P14/P15/P16 sequence-eligible design.
 
-### P17 RandomForest — terminated early; indistinguishable through two folds
+### P17 RandomForest — terminated early; two-fold descriptive observation
 
 *P17 paired a pooled `RandomForestRegressor` (native `max_features`, `symbol_code`
 as a numeric code) against a bit-reproducible re-run of the P13 LightGBM
@@ -89,15 +89,16 @@ lead (an estimated ~90-hour total, CPU-bound), so no paired comparison
 artifact exists. The cut is recorded in the journal; RF's two completed folds
 are partial evidence, not a result.*
 
-*The direct head-to-head over those two folds and all ten leads was
-statistically indistinguishable: the per-symbol out-of-sample R² deltas flip
-sign between folds (fold 1 favors LightGBM by ~0.001 mean; fold 2 favors RF by
-~0.0003 mean), the horizon-decay shape is identical (signal strongest at
-lead 1, fading to ~0 by lead 10), and the same symbols light up for both
-models. The consistent reading is RF ≈ LightGBM in accuracy at roughly
-50× the fit cost. The judgment call is to record RF as indistinguishable
-rather than spend four further CPU-days to re-confirm it. No RandomForest
-candidate was promoted or refit.*
+*The direct head-to-head over those two folds and all ten leads is descriptive
+only: the per-symbol out-of-sample R² deltas flip sign between folds (fold 1
+favors LightGBM by ~0.001 mean; fold 2 favors RF by ~0.0003 mean), the
+horizon-decay shape is similar (signal strongest at lead 1, fading to ~0 by
+lead 10), and the same symbols light up for both models. With only two folds,
+no paired comparison artifact, and no prespecified equivalence margin, this
+does not establish equivalence or statistical indistinguishability. The owner
+stopped the run because its roughly 50× fit cost did not justify four further
+CPU-days for this exploratory check. No RandomForest candidate was promoted
+or refit.*
 
 The read-only cross-benchmark selector was rerun after P15 completion. It
 accepted all three pinned sources and all nine candidates, and selected P13
@@ -186,5 +187,6 @@ and two existing Kronos purity assertions; none reads the P15 candidate paths.
 - P17 terminated after two RF folds (owner decision); the paired LightGBM
   re-run completed: `pipeline_runs/lgbm-p17-pooled-h10-walkforward-2026-02-28-c9b824ba`
   (mean 0.006401, a bit-reproducible match to the P13 LightGBM).
-- journal evidence: P16 A18783-A18798; TFT walk A18796; P17 LightGBM A18799;
-  RF termination + result memo A18800.
+- journal evidence: P16 A18784, A18788, and A18791-A18798 (including TFT walk
+  A18796); P17 A18783, A18785-A18787, A18789-A18790, and A18799-A18800
+  (including LightGBM A18799 and the RF termination/result memo A18800).
