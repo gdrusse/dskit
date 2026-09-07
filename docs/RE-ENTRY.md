@@ -41,7 +41,7 @@ one markdown file.
 
 **Open — owner.**
 
-- **ADR-0109 must be written and approved before any code.** The proposal is
+- **ADR-0111 must be written and approved before any code.** The proposal is
   not an approval.
 - Ten owner decisions in §10, none inventable: `q` (and calibrating it
   against realized hit rates, not a nominal FDR level), `U_pi` geometry
@@ -54,7 +54,7 @@ one markdown file.
 - h=1 may be disqualified by its own latency: §11 asks for realized signal
   decay, and h=1 is this child's only positive gain cell.
 
-## Current state: skeleton folders + parallel-merge drivers + topic skill (2026-09-07)
+## Current state: skeleton folders + parallel-merge drivers (2026-09-07)
 
 Landed on `main`, unpushed-local-commit scope: (1) skeleton gains `models/`
 (fitted ML/optimization artifacts, gitignored) and `docs/plans/` (child-level
@@ -63,9 +63,10 @@ plan builds), pin updated in `tests/children/test_skeleton.py`;
 accepted and built: `.gitattributes` + `tools/merge/` validated-union drivers
 for `actions.csv`/`path.csv`, take-either for the generated decisioning
 README, keep-both for this file, post-merge re-render hook; `install.sh` run
-for this clone — **other clones must run it once**. (3) ADR-0110 accepted:
-`topic` skill (`.cursor` + `.claude`) chains research → run → memo under one
-slug. Tests: tools/skeleton/journal suites green (53); the intraday_equities
+for this clone — **other clones must run it once**. The `topic` skill that
+once rode along here is REMOVED from this branch — it is being implemented on
+another lane.
+Tests: tools/skeleton/journal suites green (53); the intraday_equities
 suite failure (`run-model-select.json` vs `universe.json`) is another lane's
 uncommitted work.
 
@@ -487,7 +488,7 @@ must not overwrite or reinterpret those artifacts.
 On `main`, pushed. Everything below was reviewed by a second agent before
 merging, and both reviews changed the code.
 
-**ADR-0110 accepted and built** — `ColumnSubsetEstimator`
+**ADR-0108 accepted and built** — `ColumnSubsetEstimator`
 (`dskit/pipeline/libs/sklearn.py`) fits any named estimator on a declared
 column subset, forwarding `feature_names`/`feature_name` and
 `categorical_feature` re-indexed to the survivors. The mask rides in

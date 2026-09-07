@@ -5749,9 +5749,10 @@ which this mechanism needs.
 **On approval:** build under the TDD + skeptic loop — the class, its
 refusals, the pack tests, then the child config and its tests. No execution
 is authorized by this decision.
-> Numbering note: this ADR and ADR-0110 were proposed as 0107/0108
-> while a parallel lane's 0107/0108 were in flight on `main`; both
-> renumbered on merge, nothing else changed.
+> Numbering note: this ADR was proposed as 0107 while a parallel lane's
+> 0107/0108 were in flight on `main`; renumbered on merge, nothing else
+> changed. 0110 is left free for the `topic` skill being built on its own
+> lane.
 
 ## ADR-0109 — Parallel-agent merge policy: validated-union drivers for the shared ledgers
 
@@ -5837,39 +5838,3 @@ The "store's own contract" check the text promised is now actually
 implemented: the header must equal `ACTION_FIELDS` or `PATH_FIELDS`, so
 two sides sharing an identically drifted header no longer merge clean and
 break the next journal write.
-
-## ADR-0110 — A `topic` skill chaining research → run → record → memo
-
-**Status:** Accepted (2026-09-07; owner approved implementation)
-
-**Context.** A unit of child work is a topic: research it, run the
-pipeline document it motivates, let the journal record the execute, and
-memo the outcome. Today that is four separate skills invoked by hand
-(`record-research`, the pipeline CLI's automatic hooks, `memo`), and the
-wiring knowledge (which order, which topic slug, where drafts go) lives
-in each agent's head instead of in one place.
-
-**Decision.** Add one orchestrating skill, `topic`, under
-`.cursor/skills/topic/SKILL.md` (mirrored to `.claude/skills/` per the
-existing convention). It composes existing mechanisms and adds NO code:
-
-1. **One argument**: a topic slug. The skill fixes the shared vocabulary
-   — `--topic <slug>` for `dskit.journal research`, the memo's
-   kebab-title, and the research folder — so all artifacts of one effort
-   link by name.
-2. **Phase 1 — research**: the `record-research` flow verbatim (draft
-   outside `docs/research/`, CLI records, never hand-write).
-3. **Phase 2 — run**: the pipeline `run`/`walkforward` command the
-   research motivates; the journal hooks append the execute row
-   themselves — the skill never writes `actions.csv`.
-4. **Phase 3 — memo**: the `memo` flow verbatim, pointing at the run
-   directory and the topic's research files as evidence.
-5. **Skipping is explicit**: any phase the work does not need is stated
-   as skipped in the final report, never silently omitted.
-
-**Consequences.** One invocation produces a linked trail —
-`docs/research/<topic>/`, an actions row, a run dir, a memo — with the
-existing skills unchanged beneath it. The skill is prose only; no
-package, no hash impact, no new writer of any ledger. It is dskit-repo
-process tooling like `wrap`, not a dskit capability, so nothing
-graduates.
