@@ -91,10 +91,17 @@ Wrap the *library*, generically — never a project's use of it.
   `.claude/settings.json`).
 - **`/wrap`:** refresh `docs/RE-ENTRY.md`, merge into `main` when the work is
   coherent and tests pass, push. Defined in `.claude/commands/wrap.md`.
-- **Commits are authored under the agent's own model name** (owner ruling,
-  2026-09-05): set the author explicitly — `git -c user.name=<model-name> -c
-  user.email=<model-name>@opencode.ai commit` — never the shared `Codex`
-  identity from the ambient git config.
+- **Every commit names the SPECIFIC model that wrote it** (owner ruling,
+  2026-09-05; tightened 2026-09-07): the exact model AND version the session is
+  running — `Claude Opus 5`, never a bare `Claude`, and never the shared `Codex`
+  identity from the ambient git config. Set it in BOTH places, because a rebase
+  or squash rewrites the author but carries the trailer through:
+  - author — `git -c user.name=<model> -c user.email=<model>@opencode.ai commit`
+  - trailer — `Co-Authored-By: <model> <noreply@…>` in the message body
+
+  Cannot determine your own exact model and version? **Ask.** Never guess, and
+  never fall back to the family name — a commit that says only `Claude` cannot
+  be attributed to the session that made it, which is the whole point.
 
 ## Repository layout
 
