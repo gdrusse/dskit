@@ -1,0 +1,37 @@
+{
+  "notes": "Per-platform adapter table for /chain's cross-process dispatch (.agent-chain/dispatch.py). One source of truth for CLI flags -- edit here, never restate these flags as prose in a SKILL.md. 'models' maps a logical tier (opus/sonnet/haiku) to that platform's concrete model string; a tier missing here means dispatch.py omits the model flag and the tool uses its own default -- fill in real values as you confirm what your account has access to on that platform, rather than guessing.",
+  "claude": {
+    "binary": "claude",
+    "promptArg": "-p",
+    "modelFlag": "--model",
+    "models": {"opus": "opus", "sonnet": "sonnet", "haiku": "haiku"},
+    "autoApproveFlags": ["--permission-mode", "bypassPermissions"],
+    "cwdFlag": null
+  },
+  "codex": {
+    "binary": "codex",
+    "subcommand": "exec",
+    "promptArg": "positional",
+    "modelFlag": "-m",
+    "models": {},
+    "autoApproveFlags": ["--full-auto"],
+    "cwdFlag": "-C"
+  },
+  "cursor": {
+    "binary": "agent",
+    "promptArg": "-p",
+    "modelFlag": "--model",
+    "models": {},
+    "autoApproveFlags": ["--force"],
+    "cwdFlag": null
+  },
+  "opencode": {
+    "binary": "opencode",
+    "subcommand": "run",
+    "promptArg": "positional",
+    "modelFlag": "-m",
+    "models": {},
+    "autoApproveFlags": ["--auto"],
+    "cwdFlag": null
+  }
+}
