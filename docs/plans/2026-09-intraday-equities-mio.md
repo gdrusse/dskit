@@ -60,19 +60,22 @@ the child"* — the concave-utility scenario MILP graduates to
 ### 3.1 Objective — why maximizing per-tick E[log W] is the right long-run answer
 
 The owner's stated goal is **long-run compounded growth on an unset horizon with
-money periodically added**. Maximizing expected log wealth each tick is exactly
-the growth-optimal (Kelly) policy, and asymptotically dominates any essentially
+money periodically added**. For sequential, independent opportunities with a
+correctly specified return law, maximizing expected log wealth is the
+growth-optimal (Kelly) policy and asymptotically dominates any essentially
 different strategy (Kelly 1956, *Bell System Technical Journal* 35(4);
-Breiman 1961, *4th Berkeley Symposium*). An unset horizon is the case Kelly is
-*for* — it needs no terminal date.
+Breiman 1961, *4th Berkeley Symposium*). The child's overlapping positions and
+serially correlated signals do not satisfy those assumptions automatically;
+§11 therefore limits this claim and defines the required escalation.
 
 Two well-documented cautions, both handled below:
 
 - Kelly's effective risk aversion is `1/W`, so it bets large and is **very**
   sensitive to errors in `mu` (MacLean, Thorp & Ziemba 2010, *Quantitative
   Finance* 10(7)). Fractional Kelly is the standard remedy; here the fraction is
-  a declared knob and the `mu` error is handled explicitly by the robust
-  counterpart in §5.
+  a declared knob. Parameter uncertainty must be represented in the scenario
+  law; §5 deliberately does not attach a dimensionally unrelated linear penalty
+  to scenario utility.
 - Log utility is well approximated by `mu − sigma²/2` **for short holding
   periods and small returns** (Levy & Markowitz 1979, *AER* 69(3); Pulley 1981,
   *JFQA* 16(3)). A minutes horizon is the best case for that approximation, so a
@@ -87,14 +90,17 @@ a **larger** risky fraction (Bodie, Merton & Samuelson 1992, *JEDC* 16(3–4),
 NBER w3954; Viceira 2001, *Journal of Finance* 56(2), NBER w7409). Its present
 value shrinks relative to the account as the account grows.
 
-**Design consequence.** The Kelly fraction is not a constant. It is
+**Design consequence.** Ship a configurable risk-tolerance schedule:
 
 ```
 f_t = f_base * g( PV_contrib / W_t )
 ```
 
-with `g` a bounded, non-decreasing schedule declared in config, `f_t` clamped to
-`[f_min, f_max]`. Early on, a bad path is repaired by the next deposit and a
+with `g` bounded and non-decreasing and `f_t` clamped to `[f_min, f_max]`.
+Using CRRA coefficient `gamma=1/f_t` is only a small-return approximation to
+fractional Kelly; it is not exact with discrete scenarios, costs, integer lots,
+or constraints and must be calibrated as a risk-aversion choice. Early on, a
+bad path is repaired by the next deposit and a
 larger fraction is defensible; as `PV_contrib / W_t → 0`, `f_t → f_base`.
 **OWNER decision:** `f_base`, `f_min`, `f_max`, the shape of `g`, and the
 discount rate behind `PV_contrib`. Ship the seam; do not invent the numbers.
@@ -109,52 +115,55 @@ ADR.
 Capital is finite: funding candidate A forecloses B for the holding period.
 Three distinct mechanisms, all of which we are missing today:
 
-**(a) A reservation hurdle (the shadow price of capital).** The dual on the
-budget constraint *is* the marginal value of one more dollar. The tradition that
-actually estimates such a price against a stream of forthcoming random requests
+**(a) A reservation price for capital.** The tradition that estimates such a
+price against a stream of forthcoming random requests
 is network revenue management: a bid-price control accepts a request only if its
 value exceeds the bid price of the capacity it consumes, and is asymptotically
 optimal as demand and capacity scale together (Talluri & van Ryzin 1998,
 *Management Science* 44(11)).
 
-Implement as a **pre-solve filter**, not a constraint — it is cheaper and it
-keeps the MILP clean:
+Do **not** filter names individually on expected edge. A low standalone-return
+name can reduce joint CVaR through covariance and improve the portfolio. Instead,
+charge deployed capital inside the joint expected-utility objective:
 
 ```
-fund candidate i only if   mu_net_i  >=  lambda_t
+opportunity_cost = lambda_t_bps * 1e-4 * sum_i x_i
+W_utility_o = W_actual_o - opportunity_cost
 ```
 
-where `lambda_t` is a declared quantile of the historical distribution of best
-net alpha per dollar arriving in the next `H` minutes, **conditioned on
-time-of-day** (the open and the close are not the same market). `lambda_t` is
-read from a calibration artifact pinned by hash; the optimizer must never
-estimate it from the candidates it is choosing among.
-
-**Self-check that costs nothing:** the solver already reports the dual on
-`gross_budget` in the LP relaxation. Log it every tick. If the realized dual and
-the configured `lambda_t` disagree systematically, `lambda_t` is miscalibrated.
-That is a free, continuous validation of the hardest number in this design.
+where `lambda_t_bps` is a declared quantile of the historical distribution of best
+net alpha per dollar arriving in the next `H` minutes, expressed in basis points
+over the candidate's normalized horizon and **conditioned on time-of-day** (the
+open and the close are not the same market). `lambda_t_bps` is read from a
+calibration artifact pinned by hash; the optimizer must never estimate it from
+the candidates it is choosing among. The gross-exposure LP dual may be logged as
+a diagnostic, but it has utility-per-dollar units and must not be compared
+directly with a basis-point return. Any certainty-equivalent normalization would
+need its own derivation and validation.
 
 **(b) A no-trade band.** Under proportional costs the optimal policy is a
 wedge-shaped inaction region — you trade to the nearest boundary, never to the
 target (Constantinides 1986, *JPE* 94(4); Davis & Norman 1990, *Math. of OR*
 15(4); Liu 2004, *Journal of Finance* 59(1)). A "rebalance to the optimum every
-tick" loop is *provably wrong* under costs. The MIO therefore emits a **target**,
-and a band suppresses `Δx_i` below `band_bps` of the position. Without this the
-strategy pays the round trip in §3.4 repeatedly for noise.
+tick" loop is *provably wrong* under costs. The MIO therefore optimizes signed
+trade deltas from current inventory, with inaction encoded in the model. A
+post-solve band is forbidden: changing an optimal target after assertions can
+break cash, buying-power, HFDR, CVaR, cardinality, or positivity constraints.
+Without in-model inaction the strategy pays the round trip in §3.4 repeatedly
+for noise.
 
 **(c) Counterfactual logging (Perold).** Implementation shortfall splits into
 execution cost on shares filled and **opportunity cost on shares never filled**
 (Perold 1988, *Journal of Portfolio Management* 14(3); Wagner & Edwards 1993,
 *FAJ* 49(1)). Every tick, record every candidate that cleared the hurdle but was
 **not** funded, and mark it at its horizon. This is the only way to tell an
-over-tight `q` or `lambda_t` from a well-set one. It is a ledger row, not an
+over-tight `q` or `lambda_t_bps` from a well-set one. It is a ledger row, not an
 optimizer term.
 
 **(d) Cash is not idle.** Holding cash retains the option to take a better
 signal later. The objective must not penalize unspent capital — with a
 `gross_budget ≤ B` inequality (not equality) and the hurdle in (a), cash is the
-default and every dollar deployed must earn its way past `lambda_t`.
+default and every dollar deployed is jointly charged `lambda_t_bps` in §5.
 
 ### 3.4 Costs and frictions — what a Schwab retail account actually pays
 
@@ -169,9 +178,10 @@ free. Verified against primary sources:
 | FINRA TAF (**sells only**) | **$0.000195/share**, cap $9.79/trade (2026) | FINRA fee adjustment schedule |
 | Effective spread, retail marketable order, S&P 500 name | **4.36 bps** (wholesaler), i.e. ≈2.2 bps one way | Dyhrberg, Shkilko & Werner 2025, *JFE* 168 |
 
-**Round-trip hurdle ≈ 4.6 bps ≈ 0.046%.** Any `mu_i` below that is noise, before
-any opportunity cost is charged. This number belongs in the config as
-`min_edge_bps` and should be refused if set below the measured spread.
+**Illustrative round-trip friction ≈ 4.6 bps ≈ 0.046%.** A gross edge below its
+actual round-trip cost is uneconomic before opportunity cost. Store the assumed
+spread/fee inputs and a `round_trip_cost_floor_bps` validation floor in config;
+do not compare a return already net of those costs to that floor again.
 
 Two consequences the implementing agent must not miss:
 
@@ -194,10 +204,16 @@ literature is explicit that the haircut belongs on the expected return itself an
 is strongly non-linear — high Sharpes lightly penalized, marginal ones gutted
 (Harvey & Liu 2015, *JPM* 42(1); Harvey, Liu & Zhu 2016, *RFS* 29(1)).
 
-**So: haircut the input AND keep the constraint.** Use
-`mu_eff_i = (1 − pi_i) · mu_i` in the objective (posterior-mean shrinkage toward
-the null), and retain the ADR-0088 constraint as the portfolio-level cap.
-Doing only the constraint is a known failure mode.
+**So: haircut the return law AND keep the constraint.** Start from gross scenario
+returns, recenter each name's scenarios to weighted mean
+`(1 − pi_hat_i)·mu_gross_i`; `pi_hat` is the mean-haircut input and `pi_upper`
+is used only by the portfolio HFDR constraint. The scenario-generation artifact must declare how
+`U_mu` informed those draws. Subtract entry and horizon-liquidation costs exactly
+once in §5. Bundle field `mu_net` is audit-only and must declare a reproducible
+`cost_reference`: side, shares, price, spread, fee schedule, and horizon exit.
+It is never expected to match a different live order. Retain ADR-0088 as the
+separate portfolio-level cap. Refuse inconsistent reference metadata, not
+legitimate live-cost differences.
 
 One caution to record: FDR estimators are **conservative under low power**
 (Andrikogiannopoulou & Papakonstantinou 2019, *Journal of Finance* 74(5), show
@@ -207,14 +223,18 @@ hit rates, not against a nominal FDR level.** — OWNER.
 
 ---
 
-## 4. Measured tractability — the binding section
+## 4. Prototype tractability measurements — rerun required
 
 Everything here was measured in this container: pyomo 6.10.1, highspy, HiGHS via
 `appsi_highs`, single thread, `mip_rel_gap=0`, `random_seed=0`. Timings are
 **build + solve**, worst case over independent random instances with the full
 constraint set (integer shares, binding cardinality, binding HFDR, CVaR cap,
-Bertsimas–Sim robust term). Do not re-derive these; re-run the harness if the
-formulation changes.
+and the prototype Bertsimas–Sim term). The reviewed formulation now uses signed
+trades, self-financing, transaction costs in scenario loss, and in-model
+inaction. Those rows were absent from the scratch harness. Therefore the tables
+below are **historical prototype evidence, not a production contract**. Commit a
+reproducible harness and rerun it against the corrected formulation before
+ADR-0111 pins `n`, `S`, `K`, or a latency limit.
 
 ### 4.1 The envelope (integer shares, worst of 8 seeds)
 
@@ -228,8 +248,9 @@ formulation changes.
 | 64 | 256 | 32 | 9,156 | 3.25 s |
 | 64 | 512 | 32 | 18,116 | **11.44 s** ✗ |
 
-**S = 512 breaks the budget.** The cost is super-linear in scenarios once the
-binaries have to work. `S ≤ 256` is a hard config ceiling, refused at validate.
+**S = 512 broke the prototype budget.** The cost was super-linear in scenarios
+once the binaries had to work. Treat `S ≤ 256` as a candidate ceiling only;
+the corrected benchmark must establish the validated production ceiling.
 
 ### 4.2 How many tangent knots (n=40, S=256, reference K=256, 6 seeds)
 
@@ -241,8 +262,10 @@ binaries have to work. `S ≤ 256` is a hard config ceiling, refused at validate
 | 128 | 4.78 s | 100.00 % | 0 |
 | 256 | 7.10 s | 100.00 % | 0 |
 
-**K = 32.** It is exact to the reference on every seed and picks identical
-names. Note `pmquant.DEFAULT_N_TANGENTS = 128` — 2.4× the cost for no gain on
+**Prototype candidate: K = 32.** It matched the finite `K=256` reference on
+every seed and picked identical names; neither finite tangent approximation is
+the analytic log objective between knots. Note `pmquant.DEFAULT_N_TANGENTS =
+128` — 2.4× the cost for no gain on
 this problem class. The graduated pack must take `n_tangents` as a knob and
 default it per-caller, not inherit 128.
 
@@ -250,8 +273,8 @@ default it per-caller, not inherit 128.
 
 The Levy–Markowitz/Pulley argument (§3.1) says a cheap linear risk surrogate
 should be nearly as good at minutes horizons. We built two and scored their
-chosen portfolios on the **same exact criterion**, E[log W] over the scenario
-set, against the exact tangent program:
+chosen portfolios on the **same evaluation criterion**, E[log W] over the
+scenario set, against the finite tangent program:
 
 | form | worst time | exact log-growth captured |
 |---|---|---|
@@ -264,17 +287,18 @@ Two findings, both counter to the prior expectation:
 1. **The surrogate is not free.** It gives up 13–24 % of the growth rate and has
    a pathological zero-allocation mode, because its `gamma`/`kappa` weights have
    no principled mapping to a Kelly fraction — they are hand-tuned, and a
-   mis-tuned pair refuses to trade. The exact program needs no such tuning:
-   `kelly_fraction` is the only risk knob and its meaning is exact.
+   mis-tuned pair refuses to trade. The log/CRRA program still requires an owner-
+   calibrated `risk_aversion_gamma`; it is not an exact fractional-Kelly dial.
 2. **The MAD risk term is catastrophically slower**, not faster, than the tangent
    form — its dense equality rows coupling every `x` to the portfolio mean wreck
    branch-and-bound. Row count is a bad proxy for MILP difficulty.
 
-**Therefore: use the exact-log tangent program.** It costs ~2 s at the operating
-point, which we have, and buys back a fifth of the compounding rate, which we
-cannot get anywhere else. Do not "optimize" this into a mean-variance objective.
+**Therefore: use the log-utility tangent program.** In the prototype it cost ~2 s
+and bought back a fifth of the measured compounding rate. The corrected,
+reproducible benchmark must confirm both claims before ADR-0111. Do not
+"optimize" this into a mean-variance objective.
 
-### 4.4 Operating point, pinned
+### 4.4 Prototype operating point — not yet pinned
 
 ```
 n_candidates <= 40      (hard refuse above 64)
@@ -284,7 +308,8 @@ solver       = appsi_highs, threads=1, random_seed=0, mip_rel_gap=0
 time_limit   =    8.0 s  -- a BREAKER, not a tuning knob
 ```
 
-**Worst measured: 3.0 s. Budget: 10 s. Headroom: ~3×.**
+**Prototype worst measured: 3.0 s. Budget: 10 s. Apparent headroom: ~3×.**
+The corrected benchmark must confirm that headroom.
 
 Determinism was verified: 5 repeated solves of an identical instance returned
 byte-identical share vectors. Keep `mip_rel_gap = 0`. Relaxing it to `1e-2`
@@ -318,81 +343,135 @@ prevent. **Buy the deadline with `S` and `K`, never with the gap.**
 
 ## 5. The formulation
 
-One decision tick. Index `i = 1..n` over candidates, `o = 1..S` over joint
-net-return scenarios, `j = 1..K` over tangent knots.
+One decision tick. Index `i = 1..n` over the union of currently held names and
+new eligible candidates, `o = 1..S` over joint gross-return scenarios, and
+`j = 1..K` over tangent knots. Every held name needs a current `pi_upper` and
+scenario row or an explicit forced-exit instruction; otherwise refuse. Inputs
+include opening shares `h_i`, cash `C0`, marked opening wealth `W0`, pre-trade
+buying power `BP0`, and quotes. All quantities use one declared timestamp and
+valuation convention.
 
-### 5.1 Pre-solve filtering (cheap, and it shrinks the MILP)
+### 5.1 Eligibility (safe, non-economic gates only)
 
 A candidate enters the program only if **all** hold:
 
 1. It is in the Gate-1 / Gate-3 eligible set carried by the bundle.
 2. Its bundle entry is present, fresh, schema-compatible and hash-verifiable.
-3. `mu_net_i = (1 − pi_i)·mu_i − cost_i ≥ max(min_edge_bps, lambda_t)` — the
-   §3.3(a) reservation hurdle and the §3.4 friction floor.
-4. Its quote is fresh, the market is not halted/locked/crossed, and its price
+3. Its quote is fresh, the market is not halted/locked/crossed, and its price
    clears `min_price` (the per-share TAF argument, §3.4).
+No candidate is dropped for standalone expected return; §5.4 prices capital
+jointly so diversification and hedge value remain available.
 
-If the eligible set is empty: **return zero positions and never wake the
-solver** — the `BudgetedSelect` precedent. An empty gate that still solves is
-capital treating its gate as decoration.
+Only when both the eligible-new set and current inventory are empty may the node
+return zero without waking the solver. Otherwise it runs the sell/hold/buy model;
+mandatory exits enter as constrained sell deltas, so their cash, fees, and
+portfolio constraints remain consistent.
 
 ### 5.2 Variables
 
 | symbol | domain | meaning |
 |---|---|---|
-| `q_i` | non-negative integer, `≤ floor(B / price_i)` | shares of candidate `i` |
+| `b_i`, `s_i` | non-negative integer | shares bought and sold this tick |
+| `q_i` | non-negative integer | target shares, `h_i + b_i - s_i` |
 | `y_i` | binary | candidate `i` is held |
-| `W_o` | real, `[w_lo, w_hi]` | wealth in scenario `o` |
+| `a_i` | binary | trade-active indicator used by the no-trade band |
+| `d_i` | binary | active trade direction: one buys, zero sells |
+| `W_actual_o` | real, `[w_lo, w_hi]` | executable terminal wealth in scenario `o` |
+| `W_utility_o` | real, `[w_lo, w_hi]` | wealth after the opportunity charge |
 | `t_o` | real | utility surrogate in scenario `o` |
 | `eta`, `z_o ≥ 0` | real | Rockafellar–Uryasev CVaR pair |
-| `theta ≥ 0`, `p_i ≥ 0` | real | Bertsimas–Sim dual variables |
 
-Let `x_i = price_i · q_i` (an expression, not a variable).
+Let target exposure `x_i = price_i·q_i`, buy notional `v_i+ = price_i·b_i`,
+and sell notional `v_i- = price_i·s_i`.
+Before solve, compute a fixed, lot-rounded inaction threshold:
+
+```
+band_shares_i = lot_i * ceil(
+    band_bps * 1e-4 * max(price_i*h_i, min_ticket)
+    / (price_i*lot_i)
+)
+```
+
+Set `band_shares_i=0` for a mandatory exit. Derive finite `M_buy_i`, `M_sell_i`,
+and `M_trade_i` from the tighter of instrument, exposure, inventory, cash, and
+buying-power bounds; refuse if a finite valid bound cannot be proved.
 
 ### 5.3 Constraints
 
 ```
-(C1)  x_i <= x_max_i * y_i                      big-M link
-(C2)  x_i >= min_ticket * y_i                   min ticket
+(C1)  q_i == h_i + b_i - s_i                    inventory transition
+(C2)  x_i <= x_max_i * y_i; x_i >= min_ticket*y_i
 (C3)  sum_i y_i <= cardinality
-(C4)  sum_i x_i <= B                            gross budget  [INEQUALITY -- see 3.3(d)]
-(C5)  sum_i (pi_upper_i - q) * x_i <= 0         ADR-0088 HFDR, robust form
-(C6)  W_o == W0 + sum_i r_oi * x_i - cost       per-scenario wealth
-(C7)  t_o <= u(k_j) + u'(k_j) * (W_o - k_j)     tangent planes, all (o, j)
-(C8)  z_o >= -(sum_i r_oi * x_i) - eta          CVaR excess
-(C9)  eta + (1/(1-beta)) * sum_o w_o * z_o <= cvar_limit
-(C10) theta + p_i >= dev_i * x_i                Bertsimas-Sim on mu
+(C4)  C_after == C0 + sum_i v_i- - sum_i v_i+ - entry_cost
+(C5)  C_after >= cash_reserve
+      sum_i v_i+ + entry_cost <= BP0 + sum_i rho_i*v_i-
+(C6)  sum_i x_i <= gross_limit                   gross exposure inequality
+(C7)  sum_i (pi_upper_i-q_fdr)*x_i <= 0          ADR-0088 HFDR
+(C8a) 0 <= b_i <= M_buy_i*d_i; 0 <= s_i <= M_sell_i*(1-d_i)
+(C8b) band_shares_i*a_i <= b_i+s_i <= M_trade_i*a_i
+(C9)  W_actual_o == C_after + sum_i (1+r_oi)*x_i - exit_cost_o(q)
+(C10) W_utility_o == W_actual_o - lambda_t_bps*1e-4*sum_i x_i
+(C11) t_o <= u(k_j)+u'(k_j)*(W_utility_o-k_j)    all (o,j)
+(C12) L_o == W0-W_actual_o; z_o >= L_o-eta       actual loss includes both costs
+      eta+(1/(1-beta))*sum_o w_o*z_o <= cvar_limit
 ```
+`rho_i` is the documented same-decision sale-credit coefficient for the actual
+broker/account type; never assume sale proceeds augment buying power.
 
-`cost = sum_i (spread_bps_i * 1e-4 * x_i + taf_per_share * q_i)` — per-share and
-per-notional terms kept separate (§3.4).
+`entry_cost = Σ_i[half_spread_bps_i·1e-4·(v_i+ + v_i-)
++ min(taf_per_share·s_i, taf_cap) + sec31_bps·1e-4·v_i-]`. Represent the
+piecewise TAF cap with an exact binary linearization per proposed sell order.
+Costs are paid on **trades**, never unchanged target inventory; TAF and Section
+31 are sell-only. If the implementation batches or splits an
+order, it must apply the cap using the exact proposed-order grouping.
 
-**(C5) is the locked ADR-0088 policy.** Note it is linear in `x`, and its robust
+`exit_cost_o(q)` applies the horizon quote convention to liquidating every
+target share: exit half-spread on scenario sell notional plus sell-only TAF and
+Section 31, including the per-order TAF cap. It is represented with the same
+exact piecewise-linear construction. This proposal chooses conservative
+horizon liquidation value, not an unpriced continuation value.
+
+**(C7) is the locked ADR-0088 policy.** Note it is linear in `x`, and its robust
 counterpart over a **rectangular** `U_pi` is exactly the substitution
 `pi_i → pi_upper_i` shown. If `U_pi` is later a finite scenario set, add one
-copy of (C5) per retained scenario — still linear, still cheap. **OWNER:** the
+copy of (C7) per retained scenario — still linear, still cheap. **OWNER:** the
 geometry of `U_pi` (box vs. scenario) is A18044 and is not settled.
+C4/C5 are the self-financing and buying-power rows; C6 deliberately need not
+bind because retaining cash has option value.
 
 ### 5.4 Objective
 
 ```
-maximize   sum_o w_o * t_o  -  epsilon * (Gamma * theta + sum_i p_i)
+maximize   sum_o w_o * t_o
 ```
 
-The first term is the fractional-Kelly expected utility; `u` is `ln(W/W0)` at
-full Kelly and CRRA with `gamma = 1/f_t` below it (reuse `pmquant.mio.utility_at`
-verbatim — it is correct and tested; do **not** rewrite it). The second term is
-the budgeted-robust penalty on `mu` estimation error with budget `Gamma` and
-per-name deviation `dev_i = kappa · sd_mu_i` drawn from `U_mu`.
+This is scenario expected utility. `u` is `ln(W/W0)` when `gamma=1` and CRRA
+otherwise. The existing `pmquant.mio.utility_at` API accepts a Kelly-fraction
+parameter and internally maps it to CRRA gamma. The adapter must therefore call
+it as `utility_at(..., kelly_fraction=1/risk_aversion_gamma)` with validated
+`risk_aversion_gamma >= 1`; passing gamma directly is wrong. Keep one tested
+implementation, but rename or wrap its interface so the conversion is explicit.
+The mapping is only the small-return approximation in §3.2, not exact fractional
+Kelly for this constrained discrete problem. The former
+`epsilon·(Gamma·theta+Σp_i)` term is removed: it subtracted dollar P&L units
+from dimensionless utility, left `epsilon` undefined, and was not a robust
+counterpart of scenario expected utility. `U_mu` must instead alter the joint
+return scenarios consistently with §3.5. If ADR-0111 chooses budgeted
+Bertsimas–Sim uncertainty, it must derive and test the robust counterpart of
+each scenario-wealth/tangent row with consistent units; `Gamma` and `kappa`
+remain owner decisions. Until then, scenario recentering is the only approved
+parameter-uncertainty mechanism.
 
 ### 5.5 Post-solve — assertions, not constraints
 
-Recompute **exactly** from the integer solution and **raise** on violation:
+Recompute **exactly on the final executable target and signed order vector** and
+**raise** on violation:
 
-- `outlay ≤ B` (a budget that does not bind is the defect `BudgetedSelect`
-  documents),
-- `W_o > 0` in every scenario,
-- realized `E[log W]` and CVaR, re-billed at the exact per-share fee,
+- inventory conservation, cash, live buying power, gross exposure, min ticket,
+  cardinality, and no-trade-band rows,
+- `W_actual_o > 0` and `W_utility_o > 0` in every scenario,
+- realized scenario utility and CVaR, re-billed from exact proposed orders with
+  entry and scenario-liquidation spreads, sell-only TAF caps, and Section 31 fees,
 - `sum_i pi_upper_i·x_i ≤ q·sum_i x_i` on the exact numbers.
 
 Refuse a solver termination that is not `optimal`. A `time_limit` hit is a
@@ -400,8 +479,9 @@ Refuse a solver termination that is not `optimal`. A `time_limit` hit is a
 
 ### 5.6 From target to orders
 
-The MIO emits a **target** vector. Apply the §3.3(b) no-trade band, then hand
-`Δ` to the `Proposer` seam in `dskit/production/decider.py`, which turns head
+The MIO emits a **target plus signed trade vector that already satisfies the
+no-trade band and every post-solve assertion**. Hand that vector
+to the `Proposer` seam in `dskit/production/decider.py`, which turns head
 outputs into `Candidate` and `Proposal` records. **The MIO never talks to a
 broker.** Everything downstream of the target is `dskit.production`'s executor,
 which already owns permits, fences, breakers and the hash-chained ledger.
@@ -422,12 +502,12 @@ and nothing about equities:
 
 - concave-utility tangent-plane construction (`utility_at`, `wealth_bounds`,
   the `(o, j)` tangent rows),
-- per-scenario wealth rows from a caller-supplied payoff matrix,
+- inventory transitions and per-scenario wealth rows from caller-supplied state
+  and payoff matrices,
 - the CVaR (Rockafellar–Uryasev) block,
-- the Bertsimas–Sim budgeted-robust block,
 - the empty-gate short circuit and the post-solve exact recompute,
-- knobs: `kelly_fraction`, `n_tangents`, `n_scenarios_max`, `cvar_alpha`,
-  `cvar_limit`, `robust_budget`, `cardinality`, `min_ticket`, `solver`,
+- knobs: `risk_aversion_gamma`, `n_tangents`, `n_scenarios_max`, `cvar_alpha`,
+  `cvar_limit`, `cardinality`, `min_ticket`, `solver`,
   `solver_options`.
 
 Subclass hooks: `payoffs(inputs)` → the scenario matrix and weights;
@@ -455,9 +535,9 @@ mirroring `pmquant/nodes_capital.py`). It supplies only what is domain-specific:
 - the forecast-bundle reader and its fail-closed verification,
 - share-lot integrality and the `min_price` refusal,
 - the Schwab cost model (`spread_bps`, `taf_per_share`, `sec31_bps` on sells),
-- the ADR-0088 HFDR row (C5) — this is *this project's* policy, not a general
+- the ADR-0088 HFDR row (C7) — this is *this project's* policy, not a general
   optimizer feature,
-- the `lambda_t` reservation hurdle and the no-trade band,
+- the joint `lambda_t_bps` opportunity charge and the no-trade band,
 - the counterfactual (unfunded-candidate) ledger rows.
 
 **A `stat_test` node must be wired into its inputs** or the document refuses to
@@ -472,20 +552,24 @@ schema-incompatible or unverifiable bundle.** Fail closed, by name, before any
 model is built. Required per candidate:
 
 `decision_ts` · `entity` · `holding_horizon_minutes` · `model_release_id` ·
-`mu_gross` · `mu_net` (cost-adjusted) · `pi_hat` · `pi_upper` · `U_pi`
-provenance · `U_mu` (as `sd_mu` + `kappa` for the budgeted set) · `U_r`
+`mu_gross` · `mu_net` (audit-only at a fully declared `cost_reference`, not an
+objective input) · `cost_reference` (side, shares, price, spread, fee schedule,
+horizon exit) · `pi_hat` ·
+`pi_upper` · `U_pi` provenance · `U_mu` · `U_r`
 (scenario matrix + weights + block rule + seed) · Gate-1/Gate-3 eligibility ·
 every model/calibration/null/data hash · units · horizon semantics · coverage
 targets · **expiry**.
 
 **Portfolio state is a separate input and the bundle must never invent it:**
-current positions, cash, live buying power, quotes, lot sizes, exposure limits.
+current positions, cash, marked opening wealth, live buying power, quotes, lot
+sizes, exposure limits, and cash reserve. Refuse mismatched timestamps or an
+opening state that does not reconcile under the declared valuation convention.
 
 Two hard rules for the implementing agent:
 
 - **Normalize or separate incompatible holding horizons before they enter one
   scenario set** (A18042/A18047). A 1-minute and a 60-minute candidate in the
-  same `W_o` row is an arithmetic error, not a modeling choice.
+  same scenario-wealth row is an arithmetic error, not a modeling choice.
 - **A serving path never restates a training knob** (CLAUDE.md). Read horizon,
   feature set and cost assumptions from the run dir or source config — never
   re-spell them in the serve document.
@@ -505,12 +589,12 @@ precedent.
 3. **Refactor `pmquant.mio` onto the base.** Its existing suite must stay green
    and byte-identical in behavior — this is the regression net for step 2.
 4. **`EquityKellyMIO`** in the child + `configs/run-mio-*.json`.
-5. **The calibration artifacts** — `lambda_t` by time-of-day bucket, `pi_upper`,
+5. **The calibration artifacts** — `lambda_t_bps` by time-of-day bucket, `pi_upper`,
    `U_mu`, `U_r`. These are Path A18039–A18047 and are **empirical**; they
    cannot be config constants.
 6. **Shadow mode.** Run the whole loop under `dskit.production` in `shadow`,
-   then `paper`, logging the §3.3(c) counterfactual and the §3.3(a) dual-vs-
-   `lambda_t` check. **No live capital until both read sane.**
+   then `paper`, logging the §3.3(c) counterfactual and realized opportunity
+   costs. **No live capital until both read sane.**
 
 ---
 
@@ -518,16 +602,25 @@ precedent.
 
 | Test | Why |
 |---|---|
-| Empty gate → zero positions, solver never invoked | the `BudgetedSelect` precedent |
-| Budget binds on the exact recompute | the F-220 defect class |
-| HFDR (C5) holds on the exact recompute | ADR-0088 is a *locked* policy |
+| Empty eligible set plus empty inventory → zero, solver never invoked | safe short circuit |
+| Held inventory plus no eligible new names still solves | decayed alpha can trigger sells |
+| Negative-covariance name survives eligibility and may reduce joint CVaR | no unsafe edge filter |
+| Buy, sell, hold, and full-exit cases reconcile inventory and cash | self-financing |
+| Unchanged inventory incurs zero transaction cost | costs belong to deltas |
+| TAF/Section 31 apply only to sells; TAF cap follows order grouping | exact billing |
+| Cash and buying-power inequalities need not bind | cash has option value |
+| HFDR (C7) holds on the exact recompute | ADR-0088 is a *locked* policy |
+| CVaR scenario loss includes exact transaction cost | risk includes friction |
+| Inaction and trades pass all final-target assertions | no post-solve mutation |
 | Stale/missing/unverifiable bundle → refuse by name | A18256 fail-closed |
 | Mixed holding horizons in one scenario set → refuse | §7 |
-| Solve at (n=40, S=256, K=32) completes under 8 s | the §4 envelope is a claim; pin it |
-| `S > 256` or `n > 64` → refuse at validate | the envelope is a *contract* |
+| Corrected benchmark pins the accepted `(n,S,K)` envelope | prototype is not a contract |
 | Identical inputs → identical share vector, twice | determinism (§4.4) |
-| `test_default_agrees_everywhere` for `n_tangents`, `kelly_fraction`, `cvar_alpha` | CLAUDE.md: a default belongs to ONE name |
+| `test_default_agrees_everywhere` for `n_tangents`, `risk_aversion_gamma`, `cvar_alpha` | CLAUDE.md: a default belongs to ONE name |
 | Cost model is per-share **and** per-notional | §3.4's 15× price dependence |
+| `mu_net` reproduces only at declared `cost_reference` | audit semantics are stable |
+| Objective and CVaR include entry and scenario liquidation costs once | round-trip economics |
+| Band rounding/boundaries, mandatory exits, and every finite M | valid MILP |
 
 ---
 
@@ -540,9 +633,12 @@ None of these may be invented by the implementing agent.
 2. `U_pi` geometry: rectangular box or finite scenario set (Path A18044).
 3. `f_base`, `f_min`, `f_max`, the shape of `g`, and the discount rate behind
    `PV_contrib` (§3.2).
-4. `lambda_t`: which quantile, which time-of-day buckets, which lookback.
-5. `cvar_alpha`, `cvar_limit`, `cardinality`, `min_ticket`, `band_bps`.
-6. `Gamma` (robust budget) and `kappa` (deviation multiplier).
+4. `lambda_t_bps`: which quantile, time-of-day buckets, horizon, and lookback.
+5. `cvar_alpha`, `cvar_limit`, `cardinality`, `min_ticket`, `band_bps`, cash
+   reserve, gross exposure, and buying-power policy.
+6. Whether `U_mu` is represented entirely through scenario recentering or via a
+   newly derived, dimensionally consistent robust counterpart; if the latter,
+   `Gamma` (robust budget) and `kappa` (deviation multiplier).
 7. Cash account vs. margin — see §11.
 
 ---
@@ -555,14 +651,17 @@ None of these may be invented by the implementing agent.
   Finance* 68(6)). **Measure realized decay and refuse any horizon whose
   half-life is under ~5× decision latency.** This may disqualify h=1 outright —
   which matters, because h=1 is where this child's only positive gain cell lives.
-- **PDT: the rule changed.** FINRA Regulatory Notice 26-10 (2026-04-20) replaces
-  Rule 4210's day-trading provisions *in their entirety* — including the pattern-
-  day-trader designation and the $25,000 minimum — with an intraday margin
-  deficit standard effective 2026-06-04. **Verify Schwab's own implementation
-  before relying on this**; it could not be confirmed from Schwab's site.
-- **A cash account cannot run this strategy.** T+1 settlement makes repeated
-  intraday round trips good-faith violations; three in 12 months triggers a
-  90-day settled-cash-only restriction. Use margin. — OWNER.
+- **PDT remains an operational constraint unless primary sources say otherwise.**
+  As of this review, FINRA's current Day Trading page and Rule 4210
+  interpretations still publish the pattern-day-trader designation and $25,000
+  minimum. No official FINRA Regulatory Notice 26-10 was located. Do not rely on
+  the prior claim that PDT was retired; verify FINRA and Schwab requirements at
+  deployment time.
+- **Cash-account feasibility is unresolved.** FINRA states that day trading in a
+  cash account is not permitted. Settlement, good-faith, and freeriding rules
+  depend on exact funding and broker treatment; the prior "three in 12 months"
+  statement was unsupported. Obtain Schwab's written rules before selecting
+  account type. — OWNER.
 - **Wash sales are continuous.** Re-entering the same ticker every few minutes at
   a loss triggers §1091 (26 U.S.C. §1091) all year; year-end open positions carry
   deferred losses. The escape is a §475(f) mark-to-market election, which needs
@@ -594,11 +693,12 @@ None of these may be invented by the implementing agent.
 ## 12. Reproducing the measurements
 
 The §4 tables came from four harnesses run in this container against pyomo
-6.10.1 + highspy. They are **not** committed — they were scratch instruments,
-and CLAUDE.md forbids unrequested files. The implementing agent should rebuild
-them as a proper benchmark under `tests/` or `children/intraday_equities/`
-**after** ADR-0111 is approved, because §4.4's envelope is a contract the code
-must keep, and a contract with no test is a claim.
+6.10.1 + highspy. They are **not committed**, so this review cannot independently
+reproduce them. They also predate the corrected signed-trade, self-financing,
+cost-in-CVaR, and in-model-band formulation. The implementing agent must first
+commit a proper benchmark, then rerun it before ADR-0111 is approved. Only that
+corrected run may establish the operating envelope; until then §4 is historical
+evidence, not a production claim.
 
 What they did, so they can be rebuilt exactly:
 
@@ -619,3 +719,6 @@ HFDR row actually binds, `W0 = 100k`, `B = 40k`, `cardinality = 10`,
 `min_ticket = $1,000`. Real `U_r` scenarios will be block-bootstrap draws, not
 one-factor draws; **re-run the envelope against real scenario matrices before
 trusting §4.4 in production** — correlation structure changes MILP difficulty.
+The rerun must also use current inventory, cash, signed buys/sells, exact
+sell-only fees, and in-model inaction, and must publish the seeds and expected
+result checks needed for another machine to reproduce it.
