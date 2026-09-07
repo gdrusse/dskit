@@ -21,10 +21,15 @@ Plus one plain estimator wrapper, not a Node: :class:`ColumnSubsetEstimator`
 (ADR-0108) fits any estimator — named the same dotted way — on a declared
 ``drop``/``keep`` subset of columns, so a feature MASK is an ordinary
 ``estimator_params`` knob beside a candidate's hyperparameters rather than a
-second feature pipeline upstream. It forwards ``feature_names`` and
-``categorical_feature`` to the inner estimator, RE-INDEXED to the surviving
-columns, so a native categorical such as ``symbol_code`` stays declared
-correctly after masking shifts its position.
+second feature pipeline upstream. It forwards the surviving column names
+(as ``feature_names`` or, failing that, LightGBM's own singular
+``feature_name``) and ``categorical_feature`` to the inner estimator,
+RE-INDEXED to the surviving columns, so a native categorical such as
+``symbol_code`` stays declared correctly after masking shifts its
+position. It needs a CALLER that forwards those two kwargs into its own
+``fit`` — :class:`SklearnFit` does not, so this class reaches an
+estimator only through a caller written to do so (``intraday_equities``'s
+``NoInformationScan``, not this pack's own train node).
 
 This is a DOORWAY, not a model registry: the estimator is named by the
 document, constructed from the document's own ``estimator_params``, and
@@ -726,6 +731,16 @@ def _accepts_kwarg(model, name):
     )
 
 
+#: The two spellings a wrapped estimator's ``fit`` might declare for the
+#: surviving column-name list, tried in this order. Most sklearn-style
+#: estimators that take one spell it plural (``feature_names``, matched
+#: by this pack's own stub fixtures); LightGBM's own ``fit`` spells it
+#: SINGULAR (``feature_name``) and declares no ``**kwargs``, so trying
+#: only the plural leaves the one library this ADR targets never told
+#: the surviving names at all.
+_FEATURE_NAME_KWARGS = ("feature_names", "feature_name")
+
+
 class ColumnSubsetEstimator:
     """Fit any estimator on a declared subset of columns (ADR-0108).
 
@@ -739,13 +754,34 @@ class ColumnSubsetEstimator:
     naming the offender, because a typo'd mask that quietly keeps (or
     drops) everything reports a difference that never happened.
 
-    Both ``feature_names`` and ``categorical_feature`` are forwarded to
-    the wrapped estimator's ``fit`` when its signature accepts them
-    (inspected, never assumed) — subset and RE-INDEXED to the surviving
+    The surviving column names are forwarded to the wrapped estimator's
+    ``fit`` under whichever of ``feature_names`` or ``feature_name`` its
+    signature accepts (inspected, never assumed, tried in that order) —
+    LightGBM's own ``fit`` spells it singular and takes no ``**kwargs``,
+    so trying the plural alone would silently forward nothing to the one
+    library this ADR is written for. ``categorical_feature`` is forwarded
+    the same inspected way, subset and RE-INDEXED to the surviving
     columns, so a native categorical such as ``symbol_code`` stays
     declared categorical at its correct, shifted position instead of
     silently pointing at whatever column now sits where it used to.
-    ``predict`` projects with the same column indices ``fit`` chose.
+    ``predict`` projects with the same column indices ``fit`` chose, and
+    refuses a matrix whose column COUNT has changed since fit.
+
+    This class expects its CALLER to forward ``feature_names`` (and,
+    where one exists, ``categorical_feature``) into ``fit`` — it is a
+    plain estimator, not a node, and arranges no forwarding of its own.
+    This pack's own :class:`SklearnFit` does NOT do this: ``run_train``
+    calls ``estimator.fit(matrix, targets)`` with neither kwarg, so
+    naming this class as ``SklearnFit``'s ``estimator`` refuses
+    immediately (the mask cannot be verified with no ``feature_names``).
+    The path that DOES forward both — by the same signature inspection
+    this class itself uses — is ``intraday_equities``'s
+    ``NoInformationScan``/``_fit_estimator``
+    (``children/intraday_equities/intraday_equities/nodes.py:3160-3193``),
+    which is what P16
+    (``children/intraday_equities/configs/run-p16-feature-mask-zoo.json``)
+    actually runs through. Teaching ``SklearnFit`` to forward them too is
+    a named follow-up, not done here.
 
     Parameters
     ----------
@@ -789,6 +825,7 @@ class ColumnSubsetEstimator:
         self.estimator_params = dict(estimator_params)
         self._indices = None
         self._model = None
+        self._n_columns = None
 
     def fit(self, x, y, feature_names=None, categorical_feature=None):
         """Fit the wrapped estimator on the declared column subset.
@@ -818,13 +855,14 @@ class ColumnSubsetEstimator:
         Raises
         ------
         ValueError
-            Neither or both of ``drop``/``keep`` were declared; a
-            ``drop``/``keep`` name is absent from ``feature_names``;
-            the mask leaves zero surviving columns; or a mask is
-            declared and ``feature_names`` is ``None``.
+            Neither or both of ``drop``/``keep`` were declared; ``drop``
+            or ``keep`` is not a non-empty list of distinct, non-empty
+            column-name strings; a ``drop``/``keep`` name is absent from
+            ``feature_names``; the mask leaves zero surviving columns; a
+            mask is declared and ``feature_names`` is ``None``; or
+            ``estimator`` cannot be imported, names no ``fit`` method, or
+            rejects ``estimator_params``.
         """
-        import importlib
-
         has_drop = self.drop is not None
         has_keep = self.keep is not None
         if has_drop == has_keep:
@@ -832,9 +870,15 @@ class ColumnSubsetEstimator:
                 "ColumnSubsetEstimator requires exactly one of 'drop' or "
                 f"'keep', got drop={self.drop!r} keep={self.keep!r}"
             )
-        knob, mask_names = (
-            ("drop", list(self.drop)) if has_drop else ("keep", list(self.keep))
-        )
+        knob, raw_mask = ("drop", self.drop) if has_drop else ("keep", self.keep)
+        # Reuse the ONE list-of-column-names rule this file already owns
+        # (``features``' own validator) rather than writing a second one:
+        # a duplicate name was silently deduped by a bare ``set()`` before,
+        # which is exactly the drift CLAUDE.md calls a scheduled bug.
+        problems = _feature_list_problems(knob, raw_mask)
+        if problems:
+            raise ValueError("; ".join(problems))
+        mask_names = list(raw_mask)
         if feature_names is None:
             raise ValueError(
                 f"ColumnSubsetEstimator.{knob}={mask_names} is declared but "
@@ -863,18 +907,22 @@ class ColumnSubsetEstimator:
                 f"{knob}={mask_names} leaves zero surviving columns of {names}"
             )
 
-        module_name, _, attr = self.estimator.rpartition(".")
-        if not module_name or not attr:
-            raise ValueError(
-                f"estimator must be a dotted import path, got {self.estimator!r}"
-            )
-        inner = getattr(importlib.import_module(module_name), attr)(
-            **self.estimator_params
+        where = "ColumnSubsetEstimator"
+        path_problems = _import_path_problems(
+            "estimator", self.estimator, example="lightgbm.LGBMRegressor"
+        )
+        if path_problems:
+            raise ValueError(f"{where}: {'; '.join(path_problems)}")
+        est_cls = _import_estimator(self.estimator, where)
+        inner = _construct(
+            est_cls, self.estimator_params, self.estimator, where, "estimator_params"
         )
 
         fit_kwargs = {}
-        if _accepts_kwarg(inner, "feature_names"):
-            fit_kwargs["feature_names"] = [names[i] for i in indices]
+        for kwarg in _FEATURE_NAME_KWARGS:
+            if _accepts_kwarg(inner, kwarg):
+                fit_kwargs[kwarg] = [names[i] for i in indices]
+                break
         if categorical_feature is not None and _accepts_kwarg(
             inner, "categorical_feature"
         ):
@@ -886,6 +934,7 @@ class ColumnSubsetEstimator:
         inner.fit(x[:, indices], y, **fit_kwargs)
         self._indices = indices
         self._model = inner
+        self._n_columns = int(x.shape[1])
         return self
 
     def predict(self, x):
@@ -906,9 +955,23 @@ class ColumnSubsetEstimator:
         ------
         RuntimeError
             Called before ``fit``.
+        ValueError
+            ``x`` does not carry the same number of columns ``fit`` saw.
+            This checks column COUNT only: a matrix with the right width
+            whose columns were reordered or renamed since ``fit`` is
+            indistinguishable from a correct one by shape alone, and is
+            NOT caught here — only a ``feature_names`` mismatch supplied
+            at ``fit`` time can catch that kind of corruption.
         """
         if self._model is None:
             raise RuntimeError("ColumnSubsetEstimator is not fitted")
+        got = int(x.shape[1])
+        if got != self._n_columns:
+            raise ValueError(
+                f"ColumnSubsetEstimator.predict: x has {got} column(s), fit "
+                f"saw {self._n_columns} — the design matrix's shape has "
+                "changed since fit"
+            )
         return self._model.predict(x[:, self._indices])
 
 

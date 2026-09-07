@@ -2140,6 +2140,20 @@ def test_column_subset_refuses_a_keep_name_absent_from_feature_names():
         model.fit(x, y, feature_names=MASK_COLUMNS)
 
 
+@pytest.mark.parametrize("knob", ["drop", "keep"])
+def test_column_subset_refuses_a_duplicate_name_in_drop_or_keep(knob):
+    """A repeated column name used to be silently absorbed by a bare
+    ``set()``. ``_feature_list_problems`` already refuses duplicates for
+    ``features`` elsewhere in this file — reused here rather than a
+    second copy of the same rule (CLAUDE.md's duplication doctrine)."""
+    x, y = mask_rows()
+    model = ColumnSubsetEstimator(
+        _lstsq_path(), **{knob: ["vol_5m", "vol_5m", "symbol_code"]}
+    )
+    with pytest.raises(ValueError, match="distinct"):
+        model.fit(x, y, feature_names=MASK_COLUMNS)
+
+
 def test_column_subset_refuses_a_mask_that_leaves_zero_surviving_columns():
     x, y = mask_rows()
     model = ColumnSubsetEstimator(_lstsq_path(), drop=list(MASK_COLUMNS))
@@ -2238,10 +2252,17 @@ def test_column_subset_wraps_a_real_sklearn_estimator(tmp_path):
 
 def test_column_subset_categorical_feature_reaches_real_lightgbm():
     """Integration half, gated: real LightGBM's ``fit`` spells the
-    categorical kwarg ``categorical_feature`` (matching this wrapper)
-    but ``feature_name`` singular (NOT matching ``feature_names``), so
-    the mask must still fit and predict — proving the inspected-not-
-    assumed forwarding against the one library ADR-0108 is written for.
+    categorical kwarg ``categorical_feature`` (matching this wrapper) but
+    the surviving-names kwarg ``feature_name`` SINGULAR (NOT
+    ``feature_names`` — LightGBM takes no ``**kwargs`` either, so the
+    plural is silently never forwarded), so the mask must still fit,
+    predict, AND actually name its columns to the booster.
+
+    A shape check alone cannot prove that: a forwarding bug that
+    silently drops the names still fits and predicts fine (LightGBM
+    falls back to generic ``Column_0``/``Column_1`` names), so the real
+    proof reads the surviving names back out of the fitted booster
+    itself, exactly as the library records them.
     """
     pytest.importorskip("lightgbm")
     x, y = mask_rows(n=200)
@@ -2254,3 +2275,68 @@ def test_column_subset_categorical_feature_reaches_real_lightgbm():
     masked.fit(x, y, feature_names=MASK_COLUMNS, categorical_feature=[3])
     prediction = masked.predict(x)
     assert prediction.shape == (x.shape[0],)
+    # THE proof (ADR-0108/fix 2): the booster's own record of what it was
+    # told, not merely that fit/predict ran — ``feature_name`` singular is
+    # the spelling real LightGBM accepts, and a booster that never got it
+    # falls back to ``Column_0``/``Column_1`` while still fitting cleanly.
+    feature_infos = masked._model.booster_.dump_model()["feature_infos"]
+    assert set(feature_infos) == {"vol_5m", "symbol_code"}
+    assert not any(name.startswith("Column_") for name in feature_infos)
+
+
+# ---------------------------------------------------------------------------
+# ColumnSubsetEstimator: routed import/construction refusals (fix 3) and the
+# predict-time shape guard (fix 5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "estimator,needle",
+    [
+        ("no_such_library_zzz.Model", "cannot import"),
+        ("sklearn.linear_model.NoSuchEstimator", "no attribute"),
+    ],
+)
+def test_column_subset_refuses_an_unimportable_estimator_by_name(estimator, needle):
+    """Fix 3: ``fit`` now routes through this file's OWN
+    ``_import_object``/``_import_estimator`` — the same helpers
+    ``SklearnFit.run_train`` uses — instead of a raw ``importlib``/
+    ``getattr`` pair, so a bad module or a bad attribute refuses as a
+    clean, by-name ``ValueError`` (naming the offending path) instead of
+    a raw ``ModuleNotFoundError``/``AttributeError`` escaping unwrapped."""
+    pytest.importorskip("sklearn")
+    x, y = mask_rows()
+    model = ColumnSubsetEstimator(estimator, drop=["ret_lag_0"])
+    with pytest.raises(ValueError, match=needle) as excinfo:
+        model.fit(x, y, feature_names=MASK_COLUMNS)
+    assert estimator in str(excinfo.value)
+
+
+def test_column_subset_refuses_a_typoed_estimator_param_by_name():
+    """Fix 3: ``fit`` constructs the inner estimator through
+    ``_construct`` (the same helper ``SklearnFit``/``SklearnSelect``
+    use), so a typo'd constructor kwarg refuses as a clean ``ValueError``
+    naming BOTH the estimator path and the offending block, instead of a
+    raw ``TypeError`` escaping unwrapped."""
+    pytest.importorskip("sklearn")
+    x, y = mask_rows()
+    model = ColumnSubsetEstimator(
+        "sklearn.linear_model.Ridge", drop=["ret_lag_0"], alphaa=1.0,
+    )
+    with pytest.raises(ValueError, match="estimator_params") as excinfo:
+        model.fit(x, y, feature_names=MASK_COLUMNS)
+    assert "sklearn.linear_model.Ridge" in str(excinfo.value)
+
+
+def test_column_subset_predict_refuses_a_matrix_with_a_different_column_count():
+    """Fix 5: ``predict`` stores the column count ``fit`` saw and refuses
+    a mismatch, naming both numbers, rather than silently answering on a
+    reshaped matrix. Width alone cannot catch every corruption — a
+    same-count matrix with its columns shuffled passes this check, which
+    is why the docstring says so rather than promising more."""
+    x, y = mask_rows()
+    model = ColumnSubsetEstimator(_lstsq_path(), keep=["vol_5m", "symbol_code"])
+    model.fit(x, y, feature_names=MASK_COLUMNS)
+    narrower = x[:, :-1]  # one column short of the 4 `fit` saw
+    with pytest.raises(ValueError, match=re.escape("has 3 column(s), fit saw 4")):
+        model.predict(narrower)

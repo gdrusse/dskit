@@ -5601,8 +5601,24 @@ the reason it is not reused here. Names it cannot find in the design matrix
 refuse BY NAME rather than being ignored, because a typo'd mask that quietly
 keeps everything reports a difference that is not there.
 
-The mask is therefore `estimator_params` — the same doorway `hpo_space`
-already tunes through. Consequences follow from that one choice:
+The mask lives in `estimator_params` — the same doorway `hpo_space` already
+tunes through, which is what makes it searchable. That addressability is not
+the same claim as "runs through any caller that already reads
+`estimator_params`", and the two must not be conflated: `ColumnSubsetEstimator`
+also needs its CALLER's `fit` to forward the surviving column names (and any
+`categorical_feature`) into the constructed estimator — a property of the
+CALLER, not of `estimator_params` itself. This pack's own `SklearnFit` does
+NOT do that: `run_train` calls `estimator.fit(matrix, targets)` with neither
+kwarg, so a document naming `ColumnSubsetEstimator` as `SklearnFit`'s
+`estimator` refuses immediately (the mask cannot be verified with no
+`feature_names`) — `SklearnFit` is UNCHANGED by this decision. The caller that
+already forwards both, by the same signature inspection this class itself
+uses, is the child's `NoInformationScan`/`_fit_estimator`
+(`children/intraday_equities/intraday_equities/nodes.py:3160-3193`), and it is
+the path P16 actually runs through. Teaching `SklearnFit` to forward them too
+is a named follow-up, not done here.
+
+Consequences follow from the `estimator_params` placement:
 
 * `pipeline.features_*` stays **byte-identical** across every candidate, so
   the contract stays pinned and the comparison keeps proving the rows were
