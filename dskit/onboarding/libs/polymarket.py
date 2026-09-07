@@ -82,7 +82,6 @@ Import cost: stdlib.
 from __future__ import annotations
 
 import json
-import math
 import os
 import time
 import urllib.error
@@ -91,7 +90,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 from ..base import AssetError, MODES, parse_utc
-from ..connector import MAX_BACKOFF_S, PROTOCOL, Connector
+from ..connector import MAX_BACKOFF_S, PROTOCOL, Connector, backoff, retry_after
 
 __all__ = [
     "ARCHIVE_EVENT_TYPES",
@@ -186,7 +185,6 @@ DEFAULT_CLEANUP = True
 SYNC_STATE_PATH = "meta/pmxt-polymarket-sync-state.json"
 
 _RETRY_STATUSES = (429, 500, 502, 503, 504)
-_BACKOFF_S = 0.5
 _ARCHIVE_BATCH_ROWS = 65536
 _GAMMA_TIME = "%Y-%m-%dT%H:%M:%SZ"
 _HOUR = timedelta(hours=1)
@@ -312,25 +310,6 @@ def _levels(raw, descending):
         kept.append((price_f, [str(price), str(size)]))
     kept.sort(key=lambda pair: pair[0], reverse=descending)
     return [pair for _price, pair in kept]
-
-
-def _retry_after(headers):
-    """Seconds a numeric Retry-After asks for, capped; None when unusable."""
-    value = headers.get("Retry-After") if headers is not None else None
-    try:
-        seconds = float(value)
-    except (TypeError, ValueError):
-        return None
-    if math.isnan(seconds):
-        # float() accepts "nan", and max/min pass a NaN straight through
-        # to time.sleep (a ValueError, not a capped wait): unusable.
-        return None
-    return min(max(seconds, 0.0), MAX_BACKOFF_S)
-
-
-def _backoff(attempt):
-    """Exponential backoff for the ``attempt``-th failure, capped."""
-    return min(_BACKOFF_S * 2 ** attempt, MAX_BACKOFF_S)
 
 
 def _chunks(items, size):
@@ -657,11 +636,12 @@ class _Client:
                     raise AssetError(
                         [f"{label}: HTTP {exc.code} from {_safe(url)}"]
                     ) from exc
-                last, delay = f"HTTP {exc.code}", _retry_after(exc.headers)
+                last = f"HTTP {exc.code}"
+                delay = retry_after(exc.headers, backoff(attempt + 1))
             except OSError as exc:
-                last, delay = f"network error: {exc}", None
+                last, delay = f"network error: {exc}", backoff(attempt + 1)
             if attempt < retries:
-                self._connector.sleep(_backoff(attempt) if delay is None else delay)
+                self._connector.sleep(delay)
         raise AssetError(
             [f"{label}: giving up on {_safe(url)} after {retries + 1} attempt(s) — "
              f"last failure: {last}"]

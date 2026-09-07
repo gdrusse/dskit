@@ -1,5 +1,89 @@
 # Re-entry
 
+## Current wrap: the finalist document is locked, not run (2026-09-07)
+
+Branch `claude/maine-memo-research-agents-4yb6c0`, merged to `main`.
+
+**Landed.**
+
+1. **`configs/run-final-hpo.json`** — the `final_hpo` phase, CONSTRUCTED and
+   validated, never executed. Identity `ee674709…`. Four stages: the locked
+   calendar gates the phase, `BenchmarkSelect` names the winner by max mean
+   path score over the three pinned compare artifacts, the memory preflight
+   verifies the caches, and `FinalistCandidate` materializes the finalist
+   document for whichever candidate the selector named. The document restates
+   no model name and refuses by name if the selector picks one it has no
+   recipe for. No walkforward: the phase declares no fold schedule. The
+   window is the calendar's, pinned by test against its dates, with a
+   1 ms test band so the lockbox is unreachable.
+2. **The spaces come from the 2026-09-06 research** — `learning_rate` added,
+   `max_depth`/`colsample_bytree` pinned rather than searched, log ladders,
+   24 draws against P13's 4; the MLP pins capacity and searches shrinkage.
+3. **Research recorded** (A18779-A18781, one topic folder): feature selection,
+   HPO search spaces, and the synthesis. Headline: the "HPO tunes noise"
+   lesson came from an 1,800-row single-name holdout; the pooled one is
+   ~45,000 rows, so the resolvable gap is 5-8x sharper and 4 draws was a
+   coverage failure. Tune first, mask features second, and do not reuse
+   `universe.keep_features` — it was chosen on the finalist window.
+4. **PR #8 merged** after review sent its private-import gate back: it was a
+   line scan three ordinary idioms walked past. Now an AST walk over every
+   package in both directions, one owner. Widening it surfaced eight further
+   breaches, fixed the same way.
+5. **`kronos.py` reaches the read seam at function depth** — main was red on
+   two of its own purity tests before this.
+
+**Verification.** ruff clean over `dskit`, `tests`, `children`. 8590 passed /
+1 failed across the five packages; the child suite is 11 failed / 368 passed.
+Every failure is identical on a pristine `main` checkout — the one is a uid-0
+environment case, the eleven need run artifacts this container has not got.
+
+**Next / open.**
+
+- `hpo_objective` stays `"ic"`. The research asks for the outer path score and
+  the scan node's vocabulary offers only `mspe`/`ic`; that is a named gap, not
+  something to spell into a config the node would refuse.
+- Seven generic dskit gaps are named across the two research notes, each with
+  a tier. None was solved child-side. Log-uniform range grammar in the scan
+  node is the one the finalist would have used.
+- `origin/feat/final-model-gates` is unmerged: another agent's ADR-0107
+  horizon-conquest gate, 2 commits. It appends `actions.csv` rows, so expect
+  the same ledger-id collision this wrap already resolved once.
+- `origin/claude/dskit-production-build-3g17vw` is merged and should be
+  deleted; every delete refspec from this container was cut off by the git
+  proxy, so it needs doing by hand.
+
+## Current state: P15 temporal-fusion zoo complete (2026-09-06)
+
+The three-candidate P15 run completed 20/20 paired outer folds per model under
+benchmark `5e88726b…`. Mean path scores were Ridge 0.001346, Transformer
+0.000835, and TCN 0.000409. No pairwise test rejected equal performance at
+the 0.016667 adjusted threshold; all three positive means depended on the
+same 2023-05-19 fold and became approximately zero or negative without it.
+Ridge is the simplest P15 frontier, but no model was promoted or refit.
+
+The nine-model P13/P14/P15 reference leaves P13 pooled native LightGBM as the
+practical development frontier. Cross-zoo values are descriptive, not paired
+tests. Memo:
+`children/intraday_equities/docs/memos/p15-temporal-fusion-model-zoo-results.md`.
+
+**Next:** treat the temporal zoo as a completed negative complexity ablation.
+Only spend on another sequence family after a sharper representation or loss
+hypothesis; keep promotion/final refit as a separate owner-approved action.
+
+## Current state: cross-benchmark model selector landed (2026-09-06)
+
+`BenchmarkSelect` (ADR-0106, accepted) joins completed benchmark zoos' pinned
+`compare.json` artifacts and names one winner by a config-declared
+`decision_metric` + `select` direction — never promotes (`auto_promote` False).
+Shipped in `dskit/pipeline/benchmarks.py` with `is_sha256hex` (single owner of
+the lowercase-64 SHA-256 rule, `dskit/pipeline/stages.py`); 27 tests, ruff clean,
+skeptic loop closed with a clean round-3 pass. Child config
+`configs/run-model-select.json` now chains P13+P14+P15, ranks all nine
+candidates, and selects `lgbm-pooled-h10`. The completed selector artifact is
+`pipeline_runs/model-select-staged-2026-02-28-ef2e8f37/stages/select.json`
+(SHA-256 `df474f64…`). This is descriptive ranking only, not a cross-zoo
+significance claim, final refit, or promotion.
+
 ## Current state: horizon-conquest gate landed (2026-09-06)
 
 ADR-0107 (accepted) adds `dskit.pipeline.conquest:HorizonConquest` — the
@@ -65,11 +149,60 @@ approved additive ablation against the full nonduplicative P12 feature set;
 do not fine-tune or promote while the cheaper frozen representation shows no
 incremental value and pretraining-contamination certainty remains low.
 
-## Current wrap: dskit.production BUILT — phases 1, 2, 2b and 3 (2026-09-06)
+## Current wrap: production merged, and its four follow-ups too (2026-09-06)
 
-Branch: `claude/dskit-production-build-3g17vw`. ADR-0090 and ADR-0091 are
-**accepted**; the package is complete against
-`docs/new_package_proposals/production.md`, which is the contract.
+`dskit.production` is BUILT — phases 1, 2, 2b and 3 — and MERGED to `main` at
+`8ea1b98`. ADR-0090 and ADR-0091 are **accepted**; the package is complete
+against `docs/new_package_proposals/production.md`, which is the contract.
+
+The four follow-ups landed as PR #8, reviewed and merged after one round
+that sent the private-import gate back (item 2). What they were:
+
+1. Main was red before the merge, from its own two new pipeline modules —
+   fourteen missing docstrings, and one spelling the run-root default instead
+   of importing it, which is the very defect its pin exists to catch. Fixed.
+2. Production was importing two PRIVATE driver names. §9.1 says twice that it
+   may not, and nothing checked — the purity gate tested what production
+   EXPORTS, never what it IMPORTS. Both rules are public with one owner now,
+   the private spellings survive as aliases, and the missing gate is written
+   and proven to fail on the old code.
+
+   **Review round (2026-09-06).** The first gate was a line scan matching
+   `from dskit.` and three ordinary idioms walked straight past it: a
+   parenthesized multi-line import, a relative `from ..pipeline.driver
+   import`, and reading the attribute off a module alias the file already
+   held for a legitimate public call. It was also scoped to `production`
+   alone while three documents claimed both directions — the coverage a pin
+   claims and lacks is the defect CLAUDE.md names. Rewritten as an AST walk
+   over EVERY package in both directions; the rule has one owner,
+   `private_cross_package_uses` in the toolkit's own gate, and each
+   package's gate calls it. All four forms are pinned by a synthetic test
+   and were re-proven against the real reverted file.
+
+   Widening it surfaced eight more breaches nobody had seen: `onboarding`
+   and `production` both read `_check_dict` / `_check_str` /
+   `_check_unknown` / `_raise_if` across the boundary from `dskit.assets`,
+   in exactly the multi-line form the old scan could not see. Same remedy
+   as the driver names — public in `assets.base`, private spellings kept as
+   aliases, the two callers importing the public name under their own
+   private alias. No behaviour changed.
+3. ADR-0101 **accepted**: the six connector packs' hand-rolled retries are one
+   owner in `dskit/onboarding/connector.py`, pinned by a scan so the copies
+   cannot return. One behaviour changes on purpose — against a
+   `Retry-After: nan`, two packs used to retry IMMEDIATELY and now wait the
+   ordinary backoff. The full graduation stays the eventual direction.
+4. `alpaca_quotes` carried its own hardcoded ceiling, a second copy of the cap
+   that nothing pinned. Gone.
+
+**Owner's standing objection, recorded.** This build reached outside its own
+package: thirteen files in `dskit/pipeline` and one in `dskit/onboarding`, none
+in `assets` or `journal`. It was authorised — §9 is titled "Changes outside the
+package" and ADR-0091 IS a pipeline change — but the footprint was never put in
+front of the owner plainly, and it should have been. The seam change was
+load-bearing (serving re-executes the backtest's own nodes, and that mechanism
+was private); the serving-effect classifications were not, and could have been
+their own later change. Future package work: state the cross-package footprint
+up front.
 
 **What it is.** The serving layer: an immutable release of a finished pipeline
 run, driven forward on a cadence — fetch, decide, guard, act, record. Every

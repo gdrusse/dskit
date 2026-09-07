@@ -19,13 +19,15 @@ from dskit.pipeline.driver import run_walk_forward
 from dskit.pipeline.planner import plan as plan_document
 from dskit.pipeline.predictions import read_prediction_series
 from dskit.pipeline.program_calendar import ProgramCalendar
-from dskit.pipeline.stages import Stage, reject_unknown_params
+from dskit.pipeline.runs import DEFAULT_RUN_ROOT
+from dskit.pipeline.stages import Stage, is_sha256hex, reject_unknown_params
 from dskit.pipeline.stats import bonferroni, cluster_bootstrap_t, newey_west_mean
 
 __all__ = [
     "BenchmarkApproval",
     "BenchmarkCompare",
     "BenchmarkPlan",
+    "BenchmarkSelect",
     "PathBenchmarkCompare",
     "BenchmarkRun",
     "ProgramCalendar",
@@ -204,7 +206,7 @@ def _expected_summary_dir(document, asof):
     root = os.path.abspath(
         os.path.expanduser(
             (outputs.run_root if outputs is not None else "")
-            or "./pipeline_runs"
+            or DEFAULT_RUN_ROOT
         )
     )
     return os.path.join(
@@ -475,21 +477,41 @@ class BenchmarkApproval(Stage):
 
     @classmethod
     def validate_params(cls, params):
+        """Refuse any knob but the three this stage declares.
+
+        Parameters
+        ----------
+        params : dict
+
+        Returns
+        -------
+        list of str
+            Every problem found, empty when the params are legal.
+        """
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
         for field in cls._PARAMS:
             if not _string(params.get(field)):
                 problems.append(f"{field} must be a non-empty string")
         digest = params.get("approved_inventory_sha256")
-        if _string(digest) and digest != cls._PENDING and (
-            len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest)
-        ):
+        if _string(digest) and digest != cls._PENDING and not is_sha256hex(digest):
             problems.append(
                 "approved_inventory_sha256 must be PENDING-PLAN-REVIEW or a lowercase SHA-256"
             )
         return problems
 
     def validate_inputs(self, inputs):
+        """Require exactly the reviewed inventory digest and nothing else.
+
+        Parameters
+        ----------
+        inputs : dict
+
+        Returns
+        -------
+        list of str
+            Every problem found, empty when the inputs are legal.
+        """
         if not isinstance(inputs, dict) or set(inputs) != {"inventory_sha256"}:
             return ["inputs must contain exactly inventory_sha256"]
         digest = inputs["inventory_sha256"]
@@ -498,6 +520,23 @@ class BenchmarkApproval(Stage):
         return []
 
     def run(self, ctx, inputs):
+        """Bind the approval to the exact inventory that was reviewed.
+
+        The digest is compared rather than trusted: an inventory that moved
+        after review is a different inventory, and approving it would let an
+        unreviewed candidate run.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+        inputs : dict
+            Carries ``inventory_sha256``.
+
+        Returns
+        -------
+        dict
+            The approval record, whose ``approved`` flag gates the run stage.
+        """
         observed = inputs["inventory_sha256"]
         approved = self.params["approved_inventory_sha256"]
         if approved == self._PENDING:
@@ -534,11 +573,33 @@ class BenchmarkRun(Stage):
 
     @classmethod
     def validate_params(cls, params):
+        """Refuse every knob: what this stage runs is decided upstream.
+
+        Parameters
+        ----------
+        params : dict
+
+        Returns
+        -------
+        list of str
+            Every problem found, empty when the params are legal.
+        """
         problems = []
         reject_unknown_params(problems, params, ())
         return problems
 
     def validate_inputs(self, inputs):
+        """Require the approval and the candidate inventory, exactly.
+
+        Parameters
+        ----------
+        inputs : dict
+
+        Returns
+        -------
+        list of str
+            Every problem found, empty when the inputs are legal.
+        """
         wanted = {"approval", "candidates"}
         if not isinstance(inputs, dict) or set(inputs) != wanted:
             return [f"inputs must contain exactly {sorted(wanted)}"]
@@ -550,6 +611,22 @@ class BenchmarkRun(Stage):
         return []
 
     def run(self, ctx, inputs):
+        """Execute each approved candidate, refusing an unapproved inventory.
+
+        This is the only candidate-executing stage, which is why the approval
+        is rechecked here rather than trusted from the plan.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+        inputs : dict
+            Carries ``approval`` and ``candidates``.
+
+        Returns
+        -------
+        dict
+            One ``runs`` row per candidate, each recording its state.
+        """
         approval = inputs["approval"]
         if approval.get("approved") is not True:
             return {
@@ -805,11 +882,33 @@ class BenchmarkCompare(Stage):
 
     @classmethod
     def validate_params(cls, params):
+        """Refuse every knob: the comparison is the protocol's, not a caller's.
+
+        Parameters
+        ----------
+        params : dict
+
+        Returns
+        -------
+        list of str
+            Every problem found, empty when the params are legal.
+        """
         problems = []
         reject_unknown_params(problems, params, ())
         return problems
 
     def validate_inputs(self, inputs):
+        """Require the runs, the protocol, the contracts and the approval.
+
+        Parameters
+        ----------
+        inputs : dict
+
+        Returns
+        -------
+        list of str
+            Every problem found, empty when the inputs are legal.
+        """
         wanted = {"runs", "protocol", "contracts", "approval"}
         if not isinstance(inputs, dict) or set(inputs) != wanted:
             return [f"inputs must contain exactly {sorted(wanted)}"]
@@ -825,6 +924,22 @@ class BenchmarkCompare(Stage):
         return []
 
     def run(self, ctx, inputs):
+        """Compare the paired outer folds; never promote a winner.
+
+        The protocol reports and a human decides what ships, which is why
+        nothing here writes a selection.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+        inputs : dict
+            Carries ``runs``, ``protocol``, ``contracts`` and ``approval``.
+
+        Returns
+        -------
+        dict
+            The comparison, its multiplicity correction and its provenance.
+        """
         if inputs["approval"].get("approved") is not True:
             if any(row.get("state") == "ran" for row in inputs["runs"]):
                 raise ValueError("an unapproved benchmark contains executed candidates")
@@ -1292,6 +1407,17 @@ class PathBenchmarkCompare(BenchmarkCompare):
 
     @classmethod
     def validate_params(cls, params):
+        """Refuse any knob but the two bootstrap settings this stage declares.
+
+        Parameters
+        ----------
+        params : dict
+
+        Returns
+        -------
+        list of str
+            Every problem found, empty when the params are legal.
+        """
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
         draws = params.get("bootstrap_draws")
@@ -1303,6 +1429,18 @@ class PathBenchmarkCompare(BenchmarkCompare):
         return problems
 
     def run(self, ctx, inputs):
+        """Compare as the base does, then add the path-evidence extras.
+
+        Parameters
+        ----------
+        ctx : NodeContext
+        inputs : dict
+
+        Returns
+        -------
+        dict
+            The base comparison plus this subclass's path diagnostics.
+        """
         result = super().run(ctx, inputs)
         extras = {
             "loss_evidence": {},
@@ -1536,3 +1674,215 @@ class PathBenchmarkCompare(BenchmarkCompare):
             )
         result.update(extras)
         return result
+
+
+_BENCHMARK_SELECT_PARAMS = ("sources", "decision_metric", "select")
+_SELECT_RESERVED_FIELDS = frozenset(
+    {"candidate", "source", "family", "decision_metric", "select",
+     "compute_rank", "auto_promote"}
+)
+
+
+def _select_source_problems(sources):
+    if not isinstance(sources, list) or not sources:
+        return ["sources must be a non-empty list"]
+    problems = []
+    ids = []
+    paths = []
+    for index, source in enumerate(sources):
+        where = f"sources[{index}]"
+        if not isinstance(source, dict):
+            problems.append(f"{where} must be an object")
+            continue
+        unknown = sorted(set(source) - {"id", "path", "sha256"})
+        if unknown:
+            problems.append(f"{where} has unknown field(s) {unknown}")
+        if not _string(source.get("id")):
+            problems.append(f"{where}.id must be a non-empty string")
+        else:
+            ids.append(source["id"])
+        if not _string(source.get("path")):
+            problems.append(f"{where}.path must be a non-empty string")
+        else:
+            paths.append(source["path"])
+        digest = source.get("sha256")
+        if not is_sha256hex(digest):
+            problems.append(f"{where}.sha256 must be a lowercase SHA-256")
+    if len(ids) != len(set(ids)):
+        problems.append("sources must not repeat ids")
+    if len(paths) != len(set(paths)):
+        problems.append("sources must not repeat paths")
+    return problems
+
+
+class BenchmarkSelect(Stage):
+    """Join several completed benchmark comparisons and name one winner.
+
+    A read-only cross-benchmark selector (ADR-0106). It collects the
+    ``ranking`` rows each source's ``compare.json`` artifact already emits,
+    pins every source by SHA-256, and ranks every finishing candidate by a
+    config-declared decision metric. It never recomputes a score, reruns a
+    fold, or derives a statistic, and it never promotes: ``auto_promote`` is
+    always ``False``. Cross-zoo comparability is declared, not inferred — a
+    source that did not complete every fold, or whose rows lack the decision
+    metric, is refused by name.
+
+    Parameters
+    ----------
+    params : dict
+        ``sources`` (a non-empty list of ``id``/``path``/``sha256`` compare
+        artifacts), ``decision_metric`` (a key present on every ranking row,
+        default ``"mean"``), and ``select`` (``"max"`` or ``"min"``).
+
+    Examples
+    --------
+    Pick across two finished zoos by mean path score::
+
+        stage = BenchmarkSelect("select", {
+            "sources": [
+                {"id": "p13", "path": "p13/compare.json", "sha256": "…"},
+                {"id": "p14", "path": "p14/compare.json", "sha256": "…"},
+            ],
+            "decision_metric": "mean",
+            "select": "max",
+        })
+    """
+
+    outputs = ("selection", "ranking", "provenance")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return every source, metric, and direction shape problem."""
+        problems = []
+        reject_unknown_params(problems, params, _BENCHMARK_SELECT_PARAMS)
+        problems.extend(_select_source_problems(params.get("sources")))
+        metric = params.get("decision_metric", "mean")
+        if not _string(metric):
+            problems.append("decision_metric must be a non-empty string")
+        elif metric in _SELECT_RESERVED_FIELDS:
+            problems.append(
+                f"decision_metric {metric!r} collides with a selection field"
+            )
+        direction = params.get("select")
+        if direction not in ("max", "min"):
+            problems.append('select must be "max" or "min"')
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Reject inputs because this selector reads only pinned declarations."""
+        return [] if inputs == {} else ["BenchmarkSelect takes no inputs"]
+
+    def run(self, ctx, inputs):
+        """Join pinned ranking rows and select the winner by the metric."""
+        del inputs
+        metric = self.params.get("decision_metric", "mean")
+        reverse = self.params["select"] == "max"
+        rows = []
+        provenance_sources = []
+        for source in self.params["sources"]:
+            declared = os.path.abspath(
+                os.path.join(os.path.dirname(os.path.abspath(ctx.source_path)),
+                             source["path"])
+                if not os.path.isabs(source["path"])
+                else source["path"]
+            )
+            try:
+                with open(declared, "rb") as handle:
+                    raw = handle.read()
+            except OSError as exc:
+                raise ValueError(
+                    f"source {source['id']!r} cannot be read: {exc}"
+                ) from exc
+            observed = hashlib.sha256(raw).hexdigest()
+            if observed != source["sha256"]:
+                raise ValueError(
+                    f"{source['id']!r} hash changed: "
+                    f"{source['sha256']} -> {observed}"
+                )
+            try:
+                artifact = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError(f"{source['id']!r} is not valid JSON") from exc
+            outputs = artifact.get("outputs") if isinstance(artifact, dict) else None
+            ranking = outputs.get("ranking") if isinstance(outputs, dict) else None
+            if not isinstance(ranking, list) or not ranking:
+                raise ValueError(f"{source['id']!r} has no ranking rows")
+            provenance = outputs.get("provenance")
+            benchmark_hash = (
+                provenance.get("benchmark_hash")
+                if isinstance(provenance, dict)
+                else None
+            )
+            provenance_sources.append(
+                {
+                    "id": source["id"],
+                    "path": declared,
+                    "sha256": observed,
+                    "benchmark_hash": benchmark_hash,
+                    "n_candidates": len(ranking),
+                }
+            )
+            for row in ranking:
+                if not isinstance(row, dict):
+                    raise ValueError(f"{source['id']!r} has a malformed ranking row")
+                if not _string(row.get("id")) or not _string(row.get("family")):
+                    raise ValueError(
+                        f"{source['id']!r} has a ranking row missing id or family"
+                    )
+                value = row.get(metric)
+                if (
+                    not isinstance(value, (int, float))
+                    or isinstance(value, bool)
+                    or not math.isfinite(value)
+                ):
+                    raise ValueError(
+                        f"source {source['id']!r} candidate {row.get('id')!r} "
+                        f"has no finite decision_metric {metric!r}"
+                    )
+                n_folds = row.get("n_folds")
+                n_scored = row.get("n_scored")
+                if (
+                    not isinstance(n_folds, int)
+                    or isinstance(n_folds, bool)
+                    or not isinstance(n_scored, int)
+                    or isinstance(n_scored, bool)
+                    or n_folds < 1
+                    or n_scored != n_folds
+                ):
+                    raise ValueError(
+                        f"source {source['id']!r} candidate {row.get('id')!r} "
+                        "did not complete every fold"
+                    )
+                carried = copy.deepcopy(row)
+                carried["source"] = source["id"]
+                rows.append(carried)
+        if not rows:
+            raise ValueError("no candidates across the declared sources")
+        rows.sort(
+            key=lambda row: (
+                -row[metric] if reverse else row[metric],
+                row["source"],
+                row["id"],
+            )
+        )
+        winner = rows[0]
+        return {
+            "selection": {
+                "candidate": winner["id"],
+                "source": winner["source"],
+                "family": winner["family"],
+                "decision_metric": metric,
+                "select": self.params["select"],
+                metric: winner[metric],
+                "compute_rank": winner.get("compute_rank"),
+                "auto_promote": False,
+            },
+            "ranking": rows,
+            "provenance": {
+                "decision_metric": metric,
+                "select": self.params["select"],
+                "sources": provenance_sources,
+                "n_candidates": len(rows),
+                "tie_break": "decision metric, source id, candidate id",
+            },
+        }

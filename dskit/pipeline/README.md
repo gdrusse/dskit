@@ -168,6 +168,12 @@ kinds resolve. Two more verbs — `demo`
   records do not yet standardize elapsed
   time, peak memory, or inference latency, so the frontier says explicitly
   when it uses the manifest's ordinal `compute_rank`.
+- **Cross-benchmark selection** (ADR-0106): `BenchmarkSelect` joins several
+  completed zoos' `compare.json` artifacts (each pinned by SHA-256) and names
+  one winner by a config-declared `decision_metric` and `select` direction.
+  It reads only the `ranking` rows the comparators already emit, refuses any
+  source with an empty or incomplete ranking, and never promotes —
+  `auto_promote` is always `False`.
 - **Fan-out** (ADR-0039): an optional `foreach` section — `keys` (a declared
   list, sorted at construction) plus a `pipeline` of TEMPLATE nodes — expanded
   at document construction, so "one model per symbol" stops being N

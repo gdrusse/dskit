@@ -1,6 +1,7 @@
 """Every shipped config validates, and the action documents stay twins."""
 
 import copy
+import datetime
 import json
 import os
 
@@ -932,3 +933,181 @@ def test_p14_recurrent_zoo_has_two_one_minute_late_fusion_searches():
         "85e1fb8cbacba2d1c3524a2decc3cb95b1d6af732d009b337728538078f9bcfc"
     )
     assert approval["approved_by"] == "owner"
+
+
+def test_p15_temporal_zoo_has_three_paired_sequence_searches():
+    raw = _raw("run-p15-temporal-fusion-zoo.json")
+    features = raw["pipeline"]["features"]["params"]
+    assert features["cache_dir"] == "./pipeline_cache/p14-features-f32-ohlcv1m-v2"
+    assert features["sequence_lookback"] == 120
+    templates = raw["stages"]["materialize"]["params"]["templates"]
+    assert [row["family"] for row in templates] == [
+        "pooled-ohlcv-ridge-fusion",
+        "pooled-ohlcv-tcn-fusion",
+        "pooled-ohlcv-small-transformer-fusion",
+    ]
+    assert [row["feature_source"] for row in templates] == [
+        "sequence", "sequence", "sequence"
+    ]
+    assert [row["model"]["hpo_trials"] for row in templates] == [4, 4, 4]
+    assert templates[0]["model"]["estimator"].endswith(
+        "CategoricalSequenceRidgeRegressor"
+    )
+    assert templates[1]["model"]["estimator_params"]["arch"] == "tcn"
+    assert templates[2]["model"]["estimator_params"]["arch"] == "transformer"
+    for template in templates:
+        assert template["model"]["hpo_space"]["context_length"] == [30, 60, 120]
+    approval = raw["stages"]["approval"]["params"]
+    assert approval["approved_inventory_sha256"] == (
+        "65bbbfa44752b21f1a817e6b47d7e02984e56fbe8a5392a830a478cd977e6058"
+    )
+    assert approval["approved_by"] == "owner"
+
+
+def _ms(date_text, end_of_day=False):
+    """UTC epoch ms for an inclusive calendar date."""
+    stamp = datetime.datetime.fromisoformat(date_text).replace(
+        tzinfo=datetime.timezone.utc
+    )
+    if end_of_day:
+        stamp = stamp.replace(hour=23, minute=59, second=59)
+    return int(stamp.timestamp() * 1000)
+
+
+def test_the_finalist_window_is_the_locked_calendars_final_hpo_phase():
+    """The calendar declares dates; `run-final-hpo.json` declares epoch ms.
+
+    That is the same fact in two spellings, which is exactly the shape
+    CLAUDE.md says to pin rather than trust. The failure to design against
+    is one copy moving: a finalist that quietly fits past the cut, or
+    validates on a window the calendar never granted it.
+    """
+    calendar = _raw("program-calendar.json")
+    splits = _raw("run-final-hpo.json")["splits"]
+    periods = calendar["periods"]
+    assert splits["train_end_ms"] == _ms(periods["final_fit_extension"]["end"], True)
+    assert splits["val_start_ms"] == _ms(periods["final_hpo_validation"]["start"])
+    assert splits["val_end_ms"] == _ms(periods["final_hpo_validation"]["end"], True)
+    embargo = periods["final_hpo_embargo"]
+    assert embargo["start"] == embargo["end"]
+    assert splits["train_end_ms"] < _ms(embargo["start"]) < splits["val_start_ms"]
+
+
+def test_the_finalist_never_reaches_the_lockbox():
+    """test_end sits inside 2026-02-28, so the band cannot hold a lockbox row."""
+    calendar = _raw("program-calendar.json")
+    splits = _raw("run-final-hpo.json")["splits"]
+    lockbox = _ms(calendar["locks"]["lockbox_start"])
+    assert splits["val_end_ms"] < splits["test_end_ms"] < lockbox
+
+
+def test_the_finalist_document_declares_no_fold_schedule():
+    """`final_hpo` has `fold_schedule: null` — one fit, not a rolling series."""
+    calendar = _raw("program-calendar.json")
+    assert calendar["phases"]["final_hpo"]["fold_schedule"] is None
+    assert "walkforward" not in _raw("run-final-hpo.json")
+
+
+def test_the_finalist_names_no_model_and_takes_the_selectors_winner():
+    """WHICH model is the selector's output, never a name restated here."""
+    document = _raw("run-final-hpo.json")
+    finalist = document["stages"]["finalist"]
+    assert finalist["inputs"]["selection"] == "$select.selection"
+    assert document["stages"]["select"]["params"]["select"] == "max"
+    declared = json.dumps(finalist["params"]["templates"])
+    assert "pooled-h" not in declared
+
+
+def test_p16_feature_mask_zoo_masks_are_real_and_isolate_the_feature_set():
+    """ADR-0108: five candidates, one estimator family, one hpo_space —
+    the declared column mask is the only thing that differs between them.
+    """
+    raw = _raw("run-p16-feature-mask-zoo.json")
+    p13 = _raw("run-p13-pooled-model-zoo.json")
+    universe = _raw("universe-p13-pooled.json")
+    features = raw["pipeline"]["features"]["params"]
+
+    real_names = set(
+        _emit_feature_names(
+            features["lookback"],
+            universe["scales"],
+            universe["reference"],
+            (),
+            features["momentum_horizons"],
+            (),
+        )
+    ) | {"symbol_code"}
+
+    templates = raw["stages"]["materialize"]["params"]["templates"]
+    assert [row["id"] for row in templates] == [
+        "full",
+        "short-lags",
+        "core-scales",
+        "no-cal-tail",
+        "lean",
+    ]
+
+    # The control declares NO mask, and is byte-identical to P13's own
+    # winning lgbm candidate's model block — same estimator, same
+    # hyperparameters, same hpo_space, nothing wrapped.
+    full = templates[0]["model"]
+    assert full == p13["stages"]["materialize"]["params"]["templates"][0]["model"]
+    assert full["estimator"] == "lightgbm.LGBMRegressor"
+    assert "drop" not in full["estimator_params"]
+    assert "keep" not in full["estimator_params"]
+
+    drops = {}
+    for template in templates[1:]:
+        tid, model = template["id"], template["model"]
+        assert model["estimator"] == (
+            "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator"
+        ), tid
+        params = model["estimator_params"]
+        assert params["estimator"] == "lightgbm.LGBMRegressor", tid
+        assert "keep" not in params, tid
+        drop = params["drop"]
+        assert drop and len(set(drop)) == len(drop), tid  # non-empty, no dupes
+        missing = set(drop) - real_names
+        assert not missing, (tid, sorted(missing))
+        drops[tid] = frozenset(drop)
+
+    # lean is EXACTLY the union of the three single-family drop lists.
+    assert drops["lean"] == (
+        drops["short-lags"] | drops["core-scales"] | drops["no-cal-tail"]
+    )
+    # ...and the three single-family masks are pairwise disjoint, so the
+    # union is not silently smaller than the sum of the three parts.
+    assert not (drops["short-lags"] & drops["core-scales"])
+    assert not (drops["short-lags"] & drops["no-cal-tail"])
+    assert not (drops["core-scales"] & drops["no-cal-tail"])
+
+    # One estimator family, one hpo_space, one hpo_trials — across ALL
+    # five candidates, masked or not: this experiment isolates the
+    # feature set, so nothing about the search may also move.
+    hpo_fields = ("hpo_trials", "hpo_seed", "hpo_val_days", "hpo_embargo_days",
+                  "hpo_objective", "hpo_space")
+    baseline = {field: templates[0]["model"][field] for field in hpo_fields}
+    for template in templates[1:]:
+        model = template["model"]
+        assert {field: model[field] for field in hpo_fields} == baseline, template["id"]
+    assert templates[0]["model"]["hpo_trials"] == 4
+
+    # The plain LightGBM hyperparameters (everything but 'estimator' and
+    # the mask) are identical across all five candidates too.
+    def _lgbm_kwargs(model):
+        params = dict(model["estimator_params"])
+        params.pop("estimator", None)
+        params.pop("drop", None)
+        return params
+
+    kwarg_sets = [_lgbm_kwargs(row["model"]) for row in templates]
+    assert all(kwargs == kwarg_sets[0] for kwargs in kwarg_sets[1:])
+
+    # Plan-only: the approval stage carries the pending placeholder, never
+    # a real (or fabricated) hash — nothing here may run un-reviewed.
+    approval = raw["stages"]["approval"]["params"]
+    assert approval["approved_inventory_sha256"] == "PENDING-PLAN-REVIEW"
+    assert approval["approved_by"] == "PENDING-PLAN-REVIEW"
+    assert approval["approved_inventory_sha256"] != (
+        p13["stages"]["approval"]["params"]["approved_inventory_sha256"]
+    )

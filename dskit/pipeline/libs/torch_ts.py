@@ -25,6 +25,7 @@ __all__ = [
     "ARCHS",
     "CategoricalEmbeddingMLPRegressor",
     "CategoricalRecurrentFusionRegressor",
+    "CategoricalTemporalFusionRegressor",
     "DEFAULT_SEQUENCE_PREFIX",
     "ZooEstimator",
     "DEFAULT_ORDER",
@@ -1410,6 +1411,151 @@ class CategoricalRecurrentFusionRegressor:
             if output
             else np.zeros(0, dtype=np.float64)
         )
+
+
+class CategoricalTemporalFusionRegressor(CategoricalRecurrentFusionRegressor):
+    """Late-fuse a causal TCN or Transformer with static/entity features.
+
+    This preserves :class:`CategoricalRecurrentFusionRegressor`'s sequence
+    parsing, causal OHLCV normalization, train-only standardization, static
+    projection, and learned entity embedding. Only the temporal encoder is
+    exchanged, making recurrent and non-recurrent candidates directly
+    comparable on an identical design matrix.
+    """
+
+    def __init__(
+        self,
+        arch="tcn",
+        context_length=60,
+        hidden_size=32,
+        num_layers=2,
+        static_projection_dim=16,
+        embedding_dim=8,
+        epochs=6,
+        lr=1e-3,
+        weight_decay=1e-4,
+        batch_size=2048,
+        dropout=0.1,
+        seed=0,
+        device=None,
+        standardize=True,
+        kernel_size=3,
+        nhead=2,
+        feedforward_multiplier=2,
+    ):
+        super().__init__(
+            arch=arch,
+            context_length=context_length,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            static_projection_dim=static_projection_dim,
+            embedding_dim=embedding_dim,
+            epochs=epochs,
+            lr=lr,
+            weight_decay=weight_decay,
+            batch_size=batch_size,
+            dropout=dropout,
+            seed=seed,
+            device=device,
+            standardize=standardize,
+        )
+        self.kernel_size = kernel_size
+        self.nhead = nhead
+        self.feedforward_multiplier = feedforward_multiplier
+
+    def _build(self, n_static, n_categories):
+        """Build the selected causal encoder and the shared fusion towers."""
+        import torch
+
+        arch = str(self.arch).lower()
+        if arch not in ("tcn", "transformer"):
+            raise ValueError("arch must be tcn or transformer")
+        hidden = int(self.hidden_size)
+        layers = int(self.num_layers)
+        projection = int(self.static_projection_dim)
+        embedding = int(self.embedding_dim)
+        kernel = int(self.kernel_size)
+        nhead = int(self.nhead)
+        ff_multiplier = int(self.feedforward_multiplier)
+        dropout = float(self.dropout)
+        if min(hidden, layers, projection, embedding, kernel, nhead, ff_multiplier) < 1:
+            raise ValueError("temporal fusion dimensions must all be positive")
+        if arch == "tcn" and kernel % 2 == 0:
+            raise ValueError("kernel_size must be odd")
+        if arch == "transformer" and hidden % nhead != 0:
+            raise ValueError("hidden_size must be divisible by nhead")
+        if not 0.0 <= dropout < 1.0:
+            raise ValueError("dropout must lie in [0, 1)")
+        fields = len(self._FIELDS)
+        context = int(self.context_length)
+
+        class TemporalFusion(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                if arch == "tcn":
+                    blocks = []
+                    in_channels = fields
+                    for layer_index in range(layers):
+                        dilation = 2**layer_index
+                        blocks.append(
+                            torch.nn.Conv1d(
+                                in_channels,
+                                hidden,
+                                kernel,
+                                dilation=dilation,
+                            )
+                        )
+                        in_channels = hidden
+                    self.blocks = torch.nn.ModuleList(blocks)
+                    self.in_proj = None
+                    self.position = None
+                    self.encoder = None
+                else:
+                    self.blocks = None
+                    self.in_proj = torch.nn.Linear(fields, hidden)
+                    self.position = torch.nn.Parameter(
+                        torch.zeros(1, context, hidden)
+                    )
+                    layer = torch.nn.TransformerEncoderLayer(
+                        d_model=hidden,
+                        nhead=nhead,
+                        dim_feedforward=hidden * ff_multiplier,
+                        dropout=dropout,
+                        activation="gelu",
+                        batch_first=True,
+                        norm_first=False,
+                    )
+                    self.encoder = torch.nn.TransformerEncoder(layer, layers)
+                self.static = torch.nn.Sequential(
+                    torch.nn.Linear(n_static, projection),
+                    torch.nn.ReLU(),
+                )
+                self.embedding = torch.nn.Embedding(n_categories, embedding)
+                self.dropout = torch.nn.Dropout(dropout)
+                self.head = torch.nn.Linear(hidden + projection + embedding, 1)
+
+            def forward(self, sequence, static, category):
+                if arch == "tcn":
+                    temporal = sequence.transpose(1, 2)
+                    for layer_index, block in enumerate(self.blocks):
+                        dilation = 2**layer_index
+                        left = (kernel - 1) * dilation
+                        temporal = torch.nn.functional.pad(temporal, (left, 0))
+                        temporal = torch.relu(block(temporal))
+                    encoded = temporal.mean(dim=-1)
+                else:
+                    temporal = self.in_proj(sequence) + self.position
+                    causal = torch.nn.Transformer.generate_square_subsequent_mask(
+                        temporal.size(1), device=temporal.device
+                    )
+                    encoded = self.encoder(temporal, mask=causal)[:, -1, :]
+                joined = torch.cat(
+                    [encoded, self.static(static), self.embedding(category)],
+                    dim=1,
+                )
+                return self.head(self.dropout(joined))
+
+        return TemporalFusion()
 
 
 class _TsModel:
