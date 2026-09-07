@@ -61,6 +61,12 @@ Agent orientation — see README.md for operator commands.
 - P15's exploratory extension is `configs/run-p15-temporal-fusion-zoo.json`:
   one-hot Ridge, causal TCN, and small causal Transformer candidates share the
   exact P14 sequence rows and side features. It is not locked or auto-promoted.
+- `configs/run-final-hpo.json` is the `final_hpo` phase: `BenchmarkSelect`
+  names the winner (max mean path score over the three pinned compare
+  artifacts) and `FinalistCandidate` builds THAT candidate's document. It
+  restates no model name and refuses a selection it has no recipe for. One
+  fit, not a walk — the phase declares no fold schedule. Constructed and
+  validated (`ee674709…`); it has NOT been run.
 
 ## Machine knobs
 
