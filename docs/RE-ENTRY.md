@@ -1,5 +1,57 @@
 # Re-entry
 
+## Current wrap: the finalist document is locked, not run (2026-09-07)
+
+Branch `claude/maine-memo-research-agents-4yb6c0`, merged to `main`.
+
+**Landed.**
+
+1. **`configs/run-final-hpo.json`** — the `final_hpo` phase, CONSTRUCTED and
+   validated, never executed. Identity `ee674709…`. Four stages: the locked
+   calendar gates the phase, `BenchmarkSelect` names the winner by max mean
+   path score over the three pinned compare artifacts, the memory preflight
+   verifies the caches, and `FinalistCandidate` materializes the finalist
+   document for whichever candidate the selector named. The document restates
+   no model name and refuses by name if the selector picks one it has no
+   recipe for. No walkforward: the phase declares no fold schedule. The
+   window is the calendar's, pinned by test against its dates, with a
+   1 ms test band so the lockbox is unreachable.
+2. **The spaces come from the 2026-09-06 research** — `learning_rate` added,
+   `max_depth`/`colsample_bytree` pinned rather than searched, log ladders,
+   24 draws against P13's 4; the MLP pins capacity and searches shrinkage.
+3. **Research recorded** (A18779-A18781, one topic folder): feature selection,
+   HPO search spaces, and the synthesis. Headline: the "HPO tunes noise"
+   lesson came from an 1,800-row single-name holdout; the pooled one is
+   ~45,000 rows, so the resolvable gap is 5-8x sharper and 4 draws was a
+   coverage failure. Tune first, mask features second, and do not reuse
+   `universe.keep_features` — it was chosen on the finalist window.
+4. **PR #8 merged** after review sent its private-import gate back: it was a
+   line scan three ordinary idioms walked past. Now an AST walk over every
+   package in both directions, one owner. Widening it surfaced eight further
+   breaches, fixed the same way.
+5. **`kronos.py` reaches the read seam at function depth** — main was red on
+   two of its own purity tests before this.
+
+**Verification.** ruff clean over `dskit`, `tests`, `children`. 8590 passed /
+1 failed across the five packages; the child suite is 11 failed / 368 passed.
+Every failure is identical on a pristine `main` checkout — the one is a uid-0
+environment case, the eleven need run artifacts this container has not got.
+
+**Next / open.**
+
+- `hpo_objective` stays `"ic"`. The research asks for the outer path score and
+  the scan node's vocabulary offers only `mspe`/`ic`; that is a named gap, not
+  something to spell into a config the node would refuse.
+- Seven generic dskit gaps are named across the two research notes, each with
+  a tier. None was solved child-side. Log-uniform range grammar in the scan
+  node is the one the finalist would have used.
+- `origin/feat/final-model-gates` is unmerged: another agent's ADR-0107
+  horizon-conquest gate, 2 commits. It appends `actions.csv` rows, so expect
+  the same ledger-id collision this wrap already resolved once.
+- `origin/claude/dskit-production-build-3g17vw` is merged and should be
+  deleted; every delete refspec from this container was cut off by the git
+  proxy, so it needs doing by hand.
+
 ## Current state: P15 temporal-fusion zoo complete (2026-09-06)
 
 The three-candidate P15 run completed 20/20 paired outer folds per model under
