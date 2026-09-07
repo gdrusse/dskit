@@ -1,6 +1,6 @@
 # The intraday_equities live MIO — design proposal
 
-**Status:** PROPOSAL. Not approved, not built. **ADR-0109 must be written and
+**Status:** PROPOSAL. Not approved, not built. **ADR-0111 must be written and
 approved before any code is written** (CLAUDE.md: "ADR before code means WRITE
 IT AND WAIT"). This document is the material that ADR summarizes.
 
@@ -497,7 +497,7 @@ Two hard rules for the implementing agent:
 Each step ends green before the next begins. TDD, per the `dskit.production`
 precedent.
 
-1. **ADR-0109** in `docs/architecture/decision-log.md`. Wait for approval.
+1. **ADR-0111** in `docs/architecture/decision-log.md`. Wait for approval.
    Nothing below starts first.
 2. **`ScenarioUtilitySolve`** in `dskit/pipeline/libs/pyomo.py` + tests in
    `tests/pipeline_libs/`. Must pass the purity gate (pyomo imported inside
@@ -597,7 +597,7 @@ The §4 tables came from four harnesses run in this container against pyomo
 6.10.1 + highspy. They are **not** committed — they were scratch instruments,
 and CLAUDE.md forbids unrequested files. The implementing agent should rebuild
 them as a proper benchmark under `tests/` or `children/intraday_equities/`
-**after** ADR-0109 is approved, because §4.4's envelope is a contract the code
+**after** ADR-0111 is approved, because §4.4's envelope is a contract the code
 must keep, and a contract with no test is a claim.
 
 What they did, so they can be rebuilt exactly:
