@@ -89,6 +89,13 @@ Wrap the *library*, generically — never a project's use of it.
 
 - **Start:** pull from the remote first (automated by the `SessionStart` hook in
   `.cursor/hooks.json`).
+- **Isolation:** every session works from its own git worktree — never
+  directly on `main` in a shared checkout, and never in a checkout another
+  session is using. Use your platform's native worktree tool if you have
+  one, otherwise `git worktree add`. Sessions sharing one working tree is
+  the repeat cause of cross-session conflicts and stepped-on work (owner
+  note, 2026-09-07). Only merge or push from the worktree once the work is
+  ready to land, per this section's other rules.
 - **Parallel merges (ADR-0109):** the child ledgers, the generated child
   decisioning READMEs, and `docs/RE-ENTRY.md` merge through the drivers in
   `tools/merge/` — run `tools/merge/install.sh` once per clone (and again

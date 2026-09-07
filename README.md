@@ -168,3 +168,12 @@ python -m pytest tests/journal -q
 
 Purity gates enforce the tier rules mechanically: the cores import nothing
 heavy, ever.
+
+## Agent sessions
+
+Every agent session — Claude Code, Codex, Cursor, OpenCode, or otherwise —
+works from its own isolated git worktree, never directly on `main` in a
+shared checkout and never in a checkout another session is using. Sessions
+sharing one working tree is the repeat cause of cross-session conflicts and
+stepped-on work. See `AGENTS.md`/`CLAUDE.md`'s Session workflow section for
+the exact rule.
