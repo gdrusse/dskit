@@ -866,3 +866,35 @@ class TestScenarioUtilityRealSolve:
         node = _su_node(n_scenarios_max=2)
         with pytest.raises(ValueError, match="n_scenarios_max"):
             node.run(_ctx(tmp_path), fixture)
+
+    def test_non_finite_scenario_returns_are_refused(self, tmp_path):
+        # Regression for a round-8 skeptic-review finding: payoffs()'s
+        # weights were checked for finiteness but the return matrix r was
+        # only shape-checked — NaN/Inf in r reached the real solver and
+        # produced a raw, unhelpful solver-plumbing failure instead of a
+        # named refusal.
+        fixture = _su_fixture()
+        fixture["r"]["AAA"] = [float("nan"), -0.03]
+        node = _su_node()
+        with pytest.raises(ValueError, match="finite"):
+            node.run(_ctx(tmp_path), fixture)
+
+    def test_a_nan_account_cash_reserve_is_refused(self, tmp_path):
+        # Regression for a round-8 skeptic-review finding: the base
+        # validated 5 of 7 documented account keys (cash/buying_power/
+        # wealth_lo/wealth_hi/sale_credit) but not cash_reserve or
+        # gross_limit — a bad value in either reached raw pyomo/solver
+        # internals for any FUTURE subclass that doesn't happen to
+        # duplicate the check itself (as EquityKellyMIO now does).
+        fixture = _su_fixture()
+        fixture["account"]["cash_reserve"] = float("nan")
+        node = _su_node()
+        with pytest.raises(ValueError, match="cash_reserve"):
+            node.run(_ctx(tmp_path), fixture)
+
+    def test_a_non_finite_account_gross_limit_is_refused(self, tmp_path):
+        fixture = _su_fixture()
+        fixture["account"]["gross_limit"] = float("inf")
+        node = _su_node()
+        with pytest.raises(ValueError, match="gross_limit"):
+            node.run(_ctx(tmp_path), fixture)

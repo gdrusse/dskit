@@ -568,3 +568,31 @@ class TestAccountFieldsAreValidated:
             {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {12345}}
         )
         assert any("survivors entries must be strings" in p for p in problems)
+
+    def test_a_non_string_position_key_is_refused(self, tmp_path):
+        # Regression for a round-8 skeptic-review finding: dict VALUES were
+        # validated but KEYS were not, so {42: 100} passed validate_inputs
+        # cleanly and crashed run() with a raw TypeError from sorting a
+        # mixed str/int set.
+        node = _node()
+        problems = node.validate_inputs(
+            {"bundle": _bundle(), "portfolio": _portfolio(positions={42: 100}), "survivors": set()}
+        )
+        assert any("portfolio.positions keys" in p for p in problems)
+
+    def test_a_non_string_mark_price_key_is_refused(self, tmp_path):
+        node = _node()
+        problems = node.validate_inputs(
+            {
+                "bundle": _bundle(),
+                "portfolio": _portfolio(mark_prices={42: 100.0}),
+                "survivors": set(),
+            }
+        )
+        assert any("portfolio.mark_prices keys" in p for p in problems)
+
+    def test_bundle_weights_not_summing_to_one_are_refused(self, tmp_path):
+        bundle = _bundle()
+        bundle[0] = dict(bundle[0], weights=[0.1] * 8)  # sums to 0.8
+        problems = _bundle_problems(bundle)
+        assert any("must sum to 1" in p for p in problems)

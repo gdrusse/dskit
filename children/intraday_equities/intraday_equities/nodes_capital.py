@@ -75,10 +75,13 @@ BUNDLE_FIELDS = (
     "scenarios",
 )
 
-#: Smallest position a name may hold if it holds one at all, absent a
-#: declared ``lot_size`` — a mechanism default (accuracy/speed), never a
-#: risk number, so unlike the doorway's owner-only knobs this one is safe
-#: to default.
+#: The no-trade band's rounding granularity, absent a declared
+#: ``lot_size`` — a mechanism default (accuracy/speed), never a risk
+#: number, so unlike the doorway's owner-only knobs this one is safe to
+#: default. NOT a round-lot trading constraint: see ``lot_size`` in
+#: :class:`EquityKellyMIO`'s docstring for exactly what it does and does
+#: not do (a skeptic review found the name alone reads as a stronger
+#: promise than the code keeps).
 DEFAULT_LOT_SIZE = 1
 
 #: How far a bound-setting envelope is padded past the bundle's own observed
@@ -142,6 +145,11 @@ def _bundle_problems(bundle):
             problems.append(
                 f"bundle[{i}] ({entity!r}).weights must be all finite numbers >= 0"
             )
+        elif abs(sum(float(w) for w in weights) - 1.0) > 1e-8:
+            problems.append(
+                f"bundle[{i}] ({entity!r}).weights must sum to 1, got "
+                f"{sum(float(w) for w in weights)!r}"
+            )
         elif weights_ref is None:
             weights_ref = list(weights)
         elif list(weights) != weights_ref:
@@ -199,7 +207,13 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         ``min_ticket``), ``max_position_notional`` (required, > 0 — a
         UNIFORM per-name dollar ceiling; a bundle-declared per-name cap is a
         follow-up, not built here), ``bundle_max_staleness_ms`` (required,
-        >= 0), ``lot_size`` (int >= 1, default :data:`DEFAULT_LOT_SIZE`).
+        >= 0), ``lot_size`` (int >= 1, default :data:`DEFAULT_LOT_SIZE` — scales
+        the no-trade band's ``band_shares_i`` floor to a round number of
+        lots; shares bought or sold are NOT themselves constrained to
+        multiples of ``lot_size`` — ``model.b``/``model.s`` stay plain
+        integers. A round-lot trading constraint would need its own MILP
+        change (an integer lot-count variable, not this knob) and is not
+        built here).
 
     Examples
     --------
@@ -310,7 +324,11 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 problems.append("portfolio.positions must be a mapping of symbol -> held shares")
             else:
                 for symbol, shares in positions.items():
-                    if not number_ok(shares) or shares != int(shares) or shares < 0:
+                    if not isinstance(symbol, str) or not symbol:
+                        problems.append(
+                            f"portfolio.positions keys must be non-empty strings, got {symbol!r}"
+                        )
+                    elif not number_ok(shares) or shares != int(shares) or shares < 0:
                         problems.append(
                             f"portfolio.positions[{symbol!r}] must be a non-negative integer "
                             f"share count, got {shares!r} — a fractional or negative holding is "
@@ -322,7 +340,11 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 problems.append("portfolio.mark_prices must be a mapping of symbol -> price when given")
             else:
                 for symbol, price in mark_prices.items():
-                    if not number_ok(price) or price <= 0.0:
+                    if not isinstance(symbol, str) or not symbol:
+                        problems.append(
+                            f"portfolio.mark_prices keys must be non-empty strings, got {symbol!r}"
+                        )
+                    elif not number_ok(price) or price <= 0.0:
                         problems.append(
                             f"portfolio.mark_prices[{symbol!r}] must be a finite number > 0, "
                             f"got {price!r}"

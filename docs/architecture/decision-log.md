@@ -6010,6 +6010,15 @@ gap:**
   pass's scope warrants. Only the one true duplicate — `utility_at` — is
   unified; the rest of the graduation is a separate, later ADR if a second
   caller needs it.
+- Round-lot trading. `EquityKellyMIO`'s `lot_size` param only scales the
+  no-trade band's `band_shares_i` floor to a round number of lots — a
+  skeptic review found the name reads as a stronger promise than the code
+  keeps, since `model.b`/`model.s` are plain integers, never constrained to
+  multiples of `lot_size`. Documented precisely rather than silently left
+  ambiguous; an actual round-lot constraint needs an integer lot-count
+  variable threaded through the base's buy/sell rows and is a named
+  follow-up, not built here (the default `lot_size=1` makes the gap inert
+  for ordinary US equity trading, where every lot is one share).
 
 **Consequences.** `EquityKellyMIO` is real, tested mechanism that can size a
 synthetic portfolio end to end and is `dskit.production`-shaped output, but

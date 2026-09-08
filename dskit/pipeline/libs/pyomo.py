@@ -827,6 +827,10 @@ class ScenarioUtilitySolve(PyomoSolve):
                     f"{self.key}: payoffs()[{i!r}] has shape {r[i].shape}, expected "
                     f"({n_omega},)"
                 )
+            if not np.all(np.isfinite(r[i])):
+                raise ValueError(
+                    f"{self.key}: payoffs()[{i!r}] must be all finite numbers, got {r[i]!r}"
+                )
 
         for key in ("wealth_lo", "wealth_hi", "cash", "buying_power", "sale_credit"):
             if key not in account or not number_ok(account[key]):
@@ -834,6 +838,16 @@ class ScenarioUtilitySolve(PyomoSolve):
                     f"{self.key}: account[{key!r}] must be a finite number, got "
                     f"{account.get(key)!r}"
                 )
+        if "cash_reserve" in account and not number_ok(account["cash_reserve"]):
+            raise ValueError(
+                f"{self.key}: account['cash_reserve'] must be a finite number when given, "
+                f"got {account['cash_reserve']!r}"
+            )
+        if account.get("gross_limit") is not None and not number_ok(account["gross_limit"]):
+            raise ValueError(
+                f"{self.key}: account['gross_limit'] must be a finite number or null "
+                f"(unconstrained), got {account['gross_limit']!r}"
+            )
         w_lo, w_hi = float(account["wealth_lo"]), float(account["wealth_hi"])
         if not w_lo < w_hi:
             raise ValueError(
