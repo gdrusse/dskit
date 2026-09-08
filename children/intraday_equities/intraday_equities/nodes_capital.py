@@ -524,7 +524,18 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             "sale_credit": float(portfolio.get("sale_credit", 1.0)),
             "cash_reserve": float(portfolio.get("cash_reserve", 0.0)),
             "gross_limit": None if gross_limit is None else float(gross_limit),
-            "wealth_lo": max(1.0, w0_mark - span),
+            # The floor is relative to w0_mark, never an absolute dollar
+            # figure — a round-12 skeptic review found a hardcoded
+            # max(1.0, ...) floor could exceed wealth_hi for a small
+            # positive net worth (e.g. a near-zero account holding one
+            # residual sub-dollar position), spuriously refusing an
+            # otherwise perfectly legitimate "just sell the one share"
+            # state. w0_mark > 0 is already guaranteed (the doorway
+            # itself refuses w0_mark <= 0) and span > 0 always (the
+            # _WEALTH_ENVELOPE_FLOOR_FRAC term never vanishes), so
+            # wealth_lo < w0_mark < wealth_hi holds BY CONSTRUCTION at
+            # every scale, never just for dollar-sized accounts.
+            "wealth_lo": max(w0_mark * 0.01, w0_mark - span),
             "wealth_hi": w0_mark + span,
         }
         return names, rows, account

@@ -663,3 +663,31 @@ class TestNegativeNetWorthGivesTheClearMessage:
                 _ctx(tmp_path),
                 {"bundle": _bundle(), "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}},
             )
+
+
+class TestSmallPositiveNetWorthSolvesInsteadOfRefusing:
+    """Regression for a round-12 skeptic-review finding: the wealth-
+    envelope's ``wealth_lo`` used a hardcoded ``max(1.0, ...)`` absolute
+    dollar floor, which could exceed ``wealth_hi`` for a small POSITIVE net
+    worth (net worth in roughly $0-$1) — a perfectly legitimate account
+    state (e.g. a near-zero account holding one residual sub-dollar
+    position the bundle no longer covers) spuriously refused with the
+    generic "wealth_lo must be < wealth_hi" message. The floor is now
+    relative to net worth itself, never an absolute dollar figure."""
+
+    def test_a_near_zero_account_can_still_exit_its_one_residual_position(self, tmp_path):
+        node = EquityKellyMIO("size", {
+            "risk_aversion_gamma": 2.0, "n_tangents": 16, "n_scenarios_max": 128,
+            "cardinality": 3, "min_ticket": 0.1, "spread_bps": 2.2, "taf_per_share": 0.000195,
+            "sec31_bps": 0.0206, "min_price": 0.01, "hfdr_q": 0.90,
+            "bundle_max_staleness_ms": 5000, "cvar_alpha": 0.9, "cvar_limit": None,
+            "band_bps": 10.0, "max_position_notional": 999999.0,
+        })
+        portfolio = {
+            "asof_ms": 0, "cash": 0.0, "buying_power": 0.0, "positions": {"AAPL": 1},
+            "mark_prices": {"AAPL": 0.50}, "cash_reserve": 0.0, "gross_limit": None,
+            "sale_credit": 1.0,
+        }
+        out = node.run(_ctx(tmp_path), {"bundle": [], "portfolio": portfolio, "survivors": set()})
+        assert "AAPL" not in out["target"]
+        assert out["trades"]["AAPL"] == {"buy": 0, "sell": 1}
