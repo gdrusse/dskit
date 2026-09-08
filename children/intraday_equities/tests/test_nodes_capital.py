@@ -431,3 +431,29 @@ class TestAdversarialInputsAreRefusedByName:
         bundle[0] = dict(bundle[0], weights=bad_weights)
         problems = _bundle_problems(bundle)
         assert any("weights" in p for p in problems)
+
+
+class TestNoTradeBandNeverStrandsAPosition:
+    """Regression for a skeptic-review round-5 MAJOR: a legacy position
+    smaller than the band's floor (band_shares > held) could be held or
+    bought into, but never sold — a full exit needs sell >= band_shares,
+    which is impossible once sell is capped at held. The solve stayed
+    feasible and optimal; it just silently never executed an exit the
+    objective clearly wanted. The sell-side floor must never exceed held."""
+
+    def test_a_catastrophic_legacy_position_below_the_band_can_still_fully_exit(self, tmp_path):
+        w = _weights(8)
+        bundle = _bundle()
+        # AAPL: uniformly catastrophic scenario returns — any reasonable
+        # risk aversion should want it gone.
+        bundle[0] = dict(bundle[0], scenarios=[-0.30] * 8, weights=w)
+        portfolio = _portfolio(positions={"AAPL": 1})  # $190 notional, one lonely share
+        # band_bps=10000 (100%) on a ticket floored at min_ticket=$200
+        # gives band_shares=2 > held=1 — the exact "roach motel" shape.
+        node = _node(band_bps=10000.0)
+        out = node.run(
+            _ctx(tmp_path),
+            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}},
+        )
+        assert "AAPL" not in out["target"]
+        assert out["trades"]["AAPL"] == {"buy": 0, "sell": 1}

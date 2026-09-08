@@ -503,13 +503,37 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         linear in the target notional the doorway already exposes as
         ``model.x``.
 
-        No-trade band (§3.3(b)): one binary ``a[i]`` per name and
-        ``band_shares_i * a[i] <= b[i] + s[i] <= M_i * a[i]``, so a trade
-        either does not happen or moves at least ``band_shares_i`` — the
-        wedge-shaped inaction region proportional trading costs require
-        (Constantinides 1986; Davis & Norman 1990). ``M_i`` is the name's
-        fillable buy-or-hold room, floored at ``band_shares_i`` so the band
-        never manufactures artificial infeasibility.
+        No-trade band (§3.3(b)): a trade either does not happen at all, or
+        moves at least ``band_shares_i`` — the wedge-shaped inaction region
+        proportional trading costs require (Constantinides 1986; Davis &
+        Norman 1990) — split by direction against the doorway's own
+        ``model.d`` (1 buys this tick, 0 sells; ``b``/``s`` are already
+        mutually exclusive per name, by construction).
+
+        The SELL-side floor is ``min(band_shares_i, held_i)``, never
+        ``band_shares_i`` alone. A round-5 skeptic review proved that using
+        the raw floor made a legacy position smaller than the band a "roach
+        motel": ``s[i]`` is hard-capped at ``held[i]`` (the doorway's own
+        variable bound), so whenever ``band_shares_i > held_i`` a full exit
+        could never clear the floor and no PARTIAL exit was legal either —
+        the position could be held or bought into, never sold, with no
+        error raised. Flooring the sell side at ``held_i`` keeps the band's
+        intent (no dust-sized partial sells) while always leaving a full
+        exit reachable — the same "do nothing must stay possible regardless
+        of a legacy position's size" principle behind the doorway's own
+        ``elig_lo``/``model.d`` fix for min_ticket.
+
+        A trade-active binary ``a[i]`` keeps "no trade" a genuine third
+        option distinct from "trade in whichever direction ``d`` picks" —
+        without it, forcing a floor whenever ``d`` resolves either way would
+        make SOME trade mandatory for any name with ``held > 0``. Because
+        ``b[i]`` is already forced to 0 when ``d[i]=0`` (and ``s[i]`` to 0
+        when ``d[i]=1``, both by the doorway's own ``buy_only``/``sell_only``
+        rows), the two big-M forms below apply their own direction's floor
+        only when both that direction AND ``a[i]`` are active, and stay
+        slack (never binding) on the other direction — this is linear, not
+        a product of two binaries, because the "other direction" term is
+        already pinned to 0 elsewhere in the model.
         """
         from pyomo.environ import Binary, Constraint, Var
 
@@ -521,6 +545,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         )
 
         band = self._band_shares
+        sell_floor = {i: min(band[i], int(rows[i]["held"])) for i in names}
         trade_room = {}
         for i in names:
             price = rows[i]["price"]
@@ -528,8 +553,13 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             trade_room[i] = max(buy_room + rows[i]["held"], band[i], 1)
 
         model.a = Var(names, domain=Binary)
-        model.band_lo = Constraint(
-            names, rule=lambda m, i: band[i] * m.a[i] <= m.b[i] + m.s[i]
+        model.band_buy_floor = Constraint(
+            names,
+            rule=lambda m, i: band[i] * m.a[i] - band[i] * (1 - m.d[i]) <= m.b[i],
+        )
+        model.band_sell_floor = Constraint(
+            names,
+            rule=lambda m, i: sell_floor[i] * m.a[i] - sell_floor[i] * m.d[i] <= m.s[i],
         )
         model.band_hi = Constraint(
             names, rule=lambda m, i: m.b[i] + m.s[i] <= trade_room[i] * m.a[i]
