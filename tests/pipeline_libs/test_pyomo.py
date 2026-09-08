@@ -898,3 +898,30 @@ class TestScenarioUtilityRealSolve:
         node = _su_node()
         with pytest.raises(ValueError, match="gross_limit"):
             node.run(_ctx(tmp_path), fixture)
+
+    def test_zero_net_worth_is_refused_by_name_not_corrupted_into_nan(self, tmp_path):
+        # Regression for a round-9 skeptic-review finding: w0_mark (cash +
+        # mark value of held positions) feeds tangent_utility as the
+        # reference wealth, whose own docstring requires w0 > 0. Nothing
+        # enforced that precondition, so a completely ordinary account
+        # state — cash=0, nothing held (e.g. an unfunded account, or one
+        # funded entirely through buying_power/margin rather than cash) —
+        # divided by zero inside tangent_utility, corrupted the model with
+        # NaN tangent coefficients, and crashed with an opaque solver
+        # "infeasible" internals message instead of a named refusal.
+        fixture = _su_fixture()
+        fixture["account"]["cash"] = 0.0
+        fixture["rows"]["AAA"]["held"] = 0
+        fixture["rows"]["BBB"]["held"] = 0
+        node = _su_node()
+        with pytest.raises(ValueError, match="net worth"):
+            node.run(_ctx(tmp_path), fixture)
+
+    def test_negative_net_worth_is_refused_by_name(self, tmp_path):
+        fixture = _su_fixture()
+        fixture["account"]["cash"] = -50.0  # a margin debit
+        fixture["rows"]["AAA"]["held"] = 0
+        fixture["rows"]["BBB"]["held"] = 0
+        node = _su_node()
+        with pytest.raises(ValueError, match="net worth"):
+            node.run(_ctx(tmp_path), fixture)

@@ -859,6 +859,14 @@ class ScenarioUtilitySolve(PyomoSolve):
         cash_reserve = float(account.get("cash_reserve", 0.0))
         gross_limit = account.get("gross_limit")
         w0_mark = cash0 + sum(float(rows[i]["price"]) * float(rows[i]["held"]) for i in names)
+        if w0_mark <= 0.0:
+            raise ValueError(
+                f"{self.key}: account net worth (cash + mark value of held instruments) "
+                f"must be > 0, got {w0_mark!r} — the tangent-plane utility objective "
+                "(tangent_utility, gamma-relative to this mark) is undefined at or below "
+                "zero wealth; a zero/negative-cash account with nothing held cannot be "
+                "sized, and must refuse by name rather than reach the solver as NaN"
+            )
 
         gamma = float(params["risk_aversion_gamma"])
         n_tangents = int(params.get("n_tangents", DEFAULT_N_TANGENTS))
