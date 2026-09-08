@@ -6027,3 +6027,19 @@ any live/paper feed, and its demo config's numbers are illustrative, not
 calibrated. Live enablement still needs every item in the plan's §10 and
 §11 (cash-vs-margin, PDT/wash-sale/tax questions, realized signal-decay
 measurement) resolved by the owner before any run touches real capital.
+
+**Skeptic review.** 13 sequential, independent review rounds (one skeptic
+at a time, never in parallel, per owner instruction) found and fixed 27
+real defects total, from a BLOCKER (a held position could make the whole
+joint MILP infeasible) down to message-quality issues — every fix
+regression-tested. One known, narrow, deliberately-NOT-fixed edge remains:
+a mandatory-exit position priced below roughly its own per-share fee (an
+already-worthless, sub-$0.0002/share holding) with no cash cushion to
+absorb the shortfall raises the solver's raw, non-diagnostic infeasibility
+message rather than a named refusal — round 13 found it adjacent to round
+12's fix. This sits inside the SAME accepted design boundary
+`test_an_infeasible_program_fails_loudly` already pins (a genuinely
+infeasible program raises loudly by design, never silently); the gap is
+only that the message names no cause. Follow-up if it matters: a
+pre-flight check mirroring `w0_mark <= 0`'s, refusing a mandatory exit by
+name when its net sale proceeds would breach `cash_reserve`.
