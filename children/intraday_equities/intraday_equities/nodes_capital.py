@@ -327,12 +327,34 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                             f"portfolio.mark_prices[{symbol!r}] must be a finite number > 0, "
                             f"got {price!r}"
                         )
+            if "cash_reserve" in portfolio and not number_ok(portfolio["cash_reserve"]):
+                problems.append(
+                    f"portfolio.cash_reserve must be a finite number when given, got "
+                    f"{portfolio['cash_reserve']!r}"
+                )
+            gross_limit = portfolio.get("gross_limit")
+            if gross_limit is not None and (not number_ok(gross_limit) or gross_limit < 0.0):
+                problems.append(
+                    f"portfolio.gross_limit must be a finite number >= 0, or null (unconstrained), "
+                    f"got {gross_limit!r}"
+                )
+            if "sale_credit" in portfolio and (
+                not number_ok(portfolio["sale_credit"]) or not 0.0 <= portfolio["sale_credit"] <= 1.0
+            ):
+                problems.append(
+                    f"portfolio.sale_credit must be a finite number in [0, 1] when given, got "
+                    f"{portfolio['sale_credit']!r}"
+                )
         survivors = inputs.get("survivors")
         if not isinstance(survivors, (list, tuple, set, frozenset)):
             problems.append(
                 "survivors must be a materialized collection of entity names (the "
                 f"stat_test survivors wire), got {type(survivors).__name__}"
             )
+        else:
+            for name in survivors:
+                if not isinstance(name, str):
+                    problems.append(f"survivors entries must be strings, got {name!r}")
         return problems
 
     # -- the three doorway hooks --------------------------------------------

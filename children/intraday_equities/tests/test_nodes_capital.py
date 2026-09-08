@@ -510,3 +510,61 @@ class TestNoTradeBandFloorsAreLoadBearing:
         sold = out["trades"].get("XOM", {"sell": 0})["sell"]
         assert sold == 0 or sold >= 100
         assert sold != 4  # pin the exact "would-be dust trim" this fixture proves the floor blocks
+
+
+class TestAccountFieldsAreValidated:
+    """Regression for a skeptic-review round-7 finding: validate_inputs
+    checked portfolio.cash/buying_power/positions/mark_prices but not its
+    siblings cash_reserve/gross_limit/sale_credit, which instruments()
+    reads unguarded — a NaN/Inf/negative/non-numeric value in any of them
+    reached raw pyomo internals or an opaque solver infeasibility instead
+    of a named refusal, contradicting this module's own fail-closed claim."""
+
+    def test_nan_cash_reserve_is_refused(self, tmp_path):
+        node = _node()
+        problems = node.validate_inputs(
+            {"bundle": _bundle(), "portfolio": _portfolio(cash_reserve=float("nan")), "survivors": set()}
+        )
+        assert any("cash_reserve" in p for p in problems)
+
+    def test_nan_gross_limit_is_refused(self, tmp_path):
+        node = _node()
+        problems = node.validate_inputs(
+            {"bundle": _bundle(), "portfolio": _portfolio(gross_limit=float("nan")), "survivors": set()}
+        )
+        assert any("gross_limit" in p for p in problems)
+
+    def test_a_negative_gross_limit_is_refused(self, tmp_path):
+        node = _node()
+        problems = node.validate_inputs(
+            {"bundle": _bundle(), "portfolio": _portfolio(gross_limit=-50.0), "survivors": set()}
+        )
+        assert any("gross_limit" in p for p in problems)
+
+    def test_a_non_numeric_gross_limit_is_refused(self, tmp_path):
+        node = _node()
+        problems = node.validate_inputs(
+            {"bundle": _bundle(), "portfolio": _portfolio(gross_limit="not-a-number"), "survivors": set()}
+        )
+        assert any("gross_limit" in p for p in problems)
+
+    def test_an_out_of_range_sale_credit_is_refused(self, tmp_path):
+        node = _node()
+        problems = node.validate_inputs(
+            {"bundle": _bundle(), "portfolio": _portfolio(sale_credit=1.5), "survivors": set()}
+        )
+        assert any("sale_credit" in p for p in problems)
+
+    def test_a_nan_sale_credit_is_refused(self, tmp_path):
+        node = _node()
+        problems = node.validate_inputs(
+            {"bundle": _bundle(), "portfolio": _portfolio(sale_credit=float("nan")), "survivors": set()}
+        )
+        assert any("sale_credit" in p for p in problems)
+
+    def test_a_non_string_survivor_is_refused(self, tmp_path):
+        node = _node()
+        problems = node.validate_inputs(
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {12345}}
+        )
+        assert any("survivors entries must be strings" in p for p in problems)
