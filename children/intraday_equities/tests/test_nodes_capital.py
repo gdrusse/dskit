@@ -457,3 +457,56 @@ class TestNoTradeBandNeverStrandsAPosition:
         )
         assert "AAPL" not in out["target"]
         assert out["trades"]["AAPL"] == {"buy": 0, "sell": 1}
+
+
+class TestNoTradeBandFloorsAreLoadBearing:
+    """Regression for a skeptic-review round-6 finding: round 5's own
+    regression test above only checks "0 or >= floor" in a scenario where
+    the UNCONSTRAINED optimum already happens to land on one of those two
+    values — proved by mutation that neither band_buy_floor nor
+    band_sell_floor is actually exercised by the shipped suite (removing
+    either leaves all other tests green). These two tests isolate each
+    floor: each fixture's UNCONSTRAINED answer (band_bps=0) is a small
+    "dust" trade strictly between 0 and the floor, so the floor's presence
+    is the only thing that can move the answer to 0 or to the floor
+    itself — verified against a deliberately mutated build before being
+    committed here, per the review."""
+
+    def test_the_buy_floor_blocks_a_dust_top_up(self, tmp_path):
+        import numpy as np
+
+        price, held = 190.0, 100
+        band_bps = 1000.0  # -> band_shares = ceil(1000*1e-4*19000/190) = 10
+        gross_limit = price * held + 5 * price  # room for exactly 5 more shares — < the floor
+        rng = np.random.default_rng(7)
+        weights = _weights(64)
+        row = _row("AAPL", price, pi_upper=0.10, scenarios=rng.normal(0.02, 0.01, 64), weights=weights)
+        portfolio = _portfolio(
+            positions={"AAPL": held}, cash=999999.0, buying_power=999999.0, gross_limit=gross_limit
+        )
+        node = _node(band_bps=band_bps, cardinality=1, max_position_notional=999999.0)
+        out = node.run(_ctx(tmp_path), {"bundle": [row], "portfolio": portfolio, "survivors": {"AAPL"}})
+        assert node._band_shares["AAPL"] == 10
+        assert out["trades"] == {}  # blocked: only 5 shares of room, floor needs 10
+
+    def test_the_sell_floor_forces_a_real_trim_not_a_dust_sell(self, tmp_path):
+        import numpy as np
+
+        price, held = 190.0, 1000
+        band_bps = 1000.0  # -> band_shares = ceil(1000*1e-4*190000/190) = 100
+        rng = np.random.default_rng(1)
+        weights = _weights(64)
+        row = _row("XOM", price, pi_upper=0.10, scenarios=rng.normal(0.015, 0.02, 64), weights=weights)
+        portfolio = _portfolio(
+            positions={"XOM": held}, cash=5000.0, buying_power=5000.0, gross_limit=None
+        )
+        # cvar_limit=3400: with band_bps=0 this fixture's unconstrained
+        # CVaR-driven trim is 4 shares — comfortably below the floor of
+        # 100, so the floor (not coincidence) is what forces the jump.
+        node = _node(band_bps=band_bps, cardinality=1, cvar_alpha=0.9, cvar_limit=3400.0,
+                     max_position_notional=999999.0)
+        out = node.run(_ctx(tmp_path), {"bundle": [row], "portfolio": portfolio, "survivors": {"XOM"}})
+        assert node._band_shares["XOM"] == 100
+        sold = out["trades"].get("XOM", {"sell": 0})["sell"]
+        assert sold == 0 or sold >= 100
+        assert sold != 4  # pin the exact "would-be dust trim" this fixture proves the floor blocks
