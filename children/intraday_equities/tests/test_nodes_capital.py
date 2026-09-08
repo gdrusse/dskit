@@ -37,7 +37,6 @@ PARAMS = {
     "min_ticket": 200.0,
     "spread_bps": 2.2,
     "taf_per_share": 0.000195,
-    "taf_cap": 9.79,
     "sec31_bps": 0.0206,
     "min_price": 5.0,
     "hfdr_q": 0.30,
@@ -120,7 +119,7 @@ class TestParams:
     @pytest.mark.parametrize(
         "name",
         [
-            "spread_bps", "taf_per_share", "taf_cap", "sec31_bps", "min_price",
+            "spread_bps", "taf_per_share", "sec31_bps", "min_price",
             "hfdr_q", "band_bps", "max_position_notional", "bundle_max_staleness_ms",
         ],
     )
@@ -132,6 +131,14 @@ class TestParams:
     def test_unknown_knobs_are_refused_by_name(self):
         problems = EquityKellyMIO.validate_params({**PARAMS, "bogus": 1})
         assert any("bogus" in p for p in problems)
+
+    def test_taf_cap_is_not_a_knob(self):
+        # A round-2 skeptic review found taf_cap declared, required and
+        # validated but never READ anywhere — dead after the round-1 fix
+        # replaced the size-referenced TAF-cap trick with a flat uncapped
+        # rate. Removed entirely rather than left as an unused knob.
+        problems = EquityKellyMIO.validate_params({**PARAMS, "taf_cap": 9.79})
+        assert any("taf_cap" in p for p in problems)
 
     def test_hfdr_q_out_of_range_is_refused(self):
         problems = EquityKellyMIO.validate_params({**PARAMS, "hfdr_q": 1.5})
@@ -355,3 +362,57 @@ class TestTafNeverUndercharges:
         )
         assert names == ["AAPL"]
         assert rows["AAPL"]["cost_sell"] >= PARAMS["taf_per_share"] - 1e-12
+
+
+class TestAdversarialInputsAreRefusedByName:
+    """Regression for a skeptic-review round-2 finding: a fractional held
+    position was silently truncated with no error at all (the one genuinely
+    silent wrong-result path found), a negative position slipped past
+    validation into an opaque solver crash, and NaN/Inf could sneak through
+    ``decision_ts``/``weights``/``scenarios``/``mark_prices`` despite the
+    module's own "fail-closed" claim. Every one of these must now be
+    refused BY NAME in ``validate_inputs``, before ``run()`` ever sees it."""
+
+    def test_a_fractional_position_is_refused_not_silently_truncated(self, tmp_path):
+        node = _node()
+        problems = node.validate_inputs(
+            {"bundle": _bundle(), "portfolio": _portfolio(positions={"XOM": 19.9}), "survivors": set()}
+        )
+        assert any("XOM" in p and "integer" in p for p in problems)
+
+    def test_a_negative_position_is_refused(self, tmp_path):
+        node = _node()
+        problems = node.validate_inputs(
+            {"bundle": _bundle(), "portfolio": _portfolio(positions={"XOM": -5}), "survivors": set()}
+        )
+        assert any("XOM" in p for p in problems)
+
+    def test_a_nan_mark_price_is_refused(self, tmp_path):
+        node = _node()
+        problems = node.validate_inputs(
+            {
+                "bundle": _bundle(),
+                "portfolio": _portfolio(positions={"XOM": 5}, mark_prices={"XOM": float("nan")}),
+                "survivors": set(),
+            }
+        )
+        assert any("mark_prices" in p and "XOM" in p for p in problems)
+
+    def test_a_non_finite_decision_ts_is_refused(self, tmp_path):
+        bundle = _bundle()
+        bundle[0] = dict(bundle[0], decision_ts=float("inf"))
+        problems = _bundle_problems(bundle)
+        assert any("decision_ts" in p for p in problems)
+
+    def test_nan_scenario_values_are_refused(self, tmp_path):
+        bundle = _bundle()
+        bundle[0] = dict(bundle[0], scenarios=[float("nan")] + list(bundle[0]["scenarios"])[1:])
+        problems = _bundle_problems(bundle)
+        assert any("scenarios" in p for p in problems)
+
+    def test_non_finite_weights_are_refused(self, tmp_path):
+        bundle = _bundle()
+        bad_weights = [float("inf")] + list(bundle[0]["weights"])[1:]
+        bundle[0] = dict(bundle[0], weights=bad_weights)
+        problems = _bundle_problems(bundle)
+        assert any("weights" in p for p in problems)

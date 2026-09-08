@@ -132,10 +132,16 @@ def _bundle_problems(bundle):
             problems.append(f"bundle[{i}]: duplicate entity {entity!r} in one bundle")
         else:
             seen.add(entity)
+        if not number_ok(row.get("decision_ts")):
+            problems.append(f"bundle[{i}] ({entity!r}).decision_ts must be a finite number (epoch ms)")
         weights = row["weights"]
         scenarios = row["scenarios"]
         if not isinstance(weights, (list, tuple)) or not weights:
             problems.append(f"bundle[{i}] ({entity!r}).weights must be a non-empty list")
+        elif not all(number_ok(w) and w >= 0.0 for w in weights):
+            problems.append(
+                f"bundle[{i}] ({entity!r}).weights must be all finite numbers >= 0"
+            )
         elif weights_ref is None:
             weights_ref = list(weights)
         elif list(weights) != weights_ref:
@@ -147,11 +153,16 @@ def _bundle_problems(bundle):
             )
         if not isinstance(scenarios, (list, tuple)):
             problems.append(f"bundle[{i}] ({entity!r}).scenarios must be a list")
-        elif isinstance(weights, (list, tuple)) and len(scenarios) != len(weights):
-            problems.append(
-                f"bundle[{i}] ({entity!r}): scenarios length {len(scenarios)} != weights "
-                f"length {len(weights)}"
-            )
+        else:
+            if isinstance(weights, (list, tuple)) and len(scenarios) != len(weights):
+                problems.append(
+                    f"bundle[{i}] ({entity!r}): scenarios length {len(scenarios)} != weights "
+                    f"length {len(weights)}"
+                )
+            if not all(number_ok(v) for v in scenarios):
+                problems.append(
+                    f"bundle[{i}] ({entity!r}).scenarios must be all finite numbers"
+                )
         if not number_ok(row.get("price")) or row["price"] <= 0.0:
             problems.append(f"bundle[{i}] ({entity!r}).price must be a finite number > 0")
         if not number_ok(row.get("pi_upper")) or not 0.0 <= row["pi_upper"] <= 1.0:
@@ -178,10 +189,11 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         ``n_scenarios_max``, ``cvar_alpha``, ``cvar_limit``, ``cardinality``,
         ``min_ticket``, ``solver``, ``solver_options``) plus this kind's own:
         ``spread_bps`` (required, >= 0 — half-spread charged on entry AND
-        exit, both sides), ``taf_per_share`` / ``taf_cap`` (required, >= 0 —
-        FINRA TAF, sell-only), ``sec31_bps`` (required, >= 0 — SEC Section 31,
-        sell-only), ``min_price`` (required, > 0 — the per-share TAF-argument
-        floor, §3.4), ``hfdr_q`` (required, in (0, 1) — ADR-0088's false-
+        exit, both sides), ``taf_per_share`` (required, >= 0 — FINRA TAF,
+        sell-only, charged UNCAPPED — see the module docstring on why the
+        per-order cap is not modeled), ``sec31_bps`` (required, >= 0 — SEC
+        Section 31, sell-only), ``min_price`` (required, > 0 — the per-share
+        TAF-argument floor, §3.4), ``hfdr_q`` (required, in (0, 1) — ADR-0088's false-
         discovery threshold), ``band_bps`` (required, >= 0 — the no-trade
         band as basis points of the larger of current ticket or
         ``min_ticket``), ``max_position_notional`` (required, > 0 — a
@@ -197,7 +209,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             "risk_aversion_gamma": 2.0, "n_tangents": 32, "n_scenarios_max": 256,
             "cvar_alpha": 0.95, "cvar_limit": 5000.0, "cardinality": 5,
             "min_ticket": 500.0, "spread_bps": 2.2, "taf_per_share": 0.000195,
-            "taf_cap": 9.79, "sec31_bps": 0.0206, "min_price": 5.0,
+            "sec31_bps": 0.0206, "min_price": 5.0,
             "hfdr_q": 0.10, "band_bps": 10.0, "max_position_notional": 5000.0,
             "bundle_max_staleness_ms": 5000,
         })
@@ -209,7 +221,6 @@ class EquityKellyMIO(ScenarioUtilitySolve):
     _PARAMS = ScenarioUtilitySolve._PARAMS + (
         "spread_bps",
         "taf_per_share",
-        "taf_cap",
         "sec31_bps",
         "min_price",
         "hfdr_q",
@@ -231,7 +242,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
     def validate_params(cls, params):
         """Problems with ``params``, empty when none — the doorway's, then this kind's."""
         problems = super().validate_params(params)
-        for name in ("spread_bps", "taf_per_share", "taf_cap", "sec31_bps"):
+        for name in ("spread_bps", "taf_per_share", "sec31_bps"):
             if name not in params:
                 problems.append(
                     f"{name} is required — the Schwab cost model has no default "
@@ -297,6 +308,25 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             positions = portfolio.get("positions", {})
             if not isinstance(positions, dict):
                 problems.append("portfolio.positions must be a mapping of symbol -> held shares")
+            else:
+                for symbol, shares in positions.items():
+                    if not number_ok(shares) or shares != int(shares) or shares < 0:
+                        problems.append(
+                            f"portfolio.positions[{symbol!r}] must be a non-negative integer "
+                            f"share count, got {shares!r} — a fractional or negative holding is "
+                            "refused by name rather than silently truncated or solved into an "
+                            "opaque infeasibility"
+                        )
+            mark_prices = portfolio.get("mark_prices", {})
+            if not isinstance(mark_prices, dict):
+                problems.append("portfolio.mark_prices must be a mapping of symbol -> price when given")
+            else:
+                for symbol, price in mark_prices.items():
+                    if not number_ok(price) or price <= 0.0:
+                        problems.append(
+                            f"portfolio.mark_prices[{symbol!r}] must be a finite number > 0, "
+                            f"got {price!r}"
+                        )
         survivors = inputs.get("survivors")
         if not isinstance(survivors, (list, tuple, set, frozenset)):
             problems.append(
@@ -376,13 +406,15 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 # it either — pi_upper=0 keeps its (pi_upper - q) coefficient
                 # negative, and x_max=0 (below) already forces q=0 whatever
                 # the HFDR row says.
-                price = float(mark_prices.get(name) or 0.0)
-                if price <= 0.0:
+                mark = mark_prices.get(name)
+                if not number_ok(mark) or mark <= 0.0:
                     raise ValueError(
                         f"{self.key}: {name!r} is held ({h} shares) but absent from the "
-                        "surviving bundle rows and portfolio.mark_prices carries no price "
-                        "for it — a mandatory exit needs a mark to trade against"
+                        "surviving bundle rows and portfolio.mark_prices carries no usable "
+                        f"price for it (got {mark!r}) — a mandatory exit needs a finite mark "
+                        "> 0 to trade against"
                     )
+                price = float(mark)
                 pi_upper_i = 0.0
                 x_max = 0.0
                 scenarios = [0.0] * len(shared_weights)
