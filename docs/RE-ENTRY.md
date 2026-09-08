@@ -1,5 +1,17 @@
 # Re-entry
 
+## Current wrap: first MIO backtest paused; final-model path recorded (2026-09-08)
+
+Branch: `main` at `7d9d6108bfbc589e74b23c9e0055dde93efe1963` before this documentation-only wrap.
+
+The requested first real MIO backtest was deliberately not built or run. Two independent skeptical reviews confirmed critical prerequisites are absent: no executed/frozen finalist HPO model, no real point-in-time MIO bundle with calibrated `pi_upper` and joint scenarios, and no stateful fills/account replay. P16 predictions are volatility-scaled SPY-residual scores, not gross returns. Using them directly would be wrong.
+
+`lean-pooled-h10` remains the recommended provisional LightGBM finalist. The declared 24-trial final HPO has not run and predates the lean mask; align it to the 33-column-drop mask, persist its winning parameters and model artifact, then refit through 2026-02-28. Keep the evidence-backed 63-day refresh cadence initially.
+
+No data from 2026-03-01 onward was consumed. Preserve March-May for frozen-mean confirmation and uncertainty calibration, and June-August for the first untouched full-system simulation. Full findings and ordered handoff: `children/intraday_equities/docs/memos/2026-09-08-first-mio-backtest-readiness-and-final-model-recommendation.md`.
+
+**Next:** align/run final HPO through the 2026-02-28 cut, then build and review the causal bundle publisher and stateful execution replay before any real MIO backtest.
+
 ## Current wrap: the MIO is actually built now — ADR-0111, 13-round skeptic loop, demo pipeline (2026-09-08)
 
 Branch: `claude/intraday-equities-mio-0r0lr6`, not yet merged to `main`.
