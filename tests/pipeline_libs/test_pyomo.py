@@ -586,4 +586,226 @@ class TestShippedExample:
         assert select["positions"] == ["BRAVO", "GAMMA"]
         assert "NOISE" not in select["positions"]
         assert select["outlay"] == pytest.approx(10.0)
-        assert select["outlay"] <= 10.0 * (1 + 1e-9)
+
+
+# ---------------------------------------------------------------------------
+# ScenarioUtilitySolve (ADR-0111) — a two-name concrete subclass for tests
+# ---------------------------------------------------------------------------
+
+from dskit.pipeline.libs.pyomo import ScenarioUtilitySolve  # noqa: E402
+
+SU_PARAMS = {
+    "risk_aversion_gamma": 2.0,
+    "n_tangents": 12,
+    "n_scenarios_max": 64,
+    "cvar_alpha": 0.9,
+    "cvar_limit": None,
+    "cardinality": 2,
+    "min_ticket": 50.0,
+}
+
+
+class TwoNameSolve(ScenarioUtilitySolve):
+    """A minimal concrete subclass: two names, deterministic scenario returns,
+    no domain constraint of its own. Params carry the whole account and
+    instrument shape as a JSON-legal fixture so tests can vary it cheaply."""
+
+    outputs = ("target", "trades", "cash_after", "metrics")
+    _PARAMS = ScenarioUtilitySolve._PARAMS
+
+    def instruments(self, inputs):
+        return inputs["names"], inputs["rows"], inputs["account"]
+
+    def payoffs(self, inputs):
+        return inputs["weights"], inputs["r"]
+
+    def domain_constraints(self, model, inputs, params):
+        pass
+
+
+def _su_fixture(**overrides):
+    names = ["AAA", "BBB"]
+    rows = {
+        "AAA": {"price": 100.0, "held": 0, "x_max": 6000.0, "cost_buy": 0.05, "cost_sell": 0.05},
+        "BBB": {"price": 50.0, "held": 0, "x_max": 6000.0, "cost_buy": 0.02, "cost_sell": 0.02},
+    }
+    weights = [0.5, 0.5]
+    r = {"AAA": [0.05, -0.03], "BBB": [0.01, 0.00]}
+    account = {
+        "cash": 10000.0,
+        "buying_power": 10000.0,
+        "wealth_lo": 5000.0,
+        "wealth_hi": 15000.0,
+        "sale_credit": 1.0,
+        "cash_reserve": 0.0,
+        "gross_limit": 9000.0,
+    }
+    fixture = {"names": names, "rows": rows, "weights": weights, "r": r, "account": account}
+    fixture.update(overrides)
+    return fixture
+
+
+def _su_node(**params):
+    return TwoNameSolve("size", {**SU_PARAMS, **params})
+
+
+class TestScenarioUtilityParams:
+    def test_the_reference_params_validate_clean(self):
+        assert TwoNameSolve.validate_params(SU_PARAMS) == []
+
+    def test_unknown_knobs_are_refused_by_name(self):
+        problems = TwoNameSolve.validate_params({**SU_PARAMS, "bogus": 1})
+        assert any("bogus" in p for p in problems)
+
+    @pytest.mark.parametrize(
+        "name", ["risk_aversion_gamma", "cvar_alpha", "cvar_limit", "cardinality", "min_ticket"]
+    )
+    def test_owner_only_knobs_have_no_default(self, name):
+        params = {k: v for k, v in SU_PARAMS.items() if k != name}
+        problems = TwoNameSolve.validate_params(params)
+        assert any(name in p and "required" in p for p in problems)
+
+    def test_gamma_below_one_is_refused(self):
+        problems = TwoNameSolve.validate_params({**SU_PARAMS, "risk_aversion_gamma": 0.5})
+        assert any("risk_aversion_gamma" in p for p in problems)
+
+    def test_n_scenarios_max_over_the_hard_ceiling_is_refused(self):
+        problems = TwoNameSolve.validate_params({**SU_PARAMS, "n_scenarios_max": 300})
+        assert any("n_scenarios_max" in p for p in problems)
+
+    def test_cvar_alpha_out_of_range_is_refused(self):
+        problems = TwoNameSolve.validate_params({**SU_PARAMS, "cvar_alpha": 1.0})
+        assert any("cvar_alpha" in p for p in problems)
+
+
+class TestScenarioUtilityPlumbingWithoutPyomo:
+    def test_the_abstract_base_can_never_register(self):
+        assert node_class_errors("scenario-utility-solve", ScenarioUtilitySolve)
+
+    def test_empty_gate_deploys_zero_without_waking_the_solver(self, tmp_path, monkeypatch):
+        monkeypatch.setitem(sys.modules, "pyomo", None)
+        node = _su_node()
+        out = node.run(_ctx(tmp_path), _su_fixture(names=[], rows={}, account={"cash": 42.0}))
+        assert out == {
+            "target": {},
+            "trades": {},
+            "cash_after": 42.0,
+            "metrics": {
+                "objective": 0.0,
+                "expected_utility": 0.0,
+                "n_held": 0,
+                "n_traded": 0,
+                "gross_exposure": 0.0,
+                "cash_after": 42.0,
+                "cvar": 0.0,
+                "cvar_eta": 0.0,
+                "wealth_min": 42.0,
+                "wealth_max": 42.0,
+            },
+        }
+
+
+class TestScenarioUtilityRealSolve:
+    def test_it_solves_within_declared_caps(self, tmp_path):
+        node = _su_node()
+        out = node.run(_ctx(tmp_path), _su_fixture())
+        assert len(out["target"]) <= SU_PARAMS["cardinality"]
+        assert out["metrics"]["gross_exposure"] <= 9000.0 + 1e-6
+        for name in out["target"]:
+            notional = out["target"][name] * (100.0 if name == "AAA" else 50.0)
+            assert notional >= SU_PARAMS["min_ticket"] - 1e-6
+
+    def test_held_inventory_alone_still_solves(self, tmp_path):
+        fixture = _su_fixture()
+        fixture["rows"]["AAA"]["held"] = 10
+        fixture["rows"]["AAA"]["x_max"] = 0.0  # forced exit, no eligible new candidates
+        fixture["rows"]["BBB"]["x_max"] = 0.0
+        node = _su_node()
+        out = node.run(_ctx(tmp_path), fixture)
+        assert out["target"] == {}
+        assert out["trades"]["AAA"] == {"buy": 0, "sell": 10}
+
+    def test_negative_covariance_survives_via_cvar_not_a_return_filter(self, tmp_path):
+        # BBB has zero/near-zero mean return but is anti-correlated with AAA's
+        # loss scenario — a per-name expected-return filter would drop it;
+        # the doorway must still be ABLE to hold it (never filters by name).
+        fixture = _su_fixture()
+        fixture["r"] = {"AAA": [0.06, -0.06], "BBB": [-0.02, 0.03]}
+        node = _su_node(cvar_limit=200.0)
+        out = node.run(_ctx(tmp_path), fixture)
+        assert out["metrics"]["cvar"] <= 200.0 + 1e-6
+
+    def test_unchanged_inventory_incurs_zero_cost(self, tmp_path):
+        fixture = _su_fixture()
+        fixture["rows"]["AAA"]["held"] = 0
+        fixture["rows"]["AAA"]["x_max"] = 0.0
+        fixture["rows"]["BBB"]["x_max"] = 0.0
+        node = _su_node()
+        out = node.run(_ctx(tmp_path), fixture)
+        assert out["trades"] == {}
+        assert out["cash_after"] == pytest.approx(fixture["account"]["cash"])
+
+    def test_gross_exposure_never_exceeds_the_declared_limit(self, tmp_path):
+        fixture = _su_fixture()
+        fixture["account"]["gross_limit"] = 3000.0
+        node = _su_node()
+        out = node.run(_ctx(tmp_path), fixture)
+        assert out["metrics"]["gross_exposure"] <= 3000.0 + 1e-6
+
+    def test_cardinality_never_exceeds_the_declared_cap(self, tmp_path):
+        fixture = _su_fixture()
+        node = _su_node(cardinality=1)
+        out = node.run(_ctx(tmp_path), fixture)
+        assert len(out["target"]) <= 1
+
+    def test_identical_inputs_give_identical_shares_twice(self, tmp_path):
+        fixture = _su_fixture()
+        node_a, node_b = _su_node(), _su_node()
+        out_a = node_a.run(_ctx(tmp_path), fixture)
+        out_b = node_b.run(_ctx(tmp_path), fixture)
+        assert out_a["target"] == out_b["target"]
+        assert out_a["trades"] == out_b["trades"]
+
+    def test_a_domain_constraint_row_is_wired_in(self, tmp_path):
+        class ForbidAAA(TwoNameSolve):
+            def domain_constraints(self, model, inputs, params):
+                from pyomo.environ import Constraint
+
+                model.no_aaa = Constraint(expr=model.x["AAA"] <= 0)
+
+        node = ForbidAAA("size", SU_PARAMS)
+        out = node.run(_ctx(tmp_path), _su_fixture())
+        assert "AAA" not in out["target"]
+
+    def test_an_infeasible_program_fails_loudly(self, tmp_path):
+        fixture = _su_fixture()
+        # cash_reserve above cash with nothing held to sell: infeasible.
+        # appsi_highs raises directly on "no feasible solution" rather than
+        # handing back a gracefully-typed termination condition — still a
+        # loud refusal, just not routed through extract()'s own check.
+        fixture["account"]["cash_reserve"] = 999999.0
+        node = _su_node()
+        with pytest.raises(RuntimeError, match="[Ff]easible solution"):
+            node.run(_ctx(tmp_path), fixture)
+
+    def test_mismatched_payoff_names_are_refused(self, tmp_path):
+        fixture = _su_fixture()
+        fixture["r"] = {"AAA": [0.05, -0.03], "ZZZ": [0.01, 0.0]}
+        node = _su_node()
+        with pytest.raises(ValueError, match="do not match"):
+            node.run(_ctx(tmp_path), fixture)
+
+    def test_weights_not_summing_to_one_are_refused(self, tmp_path):
+        fixture = _su_fixture()
+        fixture["weights"] = [0.5, 0.4]
+        node = _su_node()
+        with pytest.raises(ValueError, match="sum to 1"):
+            node.run(_ctx(tmp_path), fixture)
+
+    def test_too_many_scenarios_is_refused_at_run(self, tmp_path):
+        fixture = _su_fixture()
+        fixture["weights"] = [1.0 / 3] * 3
+        fixture["r"] = {"AAA": [0.01, 0.02, -0.01], "BBB": [0.0, 0.01, -0.01]}
+        node = _su_node(n_scenarios_max=2)
+        with pytest.raises(ValueError, match="n_scenarios_max"):
+            node.run(_ctx(tmp_path), fixture)

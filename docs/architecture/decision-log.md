@@ -5921,3 +5921,97 @@ set `deployment_eligible` false and report a recommended mask, evidence rows,
 and caps only; they do not promote, refit, backtest, or feed the MIO. A later
 deployment decision needs untouched confirmation data or an explicitly
 approved nested-selection design.
+
+---
+
+## ADR-0111 — `ScenarioUtilitySolve` + `EquityKellyMIO`: a scoped first build of the intraday_equities capital step
+
+**Status:** Accepted (2026-09-08; owner directed this build live in-session,
+after the session flagged that `docs/RE-ENTRY.md`'s claim of a prior
+"skeptic-reviewed, committed" MIO was false — the cited commit `707c7222` is
+docs-only, and no `ScenarioUtilitySolve`/`EquityKellyMIO` code existed before
+this ADR)
+
+**Context.** `docs/plans/2026-09-intraday-equities-mio.md` (2026-09-07,
+last revised by `707c7222`) designs the full capital-sizing step for
+`intraday_equities`: a per-tick fractional-Kelly MILP over joint scenario
+returns, carrying the ADR-0088 HFDR row, an R-U CVaR cap, integer share
+lots, self-financing, a no-trade band under proportional costs, and a
+Bertsimas-Sim robust counterpart of `mu` uncertainty. It requires ADR
+approval before code and names ten owner decisions (§10) that must not be
+invented by the implementing agent — real numbers sizing real trading
+capital.
+
+**Decision.** Build now, scoped to the mechanism plus one runnable synthetic
+demonstration, not the full live system:
+
+1. **Tier 2** — `ScenarioUtilitySolve` in `dskit/pipeline/libs/pyomo.py`,
+   an abstract `PyomoSolve` subclass (role `capital`) owning: inventory
+   transition and self-financing wealth rows, the tangent-plane concave-
+   utility objective (`tangent_utility`, shared with `pmquant.mio` so the
+   evaluator has one home), the Rockafellar-Uryasev CVaR block, cardinality
+   and `min_ticket` eligibility gating, the empty-gate short circuit, and
+   post-solve exact-recompute assertions. Three hooks stay abstract:
+   `payoffs(inputs)` (scenario weights + per-name gross-return matrix, already
+   `mu`-recentered by the caller per §3.5), `instruments(inputs)` (per-name
+   price/held-shares/lot/cost-coefficients plus one account-state dict —
+   cash, buying power, cash reserve, gross limit), and `domain_constraints`
+   (the caller's own rows: HFDR, no-trade band, opportunity charge).
+2. **Tier 3** — `EquityKellyMIO` in
+   `children/intraday_equities/intraday_equities/nodes_capital.py`, over a
+   fail-closed forecast-bundle reader, the Schwab per-share/bps cost model,
+   the ADR-0088 HFDR row, and a no-trade band.
+3. **`pmquant.mio.utility_at`** delegates to the shared `tangent_utility`
+   (deletes the duplicate; its public signature and behavior are unchanged,
+   its own test suite stays the regression net).
+4. **Owner-only risk numbers** (`q`, `cardinality`, `cvar_alpha`/`cvar_limit`,
+   `risk_aversion_gamma`, `min_ticket`, cash reserve, gross limit) ship as
+   REQUIRED config knobs with no code-level default — a document that omits
+   one refuses at plan. The one demonstration config in
+   `configs/run-mio-demo.json` states its own numbers explicitly, drawn from
+   the plan's own §4/§12 illustrative synthetic study, and is labeled
+   UNCALIBRATED/DEMO in its `notes` — synthetic data only, never a live-data
+   or live-trading path.
+
+**Explicitly deferred, named so a later ADR does not have to rediscover the
+gap:**
+
+- The Bertsimas-Sim robust counterpart of `mu` uncertainty (§5.4, §11.6 of
+  the plan). Only the already-approved scenario-recentering mechanism for
+  `U_mu` ships; the robust-budget term (`Gamma`, `kappa`) remains open per
+  the plan's owner decision 6.
+- The exact TAF-cap piecewise linearization the plan's §5.3 describes.
+  `ScenarioUtilitySolve`'s cost coefficients are flat $/share numbers
+  (tier-2 stays domain-blind to what a "TAF" even is), so a per-ORDER
+  dollar cap cannot enter the base's linear cash/wealth rows without
+  a size-dependent rate. `EquityKellyMIO` instead prices the per-share
+  TAF rate against the CURRENT HELD SHARES as the reference sell size —
+  `min(taf_per_share, taf_cap / max(1, held))` — the same "price the fee
+  ahead of the solve, at a plausible size" pattern `pmquant.mio.gated_sides`
+  already uses for its own per-level fee. It is an approximation, not the
+  cap's exact piecewise form; a real sell far from the held size is billed
+  at a slightly wrong flat rate. Exact per-order cap linearization needs a
+  second cost variable threaded through the base's cash/wealth rows and is
+  a named follow-up if it turns out to matter financially.
+- `lambda_t_bps` calibration artifacts (time-of-day buckets from realized
+  data), the `U_pi`/`U_mu`/`U_r` empirical estimators (Path A18039-A18047),
+  and `dskit.production` shadow/paper-mode wiring. None of these can be
+  built without real market data and the plan's remaining owner
+  decisions (§10); they are follow-on work, not part of this ADR.
+- Refactoring `pmquant.mio`'s event-programming MILP (order-book depth,
+  per-level integer lots, partition/threshold settlement law) onto
+  `ScenarioUtilitySolve` itself. The plan's step 3 asks for this, but the
+  two problems are shaped differently enough (single-event order-book
+  sizing vs. multi-name portfolio sizing) that forcing pmquant onto the new
+  base now is a higher-risk rewrite of a mature, tested module than this
+  pass's scope warrants. Only the one true duplicate — `utility_at` — is
+  unified; the rest of the graduation is a separate, later ADR if a second
+  caller needs it.
+
+**Consequences.** `EquityKellyMIO` is real, tested mechanism that can size a
+synthetic portfolio end to end and is `dskit.production`-shaped output, but
+it is NOT connected to a broker, to `dskit.production`'s serve loop, or to
+any live/paper feed, and its demo config's numbers are illustrative, not
+calibrated. Live enablement still needs every item in the plan's §10 and
+§11 (cash-vs-margin, PDT/wash-sale/tax questions, realized signal-decay
+measurement) resolved by the owner before any run touches real capital.
