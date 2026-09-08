@@ -17,7 +17,7 @@ from dskit.pipeline.document import (
     TrailingSplitSpec,
     WalkForwardSpec,
 )
-from dskit.pipeline.driver import aggregate_folds, _fold_splits, run_walk_forward
+from dskit.pipeline.driver import aggregate_folds, _file_sha256, _fold_splits, run_walk_forward
 from dskit.pipeline.node import Node
 from dskit.pipeline.split_policy import EventBounds
 
@@ -1122,12 +1122,8 @@ def test_the_winner_s_recorded_name_has_a_single_owner(monkeypatch):
     assert driver._winner_cell(dropped) == "dropped (not JSON-legal)"
 
 
-def test_an_hpo_free_summary_is_byte_identical(tmp_path):
-    """The hard invariant: a walk-forward document with no search node
-    must produce exactly the summary it produced before ADR-0043 — no
-    empty ``search`` key on a fold row, none in the aggregate, and no
-    section in the report. Spelled out here independently of the
-    formatter, so an unconditional emission cannot pass."""
+def test_a_walkforward_summary_publishes_its_evidence_inventory(tmp_path):
+    """Every summary seals its fold artifacts before consumers can select."""
     import statistics
 
     from dskit.pipeline.driver import _cutoff_ms
@@ -1144,6 +1140,25 @@ def test_an_hpo_free_summary_is_byte_identical(tmp_path):
         "state",
         "folds",
         "aggregate",
+        "evidence",
+    }
+    assert summary["evidence"] == {
+        "schema_version": 2,
+        "contract": "walkforward_fold_artifacts_at_summary_publish",
+        "folds": [
+            {
+                "cutoff": fold["cutoff"],
+                "run_dir": os.path.realpath(fold["run_dir"]),
+                "carry": {
+                    "path": os.path.realpath(os.path.join(fold["run_dir"], "carry.json")),
+                    "sha256": _file_sha256(
+                        os.path.realpath(os.path.join(fold["run_dir"], "carry.json"))
+                    ),
+                },
+                "predictions": [],
+            }
+            for fold in summary["folds"]
+        ],
     }
     assert [sorted(f) for f in summary["folds"]] == [
         ["cutoff", "run_dir", "score", "state"]

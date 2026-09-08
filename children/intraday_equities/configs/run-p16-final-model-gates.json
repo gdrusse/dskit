@@ -1,0 +1,37 @@
+{
+  "name": "p16-final-model-gates",
+  "notes": "ADR-0110: developmental post-selection guardrails over the exact sealed outer-fold predictions of the selected P16 feature mask. Never auto-promote.",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe-p13-pooled.json"
+      }
+    }
+  },
+  "stages": {
+    "gates": {
+      "uses": "intraday_equities.final_gates:FinalModelGates",
+      "params": {
+        "manifest_artifact": "/home/russell/dskit/children/intraday_equities/pipeline_runs/p16-final-model-gate-inventory-staged-2026-02-28-fa061189/stages/inventory.json",
+        "manifest_sha256": "3c0741e3c2018718d73a2f532db2d6095ae48c478b89afd827b8f1e193e604c4",
+        "alpha": 0.05,
+        "correction": "bonferroni",
+        "evidence_scope": "developmental_post_selection",
+        "season_timezone": "America/New_York",
+        "season_months": {
+          "winter": [12, 1, 2],
+          "spring": [3, 4, 5],
+          "summer": [6, 7, 8],
+          "fall": [9, 10, 11]
+        }
+      }
+    }
+  },
+  "outputs": {
+    "run_root": "./pipeline_runs",
+    "notes": "Developmental post-selection diagnostics; deployment_eligible remains false."
+  },
+  "clock": null,
+  "tracking": null
+}

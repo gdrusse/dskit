@@ -1,5 +1,29 @@
 # Re-entry
 
+## Current wrap: MIO verified; P16 LightGBM mask and gates complete (2026-09-08)
+
+Branch: `main`. The MIO implementation was skeptic-reviewed through a clean
+critical/major round, committed as `707c7222`, pushed, and its remote topic
+branch was removed.
+
+P16 then completed 100/100 LightGBM feature-mask folds. `lean-pooled-h10`
+ranked first at `0.0065199151` and was the simplest candidate not detectably
+worse. The sealed final gates found 90/90 stock/horizons above the training
+mean, 51/90 clearing corrected skill plus all four seasons, and a contiguous
+serving ladder of 44 horizons across 11/25 stocks. This evidence reused the
+selection folds, so `deployment_eligible=false`; no refit or promotion ran.
+
+Implementation now seals predictions and `carry.json`, scores verified private
+snapshots, and correctly aggregates repeated model-family variants. The first
+comparison failed closed on that last issue; it was fixed, tested, independently
+reviewed, and resumed without retraining. Related verification: 363 tests,
+Ruff, config validation, and diff check clean. Full results and artifact hashes:
+`children/intraday_equities/docs/memos/p16-feature-mask-and-final-gate-results.md`.
+
+**Next:** obtain owner approval for an untouched confirmation design/run before
+using the lean mask or its caps for deployment. No code decision remains open in
+this wrap.
+
 ## Current wrap: skill, TFT, and run-evidence consolidation (2026-09-07)
 
 Branch `consolidate-mio-skills-runs`, based on current `origin/main`.

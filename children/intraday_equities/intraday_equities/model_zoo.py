@@ -14,11 +14,14 @@ from dskit.pipeline.stages import Stage, reject_unknown_params
 from dskit.pipeline.libs.torch_ts import ZooEstimator
 
 from intraday_equities.modelability_study import asset_walk_document
+from intraday_equities.final_gates import FinalModelGateInventory, FinalModelGates
 
 __all__ = [
     "DirectPathScore",
     "EmpiricalSelectRegressor",
     "FinalistCandidate",
+    "FinalModelGateInventory",
+    "FinalModelGates",
     "Gate3ZooCandidates",
     "PooledDirectPathScore",
     "PooledGate3ZooCandidates",
@@ -328,7 +331,7 @@ def _template_problems(template, index):
     if unknown:
         problems.append(f"{where} has unknown field(s) {unknown}")
     required = _TEMPLATE_FIELDS - {
-        "prerequisite", "kronos", "sequence", "feature_source"
+        "prerequisite", "kronos", "sequence", "feature_source", "notes"
     }
     for field in sorted(required):
         if field not in template:

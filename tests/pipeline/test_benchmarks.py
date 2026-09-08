@@ -57,11 +57,13 @@ def _approval(approved=True):
     }
 
 
-def _metadata(candidate_id, compute_class="cpu-small", compute_rank=1):
+def _metadata(
+    candidate_id, compute_class="cpu-small", compute_rank=1, family=None,
+):
     return {
         "id": candidate_id,
         "group": "h01",
-        "family": candidate_id,
+        "family": family or candidate_id,
         "representation": "tabular",
         "feature_policy": "intrinsic",
         "seed_policy": "fixed",
@@ -136,13 +138,56 @@ def _select_row(candidate_id, mean, family=None, compute_rank=1, std=0.0):
     }
 
 
+def _seal_test_summary(summary_dir):
+    summary_path = Path(summary_dir) / "walkforward.json"
+    payload = json.loads(summary_path.read_text())
+    sealed = []
+    for index, fold in enumerate(payload["folds"]):
+        run_dir = fold.get("run_dir")
+        if not run_dir:
+            run_dir = Path(summary_dir) / f"fold-{index}"
+            run_dir.mkdir()
+            fold["run_dir"] = str(run_dir)
+        carry = Path(run_dir) / "carry.json"
+        if not carry.exists():
+            carry.write_text("{}")
+        paths = sorted(Path(run_dir).glob("**/predictions.parquet"))
+        sealed.append(
+            {
+                "cutoff": fold["cutoff"],
+                "run_dir": str(Path(run_dir).resolve()),
+                "carry": {
+                    "path": str(carry.resolve()),
+                    "sha256": hashlib.sha256(carry.read_bytes()).hexdigest(),
+                },
+                "predictions": [
+                    {
+                        "path": str(path.resolve()),
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    }
+                    for path in paths
+                ],
+            }
+        )
+    payload["evidence"] = {
+        "schema_version": 2,
+        "contract": "walkforward_fold_artifacts_at_summary_publish",
+        "folds": sealed,
+    }
+    summary_path.write_text(json.dumps(payload))
+    return summary_path, hashlib.sha256(summary_path.read_bytes()).hexdigest()
+
+
 def _run_row(candidate_id, document_hash, summary_dir, cutoffs, **metadata):
+    summary_path, summary_sha = _seal_test_summary(summary_dir)
     return {
         **_metadata(candidate_id, **metadata),
         "state": "ran",
         "exit_code": 0,
         "document_hash": document_hash,
         "summary_dir": str(summary_dir),
+        "evidence_manifest_path": str(summary_path.resolve()),
+        "evidence_manifest_sha256": summary_sha,
         "asof": "2026-02-28",
         "objective": "$score.metrics.ic",
         "select": "max",
@@ -265,12 +310,16 @@ def test_compare_emits_paired_rows_multiplicity_and_frontier(tmp_path):
     small_cutoffs = _summary(small_dir, small_hash, [0.10, 0.20])
     large_cutoffs = _summary(large_dir, large_hash, [0.20, 0.30])
     runs = [
-        _run_row("small", small_hash, small_dir, small_cutoffs),
+        _run_row(
+            "small", small_hash, small_dir, small_cutoffs,
+            family="pooled-lightgbm",
+        ),
         _run_row(
             "large",
             large_hash,
             large_dir,
             large_cutoffs,
+            family="pooled-lightgbm",
             compute_class="cpu-large",
             compute_rank=3,
         ),
@@ -295,7 +344,107 @@ def test_compare_emits_paired_rows_multiplicity_and_frontier(tmp_path):
     assert {row["id"] for row in result["frontier"]} == {"small", "large"}
     assert result["pairwise"][0]["family_size"] == 1
     assert 0.0 < result["pairwise"][0]["p_value"] <= 1.0
+    assert result["family_ranking"] == [{
+        "family": "pooled-lightgbm", "n_pairs": 1, "n_variants": 2,
+        "equal_pair_mean": 0.2, "equal_pair_mean_rank": 1.0,
+    }]
     assert result["provenance"]["disabled"][0]["id"] == "future"
+
+
+def test_family_ranking_ranks_family_means_not_unequal_variant_counts(tmp_path):
+    specs = [
+        ("a-best", "a", [0.30, 0.30], "family-a"),
+        ("a-worst", "c", [0.10, 0.10], "family-a"),
+        ("b-middle", "e", [0.19, 0.19], "family-b"),
+    ]
+    runs = []
+    for candidate_id, hash_char, scores, family in specs:
+        summary_dir = tmp_path / candidate_id
+        document_hash = hash_char * 64
+        cutoffs = _summary(summary_dir, document_hash, scores)
+        runs.append(_run_row(
+            candidate_id, document_hash, summary_dir, cutoffs, family=family,
+        ))
+    result = BenchmarkCompare("compare").run(
+        _context(tmp_path),
+        {
+            "runs": runs, "protocol": _protocol(), "contracts": {},
+            "approval": _approval(),
+        },
+    )
+    by_family = {row["family"]: row for row in result["family_ranking"]}
+    assert by_family["family-a"] == {
+        "family": "family-a", "n_pairs": 1, "n_variants": 2,
+        "equal_pair_mean": 0.2, "equal_pair_mean_rank": 1.0,
+    }
+    assert by_family["family-b"] == {
+        "family": "family-b", "n_pairs": 1, "n_variants": 1,
+        "equal_pair_mean": 0.19, "equal_pair_mean_rank": 2.0,
+    }
+def test_compare_refuses_summary_drift_after_benchmark_run_sealed_it(tmp_path):
+    small_dir, large_dir = tmp_path / "small", tmp_path / "large"
+    small_cutoffs = _summary(small_dir, "a" * 64, [0.10, 0.20])
+    large_cutoffs = _summary(large_dir, "c" * 64, [0.20, 0.30])
+    runs = [
+        _run_row("small", "a" * 64, small_dir, small_cutoffs),
+        _run_row("large", "c" * 64, large_dir, large_cutoffs),
+    ]
+    summary_path = small_dir / "walkforward.json"
+    payload = json.loads(summary_path.read_text())
+    payload["folds"][0]["score"] = 0.9
+    payload["folds"][1]["score"] = 0.8
+    payload["aggregate"]["mean"] = 0.85
+    summary_path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="evidence seal drifted before comparison"):
+        BenchmarkCompare("compare").run(
+            _context(tmp_path),
+            {
+                "runs": runs,
+                "protocol": _protocol(),
+                "contracts": {},
+                "approval": _approval(),
+            },
+        )
+
+
+def test_compare_scores_the_same_summary_bytes_whose_digest_it_verifies(
+    tmp_path, monkeypatch,
+):
+    import dskit.pipeline.benchmarks as benchmarks
+
+    small_dir, large_dir = tmp_path / "small", tmp_path / "large"
+    small_cutoffs = _summary(small_dir, "a" * 64, [0.10, 0.20])
+    large_cutoffs = _summary(large_dir, "c" * 64, [0.20, 0.30])
+    runs = [
+        _run_row("small", "a" * 64, small_dir, small_cutoffs),
+        _run_row("large", "c" * 64, large_dir, large_cutoffs),
+    ]
+    ordinary_load = benchmarks._load_summary
+
+    def swap_around_old_two_open_loader(candidate):
+        path = Path(candidate["summary_dir"]) / "walkforward.json"
+        original = path.read_bytes()
+        payload = json.loads(original)
+        payload["folds"][0]["score"] = 0.9
+        payload["folds"][1]["score"] = 0.8
+        payload["aggregate"]["mean"] = 0.85
+        path.write_text(json.dumps(payload))
+        parsed = ordinary_load(candidate)
+        path.write_bytes(original)
+        return parsed
+
+    monkeypatch.setattr(benchmarks, "_load_summary", swap_around_old_two_open_loader)
+    result = BenchmarkCompare("compare").run(
+        _context(tmp_path),
+        {
+            "runs": runs,
+            "protocol": _protocol(),
+            "contracts": {},
+            "approval": _approval(),
+        },
+    )
+    assert result["ranking"][0]["id"] == "large"
 
 
 def test_compare_refuses_unpaired_outer_folds(tmp_path):
@@ -366,6 +515,32 @@ def test_run_recovers_a_complete_summary_after_checkpoint_window(
 
     def interrupted(*args, **kwargs):
         _summary(expected, document_hash, [0.1, 0.2])
+        summary_path = expected / "walkforward.json"
+        payload = json.loads(summary_path.read_text())
+        sealed = []
+        for index, fold in enumerate(payload["folds"]):
+            run_dir = tmp_path / f"fold-{index}"
+            run_dir.mkdir()
+            fold["run_dir"] = str(run_dir)
+            carry = run_dir / "carry.json"
+            carry.write_text("{}")
+            sealed.append(
+                {
+                    "cutoff": fold["cutoff"],
+                    "run_dir": str(run_dir),
+                    "carry": {
+                        "path": str(carry),
+                        "sha256": hashlib.sha256(carry.read_bytes()).hexdigest(),
+                    },
+                    "predictions": [],
+                }
+            )
+        payload["evidence"] = {
+            "schema_version": 2,
+            "contract": "walkforward_fold_artifacts_at_summary_publish",
+            "folds": sealed,
+        }
+        summary_path.write_text(json.dumps(payload))
         raise RuntimeError("interrupted after summary")
 
     monkeypatch.setattr(
@@ -383,12 +558,67 @@ def test_run_recovers_a_complete_summary_after_checkpoint_window(
     )
     result = stage.run(_context(tmp_path), inputs)
     assert called == []
-    assert result["runs"][0]["state"] == "ran"
-    assert result["runs"][0]["recovered_after_interruption"] is True
+    row = result["runs"][0]
+    assert row["state"] == "ran"
+    assert row["recovered_after_interruption"] is True
+    seal_path = Path(row["evidence_manifest_path"])
+    assert hashlib.sha256(seal_path.read_bytes()).hexdigest() == (
+        row["evidence_manifest_sha256"]
+    )
+    summary = json.loads(seal_path.read_text())
+    assert summary["evidence"]["schema_version"] == 2
+    assert [fold["cutoff"] for fold in summary["evidence"]["folds"]] == cutoffs
+
+
+def test_run_evidence_seal_refuses_prediction_drift(tmp_path):
+    from dskit.pipeline.benchmarks import _seal_run_row
+
+    run_dir = tmp_path / "fold"
+    prediction = run_dir / "artifacts" / "scan" / "predictions.parquet"
+    prediction.parent.mkdir(parents=True)
+    prediction.write_bytes(b"original")
+    digest = hashlib.sha256(prediction.read_bytes()).hexdigest()
+    carry = run_dir / "carry.json"
+    carry.write_text("{}")
+    carry_digest = hashlib.sha256(carry.read_bytes()).hexdigest()
+    summary_dir = tmp_path / "summary"
+    summary_dir.mkdir()
+    summary = {
+        "folds": [{"cutoff": "2025-01-01", "run_dir": str(run_dir)}],
+        "evidence": {
+            "schema_version": 2,
+            "contract": "walkforward_fold_artifacts_at_summary_publish",
+            "folds": [{
+                "cutoff": "2025-01-01", "run_dir": str(run_dir),
+                "carry": {"path": str(carry), "sha256": carry_digest},
+                "predictions": [{"path": str(prediction), "sha256": digest}],
+            }],
+        },
+    }
+    summary_path = summary_dir / "walkforward.json"
+    summary_path.write_text(json.dumps(summary))
+    candidate_doc = summary_dir / "candidate.json"
+    candidate_doc.write_text("{}")
+    alias = tmp_path / "summary-alias"
+    alias.symlink_to(summary_dir, target_is_directory=True)
+    candidate = {
+        "id": "candidate", "summary_dir": str(alias),
+        "path": str(alias / "candidate.json"),
+    }
+    row = _seal_run_row(candidate, summary)
+    assert row["summary_dir"] == str(summary_dir.resolve())
+    assert row["path"] == str(candidate_doc.resolve())
+    assert row["evidence_manifest_sha256"] == hashlib.sha256(
+        summary_path.read_bytes()
+    ).hexdigest()
+
+    prediction.write_bytes(b"drifted")
+    with pytest.raises(ValueError, match="prediction evidence drifted"):
+        _seal_run_row(candidate, summary)
 
 
 
-def test_path_compare_persists_loss_tensor_and_uncertainty_sets(tmp_path):
+def test_path_compare_persists_loss_tensor_and_uncertainty_sets(tmp_path, monkeypatch):
     pytest.importorskip("pyarrow")
     from dskit.pipeline.predictions import PredictionWriter
 
@@ -481,6 +711,26 @@ def test_path_compare_persists_loss_tensor_and_uncertainty_sets(tmp_path):
         == "shared recentered whole-session family max-t"
         for row in result["superior_predictive_ability"]
     )
+    original_compare = BenchmarkCompare.run
+
+    def mutate_after_base_compare(stage, ctx, inputs):
+        compared = original_compare(stage, ctx, inputs)
+        first_summary = json.loads(
+            (Path(runs[0]["summary_dir"]) / "walkforward.json").read_text()
+        )
+        Path(first_summary["folds"][0]["run_dir"], "carry.json").write_text("{}")
+        return compared
+
+    monkeypatch.setattr(BenchmarkCompare, "run", mutate_after_base_compare)
+    drift_dir = tmp_path / "drift-check"
+    drift_dir.mkdir()
+    with pytest.raises(ValueError, match="carry evidence drifted"):
+        PathBenchmarkCompare(
+            "compare", {"bootstrap_draws": 99, "bootstrap_seed": 0}
+        ).run(
+            _context(drift_dir),
+            {"runs": runs, "protocol": protocol, "contracts": {}, "approval": _approval()},
+        )
 
 
 def test_path_compare_is_no_launch_while_approval_is_pending(tmp_path):

@@ -5862,3 +5862,62 @@ the original text claimed and the code did not do:
    SUCCEEDS but cannot be stored is downgraded to a refusal, because a
    silently-unstored success hands back git's own `%A` — our side alone,
    looking perfectly clean.
+
+---
+
+## ADR-0110 — Final-model gates read the winner's saved outer-fold predictions
+
+**Status:** Accepted (2026-09-07; owner requested execution)
+
+**Context.** ADR-0107 shipped the generic `HorizonConquest` node but left
+execution over the final model's evidence as a separate owner action. P16's
+feature-mask benchmark now selects among five LightGBM masks and already saves
+every outer-fold prediction. Re-fitting merely to produce gate evidence would
+change the experiment and waste the persisted rows.
+
+**Decision.** First, every walk-forward publishes an embedded evidence
+inventory in `walkforward.json`: ordered fold/run identities and the digest of
+every prediction file plus each fold's `carry.json`. `BenchmarkRun` verifies
+that inventory before marking a candidate complete and carries the summary's
+path and digest into its run row. `PathBenchmarkCompare` re-verifies the sealed
+summary, reads each fold artifact once, hashes those exact bytes, and scores a
+private snapshot rather than the mutable run directory. Thus selection cannot
+precede the cryptographic seal it later cites or validate different bytes from
+those it records. Published artifact references use canonical real paths so a
+temporary worktree can be removed without invalidating the evidence chain.
+
+When several candidates are feature variants of one declared model family,
+family summaries first average those variants within each approved comparison
+group. They rank the resulting family means within that group, then weight
+groups equally. Candidate-level paired tests and the simplicity selection stay
+unchanged; variant count cannot masquerade as additional paired evidence.
+
+Use two child-owned gate stages. `FinalModelGateInventory` reads digest-pinned
+`run.json` and `compare.json`, requires both artifacts to share one benchmark
+identity, and accepts exactly one comparator marker. The marker is explicitly
+a *simplicity heuristic after no detected difference*: non-rejection is not
+equivalence. The inventory verifies the original run seal, then binds it to the
+selected candidate's canonical document hash, exact approved stock/horizon
+ladder, walk-forward contract, and ordered cutoffs in one gate manifest.
+
+`FinalModelGates` reads only that digest-pinned manifest. Before scoring, it
+re-hashes the summary and every prediction, requires the on-disk inventory to
+equal the manifest, and rejects missing or extra stock/horizon cells, wrong
+fold ordinals, non-constant benchmark means, duplicate cutoffs, and timestamps
+that are unordered or overlap folds. It delegates the canonical pooled-HAC and
+across-fold tests to `skill_vs_mean`, then Bonferroni-corrects the conservative
+maximum of those two p-values across the complete stock-by-horizon family.
+Season definitions are config and must partition all twelve months exactly
+once; every season's pooled OOS R-squared must be strictly positive. A head
+passes only when it descriptively beats the mean, survives the corrected skill
+rule, and is positive in every season. Contiguous caps remain delegated to
+`HorizonConquest`.
+
+**Consequences.** This is read-only, reproducible evidence over the exact
+selection run and can be rerun without training. Because the same outer folds
+both selected the feature mask and supply these gates, its scope is
+`developmental_post_selection`, not confirmatory inference. Outputs therefore
+set `deployment_eligible` false and report a recommended mask, evidence rows,
+and caps only; they do not promote, refit, backtest, or feed the MIO. A later
+deployment decision needs untouched confirmation data or an explicitly
+approved nested-selection design.

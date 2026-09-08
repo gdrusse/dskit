@@ -317,7 +317,7 @@
             "feature_source": "tabular",
             "seed_policy": "fixed seed 0 with purged inner HPO",
             "compute_class": "cpu-medium",
-            "compute_rank": 1,
+            "compute_rank": 5,
             "enabled": true,
             "notes": "ADR-0108 control: the plain lightgbm.LGBMRegressor with no ColumnSubsetEstimator wrapper, byte-identical to P13's incumbent lgbm candidate's model block. hpo_space and hpo_trials are UNCHANGED from P13's lgbm candidate (ADR-0108): this zoo isolates the feature set, and searching the space too at the same time would confound the ablation.",
             "model": {
@@ -627,7 +627,7 @@
             "feature_source": "tabular",
             "seed_policy": "fixed seed 0 with purged inner HPO",
             "compute_class": "cpu-medium",
-            "compute_rank": 5,
+            "compute_rank": 1,
             "enabled": true,
             "notes": "ADR-0108: the combination test the owner asked for — the union of the three single-family drop lists above, via ColumnSubsetEstimator.drop, so a deficit here that none of the three parts show in isolation is discoverable. hpo_space and hpo_trials are UNCHANGED from P13's lgbm candidate (ADR-0108): this zoo isolates the feature set, and searching the space too at the same time would confound the ablation.",
             "model": {
@@ -804,9 +804,9 @@
         "inventory_sha256": "$plan.inventory_sha256"
       },
       "params": {
-        "approved_inventory_sha256": "PENDING-PLAN-REVIEW",
-        "approved_by": "PENDING-PLAN-REVIEW",
-        "approval_note": "Awaiting owner review of this exact five-candidate feature-mask inventory (ADR-0108): control full, three single-family drops (short-lags, core-scales, no-cal-tail), and their union (lean). Each candidate uses four inner HPO trials on P13's unchanged lgbm hpo_space, exploratory-screen scale, not an exhaustive ceiling — the mask is the only thing this zoo varies."
+        "approved_inventory_sha256": "e8bdc03ce62626b6104932a3b2051b1454bfda91aa22c041fb79efc32740d23c",
+        "approved_by": "owner, 2026-09-07",
+        "approval_note": "Owner approved the verified rank-corrected five-candidate inventory on 2026-09-07: compute_rank orders masks from fewest retained features (lean=1) to most (full=5), so the comparator's simplicity heuristic has the intended direction."
       }
     },
     "run": {

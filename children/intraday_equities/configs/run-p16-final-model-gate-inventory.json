@@ -1,0 +1,29 @@
+{
+  "name": "p16-final-model-gate-inventory",
+  "notes": "ADR-0110: select the approved P16 simplicity winner and bind its original sealed outer-fold evidence. Developmental post-selection evidence only.",
+  "pipeline": {
+    "universe": {
+      "uses": "intraday_equities-universe",
+      "params": {
+        "path": "configs/universe-p13-pooled.json"
+      }
+    }
+  },
+  "stages": {
+    "inventory": {
+      "uses": "intraday_equities.final_gates:FinalModelGateInventory",
+      "params": {
+        "run_artifact": "/home/russell/dskit/children/intraday_equities/pipeline_runs/p16-feature-mask-zoo-staged-2026-02-28-98635601/stages/run.json",
+        "run_sha256": "30310d89c4ea99fdc224ac497c535286c8a4e6cc9f3ee103338270cd99ca2d9a",
+        "compare_artifact": "/home/russell/dskit/children/intraday_equities/pipeline_runs/p16-feature-mask-zoo-staged-2026-02-28-98635601/stages/compare.json",
+        "compare_sha256": "f29bbfa51b1c84bf5e686d9c63c39637d0b1e8f70116ab2a69f6d894a729061c"
+      }
+    }
+  },
+  "outputs": {
+    "run_root": "./pipeline_runs",
+    "notes": "Developmental evidence inventory; no training or promotion."
+  },
+  "clock": null,
+  "tracking": null
+}

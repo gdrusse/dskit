@@ -8,11 +8,14 @@ import numpy as np
 import pytest
 
 from dskit.pipeline.document import load_document
+from dskit.pipeline.predictions import PredictionWriter, find_predictions
 
 from intraday_equities.model_zoo import (
     DirectPathScore,
     EmpiricalSelectRegressor,
     FinalistCandidate,
+    FinalModelGateInventory,
+    FinalModelGates,
     KronosFusionRows,
     PooledDirectPathScore,
     PooledGate3ZooCandidates,
@@ -31,6 +34,297 @@ def _pass_row(index):
         "gate3_passes": True,
         "gate3_status": "pass",
     }
+
+
+def _write_json(path, payload):
+    import json
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return __import__("hashlib").sha256(path.read_bytes()).hexdigest()
+
+
+def _final_gate_fixture(tmp_path):
+    from datetime import datetime, timezone
+
+    summary_dir = tmp_path / "winner-walkforward"
+    fold_dirs = [tmp_path / "fold-1", tmp_path / "fold-2"]
+    for fold_index, fold_dir in enumerate(fold_dirs):
+        stamps = [
+            int(datetime(2024 + fold_index, month, 15, 15, tzinfo=timezone.utc).timestamp() * 1000)
+            for month in (1, 4, 7, 10)
+        ]
+        for horizon in (1, 2):
+            y = [-1.0, 1.0, -1.0, 1.0]
+            yhat = [0.5 * value for value in y]
+            if horizon == 2:
+                yhat[2] = 0.0
+            with PredictionWriter(
+                str(fold_dir / "artifacts" / f"scan_h{horizon:02d}"),
+                ["AAA"], fold=fold_index, period_minutes=1,
+            ) as writer:
+                writer.append("AAA", horizon, stamps, y, yhat, 0.0)
+    summary_path = summary_dir / "walkforward.json"
+    summary_sha = _write_json(
+        summary_path,
+        {
+            "state": "ran", "document_hash": "c" * 64,
+            "asof": "2026-02-28", "objective": "$path.metrics.path_score",
+            "select": "max",
+            "folds": [
+                {"cutoff": f"fold-{index}", "state": "ran", "run_dir": str(path)}
+                for index, path in enumerate(fold_dirs, 1)
+            ],
+        },
+    )
+    manifest = {
+        "schema_version": 1,
+        "benchmark_identity": "a" * 64,
+        "evidence_scope": "developmental_post_selection",
+        "winner": {
+            "id": "lean-pooled-h02", "feature_policy": "lean mask",
+            "mean_path_score": 0.2,
+            "selection_rule": "simplicity_heuristic_after_no_detected_difference",
+            "document_hash": "c" * 64, "asof": "2026-02-28",
+            "objective": "$path.metrics.path_score", "select": "max",
+        },
+        "summary": {"path": str(summary_path), "sha256": summary_sha},
+        "expected_units": [
+            {"symbol": "AAA", "horizon": 1},
+            {"symbol": "AAA", "horizon": 2},
+        ],
+        "folds": [
+            {
+                "cutoff": f"fold-{index}", "run_dir": str(path),
+                "predictions": [
+                    {"path": prediction, "sha256": __import__("hashlib").sha256(Path(prediction).read_bytes()).hexdigest()}
+                    for prediction in find_predictions(str(path))
+                ],
+            }
+            for index, path in enumerate(fold_dirs, 1)
+        ],
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_sha = _write_json(manifest_path, {"outputs": {"manifest": manifest}})
+    params = {
+        "manifest_artifact": str(manifest_path), "manifest_sha256": manifest_sha,
+        "alpha": 0.05, "correction": "bonferroni",
+        "evidence_scope": "developmental_post_selection",
+        "season_timezone": "America/New_York",
+        "season_months": {
+            "winter": [12, 1, 2], "spring": [3, 4, 5],
+            "summer": [6, 7, 8], "fall": [9, 10, 11],
+        },
+    }
+    return params, manifest_path, Path(manifest["folds"][0]["predictions"][0]["path"])
+
+
+def test_final_model_gate_inventory_pins_the_approved_complete_ladder(
+    tmp_path, monkeypatch,
+):
+    from types import SimpleNamespace
+
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_text("{}", encoding="utf-8")
+    fold_dirs = [tmp_path / "fold-1", tmp_path / "fold-2"]
+    cutoffs = ["2024-01-01", "2025-01-01"]
+    folds = []
+    for cutoff, fold_dir in zip(cutoffs, fold_dirs):
+        prediction = fold_dir / "artifacts" / "scan" / "predictions.parquet"
+        prediction.parent.mkdir(parents=True)
+        prediction.write_bytes(cutoff.encode())
+        carry = fold_dir / "carry.json"
+        carry.write_text("{}")
+        folds.append({"cutoff": cutoff, "state": "ran", "run_dir": str(fold_dir)})
+    summary_dir = tmp_path / "summary"
+    summary_dir.mkdir()
+    summary_path = summary_dir / "walkforward.json"
+    summary_sha = _write_json(
+        summary_path,
+        {
+            "state": "ran", "document_hash": "c" * 64,
+            "asof": "2026-02-28", "objective": "$path.metrics.path_score",
+            "select": "max", "folds": folds,
+            "evidence": {
+                "schema_version": 2,
+                "contract": "walkforward_fold_artifacts_at_summary_publish",
+                "folds": [
+                    {
+                        "cutoff": cutoff,
+                        "run_dir": str(fold_dir),
+                        "carry": {
+                            "path": str(fold_dir / "carry.json"),
+                            "sha256": __import__("hashlib").sha256(
+                                (fold_dir / "carry.json").read_bytes()
+                            ).hexdigest(),
+                        },
+                        "predictions": [{
+                            "path": str(
+                                fold_dir / "artifacts" / "scan"
+                                / "predictions.parquet"
+                            ),
+                            "sha256": __import__("hashlib").sha256(
+                                cutoff.encode()
+                            ).hexdigest(),
+                        }],
+                    }
+                    for cutoff, fold_dir in zip(cutoffs, fold_dirs)
+                ],
+            },
+        },
+    )
+    run = {
+        "stage_token": "bench:run",
+        "outputs": {"runs": [{
+            "id": "lean", "state": "ran", "path": str(candidate_path),
+            "document_hash": "c" * 64, "summary_dir": str(summary_dir),
+            "evidence_manifest_path": str(summary_path),
+            "evidence_manifest_sha256": summary_sha,
+            "expected_fold_count": 2, "expected_cutoffs": cutoffs,
+            "asof": "2026-02-28", "objective": "$path.metrics.path_score",
+            "select": "max", "feature_policy": "lean mask",
+        }]},
+    }
+    compare = {
+        "stage_token": "bench:compare",
+        "outputs": {"ranking": [{
+            "id": "lean", "mean": 0.1,
+            "selected_simplest_not_detectably_different": True,
+        }], "provenance": {
+            "benchmark_hash": "bench",
+            "asof": "2026-02-28",
+        }},
+    }
+    run_path, compare_path = tmp_path / "run.json", tmp_path / "compare.json"
+    run_sha = _write_json(run_path, run)
+    compare_sha = _write_json(compare_path, compare)
+
+    fake_document = SimpleNamespace(
+        hash="c" * 64,
+        pipeline={
+            "path": SimpleNamespace(
+                params={"asset_horizons": [
+                    {"asset": "AAA", "horizon": 2},
+                    {"asset": "BBB", "horizon": 1},
+                ]}
+            )
+        },
+    )
+    monkeypatch.setattr(
+        "dskit.pipeline.document.load_document", lambda _: fake_document
+    )
+    monkeypatch.setattr(
+        "dskit.pipeline.predictions.find_predictions",
+        lambda run_dir: [str(Path(run_dir) / "artifacts" / "scan" / "predictions.parquet")],
+    )
+    stage = FinalModelGateInventory("inventory", {
+        "run_artifact": str(run_path), "run_sha256": run_sha,
+        "compare_artifact": str(compare_path), "compare_sha256": compare_sha,
+    })
+    result = stage.run(SimpleNamespace(source_path=str(tmp_path / "gate.json")), {})
+    manifest = result["manifest"]
+    assert manifest["evidence_scope"] == "developmental_post_selection"
+    assert manifest["winner"]["selection_rule"] == (
+        "simplicity_heuristic_after_no_detected_difference"
+    )
+    assert manifest["expected_units"] == [
+        {"symbol": "AAA", "horizon": 1},
+        {"symbol": "AAA", "horizon": 2},
+        {"symbol": "BBB", "horizon": 1},
+    ]
+    assert [row["cutoff"] for row in manifest["folds"]] == cutoffs
+    assert all(len(row["predictions"]) == 1 for row in manifest["folds"])
+
+
+def test_final_model_gate_inventory_refuses_cross_asof_comparison():
+    from intraday_equities.final_gates import _validate_compare_provenance
+
+    compare = {
+        "outputs": {
+            "provenance": {
+                "benchmark_hash": "bench",
+                "asof": "2025-02-28",
+            }
+        }
+    }
+    with pytest.raises(ValueError, match="identity and asof"):
+        _validate_compare_provenance(
+            compare, "bench", {"asof": "2026-02-28"}
+        )
+
+
+def test_pinned_json_parses_the_same_bytes_whose_digest_it_verifies(
+    tmp_path, monkeypatch,
+):
+    import intraday_equities.final_gates as final_gates
+
+    path = tmp_path / "artifact.json"
+    original = b'{"value": "sealed"}'
+    path.write_bytes(original)
+    digest = __import__("hashlib").sha256(original).hexdigest()
+
+    def old_two_open_digest(target):
+        observed = __import__("hashlib").sha256(Path(target).read_bytes()).hexdigest()
+        Path(target).write_bytes(b'{"value": "swapped"}')
+        return observed
+
+    monkeypatch.setattr(final_gates, "_digest", old_two_open_digest)
+    _, value = final_gates._read_pinned_json(
+        str(tmp_path / "config.json"), str(path), digest, "artifact"
+    )
+    assert value == {"value": "sealed"}
+    assert path.read_bytes() == original
+
+
+def test_final_model_gates_use_pinned_folds_and_stop_on_a_flat_season(tmp_path):
+    from types import SimpleNamespace
+
+    params, _, _ = _final_gate_fixture(tmp_path)
+    stage = FinalModelGates("gates", params)
+    ctx = SimpleNamespace(source_path=str(tmp_path / "gates.json"))
+    result = stage.run(ctx, {})
+    assert result["winner"]["id"] == "lean-pooled-h02"
+    assert result["caps"] == [{
+        "unit": "AAA", "capped_horizon": 1, "first_failing_horizon": 2,
+        "n_passed": 1, "n_horizons": 2,
+        "passing_checks": ["beats_mean", "skill_pass_adjusted", "season_r2oos"],
+        "slice_evidence": {season: True for season in ("fall", "spring", "summer", "winter")},
+    }]
+    summer_h2 = next(
+        row for row in result["evidence"]
+        if row["horizon"] == 2 and row["season"] == "summer"
+    )
+    assert summer_h2["season_r2oos"] == pytest.approx(0.0)
+    assert summer_h2["skill_pass_raw"] is True
+    assert summer_h2["skill_pass_adjusted"] is True
+    assert summer_h2["family_size"] == 2
+    assert result["metrics"]["n_served_units"] == 1
+    assert result["metrics"]["deployment_eligible"] is False
+
+
+def test_final_model_gates_refuse_prediction_digest_drift(tmp_path):
+    from types import SimpleNamespace
+
+    params, _, prediction = _final_gate_fixture(tmp_path)
+    prediction.write_bytes(prediction.read_bytes() + b"tamper")
+    stage = FinalModelGates("gates", params)
+    ctx = SimpleNamespace(source_path=str(tmp_path / "gates.json"))
+    with pytest.raises(ValueError, match="prediction artifact hash changed"):
+        stage.run(ctx, {})
+
+
+def test_final_model_gates_refuse_consistently_missing_approved_unit(tmp_path):
+    import json
+    from types import SimpleNamespace
+
+    params, manifest_path, _ = _final_gate_fixture(tmp_path)
+    artifact = json.loads(manifest_path.read_text())
+    artifact["outputs"]["manifest"]["expected_units"].append({"symbol": "BBB", "horizon": 1})
+    params["manifest_sha256"] = _write_json(manifest_path, artifact)
+    stage = FinalModelGates("gates", params)
+    ctx = SimpleNamespace(source_path=str(tmp_path / "gates.json"))
+    with pytest.raises(ValueError, match="prediction units differ from approved inventory"):
+        stage.run(ctx, {})
 
 
 def test_gate3_inventory_requires_exactly_twenty_five_unique_passers():

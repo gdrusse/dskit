@@ -13,6 +13,7 @@ import json
 import math
 import os
 import random
+import tempfile
 
 from dskit.pipeline.document import load_document
 from dskit.pipeline.driver import run_walk_forward
@@ -691,7 +692,9 @@ class BenchmarkRun(Stage):
                         "exit_code": 0,
                         "recovered_after_interruption": True,
                     }
-                    _validate_summary(prior, _load_summary(prior))
+                    summary, summary_sha, _ = _load_summary_bytes(prior)
+                    _validate_summary(prior, summary)
+                    prior = _seal_run_row(prior, summary, summary_sha)
                     rows.append(prior)
                     _write_checkpoint(checkpoint_path, signature, rows)
                     continue
@@ -701,7 +704,16 @@ class BenchmarkRun(Stage):
                         f"state {prior.get('state')!r}; resolve it under a new "
                         "benchmark identity"
                     )
-                _validate_summary(prior, _load_summary(prior))
+                summary, summary_sha, _ = _load_summary_bytes(prior)
+                _validate_summary(prior, summary)
+                sealed = _seal_run_row(prior, summary, summary_sha)
+                if (
+                    prior.get("evidence_manifest_path")
+                    != sealed["evidence_manifest_path"]
+                    or prior.get("evidence_manifest_sha256")
+                    != sealed["evidence_manifest_sha256"]
+                ):
+                    raise ValueError("checkpoint evidence seal drifted")
                 rows.append(prior)
                 continue
             running = {
@@ -723,7 +735,9 @@ class BenchmarkRun(Stage):
                 "exit_code": result.exit_code,
             }
             if result.state == "ran" and result.exit_code == 0:
-                _validate_summary(row, _load_summary(row))
+                summary, summary_sha, _ = _load_summary_bytes(row)
+                _validate_summary(row, summary)
+                row = _seal_run_row(row, summary, summary_sha)
             rows.append(row)
             _write_checkpoint(checkpoint_path, signature, rows)
             if result.state != "ran" or result.exit_code != 0:
@@ -785,13 +799,39 @@ def _write_checkpoint(path, signature, rows):
     os.replace(tmp, path)
 
 
-def _load_summary(candidate):
-    path = os.path.join(candidate["summary_dir"], "walkforward.json")
-    with open(path, "r", encoding="utf-8") as fh:
-        summary = json.load(fh)
+def _load_summary_bytes(candidate):
+    path = os.path.realpath(
+        os.path.join(candidate["summary_dir"], "walkforward.json")
+    )
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    digest = hashlib.sha256(raw).hexdigest()
+    try:
+        summary = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"candidate {candidate['id']!r} summary is not valid UTF-8 JSON"
+        ) from exc
     if summary.get("document_hash") != candidate["document_hash"]:
         raise ValueError(
             f"candidate {candidate['id']!r} summary hash does not match its plan"
+        )
+    return summary, digest, path
+
+
+def _load_summary(candidate):
+    return _load_summary_bytes(candidate)[0]
+
+
+def _load_sealed_summary(candidate):
+    summary, digest, path = _load_summary_bytes(candidate)
+    if (
+        candidate.get("evidence_manifest_path") != path
+        or candidate.get("evidence_manifest_sha256") != digest
+    ):
+        raise ValueError(
+            f"candidate {candidate.get('id')!r} evidence seal drifted "
+            "before comparison"
         )
     return summary
 
@@ -837,6 +877,105 @@ def _validate_summary(candidate, summary):
             f"candidate {candidate['id']!r} has incomplete or inconsistent fold evidence"
         )
     return [float(score) for score in scores]
+
+
+def _file_digest(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _prediction_paths(run_dir):
+    paths = []
+    for root, dirs, files in os.walk(run_dir):
+        dirs.sort()
+        if "predictions.parquet" in files:
+            paths.append(os.path.realpath(os.path.join(root, "predictions.parquet")))
+    return sorted(paths)
+
+
+def _seal_run_row(candidate, summary, summary_sha256=None):
+    """Verify the summary-published prediction manifest and pin its bytes."""
+    evidence = summary.get("evidence") if isinstance(summary, dict) else None
+    if (
+        not isinstance(evidence, dict)
+        or evidence.get("schema_version") != 2
+        or evidence.get("contract")
+        != "walkforward_fold_artifacts_at_summary_publish"
+        or not isinstance(evidence.get("folds"), list)
+    ):
+        raise ValueError(
+            f"candidate {candidate['id']!r} has no published evidence manifest"
+        )
+    folds = summary.get("folds")
+    sealed_folds = evidence["folds"]
+    if len(sealed_folds) != len(folds):
+        raise ValueError(f"candidate {candidate['id']!r} evidence fold count drifted")
+    for fold, sealed in zip(folds, sealed_folds):
+        if not isinstance(sealed, dict):
+            raise ValueError(f"candidate {candidate['id']!r} has malformed evidence")
+        run_dir = fold.get("run_dir")
+        if (
+            not _string(run_dir)
+            or sealed.get("cutoff") != fold.get("cutoff")
+            or os.path.realpath(sealed.get("run_dir", "")) != os.path.realpath(run_dir)
+        ):
+            raise ValueError(f"candidate {candidate['id']!r} evidence fold drifted")
+        carry = sealed.get("carry")
+        carry_path = carry.get("path") if isinstance(carry, dict) else None
+        carry_digest = carry.get("sha256") if isinstance(carry, dict) else None
+        expected_carry = os.path.realpath(os.path.join(run_dir, "carry.json"))
+        if (
+            not _string(carry_path)
+            or not is_sha256hex(carry_digest)
+            or os.path.realpath(carry_path) != expected_carry
+        ):
+            raise ValueError(
+                f"candidate {candidate['id']!r} carry evidence pin is malformed"
+            )
+        if _file_digest(expected_carry) != carry_digest:
+            raise ValueError(
+                f"candidate {candidate['id']!r} carry evidence drifted"
+            )
+        pins = sealed.get("predictions")
+        if not isinstance(pins, list):
+            raise ValueError(f"candidate {candidate['id']!r} evidence pins are malformed")
+        declared = []
+        for pin in pins:
+            path = pin.get("path") if isinstance(pin, dict) else None
+            expected = pin.get("sha256") if isinstance(pin, dict) else None
+            if not _string(path) or not isinstance(expected, str) or len(expected) != 64:
+                raise ValueError(
+                    f"candidate {candidate['id']!r} evidence pin is malformed"
+                )
+            path = os.path.realpath(path)
+            if _file_digest(path) != expected:
+                raise ValueError(
+                    f"candidate {candidate['id']!r} prediction evidence drifted"
+                )
+            declared.append(path)
+        found = _prediction_paths(os.path.realpath(run_dir))
+        if sorted(declared) != found or len(set(declared)) != len(declared):
+            raise ValueError(
+                f"candidate {candidate['id']!r} prediction inventory drifted"
+            )
+    summary_path = os.path.realpath(
+        os.path.join(candidate["summary_dir"], "walkforward.json")
+    )
+    published_candidate = copy.deepcopy(candidate)
+    for field in ("path", "summary_dir"):
+        value = published_candidate.get(field)
+        if _string(value):
+            published_candidate[field] = os.path.realpath(value)
+    return {
+        **published_candidate,
+        "evidence_manifest_path": summary_path,
+        "evidence_manifest_sha256": (
+            summary_sha256 if summary_sha256 is not None else _file_digest(summary_path)
+        ),
+    }
 
 
 def _better(left, right, select):
@@ -968,8 +1107,9 @@ class BenchmarkCompare(Stage):
                 raise ValueError(
                     f"candidate {candidate.get('id')!r} is not a successful run"
                 )
-            summary = _load_summary(candidate)
+            summary = _load_sealed_summary(candidate)
             _validate_summary(candidate, summary)
+            _seal_run_row(candidate, summary, candidate["evidence_manifest_sha256"])
             row = copy.deepcopy(candidate)
             row["summary"] = summary
             grouped.setdefault(candidate["group"], []).append(row)
@@ -1147,34 +1287,46 @@ class BenchmarkCompare(Stage):
 
         families = {}
         for row in ranking:
-            entry = families.setdefault(
-                row["family"], {"family": row["family"], "pair_means": [], "pair_ranks": []}
-            )
-            entry["pair_means"].append(row["mean"])
-            same_pair = [other for other in ranking if other["group"] == row["group"]]
+            entry = families.setdefault(row["family"], {})
+            pair = entry.setdefault(row["group"], {"means": []})
+            pair["means"].append(row["mean"])
+        family_pair_ranks = {}
+        for group in material:
+            means = {
+                family: sum(pairs[group]["means"]) / len(pairs[group]["means"])
+                for family, pairs in families.items()
+                if group in pairs
+            }
             ordered = sorted(
-                same_pair,
-                key=lambda other: (
-                    -other["mean"] if overall_select == "max" else other["mean"],
-                    other["id"],
+                means,
+                key=lambda family: (
+                    -means[family] if overall_select == "max" else means[family],
+                    family,
                 ),
             )
-            entry["pair_ranks"].append(
-                1 + [other["id"] for other in ordered].index(row["id"])
-            )
+            for rank, family in enumerate(ordered, 1):
+                family_pair_ranks[(family, group)] = rank
         family_ranking = []
-        for entry in families.values():
+        for family, pairs in families.items():
+            if set(pairs) != set(material):
+                raise ValueError("family aggregation is missing an approved pair")
+            pair_means = [
+                sum(pair["means"]) / len(pair["means"])
+                for _, pair in sorted(pairs.items())
+            ]
+            pair_ranks = [
+                family_pair_ranks[(family, group)]
+                for group in sorted(pairs)
+            ]
             family_ranking.append(
                 {
-                    "family": entry["family"],
-                    "n_pairs": len(entry["pair_means"]),
-                    "equal_pair_mean": sum(entry["pair_means"]) / len(entry["pair_means"]),
-                    "equal_pair_mean_rank": sum(entry["pair_ranks"]) / len(entry["pair_ranks"]),
+                    "family": family,
+                    "n_pairs": len(pair_means),
+                    "n_variants": sum(len(pair["means"]) for pair in pairs.values()),
+                    "equal_pair_mean": sum(pair_means) / len(pair_means),
+                    "equal_pair_mean_rank": sum(pair_ranks) / len(pair_ranks),
                 }
             )
-        expected_pairs = len(material)
-        if any(row["n_pairs"] != expected_pairs for row in family_ranking):
-            raise ValueError("family aggregation is missing an approved pair")
         family_ranking.sort(
             key=lambda row: (
                 -row["equal_pair_mean"]
@@ -1386,6 +1538,67 @@ def _superior_set(by_candidate, draws, seed, alpha, label):
     }
 
 
+def _verified_bytes(path, expected, label):
+    """Read once and verify the exact bytes that a consumer will parse."""
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError as exc:
+        raise ValueError(f"{label} cannot be read") from exc
+    if hashlib.sha256(raw).hexdigest() != expected:
+        raise ValueError(f"{label} evidence drifted")
+    return raw
+
+
+def _load_sealed_fold(candidate, fold, sealed, dotted):
+    """Load carry and predictions only from a verified private snapshot."""
+    run_dir = os.path.realpath(fold.get("run_dir", ""))
+    if (
+        not isinstance(sealed, dict)
+        or sealed.get("cutoff") != fold.get("cutoff")
+        or os.path.realpath(sealed.get("run_dir", "")) != run_dir
+    ):
+        raise ValueError(f"candidate {candidate['id']!r} evidence fold drifted")
+    carry = sealed.get("carry")
+    carry_path = carry.get("path") if isinstance(carry, dict) else None
+    carry_digest = carry.get("sha256") if isinstance(carry, dict) else None
+    expected_carry = os.path.realpath(os.path.join(run_dir, "carry.json"))
+    if (
+        not _string(carry_path)
+        or not is_sha256hex(carry_digest)
+        or os.path.realpath(carry_path) != expected_carry
+    ):
+        raise ValueError(f"candidate {candidate['id']!r} carry evidence pin is malformed")
+    pins = sealed.get("predictions")
+    if not isinstance(pins, list):
+        raise ValueError(f"candidate {candidate['id']!r} evidence pins are malformed")
+    declared = []
+    for pin in pins:
+        path = pin.get("path") if isinstance(pin, dict) else None
+        digest = pin.get("sha256") if isinstance(pin, dict) else None
+        if not _string(path) or not is_sha256hex(digest):
+            raise ValueError(f"candidate {candidate['id']!r} evidence pin is malformed")
+        declared.append(os.path.realpath(path))
+    if sorted(declared) != _prediction_paths(run_dir) or len(set(declared)) != len(declared):
+        raise ValueError(f"candidate {candidate['id']!r} prediction inventory drifted")
+    carry_raw = _verified_bytes(expected_carry, carry_digest, "carry")
+    prediction_raw = [
+        _verified_bytes(os.path.realpath(pin["path"]), pin["sha256"], "prediction")
+        for pin in pins
+    ]
+    with tempfile.TemporaryDirectory(prefix="dskit-sealed-fold-") as snapshot:
+        with open(os.path.join(snapshot, "carry.json"), "wb") as handle:
+            handle.write(carry_raw)
+        for index, raw in enumerate(prediction_raw):
+            target = os.path.join(snapshot, "artifacts", f"pin-{index:04d}")
+            os.makedirs(target, exist_ok=True)
+            with open(os.path.join(target, "predictions.parquet"), "wb") as handle:
+                handle.write(raw)
+        records = _carry_path(snapshot, dotted)
+        units = read_prediction_series(snapshot)
+    return records, units
+
+
 class PathBenchmarkCompare(BenchmarkCompare):
     """Add per-lead loss evidence and path-level uncertainty sets.
 
@@ -1471,20 +1684,22 @@ class PathBenchmarkCompare(BenchmarkCompare):
                     continue
                 if not _PATH_CANDIDATE_FIELDS <= set(candidate):
                     raise ValueError(f"candidate {candidate.get('id')!r} lacks path metadata")
-                summary = _load_summary(candidate)
+                summary = _load_sealed_summary(candidate)
                 horizon = candidate["max_horizon"]
                 weights = candidate["horizon_weights"]
+                sealed_folds = summary["evidence"]["folds"]
                 for fold_index, fold in enumerate(summary["folds"]):
                     cutoff = fold["cutoff"]
-                    run_dir = fold["run_dir"]
-                    records = _carry_path(
-                        run_dir, inputs["protocol"]["path_evidence"]
+                    records, units = _load_sealed_fold(
+                        candidate,
+                        fold,
+                        sealed_folds[fold_index],
+                        inputs["protocol"]["path_evidence"],
                     )
                     scales = {
                         int(row["lead"]): float(row["train_scale"])
                         for row in records
                     }
-                    units = read_prediction_series(run_dir)
                     if {unit["lead"] for unit in units} != set(range(1, horizon + 1)):
                         raise ValueError(
                             f"{candidate['id']} fold {cutoff} lacks the complete 1..H_i path"

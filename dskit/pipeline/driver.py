@@ -2672,6 +2672,51 @@ def _walkforward_report_lines(document, spec, state, folds, aggregate):
     return lines + _walkforward_search_lines(folds, aggregate)
 
 
+def _file_sha256(path):
+    """Hash one immutable run artifact without loading it into memory."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _walkforward_evidence(folds):
+    """Bind every saved prediction to the summary published for these folds."""
+    sealed = []
+    for fold in folds:
+        run_dir = os.path.realpath(fold.get("run_dir", ""))
+        paths = []
+        if os.path.isdir(run_dir):
+            for root, dirs, files in os.walk(run_dir):
+                dirs.sort()
+                if "predictions.parquet" in files:
+                    paths.append(os.path.realpath(os.path.join(root, "predictions.parquet")))
+        carry_path = os.path.realpath(os.path.join(run_dir, "carry.json"))
+        carry = (
+            {"path": carry_path, "sha256": _file_sha256(carry_path)}
+            if os.path.isfile(carry_path) else None
+        )
+        sealed.append(
+            {
+                "cutoff": fold.get("cutoff"),
+                "run_dir": run_dir,
+                "carry": carry,
+                "predictions": [
+                    {"path": path, "sha256": _file_sha256(path)}
+                    for path in sorted(paths)
+                ],
+            }
+        )
+    return {
+        "schema_version": 2,
+        "contract": "walkforward_fold_artifacts_at_summary_publish",
+        "folds": sealed,
+    }
+
+
 def write_walkforward_summary(
     summary_dir, document, asof, spec, state, folds, aggregate
 ):
@@ -2704,6 +2749,10 @@ def write_walkforward_summary(
         )
     """
     os.makedirs(summary_dir, exist_ok=True)
+    published_folds = copy.deepcopy(folds)
+    for fold in published_folds:
+        if isinstance(fold.get("run_dir"), str) and fold["run_dir"]:
+            fold["run_dir"] = os.path.realpath(fold["run_dir"])
     _write_json(
         os.path.join(summary_dir, "walkforward.json"),
         {
@@ -2713,8 +2762,9 @@ def write_walkforward_summary(
             "objective": spec.objective,
             "select": spec.select,
             "state": state,
-            "folds": folds,
+            "folds": published_folds,
             "aggregate": aggregate,
+            "evidence": _walkforward_evidence(published_folds),
         },
     )
     lines = _walkforward_report_lines(document, spec, state, folds, aggregate)
