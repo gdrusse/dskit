@@ -10,6 +10,7 @@ import math
 from datetime import timedelta, timezone
 
 from dskit.onboarding import parse_utc
+from dskit.pipeline.node import Node
 
 from .connectors import AlpacaBars, SchwabBars
 
@@ -17,6 +18,7 @@ __all__ = [
     "DEFAULT_BARS_PER_SYMBOL",
     "StubAlpacaBars",
     "StubSchwabBars",
+    "SyntheticMioSource",
     "synthetic_bar",
 ]
 
@@ -280,3 +282,117 @@ class _StubOAuth:
 
             raise AssetError(["authorization code must be a non-empty string"])
         return {"access_token": "stub", "refresh_token": "stub"}
+
+
+class SyntheticMioSource(Node):
+    """A deterministic toy source for the ADR-0111 MIO demo pipeline.
+
+    Role ``data``. Emits per-instrument cluster evidence for the owned
+    ``stat_test`` gate (three names, each with a clear positive edge in
+    every cluster, so all three survive) plus a synthetic forecast
+    ``bundle`` and ``portfolio`` state shaped for
+    :class:`~intraday_equities.nodes_capital.EquityKellyMIO`. Referenced
+    by import path from ``configs/run-mio-demo.json`` — the same "swap
+    this one node for a real source" pattern
+    ``examples/pipeline/pyomo-solve.json`` documents for the toolkit's
+    own ``PyomoSolve`` example. NOT real market data; every number here
+    is illustrative and reproducible, never fetched.
+
+    Parameters
+    ----------
+    params : dict
+        ``seed`` (int >= 0, default 0) — the only knob; jitters both the
+        stat_test evidence and the scenario draws deterministically.
+
+    Examples
+    --------
+    ::
+
+        node = SyntheticMioSource("source", {"seed": 0})
+        out = node.run(ctx, {})
+        sorted(out["bundle"][0])   # the bundle row's own field names
+    """
+
+    role = "data"
+    outputs = ("scores", "bundle", "portfolio")
+
+    #: Three names with a clear, deterministic positive edge — enough to
+    #: prove the whole gate-then-size loop end to end without needing real
+    #: market data.
+    _NAMES = ("AAPL", "MSFT", "XOM")
+    _N_CLUSTERS = 8
+    _N_SCENARIOS = 64
+    _PRICES = {"AAPL": 190.0, "MSFT": 410.0, "XOM": 110.0}
+    _MU = {"AAPL": 0.006, "MSFT": 0.004, "XOM": 0.002}
+    _SIGMA = {"AAPL": 0.012, "MSFT": 0.010, "XOM": 0.008}
+    _PI_UPPER = {"AAPL": 0.15, "MSFT": 0.20, "XOM": 0.25}
+    #: A fixed epoch — the decision tick is a reproducible instant, not
+    #: wall-clock "now"; EquityKellyMIO reads freshness off portfolio vs.
+    #: bundle timestamps alone, never off ctx.asof.
+    _ASOF_MS = 1_700_000_000_000
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none."""
+        problems = []
+        unknown = sorted(set(params) - {"seed"})
+        if unknown:
+            problems.append(f"unknown param(s) {unknown} — allowed: ['seed']")
+        seed = params.get("seed", 0)
+        if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+            problems.append(f"seed must be an int >= 0, got {seed!r}")
+        return problems
+
+    def fingerprint(self):
+        """Identity: the kind name plus ``seed`` (dict)."""
+        return {"kind": "synthetic-mio-source", "seed": self.params.get("seed", 0)}
+
+    def run(self, ctx, inputs):
+        """Build the deterministic evidence, bundle, and portfolio.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext
+            Unused — every value here is seed-derived, never wall-clock.
+        inputs : dict
+            Unused — this is a source node.
+
+        Returns
+        -------
+        dict
+            ``scores`` (the stat_test's food), ``bundle`` and
+            ``portfolio`` (EquityKellyMIO's inputs).
+        """
+        import numpy as np
+
+        seed = int(self.params.get("seed", 0))
+        rng = np.random.default_rng(seed)
+        weights = [1.0 / self._N_SCENARIOS] * self._N_SCENARIOS
+
+        scores, bundle = {}, []
+        for i, name in enumerate(self._NAMES):
+            scores[name] = {
+                f"c{c}": 0.02 + 0.001 * ((seed + i + c) % 5) for c in range(self._N_CLUSTERS)
+            }
+            draws = rng.normal(self._MU[name], self._SIGMA[name], self._N_SCENARIOS)
+            bundle.append(
+                {
+                    "entity": name,
+                    "decision_ts": self._ASOF_MS - 1000,
+                    "price": self._PRICES[name],
+                    "pi_upper": self._PI_UPPER[name],
+                    "weights": weights,
+                    "scenarios": [float(v) for v in draws],
+                }
+            )
+
+        portfolio = {
+            "asof_ms": self._ASOF_MS,
+            "cash": 20000.0,
+            "buying_power": 20000.0,
+            "positions": {},
+            "cash_reserve": 0.0,
+            "gross_limit": 12000.0,
+            "sale_credit": 1.0,
+        }
+        return {"scores": scores, "bundle": bundle, "portfolio": portfolio}

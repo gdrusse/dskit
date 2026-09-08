@@ -368,6 +368,12 @@ def utility_at(wealth, bankroll, kelly_fraction):
     ``u(w) = ((w/W0)^(1−gamma) − 1) / (1 − gamma)``, whose growth-optimal
     stake is the fractional-Kelly stake. Both are zero at ``w = W0``.
 
+    A thin ``kelly_fraction`` parametrization over
+    :func:`dskit.pipeline.libs.pyomo.tangent_utility` — the one home for
+    the tangent-plane evaluator itself (docs/plans/2026-09-intraday-equities-mio.md
+    §6, ADR-0111): this module carries the mapping ``gamma = 1 /
+    kelly_fraction``, never a second copy of the evaluator.
+
     Parameters
     ----------
     wealth : numpy.ndarray
@@ -382,15 +388,11 @@ def utility_at(wealth, bankroll, kelly_fraction):
     tuple of numpy.ndarray
         ``(u, u_prime)`` at each wealth level.
     """
-    import numpy as np
+    from dskit.pipeline.libs.pyomo import tangent_utility
 
-    w = np.asarray(wealth, dtype=float)
-    w0 = float(bankroll)
-    if float(kelly_fraction) >= 1.0:
-        return np.log(w / w0), 1.0 / w
-    gamma = 1.0 / float(kelly_fraction)
-    ratio = w / w0
-    return (ratio ** (1.0 - gamma) - 1.0) / (1.0 - gamma), ratio ** (-gamma) / w0
+    kf = float(kelly_fraction)
+    gamma = 1.0 if kf >= 1.0 else 1.0 / kf
+    return tangent_utility(wealth, bankroll, gamma)
 
 
 @dataclass(frozen=True)

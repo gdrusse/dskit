@@ -1,0 +1,48 @@
+{
+  "name": "intraday-equities-mio-demo",
+  "notes": "UNCALIBRATED DEMO — synthetic data only, never wired to live/paper trading (ADR-0111, docs/plans/2026-09-intraday-equities-mio.md). Mirrors examples/pipeline/pyomo-solve.json's three-node shape: a deterministic toy source (intraday_equities.testing:SyntheticMioSource) emits per-instrument cluster evidence for the owned stat_test gate plus a synthetic forecast bundle and portfolio state; the stat_test decides which of AAPL/MSFT/XOM survive (all three, by construction — the source's edge is unambiguous); EquityKellyMIO then sizes only the survivors under the scenario-utility MILP (dskit/pipeline/libs/pyomo.py:ScenarioUtilitySolve). The risk knobs below are the design plan's own illustrative reference values (§4/§12), not calibrated against any realized data — swap the source node for a real forecast-bundle producer and replace every risk knob with an owner-approved number before this touches real capital.",
+
+  "pipeline": {
+    "source": {
+      "uses": "intraday_equities.testing:SyntheticMioSource",
+      "params": { "seed": 0 },
+      "notes": "role data. NOT real market data — three names with a clear, deterministic positive edge, reproducible across runs. Swap this node for a real bundle producer to make the document real."
+    },
+
+    "edge_test": {
+      "uses": "stat_test",
+      "inputs": { "scores": "$source.scores" },
+      "params": { "alpha": 0.05, "correction": "bh", "n_boot": 2000, "seed": 0 },
+      "notes": "role stat_test, toolkit-OWNED. One-sided event-clustered bootstrap per instrument, then one BH correction across the family. All three survivors are expected here — the source's evidence is unambiguous by construction."
+    },
+
+    "size": {
+      "uses": "intraday_equities.nodes_capital:EquityKellyMIO",
+      "inputs": {
+        "bundle": "$source.bundle",
+        "portfolio": "$source.portfolio",
+        "survivors": "$edge_test.survivors"
+      },
+      "params": {
+        "risk_aversion_gamma": 2.0,
+        "n_tangents": 32,
+        "n_scenarios_max": 64,
+        "cvar_alpha": 0.95,
+        "cvar_limit": 5000.0,
+        "cardinality": 5,
+        "min_ticket": 500.0,
+        "spread_bps": 2.2,
+        "taf_per_share": 0.000195,
+        "sec31_bps": 0.0206,
+        "min_price": 5.0,
+        "hfdr_q": 0.30,
+        "band_bps": 10.0,
+        "max_position_notional": 5000.0,
+        "bundle_max_staleness_ms": 5000,
+        "solver": "appsi_highs",
+        "solver_options": {}
+      },
+      "notes": "role capital. The survivors wire is structural: un-gated capital refuses to plan. Every risk knob here is the plan's own illustrative reference value (docs/plans/2026-09-intraday-equities-mio.md §4/§12) — an owner decision for any real run, never a code default (ScenarioUtilitySolve/EquityKellyMIO refuse to construct without one)."
+    }
+  }
+}

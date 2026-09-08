@@ -31,10 +31,14 @@ from .nodes import (
     Universe,
     WindowRows,
 )
+from .nodes_capital import NODE_KINDS as CAPITAL_NODE_KINDS
+from .nodes_capital import EquityKellyMIO
 
 __all__ = [
     "AlpacaBars",
     "BarsFromStore",
+    "CAPITAL_NODE_KINDS",
+    "EquityKellyMIO",
     "FeedParity",
     "FoldFeatureStats",
     "HorizonScan",
