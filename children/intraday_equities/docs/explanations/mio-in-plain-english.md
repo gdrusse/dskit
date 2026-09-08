@@ -155,3 +155,6 @@ signal will survive the delay between decision and execution.
 
 That is why the honest current status is **designed and reviewed, not implemented
 for intraday equities**.
+
+For the full equations, project input lineage, and output-to-decision wiring, see
+`mio-technical-implementation.md`.
