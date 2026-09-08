@@ -849,6 +849,12 @@ class ScenarioUtilitySolve(PyomoSolve):
                 f"(unconstrained), got {account['gross_limit']!r}"
             )
         w_lo, w_hi = float(account["wealth_lo"]), float(account["wealth_hi"])
+        if w_lo <= 0.0:
+            raise ValueError(
+                f"{self.key}: account wealth_lo {w_lo!r} must be > 0 — tangent_utility "
+                "(and the tangent knots built from this interval) is undefined at or "
+                "below zero wealth"
+            )
         if not w_lo < w_hi:
             raise ValueError(
                 f"{self.key}: account wealth_lo {w_lo!r} must be < wealth_hi {w_hi!r}"

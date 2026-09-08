@@ -485,8 +485,14 @@ class TestNoTradeBandFloorsAreLoadBearing:
             positions={"AAPL": held}, cash=999999.0, buying_power=999999.0, gross_limit=gross_limit
         )
         node = _node(band_bps=band_bps, cardinality=1, max_position_notional=999999.0)
-        out = node.run(_ctx(tmp_path), {"bundle": [row], "portfolio": portfolio, "survivors": {"AAPL"}})
+        inputs = {"bundle": [row], "portfolio": portfolio, "survivors": {"AAPL"}}
+        # instruments() alone, not post-run state — run() clears its
+        # transient bookkeeping in a finally (a round-10 skeptic-review fix).
+        _names, _rows, _account = node.instruments(inputs)
         assert node._band_shares["AAPL"] == 10
+        out = _node(band_bps=band_bps, cardinality=1, max_position_notional=999999.0).run(
+            _ctx(tmp_path), inputs
+        )
         assert out["trades"] == {}  # blocked: only 5 shares of room, floor needs 10
 
     def test_the_sell_floor_forces_a_real_trim_not_a_dust_sell(self, tmp_path):
@@ -503,10 +509,15 @@ class TestNoTradeBandFloorsAreLoadBearing:
         # cvar_limit=3400: with band_bps=0 this fixture's unconstrained
         # CVaR-driven trim is 4 shares — comfortably below the floor of
         # 100, so the floor (not coincidence) is what forces the jump.
-        node = _node(band_bps=band_bps, cardinality=1, cvar_alpha=0.9, cvar_limit=3400.0,
-                     max_position_notional=999999.0)
-        out = node.run(_ctx(tmp_path), {"bundle": [row], "portfolio": portfolio, "survivors": {"XOM"}})
+        node_params = dict(band_bps=band_bps, cardinality=1, cvar_alpha=0.9, cvar_limit=3400.0,
+                            max_position_notional=999999.0)
+        inputs = {"bundle": [row], "portfolio": portfolio, "survivors": {"XOM"}}
+        # instruments() alone, not post-run state — run() clears its
+        # transient bookkeeping in a finally (a round-10 skeptic-review fix).
+        node = _node(**node_params)
+        node.instruments(inputs)
         assert node._band_shares["XOM"] == 100
+        out = _node(**node_params).run(_ctx(tmp_path), inputs)
         sold = out["trades"].get("XOM", {"sell": 0})["sell"]
         assert sold == 0 or sold >= 100
         assert sold != 4  # pin the exact "would-be dust trim" this fixture proves the floor blocks
@@ -596,3 +607,36 @@ class TestAccountFieldsAreValidated:
         bundle[0] = dict(bundle[0], weights=[0.1] * 8)  # sums to 0.8
         problems = _bundle_problems(bundle)
         assert any("must sum to 1" in p for p in problems)
+
+
+class TestTransientStateIsClearedAfterRun:
+    """Regression for a round-10 skeptic-review finding: the class
+    docstring claimed _pi_upper/_band_shares/_payoffs/_evidence are "set
+    by instruments and cleared by run", but run() never actually cleared
+    them — a false claim and a missing defensive guard (the doorway's own
+    _scn IS cleared in a finally). Not an observed wrong-output bug (a
+    subsequent run's instruments() call always rebuilds all four before
+    anything reads them), but a node instance should not carry a prior
+    run's bookkeeping around once run() has returned."""
+
+    def test_state_is_none_after_a_successful_run(self, tmp_path):
+        node = _node()
+        node.run(
+            _ctx(tmp_path),
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}},
+        )
+        assert node._pi_upper is None
+        assert node._band_shares is None
+        assert node._payoffs is None
+        assert node._evidence is None
+
+    def test_state_is_none_after_the_empty_gate_short_circuit(self, tmp_path):
+        node = _node()
+        node.run(
+            _ctx(tmp_path),
+            {"bundle": [], "portfolio": _portfolio(cash=500.0), "survivors": set()},
+        )
+        assert node._pi_upper is None
+        assert node._band_shares is None
+        assert node._payoffs is None
+        assert node._evidence is None

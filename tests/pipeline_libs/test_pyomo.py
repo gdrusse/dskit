@@ -925,3 +925,25 @@ class TestScenarioUtilityRealSolve:
         node = _su_node()
         with pytest.raises(ValueError, match="net worth"):
             node.run(_ctx(tmp_path), fixture)
+
+    def test_a_zero_wealth_lo_is_refused_by_name_not_corrupted_into_inf(self, tmp_path):
+        # Regression for a round-10 skeptic-review finding: wealth_lo
+        # feeds tangent_utility's own wealth axis (the tangent knots run
+        # from wealth_lo to wealth_hi), which is undefined at wealth <= 0
+        # exactly like w0_mark (round 9). Nothing enforced wealth_lo > 0
+        # specifically, so a caller computing its own envelope without
+        # EquityKellyMIO's floor (max(1.0, ...)) could feed 0 or negative
+        # and corrupt the tangent rows with inf/nan coefficients, reaching
+        # an opaque solver "infeasible" instead of a named refusal.
+        fixture = _su_fixture()
+        fixture["account"]["wealth_lo"] = 0.0
+        node = _su_node()
+        with pytest.raises(ValueError, match="wealth_lo"):
+            node.run(_ctx(tmp_path), fixture)
+
+    def test_a_negative_wealth_lo_is_refused_by_name(self, tmp_path):
+        fixture = _su_fixture()
+        fixture["account"]["wealth_lo"] = -500.0
+        node = _su_node()
+        with pytest.raises(ValueError, match="wealth_lo"):
+            node.run(_ctx(tmp_path), fixture)

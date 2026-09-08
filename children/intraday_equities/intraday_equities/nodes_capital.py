@@ -613,9 +613,14 @@ class EquityKellyMIO(ScenarioUtilitySolve):
 
     def run(self, ctx, inputs):
         """Solve, then attach the routing/gating evidence to the reported outputs."""
-        out = super().run(ctx, inputs)
-        out["evidence"] = self._evidence or {"n_bundle_rows": 0, "n_gated": 0, "n_held": 0, "routed_out": {}}
-        return out
+        try:
+            out = super().run(ctx, inputs)
+            out["evidence"] = self._evidence or {
+                "n_bundle_rows": 0, "n_gated": 0, "n_held": 0, "routed_out": {},
+            }
+            return out
+        finally:
+            self._pi_upper = self._band_shares = self._payoffs = self._evidence = None
 
 
 #: kind name -> class: what the registry, the conformance suite, and a
