@@ -848,6 +848,28 @@ class ScenarioUtilitySolve(PyomoSolve):
                 f"{self.key}: account['gross_limit'] must be a finite number or null "
                 f"(unconstrained), got {account['gross_limit']!r}"
             )
+        cash0 = float(account["cash"])
+        buying_power0 = float(account["buying_power"])
+        sale_credit = float(account["sale_credit"])
+        cash_reserve = float(account.get("cash_reserve", 0.0))
+        gross_limit = account.get("gross_limit")
+        # Checked BEFORE wealth_lo/wealth_hi, deliberately: a negative-net-
+        # worth account derives an already-nonsensical envelope (a round-11
+        # skeptic review found a deeply negative net worth surfacing the
+        # generic "wealth_lo must be < wealth_hi" message instead of this
+        # one, since a caller's own envelope math can accidentally produce
+        # wealth_lo < wealth_hi even when net worth itself is deeply
+        # negative) — net worth is the actual thing an operator would fix,
+        # so its refusal must win the race.
+        w0_mark = cash0 + sum(float(rows[i]["price"]) * float(rows[i]["held"]) for i in names)
+        if w0_mark <= 0.0:
+            raise ValueError(
+                f"{self.key}: account net worth (cash + mark value of held instruments) "
+                f"must be > 0, got {w0_mark!r} — the tangent-plane utility objective "
+                "(tangent_utility, gamma-relative to this mark) is undefined at or below "
+                "zero wealth; a zero/negative-cash account with nothing held cannot be "
+                "sized, and must refuse by name rather than reach the solver as NaN"
+            )
         w_lo, w_hi = float(account["wealth_lo"]), float(account["wealth_hi"])
         if w_lo <= 0.0:
             raise ValueError(
@@ -858,20 +880,6 @@ class ScenarioUtilitySolve(PyomoSolve):
         if not w_lo < w_hi:
             raise ValueError(
                 f"{self.key}: account wealth_lo {w_lo!r} must be < wealth_hi {w_hi!r}"
-            )
-        cash0 = float(account["cash"])
-        buying_power0 = float(account["buying_power"])
-        sale_credit = float(account["sale_credit"])
-        cash_reserve = float(account.get("cash_reserve", 0.0))
-        gross_limit = account.get("gross_limit")
-        w0_mark = cash0 + sum(float(rows[i]["price"]) * float(rows[i]["held"]) for i in names)
-        if w0_mark <= 0.0:
-            raise ValueError(
-                f"{self.key}: account net worth (cash + mark value of held instruments) "
-                f"must be > 0, got {w0_mark!r} — the tangent-plane utility objective "
-                "(tangent_utility, gamma-relative to this mark) is undefined at or below "
-                "zero wealth; a zero/negative-cash account with nothing held cannot be "
-                "sized, and must refuse by name rather than reach the solver as NaN"
             )
 
         gamma = float(params["risk_aversion_gamma"])

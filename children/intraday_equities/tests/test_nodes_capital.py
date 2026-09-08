@@ -640,3 +640,26 @@ class TestTransientStateIsClearedAfterRun:
         assert node._band_shares is None
         assert node._payoffs is None
         assert node._evidence is None
+
+
+class TestNegativeNetWorthGivesTheClearMessage:
+    """Regression for a round-11 skeptic-review finding: a DEEPLY negative
+    net worth (cash far below the mark value of held positions) could
+    surface the generic "wealth_lo must be < wealth_hi" refusal instead of
+    the dedicated net-worth message, because EquityKellyMIO's own envelope
+    derivation (wealth_lo = max(1.0, w0_mark - span)) can accidentally
+    keep wealth_lo < wealth_hi even when net worth itself is deeply
+    negative. Both refusals are loud and named — nothing was silent — but
+    the net-worth message is the one that actually points an operator at
+    cash/positions, the thing to fix, so it must win the race."""
+
+    def test_a_deep_margin_debit_gets_the_net_worth_message(self, tmp_path):
+        node = _node()
+        portfolio = _portfolio(
+            positions={"AAPL": 30}, cash=-6000.0, buying_power=1000.0
+        )  # net worth = -6000 + 30*190 = -300
+        with pytest.raises(ValueError, match="net worth"):
+            node.run(
+                _ctx(tmp_path),
+                {"bundle": _bundle(), "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}},
+            )
