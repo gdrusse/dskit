@@ -715,6 +715,23 @@ class TestScenarioUtilityRealSolve:
             notional = out["target"][name] * (100.0 if name == "AAA" else 50.0)
             assert notional >= SU_PARAMS["min_ticket"] - 1e-6
 
+    def test_exit_cost_per_share_is_load_bearing(self, tmp_path):
+        # A round-3 skeptic review proved by mutation that this suite never
+        # set exit_cost_per_share, so a regression in the wealth formula's
+        # use of it (dskit/pipeline/libs/pyomo.py's _wealth_rule AND the
+        # extract() recompute both subtract it — nothing pins them to
+        # agree) would pass every existing test silently. Prove it changes
+        # the reported numbers at the BASE level, not just in the child.
+        fixture_free = _su_fixture()
+        fixture_costly = _su_fixture()
+        for row in fixture_costly["rows"].values():
+            row["exit_cost_per_share"] = 5.0
+        out_free = _su_node(cvar_limit=None).run(_ctx(tmp_path), fixture_free)
+        out_costly = _su_node(cvar_limit=None).run(_ctx(tmp_path), fixture_costly)
+        assert out_free["target"], "fixture must actually hold something for this to test anything"
+        assert out_costly["metrics"]["wealth_max"] < out_free["metrics"]["wealth_max"]
+        assert out_costly["metrics"]["expected_utility"] < out_free["metrics"]["expected_utility"]
+
     def test_held_inventory_alone_still_solves(self, tmp_path):
         fixture = _su_fixture()
         fixture["rows"]["AAA"]["held"] = 10

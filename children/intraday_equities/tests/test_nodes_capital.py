@@ -308,6 +308,21 @@ class TestExitCostIsPriced:
             assert rows[name]["exit_cost_per_share"] == pytest.approx(rows[name]["cost_sell"])
             assert rows[name]["exit_cost_per_share"] > 0.0
 
+    def test_exit_cost_per_share_is_populated_on_the_mandatory_exit_branch_too(self, tmp_path):
+        # A round-3 skeptic review flagged that the test above only
+        # exercises the ordinary gated branch (price from the bundle row);
+        # the mandatory-exit branch (price from portfolio.mark_prices) was
+        # unpinned even though the code path is different.
+        bundle = [row for row in _bundle() if row["entity"] != "XOM"]
+        portfolio = _portfolio(positions={"XOM": 20}, mark_prices={"XOM": 108.0})
+        node = _node()
+        names, rows, _account = node.instruments(
+            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}}
+        )
+        assert "XOM" in names
+        assert rows["XOM"]["exit_cost_per_share"] == pytest.approx(rows["XOM"]["cost_sell"])
+        assert rows["XOM"]["exit_cost_per_share"] > 0.0
+
     def test_zeroing_exit_cost_understates_the_reported_cvar(self, tmp_path):
         survivors = {"AAPL", "MSFT", "XOM"}
         portfolio = _portfolio(positions={"AAPL": 50}, cash=15000.0, buying_power=15000.0)
