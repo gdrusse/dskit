@@ -783,6 +783,46 @@ class TestScenarioUtilityRealSolve:
         assert out_a["target"] == out_b["target"]
         assert out_a["trades"] == out_b["trades"]
 
+    def test_a_sub_min_ticket_legacy_position_can_be_left_untouched(self, tmp_path):
+        # Regression for a round-4 skeptic-review BLOCKER: a held position
+        # smaller than min_ticket used to force elig_lo (x_i >= min_ticket
+        # whenever held-at-all) to demand EITHER a full exit or a top-up —
+        # and with thin buying power and a subclass's own no-trade band
+        # (which floors exit size too), NEITHER could be satisfied, so the
+        # solver's own doorway made the WHOLE joint solve infeasible over a
+        # position nobody asked to touch. min_ticket must bind only a tick
+        # that actually buys.
+        fixture = _su_fixture()
+        fixture["rows"]["AAA"]["held"] = 1  # $100 notional, far under min_ticket=$50
+        fixture["account"]["cash"] = 0.0
+        fixture["account"]["buying_power"] = 0.0  # cannot top up OR buy anything else
+        fixture["account"]["wealth_lo"] = 1.0  # must bracket the tiny achievable wealth —
+        fixture["account"]["wealth_hi"] = 300.0  # a fixture-consistency detail, not part of the fix
+        node = _su_node(min_ticket=5000.0)  # far above AAA's $100 legacy notional
+        out = node.run(_ctx(tmp_path), fixture)
+        assert out["target"].get("AAA") == 1  # left exactly as held, untouched
+        assert "AAA" not in out["trades"]
+
+    def test_buying_and_selling_the_same_name_in_one_tick_is_impossible(self, tmp_path):
+        # Regression for a round-4 skeptic-review MAJOR: without a
+        # direction binary, the solver could "wash trade" (buy X, sell X)
+        # to satisfy a subclass's no-trade-band floor on GROSS trade size
+        # while the NET position barely moved — defeating the very
+        # guarantee the band exists to provide. Proven generically here at
+        # the base level: min(buy, sell) must be exactly 0 for every name,
+        # under an objective explicitly REWARDING large gross churn (which
+        # would otherwise incentivize exactly this).
+        class RewardChurn(TwoNameSolve):
+            def domain_constraints(self, model, inputs, params):
+                model.objective.expr += 1e-6 * sum(model.b[i] + model.s[i] for i in model._scn["names"])
+
+        fixture = _su_fixture()
+        fixture["rows"]["AAA"]["held"] = 20
+        node = RewardChurn("size", SU_PARAMS)
+        out = node.run(_ctx(tmp_path), fixture)
+        for name, trade in out["trades"].items():
+            assert trade["buy"] == 0 or trade["sell"] == 0, (name, trade)
+
     def test_a_domain_constraint_row_is_wired_in(self, tmp_path):
         class ForbidAAA(TwoNameSolve):
             def domain_constraints(self, model, inputs, params):

@@ -588,13 +588,19 @@ class ScenarioUtilitySolve(PyomoSolve):
       charge): nothing here, because those ARE domain policy.
 
     What this class owns, and a subclass never restates: inventory
-    transition (``q = held + buy - sell``, long-only), self-financing
+    transition (``q = held + buy - sell``, long-only, ONE direction per
+    name per tick — buying and selling the same name in the same solve is
+    structurally impossible, not merely discouraged, so a subclass's own
+    trade-size floor can never be defeated by a wash trade), self-financing
     cash and buying-power inequalities, cardinality and ``min_ticket``
-    eligibility gating, the tangent-plane utility objective (built from
-    :func:`tangent_utility`), the CVaR block, the empty-gate short
-    circuit, and a post-solve EXACT recompute of every reported number
-    (never the solver's own variable values) that raises on any
-    violation or on a non-``optimal`` termination.
+    eligibility gating (the ``min_ticket`` floor binds a tick that BUYS,
+    never a pre-existing position a subclass's own document never asked to
+    touch — "do nothing" is always feasible regardless of a position's
+    size relative to the current ``min_ticket``), the tangent-plane utility
+    objective (built from :func:`tangent_utility`), the CVaR block, the
+    empty-gate short circuit, and a post-solve EXACT recompute of every
+    reported number (never the solver's own variable values) that raises
+    on any violation or on a non-``optimal`` termination.
 
     Every reported cost coefficient (``cost_buy``/``cost_sell``/
     ``exit_cost_per_share``) is a flat, ALREADY-COMPUTED dollars-per-share
@@ -729,9 +735,12 @@ class ScenarioUtilitySolve(PyomoSolve):
         domain row may reference ``model.b[name]``/``model.s[name]``
         (integer buy/sell shares), ``model.q[name]``/``model.x[name]``
         (target shares / target notional, as pyomo ``Expression``
-        objects), ``model.y[name]`` (binary held indicator), ``model.W[o]``
-        (scenario wealth) and ``model.cash_after``. ``model._scn["names"]``
-        carries the instrument order.
+        objects), ``model.y[name]`` (binary held-at-all indicator),
+        ``model.d[name]`` (binary trade direction — 1 buys this tick, 0
+        sells or holds; ``b[name]`` and ``s[name]`` can never both be
+        positive for the same name in the same tick, by construction),
+        ``model.W[o]`` (scenario wealth) and ``model.cash_after``.
+        ``model._scn["names"]`` carries the instrument order.
         """
         raise NotImplementedError
 
@@ -846,6 +855,17 @@ class ScenarioUtilitySolve(PyomoSolve):
 
         omega_ix = list(range(n_omega))
 
+        # A safe (generous, never-binding-early) upper bound on shares
+        # BOUGHT this tick: the post-trade target is capped at x_max_i by
+        # elig_hi, so q_i (and thus b_i, since s_i >= 0) can never usefully
+        # exceed x_max_i/price_i + held_i regardless of what d_i does.
+        buy_room = {
+            i: int(float(rows[i]["x_max"]) / float(rows[i]["price"])) + int(rows[i]["held"]) + 1
+            if float(rows[i]["price"]) > 0
+            else int(rows[i]["held"]) + 1
+            for i in names
+        }
+
         model = ConcreteModel(name="scenario-utility-solve")
         model.b = Var(names, domain=NonNegativeIntegers)
         model.s = Var(
@@ -853,6 +873,18 @@ class ScenarioUtilitySolve(PyomoSolve):
             bounds=lambda m, i: (0, int(rows[i]["held"])),
         )
         model.y = Var(names, domain=Binary)
+        # Direction: 1 buys this tick, 0 sells (or holds). Two jobs, one
+        # binary: (a) makes a same-tick buy+sell of one name STRUCTURALLY
+        # impossible — a "wash trade" that pads gross trade size to clear
+        # a no-trade band's floor while the NET position barely moves is
+        # otherwise legal MILP behavior, not a caller bug; (b) lets
+        # elig_lo apply the min_ticket floor only to a tick that actually
+        # BUYS, so a pre-existing position smaller than a later-declared
+        # min_ticket can be left untouched (d_i=0, b_i=s_i=0 stays
+        # feasible) rather than forced to trade — the base's own
+        # min_ticket gate must never be the thing that makes "do nothing"
+        # infeasible for a name a caller never asked to touch.
+        model.d = Var(names, domain=Binary)
         model.W = Var(omega_ix, bounds=(w_lo, w_hi))
         model.t = Var(omega_ix, domain=Reals)
         model.eta = Var(domain=Reals)
@@ -864,11 +896,17 @@ class ScenarioUtilitySolve(PyomoSolve):
         model.x = Expression(names, rule=lambda m, i: float(rows[i]["price"]) * m.q[i])
 
         model.nonneg_q = Constraint(names, rule=lambda m, i: m.q[i] >= 0)
+        model.buy_only = Constraint(
+            names, rule=lambda m, i: m.b[i] <= buy_room[i] * m.d[i]
+        )
+        model.sell_only = Constraint(
+            names, rule=lambda m, i: m.s[i] <= int(rows[i]["held"]) * (1 - m.d[i])
+        )
         model.elig_hi = Constraint(
             names, rule=lambda m, i: m.x[i] <= float(rows[i]["x_max"]) * m.y[i]
         )
         model.elig_lo = Constraint(
-            names, rule=lambda m, i: m.x[i] >= min_ticket * m.y[i]
+            names, rule=lambda m, i: m.x[i] >= min_ticket * m.d[i]
         )
         model.cardinality = Constraint(expr=sum(model.y[i] for i in names) <= cardinality)
 
@@ -1048,6 +1086,12 @@ class ScenarioUtilitySolve(PyomoSolve):
                 f"exceeds {meta['cardinality']!r}"
             )
         for i, q in target.items():
+            if b[i] == 0:
+                # min_ticket binds a tick that BUYS (elig_lo is
+                # min_ticket * d_i in build_model) — a pre-existing
+                # position left untouched, or only ever sold down, is
+                # exempt by design, not a gap in this check.
+                continue
             notional = float(rows[i]["price"]) * q
             if notional < meta["min_ticket"] - 1e-6:
                 raise AssertionError(
