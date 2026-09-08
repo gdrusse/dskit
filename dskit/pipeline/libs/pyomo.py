@@ -961,6 +961,25 @@ class ScenarioUtilitySolve(PyomoSolve):
         return model
 
     def extract(self, model, results):
+        """Read the solved model and recompute every reported number exactly.
+
+        Two different kinds of check live here, and a reviewer should not
+        expect the same independence from both. Cardinality, ``min_ticket``
+        and CVaR are recomputed by a GENUINELY DIFFERENT method than the
+        model encodes (counting the target dict; a closed-form weighted
+        quantile via :func:`_weighted_cvar` rather than reading the
+        solver's own ``eta``/``z``), so each can catch a conceptual error
+        in its own constraint rows. Cash, buying power, gross exposure and
+        scenario wealth are DEFINITIONAL identities — self-financing cash
+        after trades, notional times target shares — so recomputing them
+        here re-derives the same arithmetic from the solved integer
+        variables rather than from the model's own continuous relaxation;
+        what that catches is the solver reporting a value inconsistent
+        with its own INTEGER solution (rounding, a stale ``.value``,
+        infeasible float dust), not a shared conceptual error in those
+        rows' formulas — there is no second, independently-derivable
+        formula for what cash after a set of trades IS.
+        """
         import numpy as np
 
         condition = str(

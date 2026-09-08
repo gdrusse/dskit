@@ -256,10 +256,13 @@ class TestRealSolve:
 
     def test_the_no_trade_band_forbids_a_dust_sized_trade(self, tmp_path):
         # A name already held near its target should not see a trade
-        # smaller than the declared band — band_bps=10 on a $19,000 ticket
-        # is a ~$19 threshold, well above a one-share ($190) AAPL nudge in
-        # the other direction, so band-driven inaction must show up as
-        # EITHER no trade, or a trade at least band_shares_i in size.
+        # smaller than the declared band — band_bps=1000 (10%) on a
+        # $19,000 ticket is a ~$1,900 (10-share) threshold, well above a
+        # one-share ($190) AAPL nudge, so band-driven inaction must show
+        # up as EITHER no trade, or a trade at least band_shares_i in
+        # size — asserted UNCONDITIONALLY (a skeptic review flagged the
+        # earlier version of this test for skipping the assertion
+        # entirely whenever no AAPL trade happened).
         bundle = _bundle()
         portfolio = _portfolio(positions={"AAPL": 100}, cash=1000.0, buying_power=1000.0)
         node = _node(band_bps=1000.0)  # a deliberately huge band
@@ -267,11 +270,11 @@ class TestRealSolve:
             _ctx(tmp_path),
             {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}},
         )
-        if "AAPL" in out["trades"]:
-            moved = out["trades"]["AAPL"]["buy"] + out["trades"]["AAPL"]["sell"]
-            ticket = 190.0 * 100
-            band_shares = int(-(-(1000.0 * 1e-4 * ticket) // 190.0))
-            assert moved >= band_shares
+        moved = out["trades"].get("AAPL", {"buy": 0, "sell": 0})
+        total = moved["buy"] + moved["sell"]
+        ticket = 190.0 * 100
+        band_shares = int(-(-(1000.0 * 1e-4 * ticket) // 190.0))
+        assert total == 0 or total >= band_shares
 
     def test_identical_inputs_give_identical_output_twice(self, tmp_path):
         survivors = {"AAPL", "MSFT", "XOM"}
@@ -280,3 +283,75 @@ class TestRealSolve:
         out_b = _node().run(_ctx(tmp_path), inputs)
         assert out_a["target"] == out_b["target"]
         assert out_a["trades"] == out_b["trades"]
+
+
+class TestExitCostIsPriced:
+    """Regression for a skeptic-review BLOCKER: ``exit_cost_per_share`` was
+    never populated by ``instruments()``, so it silently defaulted to the
+    doorway's zero — pricing every liquidation as free and understating
+    reported CVaR by ~23x in the reviewer's worked example."""
+
+    def test_exit_cost_per_share_is_populated_and_matches_the_sell_cost(self, tmp_path):
+        node = _node()
+        names, rows, _account = node.instruments(
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}}
+        )
+        assert names
+        for name in names:
+            assert rows[name]["exit_cost_per_share"] == pytest.approx(rows[name]["cost_sell"])
+            assert rows[name]["exit_cost_per_share"] > 0.0
+
+    def test_zeroing_exit_cost_understates_the_reported_cvar(self, tmp_path):
+        survivors = {"AAPL", "MSFT", "XOM"}
+        portfolio = _portfolio(positions={"AAPL": 50}, cash=15000.0, buying_power=15000.0)
+        inputs = {"bundle": _bundle(), "portfolio": portfolio, "survivors": survivors}
+
+        real_out = _node(cvar_limit=100000.0).run(_ctx(tmp_path), inputs)
+
+        class ZeroExitCost(EquityKellyMIO):
+            def instruments(self, inp):
+                names, rows, account = super().instruments(inp)
+                for row in rows.values():
+                    row["exit_cost_per_share"] = 0.0
+                return names, rows, account
+
+        zero_out = ZeroExitCost("size2", {**PARAMS, "cvar_limit": 100000.0}).run(_ctx(tmp_path), inputs)
+        assert zero_out["metrics"]["cvar"] < real_out["metrics"]["cvar"]
+
+
+class TestPositionBookkeeping:
+    """Regression for a skeptic-review MAJOR: a zero-share entry in
+    ``portfolio.positions`` (a closed-out symbol left at 0 rather than
+    removed) was wrongly treated as held, demanding a mark price for a
+    position that does not exist."""
+
+    def test_a_zero_share_position_entry_is_not_treated_as_held(self, tmp_path):
+        bundle = [row for row in _bundle() if row["entity"] != "XOM"]
+        portfolio = _portfolio(positions={"XOM": 0})  # no mark_prices supplied on purpose
+        node = _node()
+        out = node.run(
+            _ctx(tmp_path),
+            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}},
+        )
+        assert "XOM" not in out["target"]
+        assert "XOM" not in out["trades"]
+
+
+class TestTafNeverUndercharges:
+    """Regression for a skeptic-review MAJOR: sizing the per-share TAF rate
+    against currently-held shares (``taf_cap / held``) undercharged a small
+    sell against a large held position by ~20x in the reviewer's worked
+    example. The fixed rate must never fall below the flat, uncapped
+    ``taf_per_share``."""
+
+    def test_a_small_sell_against_a_large_position_is_not_undercharged(self, tmp_path):
+        node = _node()
+        names, rows, _account = node.instruments(
+            {
+                "bundle": [],
+                "portfolio": _portfolio(positions={"AAPL": 1000}, mark_prices={"AAPL": 190.0}),
+                "survivors": set(),
+            }
+        )
+        assert names == ["AAPL"]
+        assert rows["AAPL"]["cost_sell"] >= PARAMS["taf_per_share"] - 1e-12

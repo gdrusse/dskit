@@ -5980,19 +5980,22 @@ gap:**
   the plan). Only the already-approved scenario-recentering mechanism for
   `U_mu` ships; the robust-budget term (`Gamma`, `kappa`) remains open per
   the plan's owner decision 6.
-- The exact TAF-cap piecewise linearization the plan's §5.3 describes.
-  `ScenarioUtilitySolve`'s cost coefficients are flat $/share numbers
-  (tier-2 stays domain-blind to what a "TAF" even is), so a per-ORDER
-  dollar cap cannot enter the base's linear cash/wealth rows without
-  a size-dependent rate. `EquityKellyMIO` instead prices the per-share
-  TAF rate against the CURRENT HELD SHARES as the reference sell size —
-  `min(taf_per_share, taf_cap / max(1, held))` — the same "price the fee
-  ahead of the solve, at a plausible size" pattern `pmquant.mio.gated_sides`
-  already uses for its own per-level fee. It is an approximation, not the
-  cap's exact piecewise form; a real sell far from the held size is billed
-  at a slightly wrong flat rate. Exact per-order cap linearization needs a
-  second cost variable threaded through the base's cash/wealth rows and is
-  a named follow-up if it turns out to matter financially.
+- The TAF per-order dollar cap. `ScenarioUtilitySolve`'s cost coefficients
+  are flat $/share numbers (tier-2 stays domain-blind to what a "TAF" even
+  is), so a per-ORDER cap cannot enter the base's linear cash/wealth rows
+  without a size-dependent rate. A first attempt priced the per-share rate
+  against CURRENT HELD SHARES as a reference sell size (`min(taf_per_share,
+  taf_cap / max(1, held))`) — the same "price the fee ahead of the solve,
+  at a plausible size" pattern `pmquant.mio.gated_sides` uses for its own
+  per-level fee — but a skeptic review proved it UNDERCHARGES: trimming a
+  handful of shares off a large held position priced the fee as though the
+  whole position were selling. `EquityKellyMIO` now charges the uncapped
+  flat `taf_per_share` rate on every sell instead — conservative in the
+  safe direction (it can only overstate the true fee on a single large
+  sell that would hit the cap, never understate it, so it never overstates
+  achievable edge). Exact per-order cap linearization needs a second cost
+  variable threaded through the base's cash/wealth rows and is a named
+  follow-up if the flat-rate conservatism turns out to cost real edge.
 - `lambda_t_bps` calibration artifacts (time-of-day buckets from realized
   data), the `U_pi`/`U_mu`/`U_r` empirical estimators (Path A18039-A18047),
   and `dskit.production` shadow/paper-mode wiring. None of these can be

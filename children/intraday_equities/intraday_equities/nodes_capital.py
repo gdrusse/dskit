@@ -18,10 +18,16 @@ proposal describes. In particular:
   only the already-approved scenario-recentering mechanism for ``U_mu``
   (a bundle's ``mu_gross``/scenario rows are assumed already recentered
   upstream, by whatever produced the bundle);
-* the TAF per-order dollar cap is priced against CURRENT HELD SHARES as a
-  reference sell size (``min(taf_per_share, taf_cap / max(1, held))``),
-  the same size-referenced-rate pattern ``pmquant.mio.gated_sides`` uses
-  for its own per-level fee — not the cap's exact piecewise form;
+* the TAF per-order dollar cap is not modeled at all — every sell is
+  charged the uncapped flat ``taf_per_share`` rate. An earlier version of
+  this file tried a size-referenced rate (``taf_cap / held``), matching
+  the pattern ``pmquant.mio.gated_sides`` uses for its own per-level fee;
+  a skeptic review proved it UNDERCHARGES a small sell against a large
+  held position (trimming 5 shares off a 1,000-share position priced the
+  fee as if 1,000 were selling). The uncapped rate is conservative in the
+  opposite, safe direction — it can only overstate the true fee on a
+  single large sell that would hit the per-order cap, never understate
+  it — so it never overstates achievable edge;
 * ``lambda_t_bps`` (the joint opportunity-cost charge), the counterfactual
   (unfunded-candidate) ledger, and every calibration artifact (``pi_upper``,
   ``U_mu``, ``U_r`` by time-of-day) are NOT built — they need real market
@@ -320,7 +326,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         max_notional = float(self.params["max_position_notional"])
         lot = int(self.params.get("lot_size", DEFAULT_LOT_SIZE))
 
-        held = {k: int(v) for k, v in portfolio.get("positions", {}).items()}
+        held = {k: int(v) for k, v in portfolio.get("positions", {}).items() if int(v) != 0}
         mark_prices = portfolio.get("mark_prices", {})
         routed_out = {}
         by_name = {}
@@ -342,7 +348,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         self._evidence = {
             "n_bundle_rows": len(bundle),
             "n_gated": len(by_name),
-            "n_held": len({k for k, v in held.items() if v}),
+            "n_held": len(held),
             "routed_out": routed_out,
         }
         if not names:
@@ -386,17 +392,32 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 x_max = max_notional
                 scenarios = [float(v) for v in row["scenarios"]]
             spread = float(self.params["spread_bps"]) * 1e-4 * price
-            taf_rate = min(
-                float(self.params["taf_per_share"]),
-                float(self.params["taf_cap"]) / max(1, h),
-            )
+            # taf_per_share UNCAPPED, deliberately: the cap applies per
+            # ORDER, and this coefficient prices a per-SHARE rate the base
+            # applies to whatever quantity the solver picks — sizing the
+            # rate against current holdings (a "cap / held" trick) was
+            # tried and rejected here because it undercharges any sell
+            # smaller than the full held size (e.g. trimming 5 shares off
+            # a 1,000-share position priced the fee as if 1,000 shares
+            # were selling). Charging the uncapped rate is conservative —
+            # it can only OVERSTATE the true fee on a single large sell
+            # that would hit the per-order cap, never understate it, so it
+            # never overstates achievable edge.
+            taf_rate = float(self.params["taf_per_share"])
             sec31 = float(self.params["sec31_bps"]) * 1e-4 * price
+            sell_cost = spread + taf_rate + sec31
             rows[name] = {
                 "price": price,
                 "held": h,
                 "x_max": x_max,
                 "cost_buy": spread,
-                "cost_sell": spread + taf_rate + sec31,
+                "cost_sell": sell_cost,
+                # Liquidating at the horizon pays the same sell-side costs
+                # as an ordinary exit (§5.3's exit_cost_o(q)) — never left
+                # at the doorway's zero default, or the CVaR cap and the
+                # objective both silently price every position as
+                # free-to-unwind.
+                "exit_cost_per_share": sell_cost,
                 "lot": lot,
             }
             pi_upper[name] = pi_upper_i
