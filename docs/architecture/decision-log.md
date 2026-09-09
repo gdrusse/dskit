@@ -6043,3 +6043,54 @@ infeasible program raises loudly by design, never silently); the gap is
 only that the message names no cause. Follow-up if it matters: a
 pre-flight check mirroring `w0_mark <= 0`'s, refusing a mandatory exit by
 name when its net sale proceeds would breach `cash_reserve`.
+
+---
+
+## ADR-0112 — Generic pinned release-rotation calendars are pure pipeline values
+
+**Status:** accepted (2026-09-08; owner authorized)
+
+**Context.** A release program needs a reproducible, inspectable schedule of
+training and embargo windows without importing a market calendar or making a
+training, promotion, deployment, dataset, or clock decision. The existing
+ProgramCalendar is a child-specific benchmark-stage contract and remains
+separate from this core mechanism.
+
+**Decision.** Add dskit.pipeline.release_rotation as a stdlib-only value-object
+seam with three public values: HalfOpenInterval, ReleaseRotationWindow, and
+ReleaseRotationCalendar. The calendar requires explicit timezone-aware anchor,
+cadence, trailing_training_span, and embargo parameters. Cadence and training
+span are strictly positive; embargo is non-negative. materialize(start,
+end_exclusive, max_windows) returns an ordered, bounded tuple of windows, and
+manifest(...) returns a JSON-serializable object with calendar_sha256 and
+manifest_sha256 outputs.
+
+All instants normalize to UTC and all materialized intervals are half-open.
+Anchor is release index zero and only non-negative indexes exist. For a release
+instant r, training is [r - embargo - span, r - embargo), and a positive
+embargo is [r - embargo, r). Zero embargo has no empty interval: the window
+encodes embargo as null, training ends at r, and the manifest preserves that
+null. Full training-plus-embargo windows may only touch, never overlap.
+
+Calendar and manifest digests use compact sorted ASCII JSON over normalized
+public objects. A window id includes its index and a digest-derived suffix.
+calendar_sha256 is exactly lowercase hexadecimal SHA-256, validated by the
+existing stage digest validator; equivalent aware offset representations of the
+same instant therefore have one identity.
+
+The seam refuses naive or non-datetime instants, non-positive cadence/span,
+negative embargo, overlapping rotations, inverted or pre-anchor ranges,
+non-positive or boolean max_windows, requests above max_windows, malformed
+window intervals/digests, and datetime arithmetic underflow or overflow. It
+has no implicit now, I/O, training, promotion, deployment, data inspection,
+market-calendar, or project-policy behavior.
+
+**Files.** docs/architecture/decision-log.md,
+dskit/pipeline/release_rotation.py, tests/pipeline/test_release_rotation.py,
+and the dskit.pipeline README and AGENTS content inventories only.
+
+**Consequences.** A caller supplies all policy through explicit values and may
+pin the resulting manifest before handing it to another layer. Domain-specific
+stage calendars retain their existing owners. Mapping a release window to a
+run, model, dataset, or deployment is caller work and needs separate
+authority.

@@ -474,6 +474,8 @@ dskit/pipeline/
 ├── fitted.py          FittedTransform family: standardize, apply-transform,
 │                      FeatureSelector
 ├── conformance.py     conformance_suite + NodeProbe
+├── release_rotation.py pure ReleaseRotationCalendar values: explicit UTC
+│                      anchor/cadence/training/embargo -> bounded pinned windows
 ├── synthetic_nodes.py demo/test nodes, private registries only
 ├── metrics.py         logloss / brier / squared_error / absolute_error / pinball + register_metric
 ├── trainlog.py        TrainingCurve + probability metrics (declared-model telemetry)

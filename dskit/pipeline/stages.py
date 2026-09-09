@@ -44,7 +44,7 @@ def reject_unknown_params(problems, params, allowed):
 
 def is_sha256hex(value):
     """Return True when ``value`` is a lowercase SHA-256 hex string."""
-    return isinstance(value, str) and bool(_DIGEST_OK.match(value))
+    return isinstance(value, str) and bool(_DIGEST_OK.fullmatch(value))
 
 
 @dataclass(frozen=True)

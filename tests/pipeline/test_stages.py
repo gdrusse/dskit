@@ -8,7 +8,7 @@ import pytest
 
 from dskit.journal import init_journal
 from dskit.pipeline.document import PipelineDocument
-from dskit.pipeline.stages import Stage, StageKindRegistry, run_staged
+from dskit.pipeline.stages import Stage, StageKindRegistry, is_sha256hex, run_staged
 
 
 class CountingStage(Stage):
@@ -111,3 +111,8 @@ def test_stage_plan_refuses_an_undeclared_output(tmp_path):
     path.write_text(json.dumps(obj))
     with pytest.raises(ValueError, match="undeclared output"):
         run_staged(str(path), asof="2026-01-02", registry=_registry())
+
+
+def test_sha256hex_requires_an_exact_full_string():
+    assert is_sha256hex("a" * 64)
+    assert not is_sha256hex("a" * 64 + "\n")

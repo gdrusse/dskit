@@ -1,5 +1,34 @@
 # Re-entry
 
+## Current wrap: ADR-0112 release-rotation calendar review-closed (2026-09-08)
+
+Branch: main; generic release-rotation work is coherent but remains uncommitted,
+unmerged, and unpushed. ADR-0112 adds an immutable, stdlib-only calendar value
+seam: explicit UTC half-open training/embargo windows and pinned manifests only.
+It makes no model, dataset, promotion, deployment, market-calendar, or child
+decision. Implementation handoff:
+docs/memos/2026-09-08-release-rotation-framework.md.
+
+The retained independent reports are
+docs/memos/2026-09-08-release-rotation-framework-skeptic-method.md
+(method/calendar lens) and
+docs/memos/2026-09-08-release-rotation-framework-skeptic-final.md
+(ship/integration lens). Each reports PASS with 0 Critical and 0 Major findings;
+the ship reviewer explicitly records that the two distinct retained reports
+satisfy skeptic-review Rules 1 and 7. This records those reviewers' verdicts;
+it does not claim an unperformed commit, merge, or push.
+
+Fresh reviewer evidence used the sibling dev environment:
+    /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_release_rotation.py tests/pipeline/test_stages.py tests/pipeline/test_purity.py tests/pipeline/test_method_lengths.py
+    /home/russell/dskit/.venv/bin/ruff check dskit/pipeline/release_rotation.py dskit/pipeline/stages.py tests/pipeline/test_release_rotation.py tests/pipeline/test_stages.py tests/pipeline/test_purity.py tests/pipeline/test_method_lengths.py
+The method review reports 49 passed in 2.83s; the ship review reports 49 passed
+in 2.94s. Both report Ruff "All checks passed!" and clean diff checks.
+
+**Next:** perform the separately authorized commit, merge, and push steps.
+No owner decision remains for this generic seam.
+
+
+
 ## Current wrap: first MIO backtest paused; final-model path recorded (2026-09-08)
 
 Branch: `main` at `7d9d6108bfbc589e74b23c9e0055dde93efe1963` before this documentation-only wrap.
