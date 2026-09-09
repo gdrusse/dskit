@@ -16,6 +16,8 @@ import copy
 import json
 import os
 import re
+import threading
+import time
 
 import pytest
 
@@ -38,6 +40,7 @@ from dskit.pipeline.kinds_search import (
     TopTrials, TrialLedger, _grid, _subsample, register,
 )
 from dskit.pipeline.kinds_search import _is_json_scalar as _grid_is_json_scalar
+from dskit.pipeline.kinds_search import _ordering_key
 from dskit.pipeline.node import Node, NodeContext, NodeKindRegistry
 from dskit.pipeline.planner import _is_json_scalar as _planner_is_json_scalar
 from dskit.pipeline.planner import plan
@@ -97,6 +100,282 @@ class TestPhaseOneEvidence:
         ]
         with pytest.raises(AttributeError):
             record._digest = "forged"
+
+
+class TestSelectionRecordSchema:
+    """Phase 1 skeptic-review Major #1 (2026-09-09, method/API lens):
+    ``SelectionRecord``'s public constructor used to accept ANY JSON-safe
+    payload — ``SelectionRecord({})`` succeeded, returned ``{}`` from
+    ``to_obj()``, and only raised ``KeyError`` when a caller later read
+    ``.ledger_digest``. It could also carry an arbitrary string digest
+    with no binding to a real ``TrialLedger``/``CandidateInventory`` at
+    all. These regressions pin the fix: there is no public constructor,
+    and the internal factory validates the exact schema.
+    """
+
+    #: One good-shaped internal payload — a sanity check that the schema
+    #: validator's happy path is exercised by these regressions, not just
+    #: its refusals.
+    _GOOD_PAYLOAD = {
+        "schema_version": 1,
+        "inventory_digest": "0" * 64,
+        "ledger_digest": "1" * 64,
+        "direction": "min",
+        "best_score": 1.0,
+        "threshold": 1.1,
+        "eligible_candidates": [{"depth": 1}],
+        "simplicity_order": [{"candidate": {"depth": 1}, "key": 1}],
+        "selected_candidate": {"depth": 1},
+    }
+
+    def test_the_formerly_exploitable_empty_payload_can_no_longer_construct(self):
+        # This is the EXACT reviewer repro: SelectionRecord({}) used to
+        # succeed and only blow up later, on .ledger_digest, as a KeyError
+        # nothing named as a schema problem.
+        with pytest.raises(TypeError, match="cannot be constructed directly"):
+            SelectionRecord({})
+
+    def test_the_public_constructor_refuses_every_call_shape(self):
+        with pytest.raises(TypeError, match="cannot be constructed directly"):
+            SelectionRecord()
+        with pytest.raises(TypeError, match="cannot be constructed directly"):
+            SelectionRecord(dict(self._GOOD_PAYLOAD))
+        with pytest.raises(TypeError, match="cannot be constructed directly"):
+            SelectionRecord(payload=dict(self._GOOD_PAYLOAD))
+
+    def test_seal_accepts_the_exact_documented_schema(self):
+        record = SelectionRecord._seal(dict(self._GOOD_PAYLOAD))
+        assert type(record) is SelectionRecord
+        assert record.schema_version == 1
+        assert record.inventory_digest == "0" * 64
+
+    def test_seal_refuses_an_unbound_digest_free_record(self):
+        # A caller-supplied arbitrary string digest with no ledger
+        # binding — the second half of the original finding.
+        bad = dict(self._GOOD_PAYLOAD)
+        bad["ledger_digest"] = "not-a-real-digest"
+        with pytest.raises(ValueError, match="sha256 hex digest"):
+            SelectionRecord._seal(bad)
+
+    def test_seal_refuses_missing_fields(self):
+        for field in self._GOOD_PAYLOAD:
+            bad = dict(self._GOOD_PAYLOAD)
+            del bad[field]
+            with pytest.raises(ValueError, match="exactly"):
+                SelectionRecord._seal(bad)
+
+    def test_seal_refuses_extra_fields(self):
+        with pytest.raises(ValueError, match="exactly"):
+            SelectionRecord._seal({**self._GOOD_PAYLOAD, "extra": 1})
+
+    def test_seal_refuses_an_unknown_schema_version(self):
+        with pytest.raises(ValueError, match="schema_version"):
+            SelectionRecord._seal({**self._GOOD_PAYLOAD, "schema_version": 2})
+
+    def test_a_record_is_only_ever_produced_by_a_real_selection(self):
+        # The complete positive path: the only way to obtain a
+        # SelectionRecord is through OneStandardErrorSelector.select(),
+        # bound to a real, complete TrialLedger.
+        inventory = CandidateInventory({"depth": [1, 2]})
+        ledger = TrialLedger(inventory, evidence_fields=("se",))
+        ledger.record({"depth": 1}, score=1.0, se=0.1)
+        ledger.record({"depth": 2}, score=5.0, se=0.1)
+        record = OneStandardErrorSelector(
+            select="min", simplicity_key=lambda row: row["overrides"]["depth"]
+        ).select(ledger)
+        assert record.inventory_digest == ledger.inventory_digest
+        assert record.ledger_digest == ledger.digest
+        assert record.schema_version == SelectionRecord.SCHEMA_VERSION
+
+
+class TestSimplicityOrderingTotalOrder:
+    """Phase 1 skeptic-review Major #2: the accepted simplicity-key
+    grammar (str/int/float/tuple) let a normal ledger emit a
+    ``simplicity_order`` containing mutually incomparable raw Python
+    values (e.g. eligible key ``1`` beside ineligible key ``"a"``) —
+    ADR-0113 promises public values refuse non-orderable selection
+    values, but nothing refused, and nothing SUBSTANTIATED an order that
+    did not exist. ``_ordering_key`` gives the whole domain one canonical
+    tagged total order (numbers, then strings, then tuples) so no pair is
+    ever incomparable; these pin that order and the exact reviewer repro.
+    """
+
+    def test_numbers_order_below_strings_which_order_below_tuples(self):
+        assert _ordering_key(5) < _ordering_key("a")
+        assert _ordering_key("zzz") < _ordering_key((0,))
+        assert _ordering_key(1) < _ordering_key(1.5) < _ordering_key(2)
+
+    def test_cross_type_numeric_comparison_is_exact(self):
+        # int vs float compares by VALUE under one tag, not lexically.
+        assert _ordering_key(2) < _ordering_key(2.5)
+        assert _ordering_key(-1.0) < _ordering_key(0)
+        assert not (_ordering_key(3) < _ordering_key(3.0))  # equal, neither wins
+
+    def test_tuples_order_elementwise_recursively_and_by_length(self):
+        assert _ordering_key((1, 2)) < _ordering_key((1, 3))
+        assert _ordering_key((1,)) < _ordering_key((1, 0))  # shorter prefix wins
+        assert _ordering_key((1, "a")) < _ordering_key((1, "b"))
+        # A nested type-shape mismatch still resolves without raising.
+        assert _ordering_key((1, 2)) < _ordering_key((1, "a"))
+
+    def test_the_exact_reviewer_repro_selects_deterministically(self):
+        # depth=1: best (score 1.0). depth=2: eligible under se=0.1 (1.05
+        # <= 1.1) and carries the SIMPLER int key. depth=3: far outside
+        # the band (ineligible) and carries a STRING key — exactly the
+        # eligible-int/ineligible-str mix the reviewer's repro produced.
+        inventory = CandidateInventory({"depth": [1, 2, 3]})
+        ledger = TrialLedger(inventory, evidence_fields=("se",))
+        ledger.record({"depth": 1}, score=1.0, se=0.1)
+        ledger.record({"depth": 2}, score=1.05, se=0.1)
+        ledger.record({"depth": 3}, score=100.0, se=0.1)
+        keys = {1: 5, 2: 2, 3: "zz"}
+        record = OneStandardErrorSelector(
+            select="min", simplicity_key=lambda row: keys[row["overrides"]["depth"]]
+        ).select(ledger)
+        assert record.selected_candidate == {"depth": 2}  # key 2 < key 5
+        order = record.to_obj()["simplicity_order"]
+        assert [entry["candidate"]["depth"] for entry in order] == [1, 2, 3]
+        assert order[2]["key"] == "zz"  # the ineligible str key is retained, not refused
+
+    def test_every_canonical_row_is_keyed_before_a_winner_is_chosen(self):
+        # A simplicity_key that raises for the ineligible candidate must
+        # still fail the WHOLE selection — evaluating every row is not
+        # optional just because one of them will not win.
+        inventory = CandidateInventory({"depth": [1, 2]})
+        ledger = TrialLedger(inventory, evidence_fields=("se",))
+        ledger.record({"depth": 1}, score=1.0, se=0.1)
+        ledger.record({"depth": 2}, score=100.0, se=0.1)  # ineligible
+
+        def poison_ineligible(row):
+            if row["overrides"]["depth"] == 2:
+                raise RuntimeError("boom")
+            return 1
+
+        with pytest.raises(ValueError, match="simplicity_key raised"):
+            OneStandardErrorSelector(
+                select="min", simplicity_key=poison_ineligible
+            ).select(ledger)
+
+
+class _SlowFreezeLedger(TrialLedger):
+    """A TrialLedger whose freeze step is artificially slow, widening the
+    reserve/freeze/commit race window so concurrency tests observe the
+    intermediate state deterministically rather than by luck."""
+
+    def _freeze_trial(self, snapshot, score, extra):
+        time.sleep(0.1)
+        return super()._freeze_trial(snapshot, score, extra)
+
+
+class _OnceInterruptingLedger(TrialLedger):
+    """A TrialLedger whose first ``record()`` raises ``KeyboardInterrupt``
+    mid-freeze (after reservation), then behaves normally afterward —
+    the interruption/retry boundary's test subject."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._raised_once = False
+
+    def _freeze_trial(self, snapshot, score, extra):
+        if not self._raised_once:
+            self._raised_once = True
+            raise KeyboardInterrupt("simulated interruption")
+        return super()._freeze_trial(snapshot, score, extra)
+
+
+class TestTrialLedgerConcurrencyContract:
+    """Phase 1 skeptic-review Major #3: ``TrialLedger``'s
+    reserve/freeze/commit transaction and its interruption behavior were
+    implemented but never declared as a public contract, so callers had
+    no documented answer for concurrent duplicate admission, retry after
+    a failed preparation, or ``BaseException`` propagation. These pin the
+    class docstring's contract — every clause there is proven by a test
+    here, never merely asserted in prose.
+    """
+
+    def test_a_duplicate_concurrent_candidate_admits_exactly_once(self):
+        ledger = _SlowFreezeLedger(
+            CandidateInventory({"depth": [1]}), evidence_fields=("se",)
+        )
+        errors = []
+
+        def attempt(se):
+            try:
+                ledger.record({"depth": 1}, score=1.0, se=se)
+            except ValueError as exc:
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=attempt, args=(se,)) for se in (0.1, 0.2)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(errors) == 1
+        assert "already recorded or is recording" in str(errors[0])
+        assert ledger.is_complete()
+        assert len(ledger.rows) == 1
+
+    def test_a_reader_never_observes_a_pending_row_as_committed(self):
+        ledger = _SlowFreezeLedger(
+            CandidateInventory({"depth": [1]}), evidence_fields=("se",)
+        )
+        mid_flight = {}
+
+        def attempt():
+            ledger.record({"depth": 1}, score=1.0, se=0.1)
+
+        t = threading.Thread(target=attempt)
+        t.start()
+        time.sleep(0.02)  # well inside the 0.1s freeze sleep, before commit
+        mid_flight["rows"] = ledger.rows
+        mid_flight["complete"] = ledger.is_complete()
+        t.join()
+        assert mid_flight["rows"] == ()
+        assert mid_flight["complete"] is False
+        assert ledger.is_complete() is True
+
+    def test_a_failed_preparation_does_not_poison_retry(self):
+        ledger = TrialLedger(
+            CandidateInventory({"depth": [1]}), evidence_fields=("se",)
+        )
+        # se present (passes _validate_trial) but non-numeric — fails
+        # AFTER reservation, inside _freeze_trial.
+        with pytest.raises(ValueError, match="finite builtin int or float"):
+            ledger.record({"depth": 1}, score=1.0, se=[1, 2])
+        assert not ledger.is_complete()
+        assert ledger.rows == ()
+        # The same candidate is not poisoned — a corrected retry succeeds.
+        ledger.record({"depth": 1}, score=1.0, se=0.1)
+        assert ledger.is_complete()
+        assert ledger.rows[0]["se"] == 0.1
+
+    def test_base_exception_propagates_unchanged_and_does_not_poison_retry(self):
+        ledger = _OnceInterruptingLedger(
+            CandidateInventory({"depth": [1]}), evidence_fields=("se",)
+        )
+        with pytest.raises(KeyboardInterrupt):
+            ledger.record({"depth": 1}, score=1.0, se=0.1)
+        assert not ledger.is_complete()
+        assert ledger.rows == ()
+        # Retry on the SAME ledger succeeds: the reservation was released
+        # before the BaseException propagated, so the candidate is not
+        # poisoned by the interruption.
+        ledger.record({"depth": 1}, score=1.0, se=0.1)
+        assert ledger.is_complete()
+        assert ledger.rows[0]["se"] == 0.1
+
+    def test_a_committed_row_can_never_be_recorded_twice(self):
+        ledger = TrialLedger(
+            CandidateInventory({"depth": [1]}), evidence_fields=("se",)
+        )
+        ledger.record({"depth": 1}, score=1.0, se=0.1)
+        with pytest.raises(ValueError, match="already recorded or is recording"):
+            ledger.record({"depth": 1}, score=2.0, se=0.2)
+        assert len(ledger.rows) == 1
+        assert ledger.rows[0]["score"] == 1.0  # the second attempt never landed
+
 
 #: Trivially-valid splits for score nodes that never read ctx.splits.
 FLAT_SPLITS = TimeSplitConfig(train_end_ms=1, val_end_ms=2, test_end_ms=3)

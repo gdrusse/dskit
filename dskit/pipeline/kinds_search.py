@@ -362,44 +362,56 @@ def _simplicity_value(value, ancestors=frozenset(), depth=0):
         "simplicity_key must be a number, string, or tuple of those"
     )
 
-def _contains_nan(value) -> bool:
-    """True if ``value`` is NaN itself, or a ``tuple``/``list`` that
-    contains a NaN anywhere, recursively.
-
-    NOT the same as ``value != value``: CPython's tuple/list ``!=``
-    shortcuts an object compared to ITSELF via per-element IDENTITY
-    (``PyObject_RichCompareBool``), so it never actually invokes float
-    NaN semantics on an element nested inside a container being compared
-    to itself — a composite key like ``(1, float("nan"))`` silently
-    passes ``key != key`` even though it plainly contains a NaN (skeptic
-    review round 14, Critical). This walks the structure explicitly
-    instead."""
-    if isinstance(value, (tuple, list)):
-        return any(_contains_nan(v) for v in value)
-    try:
-        return math.isnan(value)
-    except TypeError:
-        return False
+#: Canonical tag order for :func:`_ordering_key` — numbers order together
+#: below every string, which orders below every tuple. Documented here
+#: because it is public behavior (ADR-0113): two simplicity keys of
+#: different shapes never compare "incomparable", they compare by tag
+#: first and the tag alone decides.
+_ORDER_TAG_NUMBER = 0
+_ORDER_TAG_STRING = 1
+_ORDER_TAG_TUPLE = 2
 
 
-def _contains_unordered_set(value) -> bool:
-    """True if ``value`` is a ``set``/``frozenset``, or a ``tuple``/
-    ``list`` that contains one anywhere, recursively.
+def _ordering_key(value):
+    """Return one always-comparable tagged key giving the whole
+    str/int/float/tuple simplicity-key domain ONE deterministic total
+    order, so two keys of different Python types never raise
+    ``TypeError`` against each other and never silently tie.
 
-    Python's ``<`` on sets is a proper-subset test — a PARTIAL order
-    that never raises ``TypeError`` for two unrelated sets, it just
-    silently returns ``False`` in BOTH directions. That defeats the
-    "refuse incomparable simplicity_key types" guard (which relies on
-    ``<`` raising for a genuinely incomparable pair) and makes two
-    distinct, unrelated sets look TIED instead of refused — the
-    strict-compare winner loop then silently keeps whichever candidate
-    was recorded first, regardless of true simplicity (skeptic review
-    round 15, Major)."""
-    if isinstance(value, (set, frozenset)):
-        return True
-    if isinstance(value, (tuple, list)):
-        return any(_contains_unordered_set(v) for v in value)
-    return False
+    Every value handed to this function must already have passed
+    :func:`_simplicity_value` (finite, acyclic, str/int/float/tuple
+    only), so the three branches below are exhaustive — there is no
+    "else raise" here because there is no fourth shape left to see.
+
+    Canonical order (ADR-0113): every number (``int``/``float``, mixed
+    freely — CPython compares arbitrary-precision ``int`` against
+    ``float`` exactly, never approximately or by raising) sorts below
+    every string (lexicographic), which sorts below every tuple
+    (elementwise by this same tagging, recursively — so nested shape
+    mismatches resolve at the first differing tag too). The tag is
+    compared before the payload, so ``(0, 1) < (1, "a")`` decides on
+    ``0 < 1`` alone and never asks whether ``1`` and ``"a"`` are
+    comparable — they never are, and this function is exactly how that
+    stops mattering.
+
+    Parameters
+    ----------
+    value : str, int, float, or tuple
+        One simplicity key already validated by
+        :func:`_simplicity_value`.
+
+    Returns
+    -------
+    tuple
+        A tag paired with a same-shape-guaranteed payload: ``(0,
+        number)`` for ``int``/``float``, ``(1, str)`` for ``str``, or
+        ``(2, tuple-of-ordering-keys)`` for a ``tuple`` (recursive).
+    """
+    if type(value) is tuple:
+        return (_ORDER_TAG_TUPLE, tuple(_ordering_key(item) for item in value))
+    if type(value) is str:
+        return (_ORDER_TAG_STRING, value)
+    return (_ORDER_TAG_NUMBER, value)
 
 
 def _subsample(trials, n_trials, seed) -> list:
@@ -629,6 +641,59 @@ class TrialLedger:
     ``overrides`` is an actual member of the inventory, recorded at most
     once.
 
+    Concurrency and interruption contract (ADR-0113; PIN — every clause
+    below is proven by a test in ``TestTrialLedgerConcurrencyContract``,
+    never merely asserted here):
+
+    * **Thread-safe, process-local only.** One ``threading.RLock`` (not a
+      cross-process or cross-machine lock — nothing here coordinates
+      separate OS processes) serializes every state transition. Many
+      threads may call ``record()`` on the same ledger concurrently.
+    * **``reserve`` → freeze → ``commit`` is the transaction.** ``reserve``
+      (claim the candidate under the lock) and ``commit`` (install the
+      frozen row under the lock) are each atomic; freezing the row
+      happens OUTSIDE the lock, between them, so one slow freeze never
+      blocks other threads' reservations. A row therefore passes through
+      three states no external reader can ever observe as "committed":
+      absent, reserved-pending, committed — ``rows``, ``is_complete()``
+      and ``to_obj()`` read only the committed set, never the pending
+      one, so a caller can never observe a row that is reserved but not
+      yet frozen, or frozen but not yet committed.
+    * **A duplicate concurrent candidate: exactly one admission wins.**
+      Two callers racing ``record()`` for the SAME candidate — whether
+      already committed or merely reserved by another in-flight call —
+      both contend on one ``reserve()`` under the lock; the loser raises
+      ``ValueError`` immediately and commits nothing. The loser is NOT
+      retryable for that same candidate (the ledger already has it, or
+      will), which is correct: retrying would either raise the same
+      "already recorded" refusal or, worse, silently discard the winner's
+      evidence.
+    * **A failed preparation does not poison the candidate for retry.**
+      If validation, freezing, or the commit step raises for ANY reason
+      after this call's own reservation succeeded, ``record()`` releases
+      that reservation before re-raising (Python's `finally`/`except`
+      cannot see it — it is the explicit `except BaseException: release;
+      raise` in ``record()``) — the candidate becomes available again,
+      so a caller may legitimately call ``record()`` again with corrected
+      evidence.
+    * **``BaseException`` propagates unchanged.** ``record()`` catches
+      ``BaseException`` (not merely ``Exception``) ONLY to release an
+      uncommitted reservation, then always re-raises the identical
+      exception — a ``SystemExit`` or ``KeyboardInterrupt`` mid-freeze
+      still terminates the caller, it is never swallowed or downgraded.
+    * **Interruption before the commit point leaves no trace.** Anything
+      that stops execution between ``reserve()`` succeeding and
+      ``commit()`` installing the row (an exception, a `BaseException`,
+      a released reservation) leaves the ledger exactly as if that
+      ``record()`` call had never been made: the candidate is available
+      again, `is_complete()` and `rows` are unaffected.
+    * **Interruption after the commit point cannot happen.** ``commit()``
+      itself is the single atomic state transition (one lock-held
+      dict-replace); there is no window after a row is installed where
+      it could still appear pending, partial, or reversible. Once
+      ``record()`` returns normally, that row is permanently committed
+      for the ledger's lifetime — there is no delete/undo method.
+
     Parameters
     ----------
     inventory : CandidateInventory
@@ -731,7 +796,17 @@ class TrialLedger:
         return hashlib.sha256(canonical.encode()).hexdigest()
 
     def record(self, overrides, score, **extra) -> None:
-        """Prepare then atomically commit one immutable trial row."""
+        """Reserve, freeze, then atomically commit one immutable trial row.
+
+        Thread-safe; process-local only. Full concurrency and
+        interruption contract on the class docstring — in short: a
+        duplicate concurrent candidate raises for exactly one caller and
+        commits nothing for either; a failed preparation releases its
+        reservation so the same candidate may be retried; any
+        ``BaseException`` propagates unchanged after that release; and a
+        row that reaches a normal return is committed permanently — it
+        can never later be observed as pending or partial.
+        """
         snapshot, key = self._snapshot_trial(overrides)
         self._validate_trial(key, snapshot, extra)
         token = object()
@@ -835,10 +910,78 @@ class TrialLedger:
         )
 
 
+#: SelectionRecord's payload schema, exhaustive (ADR-0113). A record
+#: carrying any other key set is refused at construction; adding a field
+#: is a schema-version bump, not a silent grow.
+_SELECTION_RECORD_FIELDS = frozenset({
+    "schema_version",
+    "inventory_digest",
+    "ledger_digest",
+    "direction",
+    "best_score",
+    "threshold",
+    "eligible_candidates",
+    "simplicity_order",
+    "selected_candidate",
+})
+
+#: sha256 hex digest shape, used to validate both bound digests are
+#: actually digests and not caller-supplied arbitrary strings.
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _candidate_obj(overrides, label):
+    """Return one JSON-safe candidate dict, refusing by name if malformed."""
+    if not isinstance(overrides, Mapping):
+        raise ValueError(f"{label} must be a mapping")
+    try:
+        return _json_obj(_frozen_json(dict(overrides)))
+    except _EvidenceRefusal as exc:
+        raise ValueError(f"{label}: {_evidence_message(exc)}") from None
+    except Exception:
+        raise ValueError(f"{label} cannot be frozen safely") from None
+
+
 class SelectionRecord:
-    """Immutable JSON-safe evidence for one completed selection."""
+    """Immutable JSON-safe evidence for one completed selection.
+
+    Construction is internal (ADR-0113): the public class exists so
+    callers can hold, serialize, and inspect a selection, but the only
+    way to OBTAIN one is :meth:`OneStandardErrorSelector.select`, which
+    builds it through :meth:`_build` bound to the exact
+    :class:`TrialLedger` it was selected from. Calling
+    ``SelectionRecord(...)`` directly always raises — there is no public
+    constructor that accepts an arbitrary payload, so a record can never
+    exist unbound from a complete, validated ledger.
+
+    Every record's payload is the same nine-field schema
+    (``schema_version``, ``inventory_digest``, ``ledger_digest``,
+    ``direction``, ``best_score``, ``threshold``, ``eligible_candidates``,
+    ``simplicity_order``, ``selected_candidate``) — no more, no fewer —
+    validated field by field and cross-checked against the ledger at
+    build time: both digests are exact sha256 hex, ``direction`` is
+    ``"min"``/``"max"``, ``best_score``/``threshold`` are finite,
+    ``eligible_candidates`` and ``simplicity_order`` list every row in
+    the ledger's canonical (inventory) order — never arrival order — and
+    ``selected_candidate`` is exactly one member of
+    ``eligible_candidates``. ``to_obj()`` returns an independent JSON-safe
+    snapshot; the record itself is immutable JSON-safe state.
+
+    Examples
+    --------
+    A record only ever comes from a selection::
+
+        record = OneStandardErrorSelector(
+            select="min", simplicity_key=lambda row: row["overrides"]["depth"]
+        ).select(ledger)
+        record.schema_version  # -> 1
+    """
 
     __slots__ = ("_payload", "_digest", "_sealed")
+
+    #: The one schema version this build understands. Bumped only when
+    #: the field set or a field's meaning changes.
+    SCHEMA_VERSION = 1
 
     def __setattr__(self, name, value):
         """Refuse mutation after the canonical record is constructed."""
@@ -846,7 +989,118 @@ class SelectionRecord:
             raise AttributeError("SelectionRecord is immutable")
         object.__setattr__(self, name, value)
 
-    def __init__(self, payload):
+    def __init__(self, *args, **kwargs):
+        """Always refuse — see the class docstring: no public constructor."""
+        raise TypeError(
+            "SelectionRecord cannot be constructed directly; it is "
+            "produced only by OneStandardErrorSelector.select(), bound to "
+            "a complete TrialLedger"
+        )
+
+    @classmethod
+    def _build(
+        cls, *, ledger, direction, best_score, threshold, eligible_rows,
+        all_keyed_rows, winner_row,
+    ):
+        """Validate a complete selection and freeze it as one record.
+
+        Internal factory — the only caller is
+        :meth:`OneStandardErrorSelector.select`, immediately after it has
+        computed a winner over a complete, exact :class:`TrialLedger`.
+        Every argument is cross-checked against ``ledger`` itself, not
+        merely shape-checked in isolation, so a record can never claim a
+        ledger/inventory identity it was not actually built from.
+        """
+        if type(ledger) is not TrialLedger:
+            raise TypeError("ledger must be an exact TrialLedger")
+        if not ledger.is_complete():
+            raise ValueError("cannot bind a selection record to an incomplete ledger")
+        if type(direction) is not str or direction not in ("min", "max"):
+            raise ValueError("direction must be the exact string 'min' or 'max'")
+
+        canonical_rows = ledger.rows
+        canonical_keys = [_combo_key(row["overrides"]) for row in canonical_rows]
+        if len(set(canonical_keys)) != len(canonical_keys):
+            raise ValueError("ledger rows must be unique members of their inventory")
+
+        keyed_by_key = {
+            _combo_key(row["overrides"]): key for row, key in all_keyed_rows
+        }
+        if [
+            _combo_key(row["overrides"]) for row, _ in all_keyed_rows
+        ] != canonical_keys:
+            raise ValueError(
+                "simplicity keys must be evaluated for every ledger row in "
+                "canonical inventory order"
+            )
+
+        eligible_keys = [_combo_key(row["overrides"]) for row in eligible_rows]
+        if not eligible_keys:
+            raise ValueError("eligible_candidates must be non-empty")
+        if len(set(eligible_keys)) != len(eligible_keys):
+            raise ValueError("eligible_candidates must not repeat a candidate")
+        if [key for key in canonical_keys if key in set(eligible_keys)] != eligible_keys:
+            raise ValueError(
+                "eligible_candidates must list ledger rows in canonical "
+                "inventory order"
+            )
+
+        winner_key = _combo_key(winner_row["overrides"])
+        if winner_key not in eligible_keys:
+            raise ValueError(
+                "selected_candidate must be one of eligible_candidates"
+            )
+
+        best_score = _frozen_number(best_score, "best_score")
+        threshold = _frozen_number(threshold, "threshold")
+
+        payload = {
+            "schema_version": cls.SCHEMA_VERSION,
+            "inventory_digest": ledger.inventory_digest,
+            "ledger_digest": ledger.digest,
+            "direction": direction,
+            "best_score": best_score,
+            "threshold": threshold,
+            "eligible_candidates": [
+                _candidate_obj(row["overrides"], "eligible_candidates entry")
+                for row in eligible_rows
+            ],
+            "simplicity_order": [
+                {
+                    "candidate": _candidate_obj(row["overrides"], "simplicity_order candidate"),
+                    "key": keyed_by_key[_combo_key(row["overrides"])],
+                }
+                for row in canonical_rows
+            ],
+            "selected_candidate": _candidate_obj(
+                winner_row["overrides"], "selected_candidate"
+            ),
+        }
+        return cls._seal(payload)
+
+    @classmethod
+    def _seal(cls, payload):
+        """Validate the exact schema and freeze one already-built payload.
+
+        Named distinctly from the module-level :func:`_freeze` helper
+        (a generic deep-immutability walk `TrialLedger` uses) — this one
+        additionally enforces SelectionRecord's exact field set and
+        digest shape, so the two must never be confused for each other.
+        """
+        if not isinstance(payload, Mapping) or set(payload) != _SELECTION_RECORD_FIELDS:
+            raise ValueError(
+                "SelectionRecord payload must carry exactly "
+                f"{sorted(_SELECTION_RECORD_FIELDS)!r}"
+            )
+        if payload["schema_version"] != cls.SCHEMA_VERSION:
+            raise ValueError(
+                f"schema_version must be {cls.SCHEMA_VERSION!r}, got "
+                f"{payload['schema_version']!r}"
+            )
+        for field in ("inventory_digest", "ledger_digest"):
+            value = payload[field]
+            if type(value) is not str or not _DIGEST_RE.match(value):
+                raise ValueError(f"{field} must be a sha256 hex digest")
         try:
             frozen = _frozen_json(payload)
             canonical = json.dumps(
@@ -856,9 +1110,11 @@ class SelectionRecord:
             raise ValueError(_evidence_message(exc)) from None
         except Exception:
             raise ValueError("selection evidence cannot be frozen") from None
-        self._payload = frozen
-        self._digest = hashlib.sha256(canonical.encode()).hexdigest()
-        self._sealed = True
+        obj = object.__new__(cls)
+        obj._payload = frozen
+        obj._digest = hashlib.sha256(canonical.encode()).hexdigest()
+        obj._sealed = True
+        return obj
 
     def to_obj(self) -> dict:
         """Return an independent canonical JSON-safe selection snapshot."""
@@ -869,6 +1125,15 @@ class SelectionRecord:
         """Return the deterministic selection-record digest."""
         return self._digest
 
+    @property
+    def schema_version(self) -> int:
+        """Return the payload schema version this record was built under."""
+        return self._payload["schema_version"]
+
+    @property
+    def inventory_digest(self) -> str:
+        """Return the exact bound :class:`CandidateInventory` digest."""
+        return self._payload["inventory_digest"]
 
     @property
     def ledger_digest(self) -> str:
@@ -1061,34 +1326,29 @@ class OneStandardErrorSelector:
                 # `if is_simpler:`, as numpy's own opaque "truth value of
                 # an array is ambiguous" ValueError instead of this
                 # class's named, trial-naming refusal (skeptic review
-                # round 16, Major).
-                is_simpler = bool(row_key < winner_key)
+                # round 16, Major). ``_ordering_key`` gives the whole
+                # str/int/float/tuple domain ONE total order (ADR-0113),
+                # so this never raises for a value that passed
+                # ``_simplicity_value`` — the try/except stays as the
+                # same defense-in-depth every comparison in this method
+                # uses, not because a mixed-type pair is expected to
+                # reach it anymore.
+                is_simpler = bool(_ordering_key(row_key) < _ordering_key(winner_key))
             except Exception:
-                # simplicity_key returning mutually-incomparable types
-                # across rows must refuse by name without rendering a
-                # caller-controlled comparison failure.
                 raise ValueError(
                     f"simplicity_key returned incomparable values for "
                     f"trials {winner['overrides']!r} and {row['overrides']!r}"
                 ) from None
             if is_simpler:
                 winner, winner_key = row, row_key
-        return SelectionRecord(
-            {
-                "inventory_digest": ledger.inventory_digest,
-                "ledger_digest": ledger.digest,
-                "direction": self._select,
-                "best_score": best["score"],
-                "threshold": threshold,
-                "eligible_candidates": [
-                    _json_obj(row["overrides"]) for row in eligible
-                ],
-                "simplicity_order": [
-                    {"candidate": _json_obj(row["overrides"]), "key": key}
-                    for row, key in all_keyed_rows
-                ],
-                "selected_candidate": _json_obj(winner["overrides"]),
-            }
+        return SelectionRecord._build(
+            ledger=ledger,
+            direction=self._select,
+            best_score=best["score"],
+            threshold=threshold,
+            eligible_rows=eligible,
+            all_keyed_rows=all_keyed_rows,
+            winner_row=winner,
         )
 
 

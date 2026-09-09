@@ -412,6 +412,20 @@ on it without breaking its rulings.
   and simplicity. TrialLedger binds an exact CandidateInventory value; standard
   errors are nonnegative at admission (negative zero
   canonicalizes to 0.0); a rejected ledger row must leave no consumed member behind (ADR-0113).
+- **TrialLedger's concurrency contract is public, not incidental** — its
+  class docstring is the source of truth (thread-safe/process-local,
+  reserve→freeze→commit atomicity, duplicate-admission and
+  interruption/retry behavior); every clause there has a test in
+  `TestTrialLedgerConcurrencyContract` (ADR-0113). Do not extend `record()`
+  without extending both.
+- **SelectionRecord has no public constructor** — `SelectionRecord(...)`
+  always raises; only `OneStandardErrorSelector.select()` builds one, via
+  the internal `_build`/`_seal` factory that validates the exact
+  nine-field schema and cross-checks both digests against the real ledger
+  (never a caller-supplied string). Simplicity keys are ordered by
+  `_ordering_key`'s canonical tagged total order (numbers < strings <
+  tuples, recursively) — never raw Python `<` — so two keys of different
+  types are always comparable and never silently tied (ADR-0113).
 - **Spent record streams are released** (ADR-0048). After a node's last
   `$` reader runs, a list of length `>= 256` (or too big to carry) is
   replaced with `_summarize` and the pinned instance is dropped. A

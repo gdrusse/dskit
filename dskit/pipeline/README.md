@@ -72,8 +72,12 @@ kinds resolve. Two more verbs — `demo`
   What it chose rides out on `DocumentRunResult.search`, node-keyed
   (ADR-0043).
 - **Generic search values** - CandidateInventory freezes and hashes one caller-capped grid;
-  TrialLedger requires a non-empty caller evidence schema and seals complete evidence;
-  OneStandardErrorSelector returns SelectionRecord bound to the complete ledger and caller-supplied uncertainty and simplicity rules (ADR-0113).
+  TrialLedger requires a non-empty caller evidence schema, seals complete evidence, and is
+  thread-safe (process-local; full concurrency/interruption contract on its docstring);
+  OneStandardErrorSelector orders simplicity keys by one canonical tagged total order
+  (numbers, then strings, then tuples) and returns SelectionRecord — which has no public
+  constructor, only `OneStandardErrorSelector.select()` can build one — bound to the
+  complete ledger and caller-supplied uncertainty and simplicity rules (ADR-0113).
 - **Series and folds** — `_find_prev_run` + `_materialize` bind `$prev`;
   `run_walk_forward` + `_fold_splits` → `WalkForwardRunResult` (`driver.py`).
 - **Bounded fold execution** — `BoundedFoldRunner` (`folds.py`, ADR-0093)

@@ -6124,10 +6124,49 @@ It never chooses a statistical unit or a simplicity order for the caller. Select
 
 All public values refuse malformed grids, non-members, duplicates, incomplete
 ledgers, and missing/non-finite/negative standard errors at ledger admission;
-negative zero is serialized as positive 0.0. They also refuse non-orderable
-selection values. Accepted builtin integers have at most 4096 decimal digits,
-so every accepted inventory and ledger has a portable canonical JSON encoding
-and deterministic digest.
+negative zero is serialized as positive 0.0. Accepted builtin integers have
+at most 4096 decimal digits, so every accepted inventory and ledger has a
+portable canonical JSON encoding and deterministic digest.
+
+**SelectionRecord has no public constructor** (Phase 1 recovery, 2026-09-09
+— skeptic review method/API lens, Major #1). Calling `SelectionRecord(...)`
+directly always raises `TypeError`; the only way to obtain one is
+`OneStandardErrorSelector.select()`, which builds it through an internal
+factory bound to the exact, complete `TrialLedger` it was selected from. The
+factory validates the exhaustive nine-field schema (`schema_version`,
+`inventory_digest`, `ledger_digest`, `direction`, `best_score`, `threshold`,
+`eligible_candidates`, `simplicity_order`, `selected_candidate`) and
+cross-checks it against the ledger itself — both digests are computed FROM
+the ledger, never accepted as caller-supplied strings, and
+`eligible_candidates`/`simplicity_order` must each list every relevant row in
+the ledger's own canonical (inventory) order. A record can therefore never
+exist unbound, partially populated, or claiming a ledger/inventory identity
+it was not actually built from.
+
+**Simplicity keys have one canonical total order, not a raw-Python-`<`
+comparison** (Phase 1 recovery, 2026-09-09 — skeptic review Major #2). The
+accepted grammar is still str/int/float/tuple (recursively, for tuples), but
+every key is compared through one tagged ordering: every number sorts below
+every string, which sorts below every tuple (elementwise by the same tagging,
+recursively) — so two keys of different Python types never raise
+"incomparable" and never silently tie. This replaces the earlier "refuse
+non-orderable selection values" framing: nothing in the accepted domain is
+unorderable once the tag decides first. Every row in a complete ledger is
+evaluated and validated under this order before a winner is chosen; ties
+break by canonical candidate-inventory order, never record arrival order.
+
+**TrialLedger's concurrency and interruption contract is now public** (Phase
+1 recovery, 2026-09-09 — skeptic review Major #3), documented in full on the
+class docstring and pinned by `TestTrialLedgerConcurrencyContract`. In
+summary: `record()` is thread-safe but process-local only (one
+`threading.RLock`); `reserve` → freeze → `commit` is the transaction, with
+`reserve` and `commit` each atomic and freezing outside the lock; a duplicate
+concurrent candidate admits exactly once and the loser is not retryable for
+that candidate; a failed preparation releases its reservation so the same
+candidate MAY be retried; `BaseException` always propagates unchanged after
+that release; and a row that reaches a normal `record()` return is committed
+permanently — no external reader can ever observe a reserved-but-unfrozen or
+frozen-but-uncommitted row as complete.
 
 **Scope.** This is Phase 1 only: generic inventory, trial ledger, and
 one-standard-error selection. Later estimator persistence, schedule, replay,
