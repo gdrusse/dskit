@@ -64,6 +64,8 @@ from dskit.pipeline.fitted import FittedTransform
 from dskit.pipeline.node import resolve_uses
 from dskit.pipeline.stats import CORRECTIONS
 
+_MAX_JSON_INT = 10**4096 - 1
+
 __all__ = ["Plan", "plan", "unsearchable_space_why"]
 
 #: Roles that may carry ``mode``/``artifact`` (spec §5: trainable). The
@@ -737,10 +739,12 @@ def _ancestors_of(key, edges) -> set:
 
 
 def _is_json_scalar(value) -> bool:
-    """Report whether ``value`` is a JSON-legal scalar: null/bool/number/string."""
-    if value is None or isinstance(value, (bool, str)):
+    """Report whether value is a portable canonical JSON scalar."""
+    if value is None or type(value) in (bool, str):
         return True
-    return isinstance(value, (int, float)) and math.isfinite(value)
+    if type(value) is int:
+        return -_MAX_JSON_INT <= value <= _MAX_JSON_INT
+    return type(value) is float and math.isfinite(value)
 
 
 def _search_errors(key, spec, specs, roles, edges):
@@ -798,8 +802,8 @@ def _search_errors(key, spec, specs, roles, edges):
     if not isinstance(space, dict) or not space:
         problems.append(
             f"pipeline.{key}: search.space must be a non-empty dict of "
-            f"'node.param.path' -> a non-empty list of JSON scalars or a "
-            f"non-empty range-spec dict, got {space!r}"
+            "'node.param.path' -> a non-empty list of JSON scalars or a "
+            "non-empty range-spec dict"
         )
     else:
         for target, grid in space.items():
@@ -870,14 +874,13 @@ def _search_errors(key, spec, specs, roles, edges):
                     if bad:
                         problems.append(
                             f"pipeline.{key}: search.space[{target!r}] values "
-                            "must be JSON scalars (null/bool/number/string), "
-                            f"got {bad!r}"
+                            "must be JSON scalars (null/bool/number/string)"
                         )
             elif not isinstance(grid, dict) or not grid:
                 problems.append(
                     f"pipeline.{key}: search.space[{target!r}] must be a "
                     "non-empty list of JSON scalars or a non-empty range-spec "
-                    f"dict (the search kind validates its shape), got {grid!r}"
+                    "dict (the search kind validates its shape)"
                 )
     # Winner-consistency (docs/24 §8): the driver re-executes
     # needed = ancestors(T) ∪ {T} restricted to the dirty set with the

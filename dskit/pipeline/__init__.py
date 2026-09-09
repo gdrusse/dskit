@@ -146,7 +146,7 @@ from dskit.pipeline.kinds_flow import (
 from dskit.pipeline.kinds_flow import register as _register_flow_kinds
 from dskit.pipeline.kinds_report import RunReport
 from dskit.pipeline.kinds_report import register as _register_report_kinds
-from dskit.pipeline.kinds_search import HpoGrid
+from dskit.pipeline.kinds_search import CandidateInventory, HpoGrid, OneStandardErrorSelector, SelectionRecord, TrialLedger
 from dskit.pipeline.kinds_search import register as _register_search_kinds
 from dskit.pipeline.kinds_stats import StatTest, Validate
 from dskit.pipeline.kinds_stats import register as _register_stats_kinds
@@ -219,6 +219,7 @@ __all__ = [
     "DEFAULT_NODE_KINDS",
     "DocumentRunResult",
     "Derive",
+    "CandidateInventory",
     "Eligibility",
     "EventBank",
     "EventGrid",
@@ -228,6 +229,7 @@ __all__ = [
     "GroupBy",
     "HorizonConquest",
     "HpoGrid",
+    "OneStandardErrorSelector",
     "Join",
     "Node",
     "NodeContext",
@@ -250,6 +252,8 @@ __all__ = [
     "plan",
     "register_node_kind",
     "resolve_uses",
+    "SelectionRecord",
+    "TrialLedger",
     "run_document",
     "run_walk_forward",
     "RunProblem",

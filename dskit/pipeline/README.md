@@ -71,6 +71,9 @@ kinds resolve. Two more verbs — `demo`
   `apply_winner` runs it once more and that pass replaces those outputs.
   What it chose rides out on `DocumentRunResult.search`, node-keyed
   (ADR-0043).
+- **Generic search values** - CandidateInventory freezes and hashes one caller-capped grid;
+  TrialLedger requires a non-empty caller evidence schema and seals complete evidence;
+  OneStandardErrorSelector returns SelectionRecord bound to the complete ledger and caller-supplied uncertainty and simplicity rules (ADR-0113).
 - **Series and folds** — `_find_prev_run` + `_materialize` bind `$prev`;
   `run_walk_forward` + `_fold_splits` → `WalkForwardRunResult` (`driver.py`).
 - **Bounded fold execution** — `BoundedFoldRunner` (`folds.py`, ADR-0093)
@@ -602,6 +605,8 @@ dskit/pipeline/
 │                      tables + the FileWrite base both writers share, ADR-0085)
 ├── kinds_stats.py     owned validate + stat_test (plain + studentized bootstrap-t, corrections)
 ├── kinds_search.py    hpo-grid + top-trials (the ctx.rerun seam)
+|                      CandidateInventory, TrialLedger, OneStandardErrorSelector, SelectionRecord
+|                      are generic search values (ADR-0113).
 ├── kinds_report.py    owned run-report (evidence.json / evidence.md)
 ├── fitted.py          the fitted-transform family: FittedTransform (role
 │                      fitted_transform, fit/apply_state hooks, fit_split +

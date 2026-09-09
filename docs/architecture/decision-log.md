@@ -6094,3 +6094,48 @@ pin the resulting manifest before handing it to another layer. Domain-specific
 stage calendars retain their existing owners. Mapping a release window to a
 run, model, dataset, or deployment is caller work and needs separate
 authority.
+
+---
+
+## ADR-0113 - Generic candidate inventories keep search evidence complete
+
+**Status:** accepted (2026-09-09; owner authorized the cross-layer design
+and implementation continuation)
+
+**Context.** HpoGrid is a pipeline node that re-executes a document through
+the driver seam. A caller that evaluates several independent selections over
+one frozen parameter grid needs a reusable value API instead: each selection
+must see the identical candidates while retaining its own evidence. Reusing
+loose dicts risks a changed grid, a partial score-only result, or a
+non-deterministic winner.
+
+**Decision.** Add three stdlib-only values in dskit.pipeline.kinds_search.
+CandidateInventory validates a non-empty JSON-scalar grid and a positive
+exact-builtin max_candidates materialization cap (default: 4096), computes
+the full Cartesian count before allocating combinations, then orders it with the
+same canonical grid/subsample rules as HpoGrid. The cap is recorded in the
+inventory digest; n_trials never bypasses it. It freezes every combination,
+and records a SHA-256 digest. TrialLedger binds one exact immutable CandidateInventory value (subclasses are
+refused so overrides cannot alter the bound identity), accepts exactly one immutable row per declared combination, requires a non-empty caller-owned evidence schema, and seals its state. It is transactional: a rejected row changes neither its
+records nor its membership state. OneStandardErrorSelector requires a complete
+ledger, uses the caller-supplied per-row standard error and simplicity key,
+and selects the simplest row inside the best score's one-standard-error band.
+It never chooses a statistical unit or a simplicity order for the caller. SelectionRecord is immutable JSON-safe evidence binding the completed ledger and inventory digests, direction, best score, threshold, eligible candidates, canonical simplicity keys, and selected candidate.
+
+All public values refuse malformed grids, non-members, duplicates, incomplete
+ledgers, and missing/non-finite/negative standard errors at ledger admission;
+negative zero is serialized as positive 0.0. They also refuse non-orderable
+selection values. Accepted builtin integers have at most 4096 decimal digits,
+so every accepted inventory and ledger has a portable canonical JSON encoding
+and deterministic digest.
+
+**Scope.** This is Phase 1 only: generic inventory, trial ledger, and
+one-standard-error selection. Later estimator persistence, schedule, replay,
+monitoring, and every child-specific phase remain pending and require their
+own applicable authority. No empirical search, HPO, replay, market-data read,
+or child decisioning file is part of this ADR.
+
+**Consequences.** HpoGrid remains the sole DAG rerun search node. Callers
+build CandidateInventory once with an explicit or defaulted auditable
+materialization cap, create independent TrialLedgers, and provide their own
+evidence contract, uncertainty unit, and simplicity policy.

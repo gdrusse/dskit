@@ -34,7 +34,8 @@ from dskit.pipeline.document import (
 )
 from dskit.pipeline.driver import _apply_param_override, run_document
 from dskit.pipeline.kinds_search import (
-    HpoGrid, TopTrials, _grid, _subsample, register,
+    CandidateInventory, HpoGrid, OneStandardErrorSelector, SelectionRecord,
+    TopTrials, TrialLedger, _grid, _subsample, register,
 )
 from dskit.pipeline.kinds_search import _is_json_scalar as _grid_is_json_scalar
 from dskit.pipeline.node import Node, NodeContext, NodeKindRegistry
@@ -54,6 +55,48 @@ from dskit.pipeline.testing import MemoryTracker
 from tests.pipeline.dochelpers import DAY
 
 ASOF = "2026-01-01"
+
+class TestPhaseOneEvidence:
+    """Phase-1 generic evidence values retain their complete identity."""
+
+    def test_schema_is_explicit_complete_and_sealed(self):
+        """Rows require caller-declared evidence and ledger identity cannot mutate."""
+        inventory = CandidateInventory({"depth": [1]})
+        with pytest.raises(TypeError, match="evidence_fields"):
+            TrialLedger(inventory)
+        with pytest.raises(ValueError, match="evidence_fields"):
+            TrialLedger(inventory, evidence_fields=())
+        with pytest.raises(ValueError, match="reserved"):
+            TrialLedger(inventory, evidence_fields=("score",))
+        ledger = TrialLedger(inventory, evidence_fields=("se", "diagnostics"))
+        with pytest.raises(ValueError, match="missing evidence"):
+            ledger.record({"depth": 1}, score=0.0, se=0.1)
+        ledger.record({"depth": 1}, score=-0.0, se=0.1, diagnostics={})
+        assert ledger.to_obj()["evidence_fields"] == ["se", "diagnostics"]
+        assert ledger.rows[0]["score"] == 0.0
+        with pytest.raises(AttributeError):
+            ledger._state = ()
+
+    def test_selector_returns_immutable_bound_selection_record(self):
+        """The result binds complete ledger evidence and caller supplied policy."""
+        inventory = CandidateInventory({"depth": [1, 2, 3]})
+        ledger = TrialLedger(inventory, evidence_fields=("se", "fit_seed"))
+        for depth, score, se in ((1, 1.2, 0.1), (2, 1.0, 0.3), (3, 5.0, 0.1)):
+            ledger.record({"depth": depth}, score=score, se=se, fit_seed=7)
+        record = OneStandardErrorSelector(
+            select="min", simplicity_key=lambda row: row["overrides"]["depth"]
+        ).select(ledger)
+        assert type(record) is SelectionRecord
+        assert record.ledger_digest == ledger.digest
+        assert record.selected_candidate == {"depth": 1}
+        assert record.to_obj()["eligible_candidates"] == [{"depth": 1}, {"depth": 2}]
+        assert record.to_obj()["simplicity_order"] == [
+            {"candidate": {"depth": 1}, "key": 1},
+            {"candidate": {"depth": 2}, "key": 2},
+            {"candidate": {"depth": 3}, "key": 3},
+        ]
+        with pytest.raises(AttributeError):
+            record._digest = "forged"
 
 #: Trivially-valid splits for score nodes that never read ctx.splits.
 FLAT_SPLITS = TimeSplitConfig(train_end_ms=1, val_end_ms=2, test_end_ms=3)

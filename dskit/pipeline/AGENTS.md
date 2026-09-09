@@ -406,6 +406,12 @@ on it without breaking its rulings.
   deferral is ref-driven, not kind-driven: with no ref anywhere in
   params, the kind's validator DOES run at plan. A guaranteed plan-time
   gate would be a new planner↔kind protocol — ADR first.
+- **Generic search values** - CandidateInventory, TrialLedger, and
+  OneStandardErrorSelector are plain values, not nodes. Reuse canonical grid
+  ordering; callers own the eager max_candidates cap, evidence fields, SE units,
+  and simplicity. TrialLedger binds an exact CandidateInventory value; standard
+  errors are nonnegative at admission (negative zero
+  canonicalizes to 0.0); a rejected ledger row must leave no consumed member behind (ADR-0113).
 - **Spent record streams are released** (ADR-0048). After a node's last
   `$` reader runs, a list of length `>= 256` (or too big to carry) is
   replaced with `_summarize` and the pinned instance is dropped. A
@@ -470,6 +476,8 @@ dskit/pipeline/
 ├── kinds_table.py     table-file, table-write, records-write (+ the FileWrite base, ADR-0085)
 ├── kinds_stats.py     owned validate + stat_test
 ├── kinds_search.py    hpo-grid + top-trials (ctx.rerun seam)
+|                      CandidateInventory, TrialLedger, OneStandardErrorSelector, SelectionRecord
+|                      are generic search values (ADR-0113).
 ├── kinds_report.py    owned run-report
 ├── fitted.py          FittedTransform family: standardize, apply-transform,
 │                      FeatureSelector
