@@ -65,8 +65,10 @@ from dskit.production.records import (
     ExecutionScope,
     FeedAge,
     FeedResult,
+    Fill,
     Finding,
     InputWatermark,
+    Intent,
     Outcome,
     Proposal,
     Quote,
@@ -2813,3 +2815,263 @@ def test_the_loop_tells_the_heartbeat_it_is_stopping_before_it_closes_it(
         assert order.index("heartbeat.stopping") < order.index("heartbeat.close")
     finally:
         made.close()
+
+
+# ==========================================================================
+# Gate 5a — Phase 5 replay conformance / hook discovery (ADR-0114)
+# ==========================================================================
+#
+# Deliberately narrow: prove by test whether existing `ServeLoop` +
+# `ReplayFeed`/`ReplayClock` + `PaperExecutor` + the ledger can drive
+# deterministic historical ticks with synthetic, domain-blind fixtures.
+# Policy (bar choice, fill model, exit rules) is out of scope — every
+# fixture below is an injected caller value, never an inferred equity
+# adapter behaviour.
+#
+# Item-by-item outcome (items 2-5 live in `test_executor.py`, which owns
+# `PaperExecutor`; this file owns the loop and the ledger/state seam):
+#
+# 1. Decision-time bar availability / no lookahead — PASS-EXISTING, plus
+#    two new pins below. `test_a_pull_moves_the_instant_the_replay_clock_
+#    shares` (`test_feed.py`) already proves `ReplayFeed` replays a
+#    pre-recorded tape rather than inventing an as-of from `tick_at_ms`.
+#    What was UNTESTED here is that `ServeLoop`/`Tick` actually thread the
+#    same `tick_at_ms` into both `fetch` and `read_entry` unmolested, and
+#    that a caller-supplied decider can use that instant to enforce
+#    no-lookahead. Both are now pinned; no hook was needed — `Tick.run`
+#    already passes `tick_at_ms` straight through (§5.13's fixed
+#    signatures), so a caller-supplied feed/decider is where the as-of
+#    filtering mechanism already lives.
+#
+# 6. Crash/restart at every boundary — PASS-EXISTING. `SeriesState.apply`
+#    folds one ledger envelope at a time and keeps no state `apply`
+#    itself does not derive from the envelope, so a fresh fold fed the
+#    same envelopes (from `ledger.scan()`, split at any point between two
+#    "processes") lands on the identical positions/balances/working/
+#    pending as one continuous fold. No hook was needed. `cash_flow`,
+#    `decision`, `intent`, `fill`, `outcome`, the exit boundary (the fill
+#    that carries a position through flat) and the checkpoint boundary
+#    (a `snapshot` record, which folds to nothing but still marks a spot
+#    a cache write could crash right after) are all exercised directly
+#    via `ledger.append` — `cashflows.py`, `compose.py` and `state.py`
+#    itself are untouched, per the out-of-scope list.
+#
+# GAP documented, not built: `Position` carries no `opened_ms` (state.py
+# and records.py are both out of scope for this task), so holding
+# duration is proven from `Fill.ts_ms` / `OrderState.created_ms` instead —
+# see `test_executor.py`'s holding-clock tests, which is where that
+# conformance item and its evidence live.
+
+
+class AsOfBarDecider:
+    """A synthetic decider whose `read_entry` never surfaces a bar dated
+    after the `tick_at_ms` it is given — proving the loop's threaded
+    as-of is sufficient for a CALLER to enforce no-lookahead. Which bar
+    an equity adapter would then pick from what is visible is policy
+    this fixture does not decide."""
+
+    def __init__(self, calls, bars):
+        self.calls = calls
+        self._bars = bars
+        self.proposer = FakeProposer(calls)
+        self.serving_hash = "s" * 64
+
+    def read_entry(self, tick_at_ms):
+        self.calls.add("decider.read_entry", tick_at_ms)
+        visible = tuple(bar for bar in self._bars if bar[0] <= tick_at_ms)
+        watermark_ms = visible[-1][0] if visible else tick_at_ms
+        # `coverage` (§5.13) demands exactly the release's required keys,
+        # regardless of what a bar series is keyed by — the release's
+        # UNIVERSE is what this fixture must cover, not the bar payload.
+        watermarks = {
+            key: InputWatermark(key=key, latest_asof_ms=watermark_ms, source_digest="w" * 64)
+            for key in UNIVERSE
+        }
+        return EntryBatch(
+            outputs={"records": [{"ms": ms, "value": value} for ms, value in visible]},
+            watermarks_by_key=watermarks,
+            required_keys_digest=canonical_hash(list(UNIVERSE)),
+            coverage_digest="c" * 64,
+            data_asof_ms=watermark_ms,
+            inputs_digest="d" * 64,
+            source_config_hash="e" * 64,
+        )
+
+    def evaluate(self, batch):
+        self.calls.add("decider.evaluate", batch)
+        return {"picks": {"records": []}}, "h" * 64
+
+
+def test_the_loop_threads_the_same_tick_at_ms_into_fetch_and_read_entry(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """§5.13: `fetch(tick_at_ms)` and `read_entry(tick_at_ms)` both take
+    the ONE instant `Tick.run` received. A caller building an as-of
+    filter (item 1's mechanism) needs the loop to hand it the SAME
+    instant it was asked to decide at, not a value the loop invented or
+    staggered between phases."""
+    made = make_harness(tmp_path, serve_document, release_manifest, clock, calls)
+    try:
+        distinct_tick_at_ms = NOW_MS - 12_345
+        made.tick().run(distinct_tick_at_ms)
+        assert calls.first("feed.pull") == ((distinct_tick_at_ms,), {})
+        assert calls.first("decider.read_entry") == ((distinct_tick_at_ms,), {})
+    finally:
+        made.close()
+
+
+def test_a_caller_decider_can_enforce_no_lookahead_from_the_threaded_tick_at_ms(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """Item 1's mechanism claim: a synthetic bar series with T0 < T1 < T2
+    proves a caller-supplied decider can use the loop's threaded
+    `tick_at_ms` to keep T2 invisible while deciding at T1. This tests
+    the MECHANISM only — which bar an equity adapter would then choose
+    from what is visible is §11 policy, not this test's business."""
+    t0, t1, t2 = NOW_MS - 20_000, NOW_MS - 10_000, NOW_MS
+    bars = ((t0, "bar-0"), (t1, "bar-1"), (t2, "bar-2"))
+    decider = AsOfBarDecider(calls, bars)
+    made = make_harness(
+        tmp_path, serve_document, release_manifest, clock, calls, decider=decider
+    )
+    try:
+        made.tick().run(t1)
+        (batch,), _kwargs = calls.first("decider.evaluate")
+        seen_ms = tuple(row["ms"] for row in batch.outputs["records"])
+        assert seen_ms == (t0, t1)
+        assert t2 not in seen_ms
+    finally:
+        made.close()
+
+
+def _a_risk_version():
+    """A zeroed `RiskVersion` — the session tokens the fold never carries."""
+    return RiskVersion(economic_seq=0, executor_token=None, accounting_tokens=None)
+
+
+def _a_sized_proposal(candidate_id, instrument, side, qty):
+    """`a_proposal` with a caller-chosen `qty`, so the scenario controls sizes."""
+    return dataclasses.replace(a_proposal(candidate_id, instrument, side), qty=qty, notional=qty * 10)
+
+
+def _an_intent(client_ref, proposal, created_ms):
+    """An `Intent` around `proposal`, minted the way a leg would."""
+    return Intent(
+        client_ref=client_ref,
+        decision_plan_id="plan-1",
+        decision_plan_digest="p" * 64,
+        proposal=proposal,
+        created_ms=created_ms,
+        authority_id=None,
+        release_hash=RELEASE_HASH,
+        inputs_asof_ms=created_ms,
+        inputs_digest="d" * 64,
+        coverage_digest="c" * 64,
+        quote_asof_ms=created_ms,
+        quote_digest="q" * 64,
+        evidence_asof_ms=created_ms,
+        evidence_digest="v" * 64,
+        risk_version=_a_risk_version(),
+        risk_state_digest="r" * 64,
+    )
+
+
+def _a_fill(fill_id, client_ref, side, qty, price, ts_ms):
+    """A `Fill` on the conftest universe's first instrument."""
+    return Fill(
+        fill_id=fill_id, venue_ref=f"v-{fill_id}", client_ref=client_ref, instrument=UNIVERSE[0],
+        side=side, qty=qty, price=price, fee=Decimal("0.01") * qty, fee_currency="USD",
+        liquidity="taker", status="final", ts_ms=ts_ms, native=None,
+    )
+
+
+def _crash_restart_scenario():
+    """One order opened and filled, reduced, then closed flat — one
+    record of every kind item 6 names as a boundary: `cash_flow`,
+    `decision`, `intent`, `fill`, `outcome`, the exit boundary (the fill
+    that carries the position through flat) and the checkpoint boundary
+    (`snapshot`). Sizes and prices are fixed synthetic values; no bar
+    choice, fill model or exit policy is decided here."""
+    t0 = NOW_MS - 100_000
+    buy_ref, reduce_ref, close_ref = "cref-buy", "cref-reduce", "cref-close"
+    instrument = UNIVERSE[0]
+    buy = _a_sized_proposal("cand-buy", instrument, "buy", Decimal(5))
+    reduce = _a_sized_proposal("cand-reduce", instrument, "sell", Decimal(2))
+    close = _a_sized_proposal("cand-close", instrument, "sell", Decimal(3))
+    return (
+        ("cash_flow", "cf-deposit", {"currency": "USD", "amount": "100000"}),
+        ("decision", "dec-1", {"tick_id": "tick-1", "legs": []}),
+        ("intent", "intent-buy", _an_intent(buy_ref, buy, t0).to_obj()),
+        ("order_event", "oe-buy-open",
+         {"client_ref": buy_ref, "venue_ref": "v-buy", "status": "open", "recv_at_ms": t0}),
+        ("fill", "fill-buy", _a_fill("fill-buy", buy_ref, "buy", Decimal(5), Decimal(10), t0 + 1_000).to_obj()),
+        ("order_event", "oe-buy-filled",
+         {"client_ref": buy_ref, "venue_ref": "v-buy", "status": "filled", "recv_at_ms": t0 + 1_000}),
+        ("outcome", "out-1", {"tick_id": "tick-1"}),
+        ("cash_flow", "cf-buy-cost", {"currency": "USD", "amount": "-50"}),
+        ("intent", "intent-reduce", _an_intent(reduce_ref, reduce, t0 + 2_000).to_obj()),
+        ("order_event", "oe-reduce-open",
+         {"client_ref": reduce_ref, "venue_ref": "v-reduce", "status": "open", "recv_at_ms": t0 + 2_000}),
+        ("fill", "fill-reduce",
+         _a_fill("fill-reduce", reduce_ref, "sell", Decimal(2), Decimal(11), t0 + 3_000).to_obj()),
+        ("order_event", "oe-reduce-filled",
+         {"client_ref": reduce_ref, "venue_ref": "v-reduce", "status": "filled", "recv_at_ms": t0 + 3_000}),
+        ("cash_flow", "cf-reduce-proceeds", {"currency": "USD", "amount": "22"}),
+        ("intent", "intent-close", _an_intent(close_ref, close, t0 + 4_000).to_obj()),
+        ("order_event", "oe-close-open",
+         {"client_ref": close_ref, "venue_ref": "v-close", "status": "open", "recv_at_ms": t0 + 4_000}),
+        # the exit boundary: this fill carries the position through flat.
+        ("fill", "fill-close",
+         _a_fill("fill-close", close_ref, "sell", Decimal(3), Decimal(12), t0 + 5_000).to_obj()),
+        ("order_event", "oe-close-filled",
+         {"client_ref": close_ref, "venue_ref": "v-close", "status": "filled", "recv_at_ms": t0 + 5_000}),
+        ("cash_flow", "cf-close-proceeds", {"currency": "USD", "amount": "36"}),
+        # the checkpoint boundary: folds to nothing, but still names a
+        # spot the checkpoint cache would be rewritten right after.
+        ("snapshot", "snap-1", {}),
+    )
+
+
+def test_replaying_the_ledger_from_any_boundary_reproduces_the_uninterrupted_fold(
+    tmp_path, clock
+):
+    """Item 6: crash/restart at every boundary. `SeriesState.apply` folds
+    one envelope at a time and derives everything it holds from the
+    envelope stream alone (§5.8.1: "the sole owner of derived state") —
+    so a FRESH fold, fed the same envelopes read back from
+    `ledger.scan()` and split at any point between two "processes",
+    must land on the same positions, balances, working orders and
+    pending refs as one continuous fold. Splitting is the simulated
+    crash: the first loop's `restarted` state is abandoned (RAM lost)
+    exactly as `docs/architecture/decision-log.md` ADR-0114 asks, and
+    only the disk-persisted envelopes (`ledger.scan()`) survive to feed
+    the second loop — equivalent to a real process kill and restart
+    without actually killing one."""
+    series_id = "018f0f4e-7b21-7d3a-9c31-6d8f36d806a1"
+    serve = ServeRoot(str(tmp_path / "serve"), series_id)
+    lock = InstanceLock(serve.lock_path)
+    lock.acquire()
+    state_full = SeriesState(series_id)
+    ledger = JsonlLedger(serve, "proc-1", RELEASE_HASH, clock=clock, state=state_full, lock=lock)
+    try:
+        for kind, record_id, body in _crash_restart_scenario():
+            ledger.append({"kind": kind, "id": record_id, "body": body})
+        reference = state_full.snapshot()
+        assert reference.positions == ()  # the close reached flat
+        assert dict(reference.balances) == {"USD": Decimal("100008")}
+        envelopes = list(ledger.scan())
+        for boundary in range(len(envelopes) + 1):
+            restarted = SeriesState(series_id)
+            for envelope in envelopes[:boundary]:
+                restarted.apply(envelope)
+            for envelope in envelopes[boundary:]:
+                restarted.apply(envelope)
+            view = restarted.snapshot()
+            assert view.positions == reference.positions
+            assert dict(view.balances) == dict(reference.balances)
+            assert view.working == reference.working
+            assert view.pending == reference.pending
+            assert view.risk_version.economic_seq == reference.risk_version.economic_seq
+    finally:
+        ledger.close()
+        lock.release()
