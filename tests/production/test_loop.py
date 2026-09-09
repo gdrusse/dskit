@@ -3032,10 +3032,10 @@ def _economic(view, clock):
 
 def _crash_restart_scenario():
     """One order opened and filled, reduced, then closed flat — one
-    record of every kind item 6 names as a boundary. The tick is complete
-    (`tick_start` + terminal `tick`) so Recovery is a no-op closer on the
-    full fold but still runs. `_real_snapshot` is a sentinel the writer
-    turns into `ledger.snapshot(state.to_snapshot_obj())`."""
+    record of every kind item 6 names as a boundary. The tick is closed
+    after the decision so Recovery is a no-op closer at later
+    boundaries; `_real_snapshot` is a sentinel the writer turns into
+    `ledger.snapshot(state.to_snapshot_obj())`."""
     t0 = NOW_MS - 100_000
     buy_ref, reduce_ref, close_ref = "cref-buy", "cref-reduce", "cref-close"
     instrument = UNIVERSE[0]
@@ -3046,6 +3046,7 @@ def _crash_restart_scenario():
         ("tick_start", "ts-1", {"tick_id": "tick-1", "tick_at_ms": t0}),
         ("cash_flow", "cf-deposit", {"currency": "USD", "amount": "100000"}),
         ("decision", "dec-1", {"tick_id": "tick-1", "legs": []}),
+        ("tick", "tick-1-term", {"tick_id": "tick-1"}),
         ("intent", "intent-buy", _an_intent(buy_ref, buy, t0).to_obj()),
         ("order_event", "oe-buy-open",
          {"client_ref": buy_ref, "venue_ref": "v-buy", "status": "open", "recv_at_ms": t0}),
@@ -3070,7 +3071,6 @@ def _crash_restart_scenario():
         ("order_event", "oe-close-filled",
          {"client_ref": close_ref, "venue_ref": "v-close", "status": "filled", "recv_at_ms": t0 + 5_000}),
         ("cash_flow", "cf-close-proceeds", {"currency": "USD", "amount": "36"}),
-        ("tick", "tick-1-term", {"tick_id": "tick-1"}),
         ("snapshot", "snap-empty", {}),
         ("_real_snapshot", "snap-real", None),
     )
@@ -3130,29 +3130,30 @@ def test_replaying_the_ledger_from_any_boundary_reproduces_the_uninterrupted_fol
 ):
     """Item 6: crash/restart at every named boundary. Persist the prefix,
     capture uninterrupted positions/balances/NAV/metrics, close the
-    writer, abandon RAM, reopen from disk, run Recovery. Prefix must
-    match uninterrupted-at-prefix; the full reopen must match the full
-    fold. Recovery may append a `recovered` process record (and, at a
-    pending-intent boundary, an `unknown` order_event) — those are not
-    economic; positions, cash, NAV and economic_seq must still agree."""
+    writer, abandon RAM, reopen from disk, run Recovery.
+
+    Positions, cash and NAV always match the uninterrupted prefix.
+    CURRENT Recovery behaviour at a pending-intent boundary: it queries
+    the venue, records an `unknown` `order_event`, and that kind
+    advances `economic_seq` — so metrics are NOT identical there; the
+    assertions below pin that divergence rather than skip it. Where
+    nothing is pending, fold metrics (economic_seq, working, pending)
+    match. A `recovered` process record is not economic."""
     scenario = _crash_restart_scenario()
     named_indexes = [
         i for i, (kind, rid, _body) in enumerate(scenario, start=1)
-        if rid != "snap-empty"
-        and (
-            kind in _NAMED_BOUNDARIES
-            or kind == "_real_snapshot"
-            or (kind == "fill" and rid == "fill-close")
-        )
+        if rid != "snap-empty" and (kind in _NAMED_BOUNDARIES or kind == "_real_snapshot")
     ]
+    saw_pending_intent = False
+    saw_exit = False
     for bound in named_indexes:
         prefix = scenario[:bound]
         serve, ledger, live, prefixes = _write_crash_records(
             tmp_path / f"b{bound}", clock, prefix
         )
-        expected = prefixes[-1][2]
-        pending_before = prefixes[-1][3]
-        open_ticks_before = prefixes[-1][4]
+        kind, rid, expected, pending_before, _open_ticks = prefixes[-1]
+        if rid == "fill-close":
+            saw_exit = True
         ledger.close()
         reopened, restarted, report = _reopen_and_recover(serve, clock)
         try:
@@ -3160,14 +3161,26 @@ def test_replaying_the_ledger_from_any_boundary_reproduces_the_uninterrupted_fol
             assert got["positions"] == expected["positions"]
             assert got["balances"] == expected["balances"]
             assert got["nav"] == expected["nav"]
-            if not pending_before:
-                assert got["metrics"]["economic_seq"] == expected["metrics"]["economic_seq"]
-            if not pending_before and not open_ticks_before:
-                assert got["metrics"]["n_working"] == expected["metrics"]["n_working"]
-                assert got["metrics"]["n_pending"] == expected["metrics"]["n_pending"]
-            assert report.replayed >= 1 or bound == 0
+            if pending_before:
+                saw_pending_intent = True
+                assert kind == "intent"
+                assert got["metrics"]["economic_seq"] == (
+                    expected["metrics"]["economic_seq"] + len(pending_before)
+                )
+                assert set(report.queried_refs) == set(pending_before)
+                recovered = [
+                    env for env in reopened.scan(kind="order_event")
+                    if str(env.get("id", "")).startswith("recovered-order_event-")
+                ]
+                assert len(recovered) == len(pending_before)
+                assert all(env["body"]["status"] == "unknown" for env in recovered)
+            else:
+                assert got["metrics"] == expected["metrics"]
+            assert report.replayed >= 1
         finally:
             reopened.close()
+    assert saw_pending_intent
+    assert saw_exit
 
     serve, ledger, live, prefixes = _write_crash_records(tmp_path / "full", clock, scenario)
     expected = prefixes[-1][2]
@@ -3180,6 +3193,7 @@ def test_replaying_the_ledger_from_any_boundary_reproduces_the_uninterrupted_fol
         got = _economic(restarted.snapshot(), clock)
         assert got == expected
         assert tuple(report.closed_ticks) == ()
+        assert tuple(report.queried_refs) == ()
     finally:
         reopened.close()
 
