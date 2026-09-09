@@ -179,6 +179,7 @@ intraday_equities/
 ├── configs/             # universe, sources, suites, model zoo, scan/action/HPO/train
 ├── docs/decisioning/    # framework.md + one file per decision
 ├── docs/explanations/   # standalone worked explanations
+├── docs/plans/          # owner-reviewed implementation plans and hard stops
 ├── docs/memos/          # durable implementation and operational handoffs
 ├── docs/research/       # topic folders; <date>-synthesis.md + dated notes
 └── tests/

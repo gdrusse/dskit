@@ -30,6 +30,8 @@ Agent orientation — see README.md for operator commands.
 - **Standalone explanations live in `docs/explanations/`.** They explain
   child-specific methods or results without becoming decision records or
   journaled research.
+- **Implementation plans live in `docs/plans/`.** They record approved scope,
+  file ownership, test order, and explicit owner gates before code changes.
 - **Durable handoffs live in `docs/memos/`.** Use them for completed-study
   evidence, implementation outcomes, and operational caveats.
 
