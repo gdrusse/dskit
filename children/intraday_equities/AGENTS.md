@@ -87,6 +87,7 @@ journal.json         # dskit.journal marker
 docs/decisioning/    # actions.csv + path.csv; README generated
 docs/research/       # topic folders; <date>-synthesis.md + dated notes
 docs/explanations/   # standalone worked explanations
+docs/plans/          # implementation plans: scope, file ownership, owner gates
 docs/memos/          # durable implementation and operational handoffs
 tests/               # conftest + connectors/nodes/configs/live
 ```
