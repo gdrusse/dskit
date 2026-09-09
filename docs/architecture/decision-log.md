@@ -6178,3 +6178,435 @@ or child decisioning file is part of this ADR.
 build CandidateInventory once with an explicit or defaulted auditable
 materialization cap, create independent TrialLedgers, and provide their own
 evidence contract, uncertainty unit, and simplicity policy.
+
+---
+
+## ADR-0114 — Final model release, cash flows, replay, and shared monitoring: file ownership, schemas, and phase gating (Gate 1 / Phase 0)
+
+**Status:** proposed — awaiting owner approval (2026-09-09). This ADR resolves
+NONE of the ten items in plan §11 (below). Per the plan's own §1.4 ("Write one
+cross-layer ADR ... and stop for owner approval. The ADR must resolve every
+item in §11 that its phase needs") and root `CLAUDE.md` ADR discipline ("a
+proposal is not an approval — only the human owner accepts an ADR"), every
+phase below stays blocked from implementation until (a) this ADR itself is
+accepted and (b) each §11 item that phase needs is separately ruled by the
+owner. No code in this ADR has been written.
+
+**Context.** `children/intraday_equities/docs/plans/2026-09-08-final-model-replay-and-monitoring.md`
+(2026-09-08) is the authority for the remaining final-model, capital-flow,
+replay, and monitoring build. Its own §1 states: "Do not write implementation
+code until the required ADR is accepted." Its Phase 1 (generic dskit-side
+search-evidence values) is already delivered under ADR-0113 and is
+reconciled, not re-proposed, below. This ADR is the plan's required §6 Phase 0
+artifact for the remaining scope: Phases 2 through 6 of the plan's own build
+sequence, covering every file the plan's §5 "File ownership and placement"
+names as new or modified, generic (`dskit`) and child
+(`children/intraday_equities`) alike. Primary evidence carried forward
+unchanged: `docs/memos/2026-09-08-first-mio-backtest-readiness-and-final-model-recommendation.md`,
+`docs/memos/p16-feature-mask-and-final-gate-results.md`, ADR-0088, ADR-0108,
+ADR-0111, and `docs/plans/2026-09-intraday-equities-mio.md`.
+
+**Reconciliation with ADR-0113 (Phase 1).** ADR-0113 delivered exactly the
+plan's §5 `dskit/pipeline/kinds_search.py` bullet: `CandidateInventory`,
+`TrialLedger`, `OneStandardErrorSelector`, and `SelectionRecord` as
+stdlib-only, domain-blind values — "They operate on caller-supplied scores and
+know nothing about stocks, leads, LightGBM, or returns," matching the plan's
+own description verbatim. `tests/pipeline/test_kinds_search.py` (1,794 lines)
+exists and the RE-ENTRY record shows two clean skeptic rounds against it. The
+one gap: the plan's §6 Phase 1 test list (items 1–6) also describes
+DOMAIN-side evidence — "the exact forecast-accuracy objective," per-lead
+selection over real candidate scores, and a ledger fed by an actual LightGBM
+lead — none of which can exist inside `kinds_search.py` itself (it must stay
+domain-blind) and none of which ADR-0113 built or claims to have built. That
+domain half is still open work; it is not a defect in ADR-0113, it is the
+child-side counterpart the plan's §5 assigns to `final_model.py`, folded into
+Phase 2 below because refit immediately follows selection in that file. No
+extra scope beyond the plan was added by ADR-0113.
+
+**Baseline evidence for `configs/run-final-hpo.json` (plan §4 item 1).** Run
+2026-09-09, read-only, from `children/intraday_equities`, with
+`PYTHONPATH=/home/user/dskit:/home/user/dskit/children/intraday_equities`
+(the child is not `pip install`-ed in this environment; no other invocation
+succeeded):
+
+```
+$ python3 -m dskit.pipeline validate configs/run-final-hpo.json --adapter intraday_equities
+OK — configs/run-final-hpo.json
+  name:  final-hpo
+  nodes: 8  sections: splits, outputs, tracking, stages
+  hash:  ee674709be49f5865d4a77548bb2b963091181ff67a30e62379b2e69b072cc48
+# exit code 0
+```
+
+```
+$ python3 -m dskit.pipeline plan configs/run-final-hpo.json --adapter intraday_equities
+{"name": "final-hpo", "document_hash": "ee674709be49f5865d4a77548bb2b963091181ff67a30e62379b2e69b072cc48",
+ "order": ["calendar", "select", "memory", "finalist"], ...}
+# exit code 0
+```
+
+The identity hash matches the `ee674709…` value already recorded in this
+child's `CLAUDE.md`/`AGENTS.md` ("Constructed and validated
+... it has NOT been run"). Both commands confirm the document is
+STRUCTURALLY valid today, which is consistent with — not a rebuttal of — the
+plan's §4 item 1 claim: the document's `pipeline` section still builds the
+full pre-P16 feature set (20-bar lookback, five momentum-horizon windows,
+`ic`-objective inner search) and its `finalist.templates` still carry the
+pre-lean-mask LightGBM/torch-MLP recipes, not the exact P16 33-column-drop
+`lean-pooled-h10` mask or the plan's locked 24-combination common inventory.
+"Validates and plans" is a shape claim; it is not evidence the document
+describes the right recipe. Full command transcripts are also carried in the
+Gate 1 memo (below) as required evidence.
+
+**Decision.** Approve the following file list, classes/functions, outputs,
+and identity effects for Phases 2–6, EXACTLY as the plan's §5 describes them
+— no parameter, default, schema field, or behavior is invented below where
+the plan is silent; each such gap is called out by name. No phase may begin
+implementation until this ADR is accepted AND every §11 item marked as
+blocking it is separately ruled.
+
+**Phase 2 — final refit and one bundle.**
+
+- `dskit/pipeline/libs/sklearn.py` (modify, tier 2): add a public OOP bundle
+  artifact writing/loading "a mapping of named sklearn-shaped estimators as
+  one joblib file plus one JSON manifest." Manifest fields as named by the
+  plan: ordered head names, per-head constructor parameters, full and
+  surviving feature order, categorical encoding, training identities/cuts,
+  library versions, and a deterministic prediction checksum. Digest scope:
+  "model bytes together with all schema-bearing manifest fields." Reuses the
+  package's existing verified-artifact rules (not restated). The plan does
+  not name the new class(es), their public method signatures, the joblib
+  write path/atomicity mechanism beyond "one joblib file plus one JSON
+  manifest ... written atomically," or the exact checksum algorithm beyond
+  "deterministic" — those are implementation-time decisions within this
+  scope, not pre-decided here.
+- `dskit/pipeline/libs/sklearn.py` (modify, tier 2): "fix the existing
+  `SklearnFit` doorway or give the bundle writer the same inspected
+  `feature_name(s)` and `categorical_feature` forwarding contract. There must
+  be one public helper, not duplicate signature inspection in child code."
+  The plan leaves the choice (fix vs. shared helper) open; whichever is
+  implemented, `feature_name(s)`/`categorical_feature` forwarding must have
+  exactly one owner, per root `CLAUDE.md`'s "a function is never repeated
+  across modules" rule.
+- `children/intraday_equities/intraday_equities/final_model.py` (new, tier
+  3): "own only the domain assembly of ten lead datasets, the lead-specific
+  outer-aligned score, the exact P16 lean mask, per-lead winner records,
+  refit cuts, and calls into the generic search/bundle objects. No generic
+  sampler, serializer, or hash logic lives here." This file supplies the
+  domain half of Phase 1's per-lead selection (the CandidateInventory /
+  TrialLedger / OneStandardErrorSelector consumer named in the
+  reconciliation above) AND the refit-to-bundle step. Per §6 Phase 1/2 test
+  items: ten exact head names `h01..h10` (missing/duplicate/extra refuse);
+  each head trained only on its own frozen winner while sharing the
+  identical feature/category contract and refit cut; refit reads permitted
+  rows only through 2026-02-28 and performs no HPO. The plan names no public
+  class/function signature for this file beyond these behavioral
+  requirements — the shape of "domain assembly," the score function's exact
+  call signature, and how winner records are threaded to the refit are
+  implementation-time decisions.
+- Config: modify `configs/run-final-hpo.json` — "select the pinned P16
+  comparison, declare only the exact `lean-pooled-h10` recipe, freeze one
+  24-combination inventory, execute per-lead selection on the correct score,
+  and emit complete ledgers." Baseline evidence above pins its CURRENT
+  (unmodified) shape and identity hash; the plan gives no target identity
+  hash for the modified document (a new hash is inevitable — the identity
+  recipe grades the `pipeline` section this change rewrites).
+- Config: add `configs/run-final-refit.json` (new) — "read pinned HPO
+  winners, refit ten heads through 2026-02-28, and write the one verified
+  model bundle." No further shape is specified.
+- Update `dskit/pipeline/libs/sklearn.py`'s owning package docs (README/tree)
+  for the new public bundle API, per the root standard that every package
+  keeps its README/CLAUDE.md tree current.
+- Identity/hash effects: `run-final-hpo.json`'s identity hash changes the
+  moment its `pipeline`/`finalist.templates` content changes (the plan
+  requires exactly this — the current `ee674709…` document is the wrong
+  recipe and MUST get a new hash). The new bundle's own digest is model bytes
+  + schema-bearing manifest fields, per the sklearn.py bullet above; it is
+  not a `dskit.pipeline` document-identity hash.
+- **Blocking §11 items:** item 1 (the one-standard-error statistical unit and
+  simplicity ordering) blocks `final_model.py`'s per-lead winner selection
+  outright — `OneStandardErrorSelector` requires a caller-supplied `se` unit
+  and simplicity key that no one may invent. Nothing else in Phase 2 depends
+  on an open §11 item.
+
+**Phase 3 — cash flows and account state.**
+
+- `dskit/production/cashflows.py` (new, tier 2): "standard-library-only
+  `RecurringCashFlowSchedule` and immutable dated override/value objects.
+  Handle `zoneinfo`, recurrence anchoring, half-open windows, DST, exact
+  timestamp ordering, idempotent flow IDs, deposits, withdrawals, and
+  corrections. It materializes due flow records; it never decides whether a
+  real transfer settled." The plan names one class explicitly
+  (`RecurringCashFlowSchedule`) plus unnamed "immutable dated override/value
+  objects" — their exact field names, constructor signatures, and the
+  override object's shape (skip/move/replace/withdraw/correct, per plan §3
+  "Capital flows") are not given and are not decided here.
+- `dskit/production/compose.py`, `state.py`, `report.py` (modify, tier 1/2):
+  "compose scheduled flows only for replay, keep production adoption
+  settlement-driven, and add generic time-weighted and money-weighted
+  performance without changing the existing external-flow/PnL separation."
+  TWR/MWR function/method names and signatures are not given by the plan.
+  "Production ignores scheduled-but-unsettled money and books only the
+  reconciled settled event" (§6 Phase 3 test 5) is a behavioral constraint on
+  `state.py`'s existing settlement path, not a new file.
+- Config: add `configs/capital-policy.json` (new) — "USD, $10,000 starting
+  cash, the $500 biweekly Friday rule, timezone, anchor and same-timestamp
+  ordering once resolved, dated overrides, and every later-approved
+  MIO/account knob. The file is pinned by digest wherever consumed." The
+  anchor date and same-timestamp ordering are explicitly deferred to §11 item
+  2 — this config cannot be authored with real values until that item is
+  ruled.
+- Update `dskit/production/{README.md,AGENTS.md}` trees for `cashflows.py`,
+  per the plan's own instruction, conditional on `cashflows.py` being
+  approved.
+- Outputs/schema: due flow records materialized by
+  `RecurringCashFlowSchedule` (fields not specified by the plan beyond
+  "idempotent flow IDs" and the override kinds above); the production value
+  report's existing external-flow/PnL separation is extended, not replaced,
+  by TWR/MWR.
+- **Blocking §11 items:** item 2 (first biweekly Friday anchor date,
+  holiday/non-business-day treatment, and 09:30 same-instant contribution
+  ordering) blocks `configs/capital-policy.json`'s real values and the
+  same-timestamp-ordering test in §6 Phase 3 item 4 outright. Item 9
+  (broker/tax/settlement/PDT/wash-sale/live rulings) bears on production
+  settlement semantics but does not by itself block replay-only cash-flow
+  materialization.
+
+**Phase 4 — real forecast bundle and confirmed caps.**
+
+- `children/intraday_equities/intraday_equities/forecast_bundle.py` (new,
+  tier 3): "point-in-time equity conversion from label units to gross
+  fractional returns, plus the child-specific assembly and validation of the
+  ADR-0088/MIO bundle. Generic calibration estimators graduate to `dskit`;
+  this file only binds equity fields and reference policy." No class/function
+  signature is given beyond this. The plan's §6 Phase 4 test items require:
+  unit tests for the "owner-approved inverse label transformation" (not yet
+  approved — see below); point-in-time availability checks for volatility,
+  SPY reference return, residual beta, prices, outcomes, `pi_upper`, and
+  scenario residuals; every scenario row sharing timestamp, horizon, weights,
+  unit, and release identity (mixed horizons/mismatched sets refuse).
+- `children/intraday_equities/intraday_equities/nodes_capital.py` (modify,
+  tier 3): "require the pinned confirmed cap input and a lead on every bundle
+  row; refuse absent, zero, stale, ineligible, or over-cap rows before
+  optimization. Preserve the existing required `stat_test` survivor wire."
+  This extends the existing `EquityKellyMIO`-adjacent node (ADR-0111) to
+  consume and enforce a `(symbol, lead)` cap artifact it does not yet
+  consume, per plan §4 item 8.
+- Config: add `configs/run-mean-confirmation.json` (new) — explicitly "remain
+  unreadable until the full pre-March release is frozen; then consume only
+  the approved March-May slice." This file is authored as part of Phase 4's
+  scope but its DATA is not readable until later than Phase 4 itself
+  completes — the plan is explicit that no March-May row may be read early
+  "including for debugging, schema inspection, thresholds, or sample
+  counts" (§8).
+- Outputs/schema: "confirmation caps are pinned, deployable, contiguous from
+  h1, and from evidence not used to choose the P16 mask. Development caps
+  always refuse deployment" (§6 Phase 4 test 4) — the cap artifact's exact
+  field shape is not specified beyond this and beyond plan §4 item 7's
+  reference to P16's existing `deployment_eligible=false` caps.
+- **Blocking §11 items:** item 3 (the inverse-label reference policy — how
+  predicted vol-scaled SPY-residual predictions become gross returns at each
+  lead without future information) blocks `forecast_bundle.py`'s core
+  conversion outright; the plan's own §6 Phase 4 test 1 language
+  ("owner-approved inverse label transformation") presumes this ruling
+  exists. Item 4 (March-May ordering and minimum evidence for mean
+  confirmation, cap confirmation, `pi_upper`, expected-alpha uncertainty,
+  and joint scenario calibration — "data used to fit an uncertainty product
+  cannot also be its untouched test") blocks both the cap-confirmation
+  procedure and `configs/run-mean-confirmation.json` ever being read. Item 8
+  (every open MIO policy in the referenced MIO plan's §10) bears on how
+  `nodes_capital.py`'s cap enforcement interacts with the existing MIO
+  constraints.
+
+**Phase 5 — stateful replay through the production seams.**
+
+- `children/intraday_equities/intraday_equities/replay.py` (new, tier 3):
+  "thin equity policies for bar choice, execution timing, forced exits,
+  horizon identity, and the Schwab cost/fill adapter. It subclasses or
+  composes `dskit.production`; it does not own clocks, ledgers, account
+  folds, or generic performance math." No class/function signature given.
+- `dskit.production.loop.ServeLoop`, `ReplayFeed`, replay clock, accounting,
+  executor, ledger, and report (extend, tier 1/2, conditional): "Prove by
+  test whether existing `ServeLoop` + replay feed/clock + paper executor can
+  drive deterministic historical ticks. Extend the smallest generic hook
+  only after a failing conformance test demonstrates the gap ... If they
+  cannot express deterministic stateful fills, the ADR must name the
+  smallest missing abstract hook in the owning existing module. Do not
+  create `backtest.py` as a parallel engine." This ADR does not name that
+  hook — the plan requires the conformance test to run FIRST (§6 Phase 5
+  item 1) to discover whether one is even needed, and doing so is
+  implementation work this ADR does not authorize yet.
+- Config: add `configs/run-development-replay.json` (new) — "replay
+  already-spent P16 evidence only, use the same decision graph, and force
+  `deployment_eligible=false`." Matches plan §6 Phase 7 item 5's
+  developmental-replay gate ("its purpose is to find code/accounting
+  defects, not estimate returns").
+- Outputs/schema: no new event schema here — Phase 5's replay emits into the
+  Phase 6 event/metric contract below; per plan §3, "Replay and production
+  emit the same versioned event bodies into the same ledger contract and use
+  the same metric reductions."
+- **Blocking §11 items:** item 5 (first replay horizon policy — h1-only vs.
+  mixed confirmed caps, exit/expiry/overlap semantics) and item 6 (fill
+  model — order type, decision/fill bar, latency, partial fills, rejections,
+  spread/slippage, halts, forced exits, mark source) both block
+  `replay.py`'s core policies outright; plan §6 Phase 5 item 2 explicitly
+  defers those pins to "after §11 is ruled." Item 9 (broker/tax/settlement/
+  PDT/wash-sale/live rulings) bears on the Schwab cost/fill adapter's real
+  parameters, though the adapter's MECHANISM may be built and tested
+  synthetically without them per the plan's ruling in §2 ("TDD and synthetic
+  integration tests still run throughout; this ruling forbids premature
+  empirical runs, not tests").
+
+**Phase 6 — shared event and metric contract.**
+
+- `dskit/production/metrics.py`, `monitors.py`, `vocab.py` (modify, tier
+  1/2): "add only generic low-cardinality operational readings or generic
+  reducers that are genuinely absent. Per-symbol/per-lead values belong in
+  ledger artifacts and reports, not unbounded Prometheus labels." No new
+  class/function names are given.
+- `children/intraday_equities/intraday_equities/metrics.py` (new, tier 3):
+  "only equity event-field adapters and domain-specific metrics such as
+  signal decay by lead. Generic reducers and storage remain in
+  `dskit.production`." No signature given.
+- Event schema (plan §6, verbatim category list — this ADR does not add,
+  remove, or reinterpret any field): identity/invariants (release,
+  model-bundle, feature-schema, cap, calibration, scenario, cost-policy and
+  capital-policy digests; event time, known-at time, source as-of, lead,
+  symbol, deployment eligibility); data (expected/received/missing/late
+  bars, feature completeness, reference completeness, stale age,
+  label/outcome coverage, corporate-action gaps); model by symbol and lead
+  (count, baseline/model SSE, R2OOS, IC, calibration slope, prediction bias,
+  prediction/residual dispersion, weakest required slice, drift statistic,
+  time since last successful refit); gates (candidate count, survivor
+  count, cap, every refusal reason, adjusted p-value/evidence count,
+  performance hold state, override state); MIO (bundle age, scenario
+  count/effective weight, eligible/routed/sized names, build/solve latency,
+  solver status, objective, expected return, CVaR, HFDR usage,
+  cash/gross/cardinality/position utilization, binding constraints,
+  cleared-but-unfunded candidates); execution (proposals, orders,
+  acknowledgements, fills, partials, rejections, cancels,
+  decision-to-submit/fill latency, arrival-to-fill slippage, spread, fees,
+  implementation shortfall, fill rate, turnover, holding time, forced exits,
+  signal decay over realized latency); portfolio/capital (starting cash,
+  settled external flow, cash, buying power, gross/net exposure, per-name
+  concentration, realized/unrealized/net PnL, fees, NAV, TWR, MWR, peak,
+  drawdown, risk-cap utilization); operations/parity (ticks, phase latency,
+  refusals, retries, exporter failures, reconciliation breaks, breaker
+  state, health, dead-man heartbeat, replay-versus-paper divergence by
+  existing divergence class). Values are recorded even before alert
+  thresholds are approved; symbol/lead never enter closed telemetry label
+  sets unless cardinality is explicitly bounded and approved — full detail
+  stays in ledger/report artifacts, exporters publish safe aggregates only.
+- Config: add `configs/run-full-system-backtest.json` (new) — explicitly
+  "remain unreadable until the mean, uncertainty, caps, MIO, execution,
+  costs, cash policy, and monitoring policy are frozen before 2026-06-01."
+  Authored in this phase's scope; its data stays unreadable well past Phase
+  6's own completion, matching plan §6 Phase 7 items 7–8 (freeze before
+  March, freeze again before June, run the untouched June-August simulation
+  once, August is Test B and never a second tuning set).
+- **Blocking §11 items:** item 7 (performance-monitor minimum counts,
+  windows, thresholds, and the warn-versus-hold boundary — "hard-stop
+  invariant categories are already locked") blocks only the WARN/HOLD
+  threshold behavior, not recording the metric values themselves (plan §6:
+  "values are recorded even before alert thresholds are approved"). Item 10
+  (numeric reporting/alert requirements beyond the metric catalogue) blocks
+  any reporting/alerting beyond what §6's catalogue already names.
+
+**Cross-cutting.** `children/intraday_equities/intraday_equities/__init__.py`
+is modified once per newly approved child module (`final_model.py`,
+`forecast_bundle.py`, `replay.py`, `metrics.py`) so adapter import registers
+each module's public nodes, per ADR-0021's import-is-registration rule; child
+README/AGENTS trees are updated alongside. No config named
+`configs/run-mean-confirmation.json` or `configs/run-full-system-backtest.json`
+authorizes any read of its target data merely by existing — both stay
+"unreadable" documents until their named freeze gates pass, independent of
+this ADR's acceptance. The plan explicitly forbids a real-money configuration
+at any phase; none is proposed.
+
+**Open owner decisions — not resolved by this ADR (plan §11, carried
+verbatim as the plan's authoritative list).** No agent may infer these.
+
+1. The statistical unit and dependence-robust calculation for the locked
+   one-standard-error HPO rule, plus the exact simplicity ordering.
+2. The first biweekly Friday anchor date; holiday/non-business-day treatment;
+   and whether a 09:30 contribution is available before or after a decision
+   at exactly 09:30.
+3. The inverse-label reference policy: how predicted vol-scaled SPY residuals
+   become gross returns at each lead without future information.
+4. The March-May ordering and minimum evidence for mean confirmation, cap
+   confirmation, `pi_upper`, expected-alpha uncertainty, and joint scenario
+   calibration. Data used to fit an uncertainty product cannot also be its
+   untouched test.
+5. First replay horizon policy: h1-only/non-overlapping as the memo
+   recommends, or mixed confirmed caps; precise exit/expiry and overlap
+   semantics.
+6. Fill model: order type, decision/fill bar, latency, partial fills,
+   rejections, spread/slippage, halts, forced exits, and mark source.
+7. Performance-monitor minimum counts, windows, thresholds, and when a
+   warning becomes a hold. Hard-stop invariant categories are already
+   locked.
+8. Every still-open MIO policy in `docs/plans/2026-09-intraday-equities-mio.md`
+   §10: HFDR `q`, `U_pi`, contribution-aware Kelly schedule, opportunity
+   cost, CVaR, cardinality, ticket/band/reserve/exposure/buying-power
+   policy, `U_mu`, and cash-versus-margin account.
+9. Broker, tax, settlement, PDT, wash-sale, and live account rulings. These
+   cannot be settled by code and paper-only remains mandatory.
+10. Numeric reporting/alert requirements beyond the metric catalogue in §6.
+
+**Appendix — owner-only Path update packet (plan §12).** This content is
+carried here VERBATIM for owner reference only. This ADR is NOT authorized to
+apply any of it to `docs/decisioning/path.csv`; per both this child's
+`AGENTS.md` and `CLAUDE.md`, that file is human-owner-only and no agent may
+add, edit, regenerate, or otherwise update it, including its `Current Work`
+row. The owner should add or amend rows with repository-assigned IDs using
+these contents:
+
+- **Final predictive model family and mask** — pooled LightGBM,
+  `lean-pooled-h10`, exact P16 33-column drop mask; evidence P16
+  memo/config; `LOCKED=Y`; empirical.
+- **Final HPO and refit protocol** — ten independent leads, common 24-combo
+  inventory, per-lead outer-aligned accuracy, one-SE simplicity, refit
+  through 2026-02-28, 63-day refresh; this plan + final-HPO/refit configs;
+  `LOCKED=N` until §11.1 is ruled, then `Y`; judgemental.
+- **Model release artifact** — one ten-head pickle/joblib plus verified
+  readable manifest/checksum; this plan + eventual release artifact;
+  `LOCKED=Y`; judgemental.
+- **Capital funding policy** — $10,000 initial USD, $500 biweekly Friday
+  09:30 New York, recurring rule with dated overrides, production
+  settlement-only, external flow excluded from PnL; `LOCKED=N` until §11.2
+  is ruled, then `Y`; judgemental.
+- **Replay/production parity** — one pipeline decision graph, event ledger,
+  and metric reductions; only boundary adapters differ; `LOCKED=Y`;
+  judgemental.
+- **Guardrail response policy** — hard-stop identity/staleness/cap/parity/
+  reconciliation/solvency; evidence-qualified performance drift warns or
+  holds; `LOCKED=N` until §11.7 thresholds are ruled, then `Y`; judgemental.
+- Preserve A18256 as the locked fail-closed final MIO-bundle contract and
+  add this plan plus the eventual publisher artifact to its relevant files.
+  Do not mark its implementation complete until a real bundle exists.
+
+**Scope.** This ADR covers file ownership, class/function inventories (as far
+as the plan itself specifies them), output/schema/identity effects, and §11
+phase-gating for Phases 2 through 6 of the plan's build sequence only. It
+authorizes no implementation. It resolves no §11 item. It does not touch
+`docs/decisioning/path.csv`. It does not modify, extend, or reinterpret
+ADR-0113, ADR-0088, ADR-0108, or ADR-0111 — those stand as accepted. No
+market-data read, HPO run, training run, replay execution, or real-money
+configuration is authorized by or performed under this ADR.
+
+**Consequences.** Every phase above stays blocked from implementation until
+this ADR is accepted by the owner AND every §11 item marked as blocking that
+phase is separately ruled. Phase 2 may begin generic-mechanism work
+(`sklearn.py` bundle writer) once accepted, but `final_model.py`'s per-lead
+selection cannot complete without §11 item 1. Phase 3 may begin
+`cashflows.py`'s mechanism (recurrence, DST, idempotent IDs) once accepted,
+but cannot use real anchor/ordering values without §11 item 2. Phase 4 cannot
+build `forecast_bundle.py`'s core conversion without §11 item 3, and its
+confirmation config stays permanently unreadable pending §11 item 4 plus the
+pre-March freeze. Phase 5 cannot fix `replay.py`'s execution policies without
+§11 items 5 and 6. Phase 6 may record every metric in its catalogue once
+accepted, but may not act on thresholds without §11 item 7, nor add reporting
+beyond the catalogue without §11 item 10. No phase's config with data still
+behind a calendar gate (`run-mean-confirmation.json`,
+`run-full-system-backtest.json`) may be read regardless of §11 rulings, until
+its named freeze milestone passes.
