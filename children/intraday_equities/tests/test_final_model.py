@@ -89,6 +89,53 @@ def test_hpo_space_refuses_a_config_with_no_lgbm_template(tmp_path):
         hpo_space(config_path=str(bad))
 
 
+def test_hpo_space_refuses_a_missing_file(tmp_path):
+    with pytest.raises(ValueError, match="cannot read"):
+        hpo_space(str(tmp_path / "nope.json"))
+
+
+def test_hpo_space_refuses_duplicate_lgbm_templates(tmp_path):
+    import json
+
+    dup = tmp_path / "dup.json"
+    dup.write_text(json.dumps({"stages": {"finalist": {"params": {
+        "templates": [
+            {"id": "lgbm", "family": "pooled-lightgbm", "model": {"hpo_space": REAL_HPO_SPACE}},
+            {"id": "lgbm", "family": "pooled-lightgbm", "model": {"hpo_space": REAL_HPO_SPACE}},
+        ]
+    }}}}))
+    with pytest.raises(ValueError, match="exactly one"):
+        hpo_space(str(dup))
+
+
+def test_hpo_space_refuses_the_wrong_family(tmp_path):
+    import json
+
+    bad = tmp_path / "wrong_family.json"
+    bad.write_text(json.dumps({"stages": {"finalist": {"params": {
+        "templates": [
+            {"id": "lgbm", "family": "wrong-family", "model": {"hpo_space": REAL_HPO_SPACE}},
+        ]
+    }}}}))
+    with pytest.raises(ValueError, match="pooled-lightgbm"):
+        hpo_space(str(bad))
+
+
+def test_hpo_space_refuses_a_missing_or_malformed_grid(tmp_path):
+    import json
+
+    for bad_space in (None, {}, {"learning_rate": []}, {"learning_rate": "not-a-list"}):
+        template = {"id": "lgbm", "family": "pooled-lightgbm", "model": {}}
+        if bad_space is not None:
+            template["model"]["hpo_space"] = bad_space
+        bad = tmp_path / "malformed.json"
+        bad.write_text(json.dumps({"stages": {"finalist": {"params": {
+            "templates": [template]
+        }}}}))
+        with pytest.raises(ValueError, match="non-empty mapping"):
+            hpo_space(str(bad))
+
+
 def test_build_candidate_inventory_is_frozen_deterministic_and_ordered():
     a = build_candidate_inventory()
     b = build_candidate_inventory()
