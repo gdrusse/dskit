@@ -1,5 +1,38 @@
 # Re-entry
 
+## Current wrap: final-model replay Phase 1 recovered and closed (2026-09-09)
+
+Branch: `claude/phase1-recovery-seven-gates-ao4zdj` (pushed; not merged to
+`main`). Recovers and closes Phase 1 of
+`children/intraday_equities/docs/plans/2026-09-08-final-model-replay-and-monitoring.md`:
+ADR-0113's generic search-evidence framework (`CandidateInventory`,
+`TrialLedger`, `OneStandardErrorSelector`, `SelectionRecord` in
+`dskit/pipeline/kinds_search.py`) — stdlib-only, no market data, no model, no
+child logic.
+
+The actual Phase 1 implementation from an earlier session (a different
+model, on a different machine) was found already pushed to
+`origin/wip/final-model-replay-phase1-20260909` and merged in; its own
+skeptic-review report had found 3 Major findings (unbound `SelectionRecord`
+construction, a non-orderable simplicity-key mix, an undocumented
+`TrialLedger` concurrency contract). All three are fixed at the design
+level. Two fresh reviewers (method/API-contract; architecture/integration/
+governance) then closed the work over one bounded correction cycle — the
+architecture lens failed cycle 1 with 4 Major findings (doc-pairing gap,
+unpinned digit-boundary duplication, a missing cap regression, docstring
+formatting), all fixed and re-confirmed resolved in cycle 2. Both lenses
+PASS (0 Critical, 0 Major) on the final commit `83fac39`.
+
+Full detail, exact commands, and links to all four retained reviewer reports:
+docs/memos/2026-09-09-final-model-replay-phase1-recovery-implementation.md.
+
+Focused verification (never the full suite, per task scope): 190 tests
+(`test_kinds_search`, `test_planner`, `test_purity`, `test_method_lengths`),
+Ruff clean, `git diff --check` clean.
+
+**Next:** Gates 1–7 of the same plan (Phase 0 closeout through integration
+and controlled execution) have not started.
+
 ## Current wrap: quant-finance ML primer added (2026-09-09)
 
 Added children/intraday_equities/docs/explanations/quant-finance-foundations-for-ml.md:
