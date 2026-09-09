@@ -1,5 +1,14 @@
 # Re-entry
 
+## Current wrap: quant-finance ML primer added (2026-09-09)
+
+Added children/intraday_equities/docs/explanations/quant-finance-foundations-for-ml.md:
+a beginner-first primer connecting products, market mechanics, risk,
+calibration, backtesting, and Kelly sizing to the actual dskit children.
+Each section opens with a one-sentence definition, then makes the ML connection.
+It links SEC, Investor.gov, FINRA, and Fama/French source material.
+Documentation-only change; no tests run.
+
 ## Current wrap: ADR-0112 release-rotation calendar review-closed (2026-09-08)
 
 Branch: main; generic release-rotation work is coherent but remains uncommitted,
