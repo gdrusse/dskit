@@ -3134,11 +3134,14 @@ def test_replaying_the_ledger_from_any_boundary_reproduces_the_uninterrupted_fol
 
     Positions, cash and NAV always match the uninterrupted prefix.
     CURRENT Recovery behaviour at a pending-intent boundary: it queries
-    the venue, records an `unknown` `order_event`, and that kind
-    advances `economic_seq` — so metrics are NOT identical there; the
-    assertions below pin that divergence rather than skip it. Where
-    nothing is pending, fold metrics (economic_seq, working, pending)
-    match. A `recovered` process record is not economic."""
+    the venue, records an `unknown` `order_event`, and `_fold_order_event`
+    then advances `economic_seq`, pops the ref from pending, and — because
+    ``unknown`` is not terminal — adds it to working. Metrics are NOT
+    identical there; the assertions below pin that three-field
+    divergence (`economic_seq` +1, `n_working` +1, `n_pending` -1 per
+    pending ref) rather than skip it. Where nothing is pending, fold
+    metrics (economic_seq, working, pending) match. A `recovered`
+    process record is not economic."""
     scenario = _crash_restart_scenario()
     named_indexes = [
         i for i, (kind, rid, _body) in enumerate(scenario, start=1)
@@ -3164,9 +3167,17 @@ def test_replaying_the_ledger_from_any_boundary_reproduces_the_uninterrupted_fol
             if pending_before:
                 saw_pending_intent = True
                 assert kind == "intent"
+                n_pending = len(pending_before)
                 assert got["metrics"]["economic_seq"] == (
-                    expected["metrics"]["economic_seq"] + len(pending_before)
+                    expected["metrics"]["economic_seq"] + n_pending
                 )
+                assert got["metrics"]["n_working"] == (
+                    expected["metrics"]["n_working"] + n_pending
+                )
+                assert got["metrics"]["n_pending"] == (
+                    expected["metrics"]["n_pending"] - n_pending
+                )
+                assert got["metrics"]["n_positions"] == expected["metrics"]["n_positions"]
                 assert set(report.queried_refs) == set(pending_before)
                 recovered = [
                     env for env in reopened.scan(kind="order_event")
