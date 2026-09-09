@@ -1,5 +1,42 @@
 # Re-entry
 
+## Current wrap: Gate 2 — final refit and one bundle (2026-09-09)
+
+Branch: `claude/phase1-recovery-seven-gates-ao4zdj` (pushed; not merged to
+`main`). Closes the two foundational deliverables of Gate 2 (ADR-0114
+Phase 2):
+
+- **Generic multi-head model bundle** — `write_bundle`/`load_bundle`/
+  `EstimatorBundle` in `dskit/pipeline/libs/sklearn.py`: ten named fitted
+  estimators in one joblib file plus one JSON manifest, same tamper-evident
+  digest discipline as the existing single-model artifact, widened to
+  cover the whole manifest, plus a deterministic prediction-replay check
+  at load. `dskit/pipeline/node.py` gained a shared `atomic_write`
+  (promoted out of `kinds_table.py`, which now imports it).
+- **Domain assembly** — `children/intraday_equities/intraday_equities/final_model.py`
+  (new): reads the real P16 lean mask and the real 24-combination HPO grid
+  from their one real config sources (never hardcoded), computes the
+  plan's squared-error-improvement objective, and selects each of the ten
+  leads' winners using the owner-ruled SE method
+  (`cluster_bootstrap_t`, trading-day clusters) and simplicity order.
+- **Deferred** — editing `configs/run-final-hpo.json` and adding
+  `configs/run-final-refit.json` (deliverable 3) was explicitly not
+  attempted this round; see the Gate 2 memo for why.
+
+One correction cycle: the architecture/governance reviewer failed cycle 1
+with 1 Major (the HPO grid was hand-copied into `final_model.py` instead of
+read from its real config source — fixed by mirroring the lean-mask's
+already-correct read-from-source pattern). Both lenses PASS on cycle 2 (0
+Critical, 0 Major, 0 Minor). Full detail and all four retained reviewer
+reports: `children/intraday_equities/docs/memos/2026-09-09-final-model-replay-gate2-final-refit-and-bundle.md`.
+
+Focused verification: 237 dskit tests + 34 child tests, Ruff clean, `git
+diff --check` clean.
+
+**Next:** deliverable 3 (the config edits) needs a careful follow-up pass;
+Gates 3-7 remain, with 3/5a/6 being attempted in parallel on separate
+branches.
+
 ## Current: ADR-0114 accepted; §11 item 1 ruled — Gate 2 unblocked (2026-09-09)
 
 Branch: `claude/phase1-recovery-seven-gates-ao4zdj` (pushed; not merged to
