@@ -9,6 +9,7 @@ itself keeps planning there.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -2340,3 +2341,326 @@ def test_column_subset_predict_refuses_a_matrix_with_a_different_column_count():
     narrower = x[:, :-1]  # one column short of the 4 `fit` saw
     with pytest.raises(ValueError, match=re.escape("has 3 column(s), fit saw 4")):
         model.predict(narrower)
+
+
+# ---------------------------------------------------------------------------
+# The multi-head bundle artifact (ADR-0114 Phase 2)
+# ---------------------------------------------------------------------------
+
+BUNDLE_HEADS = ("h01", "h02")
+BUNDLE_FEATURE_ORDER = ["x0", "x1"]
+BUNDLE_PREDICT_FIXTURE = [[0.5, 0.5], [1.5, 1.0], [-0.5, 2.0]]
+
+
+def _bundle_heads():
+    """Two tiny, distinguishable Ridge fits — real sklearn, synthetic data."""
+    pytest.importorskip("sklearn")
+    from sklearn.linear_model import Ridge
+
+    x = np.array([[0.0, 1.0], [1.0, 0.0], [2.0, 2.0], [3.0, 1.0]])
+    y1 = np.array([1.0, 2.0, 3.0, 4.0])
+    y2 = np.array([2.0, 1.0, 5.0, 3.0])
+    return {
+        "h01": Ridge(alpha=1e-6).fit(x, y1),
+        "h02": Ridge(alpha=1e-6).fit(x, y2),
+    }
+
+
+def _bundle_kwargs(estimators, *, heads=BUNDLE_HEADS):
+    return dict(
+        heads=heads,
+        estimators=estimators,
+        head_params={
+            name: {"estimator": RIDGE, "estimator_params": {"alpha": 1e-6}}
+            for name in heads
+        },
+        feature_order=list(BUNDLE_FEATURE_ORDER),
+        surviving_features={name: list(BUNDLE_FEATURE_ORDER) for name in heads},
+        categorical_encoding={},
+        training_identities={
+            name: {"cut_ms": 123, "seed": 0, "n_rows": 4} for name in heads
+        },
+        predict_fixture=[list(row) for row in BUNDLE_PREDICT_FIXTURE],
+    )
+
+
+def _bundle_digest(joblib_path, manifest):
+    """The DOCUMENTED bundle hash material, recomputed independently of
+    the pack (mirrors ``_combined_digest`` above, generalized S2-A): sha256
+    over the joblib bytes, a NUL separator, and the canonical JSON of every
+    manifest field except ``sha256`` and ``library_versions``."""
+    import hashlib as _hashlib
+
+    material = {
+        k: v for k, v in manifest.items()
+        if k not in ("sha256", "library_versions")
+    }
+    digest = _hashlib.sha256()
+    digest.update(pathlib.Path(joblib_path).read_bytes())
+    digest.update(b"\0")
+    digest.update(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    return digest.hexdigest()
+
+
+def _rewrite_manifest(path, edit):
+    manifest_path = path + ".json"
+    with open(manifest_path, encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    manifest.update(edit)
+    with open(manifest_path, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh)
+    return manifest
+
+
+def test_bundle_write_and_load_round_trips_with_one_joblib_and_one_manifest(tmp_path):
+    from dskit.pipeline.libs.sklearn import EstimatorBundle, load_bundle, write_bundle
+
+    estimators = _bundle_heads()
+    path = str(tmp_path / "bundle.joblib")
+    manifest = write_bundle(path, **_bundle_kwargs(estimators))
+
+    assert os.path.isfile(path)
+    assert os.path.isfile(path + ".json")
+    assert manifest["format"] == "sklearn-bundle-joblib-v1"
+    assert manifest["heads"] == list(BUNDLE_HEADS)
+    assert manifest["sha256"] == _bundle_digest(path, manifest)
+
+    bundle = load_bundle(path)
+    assert isinstance(bundle, EstimatorBundle)
+    assert set(bundle.estimators) == set(BUNDLE_HEADS)
+    assert bundle.manifest["sha256"] == manifest["sha256"]
+    fixture = np.array(BUNDLE_PREDICT_FIXTURE, dtype=float)
+    for name in BUNDLE_HEADS:
+        np.testing.assert_allclose(
+            bundle.predict(name, fixture), estimators[name].predict(fixture)
+        )
+
+
+@pytest.mark.parametrize(
+    "mutate,needle",
+    [
+        (lambda k, e: {n: v for n, v in e.items() if n != "h02"}, "missing"),
+        (lambda k, e: {**e, "h03": e["h01"]}, "undeclared"),
+    ],
+)
+def test_bundle_write_refuses_when_estimators_mismatch_declared_heads(
+    tmp_path, mutate, needle
+):
+    from dskit.pipeline.libs.sklearn import write_bundle
+
+    estimators = _bundle_heads()
+    kwargs = _bundle_kwargs(estimators)
+    kwargs["estimators"] = mutate(kwargs["heads"], estimators)
+    with pytest.raises(ValueError, match=needle):
+        write_bundle(str(tmp_path / "bundle.joblib"), **kwargs)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_bundle_write_refuses_duplicate_declared_head_names(tmp_path):
+    from dskit.pipeline.libs.sklearn import write_bundle
+
+    estimators = _bundle_heads()
+    kwargs = _bundle_kwargs(estimators)
+    kwargs["heads"] = ("h01", "h01")
+    with pytest.raises(ValueError, match="distinct"):
+        write_bundle(str(tmp_path / "bundle.joblib"), **kwargs)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_bundle_write_refuses_a_head_name_that_could_escape_the_directory(tmp_path):
+    from dskit.pipeline.libs.sklearn import write_bundle
+
+    estimators = _bundle_heads()
+    kwargs = _bundle_kwargs(estimators)
+    escaped = "../../escape"
+    kwargs["heads"] = ("h01", escaped)
+    kwargs["estimators"] = {"h01": estimators["h01"], escaped: estimators["h02"]}
+    kwargs["head_params"][escaped] = kwargs["head_params"].pop("h02")
+    kwargs["surviving_features"][escaped] = kwargs["surviving_features"].pop("h02")
+    kwargs["training_identities"][escaped] = kwargs["training_identities"].pop("h02")
+    with pytest.raises(ValueError, match="letters, digits"):
+        write_bundle(str(tmp_path / "bundle.joblib"), **kwargs)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_bundle_write_refuses_to_clobber_without_overwrite(tmp_path):
+    from dskit.pipeline.libs.sklearn import write_bundle
+
+    path = str(tmp_path / "bundle.joblib")
+    write_bundle(path, **_bundle_kwargs(_bundle_heads()))
+    with pytest.raises(ValueError, match="overwrite"):
+        write_bundle(path, **_bundle_kwargs(_bundle_heads()))
+    # overwrite=True replaces it deliberately.
+    replaced = write_bundle(
+        path, overwrite=True, **_bundle_kwargs(_bundle_heads())
+    )
+    assert replaced["sha256"]
+
+
+def test_bundle_write_interrupted_mid_write_leaves_no_partial_bundle(
+    tmp_path, monkeypatch
+):
+    from dskit.pipeline.libs.sklearn import write_bundle
+
+    path = str(tmp_path / "bundle.joblib")
+    calls = {"n": 0}
+    real_replace = os.replace
+
+    def flaky_replace(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 2:  # let the joblib file land; fail the manifest
+            raise OSError("disk full (simulated)")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    with pytest.raises(OSError, match="disk full"):
+        write_bundle(path, **_bundle_kwargs(_bundle_heads()))
+
+    assert os.path.isfile(path)  # the joblib landed, atomically
+    assert not os.path.isfile(path + ".json")  # the manifest never did
+    leftovers = [p.name for p in tmp_path.iterdir() if ".tmp-" in p.name]
+    assert leftovers == []
+
+    monkeypatch.setattr(os, "replace", real_replace)
+    manifest = write_bundle(
+        path, overwrite=True, **_bundle_kwargs(_bundle_heads())
+    )
+    assert os.path.isfile(path + ".json")
+    assert manifest["sha256"]
+
+
+def test_bundle_load_refuses_missing_bundle_and_missing_manifest(tmp_path):
+    from dskit.pipeline.libs.sklearn import load_bundle, write_bundle
+
+    with pytest.raises(ValueError, match="does not exist"):
+        load_bundle(str(tmp_path / "nope.joblib"))
+
+    path = str(tmp_path / "bundle.joblib")
+    write_bundle(path, **_bundle_kwargs(_bundle_heads()))
+    os.remove(path + ".json")
+    with pytest.raises(ValueError, match="manifest .* is missing"):
+        load_bundle(path)
+
+
+def test_bundle_load_refuses_a_foreign_class_relabelled_as_declared(tmp_path):
+    from sklearn.linear_model import Lasso
+
+    from dskit.pipeline.libs.sklearn import load_bundle, write_bundle
+
+    estimators = _bundle_heads()
+    path = str(tmp_path / "bundle.joblib")
+    write_bundle(path, **_bundle_kwargs(estimators))
+
+    # Relabel h01's payload as a foreign class, then RECOMPUTE the digest
+    # over the new bytes — an adversary who controls both files still
+    # cannot pass a Lasso off as the manifest's declared Ridge.
+    import joblib
+
+    tampered = dict(joblib.load(path))
+    tampered["h01"] = Lasso(alpha=1e-6).fit([[0.0, 1.0], [1.0, 2.0]], [1.0, 2.0])
+    joblib.dump(tampered, path)
+    with open(path + ".json", encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    manifest["sha256"] = _bundle_digest(path, manifest)
+    with open(path + ".json", "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh)
+
+    with pytest.raises(ValueError, match="relabelled"):
+        load_bundle(path)
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        {"heads": ["h02", "h01"]},
+        {"feature_order": ["x1", "x0"]},
+        {"predict_checksum": "0" * 64},
+        {"categorical_encoding": {"x0": {"kind": "native"}}},
+        {
+            "training_identities": {
+                "h01": {"cut_ms": 999, "seed": 0, "n_rows": 4},
+                "h02": {"cut_ms": 123, "seed": 0, "n_rows": 4},
+            }
+        },
+        {
+            "surviving_features": {
+                "h01": ["x0"],
+                "h02": list(BUNDLE_FEATURE_ORDER),
+            }
+        },
+        {
+            "head_params": {
+                "h01": {"estimator": RIDGE, "estimator_params": {"alpha": 9.0}},
+                "h02": {"estimator": RIDGE, "estimator_params": {"alpha": 1e-6}},
+            }
+        },
+    ],
+)
+def test_every_bundle_manifest_field_is_hash_material(tmp_path, edit):
+    """The digest covers ordered head names, per-head parameters, feature
+    order, category map, cuts, and the checksum — not the model bytes
+    alone. An edit to ANY of these refuses at load (ADR-0114 Phase 2)."""
+    from dskit.pipeline.libs.sklearn import load_bundle, write_bundle
+
+    path = str(tmp_path / "bundle.joblib")
+    write_bundle(path, **_bundle_kwargs(_bundle_heads()))
+    _rewrite_manifest(path, edit)
+    with pytest.raises(ValueError, match="content hash"):
+        load_bundle(path)
+
+
+def test_bundle_predict_checksum_is_independently_reproducible(tmp_path):
+    from dskit.pipeline.libs.sklearn import write_bundle
+
+    estimators = _bundle_heads()
+    manifest = write_bundle(
+        str(tmp_path / "bundle.joblib"), **_bundle_kwargs(estimators)
+    )
+    fixture = np.array(BUNDLE_PREDICT_FIXTURE, dtype=float)
+    predictions = {
+        name: [float(v) for v in np.ravel(estimators[name].predict(fixture))]
+        for name in BUNDLE_HEADS
+    }
+    independent = hashlib.sha256(
+        json.dumps(predictions, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    assert manifest["predict_checksum"] == independent
+
+
+def test_bundle_load_replay_catches_an_in_memory_head_swap(tmp_path, monkeypatch):
+    """A head swap that happens AFTER the on-disk digest already verified
+    (a hostile or corrupted deserialize, not a file edit) is still caught:
+    the loader replays the stored fixture through the RESTORED objects and
+    refuses when the replayed beliefs disagree with the manifest's pinned
+    checksum, independent of the sha256 check above."""
+    import joblib
+
+    from dskit.pipeline.libs.sklearn import load_bundle, write_bundle
+
+    estimators = _bundle_heads()
+    path = str(tmp_path / "bundle.joblib")
+    write_bundle(path, **_bundle_kwargs(estimators))
+
+    real_load = joblib.load
+
+    def swapped_load(target, *a, **kw):
+        payload = real_load(target, *a, **kw)
+        if target == path:
+            payload = {"h01": payload["h02"], "h02": payload["h01"]}
+        return payload
+
+    monkeypatch.setattr(joblib, "load", swapped_load)
+    with pytest.raises(ValueError, match="predict checksum"):
+        load_bundle(path)
+
+
+def test_bundle_load_refuses_a_bundle_that_declares_the_wrong_format(tmp_path):
+    from dskit.pipeline.libs.sklearn import load_bundle, write_bundle
+
+    path = str(tmp_path / "bundle.joblib")
+    write_bundle(path, **_bundle_kwargs(_bundle_heads()))
+    _rewrite_manifest(path, {"format": "sklearn-joblib-v1"})
+    with pytest.raises(ValueError, match="format"):
+        load_bundle(path)

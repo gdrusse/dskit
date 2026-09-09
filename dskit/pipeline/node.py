@@ -56,6 +56,7 @@ __all__ = [
     "SERVING_EFFECTS",
     "ServingContract",
     "TrainableNode",
+    "atomic_write",
     "check_int_param",
     "class_ref",
     "node_class_errors",
@@ -167,6 +168,68 @@ def check_int_param(problems, name, value, *, ge) -> None:
         value = int(value)
     if not isinstance(value, int) or value < ge:
         problems.append(f"{name} must be an int >= {ge}, got {value!r}")
+
+
+def atomic_write(path, raw) -> None:
+    """Land ``raw`` bytes at ``path`` via a same-directory temp file, fsync,
+    and replace.
+
+    The one owner of this rule (CLAUDE.md: "a function is never repeated
+    across modules — the second copy is the bug"). Promoted here from
+    ``kinds_table.py``, which now imports it, because ``node.py`` sits
+    BELOW every kind pack in the import graph — ``kinds_table.py`` and
+    ``libs/sklearn.py`` (the multi-head bundle writer, ADR-0114 Phase 2)
+    both already import from this module, so neither gains a new
+    dependency by importing this too. ``driver.py``'s own
+    ``_atomic_write_text`` stays a SEPARATE, deliberately inlined copy —
+    NOT because of an import-graph barrier (``driver.py`` already imports
+    ``Node``/``NodeContext`` from this very module, so it could reach
+    this helper too), but because consolidating it is outside ADR-0114
+    Phase 2's authorized file list, and it serves an unrelated purpose
+    (writing one JSON node record/summary, not a multi-file model bundle
+    with a manifest). Two copies survive for now; a third would not, and
+    a future phase that touches ``driver.py`` for its own reasons should
+    finish the consolidation rather than add a fourth.
+
+    Parameters
+    ----------
+    path : str
+        The destination file path. Its parent directory is used for the
+        temp file, so the replace is guaranteed same-filesystem (atomic).
+    raw : bytes
+        The exact bytes to land at ``path``.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    OSError
+        Any failure opening, writing, fsyncing, or replacing — the
+        temp file is unlinked first so no stray ``.tmp-*`` survives it.
+
+    Examples
+    --------
+    Write two bytes where a reader never sees a half-written file::
+
+        atomic_write("/tmp/example.bin", b"ok")
+        open("/tmp/example.bin", "rb").read()
+        # -> b"ok"
+    """
+    # An interrupted write leaves the old file or the new one, never a
+    # half-file that still parses.
+    tmp = f"{path}.tmp-{os.getpid()}"
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(raw)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 
 
 def class_ref(cls) -> str:

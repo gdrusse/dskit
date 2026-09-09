@@ -184,6 +184,32 @@ on it without breaking its rulings.
   `_ordering_key`'s canonical tagged total order (numbers < strings <
   tuples, recursively) — never raw Python `<` — so two keys of
   different types are always comparable and never silently tied.
+- **Multi-head estimator bundles** — `write_bundle`/`load_bundle`/
+  `EstimatorBundle` (`libs/sklearn.py`, ADR-0114 Phase 2) generalize
+  `SklearnFit`'s single-estimator `sklearn-joblib-v1` artifact to an
+  ORDERED, caller-NAMED mapping of many fitted estimators ("heads") in
+  one joblib file plus one JSON manifest — a plain value API, not a
+  node kind, so a caller that already fitted N estimators (one per
+  final-model lead, say) persists and reloads them together without a
+  document round-trip. The digest is the single-estimator artifact's own
+  S2-A rule widened to the whole manifest (joblib bytes + every
+  schema-bearing field — `sha256`/`library_versions` excluded, the same
+  provenance-never-identity split `_UNHASHED_SIDECAR_FIELDS` already
+  makes); load additionally REPLAYS the manifest's own deterministic
+  `predict_fixture` through the restored heads and refuses on a
+  `predict_checksum` mismatch, catching a restored head that does not
+  reproduce write-time beliefs even when the on-disk bytes verified
+  clean (a hostile or corrupted in-memory deserialize, not a file edit).
+  A head name is a plain identifier (`_HEAD_NAME_RE`) so it can never be
+  used to escape the bundle's own directory. `node.atomic_write` (moved
+  here from `kinds_table.py`, which now imports it — one owner, per
+  CLAUDE.md's duplication rule) is what makes the joblib write itself
+  atomic; `SklearnFit`'s own single-estimator `joblib.dump` stays
+  unchanged (out of this ADR's named scope). `driver._atomic_write_text`
+  remains a separate, deliberately inlined text-writing copy — not an
+  import-graph barrier (`driver.py` already imports from `node.py`),
+  just outside this ADR's authorized file list and serving an unrelated
+  purpose (one JSON node record, not a multi-file bundle).
 - **One name per shared vocabulary.** `node.class_ref(cls)` is the
   `module:QualName` an artifact sidecar RECORDS and load mode compares —
   three modules used to write that f-string out, and a divergence there

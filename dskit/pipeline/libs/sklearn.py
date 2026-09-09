@@ -190,6 +190,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 from collections.abc import Mapping
 
@@ -197,17 +198,21 @@ from dskit.pipeline.fitted import FeatureSelector
 from dskit.pipeline.node import (
     DEFAULT_NODE_KINDS,
     TrainableNode,
+    atomic_write,
     reject_unknown_params,
 )
 
 __all__ = [
     "ColumnSubsetEstimator",
+    "EstimatorBundle",
     "NODE_KINDS",
     "SklearnFit",
     "SklearnPredict",
     "SklearnSelect",
     "SklearnSignal",
+    "load_bundle",
     "register",
+    "write_bundle",
 ]
 
 #: The on-disk artifact format this pack writes and the only one it loads.
@@ -255,6 +260,56 @@ _SEED_MAX = 2**32
 #: EVERYTHING else — estimator, estimator_params, features, label,
 #: predict_method, seed, n_rows, format — is hash material (S2-A).
 _UNHASHED_SIDECAR_FIELDS = ("sha256", "library_version")
+
+# ---------------------------------------------------------------------------
+# The multi-head bundle artifact (ADR-0114 Phase 2) — one joblib file
+# holding a NAMED MAPPING of fitted estimators, plus one JSON manifest.
+# S2-A generalized: the digest covers the joblib bytes AND every
+# schema-bearing manifest field, exactly as :func:`_content_hash` does for
+# one estimator (see the module docstring's own description of that
+# rule) — this section is the same doorway, widened from one estimator
+# to a named ORDERED set of them, for the ten-head final-model release
+# (`children/intraday_equities/intraday_equities/final_model.py`).
+# ---------------------------------------------------------------------------
+
+#: The on-disk multi-head bundle format this pack writes and the only one
+#: it loads. Distinct from :data:`_ARTIFACT_FORMAT`: one estimator and a
+#: named mapping of them share the joblib+sidecar SHAPE but not the
+#: schema, so the two formats are never confused for each other.
+_BUNDLE_FORMAT = "sklearn-bundle-joblib-v1"
+
+#: A head name must be a plain identifier — letters, digits, ``_`` or
+#: ``-``, 1..64 characters. Refused rather than merely discouraged: a
+#: head name is the one caller-supplied string this doorway threads
+#: through untouched, and while nothing here builds a filesystem path
+#: FROM one today, refusing ``/``/``..`` components outright means no
+#: future caller of ``write_bundle`` can be tricked into escaping the
+#: bundle's own directory through one (ADR-0114 Phase 2's "path escape"
+#: refusal).
+_HEAD_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+#: Manifest keys the bundle loader cannot proceed without.
+_BUNDLE_MANIFEST_REQUIRED = (
+    "categorical_encoding",
+    "feature_order",
+    "format",
+    "head_params",
+    "heads",
+    "predict_checksum",
+    "predict_fixture",
+    "surviving_features",
+    "training_identities",
+)
+
+#: Manifest fields the content digest does NOT cover: ``sha256`` records
+#: the digest itself (it cannot cover its own value), and
+#: ``library_versions`` is provenance the loader never enforces — the
+#: same S2-A exclusion :data:`_UNHASHED_SIDECAR_FIELDS` makes for the
+#: single-estimator artifact's ``library_version``. EVERYTHING else —
+#: ``heads``, ``head_params``, ``feature_order``, ``surviving_features``,
+#: ``categorical_encoding``, ``training_identities``, ``predict_fixture``,
+#: ``predict_checksum``, ``format`` — is hash material.
+_UNHASHED_BUNDLE_FIELDS = ("sha256", "library_versions")
 
 
 # ---------------------------------------------------------------------------
@@ -517,6 +572,17 @@ def _construct(cls_, kwargs, path, where, kwargs_name):
         ) from exc
 
 
+def _library_version(path):
+    """The top-level library version behind a dotted path, when knowable —
+    provenance only, never identity. Shared by :class:`SklearnFit` (its
+    single-estimator sidecar) and the bundle writer below (its per-library
+    ``library_versions`` map) — one owner, never two copies of the same
+    ``sys.modules`` lookup."""
+    module = sys.modules.get(path.split(".", 1)[0])
+    version = getattr(module, "__version__", None)
+    return version if isinstance(version, str) else None
+
+
 def _content_hash(path, sidecar):
     """The artifact's identity: model bytes + the sidecar's schema (S2-A).
 
@@ -641,6 +707,612 @@ def _identity_mismatches(sidecar, params):
         if got != want:
             out.append(f"{name}: artifact carries {got!r}, params declare {want!r}")
     return out
+
+
+# ---------------------------------------------------------------------------
+# The multi-head bundle artifact (ADR-0114 Phase 2)
+# ---------------------------------------------------------------------------
+
+
+def _exact_head_keys_problems(label, heads, mapping):
+    """Problems where ``mapping``'s keys do not exactly equal ``heads``.
+
+    One rule shared by ``estimators``, ``head_params``, ``surviving_features``
+    and ``training_identities`` — each is a per-head mapping, and a caller
+    who forgot a head, duplicated one under a second name, or carried an
+    extra must be told BY NAME which mapping and which head, never merely
+    "shapes differ"."""
+    if not isinstance(mapping, Mapping):
+        return [f"{label} must be a mapping keyed by every declared head name"]
+    declared = list(heads)
+    missing = [h for h in declared if h not in mapping]
+    extra = sorted(k for k in mapping if k not in declared)
+    problems = []
+    if missing:
+        problems.append(f"{label} is missing declared head(s) {missing!r}")
+    if extra:
+        problems.append(f"{label} carries undeclared head(s) {extra!r}")
+    return problems
+
+
+def _bundle_head_list_problems(heads):
+    """Problems with the declared, ORDERED head-name list itself: a
+    non-empty list of distinct, path-safe identifiers."""
+    if not isinstance(heads, (list, tuple)) or not heads:
+        return ["heads must be a non-empty list of head-name strings"]
+    problems = []
+    seen = set()
+    for name in heads:
+        if not isinstance(name, str) or not _HEAD_NAME_RE.match(name):
+            problems.append(
+                f"head name {name!r} must be a non-empty string of letters, "
+                "digits, '_' or '-' (at most 64 chars) — no path separators "
+                "or '.' components, so a head name can never be used to "
+                "escape the bundle's own directory"
+            )
+            continue
+        if name in seen:
+            problems.append(f"heads repeats {name!r} — head names must be distinct")
+        seen.add(name)
+    return problems
+
+
+def _bundle_head_params_problems(heads, head_params):
+    """Problems with the per-head constructor-identity mapping: each head
+    names its own ``estimator`` (dotted path — this is what a LOAD-time
+    isinstance check verifies against, per head) and its own
+    ``estimator_params`` kwargs — no more, no fewer."""
+    problems = _exact_head_keys_problems("head_params", heads, head_params)
+    if problems:
+        return problems
+    for name in heads:
+        entry = head_params.get(name)
+        if not isinstance(entry, Mapping) or set(entry) != {
+            "estimator", "estimator_params",
+        }:
+            problems.append(
+                f"head_params[{name!r}] must be exactly "
+                "{'estimator': <dotted path>, 'estimator_params': <dict>}, "
+                f"got {entry!r}"
+            )
+            continue
+        problems += _import_path_problems(
+            f"head_params[{name!r}].estimator", entry["estimator"],
+            example="sklearn.linear_model.Ridge",
+        )
+        problems += _kwargs_problems(
+            f"head_params[{name!r}].estimator_params", entry["estimator_params"]
+        )
+    return problems
+
+
+def _bundle_surviving_features_problems(heads, feature_order, surviving_features):
+    """Problems with the per-head surviving-column list: each must be a
+    non-empty, distinct list of names that are actually IN
+    ``feature_order`` — nothing here requires every head to agree (a
+    generic caller's heads may mask differently), only that what survives
+    was a real candidate."""
+    problems = _exact_head_keys_problems(
+        "surviving_features", heads, surviving_features
+    )
+    if problems:
+        return problems
+    order_set = set(feature_order) if isinstance(feature_order, list) else set()
+    for name in heads:
+        value = surviving_features.get(name)
+        problems += _feature_list_problems(f"surviving_features[{name!r}]", value)
+        if isinstance(value, list) and order_set:
+            unknown = [f for f in value if f not in order_set]
+            if unknown:
+                problems.append(
+                    f"surviving_features[{name!r}] names {unknown} not "
+                    "present in feature_order"
+                )
+    return problems
+
+
+def _bundle_categorical_encoding_problems(feature_order, categorical_encoding):
+    """Problems with the category map: a JSON-safe mapping whose keys are
+    all actual candidate columns."""
+    if not isinstance(categorical_encoding, Mapping):
+        return ["categorical_encoding must be a mapping of feature name -> encoding"]
+    order_set = set(feature_order) if isinstance(feature_order, list) else set()
+    problems = [
+        f"categorical_encoding names {key!r}, not present in feature_order"
+        for key in categorical_encoding
+        if order_set and key not in order_set
+    ]
+    try:
+        json.dumps(dict(categorical_encoding), sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError):
+        problems.append("categorical_encoding must be canonical-JSON-safe")
+    return problems
+
+
+def _bundle_training_identities_problems(heads, training_identities):
+    """Problems with the per-head training-identity/cuts mapping: a
+    JSON-safe dict per head — the caller's own cuts/seed/row-count
+    vocabulary, opaque to this generic doorway."""
+    problems = _exact_head_keys_problems(
+        "training_identities", heads, training_identities
+    )
+    if problems:
+        return problems
+    for name in heads:
+        value = training_identities.get(name)
+        if not isinstance(value, Mapping):
+            problems.append(f"training_identities[{name!r}] must be a mapping")
+            continue
+        try:
+            json.dumps(dict(value), sort_keys=True, allow_nan=False)
+        except (TypeError, ValueError):
+            problems.append(
+                f"training_identities[{name!r}] must be canonical-JSON-safe"
+            )
+    return problems
+
+
+def _bundle_predict_fixture_problems(feature_order, predict_fixture):
+    """Problems with the deterministic prediction fixture: a non-empty
+    list of rows, each carrying one finite number per declared feature —
+    the same row shape :func:`_row_vector` already enforces for a fit
+    stream, restated here because this fixture never passes through
+    that function (it is replayed through already-fitted estimators)."""
+    width = len(feature_order) if isinstance(feature_order, list) else None
+    if not isinstance(predict_fixture, list) or not predict_fixture:
+        return ["predict_fixture must be a non-empty list of rows"]
+    problems = []
+    for i, row in enumerate(predict_fixture):
+        if not isinstance(row, (list, tuple)) or (
+            width is not None and len(row) != width
+        ):
+            problems.append(
+                f"predict_fixture row {i} must carry {width} value(s), one "
+                "per feature_order column"
+            )
+            continue
+        if any(_finite_number(value) is None for value in row):
+            problems.append(
+                f"predict_fixture row {i} carries a non-finite or "
+                "non-numeric value"
+            )
+    return problems
+
+
+def _bundle_content_hash(path, manifest):
+    """The bundle's identity: joblib bytes + the manifest's schema (S2-A,
+    generalized from :func:`_content_hash` to a named mapping of heads).
+    sha256 over the ``.joblib`` bytes, a NUL separator, then the canonical
+    JSON of every manifest field outside :data:`_UNHASHED_BUNDLE_FIELDS`."""
+    material = {
+        k: v for k, v in manifest.items() if k not in _UNHASHED_BUNDLE_FIELDS
+    }
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            digest.update(chunk)
+    digest.update(b"\0")
+    digest.update(
+        json.dumps(
+            material, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+    )
+    return digest.hexdigest()
+
+
+def _bundle_predictions(heads, estimators, predict_fixture):
+    """Each head's prediction vector over ``predict_fixture``, in head
+    order — the raw material :func:`_bundle_predict_checksum` hashes."""
+    import numpy as np
+
+    matrix = np.asarray(predict_fixture, dtype=float)
+    predictions = {}
+    for name in heads:
+        raw = estimators[name].predict(matrix)
+        predictions[name] = [float(v) for v in np.ravel(raw)]
+    return predictions
+
+
+def _bundle_predict_checksum(predictions):
+    """sha256 of the canonical JSON of a ``{head: [prediction, ...]}`` map —
+    the DETERMINISTIC prediction checksum the plan names: replaying the
+    same fixture through the same (or a restored) mapping always yields
+    the same digest, so a load can PROVE it reproduced write-time beliefs,
+    not merely that the bytes on disk are unchanged."""
+    canon = json.dumps(
+        predictions, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def _dump_bundle_joblib(path, mapping):
+    """Write ``mapping`` to ``path`` as one joblib file, ATOMICALLY: dump
+    to memory first, then land the bytes via :func:`atomic_write` — the
+    fix for the gap the module docstring calls out (:class:`SklearnFit`'s
+    own ``joblib.dump(estimator, model_path)`` writes the final path
+    directly and is NOT atomic; this doorway does not repeat that)."""
+    import io
+
+    import joblib
+
+    buffer = io.BytesIO()
+    joblib.dump(mapping, buffer)
+    atomic_write(path, buffer.getvalue())
+
+
+def _refuse_bundle_clobber(path, overwrite):
+    """Refuse an existing bundle file unless the caller explicitly means
+    to replace it — the same clobber-refusal convention
+    ``kinds_table.FileWrite`` uses for every document-declared writer,
+    restated here for a caller-declared path (this doorway is not a
+    ``Node``, so there is no document param to read it from)."""
+    if overwrite:
+        return
+    existing = [p for p in (path, path + ".json") if os.path.isfile(p)]
+    if existing:
+        raise ValueError(
+            f"write_bundle: refusing to overwrite existing {existing} — "
+            "pass overwrite=True to replace a bundle deliberately"
+        )
+
+
+def write_bundle(
+    path,
+    heads,
+    estimators,
+    *,
+    head_params,
+    feature_order,
+    surviving_features,
+    categorical_encoding,
+    training_identities,
+    predict_fixture,
+    overwrite=False,
+):
+    """Persist a named mapping of fitted sklearn-shaped estimators as one
+    joblib file plus one JSON manifest, atomically (ADR-0114 Phase 2).
+
+    Generalizes :class:`SklearnFit`'s single-estimator artifact
+    (``sklearn-joblib-v1``) to an ORDERED, NAMED set of them sharing one
+    file: the ten-lead final-model release is the motivating caller
+    (``children/intraday_equities/intraday_equities/final_model.py``),
+    but nothing here is lead- or LightGBM-specific — ``heads`` is any
+    caller-declared, path-safe name list. The digest covers the joblib
+    bytes AND every schema-bearing manifest field (S2-A, the same rule
+    :func:`_content_hash` already enforces for one estimator), so a
+    relabelled head, a reordered feature list, a rewritten cut, or a
+    changed checksum all fail LOAD, never merely a changed model file.
+
+    Parameters
+    ----------
+    path : str
+        Destination for the joblib file; the manifest is written beside
+        it at ``path + ".json"``. Both are written atomically
+        (same-directory temp file, fsync, replace) — an interrupted
+        write leaves the previous pair intact or neither file at all,
+        never a half-written one.
+    heads : list of str
+        The bundle's ordered, distinct head names — plain identifiers
+        (letters/digits/``_``/``-``, <= 64 chars) so a head name can
+        never be used to escape ``path``'s directory.
+    estimators : dict
+        ``head name -> fitted estimator``, keyed by EXACTLY ``heads`` —
+        a missing or extra key refuses by name.
+    head_params : dict
+        ``head name -> {"estimator": <dotted path>, "estimator_params":
+        <dict>}`` — the per-head constructor identity a LOAD-time
+        isinstance check verifies each restored object against.
+    feature_order : list of str
+        The full candidate feature column order every head was built
+        against.
+    surviving_features : dict
+        ``head name -> list of str``, each a subset of ``feature_order``
+        naming that head's surviving columns (heads may differ).
+    categorical_encoding : dict
+        Feature name -> JSON-safe encoding descriptor, for columns of
+        ``feature_order`` carrying a native categorical encoding.
+    training_identities : dict
+        ``head name -> JSON-safe dict`` of that head's own training
+        identity (cuts, seed, row count, ...) — opaque to this doorway.
+    predict_fixture : list
+        Rows (each ``len(feature_order)`` finite numbers) replayed
+        through every head to produce the deterministic
+        ``predict_checksum``, and replayed again at load to verify the
+        restored heads reproduce it.
+    overwrite : bool
+        Replace an existing bundle at ``path``/``path + ".json"``
+        deliberately. Default ``False`` — an existing pair refuses.
+
+    Returns
+    -------
+    dict
+        The written manifest (the same object :func:`load_bundle` reads
+        back and verifies).
+
+    Raises
+    ------
+    ValueError
+        A malformed ``heads``/``estimators``/mapping argument, an
+        existing bundle with ``overwrite`` false, or a head name that
+        cannot be validated as directory-safe.
+
+    Examples
+    --------
+    Persist two tiny fitted Ridge heads sharing one feature order::
+
+        manifest = write_bundle(
+            "bundle.joblib",
+            ["h01", "h02"],
+            {"h01": ridge_a, "h02": ridge_b},
+            head_params={
+                "h01": {"estimator": "sklearn.linear_model.Ridge",
+                         "estimator_params": {"alpha": 1e-6}},
+                "h02": {"estimator": "sklearn.linear_model.Ridge",
+                         "estimator_params": {"alpha": 1e-6}},
+            },
+            feature_order=["x0", "x1"],
+            surviving_features={"h01": ["x0", "x1"], "h02": ["x0", "x1"]},
+            categorical_encoding={},
+            training_identities={"h01": {"n_rows": 4}, "h02": {"n_rows": 4}},
+            predict_fixture=[[0.5, 0.5]],
+        )
+        manifest["heads"]
+        # -> ["h01", "h02"]
+    """
+    where = "write_bundle"
+    problems = _bundle_head_list_problems(heads)
+    problems += _exact_head_keys_problems("estimators", heads, estimators)
+    problems += _bundle_head_params_problems(heads, head_params)
+    problems += _feature_list_problems("feature_order", feature_order)
+    problems += _bundle_surviving_features_problems(
+        heads, feature_order, surviving_features
+    )
+    problems += _bundle_categorical_encoding_problems(
+        feature_order, categorical_encoding
+    )
+    problems += _bundle_training_identities_problems(heads, training_identities)
+    problems += _bundle_predict_fixture_problems(feature_order, predict_fixture)
+    if problems:
+        raise ValueError(f"{where}: " + "; ".join(problems))
+
+    _refuse_bundle_clobber(path, overwrite)
+
+    ordered_estimators = {name: estimators[name] for name in heads}
+    predictions = _bundle_predictions(heads, ordered_estimators, predict_fixture)
+    libraries = sorted({head_params[name]["estimator"].split(".", 1)[0] for name in heads})
+
+    manifest = {
+        "format": _BUNDLE_FORMAT,
+        "heads": list(heads),
+        "head_params": {
+            name: {
+                "estimator": head_params[name]["estimator"],
+                "estimator_params": dict(head_params[name]["estimator_params"]),
+            }
+            for name in heads
+        },
+        "feature_order": list(feature_order),
+        "surviving_features": {
+            name: list(surviving_features[name]) for name in heads
+        },
+        "categorical_encoding": dict(categorical_encoding),
+        "training_identities": {
+            name: dict(training_identities[name]) for name in heads
+        },
+        "predict_fixture": [list(row) for row in predict_fixture],
+        "predict_checksum": _bundle_predict_checksum(predictions),
+        "library_versions": {lib: _library_version(lib) for lib in libraries},
+    }
+
+    # The joblib file is written FIRST (and atomically) so the digest
+    # below can hash its final bytes; the manifest is written LAST,
+    # atomically, so an interrupted run never leaves a manifest that
+    # claims a joblib file that is not actually on disk.
+    _dump_bundle_joblib(path, ordered_estimators)
+    manifest["sha256"] = _bundle_content_hash(path, manifest)
+    atomic_write(
+        path + ".json",
+        json.dumps(
+            manifest, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8"),
+    )
+    return manifest
+
+
+def load_bundle(path):
+    """Restore a bundle :func:`write_bundle` wrote, hash-verified and
+    never refitted (ADR-0114 Phase 2).
+
+    Refuses, by name: a missing bundle or manifest file; a manifest
+    declaring the wrong ``format`` or missing a required field; a content
+    hash that does not match (any schema-bearing manifest field OR the
+    joblib bytes changed since write); a restored head whose class is not
+    an instance of what its manifest declares (a relabelled model); and a
+    predict-checksum replay that disagrees with the manifest's pinned
+    value (the restored heads do not reproduce write-time beliefs, even
+    when the on-disk bytes were untouched — e.g. a hostile or corrupted
+    in-memory deserialize).
+
+    Parameters
+    ----------
+    path : str
+        The joblib file path written by :func:`write_bundle`; its
+        manifest is read from ``path + ".json"``.
+
+    Returns
+    -------
+    EstimatorBundle
+        The restored, verified bundle.
+
+    Raises
+    ------
+    ValueError
+        Any of the refusals above.
+
+    Examples
+    --------
+    Restore a bundle and predict with one head::
+
+        bundle = load_bundle("bundle.joblib")
+        bundle.predict("h01", x)
+        # -> one prediction per row of x
+    """
+    where = "load_bundle"
+    if not isinstance(path, str) or not path:
+        raise ValueError(f"{where}: loading requires a pinned bundle path, got {path!r}")
+    if not os.path.isfile(path):
+        raise ValueError(f"{where}: bundle {path!r} does not exist — nothing to load")
+    manifest_path = path + ".json"
+    if not os.path.isfile(manifest_path):
+        raise ValueError(
+            f"{where}: bundle manifest {manifest_path!r} is missing — refusing "
+            "to load a bundle whose provenance cannot be verified"
+        )
+    try:
+        with open(manifest_path, encoding="utf-8") as fh:
+            manifest = json.load(fh)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(
+            f"{where}: bundle manifest {manifest_path!r} is not readable JSON "
+            f"({exc}) — refusing to load"
+        ) from exc
+    if not isinstance(manifest, dict) or manifest.get("format") != _BUNDLE_FORMAT:
+        raise ValueError(
+            f"{where}: bundle {path!r} manifest declares format "
+            f"{manifest.get('format') if isinstance(manifest, dict) else manifest!r}, "
+            f"this pack loads {_BUNDLE_FORMAT!r} only"
+        )
+    missing = [k for k in _BUNDLE_MANIFEST_REQUIRED if k not in manifest]
+    if missing or "sha256" not in manifest:
+        raise ValueError(
+            f"{where}: bundle {path!r} manifest is missing "
+            f"{missing + (['sha256'] if 'sha256' not in manifest else [])} — "
+            "refusing to load an under-described bundle"
+        )
+
+    heads = manifest["heads"]
+    problems = _bundle_head_list_problems(heads)
+    problems += _feature_list_problems("feature_order", manifest.get("feature_order"))
+    problems += _bundle_head_params_problems(heads, manifest.get("head_params", {}))
+    if problems:
+        raise ValueError(
+            f"{where}: bundle {path!r} manifest is malformed: "
+            + "; ".join(problems)
+        )
+
+    actual = _bundle_content_hash(path, manifest)
+    if actual != manifest["sha256"]:
+        raise ValueError(
+            f"{where}: bundle {path!r} content hash {actual[:16]}… does not "
+            f"match its manifest ({str(manifest['sha256'])[:16]}…) — the "
+            "bundle file or its manifest changed since it was written (the "
+            "hash covers both); refusing to load"
+        )
+
+    import joblib
+
+    try:
+        payload = joblib.load(path)
+    except Exception as exc:  # noqa: BLE001 - any unpickling failure is the answer
+        raise ValueError(
+            f"{where}: bundle {path!r} failed to load ({exc}) — the file is "
+            "not a joblib mapping this environment can restore"
+        ) from exc
+    if not isinstance(payload, Mapping) or set(payload) != set(heads):
+        raise ValueError(
+            f"{where}: bundle {path!r} restored a payload whose head set "
+            f"does not match its manifest ({sorted(heads)!r}) — refusing a "
+            "relabelled bundle"
+        )
+
+    estimators = {}
+    for name in heads:
+        declared_path = manifest["head_params"][name]["estimator"]
+        declared_cls = _import_estimator(declared_path, where)
+        restored = payload[name]
+        if not isinstance(restored, declared_cls):
+            raise ValueError(
+                f"{where}: bundle {path!r} head {name!r} restored a "
+                f"{type(restored).__name__}, but its manifest declares "
+                f"{declared_path!r} — refusing a relabelled model (the "
+                "estimator class is identity, not a label)"
+            )
+        estimators[name] = restored
+
+    predictions = _bundle_predictions(heads, estimators, manifest["predict_fixture"])
+    replay = _bundle_predict_checksum(predictions)
+    if replay != manifest["predict_checksum"]:
+        raise ValueError(
+            f"{where}: bundle {path!r} predict checksum {replay[:16]}… does "
+            "not match its manifest "
+            f"({str(manifest['predict_checksum'])[:16]}…) — replaying the "
+            "deterministic prediction fixture through the restored heads "
+            "produced different beliefs; refusing to load"
+        )
+
+    return EstimatorBundle(estimators, manifest, path)
+
+
+class EstimatorBundle:
+    """A verified, named mapping of fitted sklearn-shaped estimators,
+    backed by one joblib file plus one JSON manifest (ADR-0114 Phase 2).
+
+    Returned only by :func:`load_bundle` (after every refusal above has
+    already passed) or held in memory straight from :func:`write_bundle`'s
+    own ``estimators``/``manifest`` pair — this class itself does no
+    verification, it is a plain, thin carrier over the two.
+
+    Parameters
+    ----------
+    estimators : dict
+        ``head name -> fitted estimator``.
+    manifest : dict
+        The bundle's full written/verified manifest.
+    path : str
+        The joblib file path this bundle was written to or loaded from.
+
+    Examples
+    --------
+    Restore a written bundle and predict with one head::
+
+        bundle = load_bundle("bundle.joblib")
+        bundle.predict("h01", x)
+        # -> one prediction per row of x
+    """
+
+    __slots__ = ("estimators", "manifest", "path")
+
+    def __init__(self, estimators, manifest, path):
+        self.estimators = dict(estimators)
+        self.manifest = manifest
+        self.path = path
+
+    def predict(self, head, matrix):
+        """The named head's prediction for ``matrix``.
+
+        Parameters
+        ----------
+        head : str
+            One of this bundle's head names.
+        matrix : array-like
+            Rows x this bundle's full ``feature_order`` width.
+
+        Returns
+        -------
+        array-like
+            Whatever the named head's own ``predict`` returns.
+
+        Raises
+        ------
+        ValueError
+            ``head`` is not one of this bundle's heads.
+        """
+        if head not in self.estimators:
+            raise ValueError(
+                f"EstimatorBundle carries no head {head!r} — has "
+                f"{sorted(self.estimators)!r}"
+            )
+        return self.estimators[head].predict(matrix)
 
 
 # ---------------------------------------------------------------------------
@@ -1089,7 +1761,7 @@ class SklearnFit(TrainableNode):
                 "model than the document declares: " + "; ".join(mismatches)
             )
         recorded = sidecar.get("library_version")
-        current = self._library_version(self.params["estimator"])
+        current = _library_version(self.params["estimator"])
         if recorded is not None and current is not None and recorded != current:
             self.log.info(
                 "loaded artifact was written under library version %s, this "
@@ -1152,7 +1824,7 @@ class SklearnFit(TrainableNode):
             "predict_method": predict_method,
             "seed": params.get("seed"),
             "n_rows": len(matrix),
-            "library_version": self._library_version(path),
+            "library_version": _library_version(path),
         }
         # Hashed LAST, over the material above: the digest covers the model
         # bytes and every schema-bearing sidecar field (S2-A).
@@ -1194,15 +1866,6 @@ class SklearnFit(TrainableNode):
             "drop the seed, or choose an estimator that takes one (a seed "
             "the estimator never reads is a config lie)"
         )
-
-    @staticmethod
-    def _library_version(path):
-        """The estimator's top-level library version, when knowable —
-        provenance for the sidecar, never identity."""
-        module = sys.modules.get(path.split(".", 1)[0])
-        version = getattr(module, "__version__", None)
-        return version if isinstance(version, str) else None
-
 
 class SklearnPredict(TrainableNode):
     """Inference-only: the signal behind a pinned artifact (role ``signal``).

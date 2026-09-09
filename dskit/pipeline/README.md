@@ -384,7 +384,13 @@ classes: `examples/pipeline/model-sweep.json` plus the pack docstring's
 estimator table; `examples/pipeline/selection-demo.json` is the selector
 cookbook — fit on train, then sweep two estimators that read
 `$select.features`; `lightgbm.LGBMRegressor` joins via the `lightgbm` extra, not
-a pack of its own);
+a pack of its own; `write_bundle`/`load_bundle`/`EstimatorBundle` (ADR-0114
+Phase 2) are a PLAIN VALUE API, not a node kind — one joblib file plus one
+JSON manifest for a caller-named, ORDERED mapping of many fitted estimators
+("heads"), hash-verified the same S2-A way as the single-estimator artifact
+but over the whole manifest, plus a deterministic prediction-fixture
+checksum replayed at load so a restored head that does not reproduce
+write-time beliefs refuses even when the on-disk bytes are untouched);
 **torch** `torch-train`/`torch-predict` (DECLARED, ADR-0025: the document
 names the `nn.Module` class — no subclass, validated at plan time) +
 `torch-linear-train`/`torch-linear-predict` + `TorchTrain`/`TorchPredict`

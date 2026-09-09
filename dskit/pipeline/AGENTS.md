@@ -426,6 +426,26 @@ on it without breaking its rulings.
   `_ordering_key`'s canonical tagged total order (numbers < strings <
   tuples, recursively) — never raw Python `<` — so two keys of different
   types are always comparable and never silently tied (ADR-0113).
+- **Multi-head estimator bundles** — `write_bundle`/`load_bundle`/
+  `EstimatorBundle` (`libs/sklearn.py`, ADR-0114 Phase 2) generalize
+  `SklearnFit`'s single-estimator `sklearn-joblib-v1` artifact to an
+  ORDERED, caller-NAMED mapping of many fitted estimators ("heads") in
+  one joblib file plus one JSON manifest — a plain value API, not a node
+  kind. The digest is the single-estimator artifact's S2-A rule widened
+  to the whole manifest (joblib bytes + every schema-bearing field;
+  `sha256`/`library_versions` stay provenance-only, excluded); load also
+  REPLAYS the manifest's own deterministic `predict_fixture` through the
+  restored heads and refuses on a `predict_checksum` mismatch, catching
+  a restored head that does not reproduce write-time beliefs even when
+  the on-disk bytes verified clean. A head name is a plain identifier
+  (`_HEAD_NAME_RE`) so it can never escape the bundle's own directory.
+  `node.atomic_write` (moved here from `kinds_table.py`, which now
+  imports it) is what makes the joblib write itself atomic;
+  `SklearnFit`'s own single-estimator `joblib.dump` is unchanged.
+  `driver._atomic_write_text` stays a separate, deliberately inlined
+  copy — not an import-graph barrier (`driver.py` already imports from
+  `node.py`), just outside this ADR's authorized file list and serving
+  an unrelated purpose (one JSON node record, not a multi-file bundle).
 - **Spent record streams are released** (ADR-0048). After a node's last
   `$` reader runs, a list of length `>= 256` (or too big to carry) is
   replaced with `_summarize` and the pinned instance is dropped. A

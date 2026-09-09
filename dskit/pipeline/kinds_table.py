@@ -76,7 +76,7 @@ from abc import abstractmethod
 
 from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.kinds_stats import _reject_unknown
-from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node
+from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, atomic_write
 
 __all__ = ["FileWrite", "RecordsWrite", "TableFile", "TableWrite", "register"]
 
@@ -280,23 +280,6 @@ def _json_text(key, where, value, **spelling):
             f"{key}: {where} holds a value JSON has no form for ({exc}) — project "
             "it to JSON scalars, lists and mappings before writing"
         ) from exc
-
-
-def _atomic_write(path, raw):
-    """Land ``raw`` at ``path`` via a same-directory temp file, fsync and replace."""
-    # An interrupted write leaves the old file or the new one, never a
-    # half-file that still parses.
-    tmp = f"{path}.tmp-{os.getpid()}"
-    try:
-        with open(tmp, "wb") as fh:
-            fh.write(raw)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
 
 
 class FileWrite(Node):
@@ -557,7 +540,7 @@ class FileWrite(Node):
         self._refuse_wrong_count(path, count)
         self._refuse_clobber(path)
         self._refuse_missing_parent(path)
-        _atomic_write(path, raw)
+        atomic_write(path, raw)
         provenance = self._provenance(ctx, path, raw, count)
         self.log.info(
             "%s %r: %d %s, %d byte(s) -> %s (sha256 %s)",
