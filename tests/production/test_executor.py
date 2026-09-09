@@ -1709,12 +1709,12 @@ def test_the_release_scope_is_a_value_not_a_string():
 # Gate 5a — Phase 5 replay conformance / hook discovery (ADR-0114)
 # ==========================================================================
 #
-# Items 2-5 (item 1's ledger/loop pins and item 6's crash/restart pin
-# live in `test_loop.py`, which owns `ServeLoop` and the ledger/state
-# seam). Every check below is PASS-EXISTING: no hook was added to
-# `executor.py`. Each documents CURRENT `PaperExecutor` behaviour with a
-# caller-injected knob — never a bar choice, fill model, or exit policy
-# this task does not own.
+# Items 2-5 (item 1's feed/clock/loop pins and item 6's crash/restart pin
+# live in `test_feed.py` / `test_clock.py` / `test_loop.py`). Every check
+# below is PASS-EXISTING: no hook was added to `executor.py`. Each
+# documents CURRENT `PaperExecutor` behaviour with a caller-injected
+# knob — never a bar choice, fill model, or exit policy this task does
+# not own.
 #
 # 2. Order timestamp, fill timestamp, price and fee — already
 #    deterministic under `seed` + injected clock + declared latency
@@ -1731,12 +1731,10 @@ def test_the_release_scope_is_a_value_not_a_string():
 # 4. Holding clock, forced exit — `Position` is `(instrument, qty,
 #    avg_cost, source, native)`; GAP documented, not built: no
 #    `opened_ms` (`records.py` is out of scope for this task). Holding
-#    duration is proven from `Fill.ts_ms` / `OrderState.created_ms`
-#    instead, both already stamped from the injected clock. A forced
-#    exit is already injectable as a `gtd`/`day` TIF
-#    (`test_a_gtd_order_expires_at_the_proposals_expiry`,
-#    `test_day_expires_at_the_declared_session_end`) — no new test
-#    needed for that half of the claim.
+#    duration is proven from fill timestamps. A forced exit of a FILLED
+#    position is caller-injected: after `clock.advance(holding_ms)` the
+#    caller submits an opposite-side close. TIF expiry of an UNFILLED
+#    order is a different mechanism and is not this item.
 # 5. Overlapping signals — `PaperExecutor` already holds two working
 #    orders from two decisions before either resolves; there is no
 #    overlap-refusal policy, and this task does not decide whether one
@@ -1829,6 +1827,38 @@ def test_position_carries_no_opened_ms_but_holding_duration_is_derivable_from_ti
     fill = page[0]
     holding_ms = fill.ts_ms - resting.created_ms
     assert holding_ms == 3_600_000
+
+
+def test_a_caller_can_force_exit_a_filled_position_after_a_holding_duration():
+    """Item 4: forced exit of a FILLED position. CURRENT mechanism — the
+    caller advances the injected clock by a holding duration, then
+    submits an opposite-side close. `PaperExecutor` has no holding-limit
+    policy of its own; TIF expiry of an unfilled order is not this. The
+    duration is the close fill's `ts_ms` minus the open fill's `ts_ms`.
+    Which holding limit an equity adapter would choose is §11 policy
+    this test does not decide."""
+    holding_ms = 3_600_000
+    clock = TestClock(start_ms=NOW_MS)
+    venue = paper({"fill_rule": "touch", "latency_ms": {"submit": 0, "cancel": 0}}, clock=clock)
+    opened = venue.submit(intent(), simulated(), tick_state())
+    assert opened.status == "filled"
+    (page, _cursor) = venue.fills(0)
+    open_fill = page[0]
+    clock.advance(holding_ms)
+    venue.on_quote(dataclasses.replace(QUOTE, asof_ms=NOW_MS + holding_ms))
+    closed = venue.submit(
+        intent("close", proposal=proposal(side="sell", tif="ioc", limit="0.40")),
+        simulated("close"),
+        tick_state(),
+    )
+    assert closed.status == "filled"
+    (page, _cursor) = venue.fills(0)
+    close_fill = page[-1]
+    book = PositionBook()
+    for fill in page:
+        book.apply(fill)
+    assert book.net_qty(INSTRUMENT) == Decimal("0")
+    assert close_fill.ts_ms - open_fill.ts_ms == holding_ms
 
 
 def test_two_working_orders_from_separate_decisions_coexist_before_either_resolves():

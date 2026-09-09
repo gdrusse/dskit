@@ -204,6 +204,30 @@ def test_a_replay_feed_then_sets_the_instant_the_recorded_pull_was_taken_at():
     assert replay.now_ms() == START_MS + 17
 
 
+def test_replay_clock_follows_the_tape_entry_not_the_tick_at_ms_argument():
+    """Gate 5a item 1, CURRENT: `ReplayFeed.pull(tick_at_ms)` ignores
+    `tick_at_ms` and sets the shared `ReplayClock` to the next tape
+    entry's `at_ms`. After the T1 pull the clock is T1 and T2 is still
+    on the tape."""
+    from dskit.production.feed import ReplayFeed
+    from dskit.production.records import FeedResult
+
+    t0, t1, t2 = START_MS, START_MS + 10_000, START_MS + 20_000
+    tape = [
+        FeedResult(status="live", acq_id="a", records_added=0, source_config_hash=None, at_ms=t0),
+        FeedResult(status="live", acq_id="b", records_added=0, source_config_hash=None, at_ms=t1),
+        FeedResult(status="live", acq_id="c", records_added=0, source_config_hash=None, at_ms=t2),
+    ]
+    manual = ManualTime(now_ms=t0)
+    replay = ReplayClock(manual_time=manual)
+    feed = ReplayFeed({}, tape=tape, time=manual)
+    feed.pull(t2)
+    assert replay.now_ms() == t0
+    feed.pull(t2)
+    assert replay.now_ms() == t1
+    assert feed.pull(0).at_ms == t2
+
+
 # ---------------------------------------------------------------------------
 # WallClock — the only reader of `time`
 # ---------------------------------------------------------------------------
