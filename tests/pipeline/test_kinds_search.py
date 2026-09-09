@@ -43,6 +43,8 @@ from dskit.pipeline.kinds_search import _is_json_scalar as _grid_is_json_scalar
 from dskit.pipeline.kinds_search import _ordering_key
 from dskit.pipeline.node import Node, NodeContext, NodeKindRegistry
 from dskit.pipeline.planner import _is_json_scalar as _planner_is_json_scalar
+from dskit.pipeline.planner import _MAX_JSON_INT as _PLANNER_MAX_JSON_INT
+from dskit.pipeline.kinds_search import _MAX_JSON_INT as _GRID_MAX_JSON_INT
 from dskit.pipeline.planner import plan
 from dskit.pipeline.synthetic_nodes import (
     SynthClip,
@@ -100,6 +102,31 @@ class TestPhaseOneEvidence:
         ]
         with pytest.raises(AttributeError):
             record._digest = "forged"
+
+
+class TestCandidateInventoryCap:
+    """Skeptic review architecture lens, first round (GPT-5.6 Terra,
+    2026-09-09): FAILED this code for materializing the full Cartesian
+    grid before ``n_trials`` was consulted, requiring "an explicit
+    positive, non-boolean caller cap... pin the cap with a regression
+    that proves ``n_trials=1`` cannot bypass it." The cap itself
+    (``_bounded_candidate_count``, called before ``_grid``/``_subsample``)
+    landed, but this specific regression did not — closed here (skeptic
+    review architecture-recovery lens, Major #3, 2026-09-09).
+    """
+
+    def test_max_candidates_refuses_before_materializing_even_with_n_trials_1(self):
+        # 2**20 combinations, capped far below that — n_trials=1 must NOT
+        # bypass the cap by only ever needing to keep one combination.
+        space = {f"k{i}": [0, 1] for i in range(20)}
+        with pytest.raises(ValueError, match="candidate count .* exceeds max_candidates 100"):
+            CandidateInventory(space, max_candidates=100, n_trials=1)
+
+    def test_a_grid_within_the_cap_still_honors_n_trials(self):
+        inventory = CandidateInventory(
+            {"a": [0, 1, 2, 3]}, max_candidates=4, n_trials=1
+        )
+        assert len(inventory.combinations) == 1
 
 
 class TestSelectionRecordSchema:
@@ -1020,6 +1047,12 @@ class TestScalarRuleAgreement:
 
     #: (value, is-a-JSON-scalar) — restated INDEPENDENTLY of both
     #: implementations, so a matching drift in both still fails here.
+    #: Includes the exact 4096/4097-decimal-digit boundary both modules'
+    #: own ``_MAX_JSON_INT`` literal enforces (skeptic review architecture
+    #: lens, Major #2, 2026-09-09): a document that passed the plan-time
+    #: check on a 4096-digit int and then died at the kind's construction
+    #: check on a 4097-digit one (or the reverse) would be this rule
+    #: having two meanings at exactly the boundary it exists to pin.
     CASES = (
         (None, True),
         (True, True),
@@ -1036,6 +1069,10 @@ class TestScalarRuleAgreement:
         ({}, False),
         ({"low": 0.0, "high": 1.0}, False),
         ((1,), False),
+        (10**4096 - 1, True),  # exactly 4096 decimal digits — the accepted edge
+        (-(10**4096 - 1), True),  # the same edge, negative
+        (10**4096, False),  # exactly 4097 decimal digits — one digit over
+        (-(10**4096), False),  # the same edge, negative
     )
 
     def test_both_gates_draw_the_same_line(self):
@@ -1045,6 +1082,14 @@ class TestScalarRuleAgreement:
         for value, expected in self.CASES:
             assert _planner_is_json_scalar(value) is expected, value
             assert _grid_is_json_scalar(value) is expected, value
+
+    def test_the_two_max_json_int_literals_agree(self):
+        # The bound itself is deliberately restated in both tier-boundary-
+        # separated modules (planner may not import a tier-2/3 module) —
+        # CLAUDE.md's "Duplication that diverges" rule requires pinning
+        # that agreement directly, not only at the boundary above, so a
+        # future edit to either literal alone fails immediately.
+        assert _PLANNER_MAX_JSON_INT == _GRID_MAX_JSON_INT == 10**4096 - 1
 
 
 class TestPlannerRules:

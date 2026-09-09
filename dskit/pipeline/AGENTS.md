@@ -489,9 +489,9 @@ dskit/pipeline/
 │                      accrual -> gate -> ledger spine
 ├── kinds_table.py     table-file, table-write, records-write (+ the FileWrite base, ADR-0085)
 ├── kinds_stats.py     owned validate + stat_test
-├── kinds_search.py    hpo-grid + top-trials (ctx.rerun seam)
-|                      CandidateInventory, TrialLedger, OneStandardErrorSelector, SelectionRecord
-|                      are generic search values (ADR-0113).
+├── kinds_search.py    hpo-grid + top-trials (ctx.rerun seam);
+│                      CandidateInventory, TrialLedger, OneStandardErrorSelector, SelectionRecord
+│                      are generic search values (ADR-0113).
 ├── kinds_report.py    owned run-report
 ├── fitted.py          FittedTransform family: standardize, apply-transform,
 │                      FeatureSelector

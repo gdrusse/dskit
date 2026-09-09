@@ -164,6 +164,26 @@ on it without breaking its rulings.
   paired outer folds and never promotes a winner. Disabled candidates name a
   prerequisite and do not count as attempts. Until walk-forward records a
   portable resource contract, call `compute_rank` declared—not measured.
+- **Generic search values** — `CandidateInventory`, `TrialLedger`, and
+  `OneStandardErrorSelector` (`kinds_search.py`) are plain values, not
+  nodes. Reuse canonical grid ordering; callers own the eager
+  `max_candidates` cap, evidence fields, SE units, and simplicity.
+  `TrialLedger` binds an exact `CandidateInventory` value; standard
+  errors are nonnegative at admission (negative zero canonicalizes to
+  0.0); a rejected ledger row must leave no consumed member behind
+  (ADR-0113). Its concurrency contract is public, not incidental — the
+  class docstring is the source of truth (thread-safe/process-local,
+  reserve→freeze→commit atomicity, duplicate-admission and
+  interruption/retry behavior); every clause there has a test in
+  `TestTrialLedgerConcurrencyContract`. `SelectionRecord` has no public
+  constructor — `SelectionRecord(...)` always raises; only
+  `OneStandardErrorSelector.select()` builds one, via the internal
+  `_build`/`_seal` factory that validates the exact nine-field schema
+  and cross-checks both digests against the real ledger (never a
+  caller-supplied string). Simplicity keys are ordered by
+  `_ordering_key`'s canonical tagged total order (numbers < strings <
+  tuples, recursively) — never raw Python `<` — so two keys of
+  different types are always comparable and never silently tied.
 - **One name per shared vocabulary.** `node.class_ref(cls)` is the
   `module:QualName` an artifact sidecar RECORDS and load mode compares —
   three modules used to write that f-string out, and a divergence there
@@ -465,7 +485,9 @@ dskit/pipeline/
 │                      accrual -> gate -> ledger spine
 ├── kinds_table.py     table-file, table-write, records-write (+ the FileWrite base, ADR-0085)
 ├── kinds_stats.py     owned validate + stat_test
-├── kinds_search.py    hpo-grid + top-trials (ctx.rerun seam)
+├── kinds_search.py    hpo-grid + top-trials (ctx.rerun seam);
+│                      CandidateInventory, TrialLedger, OneStandardErrorSelector, SelectionRecord
+│                      are generic search values (ADR-0113).
 ├── kinds_report.py    owned run-report
 ├── fitted.py          FittedTransform family: standardize, apply-transform,
 │                      FeatureSelector

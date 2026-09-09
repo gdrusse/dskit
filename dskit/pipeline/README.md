@@ -608,9 +608,9 @@ dskit/pipeline/
 ├── kinds_table.py     table-file, table-write, records-write (digest-verified keyed
 │                      tables + the FileWrite base both writers share, ADR-0085)
 ├── kinds_stats.py     owned validate + stat_test (plain + studentized bootstrap-t, corrections)
-├── kinds_search.py    hpo-grid + top-trials (the ctx.rerun seam)
-|                      CandidateInventory, TrialLedger, OneStandardErrorSelector, SelectionRecord
-|                      are generic search values (ADR-0113).
+├── kinds_search.py    hpo-grid + top-trials (the ctx.rerun seam);
+│                      CandidateInventory, TrialLedger, OneStandardErrorSelector, SelectionRecord
+│                      are generic search values (ADR-0113).
 ├── kinds_report.py    owned run-report (evidence.json / evidence.md)
 ├── fitted.py          the fitted-transform family: FittedTransform (role
 │                      fitted_transform, fit/apply_state hooks, fit_split +

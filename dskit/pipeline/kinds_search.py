@@ -472,9 +472,11 @@ class CandidateInventory:
         eager materialization.
     Examples
     --------
-    >>> inventory = CandidateInventory({"depth": [1, 2]}, max_candidates=2)
-    >>> inventory.combinations[0]["depth"]
-    1
+    Build the two-candidate inventory over one knob::
+
+        inventory = CandidateInventory({"depth": [1, 2]}, max_candidates=2)
+        inventory.combinations[0]["depth"]
+        # -> 1
     """
 
 
@@ -602,13 +604,7 @@ class CandidateInventory:
 
     @property
     def max_candidates(self) -> int:
-        """Return the immutable full-grid materialization cap.
-
-        Examples
-        --------
-        >>> CandidateInventory({"depth": [1]}, max_candidates=1).max_candidates
-        1
-        """
+        """Return the immutable full-grid materialization cap."""
         return self._max_candidates
 
     @property
@@ -704,9 +700,12 @@ class TrialLedger:
         overrides and score are refused.
     Examples
     --------
-    ledger = TrialLedger(CandidateInventory({"depth": [1]}), evidence_fields=("se",))
-    ledger.record({"depth": 1}, score=0.25, se=0.05)
-    # -> ledger.is_complete() is True
+    Record the one candidate a single-value inventory declares::
+
+        ledger = TrialLedger(CandidateInventory({"depth": [1]}), evidence_fields=("se",))
+        ledger.record({"depth": 1}, score=0.25, se=0.05)
+        ledger.is_complete()
+        # -> True
     """
 
 
@@ -1183,9 +1182,11 @@ class OneStandardErrorSelector:
         rows (e.g. ``lambda row: row["overrides"]["num_leaves"]``).
     Examples
     --------
-    selector = OneStandardErrorSelector(
-        select="min", simplicity_key=lambda row: row["overrides"]["depth"]
-    )
+    Prefer the shallowest depth within one standard error of the best::
+
+        selector = OneStandardErrorSelector(
+            select="min", simplicity_key=lambda row: row["overrides"]["depth"]
+        )
     """
 
 
