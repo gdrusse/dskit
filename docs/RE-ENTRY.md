@@ -1,5 +1,44 @@
 # Re-entry
 
+## Current wrap: final-model replay Gate 1 / Phase 0 closeout (2026-09-09)
+
+Branch: `claude/phase1-recovery-seven-gates-ao4zdj` (pushed; not merged to
+`main`). Closes Gate 1 (Phase 0) of
+`children/intraday_equities/docs/plans/2026-09-08-final-model-replay-and-monitoring.md`,
+the step immediately after Phase 1 (see the entry below). Per the plan's own
+§1 ("do not write implementation code until the required ADR is accepted"),
+Gate 1 produces a proposal only:
+
+- **ADR-0114** in `docs/architecture/decision-log.md` — status "proposed —
+  awaiting owner approval", never accepted. Covers the full file/class/
+  output/schema/identity inventory for plan Phases 2-6 (both `dskit`-side
+  and `children/intraday_equities`-side), exactly as the plan itself
+  specifies (no invented parameter/detail where the plan is silent), plus a
+  reconciliation confirming ADR-0113/Phase 1 matches the plan's ask.
+  Reproduces the plan's full §11 (10 open owner-decision items — none
+  resolved or inferred) and §12 (owner-only Path packet, explicitly not
+  applied to `path.csv`) verbatim.
+- Read-only baseline evidence for `configs/run-final-hpo.json`
+  (`validate`/`plan`, no execution): confirms it still builds the pre-P16
+  recipe, matching the plan's own claim.
+- Gate 1 memo: `children/intraday_equities/docs/memos/2026-09-09-final-model-replay-phase0-closeout.md`.
+- One journal action row via `dskit.journal record`/`render` (never a hand
+  edit); `docs/decisioning/path.csv` untouched throughout.
+
+Two fresh reviewers (ADR accuracy/completeness; governance/process) closed
+Gate 1 over one bounded correction cycle — the governance lens failed cycle 1
+with 1 Major (a doc-pairing fix that added a Layout-tree row to
+`children/intraday_equities/CLAUDE.md` without porting it to `AGENTS.md`,
+creating a NEW sibling-doc mismatch instead of closing one), fixed and
+re-confirmed resolved in cycle 2. Both lenses PASS (0 Critical, 0 Major) on
+the final commit `48f9047`. Four retained reviewer reports in `docs/memos/`,
+prefix `2026-09-09-final-model-replay-phase0-skeptic-`.
+
+No `.py` or new `.json` config file was created; no pipeline execution
+beyond `validate`/`plan` on one existing config; no §11 item was resolved.
+Gates 2 through 6 remain fully blocked pending owner acceptance of ADR-0114
+and, per-phase, the specific §11 rulings ADR-0114 names.
+
 ## Current wrap: final-model replay Phase 1 recovered and closed (2026-09-09)
 
 Branch: `claude/phase1-recovery-seven-gates-ao4zdj` (pushed; not merged to
