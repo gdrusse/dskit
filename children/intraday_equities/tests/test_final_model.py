@@ -21,11 +21,11 @@ from intraday_equities.final_model import (
     EMBARGO_START_MS,
     EVIDENCE_FIELDS,
     HEADS,
-    HPO_SPACE,
     LOCKBOX_START_MS,
     boundary_flags,
     build_candidate_inventory,
     cluster_scores_by_day,
+    hpo_space,
     lean_feature_drop,
     permitted_for_refit,
     refit_heads,
@@ -53,26 +53,40 @@ REAL_LEAN_DROP = (
 
 
 # ---------------------------------------------------------------------------
-# HEADS / HPO_SPACE / candidate inventory
+# HEADS / hpo_space() / candidate inventory
 # ---------------------------------------------------------------------------
+
+#: The real five-dimension LightGBM HPO grid, verbatim from
+#: configs/run-final-hpo.json's "lgbm" finalist template (independently
+#: transcribed here, the same discipline REAL_LEAN_DROP above uses, so
+#: the test asserts something hpo_space() could not merely echo back).
+REAL_HPO_SPACE = {
+    "learning_rate": [0.003, 0.01, 0.03],
+    "num_leaves": [4, 8, 16],
+    "min_child_samples": [500, 1000, 2000, 4000],
+    "reg_lambda": [10.0, 100.0, 1000.0],
+    "reg_alpha": [0.0, 0.1, 1.0],
+}
 
 
 def test_heads_is_the_ten_exact_lead_names_in_order():
     assert HEADS == tuple(f"h{i:02d}" for i in range(1, 11))
 
 
-def test_hpo_space_is_the_real_five_dimension_grid():
-    assert HPO_SPACE == {
-        "learning_rate": [0.003, 0.01, 0.03],
-        "num_leaves": [4, 8, 16],
-        "min_child_samples": [500, 1000, 2000, 4000],
-        "reg_lambda": [10.0, 100.0, 1000.0],
-        "reg_alpha": [0.0, 0.1, 1.0],
-    }
+def test_hpo_space_reads_the_real_five_dimension_grid_from_its_one_source():
+    space = hpo_space()
+    assert space == REAL_HPO_SPACE
     total = 1
-    for values in HPO_SPACE.values():
+    for values in space.values():
         total *= len(values)
     assert total == 324
+
+
+def test_hpo_space_refuses_a_config_with_no_lgbm_template(tmp_path):
+    bad = tmp_path / "run-final-hpo.json"
+    bad.write_text('{"stages": {"finalist": {"params": {"templates": []}}}}')
+    with pytest.raises(ValueError, match="exactly one"):
+        hpo_space(config_path=str(bad))
 
 
 def test_build_candidate_inventory_is_frozen_deterministic_and_ordered():
@@ -84,7 +98,7 @@ def test_build_candidate_inventory_is_frozen_deterministic_and_ordered():
     combos = [dict(c) for c in a.combinations]
     assert len(combos) == len({tuple(sorted(c.items())) for c in combos})
     for combo in combos:
-        assert set(combo) == set(HPO_SPACE)
+        assert set(combo) == set(REAL_HPO_SPACE)
 
 
 def test_build_candidate_inventory_different_seed_can_differ():

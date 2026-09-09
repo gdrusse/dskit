@@ -46,10 +46,10 @@ from dskit.pipeline.stats import cluster_bootstrap_t
 __all__ = [
     "EVIDENCE_FIELDS",
     "HEADS",
-    "HPO_SPACE",
     "boundary_flags",
     "build_candidate_inventory",
     "cluster_scores_by_day",
+    "hpo_space",
     "lean_feature_drop",
     "permitted_for_refit",
     "refit_heads",
@@ -62,22 +62,6 @@ __all__ = [
 #: lead h=1..10, sharing feature schema, category rules, search space and
 #: release identity — never trees or weights.
 HEADS = tuple(f"h{i:02d}" for i in range(1, 11))
-
-#: The real five-dimension LightGBM HPO grid (ADR-0114 §11.1 ruling),
-#: copied verbatim from ``configs/run-final-hpo.json``'s pooled-lightgbm
-#: template ``hpo_space`` — 324 combinations, 24 drawn by the plan-cited
-#: purged inner search. This is a plain module constant, not a second
-#: reader of the config, because the *values themselves* (not a file
-#: layout) are what ADR-0114 locked; :func:`lean_feature_drop` below
-#: takes the opposite approach for the mask specifically because the
-#: plan requires that list not be hardcoded a second time.
-HPO_SPACE = {
-    "learning_rate": [0.003, 0.01, 0.03],
-    "num_leaves": [4, 8, 16],
-    "min_child_samples": [500, 1000, 2000, 4000],
-    "reg_lambda": [10.0, 100.0, 1000.0],
-    "reg_alpha": [0.0, 0.1, 1.0],
-}
 
 #: The one seed :func:`build_candidate_inventory` defaults to — matches
 #: the ``hpo_seed`` already declared beside this grid in
@@ -117,6 +101,18 @@ _DEFAULT_LEAN_MASK_CONFIG = os.path.normpath(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "configs",
         "run-p16-feature-mask-zoo.json",
+    )
+)
+
+#: The one real source of the locked 24-combination LightGBM HPO grid —
+#: never a second hardcoded copy of its five dimensions (root CLAUDE.md's
+#: duplication rule; the same rule :func:`lean_feature_drop` already
+#: follows for the mask).
+_DEFAULT_HPO_CONFIG = os.path.normpath(
+    os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "configs",
+        "run-final-hpo.json",
     )
 )
 
@@ -234,6 +230,80 @@ def lean_feature_drop(config_path=None) -> tuple:
     return tuple(drop)
 
 
+def hpo_space(config_path=None) -> dict:
+    """Return the real five-dimension LightGBM HPO grid, read from its one real source (ADR-0114 §11.1) rather than hardcoded a second time.
+
+    Parameters
+    ----------
+    config_path : str, optional
+        Override path to the config (default: the shipped
+        ``configs/run-final-hpo.json`` beside this package).
+
+    Returns
+    -------
+    dict
+        ``"learning_rate"``/``"num_leaves"``/``"min_child_samples"``/
+        ``"reg_lambda"``/``"reg_alpha"`` -> that dimension's declared
+        value list, in the config's own order — 324 combinations total.
+
+    Raises
+    ------
+    ValueError
+        The config is missing, unreadable, or its finalist template's
+        shape does not match ADR-0114 (not exactly one
+        ``id == "lgbm"``/``family == "pooled-lightgbm"`` template, or no
+        non-empty ``hpo_space`` mapping of dimension -> value list).
+
+    Examples
+    --------
+    Read the shipped grid::
+
+        space = hpo_space()
+        sorted(space)
+        # -> ['learning_rate', 'min_child_samples', 'num_leaves', 'reg_alpha', 'reg_lambda']
+    """
+    path = _DEFAULT_HPO_CONFIG if config_path is None else config_path
+    try:
+        with open(path, encoding="utf-8") as fh:
+            document = json.load(fh)
+    except OSError as exc:
+        raise ValueError(f"hpo_space: cannot read {path!r} ({exc})") from exc
+    templates = (
+        document.get("stages", {})
+        .get("finalist", {})
+        .get("params", {})
+        .get("templates", [])
+    )
+    matches = [
+        t for t in templates if isinstance(t, dict) and t.get("id") == "lgbm"
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"hpo_space: {path!r} must declare exactly one "
+            f"templates[].id == 'lgbm', found {len(matches)}"
+        )
+    template = matches[0]
+    model = template.get("model", {})
+    if template.get("family") != "pooled-lightgbm":
+        raise ValueError(
+            f"hpo_space: {path!r}'s 'lgbm' template does not declare "
+            "family == 'pooled-lightgbm'"
+        )
+    space = model.get("hpo_space")
+    if (
+        not isinstance(space, dict)
+        or not space
+        or not all(
+            isinstance(values, list) and values for values in space.values()
+        )
+    ):
+        raise ValueError(
+            f"hpo_space: {path!r}'s 'lgbm' template hpo_space is not a "
+            "non-empty mapping of dimension -> non-empty value list"
+        )
+    return {name: list(values) for name, values in space.items()}
+
+
 def build_candidate_inventory(
     seed=DEFAULT_INVENTORY_SEED, n_trials=FROZEN_CANDIDATE_COUNT
 ) -> CandidateInventory:
@@ -256,7 +326,7 @@ def build_candidate_inventory(
     -------
     CandidateInventory
         Deterministic: two calls with the same arguments produce
-        byte-identical (equal-digest) inventories, over :data:`HPO_SPACE`
+        byte-identical (equal-digest) inventories, over :func:`hpo_space`
         — the real 324-combination grid.
 
     Examples
@@ -267,7 +337,7 @@ def build_candidate_inventory(
         len(inventory.combinations)
         # -> 24
     """
-    return CandidateInventory(HPO_SPACE, n_trials=n_trials, seed=seed)
+    return CandidateInventory(hpo_space(), n_trials=n_trials, seed=seed)
 
 
 def squared_error_improvement(y, yhat, mu) -> float:
@@ -356,10 +426,10 @@ def boundary_flags(candidate, space=None) -> dict:
     Parameters
     ----------
     candidate : mapping
-        One candidate's overrides (``HPO_SPACE`` keys -> a value drawn
-        from that key's declared list).
+        One candidate's overrides (:func:`hpo_space` keys -> a value
+        drawn from that key's declared list).
     space : dict, optional
-        The grid to check against (default :data:`HPO_SPACE`).
+        The grid to check against (default :func:`hpo_space`).
 
     Returns
     -------
@@ -377,7 +447,7 @@ def boundary_flags(candidate, space=None) -> dict:
         })["num_leaves"]
         # -> True
     """
-    space = HPO_SPACE if space is None else space
+    space = hpo_space() if space is None else space
     return {
         name: candidate[name] in (min(values), max(values))
         for name, values in space.items()

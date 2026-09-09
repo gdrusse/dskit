@@ -1035,6 +1035,9 @@ def write_bundle(
         A malformed ``heads``/``estimators``/mapping argument, an
         existing bundle with ``overwrite`` false, or a head name that
         cannot be validated as directory-safe.
+    OSError
+        The atomic write itself fails (open, write, fsync, or replace) —
+        propagated unchanged from :func:`dskit.pipeline.node.atomic_write`.
 
     Examples
     --------
