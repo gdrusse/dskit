@@ -1,5 +1,28 @@
 # Re-entry
 
+## Current: ADR-0114 accepted; §11 item 1 ruled — Gate 2 unblocked (2026-09-09)
+
+Branch: `claude/phase1-recovery-seven-gates-ao4zdj` (pushed; not merged to
+`main`). Owner accepted ADR-0114 (see Gate 1 entry below) as proposed and
+separately ruled plan §11 item 1 (docs/architecture/decision-log.md, "§11
+item 1 — RULED" section inside ADR-0114):
+
+- **SE method:** each HPO candidate's `se` comes from the existing generic
+  `dskit.pipeline.stats.cluster_bootstrap_t`, clustered by **trading day**
+  (no new statistical code).
+- **Simplicity ordering:** `(num_leaves, learning_rate, -min_child_samples,
+  -reg_lambda, -reg_alpha)` ascending, over the real 24-candidate LightGBM
+  grid in `configs/run-final-hpo.json`'s `hpo_space`.
+
+This unblocks Gate 2 (Phase 2 — final refit and one bundle); ADR-0114 names
+no other §11 item as blocking it. The remaining nine §11 items are still
+open and continue to block their respective later phases exactly as
+ADR-0114 names. Recorded through the journal CLI (action A18855).
+
+**Next:** Gate 2 implementation (generic `dskit/pipeline/libs/sklearn.py`
+bundle writer + `children/intraday_equities/intraday_equities/final_model.py`
++ the `configs/run-final-hpo.json`/`run-final-refit.json` edits).
+
 ## Current wrap: final-model replay Gate 1 / Phase 0 closeout (2026-09-09)
 
 Branch: `claude/phase1-recovery-seven-gates-ao4zdj` (pushed; not merged to

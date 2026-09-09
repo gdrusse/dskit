@@ -6183,14 +6183,14 @@ evidence contract, uncertainty unit, and simplicity policy.
 
 ## ADR-0114 — Final model release, cash flows, replay, and shared monitoring: file ownership, schemas, and phase gating (Gate 1 / Phase 0)
 
-**Status:** proposed — awaiting owner approval (2026-09-09). This ADR resolves
-NONE of the ten items in plan §11 (below). Per the plan's own §1.4 ("Write one
-cross-layer ADR ... and stop for owner approval. The ADR must resolve every
-item in §11 that its phase needs") and root `CLAUDE.md` ADR discipline ("a
-proposal is not an approval — only the human owner accepts an ADR"), every
-phase below stays blocked from implementation until (a) this ADR itself is
-accepted and (b) each §11 item that phase needs is separately ruled by the
-owner. No code in this ADR has been written.
+**Status:** accepted (2026-09-09; owner accepted the file/class/schema
+inventory as proposed). §11 item 1 is separately ruled the same day — see
+"§11 item 1 — RULED" below, inserted ahead of the full §11 list. The
+remaining nine items are still open; every phase below stays blocked from
+implementation until each §11 item IT specifically needs is separately
+ruled, per the plan's own §1.4 and root `CLAUDE.md` ADR discipline. Item 1's
+ruling unblocks Phase 2 (see that phase's "Blocking §11 items" line, updated
+below) — no other phase changes status by this update.
 
 **Context.** `children/intraday_equities/docs/plans/2026-09-08-final-model-replay-and-monitoring.md`
 (2026-09-08) is the authority for the remaining final-model, capital-flow,
@@ -6323,10 +6323,9 @@ blocking it is separately ruled.
   recipe and MUST get a new hash). The new bundle's own digest is model bytes
   + schema-bearing manifest fields, per the sklearn.py bullet above; it is
   not a `dskit.pipeline` document-identity hash.
-- **Blocking §11 items:** item 1 (the one-standard-error statistical unit and
-  simplicity ordering) blocks `final_model.py`'s per-lead winner selection
-  outright — `OneStandardErrorSelector` requires a caller-supplied `se` unit
-  and simplicity key that no one may invent. Nothing else in Phase 2 depends
+- **Blocking §11 items:** item 1 was blocking and is now RULED (2026-09-09 —
+  see "§11 item 1 — RULED" ahead of the full §11 list below); Phase 2 is no
+  longer blocked by an open owner decision. Nothing else in Phase 2 depends
   on an open §11 item.
 
 **Phase 3 — cash flows and account state.**
@@ -6522,6 +6521,53 @@ authorizes any read of its target data merely by existing — both stay
 "unreadable" documents until their named freeze gates pass, independent of
 this ADR's acceptance. The plan explicitly forbids a real-money configuration
 at any phase; none is proposed.
+
+**§11 item 1 — RULED (2026-09-09, owner).** Both halves of item 1 are
+decided; the other nine items remain open (list below, unchanged).
+
+*Standard-error method.* Each candidate's `se` (the `OneStandardErrorSelector`
+row field) is computed by `dskit.pipeline.stats.cluster_bootstrap_t`
+(existing, generic, dependence-robust — no new statistical code), with
+**trading day as the cluster unit**: `cluster_scores` maps each trading day
+in the HPO evaluation window to that day's per-decision forecast-accuracy
+contributions (the same squared-error-improvement-vs-training-mean
+components §2 already locks as the objective, never Spearman IC) for the
+candidate under evaluation. `cluster_bootstrap_t`'s own returned `"se"` is
+used directly; its returned `"mean"` MAY serve as the row's `score` (one
+call yields both the objective and its SE from the same clustering, so no
+second, differently-clustered estimate is computed for the two fields —
+`final_model.py` is free to keep them as one call's paired output). Trading
+day was chosen over symbol-level clustering because the per-decision errors
+this objective aggregates are far more serially dependent WITHIN one day
+(shared intraday regime/volatility) than they are cross-sectionally between
+symbols on the pooled model; `n_boot`, `seed`, and `alpha` are
+`final_model.py`'s own knobs to declare (the plan gives none), not
+determined by this ruling.
+
+*Simplicity ordering.* Over the plan-locked 24-candidate LightGBM grid
+(`configs/run-final-hpo.json`'s existing `hpo_space`: `learning_rate` ∈
+{0.003, 0.01, 0.03}, `num_leaves` ∈ {4, 8, 16}, `min_child_samples` ∈ {500,
+1000, 2000, 4000}, `reg_lambda` ∈ {10, 100, 1000}, `reg_alpha` ∈ {0, 0.1,
+1.0} — 324 combinations, 24 drawn by the existing purged inner search), the
+simplicity key is the lexicographic tuple, ascending (lowest wins, per
+`OneStandardErrorSelector`'s own contract):
+
+```
+(num_leaves, learning_rate, -min_child_samples, -reg_lambda, -reg_alpha)
+```
+
+i.e. primary: fewer leaves (smaller tree — the classic CART one-standard-
+error convention, treating leaf count as the direct capacity measure);
+tie-break, in order: lower `learning_rate` (smoother fitting), higher
+`min_child_samples` (more conservative splits), higher `reg_lambda`, higher
+`reg_alpha` (more regularization). The three tie-break dimensions are
+negated so ascending tuple order (`_ordering_key`'s and Python's own) reads
+"more conservative = simpler" the same direction as the primary dimension.
+This is a total order over the grid's five declared dimensions — no sixth
+dimension exists to leave unordered, and no two of the 24 drawn candidates
+share every one of the five values (confirmed: `hpo_space`'s 24 drawn points
+are documented as a purged/deduplicated draw), so ties should not arise in
+practice, but the tuple remains total regardless.
 
 **Open owner decisions — not resolved by this ADR (plan §11, carried
 verbatim as the plan's authoritative list).** No agent may infer these.
